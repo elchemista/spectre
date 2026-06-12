@@ -49,7 +49,7 @@ defmodule Spectre.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
-      {:vettore, "~> 0.2.3"},
+      {:vettore, path: "../../personal/vettore"},
       {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}

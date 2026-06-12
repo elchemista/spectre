@@ -9,7 +9,7 @@ defmodule Spectre.Classifier do
 
   alias Spectre.Classifier.{Encoder, Math}
   alias Spectre.Route
-  alias Vettore.Embedding
+  alias Vettore.{Collection, Embedding}
 
   @default_name __MODULE__
   @default_high_confidence_threshold 0.93
@@ -149,33 +149,41 @@ defmodule Spectre.Classifier do
   @spec build_centroid_index(map(), pos_integer()) ::
           {:ok, map()} | {:error, term()}
   defp build_centroid_index(%{centroids: centroids}, dimensions) when map_size(centroids) > 0 do
-    db = Vettore.new()
     collection = "#{@centroid_collection}:#{System.unique_integer([:positive])}"
 
     embeddings =
       Enum.map(centroids, fn {label, centroid} ->
         %Embedding{
+          id: label_id(label),
           value: label_id(label),
           vector: centroid,
           metadata: %{"label" => label_id(label)}
         }
       end)
 
-    with {:ok, _collection} <- Vettore.create_collection(db, collection, dimensions, :cosine),
-         {:ok, _ids} <- Vettore.batch(db, collection, embeddings) do
-      {:ok, %{db: db, collection: collection}}
+    with {:ok, index} <-
+           Collection.new(
+             name: collection,
+             dimensions: dimensions,
+             metric: :cosine,
+             normalize: :l2,
+             index: :flat,
+             score: :raw
+           ),
+         :ok <- Collection.put_many(index, embeddings) do
+      {:ok, %{collection: index}}
     end
   end
 
   defp build_centroid_index(_classifier, _dimensions), do: {:error, :empty_centroids}
 
   @spec rank_centroids([number()], map(), keyword()) :: [{String.t(), float()}]
-  defp rank_centroids(query_vector, %{centroid_index: %{db: db, collection: collection}}, opts) do
+  defp rank_centroids(query_vector, %{centroid_index: %{collection: collection}}, opts) do
     limit = Keyword.get(opts, :local_top_k, :all)
 
-    case Vettore.similarity_search(db, collection, query_vector, limit: search_limit(limit)) do
+    case Collection.search(collection, query_vector, limit: search_limit(limit)) do
       {:ok, results} ->
-        Enum.map(results, fn {label, score} -> {label, Math.raw_cosine_score(score)} end)
+        Enum.map(results, fn result -> {result.id, result.score} end)
 
       {:error, _reason} ->
         []

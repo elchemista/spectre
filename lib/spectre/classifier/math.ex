@@ -24,12 +24,12 @@ defmodule Spectre.Classifier.Math do
   end
 
   @doc """
-  Converts Vettore's cosine score into the classifier score scale.
+  Returns Vettore's raw cosine score.
   """
   @spec raw_cosine_score(term()) :: float()
   def raw_cosine_score({:ok, score}) when is_number(score), do: raw_cosine_score(score)
   def raw_cosine_score({:error, _reason}), do: 0.0
-  def raw_cosine_score(score) when is_number(score), do: score * 2.0 - 1.0
+  def raw_cosine_score(score) when is_number(score), do: score / 1
   def raw_cosine_score(_other), do: 0.0
 
   @doc """
