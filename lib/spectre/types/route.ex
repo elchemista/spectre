@@ -1,0 +1,82 @@
+defmodule Spectre.Route do
+  @moduledoc """
+  Normalized routing decision returned by Spectre.
+  """
+
+  defstruct [
+    :label,
+    :flow,
+    :handler,
+    :core_route,
+    strategy: :unknown,
+    confidence: 0.0,
+    margin: 0.0,
+    accepted?: false,
+    scores: %{},
+    raw: nil,
+    labels: [],
+    local: nil,
+    fallback_error: nil,
+    semantic_cache: nil,
+    semantic_cache_after: nil,
+    semantic_examples: [],
+    terminal?: false,
+    escalation_reason: nil
+  ]
+
+  @type t :: %__MODULE__{
+          label: atom() | nil,
+          flow: atom() | nil,
+          handler: Spectre.Rule.handler() | nil,
+          strategy: atom(),
+          confidence: float() | nil,
+          margin: float() | nil,
+          accepted?: boolean(),
+          scores: map(),
+          raw: term(),
+          labels: [atom()],
+          local: map() | nil,
+          fallback_error: term(),
+          semantic_cache: term(),
+          semantic_cache_after: term(),
+          semantic_examples: [map()],
+          terminal?: boolean(),
+          escalation_reason: String.t() | nil,
+          core_route: term()
+        }
+
+  @doc """
+  Builds a normalized route struct.
+  """
+  @spec new(map() | t()) :: t()
+  def new(%__MODULE__{} = route), do: route
+
+  def new(attrs) when is_map(attrs) do
+    struct(__MODULE__, Map.take(attrs, fields()))
+  end
+
+  @doc """
+  Builds an accepted deterministic route from a compiled rule.
+  """
+  @spec from_rule(Spectre.Rule.t(), atom(), String.t()) :: t()
+  def from_rule(%Spectre.Rule{} = rule, strategy, raw) do
+    new(%{
+      label: rule.label,
+      flow: rule.flow,
+      handler: rule.handler,
+      strategy: strategy,
+      confidence: 1.0,
+      margin: 1.0,
+      accepted?: true,
+      scores: %{rule.label => 1.0},
+      raw: raw
+    })
+  end
+
+  @spec fields() :: [atom()]
+  defp fields do
+    __MODULE__.__struct__()
+    |> Map.keys()
+    |> List.delete(:__struct__)
+  end
+end
