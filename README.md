@@ -15,6 +15,10 @@ That philosophy is inspired by the good parts of the Elixir ecosystem: Phoenix
 routers, Ecto schemas, Oban workers, Ash resources, Broadway pipelines, and OTP
 supervision trees. A Spectre agent should feel like a map, not a magic trick.
 
+> This is still work in progress and I don't even know it i will keep it public.
+> I integrated this library in different products and shaping it base on feedback
+> and on what is really useful in real world.
+
 ## A Small Agent
 
 This is the kind of module Spectre is designed to make easy:
