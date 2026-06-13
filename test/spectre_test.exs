@@ -144,7 +144,7 @@ end
 defmodule SpectreTest do
   use ExUnit.Case
 
-  alias Spectre.Classifier.{Encoder, Math}
+  alias Spectre.Classifier.{Encoder, Math, Trainer}
   alias Spectre.{PendingAction, State}
 
   @prompt_root Path.expand("tmp/spectre_test/prompts")
@@ -412,6 +412,102 @@ defmodule SpectreTest do
   test "classifier math uses vettore cosine scoring" do
     assert Math.cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
     assert Math.cosine([1.0, 0.0], [-1.0, 0.0]) == -1.0
+  end
+
+  test "classifier math uses vettore normalization" do
+    assert_in_delta hd(Math.normalize([3.0, 4.0])), 0.6, 0.00001
+    assert Math.normalize([0.0, 0.0]) == [0.0, 0.0]
+  end
+
+  @tag :tmp_dir
+  test "trained classifier defaults to compact centroid artifacts", %{tmp_dir: tmp_dir} do
+    dataset_path = Path.join(tmp_dir, "dataset.json")
+    artifact_dir = Path.join(tmp_dir, "artifact")
+
+    File.write!(
+      dataset_path,
+      Jason.encode!([
+        %{"text" => "right", "label" => "go_right"},
+        %{"text" => "left", "label" => "go_left"}
+      ])
+    )
+
+    opts = [
+      embedding_adapter: SpectreTest.EmbeddingAdapter,
+      encoder_model: "toy",
+      dimensions: 2,
+      classification_log?: false
+    ]
+
+    assert {:ok, %{labels: ["go_left", "go_right"]}} =
+             Trainer.train(dataset_path, artifact_dir, opts)
+
+    classifier =
+      artifact_dir
+      |> Path.join("classifier.etf")
+      |> File.read!()
+      |> :erlang.binary_to_term()
+
+    assert classifier.kind == :centroid_head
+    assert map_size(classifier.centroids) == 2
+    refute Map.has_key?(classifier, :examples)
+
+    assert {:ok, route} =
+             Spectre.Classifier.classify_once(
+               "right",
+               Keyword.put(opts, :artifact_dir, artifact_dir)
+             )
+
+    assert route.label == "go_right"
+    assert route.accepted?
+    assert route.scores["go_right"] > route.scores["go_left"]
+  end
+
+  @tag :tmp_dir
+  test "trained classifier can opt into vettore example index without centroids", %{
+    tmp_dir: tmp_dir
+  } do
+    dataset_path = Path.join(tmp_dir, "dataset.json")
+    artifact_dir = Path.join(tmp_dir, "artifact")
+
+    File.write!(
+      dataset_path,
+      Jason.encode!([
+        %{"text" => "right", "label" => "go_right"},
+        %{"text" => "left", "label" => "go_left"}
+      ])
+    )
+
+    opts = [
+      embedding_adapter: SpectreTest.EmbeddingAdapter,
+      encoder_model: "toy",
+      dimensions: 2,
+      local_classifier_mode: :examples,
+      classification_log?: false
+    ]
+
+    assert {:ok, %{labels: ["go_left", "go_right"]}} =
+             Trainer.train(dataset_path, artifact_dir, opts)
+
+    classifier =
+      artifact_dir
+      |> Path.join("classifier.etf")
+      |> File.read!()
+      |> :erlang.binary_to_term()
+
+    assert classifier.kind == :example_index
+    assert map_size(classifier.centroids) == 0
+    assert [%{label: "go_right"}, %{label: "go_left"}] = classifier.examples
+
+    assert {:ok, route} =
+             Spectre.Classifier.classify_once(
+               "right",
+               Keyword.put(opts, :artifact_dir, artifact_dir)
+             )
+
+    assert route.label == "go_right"
+    assert route.accepted?
+    assert route.scores["go_right"] > route.scores["go_left"]
   end
 
   test "classifier encoder accepts a custom embedding adapter" do

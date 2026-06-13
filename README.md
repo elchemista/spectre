@@ -202,6 +202,25 @@ config :spectre, :classifier,
   embedding_adapter: Spectre.Classifier.Embeddings.ExFastembed
 ```
 
+Classifier artifacts use compact centroids by default. At runtime, Spectre
+indexes those centroids with Vettore, so only one vector per label is mirrored
+into the native search resource.
+
+For larger datasets where nearest-example routing is worth the extra memory,
+you can opt into example indexing:
+
+```elixir
+config :spectre, :classifier,
+  local_classifier_mode: :examples,
+  local_classifier_index: :hnsw,
+  local_classifier_index_options: [ef_search: 64]
+```
+
+Example indexing stores training examples in ETS and mirrors their ids/vectors
+inside Vettore's native index. Labels are scored from nearest examples with
+`local_example_score: :max` by default; use `:mean` to average the returned hits
+per label. Older centroid artifacts still load as a fallback.
+
 `Spectre.Classifier.Encoder` is an adapter boundary. The default adapter uses
 the optional `:ex_fastembed` dependency, matching the example app:
 

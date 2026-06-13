@@ -1,6 +1,6 @@
 defmodule Spectre.Classifier do
   @moduledoc """
-  Runtime for Spectre's lightweight local centroid classifier.
+  Runtime for Spectre's lightweight local vector classifier.
   """
 
   use GenServer
@@ -9,11 +9,12 @@ defmodule Spectre.Classifier do
 
   alias Spectre.Classifier.{Encoder, Math}
   alias Spectre.Route
-  alias Vettore.{Collection, Embedding}
+  alias Vettore.Embedding
 
   @default_name __MODULE__
   @default_high_confidence_threshold 0.93
   @centroid_collection "spectre_classifier_centroids"
+  @example_collection "spectre_classifier_examples"
 
   @doc """
   Starts a classifier process that keeps the artifact loaded.
@@ -67,11 +68,11 @@ defmodule Spectre.Classifier do
          {:ok, classifier} <- decode_classifier(bytes),
          encoder_model <- Map.get(classifier, :encoder_model, Encoder.default_model()),
          {:ok, dimensions} <- Encoder.load(encoder_model, opts),
-         {:ok, centroid_index} <- build_centroid_index(classifier, dimensions) do
+         {:ok, classifier_index} <- build_classifier_index(classifier, dimensions, opts) do
       %{
         ready?: true,
         classifier: classifier,
-        centroid_index: centroid_index,
+        classifier_index: classifier_index,
         dimensions: dimensions,
         artifact_dir: artifact_dir,
         error: nil
@@ -108,7 +109,7 @@ defmodule Spectre.Classifier do
       )
 
     with {:ok, query_vector} <- Encoder.embed(text, opts) do
-      ranked = rank_centroids(query_vector, state, opts)
+      ranked = rank_labels(query_vector, state, opts)
 
       {label, confidence} = List.first(ranked, {"UNKNOWN", 0.0})
       {_second_label, second_score} = Enum.at(ranked, 1, {"UNKNOWN", 0.0})
@@ -146,9 +147,44 @@ defmodule Spectre.Classifier do
   defp fmt(number) when is_float(number), do: :erlang.float_to_binary(number, decimals: 4)
   defp fmt(number) when is_integer(number), do: Integer.to_string(number)
 
-  @spec build_centroid_index(map(), pos_integer()) ::
+  @spec build_classifier_index(map(), pos_integer(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  defp build_centroid_index(%{centroids: centroids}, dimensions) when map_size(centroids) > 0 do
+  defp build_classifier_index(%{examples: examples} = classifier, dimensions, opts)
+       when is_list(examples) and examples != [] do
+    build_example_index(classifier, dimensions, opts)
+  end
+
+  defp build_classifier_index(classifier, dimensions, opts) do
+    build_centroid_index(classifier, dimensions, opts)
+  end
+
+  @spec build_example_index(map(), pos_integer(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  defp build_example_index(%{examples: examples, labels: labels}, dimensions, opts) do
+    collection = "#{@example_collection}:#{System.unique_integer([:positive])}"
+
+    embeddings =
+      Enum.map(examples, fn example ->
+        label = label_id(Map.fetch!(example, :label))
+
+        %Embedding{
+          id: label_id(Map.fetch!(example, :id)),
+          value: label,
+          vector: Map.fetch!(example, :vector),
+          metadata: %{"label" => label}
+        }
+      end)
+
+    with {:ok, index} <- new_classifier_collection(collection, dimensions, opts),
+         :ok <- Vettore.put_many(index, embeddings) do
+      {:ok, %{type: :examples, collection: index, labels: Enum.map(labels, &label_id/1)}}
+    end
+  end
+
+  @spec build_centroid_index(map(), pos_integer(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  defp build_centroid_index(%{centroids: centroids}, dimensions, opts)
+       when map_size(centroids) > 0 do
     collection = "#{@centroid_collection}:#{System.unique_integer([:positive])}"
 
     embeddings =
@@ -161,27 +197,55 @@ defmodule Spectre.Classifier do
         }
       end)
 
-    with {:ok, index} <-
-           Collection.new(
-             name: collection,
-             dimensions: dimensions,
-             metric: :cosine,
-             normalize: :l2,
-             index: :flat,
-             score: :raw
-           ),
-         :ok <- Collection.put_many(index, embeddings) do
-      {:ok, %{collection: index}}
+    with {:ok, index} <- new_classifier_collection(collection, dimensions, opts),
+         :ok <- Vettore.put_many(index, embeddings) do
+      {:ok, %{type: :centroids, collection: index}}
     end
   end
 
-  defp build_centroid_index(_classifier, _dimensions), do: {:error, :empty_centroids}
+  defp build_centroid_index(_classifier, _dimensions, _opts), do: {:error, :empty_centroids}
 
-  @spec rank_centroids([number()], map(), keyword()) :: [{String.t(), float()}]
-  defp rank_centroids(query_vector, %{centroid_index: %{collection: collection}}, opts) do
+  @spec new_classifier_collection(String.t(), pos_integer(), keyword()) ::
+          {:ok, Vettore.Collection.t()} | {:error, term()}
+  defp new_classifier_collection(collection, dimensions, opts) do
+    Vettore.new(
+      name: collection,
+      dimensions: dimensions,
+      metric: :cosine,
+      normalize: :l2,
+      index: Keyword.get(opts, :local_classifier_index, :flat),
+      index_options: Keyword.get(opts, :local_classifier_index_options, []),
+      score: :raw
+    )
+  end
+
+  @spec rank_labels([number()], map(), keyword()) :: [{String.t(), float()}]
+  defp rank_labels(
+         query_vector,
+         %{classifier_index: %{type: :examples, collection: collection, labels: labels}},
+         opts
+       ) do
+    limit = Keyword.get(opts, :local_example_top_k, default_example_top_k(labels))
+
+    case Vettore.search(collection, query_vector, limit: search_limit(limit)) do
+      {:ok, results} ->
+        results
+        |> example_label_scores(Keyword.get(opts, :local_example_score, :max))
+        |> ranked_label_scores(labels)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp rank_labels(
+         query_vector,
+         %{classifier_index: %{type: :centroids, collection: collection}},
+         opts
+       ) do
     limit = Keyword.get(opts, :local_top_k, :all)
 
-    case Collection.search(collection, query_vector, limit: search_limit(limit)) do
+    case Vettore.search(collection, query_vector, limit: search_limit(limit)) do
       {:ok, results} ->
         Enum.map(results, fn result -> {result.id, result.score} end)
 
@@ -190,11 +254,42 @@ defmodule Spectre.Classifier do
     end
   end
 
-  defp rank_centroids(query_vector, %{classifier: classifier}, _opts) do
+  defp rank_labels(query_vector, %{classifier: classifier}, _opts) do
     classifier.centroids
     |> Enum.map(fn {label, centroid} -> {label, Math.cosine(query_vector, centroid)} end)
     |> Enum.sort_by(fn {_label, score} -> score end, :desc)
   end
+
+  @spec example_label_scores([Vettore.Result.t()], :max | :mean | term()) :: map()
+  defp example_label_scores(results, :mean) do
+    results
+    |> Enum.reduce(%{}, fn result, acc ->
+      Map.update(acc, result_label(result), {result.score, 1}, fn {sum, count} ->
+        {sum + result.score, count + 1}
+      end)
+    end)
+    |> Map.new(fn {label, {sum, count}} -> {label, sum / count} end)
+  end
+
+  defp example_label_scores(results, _max) do
+    Enum.reduce(results, %{}, fn result, acc ->
+      Map.update(acc, result_label(result), result.score, &max(&1, result.score))
+    end)
+  end
+
+  @spec ranked_label_scores(map(), [String.t()]) :: [{String.t(), float()}]
+  defp ranked_label_scores(scores, labels) do
+    labels
+    |> Enum.map(fn label -> {label, Map.get(scores, label, -1.0)} end)
+    |> Enum.sort_by(fn {_label, score} -> score end, :desc)
+  end
+
+  @spec result_label(Vettore.Result.t()) :: String.t()
+  defp result_label(%{metadata: %{"label" => label}}), do: label_id(label)
+  defp result_label(%{value: value}), do: label_id(value)
+
+  @spec default_example_top_k([term()]) :: pos_integer()
+  defp default_example_top_k(labels), do: max(length(labels) * 4, 20)
 
   @spec search_limit(:all | pos_integer() | term()) :: pos_integer()
   defp search_limit(:all), do: 1_000_000

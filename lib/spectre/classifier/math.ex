@@ -37,15 +37,9 @@ defmodule Spectre.Classifier.Math do
   """
   @spec normalize([number()]) :: [float()]
   def normalize(vector) when is_list(vector) do
-    norm =
-      vector
-      |> Enum.reduce(0.0, fn value, acc -> acc + value * value end)
-      |> :math.sqrt()
-
-    if norm == 0.0 do
-      Enum.map(vector, fn _ -> 0.0 end)
-    else
-      Enum.map(vector, &(&1 / norm))
+    case Distance.normalize(vector, :l2) do
+      {:ok, normalized} -> normalized
+      {:error, _reason} -> Enum.map(vector, fn _ -> 0.0 end)
     end
   end
 
