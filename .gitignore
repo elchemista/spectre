@@ -19,7 +19,7 @@
 
 # GUIDELINE.md
 
-# SKILL.md
+SKILL.md
 
 PLAN.md
 
@@ -31,4 +31,3 @@ erl_crash.dump
 
 # Ignore package tarball (built via "mix hex.build").
 spectre-*.tar
-

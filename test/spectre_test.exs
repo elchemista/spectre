@@ -121,6 +121,69 @@ defmodule SpectreTest.EmbeddingAdapter do
   def embed(_text, _opts), do: {:ok, [0.0, 1.0]}
 end
 
+defmodule SpectreTest.MockExFastembed do
+  @moduledoc false
+  @behaviour Spectre.Classifier.Embedding
+
+  def load(_model, _opts), do: {:ok, 4}
+  def download(model, opts), do: load(model, opts)
+
+  def embed(text, _opts) do
+    text = String.downcase(to_string(text))
+
+    {:ok, vector_for(text)}
+  end
+
+  # This deterministic adapter mirrors the ExFastembed boundary while keeping
+  # the test offline. Each intent owns one vector axis, so routing depends on
+  # semantic examples and cosine similarity without hidden model state.
+  defp vector_for(text) do
+    cond do
+      text =~ ~r/\b(scope|estimate|quote|proposal|budget|mvp|marketplace|build)\b/ ->
+        [1.0, 0.0, 0.0, 0.0]
+
+      text =~ ~r/\b(available|availability|calendar|meeting|schedule|call|next week)\b/ ->
+        [0.0, 1.0, 0.0, 0.0]
+
+      text =~ ~r/\b(portfolio|case studies|examples|previous|work|shipped|clients)\b/ ->
+        [0.0, 0.0, 1.0, 0.0]
+
+      text =~ ~r/\b(start|kick off|brief|project|engagement)\b/ ->
+        [0.0, 0.0, 0.0, 1.0]
+
+      true ->
+        [0.1, 0.1, 0.1, 0.1]
+    end
+  end
+end
+
+defmodule SpectreTest.DeterministicFreelanceModel do
+  @moduledoc false
+  @behaviour Spectre.LLM
+
+  def complete("FREELANCE_PROPOSAL" <> _prompt, _opts) do
+    {:ok, "I can scope the build, split milestones, and return a fixed proposal."}
+  end
+
+  def complete("FREELANCE_AVAILABILITY" <> _prompt, _opts) do
+    {:ok, "I have deterministic availability for a discovery call on Tuesday or Thursday."}
+  end
+
+  def complete("FREELANCE_PORTFOLIO" <> _prompt, _opts) do
+    {:ok, "Relevant examples: SaaS intake, marketplace launch, and internal ops tooling."}
+  end
+
+  def complete("FREELANCE_TERMS" <> _prompt, _opts) do
+    {:ok, "Please accept the collaboration terms before I create the project brief."}
+  end
+
+  def complete(_prompt, _opts), do: {:ok, "Deterministic freelance fallback."}
+end
+
+defmodule SpectreTest.FreelanceActions do
+  def create_project(args, _ctx), do: {:ok, %{created_project: args}}
+end
+
 defmodule SpectreTest.ProjectAgent do
   use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
 
@@ -359,6 +422,75 @@ defmodule SpectreTest.NormalizingAgent do
   end
 end
 
+defmodule SpectreTest.DeterministicFreelanceAgent do
+  @moduledoc false
+
+  use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
+
+  model(SpectreTest.DeterministicFreelanceModel)
+  embedding(SpectreTest.MockExFastembed, model: "mock-ex-fastembed")
+
+  router(via: [:regex, :embedding])
+
+  input_pipeline do
+    plug(Spectre.Input.Plugs.NormalizeText, case: :downcase)
+  end
+
+  actions SpectreTest.FreelanceActions do
+    protect(:create_project, with: :terms)
+  end
+
+  policy :terms do
+    request(:freelance_terms)
+    accept(:accepted_terms, regex: ~r/^\s*(yes|accept|i agree|confirmed)\s*$/i)
+    reject(:rejected_terms, regex: ~r/^\s*(no|reject|cancel)\s*$/i)
+    otherwise(ask: :freelance_terms)
+    attempts(2, then: :cancel_pending)
+  end
+
+  interrupt :FREELANCE_HELP,
+    regex: ~r/\b(help|menu|what can you do)\b/i,
+    via: [:regex] do
+    reply(:freelance_help, renderer: {SpectreTest.ReplyRenderer, :render})
+  end
+
+  flow :freelance_intake do
+    on :PROJECT_PROPOSAL,
+      regex: ~r/\b(proposal|quote|estimate|budget)\b/i,
+      embedding: ["scope an MVP build"],
+      via: [:regex, :embedding] do
+      ask(:freelance_proposal)
+    end
+
+    on :AVAILABILITY,
+      regex: ~r/\b(available|availability|meeting|schedule|calendar|call)\b/i,
+      embedding: ["schedule a discovery call"],
+      via: [:regex, :embedding] do
+      ask(:freelance_availability)
+    end
+
+    on :PORTFOLIO,
+      regex: ~r/\b(portfolio|case studies|examples|previous work)\b/i,
+      embedding: ["portfolio examples for shipped products"],
+      via: [:regex, :embedding] do
+      ask(:freelance_portfolio)
+    end
+
+    on :START_PROJECT,
+      regex: ~r/\b(start|kick off|create).*\b(project|brief|engagement)\b/i,
+      embedding: ["start a new project brief"],
+      via: [:regex, :embedding] do
+      action :create_project, args: %{kind: "freelance_brief"} do
+        reply(:freelance_terms_request, renderer: {SpectreTest.ReplyRenderer, :render})
+      end
+    end
+
+    on :FALLBACK, regex: ~r/\b(other|fallback)\b/i, via: [:regex] do
+      reply(:freelance_fallback, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+  end
+end
+
 defmodule SpectreTest do
   use ExUnit.Case
 
@@ -403,6 +535,38 @@ defmodule SpectreTest do
       Path.join(@prompt_root, "agent_failure.text.heex"),
       """
       Failed for <%= @input.text %>: <%= inspect(@reason) %>
+      """
+    )
+
+    File.write!(
+      Path.join(@prompt_root, "freelance_proposal.text.heex"),
+      """
+      FREELANCE_PROPOSAL
+      Client message: <%= @input.text %>
+      """
+    )
+
+    File.write!(
+      Path.join(@prompt_root, "freelance_availability.text.heex"),
+      """
+      FREELANCE_AVAILABILITY
+      Client message: <%= @input.text %>
+      """
+    )
+
+    File.write!(
+      Path.join(@prompt_root, "freelance_portfolio.text.heex"),
+      """
+      FREELANCE_PORTFOLIO
+      Client message: <%= @input.text %>
+      """
+    )
+
+    File.write!(
+      Path.join(@prompt_root, "freelance_terms.text.heex"),
+      """
+      FREELANCE_TERMS
+      Client message: <%= @input.text %>
       """
     )
 
@@ -828,6 +992,56 @@ defmodule SpectreTest do
              )
 
     assert result.reply_text == "reply:classifier_only:classifier only"
+  end
+
+  test "deterministic freelance agent routes proposal intent by embedding" do
+    assert {:ok, result} =
+             Spectre.ask(
+               SpectreTest.DeterministicFreelanceAgent,
+               "Can you scope an MVP for my marketplace?"
+             )
+
+    assert result.input.text == "can you scope an mvp for my marketplace?"
+    assert result.route.label == :PROJECT_PROPOSAL
+    assert result.route.strategy == :embedding
+    assert result.reply_text =~ "fixed proposal"
+  end
+
+  test "deterministic freelance agent routes availability by regex and mock model" do
+    assert {:ok, result} =
+             Spectre.ask(SpectreTest.DeterministicFreelanceAgent, "Are you available next week?")
+
+    assert result.route.label == :AVAILABILITY
+    assert result.route.strategy in [:regex, :embedding]
+    assert result.reply_text =~ "discovery call"
+  end
+
+  test "deterministic freelance agent handles help interrupt without model work" do
+    assert {:ok, result} = Spectre.ask(SpectreTest.DeterministicFreelanceAgent, "HELP")
+
+    assert result.route.label == :FREELANCE_HELP
+    assert result.route.flow == nil
+    assert result.reply_text == "reply:freelance_help:help"
+  end
+
+  test "deterministic freelance agent stages protected project action" do
+    assert {:ok, staged} =
+             Spectre.ask(SpectreTest.DeterministicFreelanceAgent, "Kick off a project brief")
+
+    assert staged.route.label == :START_PROJECT
+    assert staged.reply_text == "reply:freelance_terms_request:kick off a project brief"
+
+    assert [%PendingAction{name: :create_project, args: %{kind: "freelance_brief"}}] =
+             staged.actions
+
+    assert staged.state.awaiting.policy == :terms
+    assert staged.state.pending_action.policy == :terms
+
+    assert {:ok, executed} =
+             Spectre.ask(SpectreTest.DeterministicFreelanceAgent, "I agree", state: staged.state)
+
+    assert executed.reply_text == "%{created_project: %{kind: \"freelance_brief\"}}"
+    assert executed.state.pending_action == nil
   end
 
   test "action handler starts protected action policy without calling the LLM" do
