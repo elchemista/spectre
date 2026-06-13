@@ -1,9 +1,15 @@
 defmodule Spectre.ActionHooks do
   @moduledoc """
   Runs lifecycle hooks for executed actions.
+
+  Hooks are intentionally post-execution. They are useful for audit records,
+  delivery acknowledgements, integration events, or cleanup that should happen
+  after the user-facing action result exists.
   """
 
-  alias Spectre.{Context, PendingAction, Result}
+  alias Spectre.Context
+  alias Spectre.PendingAction
+  alias Spectre.Result
 
   @type hook_event :: :delivered
   @type hook :: %{
@@ -15,6 +21,11 @@ defmodule Spectre.ActionHooks do
 
   @doc """
   Runs hooks configured for an executed action lifecycle event.
+
+      :ok = Spectre.ActionHooks.run(MyAgent, :delivered, result, ctx)
+
+  Both agent-level hooks and hooks attached to a pending action are considered.
+  Errors are accumulated so one failing hook does not hide another.
   """
   @spec run(module(), hook_event() | atom(), Result.t(), Context.t() | map(), keyword()) ::
           :ok | {:error, [term()]}

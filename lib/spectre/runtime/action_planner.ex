@@ -4,12 +4,18 @@ defmodule Spectre.ActionPlanner do
 
   Spectre delegates Action Language extraction and planning to SpectreKinetic.
   This module intentionally does not parse AL locally.
+
+  The boundary matters because AL planning is a tool-selection concern, while
+  Spectre owns only the conversation runtime and action safety gates.
   """
 
   alias Spectre.PendingAction
 
   @doc """
   Scans an LLM reply for AL blocks and returns visible text plus staged actions.
+
+      {:ok, %{reply_text: text, actions: actions}} =
+        Spectre.ActionPlanner.plan_response(model_reply, actions_module: MyApp.Actions)
   """
   @spec plan_response(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def plan_response(text, opts \\ []) when is_binary(text) do
@@ -24,6 +30,8 @@ defmodule Spectre.ActionPlanner do
 
   @doc """
   Plans a single AL block without executing it.
+
+      {:ok, pending} = Spectre.ActionPlanner.plan("DELETE ACCOUNT", actions_module: MyApp.Actions)
   """
   @spec plan(String.t(), keyword()) :: {:ok, PendingAction.t()} | {:error, term()}
   def plan(al, opts \\ []) when is_binary(al) do
@@ -34,6 +42,8 @@ defmodule Spectre.ActionPlanner do
 
   @doc """
   Cleans a model reply using Kinetic extraction when available.
+
+      visible_text = Spectre.ActionPlanner.clean_reply(model_reply)
   """
   @spec clean_reply(String.t()) :: String.t()
   def clean_reply(text) when is_binary(text), do: scan_response(text).clean_text

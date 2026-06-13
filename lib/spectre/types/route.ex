@@ -1,6 +1,10 @@
 defmodule Spectre.Route do
   @moduledoc """
   Normalized routing decision returned by Spectre.
+
+  A route is the stable handoff between router and runner. It contains the
+  selected label, handler, strategy, scores, and metadata needed for logging or
+  host decisions.
   """
 
   defstruct [
@@ -47,6 +51,8 @@ defmodule Spectre.Route do
 
   @doc """
   Builds a normalized route struct.
+
+      route = Spectre.Route.new(label: :hello, accepted?: true)
   """
   @spec new(map() | t()) :: t()
   def new(%__MODULE__{} = route), do: route
@@ -57,6 +63,8 @@ defmodule Spectre.Route do
 
   @doc """
   Builds an accepted deterministic route from a compiled rule.
+
+      route = Spectre.Route.from_rule(rule, :regex, "hello")
   """
   @spec from_rule(Spectre.Rule.t(), atom(), String.t()) :: t()
   def from_rule(%Spectre.Rule{} = rule, strategy, raw) do

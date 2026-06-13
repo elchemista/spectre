@@ -1,10 +1,31 @@
 defmodule Spectre.Pipeline do
   @moduledoc """
   Minimal Plug-style pipeline executor for Spectre router stages.
+
+  Router pipelines collect evidence rather than immediately executing handlers.
+  This shape lets each plug focus on one strategy (regex, cache, classifier,
+  embedding, arbitration) while the final route decision remains explicit.
+
+      defmodule MyApp.RouterPipeline do
+        use Spectre.Pipeline
+
+        pipeline do
+          plug Spectre.Router.Plugs.Regex
+          plug Spectre.Router.Plugs.LocalClassifier
+          plug Spectre.Router.Plugs.Arbitrate
+          plug Spectre.Router.Plugs.Terminalize
+        end
+      end
   """
 
   defmodule Spec do
-    @moduledoc false
+    @moduledoc """
+    Initialized router plug declaration.
+
+    The executor stores initialized state alongside the module so custom plugs
+    can perform setup in `init/1` and keep `call/2` focused on per-turn routing.
+    """
+
     defstruct [:module, :state]
 
     @type t :: %__MODULE__{module: module(), state: term()}
@@ -12,6 +33,9 @@ defmodule Spectre.Pipeline do
 
   @type plug_spec :: module() | {module(), keyword()} | Spec.t()
 
+  @doc """
+  Imports router pipeline macros into a custom pipeline module.
+  """
   defmacro __using__(_opts) do
     quote do
       import Spectre.Pipeline, only: [pipeline: 1, plug: 1, plug: 2]
@@ -21,14 +45,24 @@ defmodule Spectre.Pipeline do
     end
   end
 
+  @doc """
+  Groups router plug declarations.
+  """
   defmacro pipeline(do: block), do: block
 
+  @doc """
+  Adds a router plug declaration to a custom pipeline.
+
+      plug Spectre.Router.Plugs.Regex
+      plug Spectre.Router.Plugs.LocalClassifier, classifier: MyApp.Classifier
+  """
   defmacro plug(module, opts \\ []) do
     quote do
       @spectre_pipeline {unquote(module), unquote(opts)}
     end
   end
 
+  @doc false
   defmacro __before_compile__(env) do
     specs =
       env.module
@@ -39,6 +73,7 @@ defmodule Spectre.Pipeline do
     quote do
       @spectre_pipeline_specs Spectre.Pipeline.init_specs!(unquote(specs))
 
+      @doc false
       def call(%Spectre.Router.Context{} = context) do
         Spectre.Pipeline.run(context, @spectre_pipeline_specs)
       end

@@ -1,9 +1,17 @@
 defmodule Spectre.Router.Support do
-  @moduledoc false
+  @moduledoc """
+  Shared router normalization and logging helpers.
+
+  Router plugs should stay small and focused on one evidence source. This module
+  holds the common boundary work: filtering visible rules, converting adapter
+  maps into `%Spectre.Route{}` structs, formatting fallback reasons, and keeping
+  log output consistent across strategies.
+  """
 
   require Logger
 
-  alias Spectre.{Route, Rule}
+  alias Spectre.Route
+  alias Spectre.Rule
 
   @doc """
   Returns rules visible to a router strategy.

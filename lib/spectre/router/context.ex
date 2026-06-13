@@ -1,6 +1,10 @@
 defmodule Spectre.Router.Context do
   @moduledoc """
   Shared data passed through a Spectre router pipeline.
+
+  Router context is intentionally separate from runtime context. It is optimized
+  for evidence collection: candidate routes, traces, errors, visible labels, and
+  any input enrichment produced while routing.
   """
 
   defstruct [
@@ -57,6 +61,8 @@ defmodule Spectre.Router.Context do
 
   @doc """
   Appends a routing evidence candidate.
+
+      context = Spectre.Router.Context.add_candidate(context, candidate)
   """
   @spec add_candidate(t(), Spectre.Router.Candidate.t()) :: t()
   def add_candidate(%__MODULE__{} = context, %Spectre.Router.Candidate{} = candidate) do
@@ -65,6 +71,8 @@ defmodule Spectre.Router.Context do
 
   @doc """
   Appends several routing evidence candidates.
+
+      context = Spectre.Router.Context.add_candidates(context, candidates)
   """
   @spec add_candidates(t(), [Spectre.Router.Candidate.t()]) :: t()
   def add_candidates(%__MODULE__{} = context, candidates) when is_list(candidates) do

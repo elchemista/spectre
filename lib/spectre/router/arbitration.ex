@@ -1,6 +1,16 @@
 defmodule Spectre.Router.Arbitration do
   @moduledoc """
   Input passed to a router arbitrator.
+
+  Arbitration snapshots the router context at the decision boundary. The
+  arbitrator receives the normalized input, candidate list, labels, rules, and
+  original context without needing to know how each plug produced its evidence.
+  """
+
+  @doc """
+  Builds an arbitration payload from a router context.
+
+      arbitration = Spectre.Router.Arbitration.from_context(router_context)
   """
 
   defstruct [

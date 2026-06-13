@@ -1,5 +1,11 @@
 defmodule Spectre.Router.Plugs.LLMFallback do
-  @moduledoc false
+  @moduledoc """
+  Legacy LLM fallback classifier plug.
+
+  Newer pipelines normally use `Spectre.Router.Plugs.Arbitrate`, which can ask
+  the LLM classifier as an arbitration outcome. This plug remains available for
+  custom pipelines that want an explicit fallback step.
+  """
 
   @behaviour Spectre.Router.Plug
 
@@ -7,10 +13,10 @@ defmodule Spectre.Router.Plugs.LLMFallback do
   alias Spectre.Router.LLMClassifier
   alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     if Context.halted?(context), do: {:cont, context}, else: fallback(context)
   end

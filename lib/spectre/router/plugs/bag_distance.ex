@@ -1,14 +1,26 @@
 defmodule Spectre.Router.Plugs.BagDistance do
-  @moduledoc false
+  @moduledoc """
+  Bag-distance evidence provider for short example matching.
+
+  This plug is useful for compact deterministic examples where word overlap is
+  a better signal than a strict regex. It produces scored candidates and lets
+  the arbitrator decide whether the score is strong enough for the turn.
+
+      on :list_projects, bag: ["show projects", "list my projects"] do
+        reply :project_list
+      end
+  """
 
   @behaviour Spectre.Router.Plug
 
-  alias Spectre.Router.{Candidate, Context, Support}
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Context
+  alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     if Context.halted?(context), do: {:cont, context}, else: collect(context)
   end

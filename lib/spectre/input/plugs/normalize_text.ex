@@ -14,10 +14,10 @@ defmodule Spectre.Input.Plugs.NormalizeText do
 
   @behaviour Spectre.Input.Plug
 
-  @impl true
+  @impl Spectre.Input.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Input.Plug
   def call(%Spectre.Input{} = input, _context, opts) do
     {:cont, %{input | text: normalize(input.text, opts)}}
   end

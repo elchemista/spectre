@@ -1,12 +1,19 @@
 defmodule Spectre.LLM do
   @moduledoc """
   Small LLM boundary used by `Spectre.Runner`.
+
+  The runner sends already-rendered prompts here. Adapters can be configured as
+  modules, `{module, function}` tuples, `{module, function, opts}` tuples, or
+  functions. A fallback model can be configured without changing prompt or
+  runner code.
   """
 
   @callback complete(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
 
   @doc """
   Completes a rendered prompt through the configured model adapter or function.
+
+      Spectre.LLM.complete("Say hello", model: {MyApp.LLM, :complete, model: "small"})
   """
   @spec complete(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def complete(prompt, opts \\ []) when is_binary(prompt) do
@@ -15,6 +22,7 @@ defmodule Spectre.LLM do
     |> maybe_fallback(prompt, opts)
   end
 
+  @spec do_complete(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   defp do_complete(prompt, opts) do
     cond do
       model = Keyword.get(opts, :model) ->
@@ -31,6 +39,8 @@ defmodule Spectre.LLM do
     end
   end
 
+  @spec maybe_fallback({:ok, String.t()} | {:error, term()}, String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
   defp maybe_fallback({:ok, _text} = ok, _prompt, _opts), do: ok
 
   defp maybe_fallback({:error, reason} = error, prompt, opts) do
@@ -53,10 +63,12 @@ defmodule Spectre.LLM do
     end
   end
 
+  @spec fallback_model(keyword()) :: term() | nil
   defp fallback_model(opts) do
     Keyword.get(opts, :fallback) || fallback_from_model(Keyword.get(opts, :model))
   end
 
+  @spec fallback_from_model(term()) :: term() | nil
   defp fallback_from_model({_module, _function, model_opts}) when is_list(model_opts) do
     Keyword.get(model_opts, :fallback)
   end
@@ -91,6 +103,7 @@ defmodule Spectre.LLM do
   defp call_model(fun, prompt, opts),
     do: call_model_fun(fun, prompt, Keyword.delete(opts, :model))
 
+  @spec model_opts(keyword(), keyword()) :: keyword()
   defp model_opts(adapter_opts, opts) do
     Keyword.merge(adapter_opts, Keyword.delete(opts, :model))
   end

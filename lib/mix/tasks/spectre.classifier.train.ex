@@ -18,7 +18,8 @@ defmodule Mix.Tasks.Spectre.Classifier.Train do
 
   use Mix.Task
 
-  alias Spectre.Classifier.{Encoder, Trainer}
+  alias Spectre.Classifier.Encoder
+  alias Spectre.Classifier.Trainer
 
   @shortdoc "Train Spectre classifier artifacts"
 

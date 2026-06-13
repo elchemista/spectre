@@ -1,15 +1,29 @@
 defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
-  @moduledoc false
+  @moduledoc """
+  Embedding similarity evidence provider.
+
+  The plug embeds the current user text and compares it with per-rule examples.
+  It logs and traces adapter failures as a skip instead of failing the whole
+  turn, because embedding search is optional evidence: the agent can still be
+  routed by regex, classifier, semantic cache, or LLM fallback.
+
+      on :shipping_question,
+        embedding: ["where is my package?", "track my order"] do
+        ask :shipping_answer
+      end
+  """
 
   @behaviour Spectre.Router.Plug
 
   alias Spectre.Classifier.Math
-  alias Spectre.Router.{Candidate, Context, Support}
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Context
+  alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     cond do
       Context.halted?(context) ->

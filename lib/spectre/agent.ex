@@ -1,6 +1,23 @@
 defmodule Spectre.Agent do
   @moduledoc """
-  Small DSL for declaring Spectre agents.
+  Declarative DSL for building Spectre agents.
+
+  The DSL is intentionally a control plane, not a place to hide application
+  logic. It describes the agent boundary: how input is normalized, how routes
+  are selected, which prompts/actions run, and which actions must pass a policy
+  gate before side effects can execute. The actual domain work should stay in
+  ordinary Elixir modules and be called through `run/2`, `action/2`, adapters,
+  or lifecycle hooks.
+
+  This split keeps complex agents understandable:
+
+    * `flow/2` declares conversation intents and handlers.
+    * `router/1` declares which evidence providers produce candidates.
+    * `policy/2` declares approval/rejection gates for dangerous actions.
+    * `protect/2` attaches an action name to a policy independently from the
+      prompt or handler that produced the action.
+    * `actions/2`, `state/1`, and `memory/1` keep side effects at explicit
+      runtime boundaries.
 
       defmodule MyApp.ProjectAgent do
         use Spectre.Agent, prompt_root: "priv/agents/project/prompts"
@@ -33,8 +50,48 @@ defmodule Spectre.Agent do
           end
         end
       end
+
+  In a larger agent, keep this module as the readable map of the system and
+  move business decisions into named functions or modules:
+
+      defmodule MyApp.BillingAgent do
+        use Spectre.Agent
+
+        actions MyApp.BillingActions
+        router via: [:regex, :classifier, :embedding, :llm_classifier]
+
+        protect :issue_refund, with: :refund_confirmation
+
+        flow :billing do
+          on :refund_request, train: "training/billing/refund.jsonl" do
+            run :prepare_refund_case
+          end
+
+          on :confirm_refund, regex: ~r/^refund now$/i do
+            action :issue_refund
+          end
+        end
+
+        def prepare_refund_case(input, ctx) do
+          MyApp.Billing.PrepareRefund.call(input, ctx)
+        end
+      end
   """
 
+  @doc """
+  Imports the DSL and initializes compile-time metadata for an agent module.
+
+  Options are stored as runtime configuration and are later exposed through
+  generated `__spectre_*__` functions. This is why the DSL can stay
+  declarative: all route and policy data is compiled once, then interpreted by
+  the runtime.
+
+      defmodule MyApp.SupportAgent do
+        use Spectre.Agent,
+          prompt_root: "priv/agents/support/prompts",
+          history: 20
+      end
+  """
   defmacro __using__(opts) do
     opts = eval_opts(opts, __CALLER__)
     config = default_config(opts)
@@ -43,6 +100,8 @@ defmodule Spectre.Agent do
     quote bind_quoted: [config: config, router: router] do
       import Spectre.Agent
 
+      # Metadata is accumulated at compile time so runtime routing can inspect
+      # a compact immutable description instead of re-evaluating DSL blocks.
       Module.register_attribute(__MODULE__, :spectre_config, persist: false)
       Module.register_attribute(__MODULE__, :spectre_rules, accumulate: true, persist: false)
       Module.register_attribute(__MODULE__, :spectre_policies, accumulate: true, persist: false)
@@ -65,6 +124,18 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Configures the action adapter and optional action-level protections/hooks.
+
+  Use the block form when the action module should be declared next to its
+  lifecycle policy. This keeps side-effect boundaries visible in the agent file
+  while the actual implementation remains in the action module.
+
+      actions MyApp.ProjectActions do
+        protect :delete_project, with: :confirm_delete
+        after_action :delete_project, on: :delivered, run: :audit_delete
+      end
+  """
   defmacro actions(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
     {block, opts} = Keyword.pop(opts, :do)
@@ -98,6 +169,9 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Block-form variant for `actions/2`.
+  """
   defmacro actions(module, opts, do: block) do
     module = Macro.expand(module, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -124,6 +198,14 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Configures the LLM adapter used by `ask/2`.
+
+  By default Spectre calls `complete(prompt, opts)` on the adapter. Use
+  `with:` or `function:` when the adapter exposes a different function name.
+
+      model MyApp.OpenAIAdapter, with: :complete_chat, model: "gpt-4.1-mini"
+  """
   defmacro model(adapter, opts \\ []) do
     adapter = Macro.expand(adapter, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -135,6 +217,15 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Configures a state adapter used to load and persist conversation state.
+
+  State adapters keep storage outside the domain runtime. They may implement
+  `load/3` and `persist/4` for agent-aware calls, or the smaller `load/2` and
+  `persist/2` callbacks for simpler applications.
+
+      state MyApp.AgentStateStore
+  """
   defmacro state(module) do
     module = Macro.expand(module, __CALLER__)
 
@@ -143,6 +234,15 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Configures a memory adapter used to recall and remember conversation context.
+
+  Memory is intentionally separate from state: state is the authoritative
+  machine state for routing and policies, while memory is contextual material
+  that prompts or adapters may use.
+
+      memory MyApp.AgentMemory
+  """
   defmacro memory(module) do
     module = Macro.expand(module, __CALLER__)
 
@@ -151,6 +251,23 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Declares an input normalization pipeline using plug syntax.
+
+  Input plugs run before state, routing, and policy handling. This makes
+  downstream decisions work with one normalized internal shape rather than each
+  router plug parsing raw host input differently.
+
+      input_pipeline do
+        plug Spectre.Input.Plugs.NormalizeText, trim?: true, case: :downcase
+      end
+
+  You can also pass an already-built plug spec list:
+
+      input_pipeline [
+        {Spectre.Input.Plugs.NormalizeText, trim?: true}
+      ]
+  """
   defmacro input_pipeline(do: block) do
     specs = parse_input_pipeline(block, __CALLER__)
 
@@ -175,24 +292,44 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Configures the maximum lifetime for a supervised session.
+
+      shutdown :timer.minutes(30)
+  """
   defmacro shutdown(timeout) do
     quote bind_quoted: [timeout: timeout] do
       @spectre_config Keyword.put(@spectre_config, :shutdown, timeout)
     end
   end
 
+  @doc """
+  Configures idle timeout for a supervised session.
+
+      idle :timer.minutes(5)
+  """
   defmacro idle(timeout) do
     quote bind_quoted: [timeout: timeout] do
       @spectre_config Keyword.put(@spectre_config, :idle, timeout)
     end
   end
 
+  @doc """
+  Configures how many completed turns are stored in chat history.
+
+      history 50
+  """
   defmacro history(limit) do
     quote bind_quoted: [limit: limit] do
       @spectre_config Keyword.put(@spectre_config, :history, limit)
     end
   end
 
+  @doc """
+  Configures the prompt used by `Spectre.Monitor` failure fallback text.
+
+      fail :agent_failure_reply
+  """
   defmacro fail(prompt, opts \\ []) do
     prompt = Macro.expand(prompt, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -202,12 +339,29 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Configures router behavior for the agent.
+
+  `via:` is the common path: it expands into router plugs and then appends the
+  arbitration and terminalization steps. Use `pipeline:` only when the agent
+  needs a fully custom router pipeline.
+
+      router via: [:regex, :semantic_cache, :classifier, :embedding, :llm_classifier]
+  """
   defmacro router(opts) do
     quote bind_quoted: [opts: opts] do
       @spectre_router Keyword.merge(@spectre_router, opts)
     end
   end
 
+  @doc """
+  Replaces the default evidence arbitrator.
+
+  The arbitrator receives all candidate routes from the pipeline and decides
+  whether to accept one, ask the LLM classifier, clarify, or fail.
+
+      arbitrator MyApp.Router.Arbitrator, conflict: :llm
+  """
   defmacro arbitrator(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -221,6 +375,11 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Configures the embedding adapter used by embedding-based router strategies.
+
+      embedding MyApp.Embeddings, model: "text-embedding-3-small"
+  """
   defmacro embedding(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -234,6 +393,15 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Attaches an action to a policy gate.
+
+  Protection is action-centric rather than prompt-centric on purpose: the same
+  dangerous action can be produced by DSL handlers or by AL extracted from an
+  LLM reply, and it must still pass the same policy.
+
+      protect :delete_account, with: :delete_account_confirmation
+  """
   defmacro protect(action_or_opts, opts \\ []) do
     {action, opts} = normalize_protect_args(action_or_opts, opts)
     protection = %{action: action, policy: Keyword.fetch!(opts, :with)}
@@ -243,6 +411,15 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Registers an action lifecycle hook.
+
+  Hooks run after the action execution result is available, which makes them a
+  good place for audit trails, delivery acknowledgements, and integration
+  events that should not affect route selection.
+
+      after_action :delete_account, on: :delivered, run: :audit_delete_account
+  """
   defmacro after_action(action, opts) do
     opts = eval_opts(opts, __CALLER__)
     hook = after_action_hook(action, opts)
@@ -252,6 +429,20 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Declares route rules that belong to a conversation flow.
+
+  Flow names are stored on routes and can be used by stateful applications to
+  prioritize current-flow rules before general fallback rules.
+
+      flow :project_create do
+        on :wants_project_create,
+          regex: ~r/create.*project/i,
+          train: "training/project_create.jsonl" do
+          ask :project_create
+        end
+      end
+  """
   defmacro flow(name, do: block) do
     rules = parse_flow_rules(name, block, __CALLER__)
 
@@ -261,6 +452,16 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Declares a global route that is checked before normal flow rules.
+
+  Interrupts are useful for cancel, help, handoff, and other commands that
+  should work regardless of the current flow.
+
+      interrupt :cancel, regex: ~r/^cancel$/i do
+        run :cancel_current
+      end
+  """
   defmacro interrupt(label, opts, do: block) do
     rule = build_rule(label, nil, opts, block, __CALLER__, global?: true)
 
@@ -269,6 +470,9 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Declares a global route using the compact keyword `do:` form.
+  """
   defmacro interrupt(label, opts) do
     {opts, block} = split_do!(opts)
     rule = build_rule(label, nil, opts, block, __CALLER__, global?: true)
@@ -278,6 +482,21 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Declares a policy gate for a pending action.
+
+  A policy is a small deterministic router used only while an action is waiting
+  for approval. It bypasses normal routing so a confirmation such as "yes" is
+  interpreted as a policy response instead of a generic user intent.
+
+      policy :delete_account_confirmation do
+        request :confirm_delete_account
+        accept :delete_confirmed, regex: ~r/^yes, delete$/i
+        reject :delete_rejected, regex: ~r/^no$/i
+        otherwise ask: :confirm_delete_account_retry
+        attempts 3, then: :cancel_pending
+      end
+  """
   defmacro policy(name, do: block) do
     policy = parse_policy(name, block, __CALLER__)
 
@@ -286,24 +505,59 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Creates a handler that renders a prompt, calls the LLM, and stages AL actions.
+
+      on :support_question, train: "training/support.jsonl" do
+        ask :support_answer
+      end
+  """
   defmacro ask(prompt, opts \\ []) do
     quote do
       {:__spectre_handler__, :ask, unquote(prompt), unquote(opts)}
     end
   end
 
+  @doc """
+  Creates a handler that calls an agent-local function.
+
+  Use `run/2` when the next step is normal Elixir orchestration rather than an
+  LLM prompt or a protected action boundary.
+
+      on :refund_request, train: "training/refund.jsonl" do
+        run :prepare_refund_case
+      end
+  """
   defmacro run(function, opts \\ []) do
     quote do
       {:__spectre_handler__, :run, unquote(function), unquote(opts)}
     end
   end
 
+  @doc """
+  Creates a deterministic reply handler without calling the LLM.
+
+      on :healthcheck, regex: ~r/^ping$/i do
+        reply :pong
+      end
+  """
   defmacro reply(prompt, opts \\ []) do
     quote do
       {:__spectre_handler__, :reply, unquote(prompt), unquote(opts)}
     end
   end
 
+  @doc """
+  Creates a deterministic action handler.
+
+  If the action is protected, Spectre stores it as pending and asks the policy
+  prompt. If it is not protected, the action is staged for execution by the host
+  boundary.
+
+      on :delete_account, regex: ~r/^delete my account$/i do
+        action :delete_account
+      end
+  """
   defmacro action(action, opts \\ []) do
     quote do
       {:__spectre_handler__, :action, unquote(action), unquote(opts)}
@@ -382,9 +636,11 @@ defmodule Spectre.Agent do
     )
   end
 
+  @spec normalize_fail(term()) :: {term(), keyword()}
   defp normalize_fail({prompt, fail_opts}) when is_list(fail_opts), do: {prompt, fail_opts}
   defp normalize_fail(prompt), do: {prompt, []}
 
+  @spec normalize_arbitrator(module() | {module(), keyword()}) :: {module(), keyword()}
   defp normalize_arbitrator({module, arbitrator_opts})
        when is_atom(module) and is_list(arbitrator_opts) do
     {module, arbitrator_opts}
@@ -401,6 +657,7 @@ defmodule Spectre.Agent do
     |> Map.new(fn policy -> {policy.name, policy} end)
   end
 
+  @spec parse_flow_rules(atom(), Macro.t(), Macro.Env.t()) :: [map()]
   defp parse_flow_rules(flow, block, caller) do
     block
     |> calls()
@@ -417,6 +674,7 @@ defmodule Spectre.Agent do
     end)
   end
 
+  @spec parse_policy(atom(), Macro.t(), Macro.Env.t()) :: map()
   defp parse_policy(name, block, caller) do
     base = %{
       name: name,
@@ -453,6 +711,7 @@ defmodule Spectre.Agent do
     end)
   end
 
+  @spec policy_branch(atom(), Macro.t(), Macro.Env.t()) :: map()
   defp policy_branch(label, opts_ast, caller) do
     opts = eval_opts(opts_ast, caller)
 
@@ -463,6 +722,7 @@ defmodule Spectre.Agent do
     }
   end
 
+  @spec build_rule(atom(), atom() | nil, Macro.t(), Macro.t(), Macro.Env.t(), keyword()) :: map()
   defp build_rule(label, flow, opts_ast, block, caller, extra) do
     opts = eval_opts(opts_ast, caller)
 
@@ -493,6 +753,7 @@ defmodule Spectre.Agent do
     }
   end
 
+  @spec examples_from_opts(keyword(), atom()) :: [term()]
   defp examples_from_opts(opts, key) do
     opts
     |> Keyword.get(key, [])
@@ -506,6 +767,7 @@ defmodule Spectre.Agent do
     |> Enum.reject(&is_nil/1)
   end
 
+  @spec parse_handler(Macro.t(), Macro.Env.t()) :: Spectre.Rule.handler()
   defp parse_handler({:ask, _meta, [prompt]}, _caller), do: {:ask, prompt, []}
 
   defp parse_handler({:ask, _meta, [prompt, opts]}, caller),
@@ -544,24 +806,28 @@ defmodule Spectre.Agent do
     raise ArgumentError, "expected ask/run/reply/action handler, got: #{Macro.to_string(other)}"
   end
 
+  @spec training_entries(keyword()) :: [term()]
   defp training_entries(opts) do
     opts
     |> Keyword.get(:train, Keyword.get(opts, :training, []))
     |> normalize_training_entries()
   end
 
+  @spec normalize_training_entries(term()) :: [term()]
   defp normalize_training_entries(true), do: [true]
   defp normalize_training_entries(false), do: []
   defp normalize_training_entries(nil), do: []
   defp normalize_training_entries(entries) when is_list(entries), do: entries
   defp normalize_training_entries(entry), do: [entry]
 
+  @spec rule_checks(keyword()) :: [term()]
   defp rule_checks(opts) do
     []
     |> Kernel.++(List.wrap(Keyword.get(opts, :check, [])))
     |> Kernel.++(List.wrap(Keyword.get(opts, :checks, [])))
   end
 
+  @spec parse_action_block(atom(), Macro.t(), Macro.Env.t()) :: keyword()
   defp parse_action_block(action, block, caller) do
     block
     |> calls()
@@ -586,6 +852,10 @@ defmodule Spectre.Agent do
     end)
   end
 
+  @spec parse_actions_config_block(Macro.t(), Macro.Env.t()) :: %{
+          protections: [map()],
+          after_actions: [map()]
+        }
   defp parse_actions_config_block(block, caller) do
     block
     |> calls()
@@ -607,6 +877,7 @@ defmodule Spectre.Agent do
     end)
   end
 
+  @spec protection_from_ast(Macro.t(), Macro.t() | keyword(), Macro.Env.t()) :: map()
   defp protection_from_ast(action_or_opts, opts, caller) do
     action_or_opts = eval_action_arg(action_or_opts, caller)
     opts = eval_opts(opts, caller)
@@ -614,6 +885,7 @@ defmodule Spectre.Agent do
     %{action: action, policy: Keyword.fetch!(opts, :with)}
   end
 
+  @spec parse_input_pipeline(Macro.t(), Macro.Env.t()) :: [module() | {module(), keyword()}]
   defp parse_input_pipeline(block, caller) do
     block
     |> calls()
@@ -629,6 +901,7 @@ defmodule Spectre.Agent do
     end)
   end
 
+  @spec after_action_hook(term(), keyword()) :: map()
   defp after_action_hook(action, opts) when is_list(opts) do
     %{
       action: action,
@@ -638,6 +911,7 @@ defmodule Spectre.Agent do
     }
   end
 
+  @spec split_do!(term()) :: {keyword(), Macro.t()} | no_return()
   defp split_do!(opts_ast) when is_list(opts_ast) do
     {block, opts} = Keyword.pop(opts_ast, :do)
 
@@ -651,12 +925,15 @@ defmodule Spectre.Agent do
   defp split_do!(other),
     do: raise(ArgumentError, "expected keyword options with do block, got: #{inspect(other)}")
 
+  @spec calls(Macro.t()) :: [Macro.t()]
   defp calls({:__block__, _meta, calls}), do: calls
   defp calls(one), do: [one]
 
+  @spec eval_action_arg(term(), Macro.Env.t()) :: term()
   defp eval_action_arg(arg, caller) when is_list(arg), do: eval_opts(arg, caller)
   defp eval_action_arg(arg, caller), do: Macro.expand(arg, caller)
 
+  @spec eval_opts(term(), Macro.Env.t()) :: term()
   defp eval_opts(opts, caller) when is_list(opts) do
     opts = Macro.prewalk(opts, &Macro.expand(&1, caller))
     {value, _binding} = Code.eval_quoted(opts, [], caller)
@@ -665,6 +942,7 @@ defmodule Spectre.Agent do
 
   defp eval_opts(opts, caller), do: Macro.expand(opts, caller)
 
+  @spec normalize_protect_args(term(), keyword()) :: {term(), keyword()}
   defp normalize_protect_args(action_or_opts, []) when is_list(action_or_opts) do
     {with, rest} = Keyword.pop(action_or_opts, :with)
 

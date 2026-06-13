@@ -1,9 +1,18 @@
 defmodule Spectre.Policy do
   @moduledoc """
   Policy gate evaluator for pending actions.
+
+  A policy is a temporary deterministic router for one pending action. While a
+  policy is active, Spectre ignores normal flow routing and interprets the next
+  user turn as approval, rejection, or retry. This keeps dangerous actions from
+  executing because an LLM mentioned them, while still allowing natural
+  confirmation prompts.
   """
 
-  alias Spectre.{Awaiting, Input, Result, State}
+  alias Spectre.Awaiting
+  alias Spectre.Input
+  alias Spectre.Result
+  alias Spectre.State
 
   defstruct [
     :name,
@@ -29,18 +38,24 @@ defmodule Spectre.Policy do
 
   @doc """
   Builds a policy struct from compiled DSL metadata.
+
+      policy = Spectre.Policy.new(agent.__spectre_policies__().delete_account)
   """
   @spec new(map()) :: t()
   def new(attrs) when is_map(attrs), do: struct(__MODULE__, Map.take(attrs, fields()))
 
   @doc """
   Returns true when the state is waiting on a policy response.
+
+      Spectre.Policy.awaiting?(state)
   """
   @spec awaiting?(State.t()) :: boolean()
   def awaiting?(%State{} = state), do: State.awaiting_policy?(state)
 
   @doc """
   Resumes the active policy with the user's latest input.
+
+      {:ok, result} = Spectre.Policy.resume(input, ctx)
   """
   @spec resume(Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
   def resume(%Input{} = input, %{state: %State{awaiting: %Awaiting{policy: policy_name}}} = ctx) do
@@ -52,6 +67,8 @@ defmodule Spectre.Policy do
 
   @doc """
   Decides whether policy text accepts, rejects, or misses all policy branches.
+
+      {:accept, :confirmed} = Spectre.Policy.decide(policy, "yes, delete")
   """
   @spec decide(t(), String.t()) :: decision()
   def decide(%__MODULE__{} = policy, text) when is_binary(text) do
@@ -76,6 +93,8 @@ defmodule Spectre.Policy do
   defp approve(policy, label, input, ctx) do
     state = State.clear_awaiting(ctx.state)
 
+    # Awaiting is cleared before execution so action callbacks observe the
+    # approved state, while `pending_action` remains available to execute.
     case Spectre.ActionExecutor.execute_pending(state, %{ctx | state: state}, policy: policy.name) do
       {:ok, %Result{} = result} ->
         {:ok,

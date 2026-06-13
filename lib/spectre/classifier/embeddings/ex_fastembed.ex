@@ -7,11 +7,11 @@ defmodule Spectre.Classifier.Embeddings.ExFastembed do
 
   @ex_fastembed Module.concat(["ExFastembed"])
 
-  @impl true
+  @impl Spectre.Classifier.Embedding
   @spec download(String.t(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
   def download(model, opts \\ []) when is_binary(model), do: load(model, opts)
 
-  @impl true
+  @impl Spectre.Classifier.Embedding
   @spec load(String.t(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
   def load(model, _opts \\ []) when is_binary(model) do
     with :ok <- ensure_ex_fastembed() do
@@ -22,7 +22,7 @@ defmodule Spectre.Classifier.Embeddings.ExFastembed do
     end
   end
 
-  @impl true
+  @impl Spectre.Classifier.Embedding
   @spec embed(String.t(), keyword()) ::
           {:ok, Spectre.Classifier.Embedding.vector()} | {:error, term()}
   def embed(text, _opts \\ []) when is_binary(text) do

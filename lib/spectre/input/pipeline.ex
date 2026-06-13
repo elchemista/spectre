@@ -1,10 +1,33 @@
 defmodule Spectre.Input.Pipeline do
   @moduledoc """
   Runs input plugs before the Spectre runtime handles a turn.
+
+  Input normalization is a boundary concern. By running it before state loading,
+  policy matching, and routing, the rest of the runtime can depend on one
+  internal `%Spectre.Input{}` shape instead of repeatedly handling raw host
+  payloads.
+
+      specs = [
+        {Spectre.Input.Plugs.NormalizeText, trim?: true, case: :downcase}
+      ]
+
+      {:ok, input} =
+        Spectre.Input.Pipeline.run(
+          Spectre.Input.new("  HELLO  "),
+          %{agent: MyApp.Agent, opts: []},
+          specs
+        )
   """
 
   defmodule Spec do
-    @moduledoc false
+    @moduledoc """
+    Initialized input plug declaration.
+
+    Specs store the plug module and initialized state separately so plug
+    initialization happens once when possible, while `run/3` stays focused on
+    passing the input through the pipeline.
+    """
+
     defstruct [:module, :state]
 
     @type t :: %__MODULE__{module: module(), state: term()}
@@ -14,6 +37,9 @@ defmodule Spectre.Input.Pipeline do
 
   @doc """
   Initializes input plug specs.
+
+  Use this when a host process wants to prepare a reusable pipeline once and run
+  it for many turns.
   """
   @spec init_specs([plug_spec()]) :: {:ok, [Spec.t()]} | {:error, term()}
   def init_specs(specs) when is_list(specs) do
@@ -34,6 +60,10 @@ defmodule Spectre.Input.Pipeline do
 
   @doc """
   Runs an input through initialized or ad-hoc plug specs.
+
+  A plug may continue with a new input, halt with a final input, or return an
+  error. Halting is useful when a boundary plug can fully normalize or reject a
+  turn before router/runtime work starts.
   """
   @spec run(Spectre.Input.t(), map(), [plug_spec()]) ::
           {:ok, Spectre.Input.t()} | {:error, term()}

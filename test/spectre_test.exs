@@ -346,7 +346,7 @@ defmodule SpectreTest.NormalizingAgent do
   use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
 
   input_pipeline do
-    plug Spectre.Input.Plugs.NormalizeText, case: :downcase
+    plug(Spectre.Input.Plugs.NormalizeText, case: :downcase)
   end
 
   actions SpectreTest.ProjectActions do
@@ -362,8 +362,12 @@ end
 defmodule SpectreTest do
   use ExUnit.Case
 
-  alias Spectre.Classifier.{Encoder, Math, Trainer}
-  alias Spectre.{PendingAction, State}
+  alias Spectre.Classifier.Encoder
+  alias Spectre.Classifier.Math
+  alias Spectre.Classifier.Trainer
+  alias Spectre.PendingAction
+  alias Spectre.State
+  alias Spectre.Training.Dataset
 
   @prompt_root Path.expand("tmp/spectre_test/prompts")
 
@@ -942,10 +946,7 @@ defmodule SpectreTest do
       ])
     )
 
-    assert {:ok, rows} =
-             Spectre.Training.Dataset.from_agent(SpectreTest.TrainingAgent,
-               source: source_path
-             )
+    assert {:ok, rows} = Dataset.from_agent(SpectreTest.TrainingAgent, source: source_path)
 
     assert %{text: "ciao", label: "GREETING"} in rows
     assert %{text: "hello", label: "GREETING"} in rows

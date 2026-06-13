@@ -1,12 +1,38 @@
 defmodule Spectre.Runtime do
   @moduledoc """
   Turn-level orchestration for Spectre agents.
+
+  Runtime owns the per-turn workflow, but it deliberately does not own the
+  domain decisions inside an agent. It coordinates boundaries in this order:
+
+    1. Merge agent/runtime options.
+    2. Normalize input through the configured input pipeline.
+    3. Load state and memory adapters.
+    4. Resume an active policy, or route the input normally.
+    5. Run the selected handler.
+    6. Record chat history and persist state/memory.
+
+  Keeping this flow centralized makes individual adapters simpler and keeps
+  policy gates from being accidentally skipped.
   """
 
-  alias Spectre.{Context, Input, Policy, Result, Router, State}
+  alias Spectre.Context
+  alias Spectre.Input
+  alias Spectre.Input.Pipeline
+  alias Spectre.Policy
+  alias Spectre.Result
+  alias Spectre.Router
+  alias Spectre.State
 
   @doc """
   Handles one normalized input turn for an agent module.
+
+      {:ok, result} =
+        Spectre.Runtime.handle(
+          MyApp.Agent,
+          Spectre.Input.new("delete my account"),
+          conversation_id: "conv-123"
+        )
   """
   @spec handle(module(), Input.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def handle(agent, %Input{} = input, opts) do
@@ -23,6 +49,8 @@ defmodule Spectre.Runtime do
 
   @doc """
   Restores initial session state from the configured state adapter.
+
+      {:ok, state} = Spectre.Runtime.restore_state(MyApp.Agent, conversation_id: "conv-123")
   """
   @spec restore_state(module(), keyword()) :: {:ok, State.t()} | {:error, term()}
   def restore_state(agent, opts) do
@@ -33,6 +61,8 @@ defmodule Spectre.Runtime do
 
   @doc """
   Builds the per-turn context by loading state and memory adapters.
+
+      {:ok, ctx} = Spectre.Runtime.load_context(MyApp.Agent, input, [])
   """
   @spec load_context(module(), Input.t(), keyword()) :: {:ok, Context.t()} | {:error, term()}
   def load_context(agent, %Input{} = input, opts) do
@@ -53,10 +83,15 @@ defmodule Spectre.Runtime do
   @spec run_turn(Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp run_turn(%Context{state: state} = ctx) do
     if Policy.awaiting?(state) do
+      # Policy replies intentionally bypass normal routing. A short answer like
+      # "yes" should approve/reject the pending action, not be interpreted as a
+      # general conversation intent.
       Policy.resume(ctx.input, ctx)
     else
       with {:ok, router_context} <- Router.route_context(ctx.input, ctx),
            {:ok, route} <- Router.route_from_context(router_context) do
+        # Router plugs may enrich the input before a handler runs, so the runner
+        # receives the router context input rather than the original input.
         Spectre.Runner.run(route, %{ctx | input: router_context.input, route: route})
       end
     end
@@ -70,6 +105,8 @@ defmodule Spectre.Runtime do
 
     cond do
       Keyword.has_key?(opts, :state) ->
+        # Explicit state is a test and host-app escape hatch; it wins over the
+        # adapter so callers can replay a turn deterministically.
         {:ok, opts |> Keyword.get(:state) |> State.new() |> put_conversation_id(conversation_id)}
 
       is_atom(state_module) && function_exported?(state_module, :load, 3) ->
@@ -89,6 +126,8 @@ defmodule Spectre.Runtime do
 
     cond do
       Keyword.has_key?(opts, :memory) ->
+        # Memory can be injected for tests or for host applications that have
+        # already performed retrieval before calling Spectre.
         {:ok, Keyword.get(opts, :memory)}
 
       is_atom(memory_module) && function_exported?(memory_module, :recall, 2) ->
@@ -225,7 +264,7 @@ defmodule Spectre.Runtime do
         {:ok, input}
 
       specs when is_list(specs) ->
-        Spectre.Input.Pipeline.run(input, %{agent: agent, opts: opts}, specs)
+        Pipeline.run(input, %{agent: agent, opts: opts}, specs)
 
       other ->
         {:error, {:invalid_input_pipeline, other}}

@@ -1,16 +1,24 @@
 defmodule Spectre.Router.Plugs.SemanticCacheSearch do
-  @moduledoc false
+  @moduledoc """
+  Semantic-cache search after local classifier evidence.
+
+  Search runs later than exact lookup so it can use local classifier context
+  without hiding a confident deterministic route. This ordering keeps the router
+  predictable: exact evidence first, trained local evidence next, broader
+  semantic fallback after that.
+  """
 
   @behaviour Spectre.Router.Plug
 
-  alias Spectre.Router.{Candidate, Context}
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Context
   alias Spectre.Router.SemanticCache
   alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     cond do
       Context.halted?(context) ->
@@ -71,5 +79,6 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
     end
   end
 
+  @spec route_rule(Spectre.Route.t(), [Spectre.Rule.t()]) :: Spectre.Rule.t() | nil
   defp route_rule(route, rules), do: Enum.find(rules, &(&1.label == route.label))
 end

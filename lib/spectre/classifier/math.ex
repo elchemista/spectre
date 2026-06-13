@@ -1,5 +1,10 @@
 defmodule Spectre.Classifier.Math do
-  @moduledoc false
+  @moduledoc """
+  Small vector math helpers used by classifier and embedding strategies.
+
+  These functions stay pure and dependency-free so classifier scoring can be
+  tested without loading embedding models or Vettore indexes.
+  """
 
   alias Vettore.Distance
 

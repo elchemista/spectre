@@ -1,6 +1,10 @@
 defmodule Spectre.Router.Candidate do
   @moduledoc """
   A single routing signal produced by a router evidence provider.
+
+  Candidates let router plugs report what they know without deciding the final
+  route. The arbitrator can then compare hard regex matches, classifier scores,
+  semantic cache hits, and other evidence with one common shape.
   """
 
   defstruct [
@@ -39,6 +43,8 @@ defmodule Spectre.Router.Candidate do
 
   @doc """
   Builds a candidate from a compiled rule match.
+
+      candidate = Spectre.Router.Candidate.from_rule(rule, :regex, input.text)
   """
   @spec from_rule(Spectre.Rule.t(), atom(), String.t(), keyword()) :: t()
   def from_rule(%Spectre.Rule{} = rule, provider, raw, opts \\ []) do
@@ -63,6 +69,9 @@ defmodule Spectre.Router.Candidate do
 
   @doc """
   Builds a candidate from an adapter result map.
+
+      candidate =
+        Spectre.Router.Candidate.from_result(%{label: :help, confidence: 0.94}, rule, :classifier)
   """
   @spec from_result(map() | Spectre.Route.t(), Spectre.Rule.t() | nil, atom(), keyword()) :: t()
   def from_result(result, rule, provider, opts \\ [])
@@ -93,6 +102,8 @@ defmodule Spectre.Router.Candidate do
 
   @doc """
   Converts the winning candidate into a Spectre route.
+
+      route = Spectre.Router.Candidate.to_route(candidate, [:help, :fallback])
   """
   @spec to_route(t(), [atom()]) :: Spectre.Route.t()
   def to_route(%__MODULE__{} = candidate, labels \\ []) do

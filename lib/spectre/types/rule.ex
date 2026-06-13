@@ -1,6 +1,18 @@
 defmodule Spectre.Rule do
   @moduledoc """
   Declarative routing rule compiled from `Spectre.Agent` DSL.
+
+  Rules are internal domain data. They normalize DSL options such as regexes,
+  examples, training metadata, checks, and handler declarations before any
+  router plug sees them.
+
+      rule =
+        Spectre.Rule.new(%{
+          label: :help,
+          flow: :support,
+          regex: ~r/^help$/i,
+          handler: {:reply, :help, []}
+        })
   """
 
   defstruct [
@@ -41,6 +53,8 @@ defmodule Spectre.Rule do
 
   @doc """
   Builds a normalized routing rule from DSL metadata.
+
+      %Spectre.Rule{} = Spectre.Rule.new(%{label: :hello, regex: ~r/hello/})
   """
   @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
@@ -55,6 +69,8 @@ defmodule Spectre.Rule do
 
   @doc """
   Returns true when any deterministic regex on the rule matches the text.
+
+      Spectre.Rule.match?(rule, "hello")
   """
   @spec match?(t(), String.t()) :: boolean()
   def match?(%__MODULE__{regex: []}, _text), do: false
@@ -65,6 +81,8 @@ defmodule Spectre.Rule do
 
   @doc """
   Returns true when all checks pass against an input.
+
+      Spectre.Rule.checks_match?(rule, input)
   """
   @spec checks_match?(t(), Spectre.Input.t()) :: boolean()
   def checks_match?(%__MODULE__{checks: []}, %Spectre.Input{}), do: true

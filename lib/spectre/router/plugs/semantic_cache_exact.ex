@@ -1,16 +1,23 @@
 defmodule Spectre.Router.Plugs.SemanticCacheExact do
-  @moduledoc false
+  @moduledoc """
+  Exact semantic-cache lookup before classifier fallback.
+
+  This plug runs early because a trusted cache hit is usually cheaper and more
+  stable than asking a classifier or an LLM. Cache misses are recorded as local
+  metadata so later plugs can include that context in traces and fallback logs.
+  """
 
   @behaviour Spectre.Router.Plug
 
-  alias Spectre.Router.{Candidate, Context}
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Context
   alias Spectre.Router.SemanticCache
   alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     cond do
       Context.halted?(context) ->
@@ -67,5 +74,6 @@ defmodule Spectre.Router.Plugs.SemanticCacheExact do
     end
   end
 
+  @spec route_rule(Spectre.Route.t(), [Spectre.Rule.t()]) :: Spectre.Rule.t() | nil
   defp route_rule(route, rules), do: Enum.find(rules, &(&1.label == route.label))
 end

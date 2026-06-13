@@ -5,7 +5,8 @@ defmodule Spectre.Router.Arbitrators.Default do
 
   @behaviour Spectre.Router.Arbitrator
 
-  alias Spectre.Router.{Arbitration, Candidate}
+  alias Spectre.Router.Arbitration
+  alias Spectre.Router.Candidate
 
   @defaults [
     classifier_accept: 0.93,
@@ -18,7 +19,7 @@ defmodule Spectre.Router.Arbitrators.Default do
     no_decision: :clarify
   ]
 
-  @impl true
+  @impl Spectre.Router.Arbitrator
   def decide(%Arbitration{} = arbitration, opts) do
     opts = Keyword.merge(@defaults, opts)
     candidates = eligible_candidates(arbitration.candidates, opts)

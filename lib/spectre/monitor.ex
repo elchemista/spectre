@@ -1,15 +1,31 @@
 defmodule Spectre.Monitor do
   @moduledoc """
   Failure boundary for host delivery around a Spectre agent.
+
+  `Spectre.Monitor` wraps host delivery code and creates a fallback through
+  injected callbacks when that code fails. This keeps databases, queues, and
+  transport APIs outside the runtime while still giving applications one place
+  to produce a user-safe failure response.
   """
 
   require Logger
 
-  alias Spectre.{Input, Prompt, State}
+  alias Spectre.Input
+  alias Spectre.Prompt
+  alias Spectre.State
 
   @type context :: map()
   @type callback_result :: {:ok, map()} | {:error, term()}
 
+  @doc """
+  Runs a monitored host operation and creates a fallback when it fails.
+
+      Spectre.Monitor.dispatch(MyAgent, context,
+        run: fn -> deliver_turn.() end,
+        fallback_exists?: &MyApp.Fallbacks.exists?/1,
+        create_fallback: &MyApp.Fallbacks.create/3
+      )
+  """
   @spec dispatch(module(), context(), keyword()) :: callback_result()
   def dispatch(agent, context, opts) when is_atom(agent) and is_map(context) and is_list(opts) do
     with {:ok, run} <- fetch_callback(opts, :run) do
@@ -27,6 +43,11 @@ defmodule Spectre.Monitor do
     end
   end
 
+  @doc """
+  Renders the configured failure fallback prompt.
+
+      {:ok, text} = Spectre.Monitor.fallback_text(MyAgent, context, :timeout)
+  """
   @spec fallback_text(module(), context(), term(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def fallback_text(agent, context, reason, opts \\ []) do
@@ -39,6 +60,7 @@ defmodule Spectre.Monitor do
     end
   end
 
+  @spec safe_run(function()) :: callback_result()
   defp safe_run(run) when is_function(run, 0) do
     case run.() do
       {:ok, result} -> {:ok, result}
@@ -56,6 +78,7 @@ defmodule Spectre.Monitor do
       {:error, {:spectre_failure, kind, reason}}
   end
 
+  @spec recover(module(), context(), term(), keyword()) :: callback_result()
   defp recover(agent, context, reason, opts) do
     case existing_fallback(context, reason, opts) do
       {:ok, result} ->
@@ -67,6 +90,7 @@ defmodule Spectre.Monitor do
     end
   end
 
+  @spec existing_fallback(context(), term(), keyword()) :: {:ok, map()} | :not_found
   defp existing_fallback(context, reason, opts) do
     case Keyword.get(opts, :fallback_exists?) do
       nil ->
@@ -94,6 +118,7 @@ defmodule Spectre.Monitor do
       :not_found
   end
 
+  @spec normalize_existing_result(term()) :: {:ok, map()} | :not_found
   defp normalize_existing_result({:ok, result}) when is_map(result), do: {:ok, result}
   defp normalize_existing_result(%{} = result), do: {:ok, result}
   defp normalize_existing_result(nil), do: :not_found
@@ -101,6 +126,7 @@ defmodule Spectre.Monitor do
   defp normalize_existing_result(:not_found), do: :not_found
   defp normalize_existing_result(_other), do: :not_found
 
+  @spec create_fallback(module(), context(), term(), keyword()) :: callback_result()
   defp create_fallback(agent, context, reason, opts) do
     with {:ok, create} <- fetch_callback(opts, :create_fallback),
          {:ok, text} <- fallback_text(agent, context, reason, opts),
@@ -113,6 +139,7 @@ defmodule Spectre.Monitor do
     end
   end
 
+  @spec safe_create_fallback(function(), context(), String.t(), term()) :: callback_result()
   defp safe_create_fallback(create, context, text, reason) when is_function(create, 3) do
     create.(context, text, reason)
   rescue
@@ -123,6 +150,8 @@ defmodule Spectre.Monitor do
       {:error, {:fallback_failure, kind, caught_reason}}
   end
 
+  @spec render_fallback(module(), atom() | String.t(), context(), term(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
   defp render_fallback(agent, prompt, context, reason, opts) do
     input = input_from_context(context)
     assigns = opts |> Keyword.get(:assigns, %{}) |> Map.new()
@@ -153,16 +182,19 @@ defmodule Spectre.Monitor do
     end
   end
 
+  @spec default_failure_text() :: String.t()
   defp default_failure_text do
     "I'm sorry, I couldn't complete that request right now. Please try again in a moment."
   end
 
+  @spec input_from_context(context()) :: Input.t()
   defp input_from_context(%{message: %{text: text}} = context) do
     Input.new(%{text: text, meta: input_meta(context)})
   end
 
   defp input_from_context(context), do: Input.new(%{text: "", meta: input_meta(context)})
 
+  @spec input_meta(context()) :: map()
   defp input_meta(context) do
     context
     |> Map.take([:conversation_id, :message_id, :user_id, :channel, :external_chat_id])
@@ -170,6 +202,7 @@ defmodule Spectre.Monitor do
     |> Map.new()
   end
 
+  @spec fetch_callback(keyword(), atom()) :: {:ok, function()} | {:error, term()}
   defp fetch_callback(opts, key) do
     case Keyword.get(opts, key) do
       fun when is_function(fun) -> {:ok, fun}
@@ -178,6 +211,7 @@ defmodule Spectre.Monitor do
     end
   end
 
+  @spec context_log(context()) :: String.t()
   defp context_log(context) do
     [
       conversation_id: Map.get(context, :conversation_id),
@@ -190,9 +224,8 @@ defmodule Spectre.Monitor do
     |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{value}" end)
   end
 
+  @spec compact_result(map()) :: map()
   defp compact_result(result) when is_map(result) do
     Map.take(result, [:status, :delivery, :outbound_id, :conversation_id, :message_id])
   end
-
-  defp compact_result(result), do: result
 end

@@ -1,14 +1,25 @@
 defmodule Spectre.Router.Plugs.Arbitrate do
-  @moduledoc false
+  @moduledoc """
+  Turns accumulated routing evidence into a route decision.
+
+  Earlier plugs collect candidates; this plug is the boundary where competing
+  evidence becomes one action: accept a candidate, ask the LLM classifier,
+  clarify, or produce a fallback route. Keeping this as a plug makes custom
+  arbitration possible without rewriting evidence providers.
+  """
 
   @behaviour Spectre.Router.Plug
 
-  alias Spectre.Router.{Arbitration, Candidate, Context, LLMClassifier, Support}
+  alias Spectre.Router.Arbitration
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Context
+  alias Spectre.Router.LLMClassifier
+  alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     if Context.halted?(context), do: {:cont, context}, else: arbitrate(context)
   end

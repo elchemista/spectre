@@ -1,13 +1,24 @@
 defmodule Spectre.Router do
   @moduledoc """
   Routes inbound input to a compiled Spectre rule.
+
+  Routing is evidence-first. Each configured strategy can add candidates to a
+  `%Spectre.Router.Context{}`; arbitration later decides which candidate becomes
+  the route. This keeps deterministic matches, trained classifiers, semantic
+  cache hits, and LLM fallback from overwriting each other prematurely.
   """
 
-  alias Spectre.{Input, Route, Rule, State}
+  alias Spectre.Input
+  alias Spectre.Route
   alias Spectre.Router.Context
+  alias Spectre.Router.Support
+  alias Spectre.Rule
+  alias Spectre.State
 
   @doc """
   Routes input to the best matching compiled agent rule.
+
+      {:ok, route} = Spectre.Router.route(input, ctx)
   """
   @spec route(Input.t(), Spectre.Context.t()) :: {:ok, Route.t()} | {:error, term()}
   def route(%Input{} = input, %{agent: _agent, state: %State{}} = ctx) do
@@ -21,6 +32,8 @@ defmodule Spectre.Router do
 
   This is useful for runtimes that need enriched input fields produced by
   router plugs.
+
+      {:ok, router_context} = Spectre.Router.route_context(input, ctx)
   """
   @spec route_context(Input.t(), Spectre.Context.t()) :: {:ok, Context.t()} | {:error, term()}
   def route_context(%Input{} = input, %{agent: agent, state: %State{} = state, opts: opts} = ctx) do
@@ -47,6 +60,8 @@ defmodule Spectre.Router do
 
   @doc """
   Converts a completed router context into the selected route.
+
+      {:ok, route} = Spectre.Router.route_from_context(router_context)
   """
   @spec route_from_context(Context.t()) :: {:ok, Route.t()} | {:error, term()}
   def route_from_context(%Context{} = context) do
@@ -55,6 +70,10 @@ defmodule Spectre.Router do
 
   @doc """
   Returns interrupt, current-flow, and fallback rules in evaluation order.
+
+  Interrupts are first so global commands like cancel/help remain responsive.
+  Current-flow rules come next to make multi-turn flows stable. Remaining rules
+  are kept as fallback candidates so users can still change topic.
   """
   @spec candidate_rules(module(), State.t()) :: [Rule.t()]
   def candidate_rules(agent, %State{current_flow: current_flow}) do
@@ -143,13 +162,16 @@ defmodule Spectre.Router do
   defp route_result({:ok, %Context{route: %Route{} = route}}, _input, _rules), do: {:ok, route}
 
   defp route_result({:ok, %Context{}}, %Input{text: text} = input, rules) do
-    regex_rules = Spectre.Router.Support.rules_for(rules, :regex, input)
+    regex_rules = Support.rules_for(rules, :regex, input)
 
     case Enum.find(regex_rules, &Rule.match?(&1, text)) do
       %Rule{} = rule ->
         {:ok, Route.from_rule(rule, :regex, text)}
 
       nil ->
+        # Returning an explicit unknown route keeps callers on the normal
+        # `{:ok, route}` path while preserving the full label set for
+        # clarification prompts and telemetry.
         {:ok,
          Route.new(%{
            label: :unknown,

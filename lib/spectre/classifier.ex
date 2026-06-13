@@ -1,13 +1,21 @@
 defmodule Spectre.Classifier do
   @moduledoc """
   Runtime for Spectre's lightweight local vector classifier.
+
+  The classifier loads artifacts produced by `Spectre.Classifier.Trainer` and
+  exposes a route-like result for router plugs. It can run as a GenServer for
+  warm artifacts or load artifacts on demand with `classify_once/2`.
+
+      {:ok, _pid} = Spectre.Classifier.start_link(artifact_dir: "artifacts/spectre")
+      {:ok, route} = Spectre.Classifier.classify("create a project")
   """
 
   use GenServer
 
   require Logger
 
-  alias Spectre.Classifier.{Encoder, Math}
+  alias Spectre.Classifier.Encoder
+  alias Spectre.Classifier.Math
   alias Spectre.Route
   alias Vettore.Embedding
 
@@ -18,6 +26,8 @@ defmodule Spectre.Classifier do
 
   @doc """
   Starts a classifier process that keeps the artifact loaded.
+
+      {:ok, pid} = Spectre.Classifier.start_link(artifact_dir: "artifacts/spectre")
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -28,6 +38,8 @@ defmodule Spectre.Classifier do
 
   @doc """
   Classifies text using a running classifier process when available.
+
+      {:ok, route} = Spectre.Classifier.classify("show my projects")
   """
   @spec classify(String.t(), keyword()) :: {:ok, Route.t()} | {:error, term()}
   def classify(text, opts \\ []) when is_binary(text) do
@@ -43,6 +55,8 @@ defmodule Spectre.Classifier do
 
   @doc """
   Classifies text by loading artifacts for this call.
+
+      {:ok, route} = Spectre.Classifier.classify_once("show my projects", artifact_dir: path)
   """
   @spec classify_once(String.t(), keyword()) :: {:ok, Route.t()} | {:error, term()}
   def classify_once(text, opts) do
@@ -51,7 +65,7 @@ defmodule Spectre.Classifier do
     do_classify(text, load_state(opts), opts)
   end
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     opts = classifier_opts(opts)
     state = load_state(opts)
@@ -80,7 +94,7 @@ defmodule Spectre.Classifier do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:classify, text, opts}, _from, state) do
     {:reply, do_classify(text, state, opts), state}
   end

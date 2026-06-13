@@ -1,6 +1,10 @@
 defmodule Spectre.Classifier.Encoder do
   @moduledoc """
   Configurable embedding boundary for Spectre classifier artifacts.
+
+  Encoder calls are adapter-driven so tests and host applications can inject a
+  fake or hosted embedding provider without changing classifier training or
+  runtime code.
   """
 
   @default_model "intfloat/multilingual-e5-small"
@@ -16,6 +20,8 @@ defmodule Spectre.Classifier.Encoder do
 
   @doc """
   Downloads/loads the embedding model and returns its vector dimensions.
+
+      {:ok, dimensions} = Spectre.Classifier.Encoder.download()
   """
   @spec download(String.t(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
   def download(model \\ @default_model, opts \\ []) when is_binary(model) do
@@ -27,6 +33,8 @@ defmodule Spectre.Classifier.Encoder do
 
   @doc """
   Loads the embedding model and returns its vector dimensions.
+
+      {:ok, dimensions} = Spectre.Classifier.Encoder.load("intfloat/multilingual-e5-small")
   """
   @spec load(String.t(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
   def load(model \\ @default_model, opts \\ []) when is_binary(model) do
@@ -38,6 +46,8 @@ defmodule Spectre.Classifier.Encoder do
 
   @doc """
   Embeds one text value with the loaded model.
+
+      {:ok, vector} = Spectre.Classifier.Encoder.embed("hello")
   """
   @spec embed(String.t(), keyword()) :: {:ok, embedding()} | {:error, term()}
   def embed(text, opts \\ []) when is_binary(text) do

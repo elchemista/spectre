@@ -1,9 +1,20 @@
 defmodule Spectre.Classifier.Trainer do
   @moduledoc """
   Builds a lightweight vector classifier artifact for Spectre routing.
+
+  The trainer is a build-time boundary. It reads a simple JSON dataset, embeds
+  each row, and writes artifacts that `Spectre.Classifier` can load at runtime
+  without needing the original dataset.
+
+      {:ok, stats} =
+        Spectre.Classifier.Trainer.train(
+          "training/dataset.json",
+          "artifacts/spectre"
+        )
   """
 
-  alias Spectre.Classifier.{Encoder, Math}
+  alias Spectre.Classifier.Encoder
+  alias Spectre.Classifier.Math
 
   @default_high_confidence_threshold 0.93
   @default_mode :centroid
@@ -13,6 +24,12 @@ defmodule Spectre.Classifier.Trainer do
 
   Dataset rows accept either `"label"` or `"intent"` for compatibility with the
   original AgentCore datasets.
+
+      Spectre.Classifier.Trainer.train(
+        "training/dataset.json",
+        "artifacts/spectre",
+        local_classifier_mode: :examples
+      )
   """
   @spec train(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def train(dataset_path, out_dir, opts \\ []) do

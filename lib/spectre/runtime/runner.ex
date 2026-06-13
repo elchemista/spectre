@@ -1,21 +1,26 @@
 defmodule Spectre.Runner do
   @moduledoc """
   Executes routed handlers without crossing action boundaries accidentally.
+
+  The runner translates a selected route into a result, but protected side
+  effects remain staged until a policy approves them. This is the main safety
+  boundary in Spectre: prompts may propose actions, and deterministic DSL routes
+  may stage actions, but execution is separate.
   """
 
-  alias Spectre.{
-    ActionConfig,
-    ActionPlanner,
-    ActionProtection,
-    Input,
-    PendingAction,
-    Prompt,
-    Result,
-    Route
-  }
+  alias Spectre.ActionConfig
+  alias Spectre.ActionPlanner
+  alias Spectre.ActionProtection
+  alias Spectre.Input
+  alias Spectre.PendingAction
+  alias Spectre.Prompt
+  alias Spectre.Result
+  alias Spectre.Route
 
   @doc """
   Runs the handler selected by a route.
+
+      {:ok, result} = Spectre.Runner.run(route, ctx)
   """
   @spec run(Route.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
   def run(%Route{handler: {:ask, prompt, handler_opts}} = route, ctx) do
@@ -50,6 +55,11 @@ defmodule Spectre.Runner do
 
   @doc """
   Renders a prompt, calls the LLM, cleans visible replies, and stages AL actions.
+
+      {:ok, result} = Spectre.Runner.ask(:support_answer, input, ctx)
+
+  Policy prompts use the same rendering/LLM path but skip action planning so a
+  confirmation question cannot accidentally stage another action.
   """
   @spec ask(atom() | String.t(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
@@ -76,6 +86,8 @@ defmodule Spectre.Runner do
 
   @doc """
   Calls an agent-local function declared through a `run` handler.
+
+      {:ok, result} = Spectre.Runner.run_function(:prepare_case, input, ctx)
   """
   @spec run_function(atom(), Input.t(), Spectre.Context.t() | map()) ::
           {:ok, Result.t()} | {:error, term()}
@@ -102,6 +114,8 @@ defmodule Spectre.Runner do
   root. A host application may instead pass `renderer: {Module, :function}`.
   Renderer callbacks can use arity 3 (`prompt, input, ctx`), arity 2
   (`prompt, assigns`), or arity 1 (`assigns`).
+
+      reply :fallback, renderer: {MyApp.Replies, :render}
   """
   @spec reply(atom() | String.t(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
@@ -120,6 +134,8 @@ defmodule Spectre.Runner do
   the configured policy. Pass `reply:` plus normal `reply` renderer options to
   use a no-LLM confirmation message; otherwise Spectre renders the policy
   request prompt through the normal `ask` path.
+
+      {:ok, result} = Spectre.Runner.action(:delete_account, input, ctx)
   """
   @spec action(atom(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
@@ -139,6 +155,8 @@ defmodule Spectre.Runner do
     policy = Keyword.get(opts, :policy) || ActionProtection.protected_by(ctx.agent, pending)
     state = Spectre.State.put_pending(ctx.state, pending, policy)
     ctx = %{ctx | state: state}
+    # Read the action back from state so policy metadata/status added by
+    # `State.put_pending/3` is reflected in the result actions list.
     actions = [pending_action(state)]
 
     cond do
@@ -187,6 +205,8 @@ defmodule Spectre.Runner do
     ctx = %{ctx | state: state}
 
     if policy do
+      # Protected AL actions immediately switch into the policy request flow.
+      # The visible LLM reply is preserved and joined with the policy prompt.
       request_policy(policy, reply_text, actions, input, ctx, opts)
     else
       {:ok,

@@ -23,19 +23,26 @@ defmodule Spectre.Supervisor do
 
   @type session_option :: Spectre.Session.option()
 
+  @doc """
+  Starts the dynamic supervisor for Spectre sessions.
+
+      {:ok, pid} = Spectre.Supervisor.start_link(name: MyApp.SpectreSupervisor)
+  """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     DynamicSupervisor.start_link(__MODULE__, opts, name: name)
   end
 
-  @impl true
+  @impl DynamicSupervisor
   def init(_opts) do
     DynamicSupervisor.init(strategy: :one_for_one)
   end
 
   @doc """
   Starts a supervised Spectre session under `supervisor`.
+
+      {:ok, pid} = Spectre.Supervisor.summon(MySupervisor, MyAgent, conversation_id: "123")
   """
   @spec summon(GenServer.server(), module(), [session_option()]) ::
           DynamicSupervisor.on_start_child()
@@ -46,10 +53,11 @@ defmodule Spectre.Supervisor do
 
   @doc """
   Stops a supervised Spectre session.
+
+      :ok = Spectre.Supervisor.dismiss(MySupervisor, pid)
   """
   @spec dismiss(GenServer.server(), pid()) :: :ok | {:error, term()}
   def dismiss(supervisor \\ __MODULE__, pid) when is_pid(pid) do
     DynamicSupervisor.terminate_child(supervisor, pid)
   end
-
 end

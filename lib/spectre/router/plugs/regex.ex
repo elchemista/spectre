@@ -1,16 +1,32 @@
 defmodule Spectre.Router.Plugs.Regex do
-  @moduledoc false
+  @moduledoc """
+  Deterministic regex evidence provider for the router pipeline.
+
+  Regex rules are treated as hard evidence because they are explicit agent
+  declarations. The plug records a candidate instead of immediately returning a
+  route so the arbitrator can still compare regex evidence with global
+  interrupts, semantic cache hits, classifier results, or custom providers.
+
+  Example DSL:
+
+      flow :support do
+        on :cancel, regex: ~r/^cancel$/i do
+          run :cancel_current
+        end
+      end
+  """
 
   @behaviour Spectre.Router.Plug
 
-  alias Spectre.Router.{Candidate, Context}
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Context
   alias Spectre.Router.Support
   alias Spectre.Rule
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     if Context.halted?(context) do
       {:cont, context}

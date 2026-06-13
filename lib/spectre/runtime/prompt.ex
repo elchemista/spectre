@@ -1,10 +1,16 @@
 defmodule Spectre.Prompt do
   @moduledoc """
   Prompt resolver and tiny HEEx-compatible renderer.
+
+  Prompt resolution is filesystem-boundary code. Runtime modules pass prompt
+  names and assigns; this module maps them to files under the agent prompt root
+  and renders a small HEEx-like template syntax.
   """
 
   @doc """
   Resolves and renders a prompt for an agent turn.
+
+      {:ok, text} = Spectre.Prompt.render(MyAgent, :welcome, ctx)
   """
   @spec render(module(), atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
@@ -20,6 +26,11 @@ defmodule Spectre.Prompt do
 
   @doc """
   Resolves a prompt name or relative path under the agent prompt root.
+
+      {:ok, path} = Spectre.Prompt.resolve(MyAgent, :welcome, ctx)
+
+  Policy prompts are looked up under `policies/<policy>/<prompt>.text.heex` so
+  confirmation copy can live next to the policy it explains.
   """
   @spec resolve(module(), atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, String.t()} | {:error, term()}

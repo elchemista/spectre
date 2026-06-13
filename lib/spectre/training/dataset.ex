@@ -1,6 +1,15 @@
 defmodule Spectre.Training.Dataset do
   @moduledoc """
   Builds classifier datasets from Spectre agent routing metadata.
+
+  Training examples live next to route and policy declarations so the dataset
+  stays aligned with the DSL. This module is the boundary that turns those
+  declarations into plain rows for classifier training.
+
+      {:ok, rows} =
+        Spectre.Training.Dataset.from_agent(MyApp.Agent,
+          source: "training/raw_intents.jsonl"
+        )
   """
 
   alias Spectre.Rule
@@ -17,6 +26,8 @@ defmodule Spectre.Training.Dataset do
     * `.json` files - list of objects with `text` and optional `label`/`intent`.
     * `.jsonl` files - one JSON object per line.
     * other files - one example per non-empty, non-comment line.
+
+      {:ok, rows} = Spectre.Training.Dataset.from_agent(MyApp.Agent)
   """
   @spec from_agent(module(), keyword()) :: {:ok, [row()]} | {:error, term()}
   def from_agent(agent, opts \\ []) when is_atom(agent) and is_list(opts) do

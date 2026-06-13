@@ -1,6 +1,17 @@
 defmodule Spectre.PendingAction do
   @moduledoc """
   Planned action that has not crossed the execution boundary.
+
+  Pending actions can come from deterministic DSL handlers, extracted Action
+  Language, or manual host code. The struct keeps those sources normalized so
+  protection checks and execution dispatch use one shape.
+
+      pending =
+        Spectre.PendingAction.new(%{
+          name: :delete_account,
+          args: %{reason: "user requested"},
+          source: :dsl
+        })
   """
 
   defstruct [
@@ -33,6 +44,8 @@ defmodule Spectre.PendingAction do
 
   @doc """
   Builds a pending action from planner output or fallback AL metadata.
+
+      Spectre.PendingAction.new(%{selected_tool: "Elixir.MyApp.Tools.delete/2"})
   """
   @spec new(map() | struct()) :: t()
   def new(action) when is_map(action) do
@@ -56,6 +69,8 @@ defmodule Spectre.PendingAction do
 
   @doc """
   Returns the most stable key available for protection and dispatch checks.
+
+      :delete_account = Spectre.PendingAction.action_key(pending)
   """
   @spec action_key(t() | map() | atom() | String.t()) :: atom() | String.t() | nil
   def action_key(%__MODULE__{name: name}) when is_atom(name), do: name

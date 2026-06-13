@@ -1,14 +1,26 @@
 defmodule Spectre.Router.Plugs.JaroDistance do
-  @moduledoc false
+  @moduledoc """
+  Jaro-distance evidence provider for typo-tolerant short examples.
+
+  Jaro matching is intentionally a router plug rather than a rule-level special
+  case. Keeping each evidence source in its own plug makes the arbitration step
+  explicit and lets agents opt into only the strategies they need.
+
+      on :help, jaro: ["help", "support", "assist me"] do
+        reply :help
+      end
+  """
 
   @behaviour Spectre.Router.Plug
 
-  alias Spectre.Router.{Candidate, Context, Support}
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Context
+  alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     if Context.halted?(context), do: {:cont, context}, else: collect(context)
   end

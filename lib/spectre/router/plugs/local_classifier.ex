@@ -1,16 +1,26 @@
 defmodule Spectre.Router.Plugs.LocalClassifier do
-  @moduledoc false
+  @moduledoc """
+  Local classifier evidence provider.
+
+  The classifier converts a trained artifact result into a route candidate.
+  Accepted but unrouteable labels are kept as local metadata so later semantic
+  or LLM fallback steps can explain why the local model did not produce a final
+  route.
+
+      router via: [:regex, :classifier, :llm_classifier]
+  """
 
   @behaviour Spectre.Router.Plug
 
-  alias Spectre.Router.{Candidate, Context}
-  alias Spectre.Router.LocalClassifier, as: ClassifierAdapter
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Context
+  alias Spectre.Router.LocalClassifier
   alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     if Context.halted?(context), do: {:cont, context}, else: classify(context)
   end
@@ -21,7 +31,7 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
     visible_rules = Support.rules_for(rules, :classifier, context.input)
     visible_labels = Support.labels_for(visible_rules)
 
-    case ClassifierAdapter.classify(text, opts) do
+    case LocalClassifier.classify(text, opts) do
       {:ok, %{accepted?: true} = result} ->
         route =
           result
@@ -86,5 +96,6 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
   defp maybe_put_cache_reason(result, nil), do: result
   defp maybe_put_cache_reason(result, reason), do: Map.put(result, :semantic_cache, reason)
 
+  @spec route_rule(Spectre.Route.t(), [Spectre.Rule.t()]) :: Spectre.Rule.t() | nil
   defp route_rule(route, rules), do: Enum.find(rules, &(&1.label == route.label))
 end
