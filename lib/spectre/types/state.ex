@@ -1,6 +1,14 @@
 defmodule Spectre.State do
   @moduledoc """
   Conversation state owned by Spectre.
+
+  State is the authoritative machine state for routing and action safety. It
+  tracks the current flow, pending protected action, active policy gate, compact
+  chat history, and trace events.
+
+      state =
+        %Spectre.State{}
+        |> Spectre.State.put_pending(pending_action, :confirm_delete)
   """
 
   defstruct [
@@ -27,6 +35,8 @@ defmodule Spectre.State do
 
   @doc """
   Normalizes map, keyword, or nil input into a state struct.
+
+      %Spectre.State{} = Spectre.State.new(current_flow: :checkout)
   """
   @spec new(t() | map() | keyword() | nil) :: t()
   def new(nil), do: %__MODULE__{}
@@ -43,6 +53,10 @@ defmodule Spectre.State do
 
   @doc """
   Stores a pending action and optionally starts a policy gate for it.
+
+  When a policy is provided, the pending action status is changed to
+  `:waiting_policy` and an awaiting marker is created. This keeps the execution
+  boundary explicit: the action is visible, but not executable until approved.
   """
   @spec put_pending(t(), Spectre.PendingAction.t(), atom() | nil) :: t()
   def put_pending(%__MODULE__{} = state, pending_action, nil) do
@@ -66,6 +80,9 @@ defmodule Spectre.State do
 
   @doc """
   Clears the active awaiting marker without removing the pending action.
+
+  This is used after policy approval: the action is still pending and can be
+  executed, but the state is no longer waiting for user confirmation.
   """
   @spec clear_awaiting(t()) :: t()
   def clear_awaiting(%__MODULE__{} = state), do: %{state | awaiting: nil}
@@ -88,6 +105,9 @@ defmodule Spectre.State do
 
   @doc """
   Appends a compact chat-history entry under `state.data[:chat_history]`.
+
+  History is intentionally compact so it can be passed to prompts without
+  persisting full result structs or adapter-specific data.
   """
   @spec record_turn(t(), Spectre.Input.t(), Spectre.Result.t(), pos_integer() | false | nil) ::
           t()

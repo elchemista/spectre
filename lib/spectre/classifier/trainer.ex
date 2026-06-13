@@ -1,21 +1,40 @@
 defmodule Spectre.Classifier.Trainer do
   @moduledoc """
-  Builds a lightweight centroid classifier artifact for Spectre routing.
+  Builds a lightweight vector classifier artifact for Spectre routing.
+
+  The trainer is a build-time boundary. It reads a simple JSON dataset, embeds
+  each row, and writes artifacts that `Spectre.Classifier` can load at runtime
+  without needing the original dataset.
+
+      {:ok, stats} =
+        Spectre.Classifier.Trainer.train(
+          "training/dataset.json",
+          "artifacts/spectre"
+        )
   """
 
-  alias Spectre.Classifier.{Encoder, Math}
+  alias Spectre.Classifier.Encoder
+  alias Spectre.Classifier.Math
 
   @default_high_confidence_threshold 0.93
+  @default_mode :centroid
 
   @doc """
   Trains classifier artifacts from a JSON dataset.
 
   Dataset rows accept either `"label"` or `"intent"` for compatibility with the
   original AgentCore datasets.
+
+      Spectre.Classifier.Trainer.train(
+        "training/dataset.json",
+        "artifacts/spectre",
+        local_classifier_mode: :examples
+      )
   """
   @spec train(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def train(dataset_path, out_dir, opts \\ []) do
     model = Keyword.get(opts, :encoder_model, Encoder.default_model())
+    mode = classifier_mode(opts)
     accept_threshold = Keyword.get(opts, :local_accept_threshold, 0.8)
     margin_threshold = Keyword.get(opts, :local_margin_threshold, 0.08)
 
@@ -26,13 +45,18 @@ defmodule Spectre.Classifier.Trainer do
          {:ok, dimensions} <- Encoder.load(model, opts),
          {:ok, rows} <- embed_examples(examples, opts),
          {:ok, classifier} <-
-           build_classifier(rows, %{
-             encoder_model: model,
-             dimensions: dimensions,
-             accept_threshold: accept_threshold,
-             margin_threshold: margin_threshold,
-             high_confidence_threshold: high_confidence_threshold
-           }),
+           build_classifier(
+             rows,
+             %{
+               encoder_model: model,
+               dimensions: dimensions,
+               mode: mode,
+               accept_threshold: accept_threshold,
+               margin_threshold: margin_threshold,
+               high_confidence_threshold: high_confidence_threshold
+             },
+             opts
+           ),
          :ok <- write_artifacts(classifier, out_dir, dataset_path) do
       {:ok,
        %{
@@ -79,18 +103,40 @@ defmodule Spectre.Classifier.Trainer do
     end
   end
 
-  @spec build_classifier([map()], map()) :: {:ok, map()} | {:error, term()}
-  defp build_classifier([], _metadata), do: {:error, :empty_dataset}
+  @spec build_classifier([map()], map(), keyword()) :: {:ok, map()} | {:error, term()}
+  defp build_classifier([], _metadata, _opts), do: {:error, :empty_dataset}
 
-  defp build_classifier(rows, metadata) do
+  defp build_classifier(rows, %{mode: :examples} = metadata, opts) do
     grouped = Enum.group_by(rows, &label(&1.example), & &1.vector)
+    labels = grouped |> Map.keys() |> Enum.sort()
+
+    examples =
+      rows
+      |> Enum.with_index(1)
+      |> Enum.map(fn {%{example: example, vector: vector}, index} ->
+        %{id: "example:#{index}", label: label(example), vector: vector}
+      end)
+
+    {:ok,
+     Map.merge(metadata, %{
+       version: 1,
+       kind: :example_index,
+       labels: labels,
+       examples: examples,
+       centroids: maybe_centroids(grouped, opts),
+       example_counts: Map.new(grouped, fn {label, vectors} -> {label, length(vectors)} end),
+       trained_at: DateTime.utc_now(:second) |> DateTime.to_iso8601()
+     })}
+  end
+
+  defp build_classifier(rows, metadata, _opts) do
+    grouped = Enum.group_by(rows, &label(&1.example), & &1.vector)
+    labels = grouped |> Map.keys() |> Enum.sort()
 
     centroids =
       grouped
       |> Enum.map(fn {label, vectors} -> {label, Math.centroid(vectors)} end)
       |> Map.new()
-
-    labels = grouped |> Map.keys() |> Enum.sort()
 
     {:ok,
      Map.merge(metadata, %{
@@ -103,11 +149,31 @@ defmodule Spectre.Classifier.Trainer do
      })}
   end
 
+  @spec maybe_centroids(%{optional(String.t()) => [[number()]]}, keyword()) :: map()
+  defp maybe_centroids(grouped, opts) do
+    if Keyword.get(opts, :local_store_centroids?, false) do
+      grouped
+      |> Enum.map(fn {label, vectors} -> {label, Math.centroid(vectors)} end)
+      |> Map.new()
+    else
+      %{}
+    end
+  end
+
+  @spec classifier_mode(keyword()) :: :centroid | :examples
+  defp classifier_mode(opts) do
+    case Keyword.get(opts, :local_classifier_mode, @default_mode) do
+      :examples -> :examples
+      "examples" -> :examples
+      _other -> :centroid
+    end
+  end
+
   @spec write_artifacts(map(), String.t(), String.t()) :: :ok | {:error, term()}
   defp write_artifacts(classifier, out_dir, dataset_path) do
     metadata =
       classifier
-      |> Map.drop([:centroids])
+      |> Map.drop([:centroids, :examples])
       |> Map.put(:dataset_path, dataset_path)
 
     calibration = %{

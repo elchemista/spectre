@@ -29,10 +29,10 @@ defmodule Spectre.Router.LLMClassifier do
 
   @spec complete_fun(keyword()) :: {:ok, function()} | {:error, term()}
   defp complete_fun(opts) do
-    cond do
-      fun = Keyword.get(opts, :complete) -> {:ok, fun}
-      module = Keyword.get(opts, :model) -> {:ok, &module.complete/2}
-      true -> {:error, :missing_llm_classifier_complete_fun}
+    if Keyword.has_key?(opts, :model) do
+      {:ok, &Spectre.LLM.complete(&1, Keyword.merge(opts, &2))}
+    else
+      {:error, :missing_llm_classifier_model}
     end
   end
 

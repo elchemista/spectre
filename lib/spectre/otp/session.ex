@@ -10,7 +10,9 @@ defmodule Spectre.Session do
 
   use GenServer
 
-  alias Spectre.{Input, Result, State}
+  alias Spectre.Input
+  alias Spectre.Result
+  alias Spectre.State
 
   @type option ::
           {:agent, module()}
@@ -43,6 +45,11 @@ defmodule Spectre.Session do
     }
   end
 
+  @doc """
+  Starts a conversation-scoped session process.
+
+      {:ok, pid} = Spectre.Session.start_link(agent: MyApp.Agent)
+  """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
     {name, opts} = Keyword.pop(opts, :name)
@@ -56,6 +63,8 @@ defmodule Spectre.Session do
 
   @doc """
   Handles one turn through a supervised session.
+
+      {:ok, result} = Spectre.Session.ask(session, "hello")
   """
   @spec ask(GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
@@ -64,27 +73,24 @@ defmodule Spectre.Session do
   end
 
   @doc """
-  Compatibility alias for `ask/3`.
-  """
-  @spec handle(GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
-          {:ok, Result.t()} | {:error, term()}
-  def handle(server, input, opts \\ []), do: ask(server, input, opts)
-
-  @doc """
   Returns the current in-memory Spectre state.
+
+      %Spectre.State{} = Spectre.Session.state(session)
   """
   @spec state(GenServer.server()) :: State.t()
   def state(server), do: GenServer.call(server, :state)
 
   @doc """
   Replaces the current in-memory state.
+
+      :ok = Spectre.Session.reset(session, %Spectre.State{})
   """
   @spec reset(GenServer.server(), State.t() | map() | keyword()) :: :ok
   def reset(server, state \\ %State{}) do
     GenServer.call(server, {:reset, state})
   end
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     agent = Keyword.fetch!(opts, :agent)
     conversation_id = Keyword.get(opts, :conversation_id)
@@ -109,7 +115,7 @@ defmodule Spectre.Session do
     {:ok, arm_idle_timer(data)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:handle, input, opts}, _from, data) do
     runtime_opts =
       data.base_opts
@@ -134,7 +140,7 @@ defmodule Spectre.Session do
     {:reply, :ok, data}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:idle_shutdown, data), do: {:stop, :normal, %{data | idle_timer: nil}}
 
   @spec restore_initial_state(module(), keyword(), keyword()) :: State.t()
@@ -179,6 +185,7 @@ defmodule Spectre.Session do
 
   defp arm_idle_timer(data), do: data
 
+  @spec maybe_put_conversation_id(State.t(), term()) :: State.t()
   defp maybe_put_conversation_id(%State{} = state, nil), do: state
 
   defp maybe_put_conversation_id(%State{} = state, conversation_id),

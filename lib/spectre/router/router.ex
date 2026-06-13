@@ -1,22 +1,49 @@
 defmodule Spectre.Router do
   @moduledoc """
   Routes inbound input to a compiled Spectre rule.
+
+  Routing is evidence-first. Each configured strategy can add candidates to a
+  `%Spectre.Router.Context{}`; arbitration later decides which candidate becomes
+  the route. This keeps deterministic matches, trained classifiers, semantic
+  cache hits, and LLM fallback from overwriting each other prematurely.
   """
 
-  alias Spectre.{Input, Route, Rule, State}
+  alias Spectre.Input
+  alias Spectre.Route
   alias Spectre.Router.Context
+  alias Spectre.Router.Support
+  alias Spectre.Rule
+  alias Spectre.State
 
   @doc """
   Routes input to the best matching compiled agent rule.
+
+      {:ok, route} = Spectre.Router.route(input, ctx)
   """
   @spec route(Input.t(), Spectre.Context.t()) :: {:ok, Route.t()} | {:error, term()}
-  def route(%Input{} = input, %{agent: agent, state: %State{} = state, opts: opts} = ctx) do
+  def route(%Input{} = input, %{agent: _agent, state: %State{}} = ctx) do
+    with {:ok, %Context{} = context} <- route_context(input, ctx) do
+      route_from_context(context)
+    end
+  end
+
+  @doc """
+  Runs the router pipeline and returns the full routing context.
+
+  This is useful for runtimes that need enriched input fields produced by
+  router plugs.
+
+      {:ok, router_context} = Spectre.Router.route_context(input, ctx)
+  """
+  @spec route_context(Input.t(), Spectre.Context.t()) :: {:ok, Context.t()} | {:error, term()}
+  def route_context(%Input{} = input, %{agent: agent, state: %State{} = state, opts: opts} = ctx) do
     rules = candidate_rules(agent, state)
     labels = Enum.map(rules, & &1.label)
 
     router_opts =
       agent.__spectre_router__()
       |> Keyword.merge(opts)
+      |> Keyword.put_new(:arbitrator, {Spectre.Router.Arbitrators.Default, []})
       |> Keyword.put_new(:labels, labels)
 
     context = %Context{
@@ -29,11 +56,24 @@ defmodule Spectre.Router do
 
     context
     |> route_with_pipeline(pipeline(router_opts))
-    |> route_result(input, rules)
+  end
+
+  @doc """
+  Converts a completed router context into the selected route.
+
+      {:ok, route} = Spectre.Router.route_from_context(router_context)
+  """
+  @spec route_from_context(Context.t()) :: {:ok, Route.t()} | {:error, term()}
+  def route_from_context(%Context{} = context) do
+    route_result({:ok, context}, context.input, context.rules)
   end
 
   @doc """
   Returns interrupt, current-flow, and fallback rules in evaluation order.
+
+  Interrupts are first so global commands like cancel/help remain responsive.
+  Current-flow rules come next to make multi-turn flows stable. Remaining rules
+  are kept as fallback candidates so users can still change topic.
   """
   @spec candidate_rules(module(), State.t()) :: [Rule.t()]
   def candidate_rules(agent, %State{current_flow: current_flow}) do
@@ -84,17 +124,24 @@ defmodule Spectre.Router do
 
   @spec pipeline_step(atom()) :: [module()]
   defp pipeline_step(:regex), do: [Spectre.Router.Plugs.Regex]
+  defp pipeline_step(:bag), do: [Spectre.Router.Plugs.BagDistance]
+  defp pipeline_step(:jaro), do: [Spectre.Router.Plugs.JaroDistance]
+  defp pipeline_step(:embedding), do: [Spectre.Router.Plugs.EmbeddingSimilarity]
 
   defp pipeline_step(:semantic_cache),
     do: [Spectre.Router.Plugs.SemanticCacheExact, Spectre.Router.Plugs.SemanticCacheSearch]
 
   defp pipeline_step(:classifier), do: [Spectre.Router.Plugs.LocalClassifier]
-  defp pipeline_step(:llm), do: [Spectre.Router.Plugs.LLMFallback]
+  defp pipeline_step(:llm), do: []
+  defp pipeline_step(:llm_classifier), do: []
+  defp pipeline_step(:arbitrate), do: [Spectre.Router.Plugs.Arbitrate]
   defp pipeline_step(:terminalize), do: [Spectre.Router.Plugs.Terminalize]
   defp pipeline_step(_unknown), do: []
 
   @spec append_terminalize([module()]) :: [module()]
   defp append_terminalize(pipeline) do
+    pipeline = append_arbitrate(pipeline)
+
     if Spectre.Router.Plugs.Terminalize in pipeline do
       pipeline
     else
@@ -102,17 +149,29 @@ defmodule Spectre.Router do
     end
   end
 
+  defp append_arbitrate(pipeline) do
+    if Spectre.Router.Plugs.Arbitrate in pipeline do
+      pipeline
+    else
+      pipeline ++ [Spectre.Router.Plugs.Arbitrate]
+    end
+  end
+
   @spec route_result({:ok, Context.t()} | {:error, term()}, Input.t(), [Rule.t()]) ::
           {:ok, Route.t()} | {:error, term()}
-  defp route_result({:error, reason}, _input, _rules), do: {:error, reason}
   defp route_result({:ok, %Context{route: %Route{} = route}}, _input, _rules), do: {:ok, route}
 
-  defp route_result({:ok, %Context{}}, %Input{text: text}, rules) do
-    case Enum.find(rules, &Rule.match?(&1, text)) do
+  defp route_result({:ok, %Context{}}, %Input{text: text} = input, rules) do
+    regex_rules = Support.rules_for(rules, :regex, input)
+
+    case Enum.find(regex_rules, &Rule.match?(&1, text)) do
       %Rule{} = rule ->
         {:ok, Route.from_rule(rule, :regex, text)}
 
       nil ->
+        # Returning an explicit unknown route keeps callers on the normal
+        # `{:ok, route}` path while preserving the full label set for
+        # clarification prompts and telemetry.
         {:ok,
          Route.new(%{
            label: :unknown,

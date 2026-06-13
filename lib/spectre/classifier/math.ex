@@ -1,5 +1,10 @@
 defmodule Spectre.Classifier.Math do
-  @moduledoc false
+  @moduledoc """
+  Small vector math helpers used by classifier and embedding strategies.
+
+  These functions stay pure and dependency-free so classifier scoring can be
+  tested without loading embedding models or Vettore indexes.
+  """
 
   alias Vettore.Distance
 
@@ -24,12 +29,12 @@ defmodule Spectre.Classifier.Math do
   end
 
   @doc """
-  Converts Vettore's cosine score into the classifier score scale.
+  Returns Vettore's raw cosine score.
   """
   @spec raw_cosine_score(term()) :: float()
   def raw_cosine_score({:ok, score}) when is_number(score), do: raw_cosine_score(score)
   def raw_cosine_score({:error, _reason}), do: 0.0
-  def raw_cosine_score(score) when is_number(score), do: score * 2.0 - 1.0
+  def raw_cosine_score(score) when is_number(score), do: score / 1
   def raw_cosine_score(_other), do: 0.0
 
   @doc """
@@ -37,15 +42,9 @@ defmodule Spectre.Classifier.Math do
   """
   @spec normalize([number()]) :: [float()]
   def normalize(vector) when is_list(vector) do
-    norm =
-      vector
-      |> Enum.reduce(0.0, fn value, acc -> acc + value * value end)
-      |> :math.sqrt()
-
-    if norm == 0.0 do
-      Enum.map(vector, fn _ -> 0.0 end)
-    else
-      Enum.map(vector, &(&1 / norm))
+    case Distance.normalize(vector, :l2) do
+      {:ok, normalized} -> normalized
+      {:error, _reason} -> Enum.map(vector, fn _ -> 0.0 end)
     end
   end
 

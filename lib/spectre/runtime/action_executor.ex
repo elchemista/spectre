@@ -6,12 +6,21 @@ defmodule Spectre.ActionExecutor do
   can stage actions, but execution stays behind this boundary.
   """
 
-  alias Spectre.{ActionConfig, Input, PendingAction, Result, State}
+  alias Spectre.ActionConfig
+  alias Spectre.Input
+  alias Spectre.PendingAction
+  alias Spectre.Result
+  alias Spectre.State
 
   @type action_result :: {:ok, Result.t()} | {:error, term()}
 
   @doc """
   Executes the pending action currently stored in state.
+
+      {:ok, result} = Spectre.ActionExecutor.execute_pending(state, ctx)
+
+  A state with no pending action returns an `:no_pending_action` event instead
+  of failing. This makes policy approval paths idempotent at the host boundary.
   """
   @spec execute_pending(State.t(), Spectre.Context.t() | map(), keyword()) :: action_result()
   def execute_pending(%State{pending_action: nil} = state, ctx, _opts) do
@@ -32,13 +41,18 @@ defmodule Spectre.ActionExecutor do
         |> State.clear_pending()
         |> State.trace(%{type: :action_executed, action: action.name, at: DateTime.utc_now()})
 
+      # The executed pending action is included in the event so after-action
+      # hooks can still inspect policy, AL, args, and selected tool metadata
+      # after state has been cleared.
       {:ok,
        %Result{
          input: ctx.input,
          state: state,
          actions: [action],
          reply_text: format_action_result(result),
-         events: [%{type: :action_executed, action: action.name, result: result}]
+         events: [
+           %{type: :action_executed, action: action.name, pending_action: action, result: result}
+         ]
        }}
     end
   end
@@ -56,6 +70,9 @@ defmodule Spectre.ActionExecutor do
         {:error, {:unsupported_action_arity, module, function, arity}}
 
       {:error, _reason} ->
+        # Invalid tool metadata falls back to the configured action module. This
+        # keeps AL/tool extraction errors from bypassing the explicit action
+        # adapter boundary.
         call_action_module(action, ctx)
     end
   end

@@ -1,16 +1,24 @@
 defmodule Spectre.Router.Plugs.SemanticCacheSearch do
-  @moduledoc false
+  @moduledoc """
+  Semantic-cache search after local classifier evidence.
+
+  Search runs later than exact lookup so it can use local classifier context
+  without hiding a confident deterministic route. This ordering keeps the router
+  predictable: exact evidence first, trained local evidence next, broader
+  semantic fallback after that.
+  """
 
   @behaviour Spectre.Router.Plug
 
+  alias Spectre.Router.Candidate
   alias Spectre.Router.Context
   alias Spectre.Router.SemanticCache
   alias Spectre.Router.Support
 
-  @impl true
+  @impl Spectre.Router.Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
     cond do
       Context.halted?(context) ->
@@ -28,23 +36,37 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
   end
 
   @spec semantic_search(Context.t()) :: {:cont, Context.t()}
-  defp semantic_search(
-         %Context{input: %{text: text}, labels: labels, rules: rules, opts: opts} = context
-       ) do
+  defp semantic_search(%Context{input: %{text: text}, rules: rules, opts: opts} = context) do
+    visible_rules = Support.rules_for(rules, :semantic_cache, context.input)
+    visible_labels = Support.labels_for(visible_rules)
+
     case SemanticCache.lookup(text, Keyword.put(opts, :semantic_search?, true)) do
       {:ok, %{accepted?: true} = result} ->
         route =
           result
           |> Map.put(:local, context.local_result)
-          |> Support.route_from_result(rules, labels, :semantic_cache_search)
+          |> Support.route_from_result(visible_rules, visible_labels, :semantic_cache_search)
 
-        Support.log_route(:info, "semantic_accept", route, opts)
+        if route.handler do
+          Support.log_route(:info, "semantic_accept", route, opts)
 
-        {:cont,
-         context
-         |> Context.put_route(route)
-         |> Context.put_trace({:semantic_accept, route})
-         |> Context.halt()}
+          {:cont,
+           context
+           |> Context.add_candidate(
+             Candidate.from_result(route, route_rule(route, visible_rules), route.strategy)
+           )
+           |> Context.put_trace({:semantic_accept, route})}
+        else
+          Support.log_route(:debug, "semantic_label_not_routeable", route, opts)
+
+          local_result =
+            (context.local_result || %{}) |> Map.put(:semantic_cache_after, :label_not_routeable)
+
+          {:cont,
+           context
+           |> Context.put_local_result(local_result)
+           |> Context.put_trace({:semantic_label_not_routeable, route})}
+        end
 
       {:error, reason} ->
         Support.log(:debug, "semantic_skip reason=#{Support.format_reason(reason)}", opts)
@@ -56,4 +78,7 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
          |> Context.put_trace({:semantic_skip, reason})}
     end
   end
+
+  @spec route_rule(Spectre.Route.t(), [Spectre.Rule.t()]) :: Spectre.Rule.t() | nil
+  defp route_rule(route, rules), do: Enum.find(rules, &(&1.label == route.label))
 end

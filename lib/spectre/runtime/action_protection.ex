@@ -1,12 +1,18 @@
 defmodule Spectre.ActionProtection do
   @moduledoc """
   Matches pending actions against agent `protect` declarations.
+
+  Protection is action-centric. A dangerous action must be protected whether it
+  came from a deterministic DSL `action/2` handler or from Action Language
+  extracted from an LLM reply.
   """
 
   alias Spectre.PendingAction
 
   @doc """
   Returns the policy protecting an action, if any.
+
+      :confirm_delete = Spectre.ActionProtection.protected_by(agent, pending_action)
   """
   @spec protected_by(module(), PendingAction.t()) :: atom() | nil
   def protected_by(agent, %PendingAction{} = action) when is_atom(agent) do

@@ -1,12 +1,17 @@
 defmodule Spectre.ActionConfig do
   @moduledoc """
   Reads action-related configuration from an agent module.
+
+  This module is intentionally small: it is the boundary between declarative
+  agent metadata and runtime action planning/execution.
   """
 
   @type action_config :: {module(), keyword()} | nil
 
   @doc """
   Returns the configured action module and options for an agent.
+
+      {MyApp.Actions, opts} = Spectre.ActionConfig.actions(MyApp.Agent)
   """
   @spec actions(module()) :: action_config()
   def actions(agent) when is_atom(agent) do
@@ -19,6 +24,8 @@ defmodule Spectre.ActionConfig do
 
   @doc """
   Merges runtime options with action planner options.
+
+      opts = Spectre.ActionConfig.planner_opts(ctx, al_parser: MyParser)
   """
   @spec planner_opts(Spectre.Context.t() | map(), keyword()) :: keyword()
   def planner_opts(%{agent: agent}, opts) when is_list(opts) do
