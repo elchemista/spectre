@@ -1379,7 +1379,7 @@ Compatibility aliases such as `handle/3`, `call/3`, `start_session/1`,
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.0"},
+    {:spectre, github: "elchemista/spectre"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic"}
   ]
 end
