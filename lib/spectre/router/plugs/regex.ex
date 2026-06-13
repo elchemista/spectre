@@ -3,7 +3,7 @@ defmodule Spectre.Router.Plugs.Regex do
 
   @behaviour Spectre.Router.Plug
 
-  alias Spectre.Router.Context
+  alias Spectre.Router.{Candidate, Context}
   alias Spectre.Router.Support
   alias Spectre.Rule
 
@@ -21,16 +21,17 @@ defmodule Spectre.Router.Plugs.Regex do
 
   @spec match_regex(Context.t()) :: {:cont, Context.t()}
   defp match_regex(%Context{input: %{text: text}, labels: labels, rules: rules} = context) do
-    case Enum.find(rules, &Rule.match?(&1, text)) do
+    visible_rules = Support.rules_for(rules, :regex, context.input)
+
+    case Enum.find(visible_rules, &Rule.match?(&1, text)) do
       %Rule{} = rule ->
         route = Support.route_from_rule(rule, :regex, text, labels)
         Support.log_route(:info, "regex_accept", route, context.opts)
 
         {:cont,
          context
-         |> Context.put_route(route)
-         |> Context.put_trace({:regex_accept, route})
-         |> Context.halt()}
+         |> Context.add_candidate(Candidate.from_rule(rule, :regex, text))
+         |> Context.put_trace({:regex_accept, route})}
 
       nil ->
         {:cont, Context.put_trace(context, :regex_skip)}

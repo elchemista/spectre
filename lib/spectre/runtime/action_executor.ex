@@ -38,7 +38,9 @@ defmodule Spectre.ActionExecutor do
          state: state,
          actions: [action],
          reply_text: format_action_result(result),
-         events: [%{type: :action_executed, action: action.name, result: result}]
+         events: [
+           %{type: :action_executed, action: action.name, pending_action: action, result: result}
+         ]
        }}
     end
   end

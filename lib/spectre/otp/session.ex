@@ -64,13 +64,6 @@ defmodule Spectre.Session do
   end
 
   @doc """
-  Compatibility alias for `ask/3`.
-  """
-  @spec handle(GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
-          {:ok, Result.t()} | {:error, term()}
-  def handle(server, input, opts \\ []), do: ask(server, input, opts)
-
-  @doc """
   Returns the current in-memory Spectre state.
   """
   @spec state(GenServer.server()) :: State.t()

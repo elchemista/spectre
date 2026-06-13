@@ -8,9 +8,11 @@ defmodule Spectre.PendingAction do
     :name,
     :selected_tool,
     :al,
+    :source,
     args: %{},
     status: :staged,
     policy: nil,
+    hooks: [],
     created_at: nil,
     raw: nil
   ]
@@ -20,9 +22,11 @@ defmodule Spectre.PendingAction do
           name: atom() | nil,
           selected_tool: String.t() | nil,
           al: String.t() | nil,
+          source: :al | :dsl | :manual,
           args: map(),
           status: atom(),
           policy: atom() | nil,
+          hooks: [map()],
           created_at: DateTime.t() | nil,
           raw: term()
         }
@@ -40,9 +44,11 @@ defmodule Spectre.PendingAction do
       name: normalize_name(get_attr(action, :name), selected_tool, al),
       selected_tool: selected_tool,
       al: al,
+      source: get_attr(action, :source) || infer_source(selected_tool, al),
       args: get_attr(action, :args) || %{},
       status: get_attr(action, :status) || :staged,
       policy: get_attr(action, :policy),
+      hooks: get_attr(action, :hooks) || [],
       created_at: get_attr(action, :created_at) || DateTime.utc_now(),
       raw: action
     }
@@ -89,6 +95,10 @@ defmodule Spectre.PendingAction do
   end
 
   defp infer_name(_selected_tool, _al), do: nil
+
+  @spec infer_source(String.t() | nil, String.t() | nil) :: :al | :manual
+  defp infer_source(selected_tool, al) when is_binary(selected_tool) or is_binary(al), do: :al
+  defp infer_source(_selected_tool, _al), do: :manual
 
   @spec get_attr(map(), atom()) :: term()
   defp get_attr(map, key) when is_map(map),

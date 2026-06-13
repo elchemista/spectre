@@ -6,6 +6,36 @@ defmodule Spectre.Router.Support do
   alias Spectre.{Route, Rule}
 
   @doc """
+  Returns rules visible to a router strategy.
+
+  A rule with no explicit `via:` remains visible to every strategy. When a rule
+  declares `via: [:classifier]`, deterministic regex and LLM fallback plugs will
+  ignore it.
+  """
+  @spec rules_for([Rule.t()], atom(), Spectre.Input.t() | nil) :: [Rule.t()]
+  def rules_for(rules, strategy, input \\ nil) when is_list(rules) and is_atom(strategy) do
+    Enum.filter(rules, fn
+      %Rule{via: []} = rule -> input_match?(rule, input)
+      %Rule{via: via} = rule -> strategy in via and input_match?(rule, input)
+    end)
+  end
+
+  @spec input_match?(Rule.t(), Spectre.Input.t() | nil) :: boolean()
+  defp input_match?(%Rule{checks: []}, _input), do: true
+  defp input_match?(%Rule{} = rule, %Spectre.Input{} = input), do: Rule.checks_match?(rule, input)
+  defp input_match?(%Rule{}, nil), do: false
+
+  @doc """
+  Returns unique labels for a rule set in evaluation order.
+  """
+  @spec labels_for([Rule.t()]) :: [atom()]
+  def labels_for(rules) when is_list(rules) do
+    rules
+    |> Enum.map(& &1.label)
+    |> Enum.uniq()
+  end
+
+  @doc """
   Builds an accepted route from a rule and strategy.
   """
   @spec route_from_rule(Rule.t(), atom(), String.t(), [atom()]) :: Route.t()
@@ -31,10 +61,10 @@ defmodule Spectre.Router.Support do
 
     result
     |> Map.put(:label, label || raw_label_from_result(result))
-    |> Map.put_new(:flow, rule && rule.flow)
-    |> Map.put_new(:handler, rule && rule.handler)
+    |> Map.put(:flow, rule && rule.flow)
+    |> Map.put(:handler, rule && rule.handler)
     |> Map.put_new(:strategy, Map.get(result, :strategy, strategy))
-    |> Map.put_new(:labels, labels)
+    |> Map.put(:labels, labels)
     |> Route.new()
   end
 

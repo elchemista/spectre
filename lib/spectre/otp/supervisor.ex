@@ -15,7 +15,7 @@ defmodule Spectre.Supervisor do
           MyApp.SpectreSupervisor,
           MyApp.Agents.ProjectAgent,
           conversation_id: conversation.id,
-          opts: [complete: &MyApp.LLM.complete/2]
+          opts: [model: &MyApp.LLM.complete/2]
         )
   """
 
@@ -52,20 +52,4 @@ defmodule Spectre.Supervisor do
     DynamicSupervisor.terminate_child(supervisor, pid)
   end
 
-  @doc """
-  Compatibility alias for `summon/3`.
-  """
-  @spec start_session(GenServer.server(), module(), [session_option()]) ::
-          DynamicSupervisor.on_start_child()
-  def start_session(supervisor \\ __MODULE__, agent, opts \\ []) when is_atom(agent) do
-    summon(supervisor, agent, opts)
-  end
-
-  @doc """
-  Compatibility alias for `dismiss/2`.
-  """
-  @spec stop_session(GenServer.server(), pid()) :: :ok | {:error, term()}
-  def stop_session(supervisor \\ __MODULE__, pid) when is_pid(pid) do
-    dismiss(supervisor, pid)
-  end
 end

@@ -52,7 +52,33 @@ defmodule Spectre.Classifier do
   end
 
   @impl true
-  def init(opts), do: {:ok, opts |> classifier_opts() |> load_state()}
+  def init(opts) do
+    opts = classifier_opts(opts)
+    state = load_state(opts)
+
+    cond do
+      state.ready? ->
+        Logger.info(
+          "spectre_classifier ready artifact_dir=#{state.artifact_dir} dimensions=#{state.dimensions}"
+        )
+
+        {:ok, state}
+
+      Keyword.get(opts, :required?, false) ->
+        Logger.error(
+          "spectre_classifier startup_failed artifact_dir=#{state.artifact_dir} reason=#{inspect(state.error)}"
+        )
+
+        {:stop, state.error}
+
+      true ->
+        Logger.warning(
+          "spectre_classifier unavailable artifact_dir=#{state.artifact_dir} reason=#{inspect(state.error)}"
+        )
+
+        {:ok, state}
+    end
+  end
 
   @impl true
   def handle_call({:classify, text, opts}, _from, state) do

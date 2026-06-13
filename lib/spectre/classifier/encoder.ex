@@ -102,6 +102,9 @@ defmodule Spectre.Classifier.Encoder do
   @spec call_module(module(), atom(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   defp call_module(module, function, value, opts) do
     cond do
+      not Code.ensure_loaded?(module) ->
+        {:error, {:missing_embedding_adapter, module}}
+
       function_exported?(module, function, 2) ->
         apply(module, function, [value, opts])
 

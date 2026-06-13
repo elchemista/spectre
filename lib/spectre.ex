@@ -101,57 +101,17 @@ defmodule Spectre do
   end
 
   @doc """
-  Compatibility alias for `ask/3`.
-  """
-  @spec handle(module(), Input.t() | String.t() | map(), keyword()) ::
-          {:ok, Spectre.Result.t()} | {:error, term()}
-  def handle(agent_or_input, input_or_agent, opts \\ [])
+  Runs configured action lifecycle hooks for a result.
 
-  def handle(agent, input, opts) when is_atom(agent) and is_list(opts) do
-    ask(agent, input, opts)
+  The common host-app use is to call this after a successful message delivery:
+
+      Spectre.after_action(MyAgent, :delivered, result, ctx)
+  """
+  @spec after_action(module(), atom(), Spectre.Result.t(), Spectre.Context.t() | map(), keyword()) ::
+          :ok | {:error, [term()]}
+  def after_action(agent, event, %Spectre.Result{} = result, ctx, opts \\ []) do
+    Spectre.ActionHooks.run(agent, event, result, ctx, opts)
   end
-
-  @spec handle(Input.t() | String.t() | map(), module(), keyword()) ::
-          {:ok, Spectre.Result.t()} | {:error, term()}
-  def handle(input, agent, opts) when is_atom(agent) and is_list(opts) do
-    ask(agent, input, opts)
-  end
-
-  @doc """
-  Compatibility alias for `summon/1`.
-  """
-  @spec start_session(keyword()) :: GenServer.on_start()
-  def start_session(opts) when is_list(opts), do: summon(opts)
-
-  @doc """
-  Compatibility alias for `summon/3`.
-  """
-  @spec start_session(GenServer.server(), module(), keyword()) ::
-          DynamicSupervisor.on_start_child()
-  def start_session(supervisor, agent, opts) when is_atom(agent) and is_list(opts) do
-    summon(supervisor, agent, opts)
-  end
-
-  @doc """
-  Compatibility alias for `ask/3` when addressing a supervised session.
-  """
-  @spec call(GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
-          {:ok, Spectre.Result.t()} | {:error, term()}
-  def call(session, input, opts \\ []), do: ask(session, input, opts)
-
-  @doc """
-  Compatibility alias for `cancel/2`.
-  """
-  @spec cancel_current(Input.t() | String.t() | map(), Spectre.Context.t() | map()) ::
-          {:ok, Spectre.Result.t()}
-  def cancel_current(input, ctx), do: cancel(input, ctx)
-
-  @doc """
-  Compatibility alias for `execute/3`.
-  """
-  @spec execute_pending(State.t(), Spectre.Context.t() | map(), keyword()) ::
-          {:ok, Spectre.Result.t()} | {:error, term()}
-  def execute_pending(%State{} = state, ctx, opts \\ []), do: execute(state, ctx, opts)
 
   defp agent_module?(module) when is_atom(module) do
     Code.ensure_loaded?(module) and function_exported?(module, :__spectre_config__, 0)

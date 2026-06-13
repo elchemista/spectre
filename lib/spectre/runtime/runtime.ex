@@ -12,7 +12,8 @@ defmodule Spectre.Runtime do
   def handle(agent, %Input{} = input, opts) do
     opts = runtime_opts(agent, opts)
 
-    with {:ok, ctx} <- load_context(agent, input, opts),
+    with {:ok, input} <- normalize_input(agent, input, opts),
+         {:ok, ctx} <- load_context(agent, input, opts),
          {:ok, result} <- run_turn(ctx) do
       result
       |> record_history(ctx)
@@ -54,8 +55,9 @@ defmodule Spectre.Runtime do
     if Policy.awaiting?(state) do
       Policy.resume(ctx.input, ctx)
     else
-      with {:ok, route} <- Router.route(ctx.input, ctx) do
-        Spectre.Runner.run(route, %{ctx | route: route})
+      with {:ok, router_context} <- Router.route_context(ctx.input, ctx),
+           {:ok, route} <- Router.route_from_context(router_context) do
+        Spectre.Runner.run(route, %{ctx | input: router_context.input, route: route})
       end
     end
   end
@@ -208,10 +210,26 @@ defmodule Spectre.Runtime do
     config = agent.__spectre_config__()
 
     []
-    |> maybe_put_config(config, :complete)
+    |> maybe_put_config(config, :model)
     |> maybe_put_config(config, :adapter)
+    |> maybe_put_config(config, :embedding)
+    |> maybe_put_config(config, :input_pipeline)
     |> maybe_put_config(config, :history)
     |> maybe_put_config(config, :chat_history_limit)
+  end
+
+  @spec normalize_input(module(), Input.t(), keyword()) :: {:ok, Input.t()} | {:error, term()}
+  defp normalize_input(agent, %Input{} = input, opts) do
+    case Keyword.get(opts, :input_pipeline, []) do
+      [] ->
+        {:ok, input}
+
+      specs when is_list(specs) ->
+        Spectre.Input.Pipeline.run(input, %{agent: agent, opts: opts}, specs)
+
+      other ->
+        {:error, {:invalid_input_pipeline, other}}
+    end
   end
 
   @spec maybe_put_config(keyword(), keyword(), atom()) :: keyword()

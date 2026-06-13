@@ -12,9 +12,12 @@ defmodule Spectre.Router.DefaultPipeline do
   pipeline do
     plug(Spectre.Router.Plugs.Regex)
     plug(Spectre.Router.Plugs.SemanticCacheExact)
+    plug(Spectre.Router.Plugs.BagDistance)
+    plug(Spectre.Router.Plugs.JaroDistance)
+    plug(Spectre.Router.Plugs.EmbeddingSimilarity)
     plug(Spectre.Router.Plugs.LocalClassifier)
     plug(Spectre.Router.Plugs.SemanticCacheSearch)
-    plug(Spectre.Router.Plugs.LLMFallback)
+    plug(Spectre.Router.Plugs.Arbitrate)
     plug(Spectre.Router.Plugs.Terminalize)
   end
 end
