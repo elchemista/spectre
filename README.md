@@ -142,9 +142,7 @@ visible reply text, staged actions, and runtime events.
 
 ## How Options Flow
 
-The DSL compiles metadata into functions such as `__spectre_config__/0`,
-`__spectre_router__/0`, `__spectre_rules__/0`, and
-`__spectre_policies__/0`. Runtime does not re-evaluate DSL blocks. It reads that
+Runtime does not re-evaluate DSL blocks. It reads that
 compiled metadata for each turn.
 
 Options come from three places:
