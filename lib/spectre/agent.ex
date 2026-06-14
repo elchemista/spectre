@@ -63,7 +63,7 @@ defmodule Spectre.Agent do
         protect :issue_refund, with: :refund_confirmation
 
         flow :billing do
-          on :refund_request, train: "training/billing/refund.jsonl" do
+          on :refund_request, train: true do
             run :prepare_refund_case
           end
 
@@ -438,7 +438,7 @@ defmodule Spectre.Agent do
       flow :project_create do
         on :wants_project_create,
           regex: ~r/create.*project/i,
-          train: "training/project_create.jsonl" do
+          train: true do
           ask :project_create
         end
       end
@@ -508,7 +508,7 @@ defmodule Spectre.Agent do
   @doc """
   Creates a handler that renders a prompt, calls the LLM, and stages AL actions.
 
-      on :support_question, train: "training/support.jsonl" do
+      on :support_question, train: true do
         ask :support_answer
       end
   """
@@ -524,7 +524,7 @@ defmodule Spectre.Agent do
   Use `run/2` when the next step is normal Elixir orchestration rather than an
   LLM prompt or a protected action boundary.
 
-      on :refund_request, train: "training/refund.jsonl" do
+      on :refund_request, train: true do
         run :prepare_refund_case
       end
   """
@@ -718,7 +718,8 @@ defmodule Spectre.Agent do
     %{
       label: label,
       regex: List.wrap(Keyword.get(opts, :regex, [])),
-      training: training_entries(opts)
+      training: training_entries(opts),
+      training_source?: training_source?(opts)
     }
   end
 
@@ -735,6 +736,7 @@ defmodule Spectre.Agent do
       jaro: examples_from_opts(opts, :jaro),
       embedding: examples_from_opts(opts, :embedding),
       training: training_entries(opts),
+      training_source?: training_source?(opts),
       learn: Keyword.get(opts, :learn, false),
       checks: rule_checks(opts),
       via: route_via(opts),
@@ -810,17 +812,29 @@ defmodule Spectre.Agent do
 
   @spec training_entries(keyword()) :: [term()]
   defp training_entries(opts) do
-    opts
-    |> Keyword.get(:train, Keyword.get(opts, :training, []))
-    |> normalize_training_entries()
+    reject_training_alias!(opts)
+    validate_training_flag!(Keyword.get(opts, :train, false))
+    []
   end
 
-  @spec normalize_training_entries(term()) :: [term()]
-  defp normalize_training_entries(true), do: [true]
-  defp normalize_training_entries(false), do: []
-  defp normalize_training_entries(nil), do: []
-  defp normalize_training_entries(entries) when is_list(entries), do: entries
-  defp normalize_training_entries(entry), do: [entry]
+  defp reject_training_alias!(opts) do
+    if Keyword.has_key?(opts, :training) do
+      raise ArgumentError, "training: is not supported; use train: true or train: false"
+    end
+  end
+
+  defp validate_training_flag!(value) when value in [true, false, nil], do: :ok
+
+  defp validate_training_flag!(value) do
+    raise ArgumentError,
+          "train: accepts only a boolean flag; put examples in the configured dataset, got: #{inspect(value)}"
+  end
+
+  @spec training_source?(keyword()) :: boolean()
+  defp training_source?(opts) do
+    reject_training_alias!(opts)
+    Keyword.get(opts, :train, false) == true
+  end
 
   @spec route_via(keyword()) :: [atom()]
   defp route_via(opts) do

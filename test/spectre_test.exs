@@ -196,12 +196,12 @@ defmodule SpectreTest.ProjectAgent do
 
     accept(:accepted_terms,
       regex: ~r/^\s*accetto\s*$/i,
-      train: "training/policies/terms/accept.jsonl"
+      train: true
     )
 
     reject(:rejected_terms,
       regex: ~r/^\s*(non accetto|rifiuto|no)\b/i,
-      train: "training/policies/terms/reject.jsonl"
+      train: true
     )
 
     otherwise(ask: :accept_terms_retry)
@@ -211,14 +211,14 @@ defmodule SpectreTest.ProjectAgent do
   flow :project_create do
     on :wants_project_create,
       regex: ~r/\b(crea|creare|nuovo)\b.*\b(progetto|project)\b/i,
-      train: "training/project_create/wants_project_create.jsonl" do
+      train: true do
       ask(:project_create)
     end
   end
 
   interrupt :cancel,
     regex: ~r/\b(annulla|ferma|stop)\b/i,
-    train: "training/shared/cancel.jsonl" do
+    train: true do
     run(:cancel_current)
   end
 
@@ -271,7 +271,7 @@ defmodule SpectreTest.RoutedAgent do
     on :CLASSIFIER_ONLY,
       via: [:classifier],
       regex: ~r/^classifier only$/i,
-      train: ["classifier route example"] do
+      train: true do
       reply(:classifier_only, renderer: {SpectreTest.ReplyRenderer, :render})
     end
 
@@ -287,11 +287,11 @@ defmodule SpectreTest.LearnedSemanticCacheAgent do
   embedding(SpectreTest.EmbeddingAdapter, model: "toy")
 
   flow :conversation do
-    on :GO_RIGHT, train: ["right"], learn: true do
+    on :GO_RIGHT, train: true, learn: true do
       reply(:go_right, renderer: {SpectreTest.ReplyRenderer, :render})
     end
 
-    on :GO_LEFT, train: ["left"], learn: true, via: [:classifier] do
+    on :GO_LEFT, train: true, learn: true, via: [:classifier] do
       reply(:go_left, renderer: {SpectreTest.ReplyRenderer, :render})
     end
   end
@@ -303,7 +303,7 @@ defmodule SpectreTest.OtherLearnedSemanticCacheAgent do
   embedding(SpectreTest.EmbeddingAdapter, model: "toy")
 
   flow :conversation do
-    on :OTHER_RIGHT, train: ["right"], learn: true do
+    on :OTHER_RIGHT, train: true, learn: true do
       reply(:other_right, renderer: {SpectreTest.ReplyRenderer, :render})
     end
   end
@@ -441,16 +441,16 @@ defmodule SpectreTest.TrainingAgent do
 
   policy :terms do
     request(:accept_terms)
-    accept(:ACCEPT_TERMS, train: ["yes I accept"])
-    reject(:REJECT_TERMS, train: ["no thanks"])
+    accept(:ACCEPT_TERMS, train: true)
+    reject(:REJECT_TERMS, train: true)
   end
 
   flow :conversation do
-    on :GREETING, training: true do
+    on :GREETING, train: true do
       reply(:greeting)
     end
 
-    on :SPAM, train: ["cheap crypto promo"] do
+    on :SPAM, train: true do
       reply(:spam)
     end
   end
@@ -630,11 +630,17 @@ defmodule SpectreTest do
     [
       spectre_agent: agent,
       spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1),
+      semantic_cache_source: learned_cache_source(agent),
       embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]},
       semantic_search?: true,
       semantic_cache_threshold: 0.0
     ]
   end
+
+  defp learned_cache_source(SpectreTest.OtherLearnedSemanticCacheAgent),
+    do: "test/fixtures/other_learned_semantic_cache.json"
+
+  defp learned_cache_source(_agent), do: "test/fixtures/learned_semantic_cache.json"
 
   defp learned_cache_entries(agent) do
     case :ets.whereis(Learned) do
@@ -905,7 +911,11 @@ defmodule SpectreTest do
                  agent: SpectreTest.LearnedSemanticCacheAgent,
                  input: %Spectre.Input{text: "right"},
                  state: %State{},
-                 opts: [classification_log?: false]
+                 opts: [
+                   classification_log?: false,
+                   semantic_cache_source:
+                     learned_cache_source(SpectreTest.LearnedSemanticCacheAgent)
+                 ]
                }
              )
 
@@ -922,6 +932,7 @@ defmodule SpectreTest do
     assert {:ok, result} =
              Learned.lookup("right",
                spectre_rules: rules,
+               semantic_cache_source: learned_cache_source(SpectreTest.LearnedSemanticCacheAgent),
                embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]},
                semantic_search?: true,
                semantic_cache_threshold: 0.0
@@ -1424,6 +1435,9 @@ defmodule SpectreTest do
       Jason.encode!([
         %{"text" => "ciao", "intent" => "GREETING"},
         %{"text" => "hello", "label" => "GREETING"},
+        %{"text" => "cheap crypto promo", "label" => "SPAM"},
+        %{"text" => "yes I accept", "label" => "ACCEPT_TERMS"},
+        %{"text" => "no thanks", "label" => "REJECT_TERMS"},
         %{"text" => "show my projects", "label" => "ACTION"}
       ])
     )
@@ -1436,6 +1450,32 @@ defmodule SpectreTest do
     assert %{text: "yes I accept", label: "ACCEPT_TERMS"} in rows
     assert %{text: "no thanks", label: "REJECT_TERMS"} in rows
     refute Enum.any?(rows, &(&1.label == "ACTION"))
+  end
+
+  @tag :tmp_dir
+  test "training dataset reads configured classifier source for train true", %{
+    tmp_dir: tmp_dir
+  } do
+    source_path = Path.join(tmp_dir, "configured_source.json")
+
+    File.write!(
+      source_path,
+      Jason.encode!([
+        %{"text" => "ciao configurato", "intent" => "GREETING"},
+        %{"text" => "ignored action", "label" => "ACTION"}
+      ])
+    )
+
+    previous = Application.get_env(:spectre, :classifier, [])
+    Application.put_env(:spectre, :classifier, Keyword.put(previous, :dataset_path, source_path))
+
+    on_exit(fn ->
+      Application.put_env(:spectre, :classifier, previous)
+    end)
+
+    assert {:ok, rows} = Dataset.from_agent(SpectreTest.TrainingAgent)
+    assert %{text: "ciao configurato", label: "GREETING"} in rows
+    refute Enum.any?(rows, &(&1.text == "ignored action"))
   end
 
   test "classifier math uses vettore cosine scoring" do

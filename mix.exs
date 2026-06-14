@@ -3,6 +3,18 @@ defmodule Spectre.MixProject do
 
   @version "0.1.0"
   @source_url "https://github.com/elchemista/spectre"
+  @docs_extras [
+    "README.md",
+    "docs/GETTING_STARTED.md",
+    "docs/DSL.md",
+    "docs/ROUTING.md",
+    "docs/TRAINING.md",
+    "docs/ACTIONS.md",
+    "docs/MEMORY.md",
+    "docs/API.md",
+    "docs/INSTALLATION.md",
+    "docs/ROADMAP.md"
+  ]
 
   def project do
     [
@@ -19,7 +31,7 @@ defmodule Spectre.MixProject do
       ],
       docs: [
         main: "readme",
-        extras: ["README.md"]
+        extras: @docs_extras
       ],
       source_url: @source_url,
       homepage_url: @source_url
@@ -40,7 +52,7 @@ defmodule Spectre.MixProject do
     [
       name: "spectre",
       maintainers: ["elchemista"],
-      files: ~w(lib mix.exs README.md LICENSE),
+      files: ~w(lib docs mix.exs README.md LICENSE),
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url}
     ]
@@ -50,7 +62,7 @@ defmodule Spectre.MixProject do
     [
       {:jason, "~> 1.4"},
       {:vettore, "~> 0.3.1"},
-      {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"},
+      {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master", optional: true},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]

@@ -4,17 +4,17 @@ defmodule Mix.Tasks.Spectre.Classifier.Dataset do
 
   Route and policy declarations can provide training metadata:
 
-      on :GREETING, regex: ~r/^hi$/i, training: true do
+      on :GREETING, regex: ~r/^hi$/i, train: true do
         reply :greeting
       end
 
-      on :SPAM, via: [:classifier], train: ["cheap crypto promo"] do
+      on :SPAM, via: [:classifier], train: true do
         reply :spam
       end
 
-  `training: true` pulls examples for that label from `--source` datasets.
-  `train:` entries can be direct examples, JSON/JSONL datasets, or plain text
-  files with one example per line.
+  `train: true` pulls examples for that label from configured classifier dataset
+  sources or `--source` datasets. The DSL flag is boolean only; examples belong
+  in dataset files.
 
   ## Usage
 
@@ -22,8 +22,8 @@ defmodule Mix.Tasks.Spectre.Classifier.Dataset do
 
   ## Options
 
-    * `--source` - dataset source used by routes marked `training: true`.
-      May be passed more than once.
+    * `--source` - additional dataset source used by routes marked
+      `train: true`. May be passed more than once.
     * `--pretty` - pretty-print JSON output.
   """
 

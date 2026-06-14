@@ -24,6 +24,7 @@ defmodule Spectre.Rule do
     jaro: [],
     embedding: [],
     training: [],
+    training_source?: false,
     learn: false,
     checks: [],
     via: [],
@@ -45,7 +46,8 @@ defmodule Spectre.Rule do
           bag: [String.t()],
           jaro: [String.t()],
           embedding: [String.t()],
-          training: [String.t() | boolean()],
+          training: [],
+          training_source?: boolean(),
           learn: boolean(),
           checks: [{atom() | String.t(), term()}],
           via: [atom()],
@@ -108,17 +110,35 @@ defmodule Spectre.Rule do
   defp normalize_regex(attrs), do: Map.put_new(attrs, :regex, [])
 
   @spec normalize_training(map()) :: map()
-  defp normalize_training(%{training: true} = attrs), do: %{attrs | training: [true]}
-  defp normalize_training(%{training: false} = attrs), do: %{attrs | training: []}
-  defp normalize_training(%{training: training} = attrs) when is_list(training), do: attrs
+  defp normalize_training(%{training: []} = attrs), do: attrs
 
-  defp normalize_training(%{training: training} = attrs) when is_binary(training),
-    do: %{attrs | training: [training]}
+  defp normalize_training(%{training: training}) do
+    invalid_training_alias!(training)
+  end
 
-  defp normalize_training(%{train: training} = attrs),
-    do: attrs |> Map.delete(:train) |> Map.put(:training, List.wrap(training))
+  defp normalize_training(%{train: true} = attrs),
+    do: attrs |> Map.delete(:train) |> Map.put(:training, []) |> Map.put(:training_source?, true)
+
+  defp normalize_training(%{train: false} = attrs),
+    do: attrs |> Map.delete(:train) |> Map.put(:training, [])
+
+  defp normalize_training(%{train: nil} = attrs),
+    do: attrs |> Map.delete(:train) |> Map.put(:training, [])
+
+  defp normalize_training(%{train: training}) do
+    invalid_training!(training)
+  end
 
   defp normalize_training(attrs), do: Map.put_new(attrs, :training, [])
+
+  defp invalid_training!(value) do
+    raise ArgumentError,
+          "train: accepts only a boolean flag; put examples in the configured dataset, got: #{inspect(value)}"
+  end
+
+  defp invalid_training_alias!(_value) do
+    raise ArgumentError, "training: is not supported; use train: true or train: false"
+  end
 
   @spec normalize_checks(map()) :: map()
   defp normalize_checks(attrs) do

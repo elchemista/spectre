@@ -2,9 +2,10 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @moduledoc """
   Built-in semantic cache backed by learned route examples.
 
-  Rules opt in with `learn: true`. Their `train:`/`training:` entries become
-  exact lookup rows and, for semantic search, Vettore embeddings. Hosts can still
-  override this cache with `semantic_lookup:` or `semantic_cache:`.
+  Rules opt in with `learn: true` and `train: true`. Examples are loaded from
+  the configured dataset sources and become exact lookup rows and, for semantic
+  search, Vettore embeddings. Hosts can still override this cache with
+  `semantic_lookup:` or `semantic_cache:`.
   """
 
   alias Spectre.Classifier.Encoder
@@ -193,15 +194,13 @@ defmodule Spectre.Router.SemanticCache.Learned do
   end
 
   @spec rule_rows(Rule.t(), keyword()) :: {:ok, [row()]} | {:error, term()}
-  defp rule_rows(%Rule{training: [true], label: label}, opts) do
+  defp rule_rows(%Rule{training_source?: true, label: label}, opts) do
     opts
     |> sources()
     |> collect_entries(label)
   end
 
-  defp rule_rows(%Rule{training: training, label: label}, _opts) do
-    collect_entries(training, label)
-  end
+  defp rule_rows(%Rule{}, _opts), do: {:ok, []}
 
   @spec collect_entries([term()], atom()) :: {:ok, [row()]} | {:error, term()}
   defp collect_entries(entries, label) do
@@ -410,7 +409,24 @@ defmodule Spectre.Router.SemanticCache.Learned do
     opts
     |> Keyword.get_values(:semantic_cache_source)
     |> Kernel.++(Keyword.get_values(opts, :source))
+    |> Kernel.++(configured_sources())
     |> List.flatten()
+    |> Enum.reject(&blank?/1)
+    |> Enum.uniq()
+  end
+
+  defp configured_sources do
+    config = Application.get_env(:spectre, :classifier, [])
+
+    []
+    |> Kernel.++(List.wrap(Keyword.get(config, :source)))
+    |> Kernel.++(List.wrap(Keyword.get(config, :sources)))
+    |> Kernel.++(List.wrap(Keyword.get(config, :dataset_path)))
+    |> Kernel.++(default_source())
+  end
+
+  defp default_source do
+    if File.exists?("training/dataset.json"), do: ["training/dataset.json"], else: []
   end
 
   @spec top_k(keyword()) :: pos_integer()

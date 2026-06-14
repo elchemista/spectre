@@ -1,0 +1,10 @@
+[
+  {
+    "label": "GO_RIGHT",
+    "text": "right"
+  },
+  {
+    "label": "GO_LEFT",
+    "text": "left"
+  }
+]

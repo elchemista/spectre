@@ -2,9 +2,9 @@ defmodule Spectre.Training.Dataset do
   @moduledoc """
   Builds classifier datasets from Spectre agent routing metadata.
 
-  Training examples live next to route and policy declarations so the dataset
-  stays aligned with the DSL. This module is the boundary that turns those
-  declarations into plain rows for classifier training.
+  Training examples live in configured dataset sources. Routes and policy
+  branches opt into those rows with `train: true`, and this module turns that
+  routing metadata into plain rows for classifier training.
 
       {:ok, rows} =
         Spectre.Training.Dataset.from_agent(MyApp.Agent,
@@ -19,10 +19,10 @@ defmodule Spectre.Training.Dataset do
   @doc """
   Collects classifier rows from an agent's rule and policy `train` metadata.
 
-  Supported training entries:
+  Supported training declarations:
 
-    * `true` - include examples for the route label from `:source` files.
-    * binary text - direct example unless it points to an existing file.
+    * `train: true` - include examples for the route label from `:source`
+      files.
     * `.json` files - list of objects with `text` and optional `label`/`intent`.
     * `.jsonl` files - one JSON object per line.
     * other files - one example per non-empty, non-comment line.
@@ -40,9 +40,13 @@ defmodule Spectre.Training.Dataset do
   @spec training_targets(module()) :: {:ok, [map()]} | {:error, term()}
   defp training_targets(agent) do
     case training_agent?(agent) do
-      true -> {:ok, agent |> agent_targets() |> Enum.filter(&(&1.training != []))}
+      true -> {:ok, agent |> agent_targets() |> Enum.filter(&training_target?/1)}
       false -> {:error, {:invalid_agent, agent}}
     end
+  end
+
+  defp training_target?(target) do
+    Map.get(target, :training_source?, false)
   end
 
   @spec training_agent?(module()) :: boolean()
@@ -58,7 +62,12 @@ defmodule Spectre.Training.Dataset do
     agent.__spectre_rules__()
     |> Enum.map(&Rule.new/1)
     |> Enum.map(fn rule ->
-      %{label: rule.label, training: rule.training, source: {:rule, rule.flow}}
+      %{
+        label: rule.label,
+        training: [],
+        training_source?: rule.training_source?,
+        source: {:rule, rule.flow}
+      }
     end)
   end
 
@@ -80,7 +89,8 @@ defmodule Spectre.Training.Dataset do
     Enum.map(branches, fn branch ->
       %{
         label: Map.fetch!(branch, :label),
-        training: List.wrap(Map.get(branch, :training, [])),
+        training: [],
+        training_source?: Map.get(branch, :training_source?, false),
         source: {:policy, policy_name, kind}
       }
     end)
@@ -88,7 +98,7 @@ defmodule Spectre.Training.Dataset do
 
   @spec collect_targets([map()], keyword()) :: {:ok, [row()]} | {:error, term()}
   defp collect_targets(targets, opts) do
-    sources = opts |> Keyword.get_values(:source) |> List.flatten()
+    sources = sources(opts)
 
     targets
     |> Enum.reduce_while({:ok, []}, fn target, {:ok, rows} ->
@@ -100,12 +110,33 @@ defmodule Spectre.Training.Dataset do
   end
 
   @spec collect_target(map(), [String.t()]) :: {:ok, [row()]} | {:error, term()}
-  defp collect_target(%{training: [true], label: label}, sources) do
+  defp collect_target(%{training_source?: true, label: label}, sources) do
     collect_entries(sources, label)
   end
 
-  defp collect_target(%{training: training, label: label}, _sources) do
-    collect_entries(training, label)
+  defp collect_target(_target, _sources), do: {:ok, []}
+
+  defp sources(opts) do
+    opts
+    |> Keyword.get_values(:source)
+    |> Kernel.++(configured_sources())
+    |> List.flatten()
+    |> Enum.reject(&blank?/1)
+    |> Enum.uniq()
+  end
+
+  defp configured_sources do
+    config = Application.get_env(:spectre, :classifier, [])
+
+    []
+    |> Kernel.++(List.wrap(Keyword.get(config, :source)))
+    |> Kernel.++(List.wrap(Keyword.get(config, :sources)))
+    |> Kernel.++(List.wrap(Keyword.get(config, :dataset_path)))
+    |> Kernel.++(default_source())
+  end
+
+  defp default_source do
+    if File.exists?("training/dataset.json"), do: ["training/dataset.json"], else: []
   end
 
   @spec collect_entries([term()], atom()) :: {:ok, [row()]} | {:error, term()}
