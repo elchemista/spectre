@@ -735,8 +735,9 @@ defmodule Spectre.Agent do
       jaro: examples_from_opts(opts, :jaro),
       embedding: examples_from_opts(opts, :embedding),
       training: training_entries(opts),
+      learn: Keyword.get(opts, :learn, false),
       checks: rule_checks(opts),
-      via: List.wrap(Keyword.get(opts, :via, [])),
+      via: route_via(opts),
       global?: Keyword.fetch!(extra, :global?),
       opts:
         Keyword.drop(opts, [
@@ -746,6 +747,7 @@ defmodule Spectre.Agent do
           :embedding,
           :train,
           :training,
+          :learn,
           :check,
           :checks,
           :via
@@ -819,6 +821,17 @@ defmodule Spectre.Agent do
   defp normalize_training_entries(nil), do: []
   defp normalize_training_entries(entries) when is_list(entries), do: entries
   defp normalize_training_entries(entry), do: [entry]
+
+  @spec route_via(keyword()) :: [atom()]
+  defp route_via(opts) do
+    via = List.wrap(Keyword.get(opts, :via, []))
+
+    if Keyword.get(opts, :learn, false) and via != [] do
+      Enum.uniq(via ++ [:semantic_cache])
+    else
+      via
+    end
+  end
 
   @spec rule_checks(keyword()) :: [term()]
   defp rule_checks(opts) do

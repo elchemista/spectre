@@ -179,7 +179,8 @@ Common option families:
   `local_accept_threshold`, `local_margin_threshold`,
   `local_high_confidence_threshold`
 - semantic cache opts: `semantic_lookup`, `semantic_cache`,
-  `semantic_cache?`, `semantic_after_classifier?`
+  `semantic_cache?`, `semantic_after_classifier?`,
+  `semantic_cache_threshold`, `semantic_cache_top_k`
 - embedding opts: `embedding`
 - routing opts: `via`, `pipeline`, `arbitrator`, `terminal_labels`,
   `high_confidence_threshold`, `classification_log?`
@@ -305,6 +306,8 @@ A route can include:
 - `jaro:` phrase examples for Jaro string similarity
 - `embedding:` semantic examples compared with vectors
 - `train:` or `training:` examples or files used to build classifier datasets
+- `learn: true` to mirror the route's training examples into the built-in
+  learned semantic cache
 - `check:` or `checks:` metadata guards such as language or role
 - `via:` per-route strategy visibility
 - custom options kept on the compiled rule
@@ -1040,7 +1043,42 @@ router only needs `embed/2` to return stable vectors.
 Semantic cache is an adapter boundary. Spectre does not force a vector database,
 embedding model, table shape, or cache strategy.
 
-Configure one of:
+For the common local case, a route can opt into Spectre's built-in learned cache:
+
+```elixir
+embedding(MyApp.Embeddings, model: "intfloat/multilingual-e5-small")
+
+on :PRICING,
+  train: [
+    "how much does it cost?",
+    "what are your plans?",
+    "pricing for a team"
+  ],
+  learn: true do
+  reply(:pricing)
+end
+```
+
+`learn: true` uses the route's `train:`/`training:` entries as semantic-cache
+examples. Exact lookup runs without embeddings; semantic search embeds those
+examples and indexes them with Vettore. If no router `via:` is configured,
+Spectre adds `:semantic_cache` automatically when learned rules exist. If a rule
+has an explicit route-level `via:`, `learn: true` adds `:semantic_cache` to that
+rule's visibility.
+
+Clear the learned cache at runtime when examples, thresholds, or tenant data
+have changed:
+
+```elixir
+:ok = Spectre.Router.SemanticCache.clear(MyApp.SupportAgent)
+```
+
+For the built-in learned cache, clearing drops Spectre's in-memory Vettore cache
+for that agent. The next semantic search rebuilds the cache from the route's
+`train:`/`training:` entries. It does not edit source files, DSL declarations,
+or classifier artifacts.
+
+Custom adapters still win. Configure one of these when your app owns the cache:
 
 ```elixir
 router(
@@ -1065,6 +1103,8 @@ The adapter receives the text and opts:
 
 ```elixir
 defmodule MyApp.SemanticCache do
+  @behaviour Spectre.Router.SemanticCache
+
   def lookup(text, opts) do
     if Keyword.get(opts, :semantic_search?) do
       search_similar(text, opts)
@@ -1089,8 +1129,18 @@ defmodule MyApp.SemanticCache do
         {:error, :miss}
     end
   end
+
+  def clear(agent, opts) do
+    MyApp.VectorStore.clear(namespace: {agent, opts[:tenant_id]})
+  end
 end
 ```
+
+`Spectre.Router.SemanticCache.clear/2` also calls configured module adapters'
+`clear/2` callback. If `semantic_cache: MyApp.SemanticCache` is configured and
+the module does not implement `clear/2`, clearing returns an error. A bare
+`semantic_lookup:` function can be used for lookup, but it cannot be cleared
+unless a `semantic_cache:` module is also configured.
 
 There are two semantic-cache moments:
 
@@ -1113,6 +1163,18 @@ Return a route-like map:
 
 Spectre maps the label back to the agent rule. If the label is not routeable for
 the current rule set, the hit is ignored and traced.
+
+Useful built-in learned-cache options:
+
+- `semantic_cache_threshold` or `semantic_cache_search_threshold` changes the
+  default search acceptance threshold of `0.88`.
+- `semantic_cache_top_k` changes the Vettore search limit, default `3`.
+- `semantic_cache_index` and `semantic_cache_index_options` configure the
+  Vettore index, default `:flat`.
+- `semantic_cache_compressed?` controls compressed ETS storage for the learned
+  Vettore collection, default `true`.
+- `semantic_cache_source` supplies dataset files for rules that use
+  `training: true`.
 
 ## Training And Datasets
 
