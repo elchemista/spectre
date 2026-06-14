@@ -218,6 +218,34 @@ defmodule Spectre.Agent do
   end
 
   @doc """
+  Configures classifier adapters.
+
+  The first argument is the LLM adapter used only by `:llm_classifier`
+  arbitration. `local:` configures the local classifier adapter used by the
+  `:classifier` router strategy.
+
+      classifier MyApp.SmallLLM,
+        model: "small",
+        prompt: &MyApp.ClassifierPrompt.build/1,
+        llm_opts: [temperature: 0.0, max_tokens: 8],
+        local: MyApp.LocalClassifier,
+        artifact_dir: "priv/spectre/support"
+  """
+  defmacro classifier(adapter, opts \\ []) do
+    adapter = Macro.expand(adapter, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+    classifier = normalize_classifier(adapter, opts)
+
+    quote do
+      @spectre_config Keyword.put(
+                        @spectre_config,
+                        :classifier,
+                        unquote(Macro.escape(classifier))
+                      )
+    end
+  end
+
+  @doc """
   Configures a state adapter used to load and persist conversation state.
 
   State adapters keep storage outside the domain runtime. They may implement
@@ -647,6 +675,44 @@ defmodule Spectre.Agent do
   end
 
   defp normalize_arbitrator(module) when is_atom(module), do: {module, []}
+
+  @classifier_config_keys [
+    :function,
+    :with,
+    :prompt,
+    :llm_opts,
+    :local,
+    :classify,
+    :artifact_dir,
+    :local_accept_threshold,
+    :local_margin_threshold,
+    :local_high_confidence_threshold
+  ]
+
+  @local_classifier_keys [
+    :artifact_dir,
+    :local_accept_threshold,
+    :local_margin_threshold,
+    :local_high_confidence_threshold
+  ]
+
+  @spec normalize_classifier(module(), keyword()) :: keyword()
+  defp normalize_classifier(adapter, opts) do
+    function = Keyword.get(opts, :function, Keyword.get(opts, :with, :complete))
+
+    [
+      adapter: {adapter, function, Keyword.drop(opts, @classifier_config_keys)}
+    ]
+    |> maybe_put_classifier_option(:prompt, Keyword.get(opts, :prompt))
+    |> maybe_put_classifier_option(:llm_opts, Keyword.get(opts, :llm_opts))
+    |> maybe_put_classifier_option(:local, Keyword.get(opts, :local))
+    |> maybe_put_classifier_option(:local_opts, Keyword.take(opts, @local_classifier_keys))
+  end
+
+  @spec maybe_put_classifier_option(keyword(), atom(), term()) :: keyword()
+  defp maybe_put_classifier_option(opts, _key, nil), do: opts
+  defp maybe_put_classifier_option(opts, :local_opts, []), do: opts
+  defp maybe_put_classifier_option(opts, key, value), do: Keyword.put(opts, key, value)
 
   @spec policy_map([map()] | nil) :: map()
   defp policy_map(nil), do: %{}

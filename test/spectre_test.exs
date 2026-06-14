@@ -82,6 +82,66 @@ defmodule SpectreTest.FallbackLLM do
   def complete(_prompt, opts), do: {:ok, "Fallback reply after #{inspect(opts[:primary_error])}."}
 end
 
+defmodule SpectreTest.MainBrainLLM do
+  @behaviour Spectre.LLM
+
+  def complete("PROJECT CREATE" <> _prompt, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:main_brain_llm, opts})
+    {:ok, "main brain reply"}
+  end
+
+  def complete(_prompt, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:main_brain_llm, opts})
+    {:ok, "INFO"}
+  end
+end
+
+defmodule SpectreTest.SmallClassifierLLM do
+  @behaviour Spectre.LLM
+
+  def complete(prompt, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:small_classifier_llm, prompt, opts})
+    {:ok, "INFO"}
+  end
+end
+
+defmodule SpectreTest.FailingClassifierLLM do
+  @behaviour Spectre.LLM
+
+  def complete(_prompt, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:failing_classifier_llm, opts})
+    {:error, :classifier_down}
+  end
+end
+
+defmodule SpectreTest.FallbackClassifierLLM do
+  @behaviour Spectre.LLM
+
+  def complete(prompt, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:fallback_classifier_llm, prompt, opts})
+    {:ok, "INFO"}
+  end
+end
+
+defmodule SpectreTest.ClassifierPrompt do
+  def build(assigns), do: "classify: #{assigns.text} -> #{Enum.join(assigns.labels, ",")}"
+end
+
+defmodule SpectreTest.DslLocalClassifier do
+  def classify(text, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:dsl_local_classifier, text, opts})
+
+    {:ok,
+     %{
+       label: "INFO",
+       accepted?: true,
+       confidence: 0.96,
+       margin: 0.2,
+       strategy: :local_classifier
+     }}
+  end
+end
+
 defmodule SpectreTest.ReplyRenderer do
   def render(prompt, input, _ctx), do: "reply:#{prompt}:#{input.text}"
 end
@@ -253,6 +313,31 @@ defmodule SpectreTest.ModelFallbackAgent do
 
   flow :conversation do
     on :FALLBACK, regex: ~r/\S/u do
+      ask(:project_create)
+    end
+  end
+end
+
+defmodule SpectreTest.ClassifierDslAgent do
+  use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
+
+  model(SpectreTest.MainBrainLLM, model: "main")
+
+  classifier(SpectreTest.SmallClassifierLLM,
+    model: "small",
+    fallback: SpectreTest.FallbackLLM,
+    prompt: &SpectreTest.ClassifierPrompt.build/1,
+    llm_opts: [max_tokens: 4],
+    local: SpectreTest.DslLocalClassifier,
+    artifact_dir: "dsl-artifact",
+    local_accept_threshold: 0.9,
+    local_margin_threshold: 0.08
+  )
+
+  router(via: [:classifier, :llm_classifier])
+
+  flow :conversation do
+    on :INFO, via: [:classifier, :llm_classifier] do
       ask(:project_create)
     end
   end
@@ -818,6 +903,98 @@ defmodule SpectreTest do
     assert Keyword.fetch!(opts, :no_decision) == :clarify
   end
 
+  test "classifier DSL stores LLM and local classifier configuration" do
+    config = SpectreTest.ClassifierDslAgent.__spectre_config__()
+    classifier = Keyword.fetch!(config, :classifier)
+
+    assert Keyword.fetch!(classifier, :adapter) ==
+             {SpectreTest.SmallClassifierLLM, :complete,
+              [model: "small", fallback: SpectreTest.FallbackLLM]}
+
+    assert classifier |> Keyword.fetch!(:prompt) |> is_function(1)
+    assert Keyword.fetch!(classifier, :llm_opts) == [max_tokens: 4]
+    assert Keyword.fetch!(classifier, :local) == SpectreTest.DslLocalClassifier
+
+    assert Keyword.fetch!(classifier, :local_opts) == [
+             artifact_dir: "dsl-artifact",
+             local_accept_threshold: 0.9,
+             local_margin_threshold: 0.08
+           ]
+  end
+
+  test "LLM classifier uses classifier DSL model and normal ask uses main model" do
+    config = SpectreTest.ClassifierDslAgent.__spectre_config__()
+
+    assert {:ok, route} =
+             Spectre.Router.LLMClassifier.classify(
+               "ambiguous",
+               [:INFO],
+               test_pid: self(),
+               model: Keyword.fetch!(config, :model),
+               classifier: Keyword.fetch!(config, :classifier)
+             )
+
+    assert route.label == :INFO
+
+    assert_receive {:small_classifier_llm, "classify: ambiguous -> INFO", classifier_opts}
+    assert Keyword.fetch!(classifier_opts, :model) == "small"
+    assert Keyword.fetch!(classifier_opts, :purpose) == :classifier
+    assert Keyword.fetch!(classifier_opts, :temperature) == 0.0
+    assert Keyword.fetch!(classifier_opts, :max_tokens) == 4
+
+    assert {:ok, result} =
+             Spectre.ask(SpectreTest.ClassifierDslAgent, "anything",
+               test_pid: self(),
+               classify: fn _text, _opts ->
+                 {:ok,
+                  %{
+                    label: "INFO",
+                    accepted?: true,
+                    confidence: 0.96,
+                    margin: 0.2,
+                    strategy: :local_classifier
+                  }}
+               end
+             )
+
+    assert result.reply_text == "main brain reply"
+    assert_receive {:main_brain_llm, main_opts}
+    assert Keyword.fetch!(main_opts, :model) == "main"
+  end
+
+  test "LLM classifier falls back to main model when classifier DSL is not set" do
+    assert {:ok, route} =
+             Spectre.Router.LLMClassifier.classify("anything", [:INFO],
+               test_pid: self(),
+               model: {SpectreTest.MainBrainLLM, :complete, model: "main"}
+             )
+
+    assert route.label == :INFO
+    assert_receive {:main_brain_llm, _opts}
+  end
+
+  test "LLM classifier uses classifier fallback when classifier model fails" do
+    assert {:ok, route} =
+             Spectre.Router.LLMClassifier.classify("anything", [:INFO],
+               test_pid: self(),
+               model: {SpectreTest.MainBrainLLM, :complete, model: "main"},
+               classifier: [
+                 adapter:
+                   {SpectreTest.FailingClassifierLLM, :complete,
+                    fallback: SpectreTest.FallbackClassifierLLM}
+               ]
+             )
+
+    assert route.label == :INFO
+
+    assert_receive {:failing_classifier_llm, failing_opts}
+    refute Keyword.has_key?(failing_opts, :primary_error)
+
+    assert_receive {:fallback_classifier_llm, _prompt, fallback_opts}
+    assert Keyword.fetch!(fallback_opts, :primary_error) == :classifier_down
+    refute_received {:main_brain_llm, _opts}
+  end
+
   test "model fallback adapter is used when the primary model fails" do
     assert {:ok, result} = Spectre.ask(SpectreTest.ModelFallbackAgent, "hello")
 
@@ -1055,6 +1232,31 @@ defmodule SpectreTest do
     assert [_second_entry] = learned_cache_entries(second)
   end
 
+  test "learned semantic cache capacity evicts the oldest index" do
+    first = SpectreTest.LearnedSemanticCacheAgent
+    second = SpectreTest.OtherLearnedSemanticCacheAgent
+
+    assert :ok = SemanticCache.clear(first)
+    assert :ok = SemanticCache.clear(second)
+
+    assert {:ok, %{label: :GO_RIGHT}} =
+             Learned.lookup(
+               "right",
+               Keyword.put(learned_cache_opts(first), :semantic_cache_capacity, 1)
+             )
+
+    assert [_first_entry] = learned_cache_entries(first)
+
+    assert {:ok, %{label: :OTHER_RIGHT}} =
+             Learned.lookup(
+               "right",
+               Keyword.put(learned_cache_opts(second), :semantic_cache_capacity, 1)
+             )
+
+    assert [] = learned_cache_entries(first)
+    assert [_second_entry] = learned_cache_entries(second)
+  end
+
   test "semantic cache clear delegates to custom adapter clear callback" do
     assert :ok =
              SemanticCache.clear(
@@ -1152,6 +1354,60 @@ defmodule SpectreTest do
     assert route.flow == :project_create
     assert {:ask, :project_create, []} = route.handler
     assert :wants_project_create in route.labels
+  end
+
+  test "router accepts classifier_local as the local classifier adapter option" do
+    assert {:ok, route} =
+             Spectre.Router.route(
+               %Spectre.Input{text: "classifier local"},
+               %Spectre.Context{
+                 agent: SpectreTest.ArbitratedAgent,
+                 input: %Spectre.Input{text: "classifier local"},
+                 state: %State{},
+                 opts: [
+                   classifier_local: SpectreTest.DslLocalClassifier,
+                   test_pid: self(),
+                   via: [:classifier]
+                 ]
+               }
+             )
+
+    assert route.label == :INFO
+    assert route.strategy == :local_classifier
+    assert_receive {:dsl_local_classifier, "classifier local", _opts}
+  end
+
+  test "classifier DSL local option drives the local classifier adapter" do
+    assert {:ok, result} =
+             Spectre.ask(SpectreTest.ClassifierDslAgent, "anything", test_pid: self())
+
+    assert result.route.label == :INFO
+    assert result.reply_text == "main brain reply"
+
+    assert_receive {:dsl_local_classifier, "anything", opts}
+    assert Keyword.fetch!(opts, :artifact_dir) == "dsl-artifact"
+    assert Keyword.fetch!(opts, :local_accept_threshold) == 0.9
+    assert_receive {:main_brain_llm, _opts}
+  end
+
+  test "old classifier option is no longer treated as a local classifier adapter" do
+    assert {:ok, route} =
+             Spectre.Router.route(
+               %Spectre.Input{text: "legacy classifier option"},
+               %Spectre.Context{
+                 agent: SpectreTest.ArbitratedAgent,
+                 input: %Spectre.Input{text: "legacy classifier option"},
+                 state: %State{},
+                 opts: [
+                   classifier: SpectreTest.DslLocalClassifier,
+                   test_pid: self(),
+                   via: [:classifier]
+                 ]
+               }
+             )
+
+    refute route.label == :INFO
+    refute_received {:dsl_local_classifier, _text, _opts}
   end
 
   test "rule via controls which router plug can select a rule" do

@@ -49,13 +49,35 @@ Those opts are merged into every `ask` call. `fallback:` is special: if the
 primary model returns `{:error, reason}`, Spectre calls the fallback model with
 `primary_error: reason`.
 
-The LLM classifier also uses the configured model. It builds a small prompt from
-the current labels unless you pass `classifier_prompt: fun`, and it sends
-`llm_opts` with defaults:
+## `classifier`
+
+```elixir
+# Main model: used for normal `ask/2` responses.
+model(MyApp.MainLLM, model: "large")
+
+# Classifier model: used only when `:llm_classifier` arbitrates routing.
+classifier MyApp.SmallLLM,
+  model: "small",
+  fallback: MyApp.SmallFallbackLLM,
+  prompt: &MyApp.ClassifierPrompt.build/1,
+  llm_opts: [temperature: 0.0, max_tokens: 8],
+
+  # Optional local classifier used by the `:classifier` router strategy.
+  local: MyApp.LocalClassifier,
+  artifact_dir: "priv/spectre/support"
+```
+
+The first argument configures the LLM adapter used only by `:llm_classifier`
+arbitration. If it is not configured, the LLM classifier falls back to
+`model/2`. `prompt:` customizes the classifier prompt, and `llm_opts:` are
+merged with these defaults:
 
 ```elixir
 [purpose: :classifier, temperature: 0.0, max_tokens: 8]
 ```
+
+`local:` configures the adapter used by the `:classifier` router strategy.
+Local classifier runtime overrides use `classifier_local:`.
 
 ## Runtime Boundaries
 
@@ -83,6 +105,7 @@ What they mean:
 - `memory/1` module may implement `recall/2`, then `remember/4`, `persist/4`,
   `remember/2`, or `persist/2`.
 - `embedding/2` provides the adapter used by embedding routing.
+- `classifier/2` provides classifier-specific LLM and local adapters.
 - `actions/2` stores `{module, opts}`. Those opts are also merged into
   SpectreKinetic planning opts and receive `actions_module: module`.
 - `shutdown/1` and `idle/1` affect supervised sessions.

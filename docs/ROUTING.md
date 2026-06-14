@@ -339,9 +339,15 @@ plugs look for a few well-known keys:
 ```elixir
 router(
   via: [:regex, :semantic_cache, :classifier, :embedding, :llm_classifier],
+
+  # Local classifier artifacts and adapter override.
   artifact_dir: "artifacts/spectre",
+  classifier_local: {MyApp.IntentClassifier, :classify},
+
+  # Semantic cache adapter and built-in learned-cache capacity.
   semantic_cache: MyApp.SemanticCache,
-  classifier: {MyApp.IntentClassifier, :classify},
+  semantic_cache_capacity: 100,
+
   terminal_labels: [:PRICING, :SUPPORT],
   high_confidence_threshold: 0.9,
   classification_log?: true,
@@ -365,11 +371,12 @@ Important options:
 - `:semantic_lookup` can be a function.
 - `:semantic_cache` can be a module or `{module, function}`.
 - `:classify` can be a function.
-- `:classifier` can be a module or `{module, function}`.
+- `:classifier_local` can be a module or `{module, function}`.
 - `:artifact_dir` points Spectre's local classifier to trained artifacts.
-- `:classifier_prompt` customizes the LLM classifier prompt.
-- `:llm_opts` are passed to the LLM classifier.
+- `classifier MyApp.SmallLLM, prompt: ..., llm_opts: ...` customizes the LLM
+  classifier.
 - `:recent_chat` is included in the default LLM classifier prompt.
+- `:semantic_cache_capacity` limits Spectre's built-in learned cache indexes.
 
 Adapter shapes are intentionally simple:
 
@@ -402,6 +409,11 @@ defmodule MyApp.SemanticCache do
     {:error, :miss}
   end
 end
+
+Spectre.ask(MyApp.SupportAgent, "hello",
+  classifier_local: MyApp.IntentClassifier,
+  semantic_cache: MyApp.SemanticCache
+)
 ```
 
 Classifier and semantic-cache adapters should return route-like maps:
@@ -487,6 +499,18 @@ have changed:
 
 ```elixir
 :ok = Spectre.Router.SemanticCache.clear(MyApp.SupportAgent)
+```
+
+Limit the built-in learned cache index count with `semantic_cache_capacity:`.
+When the cache is full, Spectre drops the oldest learned Vettore index before
+storing the newest one. Custom semantic cache adapters manage their own
+capacity.
+
+```elixir
+Spectre.ask(MyApp.SupportAgent, "pricing please",
+  # Keeps at most 100 learned Vettore indexes in Spectre's built-in ETS cache.
+  semantic_cache_capacity: 100
+)
 ```
 
 For the built-in learned cache, clearing drops Spectre's in-memory Vettore cache

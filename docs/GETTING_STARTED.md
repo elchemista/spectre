@@ -11,11 +11,15 @@ defmodule MyApp.SupportAgent do
     fallback: MyApp.FallbackLLM
   )
 
+  classifier(MyApp.SmallLLM,
+    model: "small",
+    artifact_dir: "priv/spectre/support"
+  )
+
   embedding(MyApp.Embeddings, model: "intfloat/multilingual-e5-small")
 
   router(
     via: [:regex, :embedding, :classifier, :semantic_cache, :llm_classifier],
-    artifact_dir: "priv/spectre/support",
     terminal_labels: [:PRICING, :TECHNICAL_SUPPORT, :DELETE_ACCOUNT]
   )
 
@@ -152,14 +156,14 @@ agent.
 
 Common option families:
 
-- model opts: `model`, `adapter`, `fallback`, `llm_opts`, `classifier_prompt`,
-  `recent_chat`
-- classifier opts: `classify`, `classifier`, `artifact_dir`,
+- model opts: `model`, `adapter`, `fallback`, `recent_chat`
+- classifier opts: `classifier`, `classify`, `classifier_local`, `artifact_dir`,
   `local_accept_threshold`, `local_margin_threshold`,
   `local_high_confidence_threshold`
 - semantic cache opts: `semantic_lookup`, `semantic_cache`,
   `semantic_cache?`, `semantic_after_classifier?`,
-  `semantic_cache_threshold`, `semantic_cache_top_k`
+  `semantic_cache_threshold`, `semantic_cache_top_k`,
+  `semantic_cache_capacity`
 - embedding opts: `embedding`
 - routing opts: `via`, `pipeline`, `arbitrator`, `terminal_labels`,
   `high_confidence_threshold`, `classification_log?`
