@@ -250,6 +250,7 @@ defmodule Spectre.Runtime do
 
     []
     |> maybe_put_config(config, :model)
+    |> maybe_put_config(config, :classifier)
     |> maybe_put_config(config, :adapter)
     |> maybe_put_config(config, :embedding)
     |> maybe_put_config(config, :input_pipeline)

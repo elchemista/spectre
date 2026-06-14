@@ -127,7 +127,13 @@ defmodule Spectre.Router.SemanticCache.Learned do
          [%{vector: first_vector} | _] <- vectors,
          {:ok, collection} <- new_collection(length(first_vector), opts),
          :ok <- Vettore.put_many(collection, embeddings(vectors)) do
-      index = %{collection: collection}
+      index = %{
+        collection: collection,
+        inserted_at: System.unique_integer([:monotonic, :positive])
+      }
+
+      # Evict before insert so the configured capacity includes the new index.
+      evict_oldest_indexes(table, key, opts)
       :ets.insert(table, {key, index})
       {:ok, index}
     else
@@ -389,6 +395,65 @@ defmodule Spectre.Router.SemanticCache.Learned do
     :ok
   rescue
     ArgumentError -> :ok
+  end
+
+  @spec evict_oldest_indexes(atom(), term(), keyword()) :: :ok
+  defp evict_oldest_indexes(table, new_key, opts) do
+    case semantic_cache_capacity(opts) do
+      :unlimited -> :ok
+      capacity -> evict_oldest_indexes_with_capacity(table, new_key, capacity)
+    end
+  end
+
+  @spec evict_oldest_indexes_with_capacity(atom(), term(), pos_integer()) :: :ok
+  defp evict_oldest_indexes_with_capacity(table, new_key, capacity) do
+    table
+    |> evictable_indexes(new_key)
+    |> oldest_indexes_to_evict(capacity)
+    |> Enum.each(&drop_cached_index(table, &1))
+
+    :ok
+  end
+
+  @spec evictable_indexes(atom(), term()) :: [{term(), map()}]
+  defp evictable_indexes(table, new_key) do
+    table
+    |> :ets.tab2list()
+    |> Enum.reject(fn {key, _index} -> key == new_key end)
+  end
+
+  @spec oldest_indexes_to_evict([{term(), map()}], pos_integer()) :: [{term(), map()}]
+  defp oldest_indexes_to_evict(entries, capacity) do
+    entries
+    |> eviction_count(capacity)
+    |> indexes_to_evict(entries)
+  end
+
+  @spec eviction_count([{term(), map()}], pos_integer()) :: integer()
+  defp eviction_count(entries, capacity), do: length(entries) - capacity + 1
+
+  @spec indexes_to_evict(integer(), [{term(), map()}]) :: [{term(), map()}]
+  defp indexes_to_evict(count, _entries) when count <= 0, do: []
+
+  defp indexes_to_evict(count, entries) do
+    entries
+    |> Enum.sort_by(fn {_key, index} -> Map.get(index, :inserted_at, 0) end)
+    |> Enum.take(count)
+  end
+
+  @spec drop_cached_index(atom(), {term(), map()}) :: :ok
+  defp drop_cached_index(table, {key, index}) do
+    drop_index(index)
+    :ets.delete(table, key)
+    :ok
+  end
+
+  @spec semantic_cache_capacity(keyword()) :: pos_integer() | :unlimited
+  defp semantic_cache_capacity(opts) do
+    case Keyword.get(opts, :semantic_cache_capacity) do
+      capacity when is_integer(capacity) and capacity > 0 -> capacity
+      _other -> :unlimited
+    end
   end
 
   @spec ensure_table() :: atom()

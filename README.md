@@ -38,6 +38,7 @@ defmodule MyApp.SupportAgent do
   use Spectre.Agent, prompt_root: "priv/agents/support/prompts"
 
   model(MyApp.LLM, purpose: :smart)
+  classifier(MyApp.SmallLLM, model: "small")
   embedding(MyApp.Embeddings, model: "intfloat/multilingual-e5-small")
 
   router(via: [:regex, :embedding, :classifier, :semantic_cache, :llm_classifier])

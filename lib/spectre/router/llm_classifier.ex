@@ -29,21 +29,44 @@ defmodule Spectre.Router.LLMClassifier do
 
   @spec complete_fun(keyword()) :: {:ok, function()} | {:error, term()}
   defp complete_fun(opts) do
-    if Keyword.has_key?(opts, :model) do
-      {:ok, &Spectre.LLM.complete(&1, Keyword.merge(opts, &2))}
-    else
-      {:error, :missing_llm_classifier_model}
+    case classifier_model(opts) || Keyword.get(opts, :model) do
+      nil ->
+        {:error, :missing_llm_classifier_model}
+
+      model ->
+        {:ok, &Spectre.LLM.complete(&1, complete_opts(opts, model, &2))}
     end
+  end
+
+  @spec classifier_model(keyword()) :: term() | nil
+  defp classifier_model(opts) do
+    opts
+    |> classifier_config()
+    |> Keyword.get(:adapter)
+  end
+
+  @spec complete_opts(keyword(), term(), keyword()) :: keyword()
+  defp complete_opts(opts, model, classifier_opts) do
+    opts
+    |> Keyword.merge(classifier_opts)
+    |> Keyword.put(:model, model)
   end
 
   @spec prompt(String.t(), [atom()], keyword()) :: {:ok, String.t()} | {:error, term()}
   defp prompt(text, labels, opts) do
     assigns = %{text: text, labels: labels, recent_chat: Keyword.get(opts, :recent_chat, "none")}
 
-    case Keyword.get(opts, :classifier_prompt) do
+    case classifier_prompt(opts) do
       fun when is_function(fun, 1) -> normalize_prompt_result(fun.(assigns))
       nil -> {:ok, default_prompt(assigns)}
     end
+  end
+
+  @spec classifier_prompt(keyword()) :: function() | nil
+  defp classifier_prompt(opts) do
+    opts
+    |> classifier_config()
+    |> Keyword.get(:prompt)
   end
 
   @spec normalize_prompt_result(term()) :: {:ok, String.t()} | {:error, term()}
@@ -71,10 +94,19 @@ defmodule Spectre.Router.LLMClassifier do
   @spec llm_opts(keyword()) :: keyword()
   defp llm_opts(opts) do
     opts
+    |> classifier_config()
     |> Keyword.get(:llm_opts, [])
     |> Keyword.put_new(:purpose, :classifier)
     |> Keyword.put_new(:temperature, 0.0)
     |> Keyword.put_new(:max_tokens, 8)
+  end
+
+  @spec classifier_config(keyword()) :: keyword()
+  defp classifier_config(opts) do
+    case Keyword.get(opts, :classifier, []) do
+      config when is_list(config) -> config
+      _other -> []
+    end
   end
 
   @spec normalize_label(term(), [atom()]) :: {:ok, atom()}

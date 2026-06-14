@@ -54,7 +54,7 @@ defmodule Spectre.Pipeline do
   Adds a router plug declaration to a custom pipeline.
 
       plug Spectre.Router.Plugs.Regex
-      plug Spectre.Router.Plugs.LocalClassifier, classifier: MyApp.Classifier
+      plug Spectre.Router.Plugs.LocalClassifier, classifier_local: MyApp.Classifier
   """
   defmacro plug(module, opts \\ []) do
     quote do
