@@ -45,6 +45,8 @@ defmodule Spectre.Router do
       |> Keyword.merge(opts)
       |> Keyword.put_new(:arbitrator, {Spectre.Router.Arbitrators.Default, []})
       |> Keyword.put_new(:labels, labels)
+      |> Keyword.put_new(:spectre_agent, agent)
+      |> Keyword.put_new(:spectre_rules, rules)
 
     context = %Context{
       input: input,
@@ -55,7 +57,7 @@ defmodule Spectre.Router do
     }
 
     context
-    |> route_with_pipeline(pipeline(router_opts))
+    |> route_with_pipeline(pipeline(router_opts, rules))
   end
 
   @doc """
@@ -106,13 +108,27 @@ defmodule Spectre.Router do
     end
   end
 
-  @spec pipeline(keyword()) :: module() | [Spectre.Pipeline.plug_spec()]
-  defp pipeline(opts) do
+  @spec pipeline(keyword(), [Rule.t()]) :: module() | [Spectre.Pipeline.plug_spec()]
+  defp pipeline(opts, rules) do
     case Keyword.get(opts, :pipeline) do
-      nil -> pipeline_from_via(Keyword.get(opts, :via, [:regex]))
+      nil -> pipeline_from_via(default_via(opts, rules))
       pipeline -> pipeline
     end
   end
+
+  @spec default_via(keyword(), [Rule.t()]) :: [atom()]
+  defp default_via(opts, rules) do
+    via = Keyword.get(opts, :via, [:regex])
+
+    if learned_rules?(rules) and Keyword.get(opts, :semantic_cache?, true) do
+      via |> List.wrap() |> Kernel.++([:semantic_cache]) |> Enum.uniq()
+    else
+      List.wrap(via)
+    end
+  end
+
+  @spec learned_rules?([Rule.t()]) :: boolean()
+  defp learned_rules?(rules), do: Enum.any?(rules, & &1.learn)
 
   @spec pipeline_from_via([atom()] | atom()) :: [module()]
   defp pipeline_from_via(via) do

@@ -281,6 +281,57 @@ defmodule SpectreTest.RoutedAgent do
   end
 end
 
+defmodule SpectreTest.LearnedSemanticCacheAgent do
+  use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
+
+  embedding(SpectreTest.EmbeddingAdapter, model: "toy")
+
+  flow :conversation do
+    on :GO_RIGHT, train: ["right"], learn: true do
+      reply(:go_right, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+
+    on :GO_LEFT, train: ["left"], learn: true, via: [:classifier] do
+      reply(:go_left, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+  end
+end
+
+defmodule SpectreTest.OtherLearnedSemanticCacheAgent do
+  use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
+
+  embedding(SpectreTest.EmbeddingAdapter, model: "toy")
+
+  flow :conversation do
+    on :OTHER_RIGHT, train: ["right"], learn: true do
+      reply(:other_right, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+  end
+end
+
+defmodule SpectreTest.SemanticCacheOverride do
+  def lookup("right", _opts) do
+    {:ok,
+     %{
+       label: :GO_LEFT,
+       accepted?: true,
+       confidence: 0.99,
+       strategy: :semantic_cache_exact
+     }}
+  end
+end
+
+defmodule SpectreTest.ClearableSemanticCache do
+  @behaviour Spectre.Router.SemanticCache
+
+  def lookup(_text, _opts), do: {:error, :miss}
+
+  def clear(agent, opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:semantic_cache_clear, agent, opts})
+    :ok
+  end
+end
+
 defmodule SpectreTest.ArbitratedAgent do
   use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
 
@@ -498,6 +549,8 @@ defmodule SpectreTest do
   alias Spectre.Classifier.Math
   alias Spectre.Classifier.Trainer
   alias Spectre.PendingAction
+  alias Spectre.Router.SemanticCache
+  alias Spectre.Router.SemanticCache.Learned
   alias Spectre.State
   alias Spectre.Training.Dataset
 
@@ -571,6 +624,38 @@ defmodule SpectreTest do
     )
 
     :ok
+  end
+
+  defp learned_cache_opts(agent) do
+    [
+      spectre_agent: agent,
+      spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1),
+      embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]},
+      semantic_search?: true,
+      semantic_cache_threshold: 0.0
+    ]
+  end
+
+  defp learned_cache_entries(agent) do
+    case :ets.whereis(Learned) do
+      :undefined ->
+        []
+
+      _tid ->
+        Learned
+        |> :ets.tab2list()
+        |> Enum.filter(fn
+          {{{:agent, ^agent}, _hash}, _index} -> true
+          _other -> false
+        end)
+    end
+  end
+
+  defp learned_cache_collection(agent) do
+    case learned_cache_entries(agent) do
+      [{_key, %{collection: collection}}] -> collection
+      entries -> flunk("expected one learned cache collection, got: #{inspect(entries)}")
+    end
   end
 
   test "agent DSL compiles flows, policies, protections and interrupts" do
@@ -780,15 +865,17 @@ defmodule SpectreTest do
   test "router can accept a semantic cache adapter before classifier fallback" do
     semantic_lookup = fn
       "cached please", opts ->
-        assert Keyword.get(opts, :semantic_search?) == false
-
-        {:ok,
-         %{
-           label: :wants_project_create,
-           accepted?: true,
-           confidence: 0.98,
-           strategy: :semantic_cache_exact
-         }}
+        if Keyword.get(opts, :semantic_search?) do
+          {:error, :miss}
+        else
+          {:ok,
+           %{
+             label: :wants_project_create,
+             accepted?: true,
+             confidence: 0.98,
+             strategy: :semantic_cache_exact
+           }}
+        end
     end
 
     assert {:ok, route} =
@@ -808,6 +895,187 @@ defmodule SpectreTest do
     assert route.label == :wants_project_create
     assert route.strategy == :semantic_cache_exact
     assert route.accepted?
+  end
+
+  test "router uses learned semantic cache by default when rules opt in" do
+    assert {:ok, route} =
+             Spectre.Router.route(
+               %Spectre.Input{text: "right"},
+               %Spectre.Context{
+                 agent: SpectreTest.LearnedSemanticCacheAgent,
+                 input: %Spectre.Input{text: "right"},
+                 state: %State{},
+                 opts: [classification_log?: false]
+               }
+             )
+
+    assert route.label == :GO_RIGHT
+    assert route.strategy == :semantic_cache_exact
+    assert route.accepted?
+  end
+
+  test "learned semantic cache uses vettore search without a custom adapter" do
+    rules =
+      SpectreTest.LearnedSemanticCacheAgent.__spectre_rules__()
+      |> Enum.map(&Spectre.Rule.new/1)
+
+    assert {:ok, result} =
+             Learned.lookup("right",
+               spectre_rules: rules,
+               embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]},
+               semantic_search?: true,
+               semantic_cache_threshold: 0.0
+             )
+
+    assert result.label == :GO_RIGHT
+    assert result.strategy == :semantic_cache_search
+    assert result.accepted?
+    assert result.confidence >= 0.0
+  end
+
+  test "learned semantic cache stores examples in a compressed vettore collection" do
+    agent = SpectreTest.LearnedSemanticCacheAgent
+
+    assert :ok = SemanticCache.clear(agent)
+
+    assert {:ok, result} =
+             Learned.lookup("right", learned_cache_opts(agent))
+
+    assert result.label == :GO_RIGHT
+
+    collection = learned_cache_collection(agent)
+    assert :ets.info(Learned, :compressed)
+    assert collection.store_state.__struct__ == Vettore.Store.ETS
+    assert :ets.info(collection.store_state.table, :compressed)
+
+    assert {:ok, embeddings} = Vettore.all(collection)
+    assert length(embeddings) == 2
+
+    right = Enum.find(embeddings, &(&1.metadata["text"] == "right"))
+    left = Enum.find(embeddings, &(&1.metadata["text"] == "left"))
+
+    assert right.metadata["label"] == :GO_RIGHT
+    assert left.metadata["label"] == :GO_LEFT
+
+    assert {:ok, fetched} = Vettore.get(collection, right.id)
+    assert fetched.metadata["text"] == "right"
+    assert fetched.vector == [1.0, 0.0]
+
+    assert {:ok, [nearest | _]} = Vettore.search(collection, [1.0, 0.0], limit: 1)
+    assert nearest.metadata["text"] == "right"
+    assert nearest.metadata["label"] == :GO_RIGHT
+  end
+
+  test "semantic cache adapter overrides learned cache" do
+    assert {:ok, route} =
+             Spectre.Router.route(
+               %Spectre.Input{text: "right"},
+               %Spectre.Context{
+                 agent: SpectreTest.LearnedSemanticCacheAgent,
+                 input: %Spectre.Input{text: "right"},
+                 state: %State{},
+                 opts: [
+                   semantic_cache: SpectreTest.SemanticCacheOverride,
+                   classification_log?: false
+                 ]
+               }
+             )
+
+    assert route.label == :GO_LEFT
+    assert route.strategy == :semantic_cache_exact
+  end
+
+  test "learn true adds semantic cache visibility to explicit route via" do
+    rules =
+      SpectreTest.LearnedSemanticCacheAgent.__spectre_rules__()
+      |> Enum.map(&Spectre.Rule.new/1)
+
+    assert %{via: via} = Enum.find(rules, &(&1.label == :GO_LEFT))
+    assert :classifier in via
+    assert :semantic_cache in via
+  end
+
+  test "semantic cache clear removes built-in learned cache for an agent" do
+    agent = SpectreTest.LearnedSemanticCacheAgent
+
+    assert :ok = SemanticCache.clear(agent)
+    assert [] = learned_cache_entries(agent)
+
+    assert {:ok, result} =
+             Learned.lookup(
+               "right",
+               learned_cache_opts(agent)
+             )
+
+    assert result.label == :GO_RIGHT
+    assert [_entry] = learned_cache_entries(agent)
+
+    assert :ok = SemanticCache.clear(agent)
+    assert [] = learned_cache_entries(agent)
+
+    assert {:ok, rebuilt} =
+             Learned.lookup(
+               "right",
+               learned_cache_opts(agent)
+             )
+
+    assert rebuilt.label == :GO_RIGHT
+    assert [_entry] = learned_cache_entries(agent)
+  end
+
+  test "semantic cache clear is scoped by agent" do
+    first = SpectreTest.LearnedSemanticCacheAgent
+    second = SpectreTest.OtherLearnedSemanticCacheAgent
+
+    assert :ok = SemanticCache.clear(first)
+    assert :ok = SemanticCache.clear(second)
+
+    assert {:ok, %{label: :GO_RIGHT}} =
+             Learned.lookup("right", learned_cache_opts(first))
+
+    assert {:ok, %{label: :OTHER_RIGHT}} =
+             Learned.lookup("right", learned_cache_opts(second))
+
+    assert [_first_entry] = learned_cache_entries(first)
+    assert [_second_entry] = learned_cache_entries(second)
+
+    assert :ok = SemanticCache.clear(first)
+    assert [] = learned_cache_entries(first)
+    assert [_second_entry] = learned_cache_entries(second)
+  end
+
+  test "semantic cache clear delegates to custom adapter clear callback" do
+    assert :ok =
+             SemanticCache.clear(
+               SpectreTest.LearnedSemanticCacheAgent,
+               semantic_cache: SpectreTest.ClearableSemanticCache,
+               test_pid: self()
+             )
+
+    assert_receive {:semantic_cache_clear, SpectreTest.LearnedSemanticCacheAgent, opts}
+    assert opts[:test_pid] == self()
+    assert opts[:spectre_agent] == SpectreTest.LearnedSemanticCacheAgent
+  end
+
+  test "semantic cache clear requires custom adapter clear callback" do
+    assert {:error, {:missing_semantic_cache_callback, SpectreTest.SemanticCacheOverride, :clear}} =
+             SemanticCache.clear(
+               SpectreTest.LearnedSemanticCacheAgent,
+               semantic_cache: SpectreTest.SemanticCacheOverride
+             )
+  end
+
+  test "semantic cache clear cannot clear bare semantic lookup function" do
+    assert {:error, :unclearable_semantic_lookup} =
+             SemanticCache.clear(
+               SpectreTest.LearnedSemanticCacheAgent,
+               semantic_lookup: fn _text, _opts -> {:error, :miss} end
+             )
+  end
+
+  test "semantic cache clear rejects invalid agents" do
+    assert {:error, {:invalid_agent, NotAnAgent}} =
+             SemanticCache.clear(NotAnAgent)
   end
 
   test "router maps classifier artifact labels onto agent rules" do
