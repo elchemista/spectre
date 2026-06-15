@@ -124,7 +124,7 @@ flow :sales do
   on :QUOTE_REQUEST,
     regex: ~r/\b(quote|estimate|proposal)\b/i,
     embedding: ["can you estimate this project?", "send me a proposal"],
-    train: true do
+    learn: true do
     ask(:quote_request)
   end
 end
@@ -136,9 +136,8 @@ A route can include:
 - `bag:` simple phrase examples for bag-distance routing
 - `jaro:` phrase examples for Jaro string similarity
 - `embedding:` semantic examples compared with vectors
-- `train: true` marks routes or policy branches for classifier dataset use
-- `learn: true` to mirror the route's training examples into the built-in
-  learned semantic cache
+- `cache: false` excludes this route from semantic-cache rows and lookup
+- `learn: true` lets accepted LLM fallback classifications add online examples
 - `check:` or `checks:` metadata guards such as language or role
 - `via:` per-route strategy visibility
 - custom options kept on the compiled rule
@@ -206,7 +205,7 @@ on :PRICING, regex: ~r/\bprice\b/i do
   reply(:pricing, renderer: {MyApp.Replies, :route_reply}, key: :price)
 end
 
-on :SMART_TURN, train: true do
+on :SMART_TURN, learn: true do
   ask(:smart_turn_prompt, temperature: 0.2)
 end
 

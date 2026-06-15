@@ -2,19 +2,16 @@ defmodule Mix.Tasks.Spectre.Classifier.Dataset do
   @moduledoc """
   Exports classifier training rows from a Spectre agent.
 
-  Route and policy declarations can provide training metadata:
+  Dataset rows must provide `text` and `label`/`intent`. The export keeps only
+  labels that exist on the agent's route and policy declarations:
 
-      on :GREETING, regex: ~r/^hi$/i, train: true do
+      on :GREETING, regex: ~r/^hi$/i do
         reply :greeting
       end
 
-      on :SPAM, via: [:classifier], train: true do
+      on :SPAM, via: [:classifier] do
         reply :spam
       end
-
-  `train: true` pulls examples for that label from configured classifier dataset
-  sources or `--source` datasets. The DSL flag is boolean only; examples belong
-  in dataset files.
 
   ## Usage
 
@@ -22,8 +19,8 @@ defmodule Mix.Tasks.Spectre.Classifier.Dataset do
 
   ## Options
 
-    * `--source` - additional dataset source used by routes marked
-      `train: true`. May be passed more than once.
+    * `--source` - additional labeled dataset source. May be passed more than
+      once.
     * `--pretty` - pretty-print JSON output.
   """
 

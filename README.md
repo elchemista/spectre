@@ -49,8 +49,8 @@ defmodule MyApp.SupportAgent do
 
   policy :delete_account_confirmation do
     request(:confirm_delete_account)
-    accept(:confirmed_delete, regex: ~r/^yes, delete it$/i, train: true)
-    reject(:cancel_delete, regex: ~r/^no|cancel$/i, train: true)
+    accept(:confirmed_delete, regex: ~r/^yes, delete it$/i)
+    reject(:cancel_delete, regex: ~r/^no|cancel$/i)
     otherwise(ask: :confirm_delete_account_retry)
   end
 
@@ -58,8 +58,14 @@ defmodule MyApp.SupportAgent do
     on :PRICING,
       regex: ~r/\b(price|pricing|cost)\b/i,
       embedding: ["how much does it cost?", "pricing plans"],
-      train: true do
+      learn: true do
       reply(:pricing)
+    end
+
+    on :DELETE_ACCOUNT,
+      cache: false,
+      learn: false do
+      action(:delete_account)
     end
   end
 end

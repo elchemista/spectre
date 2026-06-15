@@ -123,6 +123,32 @@ defmodule SpectreTest.FallbackClassifierLLM do
   end
 end
 
+defmodule SpectreTest.RouteTrainingClassifierLLM do
+  @behaviour Spectre.LLM
+
+  def complete(prompt, _opts) do
+    cond do
+      prompt =~ "delete" -> {:ok, "DELETE_ACCOUNT"}
+      prompt =~ "billing" -> {:ok, "BILLING"}
+      true -> {:ok, "PRICING"}
+    end
+  end
+end
+
+defmodule SpectreTest.ForceLLMArbitrator do
+  @behaviour Spectre.Router.Arbitrator
+
+  alias Spectre.Router.Arbitrators.Default
+
+  def decide(arbitration, opts) do
+    if Enum.any?(arbitration.candidates, &(&1.provider == :llm_classifier)) do
+      Default.decide(arbitration, Keyword.put(opts, :conflict, :best))
+    else
+      {:llm, arbitration}
+    end
+  end
+end
+
 defmodule SpectreTest.ClassifierPrompt do
   def build(assigns), do: "classify: #{assigns.text} -> #{Enum.join(assigns.labels, ",")}"
 end
@@ -255,13 +281,11 @@ defmodule SpectreTest.ProjectAgent do
     request(:accept_terms)
 
     accept(:accepted_terms,
-      regex: ~r/^\s*accetto\s*$/i,
-      train: true
+      regex: ~r/^\s*accetto\s*$/i
     )
 
     reject(:rejected_terms,
-      regex: ~r/^\s*(non accetto|rifiuto|no)\b/i,
-      train: true
+      regex: ~r/^\s*(non accetto|rifiuto|no)\b/i
     )
 
     otherwise(ask: :accept_terms_retry)
@@ -270,15 +294,13 @@ defmodule SpectreTest.ProjectAgent do
 
   flow :project_create do
     on :wants_project_create,
-      regex: ~r/\b(crea|creare|nuovo)\b.*\b(progetto|project)\b/i,
-      train: true do
+      regex: ~r/\b(crea|creare|nuovo)\b.*\b(progetto|project)\b/i do
       ask(:project_create)
     end
   end
 
   interrupt :cancel,
-    regex: ~r/\b(annulla|ferma|stop)\b/i,
-    train: true do
+    regex: ~r/\b(annulla|ferma|stop)\b/i do
     run(:cancel_current)
   end
 
@@ -355,8 +377,7 @@ defmodule SpectreTest.RoutedAgent do
 
     on :CLASSIFIER_ONLY,
       via: [:classifier],
-      regex: ~r/^classifier only$/i,
-      train: true do
+      regex: ~r/^classifier only$/i do
       reply(:classifier_only, renderer: {SpectreTest.ReplyRenderer, :render})
     end
 
@@ -372,12 +393,63 @@ defmodule SpectreTest.LearnedSemanticCacheAgent do
   embedding(SpectreTest.EmbeddingAdapter, model: "toy")
 
   flow :conversation do
-    on :GO_RIGHT, train: true, learn: true do
+    on :GO_RIGHT, learn: true do
       reply(:go_right, renderer: {SpectreTest.ReplyRenderer, :render})
     end
 
-    on :GO_LEFT, train: true, learn: true, via: [:classifier] do
+    on :GO_LEFT, learn: true, via: [:classifier] do
       reply(:go_left, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+  end
+end
+
+defmodule SpectreTest.SemanticCacheRedesignAgent do
+  use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
+
+  embedding(SpectreTest.EmbeddingAdapter, model: "toy")
+
+  flow :conversation do
+    on :PRICING, cache: true do
+      reply(:pricing, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+
+    on :TECHNICAL_SUPPORT, cache: false do
+      reply(:technical_support, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+
+    on :SALES do
+      reply(:sales, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+  end
+end
+
+defmodule SpectreTest.OnlineLearningAgent do
+  use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
+
+  classifier(SpectreTest.RouteTrainingClassifierLLM)
+  arbitrator(SpectreTest.ForceLLMArbitrator)
+  actions(SpectreTest.HookActions)
+  protect(:delete_my_account, with: :delete_account)
+
+  policy :delete_account do
+    request(:confirm_delete_account)
+    accept(:confirm_delete, regex: ~r/^yes$/i)
+    reject(:cancel_delete, regex: ~r/^no$/i)
+  end
+
+  router(via: [:llm_classifier])
+
+  flow :conversation do
+    on :PRICING, learn: true do
+      reply(:pricing, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+
+    on :BILLING, learn: false do
+      reply(:billing, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+
+    on :DELETE_ACCOUNT, learn: true do
+      action(:delete_my_account)
     end
   end
 end
@@ -388,7 +460,7 @@ defmodule SpectreTest.OtherLearnedSemanticCacheAgent do
   embedding(SpectreTest.EmbeddingAdapter, model: "toy")
 
   flow :conversation do
-    on :OTHER_RIGHT, train: true, learn: true do
+    on :OTHER_RIGHT, learn: true do
       reply(:other_right, renderer: {SpectreTest.ReplyRenderer, :render})
     end
   end
@@ -398,7 +470,7 @@ defmodule SpectreTest.SemanticCacheOverride do
   def lookup("right", _opts) do
     {:ok,
      %{
-       label: :GO_LEFT,
+       label: :GO_RIGHT,
        accepted?: true,
        confidence: 0.99,
        strategy: :semantic_cache_exact
@@ -526,16 +598,16 @@ defmodule SpectreTest.TrainingAgent do
 
   policy :terms do
     request(:accept_terms)
-    accept(:ACCEPT_TERMS, train: true)
-    reject(:REJECT_TERMS, train: true)
+    accept(:ACCEPT_TERMS, [])
+    reject(:REJECT_TERMS, [])
   end
 
   flow :conversation do
-    on :GREETING, train: true do
+    on :GREETING do
       reply(:greeting)
     end
 
-    on :SPAM, train: true do
+    on :SPAM do
       reply(:spam)
     end
   end
@@ -634,6 +706,7 @@ defmodule SpectreTest do
   alias Spectre.Classifier.Math
   alias Spectre.Classifier.Trainer
   alias Spectre.PendingAction
+  alias Spectre.Router.LLMClassifier
   alias Spectre.Router.SemanticCache
   alias Spectre.Router.SemanticCache.Learned
   alias Spectre.State
@@ -726,6 +799,8 @@ defmodule SpectreTest do
     do: "test/fixtures/other_learned_semantic_cache.json"
 
   defp learned_cache_source(_agent), do: "test/fixtures/learned_semantic_cache.json"
+
+  defp semantic_redesign_source, do: "test/fixtures/semantic_cache_redesign.json"
 
   defp learned_cache_entries(agent) do
     case :ets.whereis(Learned) do
@@ -926,7 +1001,7 @@ defmodule SpectreTest do
     config = SpectreTest.ClassifierDslAgent.__spectre_config__()
 
     assert {:ok, route} =
-             Spectre.Router.LLMClassifier.classify(
+             LLMClassifier.classify(
                "ambiguous",
                [:INFO],
                test_pid: self(),
@@ -964,7 +1039,7 @@ defmodule SpectreTest do
 
   test "LLM classifier falls back to main model when classifier DSL is not set" do
     assert {:ok, route} =
-             Spectre.Router.LLMClassifier.classify("anything", [:INFO],
+             LLMClassifier.classify("anything", [:INFO],
                test_pid: self(),
                model: {SpectreTest.MainBrainLLM, :complete, model: "main"}
              )
@@ -975,7 +1050,7 @@ defmodule SpectreTest do
 
   test "LLM classifier uses classifier fallback when classifier model fails" do
     assert {:ok, route} =
-             Spectre.Router.LLMClassifier.classify("anything", [:INFO],
+             LLMClassifier.classify("anything", [:INFO],
                test_pid: self(),
                model: {SpectreTest.MainBrainLLM, :complete, model: "main"},
                classifier: [
@@ -1080,7 +1155,7 @@ defmodule SpectreTest do
     assert route.accepted?
   end
 
-  test "router uses learned semantic cache by default when rules opt in" do
+  test "router uses learned semantic cache by default for cacheable routes" do
     assert {:ok, route} =
              Spectre.Router.route(
                %Spectre.Input{text: "right"},
@@ -1137,13 +1212,12 @@ defmodule SpectreTest do
     assert :ets.info(collection.store_state.table, :compressed)
 
     assert {:ok, embeddings} = Vettore.all(collection)
-    assert length(embeddings) == 2
+    assert length(embeddings) == 1
 
     right = Enum.find(embeddings, &(&1.metadata["text"] == "right"))
-    left = Enum.find(embeddings, &(&1.metadata["text"] == "left"))
 
     assert right.metadata["label"] == :GO_RIGHT
-    assert left.metadata["label"] == :GO_LEFT
+    refute Enum.find(embeddings, &(&1.metadata["label"] == :GO_LEFT))
 
     assert {:ok, fetched} = Vettore.get(collection, right.id)
     assert fetched.metadata["text"] == "right"
@@ -1169,18 +1243,209 @@ defmodule SpectreTest do
                }
              )
 
-    assert route.label == :GO_LEFT
+    assert route.label == :GO_RIGHT
     assert route.strategy == :semantic_cache_exact
   end
 
-  test "learn true adds semantic cache visibility to explicit route via" do
+  test "learn true does not add semantic cache visibility to explicit route via" do
     rules =
       SpectreTest.LearnedSemanticCacheAgent.__spectre_rules__()
       |> Enum.map(&Spectre.Rule.new/1)
 
     assert %{via: via} = Enum.find(rules, &(&1.label == :GO_LEFT))
     assert :classifier in via
-    assert :semantic_cache in via
+    refute :semantic_cache in via
+  end
+
+  test "offline dataset rows mirror into semantic cache by default" do
+    agent = SpectreTest.SemanticCacheRedesignAgent
+    rules = Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
+
+    opts = [
+      spectre_agent: agent,
+      spectre_rules: rules,
+      semantic_cache_source: semantic_redesign_source()
+    ]
+
+    assert {:ok, %{label: :PRICING, semantic_cache_source: :offline_dataset}} =
+             Learned.lookup("pricing quote", opts)
+
+    assert {:error, :miss} = Learned.lookup("api key fails", opts)
+
+    assert {:ok, offline_rows} =
+             SemanticCache.examples(agent,
+               source: :offline_dataset,
+               semantic_cache_source: semantic_redesign_source()
+             )
+
+    assert Enum.any?(offline_rows, &(&1.label == :PRICING and &1.editable? == false))
+    refute Enum.any?(offline_rows, &(&1.label == :TECHNICAL_SUPPORT))
+  end
+
+  test "cache false excludes semantic cache but keeps local classifier routing" do
+    classify = fn _text, _opts ->
+      {:ok,
+       %{
+         label: "TECHNICAL_SUPPORT",
+         accepted?: true,
+         confidence: 0.96,
+         margin: 0.2,
+         strategy: :local_classifier
+       }}
+    end
+
+    assert {:ok, route} =
+             Spectre.Router.route(
+               %Spectre.Input{text: "api key fails"},
+               %Spectre.Context{
+                 agent: SpectreTest.SemanticCacheRedesignAgent,
+                 input: %Spectre.Input{text: "api key fails"},
+                 state: %State{},
+                 opts: [
+                   classify: classify,
+                   via: [:semantic_cache, :classifier],
+                   semantic_cache_source: semantic_redesign_source(),
+                   classification_log?: false
+                 ]
+               }
+             )
+
+    assert route.label == :TECHNICAL_SUPPORT
+    assert route.strategy == :local_classifier
+  end
+
+  test "learn true stores online examples after accepted LLM arbitration" do
+    agent = SpectreTest.OnlineLearningAgent
+    assert :ok = SemanticCache.clear(agent)
+
+    assert {:ok, route} =
+             Spectre.Router.route(
+               %Spectre.Input{text: "what do you charge for support"},
+               %Spectre.Context{
+                 agent: agent,
+                 input: %Spectre.Input{text: "what do you charge for support"},
+                 state: %State{},
+                 opts: Keyword.merge(agent.__spectre_config__(), classification_log?: false)
+               }
+             )
+
+    assert route.label == :PRICING
+    assert route.strategy == :llm_classifier
+
+    assert {:ok, [row]} = SemanticCache.examples(agent)
+    assert row.text == "what do you charge for support"
+    assert row.label == :PRICING
+    assert row.source == :online_learned
+    refute row.verified?
+
+    assert {:ok, cached} =
+             Learned.lookup("what do you charge for support",
+               spectre_agent: agent,
+               spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
+             )
+
+    assert cached.label == :PRICING
+  end
+
+  test "learn false and guarded inputs skip online learning" do
+    agent = SpectreTest.OnlineLearningAgent
+    assert :ok = SemanticCache.clear(agent)
+
+    for text <- [
+          "billing question please",
+          "price",
+          "delete my account",
+          "password: secret12345"
+        ] do
+      assert {:ok, _route} =
+               Spectre.Router.route(
+                 %Spectre.Input{text: text},
+                 %Spectre.Context{
+                   agent: agent,
+                   input: %Spectre.Input{text: text},
+                   state: %State{},
+                   opts: Keyword.merge(agent.__spectre_config__(), classification_log?: false)
+                 }
+               )
+    end
+
+    assert {:ok, []} = SemanticCache.examples(agent)
+  end
+
+  @tag :tmp_dir
+  test "examples API supports review mutations and read-only dataset rows", %{tmp_dir: tmp_dir} do
+    agent = SpectreTest.SemanticCacheRedesignAgent
+    assert :ok = SemanticCache.clear(agent)
+
+    opts = [semantic_cache_source: semantic_redesign_source()]
+
+    assert {:ok, row} =
+             SemanticCache.put(
+               "custom quote help",
+               %{label: :PRICING, accepted?: true, strategy: :llm_classifier},
+               Keyword.merge(opts,
+                 spectre_agent: agent,
+                 spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
+               )
+             )
+
+    assert {:ok, [listed]} = SemanticCache.examples(agent, opts)
+    assert listed.id == row.id
+
+    assert {:ok, verified} = SemanticCache.verify(agent, row.id, opts)
+    assert verified.verified?
+
+    assert {:ok, relabeled} = SemanticCache.relabel(agent, row.id, :SALES, opts)
+    assert relabeled.label == :SALES
+    assert relabeled.verified?
+
+    assert {:ok, offline_rows} =
+             SemanticCache.examples(agent, Keyword.put(opts, :source, :offline_dataset))
+
+    offline = Enum.find(offline_rows, &(&1.label == :PRICING))
+    assert {:error, :read_only_example} = SemanticCache.delete(agent, offline.id, opts)
+    assert {:error, :read_only_example} = SemanticCache.verify(agent, offline.id, opts)
+    assert {:error, :read_only_example} = SemanticCache.relabel(agent, offline.id, :SALES, opts)
+
+    path = Path.join(tmp_dir, "semantic_cache.online.jsonl")
+    assert {:ok, ^path} = SemanticCache.snapshot(agent, Keyword.merge(opts, path: path))
+
+    assert :ok = SemanticCache.clear(agent)
+    assert {:ok, []} = SemanticCache.examples(agent, opts)
+
+    assert {:ok, %{loaded: 1, skipped: 0}} = SemanticCache.load_snapshot(agent, path: path)
+    assert {:ok, [loaded]} = SemanticCache.examples(agent, opts)
+    assert loaded.label == :SALES
+
+    assert :ok = SemanticCache.delete(agent, loaded.id, opts)
+    assert {:ok, []} = SemanticCache.examples(agent, opts)
+  end
+
+  test "online mutations bump revision and rebuild semantic search index" do
+    agent = SpectreTest.SemanticCacheRedesignAgent
+    assert :ok = SemanticCache.clear(agent)
+
+    opts = [
+      spectre_agent: agent,
+      spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1),
+      semantic_cache_source: semantic_redesign_source(),
+      embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]},
+      semantic_search?: true,
+      semantic_cache_threshold: 0.0
+    ]
+
+    assert {:ok, _result} = Learned.lookup("pricing quote", opts)
+    revision = Learned.online_revision(agent)
+
+    assert {:ok, _row} =
+             SemanticCache.put(
+               "available schedule now",
+               %{label: :SALES, accepted?: true, strategy: :llm_classifier},
+               opts
+             )
+
+    assert Learned.online_revision(agent) > revision
+    assert {:ok, %{label: :SALES}} = Learned.lookup("available schedule now", opts)
   end
 
   test "semantic cache clear removes built-in learned cache for an agent" do
@@ -1709,7 +1974,7 @@ defmodule SpectreTest do
   end
 
   @tag :tmp_dir
-  test "training dataset reads configured classifier source for train true", %{
+  test "training dataset reads configured classifier source for known labels", %{
     tmp_dir: tmp_dir
   } do
     source_path = Path.join(tmp_dir, "configured_source.json")

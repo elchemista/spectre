@@ -3,8 +3,7 @@ defmodule Spectre.Rule do
   Declarative routing rule compiled from `Spectre.Agent` DSL.
 
   Rules are internal domain data. They normalize DSL options such as regexes,
-  examples, training metadata, checks, and handler declarations before any
-  router plug sees them.
+  examples, checks, and handler declarations before any router plug sees them.
 
       rule =
         Spectre.Rule.new(%{
@@ -23,8 +22,7 @@ defmodule Spectre.Rule do
     bag: [],
     jaro: [],
     embedding: [],
-    training: [],
-    training_source?: false,
+    cache: true,
     learn: false,
     checks: [],
     via: [],
@@ -46,8 +44,7 @@ defmodule Spectre.Rule do
           bag: [String.t()],
           jaro: [String.t()],
           embedding: [String.t()],
-          training: [],
-          training_source?: boolean(),
+          cache: boolean(),
           learn: boolean(),
           checks: [{atom() | String.t(), term()}],
           via: [atom()],
@@ -65,7 +62,7 @@ defmodule Spectre.Rule do
     attrs =
       attrs
       |> normalize_regex()
-      |> normalize_training()
+      |> reject_training_metadata()
       |> normalize_checks()
 
     struct(__MODULE__, Map.take(attrs, fields()))
@@ -109,35 +106,14 @@ defmodule Spectre.Rule do
   defp normalize_regex(%{regex: regexes} = attrs) when is_list(regexes), do: attrs
   defp normalize_regex(attrs), do: Map.put_new(attrs, :regex, [])
 
-  @spec normalize_training(map()) :: map()
-  defp normalize_training(%{training: []} = attrs), do: attrs
+  @spec reject_training_metadata(map()) :: map()
+  defp reject_training_metadata(%{train: value}), do: invalid_training!(:train, value)
+  defp reject_training_metadata(%{training: value}), do: invalid_training!(:training, value)
+  defp reject_training_metadata(attrs), do: attrs
 
-  defp normalize_training(%{training: training}) do
-    invalid_training_alias!(training)
-  end
-
-  defp normalize_training(%{train: true} = attrs),
-    do: attrs |> Map.delete(:train) |> Map.put(:training, []) |> Map.put(:training_source?, true)
-
-  defp normalize_training(%{train: false} = attrs),
-    do: attrs |> Map.delete(:train) |> Map.put(:training, [])
-
-  defp normalize_training(%{train: nil} = attrs),
-    do: attrs |> Map.delete(:train) |> Map.put(:training, [])
-
-  defp normalize_training(%{train: training}) do
-    invalid_training!(training)
-  end
-
-  defp normalize_training(attrs), do: Map.put_new(attrs, :training, [])
-
-  defp invalid_training!(value) do
+  defp invalid_training!(key, value) do
     raise ArgumentError,
-          "train: accepts only a boolean flag; put examples in the configured dataset, got: #{inspect(value)}"
-  end
-
-  defp invalid_training_alias!(_value) do
-    raise ArgumentError, "training: is not supported; use train: true or train: false"
+          "#{inspect(key)} is not supported; keep examples in labeled dataset files, got: #{inspect(value)}"
   end
 
   @spec normalize_checks(map()) :: map()
