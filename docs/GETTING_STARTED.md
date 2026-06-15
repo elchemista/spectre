@@ -40,13 +40,11 @@ defmodule MyApp.SupportAgent do
     request(:confirm_delete_account)
 
     accept(:confirmed_delete,
-      regex: ~r/^yes, delete it$/i,
-      train: true
+      regex: ~r/^yes, delete it$/i
     )
 
     reject(:cancel_delete,
-      regex: ~r/^no|cancel$/i,
-      train: true
+      regex: ~r/^no|cancel$/i
     )
 
     otherwise(ask: :confirm_delete_account_retry)
@@ -61,14 +59,12 @@ defmodule MyApp.SupportAgent do
     on :PRICING,
       regex: ~r/\b(price|pricing|cost)\b/i,
       embedding: ["how much does it cost?", "pricing plans"],
-      train: true,
       via: [:regex, :embedding, :classifier] do
       reply(:pricing, renderer: {MyApp.SupportReplies, :route_reply})
     end
 
     on :TECHNICAL_SUPPORT,
       embedding: ["my integration is failing", "the API returns an error"],
-      train: true,
       via: [:embedding, :classifier, :semantic_cache, :llm_classifier] do
       ask(:technical_support)
     end

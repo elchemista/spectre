@@ -84,6 +84,8 @@ defmodule Spectre.Router.Arbitrators.Default do
       (is_nil(margin) or margin >= Keyword.fetch!(opts, :embedding_margin))
   end
 
+  defp eligible?(%Candidate{provider: :llm_classifier, accepted?: true}, _opts), do: true
+
   defp eligible?(%Candidate{provider: :bag, score: score}, opts) do
     number?(score) and score >= Keyword.fetch!(opts, :bag_accept)
   end

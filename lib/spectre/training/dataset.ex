@@ -2,9 +2,9 @@ defmodule Spectre.Training.Dataset do
   @moduledoc """
   Builds classifier datasets from Spectre agent routing metadata.
 
-  Training examples live in configured dataset sources. Routes and policy
-  branches opt into those rows with `train: true`, and this module turns that
-  routing metadata into plain rows for classifier training.
+  Training examples live in configured dataset sources. Rows must carry a
+  `label` or `intent`, and this module exports only labels that exist on the
+  agent's routes or policy branches.
 
       {:ok, rows} =
         Spectre.Training.Dataset.from_agent(MyApp.Agent,
@@ -17,36 +17,30 @@ defmodule Spectre.Training.Dataset do
   @type row :: %{text: String.t(), label: String.t()}
 
   @doc """
-  Collects classifier rows from an agent's rule and policy `train` metadata.
+  Collects classifier rows from labeled dataset sources for the agent's known
+  route and policy labels.
 
-  Supported training declarations:
+  Supported dataset files:
 
-    * `train: true` - include examples for the route label from `:source`
-      files.
-    * `.json` files - list of objects with `text` and optional `label`/`intent`.
-    * `.jsonl` files - one JSON object per line.
-    * other files - one example per non-empty, non-comment line.
+    * `.json` files - list of objects with `text` and `label`/`intent`.
+    * `.jsonl` files - one JSON object per line with `text` and `label`/`intent`.
 
       {:ok, rows} = Spectre.Training.Dataset.from_agent(MyApp.Agent)
   """
   @spec from_agent(module(), keyword()) :: {:ok, [row()]} | {:error, term()}
   def from_agent(agent, opts \\ []) when is_atom(agent) and is_list(opts) do
-    with {:ok, targets} <- training_targets(agent),
-         {:ok, rows} <- collect_targets(targets, opts) do
+    with {:ok, labels} <- training_labels(agent),
+         {:ok, rows} <- collect_sources(labels, opts) do
       {:ok, dedupe(rows)}
     end
   end
 
-  @spec training_targets(module()) :: {:ok, [map()]} | {:error, term()}
-  defp training_targets(agent) do
+  @spec training_labels(module()) :: {:ok, MapSet.t(String.t())} | {:error, term()}
+  defp training_labels(agent) do
     case training_agent?(agent) do
-      true -> {:ok, agent |> agent_targets() |> Enum.filter(&training_target?/1)}
+      true -> {:ok, agent |> agent_labels() |> MapSet.new(&label_id/1)}
       false -> {:error, {:invalid_agent, agent}}
     end
-  end
-
-  defp training_target?(target) do
-    Map.get(target, :training_source?, false)
   end
 
   @spec training_agent?(module()) :: boolean()
@@ -54,67 +48,46 @@ defmodule Spectre.Training.Dataset do
     Code.ensure_loaded?(agent) and function_exported?(agent, :__spectre_rules__, 0)
   end
 
-  @spec agent_targets(module()) :: [map()]
-  defp agent_targets(agent), do: rule_targets(agent) ++ policy_targets(agent)
+  @spec agent_labels(module()) :: [atom()]
+  defp agent_labels(agent), do: rule_labels(agent) ++ policy_labels(agent)
 
-  @spec rule_targets(module()) :: [map()]
-  defp rule_targets(agent) do
+  @spec rule_labels(module()) :: [atom()]
+  defp rule_labels(agent) do
     agent.__spectre_rules__()
     |> Enum.map(&Rule.new/1)
-    |> Enum.map(fn rule ->
-      %{
-        label: rule.label,
-        training: [],
-        training_source?: rule.training_source?,
-        source: {:rule, rule.flow}
-      }
-    end)
+    |> Enum.map(& &1.label)
   end
 
-  @spec policy_targets(module()) :: [map()]
-  defp policy_targets(agent) do
+  @spec policy_labels(module()) :: [atom()]
+  defp policy_labels(agent) do
     if function_exported?(agent, :__spectre_policies__, 0) do
       agent.__spectre_policies__()
       |> Enum.flat_map(fn {policy_name, policy} ->
-        policy_targets(policy_name, Map.get(policy, :accepts, []), :accept) ++
-          policy_targets(policy_name, Map.get(policy, :rejects, []), :reject)
+        policy_labels(policy_name, Map.get(policy, :accepts, []), :accept) ++
+          policy_labels(policy_name, Map.get(policy, :rejects, []), :reject)
       end)
     else
       []
     end
   end
 
-  @spec policy_targets(atom(), [map()], atom()) :: [map()]
-  defp policy_targets(policy_name, branches, kind) do
-    Enum.map(branches, fn branch ->
-      %{
-        label: Map.fetch!(branch, :label),
-        training: [],
-        training_source?: Map.get(branch, :training_source?, false),
-        source: {:policy, policy_name, kind}
-      }
-    end)
+  @spec policy_labels(atom(), [map()], atom()) :: [atom()]
+  defp policy_labels(_policy_name, branches, _kind) do
+    Enum.map(branches, &Map.fetch!(&1, :label))
   end
 
-  @spec collect_targets([map()], keyword()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_targets(targets, opts) do
+  @spec collect_sources(MapSet.t(String.t()), keyword()) :: {:ok, [row()]} | {:error, term()}
+  defp collect_sources(labels, opts) do
     sources = sources(opts)
 
-    targets
+    sources
     |> Enum.reduce_while({:ok, []}, fn target, {:ok, rows} ->
-      case collect_target(target, sources) do
+      case collect_entry(target, labels) do
         {:ok, target_rows} -> {:cont, {:ok, rows ++ target_rows}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
-
-  @spec collect_target(map(), [String.t()]) :: {:ok, [row()]} | {:error, term()}
-  defp collect_target(%{training_source?: true, label: label}, sources) do
-    collect_entries(sources, label)
-  end
-
-  defp collect_target(_target, _sources), do: {:ok, []}
 
   defp sources(opts) do
     opts
@@ -139,67 +112,43 @@ defmodule Spectre.Training.Dataset do
     if File.exists?("training/dataset.json"), do: ["training/dataset.json"], else: []
   end
 
-  @spec collect_entries([term()], atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_entries(entries, label) do
-    entries
-    |> Enum.reject(&(&1 in [true, false, nil]))
-    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, rows} ->
-      case collect_entry(entry, label) do
-        {:ok, entry_rows} -> {:cont, {:ok, rows ++ entry_rows}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  @spec collect_entry(term(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_entry(entry, label) when is_binary(entry) do
+  @spec collect_entry(term(), MapSet.t(String.t())) :: {:ok, [row()]} | {:error, term()}
+  defp collect_entry(entry, labels) when is_binary(entry) do
     if File.exists?(entry) do
-      collect_file(entry, label)
+      collect_file(entry, labels)
     else
-      {:ok, [row(entry, label)]}
+      {:error, {:missing_dataset_source, entry}}
     end
   end
 
-  defp collect_entry(entry, _label), do: {:error, {:invalid_training_entry, entry}}
+  defp collect_entry(entry, _labels), do: {:error, {:invalid_training_source, entry}}
 
-  @spec collect_file(String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_file(path, label) do
+  @spec collect_file(String.t(), MapSet.t(String.t())) :: {:ok, [row()]} | {:error, term()}
+  defp collect_file(path, labels) do
     case Path.extname(path) do
-      ".json" -> collect_json_file(path, label)
-      ".jsonl" -> collect_jsonl_file(path, label)
-      _other -> collect_lines_file(path, label)
+      ".json" -> collect_json_file(path, labels)
+      ".jsonl" -> collect_jsonl_file(path, labels)
+      _other -> {:error, {:unsupported_dataset_source, path}}
     end
   end
 
-  @spec collect_json_file(String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_json_file(path, label) do
+  @spec collect_json_file(String.t(), MapSet.t(String.t())) :: {:ok, [row()]} | {:error, term()}
+  defp collect_json_file(path, labels) do
     with {:ok, text} <- File.read(path),
          {:ok, decoded} <- Jason.decode(text),
          true <- is_list(decoded) || {:error, {:invalid_dataset_json, path}} do
-      {:ok, decoded |> Enum.flat_map(&normalize_source_row(&1, label))}
+      {:ok, decoded |> Enum.flat_map(&normalize_source_row(&1, labels))}
     end
   end
 
-  @spec collect_jsonl_file(String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_jsonl_file(path, label) do
+  @spec collect_jsonl_file(String.t(), MapSet.t(String.t())) :: {:ok, [row()]} | {:error, term()}
+  defp collect_jsonl_file(path, labels) do
     with {:ok, text} <- File.read(path) do
       text
       |> dataset_lines()
       |> Enum.reduce_while({:ok, []}, fn line, {:ok, rows} ->
-        collect_jsonl_line(line, rows, path, label)
+        collect_jsonl_line(line, rows, path, labels)
       end)
-    end
-  end
-
-  @spec collect_lines_file(String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_lines_file(path, label) do
-    with {:ok, text} <- File.read(path) do
-      rows =
-        text
-        |> dataset_lines()
-        |> Enum.map(&row(&1, label))
-
-      {:ok, rows}
     end
   end
 
@@ -211,39 +160,42 @@ defmodule Spectre.Training.Dataset do
     |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
   end
 
-  @spec collect_jsonl_line(String.t(), [row()], String.t(), atom()) ::
+  @spec collect_jsonl_line(String.t(), [row()], String.t(), MapSet.t(String.t())) ::
           {:cont, {:ok, [row()]}} | {:halt, {:error, term()}}
-  defp collect_jsonl_line(line, rows, path, label) do
+  defp collect_jsonl_line(line, rows, path, labels) do
     case Jason.decode(line) do
-      {:ok, decoded} -> {:cont, {:ok, rows ++ normalize_source_row(decoded, label)}}
+      {:ok, decoded} -> {:cont, {:ok, rows ++ normalize_source_row(decoded, labels)}}
       {:error, reason} -> {:halt, {:error, {:invalid_jsonl_row, path, reason}}}
     end
   end
 
-  @spec normalize_source_row(term(), atom()) :: [row()]
-  defp normalize_source_row(%{"text" => text} = source, label) when is_binary(text) do
-    source_label = Map.get(source, "label", Map.get(source, "intent"))
+  @spec normalize_source_row(term(), MapSet.t(String.t())) :: [row()]
+  defp normalize_source_row(%{"text" => text} = source, labels) when is_binary(text) do
+    source
+    |> Map.get("label", Map.get(source, "intent"))
+    |> row_for_label(text, labels)
+  end
 
-    if blank?(source_label) or same_label?(source_label, label) do
+  defp normalize_source_row(%{text: text} = source, labels) when is_binary(text) do
+    source
+    |> Map.get(:label, Map.get(source, :intent))
+    |> row_for_label(text, labels)
+  end
+
+  defp normalize_source_row(_source, _labels), do: []
+
+  @spec row_for_label(term(), String.t(), MapSet.t(String.t())) :: [row()]
+  defp row_for_label(source_label, text, labels) do
+    label = label_id(source_label)
+
+    if label != "" and MapSet.member?(labels, label) do
       [row(text, label)]
     else
       []
     end
   end
 
-  defp normalize_source_row(%{text: text} = source, label) when is_binary(text) do
-    source_label = Map.get(source, :label, Map.get(source, :intent))
-
-    if blank?(source_label) or same_label?(source_label, label) do
-      [row(text, label)]
-    else
-      []
-    end
-  end
-
-  defp normalize_source_row(_source, _label), do: []
-
-  @spec row(String.t(), atom()) :: row()
+  @spec row(String.t(), atom() | String.t()) :: row()
   defp row(text, label), do: %{text: String.trim(text), label: label_id(label)}
 
   @spec dedupe([row()]) :: [row()]
@@ -253,15 +205,8 @@ defmodule Spectre.Training.Dataset do
     |> Enum.uniq_by(&{&1.label, String.downcase(&1.text)})
   end
 
-  @spec same_label?(term(), atom()) :: boolean()
-  defp same_label?(source_label, label) do
-    source_label
-    |> to_string()
-    |> String.upcase()
-    |> Kernel.==(label_id(label))
-  end
-
-  @spec label_id(atom()) :: String.t()
+  @spec label_id(term()) :: String.t()
+  defp label_id(nil), do: ""
   defp label_id(label), do: label |> to_string() |> String.upcase()
 
   @spec blank?(term()) :: boolean()

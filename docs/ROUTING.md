@@ -472,27 +472,39 @@ router only needs `embed/2` to return stable vectors.
 ## Semantic Search And Cache
 
 Semantic cache is an adapter boundary. Spectre does not force a vector database,
-embedding model, table shape, or cache strategy.
+embedding model, table shape, or cache strategy. It is independent from the
+local classifier: a semantic-cache miss does not block classifier routing, and
+`cache: false` never hides a route from `:classifier`.
 
-For the common local case, a route can opt into Spectre's built-in learned cache:
+For the common local case, Spectre's built-in cache reads labeled offline
+dataset rows and route examples by default:
 
 ```elixir
 embedding(MyApp.Embeddings, model: "intfloat/multilingual-e5-small")
 
-on :PRICING,
-  train: true,
-  learn: true do
+on :PRICING, learn: true do
   reply(:pricing)
+end
+
+on :DELETE_ACCOUNT,
+  cache: false,
+  learn: false do
+  action(:delete_account)
 end
 ```
 
-`train: true` marks the route as trainable. `learn: true` mirrors matching rows
-from the configured classifier dataset sources into the learned semantic cache.
-Exact lookup runs without embeddings; semantic search embeds those examples and
+Labeled rows from configured classifier datasets are mirrored into semantic
+search by default when the label maps to a cacheable route. `learn: true` means
+online learning only: after the LLM classifier fallback accepts a final route,
+Spectre can store the user text as an editable online example. `cache: false`
+excludes offline rows, static route examples, and online examples for that
+route from semantic cache.
+
+Exact lookup runs without embeddings; semantic search embeds examples and
 indexes them with Vettore. If no router `via:` is configured, Spectre adds
-`:semantic_cache` automatically when learned rules exist. If a rule has an
-explicit route-level
-`via:`, `learn: true` adds `:semantic_cache` to that rule's visibility.
+`:semantic_cache` automatically when cacheable rules exist. If a rule has an
+explicit route-level `via:`, it must include `:semantic_cache` for semantic
+cache to see that route.
 
 Clear the learned cache at runtime when examples, thresholds, or tenant data
 have changed:
@@ -513,10 +525,10 @@ Spectre.ask(MyApp.SupportAgent, "pricing please",
 )
 ```
 
-For the built-in learned cache, clearing drops Spectre's in-memory Vettore cache
-for that agent. The next semantic search rebuilds the cache from the route's
-`train:` flags. It does not edit source files, DSL declarations,
-or classifier artifacts.
+For the built-in cache, clearing drops Spectre's in-memory Vettore cache and
+online learned rows for that agent by default. Static dataset rows are read from
+their configured sources again on the next lookup. Clearing does not edit source
+files, DSL declarations, or classifier artifacts.
 
 Custom adapters still win. Configure one of these when your app owns the cache:
 
@@ -579,8 +591,9 @@ end
 `Spectre.Router.SemanticCache.clear/2` also calls configured module adapters'
 `clear/2` callback. If `semantic_cache: MyApp.SemanticCache` is configured and
 the module does not implement `clear/2`, clearing returns an error. A bare
-`semantic_lookup:` function can be used for lookup, but it cannot be cleared
-unless a `semantic_cache:` module is also configured.
+`semantic_lookup:` function can be used for lookup, but it is lookup-only:
+write, review, snapshot, and clear operations require either the built-in cache
+or a `semantic_cache:` module.
 
 There are two semantic-cache moments:
 
@@ -613,5 +626,22 @@ Useful built-in learned-cache options:
   Vettore index, default `:flat`.
 - `semantic_cache_compressed?` controls compressed ETS storage for the learned
   Vettore collection, default `true`.
-- `semantic_cache_source` supplies dataset files for rules that use
-  `train: true`.
+- `semantic_cache_source` supplies dataset files.
+- `semantic_cache_static?: false` disables offline/static rows for a call.
+- `mirror_training_dataset?: false` disables labeled dataset mirroring.
+- `semantic_learn_failure: :error` makes online learning write failures strict.
+
+Online learned examples are reviewable:
+
+```elixir
+{:ok, rows} = Spectre.Router.SemanticCache.examples(MyApp.SupportAgent)
+{:ok, row} = Spectre.Router.SemanticCache.verify(MyApp.SupportAgent, "scx_123")
+{:ok, row} = Spectre.Router.SemanticCache.relabel(MyApp.SupportAgent, "scx_123", :BILLING)
+:ok = Spectre.Router.SemanticCache.delete(MyApp.SupportAgent, "scx_123")
+{:ok, path} = Spectre.Router.SemanticCache.snapshot(MyApp.SupportAgent, path: "priv/spectre/cache.jsonl")
+{:ok, _summary} = Spectre.Router.SemanticCache.load_snapshot(MyApp.SupportAgent, path: "priv/spectre/cache.jsonl")
+```
+
+`examples/2` returns online learned rows by default. Use `source:
+:offline_dataset`, `source: :static_route_example`, or `source: :all` to inspect
+read-only static rows.

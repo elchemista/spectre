@@ -1,23 +1,22 @@
 # Training
 
-Training examples live in datasets. The DSL only marks which routes and policy
-branches should consume those examples.
+Training examples live in labeled datasets. Runtime routing does not accept a
+`train:` DSL flag; local classifier artifacts and semantic-cache dataset
+mirroring are separate systems.
 
-Mark a route as trainable:
+For modern labeled datasets, write rows with `text` and `label`/`intent` and let
+the classifier trainer consume them directly:
 
-```elixir
-on :PRICING, train: true do
-  reply(:pricing)
-end
+```json
+[
+  {"text": "how much does it cost?", "label": "PRICING"},
+  {"text": "my API key is failing", "intent": "TECHNICAL_SUPPORT"}
+]
 ```
 
-Use `train: true` for every trainable route:
-
-```elixir
-on :TECHNICAL_SUPPORT, train: true do
-  ask(:technical_support)
-end
-```
+Classifier artifacts route by label when `:classifier` can see the route.
+Semantic cache mirrors labeled dataset rows by default unless the route uses
+`cache: false`.
 
 You can configure those sources globally:
 
@@ -27,7 +26,7 @@ config :spectre, :classifier,
   artifact_dir: "artifacts/spectre"
 ```
 
-`train:` is a boolean flag. Do not put examples in the DSL; `training:`,
+Do not put training examples in the DSL. `train:`, `training:`,
 `train: [...]`, `train: "file.jsonl"`, and similar inline training forms are
 invalid.
 
@@ -35,9 +34,9 @@ Dataset files can be:
 
 - `.json` list of objects
 - `.jsonl` one object per line
-- plain text, one example per non-empty non-comment line
 
-Rows can use either `label` or `intent`:
+Rows can use either `label` or `intent`. Labeled `.json` and `.jsonl` rows are
+also mirrored into the built-in semantic cache by default for cacheable routes:
 
 ```json
 [

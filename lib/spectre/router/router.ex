@@ -120,15 +120,15 @@ defmodule Spectre.Router do
   defp default_via(opts, rules) do
     via = Keyword.get(opts, :via, [:regex])
 
-    if learned_rules?(rules) and Keyword.get(opts, :semantic_cache?, true) do
+    if cacheable_rules?(rules) and Keyword.get(opts, :semantic_cache?, true) do
       via |> List.wrap() |> Kernel.++([:semantic_cache]) |> Enum.uniq()
     else
       List.wrap(via)
     end
   end
 
-  @spec learned_rules?([Rule.t()]) :: boolean()
-  defp learned_rules?(rules), do: Enum.any?(rules, & &1.learn)
+  @spec cacheable_rules?([Rule.t()]) :: boolean()
+  defp cacheable_rules?(rules), do: Enum.any?(rules, & &1.cache)
 
   @spec pipeline_from_via([atom()] | atom()) :: [module()]
   defp pipeline_from_via(via) do

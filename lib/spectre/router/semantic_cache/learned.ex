@@ -1,25 +1,46 @@
 defmodule Spectre.Router.SemanticCache.Learned do
   @moduledoc """
-  Built-in semantic cache backed by learned route examples.
+  Built-in semantic cache backed by static dataset rows and online examples.
 
-  Rules opt in with `learn: true` and `train: true`. Examples are loaded from
-  the configured dataset sources and become exact lookup rows and, for semantic
-  search, Vettore embeddings. Hosts can still override this cache with
-  `semantic_lookup:` or `semantic_cache:`.
+  Static rows come from labeled classifier datasets and route examples. Online
+  rows are mutable runtime examples stored in ETS. Exact lookup reads the merged
+  row set directly; semantic search builds a Vettore index and includes the
+  online revision in the cache key so mutations are visible on the next search.
   """
 
   alias Spectre.Classifier.Encoder
   alias Spectre.Rule
   alias Vettore.Embedding
 
-  @table __MODULE__
+  @index_table __MODULE__
+  @online_table Module.concat(__MODULE__, Online)
+  @revision_table Module.concat(__MODULE__, Revisions)
+
   @default_threshold 0.88
   @default_top_k 3
+  @default_learn_confidence 0.86
 
-  @type row :: %{text: String.t(), label: atom()}
+  @type source :: :offline_dataset | :static_route_example | :online_learned
+  @type row :: %{
+          id: String.t(),
+          agent: module(),
+          text: String.t(),
+          normalized_text: String.t(),
+          label: atom(),
+          source: source(),
+          source_strategy: atom() | nil,
+          accepted?: boolean(),
+          confidence: float() | nil,
+          margin: float() | nil,
+          verified?: boolean(),
+          editable?: boolean(),
+          metadata: map(),
+          inserted_at: DateTime.t(),
+          updated_at: DateTime.t()
+        }
 
   @doc """
-  Looks up text in the learned semantic cache.
+  Looks up text in the built-in semantic cache.
   """
   @spec lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def lookup(text, opts) when is_binary(text) and is_list(opts) do
@@ -37,27 +58,244 @@ defmodule Spectre.Router.SemanticCache.Learned do
   end
 
   @doc """
-  Clears cached Vettore indexes for an agent.
+  Stores or updates an online learned row.
+  """
+  @spec put(String.t(), map(), keyword()) :: {:ok, row()} | {:error, term()}
+  def put(text, result, opts) when is_binary(text) and is_map(result) and is_list(opts) do
+    with {:ok, agent} <- fetch_agent(opts),
+         {:ok, label} <- routeable_label(result_route_label(result), opts),
+         :ok <- cacheable_label(label, opts),
+         {:ok, text} <- valid_text(text) do
+      now = DateTime.utc_now()
+      normalized = normalize_text(text)
+      existing = find_online_by_normalized(agent, normalized)
+      id = (existing && existing.id) || result_id(result) || online_id()
+
+      row =
+        normalize_row(%{
+          id: id,
+          agent: agent,
+          text: text,
+          normalized_text: normalized,
+          label: label,
+          source: :online_learned,
+          source_strategy: result_source_strategy(result),
+          accepted?: true,
+          confidence: result_confidence(result, opts),
+          margin: Map.get(result, :margin),
+          verified?: Map.get(result, :verified?, false),
+          editable?: true,
+          metadata: online_metadata(result, agent, label, now),
+          inserted_at: (existing && existing.inserted_at) || now,
+          updated_at: now
+        })
+
+      online_table()
+      |> :ets.insert({{agent, id}, row})
+
+      bump_online_revision(agent)
+      {:ok, row}
+    end
+  end
+
+  def put(text, %Spectre.Route{} = route, opts), do: put(text, Map.from_struct(route), opts)
+  def put(_text, result, _opts), do: {:error, {:invalid_semantic_cache_result, result}}
+
+  @doc """
+  Returns semantic-cache rows for review.
+
+  By default this returns online learned rows only. Use `source: :all`,
+  `source: :offline_dataset`, or `source: :static_route_example` to inspect
+  other sources.
+  """
+  @spec examples(module(), keyword()) :: {:ok, [row()]} | {:error, term()}
+  def examples(agent, opts \\ [])
+
+  def examples(agent, opts) when is_atom(agent) and is_list(opts) do
+    with {:ok, opts} <- agent_opts(agent, opts) do
+      case Keyword.get(opts, :source, :online_learned) do
+        :online_learned -> {:ok, online_rows(agent, opts)}
+        :offline_dataset -> offline_dataset_rows(opts)
+        :static_route_example -> {:ok, static_route_rows(opts)}
+        :all -> rows(Keyword.put(opts, :semantic_cache_static?, true))
+        source -> {:error, {:invalid_semantic_cache_source, source}}
+      end
+    end
+  end
+
+  def examples(agent, _opts), do: {:error, {:invalid_agent, agent}}
+
+  @spec get_example(module(), String.t(), keyword()) :: {:ok, row()} | {:error, term()}
+  def get_example(agent, id, opts \\ [])
+
+  def get_example(agent, id, opts) when is_atom(agent) and is_binary(id) do
+    with {:ok, rows} <- examples(agent, Keyword.put(opts, :source, :all)) do
+      case Enum.find(rows, &(&1.id == id)) do
+        nil -> {:error, :not_found}
+        row -> {:ok, row}
+      end
+    end
+  end
+
+  def get_example(agent, id, _opts), do: {:error, {:invalid_example_lookup, agent, id}}
+
+  @spec relabel(module(), String.t(), atom(), keyword()) :: {:ok, row()} | {:error, term()}
+  def relabel(agent, id, new_label, opts \\ [])
+
+  def relabel(agent, id, new_label, opts)
+      when is_atom(agent) and is_binary(id) and is_atom(new_label) do
+    with {:ok, opts} <- agent_opts(agent, opts),
+         {:ok, row} <- mutable_or_read_only_row(agent, id, opts),
+         {:ok, label} <- routeable_label(new_label, opts),
+         :ok <- cacheable_label(label, opts) do
+      updated =
+        row
+        |> Map.put(:label, label)
+        |> Map.put(:verified?, true)
+        |> Map.put(:updated_at, DateTime.utc_now())
+        |> put_metadata(:verified_at, DateTime.utc_now())
+
+      :ets.insert(online_table(), {{agent, id}, updated})
+      bump_online_revision(agent)
+      {:ok, updated}
+    end
+  end
+
+  def relabel(agent, id, label, _opts), do: {:error, {:invalid_relabel, agent, id, label}}
+
+  @spec delete(module(), String.t(), keyword()) :: :ok | {:error, term()}
+  def delete(agent, id, opts \\ [])
+
+  def delete(agent, id, opts) when is_atom(agent) and is_binary(id) do
+    with {:ok, opts} <- agent_opts(agent, opts) do
+      case mutable_online_row(agent, id, opts) do
+        {:ok, _row} ->
+          :ets.delete(online_table(), {agent, id})
+          bump_online_revision(agent)
+          :ok
+
+        {:error, :not_found} ->
+          read_only_or_not_found(agent, id, opts)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  def delete(agent, id, _opts), do: {:error, {:invalid_delete, agent, id}}
+
+  @spec verify(module(), String.t(), keyword()) :: {:ok, row()} | {:error, term()}
+  def verify(agent, id, opts \\ [])
+
+  def verify(agent, id, opts) when is_atom(agent) and is_binary(id) do
+    with {:ok, opts} <- agent_opts(agent, opts),
+         {:ok, row} <- mutable_or_read_only_row(agent, id, opts) do
+      now = DateTime.utc_now()
+
+      updated =
+        row
+        |> Map.put(:verified?, true)
+        |> Map.put(:updated_at, now)
+        |> put_metadata(:verified_at, now)
+
+      :ets.insert(online_table(), {{agent, id}, updated})
+      bump_online_revision(agent)
+      {:ok, updated}
+    end
+  end
+
+  def verify(agent, id, _opts), do: {:error, {:invalid_verify, agent, id}}
+
+  @spec snapshot(module(), keyword()) :: {:ok, String.t() | [map()]} | {:error, term()}
+  def snapshot(agent, opts \\ [])
+
+  def snapshot(agent, opts) when is_atom(agent) and is_list(opts) do
+    source = Keyword.get(opts, :source, :online_learned)
+
+    case examples(agent, Keyword.put(opts, :source, source)) do
+      {:ok, rows} -> write_snapshot(rows, Keyword.get(opts, :path))
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def snapshot(agent, _opts), do: {:error, {:invalid_agent, agent}}
+
+  @spec write_snapshot([row()], String.t() | nil | term()) ::
+          {:ok, String.t() | [map()]} | {:error, term()}
+  defp write_snapshot(rows, nil), do: {:ok, Enum.map(rows, &encode_snapshot_row/1)}
+
+  defp write_snapshot(rows, path) when is_binary(path) do
+    rows
+    |> Enum.map(&encode_snapshot_row/1)
+    |> Enum.map_join("\n", &Jason.encode!/1)
+    |> write_snapshot_file(path)
+  end
+
+  defp write_snapshot(_rows, path), do: {:error, {:invalid_snapshot_path, path}}
+
+  @spec write_snapshot_file(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  defp write_snapshot_file(encoded, path) do
+    case File.mkdir_p(Path.dirname(path)) do
+      :ok -> write_snapshot_file_contents(path, encoded)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec write_snapshot_file_contents(String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  defp write_snapshot_file_contents(path, encoded) do
+    case File.write(path, encoded <> if(encoded == "", do: "", else: "\n")) do
+      :ok -> {:ok, path}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec load_snapshot(module(), term(), keyword()) :: {:ok, map()} | {:error, term()}
+  def load_snapshot(agent, snapshot_or_opts, opts \\ []) when is_atom(agent) and is_list(opts) do
+    with {:ok, opts} <- agent_opts(agent, opts),
+         {:ok, entries} <- snapshot_entries(snapshot_or_opts) do
+      load_entries(agent, entries, opts)
+    end
+  end
+
+  @doc """
+  Clears online rows and cached Vettore indexes for an agent.
   """
   @spec clear(module(), keyword()) :: :ok
-  def clear(agent, _opts \\ []) when is_atom(agent) do
-    case :ets.whereis(@table) do
-      :undefined ->
-        :ok
+  def clear(agent, opts \\ []) when is_atom(agent) do
+    source = Keyword.get(opts, :source, :online_learned)
 
-      _tid ->
-        @table
-        |> :ets.tab2list()
-        |> Enum.each(fn
-          {{{:agent, ^agent}, _hash} = key, index} ->
-            drop_index(index)
-            :ets.delete(@table, key)
+    if source in [:online_learned, :all] do
+      clear_online_rows(agent)
+      bump_online_revision(agent)
+    end
 
-          _other ->
-            :ok
-        end)
+    clear_indexes(agent)
+  end
 
-        :ok
+  @doc """
+  Returns the merged row set used by built-in exact lookup and semantic search.
+  """
+  @spec rows(keyword()) :: {:ok, [row()]} | {:error, term()}
+  def rows(opts) when is_list(opts) do
+    agent = Keyword.get(opts, :spectre_agent, :anonymous)
+
+    with {:ok, offline} <- maybe_offline_dataset_rows(opts) do
+      rows =
+        offline ++
+          maybe_static_route_rows(opts) ++
+          online_rows(agent, opts)
+
+      {:ok, dedupe(rows)}
+    end
+  end
+
+  @spec online_revision(module()) :: non_neg_integer()
+  def online_revision(agent) do
+    case :ets.lookup(revision_table(), agent) do
+      [{^agent, revision}] -> revision
+      [] -> 0
     end
   end
 
@@ -66,17 +304,19 @@ defmodule Spectre.Router.SemanticCache.Learned do
     key = normalize_text(text)
 
     rows
-    |> Enum.find(&(normalize_text(&1.text) == key))
+    |> Enum.find(&(&1.normalized_text == key))
     |> case do
-      %{label: label, text: matched} ->
+      %{label: label, text: matched, confidence: confidence, source: source} = row ->
         {:ok,
          %{
            label: label,
            accepted?: true,
-           confidence: 1.0,
+           confidence: confidence || 1.0,
            margin: 1.0,
            matched: matched,
-           strategy: :semantic_cache_exact
+           strategy: :semantic_cache_exact,
+           semantic_examples: [row],
+           semantic_cache_source: source
          }}
 
       nil ->
@@ -101,7 +341,8 @@ defmodule Spectre.Router.SemanticCache.Learned do
          margin: score - second_score,
          matched: result_text(first),
          scores: label_scores(results),
-         strategy: :semantic_cache_search
+         strategy: :semantic_cache_search,
+         semantic_examples: result_rows(results)
        }}
     else
       [] -> {:error, :miss}
@@ -113,7 +354,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @spec index([row()], keyword()) :: {:ok, map()} | {:error, term()}
   defp index(rows, opts) do
     key = cache_key(rows, opts)
-    table = ensure_table()
+    table = index_table()
 
     case :ets.lookup(table, key) do
       [{^key, index}] -> {:ok, index}
@@ -132,7 +373,6 @@ defmodule Spectre.Router.SemanticCache.Learned do
         inserted_at: System.unique_integer([:monotonic, :positive])
       }
 
-      # Evict before insert so the configured capacity includes the new index.
       evict_oldest_indexes(table, key, opts)
       :ets.insert(table, {key, index})
       {:ok, index}
@@ -171,156 +411,638 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @spec embeddings([map()]) :: [Embedding.t()]
   defp embeddings(rows) do
     rows
-    |> Enum.with_index()
-    |> Enum.map(fn {%{label: label, text: text, vector: vector}, index} ->
+    |> Enum.map(fn %{id: id, label: label, text: text, vector: vector} = row ->
       %Embedding{
-        id: "#{label}:#{index}:#{:erlang.phash2(text)}",
+        id: id,
         value: text,
         vector: vector,
-        metadata: %{"label" => label, "text" => text}
+        metadata: %{"label" => label, "text" => text, "row" => Map.delete(row, :vector)}
       }
     end)
   end
 
-  @spec rows(keyword()) :: {:ok, [row()]} | {:error, term()}
-  defp rows(opts) do
-    opts
-    |> Keyword.get(:spectre_rules, [])
-    |> Enum.filter(&Map.get(&1, :learn, false))
-    |> Enum.reduce_while({:ok, []}, fn rule, {:ok, acc} ->
-      case rule_rows(rule, opts) do
-        {:ok, rule_rows} -> {:cont, {:ok, acc ++ rule_rows}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, learned_rows} -> {:ok, dedupe(learned_rows)}
-      {:error, reason} -> {:error, reason}
+  @spec fetch_agent(keyword()) :: {:ok, module()} | {:error, term()}
+  defp fetch_agent(opts) do
+    case Keyword.get(opts, :spectre_agent) do
+      agent when is_atom(agent) and not is_nil(agent) -> {:ok, agent}
+      other -> {:error, {:missing_spectre_agent, other}}
     end
   end
 
-  @spec rule_rows(Rule.t(), keyword()) :: {:ok, [row()]} | {:error, term()}
-  defp rule_rows(%Rule{training_source?: true, label: label}, opts) do
-    opts
-    |> sources()
-    |> collect_entries(label)
+  @spec agent_opts(module(), keyword()) :: {:ok, keyword()} | {:error, term()}
+  defp agent_opts(agent, opts) do
+    if valid_agent?(agent) do
+      opts =
+        agent.__spectre_router__()
+        |> Keyword.merge(opts)
+        |> Keyword.put_new(:spectre_agent, agent)
+        |> Keyword.put_new(:spectre_rules, spectre_rules(agent))
+
+      {:ok, opts}
+    else
+      {:error, {:invalid_agent, agent}}
+    end
   end
 
-  defp rule_rows(%Rule{}, _opts), do: {:ok, []}
+  @spec valid_agent?(module()) :: boolean()
+  defp valid_agent?(agent) do
+    Code.ensure_loaded?(agent) and function_exported?(agent, :__spectre_router__, 0)
+  end
 
-  @spec collect_entries([term()], atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_entries(entries, label) do
-    entries
+  @spec spectre_rules(module()) :: [Rule.t()]
+  defp spectre_rules(agent) do
+    if function_exported?(agent, :__spectre_rules__, 0) do
+      Enum.map(agent.__spectre_rules__(), &Rule.new/1)
+    else
+      []
+    end
+  end
+
+  @spec maybe_offline_dataset_rows(keyword()) :: {:ok, [row()]} | {:error, term()}
+  defp maybe_offline_dataset_rows(opts) do
+    if static_rows_enabled?(opts) and mirror_training_dataset?(opts) do
+      offline_dataset_rows(opts)
+    else
+      {:ok, []}
+    end
+  end
+
+  @spec maybe_static_route_rows(keyword()) :: [row()]
+  defp maybe_static_route_rows(opts) do
+    if static_rows_enabled?(opts), do: static_route_rows(opts), else: []
+  end
+
+  @spec offline_dataset_rows(keyword()) :: {:ok, [row()]} | {:error, term()}
+  defp offline_dataset_rows(opts) do
+    rules = cacheable_rules(opts)
+
+    opts
+    |> sources()
     |> Enum.reject(&(&1 in [true, false, nil]))
     |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
-      case collect_entry(entry, label) do
+      case collect_entry(entry, rules, opts) do
         {:ok, rows} -> {:cont, {:ok, acc ++ rows}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  @spec collect_entry(term(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_entry(entry, label) when is_binary(entry) do
-    if File.exists?(entry) do
-      collect_file(entry, label)
-    else
-      {:ok, [row(entry, label)]}
-    end
-  end
+  @spec static_route_rows(keyword()) :: [row()]
+  defp static_route_rows(opts) do
+    agent = Keyword.get(opts, :spectre_agent, :anonymous)
 
-  defp collect_entry(entry, _label), do: {:error, {:invalid_learning_entry, entry}}
-
-  @spec collect_file(String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_file(path, label) do
-    case Path.extname(path) do
-      ".json" -> collect_json_file(path, label)
-      ".jsonl" -> collect_jsonl_file(path, label)
-      _other -> collect_lines_file(path, label)
-    end
-  end
-
-  @spec collect_json_file(String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_json_file(path, label) do
-    with {:ok, text} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(text),
-         true <- is_list(decoded) || {:error, {:invalid_learning_json, path}} do
-      {:ok, decoded |> Enum.flat_map(&normalize_source_row(&1, label))}
-    end
-  end
-
-  @spec collect_jsonl_file(String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_jsonl_file(path, label) do
-    with {:ok, text} <- File.read(path) do
-      text
-      |> dataset_lines()
-      |> collect_jsonl_lines(path, label)
-    end
-  end
-
-  @spec collect_jsonl_lines([String.t()], String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_jsonl_lines(lines, path, label) do
-    Enum.reduce_while(lines, {:ok, []}, fn line, {:ok, acc} ->
-      collect_jsonl_line(line, acc, path, label)
+    opts
+    |> cacheable_rules()
+    |> Enum.flat_map(fn rule ->
+      rule
+      |> static_examples()
+      |> Enum.map(&static_route_row(agent, rule, &1))
     end)
   end
 
-  @spec collect_jsonl_line(String.t(), [row()], String.t(), atom()) ::
-          {:cont, {:ok, [row()]}} | {:halt, {:error, term()}}
-  defp collect_jsonl_line(line, acc, path, label) do
-    case Jason.decode(line) do
-      {:ok, decoded} -> {:cont, {:ok, acc ++ normalize_source_row(decoded, label)}}
-      {:error, reason} -> {:halt, {:error, {:invalid_learning_jsonl_row, path, reason}}}
-    end
+  @spec online_rows(module(), keyword()) :: [row()]
+  defp online_rows(agent, opts) do
+    labels = opts |> cacheable_rules() |> Map.new(&{&1.label, true})
+
+    online_table()
+    |> :ets.tab2list()
+    |> Enum.flat_map(fn
+      {{^agent, _id}, %{label: label} = row} ->
+        if Map.has_key?(labels, label), do: [row], else: []
+
+      _other ->
+        []
+    end)
   end
 
-  @spec collect_lines_file(String.t(), atom()) :: {:ok, [row()]} | {:error, term()}
-  defp collect_lines_file(path, label) do
-    with {:ok, text} <- File.read(path) do
-      {:ok, text |> dataset_lines() |> Enum.map(&row(&1, label))}
-    end
+  @spec cacheable_rules(keyword()) :: [Rule.t()]
+  defp cacheable_rules(opts) do
+    opts
+    |> Keyword.get(:spectre_rules, [])
+    |> Enum.map(&Rule.new(rule_to_map(&1)))
+    |> Enum.filter(&cacheable_rule?/1)
   end
 
-  @spec normalize_source_row(term(), atom()) :: [row()]
-  defp normalize_source_row(%{"text" => text} = source, label) when is_binary(text) do
-    source_label = Map.get(source, "label", Map.get(source, "intent"))
+  defp cacheable_rule?(%Rule{cache: false}), do: false
+  defp cacheable_rule?(%Rule{via: []}), do: true
+  defp cacheable_rule?(%Rule{via: via}), do: :semantic_cache in via
 
-    if blank?(source_label) or same_label?(source_label, label) do
-      [row(text, label)]
+  @spec collect_entry(term(), [Rule.t()], keyword()) :: {:ok, [row()]} | {:error, term()}
+  defp collect_entry(entry, rules, opts) when is_binary(entry) do
+    if File.exists?(entry) do
+      collect_file(entry, rules, opts)
     else
-      []
+      {:error, {:missing_semantic_cache_source, entry}}
     end
   end
 
-  defp normalize_source_row(%{text: text} = source, label) when is_binary(text) do
-    source_label = Map.get(source, :label, Map.get(source, :intent))
+  defp collect_entry(entry, _rules, _opts), do: {:error, {:invalid_learning_entry, entry}}
 
-    if blank?(source_label) or same_label?(source_label, label) do
-      [row(text, label)]
-    else
-      []
+  @spec collect_file(String.t(), [Rule.t()], keyword()) :: {:ok, [row()]} | {:error, term()}
+  defp collect_file(path, rules, opts) do
+    case Path.extname(path) do
+      ".json" -> collect_json_file(path, rules, opts)
+      ".jsonl" -> collect_jsonl_file(path, rules, opts)
+      _other -> {:error, {:unsupported_semantic_cache_source, path}}
     end
   end
 
-  defp normalize_source_row(_source, _label), do: []
+  @spec collect_json_file(String.t(), [Rule.t()], keyword()) :: {:ok, [row()]} | {:error, term()}
+  defp collect_json_file(path, rules, opts) do
+    with {:ok, text} <- File.read(path),
+         {:ok, decoded} <- Jason.decode(text),
+         true <- is_list(decoded) || {:error, {:invalid_learning_json, path}} do
+      {:ok, Enum.flat_map(decoded, &source_rows(&1, rules, opts, path))}
+    end
+  end
 
-  @spec dataset_lines(String.t()) :: [String.t()]
-  defp dataset_lines(text) do
+  @spec collect_jsonl_file(String.t(), [Rule.t()], keyword()) :: {:ok, [row()]} | {:error, term()}
+  defp collect_jsonl_file(path, rules, opts) do
+    case File.read(path) do
+      {:ok, text} -> collect_jsonl_text(text, path, rules, opts)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec collect_jsonl_text(String.t(), String.t(), [Rule.t()], keyword()) ::
+          {:ok, [row()]} | {:error, term()}
+  defp collect_jsonl_text(text, path, rules, opts) do
     text
-    |> String.split("\n")
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
+    |> dataset_lines()
+    |> Enum.reduce_while({:ok, []}, fn line, {:ok, acc} ->
+      collect_jsonl_line(line, acc, path, rules, opts)
+    end)
   end
 
-  @spec row(String.t(), atom()) :: row()
-  defp row(text, label), do: %{text: String.trim(text), label: label}
+  @spec collect_jsonl_line(String.t(), [row()], String.t(), [Rule.t()], keyword()) ::
+          {:cont, {:ok, [row()]}} | {:halt, {:error, term()}}
+  defp collect_jsonl_line(line, acc, path, rules, opts) do
+    case Jason.decode(line) do
+      {:ok, decoded} ->
+        {:cont, {:ok, acc ++ source_rows(decoded, rules, opts, path)}}
+
+      {:error, reason} ->
+        {:halt, {:error, {:invalid_learning_jsonl_row, path, reason}}}
+    end
+  end
+
+  @spec source_rows(term(), [Rule.t()], keyword(), String.t()) :: [row()]
+  defp source_rows(%{"text" => text} = source, rules, opts, path) when is_binary(text) do
+    source_label = Map.get(source, "label", Map.get(source, "intent"))
+    rows_for_source_text(text, source_label, source, rules, opts, path)
+  end
+
+  defp source_rows(%{text: text} = source, rules, opts, path) when is_binary(text) do
+    source_label = Map.get(source, :label, Map.get(source, :intent))
+    rows_for_source_text(text, source_label, source, rules, opts, path)
+  end
+
+  defp source_rows(_source, _rules, _opts, _path), do: []
+
+  @spec rows_for_source_text(String.t(), term(), map(), [Rule.t()], keyword(), String.t()) :: [
+          row()
+        ]
+  defp rows_for_source_text(text, source_label, source, rules, opts, path) do
+    agent = Keyword.get(opts, :spectre_agent, :anonymous)
+
+    case matching_rules(source_label, rules) do
+      [] ->
+        []
+
+      matched_rules ->
+        Enum.map(matched_rules, fn rule ->
+          offline_dataset_row(agent, rule, text, path, source)
+        end)
+    end
+  end
+
+  @spec matching_rules(term(), [Rule.t()]) :: [Rule.t()]
+  defp matching_rules(label, _rules) when label in [nil, ""], do: []
+
+  defp matching_rules(label, rules) do
+    Enum.filter(rules, &same_label?(label, &1.label))
+  end
+
+  @spec offline_dataset_row(module(), Rule.t(), String.t(), String.t() | nil, map()) :: row()
+  defp offline_dataset_row(agent, %Rule{} = rule, text, path, source) do
+    normalized = normalize_text(text)
+
+    normalize_row(%{
+      id: "dataset_#{stable_hash([agent, rule.label, normalized, path])}",
+      agent: agent,
+      text: String.trim(text),
+      normalized_text: normalized,
+      label: rule.label,
+      source: :offline_dataset,
+      source_strategy: nil,
+      accepted?: true,
+      confidence: 1.0,
+      margin: nil,
+      verified?: true,
+      editable?: false,
+      metadata: %{
+        dataset_path: path,
+        source: source_metadata(source),
+        rule_label: rule.label
+      },
+      inserted_at: static_timestamp(),
+      updated_at: static_timestamp()
+    })
+  end
+
+  @spec static_route_row(module(), Rule.t(), String.t()) :: row()
+  defp static_route_row(agent, %Rule{} = rule, text) do
+    normalized = normalize_text(text)
+
+    normalize_row(%{
+      id: "static_#{stable_hash([agent, rule.label, normalized])}",
+      agent: agent,
+      text: String.trim(text),
+      normalized_text: normalized,
+      label: rule.label,
+      source: :static_route_example,
+      source_strategy: nil,
+      accepted?: true,
+      confidence: 1.0,
+      margin: nil,
+      verified?: true,
+      editable?: false,
+      metadata: %{rule_label: rule.label},
+      inserted_at: static_timestamp(),
+      updated_at: static_timestamp()
+    })
+  end
+
+  @spec static_examples(Rule.t()) :: [String.t()]
+  defp static_examples(%Rule{} = rule) do
+    (rule.embedding ++ rule.bag ++ rule.jaro)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  @spec mutable_online_row(module(), String.t(), keyword()) :: {:ok, row()} | {:error, term()}
+  defp mutable_online_row(agent, id, opts) do
+    case :ets.lookup(online_table(), {agent, id}) do
+      [{{^agent, ^id}, %{editable?: true} = row}] ->
+        if cacheable_label?(row.label, opts),
+          do: {:ok, row},
+          else: {:error, {:unknown_label, row.label}}
+
+      [{{^agent, ^id}, _row}] ->
+        {:error, :read_only_example}
+
+      [] ->
+        {:error, :not_found}
+    end
+  end
+
+  @spec mutable_or_read_only_row(module(), String.t(), keyword()) ::
+          {:ok, row()} | {:error, term()}
+  defp mutable_or_read_only_row(agent, id, opts) do
+    case mutable_online_row(agent, id, opts) do
+      {:error, :not_found} ->
+        case get_example(agent, id, opts) do
+          {:ok, %{editable?: false}} -> {:error, :read_only_example}
+          {:ok, _row} -> {:error, :read_only_example}
+          {:error, _reason} -> {:error, :not_found}
+        end
+
+      result ->
+        result
+    end
+  end
+
+  @spec read_only_or_not_found(module(), String.t(), keyword()) :: :ok | {:error, term()}
+  defp read_only_or_not_found(agent, id, opts) do
+    case get_example(agent, id, opts) do
+      {:ok, %{editable?: false}} -> {:error, :read_only_example}
+      {:ok, _row} -> :ok
+      {:error, _reason} -> {:error, :not_found}
+    end
+  end
+
+  @spec find_online_by_normalized(module(), String.t()) :: row() | nil
+  defp find_online_by_normalized(agent, normalized) do
+    online_table()
+    |> :ets.tab2list()
+    |> Enum.find_value(fn
+      {{^agent, _id}, %{normalized_text: ^normalized} = row} -> row
+      _other -> nil
+    end)
+  end
+
+  @spec routeable_label(term(), keyword()) :: {:ok, atom()} | {:error, term()}
+  defp routeable_label(label, opts) do
+    case route_label(label, Keyword.get(opts, :spectre_rules, [])) do
+      nil -> {:error, {:unknown_label, label}}
+      label -> {:ok, label}
+    end
+  end
+
+  @spec cacheable_label(atom(), keyword()) :: :ok | {:error, term()}
+  defp cacheable_label(label, opts) do
+    if cacheable_label?(label, opts), do: :ok, else: {:error, {:uncacheable_label, label}}
+  end
+
+  @spec cacheable_label?(atom(), keyword()) :: boolean()
+  defp cacheable_label?(label, opts), do: Enum.any?(cacheable_rules(opts), &(&1.label == label))
+
+  @spec route_label(term(), [Rule.t() | map()]) :: atom() | nil
+  defp route_label(label, rules) when is_atom(label) do
+    Enum.find_value(rules, fn rule ->
+      rule = Rule.new(rule_to_map(rule))
+      if rule.label == label, do: rule.label
+    end)
+  end
+
+  defp route_label(label, rules) when is_binary(label) do
+    Enum.find_value(rules, fn rule ->
+      rule = Rule.new(rule_to_map(rule))
+      if same_label?(label, rule.label), do: rule.label
+    end)
+  end
+
+  defp route_label(_label, _rules), do: nil
+
+  defp rule_to_map(%Rule{} = rule), do: Map.from_struct(rule)
+  defp rule_to_map(rule) when is_map(rule), do: rule
+
+  @spec result_route_label(map()) :: term()
+  defp result_route_label(result) do
+    Map.get(result, :label) || Map.get(result, :intent) || Map.get(result, "label") ||
+      Map.get(result, "intent")
+  end
+
+  @spec result_id(map()) :: String.t() | nil
+  defp result_id(result) do
+    case Map.get(result, :id) || Map.get(result, "id") do
+      id when is_binary(id) and id != "" -> id
+      _other -> nil
+    end
+  end
+
+  @spec result_source_strategy(map()) :: atom() | nil
+  defp result_source_strategy(result) do
+    Map.get(result, :source_strategy) || Map.get(result, "source_strategy") ||
+      Map.get(result, :strategy)
+  end
+
+  @spec result_confidence(map(), keyword()) :: float()
+  defp result_confidence(result, opts) do
+    case Map.get(result, :confidence) do
+      value when is_number(value) and value > 0 -> value
+      _other -> Keyword.get(opts, :semantic_learn_confidence, @default_learn_confidence)
+    end
+  end
+
+  @spec online_metadata(map(), module(), atom(), DateTime.t()) :: map()
+  defp online_metadata(result, agent, label, now) do
+    result_metadata =
+      case Map.get(result, :metadata, %{}) do
+        metadata when is_map(metadata) -> metadata
+        _other -> %{}
+      end
+
+    Map.merge(result_metadata, %{
+      agent: agent,
+      route: label,
+      verified?: Map.get(result, :verified?, false),
+      learned_at: now,
+      original_route_strategy: result_source_strategy(result)
+    })
+  end
+
+  @spec valid_text(String.t()) :: {:ok, String.t()} | {:error, term()}
+  defp valid_text(text) do
+    text = String.trim(text)
+    if text == "", do: {:error, :blank_text}, else: {:ok, text}
+  end
+
+  @spec normalize_row(map()) :: row()
+  defp normalize_row(row) do
+    row
+    |> Map.update!(:text, &String.trim/1)
+    |> Map.update(:normalized_text, normalize_text(row.text), &normalize_text/1)
+    |> Map.put_new(:accepted?, true)
+    |> Map.put_new(:confidence, nil)
+    |> Map.put_new(:margin, nil)
+    |> Map.put_new(:source_strategy, nil)
+    |> Map.put_new(:metadata, %{})
+  end
+
+  @spec put_metadata(row(), atom(), term()) :: row()
+  defp put_metadata(row, key, value) do
+    Map.update!(row, :metadata, &Map.put(&1, key, value))
+  end
 
   @spec dedupe([row()]) :: [row()]
   defp dedupe(rows) do
     rows
     |> Enum.reject(&(&1.text == ""))
-    |> Enum.uniq_by(&{&1.label, normalize_text(&1.text)})
+    |> Enum.sort_by(&dedupe_rank/1)
+    |> Enum.uniq_by(&{&1.agent, &1.normalized_text})
   end
+
+  @spec dedupe_rank(row()) :: {integer(), integer()}
+  defp dedupe_rank(%{source: :online_learned, verified?: true, updated_at: updated_at}) do
+    {0, -DateTime.to_unix(updated_at, :microsecond)}
+  end
+
+  defp dedupe_rank(%{source: :offline_dataset}), do: {1, 0}
+  defp dedupe_rank(%{source: :static_route_example}), do: {2, 0}
+
+  defp dedupe_rank(%{source: :online_learned, updated_at: updated_at}) do
+    {3, -DateTime.to_unix(updated_at, :microsecond)}
+  end
+
+  @spec encode_snapshot_row(row()) :: map()
+  defp encode_snapshot_row(row) do
+    %{
+      id: row.id,
+      text: row.text,
+      label: to_string(row.label),
+      source: to_string(row.source),
+      source_strategy: source_strategy_string(row.source_strategy),
+      confidence: row.confidence,
+      verified: row.verified?,
+      inserted_at: DateTime.to_iso8601(row.inserted_at),
+      updated_at: DateTime.to_iso8601(row.updated_at),
+      metadata: encode_metadata(row.metadata)
+    }
+  end
+
+  @spec source_strategy_string(atom() | nil) :: String.t() | nil
+  defp source_strategy_string(nil), do: nil
+  defp source_strategy_string(strategy), do: to_string(strategy)
+
+  @spec snapshot_entries(term()) :: {:ok, [map()]} | {:error, term()}
+  defp snapshot_entries(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      snapshot_entries_from_opts(opts)
+    else
+      {:ok, opts}
+    end
+  end
+
+  defp snapshot_entries(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, text} -> {:ok, snapshot_lines(text)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp snapshot_entries(other), do: {:error, {:invalid_snapshot, other}}
+
+  @spec snapshot_entries_from_opts(keyword()) :: {:ok, [map()]} | {:error, term()}
+  defp snapshot_entries_from_opts(opts) do
+    cond do
+      path = Keyword.get(opts, :path) -> snapshot_entries(path)
+      rows = Keyword.get(opts, :rows) -> snapshot_entries(rows)
+      true -> {:error, :missing_snapshot}
+    end
+  end
+
+  @spec snapshot_lines(String.t()) :: [map()]
+  defp snapshot_lines(text) do
+    text
+    |> dataset_lines()
+    |> Enum.map(&decode_snapshot_line/1)
+  end
+
+  @spec decode_snapshot_line(String.t()) :: map()
+  defp decode_snapshot_line(line) do
+    case Jason.decode(line) do
+      {:ok, row} -> row
+      {:error, reason} -> %{"__error__" => {:invalid_json, reason}}
+    end
+  end
+
+  @spec load_entries(module(), [map()], keyword()) :: {:ok, map()} | {:error, term()}
+  defp load_entries(agent, entries, opts) do
+    {loaded, skipped, errors} =
+      Enum.reduce(entries, {0, 0, []}, fn entry, {loaded, skipped, errors} ->
+        case load_entry(agent, entry, opts) do
+          {:ok, row} ->
+            :ets.insert(online_table(), {{agent, row.id}, row})
+            {loaded + 1, skipped, errors}
+
+          {:skip, reason} ->
+            {loaded, skipped + 1, [reason | errors]}
+        end
+      end)
+
+    if loaded > 0 do
+      bump_online_revision(agent)
+    end
+
+    summary = %{loaded: loaded, skipped: skipped, errors: Enum.reverse(errors)}
+
+    if Keyword.get(opts, :strict?, false) and errors != [] do
+      {:error, {:invalid_snapshot, summary}}
+    else
+      {:ok, summary}
+    end
+  end
+
+  @spec load_entry(module(), map(), keyword()) :: {:ok, row()} | {:skip, term()}
+  defp load_entry(_agent, %{"__error__" => reason}, _opts), do: {:skip, reason}
+
+  defp load_entry(agent, entry, opts) when is_map(entry) do
+    with {:ok, text} <- snapshot_text(entry),
+         {:ok, label} <- routeable_label(snapshot_label(entry), opts),
+         :ok <- cacheable_label(label, opts) do
+      {:ok, snapshot_row(agent, entry, text, label)}
+    else
+      {:skip, reason} -> {:skip, reason}
+      {:error, reason} -> {:skip, reason}
+    end
+  end
+
+  defp load_entry(_agent, entry, _opts), do: {:skip, {:invalid_snapshot_row, entry}}
+
+  @spec snapshot_text(map()) :: {:ok, String.t()} | {:skip, term()}
+  defp snapshot_text(entry) do
+    case Map.get(entry, "text") || Map.get(entry, :text) do
+      text when is_binary(text) ->
+        if String.trim(text) == "", do: {:skip, :blank_text}, else: {:ok, text}
+
+      _other ->
+        {:skip, :blank_text}
+    end
+  end
+
+  @spec snapshot_label(map()) :: term()
+  defp snapshot_label(entry), do: Map.get(entry, "label") || Map.get(entry, :label)
+
+  @spec snapshot_row(module(), map(), String.t(), atom()) :: row()
+  defp snapshot_row(agent, entry, text, label) do
+    now = DateTime.utc_now()
+    id = Map.get(entry, "id") || Map.get(entry, :id) || online_id()
+
+    normalize_row(%{
+      id: id,
+      agent: agent,
+      text: text,
+      normalized_text: normalize_text(text),
+      label: label,
+      source: :online_learned,
+      source_strategy:
+        snapshot_atom(Map.get(entry, "source_strategy") || Map.get(entry, :source_strategy)),
+      accepted?: true,
+      confidence: snapshot_confidence(entry),
+      margin: nil,
+      verified?: Map.get(entry, "verified", Map.get(entry, :verified?, false)),
+      editable?: true,
+      metadata: snapshot_metadata(entry),
+      inserted_at:
+        snapshot_time(Map.get(entry, "inserted_at") || Map.get(entry, :inserted_at), now),
+      updated_at: snapshot_time(Map.get(entry, "updated_at") || Map.get(entry, :updated_at), now)
+    })
+  end
+
+  @spec snapshot_confidence(map()) :: float()
+  defp snapshot_confidence(entry) do
+    case Map.get(entry, "confidence") || Map.get(entry, :confidence) do
+      value when is_number(value) and value > 0 -> value
+      _other -> @default_learn_confidence
+    end
+  end
+
+  @spec snapshot_metadata(map()) :: map()
+  defp snapshot_metadata(entry) do
+    case Map.get(entry, "metadata") || Map.get(entry, :metadata) do
+      metadata when is_map(metadata) -> metadata
+      _other -> %{}
+    end
+  end
+
+  @spec snapshot_atom(term()) :: atom() | nil
+  defp snapshot_atom(nil), do: nil
+
+  defp snapshot_atom(value) when is_atom(value), do: value
+
+  defp snapshot_atom(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> nil
+      text -> String.to_atom(text)
+    end
+  end
+
+  @spec snapshot_time(term(), DateTime.t()) :: DateTime.t()
+  defp snapshot_time(%DateTime{} = time, _default), do: time
+
+  defp snapshot_time(value, default) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, time, _offset} -> time
+      _other -> default
+    end
+  end
+
+  defp snapshot_time(_value, default), do: default
 
   @spec embed(String.t(), keyword()) :: {:ok, [float()]} | {:error, term()}
   defp embed(text, opts) do
@@ -360,6 +1082,14 @@ defmodule Spectre.Router.SemanticCache.Learned do
   defp result_text(%{value: value}) when is_binary(value), do: value
   defp result_text(_result), do: nil
 
+  @spec result_rows([Vettore.Result.t()]) :: [row()]
+  defp result_rows(results) do
+    Enum.flat_map(results, fn
+      %{metadata: %{"row" => row}} when is_map(row) -> [row]
+      _other -> []
+    end)
+  end
+
   @spec label_scores([Vettore.Result.t()]) :: map()
   defp label_scores(results) do
     Enum.reduce(results, %{}, fn result, acc ->
@@ -369,15 +1099,52 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec cache_key([row()], keyword()) :: term()
   defp cache_key(rows, opts) do
-    {{:agent, Keyword.get(opts, :spectre_agent, :anonymous)},
+    agent = Keyword.get(opts, :spectre_agent, :anonymous)
+
+    {{:agent, agent},
      :erlang.phash2({
        rows,
+       online_revision(agent),
        Keyword.get(opts, :embedding),
        Keyword.get(opts, :embedding_adapter),
        Keyword.get(opts, :encoder_model),
        Keyword.get(opts, :semantic_cache_index, :flat),
        Keyword.get(opts, :semantic_cache_index_options, [])
      })}
+  end
+
+  @spec clear_indexes(module()) :: :ok
+  defp clear_indexes(agent) do
+    case :ets.whereis(@index_table) do
+      :undefined ->
+        :ok
+
+      _tid ->
+        @index_table
+        |> :ets.tab2list()
+        |> Enum.each(fn
+          {{{:agent, ^agent}, _hash} = key, index} ->
+            drop_index(index)
+            :ets.delete(@index_table, key)
+
+          _other ->
+            :ok
+        end)
+
+        :ok
+    end
+  end
+
+  @spec clear_online_rows(module()) :: :ok
+  defp clear_online_rows(agent) do
+    online_table()
+    |> :ets.tab2list()
+    |> Enum.each(fn
+      {{^agent, id}, _row} -> :ets.delete(@online_table, {agent, id})
+      _other -> :ok
+    end)
+
+    :ok
   end
 
   @spec drop_index(map()) :: :ok
@@ -456,17 +1223,36 @@ defmodule Spectre.Router.SemanticCache.Learned do
     end
   end
 
-  @spec ensure_table() :: atom()
-  defp ensure_table do
-    case :ets.whereis(@table) do
-      :undefined ->
-        :ets.new(@table, [:named_table, :public, :set, :compressed, read_concurrency: true])
+  @spec index_table() :: atom()
+  defp index_table do
+    ensure_table(@index_table, [:named_table, :public, :set, :compressed, read_concurrency: true])
+  end
 
-      _tid ->
-        @table
+  @spec online_table() :: atom()
+  defp online_table do
+    ensure_table(@online_table, [:named_table, :public, :set, :compressed, read_concurrency: true])
+  end
+
+  @spec revision_table() :: atom()
+  defp revision_table do
+    ensure_table(@revision_table, [:named_table, :public, :set, write_concurrency: true])
+  end
+
+  @spec ensure_table(atom(), list()) :: atom()
+  defp ensure_table(name, options) do
+    case :ets.whereis(name) do
+      :undefined -> :ets.new(name, options)
+      _tid -> name
     end
   rescue
-    ArgumentError -> @table
+    ArgumentError -> name
+  end
+
+  @spec bump_online_revision(module()) :: non_neg_integer()
+  defp bump_online_revision(agent) do
+    revision = online_revision(agent) + 1
+    :ets.insert(revision_table(), {agent, revision})
+    revision
   end
 
   @spec sources(keyword()) :: [String.t()]
@@ -476,6 +1262,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
     |> Kernel.++(Keyword.get_values(opts, :source))
     |> Kernel.++(configured_sources())
     |> List.flatten()
+    |> Enum.filter(&is_binary/1)
     |> Enum.reject(&blank?/1)
     |> Enum.uniq()
   end
@@ -492,6 +1279,19 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   defp default_source do
     if File.exists?("training/dataset.json"), do: ["training/dataset.json"], else: []
+  end
+
+  @spec static_rows_enabled?(keyword()) :: boolean()
+  defp static_rows_enabled?(opts), do: Keyword.get(opts, :semantic_cache_static?, true)
+
+  @spec mirror_training_dataset?(keyword()) :: boolean()
+  defp mirror_training_dataset?(opts) do
+    opts
+    |> Keyword.get(
+      :mirror_training_dataset?,
+      Application.get_env(:spectre, :semantic_cache, [])
+      |> Keyword.get(:mirror_training_dataset?, true)
+    )
   end
 
   @spec top_k(keyword()) :: pos_integer()
@@ -511,6 +1311,14 @@ defmodule Spectre.Router.SemanticCache.Learned do
     )
   end
 
+  @spec dataset_lines(String.t()) :: [String.t()]
+  defp dataset_lines(text) do
+    text
+    |> String.split("\n")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
+  end
+
   @spec normalize_text(String.t()) :: String.t()
   defp normalize_text(text), do: text |> String.trim() |> String.downcase()
 
@@ -526,4 +1334,38 @@ defmodule Spectre.Router.SemanticCache.Learned do
   defp blank?(nil), do: true
   defp blank?(""), do: true
   defp blank?(_value), do: false
+
+  @spec static_timestamp() :: DateTime.t()
+  defp static_timestamp, do: ~U[1970-01-01 00:00:00Z]
+
+  @spec stable_hash(term()) :: String.t()
+  defp stable_hash(term), do: term |> :erlang.phash2() |> Integer.to_string(36)
+
+  @spec online_id() :: String.t()
+  defp online_id do
+    "scx_" <> Integer.to_string(System.unique_integer([:positive, :monotonic]), 36)
+  end
+
+  @spec source_metadata(map()) :: map()
+  defp source_metadata(source) do
+    source
+    |> Enum.reject(fn {_key, value} -> is_binary(value) and byte_size(value) > 2_000 end)
+    |> Map.new()
+  end
+
+  @spec encode_metadata(map()) :: map()
+  defp encode_metadata(metadata) do
+    Map.new(metadata, fn {key, value} ->
+      {to_string(key), encode_metadata_value(value)}
+    end)
+  end
+
+  defp encode_metadata_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp encode_metadata_value(value) when is_atom(value), do: to_string(value)
+  defp encode_metadata_value(value) when is_map(value), do: encode_metadata(value)
+
+  defp encode_metadata_value(value) when is_list(value),
+    do: Enum.map(value, &encode_metadata_value/1)
+
+  defp encode_metadata_value(value), do: value
 end

@@ -84,8 +84,8 @@ defmodule SpectreAgentDSLTest do
     })
   end
 
-  test "training declarations reject inline examples" do
-    assert_raise ArgumentError, ~r/accepts only a boolean flag/, fn ->
+  test "training declarations are not supported in the DSL" do
+    assert_raise ArgumentError, ~r/train: is not supported/, fn ->
       compile_agent("""
       flow :bad do
         on :BAD, train: [true, "hello"] do
@@ -95,10 +95,20 @@ defmodule SpectreAgentDSLTest do
       """)
     end
 
-    assert_raise ArgumentError, ~r/accepts only a boolean flag/, fn ->
+    assert_raise ArgumentError, ~r/train: is not supported/, fn ->
       compile_agent("""
       flow :bad do
         on :BAD, train: "hello" do
+          reply :bad
+        end
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/train: is not supported/, fn ->
+      compile_agent("""
+      flow :bad do
+        on :BAD, train: true do
           reply :bad
         end
       end
@@ -217,7 +227,6 @@ defmodule SpectreAgentDSLTest do
           bag: "bag example",
           jaro: [examples: ["jaro example"]],
           embedding: [examples: ["embedding example"]],
-          train: true,
           check: {:language, ["en", :it]},
           checks: [role: :admin],
           via: [:regex, :bag, :jaro, :embedding],
@@ -225,11 +234,11 @@ defmodule SpectreAgentDSLTest do
           ask :ask_prompt, temperature: 0
         end
 
-        on :RUN, regex: nil, train: true do
+        on :RUN, regex: nil do
           run :run_locally, mode: :fast
         end
 
-        on :REPLY, train: false, bag: ["one", nil, "two"] do
+        on :REPLY, bag: ["one", nil, "two"] do
           reply :reply_prompt, renderer: {SpectreAgentDSLTest.ReplyRenderer, :render}
         end
 
@@ -254,20 +263,17 @@ defmodule SpectreAgentDSLTest do
     assert ask.bag == ["bag example"]
     assert ask.jaro == ["jaro example"]
     assert ask.embedding == ["embedding example"]
-    assert ask.training == []
-    assert ask.training_source?
+    refute Map.has_key?(ask, :training)
     assert ask.checks == [{:language, ["en", :it]}, {:role, :admin}]
     assert ask.via == [:regex, :bag, :jaro, :embedding]
     assert ask.opts == [custom: :kept]
     assert ask.handler == {:ask, :ask_prompt, [temperature: 0]}
 
     assert run.regex == []
-    assert run.training == []
-    assert run.training_source?
+    refute Map.has_key?(run, :training)
     assert run.handler == {:run, :run_locally, [mode: :fast]}
 
-    assert reply.training == []
-    refute reply.training_source?
+    refute Map.has_key?(reply, :training)
     assert reply.bag == ["one", "two"]
 
     assert reply.handler ==
@@ -312,8 +318,8 @@ defmodule SpectreAgentDSLTest do
       compile_agent("""
       policy :terms do
         request :accept_terms
-        accept :accepted, regex: ~r/^yes$/i, train: true
-        reject :rejected, regex: ~r/^no$/i, train: true
+        accept :accepted, regex: ~r/^yes$/i
+        reject :rejected, regex: ~r/^no$/i
         otherwise ask: :accept_terms_retry
         attempts 3, then: :cancel_pending
       end
@@ -322,8 +328,8 @@ defmodule SpectreAgentDSLTest do
     assert %{
              name: :terms,
              request: :accept_terms,
-             accepts: [%{label: :accepted, training: [], training_source?: true}],
-             rejects: [%{label: :rejected, training: [], training_source?: true}],
+             accepts: [%{label: :accepted}],
+             rejects: [%{label: :rejected}],
              otherwise: {:ask, :accept_terms_retry},
              max_attempts: 3,
              then: :cancel_pending

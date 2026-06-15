@@ -63,7 +63,7 @@ defmodule Spectre.Agent do
         protect :issue_refund, with: :refund_confirmation
 
         flow :billing do
-          on :refund_request, train: true do
+          on :refund_request do
             run :prepare_refund_case
           end
 
@@ -465,8 +465,7 @@ defmodule Spectre.Agent do
 
       flow :project_create do
         on :wants_project_create,
-          regex: ~r/create.*project/i,
-          train: true do
+          regex: ~r/create.*project/i do
           ask :project_create
         end
       end
@@ -536,7 +535,7 @@ defmodule Spectre.Agent do
   @doc """
   Creates a handler that renders a prompt, calls the LLM, and stages AL actions.
 
-      on :support_question, train: true do
+      on :support_question do
         ask :support_answer
       end
   """
@@ -552,7 +551,7 @@ defmodule Spectre.Agent do
   Use `run/2` when the next step is normal Elixir orchestration rather than an
   LLM prompt or a protected action boundary.
 
-      on :refund_request, train: true do
+      on :refund_request do
         run :prepare_refund_case
       end
   """
@@ -780,18 +779,18 @@ defmodule Spectre.Agent do
   @spec policy_branch(atom(), Macro.t(), Macro.Env.t()) :: map()
   defp policy_branch(label, opts_ast, caller) do
     opts = eval_opts(opts_ast, caller)
+    reject_training_opts!(opts)
 
     %{
       label: label,
-      regex: List.wrap(Keyword.get(opts, :regex, [])),
-      training: training_entries(opts),
-      training_source?: training_source?(opts)
+      regex: List.wrap(Keyword.get(opts, :regex, []))
     }
   end
 
   @spec build_rule(atom(), atom() | nil, Macro.t(), Macro.t(), Macro.Env.t(), keyword()) :: map()
   defp build_rule(label, flow, opts_ast, block, caller, extra) do
     opts = eval_opts(opts_ast, caller)
+    reject_training_opts!(opts)
 
     %{
       label: label,
@@ -801,8 +800,7 @@ defmodule Spectre.Agent do
       bag: examples_from_opts(opts, :bag),
       jaro: examples_from_opts(opts, :jaro),
       embedding: examples_from_opts(opts, :embedding),
-      training: training_entries(opts),
-      training_source?: training_source?(opts),
+      cache: cache_enabled?(opts),
       learn: Keyword.get(opts, :learn, false),
       checks: rule_checks(opts),
       via: route_via(opts),
@@ -815,6 +813,7 @@ defmodule Spectre.Agent do
           :embedding,
           :train,
           :training,
+          :cache,
           :learn,
           :check,
           :checks,
@@ -876,41 +875,34 @@ defmodule Spectre.Agent do
     raise ArgumentError, "expected ask/run/reply/action handler, got: #{Macro.to_string(other)}"
   end
 
-  @spec training_entries(keyword()) :: [term()]
-  defp training_entries(opts) do
-    reject_training_alias!(opts)
-    validate_training_flag!(Keyword.get(opts, :train, false))
-    []
-  end
+  @spec reject_training_opts!(keyword()) :: :ok
+  defp reject_training_opts!(opts) do
+    cond do
+      Keyword.has_key?(opts, :train) ->
+        raise ArgumentError, "train: is not supported; keep examples in labeled dataset files"
 
-  defp reject_training_alias!(opts) do
-    if Keyword.has_key?(opts, :training) do
-      raise ArgumentError, "training: is not supported; use train: true or train: false"
+      Keyword.has_key?(opts, :training) ->
+        raise ArgumentError, "training: is not supported; keep examples in labeled dataset files"
+
+      true ->
+        :ok
     end
   end
 
-  defp validate_training_flag!(value) when value in [true, false, nil], do: :ok
+  @spec cache_enabled?(keyword()) :: boolean()
+  defp cache_enabled?(opts) do
+    case Keyword.get(opts, :cache, true) do
+      value when value in [true, false] ->
+        value
 
-  defp validate_training_flag!(value) do
-    raise ArgumentError,
-          "train: accepts only a boolean flag; put examples in the configured dataset, got: #{inspect(value)}"
-  end
-
-  @spec training_source?(keyword()) :: boolean()
-  defp training_source?(opts) do
-    reject_training_alias!(opts)
-    Keyword.get(opts, :train, false) == true
+      value ->
+        raise ArgumentError, "cache: accepts only true or false, got: #{inspect(value)}"
+    end
   end
 
   @spec route_via(keyword()) :: [atom()]
   defp route_via(opts) do
-    via = List.wrap(Keyword.get(opts, :via, []))
-
-    if Keyword.get(opts, :learn, false) and via != [] do
-      Enum.uniq(via ++ [:semantic_cache])
-    else
-      via
-    end
+    List.wrap(Keyword.get(opts, :via, []))
   end
 
   @spec rule_checks(keyword()) :: [term()]
