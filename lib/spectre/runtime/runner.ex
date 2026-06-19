@@ -11,8 +11,8 @@ defmodule Spectre.Runner do
   alias Spectre.ActionConfig
   alias Spectre.ActionPlanner
   alias Spectre.ActionProtection
+  alias Spectre.Effect
   alias Spectre.Input
-  alias Spectre.PendingAction
   alias Spectre.Prompt
   alias Spectre.Result
   alias Spectre.Route
@@ -130,8 +130,8 @@ defmodule Spectre.Runner do
   @doc """
   Handles a deterministic action without calling the LLM.
 
-  If the action is protected, Spectre stores it as the pending action and starts
-  the configured policy. Pass `reply:` plus normal `reply` renderer options to
+  If the action is protected, Spectre stores it as a pending action effect and
+  opens the configured policy awaitable. Pass `reply:` plus normal `reply` renderer options to
   use a no-LLM confirmation message; otherwise Spectre renders the policy
   request prompt through the normal `ask` path.
 
@@ -142,29 +142,31 @@ defmodule Spectre.Runner do
   def action(action, %Input{} = input, ctx, opts \\ []) when is_atom(action) do
     ctx = normalize_ctx(ctx, input, opts)
 
-    pending =
-      PendingAction.new(%{
+    effect =
+      Effect.stage(%{
         name: action,
         args: Keyword.get(opts, :args, %{}),
         status: Keyword.get(opts, :status, :ok),
-        al: Keyword.get(opts, :al),
-        hooks: Keyword.get(opts, :hooks, []),
-        source: :dsl
+        payload: %{
+          al: Keyword.get(opts, :al),
+          hooks: Keyword.get(opts, :hooks, []),
+          source: :dsl
+        }
       })
 
-    policy = Keyword.get(opts, :policy) || ActionProtection.protected_by(ctx.agent, pending)
-    state = Spectre.State.put_pending(ctx.state, pending, policy)
+    policy = Keyword.get(opts, :policy) || ActionProtection.protected_by(ctx.agent, effect)
+    state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
     ctx = %{ctx | state: state}
-    # Read the action back from state so policy metadata/status added by
-    # `State.put_pending/3` is reflected in the result actions list.
-    actions = [pending_action(state)]
+    # Read the effect back from state so policy metadata/status added by
+    # `State.put_pending_effect/3` is reflected in the result effects list.
+    effects = [pending_effect(state)]
 
     cond do
       policy && Keyword.has_key?(opts, :reply) ->
-        reply_staged_policy(policy, actions, input, ctx, opts)
+        reply_staged_policy(policy, effects, input, ctx, opts)
 
       policy ->
-        request_policy(policy, "", actions, input, ctx, opts)
+        request_policy(policy, "", effects, input, ctx, opts)
 
       true ->
         {:ok,
@@ -172,8 +174,8 @@ defmodule Spectre.Runner do
            input: input,
            route: ctx.route,
            state: state,
-           actions: actions,
-           events: [%{type: :action_staged, action: pending.name}]
+           effects: effects,
+           events: [%{type: :effect_staged, kind: :action, name: effect.name}]
          }}
     end
   end
@@ -181,33 +183,34 @@ defmodule Spectre.Runner do
   @spec plan_reply(String.t(), Input.t(), Spectre.Context.t(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
   defp plan_reply(reply, input, ctx, opts) do
-    with {:ok, %{reply_text: reply_text, actions: actions}} <-
+    with {:ok, %{reply_text: reply_text, effects: effects}} <-
            ActionPlanner.plan_response(reply, ActionConfig.planner_opts(ctx, opts)) do
-      stage_actions(reply_text, actions, input, ctx, opts)
+      stage_effects(reply_text, effects, input, ctx, opts)
     end
   end
 
-  @spec stage_actions(
+  @spec stage_effects(
           String.t(),
-          [Spectre.PendingAction.t()],
+          [Effect.t()],
           Input.t(),
           Spectre.Context.t(),
           keyword()
         ) ::
           {:ok, Result.t()} | {:error, term()}
-  defp stage_actions(reply_text, [], input, ctx, _opts) do
+  defp stage_effects(reply_text, [], input, ctx, _opts) do
     {:ok, %Result{input: input, route: ctx.route, state: ctx.state, reply_text: reply_text}}
   end
 
-  defp stage_actions(reply_text, [action | _rest] = actions, input, ctx, opts) do
-    policy = ActionProtection.protected_by(ctx.agent, action)
-    state = Spectre.State.put_pending(ctx.state, action, policy)
+  defp stage_effects(reply_text, [effect | _rest] = effects, input, ctx, opts) do
+    policy = ActionProtection.protected_by(ctx.agent, effect)
+    state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
     ctx = %{ctx | state: state}
+    staged_effect = pending_effect(state)
 
     if policy do
       # Protected AL actions immediately switch into the policy request flow.
       # The visible LLM reply is preserved and joined with the policy prompt.
-      request_policy(policy, reply_text, actions, input, ctx, opts)
+      request_policy(policy, reply_text, [staged_effect], input, ctx, opts)
     else
       {:ok,
        %Result{
@@ -215,8 +218,8 @@ defmodule Spectre.Runner do
          route: ctx.route,
          state: state,
          reply_text: reply_text,
-         actions: actions,
-         events: [%{type: :action_staged, action: action.name}]
+         effects: [staged_effect | Enum.drop(effects, 1)],
+         events: [%{type: :effect_staged, kind: :action, name: effect.name}]
        }}
     end
   end
@@ -289,21 +292,29 @@ defmodule Spectre.Runner do
 
   @spec reply_staged_policy(
           atom(),
-          [Spectre.PendingAction.t()],
+          [Effect.t()],
           Input.t(),
           Spectre.Context.t(),
           keyword()
         ) :: {:ok, Result.t()} | {:error, term()}
-  defp reply_staged_policy(policy_name, actions, input, ctx, opts) do
+  defp reply_staged_policy(policy_name, effects, input, ctx, opts) do
     with {:ok, text} <- render_reply(Keyword.fetch!(opts, :reply), input, ctx, opts) do
       {:ok,
        %Result{
          input: input,
          route: ctx.route,
          state: ctx.state,
-         actions: actions,
+         effects: effects,
+         awaitables: ctx.state.awaitables,
          reply_text: text,
-         events: [%{type: :policy_requested, policy: policy_name}]
+         events: [
+           %{type: :awaitable_opened, kind: :policy, name: policy_name},
+           %{
+             type: :effect_staged,
+             kind: :action,
+             name: List.first(effects) && List.first(effects).name
+           }
+         ]
        }}
     end
   end
@@ -311,12 +322,12 @@ defmodule Spectre.Runner do
   @spec request_policy(
           atom(),
           String.t(),
-          [Spectre.PendingAction.t()],
+          [Effect.t()],
           Input.t(),
           Spectre.Context.t(),
           keyword()
         ) :: {:ok, Result.t()} | {:error, term()}
-  defp request_policy(policy_name, reply_text, actions, input, ctx, opts) do
+  defp request_policy(policy_name, reply_text, effects, input, ctx, opts) do
     case Map.get(ctx.agent.__spectre_policies__(), policy_name) do
       nil ->
         {:error, {:unknown_policy, policy_name}}
@@ -333,8 +344,17 @@ defmodule Spectre.Runner do
            %{
              request
              | reply_text: join_reply(reply_text, request.reply_text),
-               actions: actions,
-               events: [%{type: :policy_requested, policy: policy_name} | request.events]
+               effects: effects,
+               awaitables: ctx.state.awaitables,
+               events: [
+                 %{type: :awaitable_opened, kind: :policy, name: policy_name},
+                 %{
+                   type: :effect_staged,
+                   kind: :action,
+                   name: List.first(effects) && List.first(effects).name
+                 }
+                 | request.events
+               ]
            }}
         end
     end
@@ -362,8 +382,8 @@ defmodule Spectre.Runner do
     struct(Spectre.Context, attrs)
   end
 
-  @spec pending_action(Spectre.State.t()) :: PendingAction.t()
-  defp pending_action(%Spectre.State{pending_action: %PendingAction{} = action}), do: action
+  @spec pending_effect(Spectre.State.t()) :: Effect.t()
+  defp pending_effect(%Spectre.State{} = state), do: Spectre.State.pending_effect(state)
 
   @spec join_reply(String.t(), String.t()) :: String.t()
   defp join_reply("", right), do: right

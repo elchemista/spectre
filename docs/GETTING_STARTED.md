@@ -118,7 +118,21 @@ Spectre then:
 8. Persists state and memory if adapters exist.
 
 The result contains the selected route, the normalized input, the updated state,
-visible reply text, staged actions, and runtime events.
+visible reply text, effects, awaitables, and runtime events.
+
+If the host wants a higher-level decision, use `Spectre.turn/3`:
+
+```elixir
+{:ok, turn} = Spectre.turn(MyApp.SupportAgent, "delete my account")
+
+case turn.decision do
+  {:awaiting, awaitable, result} -> present_policy(awaitable, result)
+  {:needs, effect, result} -> run_effect(effect, result)
+  {:completed, completion, result} -> deliver_completion(completion, result)
+  {:reply, result} -> deliver(result.reply_text)
+  {:no_response, _result} -> :ok
+end
+```
 
 
 ## How Options Flow

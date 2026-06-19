@@ -84,7 +84,7 @@ defmodule Spectre.Runtime do
   defp run_turn(%Context{state: state} = ctx) do
     if Policy.awaiting?(state) do
       # Policy replies intentionally bypass normal routing. A short answer like
-      # "yes" should approve/reject the pending action, not be interpreted as a
+      # "yes" should approve/reject the open policy awaitable, not be interpreted as a
       # general conversation intent.
       Policy.resume(ctx.input, ctx)
     else
@@ -300,7 +300,8 @@ defmodule Spectre.Runtime do
       reply_text: result.reply_text,
       route: result.route,
       state: result.state,
-      actions: result.actions,
+      effects: result.effects,
+      awaitables: result.awaitables,
       events: result.events
     }
   end

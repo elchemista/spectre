@@ -1,0 +1,215 @@
+defmodule Spectre.Effect do
+  @moduledoc """
+  Runtime or host work represented as data.
+
+  Effects generalize the old pending-action shape. An action is now one effect
+  kind; future capabilities such as retrieval or search can use the same
+  contract without changing turn decisions.
+  """
+
+  defstruct [
+    :id,
+    :kind,
+    :name,
+    :mode,
+    :policy,
+    :result,
+    :error,
+    args: %{},
+    status: :pending,
+    payload: %{},
+    metadata: %{}
+  ]
+
+  @type status :: :pending | :waiting_policy | :completed | :failed | :cancelled
+
+  @type t :: %__MODULE__{
+          id: term(),
+          kind: atom(),
+          name: atom() | String.t() | nil,
+          args: map(),
+          status: status(),
+          mode: atom() | nil,
+          policy: atom() | nil,
+          result: term(),
+          error: term(),
+          payload: map(),
+          metadata: map()
+        }
+
+  @doc """
+  Builds a pending effect.
+  """
+  @spec stage(map() | struct()) :: t()
+  def stage(attrs) when is_map(attrs) do
+    attrs = normalize_map(attrs)
+    payload = effect_payload(attrs)
+
+    %__MODULE__{
+      id: attr_or(attrs, :id, System.unique_integer([:positive])),
+      kind: attr_or(attrs, :kind, :action),
+      name:
+        normalize_name(
+          get_attr(attrs, :name),
+          Map.get(payload, :selected_tool),
+          Map.get(payload, :al)
+        ),
+      args: attr_or(attrs, :args, %{}),
+      status: attr_or(attrs, :status, :pending),
+      mode: get_attr(attrs, :mode),
+      policy: get_attr(attrs, :policy),
+      result: get_attr(attrs, :result),
+      error: get_attr(attrs, :error),
+      payload: payload,
+      metadata: attr_or(attrs, :metadata, %{})
+    }
+  end
+
+  @doc """
+  Marks an effect as waiting on a policy gate.
+  """
+  @spec waiting_policy(t(), atom()) :: t()
+  def waiting_policy(%__MODULE__{} = effect, policy) when is_atom(policy) do
+    %{effect | status: :waiting_policy, policy: policy}
+  end
+
+  @doc """
+  Marks an effect as completed with a result.
+  """
+  @spec complete(t(), term()) :: t()
+  def complete(%__MODULE__{} = effect, result) do
+    %{effect | status: :completed, result: result, error: nil}
+  end
+
+  @doc """
+  Marks an effect as failed with an error.
+  """
+  @spec fail(t(), term()) :: t()
+  def fail(%__MODULE__{} = effect, error) do
+    %{effect | status: :failed, error: error}
+  end
+
+  @doc """
+  Marks an effect as cancelled.
+  """
+  @spec cancel(t(), term()) :: t()
+  def cancel(%__MODULE__{} = effect, reason \\ nil) do
+    metadata =
+      if is_nil(reason),
+        do: effect.metadata,
+        else: Map.put(effect.metadata, :cancel_reason, reason)
+
+    %{effect | status: :cancelled, metadata: metadata}
+  end
+
+  @doc """
+  Returns the stable key used for protection and dispatch checks.
+  """
+  @spec effect_key(t() | map() | atom() | String.t()) :: atom() | String.t() | nil
+  def effect_key(%__MODULE__{name: name}) when is_atom(name) or is_binary(name), do: name
+  def effect_key(%__MODULE__{payload: %{selected_tool: tool}}) when is_binary(tool), do: tool
+  def effect_key(%{name: name}) when is_atom(name) or is_binary(name), do: name
+  def effect_key(%{selected_tool: tool}) when is_binary(tool), do: tool
+  def effect_key(name) when is_atom(name) or is_binary(name), do: name
+  def effect_key(_other), do: nil
+
+  @doc """
+  Returns hooks attached to an effect payload.
+  """
+  @spec hooks(t()) :: [map()]
+  def hooks(%__MODULE__{payload: payload}), do: Map.get(payload, :hooks, [])
+
+  @doc """
+  Returns the selected tool encoded in an action effect payload.
+  """
+  @spec selected_tool(t()) :: String.t() | nil
+  def selected_tool(%__MODULE__{payload: payload}), do: Map.get(payload, :selected_tool)
+
+  @doc """
+  Returns the Action Language text encoded in an action effect payload.
+  """
+  @spec al(t()) :: String.t() | nil
+  def al(%__MODULE__{payload: payload}), do: Map.get(payload, :al)
+
+  @doc """
+  Returns the source encoded in an effect payload.
+  """
+  @spec source(t()) :: atom() | nil
+  def source(%__MODULE__{payload: payload}), do: Map.get(payload, :source)
+
+  @spec effect_payload(map()) :: map()
+  defp effect_payload(attrs) do
+    payload = attr_or(attrs, :payload, %{})
+    selected_tool = payload_attr(attrs, payload, :selected_tool)
+    al = payload_attr(attrs, payload, :al)
+
+    payload
+    |> Map.put_new(:selected_tool, selected_tool)
+    |> Map.put_new(:al, al)
+    |> Map.put_new(
+      :source,
+      payload_attr(attrs, payload, :source, infer_source(selected_tool, al))
+    )
+    |> Map.put_new(:hooks, payload_attr(attrs, payload, :hooks, []))
+    |> Map.put_new(:raw, attrs)
+    |> Map.put_new(:created_at, attr_or(attrs, :created_at, DateTime.utc_now()))
+  end
+
+  @spec payload_attr(map(), map(), atom(), term()) :: term()
+  defp payload_attr(attrs, payload, key, default \\ nil) do
+    get_attr(attrs, key) || Map.get(payload, key) || default
+  end
+
+  @spec normalize_map(map() | struct()) :: map()
+  defp normalize_map(%{__struct__: _} = attrs), do: Map.from_struct(attrs)
+  defp normalize_map(attrs), do: attrs
+
+  @spec attr_or(map(), atom(), term()) :: term()
+  defp attr_or(attrs, key, default), do: get_attr(attrs, key) || default
+
+  @spec normalize_name(term(), String.t() | nil, String.t() | nil) :: atom() | String.t() | nil
+  defp normalize_name(name, _selected_tool, _al) when is_atom(name) and not is_nil(name), do: name
+  defp normalize_name(name, _selected_tool, _al) when is_binary(name), do: name
+  defp normalize_name(_name, selected_tool, al), do: infer_name(selected_tool, al)
+
+  @spec infer_name(String.t() | nil, String.t() | nil) :: atom() | nil
+  defp infer_name(selected_tool, _al) when is_binary(selected_tool) do
+    selected_tool
+    |> String.replace_prefix("Elixir.", "")
+    |> String.split(".")
+    |> List.last()
+    |> case do
+      nil -> nil
+      fun_arity -> fun_arity |> String.split("/") |> hd() |> existing_atom()
+    end
+  end
+
+  defp infer_name(_selected_tool, al) when is_binary(al) do
+    al
+    |> String.split(~r/\s+/, trim: true)
+    |> Enum.take(2)
+    |> Enum.map_join("_", &String.downcase/1)
+    |> String.replace(~r/[^a-z0-9_]/, "")
+    |> case do
+      "" -> nil
+      name -> existing_atom(name)
+    end
+  end
+
+  defp infer_name(_selected_tool, _al), do: nil
+
+  @spec infer_source(String.t() | nil, String.t() | nil) :: :al | :manual
+  defp infer_source(selected_tool, al) when is_binary(selected_tool) or is_binary(al), do: :al
+  defp infer_source(_selected_tool, _al), do: :manual
+
+  @spec get_attr(map(), atom()) :: term()
+  defp get_attr(map, key) when is_map(map),
+    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  @spec existing_atom(String.t()) :: atom() | nil
+  defp existing_atom(name) when is_binary(name) do
+    String.to_existing_atom(name)
+  rescue
+    ArgumentError -> nil
+  end
+end

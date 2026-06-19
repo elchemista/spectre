@@ -702,15 +702,18 @@ end
 defmodule SpectreTest do
   use ExUnit.Case
 
+  alias Spectre.Awaitable
   alias Spectre.Classifier.Encoder
   alias Spectre.Classifier.Math
   alias Spectre.Classifier.Trainer
-  alias Spectre.PendingAction
+  alias Spectre.Effect
+  alias Spectre.Result
   alias Spectre.Router.LLMClassifier
   alias Spectre.Router.SemanticCache
   alias Spectre.Router.SemanticCache.Learned
   alias Spectre.State
   alias Spectre.Training.Dataset
+  alias Spectre.Turn.Decision
 
   @prompt_root Path.expand("tmp/spectre_test/prompts")
 
@@ -856,17 +859,31 @@ defmodule SpectreTest do
     assert result.reply_text ==
              "Perfetto, preparo il progetto.\n\nPrima di procedere, accetti i termini?"
 
-    assert [%PendingAction{name: :create_project, status: :ok, source: :al}] = result.actions
-    assert result.state.awaiting.policy == :terms
-    assert result.state.pending_action.status == :waiting_policy
-    assert result.state.pending_action.policy == :terms
+    assert [%Effect{name: :create_project, status: :waiting_policy, policy: :terms} = effect] =
+             result.effects
+
+    assert Effect.source(effect) == :al
+    effect_id = effect.id
+
+    assert [
+             %Spectre.Awaitable{
+               kind: :policy,
+               name: :terms,
+               status: :open,
+               subject_id: ^effect_id
+             }
+           ] =
+             result.awaitables
+
+    assert [%Effect{status: :waiting_policy, policy: :terms}] = result.state.pending_effects
+    assert [%Spectre.Awaitable{name: :terms, status: :open}] = result.state.awaitables
   end
 
   test "active policy bypasses the normal router and executes pending action on accept" do
     state =
       %State{}
-      |> State.put_pending(
-        PendingAction.new(%{name: :create_project, args: %{"title" => "ciao"}}),
+      |> State.put_pending_effect(
+        Effect.stage(%{name: :create_project, args: %{"title" => "ciao"}}),
         :terms
       )
 
@@ -877,16 +894,17 @@ defmodule SpectreTest do
              )
 
     assert result.reply_text == "{:created_project, %{\"title\" => \"ciao\"}}"
-    assert result.state.awaiting == nil
-    assert result.state.pending_action == nil
-    assert [%{type: :policy_accepted, label: :accepted_terms} | _] = result.events
+    assert result.state.pending_effects == []
+    assert [%Spectre.Awaitable{status: :accepted, label: :accepted_terms}] = result.awaitables
+    assert [%Effect{name: :create_project, status: :completed}] = result.effects
+    assert [%{type: :awaitable_accepted, label: :accepted_terms} | _] = result.events
   end
 
   test "input pipeline normalizes text before policy matching" do
     state =
       %State{}
-      |> State.put_pending(
-        PendingAction.new(%{name: :create_project, args: %{"title" => "ciao"}}),
+      |> State.put_pending_effect(
+        Effect.stage(%{name: :create_project, args: %{"title" => "ciao"}}),
         :terms
       )
 
@@ -899,20 +917,20 @@ defmodule SpectreTest do
     assert result.input.text == "confermo"
     assert result.input.raw == "  Confermo  "
     assert result.reply_text == "{:created_project, %{\"title\" => \"ciao\"}}"
-    assert [%{type: :policy_accepted, label: :confirmed_terms} | _] = result.events
+    assert [%{type: :awaitable_accepted, label: :confirmed_terms} | _] = result.events
   end
 
   test "interrupt handlers can cancel pending state" do
     state =
       %State{}
-      |> State.put_pending(PendingAction.new(%{name: :create_project}), :terms)
-      |> State.clear_awaiting()
+      |> State.put_pending_effect(Effect.stage(%{name: :create_project}), :terms)
+      |> State.clear_open_awaitables()
 
     assert {:ok, result} =
              Spectre.ask(SpectreTest.ProjectAgent, "stop", state: state)
 
-    assert result.state.pending_action == nil
-    assert result.state.awaiting == nil
+    assert result.state.pending_effects == []
+    assert result.state.awaitables == []
   end
 
   test "session GenServer keeps Spectre state between turns" do
@@ -930,12 +948,61 @@ defmodule SpectreTest do
     )
 
     assert {:ok, first} = Spectre.ask(SpectreTest.ProjectSession, "crea nuovo progetto")
-    assert first.state.awaiting.policy == :terms
+    assert [%Spectre.Awaitable{name: :terms, status: :open}] = first.state.awaitables
 
     assert {:ok, second} = Spectre.ask(SpectreTest.ProjectSession, "accetto")
-    assert second.state.awaiting == nil
-    assert second.state.pending_action == nil
+    assert second.state.pending_effects == []
     assert second.reply_text == "{:created_project, %{\"title\" => \"ciao\"}}"
+  end
+
+  test "turn returns lifecycle decision for an open policy awaitable" do
+    model = fn
+      "PROJECT CREATE" <> _prompt, _opts ->
+        {:ok, "Ok.\n<al>\nCREATE PROJECT title=\"ciao\"\n</al>"}
+
+      "ACCEPT TERMS" <> _prompt, _opts ->
+        {:ok, "Accetti i termini?"}
+    end
+
+    assert {:ok, turn} =
+             Spectre.turn(SpectreTest.ProjectAgent, "crea nuovo progetto", model: model)
+
+    assert {:awaiting, %Spectre.Awaitable{name: :terms, status: :open}, result} = turn.decision
+    assert result == turn.result
+  end
+
+  test "turn decision prefers open awaitable over pending effect" do
+    effect = Effect.stage(%{kind: :action, name: :create_project})
+    awaitable = Awaitable.open_policy(:terms, effect)
+    result = %Result{effects: [effect], awaitables: [awaitable], reply_text: "visible"}
+
+    assert {:awaiting, ^awaitable, ^result} = Decision.decide(result)
+  end
+
+  test "turn decision returns needs for a pending effect" do
+    effect = Effect.stage(%{kind: :retrieve, name: :project_context})
+    result = %Result{effects: [effect], reply_text: "visible"}
+
+    assert {:needs, ^effect, ^result} = Decision.decide(result)
+  end
+
+  test "turn decision surfaces completion before reply" do
+    effect =
+      %{kind: :action, name: :create_project}
+      |> Effect.stage()
+      |> Effect.complete(%{id: 123})
+
+    result = %Result{effects: [effect], reply_text: "visible"}
+
+    assert {:completed, ^effect, ^result} = Decision.decide(result)
+  end
+
+  test "turn decision falls back to reply and no response" do
+    reply = %Result{reply_text: "hello"}
+    blank = %Result{reply_text: "   "}
+
+    assert {:reply, ^reply} = Decision.decide(reply)
+    assert {:no_response, ^blank} = Decision.decide(blank)
   end
 
   test "dynamic Spectre supervisor starts sessions" do
@@ -1831,17 +1898,16 @@ defmodule SpectreTest do
     assert staged.route.label == :START_PROJECT
     assert staged.reply_text == "reply:freelance_terms_request:kick off a project brief"
 
-    assert [%PendingAction{name: :create_project, args: %{kind: "freelance_brief"}}] =
-             staged.actions
+    assert [%Effect{name: :create_project, args: %{kind: "freelance_brief"}}] = staged.effects
 
-    assert staged.state.awaiting.policy == :terms
-    assert staged.state.pending_action.policy == :terms
+    assert [%Spectre.Awaitable{name: :terms, status: :open}] = staged.state.awaitables
+    assert [%Effect{policy: :terms}] = staged.state.pending_effects
 
     assert {:ok, executed} =
              Spectre.ask(SpectreTest.DeterministicFreelanceAgent, "I agree", state: staged.state)
 
     assert executed.reply_text == "%{created_project: %{kind: \"freelance_brief\"}}"
-    assert executed.state.pending_action == nil
+    assert executed.state.pending_effects == []
   end
 
   test "action handler starts protected action policy without calling the LLM" do
@@ -1849,14 +1915,18 @@ defmodule SpectreTest do
 
     assert result.reply_text == "reply:delete_confirmation_request:delete"
 
-    assert [%PendingAction{name: :delete_my_account, status: :waiting_policy, source: :dsl}] =
-             result.actions
+    assert [%Effect{name: :delete_my_account, status: :waiting_policy} = effect] =
+             result.effects
 
-    assert result.state.awaiting.policy == :delete_account
-    assert result.state.pending_action.name == :delete_my_account
-    assert result.state.pending_action.al == nil
-    assert result.state.pending_action.source == :dsl
-    assert [%{type: :policy_requested, policy: :delete_account}] = result.events
+    assert Effect.source(effect) == :dsl
+    assert Effect.al(effect) == nil
+    assert [%Spectre.Awaitable{name: :delete_account, status: :open}] = result.state.awaitables
+
+    assert [%Effect{name: :delete_my_account, policy: :delete_account}] =
+             result.state.pending_effects
+
+    assert [%{type: :awaitable_opened, name: :delete_account}, %{type: :effect_staged}] =
+             result.events
   end
 
   test "after_action hooks run after an executed action is delivered" do

@@ -177,16 +177,16 @@ defmodule Spectre.Router.Plugs.Arbitrate do
     else
       agent = Keyword.get(context.opts, :spectre_agent)
 
-      pending =
-        Spectre.PendingAction.new(%{
+      effect =
+        Spectre.Effect.stage(%{
           name: action,
           args: Keyword.get(handler_opts, :args, %{}),
-          source: :dsl
+          payload: %{source: :dsl}
         })
 
       cond do
         is_nil(agent) -> :ok
-        Spectre.ActionProtection.protected_by(agent, pending) -> {:skip, :protected_route}
+        Spectre.ActionProtection.protected_by(agent, effect) -> {:skip, :protected_route}
         true -> :ok
       end
     end

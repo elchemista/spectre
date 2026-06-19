@@ -6,7 +6,7 @@ Works well today:
 
 - `spectre_kinetic` integrates cleanly as the Action Language and tool-planning
   layer. Spectre delegates AL extraction and planning to Kinetic, receives
-  staged pending actions, then applies policies and execution boundaries.
+  staged action effects, then applies policies and execution boundaries.
 
 Future integration work:
 

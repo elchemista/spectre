@@ -15,8 +15,8 @@ actions MyApp.SupportActions do
 end
 ```
 
-The policy is a tiny deterministic router that is used only while that action is
-waiting:
+The policy is a tiny deterministic router that is used only while that action
+effect is waiting:
 
 ```elixir
 policy :delete_account_confirmation do
@@ -29,11 +29,11 @@ end
 ```
 
 While a policy is active, the next user turn bypasses the normal agent router.
-That matters: a short answer like `"yes"` should approve the pending action, not
-accidentally route to some generic conversation intent.
+That matters: a short answer like `"yes"` should approve the open policy
+awaitable, not accidentally route to some generic conversation intent.
 
-Approved actions still do not run automatically inside routing. Execution stays
-behind:
+Approved actions still do not run automatically inside normal routing. Execution
+stays behind the pending action effect:
 
 ```elixir
 {:ok, executed} = Spectre.execute(result.state, %{agent: MyApp.SupportAgent})
@@ -74,8 +74,8 @@ module:
 actions(MyApp.SupportActions)
 ```
 
-Hooks run after an action result exists. They are useful for audit trails,
-notifications, and delivery bookkeeping.
+Hooks run after a completed action effect exists. They are useful for audit
+trails, notifications, and delivery bookkeeping.
 
 ## SpectreKinetic Integration
 
@@ -94,8 +94,8 @@ CREATE PROJECT title="Marketplace MVP"
 
 Spectre keeps the visible text for the user and delegates the AL block to
 Kinetic for tool selection, slot mapping, and planning. The result is a
-`%Spectre.PendingAction{}`. If the action is protected, Spectre starts the
-policy flow before anything executes.
+`%Spectre.Effect{kind: :action}`. If the action is protected, Spectre opens a
+`%Spectre.Awaitable{kind: :policy}` before anything executes.
 
 Your action module can be a Kinetic tool module:
 
@@ -147,5 +147,5 @@ Kinetic can load runtime data from:
 
 Spectre does not maintain a second AL parser. Kinetic owns AL extraction, tool
 registration, registry loading, planning, slot mapping, and planning
-classifiers. Spectre owns conversation routing, policy gates, state, and action
-execution boundaries.
+classifiers. Spectre owns conversation routing, policy gates, state, effects,
+awaitables, and action execution boundaries.

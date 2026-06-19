@@ -77,4 +77,24 @@ Send a turn:
 {:ok, result} = Spectre.ask(MyApp.SupportAgent, "How much does it cost?", conversation_id: "chat-123")
 ```
 
+`ask/3` is the low-level boundary: it returns a `%Spectre.Result{}` with visible
+reply text, state, effects, awaitables, route data, and audit events. Effects
+represent work such as an action; awaitables represent user input Spectre is
+waiting for, such as policy confirmation.
+
+For host applications that want the next lifecycle step directly, use
+`Spectre.turn/3`:
+
+```elixir
+{:ok, turn} = Spectre.turn(MyApp.SupportAgent, "delete my account")
+
+case turn.decision do
+  {:awaiting, awaitable, result} -> present_policy(awaitable, result)
+  {:needs, effect, result} -> run_effect(effect, result)
+  {:completed, completion, result} -> deliver_completion(completion, result)
+  {:reply, result} -> deliver(result.reply_text)
+  {:no_response, _result} -> :ok
+end
+```
+
 Start with [Getting Started](https://github.com/elchemista/spectre/blob/main/docs/GETTING_STARTED.md) for the full example and runtime flow.

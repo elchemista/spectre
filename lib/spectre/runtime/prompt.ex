@@ -60,7 +60,13 @@ defmodule Spectre.Prompt do
   end
 
   @spec active_policy(Spectre.Context.t() | map()) :: atom() | nil
-  defp active_policy(%{state: %{awaiting: %{policy: policy}}}), do: policy
+  defp active_policy(%{state: %Spectre.State{} = state}) do
+    case Spectre.State.open_policy_awaitable(state) do
+      %Spectre.Awaitable{name: policy} -> policy
+      nil -> nil
+    end
+  end
+
   defp active_policy(_ctx), do: nil
 
   @spec assigns(Spectre.Context.t() | map(), keyword()) :: map()

@@ -8,7 +8,7 @@ defmodule Spectre.ActionHooks do
   """
 
   alias Spectre.Context
-  alias Spectre.PendingAction
+  alias Spectre.Effect
   alias Spectre.Result
 
   @type hook_event :: :delivered
@@ -24,7 +24,7 @@ defmodule Spectre.ActionHooks do
 
       :ok = Spectre.ActionHooks.run(MyAgent, :delivered, result, ctx)
 
-  Both agent-level hooks and hooks attached to a pending action are considered.
+  Both agent-level hooks and hooks attached to a completed action effect are considered.
   Errors are accumulated so one failing hook does not hide another.
   """
   @spec run(module(), hook_event() | atom(), Result.t(), Context.t() | map(), keyword()) ::
@@ -48,16 +48,15 @@ defmodule Spectre.ActionHooks do
   end
 
   @spec executed_actions(Result.t()) :: [map()]
-  defp executed_actions(%Result{events: events}) do
-    Enum.flat_map(events, fn
-      %{type: :action_executed, action: action, pending_action: pending, result: {:ok, result}} ->
-        [%{action: action, pending_action: pending, result: result}]
+  defp executed_actions(%Result{effects: effects}) do
+    Enum.flat_map(effects, fn
+      %Effect{kind: :action, status: :completed, result: {:ok, result}} = effect ->
+        [%{action: effect.name, effect: effect, result: result}]
 
-      %{type: :action_executed, action: action, pending_action: pending, result: result}
-      when is_map(result) ->
-        [%{action: action, pending_action: pending, result: result}]
+      %Effect{kind: :action, status: :completed, result: result} = effect ->
+        [%{action: effect.name, effect: effect, result: result}]
 
-      _event ->
+      _effect ->
         []
     end)
   end
@@ -65,15 +64,15 @@ defmodule Spectre.ActionHooks do
   @spec matching_hooks(module(), map(), atom()) :: [{hook(), term()}]
   defp matching_hooks(agent, executed, event) do
     action = executed.action
-    action_hooks = executed.pending_action |> pending_hooks() |> hooks_for(action, event)
+    action_hooks = executed.effect |> effect_hooks() |> hooks_for(action, event)
     agent_hooks = agent |> agent_hooks() |> hooks_for(action, event)
 
     Enum.map(action_hooks ++ agent_hooks, &{&1, executed.result})
   end
 
-  @spec pending_hooks(PendingAction.t() | term()) :: [hook()]
-  defp pending_hooks(%PendingAction{hooks: hooks}), do: hooks
-  defp pending_hooks(_pending_action), do: []
+  @spec effect_hooks(Effect.t() | term()) :: [hook()]
+  defp effect_hooks(%Effect{} = effect), do: Effect.hooks(effect)
+  defp effect_hooks(_effect), do: []
 
   @spec agent_hooks(module()) :: [hook()]
   defp agent_hooks(agent) do

@@ -9,12 +9,12 @@ defmodule Spectre.ActionPlanner do
   Spectre owns only the conversation runtime and action safety gates.
   """
 
-  alias Spectre.PendingAction
+  alias Spectre.Effect
 
   @doc """
-  Scans an LLM reply for AL blocks and returns visible text plus staged actions.
+  Scans an LLM reply for AL blocks and returns visible text plus staged effects.
 
-      {:ok, %{reply_text: text, actions: actions}} =
+      {:ok, %{reply_text: text, effects: effects}} =
         Spectre.ActionPlanner.plan_response(model_reply, actions_module: MyApp.Actions)
   """
   @spec plan_response(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -22,7 +22,7 @@ defmodule Spectre.ActionPlanner do
     scan = scan_response(text)
 
     if scan.entries == [] do
-      {:ok, %{reply_text: scan.clean_text, actions: []}}
+      {:ok, %{reply_text: scan.clean_text, effects: []}}
     else
       kinetic_plan_response(text, scan, opts)
     end
@@ -31,12 +31,12 @@ defmodule Spectre.ActionPlanner do
   @doc """
   Plans a single AL block without executing it.
 
-      {:ok, pending} = Spectre.ActionPlanner.plan("DELETE ACCOUNT", actions_module: MyApp.Actions)
+      {:ok, effect} = Spectre.ActionPlanner.plan("DELETE ACCOUNT", actions_module: MyApp.Actions)
   """
-  @spec plan(String.t(), keyword()) :: {:ok, PendingAction.t()} | {:error, term()}
+  @spec plan(String.t(), keyword()) :: {:ok, Effect.t()} | {:error, term()}
   def plan(al, opts \\ []) when is_binary(al) do
     with {:ok, action} <- kinetic_plan(al, opts) do
-      {:ok, PendingAction.new(action)}
+      {:ok, Effect.stage(action)}
     end
   end
 
@@ -49,7 +49,7 @@ defmodule Spectre.ActionPlanner do
   def clean_reply(text) when is_binary(text), do: scan_response(text).clean_text
 
   @spec kinetic_plan_response(String.t(), map(), keyword()) ::
-          {:ok, %{reply_text: String.t(), actions: [PendingAction.t()]}} | {:error, term()}
+          {:ok, %{reply_text: String.t(), effects: [Effect.t()]}} | {:error, term()}
   defp kinetic_plan_response(text, scan, opts) do
     kinetic = kinetic_module()
 
@@ -57,12 +57,12 @@ defmodule Spectre.ActionPlanner do
          {:ok, runtime} <- kinetic_runtime(opts),
          # credo:disable-for-next-line Credo.Check.Refactor.Apply
          {:ok, chain} <- apply(kinetic, :plan_chain, [runtime, text, plan_opts(opts)]) do
-      actions =
+      effects =
         chain.actions
         |> Enum.map(&prefer_exact_al_tool(&1, &1.al, opts))
-        |> Enum.map(&PendingAction.new/1)
+        |> Enum.map(&Effect.stage/1)
 
-      {:ok, %{reply_text: scan.clean_text, actions: actions}}
+      {:ok, %{reply_text: scan.clean_text, effects: effects}}
     else
       false -> {:error, :spectre_kinetic_not_loaded}
       {:error, reason} -> {:error, reason}

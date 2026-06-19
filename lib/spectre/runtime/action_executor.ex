@@ -1,101 +1,155 @@
 defmodule Spectre.ActionExecutor do
   @moduledoc """
-  Executes approved pending actions.
+  Executes approved pending action effects.
 
   This is the only module that calls action functions. Planning and policy gates
-  can stage actions, but execution stays behind this boundary.
+  can stage effects, but execution stays behind this boundary.
   """
 
   alias Spectre.ActionConfig
+  alias Spectre.Effect
   alias Spectre.Input
-  alias Spectre.PendingAction
   alias Spectre.Result
   alias Spectre.State
 
   @type action_result :: {:ok, Result.t()} | {:error, term()}
 
   @doc """
-  Executes the pending action currently stored in state.
+  Executes the pending action effect currently stored in state.
 
       {:ok, result} = Spectre.ActionExecutor.execute_pending(state, ctx)
 
-  A state with no pending action returns an `:no_pending_action` event instead
-  of failing. This makes policy approval paths idempotent at the host boundary.
+  A state with no pending effect returns an `:effect_missing` event instead of
+  failing. This makes policy approval paths idempotent at the host boundary.
   """
   @spec execute_pending(State.t(), Spectre.Context.t() | map(), keyword()) :: action_result()
-  def execute_pending(%State{pending_action: nil} = state, ctx, _opts) do
+  def execute_pending(%State{} = state, ctx, opts \\ []) do
+    case State.pending_effect(state) do
+      nil -> no_pending_effect(state, ctx)
+      %Effect{kind: :action} = effect -> execute_action_effect(state, effect, ctx, opts)
+      %Effect{} = effect -> {:error, {:unsupported_effect_kind, effect.kind}}
+    end
+  end
+
+  @spec no_pending_effect(State.t(), Spectre.Context.t() | map()) :: {:ok, Result.t()}
+  defp no_pending_effect(%State{} = state, ctx) do
     {:ok,
      %Result{
        state: state,
        input: Map.get(ctx, :input),
-       events: [%{type: :no_pending_action}]
+       events: [%{type: :effect_missing}]
      }}
   end
 
-  def execute_pending(%State{pending_action: %PendingAction{} = action} = state, ctx, opts) do
+  @spec execute_action_effect(State.t(), Effect.t(), Spectre.Context.t() | map(), keyword()) ::
+          action_result()
+  defp execute_action_effect(%State{} = state, %Effect{} = effect, ctx, opts) do
     ctx = normalize_ctx(ctx, Map.get(ctx, :input, Input.new("")), opts)
 
-    with {:ok, result} <- call_action(action, ctx) do
-      state =
-        state
-        |> State.clear_pending()
-        |> State.trace(%{type: :action_executed, action: action.name, at: DateTime.utc_now()})
+    case call_action(effect, ctx) do
+      {:ok, result} ->
+        {state, completed} =
+          state
+          |> State.complete_pending_effect(result)
+          |> trace_completed(effect)
 
-      # The executed pending action is included in the event so after-action
-      # hooks can still inspect policy, AL, args, and selected tool metadata
-      # after state has been cleared.
-      {:ok,
-       %Result{
-         input: ctx.input,
-         state: state,
-         actions: [action],
-         reply_text: format_action_result(result),
-         events: [
-           %{type: :action_executed, action: action.name, pending_action: action, result: result}
-         ]
-       }}
+        {:ok,
+         %Result{
+           input: ctx.input,
+           state: state,
+           effects: List.wrap(completed),
+           reply_text: format_action_result(result),
+           events: [
+             %{
+               type: :effect_completed,
+               kind: :action,
+               name: effect.name,
+               effect: completed,
+               result: result
+             }
+           ]
+         }}
+
+      {:error, reason} ->
+        failed = Effect.fail(effect, reason)
+
+        state = %{
+          state
+          | pending_effects: [],
+            planned_effects: Enum.take(state.planned_effects, -31) ++ [failed]
+        }
+
+        {:ok,
+         %Result{
+           input: ctx.input,
+           state: state,
+           effects: [failed],
+           events: [
+             %{
+               type: :effect_failed,
+               kind: :action,
+               name: effect.name,
+               effect: failed,
+               error: reason
+             }
+           ]
+         }}
     end
   end
 
-  @spec call_action(PendingAction.t(), Spectre.Context.t()) :: {:ok, term()} | {:error, term()}
-  defp call_action(%PendingAction{selected_tool: tool} = action, ctx) when is_binary(tool) do
-    case parse_tool(tool) do
-      {:ok, module, function, 2} ->
-        {:ok, apply(module, function, [action.args, ctx])}
+  @spec trace_completed({State.t(), Effect.t() | nil}, Effect.t()) ::
+          {State.t(), Effect.t() | nil}
+  defp trace_completed({%State{} = state, completed}, %Effect{} = original) do
+    state =
+      State.trace(state, %{
+        type: :effect_completed,
+        kind: :action,
+        name: original.name,
+        at: DateTime.utc_now()
+      })
 
-      {:ok, module, function, 1} ->
-        {:ok, apply(module, function, [action.args])}
+    {state, completed}
+  end
 
-      {:ok, module, function, arity} ->
-        {:error, {:unsupported_action_arity, module, function, arity}}
+  @spec call_action(Effect.t(), Spectre.Context.t()) :: {:ok, term()} | {:error, term()}
+  defp call_action(%Effect{} = effect, ctx) do
+    case Effect.selected_tool(effect) do
+      tool when is_binary(tool) ->
+        case parse_tool(tool) do
+          {:ok, module, function, 2} ->
+            {:ok, apply(module, function, [effect.args, ctx])}
 
-      {:error, _reason} ->
-        # Invalid tool metadata falls back to the configured action module. This
-        # keeps AL/tool extraction errors from bypassing the explicit action
-        # adapter boundary.
-        call_action_module(action, ctx)
+          {:ok, module, function, 1} ->
+            {:ok, apply(module, function, [effect.args])}
+
+          {:ok, module, function, arity} ->
+            {:error, {:unsupported_action_arity, module, function, arity}}
+
+          {:error, _reason} ->
+            call_action_module(effect, ctx)
+        end
+
+      _other ->
+        call_action_module(effect, ctx)
     end
   end
 
-  defp call_action(%PendingAction{} = action, ctx), do: call_action_module(action, ctx)
-
-  @spec call_action_module(PendingAction.t(), Spectre.Context.t()) ::
-          {:ok, term()} | {:error, term()}
-  defp call_action_module(%PendingAction{name: name} = action, ctx) when is_atom(name) do
+  @spec call_action_module(Effect.t(), Spectre.Context.t()) :: {:ok, term()} | {:error, term()}
+  defp call_action_module(%Effect{name: name} = effect, ctx) when is_atom(name) do
     case ActionConfig.actions(ctx.agent) do
-      {module, _opts} -> call_module_action(module, name, action, ctx)
+      {module, _opts} -> call_module_action(module, name, effect, ctx)
       nil -> {:error, :missing_actions_module}
     end
   end
 
-  defp call_action_module(_action, _ctx), do: {:error, :unknown_action_name}
+  defp call_action_module(_effect, _ctx), do: {:error, :unknown_action_name}
 
-  @spec call_module_action(module(), atom(), PendingAction.t(), Spectre.Context.t()) ::
+  @spec call_module_action(module(), atom(), Effect.t(), Spectre.Context.t()) ::
           {:ok, term()} | {:error, term()}
-  defp call_module_action(module, name, action, ctx) do
+  defp call_module_action(module, name, effect, ctx) do
     cond do
-      function_exported?(module, name, 2) -> {:ok, apply(module, name, [action.args, ctx])}
-      function_exported?(module, name, 1) -> {:ok, apply(module, name, [action.args])}
+      function_exported?(module, name, 2) -> {:ok, apply(module, name, [effect.args, ctx])}
+      function_exported?(module, name, 1) -> {:ok, apply(module, name, [effect.args])}
       true -> {:error, {:undefined_action, module, name}}
     end
   end

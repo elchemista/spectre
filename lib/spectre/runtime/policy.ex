@@ -1,15 +1,13 @@
 defmodule Spectre.Policy do
   @moduledoc """
-  Policy gate evaluator for pending actions.
+  Policy gate evaluator for pending effects.
 
-  A policy is a temporary deterministic router for one pending action. While a
+  A policy is a temporary deterministic router for one pending effect. While a
   policy is active, Spectre ignores normal flow routing and interprets the next
-  user turn as approval, rejection, or retry. This keeps dangerous actions from
-  executing because an LLM mentioned them, while still allowing natural
-  confirmation prompts.
+  user turn as approval, rejection, or retry.
   """
 
-  alias Spectre.Awaiting
+  alias Spectre.Awaitable
   alias Spectre.Input
   alias Spectre.Result
   alias Spectre.State
@@ -38,37 +36,35 @@ defmodule Spectre.Policy do
 
   @doc """
   Builds a policy struct from compiled DSL metadata.
-
-      policy = Spectre.Policy.new(agent.__spectre_policies__().delete_account)
   """
   @spec new(map()) :: t()
   def new(attrs) when is_map(attrs), do: struct(__MODULE__, Map.take(attrs, fields()))
 
   @doc """
   Returns true when the state is waiting on a policy response.
-
-      Spectre.Policy.awaiting?(state)
   """
   @spec awaiting?(State.t()) :: boolean()
   def awaiting?(%State{} = state), do: State.awaiting_policy?(state)
 
   @doc """
   Resumes the active policy with the user's latest input.
-
-      {:ok, result} = Spectre.Policy.resume(input, ctx)
   """
   @spec resume(Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
-  def resume(%Input{} = input, %{state: %State{awaiting: %Awaiting{policy: policy_name}}} = ctx) do
-    case find_policy(ctx.agent, policy_name) do
-      %__MODULE__{} = policy -> resume_policy(policy, input, ctx)
-      nil -> {:error, {:unknown_policy, policy_name}}
+  def resume(%Input{} = input, %{state: %State{} = state} = ctx) do
+    case State.open_policy_awaitable(state) do
+      %Awaitable{name: policy_name} ->
+        case find_policy(ctx.agent, policy_name) do
+          %__MODULE__{} = policy -> resume_policy(policy, input, ctx)
+          nil -> {:error, {:unknown_policy, policy_name}}
+        end
+
+      nil ->
+        {:error, :no_open_policy}
     end
   end
 
   @doc """
   Decides whether policy text accepts, rejects, or misses all policy branches.
-
-      {:accept, :confirmed} = Spectre.Policy.decide(policy, "yes, delete")
   """
   @spec decide(t(), String.t()) :: decision()
   def decide(%__MODULE__{} = policy, text) when is_binary(text) do
@@ -90,18 +86,21 @@ defmodule Spectre.Policy do
 
   @spec approve(t(), atom(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
-  defp approve(policy, label, input, ctx) do
-    state = State.clear_awaiting(ctx.state)
+  defp approve(policy, label, input, %{state: state} = ctx) do
+    awaitable = state |> State.open_policy_awaitable() |> Awaitable.accept(label)
+    state = state |> State.replace_awaitable(awaitable) |> State.clear_open_awaitables()
 
-    # Awaiting is cleared before execution so action callbacks observe the
-    # approved state, while `pending_action` remains available to execute.
     case Spectre.ActionExecutor.execute_pending(state, %{ctx | state: state}, policy: policy.name) do
       {:ok, %Result{} = result} ->
         {:ok,
          %{
            result
            | input: input,
-             events: [%{type: :policy_accepted, label: label} | result.events]
+             awaitables: [awaitable],
+             events: [
+               %{type: :awaitable_accepted, kind: :policy, name: policy.name, label: label}
+               | result.events
+             ]
          }}
 
       {:error, reason} ->
@@ -110,50 +109,61 @@ defmodule Spectre.Policy do
   end
 
   @spec reject(t(), atom(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
-  defp reject(_policy, label, input, ctx) do
+  defp reject(policy, label, input, %{state: state}) do
+    awaitable = state |> State.open_policy_awaitable() |> Awaitable.reject(label)
+
+    cancelled =
+      state.pending_effects |> Enum.map(&Spectre.Effect.cancel(&1, {:policy_rejected, label}))
+
     state =
-      ctx.state
+      state
+      |> State.replace_awaitable(awaitable)
       |> State.clear_pending()
-      |> State.trace(%{type: :policy_rejected, label: label, at: DateTime.utc_now()})
+      |> record_resolved_effects(cancelled)
+      |> State.trace(%{
+        type: :awaitable_rejected,
+        kind: :policy,
+        name: policy.name,
+        label: label,
+        at: DateTime.utc_now()
+      })
 
     {:ok,
      %Result{
        input: input,
        state: state,
        reply_text: "",
-       events: [%{type: :policy_rejected, label: label}]
+       effects: cancelled,
+       awaitables: [awaitable],
+       events: [
+         %{type: :awaitable_rejected, kind: :policy, name: policy.name, label: label},
+         %{type: :effect_cancelled, kind: :action, reason: {:policy_rejected, label}}
+       ]
      }}
   end
 
   @spec retry(t(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
-  defp retry(policy, input, %{state: %{awaiting: awaiting} = state} = ctx) do
-    awaiting = Awaiting.increment(awaiting)
-    state = %{state | awaiting: awaiting}
+  defp retry(policy, input, %{state: state} = ctx) do
+    awaitable = state |> State.open_policy_awaitable() |> Awaitable.increment()
+    state = State.replace_awaitable(state, awaitable)
 
-    if exceeded_attempts?(policy, awaiting) do
+    if exceeded_attempts?(policy, awaitable) do
       finish_attempts(policy, input, %{ctx | state: state})
     else
       reply_otherwise(policy, input, %{ctx | state: state})
     end
   end
 
-  @spec exceeded_attempts?(t(), Awaiting.t()) :: boolean()
-  defp exceeded_attempts?(%__MODULE__{max_attempts: nil}, _awaiting), do: false
+  @spec exceeded_attempts?(t(), Awaitable.t()) :: boolean()
+  defp exceeded_attempts?(%__MODULE__{max_attempts: nil}, _awaitable), do: false
 
-  defp exceeded_attempts?(%__MODULE__{max_attempts: max}, %Awaiting{attempts: attempts}),
+  defp exceeded_attempts?(%__MODULE__{max_attempts: max}, %Awaitable{attempts: attempts}),
     do: attempts >= max
 
   @spec finish_attempts(t(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
-  defp finish_attempts(%__MODULE__{then: :cancel_pending}, input, ctx) do
-    state = State.cancel_pending(ctx.state)
-
-    {:ok,
-     %Result{
-       input: input,
-       state: state,
-       events: [%{type: :policy_attempts_exceeded}]
-     }}
+  defp finish_attempts(%__MODULE__{then: :cancel_pending} = policy, input, ctx) do
+    cancel_attempts(policy, input, ctx)
   end
 
   defp finish_attempts(%__MODULE__{then: function}, input, ctx)
@@ -161,28 +171,62 @@ defmodule Spectre.Policy do
     Spectre.Runner.run_function(function, input, ctx)
   end
 
-  defp finish_attempts(_policy, input, ctx) do
+  defp finish_attempts(%__MODULE__{} = policy, input, ctx) do
+    cancel_attempts(policy, input, ctx)
+  end
+
+  @spec cancel_attempts(t(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
+  defp cancel_attempts(policy, input, %{state: state}) do
+    awaitable = state |> State.open_policy_awaitable() |> Awaitable.cancel()
+
+    cancelled =
+      state.pending_effects |> Enum.map(&Spectre.Effect.cancel(&1, :policy_attempts_exceeded))
+
+    state =
+      state
+      |> State.replace_awaitable(awaitable)
+      |> State.clear_pending()
+      |> record_resolved_effects(cancelled)
+
     {:ok,
      %Result{
        input: input,
-       state: State.cancel_pending(ctx.state),
-       events: [%{type: :policy_attempts_exceeded}]
+       state: state,
+       effects: cancelled,
+       awaitables: [awaitable],
+       events: [
+         %{type: :awaitable_cancelled, kind: :policy, name: policy.name},
+         %{type: :effect_cancelled, kind: :action, reason: :policy_attempts_exceeded}
+       ]
      }}
   end
 
   @spec reply_otherwise(t(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
-  defp reply_otherwise(%__MODULE__{otherwise: {:ask, prompt}}, input, ctx) do
-    Spectre.Runner.ask(prompt, input, ctx, policy_prompt?: true)
+  defp reply_otherwise(%__MODULE__{otherwise: {:ask, prompt}} = policy, input, ctx) do
+    with {:ok, %Result{} = result} <- Spectre.Runner.ask(prompt, input, ctx, policy_prompt?: true) do
+      {:ok,
+       %{
+         result
+         | awaitables: ctx.state.awaitables,
+           events: [%{type: :awaitable_pending, kind: :policy, name: policy.name} | result.events]
+       }}
+    end
   end
 
-  defp reply_otherwise(_policy, input, ctx) do
+  defp reply_otherwise(policy, input, ctx) do
     {:ok,
      %Result{
        input: input,
        state: ctx.state,
-       events: [%{type: :policy_no_match}]
+       awaitables: ctx.state.awaitables,
+       events: [%{type: :awaitable_pending, kind: :policy, name: policy.name}]
      }}
+  end
+
+  @spec record_resolved_effects(State.t(), [Spectre.Effect.t()]) :: State.t()
+  defp record_resolved_effects(%State{} = state, effects) do
+    %{state | planned_effects: Enum.take(state.planned_effects, -31) ++ effects}
   end
 
   @spec match_branch([map()], String.t()) :: atom() | nil

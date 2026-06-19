@@ -510,11 +510,11 @@ defmodule Spectre.Agent do
   end
 
   @doc """
-  Declares a policy gate for a pending action.
+  Declares a policy gate for a pending action effect.
 
-  A policy is a small deterministic router used only while an action is waiting
-  for approval. It bypasses normal routing so a confirmation such as "yes" is
-  interpreted as a policy response instead of a generic user intent.
+  A policy is a small deterministic router used only while an action effect is
+  waiting for approval. It bypasses normal routing so a confirmation such as
+  "yes" is interpreted as a policy response instead of a generic user intent.
 
       policy :delete_account_confirmation do
         request :confirm_delete_account

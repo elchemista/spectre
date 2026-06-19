@@ -177,7 +177,7 @@ action(:dangerous_or_external_action)
 ```
 
 `ask` renders a prompt, calls the model, strips Action Language from the visible
-reply, and asks SpectreKinetic to plan staged actions if AL blocks exist.
+reply, and asks SpectreKinetic to plan staged action effects if AL blocks exist.
 
 `reply` renders a deterministic response without calling the model. This is good
 for help, health checks, canned answers, and policy confirmations.

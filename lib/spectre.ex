@@ -62,6 +62,28 @@ defmodule Spectre do
   end
 
   @doc """
+  Runs one turn and reduces its result into the next host-facing decision.
+
+      {:ok, turn} = Spectre.turn(MyApp.Agent, "hello")
+      {:reply, result} = turn.decision
+  """
+  @spec turn(module() | GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
+          {:ok, Spectre.Turn.t()} | {:error, term()}
+  def turn(agent_or_session, input, opts \\ [])
+
+  def turn(agent, input, opts) when is_atom(agent) and is_list(opts) do
+    if agent_module?(agent) do
+      Spectre.Turn.run(agent, input, opts)
+    else
+      Spectre.Session.turn(agent, input, opts)
+    end
+  end
+
+  def turn(session, input, opts) when is_list(opts) do
+    Spectre.Session.turn(session, input, opts)
+  end
+
+  @doc """
   Summons a conversation-scoped session process directly.
 
       {:ok, pid} = Spectre.summon(agent: MyApp.Agent, conversation_id: "abc")
@@ -109,7 +131,7 @@ defmodule Spectre do
   def reset(session, state \\ %State{}), do: Spectre.Session.reset(session, state)
 
   @doc """
-  Cancels the active policy/pending action and returns an updated result.
+  Cancels the active policy/effect boundary and returns an updated result.
 
       {:ok, result} = Spectre.cancel("cancel", ctx)
   """
@@ -126,13 +148,15 @@ defmodule Spectre do
        input: Input.new(input),
        state: state,
        reply_text: "",
+       effects: [],
+       awaitables: state.awaitables,
        events: [%{type: :cancelled}]
      }}
   end
 
   @doc """
-  Executes the currently pending action, if the configured action module exposes
-  a matching function.
+  Executes the currently pending action effect, if the configured action module
+  exposes a matching function.
 
       {:ok, result} = Spectre.execute(state, ctx)
   """

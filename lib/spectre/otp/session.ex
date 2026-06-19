@@ -73,6 +73,15 @@ defmodule Spectre.Session do
   end
 
   @doc """
+  Handles one turn through a supervised session and returns a `%Spectre.Turn{}`.
+  """
+  @spec turn(GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
+          {:ok, Spectre.Turn.t()} | {:error, term()}
+  def turn(server, input, opts \\ []) do
+    GenServer.call(server, {:turn, input, opts}, Keyword.get(opts, :timeout, :timer.minutes(5)))
+  end
+
+  @doc """
   Returns the current in-memory Spectre state.
 
       %Spectre.State{} = Spectre.Session.state(session)
@@ -127,6 +136,23 @@ defmodule Spectre.Session do
         state = State.new(result.state)
         data = data |> Map.merge(%{state: state, last_result: result}) |> arm_idle_timer()
         {:reply, {:ok, result}, data}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  def handle_call({:turn, input, opts}, _from, data) do
+    runtime_opts =
+      data.base_opts
+      |> Keyword.merge(Keyword.drop(opts, [:timeout]))
+      |> Keyword.put(:state, data.state)
+
+    case Spectre.Turn.run(data.agent, input, runtime_opts) do
+      {:ok, %Spectre.Turn{result: %Result{} = result} = turn} ->
+        state = State.new(result.state)
+        data = data |> Map.merge(%{state: state, last_result: result}) |> arm_idle_timer()
+        {:reply, {:ok, turn}, data}
 
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}

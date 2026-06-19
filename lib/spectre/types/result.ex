@@ -3,8 +3,8 @@ defmodule Spectre.Result do
   Output of a handled turn.
 
   Results carry everything the host boundary needs after a turn: user-visible
-  reply text, updated state, staged/executed actions, route metadata, and events
-  for logging or hooks.
+  reply text, updated state, effects, awaitables, route metadata, and events
+  for logging.
 
       {:ok, %Spectre.Result{reply_text: text, state: state}} =
         Spectre.ask(MyAgent, "hello")
@@ -15,7 +15,8 @@ defmodule Spectre.Result do
     :route,
     :state,
     reply_text: "",
-    actions: [],
+    effects: [],
+    awaitables: [],
     events: [],
     metadata: %{}
   ]
@@ -25,7 +26,8 @@ defmodule Spectre.Result do
           route: Spectre.Route.t() | nil,
           state: Spectre.State.t() | nil,
           reply_text: String.t(),
-          actions: [Spectre.PendingAction.t()],
+          effects: [Spectre.Effect.t()],
+          awaitables: [Spectre.Awaitable.t()],
           events: [term()],
           metadata: map()
         }
