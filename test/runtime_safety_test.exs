@@ -191,6 +191,11 @@ defmodule SpectreRuntimeSafetyTest do
   end
 
   test "session startup fails when durable state cannot be restored" do
+    assert {:error, :store_unavailable} =
+             Spectre.Runtime.restore_state(RestoreAgent, [])
+
+    Process.flag(:trap_exit, true)
+
     assert {:error, {:state_restore_failed, :store_unavailable}} =
              Spectre.summon(agent: RestoreAgent)
   end
