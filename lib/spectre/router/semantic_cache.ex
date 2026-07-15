@@ -67,22 +67,30 @@ defmodule Spectre.Router.SemanticCache do
   @spec put(String.t(), map(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
   def put(text, result, opts) when is_binary(text) and is_map(result) and is_list(opts) do
     safe(fn ->
-      with {:ok, opts} <- put_runtime_opts(opts) do
-        cond do
-          Keyword.has_key?(opts, :semantic_lookup) and is_nil(Keyword.get(opts, :semantic_cache)) ->
-            learn_failure(:unwritable_semantic_lookup, opts)
-
-          cache = Keyword.get(opts, :semantic_cache) ->
-            call_optional(cache, :put, [text, result, opts], opts, learn_failure_mode(opts))
-
-          true ->
-            Learned.put(text, result, opts)
-        end
-      end
+      opts
+      |> put_runtime_opts()
+      |> put_with_runtime_opts(text, result)
     end)
   end
 
   def put(_text, result, _opts), do: {:error, {:invalid_semantic_cache_result, result}}
+
+  @spec put_with_runtime_opts({:ok, keyword()} | {:error, term()}, String.t(), map()) ::
+          :ok | {:ok, term()} | {:error, term()}
+  defp put_with_runtime_opts({:ok, opts}, text, result) do
+    cond do
+      Keyword.has_key?(opts, :semantic_lookup) and is_nil(Keyword.get(opts, :semantic_cache)) ->
+        learn_failure(:unwritable_semantic_lookup, opts)
+
+      cache = Keyword.get(opts, :semantic_cache) ->
+        call_optional(cache, :put, [text, result, opts], opts, learn_failure_mode(opts))
+
+      true ->
+        Learned.put(text, result, opts)
+    end
+  end
+
+  defp put_with_runtime_opts({:error, reason}, _text, _result), do: {:error, reason}
 
   @doc """
   Lists semantic-cache examples for an agent.
