@@ -141,6 +141,40 @@ defmodule Spectre.Effect do
   def idempotency_key(%__MODULE__{id: id}), do: Spectre.Identity.idempotency_key(id)
 
   @doc """
+  Returns whether an effect is ready for its host capability boundary.
+
+  Policy-gated effects become executable only after their durable
+  `:waiting_policy -> :approved` transition.
+  """
+  @spec executable?(t()) :: boolean()
+  def executable?(%__MODULE__{status: status}), do: status in [:pending, :approved]
+
+  @doc """
+  Returns whether an effect reached a terminal lifecycle state.
+  """
+  @spec terminal?(t()) :: boolean()
+  def terminal?(%__MODULE__{status: status}), do: status in [:completed, :failed, :cancelled]
+
+  @doc """
+  Normalizes a terminal effect into a host-facing outcome.
+
+  Older adapters may have stored `{:ok, value}` or `{:error, reason}` inside
+  a completed effect. These shapes are flattened for backwards compatibility.
+  Non-terminal effects return `nil`.
+  """
+  @type outcome :: {:ok, term()} | {:error, term()} | {:cancelled, term()} | nil
+  @spec outcome(t()) :: outcome()
+  def outcome(%__MODULE__{status: :completed, result: {:ok, result}}), do: {:ok, result}
+  def outcome(%__MODULE__{status: :completed, result: {:error, reason}}), do: {:error, reason}
+  def outcome(%__MODULE__{status: :completed, result: result}), do: {:ok, result}
+  def outcome(%__MODULE__{status: :failed, error: reason}), do: {:error, reason}
+
+  def outcome(%__MODULE__{status: :cancelled, metadata: metadata}),
+    do: {:cancelled, Map.get(metadata, :cancel_reason)}
+
+  def outcome(%__MODULE__{}), do: nil
+
+  @doc """
   Returns hooks attached to an effect payload.
   """
   @spec hooks(t()) :: [map()]
