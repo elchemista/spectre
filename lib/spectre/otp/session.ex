@@ -109,19 +109,22 @@ defmodule Spectre.Session do
       |> Keyword.get(:opts, [])
       |> Keyword.put_new(:conversation_id, conversation_id)
 
-    state = restore_initial_state(agent, opts, base_opts)
-    idle_timeout = idle_timeout(agent, opts, base_opts)
+    with {:ok, state} <- restore_initial_state(agent, opts, base_opts) do
+      idle_timeout = idle_timeout(agent, opts, base_opts)
 
-    data = %{
-      agent: agent,
-      base_opts: base_opts,
-      state: state,
-      last_result: nil,
-      idle_timeout: idle_timeout,
-      idle_timer: nil
-    }
+      data = %{
+        agent: agent,
+        base_opts: base_opts,
+        state: state,
+        last_result: nil,
+        idle_timeout: idle_timeout,
+        idle_timer: nil
+      }
 
-    {:ok, arm_idle_timer(data)}
+      {:ok, arm_idle_timer(data)}
+    else
+      {:error, reason} -> {:stop, {:state_restore_failed, reason}}
+    end
   end
 
   @impl GenServer
@@ -169,21 +172,19 @@ defmodule Spectre.Session do
   @impl GenServer
   def handle_info(:idle_shutdown, data), do: {:stop, :normal, %{data | idle_timer: nil}}
 
-  @spec restore_initial_state(module(), keyword(), keyword()) :: State.t()
+  @spec restore_initial_state(module(), keyword(), keyword()) ::
+          {:ok, State.t()} | {:error, term()}
   defp restore_initial_state(agent, opts, base_opts) do
     if Keyword.has_key?(opts, :state) do
-      opts
-      |> Keyword.get(:state)
-      |> State.new()
-      |> maybe_put_conversation_id(Keyword.get(base_opts, :conversation_id))
-    else
-      case Spectre.Runtime.restore_state(agent, base_opts) do
-        {:ok, %State{} = state} ->
-          state
+      state =
+        opts
+        |> Keyword.get(:state)
+        |> State.new()
+        |> maybe_put_conversation_id(Keyword.get(base_opts, :conversation_id))
 
-        {:error, _reason} ->
-          maybe_put_conversation_id(%State{}, Keyword.get(base_opts, :conversation_id))
-      end
+      {:ok, state}
+    else
+      Spectre.Runtime.restore_state(agent, base_opts)
     end
   end
 
@@ -191,12 +192,24 @@ defmodule Spectre.Session do
   defp idle_timeout(agent, opts, base_opts) do
     config = agent.__spectre_config__()
 
-    Keyword.get(opts, :idle) ||
-      Keyword.get(opts, :shutdown) ||
-      Keyword.get(base_opts, :idle) ||
-      Keyword.get(base_opts, :shutdown) ||
-      Keyword.get(config, :idle) ||
-      Keyword.get(config, :shutdown)
+    first_configured([
+      {opts, :idle},
+      {opts, :shutdown},
+      {base_opts, :idle},
+      {base_opts, :shutdown},
+      {config, :idle},
+      {config, :shutdown}
+    ])
+  end
+
+  @spec first_configured([{keyword(), atom()}]) :: term()
+  defp first_configured(entries) do
+    Enum.reduce_while(entries, nil, fn {options, key}, _acc ->
+      case Keyword.fetch(options, key) do
+        {:ok, value} -> {:halt, value}
+        :error -> {:cont, nil}
+      end
+    end)
   end
 
   @spec arm_idle_timer(map()) :: map()
