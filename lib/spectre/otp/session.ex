@@ -129,21 +129,23 @@ defmodule Spectre.Session do
       |> Keyword.get(:opts, [])
       |> Keyword.put_new(:conversation_id, conversation_id)
 
-    with {:ok, state} <- restore_initial_state(agent, opts, base_opts) do
-      idle_timeout = idle_timeout(agent, opts, base_opts)
+    case restore_initial_state(agent, opts, base_opts) do
+      {:ok, state} ->
+        idle_timeout = idle_timeout(agent, opts, base_opts)
 
-      data = %{
-        agent: agent,
-        base_opts: base_opts,
-        state: state,
-        last_result: nil,
-        idle_timeout: idle_timeout,
-        idle_timer: nil
-      }
+        data = %{
+          agent: agent,
+          base_opts: base_opts,
+          state: state,
+          last_result: nil,
+          idle_timeout: idle_timeout,
+          idle_timer: nil
+        }
 
-      {:ok, arm_idle_timer(data)}
-    else
-      {:error, reason} -> {:stop, {:state_restore_failed, reason}}
+        {:ok, arm_idle_timer(data)}
+
+      {:error, reason} ->
+        {:stop, {:state_restore_failed, reason}}
     end
   end
 
