@@ -8,6 +8,7 @@ defmodule Spectre.Policy do
   """
 
   alias Spectre.Awaitable
+  alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Result
   alias Spectre.State
@@ -86,25 +87,48 @@ defmodule Spectre.Policy do
 
   @spec approve(t(), atom(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
-  defp approve(policy, label, input, %{state: state} = ctx) do
-    awaitable = state |> State.open_policy_awaitable() |> Awaitable.accept(label)
-    state = state |> State.replace_awaitable(awaitable) |> State.clear_open_awaitables()
+  defp approve(policy, label, input, %{state: state}) do
+    case State.open_policy_awaitable(state) do
+      nil ->
+        {:error, :no_open_policy}
 
-    case Spectre.ActionExecutor.execute_pending(state, %{ctx | state: state}, policy: policy.name) do
-      {:ok, %Result{} = result} ->
-        {:ok,
-         %{
-           result
-           | input: input,
+      %Awaitable{} = open ->
+        with {:ok, state, approved} <-
+               State.approve_pending_effect(state, open.subject_id) do
+          awaitable = Awaitable.accept(open, label)
+
+          state =
+            state
+            |> State.replace_awaitable(awaitable)
+            |> State.clear_open_awaitables()
+            |> State.trace(%{
+              type: :awaitable_accepted,
+              kind: :policy,
+              name: policy.name,
+              label: label,
+              subject_id: open.subject_id,
+              at: DateTime.utc_now()
+            })
+
+          {:ok,
+           %Result{
+             input: input,
+             state: state,
+             reply_text: "",
+             effects: [approved],
              awaitables: [awaitable],
              events: [
-               %{type: :awaitable_accepted, kind: :policy, name: policy.name, label: label}
-               | result.events
+               %{type: :awaitable_accepted, kind: :policy, name: policy.name, label: label},
+               %{
+                 type: :effect_approved,
+                 kind: approved.kind,
+                 name: approved.name,
+                 effect_id: approved.id,
+                 idempotency_key: Effect.idempotency_key(approved)
+               }
              ]
-         }}
-
-      {:error, reason} ->
-        {:error, reason}
+           }}
+        end
     end
   end
 
