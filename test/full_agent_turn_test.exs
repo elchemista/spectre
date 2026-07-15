@@ -115,6 +115,7 @@ defmodule SpectreFullAgentTurnTest.Agent do
   policy :terms do
     accept(:accepted_terms, regex: ~r/^yes$/i)
     reject(:rejected_terms, regex: ~r/^no$/i)
+    attempts(2, then: :cancel_pending)
   end
 
   interrupt :HELP,
@@ -321,11 +322,134 @@ defmodule SpectreFullAgentTurnTest do
     assert Effect.outcome(cancelled) ==
              {:cancelled, {:policy_rejected, :rejected_terms}}
 
+    assert rejected_result.input.text == "no"
     assert rejected_result.state.pending_effects == []
 
     assert [%Awaitable{name: :terms, status: :rejected, label: :rejected_terms}] =
              rejected_result.state.awaitables
 
+    refute_receive {:full_agent_local_classifier, "no"}
+    refute_receive {:full_agent_action, :create_project, _args}
+
+    assert {:ok, missing} = execute(rejected_result)
+    assert missing.effects == []
+    assert missing.events == [%{type: :effect_missing}]
+    refute_receive {:full_agent_action, :create_project, _args}
+  end
+
+  test "unmatched policy reply stays awaiting and bypasses normal classifiers" do
+    assert {:ok, awaiting_turn} = turn("start classified project")
+    assert {:awaiting, _awaitable, awaiting_result} = awaiting_turn.decision
+
+    assert {:ok, retry_turn} =
+             turn(" MAYBE ", state: awaiting_result.state)
+
+    assert {:awaiting, %Awaitable{status: :open, attempts: 1}, retry_result} =
+             retry_turn.decision
+
+    assert retry_result.input.text == "maybe"
+    assert [%Effect{status: :waiting_policy}] = retry_result.state.pending_effects
+    refute_receive {:full_agent_local_classifier, "maybe"}
+    refute_receive {:full_agent_llm_classifier, _prompt, _opts}
+    refute_receive {:full_agent_action, :create_project, _args}
+  end
+
+  test "policy attempts exhaustion cancels pending work without executing it" do
+    assert {:ok, awaiting_turn} = turn("start classified project")
+    assert {:awaiting, _awaitable, awaiting_result} = awaiting_turn.decision
+
+    assert {:ok, retry_turn} =
+             turn("maybe", state: awaiting_result.state)
+
+    assert {:awaiting, _awaitable, retry_result} = retry_turn.decision
+
+    assert {:ok, cancelled_turn} =
+             turn("still unsure", state: retry_result.state)
+
+    assert {:completed, %Effect{status: :cancelled} = cancelled, cancelled_result} =
+             cancelled_turn.decision
+
+    assert Effect.outcome(cancelled) == {:cancelled, :policy_attempts_exceeded}
+    assert cancelled_result.state.pending_effects == []
+
+    assert [%Awaitable{status: :cancelled, attempts: 2}] =
+             cancelled_result.state.awaitables
+
+    assert {:ok, missing} = execute(cancelled_result)
+    assert missing.events == [%{type: :effect_missing}]
+    refute_receive {:full_agent_action, :create_project, _args}
+  end
+
+  test "trusted host rejection produces the same terminal cancellation as user rejection" do
+    assert {:ok, awaiting_turn} = turn("start classified project")
+
+    assert {:ok, rejected_turn} =
+             Turn.resolve_policy(awaiting_turn, {:reject, :rejected_terms})
+
+    assert {:completed, %Effect{status: :cancelled} = cancelled, rejected_result} =
+             rejected_turn.decision
+
+    assert Effect.outcome(cancelled) ==
+             {:cancelled, {:policy_rejected, :rejected_terms}}
+
+    assert rejected_result.state.pending_effects == []
+
+    assert Enum.any?(
+             rejected_result.events,
+             &match?(%{type: :policy_resolved, source: :host, kind: :reject}, &1)
+           )
+
+    refute_receive {:full_agent_action, :create_project, _args}
+  end
+
+  test "invalid trusted policy label leaves live session state unchanged" do
+    session = start_session()
+
+    assert {:ok, awaiting_turn} =
+             Spectre.turn(session, "start classified project", test_pid: self())
+
+    state_before = Spectre.state(session)
+
+    assert {:error, {:unknown_policy_resolution_label, :terms, :reject, :unknown}} =
+             Turn.resolve_policy(awaiting_turn, {:reject, :unknown})
+
+    assert Spectre.state(session) == state_before
+    refute_receive {:full_agent_action, :create_project, _args}
+  end
+
+  test "trusted host rejection clears pending work in the live session" do
+    session = start_session()
+
+    assert {:ok, awaiting_turn} =
+             Spectre.turn(session, "start classified project", test_pid: self())
+
+    assert {:ok, rejected_turn} =
+             Turn.resolve_policy(awaiting_turn, {:reject, :rejected_terms})
+
+    assert {:completed, %Effect{status: :cancelled}, rejected_result} =
+             rejected_turn.decision
+
+    assert rejected_result.state.pending_effects == []
+    assert Spectre.state(session) == rejected_result.state
+    refute_receive {:full_agent_action, :create_project, _args}
+  end
+
+  test "a policy cannot be resolved twice after host approval" do
+    session = start_session()
+
+    assert {:ok, awaiting_turn} =
+             Spectre.turn(session, "start classified project", test_pid: self())
+
+    assert {:ok, approved_turn} =
+             Turn.resolve_policy(awaiting_turn, {:accept, :accepted_terms})
+
+    state_after_approval = Spectre.state(session)
+    assert {:needs, %Effect{status: :approved}, _result} = approved_turn.decision
+
+    assert {:error, :no_open_policy} =
+             Turn.resolve_policy(approved_turn, {:accept, :accepted_terms})
+
+    assert Spectre.state(session) == state_after_approval
     refute_receive {:full_agent_action, :create_project, _args}
   end
 
@@ -365,6 +489,17 @@ defmodule SpectreFullAgentTurnTest do
 
   defp turn(text, opts \\ []) do
     Spectre.turn(Agent, text, Keyword.put_new(opts, :test_pid, self()))
+  end
+
+  defp start_session do
+    child_id = {:full_agent_negative_session, System.unique_integer([:positive])}
+
+    start_supervised!(
+      {Spectre.Session,
+       agent: Agent,
+       state: %State{},
+       id: child_id}
+    )
   end
 
   defp execute(%Result{} = result) do
