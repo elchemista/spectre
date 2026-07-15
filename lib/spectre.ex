@@ -151,7 +151,7 @@ defmodule Spectre do
           Spectre.Policy.resolution(),
           keyword()
         ) :: {:ok, Spectre.Result.t()} | {:error, term()}
-  def resolve_policy(agent_or_session, %Spectre.Result{} = result, resolution, opts \\ [])
+  def resolve_policy(agent_or_session, result, resolution, opts \\ [])
 
   def resolve_policy(agent, %Spectre.Result{} = result, resolution, opts)
       when is_atom(agent) and is_list(opts) do
