@@ -154,29 +154,31 @@ defmodule Spectre.Runner do
         }
       })
 
-    policy = Keyword.get(opts, :policy) || ActionProtection.protected_by(ctx.agent, effect)
-    state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
-    ctx = %{ctx | state: state}
-    # Read the effect back from state so policy metadata/status added by
-    # `State.put_pending_effect/3` is reflected in the result effects list.
-    effects = [pending_effect(state)]
+    with :ok <- ensure_no_pending_effect(ctx.state) do
+      policy = Keyword.get(opts, :policy) || ActionProtection.protected_by(ctx.agent, effect)
+      state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
+      ctx = %{ctx | state: state}
+      # Read the effect back from state so policy metadata/status added by
+      # `State.put_pending_effect/3` is reflected in the result effects list.
+      effects = [pending_effect(state)]
 
-    cond do
-      policy && Keyword.has_key?(opts, :reply) ->
-        reply_staged_policy(policy, effects, input, ctx, opts)
+      cond do
+        policy && Keyword.has_key?(opts, :reply) ->
+          reply_staged_policy(policy, effects, input, ctx, opts)
 
-      policy ->
-        request_policy(policy, "", effects, input, ctx, opts)
+        policy ->
+          request_policy(policy, "", effects, input, ctx, opts)
 
-      true ->
-        {:ok,
-         %Result{
-           input: input,
-           route: ctx.route,
-           state: state,
-           effects: effects,
-           events: [%{type: :effect_staged, kind: :action, name: effect.name}]
-         }}
+        true ->
+          {:ok,
+           %Result{
+             input: input,
+             route: ctx.route,
+             state: state,
+             effects: effects,
+             events: [%{type: :effect_staged, kind: :action, name: effect.name}]
+           }}
+      end
     end
   end
 
@@ -201,27 +203,38 @@ defmodule Spectre.Runner do
     {:ok, %Result{input: input, route: ctx.route, state: ctx.state, reply_text: reply_text}}
   end
 
-  defp stage_effects(reply_text, [effect | _rest] = effects, input, ctx, opts) do
-    policy = ActionProtection.protected_by(ctx.agent, effect)
-    state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
-    ctx = %{ctx | state: state}
-    staged_effect = pending_effect(state)
+  defp stage_effects(reply_text, [effect], input, ctx, opts) do
+    with :ok <- ensure_no_pending_effect(ctx.state) do
+      policy = ActionProtection.protected_by(ctx.agent, effect)
+      state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
+      ctx = %{ctx | state: state}
+      staged_effect = pending_effect(state)
 
-    if policy do
-      # Protected AL actions immediately switch into the policy request flow.
-      # The visible LLM reply is preserved and joined with the policy prompt.
-      request_policy(policy, reply_text, [staged_effect], input, ctx, opts)
-    else
-      {:ok,
-       %Result{
-         input: input,
-         route: ctx.route,
-         state: state,
-         reply_text: reply_text,
-         effects: [staged_effect | Enum.drop(effects, 1)],
-         events: [%{type: :effect_staged, kind: :action, name: effect.name}]
-       }}
+      if policy do
+        # Protected AL actions immediately switch into the policy request flow.
+        # The visible LLM reply is preserved and joined with the policy prompt.
+        request_policy(policy, reply_text, [staged_effect], input, ctx, opts)
+      else
+        {:ok,
+         %Result{
+           input: input,
+           route: ctx.route,
+           state: state,
+           reply_text: reply_text,
+           effects: [staged_effect],
+           events: [%{type: :effect_staged, kind: :action, name: effect.name}]
+         }}
+      end
     end
+  end
+
+  defp stage_effects(_reply_text, effects, _input, _ctx, _opts) when length(effects) > 1 do
+    identities =
+      Enum.map(effects, fn effect ->
+        %{id: effect.id, kind: effect.kind, name: effect.name}
+      end)
+
+    {:error, {:multiple_action_effects_not_supported, identities}}
   end
 
   @spec render_reply(atom() | String.t(), Input.t(), Spectre.Context.t(), keyword()) ::
@@ -380,6 +393,17 @@ defmodule Spectre.Runner do
   defp normalize_ctx(ctx, input, opts) when is_map(ctx) do
     attrs = Map.merge(ctx, %{input: input, opts: Keyword.merge(Map.get(ctx, :opts, []), opts)})
     struct(Spectre.Context, attrs)
+  end
+
+  @spec ensure_no_pending_effect(Spectre.State.t()) :: :ok | {:error, term()}
+  defp ensure_no_pending_effect(%Spectre.State{} = state) do
+    case Spectre.State.pending_effect(state) do
+      nil ->
+        :ok
+
+      %Effect{} = effect ->
+        {:error, {:pending_effect_not_resolved, effect.id, effect.status}}
+    end
   end
 
   @spec pending_effect(Spectre.State.t()) :: Effect.t()
