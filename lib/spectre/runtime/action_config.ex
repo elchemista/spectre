@@ -47,6 +47,7 @@ defmodule Spectre.ActionConfig do
         opts
     end
   end
+
   @doc """
   Verifies that a dynamically selected tool belongs to the action module
   configured by the agent and, when available, to that module's Kinetic
@@ -120,5 +121,4 @@ defmodule Spectre.ActionConfig do
   end
 
   defp registered_tool?(_tool, _function, _arity), do: false
-
 end
