@@ -75,13 +75,11 @@ defmodule Spectre do
     if agent_module?(agent) do
       Spectre.Turn.run(agent, input, opts)
     else
-      Spectre.Session.turn(agent, input, opts)
+      session_turn(agent, input, opts)
     end
   end
 
-  def turn(session, input, opts) when is_list(opts) do
-    Spectre.Session.turn(session, input, opts)
-  end
+  def turn(session, input, opts) when is_list(opts), do: session_turn(session, input, opts)
 
   @doc """
   Summons a conversation-scoped session process directly.
@@ -219,6 +217,15 @@ defmodule Spectre do
           :ok | {:error, [term()]}
   def after_action(agent, event, %Spectre.Result{} = result, ctx, opts \\ []) do
     Spectre.ActionHooks.run(agent, event, result, ctx, opts)
+  end
+
+  @spec session_turn(GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
+          {:ok, Spectre.Turn.t()} | {:error, term()}
+  defp session_turn(session, input, opts) do
+    case Spectre.Session.turn(session, input, opts) do
+      {:ok, %Spectre.Turn{} = turn} -> {:ok, %{turn | agent: session}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp agent_module?(module) when is_atom(module) do
