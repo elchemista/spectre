@@ -1597,7 +1597,7 @@ defmodule SpectreTest do
     assert [_second_entry] = learned_cache_entries(second)
 
     assert :ok = SemanticCache.clear(first)
-    assert [_first_entry] = learned_cache_entries(first)
+    assert [] = learned_cache_entries(first)
     assert [_second_entry] = learned_cache_entries(second)
   end
 
@@ -1622,7 +1622,7 @@ defmodule SpectreTest do
                Keyword.put(learned_cache_opts(second), :semantic_cache_capacity, 1)
              )
 
-    assert [] = learned_cache_entries(first)
+    assert [_first_entry] = learned_cache_entries(first)
     assert [_second_entry] = learned_cache_entries(second)
   end
 
