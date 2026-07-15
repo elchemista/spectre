@@ -188,7 +188,7 @@ defmodule SpectreFullAgentTurnTest do
 
   alias SpectreFullAgentTurnTest.Agent
 
-  test "one agent routes normalized turns through interrupt, bag, local and LLM classifiers" do
+  test "normalizes input and handles a global regex interrupt" do
     assert {:ok, help_turn} = turn("  HELP  ")
     assert {:reply, help_result} = help_turn.decision
     assert help_result.input.text == "help"
@@ -196,21 +196,31 @@ defmodule SpectreFullAgentTurnTest do
     assert help_result.route.flow == nil
     assert help_result.route.strategy == :regex
     assert help_result.reply_text == "reply:help:help"
+    refute_received {:full_agent_llm_classifier, _prompt, _opts}
+  end
 
+  test "routes a bag classifier turn without falling through to the LLM" do
     assert {:ok, bag_turn} = turn("show all projects")
     assert {:reply, bag_result} = bag_turn.decision
     assert bag_result.route.label == :LIST_PROJECTS
     assert bag_result.route.flow == :workspace
     assert bag_result.route.strategy == :bag
     assert bag_result.reply_text == "reply:projects:show all projects"
+    assert_receive {:full_agent_local_classifier, "show all projects"}
+    refute_received {:full_agent_llm_classifier, _prompt, _opts}
+  end
 
+  test "routes an accepted local classifier turn" do
     assert {:ok, local_turn} = turn("billing classified")
     assert {:reply, local_result} = local_turn.decision
     assert local_result.route.label == :BILLING
     assert local_result.route.strategy == :local_classifier
     assert local_result.reply_text == "reply:billing:billing classified"
     assert_receive {:full_agent_local_classifier, "billing classified"}
+    refute_received {:full_agent_llm_classifier, _prompt, _opts}
+  end
 
+  test "falls back to the dedicated LLM classifier when deterministic evidence is missing" do
     assert {:ok, llm_turn} = turn("show portfolio please")
     assert {:reply, llm_result} = llm_turn.decision
     assert llm_result.route.label == :PORTFOLIO
@@ -225,12 +235,16 @@ defmodule SpectreFullAgentTurnTest do
     assert Keyword.fetch!(classifier_opts, :max_tokens) == 8
   end
 
-  test "one agent covers no_response, needs, awaiting and completed turn lifecycles" do
+  test "returns no_response for a routed handler with no visible output or effect" do
     assert {:ok, silent_turn} = turn("silent")
     assert {:no_response, silent_result} = silent_turn.decision
     assert silent_result.route.label == :SILENT
     refute Result.visible_reply?(silent_result)
+    assert Result.pending_effect(silent_result) == nil
+    assert Result.latest_completion(silent_result) == nil
+  end
 
+  test "moves an unprotected action from needs to completed" do
     assert {:ok, health_turn} = turn("health")
 
     assert {:needs, %Effect{name: :health_check, status: :pending} = pending, health_result} =
@@ -254,7 +268,9 @@ defmodule SpectreFullAgentTurnTest do
              {:ok, %{action: :health_check, args: %{probe: "deep"}}}
 
     assert_receive {:full_agent_action, :health_check, %{probe: "deep"}}
+  end
 
+  test "blocks a protected action then advances awaiting through approval to completed" do
     assert {:ok, awaiting_turn} = turn("start classified project")
 
     assert {:awaiting, %Awaitable{name: :terms, status: :open}, awaiting_result} =
