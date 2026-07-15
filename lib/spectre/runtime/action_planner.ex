@@ -35,7 +35,9 @@ defmodule Spectre.ActionPlanner do
   """
   @spec plan(String.t(), keyword()) :: {:ok, Effect.t()} | {:error, term()}
   def plan(al, opts \\ []) when is_binary(al) do
-    with {:ok, action} <- kinetic_plan(al, opts) do
+    with {:ok, action} <- kinetic_plan(al, opts),
+         action <- prefer_exact_al_tool(action, al, opts),
+         :ok <- validate_planned_action(action, 0) do
       {:ok, Effect.stage(action)}
     end
   end
@@ -56,17 +58,68 @@ defmodule Spectre.ActionPlanner do
     with true <- Code.ensure_loaded?(kinetic),
          {:ok, runtime} <- kinetic_runtime(opts),
          # credo:disable-for-next-line Credo.Check.Refactor.Apply
-         {:ok, chain} <- apply(kinetic, :plan_chain, [runtime, text, plan_opts(opts)]) do
-      effects =
-        chain.actions
-        |> Enum.map(&prefer_exact_al_tool(&1, &1.al, opts))
-        |> Enum.map(&Effect.stage/1)
-
+         {:ok, chain} <- apply(kinetic, :plan_chain, [runtime, text, plan_opts(opts)]),
+         {:ok, actions} <- planned_actions(chain),
+         actions <- Enum.map(actions, &prefer_exact_al_tool(&1, action_al(&1), opts)),
+         :ok <- validate_planned_actions(actions) do
+      effects = Enum.map(actions, &Effect.stage/1)
       {:ok, %{reply_text: scan.clean_text, effects: effects}}
     else
       false -> {:error, :spectre_kinetic_not_loaded}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @spec planned_actions(term()) :: {:ok, [map() | struct()]} | {:error, term()}
+  defp planned_actions(%{actions: actions}) when is_list(actions), do: {:ok, actions}
+  defp planned_actions(other), do: {:error, {:invalid_action_chain, other}}
+
+  @spec validate_planned_actions([map() | struct()]) :: :ok | {:error, term()}
+  defp validate_planned_actions(actions) do
+    actions
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {action, index}, :ok ->
+      case validate_planned_action(action, index) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  @spec validate_planned_action(map() | struct(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  defp validate_planned_action(action, index) when is_map(action) do
+    status = action_value(action, :status)
+    selected_tool = action_value(action, :selected_tool)
+    args = action_value(action, :args)
+
+    cond do
+      action_value(action, :halted?) == true ->
+        {:error, {:action_plan_halted, index, status}}
+
+      status not in [:ok, "ok"] ->
+        {:error, {:action_plan_not_executable, index, status}}
+
+      not is_binary(selected_tool) or String.trim(selected_tool) == "" ->
+        {:error, {:action_plan_missing_tool, index}}
+
+      not is_map(args) ->
+        {:error, {:invalid_action_args, index, args}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_planned_action(action, index),
+    do: {:error, {:invalid_planned_action, index, action}}
+
+  @spec action_al(map() | struct()) :: String.t() | nil
+  defp action_al(action), do: action_value(action, :al)
+
+  @spec action_value(map() | struct(), atom()) :: term()
+  defp action_value(action, key) when is_map(action) do
+    Map.get(action, key) || Map.get(action, Atom.to_string(key))
   end
 
   @spec kinetic_plan(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
