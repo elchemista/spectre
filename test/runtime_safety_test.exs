@@ -61,8 +61,9 @@ defmodule SpectreRuntimeSafetyTest do
       |> State.put_pending_effect(Effect.stage(%{name: :succeed}), :confirmation)
 
     effect = State.pending_effect(state)
+    effect_id = effect.id
 
-    assert {:error, {:effect_not_approved, effect.id}} =
+    assert {:error, {:effect_not_approved, ^effect_id}} =
              Spectre.execute(state, %{agent: ActionAgent})
   end
 
@@ -124,7 +125,10 @@ defmodule SpectreRuntimeSafetyTest do
              Spectre.execute(state, %{agent: ActionAgent, opts: [test_pid: self()]})
 
     assert [%Effect{status: :completed}] = result.effects
-    assert_receive {:action_context, effect.id, effect.idempotency_key}
+
+    effect_id = effect.id
+    idempotency_key = effect.idempotency_key
+    assert_receive {:action_context, ^effect_id, ^idempotency_key}
   end
 
   test "session startup fails when durable state cannot be restored" do
