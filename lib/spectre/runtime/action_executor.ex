@@ -1,9 +1,10 @@
 defmodule Spectre.ActionExecutor do
   @moduledoc """
-  Executes approved pending action effects.
+  Executes pending action effects at the explicit host boundary.
 
-  This is the only module that calls action functions. Planning and policy gates
-  can stage effects, but execution stays behind this boundary.
+  Planning and policy gates only stage or approve effects. This module is the
+  only place that calls action functions, and it refuses policy-gated effects
+  until their approved state has been persisted.
   """
 
   alias Spectre.ActionConfig
@@ -15,19 +16,28 @@ defmodule Spectre.ActionExecutor do
   @type action_result :: {:ok, Result.t()} | {:error, term()}
 
   @doc """
-  Executes the pending action effect currently stored in state.
+  Executes the single pending action effect stored in state.
 
-      {:ok, result} = Spectre.ActionExecutor.execute_pending(state, ctx)
-
-  A state with no pending effect returns an `:effect_missing` event instead of
-  failing. This makes policy approval paths idempotent at the host boundary.
+  Unprotected effects are executable in `:pending` state. Protected effects
+  must first transition from `:waiting_policy` to `:approved`.
   """
   @spec execute_pending(State.t(), Spectre.Context.t() | map(), keyword()) :: action_result()
   def execute_pending(%State{} = state, ctx, opts \\ []) do
     case State.pending_effect(state) do
-      nil -> no_pending_effect(state, ctx)
-      %Effect{kind: :action} = effect -> execute_action_effect(state, effect, ctx, opts)
-      %Effect{} = effect -> {:error, {:unsupported_effect_kind, effect.kind}}
+      nil ->
+        no_pending_effect(state, ctx)
+
+      %Effect{kind: :action, status: :waiting_policy} = effect ->
+        {:error, {:effect_not_approved, effect.id}}
+
+      %Effect{kind: :action, status: status} = effect when status in [:pending, :approved] ->
+        execute_or_replay(state, effect, ctx, opts)
+
+      %Effect{kind: :action} = effect ->
+        {:error, {:effect_not_executable, effect.id, effect.status}}
+
+      %Effect{} = effect ->
+        {:error, {:unsupported_effect_kind, effect.kind}}
     end
   end
 
@@ -41,9 +51,39 @@ defmodule Spectre.ActionExecutor do
      }}
   end
 
+  @spec execute_or_replay(State.t(), Effect.t(), Spectre.Context.t() | map(), keyword()) ::
+          action_result()
+  defp execute_or_replay(%State{} = state, %Effect{} = effect, ctx, opts) do
+    case State.resolved_effect(state, effect.id) do
+      nil ->
+        execute_action_effect(state, effect, ctx, opts)
+
+      %Effect{} = resolved ->
+        state = %{state | pending_effects: []}
+
+        {:ok,
+         %Result{
+           state: state,
+           input: Map.get(ctx, :input),
+           effects: [resolved],
+           reply_text: format_action_result(resolved.result),
+           events: [
+             %{
+               type: :effect_already_resolved,
+               kind: resolved.kind,
+               name: resolved.name,
+               effect_id: resolved.id,
+               effect: resolved
+             }
+           ]
+         }}
+    end
+  end
+
   @spec execute_action_effect(State.t(), Effect.t(), Spectre.Context.t() | map(), keyword()) ::
           action_result()
   defp execute_action_effect(%State{} = state, %Effect{} = effect, ctx, opts) do
+    opts = effect_execution_opts(effect, opts)
     ctx = normalize_ctx(ctx, Map.get(ctx, :input, Input.new("")), opts)
 
     case call_action(effect, ctx) do
@@ -64,6 +104,8 @@ defmodule Spectre.ActionExecutor do
                type: :effect_completed,
                kind: :action,
                name: effect.name,
+               effect_id: effect.id,
+               idempotency_key: Effect.idempotency_key(effect),
                effect: completed,
                result: result
              }
@@ -71,24 +113,20 @@ defmodule Spectre.ActionExecutor do
          }}
 
       {:error, reason} ->
-        failed = Effect.fail(effect, reason)
-
-        state = %{
-          state
-          | pending_effects: [],
-            planned_effects: Enum.take(state.planned_effects, -31) ++ [failed]
-        }
+        {state, failed} = State.fail_pending_effect(state, reason)
 
         {:ok,
          %Result{
            input: ctx.input,
            state: state,
-           effects: [failed],
+           effects: List.wrap(failed),
            events: [
              %{
                type: :effect_failed,
                kind: :action,
                name: effect.name,
+               effect_id: effect.id,
+               idempotency_key: Effect.idempotency_key(effect),
                effect: failed,
                error: reason
              }
@@ -105,6 +143,7 @@ defmodule Spectre.ActionExecutor do
         type: :effect_completed,
         kind: :action,
         name: original.name,
+        effect_id: original.id,
         at: DateTime.utc_now()
       })
 
@@ -114,25 +153,30 @@ defmodule Spectre.ActionExecutor do
   @spec call_action(Effect.t(), Spectre.Context.t()) :: {:ok, term()} | {:error, term()}
   defp call_action(%Effect{} = effect, ctx) do
     case Effect.selected_tool(effect) do
-      tool when is_binary(tool) ->
-        case parse_tool(tool) do
-          {:ok, module, function, 2} ->
-            {:ok, apply(module, function, [effect.args, ctx])}
-
-          {:ok, module, function, 1} ->
-            {:ok, apply(module, function, [effect.args])}
-
-          {:ok, module, function, arity} ->
-            {:error, {:unsupported_action_arity, module, function, arity}}
-
-          {:error, _reason} ->
-            call_action_module(effect, ctx)
-        end
-
-      _other ->
-        call_action_module(effect, ctx)
+      tool when is_binary(tool) -> call_selected_tool(tool, effect, ctx)
+      _other -> call_action_module(effect, ctx)
     end
   end
+
+  @spec call_selected_tool(String.t(), Effect.t(), Spectre.Context.t()) ::
+          {:ok, term()} | {:error, term()}
+  defp call_selected_tool(tool, effect, ctx) do
+    with {:ok, module, function, arity} <- parse_tool(tool),
+         :ok <- ActionConfig.authorize_tool(ctx.agent, module, function, arity) do
+      call_selected_arity(module, function, arity, effect, ctx)
+    end
+  end
+
+  @spec call_selected_arity(module(), atom(), non_neg_integer(), Effect.t(), Spectre.Context.t()) ::
+          {:ok, term()} | {:error, term()}
+  defp call_selected_arity(module, function, 2, effect, ctx),
+    do: invoke_action(module, function, [effect.args, ctx])
+
+  defp call_selected_arity(module, function, 1, effect, _ctx),
+    do: invoke_action(module, function, [effect.args])
+
+  defp call_selected_arity(module, function, arity, _effect, _ctx),
+    do: {:error, {:unsupported_action_arity, module, function, arity}}
 
   @spec call_action_module(Effect.t(), Spectre.Context.t()) :: {:ok, term()} | {:error, term()}
   defp call_action_module(%Effect{name: name} = effect, ctx) when is_atom(name) do
@@ -148,29 +192,73 @@ defmodule Spectre.ActionExecutor do
           {:ok, term()} | {:error, term()}
   defp call_module_action(module, name, effect, ctx) do
     cond do
-      function_exported?(module, name, 2) -> {:ok, apply(module, name, [effect.args, ctx])}
-      function_exported?(module, name, 1) -> {:ok, apply(module, name, [effect.args])}
-      true -> {:error, {:undefined_action, module, name}}
+      function_exported?(module, name, 2) ->
+        invoke_action(module, name, [effect.args, ctx])
+
+      function_exported?(module, name, 1) ->
+        invoke_action(module, name, [effect.args])
+
+      true ->
+        {:error, {:undefined_action, module, name}}
     end
   end
 
+  @spec invoke_action(module(), atom(), list()) :: {:ok, term()} | {:error, term()}
+  defp invoke_action(module, function, args) do
+    module
+    |> apply(function, args)
+    |> normalize_action_reply()
+  rescue
+    exception ->
+      {:error, {:action_exception, module, function, exception}}
+  catch
+    kind, reason ->
+      {:error, {:action_failure, module, function, kind, reason}}
+  end
+
+  @spec normalize_action_reply(term()) :: {:ok, term()} | {:error, term()}
+  defp normalize_action_reply({:ok, result}), do: {:ok, result}
+  defp normalize_action_reply({:error, reason}), do: {:error, reason}
+  defp normalize_action_reply(result), do: {:ok, result}
+
   @spec parse_tool(String.t()) ::
           {:ok, module(), atom(), non_neg_integer()}
-          | {:error, :invalid_tool | :unknown_tool_function}
+          | {:error, :invalid_tool | :unknown_tool_module | :unknown_tool_function}
   defp parse_tool("Elixir." <> rest) do
     case Regex.run(~r/^(.+)\.([^\.\/]+)\/(\d+)$/, rest) do
       [_all, module_text, function, arity] ->
-        {:ok, Module.concat([module_text]), String.to_existing_atom(function),
-         String.to_integer(arity)}
+        with {:ok, module} <- existing_module(module_text),
+             {:ok, function} <- existing_function(function) do
+          {:ok, module, function, String.to_integer(arity)}
+        end
 
       _other ->
         {:error, :invalid_tool}
     end
+  end
+
+  defp parse_tool(_tool), do: {:error, :invalid_tool}
+
+  @spec existing_module(String.t()) :: {:ok, module()} | {:error, :unknown_tool_module}
+  defp existing_module(module_text) do
+    {:ok, String.to_existing_atom("Elixir." <> module_text)}
+  rescue
+    ArgumentError -> {:error, :unknown_tool_module}
+  end
+
+  @spec existing_function(String.t()) :: {:ok, atom()} | {:error, :unknown_tool_function}
+  defp existing_function(function) do
+    {:ok, String.to_existing_atom(function)}
   rescue
     ArgumentError -> {:error, :unknown_tool_function}
   end
 
-  defp parse_tool(_tool), do: {:error, :invalid_tool}
+  @spec effect_execution_opts(Effect.t(), keyword()) :: keyword()
+  defp effect_execution_opts(%Effect{} = effect, opts) do
+    opts
+    |> Keyword.put(:effect_id, effect.id)
+    |> Keyword.put(:idempotency_key, Effect.idempotency_key(effect))
+  end
 
   @spec normalize_ctx(Spectre.Context.t() | map(), Input.t(), keyword()) :: Spectre.Context.t()
   defp normalize_ctx(%Spectre.Context{} = ctx, _input, opts),
