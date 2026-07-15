@@ -388,7 +388,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @spec new_collection(pos_integer(), keyword()) ::
           {:ok, Vettore.Collection.t()} | {:error, term()}
   defp new_collection(dimensions, opts) do
-    Vettore.new(
+    Spectre.Router.SemanticCache.Owner.new_collection(
       name: "spectre_learned_semantic_cache:#{System.unique_integer([:positive])}",
       dimensions: dimensions,
       metric: :cosine,
@@ -1162,22 +1162,12 @@ defmodule Spectre.Router.SemanticCache.Learned do
     :ok
   end
 
-  @spec drop_index(map()) :: :ok
-  defp drop_index(%{
-         collection: %Vettore.Collection{store_state: %Vettore.Store.ETS{table: table}}
-       }) do
-    drop_ets_table(table)
+  @spec drop_index(map()) :: :ok | {:error, term()}
+  defp drop_index(%{collection: %Vettore.Collection{} = collection}) do
+    Spectre.Router.SemanticCache.Owner.drop_collection(collection)
   end
 
   defp drop_index(_index), do: :ok
-
-  @spec drop_ets_table(:ets.tid()) :: :ok
-  defp drop_ets_table(table) do
-    :ets.delete(table)
-    :ok
-  rescue
-    ArgumentError -> :ok
-  end
 
   @spec evict_oldest_indexes(atom(), term(), keyword()) :: :ok
   defp evict_oldest_indexes(table, new_key, opts) do
