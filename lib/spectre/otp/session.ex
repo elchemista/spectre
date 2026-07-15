@@ -82,6 +82,26 @@ defmodule Spectre.Session do
   end
 
   @doc """
+  Resolves the session's currently open policy from a trusted host decision.
+
+  The session uses its current state rather than trusting a potentially stale
+  state embedded in the supplied result.
+  """
+  @spec resolve_policy(
+          GenServer.server(),
+          Result.t(),
+          Spectre.Policy.resolution(),
+          keyword()
+        ) :: {:ok, Result.t()} | {:error, term()}
+  def resolve_policy(server, %Result{} = result, resolution, opts \\ []) do
+    GenServer.call(
+      server,
+      {:resolve_policy, result, resolution, Keyword.drop(opts, [:timeout])},
+      Keyword.get(opts, :timeout, :timer.minutes(5))
+    )
+  end
+
+  @doc """
   Returns the current in-memory Spectre state.
 
       %Spectre.State{} = Spectre.Session.state(session)
@@ -164,6 +184,24 @@ defmodule Spectre.Session do
       {:error, {:memory_persist_failed, _reason, %Result{} = result} = failure} ->
         data = data |> retain_committed_result(result) |> arm_idle_timer()
         {:reply, {:error, failure}, data}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  def handle_call({:resolve_policy, %Result{} = result, resolution, opts}, _from, data) do
+    runtime_opts =
+      data.base_opts
+      |> Keyword.merge(opts)
+      |> Keyword.put(:state, data.state)
+
+    result = %{result | state: data.state}
+
+    case Spectre.Runtime.resolve_policy(data.agent, result, resolution, runtime_opts) do
+      {:ok, %Result{} = resolved} ->
+        data = data |> retain_committed_result(resolved) |> arm_idle_timer()
+        {:reply, {:ok, resolved}, data}
 
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
