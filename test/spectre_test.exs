@@ -726,6 +726,7 @@ defmodule SpectreTest do
   alias Spectre.Classifier.Math
   alias Spectre.Classifier.Trainer
   alias Spectre.Effect
+  alias Spectre.Input
   alias Spectre.Result
   alias Spectre.Router.LLMClassifier
   alias Spectre.Router.SemanticCache
@@ -915,13 +916,10 @@ defmodule SpectreTest do
     end
 
     assert {:error, {:invalid_planned_action, 0, :malformed_action}} =
-             Spectre.ask(SpectreTest.ProjectAgent, "create",
-               model: model,
-               classifier_result: %{
-                 label: :wants_project_create,
-                 confidence: 0.99,
-                 margin: 0.50
-               }
+             Spectre.ask(
+               SpectreTest.ProjectAgent,
+               "crea nuovo progetto",
+               model: model
              )
   end
 
@@ -1606,7 +1604,7 @@ defmodule SpectreTest do
     assert route.strategy == :local_classifier
   end
 
-  test "learn true stores online examples after accepted LLM arbitration" do
+  test "learn true quarantines online examples until they are verified" do
     agent = SpectreTest.OnlineLearningAgent
     assert :ok = SemanticCache.clear(agent)
 
@@ -1630,11 +1628,19 @@ defmodule SpectreTest do
     assert row.source == :online_learned
     refute row.verified?
 
+    lookup_opts = [
+      spectre_agent: agent,
+      spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
+    ]
+
+    assert {:error, :empty_learned_semantic_cache} =
+             Learned.lookup("what do you charge for support", lookup_opts)
+
+    assert {:ok, verified} = SemanticCache.verify(agent, row.id)
+    assert verified.verified?
+
     assert {:ok, cached} =
-             Learned.lookup("what do you charge for support",
-               spectre_agent: agent,
-               spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
-             )
+             Learned.lookup("what do you charge for support", lookup_opts)
 
     assert cached.label == :PRICING
   end
