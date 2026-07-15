@@ -190,4 +190,51 @@ defmodule SpectreRuntimeSafetyTest do
     assert is_pid(owner)
     assert :ets.info(Spectre.Router.SemanticCache.Learned, :owner) == owner
   end
+
+  test "semantic vector collections survive the lookup process and discard duplicate builds" do
+    owner = Process.whereis(Spectre.Router.SemanticCache.Owner)
+
+    assert {:ok, first} =
+             Spectre.Router.SemanticCache.Owner.new_collection(
+               dimensions: 2,
+               metric: :cosine,
+               index: :flat
+             )
+
+    assert {:ok, duplicate} =
+             Spectre.Router.SemanticCache.Owner.new_collection(
+               dimensions: 2,
+               metric: :cosine,
+               index: :flat
+             )
+
+    first_table = first.store_state.table
+    duplicate_table = duplicate.store_state.table
+    assert :ets.info(first_table, :owner) == owner
+    assert :ets.info(duplicate_table, :owner) == owner
+
+    key = {{:agent, __MODULE__}, :duplicate_build}
+    first_index = %{collection: first, inserted_at: 1}
+    duplicate_index = %{collection: duplicate, inserted_at: 2}
+
+    assert {:ok, ^first_index} =
+             Spectre.Router.SemanticCache.Owner.cache_index(
+               Spectre.Router.SemanticCache.Learned,
+               key,
+               first_index,
+               4
+             )
+
+    assert {:ok, ^first_index} =
+             Spectre.Router.SemanticCache.Owner.cache_index(
+               Spectre.Router.SemanticCache.Learned,
+               key,
+               duplicate_index,
+               4
+             )
+
+    assert :undefined == :ets.info(duplicate_table)
+    assert :ok = Spectre.Router.SemanticCache.Owner.clear_indexes(__MODULE__)
+    assert :undefined == :ets.info(first_table)
+  end
 end
