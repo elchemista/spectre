@@ -71,37 +71,41 @@ defmodule Spectre.ActionPlanner do
   defp planned_actions(%{actions: actions}) when is_list(actions), do: {:ok, actions}
   defp planned_actions(other), do: {:error, {:invalid_action_chain, other}}
 
-  @spec planned_effect(map() | struct(), String.t(), keyword()) ::
+  @spec planned_effect(term(), String.t(), keyword()) ::
           {:ok, Effect.t()} | {:error, term()}
-  defp planned_effect(action, al, opts) do
+  defp planned_effect(action, al, opts), do: prepare_effect(action, al, 0, opts)
+
+  @spec planned_effects([term()], keyword()) ::
+          {:ok, [Effect.t()]} | {:error, term()}
+  defp planned_effects(actions, opts) do
+    actions
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {action, index}, {:ok, effects} ->
+      al = if is_map(action), do: action_al(action), else: nil
+
+      case prepare_effect(action, al, index, opts) do
+        {:ok, effect} -> {:cont, {:ok, [effect | effects]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, effects} -> {:ok, Enum.reverse(effects)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec prepare_effect(term(), String.t() | nil, non_neg_integer(), keyword()) ::
+          {:ok, Effect.t()} | {:error, term()}
+  defp prepare_effect(action, al, index, opts) when is_map(action) do
     action = prefer_exact_al_tool(action, al, opts)
 
-    with :ok <- validate_planned_action(action, 0) do
+    with :ok <- validate_planned_action(action, index) do
       {:ok, Effect.stage(action)}
     end
   end
 
-  @spec planned_effects([map() | struct()], keyword()) ::
-          {:ok, [Effect.t()]} | {:error, term()}
-  defp planned_effects(actions, opts) do
-    actions = Enum.map(actions, &prefer_exact_al_tool(&1, action_al(&1), opts))
-
-    with :ok <- validate_planned_actions(actions) do
-      {:ok, Enum.map(actions, &Effect.stage/1)}
-    end
-  end
-
-  @spec validate_planned_actions([map() | struct()]) :: :ok | {:error, term()}
-  defp validate_planned_actions(actions) do
-    actions
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {action, index}, :ok ->
-      case validate_planned_action(action, index) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
+  defp prepare_effect(action, _al, index, _opts),
+    do: {:error, {:invalid_planned_action, index, action}}
 
   @spec validate_planned_action(map() | struct(), non_neg_integer()) ::
           :ok | {:error, term()}
