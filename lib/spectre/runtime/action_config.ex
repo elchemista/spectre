@@ -39,4 +39,77 @@ defmodule Spectre.ActionConfig do
         opts
     end
   end
+  @doc """
+  Verifies that a dynamically selected tool belongs to the action module
+  configured by the agent and, when available, to that module's Kinetic
+  registry.
+  """
+  @spec authorize_tool(module(), module(), atom(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  def authorize_tool(agent, module, function, arity)
+      when is_atom(agent) and is_atom(module) and is_atom(function) and is_integer(arity) do
+    case actions(agent) do
+      nil ->
+        {:error, :missing_actions_module}
+
+      {^module, _opts} ->
+        with true <- Code.ensure_loaded?(module),
+             true <- function_exported?(module, function, arity),
+             :ok <- authorize_registered_tool(module, function, arity) do
+          :ok
+        else
+          false -> {:error, {:undefined_action, module, function, arity}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {authorized_module, _opts} ->
+        {:error, {:unauthorized_action_module, module, authorized_module}}
+    end
+  end
+
+  @spec authorize_registered_tool(module(), atom(), non_neg_integer()) :: :ok | {:error, term()}
+  defp authorize_registered_tool(module, function, arity) do
+    if function_exported?(module, :__spectre_tools__, 0) do
+      case registered_tools(module) do
+        {:ok, tools} ->
+          if Enum.any?(tools, &registered_tool?(&1, function, arity)) do
+            :ok
+          else
+            {:error, {:unregistered_action_tool, module, function, arity}}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      # A configured plain Elixir action module is itself the explicit registry.
+      :ok
+    end
+  end
+
+  @spec registered_tools(module()) :: {:ok, [map()]} | {:error, term()}
+  defp registered_tools(module) do
+    case module.__spectre_tools__() do
+      tools when is_list(tools) -> {:ok, tools}
+      other -> {:error, {:invalid_action_registry, module, other}}
+    end
+  rescue
+    exception ->
+      {:error, {:action_registry_exception, module, exception}}
+  catch
+    kind, reason ->
+      {:error, {:action_registry_failure, module, kind, reason}}
+  end
+
+  @spec registered_tool?(map(), atom(), non_neg_integer()) :: boolean()
+  defp registered_tool?(tool, function, arity) when is_map(tool) do
+    tool_function = Map.get(tool, :function) || Map.get(tool, "function")
+    tool_arity = Map.get(tool, :arity) || Map.get(tool, "arity")
+
+    tool_function in [function, Atom.to_string(function)] and
+      tool_arity in [arity, Integer.to_string(arity)]
+  end
+
+  defp registered_tool?(_tool, _function, _arity), do: false
+
 end
