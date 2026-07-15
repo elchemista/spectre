@@ -42,7 +42,7 @@ defmodule Spectre.Identity do
   defp encode_uuid(binary) when byte_size(binary) == 16 do
     hex = Base.encode16(binary, case: :lower)
 
-    Enum.map_join(
+    Enum.join(
       [
         binary_part(hex, 0, 8),
         binary_part(hex, 8, 4),
