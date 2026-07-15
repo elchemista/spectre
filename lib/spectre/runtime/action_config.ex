@@ -14,13 +14,21 @@ defmodule Spectre.ActionConfig do
       {MyApp.Actions, opts} = Spectre.ActionConfig.actions(MyApp.Agent)
   """
   @spec actions(module()) :: action_config()
-  def actions(agent) when is_atom(agent) do
-    case Keyword.get(agent.__spectre_config__(), :actions) do
-      {module, opts} when is_atom(module) and is_list(opts) -> {module, opts}
-      module when is_atom(module) and not is_nil(module) -> {module, []}
-      _other -> nil
+  def actions(agent) when is_atom(agent) and not is_nil(agent) do
+    if Code.ensure_loaded?(agent) and function_exported?(agent, :__spectre_config__, 0) do
+      case Keyword.get(agent.__spectre_config__(), :actions) do
+        {module, opts} when is_atom(module) and is_list(opts) -> {module, opts}
+        module when is_atom(module) and not is_nil(module) -> {module, []}
+        _other -> nil
+      end
     end
+  rescue
+    _exception -> nil
+  catch
+    _kind, _reason -> nil
   end
+
+  def actions(_agent), do: nil
 
   @doc """
   Merges runtime options with action planner options.
@@ -47,7 +55,8 @@ defmodule Spectre.ActionConfig do
   @spec authorize_tool(module(), module(), atom(), non_neg_integer()) ::
           :ok | {:error, term()}
   def authorize_tool(agent, module, function, arity)
-      when is_atom(agent) and is_atom(module) and is_atom(function) and is_integer(arity) do
+      when is_atom(agent) and not is_nil(agent) and is_atom(module) and
+             is_atom(function) and is_integer(arity) do
     case actions(agent) do
       nil ->
         {:error, :missing_actions_module}
