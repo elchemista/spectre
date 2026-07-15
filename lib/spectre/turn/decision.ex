@@ -40,7 +40,7 @@ defmodule Spectre.Turn.Decision do
 
   @spec pending_effect(Result.t()) :: Effect.t() | nil
   defp pending_effect(%Result{effects: effects}) do
-    Enum.find(effects, &(&1.status in [:pending, :waiting_policy]))
+    Enum.find(effects, &(&1.status in [:pending, :waiting_policy, :approved]))
   end
 
   @spec latest_completion(Result.t()) :: Effect.t() | Awaitable.t() | nil
