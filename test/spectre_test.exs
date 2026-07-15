@@ -890,6 +890,20 @@ defmodule SpectreTest do
              Spectre.ask(SpectreTest.ProjectAgent, "crea nuovo progetto", model: model)
   end
 
+  test "multi-action model output fails instead of losing trailing effects" do
+    model = fn
+      "PROJECT CREATE" <> _prompt, _opts ->
+        {:ok,
+         "Two actions.\n<al>\nCREATE PROJECT title=one\n</al>\n<al>\nCREATE PROJECT title=two\n</al>"}
+    end
+
+    assert {:error, {:multiple_action_effects_not_supported, identities}} =
+             Spectre.ask(SpectreTest.ProjectAgent, "crea nuovo progetto", model: model)
+
+    assert Enum.map(identities, & &1.name) == [:create_project, :create_project]
+    assert Enum.all?(identities, &is_binary(&1.id))
+  end
+
   test "active policy approves the pending action without executing it" do
     state =
       %State{}
