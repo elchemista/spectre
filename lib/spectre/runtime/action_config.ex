@@ -80,22 +80,30 @@ defmodule Spectre.ActionConfig do
   @spec authorize_registered_tool(module(), atom(), non_neg_integer()) :: :ok | {:error, term()}
   defp authorize_registered_tool(module, function, arity) do
     if function_exported?(module, :__spectre_tools__, 0) do
-      case registered_tools(module) do
-        {:ok, tools} ->
-          if Enum.any?(tools, &registered_tool?(&1, function, arity)) do
-            :ok
-          else
-            {:error, {:unregistered_action_tool, module, function, arity}}
-          end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+      module
+      |> registered_tools()
+      |> authorize_registered_tool_result(module, function, arity)
     else
       # A configured plain Elixir action module is itself the explicit registry.
       :ok
     end
   end
+
+  @spec authorize_registered_tool_result(
+          {:ok, [map()]} | {:error, term()},
+          module(),
+          atom(),
+          non_neg_integer()
+        ) :: :ok | {:error, term()}
+  defp authorize_registered_tool_result({:ok, tools}, module, function, arity) do
+    case Enum.any?(tools, &registered_tool?(&1, function, arity)) do
+      true -> :ok
+      false -> {:error, {:unregistered_action_tool, module, function, arity}}
+    end
+  end
+
+  defp authorize_registered_tool_result({:error, reason}, _module, _function, _arity),
+    do: {:error, reason}
 
   @spec registered_tools(module()) :: {:ok, [map()]} | {:error, term()}
   defp registered_tools(module) do
