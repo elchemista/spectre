@@ -46,6 +46,27 @@ state before returning:
   Spectre.execute(approved.state, %{agent: MyApp.SupportAgent})
 ```
 
+A host may already know that a policy is satisfied—for example, terms were
+accepted in account settings or another channel. Resolve the policy through its
+declared label instead of synthesizing a user reply:
+
+```elixir
+{:ok, approved} =
+  Spectre.resolve_policy(
+    MyApp.SupportAgent,
+    staged,
+    {:accept, :confirmed_delete},
+    conversation_id: conversation.id,
+    assigns: %{user: user}
+  )
+```
+
+The state adapter is called before this function returns. The result contains
+the accepted awaitable, the `:approved` effect, and a
+`:policy_resolved` audit event with `source: :host`. An unknown label is
+rejected, so external resolution cannot bypass the policy declaration. With a
+live session, the session state advances in the same operation.
+
 `Spectre.execute/3` rejects `:waiting_policy` effects. It also injects
 `:effect_id` and `:idempotency_key` into `ctx.opts`, so application code can
 deduplicate a retry at its durable side-effect boundary.
