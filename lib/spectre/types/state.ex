@@ -136,6 +136,47 @@ defmodule Spectre.State do
     %{state | awaitables: awaitables}
   end
 
+  @doc """
+  Marks the policy-gated effect identified by an awaitable as approved.
+
+  The effect remains pending so execution can happen at the explicit host
+  boundary after this state transition has been persisted.
+  """
+  @spec approve_pending_effect(t(), term()) ::
+          {:ok, t(), Spectre.Effect.t()}
+          | {:error, :pending_effect_not_found | {:effect_not_waiting_policy, term(), atom()}}
+  def approve_pending_effect(%__MODULE__{} = state, subject_id) do
+    case Enum.find_index(state.pending_effects, &(&1.id == subject_id)) do
+      nil ->
+        {:error, :pending_effect_not_found}
+
+      index ->
+        effect = Enum.at(state.pending_effects, index)
+
+        if effect.status == :waiting_policy do
+          approved = Spectre.Effect.approve(effect)
+
+          state =
+            %{
+              state
+              | pending_effects: List.replace_at(state.pending_effects, index, approved),
+                planned_effects: append_planned(state.planned_effects, approved)
+            }
+            |> trace(%{
+              type: :effect_approved,
+              kind: approved.kind,
+              name: approved.name,
+              effect_id: approved.id,
+              at: DateTime.utc_now()
+            })
+
+          {:ok, state, approved}
+        else
+          {:error, {:effect_not_waiting_policy, effect.id, effect.status}}
+        end
+    end
+  end
+
   @spec complete_pending_effect(t(), term()) :: {t(), Spectre.Effect.t() | nil}
   def complete_pending_effect(%__MODULE__{} = state, result) do
     case pending_effect(state) do
@@ -151,6 +192,52 @@ defmodule Spectre.State do
              planned_effects: append_planned(state.planned_effects, completed)
          }, completed}
     end
+  end
+
+  @doc """
+  Marks the current pending effect as failed and clears it from the execution
+  queue while preserving the failed transition in history.
+  """
+  @spec fail_pending_effect(t(), term()) :: {t(), Spectre.Effect.t() | nil}
+  def fail_pending_effect(%__MODULE__{} = state, reason) do
+    case pending_effect(state) do
+      nil ->
+        {%{state | pending_effects: []}, nil}
+
+      effect ->
+        failed = Spectre.Effect.fail(effect, reason)
+
+        state =
+          %{
+            state
+            | pending_effects: [],
+              planned_effects: append_planned(state.planned_effects, failed)
+          }
+          |> trace(%{
+            type: :effect_failed,
+            kind: effect.kind,
+            name: effect.name,
+            effect_id: effect.id,
+            at: DateTime.utc_now()
+          })
+
+        {state, failed}
+    end
+  end
+
+  @doc """
+  Finds a terminal transition for an effect identifier.
+
+  This is used as a local idempotency guard when a restored state accidentally
+  contains both a pending copy and an already resolved copy of the same effect.
+  """
+  @spec resolved_effect(t(), term()) :: Spectre.Effect.t() | nil
+  def resolved_effect(%__MODULE__{} = state, effect_id) do
+    state.planned_effects
+    |> Enum.reverse()
+    |> Enum.find(fn effect ->
+      effect.id == effect_id and effect.status in [:completed, :failed, :cancelled]
+    end)
   end
 
   @doc """
