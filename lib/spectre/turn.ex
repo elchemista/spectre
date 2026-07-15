@@ -7,6 +7,7 @@ defmodule Spectre.Turn do
   decision vocabulary.
   """
 
+  alias Spectre.Result
   alias Spectre.Turn.Decision
 
   defstruct [
@@ -46,16 +47,37 @@ defmodule Spectre.Turn do
   end
 
   @doc """
+  Resolves this turn's active policy from a trusted host decision and returns
+  the next lifecycle decision.
+
+  This keeps application adapters from synthesizing user text or manually
+  rebuilding approved effects.
+  """
+  @spec resolve_policy(t(), Spectre.Policy.resolution(), keyword()) ::
+          {:ok, t()} | {:error, term()}
+  def resolve_policy(%__MODULE__{} = turn, resolution, opts \\ []) do
+    opts = Keyword.merge(turn.opts, opts)
+
+    with {:ok, %Result{} = result} <-
+           Spectre.resolve_policy(turn.agent, turn.result, resolution, opts) do
+      {:ok, from_result(turn.agent, turn.input, opts, result)}
+    end
+  end
+
+  @doc """
   Builds a turn from an already available result.
   """
   @spec from_result(module() | GenServer.server(), term(), keyword(), Spectre.Result.t()) :: t()
-  def from_result(agent, input, opts, %Spectre.Result{} = result) do
+  def from_result(agent, input, opts, %Result{} = result) do
+    decision = Decision.decide(result)
+
     %__MODULE__{
       agent: agent,
       input: input,
       opts: opts,
       result: result,
-      decision: Decision.decide(result)
+      decision: decision,
+      metadata: %{lifecycle: Result.lifecycle(result)}
     }
   end
 end
