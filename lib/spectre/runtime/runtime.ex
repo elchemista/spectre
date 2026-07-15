@@ -155,17 +155,19 @@ defmodule Spectre.Runtime do
       :warn ->
         warning = %{type: :memory_persist_failed, error: reason}
 
+        metadata = result.metadata || %{}
+
+        warnings =
+          metadata
+          |> Map.get(:persistence_warnings, [])
+          |> List.wrap()
+          |> Kernel.++([warning])
+
         result =
           %{
             result
             | events: result.events ++ [warning],
-              metadata:
-                Map.update(
-                  result.metadata,
-                  :persistence_warnings,
-                  [warning],
-                  &(&1 ++ [warning])
-                )
+              metadata: Map.put(metadata, :persistence_warnings, warnings)
           }
 
         {:ok, result}
