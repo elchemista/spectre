@@ -164,14 +164,30 @@ defmodule SpectreRuntimeSafetyTest do
            ] = result.metadata.persistence_warnings
   end
 
-  test "strict memory persistence remains available for hosts that require it" do
-    assert {:error, {:memory_persist_failed, :memory_unavailable}} =
+  test "strict memory persistence returns and retains the already committed state" do
+    assert {:error, {:memory_persist_failed, :memory_unavailable, result}} =
              Spectre.ask(PersistenceAgent, "hello",
                test_pid: self(),
                memory_persist_failure: :error
              )
 
-    assert_receive {:state_persisted, %State{}}
+    assert_receive {:state_persisted, persisted}
+    assert persisted == result.state
+
+    session =
+      start_supervised!(
+        {Spectre.Session,
+         agent: PersistenceAgent,
+         id: :strict_memory_session,
+         opts: [test_pid: self(), memory_persist_failure: :error]}
+      )
+
+    assert {:error, {:memory_persist_failed, :memory_unavailable, session_result}} =
+             Spectre.ask(session, "hello")
+
+    assert_receive {:state_persisted, session_persisted}
+    assert session_persisted == session_result.state
+    assert Spectre.state(session) == session_result.state
   end
 
   test "session startup fails when durable state cannot be restored" do
