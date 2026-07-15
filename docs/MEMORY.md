@@ -77,6 +77,9 @@ Spectre.ask(MyApp.SupportAgent, input,
 )
 ```
 
-Strict mode reports `{:error, {:memory_persist_failed, reason}}`, but the state
-write has already succeeded. True cross-store atomicity still requires the host
-to place both records in the same database transaction.
+Strict mode reports
+`{:error, {:memory_persist_failed, reason, committed_result}}`. The state write
+has already succeeded, and supervised sessions retain
+`committed_result.state` before returning the error. Stateless hosts should do
+the same. True cross-store atomicity still requires the host to place both
+records in the same database transaction.
