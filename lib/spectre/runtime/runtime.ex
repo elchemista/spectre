@@ -60,6 +60,44 @@ defmodule Spectre.Runtime do
   end
 
   @doc """
+  Resolves a currently open policy from a trusted host decision and persists
+  the state transition before returning it.
+
+  Unlike a user turn, this does not route synthetic text, append chat history,
+  or invoke the memory adapter.
+
+      {:ok, approved} =
+        Spectre.Runtime.resolve_policy(
+          MyApp.Agent,
+          awaiting_result,
+          {:accept, :terms_accepted},
+          assigns: %{user: user}
+        )
+  """
+  @spec resolve_policy(module(), Result.t(), Policy.resolution(), keyword()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def resolve_policy(agent, %Result{} = result, resolution, opts \\ [])
+      when is_atom(agent) and is_list(opts) do
+    opts = runtime_opts(agent, opts)
+    input = policy_resolution_input(result, opts)
+    state = State.new(result.state)
+
+    ctx = %Context{
+      agent: agent,
+      input: input,
+      state: state,
+      opts: opts,
+      assigns: Keyword.get(opts, :assigns, %{}),
+      route: result.route
+    }
+
+    with {:ok, %Result{} = resolved} <- Policy.resolve(resolution, input, ctx),
+         {:ok, %Result{} = persisted} <- persist_state(resolved, ctx) do
+      {:ok, persisted}
+    end
+  end
+
+  @doc """
   Builds the per-turn context by loading state and memory adapters.
 
       {:ok, ctx} = Spectre.Runtime.load_context(MyApp.Agent, input, [])
@@ -347,6 +385,15 @@ defmodule Spectre.Runtime do
       awaitables: result.awaitables,
       events: result.events
     }
+  end
+
+  @spec policy_resolution_input(Result.t(), keyword()) :: Input.t()
+  defp policy_resolution_input(%Result{} = result, opts) do
+    case Keyword.get(opts, :input, result.input) do
+      %Input{} = input -> input
+      nil -> Input.new("")
+      input -> Input.new(input)
+    end
   end
 
   @spec put_conversation_id(State.t(), term()) :: State.t()
