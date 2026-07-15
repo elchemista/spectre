@@ -19,6 +19,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @default_threshold 0.88
   @default_top_k 3
   @default_learn_confidence 0.86
+  @default_index_capacity 4
 
   @type source :: :offline_dataset | :static_route_example | :online_learned
   @type row :: %{
@@ -113,11 +114,13 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   def examples(agent, opts) when is_atom(agent) and is_list(opts) do
     with {:ok, opts} <- agent_opts(agent, opts) do
+      review_opts = Keyword.put(opts, :semantic_cache_include_unverified?, true)
+
       case Keyword.get(opts, :source, :online_learned) do
-        :online_learned -> {:ok, online_rows(agent, opts)}
+        :online_learned -> {:ok, online_rows(agent, review_opts)}
         :offline_dataset -> offline_dataset_rows(opts)
         :static_route_example -> {:ok, static_route_rows(opts)}
-        :all -> rows(Keyword.put(opts, :semantic_cache_static?, true))
+        :all -> rows(Keyword.put(review_opts, :semantic_cache_static?, true))
         source -> {:error, {:invalid_semantic_cache_source, source}}
       end
     end
@@ -508,11 +511,16 @@ defmodule Spectre.Router.SemanticCache.Learned do
     |> :ets.tab2list()
     |> Enum.flat_map(fn
       {{^agent, _id}, %{label: label} = row} ->
-        if Map.has_key?(labels, label), do: [row], else: []
+        if Map.has_key?(labels, label) and usable_online_row?(row, opts), do: [row], else: []
 
       _other ->
         []
     end)
+  end
+
+  @spec usable_online_row?(row(), keyword()) :: boolean()
+  defp usable_online_row?(row, opts) do
+    row.verified? or Keyword.get(opts, :semantic_cache_include_unverified?, false)
   end
 
   @spec cacheable_rules(keyword()) :: [Rule.t()]
@@ -1028,8 +1036,15 @@ defmodule Spectre.Router.SemanticCache.Learned do
     |> String.trim()
     |> case do
       "" -> nil
-      text -> String.to_atom(text)
+      text -> existing_snapshot_atom(text)
     end
+  end
+
+  @spec existing_snapshot_atom(String.t()) :: atom() | nil
+  defp existing_snapshot_atom(text) do
+    String.to_existing_atom(text)
+  rescue
+    ArgumentError -> nil
   end
 
   @spec snapshot_time(term(), DateTime.t()) :: DateTime.t()
@@ -1183,6 +1198,15 @@ defmodule Spectre.Router.SemanticCache.Learned do
   end
 
   @spec evictable_indexes(atom(), term()) :: [{term(), map()}]
+  defp evictable_indexes(table, {{:agent, agent}, _hash} = new_key) do
+    table
+    |> :ets.tab2list()
+    |> Enum.filter(fn
+      {{{:agent, ^agent}, _hash} = key, _index} -> key != new_key
+      _other -> false
+    end)
+  end
+
   defp evictable_indexes(table, new_key) do
     table
     |> :ets.tab2list()
@@ -1217,9 +1241,21 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec semantic_cache_capacity(keyword()) :: pos_integer() | :unlimited
   defp semantic_cache_capacity(opts) do
-    case Keyword.get(opts, :semantic_cache_capacity) do
+    case Keyword.get(opts, :semantic_cache_capacity, configured_index_capacity()) do
+      :unlimited -> :unlimited
       capacity when is_integer(capacity) and capacity > 0 -> capacity
-      _other -> :unlimited
+      _other -> @default_index_capacity
+    end
+  end
+
+  @spec configured_index_capacity() :: pos_integer() | :unlimited
+  defp configured_index_capacity do
+    case Application.get_env(:spectre, :semantic_cache, []) do
+      config when is_list(config) ->
+        Keyword.get(config, :index_capacity, @default_index_capacity)
+
+      _other ->
+        @default_index_capacity
     end
   end
 
@@ -1240,12 +1276,10 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec ensure_table(atom(), list()) :: atom()
   defp ensure_table(name, options) do
-    case :ets.whereis(name) do
-      :undefined -> :ets.new(name, options)
-      _tid -> name
+    case Spectre.Router.SemanticCache.Owner.ensure_table(name, options) do
+      {:ok, ^name} -> name
+      {:error, reason} -> raise "semantic cache table unavailable: #{inspect(reason)}"
     end
-  rescue
-    ArgumentError -> name
   end
 
   @spec bump_online_revision(module()) :: non_neg_integer()
