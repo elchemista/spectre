@@ -140,9 +140,41 @@ defmodule Spectre.Runtime do
 
   @spec persist(Result.t(), Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp persist(%Result{} = result, %Context{} = ctx) do
-    with {:ok, %Result{} = result} <- persist_state(result, ctx),
-         :ok <- persist_memory(result, ctx) do
-      {:ok, result}
+    with {:ok, %Result{} = result} <- persist_state(result, ctx) do
+      case persist_memory(result, ctx) do
+        :ok -> {:ok, result}
+        {:error, reason} -> memory_persist_failure(result, ctx, reason)
+      end
+    end
+  end
+
+  @spec memory_persist_failure(Result.t(), Context.t(), term()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp memory_persist_failure(%Result{} = result, %Context{} = ctx, reason) do
+    case Keyword.get(ctx.opts, :memory_persist_failure, :warn) do
+      :warn ->
+        warning = %{type: :memory_persist_failed, error: reason}
+
+        result =
+          %{
+            result
+            | events: result.events ++ [warning],
+              metadata:
+                Map.update(
+                  result.metadata,
+                  :persistence_warnings,
+                  [warning],
+                  &(&1 ++ [warning])
+                )
+          }
+
+        {:ok, result}
+
+      :error ->
+        {:error, {:memory_persist_failed, reason}}
+
+      other ->
+        {:error, {:invalid_memory_persist_failure, other}}
     end
   end
 
