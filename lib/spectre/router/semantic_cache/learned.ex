@@ -369,20 +369,56 @@ defmodule Spectre.Router.SemanticCache.Learned do
   defp build_index(table, key, rows, opts) do
     with {:ok, vectors} <- embed_rows(rows, opts),
          [%{vector: first_vector} | _] <- vectors,
-         {:ok, collection} <- new_collection(length(first_vector), opts),
-         :ok <- Vettore.put_many(collection, embeddings(vectors)) do
-      index = %{
-        collection: collection,
-        inserted_at: System.unique_integer([:monotonic, :positive])
-      }
-
-      evict_oldest_indexes(table, key, opts)
-      :ets.insert(table, {key, index})
-      {:ok, index}
+         {:ok, collection} <- new_collection(length(first_vector), opts) do
+      cache_collection(table, key, collection, vectors, opts)
     else
       [] -> {:error, :empty_learned_semantic_cache}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @spec cache_collection(
+          atom(),
+          term(),
+          Vettore.Collection.t(),
+          [map()],
+          keyword()
+        ) :: {:ok, map()} | {:error, term()}
+  defp cache_collection(table, key, collection, vectors, opts) do
+    case Vettore.put_many(collection, embeddings(vectors)) do
+      :ok ->
+        index = %{
+          collection: collection,
+          inserted_at: System.unique_integer([:monotonic, :positive])
+        }
+
+        Spectre.Router.SemanticCache.Owner.cache_index(
+          table,
+          key,
+          index,
+          semantic_cache_capacity(opts)
+        )
+
+      {:error, reason} ->
+        discard_collection(collection)
+        {:error, reason}
+    end
+  rescue
+    exception ->
+      discard_collection(collection)
+
+      {:error,
+       {:semantic_cache_index_exception, exception.__struct__, Exception.message(exception)}}
+  catch
+    kind, reason ->
+      discard_collection(collection)
+      {:error, {:semantic_cache_index_failure, kind, reason}}
+  end
+
+  @spec discard_collection(Vettore.Collection.t()) :: :ok
+  defp discard_collection(collection) do
+    Spectre.Router.SemanticCache.Owner.drop_collection(collection)
+    :ok
   end
 
   @spec new_collection(pos_integer(), keyword()) ::
@@ -1130,23 +1166,9 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec clear_indexes(module()) :: :ok
   defp clear_indexes(agent) do
-    case :ets.whereis(@index_table) do
-      :undefined ->
-        :ok
-
-      _tid ->
-        @index_table
-        |> :ets.tab2list()
-        |> Enum.each(fn
-          {{{:agent, ^agent}, _hash} = key, index} ->
-            drop_index(index)
-            :ets.delete(@index_table, key)
-
-          _other ->
-            :ok
-        end)
-
-        :ok
+    case Spectre.Router.SemanticCache.Owner.clear_indexes(agent) do
+      :ok -> :ok
+      {:error, reason} -> raise "semantic cache indexes unavailable: #{inspect(reason)}"
     end
   end
 
@@ -1159,73 +1181,6 @@ defmodule Spectre.Router.SemanticCache.Learned do
       _other -> :ok
     end)
 
-    :ok
-  end
-
-  @spec drop_index(map()) :: :ok | {:error, term()}
-  defp drop_index(%{collection: %Vettore.Collection{} = collection}) do
-    Spectre.Router.SemanticCache.Owner.drop_collection(collection)
-  end
-
-  defp drop_index(_index), do: :ok
-
-  @spec evict_oldest_indexes(atom(), term(), keyword()) :: :ok
-  defp evict_oldest_indexes(table, new_key, opts) do
-    case semantic_cache_capacity(opts) do
-      :unlimited -> :ok
-      capacity -> evict_oldest_indexes_with_capacity(table, new_key, capacity)
-    end
-  end
-
-  @spec evict_oldest_indexes_with_capacity(atom(), term(), pos_integer()) :: :ok
-  defp evict_oldest_indexes_with_capacity(table, new_key, capacity) do
-    table
-    |> evictable_indexes(new_key)
-    |> oldest_indexes_to_evict(capacity)
-    |> Enum.each(&drop_cached_index(table, &1))
-
-    :ok
-  end
-
-  @spec evictable_indexes(atom(), term()) :: [{term(), map()}]
-  defp evictable_indexes(table, {{:agent, agent}, _hash} = new_key) do
-    table
-    |> :ets.tab2list()
-    |> Enum.filter(fn
-      {{{:agent, ^agent}, _hash} = key, _index} -> key != new_key
-      _other -> false
-    end)
-  end
-
-  defp evictable_indexes(table, new_key) do
-    table
-    |> :ets.tab2list()
-    |> Enum.reject(fn {key, _index} -> key == new_key end)
-  end
-
-  @spec oldest_indexes_to_evict([{term(), map()}], pos_integer()) :: [{term(), map()}]
-  defp oldest_indexes_to_evict(entries, capacity) do
-    entries
-    |> eviction_count(capacity)
-    |> indexes_to_evict(entries)
-  end
-
-  @spec eviction_count([{term(), map()}], pos_integer()) :: integer()
-  defp eviction_count(entries, capacity), do: length(entries) - capacity + 1
-
-  @spec indexes_to_evict(integer(), [{term(), map()}]) :: [{term(), map()}]
-  defp indexes_to_evict(count, _entries) when count <= 0, do: []
-
-  defp indexes_to_evict(count, entries) do
-    entries
-    |> Enum.sort_by(fn {_key, index} -> Map.get(index, :inserted_at, 0) end)
-    |> Enum.take(count)
-  end
-
-  @spec drop_cached_index(atom(), {term(), map()}) :: :ok
-  defp drop_cached_index(table, {key, index}) do
-    drop_index(index)
-    :ets.delete(table, key)
     :ok
   end
 
