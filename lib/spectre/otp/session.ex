@@ -140,6 +140,10 @@ defmodule Spectre.Session do
         data = data |> Map.merge(%{state: state, last_result: result}) |> arm_idle_timer()
         {:reply, {:ok, result}, data}
 
+      {:error, {:memory_persist_failed, _reason, %Result{} = result} = failure} ->
+        data = data |> retain_committed_result(result) |> arm_idle_timer()
+        {:reply, {:error, failure}, data}
+
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
     end
@@ -157,6 +161,10 @@ defmodule Spectre.Session do
         data = data |> Map.merge(%{state: state, last_result: result}) |> arm_idle_timer()
         {:reply, {:ok, turn}, data}
 
+      {:error, {:memory_persist_failed, _reason, %Result{} = result} = failure} ->
+        data = data |> retain_committed_result(result) |> arm_idle_timer()
+        {:reply, {:error, failure}, data}
+
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
     end
@@ -171,6 +179,11 @@ defmodule Spectre.Session do
 
   @impl GenServer
   def handle_info(:idle_shutdown, data), do: {:stop, :normal, %{data | idle_timer: nil}}
+
+  @spec retain_committed_result(map(), Result.t()) :: map()
+  defp retain_committed_result(data, %Result{} = result) do
+    %{data | state: State.new(result.state), last_result: result}
+  end
 
   @spec restore_initial_state(module(), keyword(), keyword()) ::
           {:ok, State.t()} | {:error, term()}
