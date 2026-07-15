@@ -24,6 +24,7 @@ defmodule Spectre.Policy do
   ]
 
   @type decision :: {:accept, atom()} | {:reject, atom()} | :no_match
+  @type resolution :: {:accept, atom()} | {:reject, atom()}
 
   @type t :: %__MODULE__{
           name: atom(),
@@ -63,6 +64,36 @@ defmodule Spectre.Policy do
         {:error, :no_open_policy}
     end
   end
+
+  @doc """
+  Resolves the active policy from a trusted host decision without matching
+  synthetic user text.
+
+  The label must exist in the policy's corresponding accept/reject branches.
+  This is useful when an application already has durable proof that a policy is
+  satisfied. Callers should use `Spectre.resolve_policy/4` so the resulting
+  state is persisted before execution.
+  """
+  @spec resolve(resolution(), Input.t(), Spectre.Context.t() | map()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def resolve({kind, label} = resolution, %Input{} = input, %{state: %State{}} = ctx)
+      when kind in [:accept, :reject] and is_atom(label) do
+    with {:ok, policy} <- active_policy(ctx),
+         :ok <- validate_resolution(policy, resolution),
+         {:ok, %Result{} = result} <- apply_resolution(policy, resolution, input, ctx) do
+      event = %{
+        type: :policy_resolved,
+        source: :host,
+        kind: kind,
+        name: policy.name,
+        label: label
+      }
+
+      {:ok, %{result | events: result.events ++ [event]}}
+    end
+  end
+
+  def resolve(resolution, _input, _ctx), do: {:error, {:invalid_policy_resolution, resolution}}
 
   @doc """
   Decides whether policy text accepts, rejects, or misses all policy branches.
@@ -263,6 +294,39 @@ defmodule Spectre.Policy do
       end
     end)
   end
+
+  @spec active_policy(Spectre.Context.t() | map()) :: {:ok, t()} | {:error, term()}
+  defp active_policy(%{agent: agent, state: %State{} = state}) do
+    case State.open_policy_awaitable(state) do
+      %Awaitable{name: policy_name} ->
+        case find_policy(agent, policy_name) do
+          %__MODULE__{} = policy -> {:ok, policy}
+          nil -> {:error, {:unknown_policy, policy_name}}
+        end
+
+      nil ->
+        {:error, :no_open_policy}
+    end
+  end
+
+  @spec validate_resolution(t(), resolution()) :: :ok | {:error, term()}
+  defp validate_resolution(%__MODULE__{} = policy, {kind, label}) do
+    branches = if kind == :accept, do: policy.accepts, else: policy.rejects
+
+    if Enum.any?(branches, &(Map.get(&1, :label) == label)) do
+      :ok
+    else
+      {:error, {:unknown_policy_resolution_label, policy.name, kind, label}}
+    end
+  end
+
+  @spec apply_resolution(t(), resolution(), Input.t(), Spectre.Context.t() | map()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp apply_resolution(policy, {:accept, label}, input, ctx),
+    do: approve(policy, label, input, ctx)
+
+  defp apply_resolution(policy, {:reject, label}, input, ctx),
+    do: reject(policy, label, input, ctx)
 
   @spec find_policy(module(), atom()) :: t() | nil
   defp find_policy(agent, name) do
