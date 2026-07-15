@@ -310,6 +310,8 @@ defmodule Spectre.Runtime do
   defp normalize_state_reply({:ok, state}, conversation_id),
     do: {:ok, state |> State.new() |> put_conversation_id(conversation_id)}
 
+  defp normalize_state_reply({:error, reason}, _conversation_id), do: {:error, reason}
+
   defp normalize_state_reply(%State{} = state, conversation_id),
     do: {:ok, put_conversation_id(state, conversation_id)}
 
