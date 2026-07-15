@@ -146,7 +146,7 @@ defmodule Spectre.Runner do
       Effect.stage(%{
         name: action,
         args: Keyword.get(opts, :args, %{}),
-        status: Keyword.get(opts, :status, :ok),
+        status: Keyword.get(opts, :status, :pending),
         payload: %{
           al: Keyword.get(opts, :al),
           hooks: Keyword.get(opts, :hooks, []),
