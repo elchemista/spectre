@@ -64,6 +64,21 @@ defmodule Spectre.Router.SemanticCache.Owner do
 
   def drop_collection(%Vettore.Collection{}), do: :ok
 
+  @doc false
+  @spec cache_index(atom(), term(), map(), pos_integer() | :unlimited) ::
+          {:ok, map()} | {:error, term()}
+  def cache_index(@index_table, key, index, capacity)
+      when is_map(index) and (capacity == :unlimited or (is_integer(capacity) and capacity > 0)),
+      do: call_owner({:cache_index, key, index, capacity})
+
+  def cache_index(table, _key, _index, _capacity),
+    do: {:error, {:invalid_semantic_cache_index, table}}
+
+  @doc false
+  @spec clear_indexes(module()) :: :ok | {:error, term()}
+  def clear_indexes(agent) when is_atom(agent), do: call_owner({:clear_indexes, agent})
+  def clear_indexes(agent), do: {:error, {:invalid_agent, agent}}
+
   @impl GenServer
   def init(:ok) do
     Enum.each(@table_specs, fn {name, options} -> create_table(name, options) end)
@@ -78,11 +93,19 @@ defmodule Spectre.Router.SemanticCache.Owner do
   def handle_call({:new_collection, opts}, _from, state) do
     # Vettore's ETS store is owned by the process calling Vettore.new/1. Build
     # it here so a short-lived lookup process cannot invalidate a cached index.
-    {:reply, Vettore.new(opts), state}
+    {:reply, create_collection(opts), state}
   end
 
   def handle_call({:drop_table, table}, _from, state) do
     {:reply, drop_owned_table(table), state}
+  end
+
+  def handle_call({:cache_index, key, index, capacity}, _from, state) do
+    {:reply, put_index(key, index, capacity), state}
+  end
+
+  def handle_call({:clear_indexes, agent}, _from, state) do
+    {:reply, clear_agent_indexes(agent), state}
   end
 
   @spec call_owner(term()) :: term()
@@ -92,6 +115,83 @@ defmodule Spectre.Router.SemanticCache.Owner do
       _pid -> GenServer.call(__MODULE__, message)
     end
   end
+
+  @spec create_collection(keyword()) :: {:ok, Vettore.Collection.t()} | {:error, term()}
+  defp create_collection(opts) do
+    Vettore.new(opts)
+  rescue
+    exception ->
+      {:error,
+       {:semantic_cache_collection_exception, exception.__struct__, Exception.message(exception)}}
+  catch
+    kind, reason ->
+      {:error, {:semantic_cache_collection_failure, kind, reason}}
+  end
+
+  @spec put_index(term(), map(), pos_integer() | :unlimited) :: {:ok, map()}
+  defp put_index(key, index, capacity) do
+    case :ets.lookup(@index_table, key) do
+      [{^key, existing}] ->
+        drop_index_collection(index)
+        {:ok, existing}
+
+      [] ->
+        true = :ets.insert(@index_table, {key, index})
+        evict_agent_indexes(key, capacity)
+        {:ok, index}
+    end
+  end
+
+  @spec evict_agent_indexes(term(), pos_integer() | :unlimited) :: :ok
+  defp evict_agent_indexes(_new_key, :unlimited), do: :ok
+
+  defp evict_agent_indexes({{:agent, agent}, _hash}, capacity) do
+    entries =
+      @index_table
+      |> :ets.tab2list()
+      |> Enum.filter(fn
+        {{{:agent, ^agent}, _hash}, _index} -> true
+        _other -> false
+      end)
+
+    entries
+    |> Enum.sort_by(fn {_key, index} -> Map.get(index, :inserted_at, 0) end)
+    |> Enum.take(max(length(entries) - capacity, 0))
+    |> Enum.each(&drop_cached_index/1)
+
+    :ok
+  end
+
+  defp evict_agent_indexes(_new_key, _capacity), do: :ok
+
+  @spec clear_agent_indexes(module()) :: :ok
+  defp clear_agent_indexes(agent) do
+    @index_table
+    |> :ets.tab2list()
+    |> Enum.each(fn
+      {{{:agent, ^agent}, _hash}, _index} = entry -> drop_cached_index(entry)
+      _other -> :ok
+    end)
+
+    :ok
+  end
+
+  @spec drop_cached_index({term(), map()}) :: :ok
+  defp drop_cached_index({key, index}) do
+    drop_index_collection(index)
+    true = :ets.delete(@index_table, key)
+    :ok
+  end
+
+  @spec drop_index_collection(map()) :: :ok | {:error, term()}
+  defp drop_index_collection(%{
+         collection: %Vettore.Collection{
+           store_state: %Vettore.Store.ETS{table: table}
+         }
+       }),
+       do: drop_owned_table(table)
+
+  defp drop_index_collection(_index), do: :ok
 
   @spec create_table(atom(), list()) :: {:ok, atom()}
   defp create_table(name, options) do
