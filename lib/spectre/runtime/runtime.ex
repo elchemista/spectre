@@ -193,7 +193,7 @@ defmodule Spectre.Runtime do
       :warn ->
         warning = %{type: :memory_persist_failed, error: reason}
 
-        metadata = result.metadata || %{}
+        metadata = result.metadata
 
         warnings =
           metadata
