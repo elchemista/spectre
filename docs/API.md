@@ -2,6 +2,7 @@
 
 - `Spectre.ask/3` sends a low-level turn to an agent module or session and returns a `%Spectre.Result{}`.
 - `Spectre.turn/3` sends a high-level turn and returns a `%Spectre.Turn{}` with a lifecycle decision.
+- `Spectre.resolve_policy/4` persists a trusted host accept/reject decision without synthetic user text.
 - `Spectre.execute/3` executes one unprotected `:pending` or policy-approved action effect.
 - `Spectre.after_action/5` runs configured lifecycle hooks for completed action effects.
 - `Spectre.cancel/2` cancels the active policy/effect boundary.
@@ -31,6 +32,31 @@ After the user accepts the policy, the turn returns the same effect in
 {:ok, completed} =
   Spectre.execute(approved.state, %{agent: MyApp.Agent})
 ```
+
+When the host already has durable proof that the policy is satisfied, resolve
+the declared policy label directly. Spectre persists this transition before
+returning; it does not route a fake `"yes"` message or append chat history:
+
+```elixir
+{:ok, approved} =
+  Spectre.resolve_policy(
+    MyApp.Agent,
+    awaiting_result,
+    {:accept, :terms_accepted},
+    conversation_id: conversation.id,
+    assigns: %{user: user}
+  )
+```
+
+For an existing `%Spectre.Turn{}`, the same transition is available through
+`Spectre.Turn.resolve_policy/3`. Live sessions also update their in-memory
+state.
+
+`Spectre.Result.lifecycle/1`, `pending_effect/1`,
+`open_awaitable/1`, `latest_completion/1`, and `action_outcome/1`
+provide a normalized host view. `Spectre.Effect.outcome/1` flattens completed,
+failed, and cancelled effects so applications do not need their own lifecycle
+pattern matcher.
 
 `turn/3` wraps `ask/3` and reduces the result into what the host should do next:
 
