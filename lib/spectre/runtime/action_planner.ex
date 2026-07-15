@@ -36,9 +36,8 @@ defmodule Spectre.ActionPlanner do
   @spec plan(String.t(), keyword()) :: {:ok, Effect.t()} | {:error, term()}
   def plan(al, opts \\ []) when is_binary(al) do
     with {:ok, action} <- kinetic_plan(al, opts),
-         action <- prefer_exact_al_tool(action, al, opts),
-         :ok <- validate_planned_action(action, 0) do
-      {:ok, Effect.stage(action)}
+         {:ok, effect} <- planned_effect(action, al, opts) do
+      {:ok, effect}
     end
   end
 
@@ -60,9 +59,7 @@ defmodule Spectre.ActionPlanner do
          # credo:disable-for-next-line Credo.Check.Refactor.Apply
          {:ok, chain} <- apply(kinetic, :plan_chain, [runtime, text, plan_opts(opts)]),
          {:ok, actions} <- planned_actions(chain),
-         actions <- Enum.map(actions, &prefer_exact_al_tool(&1, action_al(&1), opts)),
-         :ok <- validate_planned_actions(actions) do
-      effects = Enum.map(actions, &Effect.stage/1)
+         {:ok, effects} <- planned_effects(actions, opts) do
       {:ok, %{reply_text: scan.clean_text, effects: effects}}
     else
       false -> {:error, :spectre_kinetic_not_loaded}
@@ -73,6 +70,26 @@ defmodule Spectre.ActionPlanner do
   @spec planned_actions(term()) :: {:ok, [map() | struct()]} | {:error, term()}
   defp planned_actions(%{actions: actions}) when is_list(actions), do: {:ok, actions}
   defp planned_actions(other), do: {:error, {:invalid_action_chain, other}}
+
+  @spec planned_effect(map() | struct(), String.t(), keyword()) ::
+          {:ok, Effect.t()} | {:error, term()}
+  defp planned_effect(action, al, opts) do
+    action = prefer_exact_al_tool(action, al, opts)
+
+    with :ok <- validate_planned_action(action, 0) do
+      {:ok, Effect.stage(action)}
+    end
+  end
+
+  @spec planned_effects([map() | struct()], keyword()) ::
+          {:ok, [Effect.t()]} | {:error, term()}
+  defp planned_effects(actions, opts) do
+    actions = Enum.map(actions, &prefer_exact_al_tool(&1, action_al(&1), opts))
+
+    with :ok <- validate_planned_actions(actions) do
+      {:ok, Enum.map(actions, &Effect.stage/1)}
+    end
+  end
 
   @spec validate_planned_actions([map() | struct()]) :: :ok | {:error, term()}
   defp validate_planned_actions(actions) do
