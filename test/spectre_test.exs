@@ -22,13 +22,17 @@ defmodule SpectreKinetic do
       |> extract_al_scan()
       |> Map.fetch!(:entries)
       |> Enum.map(fn entry ->
-        %{
-          al: entry.al,
-          selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
-          args: %{"title" => "ciao"},
-          status:
-            if(String.starts_with?(entry.al, "REJECT"), do: :rejected, else: :ok)
-        }
+        if String.starts_with?(entry.al, "MALFORMED") do
+          :malformed_action
+        else
+          %{
+            al: entry.al,
+            selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
+            args: %{"title" => "ciao"},
+            status:
+              if(String.starts_with?(entry.al, "REJECT"), do: :rejected, else: :ok)
+          }
+        end
       end)
 
     {:ok, %__MODULE__{actions: actions}}
@@ -888,6 +892,23 @@ defmodule SpectreTest do
 
     assert {:error, {:action_plan_not_executable, 0, :rejected}} =
              Spectre.ask(SpectreTest.ProjectAgent, "crea nuovo progetto", model: model)
+  end
+
+  test "malformed Kinetic chain entries return structured planner errors" do
+    model = fn
+      "PROJECT CREATE" <> _prompt, _opts ->
+        {:ok, "I cannot plan that.\n<al>\nMALFORMED ACTION\n</al>"}
+    end
+
+    assert {:error, {:invalid_planned_action, 0, :malformed_action}} =
+             Spectre.ask(SpectreTest.ProjectAgent, "create",
+               model: model,
+               classifier_result: %{
+                 label: :wants_project_create,
+                 confidence: 0.99,
+                 margin: 0.50
+               }
+             )
   end
 
   test "multi-action model output fails instead of losing trailing effects" do
