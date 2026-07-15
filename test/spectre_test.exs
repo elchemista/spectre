@@ -26,7 +26,8 @@ defmodule SpectreKinetic do
           al: entry.al,
           selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
           args: %{"title" => "ciao"},
-          status: :ok
+          status:
+            if(String.starts_with?(entry.al, "REJECT"), do: :rejected, else: :ok)
         }
       end)
 
@@ -877,6 +878,16 @@ defmodule SpectreTest do
 
     assert [%Effect{status: :waiting_policy, policy: :terms}] = result.state.pending_effects
     assert [%Spectre.Awaitable{name: :terms, status: :open}] = result.state.awaitables
+  end
+
+  test "non-executable Kinetic decisions never become pending effects" do
+    model = fn
+      "PROJECT CREATE" <> _prompt, _opts ->
+        {:ok, "I cannot do that.\n<al>\nREJECT ACTION\n</al>"}
+    end
+
+    assert {:error, {:action_plan_not_executable, 0, :rejected}} =
+             Spectre.ask(SpectreTest.ProjectAgent, "crea nuovo progetto", model: model)
   end
 
   test "active policy approves the pending action without executing it" do
