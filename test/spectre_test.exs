@@ -312,6 +312,20 @@ defmodule SpectreTest.ProjectAgent do
   def cancel_current(input, ctx), do: Spectre.cancel(input, ctx)
 end
 
+defmodule SpectreTest.HostPolicyAgent do
+  use Spectre.Agent
+
+  state(SpectreTest.StateStore)
+  actions(SpectreTest.ProjectActions)
+
+  protect(:create_project, with: :terms)
+
+  policy :terms do
+    accept(:accepted_terms, regex: ~r/^accepted$/i)
+    reject(:rejected_terms, regex: ~r/^rejected$/i)
+  end
+end
+
 defmodule SpectreTest.DurableAgent do
   use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
 
@@ -1046,6 +1060,138 @@ defmodule SpectreTest do
 
     assert {:awaiting, %Spectre.Awaitable{name: :terms, status: :open}, result} = turn.decision
     assert result == turn.result
+  end
+
+  test "effect and result expose normalized host outcomes" do
+    completed =
+      %{kind: :action, name: :create_project}
+      |> Effect.stage()
+      |> Effect.complete({:ok, %{id: 123}})
+
+    failed =
+      %{kind: :action, name: :create_project}
+      |> Effect.stage()
+      |> Effect.fail(:denied)
+
+    cancelled =
+      %{kind: :action, name: :create_project}
+      |> Effect.stage()
+      |> Effect.cancel(:host_cancelled)
+
+    assert Effect.terminal?(completed)
+    refute Effect.executable?(completed)
+    assert Effect.outcome(completed) == {:ok, %{id: 123}}
+    assert Effect.outcome(failed) == {:error, :denied}
+    assert Effect.outcome(cancelled) == {:cancelled, :host_cancelled}
+
+    result = %Result{effects: [completed]}
+    assert Result.action_outcome(result) == {:ok, %{id: 123}}
+    assert Result.latest_completion(result) == completed
+    assert Result.lifecycle(result).action_outcome == {:ok, %{id: 123}}
+  end
+
+  test "turn decision reads open policy and pending effect from authoritative state" do
+    state =
+      %State{}
+      |> State.put_pending_effect(
+        Effect.stage(%{kind: :action, name: :create_project}),
+        :terms
+      )
+
+    result = %Result{state: state, effects: [], awaitables: [], reply_text: "visible"}
+    awaitable = State.open_policy_awaitable(state)
+
+    assert Result.open_awaitable(result) == awaitable
+    assert Result.pending_effect(result) == State.pending_effect(state)
+    assert {:awaiting, ^awaitable, ^result} = Decision.decide(result)
+  end
+
+  test "trusted host resolution persists approval and advances the turn" do
+    conversation_id = "host-policy-#{System.unique_integer([:positive])}"
+
+    state =
+      %State{conversation_id: conversation_id}
+      |> State.put_pending_effect(
+        Effect.stage(%{kind: :action, name: :create_project}),
+        :terms
+      )
+
+    pending = State.pending_effect(state)
+    awaitable = State.open_policy_awaitable(state)
+
+    result = %Result{
+      input: Input.new("already accepted elsewhere"),
+      state: state,
+      effects: [pending],
+      awaitables: [awaitable]
+    }
+
+    turn =
+      Spectre.Turn.from_result(
+        SpectreTest.HostPolicyAgent,
+        result.input,
+        [conversation_id: conversation_id],
+        result
+      )
+
+    assert {:error, {:unknown_policy_resolution_label, :terms, :accept, :unknown}} =
+             Spectre.Turn.resolve_policy(turn, {:accept, :unknown})
+
+    assert {:ok, approved_turn} =
+             Spectre.Turn.resolve_policy(turn, {:accept, :accepted_terms})
+
+    assert {:needs, %Effect{status: :approved} = approved, approved_result} =
+             approved_turn.decision
+
+    assert approved.id == pending.id
+    assert [%Awaitable{status: :accepted, label: :accepted_terms}] =
+             approved_result.awaitables
+
+    assert %{type: :policy_resolved, source: :host, kind: :accept} in
+             approved_result.events
+
+    persisted =
+      :persistent_term.get({SpectreTest.StateStore, conversation_id})
+
+    assert [%Effect{id: persisted_id, status: :approved}] = persisted.pending_effects
+    assert persisted_id == pending.id
+  end
+
+  test "trusted host resolution advances a live session state" do
+    conversation_id = "host-session-policy-#{System.unique_integer([:positive])}"
+
+    state =
+      %State{conversation_id: conversation_id}
+      |> State.put_pending_effect(
+        Effect.stage(%{kind: :action, name: :create_project}),
+        :terms
+      )
+
+    result = %Result{
+      input: Input.new("accepted in account settings"),
+      state: state,
+      effects: [State.pending_effect(state)],
+      awaitables: [State.open_policy_awaitable(state)]
+    }
+
+    session =
+      start_supervised!(
+        {Spectre.Session,
+         agent: SpectreTest.HostPolicyAgent,
+         state: state,
+         conversation_id: conversation_id,
+         id: {:host_policy_session, conversation_id}}
+      )
+
+    assert {:ok, approved} =
+             Spectre.resolve_policy(
+               session,
+               result,
+               {:accept, :accepted_terms}
+             )
+
+    assert [%Effect{status: :approved}] = approved.state.pending_effects
+    assert Spectre.state(session) == approved.state
   end
 
   test "turn decision prefers open awaitable over pending effect" do
