@@ -45,14 +45,24 @@ defmodule Spectre.Router.SemanticCache.Owner do
 
   @doc false
   @spec ensure_table(atom(), list()) :: {:ok, atom()} | {:error, term()}
-  def ensure_table(name, options) when name in @tables and is_list(options) do
-    case Process.whereis(__MODULE__) do
-      nil -> {:error, :semantic_cache_owner_not_started}
-      _pid -> GenServer.call(__MODULE__, {:ensure_table, name, options})
-    end
-  end
+  def ensure_table(name, options) when name in @tables and is_list(options),
+    do: call_owner({:ensure_table, name, options})
 
   def ensure_table(name, _options), do: {:error, {:unknown_semantic_cache_table, name}}
+
+  @doc false
+  @spec new_collection(keyword()) :: {:ok, Vettore.Collection.t()} | {:error, term()}
+  def new_collection(opts) when is_list(opts), do: call_owner({:new_collection, opts})
+  def new_collection(opts), do: {:error, {:invalid_collection_options, opts}}
+
+  @doc false
+  @spec drop_collection(Vettore.Collection.t()) :: :ok | {:error, term()}
+  def drop_collection(%Vettore.Collection{
+        store_state: %Vettore.Store.ETS{table: table}
+      }),
+      do: call_owner({:drop_table, table})
+
+  def drop_collection(%Vettore.Collection{}), do: :ok
 
   @impl GenServer
   def init(:ok) do
@@ -65,6 +75,24 @@ defmodule Spectre.Router.SemanticCache.Owner do
     {:reply, create_table(name, options), state}
   end
 
+  def handle_call({:new_collection, opts}, _from, state) do
+    # Vettore's ETS store is owned by the process calling Vettore.new/1. Build
+    # it here so a short-lived lookup process cannot invalidate a cached index.
+    {:reply, Vettore.new(opts), state}
+  end
+
+  def handle_call({:drop_table, table}, _from, state) do
+    {:reply, drop_owned_table(table), state}
+  end
+
+  @spec call_owner(term()) :: term()
+  defp call_owner(message) do
+    case Process.whereis(__MODULE__) do
+      nil -> {:error, :semantic_cache_owner_not_started}
+      _pid -> GenServer.call(__MODULE__, message)
+    end
+  end
+
   @spec create_table(atom(), list()) :: {:ok, atom()}
   defp create_table(name, options) do
     case :ets.whereis(name) do
@@ -75,5 +103,22 @@ defmodule Spectre.Router.SemanticCache.Owner do
       _tid ->
         {:ok, name}
     end
+  end
+
+  @spec drop_owned_table(:ets.tid()) :: :ok | {:error, term()}
+  defp drop_owned_table(table) do
+    case :ets.info(table, :owner) do
+      owner when owner == self() ->
+        true = :ets.delete(table)
+        :ok
+
+      :undefined ->
+        :ok
+
+      owner ->
+        {:error, {:semantic_cache_table_not_owned, owner}}
+    end
+  rescue
+    ArgumentError -> :ok
   end
 end
