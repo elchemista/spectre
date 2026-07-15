@@ -42,6 +42,25 @@ defmodule SpectreRuntimeSafetyTest do
     idle(5)
   end
 
+  defmodule RecordingStateStore do
+    def load(_input, _agent, _opts), do: {:ok, %Spectre.State{}}
+
+    def persist(state, _input, _agent, opts) do
+      send(Keyword.fetch!(opts, :test_pid), {:state_persisted, state})
+      :ok
+    end
+  end
+
+  defmodule FailingMemoryStore do
+    def remember(_payload, _opts), do: {:error, :memory_unavailable}
+  end
+
+  defmodule PersistenceAgent do
+    use Spectre.Agent
+    state(SpectreRuntimeSafetyTest.RecordingStateStore)
+    memory(SpectreRuntimeSafetyTest.FailingMemoryStore)
+  end
+
   test "effects and awaitables use durable UUIDv7 identities" do
     effect = Effect.stage(%{name: :succeed})
     awaitable = Spectre.Awaitable.open_policy(:confirm, effect)
@@ -129,6 +148,30 @@ defmodule SpectreRuntimeSafetyTest do
     effect_id = effect.id
     idempotency_key = effect.idempotency_key
     assert_receive {:action_context, ^effect_id, ^idempotency_key}
+  end
+
+  test "memory failure does not roll back already persisted machine state" do
+    assert {:ok, result} =
+             Spectre.ask(PersistenceAgent, "hello", test_pid: self())
+
+    assert_receive {:state_persisted, persisted}
+    assert persisted == result.state
+
+    assert %{type: :memory_persist_failed, error: :memory_unavailable} in result.events
+
+    assert [
+             %{type: :memory_persist_failed, error: :memory_unavailable}
+           ] = result.metadata.persistence_warnings
+  end
+
+  test "strict memory persistence remains available for hosts that require it" do
+    assert {:error, {:memory_persist_failed, :memory_unavailable}} =
+             Spectre.ask(PersistenceAgent, "hello",
+               test_pid: self(),
+               memory_persist_failure: :error
+             )
+
+    assert_receive {:state_persisted, %State{}}
   end
 
   test "session startup fails when durable state cannot be restored" do
