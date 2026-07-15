@@ -31,6 +31,7 @@ Lifecycle responsibility is currently distributed across several modules:
 | Determine current work | `State`, `Result` | Two views require precedence rules |
 | Choose the host step | `Result`, `Turn.Decision` | Terminal and pending precedence is repeated |
 | Persist progress | `Runtime`, `Session`, host | Approval and execution have different owners |
+| Agent journal | runtime traces, host logs | No durable, structured explanation stream |
 
 The types themselves are useful. The problem is that too many modules are
 allowed to decide how those types transition.
@@ -55,6 +56,12 @@ Before moving code, freeze these rules as executable contract tests:
 13. A live session never replaces committed state with an older result.
 14. Host decisions are derived from authoritative state plus the current
     transition, never from stale local arrays alone.
+15. Journal recording is observational by default and cannot change routing,
+    policy, lifecycle, or execution outcomes.
+16. Every journal record carries stable correlation identifiers and a
+    versioned schema.
+17. Record identifiers and per-turn sequence numbers make appends idempotent
+    and timelines reconstructable.
 
 The first deliverable should be a transition matrix containing every legal
 source state, command, target state, emitted event, and expected host decision.
@@ -78,6 +85,9 @@ Introduce one pure lifecycle kernel. The final name can change, but
 | `Spectre.Result` | Public receipt/read model built from a transition |
 | `Spectre.Turn` | Public host wrapper; delegates next-step calculation to the lifecycle kernel |
 | `Spectre.Session` | Serializes commands and retains only committed state |
+| `Spectre.Journal.Record` | Versioned, privacy-aware explanation record |
+| `Spectre.Journal.Recorder` | Filters, redacts, samples, and delivers journal records |
+| `Spectre.Journal.Store` | Minimal append behaviour implemented by host storage adapters |
 
 The desired pure API is approximately:
 
@@ -110,6 +120,123 @@ A transition contains all emitted data once:
 `Result` and `Turn` should project this receipt instead of independently
 reconstructing lifecycle precedence. This does not require full event sourcing;
 commands and emitted events can remain an internal consistency mechanism.
+
+## Journal And Agent Observability
+
+Chat history, the journal, and telemetry solve different problems:
+
+- chat history is conversational context that may influence a later turn;
+- the journal explains why the runtime selected and changed something;
+- telemetry aggregates counters, timings, and health without being the durable
+  source of an individual decision.
+
+The new feature should be named `journal`, not `history`, because
+`history/1` already controls conversational transcript retention.
+
+A proposed agent DSL is:
+
+```elixir
+journal MyApp.SpectreJournalStore,
+  events: [:routing, :arbitration, :policy, :lifecycle, :execution],
+  include_input: false,
+  include_reply: false,
+  include_effect_payload: false,
+  state: :revision,
+  mode: :async,
+  on_error: :warn,
+  sample_rate: 1.0
+```
+
+Without a `journal` declaration, the runtime emits nothing. `journal(false)`
+can explicitly disable an inherited application default for one agent.
+
+The store implements a deliberately small write contract:
+
+```elixir
+defmodule MyApp.SpectreJournalStore do
+  @behaviour Spectre.Journal.Store
+
+  @impl true
+  def append(%Spectre.Journal.Record{} = record, opts) do
+    MyApp.AgentJournal.insert(record, opts)
+  end
+end
+```
+
+An optional query callback may support the built-in inspection API later, but
+the runtime should depend only on `append/2`. Applications remain free to use
+PostgreSQL, ClickHouse, OpenSearch, an event stream, or an in-memory store.
+
+A versioned record should contain structured explanation data:
+
+```elixir
+%Spectre.Journal.Record{
+  schema_version: 1,
+  id: record_id,
+  agent: MyApp.SupportAgent,
+  agent_version: agent_version,
+  conversation_id: conversation_id,
+  turn_id: turn_id,
+  sequence: 3,
+  trace_id: trace_id,
+  state_revision: revision,
+  phase: :arbitration,
+  decision: %{kind: :route_selected, label: :BILLING},
+  reason: %{rule: :provider_agreement, providers: [:bag, :semantic_cache]},
+  evidence: [
+    %{provider: :bag, label: :BILLING, score: 0.82, accepted?: true},
+    %{provider: :semantic_cache, label: :BILLING, score: 0.87, accepted?: true}
+  ],
+  transition: nil,
+  policy: nil,
+  effect: nil,
+  duration_native: duration,
+  metadata: %{router_version: router_version},
+  occurred_at: DateTime.utc_now()
+}
+```
+
+The journal should record decisions at stable boundaries:
+
+1. routing evidence summary, including provider, label, score, margin, threshold,
+   and whether the candidate was accepted;
+2. arbitration winner, tie-break or fallback reason, and alternatives rejected;
+3. policy accept, reject, no-match, attempt count, cancellation, and whether the
+   source was user input or a trusted host;
+4. lifecycle command, previous status, next status, and emitted events;
+5. execution dispatch, idempotency identity, completion class, and duration;
+6. persistence success, warning, conflict, or stale-revision rejection.
+
+Input text, reply text, complete state, effect arguments, and action results must
+be excluded by default. They can contain personal data, credentials, or business
+secrets. An application may opt in per field with a redaction callback and
+retention policy.
+
+Delivery semantics must be explicit:
+
+- `mode: :async, on_error: :warn` is the monitoring default; recording cannot
+  change the agent decision and a supervised buffer protects turn latency;
+- `mode: :sync, on_error: :error` is available when the record is a required
+  audit artifact;
+- strict atomic audit requirements should use a host outbox in the same
+  transaction as state persistence;
+- policy and execution records should not be sampled by default;
+- all records need schema versioning, retention controls, and deterministic
+  correlation IDs.
+
+This feature makes it possible to answer:
+
+- why an agent selected one route instead of another;
+- which classifier or cache disagreed with the final decision;
+- how often an agent falls back, clarifies, rejects, or exhausts a policy;
+- which effects fail, are retried, or are rejected before execution;
+- whether a model, classifier, threshold, or cache revision changed behaviour;
+- how one agent version compares with another in `freelance.fast`;
+- which real decisions should become regression fixtures.
+
+The journal must consume canonical `Arbitration` and `Transition` data rather
+than adding new decision logic. That keeps observability useful without creating
+another owner of lifecycle semantics.
 
 ## Work Plan
 
@@ -224,7 +351,38 @@ Exit criteria:
 - two hosts cannot both advance the same state revision silently;
 - session and stateless adapter behavior share the same transition contract.
 
-### Phase 5: Clarify Routing And Arbitration Ownership
+### Phase 5: Add The Journal
+
+Goal: make every important agent decision inspectable without storing sensitive
+conversation content by default.
+
+- Add `Spectre.Journal.Record` with a versioned schema.
+- Add `Spectre.Journal.Recorder` as the filtering and delivery boundary.
+- Add the `Spectre.Journal.Store` behaviour with `append/2`.
+- Add a `journal/2` DSL macro and equivalent application configuration.
+- Emit records from canonical arbitration, lifecycle, policy, execution, and
+  persistence boundaries.
+- Record reason codes and structured evidence, not preformatted log strings.
+- Add filtering, redaction, per-event sampling, and retention metadata.
+- Add supervised asynchronous delivery with bounded buffering, explicit
+  overflow policy, and backpressure.
+- Define synchronous failure and transactional-outbox guidance for audit use.
+- Add telemetry derived from the same records without making telemetry the
+  durable source.
+- Provide query examples for per-agent timelines and aggregate dashboards.
+
+Exit criteria:
+
+- one turn can be reconstructed as a decision timeline using correlation IDs
+  and sequence numbers;
+- route and policy outcomes can be explained without storing input or reply
+  text;
+- disabling or losing the default recorder cannot change runtime behaviour;
+- strict recorder failures follow the explicitly configured policy;
+- sensitive fields are absent unless the application opts in;
+- the record schema has compatibility and migration tests.
+
+### Phase 6: Clarify Routing And Arbitration Ownership
 
 Goal: keep probabilistic evidence outside machine-state decisions.
 
@@ -243,7 +401,7 @@ Exit criteria:
   precedence;
 - the same evidence set always produces the same decision.
 
-### Phase 6: Reduce Optional Dependency Weight
+### Phase 7: Reduce Optional Dependency Weight
 
 Goal: let applications use the runtime without paying for every classifier
 implementation.
@@ -259,7 +417,7 @@ Exit criteria:
 - a policy-and-regex-only application does not compile native ML dependencies;
 - optional adapters have explicit compatibility versions.
 
-### Phase 7: Stabilize The Public API
+### Phase 8: Stabilize The Public API
 
 Goal: prepare a versioned release rather than exposing internal refactors.
 
@@ -290,8 +448,12 @@ The next concrete tickets should be:
 8. Split action invocation from completion mutation.
 9. Design and implement session-aware execution persistence.
 10. Add state revisions and stale-write protection.
-11. Run the `freelance.fast` compatibility fixture.
-12. Only then simplify or deprecate public APIs.
+11. Freeze `Spectre.Journal.Record` fields, privacy defaults, and reason codes.
+12. Add the `Spectre.Journal.Store` behaviour and `journal/2` DSL.
+13. Emit journal records from `Arbitration`, `Lifecycle`, and `Execution`.
+14. Add asynchronous buffering, strict mode, and outbox documentation.
+15. Run the `freelance.fast` compatibility fixture with journal monitoring.
+16. Only then simplify or deprecate public APIs.
 
 This order keeps each change reviewable and preserves the current host contract
 while responsibility moves inward.
