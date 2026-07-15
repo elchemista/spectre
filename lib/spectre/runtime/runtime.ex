@@ -173,7 +173,10 @@ defmodule Spectre.Runtime do
         {:ok, result}
 
       :error ->
-        {:error, {:memory_persist_failed, reason}}
+        # The state write is already committed. Carry the committed result so a
+        # session can advance its in-memory state even while reporting strict
+        # memory failure to the host.
+        {:error, {:memory_persist_failed, reason, result}}
 
       other ->
         {:error, {:invalid_memory_persist_failure, other}}
@@ -209,6 +212,12 @@ defmodule Spectre.Runtime do
       |> call_memory_callback(input, result, agent, opts)
       |> normalize_memory_persist_reply()
     end
+  rescue
+    exception ->
+      {:error, {:memory_persist_exception, exception.__struct__, Exception.message(exception)}}
+  catch
+    kind, reason ->
+      {:error, {:memory_persist_failure, kind, reason}}
   end
 
   @spec normalize_persist_reply(term(), Result.t()) :: {:ok, Result.t()} | {:error, term()}
