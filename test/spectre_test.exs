@@ -1147,8 +1147,10 @@ defmodule SpectreTest do
     assert [%Awaitable{status: :accepted, label: :accepted_terms}] =
              approved_result.awaitables
 
-    assert %{type: :policy_resolved, source: :host, kind: :accept} in
-             approved_result.events
+    assert Enum.any?(
+             approved_result.events,
+             &match?(%{type: :policy_resolved, source: :host, kind: :accept}, &1)
+           )
 
     persisted =
       :persistent_term.get({SpectreTest.StateStore, conversation_id})
