@@ -35,9 +35,9 @@ defmodule Spectre.ActionPlanner do
   """
   @spec plan(String.t(), keyword()) :: {:ok, Effect.t()} | {:error, term()}
   def plan(al, opts \\ []) when is_binary(al) do
-    with {:ok, action} <- kinetic_plan(al, opts),
-         {:ok, effect} <- planned_effect(action, al, opts) do
-      {:ok, effect}
+    case kinetic_plan(al, opts) do
+      {:ok, action} -> planned_effect(action, al, opts)
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -100,15 +100,14 @@ defmodule Spectre.ActionPlanner do
     action = prefer_exact_al_tool(action, al, opts)
 
     with :ok <- validate_planned_action(action, index) do
-      {:ok, Effect.stage(action)}
+      {:ok, action |> Map.put(:status, :pending) |> Effect.stage()}
     end
   end
 
   defp prepare_effect(action, _al, index, _opts),
     do: {:error, {:invalid_planned_action, index, action}}
 
-  @spec validate_planned_action(map() | struct(), non_neg_integer()) ::
-          :ok | {:error, term()}
+  @spec validate_planned_action(map(), non_neg_integer()) :: :ok | {:error, term()}
   defp validate_planned_action(action, index) when is_map(action) do
     status = action_value(action, :status)
     selected_tool = action_value(action, :selected_tool)
@@ -132,8 +131,6 @@ defmodule Spectre.ActionPlanner do
     end
   end
 
-  defp validate_planned_action(action, index),
-    do: {:error, {:invalid_planned_action, index, action}}
 
   @spec action_al(map() | struct()) :: String.t() | nil
   defp action_al(action), do: action_value(action, :al)
