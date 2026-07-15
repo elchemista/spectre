@@ -131,6 +131,45 @@ defmodule Spectre do
   def reset(session, state \\ %State{}), do: Spectre.Session.reset(session, state)
 
   @doc """
+  Resolves an open policy from a trusted host decision.
+
+  This is intended for durable facts already known by the host, such as terms
+  accepted in another channel. The resolution label must be declared by the
+  policy. For agent modules, Spectre persists the approved/rejected state
+  before returning. For sessions it also advances the session's in-memory
+  state.
+
+      {:ok, approved} =
+        Spectre.resolve_policy(
+          MyApp.Agent,
+          awaiting_result,
+          {:accept, :terms_accepted},
+          assigns: %{user: user}
+        )
+  """
+  @spec resolve_policy(
+          module() | GenServer.server(),
+          Spectre.Result.t(),
+          Spectre.Policy.resolution(),
+          keyword()
+        ) :: {:ok, Spectre.Result.t()} | {:error, term()}
+  def resolve_policy(agent_or_session, %Spectre.Result{} = result, resolution, opts \\ [])
+
+  def resolve_policy(agent, %Spectre.Result{} = result, resolution, opts)
+      when is_atom(agent) and is_list(opts) do
+    if agent_module?(agent) do
+      Runtime.resolve_policy(agent, result, resolution, opts)
+    else
+      Spectre.Session.resolve_policy(agent, result, resolution, opts)
+    end
+  end
+
+  def resolve_policy(session, %Spectre.Result{} = result, resolution, opts)
+      when is_list(opts) do
+    Spectre.Session.resolve_policy(session, result, resolution, opts)
+  end
+
+  @doc """
   Cancels the active policy/effect boundary and returns an updated result.
 
       {:ok, result} = Spectre.cancel("cancel", ctx)
