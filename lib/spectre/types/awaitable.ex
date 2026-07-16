@@ -44,7 +44,7 @@ defmodule Spectre.Awaitable do
       end
 
     %__MODULE__{
-      id: Keyword.get(opts, :id, System.unique_integer([:positive])),
+      id: Keyword.get(opts, :id, Spectre.Identity.uuid7()),
       kind: :policy,
       name: policy,
       subject_id: subject_id,

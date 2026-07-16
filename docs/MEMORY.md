@@ -61,3 +61,25 @@ end
 Every successful turn records a compact chat entry in
 `state.data[:chat_history]` before persistence. Use `history false` in the DSL
 or pass `chat_history_limit: false` to disable it.
+
+State is the authoritative machine record; recalled memory is a contextual
+projection. Spectre therefore persists state first. If the memory adapter then
+fails, the turn still returns the persisted state and adds a
+`:memory_persist_failed` event plus a `:persistence_warnings` metadata entry.
+This prevents a session from retaining an older in-memory state and replaying a
+machine transition.
+
+Hosts that require both writes to report success can opt into strict failure:
+
+```elixir
+Spectre.ask(MyApp.SupportAgent, input,
+  memory_persist_failure: :error
+)
+```
+
+Strict mode reports
+`{:error, {:memory_persist_failed, reason, committed_result}}`. The state write
+has already succeeded, and supervised sessions retain
+`committed_result.state` before returning the error. Stateless hosts should do
+the same. True cross-store atomicity still requires the host to place both
+records in the same database transaction.

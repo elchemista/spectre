@@ -19,6 +19,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @default_threshold 0.88
   @default_top_k 3
   @default_learn_confidence 0.86
+  @default_index_capacity 4
 
   @type source :: :offline_dataset | :static_route_example | :online_learned
   @type row :: %{
@@ -113,11 +114,13 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   def examples(agent, opts) when is_atom(agent) and is_list(opts) do
     with {:ok, opts} <- agent_opts(agent, opts) do
+      review_opts = Keyword.put(opts, :semantic_cache_include_unverified?, true)
+
       case Keyword.get(opts, :source, :online_learned) do
-        :online_learned -> {:ok, online_rows(agent, opts)}
+        :online_learned -> {:ok, online_rows(agent, review_opts)}
         :offline_dataset -> offline_dataset_rows(opts)
         :static_route_example -> {:ok, static_route_rows(opts)}
-        :all -> rows(Keyword.put(opts, :semantic_cache_static?, true))
+        :all -> rows(Keyword.put(review_opts, :semantic_cache_static?, true))
         source -> {:error, {:invalid_semantic_cache_source, source}}
       end
     end
@@ -366,26 +369,62 @@ defmodule Spectre.Router.SemanticCache.Learned do
   defp build_index(table, key, rows, opts) do
     with {:ok, vectors} <- embed_rows(rows, opts),
          [%{vector: first_vector} | _] <- vectors,
-         {:ok, collection} <- new_collection(length(first_vector), opts),
-         :ok <- Vettore.put_many(collection, embeddings(vectors)) do
-      index = %{
-        collection: collection,
-        inserted_at: System.unique_integer([:monotonic, :positive])
-      }
-
-      evict_oldest_indexes(table, key, opts)
-      :ets.insert(table, {key, index})
-      {:ok, index}
+         {:ok, collection} <- new_collection(length(first_vector), opts) do
+      cache_collection(table, key, collection, vectors, opts)
     else
       [] -> {:error, :empty_learned_semantic_cache}
       {:error, reason} -> {:error, reason}
     end
   end
 
+  @spec cache_collection(
+          atom(),
+          term(),
+          Vettore.Collection.t(),
+          [map()],
+          keyword()
+        ) :: {:ok, map()} | {:error, term()}
+  defp cache_collection(table, key, collection, vectors, opts) do
+    case Vettore.put_many(collection, embeddings(vectors)) do
+      :ok ->
+        index = %{
+          collection: collection,
+          inserted_at: System.unique_integer([:monotonic, :positive])
+        }
+
+        Spectre.Router.SemanticCache.Owner.cache_index(
+          table,
+          key,
+          index,
+          semantic_cache_capacity(opts)
+        )
+
+      {:error, reason} ->
+        discard_collection(collection)
+        {:error, reason}
+    end
+  rescue
+    exception ->
+      discard_collection(collection)
+
+      {:error,
+       {:semantic_cache_index_exception, exception.__struct__, Exception.message(exception)}}
+  catch
+    kind, reason ->
+      discard_collection(collection)
+      {:error, {:semantic_cache_index_failure, kind, reason}}
+  end
+
+  @spec discard_collection(Vettore.Collection.t()) :: :ok
+  defp discard_collection(collection) do
+    Spectre.Router.SemanticCache.Owner.drop_collection(collection)
+    :ok
+  end
+
   @spec new_collection(pos_integer(), keyword()) ::
           {:ok, Vettore.Collection.t()} | {:error, term()}
   defp new_collection(dimensions, opts) do
-    Vettore.new(
+    Spectre.Router.SemanticCache.Owner.new_collection(
       name: "spectre_learned_semantic_cache:#{System.unique_integer([:positive])}",
       dimensions: dimensions,
       metric: :cosine,
@@ -508,11 +547,16 @@ defmodule Spectre.Router.SemanticCache.Learned do
     |> :ets.tab2list()
     |> Enum.flat_map(fn
       {{^agent, _id}, %{label: label} = row} ->
-        if Map.has_key?(labels, label), do: [row], else: []
+        if Map.has_key?(labels, label) and usable_online_row?(row, opts), do: [row], else: []
 
       _other ->
         []
     end)
+  end
+
+  @spec usable_online_row?(row(), keyword()) :: boolean()
+  defp usable_online_row?(row, opts) do
+    row.verified? or Keyword.get(opts, :semantic_cache_include_unverified?, false)
   end
 
   @spec cacheable_rules(keyword()) :: [Rule.t()]
@@ -1028,8 +1072,15 @@ defmodule Spectre.Router.SemanticCache.Learned do
     |> String.trim()
     |> case do
       "" -> nil
-      text -> String.to_atom(text)
+      text -> existing_snapshot_atom(text)
     end
+  end
+
+  @spec existing_snapshot_atom(String.t()) :: atom() | nil
+  defp existing_snapshot_atom(text) do
+    String.to_existing_atom(text)
+  rescue
+    ArgumentError -> nil
   end
 
   @spec snapshot_time(term(), DateTime.t()) :: DateTime.t()
@@ -1115,23 +1166,9 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec clear_indexes(module()) :: :ok
   defp clear_indexes(agent) do
-    case :ets.whereis(@index_table) do
-      :undefined ->
-        :ok
-
-      _tid ->
-        @index_table
-        |> :ets.tab2list()
-        |> Enum.each(fn
-          {{{:agent, ^agent}, _hash} = key, index} ->
-            drop_index(index)
-            :ets.delete(@index_table, key)
-
-          _other ->
-            :ok
-        end)
-
-        :ok
+    case Spectre.Router.SemanticCache.Owner.clear_indexes(agent) do
+      :ok -> :ok
+      {:error, reason} -> raise "semantic cache indexes unavailable: #{inspect(reason)}"
     end
   end
 
@@ -1147,79 +1184,23 @@ defmodule Spectre.Router.SemanticCache.Learned do
     :ok
   end
 
-  @spec drop_index(map()) :: :ok
-  defp drop_index(%{
-         collection: %Vettore.Collection{store_state: %Vettore.Store.ETS{table: table}}
-       }) do
-    drop_ets_table(table)
-  end
-
-  defp drop_index(_index), do: :ok
-
-  @spec drop_ets_table(:ets.tid()) :: :ok
-  defp drop_ets_table(table) do
-    :ets.delete(table)
-    :ok
-  rescue
-    ArgumentError -> :ok
-  end
-
-  @spec evict_oldest_indexes(atom(), term(), keyword()) :: :ok
-  defp evict_oldest_indexes(table, new_key, opts) do
-    case semantic_cache_capacity(opts) do
-      :unlimited -> :ok
-      capacity -> evict_oldest_indexes_with_capacity(table, new_key, capacity)
+  @spec semantic_cache_capacity(keyword()) :: pos_integer() | :unlimited
+  defp semantic_cache_capacity(opts) do
+    case Keyword.get(opts, :semantic_cache_capacity, configured_index_capacity()) do
+      :unlimited -> :unlimited
+      capacity when is_integer(capacity) and capacity > 0 -> capacity
+      _other -> @default_index_capacity
     end
   end
 
-  @spec evict_oldest_indexes_with_capacity(atom(), term(), pos_integer()) :: :ok
-  defp evict_oldest_indexes_with_capacity(table, new_key, capacity) do
-    table
-    |> evictable_indexes(new_key)
-    |> oldest_indexes_to_evict(capacity)
-    |> Enum.each(&drop_cached_index(table, &1))
+  @spec configured_index_capacity() :: pos_integer() | :unlimited
+  defp configured_index_capacity do
+    case Application.get_env(:spectre, :semantic_cache, []) do
+      config when is_list(config) ->
+        Keyword.get(config, :index_capacity, @default_index_capacity)
 
-    :ok
-  end
-
-  @spec evictable_indexes(atom(), term()) :: [{term(), map()}]
-  defp evictable_indexes(table, new_key) do
-    table
-    |> :ets.tab2list()
-    |> Enum.reject(fn {key, _index} -> key == new_key end)
-  end
-
-  @spec oldest_indexes_to_evict([{term(), map()}], pos_integer()) :: [{term(), map()}]
-  defp oldest_indexes_to_evict(entries, capacity) do
-    entries
-    |> eviction_count(capacity)
-    |> indexes_to_evict(entries)
-  end
-
-  @spec eviction_count([{term(), map()}], pos_integer()) :: integer()
-  defp eviction_count(entries, capacity), do: length(entries) - capacity + 1
-
-  @spec indexes_to_evict(integer(), [{term(), map()}]) :: [{term(), map()}]
-  defp indexes_to_evict(count, _entries) when count <= 0, do: []
-
-  defp indexes_to_evict(count, entries) do
-    entries
-    |> Enum.sort_by(fn {_key, index} -> Map.get(index, :inserted_at, 0) end)
-    |> Enum.take(count)
-  end
-
-  @spec drop_cached_index(atom(), {term(), map()}) :: :ok
-  defp drop_cached_index(table, {key, index}) do
-    drop_index(index)
-    :ets.delete(table, key)
-    :ok
-  end
-
-  @spec semantic_cache_capacity(keyword()) :: pos_integer() | :unlimited
-  defp semantic_cache_capacity(opts) do
-    case Keyword.get(opts, :semantic_cache_capacity) do
-      capacity when is_integer(capacity) and capacity > 0 -> capacity
-      _other -> :unlimited
+      _other ->
+        @default_index_capacity
     end
   end
 
@@ -1240,12 +1221,10 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec ensure_table(atom(), list()) :: atom()
   defp ensure_table(name, options) do
-    case :ets.whereis(name) do
-      :undefined -> :ets.new(name, options)
-      _tid -> name
+    case Spectre.Router.SemanticCache.Owner.ensure_table(name, options) do
+      {:ok, ^name} -> name
+      {:error, reason} -> raise "semantic cache table unavailable: #{inspect(reason)}"
     end
-  rescue
-    ArgumentError -> name
   end
 
   @spec bump_online_revision(module()) :: non_neg_integer()

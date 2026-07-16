@@ -32,15 +32,50 @@ While a policy is active, the next user turn bypasses the normal agent router.
 That matters: a short answer like `"yes"` should approve the open policy
 awaitable, not accidentally route to some generic conversation intent.
 
-Approved actions still do not run automatically inside normal routing. Execution
-stays behind the pending action effect:
+Approved actions still do not run automatically inside normal routing. A matching
+policy response produces an `:approved` effect and the runtime persists that
+state before returning:
 
 ```elixir
-{:ok, executed} = Spectre.execute(result.state, %{agent: MyApp.SupportAgent})
+{:ok, approved} =
+  Spectre.ask(MyApp.SupportAgent, "yes, delete it", state: staged.state)
+
+[%Spectre.Effect{status: :approved}] = approved.state.pending_effects
+
+{:ok, executed} =
+  Spectre.execute(approved.state, %{agent: MyApp.SupportAgent})
 ```
 
+A host may already know that a policy is satisfied—for example, terms were
+accepted in account settings or another channel. Resolve the policy through its
+declared label instead of synthesizing a user reply:
+
+```elixir
+{:ok, approved} =
+  Spectre.resolve_policy(
+    MyApp.SupportAgent,
+    staged,
+    {:accept, :confirmed_delete},
+    conversation_id: conversation.id,
+    assigns: %{user: user}
+  )
+```
+
+The state adapter is called before this function returns. The result contains
+the accepted awaitable, the `:approved` effect, and a
+`:policy_resolved` audit event with `source: :host`. An unknown label is
+rejected, so external resolution cannot bypass the policy declaration. With a
+live session, the session state advances in the same operation.
+
+`Spectre.execute/3` rejects `:waiting_policy` effects. It also injects
+`:effect_id` and `:idempotency_key` into `ctx.opts`, so application code can
+deduplicate a retry at its durable side-effect boundary.
+
 That boundary is intentional. It gives the host application a clear place to
-control transactions, permissions, audit logs, delivery, and retries.
+control transactions, permissions, audit logs, delivery, and retries. Spectre
+accepts one action effect per turn; multi-action chains belong in
+`spectre_directive` rather than being partially executed by the conversation
+runtime.
 
 ## `actions` And Hooks
 

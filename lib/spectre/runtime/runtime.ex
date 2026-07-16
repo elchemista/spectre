@@ -60,6 +60,44 @@ defmodule Spectre.Runtime do
   end
 
   @doc """
+  Resolves a currently open policy from a trusted host decision and persists
+  the state transition before returning it.
+
+  Unlike a user turn, this does not route synthetic text, append chat history,
+  or invoke the memory adapter.
+
+      {:ok, approved} =
+        Spectre.Runtime.resolve_policy(
+          MyApp.Agent,
+          awaiting_result,
+          {:accept, :terms_accepted},
+          assigns: %{user: user}
+        )
+  """
+  @spec resolve_policy(module(), Result.t(), Policy.resolution(), keyword()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def resolve_policy(agent, %Result{} = result, resolution, opts \\ [])
+      when is_atom(agent) and is_list(opts) do
+    opts = runtime_opts(agent, opts)
+    input = policy_resolution_input(result, opts)
+    state = State.new(result.state)
+
+    ctx = %Context{
+      agent: agent,
+      input: input,
+      state: state,
+      opts: opts,
+      assigns: Keyword.get(opts, :assigns, %{}),
+      route: result.route
+    }
+
+    with {:ok, %Result{} = resolved} <- Policy.resolve(resolution, input, ctx),
+         {:ok, %Result{} = persisted} <- persist_state(resolved, ctx) do
+      {:ok, persisted}
+    end
+  end
+
+  @doc """
   Builds the per-turn context by loading state and memory adapters.
 
       {:ok, ctx} = Spectre.Runtime.load_context(MyApp.Agent, input, [])
@@ -140,9 +178,46 @@ defmodule Spectre.Runtime do
 
   @spec persist(Result.t(), Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp persist(%Result{} = result, %Context{} = ctx) do
-    with {:ok, %Result{} = result} <- persist_state(result, ctx),
-         :ok <- persist_memory(result, ctx) do
-      {:ok, result}
+    with {:ok, %Result{} = result} <- persist_state(result, ctx) do
+      case persist_memory(result, ctx) do
+        :ok -> {:ok, result}
+        {:error, reason} -> memory_persist_failure(result, ctx, reason)
+      end
+    end
+  end
+
+  @spec memory_persist_failure(Result.t(), Context.t(), term()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp memory_persist_failure(%Result{} = result, %Context{} = ctx, reason) do
+    case Keyword.get(ctx.opts, :memory_persist_failure, :warn) do
+      :warn ->
+        warning = %{type: :memory_persist_failed, error: reason}
+
+        metadata = result.metadata
+
+        warnings =
+          metadata
+          |> Map.get(:persistence_warnings, [])
+          |> List.wrap()
+          |> Kernel.++([warning])
+
+        result =
+          %{
+            result
+            | events: result.events ++ [warning],
+              metadata: Map.put(metadata, :persistence_warnings, warnings)
+          }
+
+        {:ok, result}
+
+      :error ->
+        # The state write is already committed. Carry the committed result so a
+        # session can advance its in-memory state even while reporting strict
+        # memory failure to the host.
+        {:error, {:memory_persist_failed, reason, result}}
+
+      other ->
+        {:error, {:invalid_memory_persist_failure, other}}
     end
   end
 
@@ -175,6 +250,12 @@ defmodule Spectre.Runtime do
       |> call_memory_callback(input, result, agent, opts)
       |> normalize_memory_persist_reply()
     end
+  rescue
+    exception ->
+      {:error, {:memory_persist_exception, exception.__struct__, Exception.message(exception)}}
+  catch
+    kind, reason ->
+      {:error, {:memory_persist_failure, kind, reason}}
   end
 
   @spec normalize_persist_reply(term(), Result.t()) :: {:ok, Result.t()} | {:error, term()}
@@ -228,6 +309,8 @@ defmodule Spectre.Runtime do
   @spec normalize_state_reply(term(), term()) :: {:ok, State.t()} | {:error, term()}
   defp normalize_state_reply({:ok, state}, conversation_id),
     do: {:ok, state |> State.new() |> put_conversation_id(conversation_id)}
+
+  defp normalize_state_reply({:error, reason}, _conversation_id), do: {:error, reason}
 
   defp normalize_state_reply(%State{} = state, conversation_id),
     do: {:ok, put_conversation_id(state, conversation_id)}
@@ -304,6 +387,15 @@ defmodule Spectre.Runtime do
       awaitables: result.awaitables,
       events: result.events
     }
+  end
+
+  @spec policy_resolution_input(Result.t(), keyword()) :: Input.t()
+  defp policy_resolution_input(%Result{} = result, opts) do
+    case Keyword.get(opts, :input, result.input) do
+      %Input{} = input -> input
+      nil -> Input.new("")
+      input -> Input.new(input)
+    end
   end
 
   @spec put_conversation_id(State.t(), term()) :: State.t()

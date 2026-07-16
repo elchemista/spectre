@@ -22,12 +22,17 @@ defmodule SpectreKinetic do
       |> extract_al_scan()
       |> Map.fetch!(:entries)
       |> Enum.map(fn entry ->
-        %{
-          al: entry.al,
-          selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
-          args: %{"title" => "ciao"},
-          status: :ok
-        }
+        if String.starts_with?(entry.al, "MALFORMED") do
+          :malformed_action
+        else
+          %{
+            al: entry.al,
+            selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
+            args: %{"title" => "ciao"},
+            status:
+              if(String.starts_with?(entry.al, "REJECT"), do: :rejected, else: :ok)
+          }
+        end
       end)
 
     {:ok, %__MODULE__{actions: actions}}
@@ -305,6 +310,20 @@ defmodule SpectreTest.ProjectAgent do
   end
 
   def cancel_current(input, ctx), do: Spectre.cancel(input, ctx)
+end
+
+defmodule SpectreTest.HostPolicyAgent do
+  use Spectre.Agent
+
+  state(SpectreTest.StateStore)
+  actions(SpectreTest.ProjectActions)
+
+  protect(:create_project, with: :terms)
+
+  policy :terms do
+    accept(:accepted_terms, regex: ~r/^accepted$/i)
+    reject(:rejected_terms, regex: ~r/^rejected$/i)
+  end
 end
 
 defmodule SpectreTest.DurableAgent do
@@ -707,6 +726,7 @@ defmodule SpectreTest do
   alias Spectre.Classifier.Math
   alias Spectre.Classifier.Trainer
   alias Spectre.Effect
+  alias Spectre.Input
   alias Spectre.Result
   alias Spectre.Router.LLMClassifier
   alias Spectre.Router.SemanticCache
@@ -879,7 +899,45 @@ defmodule SpectreTest do
     assert [%Spectre.Awaitable{name: :terms, status: :open}] = result.state.awaitables
   end
 
-  test "active policy bypasses the normal router and executes pending action on accept" do
+  test "non-executable Kinetic decisions never become pending effects" do
+    model = fn
+      "PROJECT CREATE" <> _prompt, _opts ->
+        {:ok, "I cannot do that.\n<al>\nREJECT ACTION\n</al>"}
+    end
+
+    assert {:error, {:action_plan_not_executable, 0, :rejected}} =
+             Spectre.ask(SpectreTest.ProjectAgent, "crea nuovo progetto", model: model)
+  end
+
+  test "malformed Kinetic chain entries return structured planner errors" do
+    model = fn
+      "PROJECT CREATE" <> _prompt, _opts ->
+        {:ok, "I cannot plan that.\n<al>\nMALFORMED ACTION\n</al>"}
+    end
+
+    assert {:error, {:invalid_planned_action, 0, :malformed_action}} =
+             Spectre.ask(
+               SpectreTest.ProjectAgent,
+               "crea nuovo progetto",
+               model: model
+             )
+  end
+
+  test "multi-action model output fails instead of losing trailing effects" do
+    model = fn
+      "PROJECT CREATE" <> _prompt, _opts ->
+        {:ok,
+         "Two actions.\n<al>\nCREATE PROJECT title=one\n</al>\n<al>\nCREATE PROJECT title=two\n</al>"}
+    end
+
+    assert {:error, {:multiple_action_effects_not_supported, identities}} =
+             Spectre.ask(SpectreTest.ProjectAgent, "crea nuovo progetto", model: model)
+
+    assert Enum.map(identities, & &1.name) == [:create_project, :create_project]
+    assert Enum.all?(identities, &is_binary(&1.id))
+  end
+
+  test "active policy approves the pending action without executing it" do
     state =
       %State{}
       |> State.put_pending_effect(
@@ -887,17 +945,36 @@ defmodule SpectreTest do
         :terms
       )
 
-    assert {:ok, result} =
+    assert {:ok, approved} =
              Spectre.ask(SpectreTest.ProjectAgent, "accetto",
                state: state,
                model: fn _prompt, _opts -> {:ok, "unused"} end
              )
 
-    assert result.reply_text == "{:created_project, %{\"title\" => \"ciao\"}}"
-    assert result.state.pending_effects == []
-    assert [%Spectre.Awaitable{status: :accepted, label: :accepted_terms}] = result.awaitables
-    assert [%Effect{name: :create_project, status: :completed}] = result.effects
-    assert [%{type: :awaitable_accepted, label: :accepted_terms} | _] = result.events
+    assert approved.reply_text == ""
+    assert [%Effect{name: :create_project, status: :approved}] =
+             approved.state.pending_effects
+
+    assert [%Spectre.Awaitable{status: :accepted, label: :accepted_terms}] =
+             approved.awaitables
+
+    assert [%Effect{name: :create_project, status: :approved}] = approved.effects
+
+    assert [
+             %{type: :awaitable_accepted, label: :accepted_terms},
+             %{type: :effect_approved}
+           ] = approved.events
+
+    assert {:ok, executed} =
+             Spectre.execute(approved.state, %{
+               agent: SpectreTest.ProjectAgent,
+               input: approved.input,
+               state: approved.state
+             })
+
+    assert executed.reply_text == "{:created_project, %{\"title\" => \"ciao\"}}"
+    assert executed.state.pending_effects == []
+    assert [%Effect{name: :create_project, status: :completed}] = executed.effects
   end
 
   test "input pipeline normalizes text before policy matching" do
@@ -916,7 +993,8 @@ defmodule SpectreTest do
 
     assert result.input.text == "confermo"
     assert result.input.raw == "  Confermo  "
-    assert result.reply_text == "{:created_project, %{\"title\" => \"ciao\"}}"
+    assert result.reply_text == ""
+    assert [%Effect{status: :approved}] = result.state.pending_effects
     assert [%{type: :awaitable_accepted, label: :confirmed_terms} | _] = result.events
   end
 
@@ -951,8 +1029,19 @@ defmodule SpectreTest do
     assert [%Spectre.Awaitable{name: :terms, status: :open}] = first.state.awaitables
 
     assert {:ok, second} = Spectre.ask(SpectreTest.ProjectSession, "accetto")
-    assert second.state.pending_effects == []
-    assert second.reply_text == "{:created_project, %{\"title\" => \"ciao\"}}"
+    assert [%Effect{status: :approved}] = second.state.pending_effects
+    assert second.reply_text == ""
+
+    assert {:ok, executed} =
+             Spectre.execute(second.state, %{
+               agent: SpectreTest.ProjectAgent,
+               input: second.input,
+               state: second.state
+             })
+
+    assert executed.reply_text == "{:created_project, %{\"title\" => \"ciao\"}}"
+    assert :ok = Spectre.reset(SpectreTest.ProjectSession, executed.state)
+    assert Spectre.state(SpectreTest.ProjectSession).pending_effects == []
   end
 
   test "turn returns lifecycle decision for an open policy awaitable" do
@@ -969,6 +1058,140 @@ defmodule SpectreTest do
 
     assert {:awaiting, %Spectre.Awaitable{name: :terms, status: :open}, result} = turn.decision
     assert result == turn.result
+  end
+
+  test "effect and result expose normalized host outcomes" do
+    completed =
+      %{kind: :action, name: :create_project}
+      |> Effect.stage()
+      |> Effect.complete({:ok, %{id: 123}})
+
+    failed =
+      %{kind: :action, name: :create_project}
+      |> Effect.stage()
+      |> Effect.fail(:denied)
+
+    cancelled =
+      %{kind: :action, name: :create_project}
+      |> Effect.stage()
+      |> Effect.cancel(:host_cancelled)
+
+    assert Effect.terminal?(completed)
+    refute Effect.executable?(completed)
+    assert Effect.outcome(completed) == {:ok, %{id: 123}}
+    assert Effect.outcome(failed) == {:error, :denied}
+    assert Effect.outcome(cancelled) == {:cancelled, :host_cancelled}
+
+    result = %Result{effects: [completed]}
+    assert Result.action_outcome(result) == {:ok, %{id: 123}}
+    assert Result.latest_completion(result) == completed
+    assert Result.lifecycle(result).action_outcome == {:ok, %{id: 123}}
+  end
+
+  test "turn decision reads open policy and pending effect from authoritative state" do
+    state =
+      %State{}
+      |> State.put_pending_effect(
+        Effect.stage(%{kind: :action, name: :create_project}),
+        :terms
+      )
+
+    result = %Result{state: state, effects: [], awaitables: [], reply_text: "visible"}
+    awaitable = State.open_policy_awaitable(state)
+
+    assert Result.open_awaitable(result) == awaitable
+    assert Result.pending_effect(result) == State.pending_effect(state)
+    assert {:awaiting, ^awaitable, ^result} = Decision.decide(result)
+  end
+
+  test "trusted host resolution persists approval and advances the turn" do
+    conversation_id = "host-policy-#{System.unique_integer([:positive])}"
+
+    state =
+      %State{conversation_id: conversation_id}
+      |> State.put_pending_effect(
+        Effect.stage(%{kind: :action, name: :create_project}),
+        :terms
+      )
+
+    pending = State.pending_effect(state)
+    awaitable = State.open_policy_awaitable(state)
+
+    result = %Result{
+      input: Input.new("already accepted elsewhere"),
+      state: state,
+      effects: [pending],
+      awaitables: [awaitable]
+    }
+
+    turn =
+      Spectre.Turn.from_result(
+        SpectreTest.HostPolicyAgent,
+        result.input,
+        [conversation_id: conversation_id],
+        result
+      )
+
+    assert {:error, {:unknown_policy_resolution_label, :terms, :accept, :unknown}} =
+             Spectre.Turn.resolve_policy(turn, {:accept, :unknown})
+
+    assert {:ok, approved_turn} =
+             Spectre.Turn.resolve_policy(turn, {:accept, :accepted_terms})
+
+    assert {:needs, %Effect{status: :approved} = approved, approved_result} =
+             approved_turn.decision
+
+    assert approved.id == pending.id
+    assert [%Awaitable{status: :accepted, label: :accepted_terms}] =
+             approved_result.awaitables
+
+    assert Enum.any?(
+             approved_result.events,
+             &match?(%{type: :policy_resolved, source: :host, kind: :accept}, &1)
+           )
+
+    persisted =
+      :persistent_term.get({SpectreTest.StateStore, conversation_id})
+
+    assert [%Effect{id: persisted_id, status: :approved}] = persisted.pending_effects
+    assert persisted_id == pending.id
+  end
+
+  test "trusted host resolution advances a live session state" do
+    conversation_id = "host-session-policy-#{System.unique_integer([:positive])}"
+
+    state =
+      %State{conversation_id: conversation_id}
+      |> State.put_pending_effect(
+        Effect.stage(%{kind: :action, name: :create_project}),
+        :terms
+      )
+
+    result = %Result{
+      input: Input.new("accepted in account settings"),
+      state: state,
+      effects: [State.pending_effect(state)],
+      awaitables: [State.open_policy_awaitable(state)]
+    }
+
+    session =
+      start_supervised!(
+        {Spectre.Session,
+         agent: SpectreTest.HostPolicyAgent,
+         state: state,
+         conversation_id: conversation_id,
+         id: {:host_policy_session, conversation_id}}
+      )
+
+    assert {:ok, approved} =
+             Spectre.resolve_policy(
+               session,
+               result,
+               {:accept, :accepted_terms}
+             )
+
+    assert [%Effect{status: :approved}] = approved.state.pending_effects
+    assert Spectre.state(session) == approved.state
   end
 
   test "turn decision prefers open awaitable over pending effect" do
@@ -1381,7 +1604,7 @@ defmodule SpectreTest do
     assert route.strategy == :local_classifier
   end
 
-  test "learn true stores online examples after accepted LLM arbitration" do
+  test "learn true quarantines online examples until they are verified" do
     agent = SpectreTest.OnlineLearningAgent
     assert :ok = SemanticCache.clear(agent)
 
@@ -1405,11 +1628,19 @@ defmodule SpectreTest do
     assert row.source == :online_learned
     refute row.verified?
 
+    lookup_opts = [
+      spectre_agent: agent,
+      spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
+    ]
+
+    assert {:error, :empty_learned_semantic_cache} =
+             Learned.lookup("what do you charge for support", lookup_opts)
+
+    assert {:ok, verified} = SemanticCache.verify(agent, row.id)
+    assert verified.verified?
+
     assert {:ok, cached} =
-             Learned.lookup("what do you charge for support",
-               spectre_agent: agent,
-               spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
-             )
+             Learned.lookup("what do you charge for support", lookup_opts)
 
     assert cached.label == :PRICING
   end
@@ -1504,7 +1735,7 @@ defmodule SpectreTest do
     assert {:ok, _result} = Learned.lookup("pricing quote", opts)
     revision = Learned.online_revision(agent)
 
-    assert {:ok, _row} =
+    assert {:ok, row} =
              SemanticCache.put(
                "available schedule now",
                %{label: :SALES, accepted?: true, strategy: :llm_classifier},
@@ -1512,7 +1743,13 @@ defmodule SpectreTest do
              )
 
     assert Learned.online_revision(agent) > revision
-    assert {:ok, %{label: :SALES}} = Learned.lookup("available schedule now", opts)
+
+    exact_opts = Keyword.put(opts, :semantic_search?, false)
+    assert {:error, :miss} = Learned.lookup("available schedule now", exact_opts)
+
+    assert {:ok, verified} = SemanticCache.verify(agent, row.id, opts)
+    assert verified.verified?
+    assert {:ok, %{label: :SALES}} = Learned.lookup("available schedule now", exact_opts)
   end
 
   test "semantic cache clear removes built-in learned cache for an agent" do
@@ -1564,7 +1801,7 @@ defmodule SpectreTest do
     assert [_second_entry] = learned_cache_entries(second)
   end
 
-  test "learned semantic cache capacity evicts the oldest index" do
+  test "learned semantic cache capacity is isolated per agent" do
     first = SpectreTest.LearnedSemanticCacheAgent
     second = SpectreTest.OtherLearnedSemanticCacheAgent
 
@@ -1585,7 +1822,7 @@ defmodule SpectreTest do
                Keyword.put(learned_cache_opts(second), :semantic_cache_capacity, 1)
              )
 
-    assert [] = learned_cache_entries(first)
+    assert [_first_entry] = learned_cache_entries(first)
     assert [_second_entry] = learned_cache_entries(second)
   end
 
@@ -1903,8 +2140,18 @@ defmodule SpectreTest do
     assert [%Spectre.Awaitable{name: :terms, status: :open}] = staged.state.awaitables
     assert [%Effect{policy: :terms}] = staged.state.pending_effects
 
-    assert {:ok, executed} =
+    assert {:ok, approved} =
              Spectre.ask(SpectreTest.DeterministicFreelanceAgent, "I agree", state: staged.state)
+
+    assert approved.reply_text == ""
+    assert [%Effect{status: :approved}] = approved.state.pending_effects
+
+    assert {:ok, executed} =
+             Spectre.execute(approved.state, %{
+               agent: SpectreTest.DeterministicFreelanceAgent,
+               input: approved.input,
+               state: approved.state
+             })
 
     assert executed.reply_text == "%{created_project: %{kind: \"freelance_brief\"}}"
     assert executed.state.pending_effects == []

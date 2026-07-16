@@ -9,6 +9,7 @@ defmodule Spectre.Effect do
 
   defstruct [
     :id,
+    :idempotency_key,
     :kind,
     :name,
     :mode,
@@ -21,10 +22,12 @@ defmodule Spectre.Effect do
     metadata: %{}
   ]
 
-  @type status :: :pending | :waiting_policy | :completed | :failed | :cancelled
+  @type status ::
+          :pending | :waiting_policy | :approved | :completed | :failed | :cancelled
 
   @type t :: %__MODULE__{
           id: term(),
+          idempotency_key: String.t(),
           kind: atom(),
           name: atom() | String.t() | nil,
           args: map(),
@@ -44,9 +47,12 @@ defmodule Spectre.Effect do
   def stage(attrs) when is_map(attrs) do
     attrs = normalize_map(attrs)
     payload = effect_payload(attrs)
+    id = attr_or(attrs, :id, Spectre.Identity.uuid7())
 
     %__MODULE__{
-      id: attr_or(attrs, :id, System.unique_integer([:positive])),
+      id: id,
+      idempotency_key:
+        attr_or(attrs, :idempotency_key, Spectre.Identity.idempotency_key(id)),
       kind: attr_or(attrs, :kind, :action),
       name:
         normalize_name(
@@ -72,6 +78,19 @@ defmodule Spectre.Effect do
   def waiting_policy(%__MODULE__{} = effect, policy) when is_atom(policy) do
     %{effect | status: :waiting_policy, policy: policy}
   end
+
+  @doc """
+  Marks a policy-gated effect as approved without executing it.
+
+  Approval is a durable state transition. The host may execute the effect only
+  after the approved state has been persisted.
+  """
+  @spec approve(t()) :: t()
+  def approve(%__MODULE__{status: :waiting_policy} = effect) do
+    %{effect | status: :approved}
+  end
+
+  def approve(%__MODULE__{} = effect), do: effect
 
   @doc """
   Marks an effect as completed with a result.
@@ -112,6 +131,48 @@ defmodule Spectre.Effect do
   def effect_key(%{selected_tool: tool}) when is_binary(tool), do: tool
   def effect_key(name) when is_atom(name) or is_binary(name), do: name
   def effect_key(_other), do: nil
+
+  @doc """
+  Returns the stable key that an action adapter can use to deduplicate retries.
+  """
+  @spec idempotency_key(t()) :: String.t()
+  def idempotency_key(%__MODULE__{idempotency_key: key}) when is_binary(key), do: key
+
+  def idempotency_key(%__MODULE__{id: id}), do: Spectre.Identity.idempotency_key(id)
+
+  @doc """
+  Returns whether an effect is ready for its host capability boundary.
+
+  Policy-gated effects become executable only after their durable
+  `:waiting_policy -> :approved` transition.
+  """
+  @spec executable?(t()) :: boolean()
+  def executable?(%__MODULE__{status: status}), do: status in [:pending, :approved]
+
+  @doc """
+  Returns whether an effect reached a terminal lifecycle state.
+  """
+  @spec terminal?(t()) :: boolean()
+  def terminal?(%__MODULE__{status: status}), do: status in [:completed, :failed, :cancelled]
+
+  @doc """
+  Normalizes a terminal effect into a host-facing outcome.
+
+  Older adapters may have stored `{:ok, value}` or `{:error, reason}` inside
+  a completed effect. These shapes are flattened for backwards compatibility.
+  Non-terminal effects return `nil`.
+  """
+  @type outcome :: {:ok, term()} | {:error, term()} | {:cancelled, term()} | nil
+  @spec outcome(t()) :: outcome()
+  def outcome(%__MODULE__{status: :completed, result: {:ok, result}}), do: {:ok, result}
+  def outcome(%__MODULE__{status: :completed, result: {:error, reason}}), do: {:error, reason}
+  def outcome(%__MODULE__{status: :completed, result: result}), do: {:ok, result}
+  def outcome(%__MODULE__{status: :failed, error: reason}), do: {:error, reason}
+
+  def outcome(%__MODULE__{status: :cancelled, metadata: metadata}),
+    do: {:cancelled, Map.get(metadata, :cancel_reason)}
+
+  def outcome(%__MODULE__{}), do: nil
 
   @doc """
   Returns hooks attached to an effect payload.

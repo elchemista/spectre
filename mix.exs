@@ -40,7 +40,8 @@ defmodule Spectre.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :eex]
+      mod: {Spectre.Application, []},
+      extra_applications: [:logger, :eex, :crypto]
     ]
   end
 

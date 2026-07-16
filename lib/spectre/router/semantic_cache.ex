@@ -67,20 +67,30 @@ defmodule Spectre.Router.SemanticCache do
   @spec put(String.t(), map(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
   def put(text, result, opts) when is_binary(text) and is_map(result) and is_list(opts) do
     safe(fn ->
-      cond do
-        Keyword.has_key?(opts, :semantic_lookup) and is_nil(Keyword.get(opts, :semantic_cache)) ->
-          learn_failure(:unwritable_semantic_lookup, opts)
-
-        cache = Keyword.get(opts, :semantic_cache) ->
-          call_optional(cache, :put, [text, result, opts], opts, learn_failure_mode(opts))
-
-        true ->
-          Learned.put(text, result, opts)
-      end
+      opts
+      |> put_runtime_opts()
+      |> put_with_runtime_opts(text, result)
     end)
   end
 
   def put(_text, result, _opts), do: {:error, {:invalid_semantic_cache_result, result}}
+
+  @spec put_with_runtime_opts({:ok, keyword()} | {:error, term()}, String.t(), map()) ::
+          :ok | {:ok, term()} | {:error, term()}
+  defp put_with_runtime_opts({:ok, opts}, text, result) do
+    cond do
+      Keyword.has_key?(opts, :semantic_lookup) and is_nil(Keyword.get(opts, :semantic_cache)) ->
+        learn_failure(:unwritable_semantic_lookup, opts)
+
+      cache = Keyword.get(opts, :semantic_cache) ->
+        call_optional(cache, :put, [text, result, opts], opts, learn_failure_mode(opts))
+
+      true ->
+        Learned.put(text, result, opts)
+    end
+  end
+
+  defp put_with_runtime_opts({:error, reason}, _text, _result), do: {:error, reason}
 
   @doc """
   Lists semantic-cache examples for an agent.
@@ -177,6 +187,14 @@ defmodule Spectre.Router.SemanticCache do
     opts
     |> Keyword.get(:spectre_rules, [])
     |> Enum.any?(&Map.get(&1, :cache, true))
+  end
+
+  @spec put_runtime_opts(keyword()) :: {:ok, keyword()} | {:error, term()}
+  defp put_runtime_opts(opts) do
+    case Keyword.get(opts, :spectre_agent) do
+      nil -> {:ok, opts}
+      agent -> runtime_opts(agent, opts)
+    end
   end
 
   @spec runtime_opts(module(), keyword()) :: {:ok, keyword()} | {:error, term()}

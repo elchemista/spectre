@@ -82,6 +82,26 @@ defmodule Spectre.Session do
   end
 
   @doc """
+  Resolves the session's currently open policy from a trusted host decision.
+
+  The session uses its current state rather than trusting a potentially stale
+  state embedded in the supplied result.
+  """
+  @spec resolve_policy(
+          GenServer.server(),
+          Result.t(),
+          Spectre.Policy.resolution(),
+          keyword()
+        ) :: {:ok, Result.t()} | {:error, term()}
+  def resolve_policy(server, %Result{} = result, resolution, opts \\ []) do
+    GenServer.call(
+      server,
+      {:resolve_policy, result, resolution, Keyword.drop(opts, [:timeout])},
+      Keyword.get(opts, :timeout, :timer.minutes(5))
+    )
+  end
+
+  @doc """
   Returns the current in-memory Spectre state.
 
       %Spectre.State{} = Spectre.Session.state(session)
@@ -109,19 +129,24 @@ defmodule Spectre.Session do
       |> Keyword.get(:opts, [])
       |> Keyword.put_new(:conversation_id, conversation_id)
 
-    state = restore_initial_state(agent, opts, base_opts)
-    idle_timeout = idle_timeout(agent, opts, base_opts)
+    case restore_initial_state(agent, opts, base_opts) do
+      {:ok, state} ->
+        idle_timeout = idle_timeout(agent, opts, base_opts)
 
-    data = %{
-      agent: agent,
-      base_opts: base_opts,
-      state: state,
-      last_result: nil,
-      idle_timeout: idle_timeout,
-      idle_timer: nil
-    }
+        data = %{
+          agent: agent,
+          base_opts: base_opts,
+          state: state,
+          last_result: nil,
+          idle_timeout: idle_timeout,
+          idle_timer: nil
+        }
 
-    {:ok, arm_idle_timer(data)}
+        {:ok, arm_idle_timer(data)}
+
+      {:error, reason} ->
+        {:stop, {:state_restore_failed, reason}}
+    end
   end
 
   @impl GenServer
@@ -136,6 +161,10 @@ defmodule Spectre.Session do
         state = State.new(result.state)
         data = data |> Map.merge(%{state: state, last_result: result}) |> arm_idle_timer()
         {:reply, {:ok, result}, data}
+
+      {:error, {:memory_persist_failed, _reason, %Result{} = result} = failure} ->
+        data = data |> retain_committed_result(result) |> arm_idle_timer()
+        {:reply, {:error, failure}, data}
 
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
@@ -154,6 +183,28 @@ defmodule Spectre.Session do
         data = data |> Map.merge(%{state: state, last_result: result}) |> arm_idle_timer()
         {:reply, {:ok, turn}, data}
 
+      {:error, {:memory_persist_failed, _reason, %Result{} = result} = failure} ->
+        data = data |> retain_committed_result(result) |> arm_idle_timer()
+        {:reply, {:error, failure}, data}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  def handle_call({:resolve_policy, %Result{} = result, resolution, opts}, _from, data) do
+    runtime_opts =
+      data.base_opts
+      |> Keyword.merge(opts)
+      |> Keyword.put(:state, data.state)
+
+    result = %{result | state: data.state}
+
+    case Spectre.Runtime.resolve_policy(data.agent, result, resolution, runtime_opts) do
+      {:ok, %Result{} = resolved} ->
+        data = data |> retain_committed_result(resolved) |> arm_idle_timer()
+        {:reply, {:ok, resolved}, data}
+
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
     end
@@ -169,21 +220,24 @@ defmodule Spectre.Session do
   @impl GenServer
   def handle_info(:idle_shutdown, data), do: {:stop, :normal, %{data | idle_timer: nil}}
 
-  @spec restore_initial_state(module(), keyword(), keyword()) :: State.t()
+  @spec retain_committed_result(map(), Result.t()) :: map()
+  defp retain_committed_result(data, %Result{} = result) do
+    %{data | state: State.new(result.state), last_result: result}
+  end
+
+  @spec restore_initial_state(module(), keyword(), keyword()) ::
+          {:ok, State.t()} | {:error, term()}
   defp restore_initial_state(agent, opts, base_opts) do
     if Keyword.has_key?(opts, :state) do
-      opts
-      |> Keyword.get(:state)
-      |> State.new()
-      |> maybe_put_conversation_id(Keyword.get(base_opts, :conversation_id))
-    else
-      case Spectre.Runtime.restore_state(agent, base_opts) do
-        {:ok, %State{} = state} ->
-          state
+      state =
+        opts
+        |> Keyword.get(:state)
+        |> State.new()
+        |> maybe_put_conversation_id(Keyword.get(base_opts, :conversation_id))
 
-        {:error, _reason} ->
-          maybe_put_conversation_id(%State{}, Keyword.get(base_opts, :conversation_id))
-      end
+      {:ok, state}
+    else
+      Spectre.Runtime.restore_state(agent, base_opts)
     end
   end
 
@@ -191,12 +245,24 @@ defmodule Spectre.Session do
   defp idle_timeout(agent, opts, base_opts) do
     config = agent.__spectre_config__()
 
-    Keyword.get(opts, :idle) ||
-      Keyword.get(opts, :shutdown) ||
-      Keyword.get(base_opts, :idle) ||
-      Keyword.get(base_opts, :shutdown) ||
-      Keyword.get(config, :idle) ||
-      Keyword.get(config, :shutdown)
+    first_configured([
+      {opts, :idle},
+      {opts, :shutdown},
+      {base_opts, :idle},
+      {base_opts, :shutdown},
+      {config, :idle},
+      {config, :shutdown}
+    ])
+  end
+
+  @spec first_configured([{keyword(), atom()}]) :: term()
+  defp first_configured(entries) do
+    Enum.reduce_while(entries, nil, fn {options, key}, _acc ->
+      case Keyword.fetch(options, key) do
+        {:ok, value} -> {:halt, value}
+        :error -> {:cont, nil}
+      end
+    end)
   end
 
   @spec arm_idle_timer(map()) :: map()

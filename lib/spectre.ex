@@ -75,13 +75,11 @@ defmodule Spectre do
     if agent_module?(agent) do
       Spectre.Turn.run(agent, input, opts)
     else
-      Spectre.Session.turn(agent, input, opts)
+      session_turn(agent, input, opts)
     end
   end
 
-  def turn(session, input, opts) when is_list(opts) do
-    Spectre.Session.turn(session, input, opts)
-  end
+  def turn(session, input, opts) when is_list(opts), do: session_turn(session, input, opts)
 
   @doc """
   Summons a conversation-scoped session process directly.
@@ -129,6 +127,45 @@ defmodule Spectre do
   """
   @spec reset(GenServer.server(), State.t() | map() | keyword()) :: :ok
   def reset(session, state \\ %State{}), do: Spectre.Session.reset(session, state)
+
+  @doc """
+  Resolves an open policy from a trusted host decision.
+
+  This is intended for durable facts already known by the host, such as terms
+  accepted in another channel. The resolution label must be declared by the
+  policy. For agent modules, Spectre persists the approved/rejected state
+  before returning. For sessions it also advances the session's in-memory
+  state.
+
+      {:ok, approved} =
+        Spectre.resolve_policy(
+          MyApp.Agent,
+          awaiting_result,
+          {:accept, :terms_accepted},
+          assigns: %{user: user}
+        )
+  """
+  @spec resolve_policy(
+          module() | GenServer.server(),
+          Spectre.Result.t(),
+          Spectre.Policy.resolution(),
+          keyword()
+        ) :: {:ok, Spectre.Result.t()} | {:error, term()}
+  def resolve_policy(agent_or_session, result, resolution, opts \\ [])
+
+  def resolve_policy(agent, %Spectre.Result{} = result, resolution, opts)
+      when is_atom(agent) and is_list(opts) do
+    if agent_module?(agent) do
+      Runtime.resolve_policy(agent, result, resolution, opts)
+    else
+      Spectre.Session.resolve_policy(agent, result, resolution, opts)
+    end
+  end
+
+  def resolve_policy(session, %Spectre.Result{} = result, resolution, opts)
+      when is_list(opts) do
+    Spectre.Session.resolve_policy(session, result, resolution, opts)
+  end
 
   @doc """
   Cancels the active policy/effect boundary and returns an updated result.
@@ -180,6 +217,15 @@ defmodule Spectre do
           :ok | {:error, [term()]}
   def after_action(agent, event, %Spectre.Result{} = result, ctx, opts \\ []) do
     Spectre.ActionHooks.run(agent, event, result, ctx, opts)
+  end
+
+  @spec session_turn(GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
+          {:ok, Spectre.Turn.t()} | {:error, term()}
+  defp session_turn(session, input, opts) do
+    case Spectre.Session.turn(session, input, opts) do
+      {:ok, %Spectre.Turn{} = turn} -> {:ok, %{turn | agent: session}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp agent_module?(module) when is_atom(module) do

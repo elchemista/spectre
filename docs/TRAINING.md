@@ -85,3 +85,39 @@ config :spectre, :classifier,
 
 Use `:mean` for `local_example_score` if you prefer averaging returned hits per
 label.
+
+## Online learning review
+
+Rows mirrored from an offline labeled dataset are trusted immediately. Rows
+created at runtime through `SemanticCache.put/3` are different: they remain
+editable but unverified and are excluded from exact and semantic routing until
+`SemanticCache.verify/3` or `SemanticCache.relabel/4` approves them.
+
+```elixir
+{:ok, row} =
+  Spectre.Router.SemanticCache.put(
+    "need a custom quote",
+    %{label: :SALES, strategy: :llm_classifier},
+    spectre_agent: MyApp.SupportAgent
+  )
+
+{:ok, pending_review} =
+  Spectre.Router.SemanticCache.examples(MyApp.SupportAgent)
+
+{:ok, verified} =
+  Spectre.Router.SemanticCache.verify(MyApp.SupportAgent, row.id)
+```
+
+This prevents an unverified classifier or LLM decision from immediately
+becoming ground truth. Review APIs still list quarantined rows, and snapshots
+preserve their verification state.
+
+Built-in semantic indexes are bounded to four cached revisions per agent by
+default. Override this only when an agent intentionally uses several embedding
+configurations:
+
+```elixir
+config :spectre, :semantic_cache, index_capacity: 8
+```
+
+Use `:unlimited` explicitly if unbounded index retention is truly intended.

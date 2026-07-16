@@ -28,8 +28,9 @@ defmodule Spectre.ActionProtection do
 
   @spec action_matches?(atom() | String.t() | {:al, String.t()} | term(), Effect.t()) ::
           boolean()
-  defp action_matches?(protected, %Effect{name: name}) when is_atom(protected),
-    do: name == protected
+  defp action_matches?(protected, %Effect{name: name} = effect) when is_atom(protected) do
+    name == protected or selected_tool_function(effect) == Atom.to_string(protected)
+  end
 
   defp action_matches?({:al, al}, %Effect{} = effect) when is_binary(al),
     do: normalize_al(Effect.al(effect)) == normalize_al(al)
@@ -39,6 +40,23 @@ defmodule Spectre.ActionProtection do
        do: Effect.selected_tool(effect) == protected
 
   defp action_matches?(_protected, _action), do: false
+
+  @spec selected_tool_function(Effect.t()) :: String.t() | nil
+  defp selected_tool_function(%Effect{} = effect) do
+    case Effect.selected_tool(effect) do
+      tool when is_binary(tool) ->
+        tool
+        |> String.split(".")
+        |> List.last()
+        |> case do
+          nil -> nil
+          function_arity -> function_arity |> String.split("/", parts: 2) |> List.first()
+        end
+
+      _other ->
+        nil
+    end
+  end
 
   @spec normalize_al(String.t() | nil) :: String.t() | nil
   defp normalize_al(nil), do: nil
