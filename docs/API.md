@@ -11,6 +11,10 @@
 - `Spectre.dismiss/2` stops a supervised session.
 - `Spectre.state/1` reads session state.
 - `Spectre.reset/2` replaces session state.
+- `Spectre.Router.evaluate/3` runs input normalization and routing without
+  loading state/memory adapters or executing a selected handler.
+- `Spectre.Eval.run/3` evaluates an agent against JSONL or in-memory routing
+  expectations and returns a `%Spectre.Eval.Report{}`.
 
 `ask/3` is the raw runtime boundary. It returns visible text, effects,
 awaitables, state, route, and audit events.
@@ -83,3 +87,18 @@ The current implementation emits `:arbitration` records from completed router
 contexts. Records use stable IDs derived from `turn_id`, phase, sequence, and
 agent, and omit conversation content unless `include_input: true` is explicit.
 See [Journal](JOURNAL.md) for configuration and delivery semantics.
+
+## Routing Evaluation Contracts
+
+`Spectre.Router.Receipt` is the privacy-safe result of one route-only
+evaluation. It records outcome, label, strategy, sanitized attempts and
+candidates, duration, and whether the LLM classifier was actually invoked. It
+does not contain input text, prompts, model output, matches, or handlers.
+
+`Spectre.Eval.Case` describes expected route/outcome and whether an LLM call is
+forbidden, allowed, or required. `Spectre.Eval.Result` contains structured
+violations for one case. `Spectre.Eval.Report` aggregates accuracy, provider
+usage, LLM violations, duration percentiles, confusion data, and tag results.
+
+See [Routing Evaluation](EVALUATION.md) for the JSONL schema and
+`mix spectre.eval` CI workflow.

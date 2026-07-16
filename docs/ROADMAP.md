@@ -21,6 +21,35 @@ These are the foundations to preserve.
 
 ## Implementation Journal
 
+### 2026-07-16: Routing Evaluation Harness
+
+This iteration made routing quality and LLM use measurable without expanding
+the normal turn runtime:
+
+- `Spectre.Router.evaluate/3` now runs the real input and routing pipelines but
+  never loads state/memory adapters or executes the selected handler;
+- evaluation forces journal delivery and online semantic learning off;
+- `Spectre.Router.Receipt` captures the winning outcome, strategy, sanitized
+  provider evidence, duration, and whether LLM arbitration actually started,
+  while excluding inputs, prompts, model outputs, matches, and handlers;
+- `Spectre.Eval` loads version-controlled JSONL cases and checks expected
+  routes/outcomes together with `forbidden`, `allowed`, or `required` LLM use;
+- aggregate reports include pass rate, route accuracy, strategy and outcome
+  distribution, LLM-policy violations, duration percentiles, confusion data,
+  and per-tag results;
+- `mix spectre.eval` provides strict-by-default CI thresholds and optional JSON
+  artifacts;
+- a representative fixture and end-to-end tests cover deterministic, local,
+  LLM, privacy, state/history, no-handler, no-journal, and no-semantic-write
+  behavior.
+
+The receipt currently normalizes the evidence already emitted by router traces
+and candidates. A later refinement should record eligibility thresholds,
+winning precedence, and per-provider duration directly at the provider boundary
+instead of inferring attempt summaries afterward. Provider execution
+resilience—standard timeouts, cancellation, normalized failure categories, and
+shared adapter contract tests—is the next critical routing milestone.
+
 ### 2026-07-16: Routing Intelligence And Journal Foundation
 
 This iteration hardened the classifier/LLM boundary and implemented the first

@@ -178,6 +178,26 @@ The important design point is that regex, embedding, classifier, and semantic
 cache do not overwrite each other in secret. They produce evidence. The
 arbitrator makes the final decision.
 
+## Route-Only Evaluation
+
+Use `Spectre.Router.evaluate/3` to run the configured input and router pipelines
+without loading state/memory adapters or executing the winning handler:
+
+```elixir
+{:ok, receipt} =
+  Spectre.Router.evaluate(MyApp.SupportAgent, "show me my invoices",
+    state: %Spectre.State{current_flow: :billing}
+  )
+```
+
+The privacy-safe receipt exposes the outcome, label, strategy, provider
+attempts, candidate summaries, duration, and `llm_called?`. Journal delivery
+and online semantic learning are forced off during evaluation. Router provider
+adapters still run, so live LLM evaluations may incur provider usage.
+
+For corpus metrics and CI regression thresholds, see
+[Routing Evaluation](EVALUATION.md).
+
 
 ## Default Arbitrator
 

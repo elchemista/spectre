@@ -8,6 +8,7 @@ defmodule Spectre.MixProject do
     "docs/GETTING_STARTED.md",
     "docs/DSL.md",
     "docs/ROUTING.md",
+    "docs/EVALUATION.md",
     "docs/TRAINING.md",
     "docs/ACTIONS.md",
     "docs/MEMORY.md",

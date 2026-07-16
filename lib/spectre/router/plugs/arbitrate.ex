@@ -227,7 +227,8 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   @spec maybe_learn_semantic_example(Context.t(), Spectre.Route.t(), [Spectre.Rule.t()]) ::
           {:ok, Context.t()} | {:error, term()}
   defp maybe_learn_semantic_example(%Context{} = context, route, visible_rules) do
-    with :ok <- learnable_route(route, visible_rules),
+    with :ok <- semantic_learning_enabled(context.opts),
+         :ok <- learnable_route(route, visible_rules),
          :ok <- learnable_text(context.input.text, context.opts),
          :ok <- learnable_label(route.label),
          :ok <- unprotected_route(route, context),
@@ -237,6 +238,13 @@ defmodule Spectre.Router.Plugs.Arbitrate do
     else
       {:skip, reason} -> {:ok, Context.put_trace(context, {:semantic_learn_skipped, reason})}
     end
+  end
+
+  @spec semantic_learning_enabled(keyword()) :: :ok | {:skip, :semantic_learning_disabled}
+  defp semantic_learning_enabled(opts) do
+    if Keyword.get(opts, :semantic_learn?, true),
+      do: :ok,
+      else: {:skip, :semantic_learning_disabled}
   end
 
   @spec learnable_route(Spectre.Route.t(), [Spectre.Rule.t()]) :: :ok | {:skip, term()}

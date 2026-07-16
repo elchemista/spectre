@@ -12,9 +12,23 @@ defmodule Spectre.Router do
   alias Spectre.Journal.Recorder
   alias Spectre.Route
   alias Spectre.Router.Context
+  alias Spectre.Router.Evaluator
+  alias Spectre.Router.Receipt
   alias Spectre.Router.Support
   alias Spectre.Rule
   alias Spectre.State
+
+  @doc """
+  Evaluates routing without executing a handler, action, or state adapter.
+
+  Evaluation runs the real input and router pipelines but disables journal
+  delivery and online semantic learning. The returned receipt contains no raw
+  input, prompt, model output, matches, or handlers.
+
+      {:ok, receipt} = Spectre.Router.evaluate(MyAgent, "help")
+  """
+  @spec evaluate(module(), Input.t() | String.t() | map(), keyword()) :: {:ok, Receipt.t()}
+  def evaluate(agent, input, opts \\ []), do: Evaluator.evaluate(agent, input, opts)
 
   @doc """
   Routes input to the best matching compiled agent rule.

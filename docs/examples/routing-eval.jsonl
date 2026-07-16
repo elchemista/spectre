@@ -1,0 +1,5 @@
+# Adapt these labels and expectations to your agent before using the corpus as a CI gate.
+{"id":"help-command","input":"help","expected_route":"HELP","expected_strategy":"regex","llm":"forbidden","tags":["deterministic","english"]}
+{"id":"pricing-paraphrase","input":"Could you explain what the service costs?","expected_route":"PRICING","llm":"forbidden","tags":["semantic","english"]}
+{"id":"delete-command","input":"delete my account","expected_route":"DELETE_ACCOUNT","expected_strategy":"regex","llm":"forbidden","tags":["protected-action","english"]}
+{"id":"billing-project-ambiguity","input":"The invoice for my project looks wrong","allowed_routes":["BILLING","PROJECT_SUPPORT"],"llm":"required","tags":["ambiguous","english"]}
