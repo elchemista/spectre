@@ -722,14 +722,18 @@ defmodule Spectre.Agent do
     :artifact_dir,
     :local_accept_threshold,
     :local_margin_threshold,
-    :local_high_confidence_threshold
+    :local_high_confidence_threshold,
+    :local_classifier_timeout,
+    :classifier_timeout
   ]
 
   @local_classifier_keys [
     :artifact_dir,
     :local_accept_threshold,
     :local_margin_threshold,
-    :local_high_confidence_threshold
+    :local_high_confidence_threshold,
+    :local_classifier_timeout,
+    :classifier_timeout
   ]
 
   @spec normalize_classifier(module(), keyword()) :: keyword()

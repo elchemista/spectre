@@ -290,6 +290,8 @@ adapters on startup, and can stop after an idle timeout.
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM
   usage policies, CI thresholds, and privacy-safe receipts.
+- [Provider Resilience](docs/PROVIDERS.md) - timeout, cancellation, normalized
+  failure, and fallback contracts for routing providers.
 - [Training](docs/TRAINING.md) - datasets, classifier artifacts, verification,
   and semantic-cache training.
 - [Actions](docs/ACTIONS.md) - protected actions, policies, hooks,

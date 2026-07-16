@@ -16,6 +16,8 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
   @behaviour Spectre.Router.Plug
 
   alias Spectre.Classifier.Math
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Router.Candidate
   alias Spectre.Router.Context
   alias Spectre.Router.Support
@@ -94,6 +96,17 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
   end
 
   defp embed(text, opts) do
+    call_opts = embedding_call_opts(opts)
+
+    case Call.run(:embedding, fn -> dispatch_embedding(text, call_opts) end, call_opts) do
+      {:ok, vector} when is_list(vector) -> validate_vector(vector)
+      {:ok, other} -> {:error, Failure.invalid_reply(:embedding, other)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec dispatch_embedding(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  defp dispatch_embedding(text, opts) do
     case Keyword.fetch(opts, :embedding) do
       {:ok, {module, adapter_opts}} when is_atom(module) and is_list(adapter_opts) ->
         module.embed(text, Keyword.merge(adapter_opts, opts))
@@ -113,11 +126,22 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
       {:ok, other} ->
         {:error, {:invalid_embedding_adapter, other}}
     end
-  rescue
-    exception ->
-      {:error, {:embedding_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    :exit, reason -> {:error, {:embedding_exit, reason}}
-    kind, reason -> {:error, {:embedding_failure, kind, reason}}
   end
+
+  @spec embedding_call_opts(keyword()) :: keyword()
+  defp embedding_call_opts(opts) do
+    case Keyword.get(opts, :embedding) do
+      {_module, adapter_opts} when is_list(adapter_opts) -> Keyword.merge(adapter_opts, opts)
+      _other -> opts
+    end
+  end
+
+  @spec validate_vector([term()]) :: {:ok, [number()]} | {:error, Failure.t()}
+  defp validate_vector([_value | _rest] = vector) do
+    if Enum.all?(vector, &is_number/1),
+      do: {:ok, vector},
+      else: {:error, Failure.invalid_reply(:embedding, vector)}
+  end
+
+  defp validate_vector([]), do: {:error, Failure.invalid_reply(:embedding, [])}
 end

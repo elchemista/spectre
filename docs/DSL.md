@@ -48,7 +48,8 @@ end
 `model/2` stores `{module, function, opts}` under the runtime `:model` option.
 Those opts are merged into every `ask` call. `fallback:` is special: if the
 primary model returns `{:error, reason}`, Spectre calls the fallback model with
-`primary_error: reason`.
+`primary_error: reason`. `llm_timeout:` controls Spectre's isolated completion
+deadline and defaults to 60 seconds.
 
 ## `classifier`
 
@@ -61,11 +62,12 @@ classifier MyApp.SmallLLM,
   model: "small",
   fallback: MyApp.SmallFallbackLLM,
   prompt: &MyApp.ClassifierPrompt.build/1,
-  llm_opts: [temperature: 0.0, max_tokens: 8],
+  llm_opts: [temperature: 0.0, max_tokens: 8, llm_timeout: 12_000],
 
   # Optional local classifier used by the `:classifier` router strategy.
   local: MyApp.LocalClassifier,
-  artifact_dir: "priv/spectre/support"
+  artifact_dir: "priv/spectre/support",
+  local_classifier_timeout: 2_000
 ```
 
 The first argument configures the LLM adapter used only by `:llm_classifier`
@@ -79,12 +81,16 @@ merged with these defaults:
 
 `local:` configures the adapter used by the `:classifier` router strategy.
 Local classifier runtime overrides use `classifier_local:`.
+`local_classifier_timeout:` controls the local adapter deadline.
 
 The built-in arbitrator uses an enabled `:llm_classifier` after local and other
 cheap evidence cannot make a decision. A custom `prompt:` callback receives at
 least `text`, `labels`, `recent_chat`, and structured `evidence`; router calls
 also add `input`, `state`, `candidates`, and `local_result` assigns. The model
 must return exactly one configured label.
+
+Timeouts, crashes, and malformed provider replies use the shared
+`Spectre.Provider.Failure` contract. See [Provider Resilience](PROVIDERS.md).
 
 ## `journal`
 

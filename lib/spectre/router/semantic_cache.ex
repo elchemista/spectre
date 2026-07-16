@@ -12,6 +12,8 @@ defmodule Spectre.Router.SemanticCache do
   `{:error, reason}` for misses.
   """
 
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Router.SemanticCache.Learned
 
   @callback lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -40,6 +42,15 @@ defmodule Spectre.Router.SemanticCache do
   """
   @spec lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def lookup(text, opts) when is_binary(text) and is_list(opts) do
+    case Call.run(:semantic_cache, fn -> dispatch_lookup(text, opts) end, opts) do
+      {:ok, result} when is_map(result) -> {:ok, result}
+      {:ok, other} -> {:error, Failure.invalid_reply(:semantic_cache, other)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec dispatch_lookup(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  defp dispatch_lookup(text, opts) do
     cond do
       lookup = Keyword.get(opts, :semantic_lookup) ->
         call_lookup(lookup, text, opts)
@@ -53,12 +64,6 @@ defmodule Spectre.Router.SemanticCache do
       true ->
         {:error, :missing_semantic_cache_adapter}
     end
-  rescue
-    exception ->
-      {:error, {:semantic_cache_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    :exit, reason -> {:error, {:semantic_cache_exit, reason}}
-    kind, reason -> {:error, {:semantic_cache_failure, kind, reason}}
   end
 
   @doc """

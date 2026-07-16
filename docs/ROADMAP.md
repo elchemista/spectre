@@ -21,6 +21,36 @@ These are the foundations to preserve.
 
 ## Implementation Journal
 
+### 2026-07-16: Provider Execution Resilience
+
+This iteration added a small operational boundary instead of embedding
+provider-specific policy throughout the router:
+
+- `Spectre.Provider.Call` isolates main LLM, LLM-classifier, local-classifier,
+  embedding, and semantic-cache lookup calls from the requesting process;
+- provider-specific deadlines have conservative defaults, application-level
+  configuration, per-agent/per-call overrides, and an explicit `:infinity`
+  escape hatch;
+- a timed-out call or dead caller terminates the local adapter worker, while
+  documenting that remote cancellation still depends on the adapter client;
+- `Spectre.Provider.Failure` normalizes infrastructure failures without
+  retaining prompts, input, raw output, exception messages, or stack traces;
+- deliberate adapter `{:error, reason}` results remain compatible and are not
+  assigned a speculative retry policy;
+- main-model fallback remains available after timeout and receives the
+  normalized primary failure;
+- local classifier, embedding, and semantic-cache failures remain optional
+  evidence so routing can continue to LLM arbitration or clarification;
+- contract tests cover success, declared error, timeout, exception, exit,
+  throw, hard crash, malformed reply, caller-death cancellation, fallback, and
+  routing degradation.
+
+No automatic retry, circuit breaker, token pricing, or metrics exporter was
+added to core. Provider-specific retry/rate-limit policy remains an adapter or
+optional middleware responsibility. The next observability refinement is to
+record provider duration and normalized outcome directly on the routing receipt
+and emit minimal telemetry from that canonical fact.
+
 ### 2026-07-16: Routing Evaluation Harness
 
 This iteration made routing quality and LLM use measurable without expanding

@@ -198,6 +198,12 @@ adapters still run, so live LLM evaluations may incur provider usage.
 For corpus metrics and CI regression thresholds, see
 [Routing Evaluation](EVALUATION.md).
 
+Routing-critical adapter calls use a shared timeout and crash-isolation
+boundary. A local classifier, embedding, or semantic-cache timeout degrades as
+unavailable evidence so arbitration can continue; an LLM timeout can activate a
+configured fallback model. See [Provider Resilience](PROVIDERS.md) for options
+and failure contracts.
+
 
 ## Default Arbitrator
 

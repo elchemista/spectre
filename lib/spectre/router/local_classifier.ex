@@ -13,6 +13,9 @@ defmodule Spectre.Router.LocalClassifier do
   artifact through `Spectre.Classifier`.
   """
 
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
+
   @doc """
   Classifies text through the configured local classifier.
   """
@@ -20,6 +23,15 @@ defmodule Spectre.Router.LocalClassifier do
   def classify(text, opts) when is_binary(text) and is_list(opts) do
     local_opts = local_opts(opts)
 
+    case Call.run(:local_classifier, fn -> dispatch(text, opts, local_opts) end, local_opts) do
+      {:ok, result} when is_map(result) -> {:ok, result}
+      {:ok, other} -> {:error, Failure.invalid_reply(:local_classifier, other)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec dispatch(String.t(), keyword(), keyword()) :: {:ok, term()} | {:error, term()}
+  defp dispatch(text, opts, local_opts) do
     cond do
       classify = Keyword.get(opts, :classify) ->
         call_classifier(classify, text, local_opts)
@@ -33,12 +45,6 @@ defmodule Spectre.Router.LocalClassifier do
       true ->
         call_classifier(Spectre.Classifier, text, local_opts)
     end
-  rescue
-    exception ->
-      {:error, {:classifier_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    :exit, reason -> {:error, {:classifier_exit, reason}}
-    kind, reason -> {:error, {:classifier_failure, kind, reason}}
   end
 
   @spec call_classifier(

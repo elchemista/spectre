@@ -102,3 +102,15 @@ usage, LLM violations, duration percentiles, confusion data, and tag results.
 
 See [Routing Evaluation](EVALUATION.md) for the JSONL schema and
 `mix spectre.eval` CI workflow.
+
+## Provider Contracts
+
+`Spectre.Provider.Call.run/3` is the shared isolation and timeout boundary used
+by routing-critical adapters. `Spectre.Provider.Failure` represents sanitized
+timeouts, exceptions, exits, throws, crashes, malformed replies, and invalid
+deadline configuration. Adapter-declared `{:error, reason}` replies remain
+unchanged.
+
+See [Provider Resilience](PROVIDERS.md) for timeout precedence, defaults,
+cancellation semantics, and the boundary between core behavior and
+provider-specific retries.
