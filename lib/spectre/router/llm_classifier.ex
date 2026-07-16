@@ -9,7 +9,11 @@ defmodule Spectre.Router.LLMClassifier do
   Asks a configured LLM completion function to return exactly one label.
   """
   @spec classify(String.t(), [atom()], keyword()) :: {:ok, Route.t()} | {:error, term()}
-  def classify(text, labels, opts \\ []) when is_binary(text) and is_list(labels) do
+  def classify(text, labels, opts \\ [])
+
+  def classify(_text, [], _opts), do: {:error, :no_llm_classifier_labels}
+
+  def classify(text, labels, opts) when is_binary(text) and is_list(labels) do
     with {:ok, complete} <- complete_fun(opts),
          {:ok, prompt_text} <- prompt(text, labels, opts),
          {:ok, model_text} <- complete.(prompt_text, llm_opts(opts)),
@@ -25,6 +29,35 @@ defmodule Spectre.Router.LLMClassifier do
          raw: model_text
        })}
     end
+  rescue
+    exception ->
+      {:error, {:llm_classifier_exception, exception.__struct__, Exception.message(exception)}}
+  catch
+    :exit, reason -> {:error, {:llm_classifier_exit, reason}}
+    kind, reason -> {:error, {:llm_classifier_failure, kind, reason}}
+  end
+
+  @doc """
+  Returns true when LLM classification is enabled for the current router.
+
+  `:llm_classifier?` is an explicit override for custom pipelines. Otherwise
+  the strategy must be present in the router's `:via` list. Merely configuring
+  a main response model does not opt an agent into LLM routing.
+  """
+  @spec enabled?(keyword()) :: boolean()
+  def enabled?(opts) when is_list(opts) do
+    case Keyword.fetch(opts, :llm_classifier?) do
+      {:ok, enabled?} -> enabled? == true
+      :error -> :llm_classifier in List.wrap(Keyword.get(opts, :via, []))
+    end
+  end
+
+  @doc """
+  Returns true when a classifier-specific or compatible main model is present.
+  """
+  @spec available?(keyword()) :: boolean()
+  def available?(opts) when is_list(opts) do
+    not is_nil(classifier_model(opts) || Keyword.get(opts, :model))
   end
 
   @spec complete_fun(keyword()) :: {:ok, function()} | {:error, term()}
@@ -54,7 +87,18 @@ defmodule Spectre.Router.LLMClassifier do
 
   @spec prompt(String.t(), [atom()], keyword()) :: {:ok, String.t()} | {:error, term()}
   defp prompt(text, labels, opts) do
-    assigns = %{text: text, labels: labels, recent_chat: Keyword.get(opts, :recent_chat, "none")}
+    base = %{
+      text: text,
+      labels: labels,
+      recent_chat: Keyword.get(opts, :recent_chat, "none"),
+      evidence: Keyword.get(opts, :classifier_evidence, [])
+    }
+
+    assigns =
+      opts
+      |> Keyword.get(:classifier_assigns, %{})
+      |> normalize_assigns()
+      |> Map.merge(base)
 
     case classifier_prompt(opts) do
       fun when is_function(fun, 1) -> normalize_prompt_result(fun.(assigns))
@@ -74,8 +118,18 @@ defmodule Spectre.Router.LLMClassifier do
   defp normalize_prompt_result(prompt) when is_binary(prompt), do: {:ok, prompt}
   defp normalize_prompt_result(other), do: {:error, {:invalid_classifier_prompt, other}}
 
+  @spec normalize_assigns(map() | keyword() | term()) :: map()
+  defp normalize_assigns(assigns) when is_map(assigns), do: assigns
+  defp normalize_assigns(assigns) when is_list(assigns), do: Map.new(assigns)
+  defp normalize_assigns(_assigns), do: %{}
+
   @spec default_prompt(map()) :: String.t()
-  defp default_prompt(%{text: text, labels: labels, recent_chat: recent_chat}) do
+  defp default_prompt(%{
+         text: text,
+         labels: labels,
+         recent_chat: recent_chat,
+         evidence: evidence
+       }) do
     """
     Classify the latest message into exactly ONE label.
     Reply with the label only, no explanation.
@@ -86,10 +140,31 @@ defmodule Spectre.Router.LLMClassifier do
     Recent chat:
     #{recent_chat}
 
+    Routing evidence:
+    #{format_evidence(evidence)}
+
     Latest message:
     #{text}
     """
   end
+
+  @spec format_evidence([map()] | term()) :: String.t()
+  defp format_evidence([]), do: "none"
+
+  defp format_evidence(evidence) when is_list(evidence) do
+    Enum.map_join(evidence, "\n", fn item ->
+      provider = Map.get(item, :provider, :unknown)
+      label = Map.get(item, :label, :unknown)
+      score = Map.get(item, :score)
+      margin = Map.get(item, :margin)
+      accepted? = Map.get(item, :accepted?, false)
+
+      "#{provider}: label=#{label}, score=#{inspect(score)}, " <>
+        "margin=#{inspect(margin)}, accepted=#{accepted?}"
+    end)
+  end
+
+  defp format_evidence(_evidence), do: "none"
 
   @spec llm_opts(keyword()) :: keyword()
   defp llm_opts(opts) do
@@ -111,26 +186,34 @@ defmodule Spectre.Router.LLMClassifier do
 
   @spec normalize_label(term(), [atom()]) :: {:ok, atom()}
   defp normalize_label(text, labels) do
-    normalized_text =
-      text
-      |> to_string()
-      |> String.upcase()
-      |> String.replace(~r/[^A-Z_]+/, " ")
-      |> String.replace(~r/\s+/, " ")
-      |> String.trim()
+    normalized = text |> clean_model_label() |> canonical_label()
 
-    tokens = String.split(normalized_text)
+    matches = Enum.filter(labels, &(canonical_label(&1) == normalized))
 
-    {:ok, Enum.find(labels, :unknown, &label_present?(&1, normalized_text, tokens))}
+    case matches do
+      [label] -> {:ok, label}
+      [] -> {:error, {:unknown_llm_classifier_label, text}}
+      labels -> {:error, {:ambiguous_llm_classifier_labels, labels}}
+    end
   end
 
-  @spec label_present?(atom(), String.t(), [String.t()]) :: boolean()
-  defp label_present?(label, normalized_text, tokens) do
-    normalized_label = label |> to_string() |> String.upcase()
-    label_words = String.replace(normalized_label, "_", " ")
+  @spec clean_model_label(term()) :: String.t()
+  defp clean_model_label(text) do
+    text
+    |> to_string()
+    |> String.trim()
+    |> String.replace(~r/\A```(?:text)?\s*/iu, "")
+    |> String.replace(~r/\s*```\z/u, "")
+    |> String.replace(~r/\Alabel\s*:\s*/iu, "")
+    |> String.trim(" \t\r\n\"'`.")
+  end
 
-    normalized_label in tokens or
-      String.contains?(" #{normalized_text} ", " #{normalized_label} ") or
-      String.contains?(" #{normalized_text} ", " #{label_words} ")
+  @spec canonical_label(atom() | String.t()) :: String.t()
+  defp canonical_label(label) do
+    label
+    |> to_string()
+    |> String.upcase()
+    |> String.replace(~r/[^\p{L}\p{N}]+/u, "_")
+    |> String.trim("_")
   end
 end

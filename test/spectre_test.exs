@@ -29,8 +29,7 @@ defmodule SpectreKinetic do
             al: entry.al,
             selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
             args: %{"title" => "ciao"},
-            status:
-              if(String.starts_with?(entry.al, "REJECT"), do: :rejected, else: :ok)
+            status: if(String.starts_with?(entry.al, "REJECT"), do: :rejected, else: :ok)
           }
         end
       end)
@@ -952,6 +951,7 @@ defmodule SpectreTest do
              )
 
     assert approved.reply_text == ""
+
     assert [%Effect{name: :create_project, status: :approved}] =
              approved.state.pending_effects
 
@@ -1142,6 +1142,7 @@ defmodule SpectreTest do
              approved_turn.decision
 
     assert approved.id == pending.id
+
     assert [%Awaitable{status: :accepted, label: :accepted_terms}] =
              approved_result.awaitables
 
@@ -1265,7 +1266,7 @@ defmodule SpectreTest do
     assert Keyword.fetch!(opts, :embedding_accept) == 0.84
     assert Keyword.fetch!(opts, :bag_accept) == 0.72
     assert Keyword.fetch!(opts, :conflict) == :llm
-    assert Keyword.fetch!(opts, :no_decision) == :clarify
+    assert Keyword.fetch!(opts, :no_decision) == :llm
   end
 
   test "classifier DSL stores LLM and local classifier configuration" do

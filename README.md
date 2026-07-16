@@ -294,6 +294,7 @@ adapters on startup, and can stop after an idle timeout.
   SpectreKinetic, and Action Language planning.
 - [Memory](docs/MEMORY.md) - state adapters, memory adapters, persistence, and
   supervised sessions.
+- [Journal](docs/JOURNAL.md) - structured decision records, privacy defaults,
+  buffering, sampling, and store adapters.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.
-

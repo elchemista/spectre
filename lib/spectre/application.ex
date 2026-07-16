@@ -6,7 +6,9 @@ defmodule Spectre.Application do
   @impl Application
   def start(_type, _args) do
     children = [
-      Spectre.Router.SemanticCache.Owner
+      Spectre.Router.SemanticCache.Owner,
+      {Task.Supervisor, name: Spectre.Journal.TaskSupervisor},
+      Spectre.Journal.Buffer
     ]
 
     Supervisor.start_link(children,

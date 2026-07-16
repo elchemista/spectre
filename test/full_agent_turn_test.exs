@@ -60,21 +60,6 @@ defmodule SpectreFullAgentTurnTest.ClassifierPrompt do
   end
 end
 
-defmodule SpectreFullAgentTurnTest.FallbackToLLMArbitrator do
-  @moduledoc false
-  @behaviour Spectre.Router.Arbitrator
-
-  alias Spectre.Router.Arbitrators.Default
-
-  @impl Spectre.Router.Arbitrator
-  def decide(arbitration, opts) do
-    case Default.decide(arbitration, opts) do
-      {:clarify, _message} -> {:llm, arbitration}
-      decision -> decision
-    end
-  end
-end
-
 defmodule SpectreFullAgentTurnTest.Actions do
   @moduledoc false
 
@@ -101,7 +86,6 @@ defmodule SpectreFullAgentTurnTest.Agent do
     llm_opts: [max_tokens: 8]
   )
 
-  arbitrator(SpectreFullAgentTurnTest.FallbackToLLMArbitrator)
   router(via: [:regex, :bag, :classifier, :llm_classifier])
 
   input_pipeline do
@@ -197,6 +181,7 @@ defmodule SpectreFullAgentTurnTest do
     assert help_result.route.flow == nil
     assert help_result.route.strategy == :regex
     assert help_result.reply_text == "reply:help:help"
+    refute_received {:full_agent_local_classifier, _text}
     refute_received {:full_agent_llm_classifier, _prompt, _opts}
   end
 
@@ -457,12 +442,7 @@ defmodule SpectreFullAgentTurnTest do
     child_id = {:full_agent_session, System.unique_integer([:positive])}
 
     session =
-      start_supervised!(
-        {Spectre.Session,
-         agent: Agent,
-         state: %State{},
-         id: child_id}
-      )
+      start_supervised!({Spectre.Session, agent: Agent, state: %State{}, id: child_id})
 
     assert {:ok, awaiting_turn} =
              Spectre.turn(session, "start classified project", test_pid: self())
@@ -494,12 +474,7 @@ defmodule SpectreFullAgentTurnTest do
   defp start_session do
     child_id = {:full_agent_negative_session, System.unique_integer([:positive])}
 
-    start_supervised!(
-      {Spectre.Session,
-       agent: Agent,
-       state: %State{},
-       id: child_id}
-    )
+    start_supervised!({Spectre.Session, agent: Agent, state: %State{}, id: child_id})
   end
 
   defp execute(%Result{} = result) do

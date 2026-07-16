@@ -9,6 +9,7 @@ defmodule Spectre.Router do
   """
 
   alias Spectre.Input
+  alias Spectre.Journal.Recorder
   alias Spectre.Route
   alias Spectre.Router.Context
   alias Spectre.Router.Support
@@ -56,8 +57,9 @@ defmodule Spectre.Router do
       rules: rules
     }
 
-    context
-    |> route_with_pipeline(pipeline(router_opts, rules))
+    with {:ok, context} <- route_with_pipeline(context, pipeline(router_opts, rules)) do
+      Recorder.record_routing(context)
+    end
   end
 
   @doc """

@@ -22,7 +22,16 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
 
   @impl Spectre.Router.Plug
   def call(%Context{} = context, _state) do
-    if Context.halted?(context), do: {:cont, context}, else: classify(context)
+    cond do
+      Context.halted?(context) ->
+        {:cont, context}
+
+      Context.hard_candidate_locked?(context) ->
+        {:cont, Context.put_trace(context, {:local_skip, :hard_candidate})}
+
+      true ->
+        classify(context)
+    end
   end
 
   @spec classify(Context.t()) :: {:cont, Context.t()}
@@ -31,6 +40,16 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
     visible_rules = Support.rules_for(rules, :classifier, context.input)
     visible_labels = Support.labels_for(visible_rules)
 
+    if visible_rules == [] do
+      {:cont, Context.put_trace(context, {:local_skip, :no_visible_rules})}
+    else
+      classify_visible(context, text, opts, visible_rules, visible_labels, cache_reason)
+    end
+  end
+
+  @spec classify_visible(Context.t(), String.t(), keyword(), [Spectre.Rule.t()], [atom()], term()) ::
+          {:cont, Context.t()}
+  defp classify_visible(context, text, opts, visible_rules, visible_labels, cache_reason) do
     case LocalClassifier.classify(text, opts) do
       {:ok, %{accepted?: true} = result} ->
         route =
@@ -52,6 +71,9 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
 
           {:cont,
            context
+           |> Context.add_candidate(
+             Candidate.from_result(route, route_rule(route, visible_rules), :local_classifier)
+           )
            |> Context.put_local_result(
              Map.put(Map.from_struct(route), :semantic_cache, cache_reason)
            )
@@ -66,6 +88,9 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
 
         {:cont,
          context
+         |> Context.add_candidate(
+           Candidate.from_result(route, route_rule(route, visible_rules), :local_classifier)
+         )
          |> Context.put_local_result(
            Map.put(Map.from_struct(route), :semantic_cache, cache_reason)
          )

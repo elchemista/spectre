@@ -51,8 +51,7 @@ defmodule Spectre.Effect do
 
     %__MODULE__{
       id: id,
-      idempotency_key:
-        attr_or(attrs, :idempotency_key, Spectre.Identity.idempotency_key(id)),
+      idempotency_key: attr_or(attrs, :idempotency_key, Spectre.Identity.idempotency_key(id)),
       kind: attr_or(attrs, :kind, :action),
       name:
         normalize_name(

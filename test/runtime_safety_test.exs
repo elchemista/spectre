@@ -2,6 +2,8 @@ defmodule SpectreRuntimeSafetyTest do
   use ExUnit.Case, async: false
 
   alias Spectre.Effect
+  alias Spectre.Router.SemanticCache.Learned
+  alias Spectre.Router.SemanticCache.Owner
   alias Spectre.State
 
   defmodule Actions do
@@ -129,9 +131,7 @@ defmodule SpectreRuntimeSafetyTest do
     assert [
              %Effect{
                status: :failed,
-               error:
-                 {:unauthorized_action_module, OtherActions,
-                  Actions}
+               error: {:unauthorized_action_module, OtherActions, Actions}
              }
            ] = result.effects
   end
@@ -206,24 +206,24 @@ defmodule SpectreRuntimeSafetyTest do
   end
 
   test "semantic cache tables belong to the supervised owner" do
-    owner = Process.whereis(Spectre.Router.SemanticCache.Owner)
+    owner = Process.whereis(Owner)
 
     assert is_pid(owner)
-    assert :ets.info(Spectre.Router.SemanticCache.Learned, :owner) == owner
+    assert :ets.info(Learned, :owner) == owner
   end
 
   test "semantic vector collections survive the lookup process and discard duplicate builds" do
-    owner = Process.whereis(Spectre.Router.SemanticCache.Owner)
+    owner = Process.whereis(Owner)
 
     assert {:ok, first} =
-             Spectre.Router.SemanticCache.Owner.new_collection(
+             Owner.new_collection(
                dimensions: 2,
                metric: :cosine,
                index: :flat
              )
 
     assert {:ok, duplicate} =
-             Spectre.Router.SemanticCache.Owner.new_collection(
+             Owner.new_collection(
                dimensions: 2,
                metric: :cosine,
                index: :flat
@@ -239,23 +239,23 @@ defmodule SpectreRuntimeSafetyTest do
     duplicate_index = %{collection: duplicate, inserted_at: 2}
 
     assert {:ok, ^first_index} =
-             Spectre.Router.SemanticCache.Owner.cache_index(
-               Spectre.Router.SemanticCache.Learned,
+             Owner.cache_index(
+               Learned,
                key,
                first_index,
                4
              )
 
     assert {:ok, ^first_index} =
-             Spectre.Router.SemanticCache.Owner.cache_index(
-               Spectre.Router.SemanticCache.Learned,
+             Owner.cache_index(
+               Learned,
                key,
                duplicate_index,
                4
              )
 
     assert :undefined == :ets.info(duplicate_table)
-    assert :ok = Spectre.Router.SemanticCache.Owner.clear_indexes(__MODULE__)
+    assert :ok = Owner.clear_indexes(__MODULE__)
     assert :undefined == :ets.info(first_table)
   end
 end

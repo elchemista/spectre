@@ -19,6 +19,7 @@ Spectre uses `priv/spectre/prompts`.
 - `:history`
 - `:fail`
 - `:arbitrator`
+- `:journal`
 
 Unknown keys are kept in `__spectre_config__/0`, so host applications can attach
 their own metadata. `:arbitrator` is copied into router config; the other keys
@@ -79,6 +80,34 @@ merged with these defaults:
 `local:` configures the adapter used by the `:classifier` router strategy.
 Local classifier runtime overrides use `classifier_local:`.
 
+The built-in arbitrator uses an enabled `:llm_classifier` after local and other
+cheap evidence cannot make a decision. A custom `prompt:` callback receives at
+least `text`, `labels`, `recent_chat`, and structured `evidence`; router calls
+also add `input`, `state`, `candidates`, and `local_result` assigns. The model
+must return exactly one configured label.
+
+## `journal`
+
+```elixir
+journal MyApp.SpectreJournal,
+  events: [:routing],
+  mode: :async,
+  on_error: :warn,
+  include_input: false,
+  sample_rate: 1.0,
+  buffer_size: 1_000,
+  overflow: :drop_newest
+```
+
+`journal/2` stores an opt-in `{Store, opts}` configuration. The store implements
+`Spectre.Journal.Store.append/2`. Routing records exclude input and reply
+content by default and are delivered through a supervised bounded buffer.
+
+Use `journal(false)` to disable an application-level default. Use
+`mode: :sync, on_error: :error` only when an append must succeed before the
+turn continues. See [Journal](JOURNAL.md) for the record schema, privacy model,
+sampling, and delivery semantics.
+
 ## Runtime Boundaries
 
 These macros configure runtime adapters:
@@ -106,6 +135,7 @@ What they mean:
   `remember/2`, or `persist/2`.
 - `embedding/2` provides the adapter used by embedding routing.
 - `classifier/2` provides classifier-specific LLM and local adapters.
+- `journal/2` configures structured decision recording.
 - `actions/2` stores `{module, opts}`. Those opts are also merged into
   SpectreKinetic planning opts and receive `actions_module: module`.
 - `shutdown/1` and `idle/1` affect supervised sessions.

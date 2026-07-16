@@ -131,7 +131,6 @@ defmodule Spectre.ActionPlanner do
     end
   end
 
-
   @spec action_al(map() | struct()) :: String.t() | nil
   defp action_al(action), do: action_value(action, :al)
 

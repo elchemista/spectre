@@ -9,6 +9,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
   """
 
   alias Spectre.Classifier.Encoder
+  alias Spectre.Router.SemanticCache.Owner
   alias Spectre.Rule
   alias Vettore.Embedding
 
@@ -392,7 +393,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
           inserted_at: System.unique_integer([:monotonic, :positive])
         }
 
-        Spectre.Router.SemanticCache.Owner.cache_index(
+        Owner.cache_index(
           table,
           key,
           index,
@@ -417,14 +418,14 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec discard_collection(Vettore.Collection.t()) :: :ok
   defp discard_collection(collection) do
-    Spectre.Router.SemanticCache.Owner.drop_collection(collection)
+    Owner.drop_collection(collection)
     :ok
   end
 
   @spec new_collection(pos_integer(), keyword()) ::
           {:ok, Vettore.Collection.t()} | {:error, term()}
   defp new_collection(dimensions, opts) do
-    Spectre.Router.SemanticCache.Owner.new_collection(
+    Owner.new_collection(
       name: "spectre_learned_semantic_cache:#{System.unique_integer([:positive])}",
       dimensions: dimensions,
       metric: :cosine,
@@ -1166,7 +1167,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec clear_indexes(module()) :: :ok
   defp clear_indexes(agent) do
-    case Spectre.Router.SemanticCache.Owner.clear_indexes(agent) do
+    case Owner.clear_indexes(agent) do
       :ok -> :ok
       {:error, reason} -> raise "semantic cache indexes unavailable: #{inspect(reason)}"
     end
@@ -1221,7 +1222,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec ensure_table(atom(), list()) :: atom()
   defp ensure_table(name, options) do
-    case Spectre.Router.SemanticCache.Owner.ensure_table(name, options) do
+    case Owner.ensure_table(name, options) do
       {:ok, ^name} -> name
       {:error, reason} -> raise "semantic cache table unavailable: #{inspect(reason)}"
     end

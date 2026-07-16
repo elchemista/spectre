@@ -7,6 +7,7 @@ defmodule Spectre.Router.Arbitrators.Default do
 
   alias Spectre.Router.Arbitration
   alias Spectre.Router.Candidate
+  alias Spectre.Router.LLMClassifier
 
   @defaults [
     classifier_accept: 0.93,
@@ -16,7 +17,7 @@ defmodule Spectre.Router.Arbitrators.Default do
     bag_accept: 0.72,
     jaro_accept: 0.9,
     conflict: :llm,
-    no_decision: :clarify
+    no_decision: :llm
   ]
 
   @impl Spectre.Router.Arbitrator
@@ -49,20 +50,46 @@ defmodule Spectre.Router.Arbitrators.Default do
           | {:clarify, String.t()}
           | {:error, term()}
   defp fallback_decision(candidates, arbitration, opts) do
-    cond do
-      conflict?(candidates) and Keyword.get(opts, :conflict) == :llm ->
-        {:llm, arbitration}
-
-      best = List.first(candidates) ->
-        {:ok, Candidate.to_route(best, arbitration.labels)}
-
-      Keyword.get(opts, :no_decision) == :clarify ->
-        {:clarify, "Please rephrase your request."}
-
-      true ->
-        {:error, :no_route_candidate}
+    if conflict?(candidates) do
+      conflict_decision(candidates, arbitration, opts)
+    else
+      no_conflict_decision(candidates, arbitration, opts)
     end
   end
+
+  @spec conflict_decision([Candidate.t()], Arbitration.t(), keyword()) ::
+          {:ok, Spectre.Route.t()} | {:llm, Arbitration.t()} | {:clarify, String.t()}
+  defp conflict_decision(candidates, arbitration, opts) do
+    case Keyword.get(opts, :conflict) do
+      :llm -> maybe_llm(arbitration, opts)
+      _other -> {:ok, Candidate.to_route(List.first(candidates), arbitration.labels)}
+    end
+  end
+
+  @spec no_conflict_decision([Candidate.t()], Arbitration.t(), keyword()) ::
+          {:ok, Spectre.Route.t()}
+          | {:llm, Arbitration.t()}
+          | {:clarify, String.t()}
+          | {:error, term()}
+  defp no_conflict_decision([best | _rest], arbitration, _opts),
+    do: {:ok, Candidate.to_route(best, arbitration.labels)}
+
+  defp no_conflict_decision([], arbitration, opts) do
+    case Keyword.get(opts, :no_decision) do
+      :llm -> maybe_llm(arbitration, opts)
+      :clarify -> clarify()
+      _other -> {:error, :no_route_candidate}
+    end
+  end
+
+  @spec maybe_llm(Arbitration.t(), keyword()) ::
+          {:llm, Arbitration.t()} | {:clarify, String.t()}
+  defp maybe_llm(arbitration, opts) do
+    if llm_ready?(opts), do: {:llm, arbitration}, else: clarify()
+  end
+
+  @spec clarify() :: {:clarify, String.t()}
+  defp clarify, do: {:clarify, "Please rephrase your request."}
 
   @spec eligible_candidates([Candidate.t()], keyword()) :: [Candidate.t()]
   defp eligible_candidates(candidates, opts) do
@@ -144,4 +171,9 @@ defmodule Spectre.Router.Arbitrators.Default do
   defp provider_rank(_provider), do: 0
 
   defp number?(value), do: is_integer(value) or is_float(value)
+
+  @spec llm_ready?(keyword()) :: boolean()
+  defp llm_ready?(opts) do
+    LLMClassifier.enabled?(opts) and LLMClassifier.available?(opts)
+  end
 end

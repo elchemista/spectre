@@ -11,6 +11,7 @@ defmodule Spectre.MixProject do
     "docs/TRAINING.md",
     "docs/ACTIONS.md",
     "docs/MEMORY.md",
+    "docs/JOURNAL.md",
     "docs/API.md",
     "docs/INSTALLATION.md",
     "docs/ROADMAP.md"

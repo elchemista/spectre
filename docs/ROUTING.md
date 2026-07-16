@@ -119,6 +119,11 @@ Built-in strategy names:
 - `:semantic_cache` asks your semantic cache adapter for exact or search hits.
 - `:llm_classifier` asks the model to choose from labels when configured.
 
+Adding `:llm_classifier` is an explicit opt-in to model-based routing. The
+model is called only when the default arbitrator cannot accept cheaper evidence
+or needs to resolve a conflict. A configured main response model alone does not
+enable LLM routing.
+
 Built-in plug mechanics:
 
 - Regex checks visible regex rules in evaluation order and adds the first match
@@ -133,6 +138,13 @@ Built-in plug mechanics:
 - Arbitrate turns candidates into a final route, LLM arbitration, clarification,
   or error.
 - Terminalize adds `terminal?` and `escalation_reason` after a route exists.
+
+An accepted hard candidate (normally a global interrupt) also prevents later
+semantic-cache, embedding, and local-classifier calls that cannot change the
+default winner. Arbitration still produces the final route. Custom arbitrators
+receive the full evidence stream unless `hard_short_circuit?: true` is set;
+`hard_short_circuit?: false` also disables the optimization for the default
+arbitrator.
 
 Per-route `via:` limits which strategies can see a route:
 
@@ -195,7 +207,7 @@ The default thresholds are:
   bag_accept: 0.72,
   jaro_accept: 0.9,
   conflict: :llm,
-  no_decision: :clarify
+  no_decision: :llm
 ]
 ```
 
@@ -210,10 +222,17 @@ The decision order is:
 5. Accept a confident bag-distance candidate.
 6. Accept a confident Jaro candidate.
 7. If eligible candidates disagree and `conflict: :llm`, ask the LLM classifier
-   to arbitrate among labels.
-8. If there is still no decision and `no_decision: :clarify`, return a clarify
-   route with `"Please rephrase your request."`.
-9. Otherwise return `{:error, :no_route_candidate}`.
+   to arbitrate among labels when that strategy and a model are configured.
+8. If no cheaper evidence is eligible and `no_decision: :llm`, ask the
+   configured LLM classifier.
+9. If LLM routing is disabled/unavailable, or `no_decision: :clarify` is set,
+   return a clarify route with `"Please rephrase your request."`.
+10. Otherwise return `{:error, :no_route_candidate}`.
+
+The LLM only sees rules visible to `:llm_classifier`. Spectre does not widen an
+empty route-level `via:` result to every rule, and it never calls the model with
+an empty label set. Model output must identify exactly one known label; an
+explanation, multiple labels, or an unknown label becomes a safe unknown route.
 
 Provider rank only matters after eligibility. It is not a magic override; it is
 how the default arbitrator sorts candidates once they have already cleared their
@@ -375,7 +394,16 @@ Important options:
 - `:artifact_dir` points Spectre's local classifier to trained artifacts.
 - `classifier MyApp.SmallLLM, prompt: ..., llm_opts: ...` customizes the LLM
   classifier.
-- `:recent_chat` is included in the default LLM classifier prompt.
+- `:recent_chat` overrides the chat included in the default LLM classifier
+  prompt. Otherwise Spectre uses up to five entries from
+  `state.data.chat_history`.
+- `:classifier_history` disables automatic classifier history when false.
+- `:classifier_history_limit` changes the default history limit of five.
+- `:classifier_assigns` adds values to a custom classifier prompt callback;
+  canonical `text`, `labels`, `recent_chat`, and `evidence` values cannot be
+  overridden.
+- `:llm_classifier?` explicitly enables or disables LLM arbitration for a
+  custom pipeline that does not use `via:`.
 - `:semantic_cache_capacity` limits Spectre's built-in learned cache indexes.
 
 Adapter shapes are intentionally simple:

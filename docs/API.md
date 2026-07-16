@@ -71,3 +71,15 @@ case turn.decision do
   {:no_response, result} -> :ok
 end
 ```
+
+## Journal Contracts
+
+`Spectre.Journal.Store` is the append-only adapter behaviour for structured
+decision records. `Spectre.Journal.Record` is the versioned value passed to the
+store. Journaling is configured through `Spectre.Agent.journal/2`, application
+configuration, or the per-call `:journal` option; it is disabled by default.
+
+The current implementation emits `:arbitration` records from completed router
+contexts. Records use stable IDs derived from `turn_id`, phase, sequence, and
+agent, and omit conversation content unless `include_input: true` is explicit.
+See [Journal](JOURNAL.md) for configuration and delivery semantics.

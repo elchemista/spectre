@@ -24,7 +24,13 @@ defmodule Spectre.Router.Plugs.LLMFallback do
   @spec fallback(Context.t()) :: {:cont, Context.t()}
   defp fallback(%Context{input: %{text: text}, rules: rules, opts: opts} = context) do
     local_result = context.local_result || %{}
-    visible_rules = Support.rules_for(rules, :llm, context.input)
+
+    visible_rules =
+      case Support.rules_for(rules, :llm_classifier, context.input) do
+        [] -> Support.rules_for(rules, :llm, context.input)
+        classifier_rules -> classifier_rules
+      end
+
     visible_labels = Support.labels_for(visible_rules)
 
     if Keyword.get(opts, :llm_fallback?, false) do

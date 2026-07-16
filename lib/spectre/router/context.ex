@@ -23,7 +23,7 @@ defmodule Spectre.Router.Context do
 
   @type t :: %__MODULE__{
           input: Spectre.Input.t(),
-          host_context: map(),
+          host_context: map() | nil,
           opts: keyword(),
           labels: [atom()],
           route: Spectre.Route.t() | nil,
@@ -40,6 +40,52 @@ defmodule Spectre.Router.Context do
   """
   @spec halted?(t()) :: boolean()
   def halted?(%__MODULE__{halted?: halted?}), do: halted?
+
+  @doc """
+  Returns true when accepted hard evidence already identifies a runnable route.
+
+  Expensive probabilistic providers can use this to avoid work that cannot
+  change the default arbitration result. The arbitrator still owns the final
+  route decision.
+  """
+  @spec hard_candidate?(t()) :: boolean()
+  def hard_candidate?(%__MODULE__{candidates: candidates}) do
+    Enum.any?(candidates, fn
+      %Spectre.Router.Candidate{strength: :hard, accepted?: true, handler: handler}
+      when not is_nil(handler) ->
+        true
+
+      _candidate ->
+        false
+    end)
+  end
+
+  @doc """
+  Returns true when hard evidence may safely short-circuit later providers.
+
+  This optimization is automatic for the built-in arbitrator. Custom
+  arbitrators retain the complete evidence stream unless they explicitly set
+  `hard_short_circuit?: true`.
+  """
+  @spec hard_candidate_locked?(t()) :: boolean()
+  def hard_candidate_locked?(%__MODULE__{} = context) do
+    hard_candidate?(context) and hard_short_circuit?(context.opts)
+  end
+
+  @spec hard_short_circuit?(keyword()) :: boolean()
+  defp hard_short_circuit?(opts) do
+    Keyword.get_lazy(opts, :hard_short_circuit?, fn -> default_arbitrator?(opts) end) == true
+  end
+
+  @spec default_arbitrator?(keyword()) :: boolean()
+  defp default_arbitrator?(opts) do
+    case Keyword.get(opts, :arbitrator) do
+      {Spectre.Router.Arbitrators.Default, _opts} -> true
+      Spectre.Router.Arbitrators.Default -> true
+      nil -> true
+      _custom -> false
+    end
+  end
 
   @doc """
   Replaces the normalized input after enrichment.

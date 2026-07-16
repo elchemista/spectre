@@ -134,7 +134,7 @@ defmodule SpectreAgentDSLTest do
     assert Keyword.fetch!(agent.__spectre_config__(), :history) == 50
     assert Keyword.fetch!(agent.__spectre_config__(), :fail) == {:agent_failure_reply, []}
     assert {Spectre.Router.Arbitrators.Default, opts} = agent.__spectre_router__()[:arbitrator]
-    assert Keyword.fetch!(opts, :no_decision) == :clarify
+    assert Keyword.fetch!(opts, :no_decision) == :llm
     assert agent.__spectre_rules__() == []
     assert agent.__spectre_policies__() == %{}
   end

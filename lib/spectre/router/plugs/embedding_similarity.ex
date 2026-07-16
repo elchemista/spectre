@@ -29,6 +29,9 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
       Context.halted?(context) ->
         {:cont, context}
 
+      Context.hard_candidate_locked?(context) ->
+        {:cont, Context.put_trace(context, {:embedding_skip, :hard_candidate})}
+
       not embedding_rules?(context) ->
         {:cont, context}
 
@@ -84,8 +87,10 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
     end
   end
 
-  defp embedding_rules?(%Context{rules: rules}) do
-    Enum.any?(rules, fn %Spectre.Rule{embedding: examples} -> examples != [] end)
+  defp embedding_rules?(%Context{rules: rules, input: input}) do
+    rules
+    |> Support.rules_for(:embedding, input)
+    |> Enum.any?(fn %Spectre.Rule{embedding: examples} -> examples != [] end)
   end
 
   defp embed(text, opts) do

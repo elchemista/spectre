@@ -36,7 +36,7 @@ defmodule Spectre.Runtime do
   """
   @spec handle(module(), Input.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def handle(agent, %Input{} = input, opts) do
-    opts = runtime_opts(agent, opts)
+    opts = agent |> runtime_opts(opts) |> put_turn_identity()
 
     with {:ok, input} <- normalize_input(agent, input, opts),
          {:ok, ctx} <- load_context(agent, input, opts),
@@ -337,6 +337,7 @@ defmodule Spectre.Runtime do
     |> maybe_put_config(config, :adapter)
     |> maybe_put_config(config, :embedding)
     |> maybe_put_config(config, :input_pipeline)
+    |> maybe_put_config(config, :journal)
     |> maybe_put_config(config, :history)
     |> maybe_put_config(config, :chat_history_limit)
   end
@@ -361,6 +362,16 @@ defmodule Spectre.Runtime do
       {:ok, value} -> Keyword.put(opts, key, value)
       :error -> opts
     end
+  end
+
+  @spec put_turn_identity(keyword()) :: keyword()
+  defp put_turn_identity(opts) do
+    turn_id = Keyword.get(opts, :turn_id) || Spectre.Identity.uuid7()
+    trace_id = Keyword.get(opts, :trace_id) || turn_id
+
+    opts
+    |> Keyword.put(:turn_id, turn_id)
+    |> Keyword.put(:trace_id, trace_id)
   end
 
   @spec record_history(Result.t(), Context.t()) :: Result.t()

@@ -129,14 +129,17 @@ defmodule SpectreTurnArbitrationTest do
       assert route.strategy == :jaro
     end
 
-    test "conflicting generic evidence asks for LLM arbitration by default" do
+    test "conflicting generic evidence asks for LLM arbitration when it is configured" do
       payload =
         arbitration([
           candidate(:FIRST, :custom, score: 0.90),
           candidate(:SECOND, :custom, score: 0.80)
         ])
 
-      assert {:llm, ^payload} = Default.decide(payload, [])
+      opts = [via: [:llm_classifier], model: fn _prompt -> {:ok, "FIRST"} end]
+
+      assert {:llm, ^payload} = Default.decide(payload, opts)
+      assert {:clarify, _message} = Default.decide(payload, [])
     end
 
     test "conflict best mode selects the highest ranked candidate" do
@@ -187,15 +190,50 @@ defmodule SpectreTurnArbitrationTest do
       assert route.terminal?
     end
 
-    test "empty evidence can return an explicit error instead of clarification" do
+    test "empty evidence uses an available LLM or follows the configured fallback" do
       payload = arbitration([])
 
       assert {:clarify, _message} = Default.decide(payload, [])
+
+      assert {:llm, ^payload} =
+               Default.decide(payload,
+                 via: [:llm_classifier],
+                 model: fn _prompt -> {:ok, "ANSWER"} end
+               )
+
+      assert {:clarify, _message} =
+               Default.decide(payload,
+                 via: [:llm_classifier],
+                 model: fn _prompt -> {:ok, "ANSWER"} end,
+                 no_decision: :clarify
+               )
+
       assert {:error, :no_route_candidate} = Default.decide(payload, no_decision: :error)
     end
   end
 
   describe "arbitration snapshots" do
+    test "hard-evidence short-circuiting is opt-in for custom arbitrators" do
+      hard = candidate(:HELP, :regex, strength: :hard)
+
+      default_context =
+        %Context{opts: [arbitrator: {Default, []}]}
+        |> Context.add_candidate(hard)
+
+      custom_context = %{
+        default_context
+        | opts: [arbitrator: {SpectreTurnArbitrationTest, []}]
+      }
+
+      assert Context.hard_candidate_locked?(default_context)
+      refute Context.hard_candidate_locked?(custom_context)
+
+      assert Context.hard_candidate_locked?(%{
+               custom_context
+               | opts: Keyword.put(custom_context.opts, :hard_short_circuit?, true)
+             })
+    end
+
     test "preserves evidence insertion order and host state" do
       first = candidate(:FIRST, :regex, strength: :hard)
       second = candidate(:SECOND, :bag, score: 0.8)
@@ -402,7 +440,7 @@ defmodule SpectreTurnArbitrationTest do
     end
   end
 
-  defp candidate(label, provider, opts \\ []) do
+  defp candidate(label, provider, opts) do
     %Candidate{
       label: label,
       flow: Keyword.get(opts, :flow),

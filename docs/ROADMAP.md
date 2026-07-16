@@ -19,6 +19,44 @@ host integration smaller.
 
 These are the foundations to preserve.
 
+## Implementation Journal
+
+### 2026-07-16: Routing Intelligence And Journal Foundation
+
+This iteration hardened the classifier/LLM boundary and implemented the first
+observability slice without moving lifecycle ownership:
+
+- hard, runnable evidence now skips later semantic-cache, embedding, and local
+  classifier work that cannot change the default winner;
+- the default arbitrator asks an enabled and available LLM classifier when no
+  cheaper candidate clears its threshold, not only when candidates conflict;
+- confident local evidence still wins without an LLM call;
+- route-level `via:` restrictions are preserved during LLM arbitration, and an
+  empty visible label set never reaches a model;
+- classifier prompts now receive canonical labels, structured evidence, and
+  bounded recent chat from state, while caller overrides remain explicit;
+- LLM output must resolve to exactly one known label; unknown, explanatory, or
+  multi-label output degrades safely instead of causing recursive arbitration;
+- `Spectre.Journal.Record`, `Spectre.Journal.Store`,
+  `Spectre.Journal.Recorder`, and a bounded supervised async buffer now exist;
+- the `journal/2` DSL, application default, per-turn override, stable turn and
+  record identities, deterministic sampling, privacy defaults, and explicit
+  failure policies are implemented;
+- completed routing contexts emit one structured `:arbitration` record with
+  decision, reason code, evidence, and thresholds but no conversation content
+  by default.
+
+This is deliberately not the completion of Phase 5. Policy, lifecycle,
+execution, and persistence records still depend on the canonical transition
+work in Phases 1 through 4. The current recorder observes the existing
+`Arbitration` boundary only; it does not invent lifecycle transitions.
+
+The next routing work is to make threshold eligibility and winning precedence
+canonical data on the arbitration receipt, then have the journal consume that
+receipt instead of reconstructing any explanation. The next journal work is to
+add redaction callbacks, retention metadata, buffer telemetry/stress coverage,
+and telemetry sourced from the same record.
+
 ## The Main Architectural Problem
 
 Lifecycle responsibility is currently distributed across several modules:
@@ -356,6 +394,13 @@ Exit criteria:
 Goal: make every important agent decision inspectable without storing sensitive
 conversation content by default.
 
+Status: foundation in progress. Schema v1, the append behaviour, routing
+records, DSL/configuration, privacy defaults, deterministic sampling, stable
+correlation IDs, synchronous strict mode, and bounded asynchronous delivery are
+implemented, including saturation, ordering, overflow, and worker-crash tests.
+Lifecycle, policy, execution, persistence, redaction, retention, and telemetry
+records remain open.
+
 - Add `Spectre.Journal.Record` with a versioned schema.
 - Add `Spectre.Journal.Recorder` as the filtering and delivery boundary.
 - Add the `Spectre.Journal.Store` behaviour with `append/2`.
@@ -385,6 +430,10 @@ Exit criteria:
 ### Phase 6: Clarify Routing And Arbitration Ownership
 
 Goal: keep probabilistic evidence outside machine-state decisions.
+
+Status: in progress. LLM eligibility, route visibility, exact-label parsing,
+hard-evidence short-circuiting, and local-first/LLM-fallback regressions are now
+covered. Canonical threshold explanations and property tests remain open.
 
 - Keep router plugs limited to evidence collection.
 - Keep `Candidate` as an immutable evidence value.

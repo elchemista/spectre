@@ -24,6 +24,9 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
       Context.halted?(context) ->
         {:cont, context}
 
+      Context.hard_candidate_locked?(context) ->
+        {:cont, Context.put_trace(context, {:semantic_skip, :hard_candidate})}
+
       not Keyword.get(context.opts, :semantic_cache?, true) ->
         {:cont, context}
 

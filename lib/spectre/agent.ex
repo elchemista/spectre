@@ -246,6 +246,43 @@ defmodule Spectre.Agent do
   end
 
   @doc """
+  Configures a structured agent journal store.
+
+  Journaling is opt-in and excludes input/reply content by default. The
+  monitoring default is asynchronous warning mode; use synchronous error mode
+  only when a failed append must fail the turn.
+
+      journal MyApp.SpectreJournal,
+        events: [:routing, :arbitration],
+        mode: :async,
+        on_error: :warn,
+        include_input: false
+
+  `journal(false)` explicitly disables an application-level default for this
+  agent.
+  """
+  defmacro journal(store, opts \\ [])
+
+  defmacro journal(false, _opts) do
+    quote do
+      @spectre_config Keyword.put(@spectre_config, :journal, false)
+    end
+  end
+
+  defmacro journal(store, opts) do
+    store = Macro.expand(store, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    quote do
+      @spectre_config Keyword.put(
+                        @spectre_config,
+                        :journal,
+                        {unquote(store), unquote(Macro.escape(opts))}
+                      )
+    end
+  end
+
+  @doc """
   Configures a state adapter used to load and persist conversation state.
 
   State adapters keep storage outside the domain runtime. They may implement
@@ -642,7 +679,7 @@ defmodule Spectre.Agent do
                          embedding_accept: 0.84,
                          bag_accept: 0.72,
                          conflict: :llm,
-                         no_decision: :clarify
+                         no_decision: :llm
                        ]}
 
   @spec default_config(keyword()) :: keyword()
