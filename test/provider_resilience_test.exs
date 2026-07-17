@@ -117,6 +117,20 @@ defmodule SpectreProviderResilienceTest.EmbeddingAgent do
   end
 end
 
+defmodule SpectreProviderResilienceTest.SemanticAgent do
+  @moduledoc false
+
+  use Spectre.Agent
+
+  router(via: [:semantic_cache], semantic_cache?: true)
+
+  flow :resilience do
+    on :ROUTE, via: [:semantic_cache] do
+      reply(:route)
+    end
+  end
+end
+
 defmodule SpectreProviderResilienceTest do
   use ExUnit.Case, async: false
 
@@ -212,6 +226,15 @@ defmodule SpectreProviderResilienceTest do
               }} =
                Call.run(:llm, fn -> flunk("adapter must not run") end, llm_timeout: 0)
     end
+
+    test "rejects malformed provider option lists without crashing the caller" do
+      assert {:error,
+              %Failure{
+                provider: :llm,
+                kind: :configuration,
+                reason: :invalid_provider_options
+              }} = Call.run(:llm, fn -> flunk("adapter must not run") end, [:invalid])
+    end
   end
 
   describe "LLM boundary" do
@@ -298,6 +321,28 @@ defmodule SpectreProviderResilienceTest do
                )
     end
 
+    test "local classifier validates route fields without retaining malformed values" do
+      classify = fn _text, _opts ->
+        {:ok,
+         %{
+           label: :ROUTE,
+           accepted?: true,
+           confidence: "private malformed confidence",
+           margin: 0.2
+         }}
+      end
+
+      assert {:error,
+              %Failure{
+                provider: :local_classifier,
+                kind: :invalid_reply,
+                reason: {:invalid_field, :confidence, :binary}
+              } = failure} =
+               LocalClassifier.classify("text", classifier_local: classify)
+
+      refute inspect(failure) =~ "private malformed confidence"
+    end
+
     test "embedding timeout degrades to clarification instead of failing routing" do
       assert {:ok, receipt} =
                Router.evaluate(SpectreProviderResilienceTest.EmbeddingAgent, "semantic request",
@@ -313,6 +358,24 @@ defmodule SpectreProviderResilienceTest do
       assert Enum.any?(receipt.attempts, fn attempt ->
                attempt.provider == :embedding and attempt.result == :skipped and
                  attempt.reason == :deadline_exceeded
+             end)
+    end
+
+    test "receipt records malformed LLM replies at the observed provider boundary" do
+      local = fn _text, _opts -> {:error, :no_local_match} end
+
+      assert {:ok, receipt} =
+               Router.evaluate(SpectreProviderResilienceTest.Agent, "route this",
+                 classifier: [
+                   adapter: SpectreProviderResilienceTest.MalformedLLM,
+                   local: local
+                 ]
+               )
+
+      assert receipt.llm_called?
+
+      assert Enum.any?(receipt.provider_calls, fn call ->
+               call.provider == :llm and call.outcome == :invalid_reply and call.invoked?
              end)
     end
 
@@ -338,6 +401,43 @@ defmodule SpectreProviderResilienceTest do
 
       assert_receive {:semantic_worker, worker}
       refute Process.alive?(worker)
+    end
+
+    test "semantic cache validates route fields without retaining malformed values" do
+      lookup = fn _text, _opts ->
+        {:ok,
+         %{
+           label: :ROUTE,
+           accepted?: true,
+           confidence: "private malformed confidence"
+         }}
+      end
+
+      assert {:error,
+              %Failure{
+                provider: :semantic_cache,
+                kind: :invalid_reply,
+                reason: {:invalid_field, :confidence, :binary}
+              } = failure} =
+               SemanticCache.lookup("lookup", semantic_lookup: lookup)
+
+      refute inspect(failure) =~ "private malformed confidence"
+    end
+
+    test "a valid non-accepted semantic reply degrades without crashing the router" do
+      lookup = fn _text, _opts -> {:ok, %{accepted?: false}} end
+
+      assert {:ok, receipt} =
+               Router.evaluate(SpectreProviderResilienceTest.SemanticAgent, "lookup",
+                 semantic_lookup: lookup
+               )
+
+      assert receipt.outcome == :clarify
+      refute receipt.llm_called?
+
+      assert Enum.count(receipt.provider_calls, fn call ->
+               call.provider == :semantic_cache and call.outcome == :ok and call.invoked?
+             end) == 2
     end
   end
 end

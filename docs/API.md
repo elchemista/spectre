@@ -92,8 +92,9 @@ See [Journal](JOURNAL.md) for configuration and delivery semantics.
 
 `Spectre.Router.Receipt` is the privacy-safe result of one route-only
 evaluation. It records outcome, label, strategy, sanitized attempts and
-candidates, duration, and whether the LLM classifier was actually invoked. It
-does not contain input text, prompts, model output, matches, or handlers.
+candidates, total duration, per-provider normalized outcomes/durations, and
+whether an LLM adapter worker was actually invoked. It does not contain input
+text, prompts, model output, matches, raw provider errors, or handlers.
 
 `Spectre.Eval.Case` describes expected route/outcome and whether an LLM call is
 forbidden, allowed, or required. `Spectre.Eval.Result` contains structured

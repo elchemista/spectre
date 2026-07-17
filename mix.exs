@@ -66,7 +66,6 @@ defmodule Spectre.MixProject do
     [
       {:jason, "~> 1.4"},
       {:vettore, "~> 0.3.1"},
-      {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master", optional: true},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]

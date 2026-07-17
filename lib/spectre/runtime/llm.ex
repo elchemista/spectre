@@ -100,14 +100,28 @@ defmodule Spectre.LLM do
 
   @spec protected_call(term(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   defp protected_call(model, prompt, opts) do
-    case Call.run(:llm, fn -> dispatch_model(model, prompt, opts) end, opts) do
+    adapter_opts = Call.adapter_opts(opts)
+
+    case Call.run(
+           :llm,
+           fn -> model |> dispatch_model(prompt, adapter_opts) |> normalize_model_reply() end,
+           opts
+         ) do
       {:ok, text} when is_binary(text) -> {:ok, text}
-      {:ok, other} -> {:error, Failure.invalid_reply(:llm, other)}
       {:error, _reason} = error -> error
     end
   end
 
-  @spec dispatch_model(term(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  @spec normalize_model_reply(term()) :: {:ok, String.t()} | {:error, term()} | term()
+  defp normalize_model_reply({:ok, text} = reply) when is_binary(text), do: reply
+
+  defp normalize_model_reply({:ok, other}),
+    do: {:error, Failure.invalid_reply(:llm, other)}
+
+  defp normalize_model_reply({:error, _reason} = error), do: error
+  defp normalize_model_reply(other), do: other
+
+  @spec dispatch_model(term(), String.t(), keyword()) :: term()
   defp dispatch_model({module, function, _adapter_opts}, prompt, opts)
        when is_atom(module) and is_atom(function) do
     apply(module, function, [prompt, opts])

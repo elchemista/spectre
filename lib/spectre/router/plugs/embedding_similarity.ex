@@ -97,15 +97,32 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
 
   defp embed(text, opts) do
     call_opts = embedding_call_opts(opts)
+    adapter_opts = Call.adapter_opts(call_opts)
 
-    case Call.run(:embedding, fn -> dispatch_embedding(text, call_opts) end, call_opts) do
-      {:ok, vector} when is_list(vector) -> validate_vector(vector)
-      {:ok, other} -> {:error, Failure.invalid_reply(:embedding, other)}
+    case Call.run(
+           :embedding,
+           fn ->
+             text
+             |> dispatch_embedding(adapter_opts)
+             |> normalize_embedding_reply()
+           end,
+           call_opts
+         ) do
+      {:ok, vector} when is_list(vector) -> {:ok, vector}
       {:error, _reason} = error -> error
     end
   end
 
-  @spec dispatch_embedding(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  @spec normalize_embedding_reply(term()) :: {:ok, [number()]} | {:error, term()} | term()
+  defp normalize_embedding_reply({:ok, vector}) when is_list(vector), do: validate_vector(vector)
+
+  defp normalize_embedding_reply({:ok, other}),
+    do: {:error, Failure.invalid_reply(:embedding, other)}
+
+  defp normalize_embedding_reply({:error, _reason} = error), do: error
+  defp normalize_embedding_reply(other), do: other
+
+  @spec dispatch_embedding(String.t(), keyword()) :: term()
   defp dispatch_embedding(text, opts) do
     case Keyword.fetch(opts, :embedding) do
       {:ok, {module, adapter_opts}} when is_atom(module) and is_list(adapter_opts) ->

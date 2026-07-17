@@ -71,6 +71,16 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
            |> Context.put_trace({:semantic_label_not_routeable, route})}
         end
 
+      {:ok, _result} ->
+        reason = :semantic_cache_not_accepted
+        Support.log(:debug, "semantic_skip reason=#{reason}", opts)
+        local_result = (context.local_result || %{}) |> Map.put(:semantic_cache_after, reason)
+
+        {:cont,
+         context
+         |> Context.put_local_result(local_result)
+         |> Context.put_trace({:semantic_skip, reason})}
+
       {:error, reason} ->
         Support.log(:debug, "semantic_skip reason=#{Support.format_reason(reason)}", opts)
         local_result = (context.local_result || %{}) |> Map.put(:semantic_cache_after, reason)

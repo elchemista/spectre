@@ -14,7 +14,7 @@ defmodule Spectre.Router.LocalClassifier do
   """
 
   alias Spectre.Provider.Call
-  alias Spectre.Provider.Failure
+  alias Spectre.Provider.Reply
 
   @doc """
   Classifies text through the configured local classifier.
@@ -22,15 +22,31 @@ defmodule Spectre.Router.LocalClassifier do
   @spec classify(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def classify(text, opts) when is_binary(text) and is_list(opts) do
     local_opts = local_opts(opts)
+    adapter_opts = Call.adapter_opts(local_opts)
 
-    case Call.run(:local_classifier, fn -> dispatch(text, opts, local_opts) end, local_opts) do
+    case Call.run(
+           :local_classifier,
+           fn ->
+             text
+             |> dispatch(opts, adapter_opts)
+             |> normalize_reply()
+           end,
+           local_opts
+         ) do
       {:ok, result} when is_map(result) -> {:ok, result}
-      {:ok, other} -> {:error, Failure.invalid_reply(:local_classifier, other)}
       {:error, _reason} = error -> error
     end
   end
 
-  @spec dispatch(String.t(), keyword(), keyword()) :: {:ok, term()} | {:error, term()}
+  @spec normalize_reply(term()) :: {:ok, map()} | {:error, term()} | term()
+  defp normalize_reply({:ok, result}) do
+    Reply.route(:local_classifier, result)
+  end
+
+  defp normalize_reply({:error, _reason} = error), do: error
+  defp normalize_reply(other), do: other
+
+  @spec dispatch(String.t(), keyword(), keyword()) :: term()
   defp dispatch(text, opts, local_opts) do
     cond do
       classify = Keyword.get(opts, :classify) ->
@@ -52,7 +68,7 @@ defmodule Spectre.Router.LocalClassifier do
           String.t(),
           keyword()
         ) ::
-          {:ok, map()} | {:error, term()}
+          term()
   defp call_classifier(fun, text, opts) when is_function(fun, 2), do: fun.(text, opts)
   defp call_classifier(fun, text, _opts) when is_function(fun, 1), do: fun.(text)
   defp call_classifier(module, text, opts) when is_atom(module), do: module.classify(text, opts)

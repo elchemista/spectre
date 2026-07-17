@@ -100,6 +100,29 @@ The failure excludes prompts, inputs, raw adapter output, exception messages,
 and stack traces. It contains only the provider, category, safe reason code,
 deadline, and a retryability hint for infrastructure failures.
 
+During `Spectre.Router.evaluate/3`, the same boundary contributes a sanitized
+call fact to the routing receipt. Each fact contains the provider, normalized
+outcome, elapsed microseconds, whether a worker was invoked, and an optional
+purpose such as `:classifier`. This is the canonical source for evaluation LLM
+usage: a prompt-rendering failure before `Spectre.LLM` is entered does not count
+as a model call. No prompt, input, provider response, or raw error is retained.
+
+## Reply Validation
+
+The boundary validates provider-specific success payloads before routing uses
+them:
+
+- LLM completion must return a binary;
+- embeddings must be a non-empty list of numbers;
+- local-classifier and semantic-cache route maps must carry a boolean
+  `accepted?`, a label when accepted, numeric score fields, an atom strategy,
+  and map-shaped metadata/scores when those optional fields are present.
+
+Invalid values become a sanitized `:invalid_reply` failure that records the
+field and value shape, never the value itself. A semantic-cache
+`{:ok, %{accepted?: false}}` is a valid negative result and degrades like a
+miss.
+
 ## Cancellation Semantics
 
 Provider code runs in an isolated worker. Spectre terminates that worker when:

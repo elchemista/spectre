@@ -117,8 +117,27 @@ receipt.attempts
 
 `Spectre.Router.Receipt` excludes input text, prompts, model output, candidate
 matches, and route handlers. It contains the outcome, winning label and
-strategy, sanitized provider attempts and candidates, duration, and whether an
-LLM classification call actually started.
+strategy, sanitized provider attempts and candidates, total duration, and a
+`provider_calls` list with the normalized outcome and duration of every shared
+provider-boundary invocation. `llm_called?` becomes true only when an LLM
+adapter worker was actually invoked; selecting LLM arbitration before prompt
+construction is not counted as model use.
+
+A provider-call entry has only operational metadata:
+
+```elixir
+%{
+  provider: :llm,
+  purpose: :classifier,
+  outcome: :ok,
+  duration_us: 12_430,
+  invoked?: true
+}
+```
+
+Configuration rejected before a worker starts is recorded with
+`invoked?: false`. Raw provider errors and responses are never copied into this
+list.
 
 ## Execution Boundary
 

@@ -172,6 +172,19 @@ defmodule SpectreTurnArbitrationTest do
       assert {:clarify, _message} = Default.decide(payload, [])
     end
 
+    test "hard strength cannot make rejected evidence eligible" do
+      payload =
+        arbitration([
+          candidate(:REJECTED, :local_classifier,
+            score: 1.0,
+            strength: :hard,
+            accepted?: false
+          )
+        ])
+
+      assert {:clarify, _message} = Default.decide(payload, [])
+    end
+
     test "accepted LLM candidate becomes a route and retains visible labels" do
       payload =
         arbitration([

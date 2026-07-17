@@ -13,7 +13,7 @@ defmodule Spectre.Router.SemanticCache do
   """
 
   alias Spectre.Provider.Call
-  alias Spectre.Provider.Failure
+  alias Spectre.Provider.Reply
   alias Spectre.Router.SemanticCache.Learned
 
   @callback lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -42,14 +42,31 @@ defmodule Spectre.Router.SemanticCache do
   """
   @spec lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def lookup(text, opts) when is_binary(text) and is_list(opts) do
-    case Call.run(:semantic_cache, fn -> dispatch_lookup(text, opts) end, opts) do
+    adapter_opts = Call.adapter_opts(opts)
+
+    case Call.run(
+           :semantic_cache,
+           fn ->
+             text
+             |> dispatch_lookup(adapter_opts)
+             |> normalize_lookup_reply()
+           end,
+           opts
+         ) do
       {:ok, result} when is_map(result) -> {:ok, result}
-      {:ok, other} -> {:error, Failure.invalid_reply(:semantic_cache, other)}
       {:error, _reason} = error -> error
     end
   end
 
-  @spec dispatch_lookup(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  @spec normalize_lookup_reply(term()) :: {:ok, map()} | {:error, term()} | term()
+  defp normalize_lookup_reply({:ok, result}) do
+    Reply.route(:semantic_cache, result, label: :accepted)
+  end
+
+  defp normalize_lookup_reply({:error, _reason} = error), do: error
+  defp normalize_lookup_reply(other), do: other
+
+  @spec dispatch_lookup(String.t(), keyword()) :: term()
   defp dispatch_lookup(text, opts) do
     cond do
       lookup = Keyword.get(opts, :semantic_lookup) ->
@@ -180,7 +197,7 @@ defmodule Spectre.Router.SemanticCache do
   def clear(agent, _opts), do: {:error, {:invalid_agent, agent}}
 
   @spec call_lookup(function() | module() | {module(), atom()} | term(), String.t(), keyword()) ::
-          {:ok, map()} | {:error, term()}
+          term()
   defp call_lookup(fun, text, opts) when is_function(fun, 2), do: fun.(text, opts)
   defp call_lookup(fun, text, _opts) when is_function(fun, 1), do: fun.(text)
   defp call_lookup(module, text, opts) when is_atom(module), do: module.lookup(text, opts)

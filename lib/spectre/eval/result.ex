@@ -71,6 +71,7 @@ defmodule Spectre.Eval.Result do
         error: receipt.error,
         attempts: receipt.attempts,
         candidates: receipt.candidates,
+        provider_calls: receipt.provider_calls,
         trace_codes: receipt.trace_codes
       },
       violations: result.violations

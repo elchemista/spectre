@@ -2,10 +2,11 @@ defmodule Spectre.Router.Receipt do
   @moduledoc """
   Privacy-safe summary of one router-only evaluation.
 
-  A receipt records the selected route, provider attempts, and whether the LLM
-  classifier was invoked. It deliberately excludes input text, prompts, model
-  output, candidate matches, and handlers so evaluation artifacts can be
-  shared without silently becoming conversation logs.
+  A receipt records the selected route, sanitized provider-call outcomes and
+  durations, and whether an LLM adapter was actually invoked. It deliberately
+  excludes input text, prompts, model output, candidate matches, and handlers
+  so evaluation artifacts can be shared without silently becoming conversation
+  logs.
   """
 
   alias Spectre.Router.Candidate
@@ -21,6 +22,7 @@ defmodule Spectre.Router.Receipt do
     :error,
     attempts: [],
     candidates: [],
+    provider_calls: [],
     trace_codes: []
   ]
 
@@ -42,6 +44,14 @@ defmodule Spectre.Router.Receipt do
           required(:strength) => atom()
         }
 
+  @type provider_call :: %{
+          required(:provider) => atom(),
+          required(:outcome) => atom(),
+          required(:duration_us) => non_neg_integer(),
+          required(:invoked?) => boolean(),
+          optional(:purpose) => atom()
+        }
+
   @type t :: %__MODULE__{
           outcome: outcome(),
           label: atom() | nil,
@@ -52,6 +62,7 @@ defmodule Spectre.Router.Receipt do
           error: atom() | nil,
           attempts: [attempt()],
           candidates: [candidate_summary()],
+          provider_calls: [provider_call()],
           trace_codes: [atom()]
         }
 
@@ -60,21 +71,36 @@ defmodule Spectre.Router.Receipt do
   """
   @spec from_context(Context.t(), non_neg_integer()) :: t()
   def from_context(%Context{} = context, duration_us) do
-    traces = Enum.reverse(context.traces || [])
-    candidates = Enum.reverse(context.candidates || [])
-    route = context.route
+    from_context(context, duration_us, nil)
+  end
+
+  @doc false
+  @spec from_context(Context.t(), non_neg_integer(), [map()] | nil) :: t()
+  def from_context(%Context{} = context, duration_us, provider_calls) do
+    traces = context.traces |> safe_list() |> Enum.reverse()
+
+    candidates =
+      context.candidates
+      |> safe_list()
+      |> Enum.reverse()
+      |> Enum.filter(&match?(%Candidate{}, &1))
+
+    route = if match?(%Spectre.Route{}, context.route), do: context.route
+    known_labels = known_labels(context.labels)
+    safe_provider_calls = sanitize_provider_calls(provider_calls)
 
     %__MODULE__{
       outcome: route_outcome(route),
-      label: route && route.label,
-      strategy: route && route.strategy,
+      label: route && safe_label(route.label, known_labels),
+      strategy: route && safe_atom(route.strategy),
       accepted?: not is_nil(route) and route.accepted? == true,
-      llm_called?: llm_called?(traces, candidates),
-      duration_us: duration_us,
-      attempts: attempts(traces, candidates),
-      candidates: Enum.map(candidates, &candidate_summary/1),
+      llm_called?: llm_called?(traces, candidates, provider_calls, safe_provider_calls),
+      duration_us: safe_duration(duration_us),
+      attempts: attempts(traces, candidates, known_labels),
+      candidates: Enum.map(candidates, &candidate_summary(&1, known_labels)),
+      provider_calls: safe_provider_calls,
       trace_codes: Enum.map(traces, &trace_code/1),
-      error: context.errors |> List.first() |> reason_code()
+      error: context.errors |> safe_list() |> List.first() |> reason_code()
     }
   end
 
@@ -82,13 +108,20 @@ defmodule Spectre.Router.Receipt do
   Builds an error receipt when the router pipeline cannot complete.
   """
   @spec from_error(term(), non_neg_integer()) :: t()
-  def from_error(reason, duration_us) do
+  def from_error(reason, duration_us), do: from_error(reason, duration_us, nil)
+
+  @doc false
+  @spec from_error(term(), non_neg_integer(), [map()] | nil) :: t()
+  def from_error(reason, duration_us, provider_calls) do
+    safe_provider_calls = sanitize_provider_calls(provider_calls)
+
     %__MODULE__{
       outcome: :error,
       accepted?: false,
-      llm_called?: false,
-      duration_us: duration_us,
-      error: reason_code(reason)
+      llm_called?: llm_called?([], [], provider_calls, safe_provider_calls),
+      duration_us: safe_duration(duration_us),
+      error: reason_code(reason),
+      provider_calls: safe_provider_calls
     }
   end
 
@@ -102,27 +135,29 @@ defmodule Spectre.Router.Receipt do
   defp route_outcome(%Spectre.Route{}), do: :unknown
   defp route_outcome(nil), do: :unknown
 
-  @spec llm_called?([term()], [Candidate.t()]) :: boolean()
-  defp llm_called?(traces, candidates) do
+  @spec llm_called?([term()], [Candidate.t()], [map()] | nil, [provider_call()]) :: boolean()
+  defp llm_called?(traces, candidates, nil, _safe_provider_calls) do
     Enum.any?(traces, &match?({:llm_arbitration_started, _labels}, &1)) or
       Enum.any?(candidates, &(&1.provider == :llm_classifier))
   end
 
-  @spec attempts([term()], [Candidate.t()]) :: [attempt()]
-  defp attempts(traces, candidates) do
-    traced = Enum.flat_map(traces, &trace_attempt/1)
+  defp llm_called?(_traces, _candidates, _provider_calls, safe_provider_calls) do
+    Enum.any?(safe_provider_calls, fn call ->
+      call.provider == :llm and call.invoked?
+    end)
+  end
+
+  @spec attempts([term()], [Candidate.t()], MapSet.t()) :: [attempt()]
+  defp attempts(traces, candidates, known_labels) do
+    traced =
+      traces |> Enum.flat_map(&trace_attempt/1) |> Enum.map(&sanitize_attempt(&1, known_labels))
+
     traced_providers = MapSet.new(traced, & &1.provider)
 
     inferred =
       candidates
       |> Enum.reject(&MapSet.member?(traced_providers, &1.provider))
-      |> Enum.map(fn candidate ->
-        %{
-          provider: candidate.provider,
-          result: :candidate,
-          label: candidate.label
-        }
-      end)
+      |> Enum.map(&candidate_attempt(&1, known_labels))
 
     traced ++ inferred
   end
@@ -179,7 +214,7 @@ defmodule Spectre.Router.Receipt do
 
   @spec route_attempt(atom(), atom(), Spectre.Route.t() | term()) :: attempt()
   defp route_attempt(provider, result, %Spectre.Route{label: label}) do
-    %{provider: provider, result: result, label: label}
+    %{provider: provider, result: result, label: safe_atom(label)}
   end
 
   defp route_attempt(provider, result, _route), do: %{provider: provider, result: result}
@@ -189,15 +224,64 @@ defmodule Spectre.Router.Receipt do
     %{provider: provider, result: result, reason: reason_code(reason)}
   end
 
-  @spec candidate_summary(Candidate.t()) :: candidate_summary()
-  defp candidate_summary(%Candidate{} = candidate) do
-    Map.take(candidate, [:provider, :label, :accepted?, :score, :margin, :strength])
+  @spec candidate_summary(Candidate.t(), MapSet.t()) :: candidate_summary()
+  defp candidate_summary(%Candidate{} = candidate, known_labels) do
+    %{
+      provider: safe_atom(candidate.provider) || :unknown,
+      label: safe_label(candidate.label, known_labels),
+      accepted?: candidate.accepted? == true,
+      score: safe_number(candidate.score),
+      margin: safe_number(candidate.margin),
+      strength: safe_atom(candidate.strength) || :unknown
+    }
+  end
+
+  @spec candidate_attempt(Candidate.t(), MapSet.t()) :: attempt()
+  defp candidate_attempt(%Candidate{} = candidate, known_labels) do
+    %{
+      provider: safe_atom(candidate.provider) || :unknown,
+      result: :candidate,
+      label: safe_label(candidate.label, known_labels)
+    }
+  end
+
+  @spec sanitize_attempt(attempt(), MapSet.t()) :: attempt()
+  defp sanitize_attempt(attempt, known_labels) do
+    Map.update(attempt, :label, nil, &safe_label(&1, known_labels))
+  end
+
+  @spec sanitize_provider_calls([map()] | nil) :: [provider_call()]
+  defp sanitize_provider_calls(nil), do: []
+
+  defp sanitize_provider_calls(provider_calls) when is_list(provider_calls) do
+    Enum.map(provider_calls, &sanitize_provider_call/1)
+  end
+
+  defp sanitize_provider_calls(_provider_calls), do: []
+
+  @spec sanitize_provider_call(map()) :: provider_call()
+  defp sanitize_provider_call(call) when is_map(call) do
+    summary = %{
+      provider: safe_atom(Map.get(call, :provider)) || :unknown,
+      outcome: safe_atom(Map.get(call, :outcome)) || :unknown,
+      duration_us: safe_duration(Map.get(call, :duration_us)),
+      invoked?: Map.get(call, :invoked?) == true
+    }
+
+    case safe_atom(Map.get(call, :purpose)) do
+      nil -> summary
+      purpose -> Map.put(summary, :purpose, purpose)
+    end
+  end
+
+  defp sanitize_provider_call(_call) do
+    %{provider: :unknown, outcome: :unknown, duration_us: 0, invoked?: false}
   end
 
   @spec trace_code(term()) :: atom()
   defp trace_code(trace) when is_atom(trace), do: trace
 
-  defp trace_code(trace) when is_tuple(trace) do
+  defp trace_code(trace) when is_tuple(trace) and tuple_size(trace) > 0 do
     case elem(trace, 0) do
       code when is_atom(code) -> code
       _other -> :unknown_trace
@@ -215,4 +299,36 @@ defmodule Spectre.Router.Receipt do
 
   defp reason_code(%{reason: reason}), do: reason_code(reason)
   defp reason_code(_reason), do: :unknown_error
+
+  @spec safe_atom(term()) :: atom() | nil
+  defp safe_atom(value) when is_atom(value), do: value
+  defp safe_atom(_value), do: nil
+
+  @spec known_labels(term()) :: MapSet.t()
+  defp known_labels(labels) do
+    labels
+    |> safe_list()
+    |> Enum.filter(&is_atom/1)
+    |> MapSet.new()
+    |> MapSet.put(:unknown)
+  end
+
+  @spec safe_label(term(), MapSet.t()) :: atom() | nil
+  defp safe_label(label, known_labels) when is_atom(label) do
+    if MapSet.member?(known_labels, label), do: label
+  end
+
+  defp safe_label(_label, _known_labels), do: nil
+
+  @spec safe_number(term()) :: number() | nil
+  defp safe_number(value) when is_number(value), do: value
+  defp safe_number(_value), do: nil
+
+  @spec safe_duration(term()) :: non_neg_integer()
+  defp safe_duration(value) when is_integer(value) and value >= 0, do: value
+  defp safe_duration(_value), do: 0
+
+  @spec safe_list(term()) :: list()
+  defp safe_list(value) when is_list(value), do: value
+  defp safe_list(_value), do: []
 end

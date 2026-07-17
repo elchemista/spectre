@@ -21,6 +21,33 @@ These are the foundations to preserve.
 
 ## Implementation Journal
 
+### 2026-07-17: Canonical Provider Facts And Reply Validation
+
+This hardening pass closed the remaining gap between route traces and the
+shared provider boundary:
+
+- evaluation receipts now record privacy-safe provider outcome and duration
+  facts emitted directly by `Spectre.Provider.Call`;
+- LLM-use policies reflect an actual adapter-worker invocation, so a failure
+  while constructing the classifier prompt is not misreported as model usage;
+- local-classifier and semantic-cache route maps now validate labels,
+  acceptance, numeric scores, strategy, metadata, and score maps before they
+  reach arbitration;
+- embedding and LLM shape validation now happens inside the same observed call
+  boundary, keeping normalized outcomes consistent;
+- receipt route, candidate, attempt, and provider-call fields are independently
+  sanitized, including values supplied by custom pipelines;
+- a valid non-accepted semantic-cache reply degrades as a miss instead of
+  crashing a router plug;
+- rejected candidates cannot become eligible merely because a rule assigned
+  hard evidence strength;
+- the dynamically detected `ex_fastembed` integration is no longer declared as
+  a transitive Git dependency, so the Spectre Hex package can be built while
+  host applications can still opt into the adapter explicitly.
+
+These facts remain local receipt data. No exporter, pricing layer, automatic
+retry, or circuit breaker was added.
+
 ### 2026-07-16: Provider Execution Resilience
 
 This iteration added a small operational boundary instead of embedding
@@ -47,9 +74,9 @@ provider-specific policy throughout the router:
 
 No automatic retry, circuit breaker, token pricing, or metrics exporter was
 added to core. Provider-specific retry/rate-limit policy remains an adapter or
-optional middleware responsibility. The next observability refinement is to
-record provider duration and normalized outcome directly on the routing receipt
-and emit minimal telemetry from that canonical fact.
+optional middleware responsibility. Provider duration and normalized outcome
+were added to the routing receipt in the 2026-07-17 pass; minimal telemetry can
+later be derived from that canonical fact.
 
 ### 2026-07-16: Routing Evaluation Harness
 
@@ -60,8 +87,8 @@ the normal turn runtime:
   never loads state/memory adapters or executes the selected handler;
 - evaluation forces journal delivery and online semantic learning off;
 - `Spectre.Router.Receipt` captures the winning outcome, strategy, sanitized
-  provider evidence, duration, and whether LLM arbitration actually started,
-  while excluding inputs, prompts, model outputs, matches, and handlers;
+  provider evidence, duration, and LLM arbitration intent while excluding
+  inputs, prompts, model outputs, matches, and handlers;
 - `Spectre.Eval` loads version-controlled JSONL cases and checks expected
   routes/outcomes together with `forbidden`, `allowed`, or `required` LLM use;
 - aggregate reports include pass rate, route accuracy, strategy and outcome
@@ -73,12 +100,11 @@ the normal turn runtime:
   LLM, privacy, state/history, no-handler, no-journal, and no-semantic-write
   behavior.
 
-The receipt currently normalizes the evidence already emitted by router traces
-and candidates. A later refinement should record eligibility thresholds,
-winning precedence, and per-provider duration directly at the provider boundary
-instead of inferring attempt summaries afterward. Provider execution
-resilience—standard timeouts, cancellation, normalized failure categories, and
-shared adapter contract tests—is the next critical routing milestone.
+The initial receipt normalized evidence emitted by router traces and candidates.
+Provider execution resilience and direct per-provider duration/outcome facts
+landed in the following passes. Eligibility thresholds and winning precedence
+still need to become canonical receipt data instead of being inferred by later
+consumers.
 
 ### 2026-07-16: Routing Intelligence And Journal Foundation
 

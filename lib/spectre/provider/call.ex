@@ -6,7 +6,9 @@ defmodule Spectre.Provider.Call do
   adapter worker to both the caller lifecycle and the configured timeout, so a
   timed-out call or dead caller terminates the local adapter worker. Remote work
   already handed to an external service can only be cancelled when that
-  adapter supports cancellation itself.
+  adapter supports cancellation itself. Route evaluation also uses this
+  boundary as the canonical source of sanitized provider outcome and duration
+  facts.
   """
 
   alias Spectre.Provider.Failure
@@ -18,7 +20,16 @@ defmodule Spectre.Provider.Call do
     semantic_cache: 30_000
   }
 
+  @observer_key :spectre_provider_observer
+
   @type result(value) :: {:ok, value} | {:error, term()}
+  @type event :: %{
+          required(:provider) => atom(),
+          required(:outcome) => atom(),
+          required(:duration_us) => non_neg_integer(),
+          required(:invoked?) => boolean(),
+          optional(:purpose) => atom()
+        }
 
   @doc """
   Runs one provider function under its configured timeout.
@@ -36,10 +47,25 @@ defmodule Spectre.Provider.Call do
   def run(provider, fun, opts \\ [])
 
   def run(provider, fun, opts) when is_atom(provider) and is_function(fun, 0) and is_list(opts) do
-    with {:ok, timeout} <- timeout(provider, opts) do
-      execute(provider, fun, timeout)
+    if Keyword.keyword?(opts) do
+      started_at = System.monotonic_time()
+
+      {result, invoked?} =
+        case timeout(provider, opts) do
+          {:ok, timeout} -> {execute(provider, fun, timeout), true}
+          {:error, %Failure{} = failure} -> {{:error, failure}, false}
+        end
+
+      notify_observer(opts, event(provider, result, invoked?, started_at))
+      result
+    else
+      {:error, Failure.invalid_options(provider)}
     end
   end
+
+  @doc false
+  @spec adapter_opts(keyword()) :: keyword()
+  def adapter_opts(opts) when is_list(opts), do: Keyword.delete(opts, @observer_key)
 
   @spec execute(atom(), (-> result(term())), timeout()) :: result(term())
   defp execute(provider, fun, timeout) do
@@ -159,11 +185,56 @@ defmodule Spectre.Provider.Call do
   defp timeout(provider, opts) do
     case Application.get_env(:spectre, :provider, []) do
       configured when is_list(configured) ->
-        validate_timeout(provider, Keyword.merge(configured, opts))
+        if Keyword.keyword?(configured) do
+          validate_timeout(provider, Keyword.merge(configured, opts))
+        else
+          {:error, Failure.invalid_timeout(provider, configured)}
+        end
 
       invalid ->
         {:error, Failure.invalid_timeout(provider, invalid)}
     end
+  end
+
+  @spec event(atom(), result(term()), boolean(), integer()) :: event()
+  defp event(provider, result, invoked?, started_at) do
+    %{
+      provider: provider,
+      outcome: outcome(result),
+      duration_us: elapsed_us(started_at),
+      invoked?: invoked?
+    }
+  end
+
+  @spec outcome(result(term())) :: atom()
+  defp outcome({:ok, _value}), do: :ok
+  defp outcome({:error, %Failure{kind: kind}}), do: kind
+  defp outcome({:error, _reason}), do: :error
+
+  @spec notify_observer(keyword(), event()) :: :ok
+  defp notify_observer(opts, event) do
+    case Keyword.get(opts, @observer_key) do
+      {observer, reference} when is_pid(observer) and is_reference(reference) ->
+        purpose = Keyword.get(opts, :purpose)
+
+        event =
+          if is_atom(purpose) and not is_nil(purpose),
+            do: Map.put(event, :purpose, purpose),
+            else: event
+
+        send(observer, {:spectre_provider_call, reference, event})
+        :ok
+
+      _other ->
+        :ok
+    end
+  end
+
+  @spec elapsed_us(integer()) :: non_neg_integer()
+  defp elapsed_us(started_at) do
+    started_at
+    |> then(&(System.monotonic_time() - &1))
+    |> System.convert_time_unit(:native, :microsecond)
   end
 
   @spec validate_timeout(atom(), keyword()) :: {:ok, timeout()} | {:error, Failure.t()}

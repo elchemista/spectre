@@ -157,6 +157,76 @@ defmodule SpectreEvalTest do
     assert receipt.trace_codes == [:unknown_trace]
     refute inspect(receipt) =~ "private trace value"
     refute inspect(receipt) =~ "private prompt value"
+
+    assert Receipt.from_context(%Spectre.Router.Context{traces: [{}]}, 1).trace_codes == [
+             :unknown_trace
+           ]
+  end
+
+  test "receipt sanitizes malformed route, candidate, and provider-call fields" do
+    private = "private model output"
+    private_atom = :"private model output"
+
+    context = %Spectre.Router.Context{
+      labels: [:SAFE],
+      route:
+        Spectre.Route.new(%{
+          label: private_atom,
+          strategy: private,
+          accepted?: true,
+          handler: {:run, :safe_handler}
+        }),
+      candidates: [
+        %Spectre.Router.Candidate{
+          provider: private,
+          label: private_atom,
+          score: private,
+          margin: private,
+          strength: private,
+          accepted?: true
+        }
+      ]
+    }
+
+    receipt =
+      Receipt.from_context(context, 1, [
+        %{
+          provider: private,
+          outcome: private,
+          duration_us: private,
+          invoked?: private,
+          purpose: private
+        }
+      ])
+
+    assert receipt.label == nil
+    assert receipt.strategy == nil
+
+    assert receipt.candidates == [
+             %{
+               provider: :unknown,
+               label: nil,
+               accepted?: true,
+               score: nil,
+               margin: nil,
+               strength: :unknown
+             }
+           ]
+
+    refute inspect(receipt) =~ private
+
+    malformed_context = %{
+      context
+      | route: %{label: private},
+        candidates: [private],
+        traces: private,
+        errors: private
+    }
+
+    malformed_receipt = Receipt.from_context(malformed_context, private)
+    assert malformed_receipt.outcome == :unknown
+    assert malformed_receipt.duration_us == 0
+    refute inspect(malformed_receipt) =~ private
   end
 
   test "receipt distinguishes local success from actual LLM fallback" do
@@ -166,6 +236,11 @@ defmodule SpectreEvalTest do
     assert local.label == :LOCAL
     assert local.strategy == :local_classifier
     refute local.llm_called?
+    assert [local_call] = local.provider_calls
+    assert local_call.provider == :local_classifier
+    assert local_call.outcome == :ok
+    assert local_call.invoked?
+    assert is_integer(local_call.duration_us) and local_call.duration_us >= 0
     assert_receive {:eval_local_called, "local request"}
     refute_received {:eval_llm_called, _prompt}
 
@@ -173,9 +248,33 @@ defmodule SpectreEvalTest do
     assert llm.label == :LLM_ROUTE
     assert llm.strategy == :llm_classifier
     assert llm.llm_called?
+
+    assert Enum.any?(llm.provider_calls, fn call ->
+             call.provider == :llm and call.purpose == :classifier and call.outcome == :ok and
+               call.invoked?
+           end)
+
     assert_receive {:eval_local_called, "needs llm"}
     assert_receive {:eval_llm_called, prompt}
     assert prompt =~ "Latest message:\nneeds llm"
+  end
+
+  test "LLM policy records a call only after prompt construction succeeds" do
+    invalid_prompt = fn _assigns -> {:ok, %{private: "prompt was not renderable"}} end
+
+    assert {:ok, receipt} =
+             Router.evaluate(SpectreEvalTest.Agent, "needs llm",
+               classifier: [
+                 adapter: SpectreEvalTest.ClassifierLLM,
+                 local: SpectreEvalTest.LocalClassifier,
+                 prompt: invalid_prompt
+               ]
+             )
+
+    assert :llm_arbitration_started in receipt.trace_codes
+    refute receipt.llm_called?
+    refute Enum.any?(receipt.provider_calls, &(&1.provider == :llm))
+    refute_received {:eval_llm_called, _prompt}
   end
 
   test "evaluation disables semantic learning even for learnable LLM routes" do
@@ -302,6 +401,7 @@ defmodule SpectreEvalTest do
     assert {:ok, artifact} = path |> File.read!() |> Jason.decode()
     assert artifact["total"] == 3
     assert length(artifact["results"]) == 3
+    assert is_list(get_in(artifact, ["results", Access.at(0), "actual", "provider_calls"]))
   end
 
   test "mix task exits unsuccessfully when a regression threshold fails" do

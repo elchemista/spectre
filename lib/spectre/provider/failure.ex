@@ -61,9 +61,27 @@ defmodule Spectre.Provider.Failure do
   end
 
   @doc false
+  @spec invalid_reply_field(atom(), atom(), term()) :: t()
+  def invalid_reply_field(provider, field, value) when is_atom(field) do
+    new(provider, :invalid_reply, {:invalid_field, field, reply_shape(value)})
+  end
+
+  @doc false
+  @spec missing_reply_field(atom(), atom()) :: t()
+  def missing_reply_field(provider, field) when is_atom(field) do
+    new(provider, :invalid_reply, {:missing_field, field})
+  end
+
+  @doc false
   @spec invalid_timeout(atom(), term()) :: t()
   def invalid_timeout(provider, timeout) do
     new(provider, :configuration, {:invalid_timeout, safe_scalar(timeout)})
+  end
+
+  @doc false
+  @spec invalid_options(atom()) :: t()
+  def invalid_options(provider) do
+    new(provider, :configuration, :invalid_provider_options)
   end
 
   @spec new(atom(), kind(), term(), keyword()) :: t()

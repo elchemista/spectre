@@ -99,7 +99,8 @@ defmodule Spectre.Router.Arbitrators.Default do
   end
 
   defp eligible?(%Candidate{handler: nil}, _opts), do: false
-  defp eligible?(%Candidate{strength: :hard}, _opts), do: true
+  defp eligible?(%Candidate{accepted?: accepted?}, _opts) when accepted? != true, do: false
+  defp eligible?(%Candidate{strength: :hard, accepted?: true}, _opts), do: true
 
   defp eligible?(%Candidate{provider: :local_classifier, score: score, margin: margin}, opts) do
     number?(score) and score >= Keyword.fetch!(opts, :classifier_accept) and

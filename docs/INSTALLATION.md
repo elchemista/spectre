@@ -9,7 +9,9 @@ def deps do
 end
 ```
 
-For local classifier embeddings:
+For local classifier embeddings, add the optional adapter in the host
+application. Spectre detects it dynamically and does not pull the Git
+dependency transitively:
 
 ```elixir
 def deps do

@@ -191,9 +191,11 @@ without loading state/memory adapters or executing the winning handler:
 ```
 
 The privacy-safe receipt exposes the outcome, label, strategy, provider
-attempts, candidate summaries, duration, and `llm_called?`. Journal delivery
-and online semantic learning are forced off during evaluation. Router provider
-adapters still run, so live LLM evaluations may incur provider usage.
+attempts, candidate summaries, total duration, sanitized provider-call
+outcomes/durations, and `llm_called?`. The LLM flag reflects an actual provider
+worker invocation, not merely selection of the LLM arbitration branch. Journal
+delivery and online semantic learning are forced off during evaluation. Router
+provider adapters still run, so live LLM evaluations may incur provider usage.
 
 For corpus metrics and CI regression thresholds, see
 [Routing Evaluation](EVALUATION.md).

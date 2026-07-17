@@ -14,36 +14,54 @@ defmodule Spectre.Router.Evaluator do
   @spec evaluate(module(), Input.t() | String.t() | map(), keyword()) :: {:ok, Receipt.t()}
   def evaluate(agent, input, opts) when is_atom(agent) and is_list(opts) do
     started_at = System.monotonic_time()
+    observer_ref = make_ref()
 
-    try do
-      result =
+    result =
+      try do
         with :ok <- validate_agent(agent),
-             opts <- evaluation_opts(agent, opts),
+             opts <-
+               agent
+               |> evaluation_opts(opts)
+               |> Keyword.put(:spectre_provider_observer, {self(), observer_ref}),
              {:ok, state} <- evaluation_state(agent, Keyword.get(opts, :state)),
              {:ok, input} <- normalize_input(agent, Input.new(input), opts) do
           context = runtime_context(agent, input, state, opts)
           Router.route_context(input, context)
         end
+      rescue
+        exception ->
+          {:error,
+           {:routing_evaluation_exception, exception.__struct__, Exception.message(exception)}}
+      catch
+        kind, reason -> {:error, {:routing_evaluation_failure, kind, reason}}
+      end
 
-      duration_us = elapsed_us(started_at)
+    duration_us = elapsed_us(started_at)
+    provider_calls = collect_provider_calls(observer_ref)
 
+    try do
       case result do
-        {:ok, router_context} -> {:ok, Receipt.from_context(router_context, duration_us)}
-        {:error, reason} -> {:ok, Receipt.from_error(reason, duration_us)}
+        {:ok, router_context} ->
+          {:ok, Receipt.from_context(router_context, duration_us, provider_calls)}
+
+        {:error, reason} ->
+          {:ok, Receipt.from_error(reason, duration_us, provider_calls)}
       end
     rescue
       exception ->
         {:ok,
          Receipt.from_error(
-           {:routing_evaluation_exception, exception.__struct__, Exception.message(exception)},
-           elapsed_us(started_at)
+           {:routing_receipt_exception, exception.__struct__, Exception.message(exception)},
+           duration_us,
+           provider_calls
          )}
     catch
       kind, reason ->
         {:ok,
          Receipt.from_error(
-           {:routing_evaluation_failure, kind, reason},
-           elapsed_us(started_at)
+           {:routing_receipt_failure, kind, reason},
+           duration_us,
+           provider_calls
          )}
     end
   end
@@ -164,5 +182,15 @@ defmodule Spectre.Router.Evaluator do
     started_at
     |> then(&(System.monotonic_time() - &1))
     |> System.convert_time_unit(:native, :microsecond)
+  end
+
+  @spec collect_provider_calls(reference(), [map()]) :: [map()]
+  defp collect_provider_calls(reference, calls \\ []) do
+    receive do
+      {:spectre_provider_call, ^reference, call} when is_map(call) ->
+        collect_provider_calls(reference, [call | calls])
+    after
+      0 -> Enum.reverse(calls)
+    end
   end
 end
