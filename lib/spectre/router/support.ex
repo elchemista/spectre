@@ -22,16 +22,28 @@ defmodule Spectre.Router.Support do
   """
   @spec rules_for([Rule.t()], atom(), Spectre.Input.t() | nil) :: [Rule.t()]
   def rules_for(rules, strategy, input \\ nil) when is_list(rules) and is_atom(strategy) do
-    Enum.filter(rules, fn
-      %Rule{via: []} = rule -> input_match?(rule, input)
-      %Rule{via: via} = rule -> strategy in via and input_match?(rule, input)
-    end)
+    visible =
+      Enum.filter(rules, fn
+        %Rule{via: []} = rule -> input_match?(rule, input)
+        %Rule{via: via} = rule -> strategy in via and input_match?(rule, input)
+      end)
+
+    reject_ambiguous_label_only_rules(visible, strategy)
   end
 
   @spec input_match?(Rule.t(), Spectre.Input.t() | nil) :: boolean()
   defp input_match?(%Rule{checks: []}, _input), do: true
   defp input_match?(%Rule{} = rule, %Spectre.Input{} = input), do: Rule.checks_match?(rule, input)
   defp input_match?(%Rule{}, nil), do: false
+
+  @spec reject_ambiguous_label_only_rules([Rule.t()], atom()) :: [Rule.t()]
+  defp reject_ambiguous_label_only_rules(rules, strategy)
+       when strategy in [:classifier, :llm_classifier, :semantic_cache] do
+    counts = Enum.frequencies_by(rules, & &1.label)
+    Enum.reject(rules, &(Map.fetch!(counts, &1.label) > 1))
+  end
+
+  defp reject_ambiguous_label_only_rules(rules, _strategy), do: rules
 
   @doc """
   Returns unique labels for a rule set in evaluation order.
@@ -65,21 +77,46 @@ defmodule Spectre.Router.Support do
 
   def route_from_result(result, rules, labels, strategy) when is_map(result) do
     label = label_from_result(result, rules)
-    rule = Enum.find(rules, &(&1.label == label))
+    scope = result_scope(result)
+    rule = result_rule(label, scope, rules)
+    label = label || raw_label_from_result(result)
 
     result
-    |> Map.put(:label, label || raw_label_from_result(result))
-    |> Map.put(:flow, rule && rule.flow)
-    |> Map.put(:handler, rule && rule.handler)
-    |> Map.put(:owner, rule && rule.owner)
-    |> Map.put(:scope, (rule && rule.scope) || :agent)
-    |> Map.put(:rule, rule)
-    |> Map.put(:injections, (rule && rule.injections) || [])
-    |> Map.put(:definition_injections, (rule && rule.definition_injections) || [])
+    |> put_result_rule(rule, label, scope)
     |> Map.put_new(:strategy, Map.get(result, :strategy, strategy))
     |> Map.put(:labels, labels)
     |> Route.new()
   end
+
+  @spec put_result_rule(map(), Rule.t() | nil, term(), term()) :: map()
+  defp put_result_rule(result, %Rule{} = rule, label, _scope) do
+    result
+    |> Map.put(:label, label)
+    |> Map.put(:flow, rule.flow)
+    |> Map.put(:handler, rule.handler)
+    |> Map.put(:owner, rule.owner)
+    |> Map.put(:scope, rule.scope)
+    |> Map.put(:rule, rule)
+    |> Map.put(:injections, rule.injections)
+    |> Map.put(:definition_injections, rule.definition_injections)
+  end
+
+  defp put_result_rule(result, nil, label, scope) do
+    result
+    |> Map.put(:label, label)
+    |> Map.put(:flow, nil)
+    |> Map.put(:handler, nil)
+    |> Map.put(:owner, nil)
+    |> Map.put(:scope, scope)
+    |> Map.put(:rule, nil)
+    |> Map.put(:injections, [])
+    |> Map.put(:definition_injections, [])
+  end
+
+  @doc false
+  @spec route_rule(Route.t(), [Rule.t()]) :: Rule.t() | nil
+  def route_rule(%Route{rule: %Rule{} = rule}, _rules), do: rule
+  def route_rule(%Route{} = route, rules), do: result_rule(route.label, route.scope, rules)
 
   @doc """
   Adds labels to a route-like map.
@@ -197,6 +234,23 @@ defmodule Spectre.Router.Support do
     Enum.find_value(rules, fn rule ->
       if same_label?(rule.label, raw), do: rule.label
     end)
+  end
+
+  @spec result_scope(map()) :: Spectre.Definition.scope() | nil
+  defp result_scope(result), do: Map.get(result, :scope) || Map.get(result, "scope")
+
+  @spec result_rule(atom() | nil, term(), [Rule.t()]) :: Rule.t() | nil
+  defp result_rule(nil, _scope, _rules), do: nil
+
+  defp result_rule(label, nil, rules) do
+    case Enum.filter(rules, &(&1.label == label)) do
+      [rule] -> rule
+      _ambiguous_or_missing -> nil
+    end
+  end
+
+  defp result_rule(label, scope, rules) do
+    Enum.find(rules, &(&1.label == label and &1.scope == scope))
   end
 
   @spec same_label?(atom(), term()) :: boolean()

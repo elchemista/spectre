@@ -322,30 +322,55 @@ defmodule Spectre.Runtime do
 
     case memory_callback(memory_module) do
       {:ok, callback} ->
-        with :ok <-
-               validate_term_size(
-                 memory_payload(input, result, agent),
-                 :memory_persist,
-                 opts,
-                 :memory_persist_max_bytes,
-                 2_000_000
-               ) do
-          case Call.run(
-                 :memory,
-                 fn ->
-                   callback
-                   |> call_memory_callback(input, result, agent, opts)
-                   |> normalize_memory_provider_reply()
-                 end,
-                 Keyword.put(opts, :purpose, :memory_persist)
-               ) do
-            {:ok, :persisted} -> :ok
-            {:error, reason} -> {:error, reason}
-          end
-        end
+        persist_memory_callback(callback, input, result, agent, opts)
 
       :ok ->
         :ok
+    end
+  end
+
+  @spec persist_memory_callback(
+          {:remember | :persist, 2 | 4, module()},
+          Input.t(),
+          Result.t(),
+          module(),
+          keyword()
+        ) :: :ok | {:error, term()}
+  defp persist_memory_callback(callback, input, result, agent, opts) do
+    with :ok <-
+           validate_term_size(
+             memory_payload(input, result, agent),
+             :memory_persist,
+             opts,
+             :memory_persist_max_bytes,
+             2_000_000
+           ) do
+      call_memory_persist(callback, input, result, agent, opts)
+    end
+  end
+
+  @spec call_memory_persist(
+          {:remember | :persist, 2 | 4, module()},
+          Input.t(),
+          Result.t(),
+          module(),
+          keyword()
+        ) :: :ok | {:error, term()}
+  defp call_memory_persist(callback, input, result, agent, opts) do
+    result =
+      Call.run(
+        :memory,
+        fn ->
+          callback
+          |> call_memory_callback(input, result, agent, opts)
+          |> normalize_memory_provider_reply()
+        end,
+        Keyword.put(opts, :purpose, :memory_persist)
+      )
+
+    case result do
+      {:ok, :persisted} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 

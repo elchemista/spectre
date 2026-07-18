@@ -3,7 +3,7 @@ defmodule Spectre.Prompt.Fragment do
   Resolved prompt content with its composition metadata.
   """
 
-  defstruct [:id, :content, :scope, :target, :position, :source, metadata: %{}]
+  defstruct [:id, :content, :scope, :target, :position, :source, :trust, metadata: %{}]
 
   @type t :: %__MODULE__{
           id: term(),
@@ -12,6 +12,7 @@ defmodule Spectre.Prompt.Fragment do
           target: Spectre.Prompt.Operation.target(),
           position: Spectre.Prompt.Operation.position(),
           source: Spectre.Prompt.Operation.source() | :base,
+          trust: :instruction | :data,
           metadata: map()
         }
 
@@ -28,6 +29,7 @@ defmodule Spectre.Prompt.Fragment do
       target: operation.target,
       position: operation.position,
       source: operation.source,
+      trust: operation.trust,
       metadata: metadata
     }
   end
@@ -43,7 +45,8 @@ defmodule Spectre.Prompt.Fragment do
       scope: :base,
       target: :task,
       position: :end,
-      source: :base
+      source: :base,
+      trust: :instruction
     }
   end
 end

@@ -17,6 +17,8 @@ defmodule Spectre.Definition.Validator do
     :embedding,
     :input_pipeline,
     :journal,
+    :history,
+    :chat_history_limit,
     :idle,
     :shutdown,
     :fail
@@ -44,6 +46,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_identity(definition),
          :ok <- validate_version(definition),
          :ok <- validate_skill_config(definition),
+         :ok <- validate_skill_router(definition),
          :ok <- validate_router(definition),
          :ok <- validate_rules(definition),
          :ok <- validate_policies(definition),
@@ -95,6 +98,14 @@ defmodule Spectre.Definition.Validator do
   end
 
   defp validate_skill_config(%Definition{}), do: :ok
+
+  @spec validate_skill_router(map()) :: :ok | {:error, term()}
+  defp validate_skill_router(%Definition{kind: :skill, router: []}), do: :ok
+
+  defp validate_skill_router(%Definition{kind: :skill, router: router}),
+    do: {:error, {:skill_cannot_configure_agent_infrastructure, {:router, router}}}
+
+  defp validate_skill_router(%Definition{}), do: :ok
 
   @spec validate_router(map()) :: :ok | {:error, term()}
   defp validate_router(%Definition{router: router}) when is_list(router) do
@@ -176,27 +187,25 @@ defmodule Spectre.Definition.Validator do
   end
 
   @spec handler_injection_scopes([map()]) :: [{term(), [Operation.t()]}]
-  defp handler_injection_scopes(rules) do
-    Enum.flat_map(rules, fn rule ->
-      case Map.get(rule, :handler) do
-        {kind, _value, opts} when kind in [:ask, :reply] ->
-          [
-            {{:handler, Map.get(rule, :label)},
-             Operation.normalize(Keyword.get(opts, :inject), :handler)}
-          ]
+  defp handler_injection_scopes(rules), do: Enum.flat_map(rules, &handler_injection_scope/1)
 
-        {_kind, _value, opts} ->
-          if Keyword.has_key?(opts, :inject) do
-            raise ArgumentError, "inject: is only supported by ask/reply handlers"
-          else
-            []
-          end
-
-        _handler ->
-          []
-      end
-    end)
+  @spec handler_injection_scope(map()) :: [{term(), [Operation.t()]}]
+  defp handler_injection_scope(%{handler: {:ask, _value, opts}} = rule) do
+    [
+      {{:handler, Map.get(rule, :label)},
+       Operation.normalize(Keyword.get(opts, :inject), :handler)}
+    ]
   end
+
+  defp handler_injection_scope(%{handler: {_kind, _value, opts}}) do
+    if Keyword.has_key?(opts, :inject) do
+      raise ArgumentError, "inject: is only supported by ask handlers"
+    else
+      []
+    end
+  end
+
+  defp handler_injection_scope(_rule), do: []
 
   @spec validate_injection_scope(term(), [Operation.t()]) :: :ok | {:error, term()}
   defp validate_injection_scope(scope, operations) when is_list(operations) do

@@ -1,6 +1,6 @@
 defmodule Spectre.Prompt do
   @moduledoc """
-  Scoped prompt resolver, renderer, and typed composition boundary.
+  Prompt resolver, renderer, and typed composition boundary.
 
   A base `ask` prompt is represented as the task section of a
   `Spectre.Prompt.Plan`. Agent, Skill, Flow, and handler `inject` declarations
@@ -17,7 +17,7 @@ defmodule Spectre.Prompt do
   @default_max_prompt_bytes 256_000
 
   @doc """
-  Resolves, composes, and renders a prompt for an Agent turn.
+  Resolves, composes, and renders a prompt for a model-backed turn.
 
       {:ok, text} = Spectre.Prompt.render(MyAgent, :welcome, ctx)
   """
@@ -29,6 +29,14 @@ defmodule Spectre.Prompt do
     end
   end
 
+  @doc false
+  @spec render_asset(module(), atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def render_asset(agent, prompt, ctx, opts \\ []) do
+    scope = prompt_scope(ctx, opts)
+    do_render_asset(agent, prompt, ctx, Keyword.put(opts, :prompt_scope, scope))
+  end
+
   @doc """
   Builds the fully resolved prompt plan used by a model call.
   """
@@ -38,8 +46,9 @@ defmodule Spectre.Prompt do
     scope = prompt_scope(ctx, opts)
     opts = Keyword.put(opts, :prompt_scope, scope)
 
-    with {:ok, base_task} <- render_asset(agent, prompt, ctx, opts),
+    with {:ok, base_task} <- do_render_asset(agent, prompt, ctx, opts),
          {:ok, operations, scopes} <- prompt_operations(agent, ctx, opts, scope),
+         :ok <- validate_operation_ids(operations),
          {:ok, resolutions} <- resolve_operations(agent, operations, ctx, opts),
          {:ok, plan} <- Plan.compose(base_task, resolutions, scopes),
          :ok <- validate_plan_size(plan, opts) do
@@ -66,9 +75,9 @@ defmodule Spectre.Prompt do
     end
   end
 
-  @spec render_asset(module(), atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::
+  @spec do_render_asset(module(), atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
-  defp render_asset(agent, prompt, ctx, opts) do
+  defp do_render_asset(agent, prompt, ctx, opts) do
     with {:ok, path} <- resolve(agent, prompt, ctx, opts),
          {:ok, text} <- File.read(path) do
       {:ok, eval_heexish(text, assigns(ctx, opts), path)}
@@ -106,10 +115,57 @@ defmodule Spectre.Prompt do
     expanded_root = Path.expand(root)
     path = Path.expand(relative, expanded_root)
 
-    if path == expanded_root or String.starts_with?(path, expanded_root <> "/") do
-      {:ok, path}
+    with true <- inside_root?(path, expanded_root),
+         {:ok, canonical_root} <- canonical_path(expanded_root),
+         {:ok, canonical_path} <- canonical_path(path),
+         true <- inside_root?(canonical_path, canonical_root) do
+      {:ok, canonical_path}
     else
-      {:error, {:prompt_outside_root, path, expanded_root}}
+      false -> {:error, {:prompt_outside_root, path, expanded_root}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec inside_root?(String.t(), String.t()) :: boolean()
+  defp inside_root?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+
+  @spec canonical_path(String.t(), non_neg_integer()) :: {:ok, String.t()} | {:error, term()}
+  defp canonical_path(path, hops \\ 0)
+
+  defp canonical_path(path, hops) when hops <= 40 do
+    case Path.split(Path.expand(path)) do
+      [root | components] -> resolve_path_components(root, components, hops)
+      [] -> {:ok, Path.expand(path)}
+    end
+  end
+
+  defp canonical_path(path, _hops), do: {:error, {:too_many_prompt_symlinks, path}}
+
+  @spec resolve_path_components(String.t(), [String.t()], non_neg_integer()) ::
+          {:ok, String.t()} | {:error, term()}
+  defp resolve_path_components(current, [], _hops), do: {:ok, Path.expand(current)}
+
+  defp resolve_path_components(current, [component | rest], hops) do
+    candidate = Path.join(current, component)
+
+    case File.read_link(candidate) do
+      {:ok, target} ->
+        target =
+          if Path.type(target) == :absolute,
+            do: target,
+            else: Path.expand(target, Path.dirname(candidate))
+
+        target = Enum.reduce(rest, target, &Path.join(&2, &1))
+        canonical_path(target, hops + 1)
+
+      {:error, :einval} ->
+        resolve_path_components(candidate, rest, hops)
+
+      {:error, :enoent} ->
+        {:ok, Enum.reduce(rest, candidate, &Path.join(&2, &1)) |> Path.expand()}
+
+      {:error, reason} ->
+        {:error, {:prompt_path_resolution_failed, candidate, reason}}
     end
   end
 
@@ -186,7 +242,8 @@ defmodule Spectre.Prompt do
   defp resolve_operation(agent, %Operation{} = operation, ctx, opts) do
     started_at = System.monotonic_time()
 
-    with {:ok, active?} <- evaluate_condition(operation, ctx, opts),
+    with false <- protected_policy_task?(operation, opts),
+         {:ok, active?} <- evaluate_condition(operation, ctx, opts),
          {:active, true} <- {:active, active?},
          {:ok, content} <- resolve_source(agent, operation, ctx, opts),
          :ok <- validate_fragment_size(content, operation, opts) do
@@ -198,6 +255,15 @@ defmodule Spectre.Prompt do
          metadata: %{bytes: byte_size(content), duration_us: elapsed_us(started_at)}
        }}
     else
+      true ->
+        {:ok,
+         %{
+           operation: operation,
+           status: :skipped,
+           reason: :protected_policy_prompt,
+           metadata: %{duration_us: elapsed_us(started_at)}
+         }}
+
       {:active, false} ->
         {:ok,
          %{
@@ -227,6 +293,25 @@ defmodule Spectre.Prompt do
      }}
   end
 
+  @spec protected_policy_task?(Operation.t(), keyword()) :: boolean()
+  defp protected_policy_task?(%Operation{target: :task}, opts),
+    do: Keyword.get(opts, :policy_prompt?, false) == true
+
+  defp protected_policy_task?(%Operation{}, _opts), do: false
+
+  @spec validate_operation_ids([Operation.t()]) :: :ok | {:error, term()}
+  defp validate_operation_ids(operations) do
+    duplicate =
+      operations
+      |> Enum.group_by(&{&1.scope, &1.id})
+      |> Enum.find(fn {_key, scoped} -> length(scoped) > 1 end)
+
+    case duplicate do
+      nil -> :ok
+      {{scope, id}, _operations} -> {:error, {:duplicate_prompt_operation, scope, id}}
+    end
+  end
+
   @spec evaluate_condition(Operation.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, boolean()} | {:error, term()}
   defp evaluate_condition(%Operation{condition: nil}, _ctx, _opts), do: {:ok, true}
@@ -251,7 +336,7 @@ defmodule Spectre.Prompt do
       |> Keyword.put(:policy_prompt?, false)
       |> Keyword.delete(:policy)
 
-    render_asset(agent, prompt, ctx, asset_opts)
+    do_render_asset(agent, prompt, ctx, asset_opts)
   end
 
   defp resolve_source(

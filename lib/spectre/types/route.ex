@@ -38,7 +38,7 @@ defmodule Spectre.Route do
           flow: atom() | nil,
           handler: Spectre.Rule.handler() | nil,
           owner: module() | nil,
-          scope: Spectre.Definition.scope(),
+          scope: Spectre.Definition.scope() | nil,
           rule: Spectre.Rule.t() | nil,
           injections: [Spectre.Prompt.Operation.t()],
           definition_injections: [Spectre.Prompt.Operation.t()],

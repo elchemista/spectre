@@ -114,6 +114,12 @@ defmodule Spectre.Runner do
       Keyword.get(ctx.opts, :handler_owner) ||
         (match?(%Route{}, ctx.route) && ctx.route.owner) || ctx.agent
 
+    call_run_function(owner, function, input, ctx)
+  end
+
+  @spec call_run_function(module(), atom(), Input.t(), Spectre.Context.t()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp call_run_function(owner, function, input, ctx) do
     cond do
       function_exported?(owner, function, 2) ->
         normalize_function_result(apply(owner, function, [input, ctx]), input, ctx)
@@ -124,6 +130,12 @@ defmodule Spectre.Runner do
       true ->
         {:error, {:undefined_run_function, owner, function}}
     end
+  rescue
+    exception ->
+      {:error, {:run_function_exception, owner, function, exception}}
+  catch
+    kind, reason ->
+      {:error, {:run_function_failure, owner, function, kind, reason}}
   end
 
   @doc """
@@ -172,12 +184,16 @@ defmodule Spectre.Runner do
         payload: %{
           al: Keyword.get(opts, :al),
           hooks: Keyword.get(opts, :hooks, []),
-          source: :dsl
+          source: :dsl,
+          scope: route_scope(ctx)
         }
       })
 
     with :ok <- ensure_no_pending_effect(ctx.state) do
-      policy = Keyword.get(opts, :policy) || ActionProtection.protected_by(ctx.agent, effect)
+      policy =
+        Keyword.get(opts, :policy) ||
+          ActionProtection.protected_by(ctx.agent, effect, route_scope(ctx))
+
       state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
       ctx = %{ctx | state: state}
       # Read the effect back from state so policy metadata/status added by
@@ -226,8 +242,10 @@ defmodule Spectre.Runner do
   end
 
   defp stage_effects(reply_text, [effect], input, ctx, opts) do
+    effect = put_effect_scope(effect, route_scope(ctx))
+
     with :ok <- ensure_no_pending_effect(ctx.state) do
-      policy = ActionProtection.protected_by(ctx.agent, effect)
+      policy = ActionProtection.protected_by(ctx.agent, effect, route_scope(ctx))
       state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
       ctx = %{ctx | state: state}
       staged_effect = pending_effect(state)
@@ -264,7 +282,7 @@ defmodule Spectre.Runner do
   defp render_reply(prompt, input, ctx, opts) do
     case Keyword.get(opts, :renderer) do
       nil ->
-        Prompt.render(ctx.agent, prompt, ctx, opts)
+        Prompt.render_asset(ctx.agent, prompt, ctx, opts)
 
       {module, function} when is_atom(module) and is_atom(function) ->
         call_reply_renderer(module, function, prompt, input, ctx, opts)
@@ -404,16 +422,42 @@ defmodule Spectre.Runner do
 
   @spec normalize_function_result(term(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
-  defp normalize_function_result({:ok, %Result{} = result}, _input, _ctx), do: {:ok, result}
-  defp normalize_function_result(%Result{} = result, _input, _ctx), do: {:ok, result}
+  defp normalize_function_result({:ok, %Result{} = result}, input, ctx),
+    do: {:ok, put_run_result_defaults(result, input, ctx)}
+
+  defp normalize_function_result(%Result{} = result, input, ctx),
+    do: {:ok, put_run_result_defaults(result, input, ctx)}
 
   defp normalize_function_result({:ok, reply}, input, ctx),
-    do: {:ok, %Result{input: input, state: ctx.state, reply_text: to_string(reply)}}
+    do:
+      {:ok,
+       %Result{input: input, route: ctx.route, state: ctx.state, reply_text: to_string(reply)}}
 
   defp normalize_function_result({:error, reason}, _input, _ctx), do: {:error, reason}
 
   defp normalize_function_result(reply, input, ctx),
-    do: {:ok, %Result{input: input, state: ctx.state, reply_text: to_string(reply)}}
+    do:
+      {:ok,
+       %Result{input: input, route: ctx.route, state: ctx.state, reply_text: to_string(reply)}}
+
+  @spec put_run_result_defaults(Result.t(), Input.t(), Spectre.Context.t()) :: Result.t()
+  defp put_run_result_defaults(%Result{} = result, input, ctx) do
+    %{
+      result
+      | input: result.input || input,
+        route: result.route || ctx.route,
+        state: result.state || ctx.state
+    }
+  end
+
+  @spec put_effect_scope(Effect.t(), Spectre.Definition.scope()) :: Effect.t()
+  defp put_effect_scope(%Effect{} = effect, scope) do
+    %{effect | payload: Map.put(effect.payload, :scope, scope)}
+  end
+
+  @spec route_scope(Spectre.Context.t() | map()) :: Spectre.Definition.scope()
+  defp route_scope(%{route: %Route{scope: scope}}), do: scope
+  defp route_scope(_ctx), do: :agent
 
   @spec normalize_ctx(Spectre.Context.t() | map(), Input.t(), keyword()) :: Spectre.Context.t()
   defp normalize_ctx(%Spectre.Context{} = ctx, _input, opts),

@@ -78,6 +78,11 @@ defmodule Spectre.Agent do
       end
   """
 
+  alias Spectre.Definition
+  alias Spectre.Definition.Validator
+  alias Spectre.Prompt.Operation
+  alias Spectre.Skill.Mount
+
   @doc """
   Imports the DSL and initializes compile-time metadata for an agent module.
 
@@ -98,7 +103,11 @@ defmodule Spectre.Agent do
     id = Keyword.get(opts, :id, __CALLER__.module)
     version = Keyword.get(opts, :version, 1)
     config = default_config(opts, kind)
-    router = default_router(opts)
+    router = default_router(opts, kind)
+
+    if kind == :skill and Keyword.has_key?(opts, :arbitrator) do
+      raise ArgumentError, "Skills inherit the Agent router and cannot configure :arbitrator"
+    end
 
     quote bind_quoted: [
             config: config,
@@ -169,14 +178,14 @@ defmodule Spectre.Agent do
     caller = __CALLER__
     module = Macro.expand(module, caller)
     opts = eval_opts(opts, caller)
-    definition = Spectre.Definition.fetch!(module)
+    definition = Definition.fetch!(module)
 
     if definition.kind != :skill do
       raise ArgumentError,
             "skill expects a module using Spectre.Skill, got: #{inspect(module)}"
     end
 
-    mount = Spectre.Skill.Mount.new(module, definition, opts)
+    mount = Mount.new(module, definition, opts)
 
     quote do
       @spectre_skills unquote(Macro.escape(mount))
@@ -194,7 +203,7 @@ defmodule Spectre.Agent do
       |> eval_opts(__CALLER__)
       |> Keyword.put_new(:source_line, __CALLER__.line)
 
-    operation = Spectre.Prompt.Operation.new(Macro.expand(id, __CALLER__), opts)
+    operation = Operation.new(Macro.expand(id, __CALLER__), opts)
 
     quote do
       @spectre_injections unquote(Macro.escape(operation))
@@ -744,6 +753,8 @@ defmodule Spectre.Agent do
     end
   end
 
+  # DSL callback generation necessarily contains several definition clauses.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defmacro __before_compile__(env) do
     metadata = compile_metadata(env.module)
     definition = compile_definition(env.module, metadata)
@@ -804,7 +815,7 @@ defmodule Spectre.Agent do
     }
   end
 
-  @spec compile_definition(module(), map()) :: Spectre.Definition.t()
+  @spec compile_definition(module(), map()) :: Definition.t()
   defp compile_definition(module, metadata) do
     %{
       kind: metadata.kind,
@@ -822,8 +833,8 @@ defmodule Spectre.Agent do
       requirements: metadata.requirements,
       skills: metadata.skills
     }
-    |> Spectre.Definition.new()
-    |> Spectre.Definition.Validator.validate!()
+    |> Definition.new()
+    |> Validator.validate!()
   end
 
   @default_shutdown :timer.minutes(10)
@@ -852,14 +863,16 @@ defmodule Spectre.Agent do
     Keyword.drop(opts, [:arbitrator, :id, :version, :__spectre_kind__])
   end
 
-  @spec default_router(keyword()) :: keyword()
-  defp default_router(opts) do
+  @spec default_router(keyword(), :agent | :skill) :: keyword()
+  defp default_router(opts, :agent) do
     []
     |> Keyword.put(
       :arbitrator,
       normalize_arbitrator(Keyword.get(opts, :arbitrator, @default_arbitrator))
     )
   end
+
+  defp default_router(_opts, :skill), do: []
 
   @spec normalize_fail(term()) :: {term(), keyword()}
   defp normalize_fail({prompt, fail_opts}) when is_list(fail_opts), do: {prompt, fail_opts}
@@ -959,10 +972,10 @@ defmodule Spectre.Agent do
   defp injection_call?({:inject, _meta, _args}), do: true
   defp injection_call?(_call), do: false
 
-  @spec parse_flow_injection(Macro.t(), Macro.Env.t()) :: Spectre.Prompt.Operation.t()
+  @spec parse_flow_injection(Macro.t(), Macro.Env.t()) :: Operation.t()
   defp parse_flow_injection({:inject, meta, [id]}, caller) do
     operation_opts = [source_line: Keyword.get(meta, :line, caller.line)]
-    Spectre.Prompt.Operation.new(Macro.expand(id, caller), operation_opts)
+    Operation.new(Macro.expand(id, caller), operation_opts)
   end
 
   defp parse_flow_injection({:inject, meta, [id, opts]}, caller) do
@@ -971,7 +984,7 @@ defmodule Spectre.Agent do
       |> eval_opts(caller)
       |> Keyword.put_new(:source_line, Keyword.get(meta, :line, caller.line))
 
-    Spectre.Prompt.Operation.new(Macro.expand(id, caller), operation_opts)
+    Operation.new(Macro.expand(id, caller), operation_opts)
   end
 
   @spec parse_policy(atom(), Macro.t(), Macro.Env.t()) :: map()

@@ -73,19 +73,23 @@ defmodule Spectre.Definition do
   """
   @spec fetch(module()) :: {:ok, t()} | {:error, term()}
   def fetch(module) when is_atom(module) and not is_nil(module) do
-    with true <- Code.ensure_loaded?(module) do
-      if function_exported?(module, :__spectre_definition__, 0) do
-        normalize_definition(module, module.__spectre_definition__())
-      else
-        legacy_definition(module)
-      end
-    else
+    case Code.ensure_loaded?(module) do
+      true -> fetch_loaded(module)
       false -> {:error, {:unknown_spectre_definition, module}}
     end
   rescue
     exception -> {:error, {:definition_exception, module, exception.__struct__}}
   catch
     kind, reason -> {:error, {:definition_failure, module, kind, reason}}
+  end
+
+  @spec fetch_loaded(module()) :: {:ok, t()} | {:error, term()}
+  defp fetch_loaded(module) do
+    if function_exported?(module, :__spectre_definition__, 0) do
+      normalize_definition(module, module.__spectre_definition__())
+    else
+      legacy_definition(module)
+    end
   end
 
   @doc """
@@ -207,15 +211,24 @@ defmodule Spectre.Definition do
   def after_actions(agent) do
     definition = fetch!(agent)
 
+    own =
+      Enum.map(
+        definition.after_actions,
+        &materialize_action_hook(&1, definition.owner, :agent, %{})
+      )
+
     mounted =
       Enum.flat_map(definition.skills, fn mount ->
-        mount.module
-        |> fetch!()
-        |> Map.fetch!(:after_actions)
-        |> Enum.map(&bind_action_field(&1, mount.bindings))
+        skill = fetch!(mount.module)
+        scope = Mount.scope(mount)
+
+        Enum.map(
+          skill.after_actions,
+          &materialize_action_hook(&1, skill.owner, scope, mount.bindings)
+        )
       end)
 
-    definition.after_actions ++ mounted
+    own ++ mounted
   end
 
   @doc """
@@ -325,7 +338,11 @@ defmodule Spectre.Definition do
       rule
       |> Map.put(:owner, owner)
       |> Map.put(:scope, scope)
-      |> Map.update(:handler, nil, &bind_handler(&1, bindings, requirement_modes))
+      |> Map.update(
+        :handler,
+        nil,
+        &bind_handler(&1, bindings, requirement_modes, owner, scope)
+      )
       |> Map.update(:injections, [], &materialize_rule_injections(&1, scope, rule.flow))
       |> Map.put(:definition_injections, materialize_injections(definition_injections, scope))
     end)
@@ -347,18 +364,43 @@ defmodule Spectre.Definition do
 
   defp put_operation_scope(operation, _scope), do: operation
 
-  @spec bind_handler(term(), map(), map()) :: term()
-  defp bind_handler({:action, action, opts}, bindings, requirement_modes) do
+  @spec bind_handler(term(), map(), map(), module(), scope()) :: term()
+  defp bind_handler({:action, action, opts}, bindings, requirement_modes, owner, scope) do
     opts =
       case Map.fetch(requirement_modes, action) do
         {:ok, mode} -> Keyword.put_new(opts, :mode, mode)
         :error -> opts
       end
 
+    opts =
+      opts
+      |> materialize_handler_hooks(owner, scope, bindings)
+      |> materialize_handler_policy(scope)
+
     {:action, Map.get(bindings, action, action), opts}
   end
 
-  defp bind_handler(handler, _bindings, _requirement_modes), do: handler
+  defp bind_handler(handler, _bindings, _requirement_modes, _owner, _scope), do: handler
+
+  @spec materialize_handler_hooks(keyword(), module(), scope(), map()) :: keyword()
+  defp materialize_handler_hooks(opts, owner, scope, bindings) do
+    if Keyword.has_key?(opts, :hooks) do
+      Keyword.update!(opts, :hooks, fn hooks ->
+        Enum.map(hooks, &materialize_action_hook(&1, owner, scope, bindings))
+      end)
+    else
+      opts
+    end
+  end
+
+  @spec materialize_handler_policy(keyword(), scope()) :: keyword()
+  defp materialize_handler_policy(opts, scope) do
+    if Keyword.has_key?(opts, :policy) do
+      Keyword.update!(opts, :policy, &materialize_policy_reference(&1, scope))
+    else
+      opts
+    end
+  end
 
   @spec requirement_modes([map()]) :: map()
   defp requirement_modes(requirements) do
@@ -378,6 +420,24 @@ defmodule Spectre.Definition do
     do: Map.put(value, :action, Map.get(bindings, action, action))
 
   defp bind_action_field(value, _bindings), do: value
+
+  @spec materialize_action_hook(map(), module(), scope(), map()) :: map()
+  defp materialize_action_hook(hook, owner, scope, bindings) do
+    hook
+    |> bind_action_field(bindings)
+    |> Map.put(:scope, scope)
+    |> Map.update(:run, nil, fn
+      function when is_atom(function) and not is_nil(function) -> {owner, function}
+      run -> run
+    end)
+  end
+
+  @spec materialize_policy_reference(term(), scope()) :: term()
+  defp materialize_policy_reference(policy, scope)
+       when is_atom(policy) and not is_nil(policy),
+       do: policy_ref(scope, policy)
+
+  defp materialize_policy_reference(policy, _scope), do: policy
 
   @spec find_policy(module(), scope(), atom()) :: {:ok, map(), scope()} | {:error, term()}
   defp find_policy(agent, scope, name) do

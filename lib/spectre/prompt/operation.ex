@@ -44,7 +44,6 @@ defmodule Spectre.Prompt.Operation do
     target = Keyword.get(opts, :into)
     position = Keyword.get(opts, :position, :end)
     source = source(id, Keyword.get(opts, :from))
-    trust = trust(target, source)
 
     operation = %__MODULE__{
       id: id,
@@ -55,7 +54,7 @@ defmodule Spectre.Prompt.Operation do
       condition: Keyword.get(opts, :when),
       source_line: Keyword.get(opts, :source_line),
       required?: Keyword.get(opts, :required, true),
-      trust: trust,
+      trust: :data,
       opts:
         Keyword.drop(opts, [
           :into,
@@ -68,7 +67,7 @@ defmodule Spectre.Prompt.Operation do
         ])
     }
 
-    validate!(operation)
+    canonicalize(operation)
   end
 
   @doc """
@@ -82,7 +81,7 @@ defmodule Spectre.Prompt.Operation do
   def normalize([], _scope), do: []
 
   def normalize(%__MODULE__{} = operation, scope),
-    do: [%{operation | scope: scope}]
+    do: [operation |> Map.put(:scope, scope) |> canonicalize()]
 
   def normalize(prompt, scope) when is_atom(prompt) or is_binary(prompt) do
     [new(prompt, [into: :task], scope)]
@@ -105,7 +104,11 @@ defmodule Spectre.Prompt.Operation do
   Assigns a materialized runtime scope to an operation.
   """
   @spec put_scope(t(), term()) :: t()
-  def put_scope(%__MODULE__{} = operation, scope), do: %{operation | scope: scope}
+  def put_scope(%__MODULE__{} = operation, scope) do
+    operation
+    |> Map.put(:scope, scope)
+    |> canonicalize()
+  end
 
   @spec source(term(), term()) :: source()
   defp source(id, nil) when is_atom(id) or is_binary(id), do: {:prompt, id}
@@ -128,6 +131,12 @@ defmodule Spectre.Prompt.Operation do
 
   defp trust(_target, _source), do: :data
 
+  @spec canonicalize(t()) :: t()
+  defp canonicalize(%__MODULE__{} = operation) do
+    operation = validate!(operation)
+    %{operation | trust: trust(operation.target, operation.source)}
+  end
+
   @spec validate!(t()) :: t()
   defp validate!(%__MODULE__{id: nil}), do: raise(ArgumentError, "inject requires an identifier")
 
@@ -145,7 +154,56 @@ defmodule Spectre.Prompt.Operation do
     raise ArgumentError, "inject required: must be a boolean, got: #{inspect(required?)}"
   end
 
-  defp validate!(%__MODULE__{condition: condition} = operation) do
+  defp validate!(%__MODULE__{source: {:prompt, prompt}})
+       when not is_atom(prompt) and not is_binary(prompt) do
+    raise ArgumentError,
+          "inject prompt source must be an atom or string, got: #{inspect(prompt)}"
+  end
+
+  defp validate!(%__MODULE__{source: {:provider, module, function}})
+       when not is_atom(module) or not is_atom(function) do
+    raise ArgumentError,
+          "inject provider source must be {Module, :function}, got: " <>
+            inspect({module, function})
+  end
+
+  defp validate!(%__MODULE__{source: {:prompt, _prompt}} = operation),
+    do: validate_options_and_condition!(operation)
+
+  defp validate!(%__MODULE__{source: {:provider, _module, _function}} = operation),
+    do: validate_options_and_condition!(operation)
+
+  defp validate!(%__MODULE__{source: source})
+       when is_tuple(source) and elem(source, 0) == :prompt and tuple_size(source) != 2 do
+    raise ArgumentError, "invalid inject source: #{inspect(source)}"
+  end
+
+  defp validate!(%__MODULE__{source: source})
+       when is_tuple(source) and elem(source, 0) == :provider and tuple_size(source) != 3 do
+    raise ArgumentError, "invalid inject source: #{inspect(source)}"
+  end
+
+  defp validate!(%__MODULE__{source: source})
+       when not is_tuple(source) or tuple_size(source) not in [2, 3] do
+    raise ArgumentError, "invalid inject source: #{inspect(source)}"
+  end
+
+  defp validate!(%__MODULE__{source: source})
+       when elem(source, 0) not in [:prompt, :provider] do
+    raise ArgumentError, "invalid inject source: #{inspect(source)}"
+  end
+
+  @spec validate_options_and_condition!(t()) :: t()
+  defp validate_options_and_condition!(%__MODULE__{opts: opts} = operation) do
+    if is_list(opts) and Keyword.keyword?(opts) do
+      validate_condition!(operation)
+    else
+      raise ArgumentError, "inject opts must be a keyword list, got: #{inspect(opts)}"
+    end
+  end
+
+  @spec validate_condition!(t()) :: t()
+  defp validate_condition!(%__MODULE__{condition: condition} = operation) do
     if valid_condition?(condition) do
       operation
     else

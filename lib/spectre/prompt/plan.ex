@@ -49,32 +49,39 @@ defmodule Spectre.Prompt.Plan do
       when is_binary(base_task) and is_list(resolutions) and is_list(scopes) do
     applied = Enum.filter(resolutions, &(&1.status == :applied))
 
-    with :ok <- validate_replacements(applied) do
-      fragments = Enum.map(applied, &fragment/1)
-
-      sections =
-        Map.new(@targets, fn target ->
-          inner = if target == :task, do: [Fragment.base(base_task)], else: []
-          {target, resolve_target(target, fragments, scopes, inner)}
-        end)
-
-      rendered = render_sections(sections)
-
-      plan = %__MODULE__{
-        instructions: Map.fetch!(sections, :instructions),
-        context: Map.fetch!(sections, :context),
-        task: Map.fetch!(sections, :task),
-        operations: Enum.map(resolutions, &resolution_summary/1),
-        rendered: rendered,
-        metadata: %{
-          hash: hash(rendered),
-          bytes: byte_size(rendered),
-          operations: Enum.map(resolutions, &resolution_summary/1)
-        }
-      }
-
-      {:ok, plan}
+    case validate_replacements(applied) do
+      :ok -> {:ok, compose_plan(base_task, applied, resolutions, scopes)}
+      {:error, _reason} = error -> error
     end
+  end
+
+  @spec compose_plan(String.t(), [resolution()], [resolution()], [term()]) :: t()
+  defp compose_plan(base_task, applied, resolutions, scopes) do
+    fragments = Enum.map(applied, &fragment/1)
+    sections = resolve_sections(base_task, fragments, scopes)
+    rendered = render_sections(sections)
+    operations = Enum.map(resolutions, &resolution_summary/1)
+
+    %__MODULE__{
+      instructions: Map.fetch!(sections, :instructions),
+      context: Map.fetch!(sections, :context),
+      task: Map.fetch!(sections, :task),
+      operations: operations,
+      rendered: rendered,
+      metadata: %{
+        hash: hash(rendered),
+        bytes: byte_size(rendered),
+        operations: operations
+      }
+    }
+  end
+
+  @spec resolve_sections(String.t(), [Fragment.t()], [term()]) :: map()
+  defp resolve_sections(base_task, fragments, scopes) do
+    Map.new(@targets, fn target ->
+      inner = if target == :task, do: [Fragment.base(base_task)], else: []
+      {target, resolve_target(target, fragments, scopes, inner)}
+    end)
   end
 
   @doc """
@@ -131,6 +138,7 @@ defmodule Spectre.Prompt.Plan do
       scope: operation.scope,
       target: operation.target,
       position: operation.position,
+      trust: operation.trust,
       status: status,
       required?: operation.required?
     }

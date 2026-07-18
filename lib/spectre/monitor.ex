@@ -170,7 +170,7 @@ defmodule Spectre.Monitor do
         )
     }
 
-    case Prompt.render(agent, prompt, ctx, opts) do
+    case Prompt.render_asset(agent, prompt, ctx, opts) do
       {:ok, text} ->
         {:ok, text}
 

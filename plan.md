@@ -4,7 +4,7 @@ Status: core implementation complete on `feature/skills-and-inject`
 Scope: production hardening, modular Skills, and structured `inject` support  
 Explicitly deferred: CI setup and ExDoc work
 
-Verification: `mix format --check-formatted`, 225 tests, Credo strict (no
+Verification: `mix format --check-formatted`, 253 tests, Credo strict (no
 warnings/errors), and Dialyzer (zero errors) pass locally. Optional scoped
 router/classifier/memory work (Phase 6), package extraction/load profiling
 (P2), and the two compatibility-sensitive P1 follow-ups called out below are

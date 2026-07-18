@@ -85,7 +85,11 @@ defmodule Spectre.Router.Plugs.Arbitrate do
         route = Support.route_from_result(result, visible_rules, labels, :llm_classifier)
 
         candidate =
-          Candidate.from_result(route, route_rule(route, visible_rules), :llm_classifier)
+          Candidate.from_result(
+            route,
+            Support.route_rule(route, visible_rules),
+            :llm_classifier
+          )
 
         context = Context.add_candidate(context, candidate)
 
@@ -253,7 +257,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
          rules
        )
        when not is_nil(handler) do
-    case route_rule(route, rules) do
+    case Support.route_rule(route, rules) do
       %Spectre.Rule{learn: true} -> :ok
       %Spectre.Rule{} -> {:skip, :route_not_learnable}
       nil -> {:skip, :route_not_visible}
@@ -288,7 +292,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
   @spec unprotected_route(Spectre.Route.t(), Context.t()) :: :ok | {:skip, term()}
   defp unprotected_route(
-         %Spectre.Route{handler: {:action, action, handler_opts}},
+         %Spectre.Route{handler: {:action, action, handler_opts}} = route,
          %Context{} = context
        ) do
     if Keyword.get(context.opts, :semantic_learn_protected?, false) do
@@ -304,9 +308,14 @@ defmodule Spectre.Router.Plugs.Arbitrate do
         })
 
       cond do
-        is_nil(agent) -> :ok
-        Spectre.ActionProtection.protected_by(agent, effect) -> {:skip, :protected_route}
-        true -> :ok
+        is_nil(agent) ->
+          :ok
+
+        Spectre.ActionProtection.protected_by(agent, effect, route.scope) ->
+          {:skip, :protected_route}
+
+        true ->
+          :ok
       end
     end
   end
@@ -394,8 +403,6 @@ defmodule Spectre.Router.Plugs.Arbitrate do
         {module, []}
     end
   end
-
-  defp route_rule(route, rules), do: Enum.find(rules, &(&1.label == route.label))
 
   defp clarify_route(context, text) do
     case Enum.find(context.rules, &(&1.label == :UNKNOWN)) do

@@ -105,22 +105,21 @@ defmodule Spectre.State.Codec do
          {:ok, awaitables} <- decode_collection(attrs, "awaitables", &decode_awaitable/1),
          {:ok, memory_refs} <- decode_field(attrs, "memory_refs", []),
          {:ok, data} <- decode_field(attrs, "data", %{}),
-         {:ok, trace} <- decode_field(attrs, "trace", []),
-         {:ok, state} <-
-           build_state(%{
-             state_version: @state_version,
-             revision: revision,
-             conversation_id: conversation_id,
-             current_flow: current_flow,
-             current_scope: current_scope,
-             pending_effects: pending_effects,
-             planned_effects: planned_effects,
-             awaitables: awaitables,
-             memory_refs: memory_refs,
-             data: data,
-             trace: trace
-           }) do
-      {:ok, state}
+         :ok <- validate_state_data(data),
+         {:ok, trace} <- decode_field(attrs, "trace", []) do
+      build_state(%{
+        state_version: @state_version,
+        revision: revision,
+        conversation_id: conversation_id,
+        current_flow: current_flow,
+        current_scope: current_scope,
+        pending_effects: pending_effects,
+        planned_effects: planned_effects,
+        awaitables: awaitables,
+        memory_refs: memory_refs,
+        data: data,
+        trace: trace
+      })
     end
   end
 
@@ -264,10 +263,32 @@ defmodule Spectre.State.Codec do
 
   @spec validate_state(State.t()) :: :ok | {:error, term()}
   defp validate_state(%State{} = state) do
-    cond do
-      not is_integer(state.revision) or state.revision < 0 ->
-        {:error, {:invalid_state_revision, state.revision}}
+    with :ok <- validate_revision(state.revision),
+         :ok <- validate_state_collections(state),
+         :ok <-
+           validate_collection_size(state.pending_effects, :pending_effects, @max_pending_effects),
+         :ok <-
+           validate_collection_size(state.planned_effects, :planned_effects, @max_planned_effects),
+         :ok <- validate_collection_size(state.awaitables, :awaitables, @max_awaitables),
+         :ok <- validate_collection_size(state.memory_refs, :memory_refs, @max_memory_refs) do
+      validate_collection_size(state.trace, :trace, @max_trace_entries)
+    end
+  end
 
+  @spec validate_revision(term()) :: :ok | {:error, term()}
+  defp validate_revision(revision) when is_integer(revision) and revision >= 0, do: :ok
+  defp validate_revision(revision), do: {:error, {:invalid_state_revision, revision}}
+
+  @spec validate_state_data(term()) :: :ok | {:error, term()}
+  defp validate_state_data(data) do
+    if is_map(data),
+      do: :ok,
+      else: {:error, {:invalid_state_data, value_shape(data)}}
+  end
+
+  @spec validate_state_collections(State.t()) :: :ok | {:error, term()}
+  defp validate_state_collections(%State{} = state) do
+    cond do
       not is_list(state.pending_effects) or not is_list(state.planned_effects) ->
         {:error, :invalid_effect_collections}
 
@@ -275,33 +296,18 @@ defmodule Spectre.State.Codec do
           not is_list(state.trace) ->
         {:error, :invalid_state_collections}
 
-      not is_map(state.data) ->
-        {:error, {:invalid_state_data, value_shape(state.data)}}
-
-      length(state.pending_effects) > @max_pending_effects ->
-        {:error,
-         {:state_collection_too_large, :pending_effects, length(state.pending_effects),
-          @max_pending_effects}}
-
-      length(state.planned_effects) > @max_planned_effects ->
-        {:error,
-         {:state_collection_too_large, :planned_effects, length(state.planned_effects),
-          @max_planned_effects}}
-
-      length(state.awaitables) > @max_awaitables ->
-        {:error,
-         {:state_collection_too_large, :awaitables, length(state.awaitables), @max_awaitables}}
-
-      length(state.memory_refs) > @max_memory_refs ->
-        {:error,
-         {:state_collection_too_large, :memory_refs, length(state.memory_refs), @max_memory_refs}}
-
-      length(state.trace) > @max_trace_entries ->
-        {:error, {:state_collection_too_large, :trace, length(state.trace), @max_trace_entries}}
-
       true ->
         :ok
     end
+  end
+
+  @spec validate_collection_size(list(), atom(), non_neg_integer()) :: :ok | {:error, term()}
+  defp validate_collection_size(values, name, max) do
+    size = length(values)
+
+    if size <= max,
+      do: :ok,
+      else: {:error, {:state_collection_too_large, name, size, max}}
   end
 
   @spec validate_effect(Effect.t()) :: :ok | {:error, term()}

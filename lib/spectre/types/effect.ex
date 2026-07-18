@@ -197,6 +197,14 @@ defmodule Spectre.Effect do
   @spec source(t()) :: atom() | nil
   def source(%__MODULE__{payload: payload}), do: Map.get(payload, :source)
 
+  @doc """
+  Returns the Agent or mounted-Skill scope that staged the effect.
+
+  Older persisted effects may not carry a scope and return `nil`.
+  """
+  @spec scope(t()) :: Spectre.Definition.scope() | nil
+  def scope(%__MODULE__{payload: payload}), do: Map.get(payload, :scope)
+
   @spec effect_payload(map()) :: map()
   defp effect_payload(attrs) do
     payload = attr_or(attrs, :payload, %{})
