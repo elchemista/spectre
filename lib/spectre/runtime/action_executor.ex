@@ -233,12 +233,6 @@ defmodule Spectre.ActionExecutor do
     module
     |> apply(function, args)
     |> normalize_action_reply()
-  rescue
-    exception ->
-      {:error, {:action_exception, module, function, exception}}
-  catch
-    kind, reason ->
-      {:error, {:action_failure, module, function, kind, reason}}
   end
 
   @spec normalize_action_reply(term()) :: {:ok, term()} | {:error, term()}

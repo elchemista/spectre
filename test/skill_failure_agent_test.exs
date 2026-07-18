@@ -95,6 +95,7 @@ defmodule SpectreSkillFailureAgentTest do
   use ExUnit.Case, async: false
 
   alias Spectre.Effect
+  alias Spectre.Provider.Failure
   alias Spectre.Result
   alias SpectreSkillFailureAgentTest.Agent
   alias SpectreSkillFailureAgentTest.FailureSkill
@@ -148,14 +149,14 @@ defmodule SpectreSkillFailureAgentTest do
     session = start_supervised!({Spectre.Session, agent: Agent})
 
     assert {:error,
-            {:run_function_exception, FailureSkill, :crashing_run,
-             %RuntimeError{message: "run callback exploded"}}} =
+            %Failure{provider: :run, kind: :exception, reason: RuntimeError} = raised_failure} =
              Spectre.ask(session, "run crash")
+
+    refute inspect(raised_failure) =~ "run callback exploded"
 
     assert Process.alive?(session)
 
-    assert {:error,
-            {:run_function_failure, FailureSkill, :exiting_run, :exit, :run_callback_exit}} =
+    assert {:error, %Failure{provider: :run, kind: :exit, reason: :run_callback_exit}} =
              Spectre.ask(session, "run exit")
 
     assert Process.alive?(session)

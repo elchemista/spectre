@@ -13,6 +13,7 @@ defmodule Spectre.Router.SemanticCache do
   """
 
   alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Provider.Reply
   alias Spectre.Router.SemanticCache.Learned
 
@@ -338,7 +339,9 @@ defmodule Spectre.Router.SemanticCache do
         {:error, {:invalid_semantic_cache_adapter, module}}
 
       function_exported?(module, :clear, 2) ->
-        normalize_clear_result(module.clear(agent, opts))
+        module
+        |> protected_optional_call(:clear, [agent, Call.adapter_opts(opts)], opts)
+        |> normalize_clear_result()
 
       true ->
         {:error, {:missing_semantic_cache_callback, module, :clear}}
@@ -355,7 +358,6 @@ defmodule Spectre.Router.SemanticCache do
   defp normalize_clear_result(:ok), do: :ok
   defp normalize_clear_result({:ok, _value}), do: :ok
   defp normalize_clear_result({:error, reason}), do: {:error, reason}
-  defp normalize_clear_result(other), do: {:error, {:invalid_semantic_cache_clear_result, other}}
 
   @spec call_optional(
           module() | {module(), atom()} | term(),
@@ -365,13 +367,13 @@ defmodule Spectre.Router.SemanticCache do
           :ignore | :error
         ) ::
           term()
-  defp call_optional(module, function, args, _opts, failure_mode) when is_atom(module) do
+  defp call_optional(module, function, args, opts, failure_mode) when is_atom(module) do
     cond do
       not Code.ensure_loaded?(module) ->
         {:error, {:invalid_semantic_cache_adapter, module}}
 
       function_exported?(module, function, length(args)) ->
-        apply(module, function, args)
+        protected_optional_call(module, function, sanitize_adapter_args(args), opts)
 
       failure_mode == :ignore ->
         :ok
@@ -388,6 +390,40 @@ defmodule Spectre.Router.SemanticCache do
 
   defp call_optional(other, _function, _args, _opts, _failure_mode),
     do: {:error, {:invalid_semantic_cache_adapter, other}}
+
+  @spec protected_optional_call(module(), atom(), [term()], keyword()) ::
+          :ok | {:ok, term()} | {:error, term()}
+  defp protected_optional_call(module, function, args, opts) do
+    result =
+      Call.run(
+        :semantic_cache,
+        fn -> module |> apply(function, args) |> normalize_optional_reply() end,
+        Keyword.put(opts, :purpose, function)
+      )
+
+    case result do
+      {:ok, :completed} -> :ok
+      {:ok, {:value, value}} -> {:ok, value}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec normalize_optional_reply(term()) ::
+          {:ok, :completed | {:value, term()}} | {:error, term()}
+  defp normalize_optional_reply(:ok), do: {:ok, :completed}
+  defp normalize_optional_reply({:ok, value}), do: {:ok, {:value, value}}
+  defp normalize_optional_reply({:error, reason}), do: {:error, reason}
+
+  defp normalize_optional_reply(other),
+    do: {:error, Failure.invalid_reply(:semantic_cache, other)}
+
+  @spec sanitize_adapter_args([term()]) :: [term()]
+  defp sanitize_adapter_args(args) do
+    List.update_at(args, -1, fn
+      opts when is_list(opts) -> Call.adapter_opts(opts)
+      value -> value
+    end)
+  end
 
   @spec learn_failure(term(), keyword()) :: :ok | {:error, term()}
   defp learn_failure(reason, opts) do

@@ -13,6 +13,7 @@ defmodule Spectre.Journal.Recorder do
   alias Spectre.Journal.Buffer
   alias Spectre.Journal.Record
   alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Router.Candidate
   alias Spectre.Router.Context
 
@@ -358,7 +359,7 @@ defmodule Spectre.Journal.Recorder do
   defp normalize_append_reply({:error, reason}), do: {:error, reason}
 
   defp normalize_append_reply(other),
-    do: {:error, {:invalid_journal_store_reply, other}}
+    do: {:error, Failure.invalid_reply(:journal, other)}
 
   @spec handle_sync_error(term(), keyword(), Context.t()) ::
           {:ok, Context.t()} | {:error, term()}

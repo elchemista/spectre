@@ -24,6 +24,7 @@ defmodule Spectre.Runtime do
   alias Spectre.Input.Pipeline
   alias Spectre.Policy
   alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Result
   alias Spectre.Router
   alias Spectre.State
@@ -378,7 +379,9 @@ defmodule Spectre.Runtime do
   defp normalize_memory_persist_reply(:ok), do: :ok
   defp normalize_memory_persist_reply({:ok, _reply}), do: :ok
   defp normalize_memory_persist_reply({:error, reason}), do: {:error, reason}
-  defp normalize_memory_persist_reply(other), do: {:error, {:invalid_memory_persist_reply, other}}
+
+  defp normalize_memory_persist_reply(other),
+    do: {:error, Failure.invalid_reply(:memory, other)}
 
   @spec normalize_memory_provider_reply(term()) :: {:ok, :persisted} | {:error, term()}
   defp normalize_memory_provider_reply(reply) do
@@ -633,6 +636,14 @@ defmodule Spectre.Runtime do
     |> maybe_put_config(config, :chat_history_limit)
     |> maybe_put_config(config, :state_timeout)
     |> maybe_put_config(config, :memory_timeout)
+    |> maybe_put_config(config, :run_timeout)
+    |> maybe_put_config(config, :renderer_timeout)
+    |> maybe_put_config(config, :hook_timeout)
+    |> maybe_put_config(config, :prompt_timeout)
+    |> maybe_put_config(config, :input_timeout)
+    |> maybe_put_config(config, :router_timeout)
+    |> maybe_put_config(config, :monitor_timeout)
+    |> maybe_put_config(config, :callback_timeout)
     |> maybe_put_config(config, :input_max_bytes)
     |> maybe_put_config(config, :memory_max_bytes)
     |> maybe_put_config(config, :memory_persist_max_bytes)

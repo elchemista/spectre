@@ -110,9 +110,15 @@ defmodule SpectreRuntimeSafetyTest do
     assert [
              %Effect{
                status: :failed,
-               error: {:action_exception, Actions, :explode, %RuntimeError{message: "boom"}}
+               error: %Spectre.Provider.Failure{
+                 provider: :action,
+                 kind: :exception,
+                 reason: RuntimeError
+               }
              }
            ] = result.effects
+
+    refute inspect(result.effects) =~ "boom"
   end
 
   test "a selected tool cannot escape the configured action module" do

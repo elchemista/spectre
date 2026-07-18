@@ -3,6 +3,8 @@ defmodule Spectre.Router.LLMClassifier do
   One-label LLM fallback classifier for Spectre routes.
   """
 
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Route
 
   @doc """
@@ -101,8 +103,15 @@ defmodule Spectre.Router.LLMClassifier do
       |> Map.merge(base)
 
     case classifier_prompt(opts) do
-      fun when is_function(fun, 1) -> normalize_prompt_result(fun.(assigns))
-      nil -> {:ok, default_prompt(assigns)}
+      fun when is_function(fun, 1) ->
+        Call.run(
+          :prompt,
+          fn -> fun.(assigns) |> normalize_prompt_result() end,
+          opts |> Call.adapter_opts() |> Keyword.put(:purpose, :classifier_prompt)
+        )
+
+      nil ->
+        {:ok, default_prompt(assigns)}
     end
   end
 
@@ -116,7 +125,11 @@ defmodule Spectre.Router.LLMClassifier do
   @spec normalize_prompt_result(term()) :: {:ok, String.t()} | {:error, term()}
   defp normalize_prompt_result({:ok, prompt}) when is_binary(prompt), do: {:ok, prompt}
   defp normalize_prompt_result(prompt) when is_binary(prompt), do: {:ok, prompt}
-  defp normalize_prompt_result(other), do: {:error, {:invalid_classifier_prompt, other}}
+
+  defp normalize_prompt_result({:error, reason}), do: {:error, reason}
+
+  defp normalize_prompt_result(other),
+    do: {:error, Failure.invalid_reply(:prompt, other)}
 
   @spec normalize_assigns(map() | keyword() | term()) :: map()
   defp normalize_assigns(assigns) when is_map(assigns), do: assigns

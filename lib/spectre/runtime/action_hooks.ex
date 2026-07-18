@@ -9,6 +9,8 @@ defmodule Spectre.ActionHooks do
 
   alias Spectre.Context
   alias Spectre.Effect
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Result
 
   @type hook_event :: :delivered
@@ -114,51 +116,67 @@ defmodule Spectre.ActionHooks do
   defp normalize_action(action), do: action
 
   @spec run_hook(hook(), term(), Context.t()) :: :ok | {:error, term()}
-  defp run_hook(%{run: {module, function}} = hook, action_result, %Context{} = ctx)
+  defp run_hook(hook, action_result, %Context{} = ctx) do
+    result =
+      Call.run(
+        :hook,
+        fn -> hook |> invoke_hook(action_result, ctx) |> normalize_hook_result() end,
+        ctx.opts |> Call.adapter_opts() |> Keyword.put(:purpose, :after_action)
+      )
+
+    case result do
+      {:ok, :completed} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec invoke_hook(hook(), term(), Context.t()) :: term()
+  defp invoke_hook(%{run: {module, function}} = hook, action_result, %Context{} = ctx)
        when is_atom(module) and is_atom(function) do
     Code.ensure_loaded(module)
 
     cond do
       function_exported?(module, function, 3) ->
-        normalize_hook_result(apply(module, function, [action_result, ctx, hook]))
+        apply(module, function, [action_result, ctx, hook])
 
       function_exported?(module, function, 2) ->
-        normalize_hook_result(apply(module, function, [action_result, ctx]))
+        apply(module, function, [action_result, ctx])
 
       function_exported?(module, function, 1) ->
-        normalize_hook_result(apply(module, function, [action_result]))
+        apply(module, function, [action_result])
 
       function_exported?(module, function, 0) ->
-        normalize_hook_result(apply(module, function, []))
+        apply(module, function, [])
 
       true ->
         {:error, {:undefined_after_action_hook, module, function}}
     end
-  rescue
-    exception ->
-      {:error, {:after_action_hook_exception, module, function, exception}}
   end
 
-  defp run_hook(%{run: function}, action_result, %Context{} = ctx) when is_function(function, 3),
-    do: normalize_hook_result(function.(action_result, ctx, %{}))
+  defp invoke_hook(%{run: function} = hook, action_result, %Context{} = ctx)
+       when is_function(function, 3),
+       do: function.(action_result, ctx, hook)
 
-  defp run_hook(%{run: function}, action_result, %Context{} = ctx) when is_function(function, 2),
-    do: normalize_hook_result(function.(action_result, ctx))
+  defp invoke_hook(%{run: function}, action_result, %Context{} = ctx)
+       when is_function(function, 2),
+       do: function.(action_result, ctx)
 
-  defp run_hook(%{run: function}, action_result, %Context{}) when is_function(function, 1),
-    do: normalize_hook_result(function.(action_result))
+  defp invoke_hook(%{run: function}, action_result, %Context{}) when is_function(function, 1),
+    do: function.(action_result)
 
-  defp run_hook(%{run: function}, _action_result, %Context{}) when is_function(function, 0),
-    do: normalize_hook_result(function.())
+  defp invoke_hook(%{run: function}, _action_result, %Context{}) when is_function(function, 0),
+    do: function.()
 
-  defp run_hook(%{run: run}, _action_result, %Context{}),
+  defp invoke_hook(%{run: run}, _action_result, %Context{}),
     do: {:error, {:invalid_after_action_hook, run}}
 
-  @spec normalize_hook_result(term()) :: :ok | {:error, term()}
-  defp normalize_hook_result(:ok), do: :ok
-  defp normalize_hook_result({:ok, _result}), do: :ok
+  @spec normalize_hook_result(term()) :: {:ok, :completed} | {:error, term()}
+  defp normalize_hook_result(:ok), do: {:ok, :completed}
+  defp normalize_hook_result({:ok, _result}), do: {:ok, :completed}
   defp normalize_hook_result({:error, reason}), do: {:error, reason}
-  defp normalize_hook_result(other), do: {:error, {:invalid_after_action_result, other}}
+
+  defp normalize_hook_result(other),
+    do: {:error, Failure.invalid_reply(:hook, other)}
 
   @spec normalize_ctx(module(), Result.t(), Context.t() | map(), keyword()) :: Context.t()
   defp normalize_ctx(agent, %Result{} = result, %Context{} = ctx, opts) do

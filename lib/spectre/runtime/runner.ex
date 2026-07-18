@@ -15,6 +15,8 @@ defmodule Spectre.Runner do
   alias Spectre.Input
   alias Spectre.Prompt
   alias Spectre.Prompt.Plan
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Result
   alias Spectre.Route
 
@@ -122,20 +124,24 @@ defmodule Spectre.Runner do
   defp call_run_function(owner, function, input, ctx) do
     cond do
       function_exported?(owner, function, 2) ->
-        normalize_function_result(apply(owner, function, [input, ctx]), input, ctx)
+        protected_run(fn -> apply(owner, function, [input, ctx]) end, input, ctx)
 
       function_exported?(owner, function, 1) ->
-        normalize_function_result(apply(owner, function, [input]), input, ctx)
+        protected_run(fn -> apply(owner, function, [input]) end, input, ctx)
 
       true ->
         {:error, {:undefined_run_function, owner, function}}
     end
-  rescue
-    exception ->
-      {:error, {:run_function_exception, owner, function, exception}}
-  catch
-    kind, reason ->
-      {:error, {:run_function_failure, owner, function, kind, reason}}
+  end
+
+  @spec protected_run((-> term()), Input.t(), Spectre.Context.t()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp protected_run(callback, input, ctx) do
+    Call.run(
+      :run,
+      fn -> callback.() |> normalize_function_result(input, ctx) end,
+      ctx.opts |> Call.adapter_opts() |> Keyword.put(:purpose, :run_handler)
+    )
   end
 
   @doc """
@@ -282,23 +288,36 @@ defmodule Spectre.Runner do
   defp render_reply(prompt, input, ctx, opts) do
     case Keyword.get(opts, :renderer) do
       nil ->
-        Prompt.render_asset(ctx.agent, prompt, ctx, opts)
+        protected_renderer(fn -> Prompt.render_asset(ctx.agent, prompt, ctx, opts) end, opts)
 
       {module, function} when is_atom(module) and is_atom(function) ->
-        call_reply_renderer(module, function, prompt, input, ctx, opts)
+        protected_renderer(
+          fn -> call_reply_renderer(module, function, prompt, input, ctx, opts) end,
+          opts
+        )
 
       function when is_function(function, 3) ->
-        normalize_reply_text(function.(prompt, input, ctx))
+        protected_renderer(fn -> function.(prompt, input, ctx) end, opts)
 
       function when is_function(function, 2) ->
-        normalize_reply_text(function.(prompt, reply_assigns(ctx, opts)))
+        protected_renderer(fn -> function.(prompt, reply_assigns(ctx, opts)) end, opts)
 
       function when is_function(function, 1) ->
-        normalize_reply_text(function.(reply_assigns(ctx, opts)))
+        protected_renderer(fn -> function.(reply_assigns(ctx, opts)) end, opts)
 
       other ->
-        {:error, {:invalid_reply_renderer, other}}
+        {:error, {:invalid_reply_renderer, reply_shape(other)}}
     end
+  end
+
+  @spec protected_renderer((-> term()), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  defp protected_renderer(callback, opts) do
+    Call.run(
+      :renderer,
+      fn -> callback.() |> normalize_reply_text() end,
+      opts |> Call.adapter_opts() |> Keyword.put(:purpose, :reply_renderer)
+    )
   end
 
   @spec call_reply_renderer(module(), atom(), term(), Input.t(), Spectre.Context.t(), keyword()) ::
@@ -308,20 +327,17 @@ defmodule Spectre.Runner do
 
     cond do
       function_exported?(module, function, 3) ->
-        normalize_reply_text(apply(module, function, [prompt, input, ctx]))
+        apply(module, function, [prompt, input, ctx])
 
       function_exported?(module, function, 2) ->
-        normalize_reply_text(apply(module, function, [prompt, reply_assigns(ctx, opts)]))
+        apply(module, function, [prompt, reply_assigns(ctx, opts)])
 
       function_exported?(module, function, 1) ->
-        normalize_reply_text(apply(module, function, [reply_assigns(ctx, opts)]))
+        apply(module, function, [reply_assigns(ctx, opts)])
 
       true ->
         {:error, {:undefined_reply_renderer, module, function}}
     end
-  rescue
-    exception ->
-      {:error, {:reply_renderer_exception, module, function, exception}}
   end
 
   @spec reply_assigns(Spectre.Context.t(), keyword()) :: map()
@@ -341,7 +357,8 @@ defmodule Spectre.Runner do
   @spec normalize_reply_text(term()) :: {:ok, String.t()} | {:error, term()}
   defp normalize_reply_text({:ok, text}) when is_binary(text), do: {:ok, text}
   defp normalize_reply_text(text) when is_binary(text), do: {:ok, text}
-  defp normalize_reply_text(other), do: {:error, {:invalid_reply_text, other}}
+  defp normalize_reply_text({:error, reason}), do: {:error, reason}
+  defp normalize_reply_text(other), do: {:error, Failure.invalid_reply(:renderer, other)}
 
   @spec reply_staged_policy(
           atom(),
@@ -429,16 +446,33 @@ defmodule Spectre.Runner do
     do: {:ok, put_run_result_defaults(result, input, ctx)}
 
   defp normalize_function_result({:ok, reply}, input, ctx),
-    do:
-      {:ok,
-       %Result{input: input, route: ctx.route, state: ctx.state, reply_text: to_string(reply)}}
+    do: normalize_run_reply(reply, input, ctx)
 
   defp normalize_function_result({:error, reason}, _input, _ctx), do: {:error, reason}
 
-  defp normalize_function_result(reply, input, ctx),
-    do:
-      {:ok,
-       %Result{input: input, route: ctx.route, state: ctx.state, reply_text: to_string(reply)}}
+  defp normalize_function_result(reply, input, ctx), do: normalize_run_reply(reply, input, ctx)
+
+  @spec normalize_run_reply(term(), Input.t(), Spectre.Context.t()) ::
+          {:ok, Result.t()} | {:error, Failure.t()}
+  defp normalize_run_reply(reply, input, ctx) do
+    case String.Chars.impl_for(reply) do
+      nil ->
+        {:error, Failure.invalid_reply(:run, reply)}
+
+      _implementation ->
+        {:ok,
+         %Result{input: input, route: ctx.route, state: ctx.state, reply_text: to_string(reply)}}
+    end
+  end
+
+  @spec reply_shape(term()) :: term()
+  defp reply_shape(value) when is_atom(value), do: :atom
+  defp reply_shape(value) when is_binary(value), do: :binary
+  defp reply_shape(value) when is_list(value), do: :list
+  defp reply_shape(value) when is_map(value), do: :map
+  defp reply_shape(value) when is_tuple(value), do: {:tuple, tuple_size(value)}
+  defp reply_shape(value) when is_function(value), do: :function
+  defp reply_shape(_value), do: :other
 
   @spec put_run_result_defaults(Result.t(), Input.t(), Spectre.Context.t()) :: Result.t()
   defp put_run_result_defaults(%Result{} = result, input, ctx) do
