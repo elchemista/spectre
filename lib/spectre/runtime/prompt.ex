@@ -4,8 +4,15 @@ defmodule Spectre.Prompt do
 
   A base `ask` prompt is represented as the task section of a
   `Spectre.Prompt.Plan`. Agent, Skill, Flow, and handler `inject` declarations
-  resolve into typed fragments before the plan is serialized for the current
-  string-based LLM adapter.
+  resolve into typed fragments before model capability negotiation. Dynamic
+  providers remain context data, while static instruction/task assets retain
+  instruction trust. Policy request tasks cannot be replaced by application
+  injections at any scope.
+
+  These rules prevent privilege promotion and policy bypass inside Spectre.
+  Structured adapters preserve them at the adapter boundary; legacy adapters
+  receive an escaped data marker. Neither form claims that the downstream
+  model is immune to semantic jailbreaks.
   """
 
   alias Spectre.Definition

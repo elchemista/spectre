@@ -37,12 +37,12 @@ defmodule Spectre.Runner do
   end
 
   def run(%Route{handler: {:reply, prompt, handler_opts}} = route, ctx) do
-    ctx = %{ctx | route: route, opts: Keyword.merge(ctx.opts, handler_opts)}
+    ctx = %{ctx | route: route}
     reply(prompt, ctx.input, ctx, handler_opts)
   end
 
   def run(%Route{handler: {:action, action, handler_opts}} = route, ctx) do
-    ctx = %{ctx | route: route, opts: Keyword.merge(ctx.opts, handler_opts)}
+    ctx = %{ctx | route: route}
     action(action, ctx.input, ctx, handler_opts)
   end
 
@@ -73,7 +73,7 @@ defmodule Spectre.Runner do
 
     with {:ok, %Plan{} = plan} <-
            Prompt.build(ctx.agent, prompt, ctx, prompt_opts),
-         {:ok, reply} <- Spectre.LLM.complete(plan.rendered, prompt_opts),
+         {:ok, reply} <- Spectre.LLM.complete(plan, prompt_opts),
          :ok <- validate_model_reply_size(reply, prompt_opts),
          {:ok, %Result{} = result} <-
            ask_result(reply, input, ctx, prompt_opts, Keyword.get(opts, :policy_prompt?)) do
@@ -179,7 +179,8 @@ defmodule Spectre.Runner do
   @spec action(atom(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
   def action(action, %Input{} = input, ctx, opts \\ []) when is_atom(action) do
-    ctx = normalize_ctx(ctx, input, opts)
+    ctx = normalize_ctx(ctx, input, [])
+    ctx = %{ctx | opts: merge_prompt_opts(ctx.opts, opts)}
 
     effect =
       Effect.stage(%{

@@ -9,6 +9,25 @@ defmodule SpectreSkillInjectTest.LLM do
   end
 end
 
+defmodule SpectreSkillInjectTest.StructuredLLM do
+  @moduledoc false
+  @behaviour Spectre.LLM
+
+  @impl Spectre.LLM
+  @spec complete(String.t(), keyword()) :: {:ok, String.t()}
+  def complete(prompt, opts) do
+    if pid = Keyword.get(opts, :test_pid), do: send(pid, {:legacy_prompt_called, prompt})
+    {:ok, "LEGACY_MODEL_REPLY"}
+  end
+
+  @impl Spectre.LLM
+  @spec complete_plan(Spectre.Prompt.Plan.t(), keyword()) :: {:ok, String.t()}
+  def complete_plan(plan, opts) do
+    if pid = Keyword.get(opts, :test_pid), do: send(pid, {:structured_prompt, plan})
+    {:ok, "STRUCTURED_MODEL_REPLY"}
+  end
+end
+
 defmodule SpectreSkillInjectTest.ContextProvider do
   @moduledoc false
 
@@ -322,6 +341,8 @@ defmodule SpectreSkillInjectTest.PolicyReplaceSkill do
   protect(:publish, with: :confirm_publish)
 
   flow :policy_replace do
+    inject(:handler_replace, into: :task, position: :replace)
+
     on :POLICY_REPLACE, regex: ~r/^policy replace$/ do
       action(:publish, args: %{source: :policy_replace})
     end
@@ -335,6 +356,7 @@ defmodule SpectreSkillInjectTest.PolicyReplaceAgent do
 
   model(SpectreSkillInjectTest.LLM)
   actions(SpectreSkillInjectTest.Actions)
+  inject(:agent_start, into: :task, position: :replace)
 
   skill(SpectreSkillInjectTest.PolicyReplaceSkill,
     bind: [publish: :publish_report]
@@ -453,6 +475,120 @@ defmodule SpectreSkillInjectTest do
     assert Enum.any?(operations, &(&1.id == :disabled and &1.status == :skipped))
     assert Enum.any?(operations, &(&1.id == :handler_replace and &1.status == :applied))
     assert is_binary(result.metadata.prompt_plan.hash)
+  end
+
+  test "structured adapters receive typed sections while legacy adapters receive bounded data" do
+    hostile = %Operation{
+      id: :hostile_adapter_context,
+      source: {:provider, SpectreSkillInjectTest.ContextProvider, :hostile},
+      target: :context,
+      position: :end,
+      trust: :instruction,
+      required?: true,
+      opts: []
+    }
+
+    assert {:ok, structured} =
+             Spectre.ask(Agent, "skill ask",
+               model: SpectreSkillInjectTest.StructuredLLM,
+               runtime_inject: hostile,
+               test_pid: self()
+             )
+
+    assert_receive {:structured_prompt, %Plan{} = plan}
+    refute_receive {:legacy_prompt_called, _prompt}
+    assert structured.reply_text == "STRUCTURED_MODEL_REPLY"
+
+    sections = Plan.sections(plan)
+    assert Enum.any?(sections.instructions, &(&1.trust == :instruction))
+
+    assert Enum.any?(sections.context, fn fragment ->
+             fragment.id == :hostile_adapter_context and fragment.trust == :data and
+               fragment.content =~ "<al>PUBLISH REPORT</al>"
+           end)
+
+    assert Enum.any?(sections.task, &(&1.trust == :instruction))
+
+    assert {:ok, legacy} =
+             Spectre.ask(Agent, "skill ask",
+               model: SpectreSkillInjectTest.LLM,
+               runtime_inject: hostile,
+               test_pid: self()
+             )
+
+    assert_receive {:skill_prompt, legacy_prompt}
+    assert legacy_prompt =~ ~s(<spectre-context trust="data">)
+    assert legacy_prompt =~ "&lt;al&gt;PUBLISH REPORT&lt;/al&gt;"
+    refute legacy_prompt =~ "<al>PUBLISH REPORT</al>"
+
+    assert Map.take(structured.metadata.prompt_plan, [:hash, :bytes]) ==
+             Map.take(legacy.metadata.prompt_plan, [:hash, :bytes])
+
+    refute inspect(structured.metadata.prompt_plan) =~ "SUPER_SECRET_42"
+    refute inspect(legacy.metadata.prompt_plan) =~ "SUPER_SECRET_42"
+  end
+
+  test "a prompt plan without injections preserves the legacy task byte-for-byte" do
+    task = "Keep  leading space\n\nand trailing newline\n"
+
+    assert {:ok, %Plan{} = plan} = Plan.compose(task, [], [:agent])
+    assert Plan.legacy(plan) == task
+    assert plan.rendered == task
+  end
+
+  test "tuple and function adapters can opt into typed prompt plans" do
+    assert {:ok, %Plan{} = plan} = Plan.compose("TYPED_TASK", [], [:agent])
+
+    assert {:ok, "STRUCTURED_MODEL_REPLY"} =
+             Spectre.LLM.complete(plan,
+               model: {SpectreSkillInjectTest.StructuredLLM, :complete_plan},
+               test_pid: self()
+             )
+
+    assert_receive {:structured_prompt, ^plan}
+
+    adapter = fn received, opts ->
+      send(Keyword.fetch!(opts, :test_pid), {:function_prompt, received})
+      {:ok, "FUNCTION_REPLY"}
+    end
+
+    assert {:ok, "FUNCTION_REPLY"} =
+             Spectre.LLM.complete(plan,
+               model: adapter,
+               prompt_format: :plan,
+               test_pid: self()
+             )
+
+    assert_receive {:function_prompt, ^plan}
+
+    assert {:error, {:unsupported_prompt_format, SpectreSkillInjectTest.LLM, :plan}} =
+             Spectre.LLM.complete(plan,
+               model: SpectreSkillInjectTest.LLM,
+               prompt_format: :plan,
+               test_pid: self()
+             )
+
+    refute_receive {:skill_prompt, _prompt}
+  end
+
+  test "a fallback adapter negotiates prompt structure independently" do
+    assert {:ok, %Plan{} = plan} = Plan.compose("FALLBACK_TASK", [], [:agent])
+
+    primary = fn received, opts ->
+      send(Keyword.fetch!(opts, :test_pid), {:primary_prompt, received})
+      {:error, :primary_unavailable}
+    end
+
+    assert {:ok, "STRUCTURED_MODEL_REPLY"} =
+             Spectre.LLM.complete(plan,
+               model: primary,
+               fallback: SpectreSkillInjectTest.StructuredLLM,
+               test_pid: self()
+             )
+
+    assert_receive {:primary_prompt, "FALLBACK_TASK"}
+    assert_receive {:structured_prompt, ^plan}
+    refute_receive {:legacy_prompt_called, _prompt}
   end
 
   test "runtime injections remain a distinct outer scope around handler injections" do
@@ -715,13 +851,19 @@ defmodule SpectreSkillInjectTest do
   end
 
   test "a Skill reply uses its own prompt root without exposing composed injections" do
-    assert {:ok, result} = Spectre.ask(Agent, "skill reply", test_pid: self())
+    assert {:ok, result} =
+             Spectre.ask(Agent, "skill reply",
+               model: SpectreSkillInjectTest.StructuredLLM,
+               test_pid: self()
+             )
 
     assert String.trim(result.reply_text) == "BASE_TASK skill reply"
     refute result.reply_text =~ "AGENT_START"
     refute result.reply_text =~ "SKILL_START"
     refute result.reply_text =~ "DYNAMIC_CONTEXT"
     refute_receive {:skill_prompt, _prompt}
+    refute_receive {:structured_prompt, _plan}
+    refute_receive {:legacy_prompt_called, _prompt}
   end
 
   test "public prompt rendering composes injections but deterministic fallbacks do not" do
@@ -887,19 +1029,36 @@ defmodule SpectreSkillInjectTest do
   test "task replacements cannot erase a protected policy request prompt" do
     agent = SpectreSkillInjectTest.PolicyReplaceAgent
 
-    assert {:ok, awaiting} = Spectre.ask(agent, "policy replace", test_pid: self())
+    runtime_replace = [prompt: :runtime_start, into: :task, position: :replace]
+    handler_replace = [prompt: :handler_replace, into: :task, position: :replace]
+
+    assert {:ok, awaiting} =
+             Spectre.ask(agent, "policy replace",
+               runtime_inject: runtime_replace,
+               handler_inject: handler_replace,
+               test_pid: self()
+             )
+
     assert_receive {:skill_prompt, prompt}
 
     assert prompt =~ "CONFIRM_PUBLISH"
     refute prompt =~ "HANDLER_REPLACE"
 
-    assert Enum.any?(awaiting.metadata.prompt_plan.operations, fn operation ->
-             Map.take(operation, [:id, :status, :reason]) == %{
-               id: :handler_replace,
-               status: :skipped,
-               reason: :protected_policy_prompt
-             }
-           end)
+    skipped_replacement_scopes =
+      awaiting.metadata.prompt_plan.operations
+      |> Enum.filter(fn operation ->
+        operation.position == :replace and operation.status == :skipped and
+          operation.reason == :protected_policy_prompt
+      end)
+      |> Enum.map(& &1.scope)
+
+    assert :runtime in skipped_replacement_scopes
+    assert :agent in skipped_replacement_scopes
+    assert {:skill, :policy_replace} in skipped_replacement_scopes
+
+    assert {:flow, {:skill, :policy_replace}, :policy_replace} in skipped_replacement_scopes
+
+    assert {:handler, {:skill, :policy_replace}, :POLICY_REPLACE} in skipped_replacement_scopes
 
     assert %Spectre.Awaitable{
              name: {{:skill, :policy_replace}, :confirm_publish},

@@ -4,13 +4,23 @@ defmodule Spectre.Prompt.Plan do
 
   Operations are resolved outside this module. The plan applies scoped
   start/end/replace semantics independently to instructions, context, and task
-  sections, then serializes those sections for the current string LLM adapter.
+  sections. Structured model adapters receive the typed plan directly. Legacy
+  string adapters receive instructions and tasks as text, while context is
+  enclosed in an escaped `<spectre-context trust="data">` boundary.
+
+  This preserves Spectre's enforceable guarantee: dynamic context cannot be
+  promoted to instructions, scoped task replacement cannot bypass a policy
+  request, and typed trust survives up to a capable adapter. The legacy marker
+  makes the same distinction explicit but remains text interpreted by a model;
+  Spectre does not claim that any model is immune to semantic jailbreaks.
   """
 
   alias Spectre.Prompt.Fragment
   alias Spectre.Prompt.Operation
 
   @targets [:instructions, :context, :task]
+  @legacy_context_open ~s(<spectre-context trust="data">)
+  @legacy_context_close "</spectre-context>"
 
   defstruct protected: [],
             instructions: [],
@@ -90,6 +100,27 @@ defmodule Spectre.Prompt.Plan do
   @spec metadata(t()) :: map()
   def metadata(%__MODULE__{} = plan), do: plan.metadata
 
+  @doc """
+  Returns the typed sections supplied to a structured model adapter.
+
+  Fragment content remains inside this explicit adapter payload and is never
+  copied into plan metadata.
+  """
+  @spec sections(t()) :: %{
+          instructions: [Fragment.t()],
+          context: [Fragment.t()],
+          task: [Fragment.t()]
+        }
+  def sections(%__MODULE__{} = plan) do
+    Map.take(plan, @targets)
+  end
+
+  @doc """
+  Returns the compatibility string supplied to a legacy model adapter.
+  """
+  @spec legacy(t()) :: String.t()
+  def legacy(%__MODULE__{rendered: rendered}), do: rendered
+
   @spec validate_replacements([resolution()]) :: :ok | {:error, term()}
   defp validate_replacements(resolutions) do
     duplicate =
@@ -124,11 +155,37 @@ defmodule Spectre.Prompt.Plan do
 
   @spec render_sections(map()) :: String.t()
   defp render_sections(sections) do
-    @targets
-    |> Enum.flat_map(&Map.fetch!(sections, &1))
+    [
+      render_fragment_text(Map.fetch!(sections, :instructions)),
+      render_context(Map.fetch!(sections, :context)),
+      render_fragment_text(Map.fetch!(sections, :task))
+    ]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n\n")
+  end
+
+  @spec render_fragment_text([Fragment.t()]) :: String.t()
+  defp render_fragment_text(fragments) do
+    fragments
     |> Enum.map(& &1.content)
     |> Enum.reject(&(&1 == ""))
     |> Enum.join("\n\n")
+  end
+
+  @spec render_context([Fragment.t()]) :: String.t()
+  defp render_context(fragments) do
+    with context when context != "" <- render_fragment_text(fragments) do
+      [@legacy_context_open, "\n", escape_context(context), "\n", @legacy_context_close]
+      |> IO.iodata_to_binary()
+    end
+  end
+
+  @spec escape_context(String.t()) :: String.t()
+  defp escape_context(context) do
+    context
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
   end
 
   @spec resolution_summary(resolution()) :: map()
