@@ -16,13 +16,18 @@ defmodule Spectre.Runtime do
   policy gates from being accidentally skipped.
   """
 
+  alias Spectre.ActionExecutor
   alias Spectre.Context
+  alias Spectre.Definition
+  alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Input.Pipeline
   alias Spectre.Policy
+  alias Spectre.Provider.Call
   alias Spectre.Result
   alias Spectre.Router
   alias Spectre.State
+  alias Spectre.State.Codec
 
   @doc """
   Handles one normalized input turn for an agent module.
@@ -98,6 +103,61 @@ defmodule Spectre.Runtime do
   end
 
   @doc """
+  Executes a staged effect using the durable two-commit workflow.
+
+  The executable state is persisted before the capability is invoked, and the
+  completed/failed state is persisted before the terminal result is returned.
+  Adapters receive the effect idempotency key through the action context.
+  """
+  @spec execute(module(), Result.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
+  def execute(agent, %Result{} = result, opts \\ []) when is_atom(agent) and is_list(opts) do
+    opts = agent |> runtime_opts(opts) |> put_turn_identity()
+    input = policy_resolution_input(result, opts)
+    state = State.new(result.state)
+
+    ctx = %Context{
+      agent: agent,
+      input: input,
+      state: state,
+      opts: opts,
+      assigns: Keyword.get(opts, :assigns, %{}),
+      route: result.route
+    }
+
+    result = %{result | state: state}
+
+    if terminal_execution_result?(result) do
+      {:ok, result}
+    else
+      execute_pending_result(result, ctx, opts)
+    end
+  end
+
+  @spec execute_pending_result(Result.t(), Context.t(), keyword()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp execute_pending_result(%Result{} = result, %Context{} = ctx, opts) do
+    with {:ok, prepared} <- ensure_execution_state_persisted(result, ctx),
+         execution_ctx = %{ctx | state: prepared.state},
+         {:ok, executed} <- ActionExecutor.execute_pending(prepared.state, execution_ctx, opts),
+         executed <- inherit_execution_context(executed, prepared) do
+      persist_state(executed, execution_ctx)
+    end
+  end
+
+  @spec terminal_execution_result?(Result.t()) :: boolean()
+  defp terminal_execution_result?(%Result{state: %State{} = state, effects: effects}) do
+    is_nil(State.pending_effect(state)) and
+      Enum.any?(effects, fn
+        %Effect{id: id} = effect ->
+          Effect.terminal?(effect) and
+            Enum.any?(state.planned_effects, &(&1.id == id and &1.status == effect.status))
+
+        _effect ->
+          false
+      end)
+  end
+
+  @doc """
   Builds the per-turn context by loading state and memory adapters.
 
       {:ok, ctx} = Spectre.Runtime.load_context(MyApp.Agent, input, [])
@@ -137,7 +197,7 @@ defmodule Spectre.Runtime do
 
   @spec load_state(module(), Input.t(), keyword()) :: {:ok, State.t()} | {:error, term()}
   defp load_state(agent, input, opts) do
-    config = agent.__spectre_config__()
+    config = definition_config(agent)
     state_module = Keyword.get(config, :state)
     conversation_id = Keyword.get(opts, :conversation_id)
 
@@ -148,10 +208,10 @@ defmodule Spectre.Runtime do
         {:ok, opts |> Keyword.get(:state) |> State.new() |> put_conversation_id(conversation_id)}
 
       is_atom(state_module) && function_exported?(state_module, :load, 3) ->
-        state_module.load(input, agent, opts) |> normalize_state_reply(conversation_id)
+        load_state_adapter(state_module, :load, [input, agent, opts], conversation_id, opts)
 
       is_atom(state_module) && function_exported?(state_module, :load, 2) ->
-        state_module.load(input, opts) |> normalize_state_reply(conversation_id)
+        load_state_adapter(state_module, :load, [input, opts], conversation_id, opts)
 
       true ->
         {:ok, put_conversation_id(%State{}, conversation_id)}
@@ -160,19 +220,33 @@ defmodule Spectre.Runtime do
 
   @spec load_memory(module(), Input.t(), State.t(), keyword()) :: {:ok, term()} | {:error, term()}
   defp load_memory(agent, input, state, opts) do
-    memory_module = agent.__spectre_config__() |> Keyword.get(:memory)
+    memory_module = agent |> definition_config() |> Keyword.get(:memory)
 
-    cond do
-      Keyword.has_key?(opts, :memory) ->
-        # Memory can be injected for tests or for host applications that have
-        # already performed retrieval before calling Spectre.
-        {:ok, Keyword.get(opts, :memory)}
+    result =
+      cond do
+        Keyword.has_key?(opts, :memory) ->
+          # Memory can be injected for tests or for host applications that have
+          # already performed retrieval before calling Spectre.
+          {:ok, Keyword.get(opts, :memory)}
 
-      is_atom(memory_module) && function_exported?(memory_module, :recall, 2) ->
-        memory_module.recall(input.text, state: state, input: input)
+        is_atom(memory_module) && function_exported?(memory_module, :recall, 2) ->
+          Call.run(
+            :memory,
+            fn ->
+              normalize_provider_reply(
+                memory_module.recall(input.text, state: state, input: input)
+              )
+            end,
+            Keyword.put(opts, :purpose, :memory_recall)
+          )
 
-      true ->
-        {:ok, nil}
+        true ->
+          {:ok, nil}
+      end
+
+    with {:ok, memory} <- result,
+         :ok <- validate_term_size(memory, :memory_recall, opts, :memory_max_bytes, 1_000_000) do
+      {:ok, memory}
     end
   end
 
@@ -222,55 +296,261 @@ defmodule Spectre.Runtime do
   end
 
   @spec persist_state(Result.t(), Context.t()) :: {:ok, Result.t()} | {:error, term()}
-  defp persist_state(%Result{} = result, %Context{agent: agent, input: input, opts: opts}) do
-    state_module = agent.__spectre_config__() |> Keyword.get(:state)
+  defp persist_state(
+         %Result{} = result,
+         %Context{agent: agent, input: input, opts: opts, state: current_state}
+       ) do
+    state_module = agent |> definition_config() |> Keyword.get(:state)
+    expected_revision = current_state.revision
 
-    cond do
-      is_atom(state_module) && function_exported?(state_module, :persist, 4) ->
-        result.state
-        |> state_module.persist(input, agent, opts)
-        |> normalize_persist_reply(result)
+    with :ok <- validate_result_revision(result, expected_revision) do
+      next = %{result | state: State.bump_revision(result.state)}
 
-      is_atom(state_module) && function_exported?(state_module, :persist, 2) ->
-        result.state
-        |> state_module.persist(input)
-        |> normalize_persist_reply(result)
+      case persistence_callback(state_module, next.state, expected_revision, input, agent, opts) do
+        nil ->
+          {:ok, mark_state_persisted(next, expected_revision, :in_memory)}
 
-      true ->
-        {:ok, result}
+        {module, function, args, mode} ->
+          persist_with_adapter(module, function, args, mode, next, expected_revision, opts)
+      end
     end
   end
 
   @spec persist_memory(Result.t(), Context.t()) :: :ok | {:error, term()}
   defp persist_memory(%Result{} = result, %Context{agent: agent, input: input, opts: opts}) do
-    memory_module = agent.__spectre_config__() |> Keyword.get(:memory)
+    memory_module = agent |> definition_config() |> Keyword.get(:memory)
 
-    with {:ok, callback} <- memory_callback(memory_module) do
-      callback
-      |> call_memory_callback(input, result, agent, opts)
-      |> normalize_memory_persist_reply()
+    case memory_callback(memory_module) do
+      {:ok, callback} ->
+        with :ok <-
+               validate_term_size(
+                 memory_payload(input, result, agent),
+                 :memory_persist,
+                 opts,
+                 :memory_persist_max_bytes,
+                 2_000_000
+               ) do
+          case Call.run(
+                 :memory,
+                 fn ->
+                   callback
+                   |> call_memory_callback(input, result, agent, opts)
+                   |> normalize_memory_provider_reply()
+                 end,
+                 Keyword.put(opts, :purpose, :memory_persist)
+               ) do
+            {:ok, :persisted} -> :ok
+            {:error, reason} -> {:error, reason}
+          end
+        end
+
+      :ok ->
+        :ok
     end
-  rescue
-    exception ->
-      {:error, {:memory_persist_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    kind, reason ->
-      {:error, {:memory_persist_failure, kind, reason}}
   end
-
-  @spec normalize_persist_reply(term(), Result.t()) :: {:ok, Result.t()} | {:error, term()}
-  defp normalize_persist_reply({:ok, state}, %Result{} = result),
-    do: {:ok, %{result | state: State.new(state)}}
-
-  defp normalize_persist_reply(:ok, %Result{} = result), do: {:ok, result}
-  defp normalize_persist_reply({:error, reason}, _result), do: {:error, reason}
-  defp normalize_persist_reply(other, _result), do: {:error, {:invalid_persist_reply, other}}
 
   @spec normalize_memory_persist_reply(term()) :: :ok | {:error, term()}
   defp normalize_memory_persist_reply(:ok), do: :ok
   defp normalize_memory_persist_reply({:ok, _reply}), do: :ok
   defp normalize_memory_persist_reply({:error, reason}), do: {:error, reason}
   defp normalize_memory_persist_reply(other), do: {:error, {:invalid_memory_persist_reply, other}}
+
+  @spec normalize_memory_provider_reply(term()) :: {:ok, :persisted} | {:error, term()}
+  defp normalize_memory_provider_reply(reply) do
+    case normalize_memory_persist_reply(reply) do
+      :ok -> {:ok, :persisted}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec load_state_adapter(module(), atom(), list(), term(), keyword()) ::
+          {:ok, State.t()} | {:error, term()}
+  defp load_state_adapter(module, function, args, conversation_id, opts) do
+    case Call.run(
+           :state,
+           fn -> module |> apply(function, args) |> normalize_provider_reply() end,
+           Keyword.put(opts, :purpose, :state_load)
+         ) do
+      {:ok, payload} -> normalize_loaded_state(payload, conversation_id)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec normalize_provider_reply(term()) :: {:ok, term()} | {:error, term()}
+  defp normalize_provider_reply({:ok, value}), do: {:ok, value}
+  defp normalize_provider_reply({:error, reason}), do: {:error, reason}
+  defp normalize_provider_reply(value), do: {:ok, value}
+
+  @spec normalize_loaded_state(term(), term()) :: {:ok, State.t()} | {:error, term()}
+  defp normalize_loaded_state(%State{} = state, conversation_id),
+    do: {:ok, put_conversation_id(state, conversation_id)}
+
+  defp normalize_loaded_state(payload, conversation_id)
+       when is_map(payload) or is_binary(payload) do
+    case Codec.decode(payload) do
+      {:ok, state} -> {:ok, put_conversation_id(state, conversation_id)}
+      {:error, reason} -> {:error, {:invalid_persisted_state, reason}}
+    end
+  end
+
+  defp normalize_loaded_state(other, _conversation_id),
+    do: {:error, {:invalid_state_reply, reply_shape(other)}}
+
+  @spec persistence_callback(
+          module() | term(),
+          State.t(),
+          non_neg_integer(),
+          Input.t(),
+          module(),
+          keyword()
+        ) ::
+          {module(), atom(), list(), :cas | :legacy} | nil
+  defp persistence_callback(module, state, expected, input, agent, opts) when is_atom(module) do
+    adapter_opts = Call.adapter_opts(opts)
+
+    cond do
+      function_exported?(module, :compare_and_swap, 5) ->
+        {module, :compare_and_swap, [state, expected, input, agent, adapter_opts], :cas}
+
+      function_exported?(module, :persist, 5) ->
+        {module, :persist, [state, expected, input, agent, adapter_opts], :cas}
+
+      function_exported?(module, :persist, 4) ->
+        {module, :persist, [state, input, agent, adapter_opts], :legacy}
+
+      function_exported?(module, :persist, 2) ->
+        {module, :persist, [state, input], :legacy}
+
+      true ->
+        nil
+    end
+  end
+
+  defp persistence_callback(_module, _state, _expected, _input, _agent, _opts), do: nil
+
+  @spec persist_with_adapter(
+          module(),
+          atom(),
+          list(),
+          :cas | :legacy,
+          Result.t(),
+          non_neg_integer(),
+          keyword()
+        ) :: {:ok, Result.t()} | {:error, term()}
+  defp persist_with_adapter(module, function, args, mode, result, expected, opts) do
+    reply =
+      Call.run(
+        :state,
+        fn -> module |> apply(function, args) |> normalize_persist_provider_reply() end,
+        Keyword.put(opts, :purpose, :state_persist)
+      )
+
+    case reply do
+      {:ok, :persisted} ->
+        {:ok, mark_state_persisted(result, expected, mode)}
+
+      {:ok, {:state, payload}} ->
+        with {:ok, state} <- normalize_loaded_state(payload, result.state.conversation_id),
+             :ok <- validate_persisted_revision(state, result.state.revision) do
+          result = %{result | state: state}
+          {:ok, mark_state_persisted(result, expected, mode)}
+        end
+
+      {:error, :stale_state} ->
+        {:error, {:stale_state, expected}}
+
+      {:error, {:stale_state, actual}} ->
+        {:error, {:stale_state, expected, actual}}
+
+      {:error, {:ambiguous, reason}} ->
+        ambiguous = mark_state_persisted(result, expected, :ambiguous)
+        {:error, {:persistence_ambiguous, reason, ambiguous}}
+
+      {:error, {:persistence_ambiguous, reason}} ->
+        ambiguous = mark_state_persisted(result, expected, :ambiguous)
+        {:error, {:persistence_ambiguous, reason, ambiguous}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec normalize_persist_provider_reply(term()) :: {:ok, term()} | {:error, term()}
+  defp normalize_persist_provider_reply(:ok), do: {:ok, :persisted}
+  defp normalize_persist_provider_reply({:ok, %State{} = state}), do: {:ok, {:state, state}}
+
+  defp normalize_persist_provider_reply({:ok, state}) when is_map(state) or is_binary(state),
+    do: {:ok, {:state, state}}
+
+  defp normalize_persist_provider_reply({:error, reason}), do: {:error, reason}
+
+  defp normalize_persist_provider_reply(other),
+    do: {:error, {:invalid_persist_reply, reply_shape(other)}}
+
+  @spec validate_result_revision(Result.t(), non_neg_integer()) :: :ok | {:error, term()}
+  defp validate_result_revision(%Result{state: %State{revision: revision}}, expected)
+       when revision == expected,
+       do: :ok
+
+  defp validate_result_revision(%Result{state: %State{revision: revision}}, expected),
+    do: {:error, {:invalid_state_revision_transition, expected, revision}}
+
+  @spec validate_persisted_revision(State.t(), non_neg_integer()) :: :ok | {:error, term()}
+  defp validate_persisted_revision(%State{revision: revision}, expected)
+       when revision == expected,
+       do: :ok
+
+  defp validate_persisted_revision(%State{revision: revision}, expected),
+    do: {:error, {:invalid_persisted_revision, expected, revision}}
+
+  @spec mark_state_persisted(Result.t(), non_neg_integer(), atom()) :: Result.t()
+  defp mark_state_persisted(%Result{} = result, expected, mode) do
+    persistence = %{
+      status: if(mode == :ambiguous, do: :ambiguous, else: :committed),
+      mode: mode,
+      expected_revision: expected,
+      revision: result.state.revision
+    }
+
+    %{result | metadata: Map.put(result.metadata, :state_persistence, persistence)}
+  end
+
+  @spec ensure_execution_state_persisted(Result.t(), Context.t()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp ensure_execution_state_persisted(%Result{} = result, %Context{} = ctx) do
+    case get_in(result.metadata, [:state_persistence, :revision]) do
+      revision when revision == result.state.revision ->
+        {:ok, result}
+
+      nil ->
+        persist_state(result, ctx)
+
+      revision ->
+        {:error, {:stale_execution_result, revision, result.state.revision}}
+    end
+  end
+
+  @spec inherit_execution_context(Result.t(), Result.t()) :: Result.t()
+  defp inherit_execution_context(%Result{} = executed, %Result{} = prepared) do
+    %{
+      executed
+      | route: prepared.route,
+        metadata: Map.merge(prepared.metadata, executed.metadata)
+    }
+  end
+
+  @spec definition_config(module()) :: keyword()
+  defp definition_config(agent), do: Definition.fetch!(agent).config
+
+  @spec reply_shape(term()) :: term()
+  defp reply_shape(value) when is_nil(value), do: nil
+  defp reply_shape(value) when is_atom(value), do: :atom
+  defp reply_shape(value) when is_binary(value), do: :binary
+  defp reply_shape(value) when is_list(value), do: :list
+  defp reply_shape(%{__struct__: module}), do: {:struct, module}
+  defp reply_shape(value) when is_map(value), do: :map
+  defp reply_shape(value) when is_tuple(value), do: {:tuple, tuple_size(value)}
+  defp reply_shape(_value), do: :other
 
   @spec memory_callback(module() | term()) ::
           {:ok, {:remember | :persist, 2 | 4, module()}} | :ok
@@ -306,20 +586,6 @@ defmodule Spectre.Runtime do
     apply(module, function, [payload, memory_opts])
   end
 
-  @spec normalize_state_reply(term(), term()) :: {:ok, State.t()} | {:error, term()}
-  defp normalize_state_reply({:ok, state}, conversation_id),
-    do: {:ok, state |> State.new() |> put_conversation_id(conversation_id)}
-
-  defp normalize_state_reply({:error, reason}, _conversation_id), do: {:error, reason}
-
-  defp normalize_state_reply(%State{} = state, conversation_id),
-    do: {:ok, put_conversation_id(state, conversation_id)}
-
-  defp normalize_state_reply(state, conversation_id) when is_map(state),
-    do: {:ok, state |> State.new() |> put_conversation_id(conversation_id)}
-
-  defp normalize_state_reply(other, _conversation_id), do: {:error, {:invalid_state_reply, other}}
-
   @spec runtime_opts(module(), keyword()) :: keyword()
   defp runtime_opts(agent, opts) do
     agent
@@ -329,7 +595,7 @@ defmodule Spectre.Runtime do
 
   @spec agent_runtime_opts(module()) :: keyword()
   defp agent_runtime_opts(agent) do
-    config = agent.__spectre_config__()
+    config = definition_config(agent)
 
     []
     |> maybe_put_config(config, :model)
@@ -340,19 +606,30 @@ defmodule Spectre.Runtime do
     |> maybe_put_config(config, :journal)
     |> maybe_put_config(config, :history)
     |> maybe_put_config(config, :chat_history_limit)
+    |> maybe_put_config(config, :state_timeout)
+    |> maybe_put_config(config, :memory_timeout)
+    |> maybe_put_config(config, :input_max_bytes)
+    |> maybe_put_config(config, :memory_max_bytes)
+    |> maybe_put_config(config, :memory_persist_max_bytes)
   end
 
   @spec normalize_input(module(), Input.t(), keyword()) :: {:ok, Input.t()} | {:error, term()}
   defp normalize_input(agent, %Input{} = input, opts) do
-    case Keyword.get(opts, :input_pipeline, []) do
-      [] ->
-        {:ok, input}
+    normalized =
+      case Keyword.get(opts, :input_pipeline, []) do
+        [] ->
+          {:ok, input}
 
-      specs when is_list(specs) ->
-        Pipeline.run(input, %{agent: agent, opts: opts}, specs)
+        specs when is_list(specs) ->
+          Pipeline.run(input, %{agent: agent, opts: opts}, specs)
 
-      other ->
-        {:error, {:invalid_input_pipeline, other}}
+        other ->
+          {:error, {:invalid_input_pipeline, other}}
+      end
+
+    with {:ok, input} <- normalized,
+         :ok <- validate_binary_size(input.text, :input, opts, :input_max_bytes, 64_000) do
+      {:ok, input}
     end
   end
 
@@ -380,7 +657,7 @@ defmodule Spectre.Runtime do
       Keyword.get(
         opts,
         :chat_history_limit,
-        Keyword.get(agent.__spectre_config__(), :history, 20)
+        Keyword.get(definition_config(agent), :history, 20)
       )
 
     %{result | state: State.record_turn(result.state, result.input, result, limit)}
@@ -416,4 +693,31 @@ defmodule Spectre.Runtime do
     do: %{state | conversation_id: conversation_id}
 
   defp put_conversation_id(%State{} = state, _conversation_id), do: state
+
+  @spec validate_binary_size(binary(), atom(), keyword(), atom(), pos_integer()) ::
+          :ok | {:error, term()}
+  defp validate_binary_size(value, boundary, opts, key, default) when is_binary(value) do
+    max_bytes = Keyword.get(opts, key, default)
+
+    if is_integer(max_bytes) and max_bytes > 0 and byte_size(value) <= max_bytes do
+      :ok
+    else
+      {:error, {:payload_too_large, boundary, byte_size(value), max_bytes}}
+    end
+  end
+
+  @spec validate_term_size(term(), atom(), keyword(), atom(), pos_integer()) ::
+          :ok | {:error, term()}
+  defp validate_term_size(value, boundary, opts, key, default) do
+    max_bytes = Keyword.get(opts, key, default)
+    bytes = :erlang.external_size(value)
+
+    if is_integer(max_bytes) and max_bytes > 0 and bytes <= max_bytes do
+      :ok
+    else
+      {:error, {:payload_too_large, boundary, bytes, max_bytes}}
+    end
+  rescue
+    exception -> {:error, {:payload_size_failed, boundary, exception.__struct__}}
+  end
 end

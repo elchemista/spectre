@@ -75,13 +75,7 @@ defmodule Spectre.ActionHooks do
   defp effect_hooks(_effect), do: []
 
   @spec agent_hooks(module()) :: [hook()]
-  defp agent_hooks(agent) do
-    if function_exported?(agent, :__spectre_after_actions__, 0) do
-      agent.__spectre_after_actions__()
-    else
-      []
-    end
-  end
+  defp agent_hooks(agent), do: Spectre.Definition.after_actions(agent)
 
   @spec hooks_for([hook()], atom() | String.t() | nil, atom()) :: [hook()]
   defp hooks_for(hooks, action, event) do

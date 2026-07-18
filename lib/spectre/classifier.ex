@@ -21,6 +21,7 @@ defmodule Spectre.Classifier do
 
   @default_name __MODULE__
   @default_high_confidence_threshold 0.93
+  @default_artifact_max_bytes 64_000_000
   @centroid_collection "spectre_classifier_centroids"
   @example_collection "spectre_classifier_examples"
 
@@ -104,10 +105,13 @@ defmodule Spectre.Classifier do
     artifact_dir = Keyword.get(opts, :artifact_dir, "artifacts/spectre")
     classifier_path = Path.join(artifact_dir, "classifier.etf")
 
-    with {:ok, bytes} <- File.read(classifier_path),
+    with {:ok, stat} <- File.stat(classifier_path),
+         :ok <- validate_artifact_size(stat.size, opts),
+         {:ok, bytes} <- File.read(classifier_path),
          {:ok, classifier} <- decode_classifier(bytes),
          encoder_model <- Map.get(classifier, :encoder_model, Encoder.default_model()),
          {:ok, dimensions} <- Encoder.load(encoder_model, opts),
+         :ok <- validate_encoder_dimensions(classifier, dimensions),
          {:ok, classifier_index} <- build_classifier_index(classifier, dimensions, opts) do
       %{
         ready?: true,
@@ -123,9 +127,22 @@ defmodule Spectre.Classifier do
     end
   end
 
+  @spec validate_artifact_size(non_neg_integer(), keyword()) :: :ok | {:error, term()}
+  defp validate_artifact_size(size, opts) do
+    max_bytes = Keyword.get(opts, :classifier_artifact_max_bytes, @default_artifact_max_bytes)
+
+    if is_integer(max_bytes) and max_bytes > 0 and size <= max_bytes do
+      :ok
+    else
+      {:error, {:classifier_artifact_too_large, size, max_bytes}}
+    end
+  end
+
   @spec decode_classifier(binary()) :: {:ok, map()} | {:error, term()}
   defp decode_classifier(bytes) do
-    {:ok, :erlang.binary_to_term(bytes)}
+    bytes
+    |> :erlang.binary_to_term([:safe])
+    |> validate_classifier()
   rescue
     exception ->
       {:error, {:invalid_classifier_artifact, exception.__struct__, Exception.message(exception)}}
@@ -175,13 +192,141 @@ defmodule Spectre.Classifier do
 
   @spec log_result(String.t(), String.t(), boolean(), number(), number(), keyword()) :: :ok
   defp log_result(text, label, accepted?, confidence, margin, opts) do
-    if Keyword.get(opts, :classification_log?, true) do
+    if Keyword.get(opts, :classification_log?, false) do
+      input =
+        if Keyword.get(opts, :classification_log_input?, false) do
+          " text=#{inspect(String.slice(text, 0, 180))}"
+        else
+          " input_bytes=#{byte_size(text)}"
+        end
+
       Logger.info(
-        "spectre_classifier local_result text=#{inspect(String.slice(text, 0, 180))} " <>
+        "spectre_classifier local_result#{input} " <>
           "label=#{label} accepted=#{accepted?} confidence=#{fmt(confidence)} margin=#{fmt(margin)}"
       )
     end
   end
+
+  @spec validate_classifier(term()) :: {:ok, map()} | {:error, term()}
+  defp validate_classifier(classifier) when is_map(classifier) do
+    kind = Map.get(classifier, :kind)
+    version = Map.get(classifier, :version)
+    dimensions = Map.get(classifier, :dimensions)
+    labels = Map.get(classifier, :labels)
+
+    with true <- kind in [:centroid_head, :example_index],
+         true <- version == 1,
+         true <- is_integer(dimensions) and dimensions > 0,
+         :ok <- validate_labels(labels),
+         :ok <- validate_thresholds(classifier),
+         :ok <- validate_classifier_vectors(classifier, kind, dimensions, labels) do
+      {:ok, classifier}
+    else
+      false -> {:error, {:invalid_classifier_schema, kind, version, dimensions}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_classifier(other),
+    do: {:error, {:invalid_classifier_artifact_type, artifact_shape(other)}}
+
+  @spec validate_labels(term()) :: :ok | {:error, term()}
+  defp validate_labels(labels) when is_list(labels) and labels != [] do
+    if Enum.all?(labels, &(is_binary(&1) and String.trim(&1) != "")) and
+         length(labels) == length(Enum.uniq(labels)) do
+      :ok
+    else
+      {:error, :invalid_classifier_labels}
+    end
+  end
+
+  defp validate_labels(_labels), do: {:error, :invalid_classifier_labels}
+
+  @spec validate_thresholds(map()) :: :ok | {:error, term()}
+  defp validate_thresholds(classifier) do
+    keys = [:accept_threshold, :margin_threshold, :high_confidence_threshold]
+
+    case Enum.find(keys, fn key ->
+           value = Map.get(classifier, key)
+           not is_number(value) or value < 0 or value > 1
+         end) do
+      nil -> :ok
+      key -> {:error, {:invalid_classifier_threshold, key, Map.get(classifier, key)}}
+    end
+  end
+
+  @spec validate_classifier_vectors(map(), atom(), pos_integer(), [String.t()]) ::
+          :ok | {:error, term()}
+  defp validate_classifier_vectors(classifier, :centroid_head, dimensions, labels) do
+    centroids = Map.get(classifier, :centroids)
+
+    cond do
+      not is_map(centroids) ->
+        {:error, :invalid_classifier_centroids}
+
+      MapSet.new(Map.keys(centroids), &label_id/1) != MapSet.new(labels) ->
+        {:error, :classifier_label_mismatch}
+
+      invalid =
+          Enum.find(centroids, fn {_label, vector} -> not valid_vector?(vector, dimensions) end) ->
+        {:error, {:invalid_classifier_vector, invalid |> elem(0) |> label_id()}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_classifier_vectors(classifier, :example_index, dimensions, labels) do
+    examples = Map.get(classifier, :examples)
+
+    cond do
+      not is_list(examples) or examples == [] ->
+        {:error, :invalid_classifier_examples}
+
+      invalid =
+          Enum.find(examples, fn example ->
+            not is_map(example) or label_id(Map.get(example, :label)) not in labels or
+              not is_binary(Map.get(example, :id)) or
+                not valid_vector?(Map.get(example, :vector), dimensions)
+          end) ->
+        {:error, {:invalid_classifier_example, artifact_shape(invalid)}}
+
+      true ->
+        :ok
+    end
+  end
+
+  @spec validate_encoder_dimensions(map(), pos_integer()) :: :ok | {:error, term()}
+  defp validate_encoder_dimensions(%{dimensions: expected}, actual) when expected == actual,
+    do: :ok
+
+  defp validate_encoder_dimensions(%{dimensions: expected}, actual),
+    do: {:error, {:classifier_dimension_mismatch, expected, actual}}
+
+  @spec valid_vector?(term(), pos_integer()) :: boolean()
+  defp valid_vector?(vector, dimensions) when is_list(vector) and length(vector) == dimensions,
+    do: Enum.all?(vector, &finite_number?/1)
+
+  defp valid_vector?(_vector, _dimensions), do: false
+
+  defp finite_number?(number) when is_integer(number), do: true
+
+  defp finite_number?(number) when is_float(number) do
+    _encoded = :erlang.float_to_binary(number, [:compact])
+    true
+  rescue
+    ArithmeticError -> false
+  end
+
+  defp finite_number?(_number), do: false
+
+  @spec artifact_shape(term()) :: term()
+  defp artifact_shape(value) when is_atom(value), do: :atom
+  defp artifact_shape(value) when is_binary(value), do: :binary
+  defp artifact_shape(value) when is_list(value), do: :list
+  defp artifact_shape(value) when is_map(value), do: :map
+  defp artifact_shape(value) when is_tuple(value), do: {:tuple, tuple_size(value)}
+  defp artifact_shape(_value), do: :other
 
   @spec fmt(number()) :: String.t()
   defp fmt(number) when is_float(number), do: :erlang.float_to_binary(number, decimals: 4)

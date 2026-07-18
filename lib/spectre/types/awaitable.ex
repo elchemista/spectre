@@ -23,7 +23,7 @@ defmodule Spectre.Awaitable do
   @type t :: %__MODULE__{
           id: term(),
           kind: atom(),
-          name: atom() | String.t() | nil,
+          name: term(),
           status: status(),
           subject_id: term(),
           label: atom() | nil,
@@ -35,8 +35,8 @@ defmodule Spectre.Awaitable do
   @doc """
   Opens a policy awaitable for an effect.
   """
-  @spec open_policy(atom(), Spectre.Effect.t() | term(), keyword()) :: t()
-  def open_policy(policy, subject, opts \\ []) when is_atom(policy) do
+  @spec open_policy(term(), Spectre.Effect.t() | term(), keyword()) :: t()
+  def open_policy(policy, subject, opts \\ []) when not is_nil(policy) do
     subject_id =
       case subject do
         %Spectre.Effect{id: id} -> id

@@ -15,6 +15,7 @@ defmodule Spectre.Router.Receipt do
   defstruct [
     :outcome,
     :label,
+    :scope,
     :strategy,
     :accepted?,
     :llm_called?,
@@ -55,6 +56,7 @@ defmodule Spectre.Router.Receipt do
   @type t :: %__MODULE__{
           outcome: outcome(),
           label: atom() | nil,
+          scope: Spectre.Definition.scope() | nil,
           strategy: atom() | nil,
           accepted?: boolean(),
           llm_called?: boolean(),
@@ -92,6 +94,7 @@ defmodule Spectre.Router.Receipt do
     %__MODULE__{
       outcome: route_outcome(route),
       label: route && safe_label(route.label, known_labels),
+      scope: route && safe_scope(route.scope),
       strategy: route && safe_atom(route.strategy),
       accepted?: not is_nil(route) and route.accepted? == true,
       llm_called?: llm_called?(traces, candidates, provider_calls, safe_provider_calls),
@@ -226,7 +229,7 @@ defmodule Spectre.Router.Receipt do
 
   @spec candidate_summary(Candidate.t(), MapSet.t()) :: candidate_summary()
   defp candidate_summary(%Candidate{} = candidate, known_labels) do
-    %{
+    summary = %{
       provider: safe_atom(candidate.provider) || :unknown,
       label: safe_label(candidate.label, known_labels),
       accepted?: candidate.accepted? == true,
@@ -234,6 +237,11 @@ defmodule Spectre.Router.Receipt do
       margin: safe_number(candidate.margin),
       strength: safe_atom(candidate.strength) || :unknown
     }
+
+    case safe_scope(candidate.scope) do
+      nil -> summary
+      scope -> Map.put(summary, :scope, scope)
+    end
   end
 
   @spec candidate_attempt(Candidate.t(), MapSet.t()) :: attempt()
@@ -319,6 +327,14 @@ defmodule Spectre.Router.Receipt do
   end
 
   defp safe_label(_label, _known_labels), do: nil
+
+  @spec safe_scope(term()) :: Spectre.Definition.scope() | nil
+  defp safe_scope(:agent), do: :agent
+
+  defp safe_scope({:skill, id}) when is_atom(id) or is_binary(id) or is_integer(id),
+    do: {:skill, id}
+
+  defp safe_scope(_scope), do: nil
 
   @spec safe_number(term()) :: number() | nil
   defp safe_number(value) when is_number(value), do: value

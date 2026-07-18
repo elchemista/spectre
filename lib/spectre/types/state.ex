@@ -7,9 +7,14 @@ defmodule Spectre.State do
   history, and trace events.
   """
 
-  defstruct state_version: 2,
+  @state_version 3
+  @max_trace_entries 256
+
+  defstruct state_version: @state_version,
+            revision: 0,
             conversation_id: nil,
             current_flow: nil,
+            current_scope: nil,
             pending_effects: [],
             planned_effects: [],
             awaitables: [],
@@ -19,8 +24,10 @@ defmodule Spectre.State do
 
   @type t :: %__MODULE__{
           state_version: pos_integer(),
+          revision: non_neg_integer(),
           conversation_id: term(),
           current_flow: atom() | nil,
+          current_scope: Spectre.Definition.scope() | nil,
           pending_effects: [Spectre.Effect.t()],
           planned_effects: [Spectre.Effect.t()],
           awaitables: [Spectre.Awaitable.t()],
@@ -40,6 +47,7 @@ defmodule Spectre.State do
   def new(attrs) when is_map(attrs) do
     attrs
     |> normalize_map()
+    |> normalize_known_keys()
     |> migrate()
     |> Map.take(fields())
     |> then(&struct(__MODULE__, &1))
@@ -54,28 +62,15 @@ defmodule Spectre.State do
   @doc """
   Stores a pending effect and optionally starts a policy gate for it.
   """
-  @spec put_pending_effect(t(), Spectre.Effect.t(), atom() | nil) :: t()
-  def put_pending_effect(%__MODULE__{} = state, %Spectre.Effect{} = effect, nil) do
-    effect = %{effect | status: :pending}
+  @spec put_pending_effect(t(), Spectre.Effect.t(), term()) :: t()
+  def put_pending_effect(%__MODULE__{} = state, %Spectre.Effect{} = effect, policy) do
+    case Spectre.Lifecycle.stage(state, effect, policy) do
+      {:ok, transition} ->
+        transition.to
 
-    %{
-      state
-      | pending_effects: [effect],
-        planned_effects: append_planned(state.planned_effects, effect)
-    }
-  end
-
-  def put_pending_effect(%__MODULE__{} = state, %Spectre.Effect{} = effect, policy)
-      when is_atom(policy) do
-    effect = Spectre.Effect.waiting_policy(effect, policy)
-    awaitable = Spectre.Awaitable.open_policy(policy, effect)
-
-    %{
-      state
-      | pending_effects: [effect],
-        planned_effects: append_planned(state.planned_effects, effect),
-        awaitables: [awaitable]
-    }
+      {:error, reason} ->
+        raise ArgumentError, "invalid Spectre lifecycle transition: #{inspect(reason)}"
+    end
   end
 
   @doc """
@@ -103,18 +98,8 @@ defmodule Spectre.State do
   """
   @spec cancel_pending(t()) :: t()
   def cancel_pending(%__MODULE__{} = state) do
-    cancelled_effects =
-      Enum.map(state.pending_effects, &Spectre.Effect.cancel(&1, :cancel_pending))
-
-    awaitables = Enum.map(state.awaitables, &cancel_open/1)
-
-    %{
-      state
-      | pending_effects: [],
-        awaitables: awaitables,
-        planned_effects: Enum.take(state.planned_effects, -31) ++ cancelled_effects
-    }
-    |> trace(%{type: :cancel_pending, at: DateTime.utc_now()})
+    {:ok, transition} = Spectre.Lifecycle.cancel_pending(state)
+    transition.to
   end
 
   @spec pending_effect(t()) :: Spectre.Effect.t() | nil
@@ -146,34 +131,15 @@ defmodule Spectre.State do
           {:ok, t(), Spectre.Effect.t()}
           | {:error, :pending_effect_not_found | {:effect_not_waiting_policy, term(), atom()}}
   def approve_pending_effect(%__MODULE__{} = state, subject_id) do
-    case Enum.find_index(state.pending_effects, &(&1.id == subject_id)) do
-      nil ->
-        {:error, :pending_effect_not_found}
+    case Spectre.Lifecycle.approve_effect(state, subject_id) do
+      {:ok, transition} ->
+        {:ok, transition.to, transition.effect}
 
-      index ->
-        effect = Enum.at(state.pending_effects, index)
+      {:error, {:invalid_effect_transition, id, status, :approved}} ->
+        {:error, {:effect_not_waiting_policy, id, status}}
 
-        if effect.status == :waiting_policy do
-          approved = Spectre.Effect.approve(effect)
-
-          state =
-            %{
-              state
-              | pending_effects: List.replace_at(state.pending_effects, index, approved),
-                planned_effects: append_planned(state.planned_effects, approved)
-            }
-            |> trace(%{
-              type: :effect_approved,
-              kind: approved.kind,
-              name: approved.name,
-              effect_id: approved.id,
-              at: DateTime.utc_now()
-            })
-
-          {:ok, state, approved}
-        else
-          {:error, {:effect_not_waiting_policy, effect.id, effect.status}}
-        end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -184,13 +150,10 @@ defmodule Spectre.State do
         {%{state | pending_effects: []}, nil}
 
       effect ->
-        completed = Spectre.Effect.complete(effect, result)
-
-        {%{
-           state
-           | pending_effects: [],
-             planned_effects: append_planned(state.planned_effects, completed)
-         }, completed}
+        case Spectre.Lifecycle.complete_effect(state, effect.id, result) do
+          {:ok, transition} -> {transition.to, transition.effect}
+          {:error, _reason} -> {state, nil}
+        end
     end
   end
 
@@ -205,23 +168,10 @@ defmodule Spectre.State do
         {%{state | pending_effects: []}, nil}
 
       effect ->
-        failed = Spectre.Effect.fail(effect, reason)
-
-        state =
-          %{
-            state
-            | pending_effects: [],
-              planned_effects: append_planned(state.planned_effects, failed)
-          }
-          |> trace(%{
-            type: :effect_failed,
-            kind: effect.kind,
-            name: effect.name,
-            effect_id: effect.id,
-            at: DateTime.utc_now()
-          })
-
-        {state, failed}
+        case Spectre.Lifecycle.fail_effect(state, effect.id, reason) do
+          {:ok, transition} -> {transition.to, transition.effect}
+          {:error, _reason} -> {state, nil}
+        end
     end
   end
 
@@ -264,7 +214,18 @@ defmodule Spectre.State do
   Prepends a compact trace event to the state.
   """
   @spec trace(t(), term()) :: t()
-  def trace(%__MODULE__{} = state, event), do: %{state | trace: [event | state.trace]}
+  def trace(%__MODULE__{} = state, event) do
+    %{state | trace: Enum.take([event | state.trace], @max_trace_entries)}
+  end
+
+  @doc """
+  Advances the optimistic-concurrency revision exactly once.
+  """
+  @spec bump_revision(t()) :: t()
+  def bump_revision(%__MODULE__{revision: revision} = state)
+      when is_integer(revision) and revision >= 0 do
+    %{state | revision: revision + 1}
+  end
 
   @spec history_entry(Spectre.Input.t(), Spectre.Result.t()) :: map()
   defp history_entry(input, result) do
@@ -276,19 +237,6 @@ defmodule Spectre.State do
       events: Enum.map(result.events, &Map.get(&1, :type))
     }
   end
-
-  @spec append_planned([Spectre.Effect.t()], Spectre.Effect.t()) :: [Spectre.Effect.t()]
-  defp append_planned(effects, effect) do
-    effects
-    |> Enum.take(-31)
-    |> Kernel.++([effect])
-  end
-
-  @spec cancel_open(Spectre.Awaitable.t()) :: Spectre.Awaitable.t()
-  defp cancel_open(%Spectre.Awaitable{status: :open} = awaitable),
-    do: Spectre.Awaitable.cancel(awaitable)
-
-  defp cancel_open(awaitable), do: awaitable
 
   @spec migrate(map()) :: map()
   defp migrate(attrs) do
@@ -303,7 +251,8 @@ defmodule Spectre.State do
     |> normalize_list(:pending_effects, &Spectre.Effect.stage/1)
     |> normalize_list(:planned_effects, &Spectre.Effect.stage/1)
     |> normalize_list(:awaitables, &normalize_awaitable/1)
-    |> Map.put(:state_version, 2)
+    |> Map.put(:state_version, @state_version)
+    |> Map.put_new(:revision, 0)
   end
 
   @spec normalize_legacy(map()) :: map()
@@ -316,7 +265,8 @@ defmodule Spectre.State do
     awaitable = legacy_awaitable(awaiting, effect)
 
     attrs
-    |> Map.put(:state_version, 2)
+    |> Map.put(:state_version, @state_version)
+    |> Map.put_new(:revision, 0)
     |> Map.put(:pending_effects, List.wrap(effect))
     |> Map.put(:planned_effects, Enum.map(List.wrap(planned_actions), &Spectre.Effect.stage/1))
     |> Map.update!(:planned_effects, fn effects -> effects ++ List.wrap(effect) end)
@@ -362,6 +312,21 @@ defmodule Spectre.State do
   @spec normalize_map(map() | struct()) :: map()
   defp normalize_map(%{__struct__: _} = attrs), do: Map.from_struct(attrs)
   defp normalize_map(attrs), do: attrs
+
+  @spec normalize_known_keys(map()) :: map()
+  defp normalize_known_keys(attrs) do
+    Enum.reduce(fields(), attrs, fn key, normalized ->
+      string_key = Atom.to_string(key)
+
+      if Map.has_key?(normalized, string_key) and not Map.has_key?(normalized, key) do
+        normalized
+        |> Map.put(key, Map.fetch!(normalized, string_key))
+        |> Map.delete(string_key)
+      else
+        normalized
+      end
+    end)
+  end
 
   @spec awaitable_fields() :: [atom()]
   defp awaitable_fields do

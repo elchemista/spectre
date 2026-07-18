@@ -53,7 +53,8 @@ defmodule Spectre.Training.Dataset do
 
   @spec rule_labels(module()) :: [atom()]
   defp rule_labels(agent) do
-    agent.__spectre_rules__()
+    agent
+    |> Spectre.Definition.rules()
     |> Enum.map(&Rule.new/1)
     |> Enum.map(& &1.label)
   end

@@ -33,7 +33,7 @@ defmodule Spectre.Effect do
           args: map(),
           status: status(),
           mode: atom() | nil,
-          policy: atom() | nil,
+          policy: term(),
           result: term(),
           error: term(),
           payload: map(),
@@ -73,8 +73,8 @@ defmodule Spectre.Effect do
   @doc """
   Marks an effect as waiting on a policy gate.
   """
-  @spec waiting_policy(t(), atom()) :: t()
-  def waiting_policy(%__MODULE__{} = effect, policy) when is_atom(policy) do
+  @spec waiting_policy(t(), term()) :: t()
+  def waiting_policy(%__MODULE__{} = effect, policy) when not is_nil(policy) do
     %{effect | status: :waiting_policy, policy: policy}
   end
 

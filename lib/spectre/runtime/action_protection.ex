@@ -14,14 +14,16 @@ defmodule Spectre.ActionProtection do
 
       :confirm_delete = Spectre.ActionProtection.protected_by(agent, effect)
   """
-  @spec protected_by(module(), Effect.t()) :: atom() | nil
+  @spec protected_by(module(), Effect.t()) :: term()
   def protected_by(agent, %Effect{} = effect) when is_atom(agent) do
-    Enum.find_value(agent.__spectre_protections__(), fn protection ->
+    agent
+    |> Spectre.Definition.protections()
+    |> Enum.find_value(fn protection ->
       matching_policy(protection, effect)
     end)
   end
 
-  @spec matching_policy(map(), Effect.t()) :: atom() | nil
+  @spec matching_policy(map(), Effect.t()) :: term()
   defp matching_policy(%{action: protected, policy: policy}, %Effect{} = effect) do
     if action_matches?(protected, effect), do: policy
   end

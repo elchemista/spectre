@@ -12,6 +12,7 @@ defmodule Spectre.Journal.Recorder do
 
   alias Spectre.Journal.Buffer
   alias Spectre.Journal.Record
+  alias Spectre.Provider.Call
   alias Spectre.Router.Candidate
   alias Spectre.Router.Context
 
@@ -149,6 +150,7 @@ defmodule Spectre.Journal.Recorder do
         thresholds: routing_thresholds(opts),
         state_version: state_value(state, :state_version),
         current_flow: state_value(state, :current_flow),
+        current_scope: state_value(state, :current_scope),
         router_errors: context.errors |> Enum.reverse() |> Enum.map(&reason_code/1)
       }
     })
@@ -172,6 +174,8 @@ defmodule Spectre.Journal.Recorder do
     %{
       kind: :route_selected,
       label: route.label,
+      scope: route.scope,
+      owner: route.owner,
       strategy: route.strategy,
       accepted?: route.accepted?,
       confidence: route.confidence,
@@ -207,6 +211,7 @@ defmodule Spectre.Journal.Recorder do
   defp candidate_evidence(%Candidate{} = candidate) do
     Map.take(candidate, [
       :label,
+      :scope,
       :provider,
       :score,
       :margin,
@@ -309,13 +314,19 @@ defmodule Spectre.Journal.Recorder do
   defp start_async_append(store, record, config) do
     delivery = fn ->
       case append(store, record, store_opts(config)) do
-        :ok -> :ok
-        {:error, reason} -> handle_async_error(reason, config, record)
+        :ok ->
+          :ok
+
+        {:error, reason} = error ->
+          handle_async_error(reason, config, record)
+          error
       end
     end
 
     buffer_opts =
-      Keyword.take(config, [:buffer_size, :overflow])
+      config
+      |> Keyword.take([:buffer_size, :overflow])
+      |> Keyword.put(:partition, store)
 
     case Buffer.enqueue(delivery, buffer_opts) do
       :ok -> :ok
@@ -328,19 +339,26 @@ defmodule Spectre.Journal.Recorder do
 
   @spec append(module(), Record.t(), keyword()) :: :ok | {:error, term()}
   defp append(store, record, opts) do
-    case store.append(record, opts) do
-      :ok -> :ok
-      {:ok, _value} -> :ok
+    call_opts = Keyword.put(opts, :purpose, :journal_append)
+    adapter_opts = Keyword.drop(opts, [:journal_timeout, :provider_timeout])
+
+    case Call.run(
+           :journal,
+           fn -> normalize_append_reply(store.append(record, adapter_opts)) end,
+           call_opts
+         ) do
+      {:ok, :appended} -> :ok
       {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_journal_store_reply, other}}
     end
-  rescue
-    exception ->
-      {:error, {:journal_store_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    :exit, reason -> {:error, {:journal_store_exit, reason}}
-    kind, reason -> {:error, {:journal_store_failure, kind, reason}}
   end
+
+  @spec normalize_append_reply(term()) :: {:ok, :appended} | {:error, term()}
+  defp normalize_append_reply(:ok), do: {:ok, :appended}
+  defp normalize_append_reply({:ok, _value}), do: {:ok, :appended}
+  defp normalize_append_reply({:error, reason}), do: {:error, reason}
+
+  defp normalize_append_reply(other),
+    do: {:error, {:invalid_journal_store_reply, other}}
 
   @spec handle_sync_error(term(), keyword(), Context.t()) ::
           {:ok, Context.t()} | {:error, term()}

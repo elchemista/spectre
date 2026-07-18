@@ -94,10 +94,19 @@ defmodule Spectre.Agent do
   """
   defmacro __using__(opts) do
     opts = eval_opts(opts, __CALLER__)
-    config = default_config(opts)
+    kind = Keyword.get(opts, :__spectre_kind__, :agent)
+    id = Keyword.get(opts, :id, __CALLER__.module)
+    version = Keyword.get(opts, :version, 1)
+    config = default_config(opts, kind)
     router = default_router(opts)
 
-    quote bind_quoted: [config: config, router: router] do
+    quote bind_quoted: [
+            config: config,
+            router: router,
+            kind: kind,
+            definition_id: id,
+            definition_version: version
+          ] do
       import Spectre.Agent
 
       # Metadata is accumulated at compile time so runtime routing can inspect
@@ -118,9 +127,116 @@ defmodule Spectre.Agent do
 
       Module.register_attribute(__MODULE__, :spectre_router, persist: false)
 
+      Module.register_attribute(__MODULE__, :spectre_injections,
+        accumulate: true,
+        persist: false
+      )
+
+      Module.register_attribute(__MODULE__, :spectre_skills,
+        accumulate: true,
+        persist: false
+      )
+
+      Module.register_attribute(__MODULE__, :spectre_requirements,
+        accumulate: true,
+        persist: false
+      )
+
+      Module.register_attribute(__MODULE__, :spectre_kind, persist: false)
+      Module.register_attribute(__MODULE__, :spectre_definition_id, persist: false)
+      Module.register_attribute(__MODULE__, :spectre_definition_version, persist: false)
+
       @spectre_config config
       @spectre_router router
+      @spectre_kind kind
+      @spectre_definition_id definition_id
+      @spectre_definition_version definition_version
       @before_compile Spectre.Agent
+    end
+  end
+
+  @doc """
+  Mounts a reusable `Spectre.Skill` inside an Agent.
+
+  `as:` assigns the local scope identifier. `bind:` maps logical Skill action
+  requirements to concrete actions owned by the Agent.
+
+      skill MyApp.Skills.Research,
+        as: :research,
+        bind: [search: :web_search, publish: :publish_report]
+  """
+  defmacro skill(module, opts \\ []) do
+    caller = __CALLER__
+    module = Macro.expand(module, caller)
+    opts = eval_opts(opts, caller)
+    definition = Spectre.Definition.fetch!(module)
+
+    if definition.kind != :skill do
+      raise ArgumentError,
+            "skill expects a module using Spectre.Skill, got: #{inspect(module)}"
+    end
+
+    mount = Spectre.Skill.Mount.new(module, definition, opts)
+
+    quote do
+      @spectre_skills unquote(Macro.escape(mount))
+    end
+  end
+
+  @doc """
+  Adds a typed prompt fragment to the current Agent or Skill scope.
+
+      inject :company_identity, into: :instructions, position: :start
+  """
+  defmacro inject(id, opts \\ []) do
+    opts =
+      opts
+      |> eval_opts(__CALLER__)
+      |> Keyword.put_new(:source_line, __CALLER__.line)
+
+    operation = Spectre.Prompt.Operation.new(Macro.expand(id, __CALLER__), opts)
+
+    quote do
+      @spectre_injections unquote(Macro.escape(operation))
+    end
+  end
+
+  @doc """
+  Declares a logical action that must be bound when a reusable Skill is
+  mounted.
+
+      requires_action :search, mode: :read
+  """
+  defmacro requires_action(name, opts \\ []) do
+    name = Macro.expand(name, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    requirement = %{
+      name: name,
+      mode: Keyword.get(opts, :mode, :read),
+      opts: Keyword.drop(opts, [:mode])
+    }
+
+    quote do
+      @spectre_requirements unquote(Macro.escape(requirement))
+    end
+  end
+
+  @doc """
+  Alias for `requires_action/2` using tool-oriented terminology.
+  """
+  defmacro requires_tool(name, opts \\ []) do
+    name = Macro.expand(name, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    requirement = %{
+      name: name,
+      mode: Keyword.get(opts, :mode, :read),
+      opts: Keyword.drop(opts, [:mode])
+    }
+
+    quote do
+      @spectre_requirements unquote(Macro.escape(requirement))
     end
   end
 
@@ -630,8 +746,12 @@ defmodule Spectre.Agent do
 
   defmacro __before_compile__(env) do
     metadata = compile_metadata(env.module)
+    definition = compile_definition(env.module, metadata)
 
     quote do
+      @doc false
+      def __spectre_definition__, do: unquote(Macro.escape(definition))
+
       @doc false
       def __spectre_config__, do: unquote(Macro.escape(metadata.config))
 
@@ -651,6 +771,15 @@ defmodule Spectre.Agent do
       def __spectre_after_actions__, do: unquote(Macro.escape(metadata.after_actions))
 
       @doc false
+      def __spectre_injections__, do: unquote(Macro.escape(metadata.injections))
+
+      @doc false
+      def __spectre_skills__, do: unquote(Macro.escape(metadata.skills))
+
+      @doc false
+      def __spectre_requirements__, do: unquote(Macro.escape(metadata.requirements))
+
+      @doc false
       def __spectre_prompt_root__ do
         Keyword.get(__spectre_config__(), :prompt_root, "priv/spectre/prompts")
       end
@@ -665,8 +794,36 @@ defmodule Spectre.Agent do
       rules: module |> Module.get_attribute(:spectre_rules) |> Enum.reverse(),
       policies: module |> Module.get_attribute(:spectre_policies) |> policy_map(),
       after_actions: Module.get_attribute(module, :spectre_after_actions) || [],
-      protections: Module.get_attribute(module, :spectre_protections) || []
+      protections: Module.get_attribute(module, :spectre_protections) || [],
+      injections: module |> Module.get_attribute(:spectre_injections) |> reverse_attribute(),
+      skills: module |> Module.get_attribute(:spectre_skills) |> reverse_attribute(),
+      requirements: module |> Module.get_attribute(:spectre_requirements) |> reverse_attribute(),
+      kind: Module.get_attribute(module, :spectre_kind) || :agent,
+      id: Module.get_attribute(module, :spectre_definition_id) || module,
+      version: Module.get_attribute(module, :spectre_definition_version) || 1
     }
+  end
+
+  @spec compile_definition(module(), map()) :: Spectre.Definition.t()
+  defp compile_definition(module, metadata) do
+    %{
+      kind: metadata.kind,
+      id: metadata.id,
+      version: metadata.version,
+      owner: module,
+      prompt_root: Keyword.get(metadata.config, :prompt_root, "priv/spectre/prompts"),
+      config: metadata.config,
+      router: metadata.router,
+      rules: metadata.rules,
+      policies: metadata.policies,
+      protections: metadata.protections,
+      after_actions: metadata.after_actions,
+      injections: metadata.injections,
+      requirements: metadata.requirements,
+      skills: metadata.skills
+    }
+    |> Spectre.Definition.new()
+    |> Spectre.Definition.Validator.validate!()
   end
 
   @default_shutdown :timer.minutes(10)
@@ -682,13 +839,17 @@ defmodule Spectre.Agent do
                          no_decision: :llm
                        ]}
 
-  @spec default_config(keyword()) :: keyword()
-  defp default_config(opts) do
+  @spec default_config(keyword(), :agent | :skill) :: keyword()
+  defp default_config(opts, :agent) do
     opts
-    |> Keyword.drop([:arbitrator])
+    |> Keyword.drop([:arbitrator, :id, :version, :__spectre_kind__])
     |> Keyword.put_new(:shutdown, @default_shutdown)
     |> Keyword.put_new(:history, @default_history)
     |> Keyword.update(:fail, @default_fail, &normalize_fail/1)
+  end
+
+  defp default_config(opts, :skill) do
+    Keyword.drop(opts, [:arbitrator, :id, :version, :__spectre_kind__])
   end
 
   @spec default_router(keyword()) :: keyword()
@@ -758,26 +919,59 @@ defmodule Spectre.Agent do
   defp policy_map(nil), do: %{}
 
   defp policy_map(policies) do
-    policies
-    |> Enum.reverse()
-    |> Map.new(fn policy -> {policy.name, policy} end)
+    policies = Enum.reverse(policies)
+    names = Enum.map(policies, & &1.name)
+
+    case names -- Enum.uniq(names) do
+      [] -> Map.new(policies, fn policy -> {policy.name, policy} end)
+      [duplicate | _rest] -> raise ArgumentError, "duplicate policy #{inspect(duplicate)}"
+    end
   end
 
   @spec parse_flow_rules(atom(), Macro.t(), Macro.Env.t()) :: [map()]
   defp parse_flow_rules(flow, block, caller) do
-    block
-    |> calls()
-    |> Enum.map(fn
+    {injection_calls, rule_calls} =
+      block
+      |> calls()
+      |> Enum.split_with(&injection_call?/1)
+
+    injections = Enum.map(injection_calls, &parse_flow_injection(&1, caller))
+
+    Enum.map(rule_calls, fn
       {:on, _meta, [label, opts]} ->
         {opts, block} = split_do!(opts)
-        build_rule(label, flow, opts, block, caller, global?: false)
+
+        label
+        |> build_rule(flow, opts, block, caller, global?: false)
+        |> Map.put(:injections, injections)
 
       {:on, _meta, [label, opts, [do: block]]} ->
-        build_rule(label, flow, opts, block, caller, global?: false)
+        label
+        |> build_rule(flow, opts, block, caller, global?: false)
+        |> Map.put(:injections, injections)
 
       other ->
         raise ArgumentError, "invalid flow declaration: #{Macro.to_string(other)}"
     end)
+  end
+
+  @spec injection_call?(Macro.t()) :: boolean()
+  defp injection_call?({:inject, _meta, _args}), do: true
+  defp injection_call?(_call), do: false
+
+  @spec parse_flow_injection(Macro.t(), Macro.Env.t()) :: Spectre.Prompt.Operation.t()
+  defp parse_flow_injection({:inject, meta, [id]}, caller) do
+    operation_opts = [source_line: Keyword.get(meta, :line, caller.line)]
+    Spectre.Prompt.Operation.new(Macro.expand(id, caller), operation_opts)
+  end
+
+  defp parse_flow_injection({:inject, meta, [id, opts]}, caller) do
+    operation_opts =
+      opts
+      |> eval_opts(caller)
+      |> Keyword.put_new(:source_line, Keyword.get(meta, :line, caller.line))
+
+    Spectre.Prompt.Operation.new(Macro.expand(id, caller), operation_opts)
   end
 
   @spec parse_policy(atom(), Macro.t(), Macro.Env.t()) :: map()
@@ -846,6 +1040,7 @@ defmodule Spectre.Agent do
       checks: rule_checks(opts),
       via: route_via(opts),
       global?: Keyword.fetch!(extra, :global?),
+      injections: [],
       opts:
         Keyword.drop(opts, [
           :regex,
@@ -1067,6 +1262,10 @@ defmodule Spectre.Agent do
   end
 
   defp eval_opts(opts, caller), do: Macro.expand(opts, caller)
+
+  @spec reverse_attribute(list() | nil) :: list()
+  defp reverse_attribute(nil), do: []
+  defp reverse_attribute(values), do: Enum.reverse(values)
 
   @spec normalize_protect_args(term(), keyword()) :: {term(), keyword()}
   defp normalize_protect_args(action_or_opts, []) when is_list(action_or_opts) do
