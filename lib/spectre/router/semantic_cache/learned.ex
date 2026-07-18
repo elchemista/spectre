@@ -249,9 +249,16 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @spec write_snapshot_file_contents(String.t(), String.t()) ::
           {:ok, String.t()} | {:error, term()}
   defp write_snapshot_file_contents(path, encoded) do
-    case File.write(path, encoded <> if(encoded == "", do: "", else: "\n")) do
-      :ok -> {:ok, path}
-      {:error, reason} -> {:error, reason}
+    temporary = path <> ".tmp-#{System.unique_integer([:positive, :monotonic])}"
+    contents = encoded <> if(encoded == "", do: "", else: "\n")
+
+    with :ok <- File.write(temporary, contents),
+         :ok <- File.rename(temporary, path) do
+      {:ok, path}
+    else
+      {:error, reason} ->
+        File.rm(temporary)
+        {:error, reason}
     end
   end
 
@@ -491,11 +498,9 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec spectre_rules(module()) :: [Rule.t()]
   defp spectre_rules(agent) do
-    if function_exported?(agent, :__spectre_rules__, 0) do
-      Enum.map(agent.__spectre_rules__(), &Rule.new/1)
-    else
-      []
-    end
+    agent
+    |> Spectre.Definition.rules()
+    |> Enum.map(&Rule.new/1)
   end
 
   @spec maybe_offline_dataset_rows(keyword()) :: {:ok, [row()]} | {:error, term()}
@@ -1230,9 +1235,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   @spec bump_online_revision(module()) :: non_neg_integer()
   defp bump_online_revision(agent) do
-    revision = online_revision(agent) + 1
-    :ets.insert(revision_table(), {agent, revision})
-    revision
+    :ets.update_counter(revision_table(), agent, {2, 1}, {agent, 0})
   end
 
   @spec sources(keyword()) :: [String.t()]

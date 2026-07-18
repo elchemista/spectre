@@ -40,7 +40,7 @@ defmodule Spectre.Session do
     %{
       id: id,
       start: {__MODULE__, :start_link, [opts]},
-      restart: Keyword.get(opts, :restart, :temporary),
+      restart: Keyword.get(opts, :restart, :transient),
       type: :worker
     }
   end
@@ -102,6 +102,22 @@ defmodule Spectre.Session do
   end
 
   @doc """
+  Executes the session's current pending effect and commits its terminal state.
+
+  The state embedded in the supplied result is treated as a reference only;
+  the Session's current state remains authoritative.
+  """
+  @spec execute(GenServer.server(), Result.t(), keyword()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def execute(server, %Result{} = result, opts \\ []) do
+    GenServer.call(
+      server,
+      {:execute, result, Keyword.drop(opts, [:timeout])},
+      Keyword.get(opts, :timeout, :timer.minutes(5))
+    )
+  end
+
+  @doc """
   Returns the current in-memory Spectre state.
 
       %Spectre.State{} = Spectre.Session.state(session)
@@ -139,7 +155,8 @@ defmodule Spectre.Session do
           state: state,
           last_result: nil,
           idle_timeout: idle_timeout,
-          idle_timer: nil
+          idle_timer: nil,
+          idle_generation: 0
         }
 
         {:ok, arm_idle_timer(data)}
@@ -210,6 +227,32 @@ defmodule Spectre.Session do
     end
   end
 
+  def handle_call({:execute, %Result{} = supplied, opts}, _from, data) do
+    runtime_opts = data.base_opts |> Keyword.merge(opts) |> Keyword.put(:state, data.state)
+
+    case prepare_session_execution(supplied, data) do
+      {:replay, %Result{} = replayed} ->
+        {:reply, {:ok, replayed}, arm_idle_timer(data)}
+
+      {:ok, %Result{} = current} ->
+        case Spectre.Runtime.execute(data.agent, current, runtime_opts) do
+          {:ok, %Result{} = completed} ->
+            data = data |> retain_committed_result(completed) |> arm_idle_timer()
+            {:reply, {:ok, completed}, data}
+
+          {:error, {:persistence_ambiguous, _reason, %Result{} = ambiguous} = failure} ->
+            data = data |> retain_committed_result(ambiguous) |> arm_idle_timer()
+            {:reply, {:error, failure}, data}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, arm_idle_timer(data)}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
   def handle_call(:state, _from, data), do: {:reply, data.state, arm_idle_timer(data)}
 
   def handle_call({:reset, state}, _from, data) do
@@ -218,11 +261,92 @@ defmodule Spectre.Session do
   end
 
   @impl GenServer
-  def handle_info(:idle_shutdown, data), do: {:stop, :normal, %{data | idle_timer: nil}}
+  def handle_info({:idle_shutdown, generation}, %{idle_generation: generation} = data) do
+    {:stop, :normal, %{data | idle_timer: nil}}
+  end
+
+  def handle_info({:idle_shutdown, _stale_generation}, data), do: {:noreply, data}
+
+  # Compatibility with stale messages emitted by pre-generation Session code.
+  def handle_info(:idle_shutdown, data), do: {:noreply, data}
 
   @spec retain_committed_result(map(), Result.t()) :: map()
   defp retain_committed_result(data, %Result{} = result) do
     %{data | state: State.new(result.state), last_result: result}
+  end
+
+  @spec prepare_session_execution(Result.t(), map()) ::
+          {:ok, Result.t()} | {:replay, Result.t()} | {:error, term()}
+  defp prepare_session_execution(%Result{} = supplied, data) do
+    submitted = Result.pending_effect(supplied)
+    current = State.pending_effect(data.state)
+
+    cond do
+      is_nil(submitted) and is_nil(current) ->
+        {:error, :no_pending_effect}
+
+      is_nil(submitted) ->
+        {:error, {:stale_execution_result, :missing_effect}}
+
+      resolved = State.resolved_effect(data.state, submitted.id) ->
+        {:replay, replay_result(supplied, data.state, resolved)}
+
+      is_nil(current) ->
+        {:error, {:stale_execution_result, submitted.id}}
+
+      current.id != submitted.id ->
+        {:error, {:stale_execution_result, submitted.id, current.id}}
+
+      true ->
+        metadata = current_persistence_metadata(data, supplied)
+        {:ok, %{supplied | state: data.state, metadata: metadata}}
+    end
+  end
+
+  @spec current_persistence_metadata(map(), Result.t()) :: map()
+  defp current_persistence_metadata(%{last_result: %Result{} = last}, supplied) do
+    case get_in(last.metadata, [:state_persistence, :revision]) do
+      revision when revision == last.state.revision and revision == supplied.state.revision ->
+        Map.put(supplied.metadata, :state_persistence, last.metadata.state_persistence)
+
+      revision when revision == last.state.revision ->
+        Map.put(supplied.metadata, :state_persistence, last.metadata.state_persistence)
+
+      _other ->
+        supplied.metadata
+    end
+  end
+
+  defp current_persistence_metadata(_data, supplied), do: supplied.metadata
+
+  @spec replay_result(Result.t(), State.t(), Spectre.Effect.t()) :: Result.t()
+  defp replay_result(%Result{} = supplied, %State{} = state, effect) do
+    %Result{
+      input: supplied.input,
+      route: supplied.route,
+      state: state,
+      effects: [effect],
+      reply_text: replay_text(effect),
+      events: [
+        %{
+          type: :effect_already_resolved,
+          kind: effect.kind,
+          name: effect.name,
+          effect_id: effect.id,
+          effect: effect
+        }
+      ],
+      metadata: supplied.metadata
+    }
+  end
+
+  @spec replay_text(Spectre.Effect.t()) :: String.t()
+  defp replay_text(effect) do
+    case Spectre.Effect.outcome(effect) do
+      {:ok, value} when is_binary(value) -> value
+      {:ok, value} -> inspect(value)
+      _outcome -> ""
+    end
   end
 
   @spec restore_initial_state(module(), keyword(), keyword()) ::
@@ -266,16 +390,22 @@ defmodule Spectre.Session do
   end
 
   @spec arm_idle_timer(map()) :: map()
-  defp arm_idle_timer(%{idle_timer: ref} = data) when is_reference(ref) do
-    Process.cancel_timer(ref)
-    arm_idle_timer(%{data | idle_timer: nil})
-  end
+  defp arm_idle_timer(data) do
+    if is_reference(data.idle_timer), do: Process.cancel_timer(data.idle_timer)
 
-  defp arm_idle_timer(%{idle_timeout: timeout} = data) when is_integer(timeout) and timeout > 0 do
-    %{data | idle_timer: Process.send_after(self(), :idle_shutdown, timeout)}
-  end
+    generation = data.idle_generation + 1
 
-  defp arm_idle_timer(data), do: data
+    timer =
+      case data.idle_timeout do
+        timeout when is_integer(timeout) and timeout > 0 ->
+          Process.send_after(self(), {:idle_shutdown, generation}, timeout)
+
+        _other ->
+          nil
+      end
+
+    %{data | idle_timer: timer, idle_generation: generation}
+  end
 
   @spec maybe_put_conversation_id(State.t(), term()) :: State.t()
   defp maybe_put_conversation_id(%State{} = state, nil), do: state

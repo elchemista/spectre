@@ -95,7 +95,7 @@ defmodule Spectre.Router.Arbitrators.Default do
   defp eligible_candidates(candidates, opts) do
     candidates
     |> Enum.filter(&eligible?(&1, opts))
-    |> Enum.sort_by(&candidate_rank/1, :desc)
+    |> Enum.sort_by(&candidate_order_key/1)
   end
 
   defp eligible?(%Candidate{handler: nil}, _opts), do: false
@@ -131,14 +131,17 @@ defmodule Spectre.Router.Arbitrators.Default do
 
   defp agreement(candidates) do
     candidates
-    |> Enum.group_by(& &1.label)
-    |> Enum.find_value(fn {_label, same_label} ->
-      providers = same_label |> Enum.map(& &1.provider) |> Enum.uniq()
+    |> Enum.group_by(&candidate_identity/1)
+    |> Enum.flat_map(fn {_identity, same_route} ->
+      providers = same_route |> Enum.map(& &1.provider) |> Enum.uniq()
 
       if length(providers) >= 2 do
-        Enum.max_by(same_label, &(&1.score || 0.0))
+        [Enum.min_by(same_route, &candidate_order_key/1)]
+      else
+        []
       end
     end)
+    |> Enum.min_by(&candidate_order_key/1, fn -> nil end)
   end
 
   defp confident_provider(candidates, provider) do
@@ -147,14 +150,33 @@ defmodule Spectre.Router.Arbitrators.Default do
 
   defp conflict?(candidates) do
     candidates
-    |> Enum.map(& &1.label)
+    |> Enum.map(&candidate_identity/1)
     |> Enum.uniq()
     |> length() > 1
   end
 
-  defp candidate_rank(%Candidate{} = candidate) do
-    {strength_rank(candidate.strength), provider_rank(candidate.provider), candidate.score || 0.0}
+  defp candidate_identity(%Candidate{} = candidate), do: {candidate.scope, candidate.label}
+
+  defp candidate_order_key(%Candidate{} = candidate) do
+    {
+      -strength_rank(candidate.strength),
+      -provider_rank(candidate.provider),
+      -(candidate.score || 0.0),
+      -(candidate.margin || 0.0),
+      stable_id(candidate.scope),
+      stable_id(candidate.label),
+      stable_id(candidate.flow),
+      stable_id(candidate.owner),
+      stable_id(candidate.provider)
+    }
   end
+
+  defp stable_id(nil), do: ""
+
+  defp stable_id(value) when is_atom(value) or is_binary(value) or is_integer(value),
+    do: to_string(value)
+
+  defp stable_id(value), do: inspect(value, limit: 4, printable_limit: 120)
 
   defp strength_rank(:hard), do: 4
   defp strength_rank(:strong), do: 3

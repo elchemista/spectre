@@ -94,19 +94,22 @@ defmodule Spectre.Router do
   are kept as fallback candidates so users can still change topic.
   """
   @spec candidate_rules(module(), State.t()) :: [Rule.t()]
-  def candidate_rules(agent, %State{current_flow: current_flow}) do
-    rules = Enum.map(agent.__spectre_rules__(), &Rule.new/1)
+  def candidate_rules(agent, %State{current_flow: current_flow, current_scope: current_scope}) do
+    rules = agent |> Spectre.Definition.rules() |> Enum.map(&Rule.new/1)
 
     {interrupts, normal} = Enum.split_with(rules, & &1.global?)
 
     current =
       if current_flow do
-        Enum.filter(normal, &(&1.flow == current_flow))
+        Enum.filter(normal, fn rule ->
+          rule.flow == current_flow and (is_nil(current_scope) or rule.scope == current_scope)
+        end)
       else
         []
       end
 
-    rest = Enum.reject(normal, &(&1.flow == current_flow))
+    current_ids = MapSet.new(current, &{&1.scope, &1.flow, &1.label})
+    rest = Enum.reject(normal, &MapSet.member?(current_ids, {&1.scope, &1.flow, &1.label}))
     interrupts ++ current ++ rest
   end
 

@@ -14,14 +14,36 @@ defmodule Spectre.ActionProtection do
 
       :confirm_delete = Spectre.ActionProtection.protected_by(agent, effect)
   """
-  @spec protected_by(module(), Effect.t()) :: atom() | nil
+  @spec protected_by(module(), Effect.t()) :: term()
   def protected_by(agent, %Effect{} = effect) when is_atom(agent) do
-    Enum.find_value(agent.__spectre_protections__(), fn protection ->
-      matching_policy(protection, effect)
+    protected_by(agent, effect, Effect.scope(effect))
+  end
+
+  @doc """
+  Returns the matching policy in the active route scope.
+
+  Agent protections are global. Skill protections apply only to effects staged
+  by that mounted Skill, preventing two Skills bound to the same concrete
+  action from stealing each other's policy.
+  """
+  @spec protected_by(module(), Effect.t(), Spectre.Definition.scope() | nil) :: term()
+  def protected_by(agent, %Effect{} = effect, scope) when is_atom(agent) do
+    agent
+    |> Spectre.Definition.protections()
+    |> Enum.find_value(fn protection ->
+      if protection_scope_matches?(protection, scope) do
+        matching_policy(protection, effect)
+      end
     end)
   end
 
-  @spec matching_policy(map(), Effect.t()) :: atom() | nil
+  @spec protection_scope_matches?(map(), Spectre.Definition.scope() | nil) :: boolean()
+  defp protection_scope_matches?(%{scope: :agent}, _scope), do: true
+  defp protection_scope_matches?(%{scope: nil}, _scope), do: true
+  defp protection_scope_matches?(%{scope: scope}, scope), do: true
+  defp protection_scope_matches?(_protection, _scope), do: false
+
+  @spec matching_policy(map(), Effect.t()) :: term()
   defp matching_policy(%{action: protected, policy: policy}, %Effect{} = effect) do
     if action_matches?(protected, effect), do: policy
   end

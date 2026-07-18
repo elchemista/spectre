@@ -89,6 +89,39 @@ defmodule SpectreJournalBufferTest do
     assert log =~ "store_crashed"
   end
 
+  test "a blocked partition does not head-of-line block another store" do
+    buffer = start_buffer()
+    parent = self()
+
+    assert :ok =
+             Buffer.enqueue(buffer, blocking_delivery(parent),
+               buffer_size: 2,
+               partition: :slow_store
+             )
+
+    assert_receive {:started, slow_worker}
+
+    assert :ok =
+             Buffer.enqueue(
+               buffer,
+               fn ->
+                 send(parent, {:fast_started, self()})
+
+                 receive do
+                   :release -> :ok
+                 end
+               end,
+               buffer_size: 2,
+               partition: :fast_store
+             )
+
+    assert_receive {:fast_started, fast_worker}
+    assert %{queue_depth: 0, running_count: 2, running?: true} = Buffer.stats(buffer)
+
+    send(fast_worker, :release)
+    send(slow_worker, :release)
+  end
+
   defp start_buffer do
     name = Module.concat(__MODULE__, "Buffer#{System.unique_integer([:positive])}")
     start_supervised!({Buffer, name: name})

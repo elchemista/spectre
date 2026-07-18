@@ -64,24 +64,18 @@ defmodule Spectre.ActionHooks do
   @spec matching_hooks(module(), map(), atom()) :: [{hook(), term()}]
   defp matching_hooks(agent, executed, event) do
     action = executed.action
+    scope = Effect.scope(executed.effect)
     action_hooks = executed.effect |> effect_hooks() |> hooks_for(action, event)
-    agent_hooks = agent |> agent_hooks() |> hooks_for(action, event)
+    agent_hooks = agent |> agent_hooks() |> hooks_for(action, event, scope)
 
     Enum.map(action_hooks ++ agent_hooks, &{&1, executed.result})
   end
 
-  @spec effect_hooks(Effect.t() | term()) :: [hook()]
+  @spec effect_hooks(Effect.t()) :: [hook()]
   defp effect_hooks(%Effect{} = effect), do: Effect.hooks(effect)
-  defp effect_hooks(_effect), do: []
 
   @spec agent_hooks(module()) :: [hook()]
-  defp agent_hooks(agent) do
-    if function_exported?(agent, :__spectre_after_actions__, 0) do
-      agent.__spectre_after_actions__()
-    else
-      []
-    end
-  end
+  defp agent_hooks(agent), do: Spectre.Definition.after_actions(agent)
 
   @spec hooks_for([hook()], atom() | String.t() | nil, atom()) :: [hook()]
   defp hooks_for(hooks, action, event) do
@@ -89,6 +83,21 @@ defmodule Spectre.ActionHooks do
       hook.on == event and action_matches?(hook.action, action)
     end)
   end
+
+  @spec hooks_for([hook()], atom() | String.t() | nil, atom(), Spectre.Definition.scope() | nil) ::
+          [hook()]
+  defp hooks_for(hooks, action, event, scope) do
+    Enum.filter(hooks, fn hook ->
+      hook.on == event and action_matches?(hook.action, action) and
+        hook_scope_matches?(hook, scope)
+    end)
+  end
+
+  @spec hook_scope_matches?(map(), Spectre.Definition.scope() | nil) :: boolean()
+  defp hook_scope_matches?(%{scope: :agent}, _scope), do: true
+  defp hook_scope_matches?(%{scope: nil}, _scope), do: true
+  defp hook_scope_matches?(%{scope: scope}, scope), do: true
+  defp hook_scope_matches?(_hook, _scope), do: false
 
   @spec action_matches?(term(), term()) :: boolean()
   defp action_matches?(left, right), do: normalize_action(left) == normalize_action(right)

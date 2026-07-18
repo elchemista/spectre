@@ -18,6 +18,8 @@ defmodule Spectre.Rule do
     :label,
     :flow,
     :handler,
+    :owner,
+    scope: :agent,
     regex: [],
     bag: [],
     jaro: [],
@@ -26,6 +28,8 @@ defmodule Spectre.Rule do
     learn: false,
     checks: [],
     via: [],
+    injections: [],
+    definition_injections: [],
     global?: false,
     opts: []
   ]
@@ -40,6 +44,8 @@ defmodule Spectre.Rule do
           label: atom(),
           flow: atom() | nil,
           handler: handler(),
+          owner: module() | nil,
+          scope: Spectre.Definition.scope(),
           regex: [Regex.t()],
           bag: [String.t()],
           jaro: [String.t()],
@@ -48,6 +54,8 @@ defmodule Spectre.Rule do
           learn: boolean(),
           checks: [{atom() | String.t(), term()}],
           via: [atom()],
+          injections: [Spectre.Prompt.Operation.t()],
+          definition_injections: [Spectre.Prompt.Operation.t()],
           global?: boolean(),
           opts: keyword()
         }

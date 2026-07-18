@@ -63,7 +63,11 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
           {:cont,
            context
            |> Context.add_candidate(
-             Candidate.from_result(route, route_rule(route, visible_rules), :local_classifier)
+             Candidate.from_result(
+               route,
+               Support.route_rule(route, visible_rules),
+               :local_classifier
+             )
            )
            |> Context.put_trace({:local_accept, route})}
         else
@@ -72,7 +76,11 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
           {:cont,
            context
            |> Context.add_candidate(
-             Candidate.from_result(route, route_rule(route, visible_rules), :local_classifier)
+             Candidate.from_result(
+               route,
+               Support.route_rule(route, visible_rules),
+               :local_classifier
+             )
            )
            |> Context.put_local_result(
              Map.put(Map.from_struct(route), :semantic_cache, cache_reason)
@@ -89,7 +97,11 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
         {:cont,
          context
          |> Context.add_candidate(
-           Candidate.from_result(route, route_rule(route, visible_rules), :local_classifier)
+           Candidate.from_result(
+             route,
+             Support.route_rule(route, visible_rules),
+             :local_classifier
+           )
          )
          |> Context.put_local_result(
            Map.put(Map.from_struct(route), :semantic_cache, cache_reason)
@@ -120,7 +132,4 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
   defp maybe_put_cache_reason(result, :semantic_cache_disabled), do: result
   defp maybe_put_cache_reason(result, nil), do: result
   defp maybe_put_cache_reason(result, reason), do: Map.put(result, :semantic_cache, reason)
-
-  @spec route_rule(Spectre.Route.t(), [Spectre.Rule.t()]) :: Spectre.Rule.t() | nil
-  defp route_rule(route, rules), do: Enum.find(rules, &(&1.label == route.label))
 end

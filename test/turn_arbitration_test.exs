@@ -50,6 +50,42 @@ defmodule SpectreTurnArbitrationTest do
       assert route.confidence == 0.85
     end
 
+    test "same local label in different Skill scopes is not false agreement" do
+      first = candidate(:SEARCH, :bag, score: 0.80, scope: {:skill, :first})
+      second = candidate(:SEARCH, :semantic_cache, score: 0.85, scope: {:skill, :second})
+
+      local =
+        candidate(:OTHER, :local_classifier,
+          score: 0.99,
+          margin: 0.5,
+          scope: {:skill, :third}
+        )
+
+      assert {:ok, route} =
+               Default.decide(arbitration([first, second, local]), conflict: :best)
+
+      assert route.label == :OTHER
+      assert route.scope == {:skill, :third}
+    end
+
+    test "winner is invariant under candidate permutations and score ties" do
+      candidates = [
+        candidate(:SECOND, :custom, score: 0.81, scope: {:skill, :zeta}),
+        candidate(:FIRST, :custom, score: 0.81, scope: {:skill, :alpha}),
+        candidate(:THIRD, :custom, score: 0.81, scope: {:skill, :omega})
+      ]
+
+      winners =
+        candidates
+        |> permutations()
+        |> Enum.map(fn permutation ->
+          assert {:ok, route} = Default.decide(arbitration(permutation), conflict: :best)
+          {route.scope, route.label, route.strategy}
+        end)
+
+      assert Enum.uniq(winners) == [{{:skill, :alpha}, :FIRST, :custom}]
+    end
+
     test "classifier acceptance threshold is configurable" do
       local =
         candidate(:LOCAL, :local_classifier,
@@ -458,6 +494,8 @@ defmodule SpectreTurnArbitrationTest do
       label: label,
       flow: Keyword.get(opts, :flow),
       handler: Keyword.get(opts, :handler, @handler),
+      owner: Keyword.get(opts, :owner),
+      scope: Keyword.get(opts, :scope, :agent),
       provider: provider,
       score: Keyword.get(opts, :score, 0.9),
       margin: Keyword.get(opts, :margin, 0.2),
@@ -485,5 +523,14 @@ defmodule SpectreTurnArbitrationTest do
       candidates: candidates,
       context: %Context{}
     }
+  end
+
+  defp permutations([]), do: [[]]
+
+  defp permutations(values) do
+    for value <- values,
+        rest <- permutations(List.delete(values, value)) do
+      [value | rest]
+    end
   end
 end

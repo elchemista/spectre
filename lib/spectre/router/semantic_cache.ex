@@ -241,11 +241,9 @@ defmodule Spectre.Router.SemanticCache do
 
   @spec spectre_rules(module()) :: [Spectre.Rule.t()]
   defp spectre_rules(agent) do
-    if function_exported?(agent, :__spectre_rules__, 0) do
-      Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
-    else
-      []
-    end
+    agent
+    |> Spectre.Definition.rules()
+    |> Enum.map(&Spectre.Rule.new/1)
   end
 
   @spec with_runtime_opts(module(), keyword(), function()) :: term()

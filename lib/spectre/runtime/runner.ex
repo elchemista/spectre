@@ -14,6 +14,7 @@ defmodule Spectre.Runner do
   alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Prompt
+  alias Spectre.Prompt.Plan
   alias Spectre.Result
   alias Spectre.Route
 
@@ -64,24 +65,39 @@ defmodule Spectre.Runner do
   @spec ask(atom() | String.t(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
   def ask(prompt, %Input{} = input, ctx, opts \\ []) do
-    ctx = normalize_ctx(ctx, input, opts)
+    ctx = normalize_ctx(ctx, input, [])
+    prompt_opts = merge_prompt_opts(ctx.opts, opts)
+    ctx = %{ctx | opts: prompt_opts}
 
-    prompt_opts = Keyword.merge(ctx.opts, opts)
-
-    with {:ok, rendered} <- Prompt.render(ctx.agent, prompt, ctx, prompt_opts),
-         {:ok, reply} <- Spectre.LLM.complete(rendered, prompt_opts) do
-      if Keyword.get(opts, :policy_prompt?) do
-        {:ok,
-         %Result{
-           input: input,
-           route: ctx.route,
-           state: ctx.state,
-           reply_text: ActionPlanner.clean_reply(reply)
-         }}
-      else
-        plan_reply(reply, input, ctx, prompt_opts)
-      end
+    with {:ok, %Plan{} = plan} <-
+           Prompt.build(ctx.agent, prompt, ctx, prompt_opts),
+         {:ok, reply} <- Spectre.LLM.complete(plan.rendered, prompt_opts),
+         :ok <- validate_model_reply_size(reply, prompt_opts),
+         {:ok, %Result{} = result} <-
+           ask_result(reply, input, ctx, prompt_opts, Keyword.get(opts, :policy_prompt?)) do
+      {:ok, put_prompt_metadata(result, plan)}
     end
+  end
+
+  @spec ask_result(String.t(), Input.t(), Spectre.Context.t(), keyword(), boolean() | nil) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp ask_result(reply, input, ctx, _opts, true) do
+    {:ok,
+     %Result{
+       input: input,
+       route: ctx.route,
+       state: ctx.state,
+       reply_text: ActionPlanner.clean_reply(reply)
+     }}
+  end
+
+  defp ask_result(reply, input, ctx, opts, _policy_prompt?),
+    do: plan_reply(reply, input, ctx, opts)
+
+  @spec put_prompt_metadata(Result.t(), Plan.t()) :: Result.t()
+  defp put_prompt_metadata(%Result{} = result, %Plan{} = plan) do
+    metadata = Map.put(result.metadata, :prompt_plan, Plan.metadata(plan))
+    %{result | metadata: metadata}
   end
 
   @doc """
@@ -93,18 +109,33 @@ defmodule Spectre.Runner do
           {:ok, Result.t()} | {:error, term()}
   def run_function(function, %Input{} = input, ctx) when is_atom(function) do
     ctx = normalize_ctx(ctx, input, [])
-    agent = ctx.agent
 
+    owner =
+      Keyword.get(ctx.opts, :handler_owner) ||
+        (match?(%Route{}, ctx.route) && ctx.route.owner) || ctx.agent
+
+    call_run_function(owner, function, input, ctx)
+  end
+
+  @spec call_run_function(module(), atom(), Input.t(), Spectre.Context.t()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp call_run_function(owner, function, input, ctx) do
     cond do
-      function_exported?(agent, function, 2) ->
-        normalize_function_result(apply(agent, function, [input, ctx]), input, ctx)
+      function_exported?(owner, function, 2) ->
+        normalize_function_result(apply(owner, function, [input, ctx]), input, ctx)
 
-      function_exported?(agent, function, 1) ->
-        normalize_function_result(apply(agent, function, [input]), input, ctx)
+      function_exported?(owner, function, 1) ->
+        normalize_function_result(apply(owner, function, [input]), input, ctx)
 
       true ->
-        {:error, {:undefined_run_function, agent, function}}
+        {:error, {:undefined_run_function, owner, function}}
     end
+  rescue
+    exception ->
+      {:error, {:run_function_exception, owner, function, exception}}
+  catch
+    kind, reason ->
+      {:error, {:run_function_failure, owner, function, kind, reason}}
   end
 
   @doc """
@@ -120,9 +151,11 @@ defmodule Spectre.Runner do
   @spec reply(atom() | String.t(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
   def reply(prompt, %Input{} = input, ctx, opts \\ []) do
-    ctx = normalize_ctx(ctx, input, opts)
+    ctx = normalize_ctx(ctx, input, [])
+    prompt_opts = merge_prompt_opts(ctx.opts, opts)
+    ctx = %{ctx | opts: prompt_opts}
 
-    with {:ok, text} <- render_reply(prompt, input, ctx, opts) do
+    with {:ok, text} <- render_reply(prompt, input, ctx, prompt_opts) do
       {:ok, %Result{input: input, route: ctx.route, state: ctx.state, reply_text: text}}
     end
   end
@@ -146,16 +179,21 @@ defmodule Spectre.Runner do
       Effect.stage(%{
         name: action,
         args: Keyword.get(opts, :args, %{}),
+        mode: Keyword.get(opts, :mode),
         status: Keyword.get(opts, :status, :pending),
         payload: %{
           al: Keyword.get(opts, :al),
           hooks: Keyword.get(opts, :hooks, []),
-          source: :dsl
+          source: :dsl,
+          scope: route_scope(ctx)
         }
       })
 
     with :ok <- ensure_no_pending_effect(ctx.state) do
-      policy = Keyword.get(opts, :policy) || ActionProtection.protected_by(ctx.agent, effect)
+      policy =
+        Keyword.get(opts, :policy) ||
+          ActionProtection.protected_by(ctx.agent, effect, route_scope(ctx))
+
       state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
       ctx = %{ctx | state: state}
       # Read the effect back from state so policy metadata/status added by
@@ -204,8 +242,10 @@ defmodule Spectre.Runner do
   end
 
   defp stage_effects(reply_text, [effect], input, ctx, opts) do
+    effect = put_effect_scope(effect, route_scope(ctx))
+
     with :ok <- ensure_no_pending_effect(ctx.state) do
-      policy = ActionProtection.protected_by(ctx.agent, effect)
+      policy = ActionProtection.protected_by(ctx.agent, effect, route_scope(ctx))
       state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
       ctx = %{ctx | state: state}
       staged_effect = pending_effect(state)
@@ -242,7 +282,7 @@ defmodule Spectre.Runner do
   defp render_reply(prompt, input, ctx, opts) do
     case Keyword.get(opts, :renderer) do
       nil ->
-        Prompt.render(ctx.agent, prompt, ctx, opts)
+        Prompt.render_asset(ctx.agent, prompt, ctx, opts)
 
       {module, function} when is_atom(module) and is_atom(function) ->
         call_reply_renderer(module, function, prompt, input, ctx, opts)
@@ -333,7 +373,7 @@ defmodule Spectre.Runner do
   end
 
   @spec request_policy(
-          atom(),
+          term(),
           String.t(),
           [Effect.t()],
           Input.t(),
@@ -341,17 +381,24 @@ defmodule Spectre.Runner do
           keyword()
         ) :: {:ok, Result.t()} | {:error, term()}
   defp request_policy(policy_name, reply_text, effects, input, ctx, opts) do
-    case Map.get(ctx.agent.__spectre_policies__(), policy_name) do
-      nil ->
+    case Spectre.Definition.policy(ctx.agent, policy_name) do
+      {:error, _reason} ->
         {:error, {:unknown_policy, policy_name}}
 
-      %{request: request_prompt} = policy ->
+      {:ok, %{request: request_prompt}, scope} ->
+        definition = Spectre.Definition.for_scope!(ctx.agent, scope)
+
         with {:ok, %Result{} = request} <-
                ask(
                  request_prompt,
                  input,
                  ctx,
-                 Keyword.merge(opts, policy_prompt?: true, policy: policy.name)
+                 Keyword.merge(opts,
+                   policy_prompt?: true,
+                   policy: policy_name,
+                   prompt_scope: scope,
+                   prompt_owner: definition.owner
+                 )
                ) do
           {:ok,
            %{
@@ -375,16 +422,42 @@ defmodule Spectre.Runner do
 
   @spec normalize_function_result(term(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
-  defp normalize_function_result({:ok, %Result{} = result}, _input, _ctx), do: {:ok, result}
-  defp normalize_function_result(%Result{} = result, _input, _ctx), do: {:ok, result}
+  defp normalize_function_result({:ok, %Result{} = result}, input, ctx),
+    do: {:ok, put_run_result_defaults(result, input, ctx)}
+
+  defp normalize_function_result(%Result{} = result, input, ctx),
+    do: {:ok, put_run_result_defaults(result, input, ctx)}
 
   defp normalize_function_result({:ok, reply}, input, ctx),
-    do: {:ok, %Result{input: input, state: ctx.state, reply_text: to_string(reply)}}
+    do:
+      {:ok,
+       %Result{input: input, route: ctx.route, state: ctx.state, reply_text: to_string(reply)}}
 
   defp normalize_function_result({:error, reason}, _input, _ctx), do: {:error, reason}
 
   defp normalize_function_result(reply, input, ctx),
-    do: {:ok, %Result{input: input, state: ctx.state, reply_text: to_string(reply)}}
+    do:
+      {:ok,
+       %Result{input: input, route: ctx.route, state: ctx.state, reply_text: to_string(reply)}}
+
+  @spec put_run_result_defaults(Result.t(), Input.t(), Spectre.Context.t()) :: Result.t()
+  defp put_run_result_defaults(%Result{} = result, input, ctx) do
+    %{
+      result
+      | input: result.input || input,
+        route: result.route || ctx.route,
+        state: result.state || ctx.state
+    }
+  end
+
+  @spec put_effect_scope(Effect.t(), Spectre.Definition.scope()) :: Effect.t()
+  defp put_effect_scope(%Effect{} = effect, scope) do
+    %{effect | payload: Map.put(effect.payload, :scope, scope)}
+  end
+
+  @spec route_scope(Spectre.Context.t() | map()) :: Spectre.Definition.scope()
+  defp route_scope(%{route: %Route{scope: scope}}), do: scope
+  defp route_scope(_ctx), do: :agent
 
   @spec normalize_ctx(Spectre.Context.t() | map(), Input.t(), keyword()) :: Spectre.Context.t()
   defp normalize_ctx(%Spectre.Context{} = ctx, _input, opts),
@@ -394,6 +467,33 @@ defmodule Spectre.Runner do
     attrs = Map.merge(ctx, %{input: input, opts: Keyword.merge(Map.get(ctx, :opts, []), opts)})
     struct(Spectre.Context, attrs)
   end
+
+  @spec validate_model_reply_size(String.t(), keyword()) :: :ok | {:error, term()}
+  defp validate_model_reply_size(reply, opts) when is_binary(reply) do
+    max_bytes = Keyword.get(opts, :model_reply_max_bytes, 1_000_000)
+
+    if is_integer(max_bytes) and max_bytes > 0 and byte_size(reply) <= max_bytes do
+      :ok
+    else
+      {:error, {:model_reply_too_large, byte_size(reply), max_bytes}}
+    end
+  end
+
+  @spec merge_prompt_opts(keyword(), keyword()) :: keyword()
+  defp merge_prompt_opts(base, override) do
+    base_inject = Keyword.get(base, :runtime_inject, Keyword.get(base, :inject))
+    handler_inject = Keyword.get(override, :handler_inject, Keyword.get(override, :inject))
+
+    base
+    |> Keyword.delete(:inject)
+    |> Keyword.merge(Keyword.delete(override, :inject))
+    |> maybe_put_prompt_inject(:runtime_inject, base_inject)
+    |> maybe_put_prompt_inject(:handler_inject, handler_inject)
+  end
+
+  @spec maybe_put_prompt_inject(keyword(), atom(), term()) :: keyword()
+  defp maybe_put_prompt_inject(opts, _key, nil), do: opts
+  defp maybe_put_prompt_inject(opts, key, inject), do: Keyword.put(opts, key, inject)
 
   @spec ensure_no_pending_effect(Spectre.State.t()) :: :ok | {:error, term()}
   defp ensure_no_pending_effect(%Spectre.State{} = state) do

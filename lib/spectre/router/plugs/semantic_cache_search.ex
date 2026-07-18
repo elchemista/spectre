@@ -56,7 +56,11 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
           {:cont,
            context
            |> Context.add_candidate(
-             Candidate.from_result(route, route_rule(route, visible_rules), route.strategy)
+             Candidate.from_result(
+               route,
+               Support.route_rule(route, visible_rules),
+               route.strategy
+             )
            )
            |> Context.put_trace({:semantic_accept, route})}
         else
@@ -91,7 +95,4 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
          |> Context.put_trace({:semantic_skip, reason})}
     end
   end
-
-  @spec route_rule(Spectre.Route.t(), [Spectre.Rule.t()]) :: Spectre.Rule.t() | nil
-  defp route_rule(route, rules), do: Enum.find(rules, &(&1.label == route.label))
 end

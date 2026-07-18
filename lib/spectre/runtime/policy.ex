@@ -10,11 +10,15 @@ defmodule Spectre.Policy do
   alias Spectre.Awaitable
   alias Spectre.Effect
   alias Spectre.Input
+  alias Spectre.Lifecycle
   alias Spectre.Result
   alias Spectre.State
 
   defstruct [
     :name,
+    :reference,
+    :scope,
+    :owner,
     :request,
     accepts: [],
     rejects: [],
@@ -28,6 +32,9 @@ defmodule Spectre.Policy do
 
   @type t :: %__MODULE__{
           name: atom(),
+          reference: term(),
+          scope: Spectre.Definition.scope(),
+          owner: module() | nil,
           request: atom() | String.t() | nil,
           accepts: [map()],
           rejects: [map()],
@@ -85,7 +92,7 @@ defmodule Spectre.Policy do
         type: :policy_resolved,
         source: :host,
         kind: kind,
-        name: policy.name,
+        name: policy_identifier(policy),
         label: label
       }
 
@@ -119,79 +126,54 @@ defmodule Spectre.Policy do
   @spec approve(t(), atom(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
   defp approve(policy, label, input, %{state: state}) do
-    case State.open_policy_awaitable(state) do
-      nil ->
-        {:error, :no_open_policy}
+    with {:ok, transition} <- Lifecycle.resolve_policy(state, :accept, label) do
+      approved = transition.effect
+      awaitable = transition.awaitable
 
-      %Awaitable{} = open ->
-        with {:ok, state, approved} <-
-               State.approve_pending_effect(state, open.subject_id) do
-          awaitable = Awaitable.accept(open, label)
-
-          state =
-            state
-            |> State.replace_awaitable(awaitable)
-            |> State.clear_open_awaitables()
-            |> State.trace(%{
-              type: :awaitable_accepted,
-              kind: :policy,
-              name: policy.name,
-              label: label,
-              subject_id: open.subject_id,
-              at: DateTime.utc_now()
-            })
-
-          {:ok,
-           %Result{
-             input: input,
-             state: state,
-             reply_text: "",
-             effects: [approved],
-             awaitables: [awaitable],
-             events: [
-               %{type: :awaitable_accepted, kind: :policy, name: policy.name, label: label},
-               %{
-                 type: :effect_approved,
-                 kind: approved.kind,
-                 name: approved.name,
-                 effect_id: approved.id,
-                 idempotency_key: Effect.idempotency_key(approved)
-               }
-             ]
-           }}
-        end
+      {:ok,
+       %Result{
+         input: input,
+         state: transition.to,
+         reply_text: "",
+         effects: [approved],
+         awaitables: [awaitable],
+         events: [
+           %{
+             type: :awaitable_accepted,
+             kind: :policy,
+             name: policy_identifier(policy),
+             label: label
+           },
+           %{
+             type: :effect_approved,
+             kind: approved.kind,
+             name: approved.name,
+             effect_id: approved.id,
+             idempotency_key: Effect.idempotency_key(approved)
+           }
+         ]
+       }}
     end
   end
 
   @spec reject(t(), atom(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
   defp reject(policy, label, input, %{state: state}) do
-    awaitable = state |> State.open_policy_awaitable() |> Awaitable.reject(label)
-
-    cancelled =
-      state.pending_effects |> Enum.map(&Spectre.Effect.cancel(&1, {:policy_rejected, label}))
-
-    state =
-      state
-      |> State.replace_awaitable(awaitable)
-      |> State.clear_pending()
-      |> record_resolved_effects(cancelled)
-      |> State.trace(%{
-        type: :awaitable_rejected,
-        kind: :policy,
-        name: policy.name,
-        label: label,
-        at: DateTime.utc_now()
-      })
+    {:ok, transition} = Lifecycle.resolve_policy(state, :reject, label)
 
     {:ok,
      %Result{
        input: input,
-       state: state,
+       state: transition.to,
        reply_text: "",
-       effects: cancelled,
-       awaitables: [awaitable],
+       effects: [transition.effect],
+       awaitables: [transition.awaitable],
        events: [
-         %{type: :awaitable_rejected, kind: :policy, name: policy.name, label: label},
+         %{
+           type: :awaitable_rejected,
+           kind: :policy,
+           name: policy_identifier(policy),
+           label: label
+         },
          %{type: :effect_cancelled, kind: :action, reason: {:policy_rejected, label}}
        ]
      }}
@@ -223,7 +205,8 @@ defmodule Spectre.Policy do
 
   defp finish_attempts(%__MODULE__{then: function}, input, ctx)
        when is_atom(function) and not is_nil(function) do
-    Spectre.Runner.run_function(function, input, ctx)
+    opts = Keyword.put(ctx.opts, :handler_owner, policy_owner(ctx))
+    Spectre.Runner.run_function(function, input, %{ctx | opts: opts})
   end
 
   defp finish_attempts(%__MODULE__{} = policy, input, ctx) do
@@ -250,7 +233,7 @@ defmodule Spectre.Policy do
        effects: cancelled,
        awaitables: [awaitable],
        events: [
-         %{type: :awaitable_cancelled, kind: :policy, name: policy.name},
+         %{type: :awaitable_cancelled, kind: :policy, name: policy_identifier(policy)},
          %{type: :effect_cancelled, kind: :action, reason: :policy_attempts_exceeded}
        ]
      }}
@@ -259,12 +242,22 @@ defmodule Spectre.Policy do
   @spec reply_otherwise(t(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
   defp reply_otherwise(%__MODULE__{otherwise: {:ask, prompt}} = policy, input, ctx) do
-    with {:ok, %Result{} = result} <- Spectre.Runner.ask(prompt, input, ctx, policy_prompt?: true) do
+    prompt_opts = [
+      policy_prompt?: true,
+      policy: policy_identifier(policy),
+      prompt_scope: policy.scope,
+      prompt_owner: policy.owner
+    ]
+
+    with {:ok, %Result{} = result} <- Spectre.Runner.ask(prompt, input, ctx, prompt_opts) do
       {:ok,
        %{
          result
          | awaitables: ctx.state.awaitables,
-           events: [%{type: :awaitable_pending, kind: :policy, name: policy.name} | result.events]
+           events: [
+             %{type: :awaitable_pending, kind: :policy, name: policy_identifier(policy)}
+             | result.events
+           ]
        }}
     end
   end
@@ -275,7 +268,7 @@ defmodule Spectre.Policy do
        input: input,
        state: ctx.state,
        awaitables: ctx.state.awaitables,
-       events: [%{type: :awaitable_pending, kind: :policy, name: policy.name}]
+       events: [%{type: :awaitable_pending, kind: :policy, name: policy_identifier(policy)}]
      }}
   end
 
@@ -316,7 +309,7 @@ defmodule Spectre.Policy do
     if Enum.any?(branches, &(Map.get(&1, :label) == label)) do
       :ok
     else
-      {:error, {:unknown_policy_resolution_label, policy.name, kind, label}}
+      {:error, {:unknown_policy_resolution_label, policy_identifier(policy), kind, label}}
     end
   end
 
@@ -328,13 +321,36 @@ defmodule Spectre.Policy do
   defp apply_resolution(policy, {:reject, label}, input, ctx),
     do: reject(policy, label, input, ctx)
 
-  @spec find_policy(module(), atom()) :: t() | nil
+  @spec find_policy(module(), term()) :: t() | nil
   defp find_policy(agent, name) do
-    agent.__spectre_policies__()
-    |> Map.get(name)
-    |> case do
-      nil -> nil
-      policy -> new(policy)
+    case Spectre.Definition.policy(agent, name) do
+      {:ok, policy, scope} ->
+        definition = Spectre.Definition.for_scope!(agent, scope)
+
+        policy
+        |> Map.put(:reference, Spectre.Definition.policy_ref(scope, policy.name))
+        |> Map.put(:scope, scope)
+        |> Map.put(:owner, definition.owner)
+        |> new()
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  @spec policy_identifier(t()) :: term()
+  defp policy_identifier(%__MODULE__{reference: nil, name: name}), do: name
+  defp policy_identifier(%__MODULE__{reference: reference}), do: reference
+
+  @spec policy_owner(Spectre.Context.t() | map()) :: module()
+  defp policy_owner(%{agent: agent, state: %State{} = state}) do
+    case State.open_policy_awaitable(state) do
+      %Awaitable{name: reference} ->
+        scope = Spectre.Definition.policy_scope(reference)
+        Spectre.Definition.for_scope!(agent, scope).owner
+
+      nil ->
+        agent
     end
   end
 

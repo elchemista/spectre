@@ -196,11 +196,28 @@ defmodule Spectre do
   exposes a matching function.
 
       {:ok, result} = Spectre.execute(state, ctx)
+      {:ok, result} = Spectre.execute(MyAgent, approved_result)
   """
   @spec execute(State.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, Spectre.Result.t()} | {:error, term()}
-  def execute(%State{} = state, ctx, opts \\ []) do
+  @spec execute(module() | GenServer.server(), Spectre.Result.t(), keyword()) ::
+          {:ok, Spectre.Result.t()} | {:error, term()}
+  def execute(state_or_agent, context_or_result, opts \\ [])
+
+  def execute(%State{} = state, ctx, opts) do
     Spectre.ActionExecutor.execute_pending(state, ctx, opts)
+  end
+
+  def execute(agent, %Spectre.Result{} = result, opts) when is_atom(agent) do
+    if agent_module?(agent) do
+      Runtime.execute(agent, result, opts)
+    else
+      Spectre.Session.execute(agent, result, opts)
+    end
+  end
+
+  def execute(session, %Spectre.Result{} = result, opts) when is_list(opts) do
+    Spectre.Session.execute(session, result, opts)
   end
 
   @doc """

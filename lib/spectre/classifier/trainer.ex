@@ -184,18 +184,40 @@ defmodule Spectre.Classifier.Trainer do
 
     with :ok <- File.mkdir_p(out_dir),
          :ok <-
-           File.write(Path.join(out_dir, "classifier.etf"), :erlang.term_to_binary(classifier)),
+           atomic_write(
+             Path.join(out_dir, "metadata.json"),
+             Jason.encode!(metadata, pretty: true)
+           ),
          :ok <-
-           File.write(Path.join(out_dir, "metadata.json"), Jason.encode!(metadata, pretty: true)),
-         :ok <-
-           File.write(
+           atomic_write(
              Path.join(out_dir, "calibration.json"),
              Jason.encode!(calibration, pretty: true)
+           ),
+         :ok <-
+           atomic_write(
+             Path.join(out_dir, "labels.json"),
+             Jason.encode!(classifier.labels, pretty: true)
            ) do
-      File.write(
-        Path.join(out_dir, "labels.json"),
-        Jason.encode!(classifier.labels, pretty: true)
+      # Publish the validated runtime artifact last so readers never observe a
+      # new classifier with partially written companion files.
+      atomic_write(
+        Path.join(out_dir, "classifier.etf"),
+        :erlang.term_to_binary(classifier)
       )
+    end
+  end
+
+  @spec atomic_write(String.t(), binary()) :: :ok | {:error, term()}
+  defp atomic_write(path, bytes) do
+    temporary = "#{path}.tmp.#{System.unique_integer([:positive, :monotonic])}"
+
+    with :ok <- File.write(temporary, bytes, [:binary, :sync]),
+         :ok <- File.rename(temporary, path) do
+      :ok
+    else
+      {:error, reason} ->
+        File.rm(temporary)
+        {:error, reason}
     end
   end
 

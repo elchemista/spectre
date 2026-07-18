@@ -10,6 +10,8 @@ defmodule Spectre.ActionExecutor do
   alias Spectre.ActionConfig
   alias Spectre.Effect
   alias Spectre.Input
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Result
   alias Spectre.State
 
@@ -86,12 +88,9 @@ defmodule Spectre.ActionExecutor do
     opts = effect_execution_opts(effect, opts)
     ctx = normalize_ctx(ctx, Map.get(ctx, :input, Input.new("")), opts)
 
-    case call_action(effect, ctx) do
+    case bounded_action_call(effect, ctx) do
       {:ok, result} ->
-        {state, completed} =
-          state
-          |> State.complete_pending_effect(result)
-          |> trace_completed(effect)
+        {state, completed} = State.complete_pending_effect(state, result)
 
         {:ok,
          %Result{
@@ -135,19 +134,45 @@ defmodule Spectre.ActionExecutor do
     end
   end
 
-  @spec trace_completed({State.t(), Effect.t() | nil}, Effect.t()) ::
-          {State.t(), Effect.t() | nil}
-  defp trace_completed({%State{} = state, completed}, %Effect{} = original) do
-    state =
-      State.trace(state, %{
-        type: :effect_completed,
-        kind: :action,
-        name: original.name,
-        effect_id: original.id,
-        at: DateTime.utc_now()
-      })
+  @spec bounded_action_call(Effect.t(), Spectre.Context.t()) ::
+          {:ok, term()} | {:error, term()}
+  defp bounded_action_call(%Effect{} = effect, ctx) do
+    with :ok <- validate_action_payload(effect.args, :arguments, ctx.opts, :action_max_bytes),
+         {:ok, result} <- isolated_action_call(effect, ctx),
+         :ok <- validate_action_payload(result, :result, ctx.opts, :action_result_max_bytes) do
+      {:ok, result}
+    end
+  end
 
-    {state, completed}
+  @spec isolated_action_call(Effect.t(), Spectre.Context.t()) ::
+          {:ok, term()} | {:error, term()}
+  defp isolated_action_call(%Effect{} = effect, ctx) do
+    case Call.run(
+           :action,
+           fn -> call_action(effect, ctx) end,
+           Keyword.put(ctx.opts, :purpose, :action_execute)
+         ) do
+      {:error, %Failure{kind: kind} = failure}
+      when kind in [:timeout, :exit, :crash] ->
+        {:error, {:action_outcome_ambiguous, failure}}
+
+      result ->
+        result
+    end
+  end
+
+  @spec validate_action_payload(term(), atom(), keyword(), atom()) :: :ok | {:error, term()}
+  defp validate_action_payload(value, kind, opts, key) do
+    max_bytes = Keyword.get(opts, key, 1_000_000)
+    bytes = :erlang.external_size(value)
+
+    if is_integer(max_bytes) and max_bytes > 0 and bytes <= max_bytes do
+      :ok
+    else
+      {:error, {:action_payload_too_large, kind, bytes, max_bytes}}
+    end
+  rescue
+    exception -> {:error, {:action_payload_size_failed, kind, exception.__struct__}}
   end
 
   @spec call_action(Effect.t(), Spectre.Context.t()) :: {:ok, term()} | {:error, term()}
