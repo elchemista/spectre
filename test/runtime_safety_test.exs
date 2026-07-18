@@ -156,6 +156,19 @@ defmodule SpectreRuntimeSafetyTest do
     assert_receive {:action_context, ^effect_id, ^idempotency_key}
   end
 
+  test "a forged effect owner is rejected before its action is called" do
+    effect = Effect.stage_action(%{name: :capture}, OtherActions, :agent)
+    state = State.put_pending_effect(%State{}, effect, nil)
+
+    assert {:error,
+            {:effect_owner_mismatch, effect_id, OtherActions,
+             SpectreRuntimeSafetyTest.ActionAgent}} =
+             Spectre.execute(state, %{agent: ActionAgent, opts: [test_pid: self()]})
+
+    assert effect_id == effect.id
+    refute_receive {:action_context, _, _}
+  end
+
   test "memory failure does not roll back already persisted machine state" do
     assert {:ok, result} =
              Spectre.ask(PersistenceAgent, "hello", test_pid: self())

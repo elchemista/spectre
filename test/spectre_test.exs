@@ -878,7 +878,15 @@ defmodule SpectreTest do
     assert result.reply_text ==
              "Perfetto, preparo il progetto.\n\nPrima di procedere, accetti i termini?"
 
-    assert [%Effect{name: :create_project, status: :waiting_policy, policy: :terms} = effect] =
+    assert [
+             %Effect{
+               name: :create_project,
+               owner: SpectreTest.ProjectAgent,
+               scope: :agent,
+               status: :waiting_policy,
+               policy: :terms
+             } = effect
+           ] =
              result.effects
 
     assert Effect.source(effect) == :al

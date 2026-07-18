@@ -298,29 +298,37 @@ defmodule Spectre.Router.Plugs.Arbitrate do
     if Keyword.get(context.opts, :semantic_learn_protected?, false) do
       :ok
     else
-      agent = Keyword.get(context.opts, :spectre_agent)
-
-      effect =
-        Spectre.Effect.stage(%{
-          name: action,
-          args: Keyword.get(handler_opts, :args, %{}),
-          payload: %{source: :dsl}
-        })
-
-      cond do
-        is_nil(agent) ->
-          :ok
-
-        Spectre.ActionProtection.protected_by(agent, effect, route.scope) ->
-          {:skip, :protected_route}
-
-        true ->
-          :ok
-      end
+      unprotected_action_route(
+        route,
+        action,
+        handler_opts,
+        Keyword.get(context.opts, :spectre_agent)
+      )
     end
   end
 
   defp unprotected_route(_route, _context), do: :ok
+
+  @spec unprotected_action_route(Spectre.Route.t(), atom(), keyword(), module() | nil) ::
+          :ok | {:skip, :protected_route}
+  defp unprotected_action_route(_route, _action, _handler_opts, nil), do: :ok
+
+  defp unprotected_action_route(route, action, handler_opts, agent) do
+    effect =
+      Spectre.Effect.stage_action(
+        %{
+          name: action,
+          args: Keyword.get(handler_opts, :args, %{}),
+          payload: %{source: :dsl}
+        },
+        route.owner || agent,
+        route.scope || :agent
+      )
+
+    if Spectre.ActionProtection.protected_by(agent, effect),
+      do: {:skip, :protected_route},
+      else: :ok
+  end
 
   @spec semantic_cache_missed(Context.t()) :: :ok | {:skip, term()}
   defp semantic_cache_missed(%Context{} = context) do

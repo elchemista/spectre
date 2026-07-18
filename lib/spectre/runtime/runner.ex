@@ -183,23 +183,26 @@ defmodule Spectre.Runner do
     ctx = %{ctx | opts: merge_prompt_opts(ctx.opts, opts)}
 
     effect =
-      Effect.stage(%{
-        name: action,
-        args: Keyword.get(opts, :args, %{}),
-        mode: Keyword.get(opts, :mode),
-        status: Keyword.get(opts, :status, :pending),
-        payload: %{
-          al: Keyword.get(opts, :al),
-          hooks: Keyword.get(opts, :hooks, []),
-          source: :dsl,
-          scope: route_scope(ctx)
-        }
-      })
+      Effect.stage_action(
+        %{
+          name: action,
+          args: Keyword.get(opts, :args, %{}),
+          mode: Keyword.get(opts, :mode),
+          status: Keyword.get(opts, :status, :pending),
+          payload: %{
+            al: Keyword.get(opts, :al),
+            hooks: Keyword.get(opts, :hooks, []),
+            source: :dsl
+          }
+        },
+        route_owner(ctx),
+        route_scope(ctx)
+      )
 
     with :ok <- ensure_no_pending_effect(ctx.state) do
       policy =
         Keyword.get(opts, :policy) ||
-          ActionProtection.protected_by(ctx.agent, effect, route_scope(ctx))
+          ActionProtection.protected_by(ctx.agent, effect)
 
       state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
       ctx = %{ctx | state: state}
@@ -221,7 +224,7 @@ defmodule Spectre.Runner do
              route: ctx.route,
              state: state,
              effects: effects,
-             events: [%{type: :effect_staged, kind: :action, name: effect.name}]
+             events: [effect_event(:effect_staged, effect)]
            }}
       end
     end
@@ -230,8 +233,14 @@ defmodule Spectre.Runner do
   @spec plan_reply(String.t(), Input.t(), Spectre.Context.t(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
   defp plan_reply(reply, input, ctx, opts) do
+    planner_opts =
+      ctx
+      |> ActionConfig.planner_opts(opts)
+      |> Keyword.put(:effect_owner, route_owner(ctx))
+      |> Keyword.put(:effect_scope, route_scope(ctx))
+
     with {:ok, %{reply_text: reply_text, effects: effects}} <-
-           ActionPlanner.plan_response(reply, ActionConfig.planner_opts(ctx, opts)) do
+           ActionPlanner.plan_response(reply, planner_opts) do
       stage_effects(reply_text, effects, input, ctx, opts)
     end
   end
@@ -249,10 +258,8 @@ defmodule Spectre.Runner do
   end
 
   defp stage_effects(reply_text, [effect], input, ctx, opts) do
-    effect = put_effect_scope(effect, route_scope(ctx))
-
     with :ok <- ensure_no_pending_effect(ctx.state) do
-      policy = ActionProtection.protected_by(ctx.agent, effect, route_scope(ctx))
+      policy = ActionProtection.protected_by(ctx.agent, effect)
       state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
       ctx = %{ctx | state: state}
       staged_effect = pending_effect(state)
@@ -269,7 +276,7 @@ defmodule Spectre.Runner do
            state: state,
            reply_text: reply_text,
            effects: [staged_effect],
-           events: [%{type: :effect_staged, kind: :action, name: effect.name}]
+           events: [effect_event(:effect_staged, effect)]
          }}
       end
     end
@@ -379,12 +386,8 @@ defmodule Spectre.Runner do
          awaitables: ctx.state.awaitables,
          reply_text: text,
          events: [
-           %{type: :awaitable_opened, kind: :policy, name: policy_name},
-           %{
-             type: :effect_staged,
-             kind: :action,
-             name: List.first(effects) && List.first(effects).name
-           }
+           %{type: :awaitable_opened, kind: :policy, name: policy_name}
+           | Enum.map(effects, &effect_event(:effect_staged, &1))
          ]
        }}
     end
@@ -424,15 +427,9 @@ defmodule Spectre.Runner do
              | reply_text: join_reply(reply_text, request.reply_text),
                effects: effects,
                awaitables: ctx.state.awaitables,
-               events: [
-                 %{type: :awaitable_opened, kind: :policy, name: policy_name},
-                 %{
-                   type: :effect_staged,
-                   kind: :action,
-                   name: List.first(effects) && List.first(effects).name
-                 }
-                 | request.events
-               ]
+               events:
+                 [%{type: :awaitable_opened, kind: :policy, name: policy_name}] ++
+                   Enum.map(effects, &effect_event(:effect_staged, &1)) ++ request.events
            }}
         end
     end
@@ -485,14 +482,24 @@ defmodule Spectre.Runner do
     }
   end
 
-  @spec put_effect_scope(Effect.t(), Spectre.Definition.scope()) :: Effect.t()
-  defp put_effect_scope(%Effect{} = effect, scope) do
-    %{effect | payload: Map.put(effect.payload, :scope, scope)}
-  end
-
   @spec route_scope(Spectre.Context.t() | map()) :: Spectre.Definition.scope()
-  defp route_scope(%{route: %Route{scope: scope}}), do: scope
+  defp route_scope(%{route: %Route{scope: scope}}), do: scope || :agent
   defp route_scope(_ctx), do: :agent
+
+  @spec route_owner(Spectre.Context.t() | map()) :: module()
+  defp route_owner(%{route: %Route{owner: owner}, agent: agent}), do: owner || agent
+  defp route_owner(%{agent: agent}), do: agent
+
+  @spec effect_event(atom(), Effect.t()) :: map()
+  defp effect_event(type, %Effect{} = effect) do
+    %{
+      type: type,
+      kind: effect.kind,
+      name: effect.name,
+      owner: effect.owner,
+      scope: effect.scope
+    }
+  end
 
   @spec normalize_ctx(Spectre.Context.t() | map(), Input.t(), keyword()) :: Spectre.Context.t()
   defp normalize_ctx(%Spectre.Context{} = ctx, _input, opts),

@@ -86,6 +86,8 @@ defmodule Spectre.Lifecycle do
               type: :effect_approved,
               kind: approved.kind,
               name: approved.name,
+              owner: approved.owner,
+              scope: approved.scope,
               effect_id: approved.id,
               at: DateTime.utc_now()
             })
@@ -124,6 +126,8 @@ defmodule Spectre.Lifecycle do
             type: :effect_completed,
             kind: completed.kind,
             name: completed.name,
+            owner: completed.owner,
+            scope: completed.scope,
             effect_id: completed.id,
             at: DateTime.utc_now()
           })
@@ -161,6 +165,8 @@ defmodule Spectre.Lifecycle do
             type: :effect_failed,
             kind: failed.kind,
             name: failed.name,
+            owner: failed.owner,
+            scope: failed.scope,
             effect_id: failed.id,
             at: DateTime.utc_now()
           })

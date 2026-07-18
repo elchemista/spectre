@@ -4,7 +4,9 @@ defmodule Spectre.Effect do
 
   Effects generalize the old pending-action shape. An action is now one effect
   kind; future capabilities such as retrieval or search can use the same
-  contract without changing turn decisions.
+  contract without changing turn decisions. Action effects carry their owning
+  module and mounted scope as first-class fields; payload data cannot override
+  that trusted runtime origin.
   """
 
   defstruct [
@@ -12,6 +14,8 @@ defmodule Spectre.Effect do
     :idempotency_key,
     :kind,
     :name,
+    :owner,
+    :scope,
     :mode,
     :policy,
     :result,
@@ -30,6 +34,8 @@ defmodule Spectre.Effect do
           idempotency_key: String.t(),
           kind: atom(),
           name: atom() | String.t() | nil,
+          owner: module() | nil,
+          scope: Spectre.Definition.scope() | nil,
           args: map(),
           status: status(),
           mode: atom() | nil,
@@ -41,12 +47,50 @@ defmodule Spectre.Effect do
         }
 
   @doc """
-  Builds a pending effect.
+  Builds a pending effect outside a routed Skill context.
+
+  Effects staged through this generic compatibility API default to Agent scope.
+  Routed actions should use `stage_action/3` so ownership cannot be omitted.
   """
   @spec stage(map() | struct()) :: t()
   def stage(attrs) when is_map(attrs) do
+    attrs
+    |> build()
+    |> put_origin(nil, :agent)
+  end
+
+  @doc """
+  Builds a pending action effect with a trusted owner and scope.
+
+  Explicit origin arguments replace any owner or scope supplied by the action
+  payload. Both deterministic DSL actions and model-planned actions use this
+  constructor.
+  """
+  @spec stage_action(map() | struct(), module(), Spectre.Definition.scope()) :: t()
+  def stage_action(attrs, owner, scope)
+      when is_map(attrs) and is_atom(owner) and not is_nil(owner) do
+    attrs
+    |> normalize_map()
+    |> Map.put(:kind, :action)
+    |> build()
+    |> put_origin(owner, scope)
+  end
+
+  @doc """
+  Restores a persisted effect without inventing a missing scope.
+
+  Durable codecs use this behavior for legacy state. An unscoped restored
+  effect remains observable but must be rejected by the execution boundary.
+  """
+  @spec restore(map() | struct()) :: t()
+  def restore(attrs) when is_map(attrs), do: build(attrs)
+
+  @spec build(map() | struct()) :: t()
+  defp build(attrs) do
     attrs = normalize_map(attrs)
     payload = effect_payload(attrs)
+    owner = origin_attr(attrs, payload, :owner)
+    scope = origin_attr(attrs, payload, :scope)
     id = attr_or(attrs, :id, Spectre.Identity.uuid7())
 
     %__MODULE__{
@@ -59,13 +103,15 @@ defmodule Spectre.Effect do
           Map.get(payload, :selected_tool),
           Map.get(payload, :al)
         ),
+      owner: owner,
+      scope: scope,
       args: attr_or(attrs, :args, %{}),
       status: attr_or(attrs, :status, :pending),
       mode: get_attr(attrs, :mode),
       policy: get_attr(attrs, :policy),
       result: get_attr(attrs, :result),
       error: get_attr(attrs, :error),
-      payload: payload,
+      payload: drop_origin(payload),
       metadata: attr_or(attrs, :metadata, %{})
     }
   end
@@ -198,12 +244,20 @@ defmodule Spectre.Effect do
   def source(%__MODULE__{payload: payload}), do: Map.get(payload, :source)
 
   @doc """
+  Returns the module that owned the route which staged the effect.
+
+  Legacy persisted effects may not carry an owner and return `nil`.
+  """
+  @spec owner(t()) :: module() | nil
+  def owner(%__MODULE__{owner: owner}), do: owner
+
+  @doc """
   Returns the Agent or mounted-Skill scope that staged the effect.
 
   Older persisted effects may not carry a scope and return `nil`.
   """
   @spec scope(t()) :: Spectre.Definition.scope() | nil
-  def scope(%__MODULE__{payload: payload}), do: Map.get(payload, :scope)
+  def scope(%__MODULE__{scope: scope}), do: scope
 
   @spec effect_payload(map()) :: map()
   defp effect_payload(attrs) do
@@ -219,8 +273,21 @@ defmodule Spectre.Effect do
       payload_attr(attrs, payload, :source, infer_source(selected_tool, al))
     )
     |> Map.put_new(:hooks, payload_attr(attrs, payload, :hooks, []))
-    |> Map.put_new(:raw, attrs)
+    |> Map.put_new(:raw, drop_origin(attrs))
     |> Map.put_new(:created_at, attr_or(attrs, :created_at, DateTime.utc_now()))
+  end
+
+  @spec origin_attr(map(), map(), :owner | :scope) :: term()
+  defp origin_attr(attrs, payload, key),
+    do: get_attr(attrs, key) || Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
+
+  @spec put_origin(t(), module() | nil, Spectre.Definition.scope()) :: t()
+  defp put_origin(%__MODULE__{} = effect, owner, scope),
+    do: %{effect | owner: owner, scope: scope}
+
+  @spec drop_origin(map()) :: map()
+  defp drop_origin(map) do
+    Map.drop(map, [:owner, :scope, "owner", "scope"])
   end
 
   @spec payload_attr(map(), map(), atom(), term()) :: term()

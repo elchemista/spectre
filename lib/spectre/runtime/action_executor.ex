@@ -29,19 +29,57 @@ defmodule Spectre.ActionExecutor do
       nil ->
         no_pending_effect(state, ctx)
 
-      %Effect{kind: :action, status: :waiting_policy} = effect ->
-        {:error, {:effect_not_approved, effect.id}}
-
-      %Effect{kind: :action, status: status} = effect when status in [:pending, :approved] ->
-        execute_or_replay(state, effect, ctx, opts)
-
-      %Effect{kind: :action} = effect ->
-        {:error, {:effect_not_executable, effect.id, effect.status}}
-
       %Effect{} = effect ->
-        {:error, {:unsupported_effect_kind, effect.kind}}
+        with :ok <- validate_effect_origin(effect, ctx) do
+          execute_effect(state, effect, ctx, opts)
+        end
     end
   end
+
+  @spec execute_effect(State.t(), Effect.t(), Spectre.Context.t() | map(), keyword()) ::
+          action_result()
+  defp execute_effect(
+         _state,
+         %Effect{kind: :action, status: :waiting_policy} = effect,
+         _ctx,
+         _opts
+       ),
+       do: {:error, {:effect_not_approved, effect.id}}
+
+  defp execute_effect(state, %Effect{kind: :action, status: status} = effect, ctx, opts)
+       when status in [:pending, :approved],
+       do: execute_or_replay(state, effect, ctx, opts)
+
+  defp execute_effect(_state, %Effect{kind: :action} = effect, _ctx, _opts),
+    do: {:error, {:effect_not_executable, effect.id, effect.status}}
+
+  defp execute_effect(_state, %Effect{} = effect, _ctx, _opts),
+    do: {:error, {:unsupported_effect_kind, effect.kind}}
+
+  @spec validate_effect_origin(Effect.t(), Spectre.Context.t() | map()) ::
+          :ok | {:error, term()}
+  defp validate_effect_origin(%Effect{scope: nil} = effect, _ctx),
+    do: {:error, {:effect_scope_missing, effect.id}}
+
+  defp validate_effect_origin(%Effect{} = effect, %{agent: agent})
+       when is_atom(agent) and not is_nil(agent) do
+    with {:ok, definition} <- Spectre.Definition.for_scope(agent, effect.scope) do
+      validate_effect_owner(effect, definition.owner)
+    else
+      {:error, reason} ->
+        {:error, {:effect_scope_unresolvable, effect.id, effect.scope, reason}}
+    end
+  end
+
+  defp validate_effect_origin(%Effect{} = effect, _ctx),
+    do: {:error, {:effect_agent_missing, effect.id}}
+
+  @spec validate_effect_owner(Effect.t(), module()) :: :ok | {:error, term()}
+  defp validate_effect_owner(%Effect{owner: nil}, _expected_owner), do: :ok
+  defp validate_effect_owner(%Effect{owner: owner}, owner), do: :ok
+
+  defp validate_effect_owner(%Effect{} = effect, expected_owner),
+    do: {:error, {:effect_owner_mismatch, effect.id, effect.owner, expected_owner}}
 
   @spec no_pending_effect(State.t(), Spectre.Context.t() | map()) :: {:ok, Result.t()}
   defp no_pending_effect(%State{} = state, ctx) do
@@ -103,6 +141,8 @@ defmodule Spectre.ActionExecutor do
                type: :effect_completed,
                kind: :action,
                name: effect.name,
+               owner: effect.owner,
+               scope: effect.scope,
                effect_id: effect.id,
                idempotency_key: Effect.idempotency_key(effect),
                effect: completed,
@@ -124,6 +164,8 @@ defmodule Spectre.ActionExecutor do
                type: :effect_failed,
                kind: :action,
                name: effect.name,
+               owner: effect.owner,
+               scope: effect.scope,
                effect_id: effect.id,
                idempotency_key: Effect.idempotency_key(effect),
                effect: failed,
@@ -277,6 +319,8 @@ defmodule Spectre.ActionExecutor do
     opts
     |> Keyword.put(:effect_id, effect.id)
     |> Keyword.put(:idempotency_key, Effect.idempotency_key(effect))
+    |> Keyword.put(:effect_owner, effect.owner)
+    |> Keyword.put(:effect_scope, effect.scope)
   end
 
   @spec normalize_ctx(Spectre.Context.t() | map(), Input.t(), keyword()) :: Spectre.Context.t()

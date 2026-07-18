@@ -7,7 +7,7 @@ defmodule Spectre.State do
   history, and trace events.
   """
 
-  @state_version 3
+  @state_version 4
   @max_trace_entries 256
 
   defstruct state_version: @state_version,
@@ -248,8 +248,8 @@ defmodule Spectre.State do
   @spec normalize_current(map()) :: map()
   defp normalize_current(attrs) do
     attrs
-    |> normalize_list(:pending_effects, &Spectre.Effect.stage/1)
-    |> normalize_list(:planned_effects, &Spectre.Effect.stage/1)
+    |> normalize_list(:pending_effects, &Spectre.Effect.restore/1)
+    |> normalize_list(:planned_effects, &Spectre.Effect.restore/1)
     |> normalize_list(:awaitables, &normalize_awaitable/1)
     |> Map.put(:state_version, @state_version)
     |> Map.put_new(:revision, 0)
@@ -261,14 +261,14 @@ defmodule Spectre.State do
     awaiting = Map.get(attrs, :awaiting) || Map.get(attrs, "awaiting")
     planned_actions = Map.get(attrs, :planned_actions) || Map.get(attrs, "planned_actions") || []
 
-    effect = if pending_action, do: Spectre.Effect.stage(pending_action)
+    effect = if pending_action, do: Spectre.Effect.restore(pending_action)
     awaitable = legacy_awaitable(awaiting, effect)
 
     attrs
     |> Map.put(:state_version, @state_version)
     |> Map.put_new(:revision, 0)
     |> Map.put(:pending_effects, List.wrap(effect))
-    |> Map.put(:planned_effects, Enum.map(List.wrap(planned_actions), &Spectre.Effect.stage/1))
+    |> Map.put(:planned_effects, Enum.map(List.wrap(planned_actions), &Spectre.Effect.restore/1))
     |> Map.update!(:planned_effects, fn effects -> effects ++ List.wrap(effect) end)
     |> Map.put(:awaitables, List.wrap(awaitable))
     |> Map.drop([

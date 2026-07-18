@@ -303,6 +303,73 @@ defmodule SpectreSkillInjectTest.ScopedActionAgent do
   )
 end
 
+defmodule SpectreSkillInjectTest.ScopedCodecStore do
+  @moduledoc false
+  @behaviour Spectre.State.Store
+
+  alias Spectre.State
+  alias Spectre.State.Codec
+
+  @impl Spectre.State.Store
+  @spec load(Spectre.Input.t(), module(), keyword()) :: {:ok, State.t() | String.t()}
+  def load(_input, _agent, opts) do
+    key = {__MODULE__, Keyword.get(opts, :conversation_id)}
+    {:ok, :persistent_term.get(key, %State{})}
+  end
+
+  @impl Spectre.State.Store
+  @spec compare_and_swap(State.t(), non_neg_integer(), Spectre.Input.t(), module(), keyword()) ::
+          :ok | {:error, term()}
+  def compare_and_swap(state, expected_revision, _input, _agent, opts) do
+    key = {__MODULE__, state.conversation_id || Keyword.get(opts, :conversation_id)}
+
+    with {:ok, current} <- current_state(key),
+         :ok <- compare_revision(current.revision, expected_revision),
+         {:ok, encoded} <- Codec.encode_json(state) do
+      :persistent_term.put(key, encoded)
+      :ok
+    end
+  end
+
+  @spec current_state(term()) :: {:ok, State.t()} | {:error, term()}
+  defp current_state(key) do
+    with encoded <- :persistent_term.get(key, nil),
+         {:ok, state} <- decode_state(encoded) do
+      {:ok, state}
+    end
+  end
+
+  @spec decode_state(String.t() | nil) :: {:ok, State.t()} | {:error, term()}
+  defp decode_state(nil), do: {:ok, %State{}}
+  defp decode_state(encoded), do: Codec.decode(encoded)
+
+  @spec compare_revision(non_neg_integer(), non_neg_integer()) :: :ok | {:error, term()}
+  defp compare_revision(revision, revision), do: :ok
+
+  defp compare_revision(actual, expected),
+    do: {:error, {:stale_state, expected, actual}}
+end
+
+defmodule SpectreSkillInjectTest.DurableScopedActionAgent do
+  @moduledoc false
+
+  use Spectre.Agent
+
+  model(SpectreSkillInjectTest.LLM)
+  actions(SpectreSkillInjectTest.Actions)
+  state(SpectreSkillInjectTest.ScopedCodecStore)
+
+  skill(SpectreSkillInjectTest.FirstSharedSkill,
+    as: :first,
+    bind: [shared: :publish_report]
+  )
+
+  skill(SpectreSkillInjectTest.SecondSharedSkill,
+    as: :second,
+    bind: [shared: :publish_report]
+  )
+end
+
 defmodule SpectreSkillInjectTest.AgentActionWithSkill do
   @moduledoc false
 
@@ -920,17 +987,48 @@ defmodule SpectreSkillInjectTest do
   test "Skill protections and hooks stay scoped when mounts bind the same action" do
     agent = SpectreSkillInjectTest.ScopedActionAgent
 
+    assert {:ok, first_awaiting} = Spectre.ask(agent, "first shared", test_pid: self())
+    assert_receive {:skill_prompt, first_prompt}
+    assert first_prompt =~ "CONFIRM_PUBLISH"
+
+    assert %Effect{
+             name: :publish_report,
+             owner: SpectreSkillInjectTest.FirstSharedSkill,
+             scope: {:skill, :first},
+             mode: :read,
+             policy: {{:skill, :first}, :confirm_publish},
+             status: :waiting_policy
+           } = first_effect = Spectre.Result.pending_effect(first_awaiting)
+
+    assert [
+             %{
+               action: :publish_report,
+               scope: {:skill, :first},
+               run: {SpectreSkillInjectTest.FirstSharedSkill, :record_delivery}
+             },
+             %{
+               action: :publish_report,
+               scope: {:skill, :second},
+               run: {SpectreSkillInjectTest.SecondSharedSkill, :record_delivery}
+             }
+           ] = Definition.after_actions(agent)
+
+    assert Effect.hooks(first_effect) == []
+
     assert {:ok, awaiting} = Spectre.ask(agent, "second shared", test_pid: self())
     assert_receive {:skill_prompt, prompt}
     assert prompt =~ "CONFIRM_PUBLISH"
 
-    assert %Spectre.Effect{
+    assert %Effect{
              name: :publish_report,
+             owner: SpectreSkillInjectTest.SecondSharedSkill,
+             scope: {:skill, :second},
              mode: :destructive,
+             policy: {{:skill, :second}, :confirm_publish},
              status: :waiting_policy
            } = effect = Spectre.Result.pending_effect(awaiting)
 
-    assert Spectre.Effect.scope(effect) == {:skill, :second}
+    assert Effect.hooks(effect) == []
 
     assert %Spectre.Awaitable{
              name: {{:skill, :second}, :confirm_publish},
@@ -940,15 +1038,24 @@ defmodule SpectreSkillInjectTest do
     assert {:ok, encoded_state} = Codec.encode_json(awaiting.state)
     assert {:ok, restored_state} = Codec.decode(encoded_state)
 
-    assert restored_state
-           |> Spectre.State.pending_effect()
-           |> Effect.scope() == {:skill, :second}
+    assert %Effect{
+             owner: SpectreSkillInjectTest.SecondSharedSkill,
+             scope: {:skill, :second}
+           } = Spectre.State.pending_effect(restored_state)
 
     assert {:ok, approved} =
              Spectre.ask(agent, "yes", state: restored_state, test_pid: self())
 
     assert {:ok, completed} = Spectre.execute(agent, approved, test_pid: self())
     assert_receive {:published, %{source: :second}}
+
+    assert [
+             %Effect{
+               owner: SpectreSkillInjectTest.SecondSharedSkill,
+               scope: {:skill, :second},
+               status: :completed
+             }
+           ] = completed.effects
 
     ctx = %Spectre.Context{
       agent: agent,
@@ -967,11 +1074,13 @@ defmodule SpectreSkillInjectTest do
 
     assert {:ok, staged} = Spectre.ask(agent, "agent shared", test_pid: self())
 
-    assert %Spectre.Effect{status: :pending, policy: nil} =
-             effect =
-             Spectre.Result.pending_effect(staged)
+    assert %Effect{
+             owner: SpectreSkillInjectTest.AgentActionWithSkill,
+             scope: :agent,
+             status: :pending,
+             policy: nil
+           } = Spectre.Result.pending_effect(staged)
 
-    assert Spectre.Effect.scope(effect) == :agent
     assert Spectre.Result.open_awaitable(staged) == nil
 
     assert {:ok, completed} = Spectre.execute(agent, staged, test_pid: self())
@@ -986,6 +1095,66 @@ defmodule SpectreSkillInjectTest do
 
     assert :ok = Spectre.after_action(agent, :delivered, completed, ctx)
     refute_receive {:first_shared_hook, _result}
+  end
+
+  test "a scoped pending effect survives a codec-backed Session restart" do
+    agent = SpectreSkillInjectTest.DurableScopedActionAgent
+    store = SpectreSkillInjectTest.ScopedCodecStore
+    conversation_id = "scoped-restart-#{System.unique_integer([:positive])}"
+    store_key = {store, conversation_id}
+    :persistent_term.erase(store_key)
+
+    on_exit(fn -> :persistent_term.erase(store_key) end)
+
+    assert {:ok, session} =
+             Spectre.summon(
+               agent: agent,
+               conversation_id: conversation_id,
+               shutdown: false,
+               opts: [test_pid: self()]
+             )
+
+    assert {:ok, awaiting} = Spectre.ask(session, "second shared")
+    assert_receive {:skill_prompt, prompt}
+    assert prompt =~ "CONFIRM_PUBLISH"
+
+    assert %Effect{
+             owner: SpectreSkillInjectTest.SecondSharedSkill,
+             scope: {:skill, :second},
+             status: :waiting_policy
+           } = Spectre.Result.pending_effect(awaiting)
+
+    GenServer.stop(session)
+
+    assert {:ok, restarted} =
+             Spectre.summon(
+               agent: agent,
+               conversation_id: conversation_id,
+               shutdown: false,
+               opts: [test_pid: self()]
+             )
+
+    on_exit(fn ->
+      if Process.alive?(restarted), do: GenServer.stop(restarted)
+    end)
+
+    assert %Effect{
+             owner: SpectreSkillInjectTest.SecondSharedSkill,
+             scope: {:skill, :second},
+             status: :waiting_policy
+           } = Spectre.State.pending_effect(Spectre.state(restarted))
+
+    assert {:ok, approved} = Spectre.ask(restarted, "yes")
+    assert {:ok, completed} = Spectre.execute(restarted, approved)
+    assert_receive {:published, %{source: :second}}
+
+    assert [
+             %Effect{
+               owner: SpectreSkillInjectTest.SecondSharedSkill,
+               scope: {:skill, :second},
+               status: :completed
+             }
+           ] = completed.effects
   end
 
   test "handler-local Skill policies and hooks are materialized to owner and mount scope" do

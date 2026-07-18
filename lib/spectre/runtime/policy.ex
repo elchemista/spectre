@@ -148,6 +148,8 @@ defmodule Spectre.Policy do
              type: :effect_approved,
              kind: approved.kind,
              name: approved.name,
+             owner: approved.owner,
+             scope: approved.scope,
              effect_id: approved.id,
              idempotency_key: Effect.idempotency_key(approved)
            }
@@ -159,13 +161,14 @@ defmodule Spectre.Policy do
   @spec reject(t(), atom(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
   defp reject(policy, label, input, %{state: state}) do
     {:ok, transition} = Lifecycle.resolve_policy(state, :reject, label)
+    cancelled = transition.effect
 
     {:ok,
      %Result{
        input: input,
        state: transition.to,
        reply_text: "",
-       effects: [transition.effect],
+       effects: [cancelled],
        awaitables: [transition.awaitable],
        events: [
          %{
@@ -174,7 +177,15 @@ defmodule Spectre.Policy do
            name: policy_identifier(policy),
            label: label
          },
-         %{type: :effect_cancelled, kind: :action, reason: {:policy_rejected, label}}
+         %{
+           type: :effect_cancelled,
+           kind: :action,
+           name: cancelled.name,
+           owner: cancelled.owner,
+           scope: cancelled.scope,
+           effect_id: cancelled.id,
+           reason: {:policy_rejected, label}
+         }
        ]
      }}
   end
@@ -233,10 +244,23 @@ defmodule Spectre.Policy do
        effects: cancelled,
        awaitables: [awaitable],
        events: [
-         %{type: :awaitable_cancelled, kind: :policy, name: policy_identifier(policy)},
-         %{type: :effect_cancelled, kind: :action, reason: :policy_attempts_exceeded}
+         %{type: :awaitable_cancelled, kind: :policy, name: policy_identifier(policy)}
+         | Enum.map(cancelled, &cancelled_event(&1, :policy_attempts_exceeded))
        ]
      }}
+  end
+
+  @spec cancelled_event(Effect.t(), term()) :: map()
+  defp cancelled_event(%Effect{} = effect, reason) do
+    %{
+      type: :effect_cancelled,
+      kind: effect.kind,
+      name: effect.name,
+      owner: effect.owner,
+      scope: effect.scope,
+      effect_id: effect.id,
+      reason: reason
+    }
   end
 
   @spec reply_otherwise(t(), Input.t(), Spectre.Context.t()) ::
