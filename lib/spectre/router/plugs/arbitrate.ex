@@ -56,8 +56,13 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   end
 
   defp llm_arbitrate(%Context{} = context, %Arbitration{} = arbitration) do
+    ambiguous =
+      Support.ambiguous_labels(context.rules, :llm_classifier, context.input)
+
+    ambiguity_reason = Support.ambiguity_reason(:llm_classifier, ambiguous)
     visible_rules = Support.rules_for(context.rules, :llm_classifier, context.input)
     labels = Support.labels_for(visible_rules)
+    context = put_ambiguity_trace(context, ambiguity_reason)
 
     cond do
       not LLMClassifier.enabled?(context.opts) ->
@@ -67,12 +72,18 @@ defmodule Spectre.Router.Plugs.Arbitrate do
         skip_llm(context, :missing_llm_classifier_model)
 
       visible_rules == [] ->
-        skip_llm(context, :no_llm_visible_rules)
+        skip_llm(context, ambiguity_reason || :no_llm_visible_rules)
 
       true ->
         classify_with_llm(context, arbitration, visible_rules, labels)
     end
   end
+
+  @spec put_ambiguity_trace(Context.t(), term() | nil) :: Context.t()
+  defp put_ambiguity_trace(%Context{} = context, nil), do: context
+
+  defp put_ambiguity_trace(%Context{} = context, reason),
+    do: Context.put_trace(context, reason)
 
   @spec classify_with_llm(Context.t(), Arbitration.t(), [Spectre.Rule.t()], [atom()]) ::
           {:cont, Context.t()} | {:error, term()}
@@ -366,6 +377,8 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   defp write_semantic_example(%Context{} = context, route) do
     result = %{
       label: route.label,
+      owner: route.owner,
+      scope: route.scope,
       accepted?: true,
       confidence: Keyword.get(context.opts, :semantic_learn_confidence, 0.86),
       margin: nil,
@@ -375,6 +388,8 @@ defmodule Spectre.Router.Plugs.Arbitrate do
       metadata: %{
         agent: Keyword.get(context.opts, :spectre_agent),
         route: route.label,
+        owner: route.owner,
+        scope: route.scope,
         verified?: false,
         learned_at: DateTime.utc_now(),
         original_route_strategy: :llm_classifier

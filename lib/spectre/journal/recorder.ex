@@ -186,7 +186,15 @@ defmodule Spectre.Journal.Recorder do
   end
 
   @spec routing_reason(Context.t()) :: map()
+  defp routing_reason(%Context{route: %Spectre.Route{accepted?: true}, traces: traces}),
+    do: trace_reason(traces)
+
   defp routing_reason(%Context{traces: traces}) do
+    ambiguity_reason(traces) || trace_reason(traces)
+  end
+
+  @spec trace_reason([term()]) :: map()
+  defp trace_reason(traces) do
     Enum.find_value(traces, %{code: :pipeline_completed}, fn
       {:llm_arbitrated, route} ->
         %{code: :llm_selected, label: route.label}
@@ -202,6 +210,17 @@ defmodule Spectre.Journal.Recorder do
 
       {:clarify, _text} ->
         %{code: :clarification_required}
+
+      _trace ->
+        nil
+    end)
+  end
+
+  @spec ambiguity_reason([term()]) :: map() | nil
+  defp ambiguity_reason(traces) do
+    Enum.find_value(traces, fn
+      {:ambiguous_scoped_labels, strategy, labels} ->
+        %{code: :ambiguous_scoped_labels, strategy: strategy, labels: labels}
 
       _trace ->
         nil

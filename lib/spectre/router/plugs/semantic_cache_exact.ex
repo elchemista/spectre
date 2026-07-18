@@ -42,9 +42,48 @@ defmodule Spectre.Router.Plugs.SemanticCacheExact do
          skip_trace
        ) do
     lookup_opts = Keyword.put(opts, :semantic_search?, search?)
+    ambiguous = Support.ambiguous_labels(rules, :semantic_cache, context.input)
+    ambiguity_reason = Support.ambiguity_reason(:semantic_cache, ambiguous)
     visible_rules = Support.rules_for(rules, :semantic_cache, context.input)
     visible_labels = Support.labels_for(visible_rules)
+    context = put_ambiguity_trace(context, ambiguity_reason)
 
+    with :ok <- routeable_labels(visible_rules, ambiguity_reason) do
+      lookup_visible(
+        context,
+        text,
+        lookup_opts,
+        opts,
+        visible_rules,
+        visible_labels,
+        accept_trace,
+        skip_trace
+      )
+    else
+      {:skip, reason} -> skip_lookup(context, skip_trace, reason, opts)
+    end
+  end
+
+  @spec lookup_visible(
+          Context.t(),
+          String.t(),
+          keyword(),
+          keyword(),
+          [Spectre.Rule.t()],
+          [atom()],
+          atom(),
+          atom()
+        ) :: {:cont, Context.t()}
+  defp lookup_visible(
+         context,
+         text,
+         lookup_opts,
+         opts,
+         visible_rules,
+         visible_labels,
+         accept_trace,
+         skip_trace
+       ) do
     case SemanticCache.lookup(text, lookup_opts) do
       {:ok, %{accepted?: true} = result} ->
         route = Support.route_from_result(result, visible_rules, visible_labels, :semantic_cache)
@@ -89,4 +128,24 @@ defmodule Spectre.Router.Plugs.SemanticCacheExact do
          |> Context.put_trace({skip_trace, reason})}
     end
   end
+
+  @spec routeable_labels([Spectre.Rule.t()], term() | nil) :: :ok | {:skip, term()}
+  defp routeable_labels([], reason) when not is_nil(reason), do: {:skip, reason}
+  defp routeable_labels(_visible_rules, _reason), do: :ok
+
+  @spec skip_lookup(Context.t(), atom(), term(), keyword()) :: {:cont, Context.t()}
+  defp skip_lookup(%Context{} = context, skip_trace, reason, opts) do
+    Support.log(:debug, "#{skip_trace} reason=#{Support.format_reason(reason)}", opts)
+
+    {:cont,
+     context
+     |> Context.put_local_result(%{semantic_cache: reason})
+     |> Context.put_trace({skip_trace, reason})}
+  end
+
+  @spec put_ambiguity_trace(Context.t(), term() | nil) :: Context.t()
+  defp put_ambiguity_trace(%Context{} = context, nil), do: context
+
+  defp put_ambiguity_trace(%Context{} = context, reason),
+    do: Context.put_trace(context, reason)
 end
