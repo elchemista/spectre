@@ -9,6 +9,7 @@ defmodule Spectre.MixProject do
     "docs/GETTING_STARTED.md",
     "docs/ARCHITECTURE.md",
     "docs/DSL.md",
+    "docs/SKILLS.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
     "docs/PROVIDERS.md",
@@ -90,6 +91,7 @@ defmodule Spectre.MixProject do
         "Core concepts": [
           "docs/ARCHITECTURE.md",
           "docs/DSL.md",
+          "docs/SKILLS.md",
           "docs/API.md"
         ],
         "Runtime guides": [

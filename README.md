@@ -173,6 +173,42 @@ end
 transition lists. An open awaitable wins over a pending effect; a pending effect
 wins over a terminal completion; a completion wins over a visible reply.
 
+## Reusable Skills
+
+A `Spectre.Skill` is a reusable, scoped set of flows, handlers, prompts, and
+policies. A Skill is not run on its own: an Agent mounts it and supplies runtime
+infrastructure such as the model, router, state, memory, and action module.
+
+```elixir
+defmodule MyApp.Skills.Greeting do
+  use Spectre.Skill, id: :greeting, version: 1
+
+  flow :greeting do
+    on :HELLO, regex: ~r/^hello$/i do
+      run(:greet)
+    end
+  end
+
+  def greet(_input, _ctx), do: {:ok, "Hello from the greeting skill!"}
+end
+
+defmodule MyApp.Agent do
+  use Spectre.Agent
+
+  skill(MyApp.Skills.Greeting, as: :greeting)
+end
+
+{:ok, result} = Spectre.ask(MyApp.Agent, "hello")
+"Hello from the greeting skill!" = result.reply_text
+{:skill, :greeting} = result.route.scope
+```
+
+Skills can declare logical action requirements with `requires_action/2`; the
+mounting Agent binds those names to its concrete actions. This keeps reusable
+behavior independent of application-specific action names and implementations.
+See [Skills](docs/SKILLS.md) for a complete example, action binding, scoped
+prompts and policies, and composition rules.
+
 ## Protected Actions
 
 Starting a protected action does not execute it:
@@ -302,6 +338,8 @@ adapters on startup, and can stop after an idle timeout.
   boundaries.
 - [DSL](docs/DSL.md) - agent macros, flows, handlers, policies, actions, input
   pipeline, and prompts.
+- [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action
+  requirements, prompts, policies, and complete examples.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM
