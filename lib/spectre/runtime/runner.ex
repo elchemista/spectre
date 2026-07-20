@@ -199,15 +199,16 @@ defmodule Spectre.Runner do
         route_scope(ctx)
       )
 
-    with :ok <- ensure_no_pending_effect(ctx.state) do
-      policy =
-        Keyword.get(opts, :policy) ||
-          ActionProtection.protected_by(ctx.agent, effect)
+    policy =
+      Keyword.get(opts, :policy) ||
+        ActionProtection.protected_by(ctx.agent, effect)
 
-      state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
+    with :ok <- ensure_no_pending_effect(ctx.state),
+         {:ok, transition} <-
+           Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, policy}) do
+      state = transition.to
       ctx = %{ctx | state: state}
-      # Read the effect back from state so policy metadata/status added by
-      # `State.put_pending_effect/3` is reflected in the result effects list.
+      # The lifecycle transition carries policy metadata/status into state.
       effects = [pending_effect(state)]
 
       cond do
@@ -258,9 +259,12 @@ defmodule Spectre.Runner do
   end
 
   defp stage_effects(reply_text, [effect], input, ctx, opts) do
-    with :ok <- ensure_no_pending_effect(ctx.state) do
-      policy = ActionProtection.protected_by(ctx.agent, effect)
-      state = Spectre.State.put_pending_effect(ctx.state, effect, policy)
+    policy = ActionProtection.protected_by(ctx.agent, effect)
+
+    with :ok <- ensure_no_pending_effect(ctx.state),
+         {:ok, transition} <-
+           Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, policy}) do
+      state = transition.to
       ctx = %{ctx | state: state}
       staged_effect = pending_effect(state)
 

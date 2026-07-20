@@ -54,7 +54,11 @@ defmodule Spectre.Router do
   """
   @spec route_context(Input.t(), Spectre.Context.t()) :: {:ok, Context.t()} | {:error, term()}
   def route_context(%Input{} = input, %{agent: agent, state: %State{} = state, opts: opts} = ctx) do
-    rules = candidate_rules(agent, state)
+    rules =
+      agent
+      |> candidate_rules(state)
+      |> maybe_interrupt_rules(opts)
+
     labels = Enum.map(rules, & &1.label)
 
     router_opts =
@@ -75,6 +79,14 @@ defmodule Spectre.Router do
 
     with {:ok, context} <- route_with_pipeline(context, pipeline(router_opts, rules)) do
       Recorder.record_routing(context)
+    end
+  end
+
+  defp maybe_interrupt_rules(rules, opts) do
+    if Keyword.get(opts, :policy_interrupt_only?, false) do
+      Enum.filter(rules, & &1.global?)
+    else
+      rules
     end
   end
 

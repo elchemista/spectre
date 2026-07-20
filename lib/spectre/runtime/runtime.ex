@@ -16,12 +16,12 @@ defmodule Spectre.Runtime do
   policy gates from being accidentally skipped.
   """
 
-  alias Spectre.ActionExecutor
   alias Spectre.Context
   alias Spectre.Definition
   alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Input.Pipeline
+  alias Spectre.Journal.Recorder
   alias Spectre.Policy
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
@@ -46,10 +46,11 @@ defmodule Spectre.Runtime do
 
     with {:ok, input} <- normalize_input(agent, input, opts),
          {:ok, ctx} <- load_context(agent, input, opts),
-         {:ok, result} <- run_turn(ctx) do
-      result
-      |> record_history(ctx)
-      |> persist(ctx)
+         {:ok, result} <- run_turn(ctx),
+         result = put_runtime_identity(result, opts),
+         result = record_history(result, ctx),
+         {:ok, result} <- Recorder.record_result(result, ctx) do
+      persist(result, ctx)
     end
   end
 
@@ -62,7 +63,16 @@ defmodule Spectre.Runtime do
   def restore_state(agent, opts) do
     opts = runtime_opts(agent, opts)
     input = Input.new(%{text: "", meta: Map.take(Map.new(opts), [:conversation_id])})
-    load_state(agent, input, opts)
+    result = load_state(agent, input, opts)
+
+    Spectre.Telemetry.emit(
+      [:session, :restore],
+      %{count: 1},
+      %{agent: agent, outcome: if(match?({:ok, _}, result), do: :ok, else: :error)},
+      opts
+    )
+
+    result
   end
 
   @doc """
@@ -84,7 +94,7 @@ defmodule Spectre.Runtime do
           {:ok, Result.t()} | {:error, term()}
   def resolve_policy(agent, %Result{} = result, resolution, opts \\ [])
       when is_atom(agent) and is_list(opts) do
-    opts = runtime_opts(agent, opts)
+    opts = continuation_runtime_opts(agent, result, opts)
     input = policy_resolution_input(result, opts)
     state = State.new(result.state)
 
@@ -98,6 +108,8 @@ defmodule Spectre.Runtime do
     }
 
     with {:ok, %Result{} = resolved} <- Policy.resolve(resolution, input, ctx),
+         resolved = put_runtime_identity(resolved, opts),
+         {:ok, %Result{} = resolved} <- Recorder.record_result(resolved, ctx),
          {:ok, %Result{} = persisted} <- persist_state(resolved, ctx) do
       {:ok, persisted}
     end
@@ -112,7 +124,7 @@ defmodule Spectre.Runtime do
   """
   @spec execute(module(), Result.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def execute(agent, %Result{} = result, opts \\ []) when is_atom(agent) and is_list(opts) do
-    opts = agent |> runtime_opts(opts) |> put_turn_identity()
+    opts = continuation_runtime_opts(agent, result, opts)
     input = policy_resolution_input(result, opts)
     state = State.new(result.state)
 
@@ -139,8 +151,10 @@ defmodule Spectre.Runtime do
   defp execute_pending_result(%Result{} = result, %Context{} = ctx, opts) do
     with {:ok, prepared} <- ensure_execution_state_persisted(result, ctx),
          execution_ctx = %{ctx | state: prepared.state},
-         {:ok, executed} <- ActionExecutor.execute_pending(prepared.state, execution_ctx, opts),
-         executed <- inherit_execution_context(executed, prepared) do
+         {:ok, executed} <- Spectre.Execution.execute_pending(prepared.state, execution_ctx, opts),
+         executed <- inherit_execution_context(executed, prepared),
+         executed = put_runtime_identity(executed, opts),
+         {:ok, executed} <- Recorder.record_result(executed, execution_ctx) do
       persist_state(executed, execution_ctx)
     end
   end
@@ -182,10 +196,7 @@ defmodule Spectre.Runtime do
   @spec run_turn(Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp run_turn(%Context{state: state} = ctx) do
     if Policy.awaiting?(state) do
-      # Policy replies intentionally bypass normal routing. A short answer like
-      # "yes" should approve/reject the open policy awaitable, not be interpreted as a
-      # general conversation intent.
-      Policy.resume(ctx.input, ctx)
+      run_policy_turn(ctx)
     else
       with {:ok, router_context} <- Router.route_context(ctx.input, ctx),
            {:ok, route} <- Router.route_from_context(router_context) do
@@ -193,6 +204,34 @@ defmodule Spectre.Runtime do
         # receives the router context input rather than the original input.
         Spectre.Runner.run(route, %{ctx | input: router_context.input, route: route})
       end
+    end
+  end
+
+  defp run_policy_turn(%Context{} = ctx) do
+    if Keyword.get(ctx.opts, :policy_global_interrupts?, false) do
+      run_policy_interrupt_or_resume(ctx)
+    else
+      # Closed by default: short policy answers never enter normal routing.
+      Policy.resume(ctx.input, ctx)
+    end
+  end
+
+  defp run_policy_interrupt_or_resume(%Context{} = ctx) do
+    interrupt_opts =
+      ctx.opts
+      |> Keyword.put(:policy_interrupt_only?, true)
+      |> Keyword.put(:via, Keyword.get(ctx.opts, :policy_interrupt_via, [:regex]))
+
+    interrupt_ctx = %{ctx | opts: interrupt_opts}
+
+    with {:ok, router_context} <- Router.route_context(ctx.input, interrupt_ctx),
+         {:ok, %Spectre.Route{rule: %Spectre.Rule{global?: true}} = route} <-
+           Router.route_from_context(router_context) do
+      Spectre.Runner.run(route, %{ctx | input: router_context.input, route: route})
+    else
+      {:error, {:journal_append_failed, _reason} = failure} -> {:error, failure}
+      {:error, {:invalid_journal_configuration, _reason} = failure} -> {:error, failure}
+      _no_interrupt -> Policy.resume(ctx.input, ctx)
     end
   end
 
@@ -299,7 +338,7 @@ defmodule Spectre.Runtime do
   @spec persist_state(Result.t(), Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp persist_state(
          %Result{} = result,
-         %Context{agent: agent, input: input, opts: opts, state: current_state}
+         %Context{agent: agent, input: input, opts: opts, state: current_state} = ctx
        ) do
     state_module = agent |> definition_config() |> Keyword.get(:state)
     expected_revision = current_state.revision
@@ -307,14 +346,57 @@ defmodule Spectre.Runtime do
     with :ok <- validate_result_revision(result, expected_revision) do
       next = %{result | state: State.bump_revision(result.state)}
 
-      case persistence_callback(state_module, next.state, expected_revision, input, agent, opts) do
-        nil ->
-          {:ok, mark_state_persisted(next, expected_revision, :in_memory)}
+      persisted =
+        case persistence_callback(state_module, next.state, expected_revision, input, agent, opts) do
+          nil ->
+            {:ok, mark_state_persisted(next, expected_revision, :in_memory)}
 
-        {module, function, args, mode} ->
-          persist_with_adapter(module, function, args, mode, next, expected_revision, opts)
+          {module, function, args, mode} ->
+            persist_with_adapter(module, function, args, mode, next, expected_revision, opts)
+        end
+
+      case persisted do
+        {:ok, %Result{} = committed} ->
+          emit_persistence(:committed, committed, ctx)
+          Recorder.record_persistence(committed, ctx)
+
+        {:error, {:persistence_ambiguous, reason, %Result{} = ambiguous}} ->
+          emit_persistence(:ambiguous, ambiguous, ctx)
+          _ = Recorder.record_persistence(ambiguous, ctx)
+          {:error, {:persistence_ambiguous, reason, ambiguous}}
+
+        {:error, reason} = error
+        when is_tuple(reason) and tuple_size(reason) > 0 and elem(reason, 0) == :stale_state ->
+          emit_persistence_conflict(ctx, expected_revision)
+          error
+
+        {:error, _reason} = error ->
+          error
       end
     end
+  end
+
+  defp emit_persistence(outcome, result, ctx) do
+    Spectre.Telemetry.emit(
+      [:persistence, :stop],
+      %{count: 1},
+      %{
+        agent: ctx.agent,
+        outcome: outcome,
+        revision: result.state.revision,
+        mode: get_in(result.metadata, [:state_persistence, :mode])
+      },
+      ctx.opts
+    )
+  end
+
+  defp emit_persistence_conflict(ctx, expected_revision) do
+    Spectre.Telemetry.emit(
+      [:persistence, :conflict],
+      %{count: 1},
+      %{agent: ctx.agent, reason: :stale_state, expected_revision: expected_revision},
+      ctx.opts
+    )
   end
 
   @spec persist_memory(Result.t(), Context.t()) :: :ok | {:error, term()}
@@ -565,6 +647,27 @@ defmodule Spectre.Runtime do
       | route: prepared.route,
         metadata: Map.merge(prepared.metadata, executed.metadata)
     }
+  end
+
+  defp continuation_runtime_opts(agent, result, opts) do
+    trace_id = get_in(result.metadata, [:runtime_identity, :trace_id])
+
+    agent
+    |> runtime_opts(opts)
+    |> maybe_put_trace_id(trace_id)
+    |> put_turn_identity()
+  end
+
+  defp maybe_put_trace_id(opts, nil), do: opts
+  defp maybe_put_trace_id(opts, trace_id), do: Keyword.put_new(opts, :trace_id, trace_id)
+
+  defp put_runtime_identity(%Result{} = result, opts) do
+    identity = %{
+      turn_id: Keyword.get(opts, :turn_id),
+      trace_id: Keyword.get(opts, :trace_id)
+    }
+
+    %{result | metadata: Map.put(result.metadata, :runtime_identity, identity)}
   end
 
   @spec definition_config(module()) :: keyword()

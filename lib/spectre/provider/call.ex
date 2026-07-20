@@ -93,7 +93,16 @@ defmodule Spectre.Provider.Call do
           {:error, %Failure{} = failure} -> {{:error, failure}, false}
         end
 
-      notify_observer(opts, event(provider, result, invoked?, started_at))
+      event = event(provider, result, invoked?, started_at)
+      notify_observer(opts, event)
+
+      Spectre.Telemetry.emit(
+        [:provider, :stop],
+        %{duration_us: event.duration_us},
+        Map.take(event, [:provider, :outcome, :invoked?, :purpose]),
+        opts
+      )
+
       result
     else
       {:error, Failure.invalid_options(provider)}

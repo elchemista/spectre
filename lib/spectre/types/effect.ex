@@ -170,7 +170,10 @@ defmodule Spectre.Effect do
   Returns the stable key used for protection and dispatch checks.
   """
   @spec effect_key(t() | map() | atom() | String.t()) :: atom() | String.t() | nil
-  def effect_key(%__MODULE__{name: name}) when is_atom(name) or is_binary(name), do: name
+  def effect_key(%__MODULE__{name: name})
+      when (is_atom(name) and not is_nil(name)) or is_binary(name),
+      do: name
+
   def effect_key(%__MODULE__{payload: %{selected_tool: tool}}) when is_binary(tool), do: tool
   def effect_key(%{name: name}) when is_atom(name) or is_binary(name), do: name
   def effect_key(%{selected_tool: tool}) when is_binary(tool), do: tool

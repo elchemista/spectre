@@ -15,6 +15,7 @@ defmodule Spectre.Router.Context do
     :route,
     :rules,
     :local_result,
+    :arbitration,
     candidates: [],
     halted?: false,
     traces: [],
@@ -29,6 +30,7 @@ defmodule Spectre.Router.Context do
           route: Spectre.Route.t() | nil,
           rules: [Spectre.Rule.t()],
           local_result: map() | nil,
+          arbitration: map() | nil,
           candidates: [Spectre.Router.Candidate.t()],
           halted?: boolean(),
           traces: [term()],
@@ -104,6 +106,13 @@ defmodule Spectre.Router.Context do
   """
   @spec put_local_result(t(), map()) :: t()
   def put_local_result(%__MODULE__{} = context, result), do: %{context | local_result: result}
+
+  @doc """
+  Stores the canonical privacy-safe arbitration explanation.
+  """
+  @spec put_arbitration(t(), map()) :: t()
+  def put_arbitration(%__MODULE__{} = context, explanation) when is_map(explanation),
+    do: %{context | arbitration: explanation}
 
   @doc """
   Appends a routing evidence candidate.

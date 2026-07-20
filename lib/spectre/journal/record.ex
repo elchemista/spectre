@@ -80,6 +80,35 @@ defmodule Spectre.Journal.Record do
     struct(__MODULE__, Map.take(attrs, fields()))
   end
 
+  @doc """
+  Restores a persisted schema-v1 record while tolerating unknown additive
+  fields. Legacy maps without a schema version are migrated to version 1.
+  """
+  @spec restore(t() | map()) :: {:ok, t()} | {:error, term()}
+  def restore(%__MODULE__{} = record), do: {:ok, record}
+
+  def restore(attrs) when is_map(attrs) do
+    attrs = normalize_keys(attrs)
+    version = Map.get(attrs, :schema_version, 1)
+
+    if version == @schema_version do
+      {:ok, attrs |> Map.put(:schema_version, version) |> new()}
+    else
+      {:error, {:unsupported_journal_schema, version}}
+    end
+  end
+
+  def restore(other), do: {:error, {:invalid_journal_record, other}}
+
+  defp normalize_keys(attrs) do
+    known = Map.new(fields(), &{Atom.to_string(&1), &1})
+
+    Map.new(attrs, fn
+      {key, value} when is_binary(key) -> {Map.get(known, key, key), value}
+      pair -> pair
+    end)
+  end
+
   @spec stable_id(term(), atom(), non_neg_integer(), module() | nil) :: String.t()
   defp stable_id(turn_id, phase, sequence, agent) do
     digest =

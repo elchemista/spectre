@@ -1,12 +1,13 @@
 # Spectre next-run roadmap
 
-Status: ready for the next hardening pass
+Status: completed and superseded by `docs/ROADMAP.md`
 
 Baseline: Skills and scoped prompt injection implemented on
 `feature/skills-and-inject`
 
-Verification baseline: 253 tests, warnings-as-errors compilation, strict
-Credo, and Dialyzer all pass locally
+Verification baseline: the suite now exceeds 1,000 tests, including 800
+generated multi-strategy cases across ten agents. Current verification results
+are maintained in `docs/ROADMAP.md`.
 
 This file is the short execution plan for the next development run. The
 long-term architecture remains documented in `docs/ROADMAP.md`; the completed

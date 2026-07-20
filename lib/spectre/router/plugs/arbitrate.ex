@@ -28,7 +28,10 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   defp arbitrate(%Context{} = context) do
     arbitration = Arbitration.from_context(context)
 
-    case call_arbitrator(arbitration, context.opts) do
+    {decision, explanation} = call_arbitrator(arbitration, context.opts)
+    context = Context.put_arbitration(context, explanation)
+
+    case decision do
       {:ok, route} ->
         Support.log_route(:info, "arbitrated", route, context.opts)
 
@@ -104,10 +107,15 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
         context = Context.add_candidate(context, candidate)
 
-        case call_arbitrator(
-               Arbitration.from_context(context),
-               Keyword.put(context.opts, :conflict, :best)
-             ) do
+        {decision, explanation} =
+          call_arbitrator(
+            Arbitration.from_context(context),
+            Keyword.put(context.opts, :conflict, :best)
+          )
+
+        context = Context.put_arbitration(context, explanation)
+
+        case decision do
           {:ok, route} ->
             finish_llm_route(context, route, visible_rules)
 
@@ -414,7 +422,22 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
   defp call_arbitrator(%Arbitration{} = arbitration, opts) do
     {module, arbitrator_opts} = arbitrator(opts)
-    module.decide(arbitration, Keyword.merge(arbitrator_opts, opts))
+    merged = Keyword.merge(arbitrator_opts, opts)
+
+    if function_exported?(module, :explain, 2) do
+      module.explain(arbitration, merged)
+    else
+      decision = module.decide(arbitration, merged)
+
+      {decision,
+       %{
+         version: 1,
+         outcome: :custom,
+         reason: :custom_arbitrator,
+         thresholds: %{},
+         candidates: []
+       }}
+    end
   end
 
   defp arbitrator(opts) do

@@ -8,6 +8,7 @@ defmodule Spectre.Lifecycle do
 
   alias Spectre.Awaitable
   alias Spectre.Effect
+  alias Spectre.Result
   alias Spectre.State
   alias Spectre.Transition
 
@@ -15,6 +16,89 @@ defmodule Spectre.Lifecycle do
   @trace_limit 256
 
   @type result :: {:ok, Transition.t()} | {:error, term()}
+
+  @type command ::
+          {:stage_effect, Effect.t(), term()}
+          | {:approve_effect, term()}
+          | {:complete_effect, term(), term()}
+          | {:fail_effect, term(), term()}
+          | {:cancel_pending, term()}
+          | {:resolve_policy, :accept | :reject, atom()}
+          | {:policy_attempt, term()}
+          | {:expire_policy, term()}
+          | {:replay_effect, term()}
+          | {:replace_awaitable, Awaitable.t()}
+          | :clear_open_awaitables
+          | :clear_pending
+
+  @doc """
+  Applies one canonical lifecycle command.
+
+  The named functions below remain available for compatibility, while this
+  entry point gives policy, runner, execution, and hosts one command surface.
+  """
+  @spec apply(State.t(), command()) :: result()
+  def apply(%State{} = state, {:stage_effect, %Effect{} = effect, policy}),
+    do: stage(state, effect, policy)
+
+  def apply(%State{} = state, {:approve_effect, effect_id}),
+    do: approve_effect(state, effect_id)
+
+  def apply(%State{} = state, {:complete_effect, effect_id, result}),
+    do: complete_effect(state, effect_id, result)
+
+  def apply(%State{} = state, {:fail_effect, effect_id, reason}),
+    do: fail_effect(state, effect_id, reason)
+
+  def apply(%State{} = state, {:cancel_pending, reason}), do: cancel_pending(state, reason)
+
+  def apply(%State{} = state, {:resolve_policy, kind, label}),
+    do: resolve_policy(state, kind, label)
+
+  def apply(%State{} = state, {:policy_attempt, awaitable_id}),
+    do: policy_attempt(state, awaitable_id)
+
+  def apply(%State{} = state, {:expire_policy, awaitable_id}),
+    do: expire_policy(state, awaitable_id)
+
+  def apply(%State{} = state, {:replay_effect, effect_id}),
+    do: replay_effect(state, effect_id)
+
+  def apply(%State{} = state, {:replace_awaitable, %Awaitable{} = awaitable}),
+    do: replace_awaitable_transition(state, awaitable)
+
+  def apply(%State{} = state, :clear_open_awaitables), do: clear_open_awaitables(state)
+  def apply(%State{} = state, :clear_pending), do: clear_pending(state)
+  def apply(%State{}, command), do: {:error, {:unknown_lifecycle_command, command}}
+
+  @doc """
+  Projects a result to the single next host decision.
+  """
+  @spec next(Result.t()) :: Spectre.Turn.decision()
+  def next(%Result{} = result) do
+    cond do
+      awaitable = Result.open_awaitable(result) -> {:awaiting, awaitable, result}
+      effect = Result.pending_effect(result) -> {:needs, effect, result}
+      completion = Result.latest_completion(result) -> {:completed, completion, result}
+      Result.visible_reply?(result) -> {:reply, result}
+      true -> {:no_response, result}
+    end
+  end
+
+  @doc """
+  Returns the canonical lifecycle projection used by results and turns.
+  """
+  @spec projection(Result.t()) :: map()
+  def projection(%Result{} = result) do
+    %{
+      open_awaitable: Result.open_awaitable(result),
+      pending_effect: Result.pending_effect(result),
+      completions: Result.completions(result),
+      latest_completion: Result.latest_completion(result),
+      action_outcome: Result.action_outcome(result),
+      visible_reply?: Result.visible_reply?(result)
+    }
+  end
 
   @doc """
   Stages one effect and optionally opens its policy awaitable.
@@ -226,6 +310,147 @@ defmodule Spectre.Lifecycle do
 
   def resolve_policy(%State{}, kind, label),
     do: {:error, {:invalid_policy_resolution, kind, label}}
+
+  @doc """
+  Records one unmatched policy response without resolving the policy.
+  """
+  @spec policy_attempt(State.t(), term()) :: result()
+  def policy_attempt(%State{} = state, awaitable_id) do
+    case Enum.find(state.awaitables, &(&1.id == awaitable_id)) do
+      %Awaitable{kind: :policy, status: :open} = awaitable ->
+        attempted = Awaitable.increment(awaitable)
+
+        to =
+          state
+          |> Map.put(:awaitables, replace_awaitable(state.awaitables, attempted))
+          |> put_trace(%{
+            type: :policy_attempted,
+            name: attempted.name,
+            subject_id: attempted.subject_id,
+            attempts: attempted.attempts,
+            at: DateTime.utc_now()
+          })
+
+        {:ok,
+         Transition.new(:policy_attempted, state, to,
+           awaitable: attempted,
+           entity_id: attempted.id,
+           metadata: %{attempts: attempted.attempts}
+         )}
+
+      %Awaitable{} = awaitable ->
+        {:error, {:invalid_awaitable_transition, awaitable.id, awaitable.status, :attempted}}
+
+      nil ->
+        {:error, :awaitable_not_found}
+    end
+  end
+
+  @doc """
+  Expires an open policy and cancels its gated work atomically.
+  """
+  @spec expire_policy(State.t(), term()) :: result()
+  def expire_policy(%State{} = state, awaitable_id) do
+    case Enum.find(state.awaitables, &(&1.id == awaitable_id)) do
+      %Awaitable{kind: :policy, status: :open} = awaitable ->
+        expired = Awaitable.expire(awaitable)
+
+        cancelled =
+          state.pending_effects
+          |> Enum.find(&(&1.id == awaitable.subject_id))
+          |> case do
+            %Effect{} = effect -> Effect.cancel(effect, :policy_expired)
+            nil -> nil
+          end
+
+        history =
+          if cancelled,
+            do: append_history(state.planned_effects, cancelled),
+            else: state.planned_effects
+
+        to =
+          %{
+            state
+            | pending_effects:
+                Enum.reject(state.pending_effects, &(&1.id == awaitable.subject_id)),
+              planned_effects: history,
+              awaitables: replace_awaitable(state.awaitables, expired)
+          }
+          |> put_trace(%{
+            type: :awaitable_expired,
+            kind: :policy,
+            name: awaitable.name,
+            subject_id: awaitable.subject_id,
+            at: DateTime.utc_now()
+          })
+
+        {:ok,
+         Transition.new(:policy_expired, state, to,
+           effect: cancelled,
+           awaitable: expired,
+           entity_id: awaitable.id
+         )}
+
+      %Awaitable{} = awaitable ->
+        {:error, {:invalid_awaitable_transition, awaitable.id, awaitable.status, :expired}}
+
+      nil ->
+        {:error, :awaitable_not_found}
+    end
+  end
+
+  @doc """
+  Removes a stale pending copy when the same effect already has a terminal
+  history entry. No capability is invoked and the stored outcome is replayed.
+  """
+  @spec replay_effect(State.t(), term()) :: result()
+  def replay_effect(%State{} = state, effect_id) do
+    case terminal_effect(state, effect_id) do
+      %Effect{} = effect ->
+        to = %{state | pending_effects: Enum.reject(state.pending_effects, &(&1.id == effect_id))}
+
+        {:ok,
+         Transition.new(:effect_replayed, state, to,
+           effect: effect,
+           entity_id: effect.id,
+           replayed?: true
+         )}
+
+      nil ->
+        {:error, :resolved_effect_not_found}
+    end
+  end
+
+  @doc false
+  @spec clear_open_awaitables(State.t()) :: result()
+  def clear_open_awaitables(%State{} = state) do
+    to = %{state | awaitables: Enum.reject(state.awaitables, &(&1.status == :open))}
+    {:ok, Transition.new(:open_awaitables_cleared, state, to)}
+  end
+
+  @doc false
+  @spec clear_pending(State.t()) :: result()
+  def clear_pending(%State{} = state) do
+    {:ok, cleared} = clear_open_awaitables(state)
+    to = %{cleared.to | pending_effects: []}
+    {:ok, Transition.new(:pending_cleared, state, to)}
+  end
+
+  @doc false
+  @spec replace_awaitable_transition(State.t(), Awaitable.t()) :: result()
+  def replace_awaitable_transition(%State{} = state, %Awaitable{} = awaitable) do
+    if Enum.any?(state.awaitables, &(&1.id == awaitable.id)) do
+      to = %{state | awaitables: replace_awaitable(state.awaitables, awaitable)}
+
+      {:ok,
+       Transition.new(:awaitable_replaced, state, to,
+         awaitable: awaitable,
+         entity_id: awaitable.id
+       )}
+    else
+      {:error, :awaitable_not_found}
+    end
+  end
 
   @spec resolve_policy_awaitable(State.t(), Awaitable.t(), :accept | :reject, atom()) :: result()
   defp resolve_policy_awaitable(state, awaitable, :accept, label) do

@@ -78,7 +78,8 @@ defmodule Spectre.State do
   """
   @spec clear_open_awaitables(t()) :: t()
   def clear_open_awaitables(%__MODULE__{} = state) do
-    %{state | awaitables: Enum.reject(state.awaitables, &(&1.status == :open))}
+    {:ok, transition} = Spectre.Lifecycle.apply(state, :clear_open_awaitables)
+    transition.to
   end
 
   @doc """
@@ -86,11 +87,8 @@ defmodule Spectre.State do
   """
   @spec clear_pending(t()) :: t()
   def clear_pending(%__MODULE__{} = state) do
-    %{
-      state
-      | pending_effects: [],
-        awaitables: Enum.reject(state.awaitables, &(&1.status == :open))
-    }
+    {:ok, transition} = Spectre.Lifecycle.apply(state, :clear_pending)
+    transition.to
   end
 
   @doc """
@@ -113,12 +111,8 @@ defmodule Spectre.State do
 
   @spec replace_awaitable(t(), Spectre.Awaitable.t()) :: t()
   def replace_awaitable(%__MODULE__{} = state, %Spectre.Awaitable{} = awaitable) do
-    awaitables =
-      state.awaitables
-      |> Enum.reject(&(&1.id == awaitable.id))
-      |> Kernel.++([awaitable])
-
-    %{state | awaitables: awaitables}
+    {:ok, transition} = Spectre.Lifecycle.apply(state, {:replace_awaitable, awaitable})
+    transition.to
   end
 
   @doc """

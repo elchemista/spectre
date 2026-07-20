@@ -13,11 +13,13 @@ defmodule Spectre.Classifier.Embeddings.ExFastembed do
 
   @impl Spectre.Classifier.Embedding
   @spec load(String.t(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
-  def load(model, _opts \\ []) when is_binary(model) do
-    with :ok <- ensure_ex_fastembed() do
-      case call_ex_fastembed(:load, [model]) do
+  def load(model, opts \\ []) when is_binary(model) do
+    backend = backend(opts)
+
+    with :ok <- ensure_ex_fastembed(backend) do
+      case call_ex_fastembed(backend, :load, [model]) do
         {:ok, dimensions} -> {:ok, dimensions}
-        {:error, reason} -> maybe_loaded_dimensions(reason)
+        {:error, reason} -> maybe_loaded_dimensions(reason, opts)
       end
     end
   end
@@ -25,9 +27,11 @@ defmodule Spectre.Classifier.Embeddings.ExFastembed do
   @impl Spectre.Classifier.Embedding
   @spec embed(String.t(), keyword()) ::
           {:ok, Spectre.Classifier.Embedding.vector()} | {:error, term()}
-  def embed(text, _opts \\ []) when is_binary(text) do
-    with :ok <- ensure_ex_fastembed() do
-      case call_ex_fastembed(:embed_text, [[text]]) do
+  def embed(text, opts \\ []) when is_binary(text) do
+    backend = backend(opts)
+
+    with :ok <- ensure_ex_fastembed(backend) do
+      case call_ex_fastembed(backend, :embed_text, [[text]]) do
         {:ok, [vector | _]} -> {:ok, Enum.map(vector, &(&1 / 1))}
         {:ok, []} -> {:error, :empty_embedding}
         {:error, reason} -> {:error, reason}
@@ -35,29 +39,33 @@ defmodule Spectre.Classifier.Embeddings.ExFastembed do
     end
   end
 
-  @spec maybe_loaded_dimensions(term()) :: {:ok, pos_integer()} | {:error, term()}
-  defp maybe_loaded_dimensions(reason) when is_binary(reason) do
+  @spec maybe_loaded_dimensions(term(), keyword()) ::
+          {:ok, pos_integer()} | {:error, term()}
+  defp maybe_loaded_dimensions(reason, opts) when is_binary(reason) do
     if reason |> String.downcase() |> String.contains?("already loaded") do
-      with {:ok, vector} <- embed("dimension probe"), do: {:ok, length(vector)}
+      with {:ok, vector} <- embed("dimension probe", opts), do: {:ok, length(vector)}
     else
       {:error, reason}
     end
   end
 
-  defp maybe_loaded_dimensions(reason), do: {:error, reason}
+  defp maybe_loaded_dimensions(reason, _opts), do: {:error, reason}
 
-  @spec ensure_ex_fastembed() :: :ok | {:error, term()}
-  defp ensure_ex_fastembed do
-    if Code.ensure_loaded?(@ex_fastembed) do
+  @spec backend(keyword()) :: module()
+  defp backend(opts), do: Keyword.get(opts, :ex_fastembed_module, @ex_fastembed)
+
+  @spec ensure_ex_fastembed(module()) :: :ok | {:error, term()}
+  defp ensure_ex_fastembed(backend) do
+    if Code.ensure_loaded?(backend) do
       :ok
     else
       {:error, {:missing_dependency, :ex_fastembed}}
     end
   end
 
-  @spec call_ex_fastembed(atom(), [term()]) :: term()
-  defp call_ex_fastembed(function, args) do
+  @spec call_ex_fastembed(module(), atom(), [term()]) :: term()
+  defp call_ex_fastembed(backend, function, args) do
     # credo:disable-for-next-line Credo.Check.Refactor.Apply
-    apply(@ex_fastembed, function, args)
+    apply(backend, function, args)
   end
 end
