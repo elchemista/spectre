@@ -4,8 +4,15 @@ defmodule Spectre.Prompt do
 
   A base `ask` prompt is represented as the task section of a
   `Spectre.Prompt.Plan`. Agent, Skill, Flow, and handler `inject` declarations
-  resolve into typed fragments before the plan is serialized for the current
-  string-based LLM adapter.
+  resolve into typed fragments before model capability negotiation. Dynamic
+  providers remain context data, while static instruction/task assets retain
+  instruction trust. Policy request tasks cannot be replaced by application
+  injections at any scope.
+
+  These rules prevent privilege promotion and policy bypass inside Spectre.
+  Structured adapters preserve them at the adapter boundary; legacy adapters
+  receive an escaped data marker. Neither form claims that the downstream
+  model is immune to semantic jailbreaks.
   """
 
   alias Spectre.Definition
@@ -78,15 +85,16 @@ defmodule Spectre.Prompt do
   @spec do_render_asset(module(), atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   defp do_render_asset(agent, prompt, ctx, opts) do
-    with {:ok, path} <- resolve(agent, prompt, ctx, opts),
-         {:ok, text} <- File.read(path) do
-      {:ok, eval_heexish(text, assigns(ctx, opts), path)}
-    end
-  rescue
-    exception ->
-      {:error, {:prompt_render_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    kind, reason -> {:error, {:prompt_render_failure, kind, reason}}
+    Call.run(
+      :prompt,
+      fn ->
+        with {:ok, path} <- resolve(agent, prompt, ctx, opts),
+             {:ok, text} <- File.read(path) do
+          {:ok, eval_heexish(text, assigns(ctx, opts), path)}
+        end
+      end,
+      opts |> Call.adapter_opts() |> Keyword.put(:purpose, :prompt_asset)
+    )
   end
 
   @spec relative_prompt(atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::

@@ -76,6 +76,12 @@ defmodule Spectre.Awaitable do
   def cancel(%__MODULE__{} = awaitable), do: %{awaitable | status: :cancelled}
 
   @doc """
+  Marks an awaitable as expired.
+  """
+  @spec expire(t()) :: t()
+  def expire(%__MODULE__{} = awaitable), do: %{awaitable | status: :expired}
+
+  @doc """
   Increments the retry attempt counter.
   """
   @spec increment(t()) :: t()

@@ -13,6 +13,8 @@ defmodule Spectre.Router.Support do
   alias Spectre.Route
   alias Spectre.Rule
 
+  @label_only_strategies [:classifier, :llm_classifier, :llm, :semantic_cache]
+
   @doc """
   Returns rules visible to a router strategy.
 
@@ -22,13 +24,42 @@ defmodule Spectre.Router.Support do
   """
   @spec rules_for([Rule.t()], atom(), Spectre.Input.t() | nil) :: [Rule.t()]
   def rules_for(rules, strategy, input \\ nil) when is_list(rules) and is_atom(strategy) do
-    visible =
-      Enum.filter(rules, fn
-        %Rule{via: []} = rule -> input_match?(rule, input)
-        %Rule{via: via} = rule -> strategy in via and input_match?(rule, input)
-      end)
-
+    visible = visible_rules(rules, strategy, input)
     reject_ambiguous_label_only_rules(visible, strategy)
+  end
+
+  @doc """
+  Returns labels that a label-only provider cannot resolve to one visible rule.
+
+  Deterministic providers can retain duplicate labels because their evidence
+  identifies a concrete rule. Classifiers, semantic caches, and LLM classifiers
+  return only a label, so duplicates are ambiguous even when their mounted
+  scopes differ.
+  """
+  @spec ambiguous_labels([Rule.t()], atom(), Spectre.Input.t() | nil) :: [atom()]
+  def ambiguous_labels(rules, strategy, input \\ nil)
+      when is_list(rules) and is_atom(strategy) do
+    rules
+    |> visible_rules(strategy, input)
+    |> ambiguous_visible_labels(strategy)
+  end
+
+  @doc """
+  Builds the trace reason used when scoped labels are ambiguous.
+  """
+  @spec ambiguity_reason(atom(), [atom()]) ::
+          {:ambiguous_scoped_labels, atom(), [atom()]} | nil
+  def ambiguity_reason(_strategy, []), do: nil
+
+  def ambiguity_reason(strategy, labels) when is_atom(strategy) and is_list(labels),
+    do: {:ambiguous_scoped_labels, strategy, labels}
+
+  @spec visible_rules([Rule.t()], atom(), Spectre.Input.t() | nil) :: [Rule.t()]
+  defp visible_rules(rules, strategy, input) do
+    Enum.filter(rules, fn
+      %Rule{via: []} = rule -> input_match?(rule, input)
+      %Rule{via: via} = rule -> strategy in via and input_match?(rule, input)
+    end)
   end
 
   @spec input_match?(Rule.t(), Spectre.Input.t() | nil) :: boolean()
@@ -37,13 +68,21 @@ defmodule Spectre.Router.Support do
   defp input_match?(%Rule{}, nil), do: false
 
   @spec reject_ambiguous_label_only_rules([Rule.t()], atom()) :: [Rule.t()]
-  defp reject_ambiguous_label_only_rules(rules, strategy)
-       when strategy in [:classifier, :llm_classifier, :semantic_cache] do
-    counts = Enum.frequencies_by(rules, & &1.label)
-    Enum.reject(rules, &(Map.fetch!(counts, &1.label) > 1))
+  defp reject_ambiguous_label_only_rules(rules, strategy) do
+    ambiguous = rules |> ambiguous_visible_labels(strategy) |> MapSet.new()
+    Enum.reject(rules, &MapSet.member?(ambiguous, &1.label))
   end
 
-  defp reject_ambiguous_label_only_rules(rules, _strategy), do: rules
+  @spec ambiguous_visible_labels([Rule.t()], atom()) :: [atom()]
+  defp ambiguous_visible_labels(rules, strategy) when strategy in @label_only_strategies do
+    counts = Enum.frequencies_by(rules, & &1.label)
+
+    rules
+    |> labels_for()
+    |> Enum.filter(&(Map.fetch!(counts, &1) > 1))
+  end
+
+  defp ambiguous_visible_labels(_rules, _strategy), do: []
 
   @doc """
   Returns unique labels for a rule set in evaluation order.
@@ -71,7 +110,7 @@ defmodule Spectre.Router.Support do
   @spec route_from_result(map() | Route.t(), [Rule.t()], [atom()], atom()) :: Route.t()
   def route_from_result(%Route{} = route, rules, labels, strategy) do
     route
-    |> Map.from_struct()
+    |> provider_result_attrs()
     |> route_from_result(rules, labels, strategy)
   end
 
@@ -87,6 +126,22 @@ defmodule Spectre.Router.Support do
     |> Map.put(:labels, labels)
     |> Route.new()
   end
+
+  @spec provider_result_attrs(Route.t()) :: map()
+  defp provider_result_attrs(
+         %Route{
+           rule: nil,
+           handler: nil,
+           owner: nil,
+           scope: :agent
+         } = route
+       ) do
+    route
+    |> Map.from_struct()
+    |> Map.put(:scope, nil)
+  end
+
+  defp provider_result_attrs(%Route{} = route), do: Map.from_struct(route)
 
   @spec put_result_rule(map(), Rule.t() | nil, term(), term()) :: map()
   defp put_result_rule(result, %Rule{} = rule, label, _scope) do

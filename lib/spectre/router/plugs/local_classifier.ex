@@ -37,15 +37,24 @@ defmodule Spectre.Router.Plugs.LocalClassifier do
   @spec classify(Context.t()) :: {:cont, Context.t()}
   defp classify(%Context{input: %{text: text}, rules: rules, opts: opts} = context) do
     cache_reason = semantic_cache_reason(context)
+    ambiguous = Support.ambiguous_labels(rules, :classifier, context.input)
+    ambiguity_reason = Support.ambiguity_reason(:classifier, ambiguous)
     visible_rules = Support.rules_for(rules, :classifier, context.input)
     visible_labels = Support.labels_for(visible_rules)
+    context = put_ambiguity_trace(context, ambiguity_reason)
 
     if visible_rules == [] do
-      {:cont, Context.put_trace(context, {:local_skip, :no_visible_rules})}
+      {:cont, Context.put_trace(context, {:local_skip, ambiguity_reason || :no_visible_rules})}
     else
       classify_visible(context, text, opts, visible_rules, visible_labels, cache_reason)
     end
   end
+
+  @spec put_ambiguity_trace(Context.t(), term() | nil) :: Context.t()
+  defp put_ambiguity_trace(%Context{} = context, nil), do: context
+
+  defp put_ambiguity_trace(%Context{} = context, reason),
+    do: Context.put_trace(context, reason)
 
   @spec classify_visible(Context.t(), String.t(), keyword(), [Spectre.Rule.t()], [atom()], term()) ::
           {:cont, Context.t()}

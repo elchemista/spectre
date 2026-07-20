@@ -10,6 +10,8 @@ defmodule Spectre.Classifier.Encoder do
   @default_model "intfloat/multilingual-e5-small"
   @default_adapter Spectre.Classifier.Embeddings.ExFastembed
 
+  alias Spectre.Provider.Call
+
   @type embedding :: [float()]
 
   @doc """
@@ -25,10 +27,12 @@ defmodule Spectre.Classifier.Encoder do
   """
   @spec download(String.t(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
   def download(model \\ @default_model, opts \\ []) when is_binary(model) do
-    case configured_download(opts) do
-      {:ok, callback} -> call_download(callback, model, opts)
-      :default -> call_adapter(:download, model, opts)
-    end
+    protected_embedding(:embedding_download, opts, fn ->
+      case configured_download(opts) do
+        {:ok, callback} -> call_download(callback, model, opts)
+        :default -> call_adapter(:download, model, opts)
+      end
+    end)
   end
 
   @doc """
@@ -38,10 +42,12 @@ defmodule Spectre.Classifier.Encoder do
   """
   @spec load(String.t(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
   def load(model \\ @default_model, opts \\ []) when is_binary(model) do
-    case configured_load(opts) do
-      {:ok, callback} -> call_load(callback, model, opts)
-      :default -> call_adapter(:load, model, opts)
-    end
+    protected_embedding(:embedding_load, opts, fn ->
+      case configured_load(opts) do
+        {:ok, callback} -> call_load(callback, model, opts)
+        :default -> call_adapter(:load, model, opts)
+      end
+    end)
   end
 
   @doc """
@@ -51,10 +57,19 @@ defmodule Spectre.Classifier.Encoder do
   """
   @spec embed(String.t(), keyword()) :: {:ok, embedding()} | {:error, term()}
   def embed(text, opts \\ []) when is_binary(text) do
-    case configured_embed(opts) do
-      {:ok, callback} -> call_embed(callback, text, opts)
-      :default -> call_adapter(:embed, text, opts)
-    end
+    protected_embedding(:embedding_encode, opts, fn ->
+      case configured_embed(opts) do
+        {:ok, callback} -> call_embed(callback, text, opts)
+        :default -> call_adapter(:embed, text, opts)
+      end
+    end)
+  end
+
+  @spec protected_embedding(atom(), keyword(), (-> term())) ::
+          {:ok, term()} | {:error, term()}
+  defp protected_embedding(purpose, opts, callback) do
+    call_opts = opts |> embedding_opts() |> Call.adapter_opts() |> Keyword.put(:purpose, purpose)
+    Call.run(:embedding, callback, call_opts)
   end
 
   @spec configured_download(keyword()) :: {:ok, term()} | :default

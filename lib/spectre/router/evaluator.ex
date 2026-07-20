@@ -11,6 +11,7 @@ defmodule Spectre.Router.Evaluator do
   @agent_config_keys [:model, :classifier, :adapter, :embedding, :input_pipeline]
   @state_keys State.__struct__() |> Map.keys() |> List.delete(:__struct__)
 
+  @doc false
   @spec evaluate(module(), Input.t() | String.t() | map(), keyword()) :: {:ok, Receipt.t()}
   def evaluate(agent, input, opts) when is_atom(agent) and is_list(opts) do
     started_at = System.monotonic_time()

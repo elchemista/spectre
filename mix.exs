@@ -5,7 +5,9 @@ defmodule Spectre.MixProject do
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
+    "CHANGELOG.md",
     "docs/GETTING_STARTED.md",
+    "docs/ARCHITECTURE.md",
     "docs/DSL.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
@@ -14,9 +16,14 @@ defmodule Spectre.MixProject do
     "docs/ACTIONS.md",
     "docs/MEMORY.md",
     "docs/JOURNAL.md",
+    "docs/PRODUCTION.md",
+    "docs/TESTING.md",
     "docs/API.md",
     "docs/INSTALLATION.md",
-    "docs/ROADMAP.md"
+    "docs/ROADMAP.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE"
   ]
 
   def project do
@@ -32,10 +39,7 @@ defmodule Spectre.MixProject do
       dialyzer: [
         plt_add_apps: [:mix]
       ],
-      docs: [
-        main: "readme",
-        extras: @docs_extras
-      ],
+      docs: docs(),
       source_url: @source_url,
       homepage_url: @source_url
     ]
@@ -56,7 +60,7 @@ defmodule Spectre.MixProject do
     [
       name: "spectre",
       maintainers: ["elchemista"],
-      files: ~w(lib docs mix.exs README.md LICENSE),
+      files: ~w(lib docs mix.exs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url}
     ]
@@ -66,8 +70,117 @@ defmodule Spectre.MixProject do
     [
       {:jason, "~> 1.4"},
       {:vettore, "~> 0.3.1"},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_ref: "v#{@version}",
+      extras: @docs_extras,
+      groups_for_extras: [
+        "Start here": [
+          "README.md",
+          "docs/GETTING_STARTED.md",
+          "docs/INSTALLATION.md"
+        ],
+        "Core concepts": [
+          "docs/ARCHITECTURE.md",
+          "docs/DSL.md",
+          "docs/API.md"
+        ],
+        "Runtime guides": [
+          "docs/ROUTING.md",
+          "docs/ACTIONS.md",
+          "docs/MEMORY.md",
+          "docs/JOURNAL.md",
+          "docs/PROVIDERS.md",
+          "docs/TRAINING.md",
+          "docs/EVALUATION.md"
+        ],
+        Operations: [
+          "docs/PRODUCTION.md",
+          "docs/TESTING.md",
+          "SECURITY.md"
+        ],
+        Project: [
+          "CHANGELOG.md",
+          "CONTRIBUTING.md",
+          "docs/ROADMAP.md",
+          "LICENSE"
+        ]
+      ],
+      groups_for_modules: [
+        "Core API": [
+          Spectre,
+          Spectre.Agent,
+          Spectre.Skill,
+          Spectre.Turn,
+          Spectre.Session,
+          Spectre.Supervisor
+        ],
+        "Lifecycle and state": [
+          Spectre.Lifecycle,
+          Spectre.Transition,
+          Spectre.State,
+          Spectre.State.Codec,
+          Spectre.State.Store,
+          Spectre.Result,
+          Spectre.Effect,
+          Spectre.Awaitable,
+          Spectre.Policy,
+          Spectre.Policy.Matcher,
+          Spectre.Policy.Resolution
+        ],
+        Routing: [
+          Spectre.Router,
+          Spectre.Router.Arbitration,
+          Spectre.Router.Arbitrator,
+          Spectre.Router.Candidate,
+          Spectre.Router.Context,
+          Spectre.Router.Receipt,
+          Spectre.Router.SemanticCache
+        ],
+        "Prompts and providers": [
+          Spectre.LLM,
+          Spectre.Prompt,
+          Spectre.Prompt.Fragment,
+          Spectre.Prompt.Operation,
+          Spectre.Prompt.Plan,
+          Spectre.Provider.Call,
+          Spectre.Provider.Failure
+        ],
+        Actions: [
+          Spectre.ActionConfig,
+          Spectre.ActionDispatcher,
+          Spectre.ActionExecutor,
+          Spectre.ActionHooks,
+          Spectre.ActionPlanner,
+          Spectre.ActionProtection,
+          Spectre.Execution
+        ],
+        "Classifiers and evaluation": [
+          Spectre.Classifier,
+          Spectre.Classifier.Embedding,
+          Spectre.Classifier.Encoder,
+          Spectre.Classifier.Trainer,
+          Spectre.Eval,
+          Spectre.Eval.Case,
+          Spectre.Eval.Report,
+          Spectre.Eval.Result,
+          Spectre.Training.Dataset
+        ],
+        "Journal and operations": [
+          Spectre.Journal.Record,
+          Spectre.Journal.Recorder,
+          Spectre.Journal.Store,
+          Spectre.Monitor,
+          Spectre.Telemetry
+        ]
+      ]
     ]
   end
 end

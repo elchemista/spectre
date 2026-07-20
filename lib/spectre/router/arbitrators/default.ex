@@ -31,6 +31,169 @@ defmodule Spectre.Router.Arbitrators.Default do
     end
   end
 
+  @doc """
+  Returns the normal arbitration decision together with a privacy-safe,
+  deterministic explanation of thresholds, eligibility, and precedence.
+  """
+  @spec explain(Arbitration.t(), keyword()) :: {term(), map()}
+  def explain(%Arbitration{} = arbitration, opts) do
+    merged = Keyword.merge(@defaults, opts)
+    decision = decide(arbitration, opts)
+
+    evidence =
+      Enum.map(arbitration.candidates, fn candidate ->
+        candidate_explanation(candidate, merged, decision)
+      end)
+
+    {decision,
+     %{
+       version: 1,
+       outcome: decision_outcome(decision),
+       reason: decision_reason(decision, arbitration.candidates, merged),
+       thresholds: threshold_configuration(merged),
+       candidates: evidence
+     }}
+  end
+
+  @spec candidate_explanation(Candidate.t(), keyword(), term()) :: map()
+  defp candidate_explanation(%Candidate{} = candidate, opts, decision) do
+    {eligible?, rejection, thresholds} = eligibility(candidate, opts)
+
+    %{
+      provider: candidate.provider,
+      label: candidate.label,
+      scope: candidate.scope,
+      score: candidate.score,
+      margin: candidate.margin,
+      strength: candidate.strength,
+      accepted?: candidate.accepted? == true,
+      eligible?: eligible?,
+      rejection_reason: rejection,
+      required: thresholds,
+      winner?: winner?(candidate, decision)
+    }
+  end
+
+  defp eligibility(%Candidate{handler: nil}, _opts), do: {false, :missing_handler, %{}}
+
+  defp eligibility(%Candidate{accepted?: accepted?}, _opts) when accepted? != true,
+    do: {false, :provider_rejected, %{}}
+
+  defp eligibility(%Candidate{strength: :hard, accepted?: true}, _opts),
+    do: {true, nil, %{strength: :hard}}
+
+  defp eligibility(%Candidate{provider: :local_classifier} = candidate, opts) do
+    required = %{
+      score: Keyword.fetch!(opts, :classifier_accept),
+      margin: Keyword.fetch!(opts, :classifier_margin)
+    }
+
+    threshold_eligibility(candidate, required)
+  end
+
+  defp eligibility(%Candidate{provider: :embedding} = candidate, opts) do
+    required = %{
+      score: Keyword.fetch!(opts, :embedding_accept),
+      margin: Keyword.fetch!(opts, :embedding_margin),
+      margin_optional?: true
+    }
+
+    threshold_eligibility(candidate, required)
+  end
+
+  defp eligibility(%Candidate{provider: :bag} = candidate, opts),
+    do: threshold_eligibility(candidate, %{score: Keyword.fetch!(opts, :bag_accept)})
+
+  defp eligibility(%Candidate{provider: :jaro} = candidate, opts),
+    do: threshold_eligibility(candidate, %{score: Keyword.fetch!(opts, :jaro_accept)})
+
+  defp eligibility(%Candidate{provider: :llm_classifier}, _opts), do: {true, nil, %{}}
+
+  defp eligibility(%Candidate{score: score}, _opts) do
+    if is_nil(score) or (number?(score) and score > 0),
+      do: {true, nil, %{}},
+      else: {false, :non_positive_score, %{}}
+  end
+
+  defp threshold_eligibility(candidate, required) do
+    case {score_threshold_met?(candidate, required), margin_threshold_met?(candidate, required)} do
+      {false, _margin} -> {false, :score_below_threshold, required}
+      {true, false} -> {false, :margin_below_threshold, required}
+      {true, true} -> {true, nil, required}
+    end
+  end
+
+  defp score_threshold_met?(candidate, required),
+    do: number?(candidate.score) and candidate.score >= required.score
+
+  defp margin_threshold_met?(_candidate, required) when not is_map_key(required, :margin),
+    do: true
+
+  defp margin_threshold_met?(%Candidate{margin: nil}, %{margin_optional?: true}), do: true
+
+  defp margin_threshold_met?(candidate, required),
+    do: number?(candidate.margin) and candidate.margin >= required.margin
+
+  defp winner?(candidate, {:ok, route}) do
+    candidate.provider == route.strategy and candidate.label == route.label and
+      (candidate.scope || :agent) == route.scope
+  end
+
+  defp winner?(_candidate, _decision), do: false
+
+  defp decision_outcome({:ok, _route}), do: :route
+  defp decision_outcome({:llm, _arbitration}), do: :llm
+  defp decision_outcome({:clarify, _text}), do: :clarify
+  defp decision_outcome({:error, _reason}), do: :error
+
+  defp decision_reason({:llm, _}, _candidates, _opts), do: :llm_fallback
+  defp decision_reason({:clarify, _}, _candidates, _opts), do: :no_eligible_candidate
+  defp decision_reason({:error, _}, _candidates, _opts), do: :arbitration_error
+
+  defp decision_reason({:ok, route}, candidates, opts) do
+    eligible = eligible_candidates(candidates, opts)
+    winner = Enum.find(eligible, &winner?(&1, {:ok, route}))
+    selected_reason(winner, eligible)
+  end
+
+  defp selected_reason(%Candidate{strength: :hard}, _eligible), do: :hard_evidence
+
+  defp selected_reason(%Candidate{} = winner, eligible) do
+    if agreement_winner?(winner, eligible),
+      do: :provider_agreement,
+      else: provider_reason(winner.provider)
+  end
+
+  defp selected_reason(nil, _eligible), do: :best_candidate
+
+  defp provider_reason(:local_classifier), do: :classifier_precedence
+  defp provider_reason(:embedding), do: :embedding_precedence
+  defp provider_reason(provider) when provider in [:bag, :jaro], do: :similarity_precedence
+  defp provider_reason(_provider), do: :best_candidate
+
+  defp agreement_winner?(winner, candidates) do
+    candidates
+    |> Enum.filter(&(candidate_identity(&1) == candidate_identity(winner)))
+    |> Enum.map(& &1.provider)
+    |> Enum.uniq()
+    |> length() >= 2
+  end
+
+  defp threshold_configuration(opts) do
+    opts
+    |> Keyword.take([
+      :classifier_accept,
+      :classifier_margin,
+      :embedding_accept,
+      :embedding_margin,
+      :bag_accept,
+      :jaro_accept,
+      :conflict,
+      :no_decision
+    ])
+    |> Map.new()
+  end
+
   @spec select_candidate([Candidate.t()]) :: Candidate.t() | nil
   defp select_candidate(candidates) do
     [

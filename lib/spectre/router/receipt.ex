@@ -21,6 +21,7 @@ defmodule Spectre.Router.Receipt do
     :llm_called?,
     :duration_us,
     :error,
+    :arbitration,
     attempts: [],
     candidates: [],
     provider_calls: [],
@@ -42,7 +43,11 @@ defmodule Spectre.Router.Receipt do
           required(:accepted?) => boolean(),
           required(:score) => number() | nil,
           required(:margin) => number() | nil,
-          required(:strength) => atom()
+          required(:strength) => atom(),
+          optional(:eligible?) => boolean(),
+          optional(:winner?) => boolean(),
+          optional(:rejection_reason) => atom() | nil,
+          optional(:required) => map()
         }
 
   @type provider_call :: %{
@@ -62,6 +67,7 @@ defmodule Spectre.Router.Receipt do
           llm_called?: boolean(),
           duration_us: non_neg_integer(),
           error: atom() | nil,
+          arbitration: map() | nil,
           attempts: [attempt()],
           candidates: [candidate_summary()],
           provider_calls: [provider_call()],
@@ -90,6 +96,8 @@ defmodule Spectre.Router.Receipt do
     route = if match?(%Spectre.Route{}, context.route), do: context.route
     known_labels = known_labels(context.labels)
     safe_provider_calls = sanitize_provider_calls(provider_calls)
+    arbitration = sanitize_arbitration(context.arbitration, known_labels)
+    explanations = candidate_explanations(arbitration)
 
     %__MODULE__{
       outcome: route_outcome(route),
@@ -100,7 +108,8 @@ defmodule Spectre.Router.Receipt do
       llm_called?: llm_called?(traces, candidates, provider_calls, safe_provider_calls),
       duration_us: safe_duration(duration_us),
       attempts: attempts(traces, candidates, known_labels),
-      candidates: Enum.map(candidates, &candidate_summary(&1, known_labels)),
+      candidates: Enum.map(candidates, &candidate_summary(&1, known_labels, explanations)),
+      arbitration: arbitration,
       provider_calls: safe_provider_calls,
       trace_codes: Enum.map(traces, &trace_code/1),
       error: context.errors |> safe_list() |> List.first() |> reason_code()
@@ -227,8 +236,8 @@ defmodule Spectre.Router.Receipt do
     %{provider: provider, result: result, reason: reason_code(reason)}
   end
 
-  @spec candidate_summary(Candidate.t(), MapSet.t()) :: candidate_summary()
-  defp candidate_summary(%Candidate{} = candidate, known_labels) do
+  @spec candidate_summary(Candidate.t(), MapSet.t(), map()) :: candidate_summary()
+  defp candidate_summary(%Candidate{} = candidate, known_labels, explanations) do
     summary = %{
       provider: safe_atom(candidate.provider) || :unknown,
       label: safe_label(candidate.label, known_labels),
@@ -238,10 +247,74 @@ defmodule Spectre.Router.Receipt do
       strength: safe_atom(candidate.strength) || :unknown
     }
 
+    summary = Map.merge(summary, Map.get(explanations, candidate_key(candidate), %{}))
+
     case safe_scope(candidate.scope) do
       nil -> summary
       scope -> Map.put(summary, :scope, scope)
     end
+  end
+
+  @spec sanitize_arbitration(term(), MapSet.t()) :: map() | nil
+  defp sanitize_arbitration(explanation, known_labels) when is_map(explanation) do
+    candidates =
+      explanation
+      |> Map.get(:candidates, [])
+      |> safe_list()
+      |> Enum.map(&sanitize_candidate_explanation(&1, known_labels))
+
+    %{
+      version: Map.get(explanation, :version, 1),
+      outcome: safe_atom(Map.get(explanation, :outcome)) || :unknown,
+      reason: safe_atom(Map.get(explanation, :reason)) || :unknown,
+      thresholds: sanitize_thresholds(Map.get(explanation, :thresholds, %{})),
+      candidates: candidates
+    }
+  end
+
+  defp sanitize_arbitration(_explanation, _known_labels), do: nil
+
+  defp sanitize_candidate_explanation(candidate, known_labels) when is_map(candidate) do
+    %{
+      provider: safe_atom(Map.get(candidate, :provider)) || :unknown,
+      label: safe_label(Map.get(candidate, :label), known_labels),
+      scope: safe_scope(Map.get(candidate, :scope)),
+      score: safe_number(Map.get(candidate, :score)),
+      margin: safe_number(Map.get(candidate, :margin)),
+      strength: safe_atom(Map.get(candidate, :strength)) || :unknown,
+      accepted?: Map.get(candidate, :accepted?) == true,
+      eligible?: Map.get(candidate, :eligible?) == true,
+      winner?: Map.get(candidate, :winner?) == true,
+      rejection_reason: safe_atom(Map.get(candidate, :rejection_reason)),
+      required: sanitize_thresholds(Map.get(candidate, :required, %{}))
+    }
+  end
+
+  defp sanitize_candidate_explanation(_candidate, _known_labels), do: %{}
+
+  defp sanitize_thresholds(thresholds) when is_map(thresholds) do
+    thresholds
+    |> Enum.filter(fn {key, value} ->
+      is_atom(key) and (is_number(value) or is_boolean(value) or is_atom(value))
+    end)
+    |> Map.new()
+  end
+
+  defp sanitize_thresholds(_thresholds), do: %{}
+
+  defp candidate_explanations(%{candidates: candidates}) do
+    Map.new(candidates, fn candidate ->
+      summary =
+        Map.take(candidate, [:eligible?, :winner?, :rejection_reason, :required])
+
+      {candidate_key(candidate), summary}
+    end)
+  end
+
+  defp candidate_explanations(_arbitration), do: %{}
+
+  defp candidate_key(candidate) do
+    {Map.get(candidate, :provider), Map.get(candidate, :scope), Map.get(candidate, :label)}
   end
 
   @spec candidate_attempt(Candidate.t(), MapSet.t()) :: attempt()

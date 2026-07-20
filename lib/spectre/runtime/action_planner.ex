@@ -100,12 +100,33 @@ defmodule Spectre.ActionPlanner do
     action = prefer_exact_al_tool(action, al, opts)
 
     with :ok <- validate_planned_action(action, index) do
-      {:ok, action |> Map.put(:status, :pending) |> Effect.stage()}
+      stage_planned_effect(Map.put(action, :status, :pending), opts)
     end
   end
 
   defp prepare_effect(action, _al, index, _opts),
     do: {:error, {:invalid_planned_action, index, action}}
+
+  @spec stage_planned_effect(map(), keyword()) :: {:ok, Effect.t()} | {:error, term()}
+  defp stage_planned_effect(action, opts) when is_list(opts) do
+    stage_planned_effect(
+      action,
+      {Keyword.get(opts, :effect_owner), Keyword.get(opts, :effect_scope)}
+    )
+  end
+
+  @spec stage_planned_effect(
+          map(),
+          {module() | nil, Spectre.Definition.scope() | nil}
+        ) :: {:ok, Effect.t()} | {:error, term()}
+  defp stage_planned_effect(action, {owner, scope})
+       when is_atom(owner) and not is_nil(owner) and not is_nil(scope),
+       do: {:ok, Effect.stage_action(action, owner, scope)}
+
+  defp stage_planned_effect(action, {nil, nil}), do: {:ok, Effect.stage(action)}
+
+  defp stage_planned_effect(_action, origin),
+    do: {:error, {:incomplete_effect_origin, origin}}
 
   @spec validate_planned_action(map(), non_neg_integer()) :: :ok | {:error, term()}
   defp validate_planned_action(action, index) when is_map(action) do

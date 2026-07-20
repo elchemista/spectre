@@ -7,12 +7,6 @@ defmodule Spectre.Router.Arbitration do
   original context without needing to know how each plug produced its evidence.
   """
 
-  @doc """
-  Builds an arbitration payload from a router context.
-
-      arbitration = Spectre.Router.Arbitration.from_context(router_context)
-  """
-
   defstruct [
     :input,
     :state,
@@ -31,6 +25,15 @@ defmodule Spectre.Router.Arbitration do
           context: Spectre.Router.Context.t()
         }
 
+  @doc """
+  Builds an arbitration payload from a completed evidence-collection context.
+
+  Candidates are restored to evaluation order because router contexts prepend
+  evidence as plugs run. The original context is retained so custom
+  arbitrators can inspect traces and options without reconstructing them.
+
+      arbitration = Spectre.Router.Arbitration.from_context(router_context)
+  """
   @spec from_context(Spectre.Router.Context.t()) :: t()
   def from_context(%Spectre.Router.Context{} = context) do
     %__MODULE__{

@@ -113,14 +113,5 @@ defmodule Spectre.Result do
   Returns a compact, normalized lifecycle view for host turn dispatch.
   """
   @spec lifecycle(t()) :: map()
-  def lifecycle(%__MODULE__{} = result) do
-    %{
-      open_awaitable: open_awaitable(result),
-      pending_effect: pending_effect(result),
-      completions: completions(result),
-      latest_completion: latest_completion(result),
-      action_outcome: action_outcome(result),
-      visible_reply?: visible_reply?(result)
-    }
-  end
+  def lifecycle(%__MODULE__{} = result), do: Spectre.Lifecycle.projection(result)
 end

@@ -19,6 +19,9 @@ defmodule Spectre.Input.Pipeline do
         )
   """
 
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
+
   defmodule Spec do
     @moduledoc """
     Initialized input plug declaration.
@@ -41,12 +44,12 @@ defmodule Spectre.Input.Pipeline do
   Use this when a host process wants to prepare a reusable pipeline once and run
   it for many turns.
   """
-  @spec init_specs([plug_spec()]) :: {:ok, [Spec.t()]} | {:error, term()}
-  def init_specs(specs) when is_list(specs) do
+  @spec init_specs([plug_spec()], keyword()) :: {:ok, [Spec.t()]} | {:error, term()}
+  def init_specs(specs, callback_opts \\ []) when is_list(specs) and is_list(callback_opts) do
     specs
     |> Enum.reduce_while({:ok, []}, fn spec, {:ok, acc} ->
       with {:ok, {module, opts}} <- normalize_declaration(spec),
-           {:ok, state} <- init_plug(module, opts) do
+           {:ok, state} <- init_plug(module, opts, callback_opts) do
         {:cont, {:ok, [%Spec{module: module, state: state} | acc]}}
       else
         {:error, reason} -> {:halt, {:error, reason}}
@@ -68,21 +71,24 @@ defmodule Spectre.Input.Pipeline do
   @spec run(Spectre.Input.t(), map(), [plug_spec()]) ::
           {:ok, Spectre.Input.t()} | {:error, term()}
   def run(%Spectre.Input{} = input, context, specs) when is_map(context) and is_list(specs) do
+    callback_opts = Map.get(context, :opts, [])
+
     Enum.reduce_while(specs, {:ok, input}, fn spec, {:ok, input} ->
-      case normalize_spec(spec) do
-        {:ok, {module, state}} -> run_plug(module, state, input, context)
+      case normalize_spec(spec, callback_opts) do
+        {:ok, {module, state}} -> run_plug(module, state, input, context, callback_opts)
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  @spec normalize_spec(plug_spec()) :: {:ok, {module(), term()}} | {:error, term()}
-  defp normalize_spec(%Spec{module: module, state: state}) when is_atom(module),
+  @spec normalize_spec(plug_spec(), keyword()) ::
+          {:ok, {module(), term()}} | {:error, term()}
+  defp normalize_spec(%Spec{module: module, state: state}, _callback_opts) when is_atom(module),
     do: {:ok, {module, state}}
 
-  defp normalize_spec(spec) do
+  defp normalize_spec(spec, callback_opts) do
     with {:ok, {module, opts}} <- normalize_declaration(spec),
-         {:ok, state} <- init_plug(module, opts) do
+         {:ok, state} <- init_plug(module, opts, callback_opts) do
       {:ok, {module, state}}
     end
   end
@@ -97,20 +103,39 @@ defmodule Spectre.Input.Pipeline do
   defp normalize_declaration(%Spec{} = spec), do: {:ok, {spec.module, spec.state}}
   defp normalize_declaration(spec), do: {:error, {:invalid_input_plug_spec, spec}}
 
-  @spec init_plug(module(), keyword()) :: {:ok, term()}
-  defp init_plug(module, opts), do: {:ok, module.init(opts)}
+  @spec init_plug(module(), keyword(), keyword()) :: {:ok, term()} | {:error, term()}
+  defp init_plug(module, opts, callback_opts) do
+    Call.run(
+      :input,
+      fn -> {:ok, module.init(opts)} end,
+      callback_opts |> Call.adapter_opts() |> Keyword.put(:purpose, :input_plug_init)
+    )
+  end
 
-  @spec run_plug(module(), term(), Spectre.Input.t(), map()) ::
+  @spec run_plug(module(), term(), Spectre.Input.t(), map(), keyword()) ::
           {:cont, {:ok, Spectre.Input.t()}}
           | {:halt, {:ok, Spectre.Input.t()} | {:error, term()}}
-  defp run_plug(module, state, input, context) do
-    case module.call(input, context, state) do
-      {:cont, %Spectre.Input{} = input} -> {:cont, {:ok, input}}
-      {:halt, %Spectre.Input{} = input} -> {:halt, {:ok, input}}
+  defp run_plug(module, state, input, context, callback_opts) do
+    result =
+      Call.run(
+        :input,
+        fn -> module.call(input, context, state) |> normalize_plug_reply() end,
+        callback_opts |> Call.adapter_opts() |> Keyword.put(:purpose, :input_plug_call)
+      )
+
+    case result do
+      {:ok, {:cont, input}} -> {:cont, {:ok, input}}
+      {:ok, {:halt, input}} -> {:halt, {:ok, input}}
       {:error, reason} -> {:halt, {:error, {module, reason}}}
-      other -> {:halt, {:error, {module, {:invalid_input_plug_return, other}}}}
     end
-  rescue
-    error -> {:halt, {:error, {module, error}}}
   end
+
+  @spec normalize_plug_reply(term()) ::
+          {:ok, {:cont | :halt, Spectre.Input.t()}} | {:error, term()}
+  defp normalize_plug_reply({:cont, %Spectre.Input{} = input}), do: {:ok, {:cont, input}}
+  defp normalize_plug_reply({:halt, %Spectre.Input{} = input}), do: {:ok, {:halt, input}}
+  defp normalize_plug_reply({:error, reason}), do: {:error, reason}
+
+  defp normalize_plug_reply(other),
+    do: {:error, Failure.invalid_reply(:input, other)}
 end

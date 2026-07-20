@@ -9,6 +9,26 @@ defmodule Spectre.Provider.Call do
   adapter supports cancellation itself. Route evaluation also uses this
   boundary as the canonical source of sanitized provider outcome and duration
   facts.
+
+  The same boundary is used for application callbacks executed by a turn. The
+  callback contracts are:
+
+  | Kind | Supported arities | Normalized success | Timeout | Failure policy |
+  | --- | --- | --- | --- | --- |
+  | `:run` | 1, 2 | a `Spectre.Result` or visible reply value | `:run_timeout`, 30s | abort the handler turn |
+  | `:renderer` | 1, 2, 3 | a binary reply | `:renderer_timeout`, 10s | abort the handler turn |
+  | `:hook` | 0, 1, 2, 3 | `:ok` or `{:ok, value}` | `:hook_timeout`, 10s | aggregate and report |
+  | `:prompt` | 0, 1, 2 | a boolean condition or binary context | `:prompt_timeout`, 10s | abort required operations, skip optional ones |
+  | `:input` | `init/1`, `call/3` | a valid pipeline transition | `:input_timeout`, 10s | abort the turn |
+  | `:router` | `init/1`, `call/2` | a valid pipeline transition | `:router_timeout`, 120s | abort the routing pipeline |
+  | `:monitor` | 0, 1, 2, 3 | callback-specific host data | `:monitor_timeout`, 60s | enter or continue recovery |
+
+  Model, classifier, embedding, semantic-cache, action, state, memory, and
+  journal adapters use their existing provider-specific timeout keys. Every
+  timeout accepts `:infinity` only when explicitly configured. Declared
+  `{:error, reason}` replies are returned unchanged; exceptions, exits, throws,
+  hard crashes, timeouts, and malformed envelopes become privacy-safe
+  `Spectre.Provider.Failure` values. Calls are attempted exactly once.
   """
 
   alias Spectre.Provider.Failure
@@ -22,7 +42,13 @@ defmodule Spectre.Provider.Call do
     action: 60_000,
     state: 10_000,
     memory: 10_000,
-    journal: 10_000
+    journal: 10_000,
+    run: 30_000,
+    renderer: 10_000,
+    hook: 10_000,
+    input: 10_000,
+    router: 120_000,
+    monitor: 60_000
   }
 
   @observer_key :spectre_provider_observer
@@ -45,6 +71,12 @@ defmodule Spectre.Provider.Call do
     * `:local_classifier_timeout` or `:classifier_timeout`
     * `:embedding_timeout`
     * `:semantic_cache_timeout`
+    * `:run_timeout`
+    * `:renderer_timeout`
+    * `:hook_timeout`
+    * `:input_timeout`
+    * `:router_timeout`
+    * `:monitor_timeout`
 
   Application defaults may be configured under `config :spectre, :provider`.
   """
@@ -61,7 +93,16 @@ defmodule Spectre.Provider.Call do
           {:error, %Failure{} = failure} -> {{:error, failure}, false}
         end
 
-      notify_observer(opts, event(provider, result, invoked?, started_at))
+      event = event(provider, result, invoked?, started_at)
+      notify_observer(opts, event)
+
+      Spectre.Telemetry.emit(
+        [:provider, :stop],
+        %{duration_us: event.duration_us},
+        Map.take(event, [:provider, :outcome, :invoked?, :purpose]),
+        opts
+      )
+
       result
     else
       {:error, Failure.invalid_options(provider)}
@@ -272,6 +313,15 @@ defmodule Spectre.Provider.Call do
   defp timeout_keys(:state), do: [:state_timeout, :provider_timeout]
   defp timeout_keys(:memory), do: [:memory_timeout, :provider_timeout]
   defp timeout_keys(:journal), do: [:journal_timeout, :provider_timeout]
+  defp timeout_keys(:run), do: [:run_timeout, :callback_timeout, :provider_timeout]
+
+  defp timeout_keys(:renderer),
+    do: [:renderer_timeout, :callback_timeout, :provider_timeout]
+
+  defp timeout_keys(:hook), do: [:hook_timeout, :callback_timeout, :provider_timeout]
+  defp timeout_keys(:input), do: [:input_timeout, :callback_timeout, :provider_timeout]
+  defp timeout_keys(:router), do: [:router_timeout, :callback_timeout, :provider_timeout]
+  defp timeout_keys(:monitor), do: [:monitor_timeout, :callback_timeout, :provider_timeout]
   defp timeout_keys(_provider), do: [:provider_timeout]
 
   @spec default_timeout(atom()) :: timeout()

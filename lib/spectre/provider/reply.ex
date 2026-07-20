@@ -6,6 +6,7 @@ defmodule Spectre.Provider.Reply do
   @numeric_fields [:confidence, :score, :margin]
   @boolean_fields [:accepted?, :terminal?]
 
+  @doc false
   @spec route(atom(), term(), keyword()) :: {:ok, map()} | {:error, Failure.t()}
   def route(provider, reply, opts \\ [])
 

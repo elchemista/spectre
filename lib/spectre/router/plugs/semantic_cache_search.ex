@@ -40,9 +40,21 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
 
   @spec semantic_search(Context.t()) :: {:cont, Context.t()}
   defp semantic_search(%Context{input: %{text: text}, rules: rules, opts: opts} = context) do
+    ambiguous = Support.ambiguous_labels(rules, :semantic_cache, context.input)
+    ambiguity_reason = Support.ambiguity_reason(:semantic_cache, ambiguous)
     visible_rules = Support.rules_for(rules, :semantic_cache, context.input)
     visible_labels = Support.labels_for(visible_rules)
+    context = put_ambiguity_trace(context, ambiguity_reason)
 
+    case routeable_labels(visible_rules, ambiguity_reason) do
+      :ok -> search_visible(context, text, opts, visible_rules, visible_labels)
+      {:skip, reason} -> skip_search(context, reason, opts)
+    end
+  end
+
+  @spec search_visible(Context.t(), String.t(), keyword(), [Spectre.Rule.t()], [atom()]) ::
+          {:cont, Context.t()}
+  defp search_visible(context, text, opts, visible_rules, visible_labels) do
     case SemanticCache.lookup(text, Keyword.put(opts, :semantic_search?, true)) do
       {:ok, %{accepted?: true} = result} ->
         route =
@@ -95,4 +107,25 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
          |> Context.put_trace({:semantic_skip, reason})}
     end
   end
+
+  @spec routeable_labels([Spectre.Rule.t()], term() | nil) :: :ok | {:skip, term()}
+  defp routeable_labels([], reason) when not is_nil(reason), do: {:skip, reason}
+  defp routeable_labels(_visible_rules, _reason), do: :ok
+
+  @spec skip_search(Context.t(), term(), keyword()) :: {:cont, Context.t()}
+  defp skip_search(%Context{} = context, reason, opts) do
+    Support.log(:debug, "semantic_skip reason=#{Support.format_reason(reason)}", opts)
+    local_result = (context.local_result || %{}) |> Map.put(:semantic_cache_after, reason)
+
+    {:cont,
+     context
+     |> Context.put_local_result(local_result)
+     |> Context.put_trace({:semantic_skip, reason})}
+  end
+
+  @spec put_ambiguity_trace(Context.t(), term() | nil) :: Context.t()
+  defp put_ambiguity_trace(%Context{} = context, nil), do: context
+
+  defp put_ambiguity_trace(%Context{} = context, reason),
+    do: Context.put_trace(context, reason)
 end

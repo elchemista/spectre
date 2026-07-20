@@ -11,6 +11,8 @@ defmodule Spectre.Policy do
   alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Lifecycle
+  alias Spectre.Policy.Matcher
+  alias Spectre.Policy.Resolution
   alias Spectre.Result
   alias Spectre.State
 
@@ -28,7 +30,7 @@ defmodule Spectre.Policy do
   ]
 
   @type decision :: {:accept, atom()} | {:reject, atom()} | :no_match
-  @type resolution :: {:accept, atom()} | {:reject, atom()}
+  @type resolution :: {:accept, atom()} | {:reject, atom()} | Resolution.t()
 
   @type t :: %__MODULE__{
           name: atom(),
@@ -83,17 +85,26 @@ defmodule Spectre.Policy do
   """
   @spec resolve(resolution(), Input.t(), Spectre.Context.t() | map()) ::
           {:ok, Result.t()} | {:error, term()}
-  def resolve({kind, label} = resolution, %Input{} = input, %{state: %State{}} = ctx)
+  def resolve({kind, label}, %Input{} = input, %{state: %State{}} = ctx)
       when kind in [:accept, :reject] and is_atom(label) do
+    with {:ok, resolution} <- Resolution.new(kind, label, :host) do
+      resolve(resolution, input, ctx)
+    end
+  end
+
+  def resolve(%Resolution{} = resolution, %Input{} = input, %{state: %State{}} = ctx) do
+    tuple = Resolution.to_tuple(resolution)
+
     with {:ok, policy} <- active_policy(ctx),
-         :ok <- validate_resolution(policy, resolution),
-         {:ok, %Result{} = result} <- apply_resolution(policy, resolution, input, ctx) do
+         :ok <- validate_resolution(policy, tuple),
+         {:ok, %Result{} = result} <- apply_resolution(policy, tuple, input, ctx) do
       event = %{
         type: :policy_resolved,
-        source: :host,
-        kind: kind,
+        source: resolution.source,
+        kind: resolution.kind,
         name: policy_identifier(policy),
-        label: label
+        label: resolution.label,
+        metadata: resolution.metadata
       }
 
       {:ok, %{result | events: result.events ++ [event]}}
@@ -107,18 +118,17 @@ defmodule Spectre.Policy do
   """
   @spec decide(t(), String.t()) :: decision()
   def decide(%__MODULE__{} = policy, text) when is_binary(text) do
-    cond do
-      label = match_branch(policy.accepts, text) -> {:accept, label}
-      label = match_branch(policy.rejects, text) -> {:reject, label}
-      true -> :no_match
+    case Matcher.match(policy, text) do
+      {:ok, %Resolution{} = resolution} -> Resolution.to_tuple(resolution)
+      :no_match -> :no_match
     end
   end
 
   @spec resume_policy(t(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp resume_policy(policy, input, ctx) do
-    case decide(policy, input.text) do
-      {:accept, label} -> approve(policy, label, input, ctx)
-      {:reject, label} -> reject(policy, label, input, ctx)
+    case Matcher.match(policy, input.text) do
+      {:ok, %Resolution{kind: :accept, label: label}} -> approve(policy, label, input, ctx)
+      {:ok, %Resolution{kind: :reject, label: label}} -> reject(policy, label, input, ctx)
       :no_match -> retry(policy, input, ctx)
     end
   end
@@ -148,6 +158,8 @@ defmodule Spectre.Policy do
              type: :effect_approved,
              kind: approved.kind,
              name: approved.name,
+             owner: approved.owner,
+             scope: approved.scope,
              effect_id: approved.id,
              idempotency_key: Effect.idempotency_key(approved)
            }
@@ -159,13 +171,14 @@ defmodule Spectre.Policy do
   @spec reject(t(), atom(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
   defp reject(policy, label, input, %{state: state}) do
     {:ok, transition} = Lifecycle.resolve_policy(state, :reject, label)
+    cancelled = transition.effect
 
     {:ok,
      %Result{
        input: input,
        state: transition.to,
        reply_text: "",
-       effects: [transition.effect],
+       effects: [cancelled],
        awaitables: [transition.awaitable],
        events: [
          %{
@@ -174,15 +187,32 @@ defmodule Spectre.Policy do
            name: policy_identifier(policy),
            label: label
          },
-         %{type: :effect_cancelled, kind: :action, reason: {:policy_rejected, label}}
+         %{
+           type: :effect_cancelled,
+           kind: :action,
+           name: cancelled.name,
+           owner: cancelled.owner,
+           scope: cancelled.scope,
+           effect_id: cancelled.id,
+           reason: {:policy_rejected, label}
+         }
        ]
      }}
   end
 
   @spec retry(t(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp retry(policy, input, %{state: state} = ctx) do
-    awaitable = state |> State.open_policy_awaitable() |> Awaitable.increment()
-    state = State.replace_awaitable(state, awaitable)
+    current = State.open_policy_awaitable(state)
+    {:ok, transition} = Lifecycle.apply(state, {:policy_attempt, current.id})
+    awaitable = transition.awaitable
+    state = transition.to
+
+    Spectre.Telemetry.emit(
+      [:policy, :retry],
+      %{attempts: awaitable.attempts},
+      %{policy: policy_identifier(policy), awaitable_id: awaitable.id},
+      ctx.opts
+    )
 
     if exceeded_attempts?(policy, awaitable) do
       finish_attempts(policy, input, %{ctx | state: state})
@@ -215,16 +245,14 @@ defmodule Spectre.Policy do
 
   @spec cancel_attempts(t(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
   defp cancel_attempts(policy, input, %{state: state}) do
-    awaitable = state |> State.open_policy_awaitable() |> Awaitable.cancel()
+    {:ok, transition} = Lifecycle.apply(state, {:cancel_pending, :policy_attempts_exceeded})
+    state = transition.to
+    awaitable = Enum.find(state.awaitables, &(&1.kind == :policy and &1.status == :cancelled))
 
     cancelled =
-      state.pending_effects |> Enum.map(&Spectre.Effect.cancel(&1, :policy_attempts_exceeded))
-
-    state =
-      state
-      |> State.replace_awaitable(awaitable)
-      |> State.clear_pending()
-      |> record_resolved_effects(cancelled)
+      state.planned_effects
+      |> Enum.filter(&match_cancelled?(&1, :policy_attempts_exceeded))
+      |> Enum.take(-transition.metadata.count)
 
     {:ok,
      %Result{
@@ -233,10 +261,23 @@ defmodule Spectre.Policy do
        effects: cancelled,
        awaitables: [awaitable],
        events: [
-         %{type: :awaitable_cancelled, kind: :policy, name: policy_identifier(policy)},
-         %{type: :effect_cancelled, kind: :action, reason: :policy_attempts_exceeded}
+         %{type: :awaitable_cancelled, kind: :policy, name: policy_identifier(policy)}
+         | Enum.map(cancelled, &cancelled_event(&1, :policy_attempts_exceeded))
        ]
      }}
+  end
+
+  @spec cancelled_event(Effect.t(), term()) :: map()
+  defp cancelled_event(%Effect{} = effect, reason) do
+    %{
+      type: :effect_cancelled,
+      kind: effect.kind,
+      name: effect.name,
+      owner: effect.owner,
+      scope: effect.scope,
+      effect_id: effect.id,
+      reason: reason
+    }
   end
 
   @spec reply_otherwise(t(), Input.t(), Spectre.Context.t()) ::
@@ -272,21 +313,9 @@ defmodule Spectre.Policy do
      }}
   end
 
-  @spec record_resolved_effects(State.t(), [Spectre.Effect.t()]) :: State.t()
-  defp record_resolved_effects(%State{} = state, effects) do
-    %{state | planned_effects: Enum.take(state.planned_effects, -31) ++ effects}
-  end
-
-  @spec match_branch([map()], String.t()) :: atom() | nil
-  defp match_branch(branches, text) do
-    Enum.find_value(branches, fn branch ->
-      regexes = branch |> Map.get(:regex, []) |> List.wrap()
-
-      if Enum.any?(regexes, &Regex.match?(&1, text)) do
-        Map.fetch!(branch, :label)
-      end
-    end)
-  end
+  @spec match_cancelled?(Effect.t(), term()) :: boolean()
+  defp match_cancelled?(%Effect{} = effect, reason),
+    do: effect.status == :cancelled and Effect.outcome(effect) == {:cancelled, reason}
 
   @spec active_policy(Spectre.Context.t() | map()) :: {:ok, t()} | {:error, term()}
   defp active_policy(%{agent: agent, state: %State{} = state}) do

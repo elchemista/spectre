@@ -12,14 +12,14 @@ defmodule Spectre.State.Codec do
   alias Spectre.Effect
   alias Spectre.State
 
-  @state_version 3
+  @state_version 4
   @max_json_bytes 2_000_000
   @max_pending_effects 1
   @max_planned_effects 32
   @max_awaitables 64
   @max_memory_refs 256
   @max_trace_entries 256
-  @supported_versions [2, 3]
+  @supported_versions [2, 3, 4]
   @effect_statuses [:pending, :waiting_policy, :approved, :completed, :failed, :cancelled]
   @awaitable_statuses [:open, :accepted, :rejected, :cancelled, :expired]
   @effect_kinds [:action]
@@ -30,8 +30,12 @@ defmodule Spectre.State.Codec do
     pending_effects planned_effects awaitables memory_refs data trace
   )
 
-  @effect_keys ~w(
+  @legacy_effect_keys ~w(
     id idempotency_key kind name mode policy result error args status payload metadata
+  )
+
+  @effect_keys ~w(
+    id idempotency_key kind name owner scope mode policy result error args status payload metadata
   )
 
   @awaitable_keys ~w(
@@ -100,8 +104,10 @@ defmodule Spectre.State.Codec do
          {:ok, conversation_id} <- decode_field(attrs, "conversation_id", nil),
          {:ok, current_flow} <- decode_field(attrs, "current_flow", nil),
          {:ok, current_scope} <- decode_field(attrs, "current_scope", nil),
-         {:ok, pending_effects} <- decode_collection(attrs, "pending_effects", &decode_effect/1),
-         {:ok, planned_effects} <- decode_collection(attrs, "planned_effects", &decode_effect/1),
+         {:ok, pending_effects} <-
+           decode_collection(attrs, "pending_effects", &decode_effect(&1, version)),
+         {:ok, planned_effects} <-
+           decode_collection(attrs, "planned_effects", &decode_effect(&1, version)),
          {:ok, awaitables} <- decode_collection(attrs, "awaitables", &decode_awaitable/1),
          {:ok, memory_refs} <- decode_field(attrs, "memory_refs", []),
          {:ok, data} <- decode_field(attrs, "data", %{}),
@@ -141,6 +147,8 @@ defmodule Spectre.State.Codec do
     with :ok <- validate_effect(effect),
          {:ok, id} <- encode_value(effect.id),
          {:ok, name} <- encode_value(effect.name),
+         {:ok, owner} <- encode_value(effect.owner),
+         {:ok, scope} <- encode_value(effect.scope),
          {:ok, policy} <- encode_value(effect.policy),
          {:ok, result} <- encode_value(effect.result),
          {:ok, error} <- encode_value(effect.error),
@@ -153,6 +161,8 @@ defmodule Spectre.State.Codec do
          "idempotency_key" => effect.idempotency_key,
          "kind" => Atom.to_string(effect.kind),
          "name" => name,
+         "owner" => owner,
+         "scope" => scope,
          "mode" => encode_optional_atom(effect.mode),
          "policy" => policy,
          "result" => result,
@@ -167,9 +177,9 @@ defmodule Spectre.State.Codec do
 
   defp encode_effect(other), do: {:error, {:invalid_effect, value_shape(other)}}
 
-  @spec decode_effect(term()) :: {:ok, Effect.t()} | {:error, term()}
-  defp decode_effect(attrs) when is_map(attrs) do
-    with {:ok, attrs} <- normalize_schema_map(attrs, @effect_keys, :effect),
+  @spec decode_effect(term(), integer()) :: {:ok, Effect.t()} | {:error, term()}
+  defp decode_effect(attrs, version) when is_map(attrs) do
+    with {:ok, attrs} <- normalize_schema_map(attrs, effect_keys(version), :effect),
          {:ok, id} <- decode_required_field(attrs, "id"),
          {:ok, key} <- required_binary(attrs, "idempotency_key"),
          {:ok, kind} <- decode_enum(attrs, "kind", @effect_kinds),
@@ -184,13 +194,16 @@ defmodule Spectre.State.Codec do
          {:ok, metadata} <- decode_field(attrs, "metadata", %{}),
          :ok <- require_map(args, :effect_args),
          :ok <- require_map(payload, :effect_payload),
-         :ok <- require_map(metadata, :effect_metadata) do
+         :ok <- require_map(metadata, :effect_metadata),
+         {:ok, owner, scope, payload} <- decode_effect_origin(attrs, payload, version) do
       {:ok,
        %Effect{
          id: id,
          idempotency_key: key,
          kind: kind,
          name: name,
+         owner: owner,
+         scope: scope,
          mode: mode,
          policy: policy,
          result: result,
@@ -203,7 +216,59 @@ defmodule Spectre.State.Codec do
     end
   end
 
-  defp decode_effect(other), do: {:error, {:invalid_effect_payload, value_shape(other)}}
+  defp decode_effect(other, _version),
+    do: {:error, {:invalid_effect_payload, value_shape(other)}}
+
+  @spec decode_effect_origin(map(), map(), integer()) ::
+          {:ok, module() | nil, Spectre.Definition.scope() | nil, map()} | {:error, term()}
+  defp decode_effect_origin(_attrs, payload, version) when version in [2, 3] do
+    owner = origin_value(payload, :owner)
+    scope = origin_value(payload, :scope)
+
+    with :ok <- validate_effect_origin(owner, scope) do
+      {:ok, owner, scope, drop_effect_origin(payload)}
+    end
+  end
+
+  defp decode_effect_origin(attrs, payload, @state_version) do
+    with {:ok, owner} <- decode_field(attrs, "owner", nil),
+         {:ok, scope} <- decode_field(attrs, "scope", nil),
+         :ok <- validate_effect_origin(owner, scope) do
+      {:ok, owner, scope, drop_effect_origin(payload)}
+    end
+  end
+
+  @spec effect_keys(integer()) :: [String.t()]
+  defp effect_keys(version) when version in [2, 3], do: @legacy_effect_keys
+  defp effect_keys(@state_version), do: @effect_keys
+
+  @spec origin_value(map(), :owner | :scope) :: term()
+  defp origin_value(payload, key),
+    do: Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
+
+  @spec drop_effect_origin(map()) :: map()
+  defp drop_effect_origin(payload),
+    do: Map.drop(payload, [:owner, :scope, "owner", "scope"])
+
+  @spec validate_effect_origin(term(), term()) :: :ok | {:error, term()}
+  defp validate_effect_origin(owner, scope) do
+    cond do
+      not is_nil(owner) and not is_atom(owner) ->
+        {:error, {:invalid_effect_owner, value_shape(owner)}}
+
+      not valid_effect_scope?(scope) ->
+        {:error, {:invalid_effect_scope, scope}}
+
+      true ->
+        :ok
+    end
+  end
+
+  @spec valid_effect_scope?(term()) :: boolean()
+  defp valid_effect_scope?(nil), do: true
+  defp valid_effect_scope?(:agent), do: true
+  defp valid_effect_scope?({:skill, _mount_id}), do: true
+  defp valid_effect_scope?(_scope), do: false
 
   @spec encode_awaitable(Awaitable.t()) :: {:ok, map()} | {:error, term()}
   defp encode_awaitable(%Awaitable{} = awaitable) do
@@ -312,10 +377,34 @@ defmodule Spectre.State.Codec do
 
   @spec validate_effect(Effect.t()) :: :ok | {:error, term()}
   defp validate_effect(%Effect{} = effect) do
+    with :ok <- validate_effect_identity(effect),
+         :ok <- validate_effect_ownership(effect) do
+      validate_effect_maps(effect)
+    end
+  end
+
+  @spec validate_effect_identity(Effect.t()) :: :ok | {:error, term()}
+  defp validate_effect_identity(%Effect{} = effect) do
     cond do
       effect.kind not in @effect_kinds -> {:error, {:invalid_effect_kind, effect.kind}}
       effect.status not in @effect_statuses -> {:error, {:invalid_effect_status, effect.status}}
       not is_binary(effect.idempotency_key) -> {:error, :invalid_idempotency_key}
+      true -> :ok
+    end
+  end
+
+  @spec validate_effect_ownership(Effect.t()) :: :ok | {:error, term()}
+  defp validate_effect_ownership(%Effect{} = effect) do
+    cond do
+      not is_nil(effect.owner) and not is_atom(effect.owner) -> {:error, :invalid_effect_owner}
+      not valid_effect_scope?(effect.scope) -> {:error, {:invalid_effect_scope, effect.scope}}
+      true -> :ok
+    end
+  end
+
+  @spec validate_effect_maps(Effect.t()) :: :ok | {:error, term()}
+  defp validate_effect_maps(%Effect{} = effect) do
+    cond do
       not is_map(effect.args) -> {:error, :invalid_effect_args}
       not is_map(effect.payload) -> {:error, :invalid_effect_payload}
       not is_map(effect.metadata) -> {:error, :invalid_effect_metadata}

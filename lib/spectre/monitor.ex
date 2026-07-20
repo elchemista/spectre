@@ -12,6 +12,8 @@ defmodule Spectre.Monitor do
 
   alias Spectre.Input
   alias Spectre.Prompt
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.State
 
   @type context :: map()
@@ -29,13 +31,14 @@ defmodule Spectre.Monitor do
   @spec dispatch(module(), context(), keyword()) :: callback_result()
   def dispatch(agent, context, opts) when is_atom(agent) and is_map(context) and is_list(opts) do
     with {:ok, run} <- fetch_callback(opts, :run) do
-      case safe_run(run) do
+      case safe_run(run, opts) do
         {:ok, result} ->
           {:ok, result}
 
         {:error, reason} ->
           Logger.error(
-            "spectre_monitor detected_failure #{context_log(context)} reason=#{inspect(reason)}"
+            "spectre_monitor detected_failure #{context_log(context)} " <>
+              "reason=#{reason_code(reason)}"
           )
 
           recover(agent, context, reason, opts)
@@ -60,23 +63,16 @@ defmodule Spectre.Monitor do
     end
   end
 
-  @spec safe_run(function()) :: callback_result()
-  defp safe_run(run) when is_function(run, 0) do
-    case run.() do
-      {:ok, result} -> {:ok, result}
-      {:error, reason} -> {:error, reason}
-      result -> {:ok, result}
-    end
-  rescue
-    exception ->
-      {:error, {:spectre_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    :exit, reason ->
-      {:error, {:spectre_exit, reason}}
-
-    kind, reason ->
-      {:error, {:spectre_failure, kind, reason}}
+  @spec safe_run(function(), keyword()) :: callback_result()
+  defp safe_run(run, opts) when is_function(run, 0) do
+    Call.run(
+      :monitor,
+      fn -> run.() |> normalize_callback_result() end,
+      opts |> Call.adapter_opts() |> Keyword.put(:purpose, :monitor_run)
+    )
   end
+
+  defp safe_run(_run, _opts), do: {:error, {:invalid_spectre_monitor_callback_arity, :run}}
 
   @spec recover(module(), context(), term(), keyword()) :: callback_result()
   defp recover(agent, context, reason, opts) do
@@ -97,40 +93,60 @@ defmodule Spectre.Monitor do
         :not_found
 
       fun when is_function(fun, 1) ->
-        normalize_existing_result(fun.(context))
+        protected_existing_fallback(fn -> fun.(context) end, context, opts)
 
       fun when is_function(fun, 2) ->
-        normalize_existing_result(fun.(context, reason))
+        protected_existing_fallback(fn -> fun.(context, reason) end, context, opts)
+
+      _other ->
+        log_recovery_failure(context, :invalid_fallback_exists_callback)
+        :not_found
     end
-  rescue
-    exception ->
-      Logger.error(
-        "spectre_monitor fallback_exists_exception #{context_log(context)} reason=#{Exception.message(exception)}"
-      )
-
-      :not_found
-  catch
-    kind, caught_reason ->
-      Logger.error(
-        "spectre_monitor fallback_exists_failure #{context_log(context)} reason=#{inspect({kind, caught_reason})}"
-      )
-
-      :not_found
   end
 
-  @spec normalize_existing_result(term()) :: {:ok, map()} | :not_found
-  defp normalize_existing_result({:ok, result}) when is_map(result), do: {:ok, result}
-  defp normalize_existing_result(%{} = result), do: {:ok, result}
-  defp normalize_existing_result(nil), do: :not_found
-  defp normalize_existing_result(false), do: :not_found
-  defp normalize_existing_result(:not_found), do: :not_found
-  defp normalize_existing_result(_other), do: :not_found
+  @spec protected_existing_fallback((-> term()), context(), keyword()) ::
+          {:ok, map()} | :not_found
+  defp protected_existing_fallback(callback, context, opts) do
+    result =
+      Call.run(
+        :monitor,
+        fn -> callback.() |> normalize_existing_result() end,
+        opts |> Call.adapter_opts() |> Keyword.put(:purpose, :monitor_fallback_exists)
+      )
+
+    case result do
+      {:ok, {:found, result}} ->
+        {:ok, result}
+
+      {:ok, :not_found} ->
+        :not_found
+
+      {:error, reason} ->
+        log_recovery_failure(context, reason)
+        :not_found
+    end
+  end
+
+  @spec normalize_existing_result(term()) ::
+          {:ok, {:found, map()} | :not_found} | {:error, term()}
+  defp normalize_existing_result({:ok, result}) when is_map(result),
+    do: {:ok, {:found, result}}
+
+  defp normalize_existing_result(%{} = result), do: {:ok, {:found, result}}
+
+  defp normalize_existing_result(value) when value in [nil, false, :not_found],
+    do: {:ok, :not_found}
+
+  defp normalize_existing_result({:error, reason}), do: {:error, reason}
+
+  defp normalize_existing_result(other),
+    do: {:error, Failure.invalid_reply(:monitor, other)}
 
   @spec create_fallback(module(), context(), term(), keyword()) :: callback_result()
   defp create_fallback(agent, context, reason, opts) do
     with {:ok, create} <- fetch_callback(opts, :create_fallback),
          {:ok, text} <- fallback_text(agent, context, reason, opts),
-         {:ok, result} <- safe_create_fallback(create, context, text, reason) do
+         {:ok, result} <- safe_create_fallback(create, context, text, reason, opts) do
       Logger.warning(
         "spectre_monitor fallback_created #{context_log(context)} result=#{inspect(compact_result(result))}"
       )
@@ -139,16 +155,26 @@ defmodule Spectre.Monitor do
     end
   end
 
-  @spec safe_create_fallback(function(), context(), String.t(), term()) :: callback_result()
-  defp safe_create_fallback(create, context, text, reason) when is_function(create, 3) do
-    create.(context, text, reason)
-  rescue
-    exception ->
-      {:error, {:fallback_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    kind, caught_reason ->
-      {:error, {:fallback_failure, kind, caught_reason}}
+  @spec safe_create_fallback(function(), context(), String.t(), term(), keyword()) ::
+          callback_result()
+  defp safe_create_fallback(create, context, text, reason, opts) when is_function(create, 3) do
+    Call.run(
+      :monitor,
+      fn -> create.(context, text, reason) |> normalize_callback_result() end,
+      opts |> Call.adapter_opts() |> Keyword.put(:purpose, :monitor_create_fallback)
+    )
   end
+
+  defp safe_create_fallback(_create, _context, _text, _reason, _opts),
+    do: {:error, {:invalid_spectre_monitor_callback_arity, :create_fallback}}
+
+  @spec normalize_callback_result(term()) :: callback_result()
+  defp normalize_callback_result({:ok, result}) when is_map(result), do: {:ok, result}
+  defp normalize_callback_result(%{} = result), do: {:ok, result}
+  defp normalize_callback_result({:error, reason}), do: {:error, reason}
+
+  defp normalize_callback_result(other),
+    do: {:error, Failure.invalid_reply(:monitor, other)}
 
   @spec render_fallback(module(), atom() | String.t(), context(), term(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
@@ -228,4 +254,25 @@ defmodule Spectre.Monitor do
   defp compact_result(result) when is_map(result) do
     Map.take(result, [:status, :delivery, :outbound_id, :conversation_id, :message_id])
   end
+
+  @spec log_recovery_failure(context(), term()) :: :ok
+  defp log_recovery_failure(context, reason) do
+    Logger.error(
+      "spectre_monitor fallback_exists_failure #{context_log(context)} " <>
+        "reason=#{reason_code(reason)}"
+    )
+  end
+
+  @spec reason_code(term()) :: atom()
+  defp reason_code(%Failure{kind: kind}), do: kind
+  defp reason_code(reason) when is_atom(reason), do: reason
+
+  defp reason_code(reason) when is_tuple(reason) and tuple_size(reason) > 0 do
+    case elem(reason, 0) do
+      code when is_atom(code) -> code
+      _other -> :monitor_callback_failed
+    end
+  end
+
+  defp reason_code(_reason), do: :monitor_callback_failed
 end

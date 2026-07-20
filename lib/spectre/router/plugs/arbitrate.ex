@@ -28,7 +28,10 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   defp arbitrate(%Context{} = context) do
     arbitration = Arbitration.from_context(context)
 
-    case call_arbitrator(arbitration, context.opts) do
+    {decision, explanation} = call_arbitrator(arbitration, context.opts)
+    context = Context.put_arbitration(context, explanation)
+
+    case decision do
       {:ok, route} ->
         Support.log_route(:info, "arbitrated", route, context.opts)
 
@@ -56,8 +59,13 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   end
 
   defp llm_arbitrate(%Context{} = context, %Arbitration{} = arbitration) do
+    ambiguous =
+      Support.ambiguous_labels(context.rules, :llm_classifier, context.input)
+
+    ambiguity_reason = Support.ambiguity_reason(:llm_classifier, ambiguous)
     visible_rules = Support.rules_for(context.rules, :llm_classifier, context.input)
     labels = Support.labels_for(visible_rules)
+    context = put_ambiguity_trace(context, ambiguity_reason)
 
     cond do
       not LLMClassifier.enabled?(context.opts) ->
@@ -67,12 +75,18 @@ defmodule Spectre.Router.Plugs.Arbitrate do
         skip_llm(context, :missing_llm_classifier_model)
 
       visible_rules == [] ->
-        skip_llm(context, :no_llm_visible_rules)
+        skip_llm(context, ambiguity_reason || :no_llm_visible_rules)
 
       true ->
         classify_with_llm(context, arbitration, visible_rules, labels)
     end
   end
+
+  @spec put_ambiguity_trace(Context.t(), term() | nil) :: Context.t()
+  defp put_ambiguity_trace(%Context{} = context, nil), do: context
+
+  defp put_ambiguity_trace(%Context{} = context, reason),
+    do: Context.put_trace(context, reason)
 
   @spec classify_with_llm(Context.t(), Arbitration.t(), [Spectre.Rule.t()], [atom()]) ::
           {:cont, Context.t()} | {:error, term()}
@@ -93,10 +107,15 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
         context = Context.add_candidate(context, candidate)
 
-        case call_arbitrator(
-               Arbitration.from_context(context),
-               Keyword.put(context.opts, :conflict, :best)
-             ) do
+        {decision, explanation} =
+          call_arbitrator(
+            Arbitration.from_context(context),
+            Keyword.put(context.opts, :conflict, :best)
+          )
+
+        context = Context.put_arbitration(context, explanation)
+
+        case decision do
           {:ok, route} ->
             finish_llm_route(context, route, visible_rules)
 
@@ -298,29 +317,37 @@ defmodule Spectre.Router.Plugs.Arbitrate do
     if Keyword.get(context.opts, :semantic_learn_protected?, false) do
       :ok
     else
-      agent = Keyword.get(context.opts, :spectre_agent)
-
-      effect =
-        Spectre.Effect.stage(%{
-          name: action,
-          args: Keyword.get(handler_opts, :args, %{}),
-          payload: %{source: :dsl}
-        })
-
-      cond do
-        is_nil(agent) ->
-          :ok
-
-        Spectre.ActionProtection.protected_by(agent, effect, route.scope) ->
-          {:skip, :protected_route}
-
-        true ->
-          :ok
-      end
+      unprotected_action_route(
+        route,
+        action,
+        handler_opts,
+        Keyword.get(context.opts, :spectre_agent)
+      )
     end
   end
 
   defp unprotected_route(_route, _context), do: :ok
+
+  @spec unprotected_action_route(Spectre.Route.t(), atom(), keyword(), module() | nil) ::
+          :ok | {:skip, :protected_route}
+  defp unprotected_action_route(_route, _action, _handler_opts, nil), do: :ok
+
+  defp unprotected_action_route(route, action, handler_opts, agent) do
+    effect =
+      Spectre.Effect.stage_action(
+        %{
+          name: action,
+          args: Keyword.get(handler_opts, :args, %{}),
+          payload: %{source: :dsl}
+        },
+        route.owner || agent,
+        route.scope || :agent
+      )
+
+    if Spectre.ActionProtection.protected_by(agent, effect),
+      do: {:skip, :protected_route},
+      else: :ok
+  end
 
   @spec semantic_cache_missed(Context.t()) :: :ok | {:skip, term()}
   defp semantic_cache_missed(%Context{} = context) do
@@ -358,6 +385,8 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   defp write_semantic_example(%Context{} = context, route) do
     result = %{
       label: route.label,
+      owner: route.owner,
+      scope: route.scope,
       accepted?: true,
       confidence: Keyword.get(context.opts, :semantic_learn_confidence, 0.86),
       margin: nil,
@@ -367,6 +396,8 @@ defmodule Spectre.Router.Plugs.Arbitrate do
       metadata: %{
         agent: Keyword.get(context.opts, :spectre_agent),
         route: route.label,
+        owner: route.owner,
+        scope: route.scope,
         verified?: false,
         learned_at: DateTime.utc_now(),
         original_route_strategy: :llm_classifier
@@ -391,7 +422,22 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
   defp call_arbitrator(%Arbitration{} = arbitration, opts) do
     {module, arbitrator_opts} = arbitrator(opts)
-    module.decide(arbitration, Keyword.merge(arbitrator_opts, opts))
+    merged = Keyword.merge(arbitrator_opts, opts)
+
+    if function_exported?(module, :explain, 2) do
+      module.explain(arbitration, merged)
+    else
+      decision = module.decide(arbitration, merged)
+
+      {decision,
+       %{
+         version: 1,
+         outcome: :custom,
+         reason: :custom_arbitrator,
+         thresholds: %{},
+         candidates: []
+       }}
+    end
   end
 
   defp arbitrator(opts) do

@@ -110,9 +110,15 @@ defmodule SpectreRuntimeSafetyTest do
     assert [
              %Effect{
                status: :failed,
-               error: {:action_exception, Actions, :explode, %RuntimeError{message: "boom"}}
+               error: %Spectre.Provider.Failure{
+                 provider: :action,
+                 kind: :exception,
+                 reason: RuntimeError
+               }
              }
            ] = result.effects
+
+    refute inspect(result.effects) =~ "boom"
   end
 
   test "a selected tool cannot escape the configured action module" do
@@ -148,6 +154,19 @@ defmodule SpectreRuntimeSafetyTest do
     effect_id = effect.id
     idempotency_key = effect.idempotency_key
     assert_receive {:action_context, ^effect_id, ^idempotency_key}
+  end
+
+  test "a forged effect owner is rejected before its action is called" do
+    effect = Effect.stage_action(%{name: :capture}, OtherActions, :agent)
+    state = State.put_pending_effect(%State{}, effect, nil)
+
+    assert {:error,
+            {:effect_owner_mismatch, effect_id, OtherActions,
+             SpectreRuntimeSafetyTest.ActionAgent}} =
+             Spectre.execute(state, %{agent: ActionAgent, opts: [test_pid: self()]})
+
+    assert effect_id == effect.id
+    refute_receive {:action_context, _, _}
   end
 
   test "memory failure does not roll back already persisted machine state" do

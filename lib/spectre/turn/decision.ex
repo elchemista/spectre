@@ -16,22 +16,5 @@ defmodule Spectre.Turn.Decision do
   omitted while reconstructing a result.
   """
   @spec decide(Result.t()) :: Spectre.Turn.decision()
-  def decide(%Result{} = result) do
-    cond do
-      awaitable = Result.open_awaitable(result) ->
-        {:awaiting, awaitable, result}
-
-      effect = Result.pending_effect(result) ->
-        {:needs, effect, result}
-
-      completion = Result.latest_completion(result) ->
-        {:completed, completion, result}
-
-      Result.visible_reply?(result) ->
-        {:reply, result}
-
-      true ->
-        {:no_response, result}
-    end
-  end
+  def decide(%Result{} = result), do: Spectre.Lifecycle.next(result)
 end

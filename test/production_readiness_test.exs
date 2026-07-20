@@ -106,7 +106,12 @@ defmodule SpectreProductionReadinessTest do
   end
 
   test "state codec round-trips scoped effects and rejects malformed enums" do
-    effect = Effect.stage(%{name: :perform, args: %{count: 2}})
+    effect =
+      Effect.stage_action(
+        %{name: :perform, args: %{count: 2}},
+        SpectreProductionReadinessTest.Actions,
+        {:skill, :support}
+      )
 
     state =
       %State{
@@ -122,14 +127,76 @@ defmodule SpectreProductionReadinessTest do
     assert {:ok, json} = Codec.encode_json(state)
     assert {:ok, ^state} = Codec.decode(json)
 
+    assert %Effect{
+             owner: SpectreProductionReadinessTest.Actions,
+             scope: {:skill, :support}
+           } = State.pending_effect(state)
+
+    refute Map.has_key?(effect.payload, :owner)
+    refute Map.has_key?(effect.payload, :scope)
+
     assert {:ok, encoded} = Codec.encode(state)
     [pending] = encoded["pending_effects"]
+    assert Map.has_key?(pending, "owner")
+    assert Map.has_key?(pending, "scope")
+
     malformed = put_in(encoded, ["pending_effects"], [%{pending | "status" => "owned"}])
 
     assert {:error, {:invalid_enum, "status", "owned"}} = Codec.decode(malformed)
 
+    missing_scope =
+      put_in(encoded, ["pending_effects"], [Map.delete(pending, "scope")])
+
+    assert {:ok, decoded_without_scope} = Codec.decode(missing_scope)
+    assert %Effect{scope: nil} = State.pending_effect(decoded_without_scope)
+
     assert {:error, {:duplicate_or_unknown_field, :state, "surprise"}} =
              Codec.decode(Map.put(encoded, "surprise", true))
+  end
+
+  test "state codec migrates v3 payload scope into first-class effect fields" do
+    effect =
+      Effect.stage_action(
+        %{name: :perform},
+        SpectreProductionReadinessTest.Actions,
+        {:skill, :support}
+      )
+
+    state = State.put_pending_effect(%State{}, effect, nil)
+
+    assert {:ok, encoded} = Codec.encode(state)
+    assert {:ok, restored} = encoded |> legacy_v3_state(true) |> Codec.decode()
+
+    assert %Effect{owner: nil, scope: {:skill, :support}} =
+             restored_effect =
+             State.pending_effect(restored)
+
+    refute Map.has_key?(restored_effect.payload, :owner)
+    refute Map.has_key?(restored_effect.payload, :scope)
+  end
+
+  test "a legacy effect without scope decodes but fails before action execution" do
+    effect =
+      Effect.stage_action(
+        %{name: :perform},
+        SpectreProductionReadinessTest.Agent,
+        :agent
+      )
+
+    state = State.put_pending_effect(%State{}, effect, nil)
+
+    assert {:ok, encoded} = Codec.encode(state)
+    assert {:ok, legacy_state} = encoded |> legacy_v3_state(false) |> Codec.decode()
+
+    assert %Effect{id: effect_id, owner: nil, scope: nil} = State.pending_effect(legacy_state)
+
+    assert {:error, {:effect_scope_missing, ^effect_id}} =
+             Spectre.execute(legacy_state, %{
+               agent: SpectreProductionReadinessTest.Agent,
+               opts: [test_pid: self()]
+             })
+
+    refute_receive {:performed, _, _}
   end
 
   test "state codec enforces outer payload and bounded collection limits" do
@@ -278,5 +345,34 @@ defmodule SpectreProductionReadinessTest do
     send(pid, {:idle_shutdown, generation - 1})
     Process.sleep(5)
     assert Process.alive?(pid)
+  end
+
+  @spec legacy_v3_state(map(), boolean()) :: map()
+  defp legacy_v3_state(encoded, include_scope?) do
+    encoded
+    |> Map.put("state_version", 3)
+    |> Map.update!(
+      "pending_effects",
+      &Enum.map(&1, fn effect -> legacy_effect(effect, include_scope?) end)
+    )
+    |> Map.update!(
+      "planned_effects",
+      &Enum.map(&1, fn effect -> legacy_effect(effect, include_scope?) end)
+    )
+  end
+
+  @spec legacy_effect(map(), boolean()) :: map()
+  defp legacy_effect(effect, include_scope?) do
+    payload =
+      if include_scope? do
+        scope_key = %{"$spectre" => "atom", "value" => "scope"}
+        Map.update!(effect["payload"], "entries", &[[scope_key, effect["scope"]] | &1])
+      else
+        effect["payload"]
+      end
+
+    effect
+    |> Map.drop(["owner", "scope"])
+    |> Map.put("payload", payload)
   end
 end

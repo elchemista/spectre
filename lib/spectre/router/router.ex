@@ -10,6 +10,8 @@ defmodule Spectre.Router do
 
   alias Spectre.Input
   alias Spectre.Journal.Recorder
+  alias Spectre.Provider.Call
+  alias Spectre.Provider.Failure
   alias Spectre.Route
   alias Spectre.Router.Context
   alias Spectre.Router.Evaluator
@@ -52,7 +54,11 @@ defmodule Spectre.Router do
   """
   @spec route_context(Input.t(), Spectre.Context.t()) :: {:ok, Context.t()} | {:error, term()}
   def route_context(%Input{} = input, %{agent: agent, state: %State{} = state, opts: opts} = ctx) do
-    rules = candidate_rules(agent, state)
+    rules =
+      agent
+      |> candidate_rules(state)
+      |> maybe_interrupt_rules(opts)
+
     labels = Enum.map(rules, & &1.label)
 
     router_opts =
@@ -73,6 +79,14 @@ defmodule Spectre.Router do
 
     with {:ok, context} <- route_with_pipeline(context, pipeline(router_opts, rules)) do
       Recorder.record_routing(context)
+    end
+  end
+
+  defp maybe_interrupt_rules(rules, opts) do
+    if Keyword.get(opts, :policy_interrupt_only?, false) do
+      Enum.filter(rules, & &1.global?)
+    else
+      rules
     end
   end
 
@@ -118,14 +132,33 @@ defmodule Spectre.Router do
   defp route_with_pipeline(%Context{} = context, nil), do: {:ok, context}
 
   defp route_with_pipeline(%Context{} = context, pipeline) when is_atom(pipeline) do
-    pipeline.call(context)
+    protected_pipeline(context, fn -> pipeline.call(context) end)
   end
 
   defp route_with_pipeline(%Context{} = context, pipeline) when is_list(pipeline) do
-    with {:ok, specs} <- Spectre.Pipeline.init_specs(pipeline) do
-      Spectre.Pipeline.run(context, specs)
-    end
+    protected_pipeline(context, fn ->
+      with {:ok, specs} <- Spectre.Pipeline.init_specs(pipeline) do
+        Spectre.Pipeline.run(context, specs)
+      end
+    end)
   end
+
+  @spec protected_pipeline(Context.t(), (-> term())) ::
+          {:ok, Context.t()} | {:error, term()}
+  defp protected_pipeline(%Context{} = context, callback) do
+    Call.run(
+      :router,
+      fn -> callback.() |> normalize_pipeline_reply() end,
+      context.opts |> Call.adapter_opts() |> Keyword.put(:purpose, :router_pipeline)
+    )
+  end
+
+  @spec normalize_pipeline_reply(term()) :: {:ok, Context.t()} | {:error, term()}
+  defp normalize_pipeline_reply({:ok, %Context{}} = result), do: result
+  defp normalize_pipeline_reply({:error, _reason} = error), do: error
+
+  defp normalize_pipeline_reply(other),
+    do: {:error, Failure.invalid_reply(:router, other)}
 
   @spec pipeline(keyword(), [Rule.t()]) :: module() | [Spectre.Pipeline.plug_spec()]
   defp pipeline(opts, rules) do

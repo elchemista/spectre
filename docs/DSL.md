@@ -106,7 +106,7 @@ journal MyApp.SpectreJournal,
 ```
 
 `journal/2` stores an opt-in `{Store, opts}` configuration. The store implements
-`Spectre.Journal.Store.append/2`. Routing records exclude input and reply
+`c:Spectre.Journal.Store.append/2`. Routing records exclude input and reply
 content by default and are delivered through a supervised bounded buffer.
 
 Use `journal(false)` to disable an application-level default. Use

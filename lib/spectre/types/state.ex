@@ -7,7 +7,7 @@ defmodule Spectre.State do
   history, and trace events.
   """
 
-  @state_version 3
+  @state_version 4
   @max_trace_entries 256
 
   defstruct state_version: @state_version,
@@ -78,7 +78,8 @@ defmodule Spectre.State do
   """
   @spec clear_open_awaitables(t()) :: t()
   def clear_open_awaitables(%__MODULE__{} = state) do
-    %{state | awaitables: Enum.reject(state.awaitables, &(&1.status == :open))}
+    {:ok, transition} = Spectre.Lifecycle.apply(state, :clear_open_awaitables)
+    transition.to
   end
 
   @doc """
@@ -86,11 +87,8 @@ defmodule Spectre.State do
   """
   @spec clear_pending(t()) :: t()
   def clear_pending(%__MODULE__{} = state) do
-    %{
-      state
-      | pending_effects: [],
-        awaitables: Enum.reject(state.awaitables, &(&1.status == :open))
-    }
+    {:ok, transition} = Spectre.Lifecycle.apply(state, :clear_pending)
+    transition.to
   end
 
   @doc """
@@ -102,23 +100,40 @@ defmodule Spectre.State do
     transition.to
   end
 
+  @doc """
+  Returns the next effect in the execution queue, or `nil` when it is empty.
+
+  Hosts normally use `Spectre.Result.pending_effect/1` on the value returned by
+  `Spectre.ask/3` or `Spectre.turn/3`. This state-level helper is useful for
+  adapters restoring persisted state.
+  """
   @spec pending_effect(t()) :: Spectre.Effect.t() | nil
   def pending_effect(%__MODULE__{pending_effects: [effect | _]}), do: effect
   def pending_effect(%__MODULE__{}), do: nil
 
+  @doc """
+  Returns the currently open policy awaitable, if one exists.
+
+  Closed, expired, and non-policy awaitables are ignored. Spectre enforces at
+  most one active policy boundary during normal lifecycle transitions.
+  """
   @spec open_policy_awaitable(t()) :: Spectre.Awaitable.t() | nil
   def open_policy_awaitable(%__MODULE__{} = state) do
     Enum.find(state.awaitables, &(&1.kind == :policy and &1.status == :open))
   end
 
+  @doc """
+  Replaces an awaitable through the validated lifecycle transition.
+
+  Matching is performed by awaitable identifier. The function raises if the
+  replacement would violate lifecycle invariants; application code should
+  prefer the higher-level `Spectre.Lifecycle` operations unless implementing a
+  state adapter or compatibility layer.
+  """
   @spec replace_awaitable(t(), Spectre.Awaitable.t()) :: t()
   def replace_awaitable(%__MODULE__{} = state, %Spectre.Awaitable{} = awaitable) do
-    awaitables =
-      state.awaitables
-      |> Enum.reject(&(&1.id == awaitable.id))
-      |> Kernel.++([awaitable])
-
-    %{state | awaitables: awaitables}
+    {:ok, transition} = Spectre.Lifecycle.apply(state, {:replace_awaitable, awaitable})
+    transition.to
   end
 
   @doc """
@@ -143,6 +158,14 @@ defmodule Spectre.State do
     end
   end
 
+  @doc """
+  Completes the next pending effect and returns `{state, completed_effect}`.
+
+  If the queue is empty, the effect is `nil`. If the lifecycle rejects the
+  transition, the original state and `nil` are returned. Runtime integrations
+  should normally call `Spectre.execute/3`, which also enforces authorization,
+  persistence, idempotency, and action execution boundaries.
+  """
   @spec complete_pending_effect(t(), term()) :: {t(), Spectre.Effect.t() | nil}
   def complete_pending_effect(%__MODULE__{} = state, result) do
     case pending_effect(state) do
@@ -248,8 +271,8 @@ defmodule Spectre.State do
   @spec normalize_current(map()) :: map()
   defp normalize_current(attrs) do
     attrs
-    |> normalize_list(:pending_effects, &Spectre.Effect.stage/1)
-    |> normalize_list(:planned_effects, &Spectre.Effect.stage/1)
+    |> normalize_list(:pending_effects, &Spectre.Effect.restore/1)
+    |> normalize_list(:planned_effects, &Spectre.Effect.restore/1)
     |> normalize_list(:awaitables, &normalize_awaitable/1)
     |> Map.put(:state_version, @state_version)
     |> Map.put_new(:revision, 0)
@@ -261,14 +284,14 @@ defmodule Spectre.State do
     awaiting = Map.get(attrs, :awaiting) || Map.get(attrs, "awaiting")
     planned_actions = Map.get(attrs, :planned_actions) || Map.get(attrs, "planned_actions") || []
 
-    effect = if pending_action, do: Spectre.Effect.stage(pending_action)
+    effect = if pending_action, do: Spectre.Effect.restore(pending_action)
     awaitable = legacy_awaitable(awaiting, effect)
 
     attrs
     |> Map.put(:state_version, @state_version)
     |> Map.put_new(:revision, 0)
     |> Map.put(:pending_effects, List.wrap(effect))
-    |> Map.put(:planned_effects, Enum.map(List.wrap(planned_actions), &Spectre.Effect.stage/1))
+    |> Map.put(:planned_effects, Enum.map(List.wrap(planned_actions), &Spectre.Effect.restore/1))
     |> Map.update!(:planned_effects, fn effects -> effects ++ List.wrap(effect) end)
     |> Map.put(:awaitables, List.wrap(awaitable))
     |> Map.drop([

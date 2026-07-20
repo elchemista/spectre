@@ -245,10 +245,12 @@ defmodule Spectre.Session do
             {:reply, {:error, failure}, data}
 
           {:error, reason} ->
+            emit_stale_command(reason, data)
             {:reply, {:error, reason}, arm_idle_timer(data)}
         end
 
       {:error, reason} ->
+        emit_stale_command(reason, data)
         {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
@@ -262,6 +264,13 @@ defmodule Spectre.Session do
 
   @impl GenServer
   def handle_info({:idle_shutdown, generation}, %{idle_generation: generation} = data) do
+    Spectre.Telemetry.emit(
+      [:session, :idle_shutdown],
+      %{count: 1},
+      %{agent: data.agent, generation: generation},
+      data.base_opts
+    )
+
     {:stop, :normal, %{data | idle_timer: nil}}
   end
 
@@ -301,6 +310,23 @@ defmodule Spectre.Session do
         metadata = current_persistence_metadata(data, supplied)
         {:ok, %{supplied | state: data.state, metadata: metadata}}
     end
+  end
+
+  defp emit_stale_command(reason, data) do
+    case reason do
+      {:stale_execution_result, _detail} -> emit_stale(data)
+      {:stale_execution_result, _submitted, _current} -> emit_stale(data)
+      _other -> :ok
+    end
+  end
+
+  defp emit_stale(data) do
+    Spectre.Telemetry.emit(
+      [:session, :stale_command],
+      %{count: 1},
+      %{agent: data.agent, reason: :stale_execution_result, revision: data.state.revision},
+      data.base_opts
+    )
   end
 
   @spec current_persistence_metadata(map(), Result.t()) :: map()

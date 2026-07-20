@@ -7,9 +7,10 @@ separate from chat history and logs:
 - journal records explain an individual runtime decision;
 - logs and telemetry describe operational health.
 
-The current implementation records the routing and arbitration boundary. The
-record schema already reserves lifecycle, policy, effect, and execution fields;
-those phases remain roadmap work and are not emitted yet.
+The current implementation records routing/arbitration, policy, lifecycle,
+execution, and persistence boundaries. All phases share stable turn/trace
+identities and exclude conversation content, effect arguments, action results,
+and provider errors by default.
 
 ## Configure A Store
 
@@ -20,7 +21,7 @@ defmodule MyApp.SupportAgent do
   use Spectre.Agent
 
   journal MyApp.SpectreJournal,
-    events: [:routing],
+    events: [:routing, :policy, :lifecycle, :execution, :persistence],
     mode: :async,
     on_error: :warn,
     sample_rate: 1.0,
@@ -31,7 +32,8 @@ defmodule MyApp.SupportAgent do
 end
 ```
 
-`:arbitration` is accepted as an alias for the current `:routing` event filter.
+`:arbitration` is accepted as an alias for `:routing`. Use `events: [:all]` to
+record every supported phase.
 
 The store implements one append callback:
 
@@ -75,7 +77,21 @@ contain:
 
 Set `include_input: true` only when the store's access, redaction, and retention
 policy can safely handle conversation content. Reply recording is reserved but
-is not emitted by the current routing-only implementation.
+requires `include_reply: true`.
+
+Use `redact:` for a final application-controlled record transformation and
+`retention:` for metadata the store can enforce:
+
+```elixir
+journal MyApp.AuditJournal,
+  events: [:all],
+  redact: {MyApp.JournalRedactor, :redact},
+  retention: [days: 30]
+```
+
+The redactor receives a `%Spectre.Journal.Record{}` and returns a record,
+`{:ok, record}`, or `{:error, reason}`. Policy and execution phases default to
+unsampled delivery; `sample_rates: %{policy: 0.5}` can override that explicitly.
 
 ## Delivery And Failures
 
@@ -132,7 +148,7 @@ for a record ID, so a retry with the same `turn_id` makes the same sampling
 decision. Routing records can be sampled; future policy and execution records
 will default to unsampled because they are audit-sensitive.
 
-## Routing Record Shape
+## Record Shape
 
 The current `:arbitration` record includes:
 
@@ -174,3 +190,12 @@ The current `:arbitration` record includes:
 Stores should persist `schema_version` and tolerate newly added optional fields.
 They should use `record.id` as an idempotency key rather than generating a new
 identity during append.
+
+Persisted schema-v1 maps can be checked with
+`Spectre.Journal.Record.restore/1`. Unknown additive fields are ignored and an
+unsupported schema version returns an explicit error.
+
+For a per-agent timeline, query by `agent`, `conversation_id`, and `turn_id`,
+then order by `sequence, occurred_at`. For aggregate dashboards, group by
+`phase`, `decision.kind`, `reason.code`, and the arbitration strategy; content
+fields are unnecessary for those queries.

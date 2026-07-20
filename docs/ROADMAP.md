@@ -21,6 +21,50 @@ These are the foundations to preserve.
 
 ## Implementation Journal
 
+### 2026-07-20: Lifecycle, Execution, Journal, And Arbitration Hardening
+
+Phases 1 through 6 are functionally complete for the library scope:
+
+- `Spectre.Lifecycle.apply/2`, `next/1`, and `projection/1` are the canonical
+  command and host-decision surface; `State`, `Result`, `Turn.Decision`,
+  `Runner`, and `Policy` delegate to it;
+- `Spectre.Policy.Matcher` is pure, and user text plus trusted host decisions
+  share `Spectre.Policy.Resolution`, including optional structured metadata;
+- no-match attempts, exhaustion, rejection, cancellation, and expiration are
+  explicit lifecycle commands; global interrupts remain closed by default and
+  can be enabled with `policy_global_interrupts?: true`;
+- `Spectre.ActionDispatcher` owns capability calls only, while
+  `Spectre.Execution` validates effects and applies terminal lifecycle
+  commands; `Runtime` and `Session` retain the durable two-commit workflow;
+- journal records now cover arbitration, policy, lifecycle, execution, and
+  persistence, with redaction callbacks, per-phase sampling, retention
+  metadata, schema restoration, and telemetry derived from records;
+- arbitration explanations now expose eligibility, configured thresholds,
+  rejected alternatives, the winner, and deterministic precedence in receipts
+  and journal evidence;
+- operational telemetry covers provider calls, policy retries, execution,
+  restore, persistence conflicts, stale session commands, journal records, and
+  idle shutdown without requiring `:telemetry` as a dependency;
+- the strategy matrix contains 800 generated cases across ten differently
+  configured agents, backed by local FastEmbed-compatible fixtures; the full
+  suite exceeds 1,000 tests.
+
+Current verification is 1,177 passing tests and 90.08% line coverage, together
+with warnings-as-errors compilation, strict Credo, Dialyzer, ExDoc generation,
+formatting, and diff checks. The default 90% coverage threshold remains
+enforced.
+
+Project decisions for this cycle:
+
+- the `freelance.fast` integration fixture from Phase 0 is waived because it
+  belongs in the consuming application, not this library repository;
+- Vettore remains a required dependency by design, including regex-only
+  deployments;
+- Phase 8 release/editorial stabilization is complete for the `0.1.0` public
+  preview: package metadata, changelog, public guides, API documentation,
+  production checklist, testing guide, security policy, and contribution
+  policy are versioned with the source.
+
 ### 2026-07-17: Canonical Provider Facts And Reply Validation
 
 This hardening pass closed the remaining gap between route traces and the
@@ -365,6 +409,10 @@ another owner of lifecycle semantics.
 
 ### Phase 0: Freeze Current Behaviour
 
+Status: complete for the Spectre repository. The external `freelance.fast`
+fixture is explicitly out of scope; its application suite remains a downstream
+integration test.
+
 Goal: prevent an architectural refactor from changing externally visible
 semantics accidentally.
 
@@ -372,8 +420,7 @@ semantics accidentally.
   attempts exhaustion, host resolution, sessions, persistence failures, and
   idempotency.
 - Add a table-driven lifecycle contract suite covering every invariant above.
-- Add a small integration fixture matching the dispatcher shape used by
-  `freelance.fast`.
+- Validate `freelance.fast` in its own consuming repository when desired.
 - Document `ask/3`, `turn/3`, `resolve_policy/4`, and `execute/3` as the current
   compatibility surface.
 - Record the current serialized `State` version and migration fixtures.
@@ -381,10 +428,12 @@ semantics accidentally.
 Exit criteria:
 
 - every legal transition and every forbidden transition has a test;
-- the `freelance.fast` fixture consumes only public Spectre APIs;
+- downstream consumers can use only public Spectre APIs;
 - no test needs to inspect private runtime functions.
 
 ### Phase 1: Extract The Pure Lifecycle Kernel
+
+Status: complete.
 
 Goal: centralize state transitions without changing public APIs.
 
@@ -407,6 +456,8 @@ Exit criteria:
 
 ### Phase 2: Separate Policy Matching From Policy Transitions
 
+Status: complete.
+
 Goal: make policy behavior deterministic and independently testable.
 
 - Extract `Spectre.Policy.Matcher`.
@@ -425,6 +476,10 @@ Exit criteria:
 - user and host rejection produce the same lifecycle outcome shape.
 
 ### Phase 3: Unify Execution And Persistence
+
+Status: complete. `Runtime` owns durable commits, `Execution` owns validated
+dispatch-to-transition orchestration, and `ActionDispatcher` owns the module
+call only.
 
 Goal: remove ambiguity around who stores terminal execution state.
 
@@ -458,6 +513,8 @@ Exit criteria:
 
 ### Phase 4: Harden Sessions And Recovery
 
+Status: complete for the implemented state-adapter and Session contracts.
+
 Goal: make one conversation safe across crashes and concurrent hosts.
 
 - Add a monotonic `revision` separate from the serialized schema version.
@@ -479,12 +536,10 @@ Exit criteria:
 Goal: make every important agent decision inspectable without storing sensitive
 conversation content by default.
 
-Status: foundation in progress. Schema v1, the append behaviour, routing
-records, DSL/configuration, privacy defaults, deterministic sampling, stable
-correlation IDs, synchronous strict mode, and bounded asynchronous delivery are
-implemented, including saturation, ordering, overflow, and worker-crash tests.
-Lifecycle, policy, execution, persistence, redaction, retention, and telemetry
-records remain open.
+Status: complete for schema v1. Arbitration, policy, lifecycle, execution, and
+persistence records, privacy defaults, redaction, retention metadata,
+per-phase sampling, telemetry, strict mode, and bounded asynchronous delivery
+are implemented.
 
 - Add `Spectre.Journal.Record` with a versioned schema.
 - Add `Spectre.Journal.Recorder` as the filtering and delivery boundary.
@@ -516,9 +571,9 @@ Exit criteria:
 
 Goal: keep probabilistic evidence outside machine-state decisions.
 
-Status: in progress. LLM eligibility, route visibility, exact-label parsing,
-hard-evidence short-circuiting, and local-first/LLM-fallback regressions are now
-covered. Canonical threshold explanations and property tests remain open.
+Status: complete. Canonical threshold and precedence explanations are carried
+by routing contexts and receipts; deterministic permutation tests and the
+generated multi-strategy matrix cover ordering and precedence.
 
 - Keep router plugs limited to evidence collection.
 - Keep `Candidate` as an immutable evidence value.
@@ -537,21 +592,28 @@ Exit criteria:
 
 ### Phase 7: Reduce Optional Dependency Weight
 
+Status: superseded by project decision. Vettore intentionally remains a small,
+required dependency of Spectre.
+
 Goal: let applications use the runtime without paying for every classifier
 implementation.
 
 - Keep core runtime, routing contracts, policies, and OTP sessions lightweight.
-- Move native embedding and classifier implementations behind optional
-  adapters or companion packages where practical.
+- Keep Vettore mandatory and keep external embedding engines such as
+  `ex_fastembed` adapter-driven.
 - Fail with clear configuration errors when an optional adapter is unavailable.
 - Add minimal, classifier, and full-feature dependency profiles to CI.
 
 Exit criteria:
 
-- a policy-and-regex-only application does not compile native ML dependencies;
-- optional adapters have explicit compatibility versions.
+- regex-only applications retain the same Vettore-backed runtime contract;
+- external optional adapters have explicit compatibility versions.
 
 ### Phase 8: Stabilize The Public API
+
+Status: complete for the `0.1.0` public preview. Compatibility remains governed
+by Semantic Versioning's `0.x` rules and the documented public/internal module
+boundary.
 
 Goal: prepare a versioned release rather than exposing internal refactors.
 
@@ -560,13 +622,15 @@ Goal: prepare a versioned release rather than exposing internal refactors.
 - Deprecate old APIs with migration examples before removal.
 - Add upgrade fixtures for serialized state.
 - Document supported Elixir, OTP, NIF, and adapter versions.
-- Run the complete suite against a representative `freelance.fast` integration.
+- Validate the package from consuming products such as `freelance.fast`; those
+  product-specific fixtures remain in their own repositories.
 
 Exit criteria:
 
-- one canonical host integration path is documented;
-- serialized state upgrades are tested;
-- release notes name every breaking change.
+- one canonical host integration path is documented in Getting Started;
+- serialized state upgrades are tested through schema-v4 fixtures;
+- release notes and a changelog policy are present;
+- ExDoc builds without missing-reference warnings.
 
 ## Recommended Implementation Order
 
