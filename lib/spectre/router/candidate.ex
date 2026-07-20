@@ -135,6 +135,21 @@ defmodule Spectre.Router.Candidate do
     })
   end
 
+  @doc """
+  Builds a candidate from normalized attributes.
+
+  Unknown keys are ignored. Prefer `from_rule/4` or `from_result/4` at adapter
+  boundaries because they derive rule ownership, evidence strength, and score
+  fields consistently.
+
+      candidate =
+        Spectre.Router.Candidate.new(%{
+          label: :HELP,
+          provider: :custom,
+          score: 0.9,
+          accepted?: true
+        })
+  """
   @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
     struct(__MODULE__, Map.take(attrs, fields()))

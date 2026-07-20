@@ -15,6 +15,32 @@ defmodule Spectre.Execution do
 
   @type result :: {:ok, Result.t()} | {:error, term()}
 
+  @doc """
+  Executes or replays the current pending effect in `state`.
+
+  The effect must belong to the Agent and scope carried by `ctx`. Unprotected
+  `:pending` effects and policy-approved effects are dispatched through
+  `Spectre.ActionDispatcher`; `:waiting_policy`, terminal, unscoped, foreign,
+  and unsupported effects are rejected before any capability is invoked.
+
+  A terminal effect with the same identifier in `state.planned_effects` is
+  replayed without invoking the capability again. Successful and failed
+  dispatches are applied through `Spectre.Lifecycle` and returned as a
+  `Spectre.Result` containing the terminal state and transition event.
+
+  ## Example
+
+      ctx = %{agent: MyApp.Agent, input: input, opts: [user_id: user.id]}
+
+      {:ok, result} =
+        Spectre.Execution.execute_pending(approved_state, ctx)
+
+      {:ok, value} = Spectre.Result.action_outcome(result)
+
+  This low-level function does not persist state. Use `Spectre.execute/3` when
+  the Agent's configured state adapter must participate in the two-commit
+  execution workflow.
+  """
   @spec execute_pending(State.t(), Spectre.Context.t() | map(), keyword()) :: result()
   def execute_pending(%State{} = state, ctx, opts \\ []) do
     case State.pending_effect(state) do

@@ -15,6 +15,10 @@
 
 /.elixir_ls/
 
+/.codex/
+
+/.agents/
+
 /example/
 
 GUIDELINE.md

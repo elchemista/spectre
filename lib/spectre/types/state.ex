@@ -100,15 +100,36 @@ defmodule Spectre.State do
     transition.to
   end
 
+  @doc """
+  Returns the next effect in the execution queue, or `nil` when it is empty.
+
+  Hosts normally use `Spectre.Result.pending_effect/1` on the value returned by
+  `Spectre.ask/3` or `Spectre.turn/3`. This state-level helper is useful for
+  adapters restoring persisted state.
+  """
   @spec pending_effect(t()) :: Spectre.Effect.t() | nil
   def pending_effect(%__MODULE__{pending_effects: [effect | _]}), do: effect
   def pending_effect(%__MODULE__{}), do: nil
 
+  @doc """
+  Returns the currently open policy awaitable, if one exists.
+
+  Closed, expired, and non-policy awaitables are ignored. Spectre enforces at
+  most one active policy boundary during normal lifecycle transitions.
+  """
   @spec open_policy_awaitable(t()) :: Spectre.Awaitable.t() | nil
   def open_policy_awaitable(%__MODULE__{} = state) do
     Enum.find(state.awaitables, &(&1.kind == :policy and &1.status == :open))
   end
 
+  @doc """
+  Replaces an awaitable through the validated lifecycle transition.
+
+  Matching is performed by awaitable identifier. The function raises if the
+  replacement would violate lifecycle invariants; application code should
+  prefer the higher-level `Spectre.Lifecycle` operations unless implementing a
+  state adapter or compatibility layer.
+  """
   @spec replace_awaitable(t(), Spectre.Awaitable.t()) :: t()
   def replace_awaitable(%__MODULE__{} = state, %Spectre.Awaitable{} = awaitable) do
     {:ok, transition} = Spectre.Lifecycle.apply(state, {:replace_awaitable, awaitable})
@@ -137,6 +158,14 @@ defmodule Spectre.State do
     end
   end
 
+  @doc """
+  Completes the next pending effect and returns `{state, completed_effect}`.
+
+  If the queue is empty, the effect is `nil`. If the lifecycle rejects the
+  transition, the original state and `nil` are returned. Runtime integrations
+  should normally call `Spectre.execute/3`, which also enforces authorization,
+  persistence, idempotency, and action execution boundaries.
+  """
   @spec complete_pending_effect(t(), term()) :: {t(), Spectre.Effect.t() | nil}
   def complete_pending_effect(%__MODULE__{} = state, result) do
     case pending_effect(state) do

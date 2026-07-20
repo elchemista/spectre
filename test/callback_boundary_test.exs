@@ -91,37 +91,29 @@ defmodule SpectreCallbackBoundaryTest.InputPlug do
 
   @impl Spectre.Input.Plug
   def call(input, _context, state) do
-    case Keyword.get(state, :mode, :cont) do
-      :cont ->
-        {:cont, Spectre.Input.put_meta(input, :bounded, true)}
+    state
+    |> Keyword.get(:mode, :cont)
+    |> call_mode(input, state)
+  end
 
-      :halt ->
-        {:halt, Spectre.Input.put_meta(input, :bounded, true)}
+  defp call_mode(:cont, input, _state),
+    do: {:cont, Spectre.Input.put_meta(input, :bounded, true)}
 
-      :error ->
-        {:error, :declared_input_error}
+  defp call_mode(:halt, input, _state),
+    do: {:halt, Spectre.Input.put_meta(input, :bounded, true)}
 
-      :raise ->
-        raise "SENSITIVE input callback exception"
+  defp call_mode(:error, _input, _state), do: {:error, :declared_input_error}
+  defp call_mode(:raise, _input, _state), do: raise("SENSITIVE input callback exception")
+  defp call_mode(:exit, _input, _state), do: exit({:input_exit, "SENSITIVE"})
+  defp call_mode(:throw, _input, _state), do: throw({:input_throw, "SENSITIVE"})
+  defp call_mode(:crash, _input, _state), do: Process.exit(self(), :kill)
+  defp call_mode(:malformed, _input, _state), do: %{private: "input callback result"}
 
-      :exit ->
-        exit({:input_exit, "SENSITIVE"})
-
-      :throw ->
-        throw({:input_throw, "SENSITIVE"})
-
-      :crash ->
-        Process.exit(self(), :kill)
-
-      :malformed ->
-        %{private: "input callback result"}
-
-      :timeout ->
-        send(Keyword.fetch!(state, :test_pid), {:input_worker, self()})
-        Process.sleep(250)
-        send(Keyword.fetch!(state, :test_pid), :late_input_result)
-        {:cont, input}
-    end
+  defp call_mode(:timeout, input, state) do
+    send(Keyword.fetch!(state, :test_pid), {:input_worker, self()})
+    Process.sleep(250)
+    send(Keyword.fetch!(state, :test_pid), :late_input_result)
+    {:cont, input}
   end
 end
 
@@ -163,9 +155,11 @@ defmodule SpectreCallbackBoundaryTest do
   alias Spectre.Context
   alias Spectre.Effect
   alias Spectre.Input
+  alias Spectre.Input.Pipeline, as: InputPipeline
   alias Spectre.Provider.Failure
   alias Spectre.Result
   alias Spectre.State
+  alias SpectreCallbackBoundaryTest.SlowRouter
 
   @callbacks SpectreCallbackBoundaryTest.Callbacks
   @input_plug SpectreCallbackBoundaryTest.InputPlug
@@ -304,7 +298,7 @@ defmodule SpectreCallbackBoundaryTest do
 
   test "input init and call timeouts terminate workers and a Session remains healthy" do
     assert {:error, %Failure{provider: :input, kind: :timeout}} =
-             Spectre.Input.Pipeline.init_specs(
+             InputPipeline.init_specs(
                [{@input_plug, [init_mode: :timeout, test_pid: self()]}],
                input_timeout: 10
              )
@@ -334,7 +328,7 @@ defmodule SpectreCallbackBoundaryTest do
 
     assert {:error, %Failure{provider: :router, kind: :timeout}} =
              Spectre.ask(session, "healthy",
-               pipeline: SpectreCallbackBoundaryTest.SlowRouter,
+               pipeline: SlowRouter,
                router_timeout: 10,
                test_pid: self()
              )
@@ -412,7 +406,7 @@ defmodule SpectreCallbackBoundaryTest do
   end
 
   defp run_input(input, plug_opts) do
-    Spectre.Input.Pipeline.run(input, %{agent: @agent, opts: []}, [
+    InputPipeline.run(input, %{agent: @agent, opts: []}, [
       {@input_plug, plug_opts}
     ])
   end

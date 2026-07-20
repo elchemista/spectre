@@ -99,9 +99,8 @@ defmodule Spectre.ActionPlanner do
   defp prepare_effect(action, al, index, opts) when is_map(action) do
     action = prefer_exact_al_tool(action, al, opts)
 
-    with :ok <- validate_planned_action(action, index),
-         {:ok, effect} <- stage_planned_effect(Map.put(action, :status, :pending), opts) do
-      {:ok, effect}
+    with :ok <- validate_planned_action(action, index) do
+      stage_planned_effect(Map.put(action, :status, :pending), opts)
     end
   end
 

@@ -49,10 +49,10 @@ Phases 1 through 6 are functionally complete for the library scope:
   configured agents, backed by local FastEmbed-compatible fixtures; the full
   suite exceeds 1,000 tests.
 
-Current verification is 1,099 passing tests, warnings-as-errors compilation,
-strict Credo, and Dialyzer with zero errors. Line coverage is 75.72%; the
-default 90% coverage threshold is not yet met and has intentionally not been
-lowered or hidden.
+Current verification is 1,177 passing tests and 90.08% line coverage, together
+with warnings-as-errors compilation, strict Credo, Dialyzer, ExDoc generation,
+formatting, and diff checks. The default 90% coverage threshold remains
+enforced.
 
 Project decisions for this cycle:
 
@@ -60,8 +60,10 @@ Project decisions for this cycle:
   belongs in the consuming application, not this library repository;
 - Vettore remains a required dependency by design, including regex-only
   deployments;
-- Phase 8 release/editorial stabilization is deferred; current work targets
-  library behavior and code quality only.
+- Phase 8 release/editorial stabilization is complete for the `0.1.0` public
+  preview: package metadata, changelog, public guides, API documentation,
+  production checklist, testing guide, security policy, and contribution
+  policy are versioned with the source.
 
 ### 2026-07-17: Canonical Provider Facts And Reply Validation
 
@@ -609,8 +611,9 @@ Exit criteria:
 
 ### Phase 8: Stabilize The Public API
 
-Status: deferred. Editorial release preparation and deprecation work are not
-part of the current functionality-focused cycle.
+Status: complete for the `0.1.0` public preview. Compatibility remains governed
+by Semantic Versioning's `0.x` rules and the documented public/internal module
+boundary.
 
 Goal: prepare a versioned release rather than exposing internal refactors.
 
@@ -619,13 +622,15 @@ Goal: prepare a versioned release rather than exposing internal refactors.
 - Deprecate old APIs with migration examples before removal.
 - Add upgrade fixtures for serialized state.
 - Document supported Elixir, OTP, NIF, and adapter versions.
-- Run the complete suite against a representative `freelance.fast` integration.
+- Validate the package from consuming products such as `freelance.fast`; those
+  product-specific fixtures remain in their own repositories.
 
 Exit criteria:
 
-- one canonical host integration path is documented;
-- serialized state upgrades are tested;
-- release notes name every breaking change.
+- one canonical host integration path is documented in Getting Started;
+- serialized state upgrades are tested through schema-v4 fixtures;
+- release notes and a changelog policy are present;
+- ExDoc builds without missing-reference warnings.
 
 ## Recommended Implementation Order
 

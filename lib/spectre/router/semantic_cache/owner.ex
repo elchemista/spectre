@@ -38,6 +38,7 @@ defmodule Spectre.Router.SemanticCache.Owner do
     ]
   }
 
+  @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, :ok, Keyword.put_new(opts, :name, __MODULE__))

@@ -103,12 +103,15 @@ end
 
 defmodule SpectreBranchMatrixTest.RouterPlug do
   @moduledoc false
+
+  alias Spectre.Router.Context
+
   def init(opts), do: Keyword.get(opts, :mode, :continue)
 
   def call(context, :continue),
-    do: {:cont, Spectre.Router.Context.put_trace(context, :continued)}
+    do: {:cont, Context.put_trace(context, :continued)}
 
-  def call(context, :halt), do: {:halt, Spectre.Router.Context.put_trace(context, :halted)}
+  def call(context, :halt), do: {:halt, Context.put_trace(context, :halted)}
   def call(_context, :error), do: {:error, :plug_error}
   def call(_context, :invalid), do: :invalid
   def call(_context, :raise), do: raise("router plug")

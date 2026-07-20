@@ -46,9 +46,8 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
     visible_labels = Support.labels_for(visible_rules)
     context = put_ambiguity_trace(context, ambiguity_reason)
 
-    with :ok <- routeable_labels(visible_rules, ambiguity_reason) do
-      search_visible(context, text, opts, visible_rules, visible_labels)
-    else
+    case routeable_labels(visible_rules, ambiguity_reason) do
+      :ok -> search_visible(context, text, opts, visible_rules, visible_labels)
       {:skip, reason} -> skip_search(context, reason, opts)
     end
   end

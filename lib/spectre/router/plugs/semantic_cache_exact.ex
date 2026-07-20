@@ -48,19 +48,21 @@ defmodule Spectre.Router.Plugs.SemanticCacheExact do
     visible_labels = Support.labels_for(visible_rules)
     context = put_ambiguity_trace(context, ambiguity_reason)
 
-    with :ok <- routeable_labels(visible_rules, ambiguity_reason) do
-      lookup_visible(
-        context,
-        text,
-        lookup_opts,
-        opts,
-        visible_rules,
-        visible_labels,
-        accept_trace,
-        skip_trace
-      )
-    else
-      {:skip, reason} -> skip_lookup(context, skip_trace, reason, opts)
+    case routeable_labels(visible_rules, ambiguity_reason) do
+      :ok ->
+        lookup_visible(
+          context,
+          text,
+          lookup_opts,
+          opts,
+          visible_rules,
+          visible_labels,
+          accept_trace,
+          skip_trace
+        )
+
+      {:skip, reason} ->
+        skip_lookup(context, skip_trace, reason, opts)
     end
   end
 

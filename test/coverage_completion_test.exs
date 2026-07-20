@@ -90,9 +90,12 @@ end
 defmodule SpectreCoverageCompletionTest do
   use ExUnit.Case, async: false
 
+  alias Mix.Tasks.Spectre.Classifier.Dataset, as: DatasetTask
+  alias Mix.Tasks.Spectre.Classifier.DownloadModel, as: DownloadModelTask
+  alias Mix.Tasks.Spectre.Classifier.Train, as: TrainTask
   alias Spectre.Awaitable
-  alias Spectre.Classifier.Embeddings.ExFastembed
   alias Spectre.Classifier
+  alias Spectre.Classifier.Embeddings.ExFastembed
   alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Journal.Recorder
@@ -172,7 +175,7 @@ defmodule SpectreCoverageCompletionTest do
       reenable("spectre.classifier.dataset")
 
       assert :ok =
-               Mix.Tasks.Spectre.Classifier.Dataset.run([
+               DatasetTask.run([
                  "SpectreCoverageCompletionTest.Agent",
                  dataset,
                  "--source",
@@ -186,7 +189,7 @@ defmodule SpectreCoverageCompletionTest do
       reenable("spectre.classifier.download_model")
 
       assert :ok =
-               Mix.Tasks.Spectre.Classifier.DownloadModel.run([
+               DownloadModelTask.run([
                  "--model",
                  "coverage-model"
                ])
@@ -194,7 +197,7 @@ defmodule SpectreCoverageCompletionTest do
       reenable("spectre.classifier.train")
 
       assert :ok =
-               Mix.Tasks.Spectre.Classifier.Train.run([
+               TrainTask.run([
                  dataset,
                  artifact,
                  "--model",
@@ -212,9 +215,9 @@ defmodule SpectreCoverageCompletionTest do
 
     test "task parsers reject malformed CLI input" do
       for {task, argv} <- [
-            {Mix.Tasks.Spectre.Classifier.Dataset, ["--unknown"]},
-            {Mix.Tasks.Spectre.Classifier.DownloadModel, ["--unknown"]},
-            {Mix.Tasks.Spectre.Classifier.Train, ["--unknown"]}
+            {DatasetTask, ["--unknown"]},
+            {DownloadModelTask, ["--unknown"]},
+            {TrainTask, ["--unknown"]}
           ] do
         reenable(task_name(task))
         assert_raise Mix.Error, fn -> task.run(argv) end
@@ -223,7 +226,7 @@ defmodule SpectreCoverageCompletionTest do
       reenable("spectre.classifier.dataset")
 
       assert_raise Mix.Error, ~r/expected an agent module/, fn ->
-        Mix.Tasks.Spectre.Classifier.Dataset.run([])
+        DatasetTask.run([])
       end
     end
   end
@@ -655,10 +658,7 @@ defmodule SpectreCoverageCompletionTest do
 
     test "search builds and reuses a real Vettore index and enforces thresholds" do
       embedding = fn text, _opts ->
-        cond do
-          String.contains?(text, "beta") -> {:ok, [0.0, 1.0]}
-          true -> {:ok, [1.0, 0.0]}
-        end
+        if String.contains?(text, "beta"), do: {:ok, [0.0, 1.0]}, else: {:ok, [1.0, 0.0]}
       end
 
       opts =

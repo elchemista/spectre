@@ -333,10 +333,8 @@ defmodule SpectreSkillInjectTest.ScopedCodecStore do
 
   @spec current_state(term()) :: {:ok, State.t()} | {:error, term()}
   defp current_state(key) do
-    with encoded <- :persistent_term.get(key, nil),
-         {:ok, state} <- decode_state(encoded) do
-      {:ok, state}
-    end
+    encoded = :persistent_term.get(key, nil)
+    decode_state(encoded)
   end
 
   @spec decode_state(String.t() | nil) :: {:ok, State.t()} | {:error, term()}
@@ -533,13 +531,26 @@ defmodule SpectreSkillInjectTest do
 
   alias Spectre.Definition
   alias Spectre.Effect
+  alias Spectre.Input
+  alias Spectre.Journal.Recorder
   alias Spectre.Prompt.Operation
   alias Spectre.Prompt.Plan
+  alias Spectre.Router
+  alias Spectre.Router.Plugs.Arbitrate
+  alias Spectre.Router.Plugs.LLMFallback
+  alias Spectre.Router.Plugs.LocalClassifier
+  alias Spectre.Router.Plugs.SemanticCacheExact
+  alias Spectre.Router.Plugs.SemanticCacheSearch
+  alias Spectre.Router.SemanticCache
   alias Spectre.Router.Support
   alias Spectre.Rule
   alias Spectre.Skill.Mount
+  alias Spectre.State
   alias Spectre.State.Codec
   alias SpectreSkillInjectTest.Agent
+  alias SpectreSkillInjectTest.AmbiguityJournalStore
+  alias SpectreSkillInjectTest.ScopedLearningAgent
+  alias SpectreSkillInjectTest.ScopedLearningSkill
 
   test "a mounted Skill routes and runs its owner callback" do
     assert {:ok, result} = Spectre.ask(Agent, "skill run")
@@ -1528,42 +1539,42 @@ defmodule SpectreSkillInjectTest do
     legacy_llm_reason = {:ambiguous_scoped_labels, :llm, [:SKILL_RUN]}
 
     assert {:cont, local_context} =
-             Spectre.Router.Plugs.LocalClassifier.call(context, [])
+             LocalClassifier.call(context, [])
 
     assert classifier_reason in local_context.traces
     assert {:local_skip, classifier_reason} in local_context.traces
 
     assert {:cont, exact_context} =
-             Spectre.Router.Plugs.SemanticCacheExact.call(context, [])
+             SemanticCacheExact.call(context, [])
 
     assert cache_reason in exact_context.traces
     assert {:cache_skip, cache_reason} in exact_context.traces
 
     assert {:cont, search_context} =
-             Spectre.Router.Plugs.SemanticCacheSearch.call(context, [])
+             SemanticCacheSearch.call(context, [])
 
     assert cache_reason in search_context.traces
     assert {:semantic_skip, cache_reason} in search_context.traces
 
-    assert {:cont, llm_context} = Spectre.Router.Plugs.Arbitrate.call(context, [])
+    assert {:cont, llm_context} = Arbitrate.call(context, [])
     assert llm_context.route.accepted? == false
     assert llm_reason in llm_context.traces
     assert {:llm_arbitration_skipped, llm_reason} in llm_context.traces
 
     assert {:cont, legacy_llm_context} =
-             Spectre.Router.Plugs.LLMFallback.call(context, [])
+             LLMFallback.call(context, [])
 
     assert legacy_llm_context.route.accepted? == false
     assert legacy_llm_reason in legacy_llm_context.traces
     assert {:fallback_route, legacy_llm_reason} in legacy_llm_context.traces
 
     journal =
-      {SpectreSkillInjectTest.AmbiguityJournalStore, [mode: :sync, store_opts: [pid: self()]]}
+      {AmbiguityJournalStore, [mode: :sync, store_opts: [pid: self()]]}
 
     journal_context = %{llm_context | opts: Keyword.put(llm_context.opts, :journal, journal)}
 
     assert {:ok, _recorded_context} =
-             Spectre.Journal.Recorder.record_routing(journal_context)
+             Recorder.record_routing(journal_context)
 
     assert_receive {:ambiguity_journal, record}
 
@@ -1577,29 +1588,29 @@ defmodule SpectreSkillInjectTest do
   end
 
   test "semantic learning records the selected Skill owner and scope" do
-    agent = SpectreSkillInjectTest.ScopedLearningAgent
-    assert :ok = Spectre.Router.SemanticCache.clear(agent)
+    agent = ScopedLearningAgent
+    assert :ok = SemanticCache.clear(agent)
 
-    on_exit(fn -> Spectre.Router.SemanticCache.clear(agent) end)
+    on_exit(fn -> SemanticCache.clear(agent) end)
 
-    input = Spectre.Input.new("learn this scoped request")
+    input = Input.new("learn this scoped request")
 
     ctx = %Spectre.Context{
       agent: agent,
       input: input,
-      state: %Spectre.State{},
+      state: %State{},
       opts: agent.__spectre_config__()
     }
 
-    assert {:ok, router_context} = Spectre.Router.route_context(input, ctx)
+    assert {:ok, router_context} = Router.route_context(input, ctx)
     assert {:semantic_learned, :SCOPED_LEARN} in router_context.traces
-    assert {:ok, route} = Spectre.Router.route_from_context(router_context)
-    assert route.owner == SpectreSkillInjectTest.ScopedLearningSkill
+    assert {:ok, route} = Router.route_from_context(router_context)
+    assert route.owner == ScopedLearningSkill
     assert route.scope == {:skill, :learner}
     assert route.strategy == :llm_classifier
 
-    assert {:ok, [row]} = Spectre.Router.SemanticCache.examples(agent)
-    assert row.metadata.owner == SpectreSkillInjectTest.ScopedLearningSkill
+    assert {:ok, [row]} = SemanticCache.examples(agent)
+    assert row.metadata.owner == ScopedLearningSkill
     assert row.metadata.scope == {:skill, :learner}
   end
 

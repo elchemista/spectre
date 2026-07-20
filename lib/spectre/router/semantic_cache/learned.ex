@@ -129,6 +129,19 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   def examples(agent, _opts), do: {:error, {:invalid_agent, agent}}
 
+  @doc """
+  Fetches one review row by identifier.
+
+  The lookup includes online, dataset, and static route examples. Static rows
+  are returned with `editable?: false`; only rows whose source is
+  `:online_learned` can be changed by `relabel/4`, `verify/3`, or `delete/3`.
+
+      {:ok, rows} = Learned.examples(MyApp.Agent)
+      {:ok, row} = Learned.get_example(MyApp.Agent, hd(rows).id)
+
+  Agent router options are loaded first and may be overridden through `opts`.
+  Returns `{:error, :not_found}` when no source contains the identifier.
+  """
   @spec get_example(module(), String.t(), keyword()) :: {:ok, row()} | {:error, term()}
   def get_example(agent, id, opts \\ [])
 
@@ -143,6 +156,21 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   def get_example(agent, id, _opts), do: {:error, {:invalid_example_lookup, agent, id}}
 
+  @doc """
+  Changes the route label of an online example and marks it verified.
+
+  `new_label` must name a route declared by the agent and that route must allow
+  semantic caching. Offline dataset rows and static route examples are
+  immutable and return `{:error, :read_only_example}`.
+
+      {:ok, updated} =
+        Learned.relabel(MyApp.Agent, example_id, :support_request)
+
+      true = updated.verified?
+
+  A successful mutation increments `online_revision/1`, invalidating cached
+  semantic indexes for the next lookup.
+  """
   @spec relabel(module(), String.t(), atom(), keyword()) :: {:ok, row()} | {:error, term()}
   def relabel(agent, id, new_label, opts \\ [])
 
@@ -167,6 +195,18 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   def relabel(agent, id, label, _opts), do: {:error, {:invalid_relabel, agent, id, label}}
 
+  @doc """
+  Deletes an online learned example.
+
+  Static route examples and offline dataset rows are read-only. The function
+  therefore returns `{:error, :read_only_example}` for their identifiers and
+  `{:error, :not_found}` for an unknown identifier.
+
+      :ok = Learned.delete(MyApp.Agent, example_id)
+
+  Deleting a row also advances `online_revision/1` so an existing Vettore
+  index cannot keep serving the removed example.
+  """
   @spec delete(module(), String.t(), keyword()) :: :ok | {:error, term()}
   def delete(agent, id, opts \\ [])
 
@@ -189,6 +229,19 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   def delete(agent, id, _opts), do: {:error, {:invalid_delete, agent, id}}
 
+  @doc """
+  Marks an online example as reviewed and eligible for normal lookup.
+
+  Learned rows may be stored as unverified and are excluded unless
+  `:semantic_cache_include_unverified?` is enabled. Verification sets
+  `verified?: true`, records `:verified_at` in metadata, and invalidates the
+  current semantic index.
+
+      {:ok, verified} = Learned.verify(MyApp.Agent, example_id)
+      true = verified.verified?
+
+  Static and dataset-backed examples are already trusted and read-only.
+  """
   @spec verify(module(), String.t(), keyword()) :: {:ok, row()} | {:error, term()}
   def verify(agent, id, opts \\ [])
 
@@ -211,6 +264,22 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   def verify(agent, id, _opts), do: {:error, {:invalid_verify, agent, id}}
 
+  @doc """
+  Exports review rows as portable snapshot maps or an atomic JSONL file.
+
+  Without `:path`, the return value contains JSON-compatible maps:
+
+      {:ok, rows} = Learned.snapshot(MyApp.Agent)
+
+  With a path, Spectre writes a temporary file and renames it into place:
+
+      {:ok, "priv/cache/support.jsonl"} =
+        Learned.snapshot(MyApp.Agent, path: "priv/cache/support.jsonl")
+
+  Online rows are exported by default. Set `source: :all`,
+  `:offline_dataset`, or `:static_route_example` to select another review
+  view. Snapshot data can be restored with `load_snapshot/3`.
+  """
   @spec snapshot(module(), keyword()) :: {:ok, String.t() | [map()]} | {:error, term()}
   def snapshot(agent, opts \\ [])
 
@@ -262,6 +331,22 @@ defmodule Spectre.Router.SemanticCache.Learned do
     end
   end
 
+  @doc """
+  Loads online examples from snapshot rows or a JSONL path.
+
+  The second argument may be a path, a list of snapshot maps, or a keyword
+  list containing `:path` or `:rows`:
+
+      {:ok, %{loaded: loaded, skipped: skipped, errors: errors}} =
+        Learned.load_snapshot(MyApp.Agent, "priv/cache/support.jsonl")
+
+  Each label is resolved against the agent's current routes. Blank, malformed,
+  unknown, and no-longer-cacheable rows are skipped and reported in the
+  summary. Pass `strict?: true` to return
+  `{:error, {:invalid_snapshot, summary}}` when any row is skipped. Valid rows
+  loaded before that strict error remain stored, so validate untrusted files
+  before using strict loading as a deployment gate.
+  """
   @spec load_snapshot(module(), term(), keyword()) :: {:ok, map()} | {:error, term()}
   def load_snapshot(agent, snapshot_or_opts, opts \\ []) when is_atom(agent) and is_list(opts) do
     with {:ok, opts} <- agent_opts(agent, opts),
@@ -302,6 +387,14 @@ defmodule Spectre.Router.SemanticCache.Learned do
     end
   end
 
+  @doc """
+  Returns the monotonic in-memory revision of an agent's online examples.
+
+  The revision starts at zero and advances after successful mutations. It is
+  part of the semantic-index cache key, making a later lookup rebuild against
+  the latest rows. It is an implementation revision, not a durable business
+  version; snapshot it only if the host needs diagnostics.
+  """
   @spec online_revision(module()) :: non_neg_integer()
   def online_revision(agent) do
     case :ets.lookup(revision_table(), agent) do

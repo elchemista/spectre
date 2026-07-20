@@ -3,6 +3,10 @@
 Spectre is an OTP-native Elixir runtime for building agents whose routing,
 state, policies, and side effects remain explicit.
 
+[![Hex.pm](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
+[![HexDocs](https://img.shields.io/badge/hex-docs-purple.svg)](https://hexdocs.pm/spectre)
+[![License](https://img.shields.io/hexpm/l/spectre.svg)](LICENSE)
+
 The goal is to describe the stable shape of an agent in one readable module
 without hiding application logic behind a large callback framework. The DSL
 declares repetitive structure; normal Elixir modules still own business rules,
@@ -20,8 +24,10 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre is still a work in progress. It is already used in real applications,
-> but its public API may evolve while the runtime contracts are hardened.
+> Spectre `0.1.x` is a public preview. Runtime invariants are hardened and the
+> full suite exceeds 90% line coverage, but documented APIs may still evolve in
+> a minor `0.x` release. Internal modules marked with `@moduledoc false` are not
+> part of the compatibility contract.
 
 ## Lifecycle At A Glance
 
@@ -61,8 +67,16 @@ better integration boundary for applications because it returns one of:
 
 ## Installation
 
-See [Installation](docs/INSTALLATION.md) for the base dependency and optional
-classifier and embedding dependencies.
+```elixir
+def deps do
+  [
+    {:spectre, "~> 0.1.0"}
+  ]
+end
+```
+
+See [Installation](docs/INSTALLATION.md) for Git previews and optional
+SpectreKinetic and ExFastembed integrations.
 
 ## A Small Agent
 
@@ -284,6 +298,8 @@ adapters on startup, and can stop after an idle timeout.
 
 - [Getting Started](docs/GETTING_STARTED.md) - a complete agent and host
   lifecycle, including approval, rejection, retries, execution, and sessions.
+- [Architecture](docs/ARCHITECTURE.md) - ownership, lifecycle, trust, and host
+  boundaries.
 - [DSL](docs/DSL.md) - agent macros, flows, handlers, policies, actions, input
   pipeline, and prompts.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
@@ -300,5 +316,14 @@ adapters on startup, and can stop after an idle timeout.
   supervised sessions.
 - [Journal](docs/JOURNAL.md) - structured decision records, privacy defaults,
   buffering, sampling, and store adapters.
+- [Production Operations](docs/PRODUCTION.md) - persistence, idempotency,
+  deadlines, supervision, privacy, and deployment checklist.
+- [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
+  matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
+- [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.
+
+## License
+
+Spectre is released under the [Apache License 2.0](LICENSE).

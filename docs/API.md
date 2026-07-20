@@ -1,117 +1,392 @@
 # Public API
 
-- `Spectre.ask/3` sends a low-level turn to an agent module or session and returns a `%Spectre.Result{}`.
-- `Spectre.turn/3` sends a high-level turn and returns a `%Spectre.Turn{}` with a lifecycle decision.
-- `Spectre.resolve_policy/4` persists a trusted host accept/reject decision without synthetic user text.
-- `Spectre.execute/3` executes one unprotected `:pending` or policy-approved action effect.
-- `Spectre.after_action/5` runs configured lifecycle hooks for completed action effects.
-- `Spectre.cancel/2` cancels the active policy/effect boundary.
-- `Spectre.summon/1` starts one session directly.
-- `Spectre.summon/3` starts one session under `Spectre.Supervisor`.
-- `Spectre.dismiss/2` stops a supervised session.
-- `Spectre.state/1` reads session state.
-- `Spectre.reset/2` replaces session state.
-- `Spectre.Router.evaluate/3` runs input normalization and routing without
-  loading state/memory adapters or executing a selected handler.
-- `Spectre.Eval.run/3` evaluates an agent against JSONL or in-memory routing
-  expectations and returns a `%Spectre.Eval.Report{}`.
+This guide maps Spectre's public boundary to the job a host application needs
+to perform. The module pages remain the exact function reference; this page
+explains how the pieces fit together and which layer an integration should use.
 
-`ask/3` is the raw runtime boundary. It returns visible text, effects,
-awaitables, state, route, and audit events.
+Spectre `0.1.x` is a public preview. Public modules, documented functions,
+struct fields, DSL forms, and adapter callbacks follow semantic versioning.
+Modules with `@moduledoc false`, undocumented generated functions, and private
+runtime data are implementation details.
+
+## Choose the right turn API
+
+| Need | API | Result |
+| --- | --- | --- |
+| Full runtime result | `Spectre.ask/3` | `{:ok, %Spectre.Result{}}` |
+| One host-facing decision | `Spectre.turn/3` | `{:ok, %Spectre.Turn{}}` |
+| Routing only | `Spectre.Router.evaluate/3` | `{:ok, %Spectre.Router.Receipt{}}` |
+| Dataset evaluation | `Spectre.Eval.run/3` | `{:ok, %Spectre.Eval.Report{}}` |
+
+`ask/3` is the low-level turn boundary. It returns reply text, effects,
+awaitables, route evidence, state, and audit events:
 
 ```elixir
-{:ok, result} = Spectre.ask(MyApp.Agent, "create a project")
+{:ok, result} =
+  Spectre.ask(
+    MyApp.SupportAgent,
+    %{text: "create a project", meta: %{locale: "en"}},
+    conversation_id: "conversation-42",
+    assigns: %{account_id: "acct-7"}
+  )
 
-[%Spectre.Effect{kind: :action, status: :waiting_policy}] = result.effects
+result.reply_text
+result.route
+result.effects
+result.awaitables
+result.state
+```
+
+`turn/3` wraps the same runtime result and reduces it into the next operation
+the host should perform:
+
+```elixir
+{:ok, turn} = Spectre.turn(MyApp.SupportAgent, "create a project")
+
+case turn.decision do
+  {:awaiting, awaitable, result} -> present_policy(awaitable, result)
+  {:needs, effect, result} -> execute_or_enqueue(effect, result)
+  {:completed, completion, result} -> deliver_completion(completion, result)
+  {:reply, result} -> deliver(result.reply_text)
+  {:no_response, result} -> record_no_response(result)
+end
+```
+
+Use `turn/3` for most HTTP, chat, and worker integrations. Use `ask/3` when the
+host needs to inspect multiple effects or build its own reducer.
+
+## Results and lifecycle queries
+
+`Spectre.Result` is the complete output of a turn. Prefer its query helpers to
+matching internal state lists yourself:
+
+```elixir
+lifecycle = Spectre.Result.lifecycle(result)
+
+lifecycle.open_awaitable
+lifecycle.pending_effect
+lifecycle.completions
+lifecycle.latest_completion
+lifecycle.action_outcome
+lifecycle.visible_reply?
+
+effect = Spectre.Result.pending_effect(result)
+awaitable = Spectre.Result.open_awaitable(result)
+completion = Spectre.Result.latest_completion(result)
+outcome = Spectre.Result.action_outcome(result)
+```
+
+The important lifecycle statuses are:
+
+```text
+planned -> waiting_policy -> approved -> pending -> completed
+                   |                         |        failed
+                   +-------------------------+------> cancelled
+```
+
+`Spectre.State` is authoritative machine state. `revision` supports optimistic
+concurrency, while `pending_effects`, `planned_effects`, and `awaitables`
+describe execution safety. Treat the struct as a versioned value: persist it
+through a state adapter or encode it with `Spectre.State.Codec` instead of
+serializing arbitrary Erlang terms.
+
+## Policy decisions and action execution
+
+A routed handler may plan an action, but it cannot directly perform a protected
+side effect. A protected action first produces a waiting effect and an open
+policy awaitable:
+
+```elixir
+{:ok, result} = Spectre.ask(MyApp.ProjectAgent, "delete project 42")
+
+[%Spectre.Effect{status: :waiting_policy}] = result.effects
 [%Spectre.Awaitable{kind: :policy, status: :open}] = result.awaitables
 ```
 
-After the user accepts the policy, the turn returns the same effect in
-`:approved` state. Execution remains explicit:
+The user's next message can resolve the policy through normal routing:
 
 ```elixir
-{:ok, approved} = Spectre.ask(MyApp.Agent, "yes", state: result.state)
-[%Spectre.Effect{status: :approved}] = approved.effects
+{:ok, approved} =
+  Spectre.ask(MyApp.ProjectAgent, "yes, delete it", state: result.state)
 
-{:ok, completed} =
-  Spectre.execute(approved.state, %{agent: MyApp.Agent})
+%Spectre.Effect{status: :approved} =
+  Spectre.Result.pending_effect(approved)
 ```
 
-When the host already has durable proof that the policy is satisfied, resolve
-the declared policy label directly. Spectre persists this transition before
-returning; it does not route a fake `"yes"` message or append chat history:
+If the host already has trusted, durable proof, resolve the declared label
+without injecting synthetic user text:
 
 ```elixir
 {:ok, approved} =
   Spectre.resolve_policy(
-    MyApp.Agent,
-    awaiting_result,
-    {:accept, :terms_accepted},
-    conversation_id: conversation.id,
-    assigns: %{user: user}
+    MyApp.ProjectAgent,
+    result,
+    {:accept, :delete_confirmed},
+    conversation_id: "conversation-42",
+    assigns: %{actor_id: "user-9"}
   )
 ```
 
-For an existing `%Spectre.Turn{}`, the same transition is available through
-`Spectre.Turn.resolve_policy/3`. Live sessions also update their in-memory
-state.
-
-`Spectre.Result.lifecycle/1`, `pending_effect/1`,
-`open_awaitable/1`, `latest_completion/1`, and `action_outcome/1`
-provide a normalized host view. `Spectre.Effect.outcome/1` flattens completed,
-failed, and cancelled effects so applications do not need their own lifecycle
-pattern matcher.
-
-`turn/3` wraps `ask/3` and reduces the result into what the host should do next:
+Execution remains explicit and separate from approval:
 
 ```elixir
-{:ok, turn} = Spectre.turn(MyApp.Agent, "create a project")
+{:ok, completed} =
+  Spectre.execute(
+    MyApp.ProjectAgent,
+    approved,
+    conversation_id: "conversation-42",
+    assigns: %{actor_id: "user-9"}
+  )
 
-case turn.decision do
-  {:awaiting, awaitable, result} -> present_policy(awaitable, result)
-  {:needs, effect, result} -> run_effect(effect, result)
-  {:completed, completion, result} -> deliver_completion(completion, result)
-  {:reply, result} -> deliver(result.reply_text)
-  {:no_response, result} -> :ok
+{:ok, value} = Spectre.Result.action_outcome(completed)
+```
+
+Module/session execution persists transitions around the action boundary and
+checks idempotency. `Spectre.execute(state, context)` is the lower-level form
+for integrations that own those concerns themselves. See [Actions and Policy
+Gates](ACTIONS.md) for action return values, protection, and hooks.
+
+After an external delivery succeeds, lifecycle hooks can run independently:
+
+```elixir
+:ok =
+  Spectre.after_action(
+    MyApp.ProjectAgent,
+    :delivered,
+    completed,
+    %{conversation_id: "conversation-42"}
+  )
+```
+
+Use `Spectre.cancel/2` to cancel the active policy/effect boundary.
+
+## Stateful sessions
+
+Calling an agent module is suitable for request-scoped runtimes backed by a
+durable state adapter. Sessions provide one OTP process per active
+conversation:
+
+```elixir
+children = [
+  {Spectre.Supervisor, name: MyApp.SpectreSupervisor}
+]
+
+{:ok, session} =
+  Spectre.summon(
+    MyApp.SpectreSupervisor,
+    MyApp.SupportAgent,
+    conversation_id: "conversation-42"
+  )
+
+{:ok, turn} = Spectre.turn(session, "hello")
+%Spectre.State{} = Spectre.state(session)
+:ok = Spectre.reset(session, restored_state)
+:ok = Spectre.dismiss(MyApp.SpectreSupervisor, session)
+```
+
+`Spectre.summon/1` starts a session directly; prefer `summon/3` in production
+so a `Spectre.Supervisor` owns restart and shutdown behavior.
+
+## Route-only evaluation
+
+`Spectre.Router.evaluate/3` normalizes input and runs routing without loading
+conversation state, memory, prompts for a selected handler, or actions:
+
+```elixir
+{:ok, receipt} =
+  Spectre.Router.evaluate(MyApp.SupportAgent, "I need a refund")
+
+receipt.outcome
+receipt.label
+receipt.strategy
+receipt.attempts
+receipt.provider_calls
+receipt.llm_called?
+```
+
+`Spectre.Router.Receipt` deliberately excludes input text, generated prompts,
+model output, regex matches, raw errors, and handlers. It is safe to use for
+aggregate routing telemetry, subject to the metadata your adapters add.
+
+For regression suites, `Spectre.Eval.run/3` accepts JSONL or in-memory cases:
+
+```elixir
+{:ok, report} =
+  Spectre.Eval.run(
+    MyApp.SupportAgent,
+    [
+      %{
+        id: "greeting-1",
+        input: "hello",
+        expected_route: :greeting,
+        llm: :forbidden,
+        tags: [:release]
+      },
+      %{
+        id: "refund-1",
+        input: "refund order 42",
+        expected_route: :refund,
+        llm: :allowed,
+        tags: [:release]
+      }
+    ]
+  )
+
+report.route_accuracy
+report.confusion_matrix
+report.unnecessary_llm_calls
+```
+
+See [Routing Evaluation](EVALUATION.md) for the JSONL schema and the
+`mix spectre.eval` CI task.
+
+## Routing and strategy precedence
+
+The agent's `router` declaration selects evidence providers and their order:
+
+```elixir
+router via: [
+  :regex,
+  :semantic_cache,
+  :classifier,
+  :embedding,
+  :llm_classifier
+]
+```
+
+Strategies propose candidates; the configured arbitrator decides the winning
+route from normalized evidence. A strategy miss is not automatically an
+error. Timeouts, malformed provider replies, confidence thresholds, margins,
+and ties remain visible in sanitized attempts and receipts.
+
+The lower-level `Spectre.Router.route/2` accepts an already normalized
+`Spectre.Input` and a complete `Spectre.Context`. Application integrations
+should usually prefer `evaluate/3` for diagnostics or `ask/3` for a complete
+turn.
+
+See [Routing](ROUTING.md) for precedence, cache behavior, confidence, and
+arbitration.
+
+## Semantic-cache review API
+
+`Spectre.Router.SemanticCache` is the stable facade for both custom adapters
+and the built-in learned cache:
+
+```elixir
+alias Spectre.Router.SemanticCache
+
+{:ok, examples} = SemanticCache.examples(MyApp.SupportAgent)
+{:ok, example} = SemanticCache.get_example(MyApp.SupportAgent, id)
+{:ok, example} = SemanticCache.verify(MyApp.SupportAgent, id)
+{:ok, example} = SemanticCache.relabel(MyApp.SupportAgent, id, :billing)
+:ok = SemanticCache.delete(MyApp.SupportAgent, id)
+```
+
+Online examples are editable. Static DSL examples and mirrored classifier
+datasets are reviewable but read-only. Labels must still exist and allow
+semantic caching, preventing a stale snapshot from introducing an undeclared
+route.
+
+Snapshots can be kept in source control or moved between deployments:
+
+```elixir
+{:ok, path} =
+  SemanticCache.snapshot(
+    MyApp.SupportAgent,
+    path: "priv/semantic/support.jsonl"
+  )
+
+{:ok, %{loaded: loaded, skipped: skipped}} =
+  SemanticCache.load_snapshot(MyApp.SupportAgent, path, strict?: false)
+```
+
+Custom cache modules implement `Spectre.Router.SemanticCache` callbacks.
+Mutation callbacks are optional; read-only custom caches can implement only
+`lookup/2` and return a controlled error for review operations.
+
+## Journaling, telemetry, and monitoring
+
+`Spectre.Journal.Store` receives versioned `Spectre.Journal.Record` values.
+Journaling is disabled by default and configured at agent, application, or
+call level:
+
+```elixir
+defmodule MyApp.Agent do
+  use Spectre.Agent
+
+  journal MyApp.JournalStore,
+    include_input: false,
+    failure_mode: :continue
 end
 ```
 
-## Journal Contracts
+Arbitration records have stable identifiers derived from turn identity and do
+not include conversation content unless `include_input: true` is explicit.
+See [Journal](JOURNAL.md) for delivery and privacy semantics.
 
-`Spectre.Journal.Store` is the append-only adapter behaviour for structured
-decision records. `Spectre.Journal.Record` is the versioned value passed to the
-store. Journaling is configured through `Spectre.Agent.journal/2`, application
-configuration, or the per-call `:journal` option; it is disabled by default.
+`Spectre.Telemetry.emit/4` emits events only when `:telemetry` is available;
+telemetry handlers cannot crash the runtime. Event metadata is intended for
+identifiers, strategies, statuses, durations, and counts—not prompts or user
+content. `Spectre.Monitor` provides the built-in aggregate observer.
 
-The current implementation emits `:arbitration` records from completed router
-contexts. Records use stable IDs derived from `turn_id`, phase, sequence, and
-agent, and omit conversation content unless `include_input: true` is explicit.
-See [Journal](JOURNAL.md) for configuration and delivery semantics.
+## Adapter contracts
 
-## Routing Evaluation Contracts
+Spectre exposes behaviors where a strict callback contract is useful and
+function conventions where adapters may be supplied as modules, tuples, or
+functions:
 
-`Spectre.Router.Receipt` is the privacy-safe result of one route-only
-evaluation. It records outcome, label, strategy, sanitized attempts and
-candidates, total duration, per-provider normalized outcomes/durations, and
-whether an LLM adapter worker was actually invoked. It does not contain input
-text, prompts, model output, matches, raw provider errors, or handlers.
+| Behavior | Responsibility |
+| --- | --- |
+| `Spectre.LLM` | Complete rendered prompts and return normalized provider output |
+| `Spectre.State.Store` | Load and compare-and-swap durable conversation state |
+| `Spectre.Classifier.Embedding` | Produce embedding vectors |
+| `Spectre.Router.SemanticCache` | Lookup and optionally review learned routes |
+| `Spectre.Journal.Store` | Append structured audit records idempotently |
 
-`Spectre.Eval.Case` describes expected route/outcome and whether an LLM call is
-forbidden, allowed, or required. `Spectre.Eval.Result` contains structured
-violations for one case. `Spectre.Eval.Report` aggregates accuracy, provider
-usage, LLM violations, duration percentiles, confusion data, and tag results.
+Memory adapters use `recall/2` and an optional persistence callback documented
+in [Memory](MEMORY.md). Local classifier adapters expose `classify/2`; the
+built-in `Spectre.Classifier` is also available for trained artifacts. Router
+and input pipelines implement `Spectre.Router.Plug` and `Spectre.Input.Plug`,
+while custom arbitration implements `Spectre.Router.Arbitrator`.
 
-See [Routing Evaluation](EVALUATION.md) for the JSONL schema and
-`mix spectre.eval` CI workflow.
+Routing-critical providers run through `Spectre.Provider.Call`, which enforces
+deadline validation, isolation, reply normalization, and sanitized failures.
+Provider-declared `{:error, reason}` values are preserved; crashes, exits,
+throws, timeouts, and malformed replies become `Spectre.Provider.Failure`
+values. See [Provider Resilience](PROVIDERS.md).
 
-## Provider Contracts
+## Option precedence
 
-`Spectre.Provider.Call.run/3` is the shared isolation and timeout boundary used
-by routing-critical adapters. `Spectre.Provider.Failure` represents sanitized
-timeouts, exceptions, exits, throws, crashes, malformed replies, and invalid
-deadline configuration. Adapter-declared `{:error, reason}` replies remain
-unchanged.
+Unless a module documents a narrower rule, runtime options are resolved from
+least to most specific:
 
-See [Provider Resilience](PROVIDERS.md) for timeout precedence, defaults,
-cancellation semantics, and the boundary between core behavior and
-provider-specific retries.
+1. Spectre defaults.
+2. Application configuration.
+3. Agent DSL configuration.
+4. Adapter tuple options.
+5. Per-call options.
+
+This lets production defaults remain centralized while a single evaluation or
+turn can override a timeout, threshold, state, adapter, or diagnostic flag.
+Do not pass untrusted user fields directly as runtime options.
+
+## Errors
+
+Public operations use tagged tuples and avoid raising for provider or user
+failures:
+
+```elixir
+case Spectre.turn(MyApp.Agent, input) do
+  {:ok, turn} -> handle(turn)
+  {:error, %Spectre.Provider.Failure{} = failure} -> retry_or_degrade(failure)
+  {:error, {:state_conflict, details}} -> reload_and_retry(details)
+  {:error, reason} -> report(reason)
+end
+```
+
+Configuration and DSL validation may raise at compile time because the agent
+definition is invalid. Runtime adapter implementations should preserve the
+documented tagged-tuple contracts and must not place secrets or raw user input
+inside error reasons that could reach logs.
+
+For a complete deployable setup, continue with [Production](PRODUCTION.md).

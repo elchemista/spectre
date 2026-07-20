@@ -17,6 +17,22 @@ defmodule Spectre.Policy.Resolution do
           metadata: map()
         }
 
+  @doc """
+  Validates and builds an accept or reject resolution.
+
+  `kind` must be `:accept` or `:reject`; `label` and `source` must be atoms;
+  metadata must be a map. The constructor returns an error tuple instead of
+  raising so host-supplied policy decisions can be rejected without mutating
+  state.
+
+      {:ok, resolution} =
+        Spectre.Policy.Resolution.new(
+          :accept,
+          :terms_accepted,
+          :host,
+          %{actor_id: "admin-1"}
+        )
+  """
   @spec new(kind(), atom(), source(), map()) :: {:ok, t()} | {:error, term()}
   def new(kind, label, source, metadata \\ %{})
 
@@ -28,6 +44,13 @@ defmodule Spectre.Policy.Resolution do
   def new(kind, label, source, metadata),
     do: {:error, {:invalid_policy_resolution, kind, label, source, metadata}}
 
-  @spec to_tuple(t()) :: {:accept | :reject, atom()}
+  @doc """
+  Returns the compact `{kind, label}` representation accepted by lifecycle
+  policy commands.
+
+      {:accept, :terms_accepted} =
+        Spectre.Policy.Resolution.to_tuple(resolution)
+  """
+  @spec to_tuple(t()) :: {kind(), atom()}
   def to_tuple(%__MODULE__{kind: kind, label: label}), do: {kind, label}
 end

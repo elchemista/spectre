@@ -377,12 +377,34 @@ defmodule Spectre.State.Codec do
 
   @spec validate_effect(Effect.t()) :: :ok | {:error, term()}
   defp validate_effect(%Effect{} = effect) do
+    with :ok <- validate_effect_identity(effect),
+         :ok <- validate_effect_ownership(effect) do
+      validate_effect_maps(effect)
+    end
+  end
+
+  @spec validate_effect_identity(Effect.t()) :: :ok | {:error, term()}
+  defp validate_effect_identity(%Effect{} = effect) do
     cond do
       effect.kind not in @effect_kinds -> {:error, {:invalid_effect_kind, effect.kind}}
       effect.status not in @effect_statuses -> {:error, {:invalid_effect_status, effect.status}}
       not is_binary(effect.idempotency_key) -> {:error, :invalid_idempotency_key}
+      true -> :ok
+    end
+  end
+
+  @spec validate_effect_ownership(Effect.t()) :: :ok | {:error, term()}
+  defp validate_effect_ownership(%Effect{} = effect) do
+    cond do
       not is_nil(effect.owner) and not is_atom(effect.owner) -> {:error, :invalid_effect_owner}
       not valid_effect_scope?(effect.scope) -> {:error, {:invalid_effect_scope, effect.scope}}
+      true -> :ok
+    end
+  end
+
+  @spec validate_effect_maps(Effect.t()) :: :ok | {:error, term()}
+  defp validate_effect_maps(%Effect{} = effect) do
+    cond do
       not is_map(effect.args) -> {:error, :invalid_effect_args}
       not is_map(effect.payload) -> {:error, :invalid_effect_payload}
       not is_map(effect.metadata) -> {:error, :invalid_effect_metadata}

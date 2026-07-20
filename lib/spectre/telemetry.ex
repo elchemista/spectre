@@ -8,6 +8,25 @@ defmodule Spectre.Telemetry do
   callback failures never alter a turn.
   """
 
+  @doc """
+  Emits one privacy-safe event under the `[:spectre, ...]` prefix.
+
+  When `:telemetry` is installed, Spectre calls `:telemetry.execute/3`. A host
+  may also pass `telemetry_handler:` as an arity-three function or
+  `{module, function}` tuple. Both handlers receive the prefixed event,
+  measurements, and metadata.
+
+      Spectre.Telemetry.emit(
+        [:execution, :stop],
+        %{duration_us: 850},
+        %{outcome: :ok, kind: :action}
+      )
+
+  Telemetry is observational. Invalid handlers, exceptions, exits, and throws
+  are contained and the function always returns `:ok`. Callers must keep
+  metadata free of prompts, conversation text, credentials, and raw adapter
+  errors.
+  """
   @spec emit([atom()], map(), map(), keyword()) :: :ok
   def emit(event, measurements \\ %{}, metadata \\ %{}, opts \\ [])
 

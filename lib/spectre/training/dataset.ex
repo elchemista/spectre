@@ -25,7 +25,9 @@ defmodule Spectre.Training.Dataset do
     * `.json` files - list of objects with `text` and `label`/`intent`.
     * `.jsonl` files - one JSON object per line with `text` and `label`/`intent`.
 
-      {:ok, rows} = Spectre.Training.Dataset.from_agent(MyApp.Agent)
+  ```elixir
+  {:ok, rows} = Spectre.Training.Dataset.from_agent(MyApp.Agent)
+  ```
   """
   @spec from_agent(module(), keyword()) :: {:ok, [row()]} | {:error, term()}
   def from_agent(agent, opts \\ []) when is_atom(agent) and is_list(opts) do

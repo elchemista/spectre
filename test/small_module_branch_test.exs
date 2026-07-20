@@ -117,11 +117,16 @@ end
 defmodule SpectreSmallModuleBranchTest do
   use ExUnit.Case, async: false
 
+  alias Spectre.Classifier.Math
   alias Spectre.Context
   alias Spectre.Effect
   alias Spectre.Eval.Case, as: EvalCase
   alias Spectre.Provider.Failure
   alias Spectre.Provider.Reply
+  alias Spectre.Router.Candidate
+  alias Spectre.Router.Plugs.Terminalize
+  alias Spectre.Skill.Mount
+  alias SpectreSmallModuleBranchTest.MountSkill
 
   test "context helpers are immutable and prepend diagnostics" do
     original = %Context{}
@@ -599,13 +604,13 @@ defmodule SpectreSmallModuleBranchTest do
 
   test "small compatibility boundaries cover defaults and malformed vector data" do
     assert :ok = Spectre.Telemetry.emit([:default])
-    assert [] == Spectre.Classifier.Math.centroid([])
-    assert 0.0 == Spectre.Classifier.Math.raw_cosine_score({:error, :bad})
-    assert 0.0 == Spectre.Classifier.Math.raw_cosine_score(:bad)
-    assert [0.0, 0.0] == Spectre.Classifier.Math.normalize([0.0, 0.0])
+    assert [] == Math.centroid([])
+    assert 0.0 == Math.raw_cosine_score({:error, :bad})
+    assert 0.0 == Math.raw_cosine_score(:bad)
+    assert [0.0, 0.0] == Math.normalize([0.0, 0.0])
 
     context = %Spectre.Router.Context{}
-    assert {:cont, ^context} = Spectre.Router.Plugs.Terminalize.call(context, [])
+    assert {:cont, ^context} = Terminalize.call(context, [])
 
     assert {:ok, %{events: [%{type: :effect_missing}]}} =
              Spectre.ActionExecutor.execute_pending(
@@ -617,17 +622,17 @@ defmodule SpectreSmallModuleBranchTest do
     assert {:ok, ^record} = Spectre.Journal.Record.restore(record)
     assert {:error, {:invalid_journal_record, :bad}} = Spectre.Journal.Record.restore(:bad)
 
-    skill = SpectreSmallModuleBranchTest.MountSkill.definition()
+    skill = MountSkill.definition()
 
-    assert %Spectre.Skill.Mount{bindings: %{logical_read: :physical_read}} =
-             Spectre.Skill.Mount.new(
-               SpectreSmallModuleBranchTest.MountSkill,
+    assert %Mount{bindings: %{logical_read: :physical_read}} =
+             Mount.new(
+               MountSkill,
                skill,
                bind: %{logical_read: :physical_read}
              )
 
     assert_raise ArgumentError, fn ->
-      Spectre.Skill.Mount.new(SpectreSmallModuleBranchTest.MountSkill, skill, bind: :invalid)
+      Mount.new(MountSkill, skill, bind: :invalid)
     end
   end
 
@@ -698,7 +703,7 @@ defmodule SpectreSmallModuleBranchTest do
 
   test "router candidate defaults retain raw string intents and context errors" do
     candidate =
-      Spectre.Router.Candidate.from_result(
+      Candidate.from_result(
         %{"intent" => "ALPHA", accepted?: true, confidence: 0.7},
         nil,
         :classifier
@@ -708,7 +713,7 @@ defmodule SpectreSmallModuleBranchTest do
     assert candidate.strength == :medium
 
     assert %Spectre.Route{label: "ALPHA", labels: []} =
-             Spectre.Router.Candidate.to_route(candidate)
+             Candidate.to_route(candidate)
 
     context = %Spectre.Router.Context{opts: [], candidates: []}
     assert Spectre.Router.Context.hard_candidate_locked?(context) == false
