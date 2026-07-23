@@ -1,6 +1,7 @@
 defmodule Spectre.Router.SemanticCache.Owner do
   @moduledoc """
-  Stable owner for the built-in semantic-cache ETS tables.
+  Stable owner for the built-in semantic-cache ETS tables and collection
+  lifecycle operations.
 
   Tables created by arbitrary request processes disappear when those callers
   exit. Owning them from the application supervision tree makes their lifetime
@@ -58,12 +59,8 @@ defmodule Spectre.Router.SemanticCache.Owner do
 
   @doc false
   @spec drop_collection(Vettore.Collection.t()) :: :ok | {:error, term()}
-  def drop_collection(%Vettore.Collection{
-        store_state: %Vettore.Store.ETS{table: table}
-      }),
-      do: call_owner({:drop_table, table})
-
-  def drop_collection(%Vettore.Collection{}), do: :ok
+  def drop_collection(%Vettore.Collection{} = collection),
+    do: call_owner({:drop_collection, collection})
 
   @doc false
   @spec cache_index(atom(), term(), map(), pos_integer() | :unlimited) ::
@@ -92,13 +89,14 @@ defmodule Spectre.Router.SemanticCache.Owner do
   end
 
   def handle_call({:new_collection, opts}, _from, state) do
-    # Vettore's ETS store is owned by the process calling Vettore.new/1. Build
-    # it here so a short-lived lookup process cannot invalidate a cached index.
+    # Collection lifecycle changes remain serialized with cache updates. Modern
+    # Vettore versions place each ETS collection under their own supervised
+    # owner, so its lifetime is independent from both this server and callers.
     {:reply, create_collection(opts), state}
   end
 
-  def handle_call({:drop_table, table}, _from, state) do
-    {:reply, drop_owned_table(table), state}
+  def handle_call({:drop_collection, collection}, _from, state) do
+    {:reply, close_collection(collection), state}
   end
 
   def handle_call({:cache_index, key, index, capacity}, _from, state) do
@@ -185,12 +183,8 @@ defmodule Spectre.Router.SemanticCache.Owner do
   end
 
   @spec drop_index_collection(map()) :: :ok | {:error, term()}
-  defp drop_index_collection(%{
-         collection: %Vettore.Collection{
-           store_state: %Vettore.Store.ETS{table: table}
-         }
-       }),
-       do: drop_owned_table(table)
+  defp drop_index_collection(%{collection: %Vettore.Collection{} = collection}),
+    do: close_collection(collection)
 
   defp drop_index_collection(_index), do: :ok
 
@@ -206,20 +200,16 @@ defmodule Spectre.Router.SemanticCache.Owner do
     end
   end
 
-  @spec drop_owned_table(:ets.tid()) :: :ok | {:error, term()}
-  defp drop_owned_table(table) do
-    case :ets.info(table, :owner) do
-      owner when owner == self() ->
-        true = :ets.delete(table)
-        :ok
-
-      :undefined ->
-        :ok
-
-      owner ->
-        {:error, {:semantic_cache_table_not_owned, owner}}
-    end
+  @spec close_collection(Vettore.Collection.t()) :: :ok | {:error, term()}
+  defp close_collection(collection) do
+    Vettore.close(collection)
   rescue
-    ArgumentError -> :ok
+    exception ->
+      {:error,
+       {:semantic_cache_collection_close_exception, exception.__struct__,
+        Exception.message(exception)}}
+  catch
+    kind, reason ->
+      {:error, {:semantic_cache_collection_close_failure, kind, reason}}
   end
 end

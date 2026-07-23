@@ -14,10 +14,34 @@ host integration smaller.
 - Policy approval and side-effect execution are separate operations.
 - `State`, `Effect`, `Awaitable`, `Result`, and `Turn` expose lifecycle as data.
 - Sessions serialize conversation turns and can restore durable state.
+- Ordered turn handlers let an optional external runtime own a normal turn
+  without gaining authority over Spectre state, policy, routing, or effects.
 - `spectre_kinetic` can own Action Language and tool planning without moving
   side effects into the conversational runtime.
 
 These are the foundations to preserve.
+
+## Ecosystem integration direction
+
+Future packages should compose through one local turn vocabulary and explicit
+ownership boundaries rather than a universal plugin system:
+
+- `Spectre.turn/3` remains the canonical local host port for Agent modules and
+  Sessions;
+- SpectreDirective may claim an active durable mission through a turn handler;
+- SpectreMnemonic should adapt to the existing memory port;
+- SpectreLens should expose browser work as trusted actions/Skills and safe
+  context data;
+- SpectrePulse may define agent-to-agent envelopes, addressing, task and
+  correlation identifiers, delivery, retries, streaming, and cancellation,
+  then adapt a validated payload to and from `Spectre.turn/3`;
+- a Pulse exchange should use a turn handler only when an already-active local
+  task genuinely owns subsequent input before normal routing.
+
+New libraries can register ordered handlers without creating a core
+dependency, but the handler contract will remain deliberately unable to
+mutate input, state, routes, effects, or awaitables. Broader needs should first
+justify a dedicated narrow port.
 
 ## Implementation Journal
 

@@ -4,7 +4,13 @@ defmodule Spectre.Turn do
 
   A turn wraps the raw `%Spectre.Result{}` and a lifecycle decision that tells
   the host what to do next without encoding capability-specific branches in the
-  decision vocabulary.
+  decision vocabulary. This is Spectre's canonical local host result whether
+  the input was routed normally or claimed by a pre-route
+  `Spectre.Turn.Handler`.
+
+  Transport protocols should map their envelope into `Spectre.turn/3` and map
+  this result back out. Addressing, correlation, remote task state, retries,
+  and delivery guarantees remain transport concerns.
   """
 
   alias Spectre.Result

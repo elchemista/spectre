@@ -12,6 +12,7 @@ defmodule Spectre.Definition.Validator do
     :actions,
     :state,
     :memory,
+    :turn_handlers,
     :model,
     :classifier,
     :embedding,
@@ -37,6 +38,17 @@ defmodule Spectre.Definition.Validator do
     :terminalize
   ]
 
+  # `Definition.t()` describes the valid compiled shape, while this validator
+  # deliberately exercises malformed structs received from dynamic or test
+  # construction. Dialyzer therefore sees these defensive fallback clauses as
+  # unreachable in the production call graph even though they are public-boundary
+  # validation covered by tests.
+  @dialyzer {:nowarn_function, validate_router: 1}
+  @dialyzer {:nowarn_function, validate_rules: 1}
+  @dialyzer {:nowarn_function, validate_policies: 1}
+  @dialyzer {:nowarn_function, validate_requirement_list: 1}
+  @dialyzer {:nowarn_function, validate_protections: 1}
+
   @doc """
   Validates a compiled definition and raises `ArgumentError` on invalid DSL.
   """
@@ -46,6 +58,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_identity(definition),
          :ok <- validate_version(definition),
          :ok <- validate_skill_config(definition),
+         :ok <- validate_turn_handlers(definition),
          :ok <- validate_skill_router(definition),
          :ok <- validate_router(definition),
          :ok <- validate_rules(definition),
@@ -98,6 +111,40 @@ defmodule Spectre.Definition.Validator do
   end
 
   defp validate_skill_config(%Definition{}), do: :ok
+
+  @spec validate_turn_handlers(Definition.t()) :: :ok | {:error, term()}
+  defp validate_turn_handlers(%Definition{config: config}) do
+    case Keyword.get(config, :turn_handlers) do
+      value when value in [nil, false] ->
+        :ok
+
+      handlers when is_list(handlers) ->
+        validate_turn_handler_list(handlers, 0)
+
+      invalid ->
+        {:error, {:invalid_turn_handlers, invalid}}
+    end
+  end
+
+  @spec validate_turn_handler_list([term()], non_neg_integer()) :: :ok | {:error, term()}
+  defp validate_turn_handler_list([], _index), do: :ok
+
+  defp validate_turn_handler_list([handler | rest], index) do
+    case validate_turn_handler(handler) do
+      :ok -> validate_turn_handler_list(rest, index + 1)
+      {:error, reason} -> {:error, {:invalid_turn_handler, index, reason}}
+    end
+  end
+
+  @spec validate_turn_handler(term()) :: :ok | {:error, term()}
+  defp validate_turn_handler(handler) when is_atom(handler) and not is_nil(handler), do: :ok
+
+  defp validate_turn_handler({handler, opts})
+       when is_atom(handler) and not is_nil(handler) and is_list(opts) do
+    if Keyword.keyword?(opts), do: :ok, else: {:error, {:invalid_options, opts}}
+  end
+
+  defp validate_turn_handler(handler), do: {:error, {:invalid_spec, handler}}
 
   @spec validate_skill_router(map()) :: :ok | {:error, term()}
   defp validate_skill_router(%Definition{kind: :skill, router: []}), do: :ok

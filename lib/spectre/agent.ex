@@ -442,6 +442,51 @@ defmodule Spectre.Agent do
   end
 
   @doc """
+  Appends an optional handler to the pre-route turn pipeline.
+
+  Handlers run in declaration order after an already-open Spectre policy and
+  before ordinary routing. They return `:cont` to preserve the pipeline or a
+  typed reply to own the turn. This is a dependency-free integration point for
+  external runtimes; memory, actions, prompts, input, and telemetry retain
+  their narrower dedicated boundaries.
+
+      turn_handler MyApp.ActiveWorkflow, namespace: :support
+  """
+  defmacro turn_handler(handler, opts \\ []) do
+    handler = Macro.expand(handler, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+    handler_spec = {handler, opts}
+
+    quote bind_quoted: [handler_spec: handler_spec] do
+      handlers =
+        case Keyword.get(@spectre_config, :turn_handlers, []) do
+          current when is_list(current) -> current ++ [handler_spec]
+          _disabled_or_invalid -> [handler_spec]
+        end
+
+      @spectre_config Keyword.put(@spectre_config, :turn_handlers, handlers)
+    end
+  end
+
+  @doc """
+  Replaces the complete turn-handler pipeline or disables it with `false`.
+
+      turn_handlers [
+        MyApp.FirstIntegration,
+        {MyApp.SecondIntegration, namespace: :support}
+      ]
+
+      turn_handlers false
+  """
+  defmacro turn_handlers(handlers) do
+    handlers = eval_opts(handlers, __CALLER__)
+
+    quote bind_quoted: [handlers: handlers] do
+      @spectre_config Keyword.put(@spectre_config, :turn_handlers, handlers)
+    end
+  end
+
+  @doc """
   Declares an input normalization pipeline using plug syntax.
 
   Input plugs run before state, routing, and policy handling. This makes
