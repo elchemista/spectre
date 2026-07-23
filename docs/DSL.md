@@ -20,6 +20,7 @@ Spectre uses `priv/spectre/prompts`.
 - `:fail`
 - `:arbitrator`
 - `:journal`
+- `:turn_handlers`
 
 Unknown keys are kept in `__spectre_config__/0`, so host applications can attach
 their own metadata. `:arbitrator` is copied into router config; the other keys
@@ -142,6 +143,7 @@ What they mean:
 - `embedding/2` provides the adapter used by embedding routing.
 - `classifier/2` provides classifier-specific LLM and local adapters.
 - `journal/2` configures structured decision recording.
+- `turn_handler/2` appends an optional owner of a complete normal turn.
 - `actions/2` stores `{module, opts}`. Those opts are also merged into
   SpectreKinetic planning opts and receive `actions_module: module`.
 - `shutdown/1` and `idle/1` affect supervised sessions.
@@ -150,6 +152,29 @@ What they mean:
 
 Per-call options such as `state: %Spectre.State{}` or `memory: value` can bypass
 adapters for tests or host-controlled replay.
+
+## `turn_handler` and `turn_handlers`
+
+```elixir
+turn_handler MyApp.ActiveWorkflow, namespace: :support
+
+turn_handlers [
+  {MyApp.ActiveWorkflow, namespace: :support}
+]
+```
+
+Handlers execute in declaration order after any already-open policy and before
+routing. Each implements `Spectre.Turn.Handler` and returns `:cont` or
+`{:reply, %Spectre.Turn.Handler.Reply{}}`. The first reply owns the turn.
+Failures and timeouts stop the turn rather than allowing another route to
+reinterpret the input.
+
+`turn_handlers/1` replaces the full list. Pass `false` to disable it in an
+Agent or in trusted per-call options. Skills cannot configure this Agent-wide
+infrastructure. A handler is a pre-route ownership hook, not the canonical
+host result or a protocol envelope. Use the narrower input, memory, Skill,
+action, journal, or transport boundary when an integration does not own the
+complete turn. See [Turn semantics and integration boundaries](INTEGRATIONS.md).
 
 ## `flow` And `on`
 

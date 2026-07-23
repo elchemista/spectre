@@ -18,7 +18,11 @@ Runtime restore ──► Spectre.State + recalled memory
   │
   ├─ open policy ──► deterministic Policy.Matcher
   │
-  └─ normal turn ──► router plugs ──► candidates ──► arbitrator
+  └─ normal turn ──► ordered turn handlers
+                       │
+                       ├─ claimed ──► typed integration reply
+                       │
+                       └─ continue ──► router plugs ──► candidates ──► arbitrator
                                               │
                                               ▼
                                          Spectre.Route
@@ -44,6 +48,26 @@ Runtime restore ──► Spectre.State + recalled memory
 `Spectre.turn/3` wraps the result in a `Spectre.Turn` and reduces authoritative
 state to one host decision. It does not execute a staged effect.
 
+## One vocabulary, separate execution models
+
+The common semantic boundary is `input -> result -> turn decision`. It is not
+a requirement that every participant use the same callback or own the same
+state:
+
+| Participant | Role in a turn |
+| --- | --- |
+| Agent module | evaluates one stateless/local call through `Spectre.turn/3` |
+| `Spectre.Session` | serializes calls and retains the latest Spectre state |
+| `GenServer` or `gen_statem` | calls or adapts the local turn API while retaining its native OTP protocol |
+| `Spectre.Turn.Handler` | optionally claims an already-active dialogue before routing |
+| SpectreDirective | owns and snapshots a durable mission/plan across turns |
+| SpectrePulse | owns remote envelopes, correlation, task state, and delivery |
+
+This distinction matters under failure. A local handler timeout, an OTP process
+restart, a stale durable snapshot, and an ambiguous network delivery require
+different recovery rules even though they eventually produce or consume the
+same turn decisions.
+
 ## Ownership
 
 | Concern | Owner |
@@ -56,6 +80,7 @@ state to one host decision. It does not execute a staged effect.
 | Policy text/label matching | `Spectre.Policy.Matcher` |
 | Prompt trust and composition | `Spectre.Prompt.Plan` |
 | Provider isolation and deadlines | `Spectre.Provider.Call` |
+| Optional ownership of a complete normal turn | `Spectre.Turn.Handler` |
 | Capability invocation | `Spectre.ActionDispatcher` |
 | Action terminal transition | `Spectre.Execution` |
 | Durable storage and authorization | host application |
@@ -133,8 +158,15 @@ infrastructure:
 - `Spectre.Classifier.Embedding` and classifier callbacks;
 - model functions or modules through `Spectre.LLM`;
 - semantic-cache adapters through `Spectre.Router.SemanticCache`;
+- external conversation owners through ordered `Spectre.Turn.Handler`
+  adapters;
 - action registries and optional SpectreKinetic planning.
 
 All provider-style callbacks execute behind documented failure and timeout
 boundaries. See [Provider Resilience](PROVIDERS.md).
 
+The handler is not a universal plugin or a wire protocol. The canonical local
+host result is `%Spectre.Turn{}` from `Spectre.turn/3`. Input transformation,
+memory, Skills, actions, telemetry, journaling, and transport retain their
+dedicated boundaries. See
+[Turn semantics and integration boundaries](INTEGRATIONS.md).

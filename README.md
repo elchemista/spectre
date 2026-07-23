@@ -34,7 +34,9 @@ a map, not a magic trick.
 ```text
 input
   -> normalize
-  -> collect routing evidence
+  -> restore state and memory
+  -> resolve an already-open policy, or consult ordered turn handlers
+  -> collect routing evidence when no integration claims the turn
   -> arbitrate one route
   -> run handler
        -> reply / no response
@@ -209,6 +211,24 @@ behavior independent of application-specific action names and implementations.
 See [Skills](docs/SKILLS.md) for a complete example, action binding, scoped
 prompts and policies, and composition rules.
 
+## Turn Semantics And Optional Owners
+
+`Spectre.turn/3` is the canonical local host boundary: Agent modules and
+supervised Sessions return the same `%Spectre.Turn{decision: ...}` vocabulary.
+An external runtime that already owns a conversation-scoped interaction can
+join the normal Agent path through an ordered `Spectre.Turn.Handler`.
+Already-open Spectre policies keep precedence, the first replying integration
+wins, and a typed handler reply cannot inject state, routes, effects, or
+awaitables. Agents without handlers follow the existing route path.
+
+This is intentionally not the integration point for every library. Memory,
+Skills, actions, input transformation, telemetry, journaling, and transport
+keep their narrower boundaries. SpectrePulse can wrap `Spectre.turn/3` while
+owning remote addressing, correlation, task lifecycle, retries, and delivery.
+See [Turn semantics and integration boundaries](docs/INTEGRATIONS.md),
+including the intended shapes for SpectreDirective, SpectreLens,
+SpectreMnemonic, SpectrePulse, and future packages.
+
 ## Protected Actions
 
 Starting a protected action does not execute it:
@@ -336,6 +356,8 @@ adapters on startup, and can stop after an idle timeout.
   lifecycle, including approval, rejection, retries, execution, and sessions.
 - [Architecture](docs/ARCHITECTURE.md) - ownership, lifecycle, trust, and host
   boundaries.
+- [Integration Boundaries](docs/INTEGRATIONS.md) - input, Skills, memory,
+  complete-turn ownership, Pulse protocol transport, and composition rules.
 - [DSL](docs/DSL.md) - agent macros, flows, handlers, policies, actions, input
   pipeline, and prompts.
 - [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action

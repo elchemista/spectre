@@ -8,6 +8,7 @@ defmodule Spectre.MixProject do
     "CHANGELOG.md",
     "docs/GETTING_STARTED.md",
     "docs/ARCHITECTURE.md",
+    "docs/INTEGRATIONS.md",
     "docs/DSL.md",
     "docs/SKILLS.md",
     "docs/ROUTING.md",
@@ -90,6 +91,7 @@ defmodule Spectre.MixProject do
         ],
         "Core concepts": [
           "docs/ARCHITECTURE.md",
+          "docs/INTEGRATIONS.md",
           "docs/DSL.md",
           "docs/SKILLS.md",
           "docs/API.md"
@@ -119,6 +121,9 @@ defmodule Spectre.MixProject do
         "Core API": [
           Spectre,
           Spectre.Agent,
+          Spectre.Turn.Handler,
+          Spectre.Turn.Handler.Request,
+          Spectre.Turn.Handler.Reply,
           Spectre.Skill,
           Spectre.Turn,
           Spectre.Session,

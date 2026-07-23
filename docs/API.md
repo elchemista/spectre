@@ -342,12 +342,20 @@ functions:
 | `Spectre.Classifier.Embedding` | Produce embedding vectors |
 | `Spectre.Router.SemanticCache` | Lookup and optionally review learned routes |
 | `Spectre.Journal.Store` | Append structured audit records idempotently |
+| `Spectre.Turn.Handler` | Optionally own one complete normal turn before routing |
 
 Memory adapters use `recall/2` and an optional persistence callback documented
 in [Memory](MEMORY.md). Local classifier adapters expose `classify/2`; the
 built-in `Spectre.Classifier` is also available for trained artifacts. Router
 and input pipelines implement `Spectre.Router.Plug` and `Spectre.Input.Plug`,
 while custom arbitration implements `Spectre.Router.Arbitrator`.
+
+Turn handlers are ordered Agent infrastructure for external conversational
+runtimes. They run after an already-open policy and before routing, return only
+`:cont` or a typed reply, and fail closed. They are not the host turn protocol:
+that contract is `Spectre.turn/3` and `%Spectre.Turn{}`. See
+[Turn semantics and integration boundaries](INTEGRATIONS.md) before choosing
+this broader port.
 
 Routing-critical providers run through `Spectre.Provider.Call`, which enforces
 deadline validation, isolation, reply normalization, and sanitized failures.

@@ -1,6 +1,6 @@
 # Provider Resilience
 
-Spectre isolates routing-critical external calls behind
+Spectre isolates routing-critical and turn-owning external calls behind
 `Spectre.Provider.Call`. The boundary protects the caller from adapter crashes,
 enforces a bounded wait, and produces a sanitized
 `Spectre.Provider.Failure` for infrastructure failures.
@@ -12,6 +12,7 @@ The boundary currently covers:
 - local classifier adapters;
 - router embedding adapters;
 - semantic-cache lookups.
+- turn-handler callbacks.
 
 Provider-specific training and semantic-cache administration remain explicit
 host operations and are not silently given runtime retry policies.
@@ -24,6 +25,7 @@ host operations and are not silently given runtime retry policies.
 | Local classifier | `local_classifier_timeout` | 30 seconds |
 | Embedding | `embedding_timeout` | 30 seconds |
 | Semantic-cache lookup | `semantic_cache_timeout` | 30 seconds |
+| Turn handler | `turn_handler_timeout` | 30 seconds |
 
 `provider_timeout` is a common fallback when the provider-specific option is
 absent. Use `:infinity` explicitly to remove the Spectre deadline.
@@ -35,7 +37,8 @@ config :spectre, :provider,
   llm_timeout: 45_000,
   local_classifier_timeout: 5_000,
   embedding_timeout: 10_000,
-  semantic_cache_timeout: 2_000
+  semantic_cache_timeout: 2_000,
+  turn_handler_timeout: 20_000
 ```
 
 Closer configuration wins. Main model options can carry the LLM deadline:

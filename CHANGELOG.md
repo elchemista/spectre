@@ -6,7 +6,21 @@ minor release may contain documented breaking API changes.
 
 ## Unreleased
 
-No unreleased changes.
+### Added
+
+- An ordered, optional `Spectre.Turn.Handler` boundary for external
+  conversational runtimes. Open Spectre policies retain precedence; typed
+  replies cannot replace state, routes, effects, or awaitables; failures and
+  timeouts fail closed.
+- Integration guidance that defines `Spectre.turn/3` as the canonical local
+  host contract while keeping input decoding, Skills, memory, actions,
+  pre-route ownership, telemetry/journaling, durable workflows, and
+  agent-protocol transport on separate extension surfaces.
+
+### Fixed
+
+- Semantic-cache collection cleanup now follows Vettore 0.3.2's dedicated
+  supervised ETS ownership model.
 
 ## 0.1.0 — 2026-07-20
 
@@ -62,4 +76,3 @@ First public preview.
 - Vettore is a required dependency.
 - ExFastembed and SpectreKinetic integrations are optional and detected or
   configured by the host application.
-
