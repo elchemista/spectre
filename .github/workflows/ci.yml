@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.19.x"
+  OTP_VERSION: "28.x"
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      MIX_ENV: test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Elixir and Erlang/OTP
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore test build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/test
+          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-test-${{ hashFiles('mix.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Run tests
+        run: mix test
+
+  credo:
+    name: Credo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      MIX_ENV: dev
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Elixir and Erlang/OTP
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore Credo build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/dev
+          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-credo-${{ hashFiles('mix.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Run Credo
+        run: mix credo
+
+  dialyzer:
+    name: Dialyzer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      MIX_ENV: dev
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Elixir and Erlang/OTP
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore Dialyzer PLT and build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/dev
+          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-dialyzer-${{ hashFiles('mix.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Run Dialyzer
+        run: mix dialyzer
