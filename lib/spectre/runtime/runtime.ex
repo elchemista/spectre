@@ -8,8 +8,8 @@ defmodule Spectre.Runtime do
     1. Merge agent/runtime options.
     2. Normalize input through the configured input pipeline.
     3. Load state and memory adapters.
-    4. Resume an active policy, or route the input normally.
-    5. Run the selected handler.
+    4. Resume an active policy, or consult ordered turn handlers.
+    5. Route unclaimed input and run the selected handler.
     6. Record chat history and persist state/memory.
 
   Keeping this flow centralized makes individual adapters simpler and keeps
@@ -29,6 +29,7 @@ defmodule Spectre.Runtime do
   alias Spectre.Router
   alias Spectre.State
   alias Spectre.State.Codec
+  alias Spectre.Turn.Handlers
 
   @doc """
   Handles one normalized input turn for an agent module.
@@ -198,12 +199,21 @@ defmodule Spectre.Runtime do
     if Policy.awaiting?(state) do
       run_policy_turn(ctx)
     else
-      with {:ok, router_context} <- Router.route_context(ctx.input, ctx),
-           {:ok, route} <- Router.route_from_context(router_context) do
-        # Router plugs may enrich the input before a handler runs, so the runner
-        # receives the router context input rather than the original input.
-        Spectre.Runner.run(route, %{ctx | input: router_context.input, route: route})
+      case Handlers.dispatch(ctx) do
+        :cont -> run_routed_turn(ctx)
+        {:reply, %Result{} = result} -> {:ok, result}
+        {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  @spec run_routed_turn(Context.t()) :: {:ok, Result.t()} | {:error, term()}
+  defp run_routed_turn(%Context{} = ctx) do
+    with {:ok, router_context} <- Router.route_context(ctx.input, ctx),
+         {:ok, route} <- Router.route_from_context(router_context) do
+      # Router plugs may enrich the input before a handler runs, so the runner
+      # receives the router context input rather than the original input.
+      Spectre.Runner.run(route, %{ctx | input: router_context.input, route: route})
     end
   end
 
@@ -734,6 +744,7 @@ defmodule Spectre.Runtime do
     |> maybe_put_config(config, :adapter)
     |> maybe_put_config(config, :embedding)
     |> maybe_put_config(config, :input_pipeline)
+    |> maybe_put_config(config, :turn_handlers)
     |> maybe_put_config(config, :journal)
     |> maybe_put_config(config, :history)
     |> maybe_put_config(config, :chat_history_limit)
@@ -747,6 +758,7 @@ defmodule Spectre.Runtime do
     |> maybe_put_config(config, :router_timeout)
     |> maybe_put_config(config, :monitor_timeout)
     |> maybe_put_config(config, :callback_timeout)
+    |> maybe_put_config(config, :turn_handler_timeout)
     |> maybe_put_config(config, :input_max_bytes)
     |> maybe_put_config(config, :memory_max_bytes)
     |> maybe_put_config(config, :memory_persist_max_bytes)

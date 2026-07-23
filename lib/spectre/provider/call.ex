@@ -20,6 +20,7 @@ defmodule Spectre.Provider.Call do
   | `:hook` | 0, 1, 2, 3 | `:ok` or `{:ok, value}` | `:hook_timeout`, 10s | aggregate and report |
   | `:prompt` | 0, 1, 2 | a boolean condition or binary context | `:prompt_timeout`, 10s | abort required operations, skip optional ones |
   | `:input` | `init/1`, `call/3` | a valid pipeline transition | `:input_timeout`, 10s | abort the turn |
+  | `:turn_handler` | `handle_turn/2` | `:cont` or a typed reply | `:turn_handler_timeout`, 30s | abort the turn (fail closed) |
   | `:router` | `init/1`, `call/2` | a valid pipeline transition | `:router_timeout`, 120s | abort the routing pipeline |
   | `:monitor` | 0, 1, 2, 3 | callback-specific host data | `:monitor_timeout`, 60s | enter or continue recovery |
 
@@ -43,6 +44,7 @@ defmodule Spectre.Provider.Call do
     state: 10_000,
     memory: 10_000,
     journal: 10_000,
+    turn_handler: 30_000,
     run: 30_000,
     renderer: 10_000,
     hook: 10_000,
@@ -77,6 +79,7 @@ defmodule Spectre.Provider.Call do
     * `:input_timeout`
     * `:router_timeout`
     * `:monitor_timeout`
+    * `:turn_handler_timeout`
 
   Application defaults may be configured under `config :spectre, :provider`.
   """
@@ -313,6 +316,10 @@ defmodule Spectre.Provider.Call do
   defp timeout_keys(:state), do: [:state_timeout, :provider_timeout]
   defp timeout_keys(:memory), do: [:memory_timeout, :provider_timeout]
   defp timeout_keys(:journal), do: [:journal_timeout, :provider_timeout]
+
+  defp timeout_keys(:turn_handler),
+    do: [:turn_handler_timeout, :callback_timeout, :provider_timeout]
+
   defp timeout_keys(:run), do: [:run_timeout, :callback_timeout, :provider_timeout]
 
   defp timeout_keys(:renderer),
