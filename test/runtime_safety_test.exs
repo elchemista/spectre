@@ -231,9 +231,7 @@ defmodule SpectreRuntimeSafetyTest do
     assert :ets.info(Learned, :owner) == owner
   end
 
-  test "semantic vector collections survive the lookup process and discard duplicate builds" do
-    owner = Process.whereis(Owner)
-
+  test "semantic vector collections have durable owners and discard duplicate builds" do
     assert {:ok, first} =
              Owner.new_collection(
                dimensions: 2,
@@ -250,8 +248,13 @@ defmodule SpectreRuntimeSafetyTest do
 
     first_table = first.store_state.table
     duplicate_table = duplicate.store_state.table
-    assert :ets.info(first_table, :owner) == owner
-    assert :ets.info(duplicate_table, :owner) == owner
+    first_owner = first.store_state.owner
+    duplicate_owner = duplicate.store_state.owner
+
+    assert :ets.info(first_table, :owner) == first_owner
+    assert :ets.info(duplicate_table, :owner) == duplicate_owner
+    assert Process.alive?(first_owner)
+    assert Process.alive?(duplicate_owner)
 
     key = {{:agent, __MODULE__}, :duplicate_build}
     first_index = %{collection: first, inserted_at: 1}
@@ -274,7 +277,10 @@ defmodule SpectreRuntimeSafetyTest do
              )
 
     assert :undefined == :ets.info(duplicate_table)
+    refute Process.alive?(duplicate_owner)
+    assert Process.alive?(first_owner)
     assert :ok = Owner.clear_indexes(__MODULE__)
     assert :undefined == :ets.info(first_table)
+    refute Process.alive?(first_owner)
   end
 end
