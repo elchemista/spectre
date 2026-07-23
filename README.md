@@ -6,6 +6,7 @@ state, policies, and side effects remain explicit.
 [![Hex.pm](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
 [![HexDocs](https://img.shields.io/badge/hex-docs-purple.svg)](https://hexdocs.pm/spectre)
 [![License](https://img.shields.io/hexpm/l/spectre.svg)](LICENSE)
+[![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
 
 The goal is to describe the stable shape of an agent in one readable module
 without hiding application logic behind a large callback framework. The DSL
