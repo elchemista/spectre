@@ -4,8 +4,8 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   Static rows come from labeled classifier datasets and route examples. Online
   rows are mutable runtime examples stored in ETS. Exact lookup reads the merged
-  row set directly; semantic search builds a Vettore index and includes the
-  online revision in the cache key so mutations are visible on the next search.
+  row set directly. Semantic search only indexes embeddings already stored with
+  those rows; it never embeds the full dataset from a request process.
   """
 
   alias Spectre.Classifier.Encoder
@@ -36,6 +36,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
           margin: float() | nil,
           verified?: boolean(),
           editable?: boolean(),
+          embedding: [float()] | nil,
           metadata: map(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
@@ -46,16 +47,26 @@ defmodule Spectre.Router.SemanticCache.Learned do
   """
   @spec lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def lookup(text, opts) when is_binary(text) and is_list(opts) do
+    case lookup_with_metadata(text, opts) do
+      {:ok, result, _metadata} -> {:ok, result}
+      {:error, reason, _metadata} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec lookup_with_metadata(String.t(), keyword()) ::
+          {:ok, map(), map()} | {:error, term(), map()}
+  def lookup_with_metadata(text, opts) when is_binary(text) and is_list(opts) do
     with {:ok, rows} <- rows(opts),
          [_ | _] <- rows do
       if Keyword.get(opts, :semantic_search?, false) do
         search(text, rows, opts)
       else
-        exact(text, rows)
+        with_empty_metadata(exact(text, rows))
       end
     else
-      [] -> {:error, :empty_learned_semantic_cache}
-      {:error, reason} -> {:error, reason}
+      [] -> {:error, :empty_learned_semantic_cache, %{}}
+      {:error, reason} -> {:error, reason, %{}}
     end
   end
 
@@ -67,10 +78,11 @@ defmodule Spectre.Router.SemanticCache.Learned do
     with {:ok, agent} <- fetch_agent(opts),
          {:ok, label} <- routeable_label(result_route_label(result), opts),
          :ok <- cacheable_label(label, opts),
-         {:ok, text} <- valid_text(text) do
+         {:ok, text} <- valid_text(text),
+         existing <- find_online_by_normalized(agent, normalize_text(text)),
+         {:ok, embedding} <- stored_embedding(text, result, existing, opts) do
       now = DateTime.utc_now()
       normalized = normalize_text(text)
-      existing = find_online_by_normalized(agent, normalized)
       id = (existing && existing.id) || result_id(result) || online_id()
 
       row =
@@ -87,6 +99,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
           margin: Map.get(result, :margin),
           verified?: Map.get(result, :verified?, false),
           editable?: true,
+          embedding: embedding,
           metadata: online_metadata(result, agent, label, now),
           inserted_at: (existing && existing.inserted_at) || now,
           updated_at: now
@@ -96,6 +109,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
       |> :ets.insert({{agent, id}, row})
 
       bump_online_revision(agent)
+      _index_status = warm_stored_index(opts)
       {:ok, row}
     end
   end
@@ -168,8 +182,8 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
       true = updated.verified?
 
-  A successful mutation increments `online_revision/1`, invalidating cached
-  semantic indexes for the next lookup.
+  A successful mutation increments `online_revision/1` and refreshes the local
+  semantic index from the embeddings already stored on the rows.
   """
   @spec relabel(module(), String.t(), atom(), keyword()) :: {:ok, row()} | {:error, term()}
   def relabel(agent, id, new_label, opts \\ [])
@@ -189,6 +203,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
       :ets.insert(online_table(), {{agent, id}, updated})
       bump_online_revision(agent)
+      _index_status = warm_stored_index(opts)
       {:ok, updated}
     end
   end
@@ -204,8 +219,8 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
       :ok = Learned.delete(MyApp.Agent, example_id)
 
-  Deleting a row also advances `online_revision/1` so an existing Vettore
-  index cannot keep serving the removed example.
+  Deleting a row also advances `online_revision/1` and refreshes the local
+  Vettore projection so it cannot keep serving the removed example.
   """
   @spec delete(module(), String.t(), keyword()) :: :ok | {:error, term()}
   def delete(agent, id, opts \\ [])
@@ -216,6 +231,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
         {:ok, _row} ->
           :ets.delete(online_table(), {agent, id})
           bump_online_revision(agent)
+          _index_status = warm_stored_index(opts)
           :ok
 
         {:error, :not_found} ->
@@ -234,8 +250,8 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   Learned rows may be stored as unverified and are excluded unless
   `:semantic_cache_include_unverified?` is enabled. Verification sets
-  `verified?: true`, records `:verified_at` in metadata, and invalidates the
-  current semantic index.
+  `verified?: true`, records `:verified_at` in metadata, and refreshes the local
+  index from the row's stored embedding.
 
       {:ok, verified} = Learned.verify(MyApp.Agent, example_id)
       true = verified.verified?
@@ -258,6 +274,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
       :ets.insert(online_table(), {{agent, id}, updated})
       bump_online_revision(agent)
+      _index_status = warm_stored_index(opts)
       {:ok, updated}
     end
   end
@@ -265,7 +282,8 @@ defmodule Spectre.Router.SemanticCache.Learned do
   def verify(agent, id, _opts), do: {:error, {:invalid_verify, agent, id}}
 
   @doc """
-  Exports review rows as portable snapshot maps or an atomic JSONL file.
+  Exports review rows and their stored embeddings as portable snapshot maps or
+  an atomic JSONL file.
 
   Without `:path`, the return value contains JSON-compatible maps:
 
@@ -278,7 +296,9 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
   Online rows are exported by default. Set `source: :all`,
   `:offline_dataset`, or `:static_route_example` to select another review
-  view. Snapshot data can be restored with `load_snapshot/3`.
+  view. Snapshot data can be restored with `load_snapshot/3`. Legacy snapshots
+  without embeddings remain readable for exact lookup, but are not eligible for
+  vector search until the row is learned again with an embedding.
   """
   @spec snapshot(module(), keyword()) :: {:ok, String.t() | [map()]} | {:error, term()}
   def snapshot(agent, opts \\ [])
@@ -332,7 +352,8 @@ defmodule Spectre.Router.SemanticCache.Learned do
   end
 
   @doc """
-  Loads online examples from snapshot rows or a JSONL path.
+  Loads online examples and their stored embeddings from snapshot rows or a
+  JSONL path.
 
   The second argument may be a path, a list of snapshot maps, or a keyword
   list containing `:path` or `:rows`:
@@ -390,10 +411,9 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @doc """
   Returns the monotonic in-memory revision of an agent's online examples.
 
-  The revision starts at zero and advances after successful mutations. It is
-  part of the semantic-index cache key, making a later lookup rebuild against
-  the latest rows. It is an implementation revision, not a durable business
-  version; snapshot it only if the host needs diagnostics.
+  The revision starts at zero and advances after successful mutations. Semantic
+  index keys are derived from the searchable row contents themselves, while
+  this counter remains available for host diagnostics.
   """
   @spec online_revision(module()) :: non_neg_integer()
   def online_revision(agent) do
@@ -428,30 +448,52 @@ defmodule Spectre.Router.SemanticCache.Learned do
     end
   end
 
-  @spec search(String.t(), [row()], keyword()) :: {:ok, map()} | {:error, term()}
+  @spec with_empty_metadata({:ok, map()} | {:error, term()}) ::
+          {:ok, map(), map()} | {:error, term(), map()}
+  defp with_empty_metadata({:ok, result}), do: {:ok, result, %{}}
+  defp with_empty_metadata({:error, reason}), do: {:error, reason, %{}}
+
+  @spec search(String.t(), [row()], keyword()) ::
+          {:ok, map(), map()} | {:error, term(), map()}
   defp search(text, rows, opts) do
     with {:ok, %{collection: collection}} <- index(rows, opts),
-         {:ok, query} <- embed(text, opts),
-         {:ok, results} <- Vettore.search(collection, query, limit: top_k(opts)),
-         [%{score: score} = first | rest] <- results,
-         true <- score >= threshold(opts) do
-      second_score = rest |> List.first(%{score: 0.0}) |> Map.get(:score)
-
-      {:ok,
-       %{
-         label: result_label(first),
-         accepted?: true,
-         confidence: score,
-         margin: score - second_score,
-         matched: result_text(first),
-         scores: label_scores(results),
-         strategy: :semantic_cache_search,
-         semantic_examples: result_rows(results)
-       }}
+         {:ok, query} <- embed(text, opts) do
+      search_collection(collection, query, opts)
     else
-      [] -> {:error, :miss}
-      false -> {:error, :below_threshold}
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> {:error, reason, %{}}
+    end
+  end
+
+  @spec search_collection(Vettore.Collection.t(), [float()], keyword()) ::
+          {:ok, map(), map()} | {:error, term(), map()}
+  defp search_collection(collection, query, opts) do
+    metadata = %{query_embedding: query}
+    minimum_score = threshold(opts)
+
+    case Vettore.search(collection, query, limit: top_k(opts)) do
+      {:ok, [%{score: score} = first | rest] = results} when score >= minimum_score ->
+        second_score = rest |> List.first(%{score: 0.0}) |> Map.get(:score)
+
+        {:ok,
+         %{
+           label: result_label(first),
+           accepted?: true,
+           confidence: score,
+           margin: score - second_score,
+           matched: result_text(first),
+           scores: label_scores(results),
+           strategy: :semantic_cache_search,
+           semantic_examples: result_rows(results)
+         }, metadata}
+
+      {:ok, [_first | _rest]} ->
+        {:error, :below_threshold, metadata}
+
+      {:ok, []} ->
+        {:error, :miss, metadata}
+
+      {:error, reason} ->
+        {:error, reason, metadata}
     end
   end
 
@@ -462,18 +504,37 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
     case :ets.lookup(table, key) do
       [{^key, index}] -> {:ok, index}
-      [] -> build_index(table, key, rows, opts)
+      [] -> load_index(table, key, rows, opts)
     end
   end
 
-  @spec build_index(atom(), term(), [row()], keyword()) :: {:ok, map()} | {:error, term()}
-  defp build_index(table, key, rows, opts) do
-    with {:ok, vectors} <- embed_rows(rows, opts),
+  @spec warm_stored_index(keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
+  defp warm_stored_index(opts) do
+    with {:ok, rows} <- rows(opts) do
+      warm_stored_index(rows, length(stored_vectors(rows)), opts)
+    end
+  end
+
+  @spec warm_stored_index([row()], non_neg_integer(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  defp warm_stored_index(_rows, 0, _opts), do: {:ok, 0}
+
+  defp warm_stored_index(rows, count, opts) do
+    case index(rows, opts) do
+      {:ok, _index} -> {:ok, count}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec load_index(atom(), term(), [row()], keyword()) :: {:ok, map()} | {:error, term()}
+  defp load_index(table, key, rows, opts) do
+    with [_ | _] = vectors <- stored_vectors(rows),
          [%{vector: first_vector} | _] <- vectors,
+         :ok <- validate_stored_dimensions(vectors, length(first_vector)),
          {:ok, collection} <- new_collection(length(first_vector), opts) do
       cache_collection(table, key, collection, vectors, opts)
     else
-      [] -> {:error, :empty_learned_semantic_cache}
+      [] -> {:error, :semantic_cache_embeddings_not_loaded}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -537,15 +598,26 @@ defmodule Spectre.Router.SemanticCache.Learned do
     )
   end
 
-  @spec embed_rows([row()], keyword()) :: {:ok, [map()]} | {:error, term()}
-  defp embed_rows(rows, opts) do
-    rows
-    |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
-      case embed(row.text, opts) do
-        {:ok, vector} -> {:cont, {:ok, acc ++ [Map.put(row, :vector, vector)]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
+  @spec stored_vectors([row()]) :: [map()]
+  defp stored_vectors(rows) do
+    Enum.flat_map(rows, fn
+      %{embedding: embedding} = row when is_list(embedding) and embedding != [] ->
+        [Map.put(row, :vector, embedding)]
+
+      _row ->
+        []
     end)
+  end
+
+  @spec validate_stored_dimensions([map()], pos_integer()) :: :ok | {:error, term()}
+  defp validate_stored_dimensions(rows, dimensions) do
+    case Enum.find(rows, &(length(&1.vector) != dimensions)) do
+      nil ->
+        :ok
+
+      %{id: id, vector: vector} ->
+        {:error, {:semantic_cache_dimension_mismatch, id, length(vector), dimensions}}
+    end
   end
 
   @spec embeddings([map()]) :: [Embedding.t()]
@@ -783,6 +855,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
       margin: nil,
       verified?: true,
       editable?: false,
+      embedding: source_embedding(source),
       metadata: %{
         dataset_path: path,
         source: source_metadata(source),
@@ -810,6 +883,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
       margin: nil,
       verified?: true,
       editable?: false,
+      embedding: nil,
       metadata: %{rule_label: rule.label},
       inserted_at: static_timestamp(),
       updated_at: static_timestamp()
@@ -940,6 +1014,80 @@ defmodule Spectre.Router.SemanticCache.Learned do
     end
   end
 
+  @spec stored_embedding(String.t(), map(), row() | nil, keyword()) ::
+          {:ok, [float()] | nil} | {:error, term()}
+  defp stored_embedding(text, result, existing, opts) do
+    case result_embedding(result) do
+      {:present, embedding} -> normalize_embedding(embedding)
+      :missing -> existing_or_new_embedding(text, existing, opts)
+    end
+  end
+
+  @spec result_embedding(map()) :: {:present, term()} | :missing
+  defp result_embedding(result) do
+    cond do
+      Map.has_key?(result, :embedding) -> {:present, Map.get(result, :embedding)}
+      Map.has_key?(result, "embedding") -> {:present, Map.get(result, "embedding")}
+      Map.has_key?(result, :vector) -> {:present, Map.get(result, :vector)}
+      Map.has_key?(result, "vector") -> {:present, Map.get(result, "vector")}
+      true -> :missing
+    end
+  end
+
+  @spec existing_or_new_embedding(String.t(), row() | nil, keyword()) ::
+          {:ok, [float()] | nil} | {:error, term()}
+  defp existing_or_new_embedding(_text, %{embedding: embedding}, _opts)
+       when is_list(embedding) and embedding != [],
+       do: {:ok, embedding}
+
+  defp existing_or_new_embedding(text, _existing, opts) do
+    if embedding_configured?(opts) do
+      case embed(text, opts) do
+        {:ok, embedding} -> normalize_embedding(embedding)
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  @spec embedding_configured?(keyword()) :: boolean()
+  defp embedding_configured?(opts) do
+    classifier_opts =
+      :spectre
+      |> Application.get_env(:classifier, [])
+      |> Keyword.merge(opts)
+
+    Keyword.has_key?(opts, :embedding) or
+      Keyword.has_key?(classifier_opts, :embedding_adapter) or
+      Keyword.has_key?(classifier_opts, :embed)
+  end
+
+  @spec normalize_embedding(term()) :: {:ok, [float()] | nil} | {:error, term()}
+  defp normalize_embedding(nil), do: {:ok, nil}
+
+  defp normalize_embedding(embedding) when is_list(embedding) and embedding != [] do
+    if Enum.all?(embedding, &finite_number?/1) do
+      {:ok, Enum.map(embedding, &(&1 * 1.0))}
+    else
+      {:error, :invalid_semantic_cache_embedding}
+    end
+  end
+
+  defp normalize_embedding(_embedding), do: {:error, :invalid_semantic_cache_embedding}
+
+  @spec finite_number?(term()) :: boolean()
+  defp finite_number?(number) when is_integer(number), do: true
+
+  defp finite_number?(number) when is_float(number) do
+    _encoded = :erlang.float_to_binary(number, [:compact])
+    true
+  rescue
+    ArithmeticError -> false
+  end
+
+  defp finite_number?(_number), do: false
+
   @spec online_metadata(map(), module(), atom(), DateTime.t()) :: map()
   defp online_metadata(result, agent, label, now) do
     result_metadata =
@@ -972,6 +1120,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
     |> Map.put_new(:confidence, nil)
     |> Map.put_new(:margin, nil)
     |> Map.put_new(:source_strategy, nil)
+    |> Map.put_new(:embedding, nil)
     |> Map.put_new(:metadata, %{})
   end
 
@@ -993,7 +1142,11 @@ defmodule Spectre.Router.SemanticCache.Learned do
     {0, -DateTime.to_unix(updated_at, :microsecond)}
   end
 
-  defp dedupe_rank(%{source: :offline_dataset}), do: {1, 0}
+  defp dedupe_rank(%{source: :offline_dataset, embedding: embedding})
+       when is_list(embedding) and embedding != [],
+       do: {1, 0}
+
+  defp dedupe_rank(%{source: :offline_dataset}), do: {1, 1}
   defp dedupe_rank(%{source: :static_route_example}), do: {2, 0}
 
   defp dedupe_rank(%{source: :online_learned, updated_at: updated_at}) do
@@ -1010,6 +1163,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
       source_strategy: source_strategy_string(row.source_strategy),
       confidence: row.confidence,
       verified: row.verified?,
+      embedding: row.embedding,
       inserted_at: DateTime.to_iso8601(row.inserted_at),
       updated_at: DateTime.to_iso8601(row.updated_at),
       metadata: encode_metadata(row.metadata)
@@ -1080,6 +1234,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
       bump_online_revision(agent)
     end
 
+    _index_status = warm_stored_index(opts)
     summary = %{loaded: loaded, skipped: skipped, errors: Enum.reverse(errors)}
 
     if Keyword.get(opts, :strict?, false) and errors != [] do
@@ -1095,8 +1250,9 @@ defmodule Spectre.Router.SemanticCache.Learned do
   defp load_entry(agent, entry, opts) when is_map(entry) do
     with {:ok, text} <- snapshot_text(entry),
          {:ok, label} <- routeable_label(snapshot_label(entry), opts),
-         :ok <- cacheable_label(label, opts) do
-      {:ok, snapshot_row(agent, entry, text, label)}
+         :ok <- cacheable_label(label, opts),
+         {:ok, embedding} <- snapshot_embedding(entry) do
+      {:ok, snapshot_row(agent, entry, text, label, embedding)}
     else
       {:skip, reason} -> {:skip, reason}
       {:error, reason} -> {:skip, reason}
@@ -1119,8 +1275,8 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @spec snapshot_label(map()) :: term()
   defp snapshot_label(entry), do: Map.get(entry, "label") || Map.get(entry, :label)
 
-  @spec snapshot_row(module(), map(), String.t(), atom()) :: row()
-  defp snapshot_row(agent, entry, text, label) do
+  @spec snapshot_row(module(), map(), String.t(), atom(), [float()] | nil) :: row()
+  defp snapshot_row(agent, entry, text, label, embedding) do
     now = DateTime.utc_now()
     id = Map.get(entry, "id") || Map.get(entry, :id) || online_id()
 
@@ -1136,8 +1292,10 @@ defmodule Spectre.Router.SemanticCache.Learned do
       accepted?: true,
       confidence: snapshot_confidence(entry),
       margin: nil,
-      verified?: Map.get(entry, "verified", Map.get(entry, :verified?, false)),
+      verified?:
+        Map.get(entry, "verified", Map.get(entry, :verified, Map.get(entry, :verified?, false))),
       editable?: true,
+      embedding: embedding || existing_snapshot_embedding(agent, id, text),
       metadata: snapshot_metadata(entry),
       inserted_at:
         snapshot_time(Map.get(entry, "inserted_at") || Map.get(entry, :inserted_at), now),
@@ -1150,6 +1308,25 @@ defmodule Spectre.Router.SemanticCache.Learned do
     case Map.get(entry, "confidence") || Map.get(entry, :confidence) do
       value when is_number(value) and value > 0 -> value
       _other -> @default_learn_confidence
+    end
+  end
+
+  @spec snapshot_embedding(map()) :: {:ok, [float()] | nil} | {:error, term()}
+  defp snapshot_embedding(entry) do
+    entry
+    |> Map.get("embedding", Map.get(entry, :embedding))
+    |> normalize_embedding()
+  end
+
+  @spec existing_snapshot_embedding(module(), String.t(), String.t()) :: [float()] | nil
+  defp existing_snapshot_embedding(agent, id, text) do
+    case :ets.lookup(online_table(), {agent, id}) do
+      [{{^agent, ^id}, %{text: existing_text, embedding: embedding}}]
+      when is_list(embedding) and embedding != [] ->
+        if normalize_text(existing_text) == normalize_text(text), do: embedding
+
+      _other ->
+        nil
     end
   end
 
@@ -1253,14 +1430,18 @@ defmodule Spectre.Router.SemanticCache.Learned do
 
     {{:agent, agent},
      :erlang.phash2({
-       rows,
-       online_revision(agent),
-       Keyword.get(opts, :embedding),
-       Keyword.get(opts, :embedding_adapter),
-       Keyword.get(opts, :encoder_model),
+       index_rows_revision(rows),
        Keyword.get(opts, :semantic_cache_index, :flat),
-       Keyword.get(opts, :semantic_cache_index_options, [])
+       Keyword.get(opts, :semantic_cache_index_options, []),
+       Keyword.get(opts, :semantic_cache_compressed?, true)
      })}
+  end
+
+  @spec index_rows_revision([row()]) :: [term()]
+  defp index_rows_revision(rows) do
+    rows
+    |> Enum.map(&{&1.id, &1.label, &1.normalized_text, &1.embedding})
+    |> Enum.sort()
   end
 
   @spec clear_indexes(module()) :: :ok
@@ -1336,11 +1517,27 @@ defmodule Spectre.Router.SemanticCache.Learned do
     opts
     |> Keyword.get_values(:semantic_cache_source)
     |> Kernel.++(Keyword.get_values(opts, :source))
+    |> Kernel.++(semantic_artifact_sources(opts))
     |> Kernel.++(configured_sources())
     |> List.flatten()
     |> Enum.filter(&is_binary/1)
     |> Enum.reject(&blank?/1)
     |> Enum.uniq()
+  end
+
+  @spec semantic_artifact_sources(keyword()) :: [String.t()]
+  defp semantic_artifact_sources(opts) do
+    config = Application.get_env(:spectre, :classifier, [])
+    artifact_dir = Keyword.get(opts, :artifact_dir, Keyword.get(config, :artifact_dir))
+
+    case artifact_dir do
+      path when is_binary(path) ->
+        semantic_path = Path.join(path, "semantic_cache.jsonl")
+        if File.regular?(semantic_path), do: [semantic_path], else: []
+
+      _other ->
+        []
+    end
   end
 
   defp configured_sources do
@@ -1422,9 +1619,24 @@ defmodule Spectre.Router.SemanticCache.Learned do
     "scx_" <> Integer.to_string(System.unique_integer([:positive, :monotonic]), 36)
   end
 
+  @spec source_embedding(map()) :: [float()] | nil
+  defp source_embedding(source) do
+    source
+    |> Map.get(
+      "embedding",
+      Map.get(source, :embedding, Map.get(source, "vector", Map.get(source, :vector)))
+    )
+    |> normalize_embedding()
+    |> case do
+      {:ok, embedding} -> embedding
+      {:error, _reason} -> nil
+    end
+  end
+
   @spec source_metadata(map()) :: map()
   defp source_metadata(source) do
     source
+    |> Map.drop(["embedding", :embedding, "vector", :vector])
     |> Enum.reject(fn {_key, value} -> is_binary(value) and byte_size(value) > 2_000 end)
     |> Map.new()
   end

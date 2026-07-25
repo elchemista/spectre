@@ -43,19 +43,33 @@ defmodule Spectre.Router.SemanticCache do
   """
   @spec lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def lookup(text, opts) when is_binary(text) and is_list(opts) do
+    {reply, _metadata} = lookup_with_metadata(text, opts)
+    reply
+  end
+
+  @doc false
+  @spec lookup_with_metadata(String.t(), keyword()) ::
+          {{:ok, map()} | {:error, term()}, map()}
+  def lookup_with_metadata(text, opts) when is_binary(text) and is_list(opts) do
     adapter_opts = Call.adapter_opts(opts)
 
     case Call.run(
            :semantic_cache,
            fn ->
              text
-             |> dispatch_lookup(adapter_opts)
-             |> normalize_lookup_reply()
+             |> dispatch_lookup_with_metadata(adapter_opts)
+             |> normalize_lookup_with_metadata_reply()
            end,
            opts
          ) do
-      {:ok, result} when is_map(result) -> {:ok, result}
-      {:error, _reason} = error -> error
+      {:ok, {result, metadata}} when is_map(result) and is_map(metadata) ->
+        {{:ok, result}, metadata}
+
+      {:error, {:semantic_cache_lookup_metadata, reason, metadata}} when is_map(metadata) ->
+        {{:error, reason}, metadata}
+
+      {:error, reason} ->
+        {{:error, reason}, %{}}
     end
   end
 
@@ -66,6 +80,43 @@ defmodule Spectre.Router.SemanticCache do
 
   defp normalize_lookup_reply({:error, _reason} = error), do: error
   defp normalize_lookup_reply(other), do: other
+
+  @spec normalize_lookup_with_metadata_reply(term()) :: term()
+  defp normalize_lookup_with_metadata_reply({:ok, result, metadata}) when is_map(metadata) do
+    case normalize_lookup_reply({:ok, result}) do
+      {:ok, normalized} -> {:ok, {normalized, metadata}}
+      {:error, reason} -> {:error, reason}
+      other -> other
+    end
+  end
+
+  defp normalize_lookup_with_metadata_reply({:error, reason, metadata}) when is_map(metadata) do
+    {:error, {:semantic_cache_lookup_metadata, reason, metadata}}
+  end
+
+  defp normalize_lookup_with_metadata_reply(other) do
+    case normalize_lookup_reply(other) do
+      {:ok, normalized} -> {:ok, {normalized, %{}}}
+      {:error, reason} -> {:error, reason}
+      invalid -> invalid
+    end
+  end
+
+  @spec dispatch_lookup_with_metadata(String.t(), keyword()) :: term()
+  defp dispatch_lookup_with_metadata(text, opts) do
+    if built_in_lookup?(opts) do
+      Learned.lookup_with_metadata(text, opts)
+    else
+      dispatch_lookup(text, opts)
+    end
+  end
+
+  @spec built_in_lookup?(keyword()) :: boolean()
+  defp built_in_lookup?(opts) do
+    is_nil(Keyword.get(opts, :semantic_lookup)) and
+      is_nil(Keyword.get(opts, :semantic_cache)) and
+      built_in_cache?(opts)
+  end
 
   @spec dispatch_lookup(String.t(), keyword()) :: term()
   defp dispatch_lookup(text, opts) do
@@ -156,7 +207,7 @@ defmodule Spectre.Router.SemanticCache do
   end
 
   @doc """
-  Snapshots semantic-cache examples.
+  Snapshots semantic-cache examples and their stored embeddings.
   """
   @spec snapshot(module(), keyword()) :: {:ok, term()} | {:error, term()}
   def snapshot(agent, opts \\ []) do
@@ -164,7 +215,7 @@ defmodule Spectre.Router.SemanticCache do
   end
 
   @doc """
-  Loads online learned examples from a snapshot.
+  Loads online learned examples and their stored embeddings from a snapshot.
   """
   @spec load_snapshot(module(), term(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
   def load_snapshot(agent, snapshot_or_opts, opts \\ []) do

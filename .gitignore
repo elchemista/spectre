@@ -13,6 +13,8 @@
 # Temporary files, for example, from tests.
 /tmp/
 
+/.fastembed_cache/
+
 /.elixir_ls/
 
 /.codex/

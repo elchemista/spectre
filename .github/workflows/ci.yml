@@ -50,6 +50,53 @@ jobs:
       - name: Run tests
         run: mix test
 
+  real-ex-fastembed:
+    name: Real ExFastembed system test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MIX_ENV: test
+      SPECTRE_EX_FASTEMBED_PATH: ${{ github.workspace }}/ex_fastembed
+      SPECTRE_REAL_EMBEDDING_TESTS: "1"
+      CC: /usr/bin/clang
+      CXX: /usr/bin/clang++
+    steps:
+      - name: Check out Spectre
+        uses: actions/checkout@v6
+
+      - name: Check out ExFastembed
+        uses: actions/checkout@v6
+        with:
+          repository: elchemista/ex_fastembed
+          ref: 02edfc604274077d8a02848dcfafd56797598d77
+          path: ex_fastembed
+
+      - name: Set up Elixir and Erlang/OTP
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore native build and model caches
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/test
+            .fastembed_cache
+            ex_fastembed/native/ex_fastembed/target
+          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-real-fastembed-${{ hashFiles('mix.real_embeddings.lock', 'ex_fastembed/mix.lock', 'ex_fastembed/native/ex_fastembed/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Run real embedding lifecycle test
+        run: mix test test/real_ex_fastembed_semantic_cache_test.exs --include real_ex_fastembed
+
   credo:
     name: Credo
     runs-on: ubuntu-24.04

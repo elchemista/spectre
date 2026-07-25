@@ -57,7 +57,7 @@ defmodule Spectre.Classifier.Trainer do
              },
              opts
            ),
-         :ok <- write_artifacts(classifier, out_dir, dataset_path) do
+         :ok <- write_artifacts(classifier, rows, out_dir, dataset_path) do
       {:ok,
        %{
          out_dir: out_dir,
@@ -169,12 +169,13 @@ defmodule Spectre.Classifier.Trainer do
     end
   end
 
-  @spec write_artifacts(map(), String.t(), String.t()) :: :ok | {:error, term()}
-  defp write_artifacts(classifier, out_dir, dataset_path) do
+  @spec write_artifacts(map(), [map()], String.t(), String.t()) :: :ok | {:error, term()}
+  defp write_artifacts(classifier, rows, out_dir, dataset_path) do
     metadata =
       classifier
       |> Map.drop([:centroids, :examples])
       |> Map.put(:dataset_path, dataset_path)
+      |> Map.put(:semantic_cache_path, Path.join(out_dir, "semantic_cache.jsonl"))
 
     calibration = %{
       accept_threshold: classifier.accept_threshold,
@@ -197,6 +198,11 @@ defmodule Spectre.Classifier.Trainer do
            atomic_write(
              Path.join(out_dir, "labels.json"),
              Jason.encode!(classifier.labels, pretty: true)
+           ),
+         :ok <-
+           atomic_write(
+             Path.join(out_dir, "semantic_cache.jsonl"),
+             encode_semantic_cache(rows)
            ) do
       # Publish the validated runtime artifact last so readers never observe a
       # new classifier with partially written companion files.
@@ -205,6 +211,19 @@ defmodule Spectre.Classifier.Trainer do
         :erlang.term_to_binary(classifier)
       )
     end
+  end
+
+  @spec encode_semantic_cache([map()]) :: String.t()
+  defp encode_semantic_cache(rows) do
+    rows
+    |> Enum.map(fn %{example: example, vector: vector} ->
+      %{
+        text: Map.fetch!(example, "text"),
+        label: label(example),
+        embedding: vector
+      }
+    end)
+    |> Enum.map_join("", &(Jason.encode!(&1) <> "\n"))
   end
 
   @spec atomic_write(String.t(), binary()) :: :ok | {:error, term()}

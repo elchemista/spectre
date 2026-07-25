@@ -33,6 +33,7 @@ defmodule Spectre.MixProject do
       app: :spectre,
       name: "Spectre",
       version: @version,
+      lockfile: lockfile(),
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -75,7 +76,30 @@ defmodule Spectre.MixProject do
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
-    ]
+    ] ++ real_embedding_test_deps()
+  end
+
+  defp real_embedding_test_deps do
+    case real_embedding_test_path() do
+      path when is_binary(path) ->
+        [{:ex_fastembed, path: Path.expand(path), only: :test, runtime: false}]
+
+      _other ->
+        []
+    end
+  end
+
+  defp lockfile do
+    if real_embedding_test_path(),
+      do: "mix.real_embeddings.lock",
+      else: "mix.lock"
+  end
+
+  defp real_embedding_test_path do
+    case {Mix.env(), System.get_env("SPECTRE_EX_FASTEMBED_PATH")} do
+      {:test, path} when is_binary(path) and path != "" -> path
+      _other -> nil
+    end
   end
 
   defp docs do

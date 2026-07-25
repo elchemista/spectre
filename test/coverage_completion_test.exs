@@ -632,6 +632,20 @@ defmodule SpectreCoverageCompletionTest do
     test "contains embedding exceptions, exits, throws, and invalid adapters" do
       base = Keyword.merge(learned_opts(), semantic_search?: true, semantic_cache_threshold: 0.0)
 
+      assert {:ok, %{loaded: 1, skipped: 0}} =
+               Learned.load_snapshot(
+                 @agent,
+                 [
+                   %{
+                     text: "alpha stored",
+                     label: :ALPHA,
+                     verified: true,
+                     embedding: [1.0, 0.0]
+                   }
+                 ],
+                 semantic_cache_static?: false
+               )
+
       failures = [
         {fn _text -> raise "embedding boom" end, :embedding_exception},
         {fn _text -> exit(:embedding_exit) end, :embedding_exit},
@@ -646,6 +660,8 @@ defmodule SpectreCoverageCompletionTest do
         assert reason_code(reason) == code
       end
 
+      assert :ok = Learned.clear(@agent)
+
       assert {:error, :empty_learned_semantic_cache} =
                Learned.lookup(
                  "query",
@@ -656,13 +672,34 @@ defmodule SpectreCoverageCompletionTest do
                )
     end
 
-    test "search builds and reuses a real Vettore index and enforces thresholds" do
+    test "search loads saved vectors into Vettore and enforces thresholds" do
       embedding = fn text, _opts ->
         if String.contains?(text, "beta"), do: {:ok, [0.0, 1.0]}, else: {:ok, [1.0, 0.0]}
       end
 
+      assert {:ok, %{loaded: 2, skipped: 0}} =
+               Learned.load_snapshot(
+                 @agent,
+                 [
+                   %{
+                     text: "alpha stored",
+                     label: :ALPHA,
+                     verified: true,
+                     embedding: [1.0, 0.0]
+                   },
+                   %{
+                     text: "beta stored",
+                     label: :BETA,
+                     verified: true,
+                     embedding: [0.0, 1.0]
+                   }
+                 ],
+                 semantic_cache_static?: false
+               )
+
       opts =
         Keyword.merge(learned_opts(),
+          semantic_cache_static?: false,
           semantic_search?: true,
           semantic_cache_threshold: 0.0,
           semantic_cache_top_k: :invalid,
@@ -679,10 +716,12 @@ defmodule SpectreCoverageCompletionTest do
       assert {:error, :below_threshold} =
                Learned.lookup("alpha query", Keyword.put(opts, :semantic_cache_threshold, 1.1))
 
-      assert {:error, :cannot_embed_row} =
+      assert {:error, :cannot_embed_query} =
                Learned.lookup(
                  "query",
-                 Keyword.put(opts, :embedding, fn _text, _opts -> {:error, :cannot_embed_row} end)
+                 Keyword.put(opts, :embedding, fn _text, _opts ->
+                   {:error, :cannot_embed_query}
+                 end)
                )
     end
 

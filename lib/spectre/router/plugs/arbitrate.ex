@@ -37,6 +37,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
         {:cont,
          context
+         |> Context.clear_semantic_cache_query_embedding()
          |> Context.put_route(route)
          |> Context.put_trace({:arbitrated, route})
          |> Context.halt()}
@@ -49,6 +50,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
         {:cont,
          context
+         |> Context.clear_semantic_cache_query_embedding()
          |> Context.put_route(route)
          |> Context.put_trace({:clarify, text})
          |> Context.halt()}
@@ -128,6 +130,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
         {:cont,
          context
+         |> Context.clear_semantic_cache_query_embedding()
          |> Context.put_route(route)
          |> Context.put_trace({:llm_arbitration_failed, reason})
          |> Context.halt()}
@@ -140,6 +143,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
     {:cont,
      context
+     |> Context.clear_semantic_cache_query_embedding()
      |> Context.put_route(route)
      |> Context.put_trace({:llm_arbitration_skipped, reason})
      |> Context.halt()}
@@ -238,6 +242,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
       {:ok, context} ->
         {:cont,
          context
+         |> Context.clear_semantic_cache_query_embedding()
          |> Context.put_route(route)
          |> Context.put_trace({:llm_arbitrated, route})
          |> Context.halt()}
@@ -383,26 +388,28 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   @spec write_semantic_example(Context.t(), Spectre.Route.t()) ::
           {:ok, Context.t()} | {:error, term()}
   defp write_semantic_example(%Context{} = context, route) do
-    result = %{
-      label: route.label,
-      owner: route.owner,
-      scope: route.scope,
-      accepted?: true,
-      confidence: Keyword.get(context.opts, :semantic_learn_confidence, 0.86),
-      margin: nil,
-      strategy: :semantic_cache_learned,
-      source_strategy: :llm_classifier,
-      matched: context.input.text,
-      metadata: %{
-        agent: Keyword.get(context.opts, :spectre_agent),
-        route: route.label,
+    result =
+      %{
+        label: route.label,
         owner: route.owner,
         scope: route.scope,
-        verified?: false,
-        learned_at: DateTime.utc_now(),
-        original_route_strategy: :llm_classifier
+        accepted?: true,
+        confidence: Keyword.get(context.opts, :semantic_learn_confidence, 0.86),
+        margin: nil,
+        strategy: :semantic_cache_learned,
+        source_strategy: :llm_classifier,
+        matched: context.input.text,
+        metadata: %{
+          agent: Keyword.get(context.opts, :spectre_agent),
+          route: route.label,
+          owner: route.owner,
+          scope: route.scope,
+          verified?: false,
+          learned_at: DateTime.utc_now(),
+          original_route_strategy: :llm_classifier
+        }
       }
-    }
+      |> maybe_put_query_embedding(context.semantic_cache_query_embedding)
 
     case SemanticCache.put(context.input.text, result, context.opts) do
       {:ok, _row} ->
@@ -419,6 +426,14 @@ defmodule Spectre.Router.Plugs.Arbitrate do
         end
     end
   end
+
+  @spec maybe_put_query_embedding(map(), [float()] | nil) :: map()
+  defp maybe_put_query_embedding(result, embedding)
+       when is_list(embedding) and embedding != [] do
+    Map.put(result, :embedding, embedding)
+  end
+
+  defp maybe_put_query_embedding(result, _embedding), do: result
 
   defp call_arbitrator(%Arbitration{} = arbitration, opts) do
     {module, arbitrator_opts} = arbitrator(opts)

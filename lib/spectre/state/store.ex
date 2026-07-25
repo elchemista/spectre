@@ -7,7 +7,9 @@ defmodule Spectre.State.Store do
   Return `{:error, :stale_state}` (or `{:error, {:stale_state, actual}}`) when
   another turn committed first. If the store cannot determine whether a write
   committed, return `{:error, {:ambiguous, reason}}`; Spectre will not retry it
-  blindly.
+  blindly. Spectre also treats an invoked persistence callback that crashes,
+  exits, throws, times out, or returns a malformed success envelope as
+  ambiguous because the failure may have happened after the durable commit.
   """
 
   @callback load(Spectre.Input.t(), module(), keyword()) ::

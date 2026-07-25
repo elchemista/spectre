@@ -149,6 +149,47 @@ defmodule SpectreProviderResilienceTest do
                Call.run(:llm, fn -> {:error, :provider_busy} end, provider_timeout: 100)
     end
 
+    test "supports an explicitly unbounded call without changing its result contract" do
+      assert {:ok, :completed} =
+               Call.run(:llm, fn -> {:ok, :completed} end, provider_timeout: :infinity)
+    end
+
+    test "applies the shared timeout contract to custom provider boundaries" do
+      assert {:ok, :custom_result} =
+               Call.run(:custom_provider, fn -> {:ok, :custom_result} end, provider_timeout: 100)
+
+      assert {:error,
+              %Failure{
+                provider: :custom_provider,
+                kind: :configuration,
+                reason: {:invalid_timeout, 0}
+              }} =
+               Call.run(:custom_provider, fn -> flunk("adapter must not run") end,
+                 provider_timeout: 0
+               )
+    end
+
+    test "fails closed when application provider configuration has the wrong shape" do
+      previous = Application.get_env(:spectre, :provider, :__missing__)
+
+      on_exit(fn ->
+        case previous do
+          :__missing__ -> Application.delete_env(:spectre, :provider)
+          value -> Application.put_env(:spectre, :provider, value)
+        end
+      end)
+
+      Application.put_env(:spectre, :provider, %{llm_timeout: 100})
+
+      assert {:error,
+              %Failure{
+                provider: :llm,
+                kind: :configuration,
+                reason: {:invalid_timeout, :invalid}
+              }} =
+               Call.run(:llm, fn -> flunk("adapter must not run") end)
+    end
+
     test "normalizes exceptions, exits, throws, crashes, and malformed envelopes" do
       assert {:error, %Failure{provider: :llm, kind: :exception, reason: RuntimeError}} =
                Call.run(:llm, fn -> raise("private exception text") end)

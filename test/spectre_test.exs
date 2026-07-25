@@ -16,32 +16,109 @@ defmodule SpectreKinetic do
     %{clean_text: clean_text, entries: Enum.map(al_blocks, &%{raw: &1, al: &1, error: nil})}
   end
 
-  def plan_chain(_runtime, text, _opts) do
-    actions =
-      text
-      |> extract_al_scan()
-      |> Map.fetch!(:entries)
-      |> Enum.map(fn entry ->
-        if String.starts_with?(entry.al, "MALFORMED") do
-          :malformed_action
-        else
-          %{
-            al: entry.al,
-            selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
-            args: %{"title" => "ciao"},
-            status: if(String.starts_with?(entry.al, "REJECT"), do: :rejected, else: :ok)
-          }
-        end
-      end)
+  def plan(runtime, al, opts) do
+    notify({:kinetic_plan, runtime, al, opts})
 
-    {:ok, %__MODULE__{actions: actions}}
+    case al do
+      "HALTED" ->
+        {:ok, %{al: al, halted?: true, status: :blocked, selected_tool: "one/1", args: %{}}}
+
+      "REJECTED" ->
+        {:ok, %{al: al, status: :rejected, selected_tool: "one/1", args: %{}}}
+
+      "MISSING TOOL" ->
+        {:ok, %{al: al, status: :ok, selected_tool: " ", args: %{}}}
+
+      "INVALID ARGS" ->
+        {:ok, %{al: al, status: :ok, selected_tool: "one/1", args: []}}
+
+      "NON MAP" ->
+        {:ok, :not_an_action}
+
+      _other ->
+        {:ok, %{al: al, status: :ok, selected_tool: "unmatched/1", args: %{}}}
+    end
   end
 
-  def load_runtime(_opts), do: {:ok, :kinetic_runtime}
+  def plan_chain(_runtime, text, _opts) do
+    cond do
+      String.contains?(text, "INVALID CHAIN") ->
+        {:ok, :not_a_chain}
+
+      String.contains?(text, "MALFORMED CHAIN") ->
+        {:ok,
+         %__MODULE__{
+           actions: [
+             %{al: "EXACT ONE", status: :ok, selected_tool: "one/1", args: %{}},
+             :not_an_action
+           ]
+         }}
+
+      String.contains?(text, "VALID CHAIN") ->
+        {:ok,
+         %__MODULE__{
+           actions: [
+             %{
+               "al" => "EXACT ONE",
+               "status" => "ok",
+               "selected_tool" => "one/1",
+               "args" => %{}
+             },
+             %{al: "EXACT TWO", status: :ok, selected_tool: "two/2", args: %{}}
+           ]
+         }}
+
+      true ->
+        actions =
+          text
+          |> extract_al_scan()
+          |> Map.fetch!(:entries)
+          |> Enum.map(&plan_chain_action/1)
+
+        {:ok, %__MODULE__{actions: actions}}
+    end
+  end
+
+  def load_runtime(opts) do
+    notify({:kinetic_load_runtime, opts})
+    {:ok, :kinetic_runtime}
+  end
+
+  defp notify(message) do
+    if pid = Application.get_env(:spectre, :coverage_action_boundary_pid) do
+      send(pid, message)
+    end
+
+    :ok
+  end
+
+  defp plan_chain_action(%{al: "MALFORMED" <> _suffix}), do: :malformed_action
+
+  defp plan_chain_action(entry) do
+    %{
+      al: entry.al,
+      selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
+      args: %{"title" => "ciao"},
+      status: chain_action_status(entry.al)
+    }
+  end
+
+  defp chain_action_status("REJECT" <> _suffix), do: :rejected
+  defp chain_action_status(_al), do: :ok
 end
 
 defmodule SpectreKinetic.Tool.Extractor do
-  def extract_module(_module), do: {:ok, []}
+  def extract_module(module) do
+    if pid = Application.get_env(:spectre, :coverage_action_boundary_pid) do
+      send(pid, {:kinetic_extract, module})
+    end
+
+    case module do
+      SpectreActionBoundaryContractTest.NoActionsAgent -> {:error, :extract_failed}
+      SpectreActionBoundaryContractTest.Hooks -> {:ok, [%{pid: self()}]}
+      _other -> {:ok, []}
+    end
+  end
 end
 
 defmodule SpectreTest.ProjectActions do
@@ -468,6 +545,30 @@ defmodule SpectreTest.OnlineLearningAgent do
 
     on :DELETE_ACCOUNT, learn: true do
       action(:delete_my_account)
+    end
+  end
+end
+
+defmodule SpectreTest.SemanticLearningClassifierLLM do
+  @behaviour Spectre.LLM
+
+  def complete(_prompt, _opts), do: {:ok, "SALES"}
+end
+
+defmodule SpectreTest.SemanticLearningReuseAgent do
+  use Spectre.Agent, prompt_root: "tmp/spectre_test/prompts"
+
+  embedding(SpectreTest.EmbeddingAdapter, model: "toy")
+  classifier(SpectreTest.SemanticLearningClassifierLLM)
+  router(via: [:semantic_cache, :llm_classifier])
+
+  flow :conversation do
+    on :PRICING, learn: true do
+      reply(:pricing, renderer: {SpectreTest.ReplyRenderer, :render})
+    end
+
+    on :SALES, learn: true do
+      reply(:sales, renderer: {SpectreTest.ReplyRenderer, :render})
     end
   end
 end
@@ -1420,9 +1521,14 @@ defmodule SpectreTest do
   end
 
   test "router can accept a semantic cache adapter before classifier fallback" do
+    test_pid = self()
+
     semantic_lookup = fn
       "cached please", opts ->
-        if Keyword.get(opts, :semantic_search?) do
+        search? = Keyword.get(opts, :semantic_search?)
+        send(test_pid, {:semantic_cache_lookup, search?})
+
+        if search? do
           {:error, :miss}
         else
           {:ok,
@@ -1452,9 +1558,18 @@ defmodule SpectreTest do
     assert route.label == :wants_project_create
     assert route.strategy == :semantic_cache_exact
     assert route.accepted?
+    assert_receive {:semantic_cache_lookup, false}
+    refute_receive {:semantic_cache_lookup, true}
   end
 
   test "router uses learned semantic cache by default for cacheable routes" do
+    test_pid = self()
+
+    embedding = fn text, _opts ->
+      send(test_pid, {:unexpected_embedding, text})
+      {:ok, [1.0, 0.0]}
+    end
+
     assert {:ok, route} =
              Spectre.Router.route(
                %Spectre.Input{text: "right"},
@@ -1464,6 +1579,7 @@ defmodule SpectreTest do
                  state: %State{},
                  opts: [
                    classification_log?: false,
+                   embedding: embedding,
                    semantic_cache_source:
                      learned_cache_source(SpectreTest.LearnedSemanticCacheAgent)
                  ]
@@ -1473,18 +1589,26 @@ defmodule SpectreTest do
     assert route.label == :GO_RIGHT
     assert route.strategy == :semantic_cache_exact
     assert route.accepted?
+    refute_receive {:unexpected_embedding, _text}
   end
 
-  test "learned semantic cache uses vettore search without a custom adapter" do
+  test "learned semantic cache embeds only the query and searches stored vectors" do
     rules =
       SpectreTest.LearnedSemanticCacheAgent.__spectre_rules__()
       |> Enum.map(&Spectre.Rule.new/1)
+
+    test_pid = self()
+
+    embedding = fn text, _opts ->
+      send(test_pid, {:embedded, text})
+      SpectreTest.EmbeddingAdapter.embed(text, [])
+    end
 
     assert {:ok, result} =
              Learned.lookup("right",
                spectre_rules: rules,
                semantic_cache_source: learned_cache_source(SpectreTest.LearnedSemanticCacheAgent),
-               embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]},
+               embedding: embedding,
                semantic_search?: true,
                semantic_cache_threshold: 0.0
              )
@@ -1493,6 +1617,88 @@ defmodule SpectreTest do
     assert result.strategy == :semantic_cache_search
     assert result.accepted?
     assert result.confidence >= 0.0
+    assert_receive {:embedded, "right"}
+    refute_receive {:embedded, _stored_row}
+  end
+
+  test "semantic search never generates missing stored embeddings at request time" do
+    agent = SpectreTest.LearnedSemanticCacheAgent
+    rules = Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1)
+    test_pid = self()
+
+    assert :ok = Learned.clear(agent)
+
+    assert {:ok, %{loaded: 1, skipped: 0}} =
+             Learned.load_snapshot(
+               agent,
+               [%{text: "legacy right", label: :GO_RIGHT, verified?: true}],
+               semantic_cache_static?: false
+             )
+
+    embedding = fn text, _opts ->
+      send(test_pid, {:unexpected_embedding, text})
+      {:ok, [1.0, 0.0]}
+    end
+
+    assert {:error, :semantic_cache_embeddings_not_loaded} =
+             Learned.lookup("query",
+               spectre_agent: agent,
+               spectre_rules: rules,
+               semantic_cache_static?: false,
+               mirror_training_dataset?: false,
+               embedding: embedding,
+               semantic_search?: true,
+               semantic_cache_threshold: 0.0
+             )
+
+    refute_receive {:unexpected_embedding, _text}
+  end
+
+  test "semantic miss and online learning reuse the one query embedding" do
+    agent = SpectreTest.SemanticLearningReuseAgent
+    text = "connect me with enterprise sales"
+    test_pid = self()
+
+    embedding = fn embedded_text, _opts ->
+      vector = [1.0, 0.0]
+      send(test_pid, {:embedded_once, embedded_text, vector})
+      {:ok, vector}
+    end
+
+    opts =
+      Keyword.merge(agent.__spectre_config__(),
+        classification_log?: false,
+        semantic_cache_source: semantic_redesign_source(),
+        semantic_cache_threshold: 2.0,
+        embedding: embedding
+      )
+
+    assert :ok = SemanticCache.clear(agent, opts)
+
+    input = %Spectre.Input{text: text}
+
+    assert {:ok, router_context} =
+             Spectre.Router.route_context(
+               input,
+               %Spectre.Context{
+                 agent: agent,
+                 input: input,
+                 state: %State{},
+                 opts: opts
+               }
+             )
+
+    assert is_nil(router_context.semantic_cache_query_embedding)
+    assert {:ok, route} = Spectre.Router.route_from_context(router_context)
+
+    assert route.label == :SALES
+    assert route.strategy == :llm_classifier
+    assert_receive {:embedded_once, ^text, vector}
+    refute_receive {:embedded_once, _text, _vector}
+
+    assert {:ok, [row]} = SemanticCache.examples(agent, opts)
+    assert row.text == text
+    assert row.embedding == vector
   end
 
   test "learned semantic cache stores examples in a compressed vettore collection" do
@@ -1684,7 +1890,10 @@ defmodule SpectreTest do
     agent = SpectreTest.SemanticCacheRedesignAgent
     assert :ok = SemanticCache.clear(agent)
 
-    opts = [semantic_cache_source: semantic_redesign_source()]
+    opts = [
+      semantic_cache_source: semantic_redesign_source(),
+      embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]}
+    ]
 
     assert {:ok, row} =
              SemanticCache.put(
@@ -1696,6 +1905,7 @@ defmodule SpectreTest do
                )
              )
 
+    assert row.embedding == [0.0, 1.0]
     assert {:ok, [listed]} = SemanticCache.examples(agent, opts)
     assert listed.id == row.id
 
@@ -1716,19 +1926,50 @@ defmodule SpectreTest do
 
     path = Path.join(tmp_dir, "semantic_cache.online.jsonl")
     assert {:ok, ^path} = SemanticCache.snapshot(agent, Keyword.merge(opts, path: path))
+    assert File.read!(path) =~ ~s("embedding":[0.0,1.0])
 
     assert :ok = SemanticCache.clear(agent)
     assert {:ok, []} = SemanticCache.examples(agent, opts)
 
-    assert {:ok, %{loaded: 1, skipped: 0}} = SemanticCache.load_snapshot(agent, path: path)
+    assert {:ok, %{loaded: 1, skipped: 0}} =
+             SemanticCache.load_snapshot(
+               agent,
+               path,
+               Keyword.put(opts, :semantic_cache_static?, false)
+             )
+
     assert {:ok, [loaded]} = SemanticCache.examples(agent, opts)
     assert loaded.label == :SALES
+    assert loaded.embedding == [0.0, 1.0]
+
+    test_pid = self()
+
+    query_embedding = fn text, _opts ->
+      send(test_pid, {:embedded_query, text})
+      {:ok, [0.0, 1.0]}
+    end
+
+    assert {:ok, %{label: :SALES, strategy: :semantic_cache_search}} =
+             Learned.lookup(
+               "schedule a custom quote",
+               Keyword.merge(opts,
+                 spectre_agent: agent,
+                 spectre_rules: Enum.map(agent.__spectre_rules__(), &Spectre.Rule.new/1),
+                 semantic_cache_static?: false,
+                 semantic_search?: true,
+                 semantic_cache_threshold: 0.0,
+                 embedding: query_embedding
+               )
+             )
+
+    assert_receive {:embedded_query, "schedule a custom quote"}
+    refute_receive {:embedded_query, _stored_row}
 
     assert :ok = SemanticCache.delete(agent, loaded.id, opts)
     assert {:ok, []} = SemanticCache.examples(agent, opts)
   end
 
-  test "online mutations bump revision and rebuild semantic search index" do
+  test "online mutations bump revision and refresh semantic search from stored vectors" do
     agent = SpectreTest.SemanticCacheRedesignAgent
     assert :ok = SemanticCache.clear(agent)
 
@@ -2367,6 +2608,17 @@ defmodule SpectreTest do
     assert classifier.kind == :centroid_head
     assert map_size(classifier.centroids) == 2
     refute Map.has_key?(classifier, :examples)
+
+    semantic_rows =
+      artifact_dir
+      |> Path.join("semantic_cache.jsonl")
+      |> File.stream!()
+      |> Enum.map(&Jason.decode!/1)
+
+    assert semantic_rows == [
+             %{"text" => "right", "label" => "go_right", "embedding" => [1.0, 0.0]},
+             %{"text" => "left", "label" => "go_left", "embedding" => [-1.0, 0.0]}
+           ]
 
     assert {:ok, route} =
              Spectre.Classifier.classify_once(

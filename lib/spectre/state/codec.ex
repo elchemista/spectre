@@ -96,6 +96,9 @@ defmodule Spectre.State.Codec do
     end
   end
 
+  def decode(%{__struct__: _module} = struct),
+    do: {:error, {:invalid_state_payload, value_shape(struct)}}
+
   def decode(attrs) when is_map(attrs) do
     with {:ok, attrs} <- normalize_schema_map(attrs, @state_keys, :state),
          {:ok, version} <- required_integer(attrs, "state_version"),
@@ -716,6 +719,7 @@ defmodule Spectre.State.Codec do
   defp value_shape(value) when is_atom(value), do: :atom
   defp value_shape(value) when is_binary(value), do: :binary
   defp value_shape(value) when is_list(value), do: :list
+  defp value_shape(%{__struct__: module}), do: {:struct, module}
   defp value_shape(value) when is_map(value), do: :map
   defp value_shape(value) when is_tuple(value), do: {:tuple, tuple_size(value)}
   defp value_shape(value) when is_pid(value), do: :pid

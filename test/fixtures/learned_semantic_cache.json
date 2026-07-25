@@ -1,10 +1,12 @@
 [
   {
     "label": "GO_RIGHT",
-    "text": "right"
+    "text": "right",
+    "embedding": [1.0, 0.0]
   },
   {
     "label": "GO_LEFT",
-    "text": "left"
+    "text": "left",
+    "embedding": [-1.0, 0.0]
   }
 ]

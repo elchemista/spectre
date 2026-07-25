@@ -103,6 +103,9 @@ end
 
 defmodule SpectreStrategyMatrix.SemanticCache do
   @moduledoc false
+  # Router-precedence double only. Built-in cache persistence and embedding
+  # cardinality belong to semantic_cache_contract_test.exs and the real
+  # ExFastembed system test.
   @behaviour Spectre.Router.SemanticCache
 
   @impl Spectre.Router.SemanticCache
