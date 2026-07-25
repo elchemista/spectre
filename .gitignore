@@ -17,6 +17,7 @@
 
 /.elixir_ls/
 
+/.fastembed_cache/
 /.codex/
 
 /.agents/
