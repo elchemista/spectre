@@ -88,8 +88,9 @@ jobs:
             deps
             _build/test
             .fastembed_cache
+            ex_fastembed/priv/native
             ex_fastembed/native/ex_fastembed/target
-          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-real-fastembed-${{ hashFiles('mix.real_embeddings.lock', 'ex_fastembed/mix.lock', 'ex_fastembed/native/ex_fastembed/Cargo.lock') }}
+          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-real-fastembed-v2-${{ hashFiles('mix.real_embeddings.lock', 'ex_fastembed/mix.lock', 'ex_fastembed/native/ex_fastembed/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
