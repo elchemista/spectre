@@ -179,12 +179,9 @@ defmodule Spectre.Session do
         data = data |> Map.merge(%{state: state, last_result: result}) |> arm_idle_timer()
         {:reply, {:ok, result}, data}
 
-      {:error, {:memory_persist_failed, _reason, %Result{} = result} = failure} ->
-        data = data |> retain_committed_result(result) |> arm_idle_timer()
-        {:reply, {:error, failure}, data}
-
       {:error, reason} ->
-        {:reply, {:error, reason}, arm_idle_timer(data)}
+        data = data |> retain_failure_result(reason) |> arm_idle_timer()
+        {:reply, {:error, reason}, data}
     end
   end
 
@@ -200,12 +197,9 @@ defmodule Spectre.Session do
         data = data |> Map.merge(%{state: state, last_result: result}) |> arm_idle_timer()
         {:reply, {:ok, turn}, data}
 
-      {:error, {:memory_persist_failed, _reason, %Result{} = result} = failure} ->
-        data = data |> retain_committed_result(result) |> arm_idle_timer()
-        {:reply, {:error, failure}, data}
-
       {:error, reason} ->
-        {:reply, {:error, reason}, arm_idle_timer(data)}
+        data = data |> retain_failure_result(reason) |> arm_idle_timer()
+        {:reply, {:error, reason}, data}
     end
   end
 
@@ -223,7 +217,8 @@ defmodule Spectre.Session do
         {:reply, {:ok, resolved}, data}
 
       {:error, reason} ->
-        {:reply, {:error, reason}, arm_idle_timer(data)}
+        data = data |> retain_failure_result(reason) |> arm_idle_timer()
+        {:reply, {:error, reason}, data}
     end
   end
 
@@ -240,13 +235,10 @@ defmodule Spectre.Session do
             data = data |> retain_committed_result(completed) |> arm_idle_timer()
             {:reply, {:ok, completed}, data}
 
-          {:error, {:persistence_ambiguous, _reason, %Result{} = ambiguous} = failure} ->
-            data = data |> retain_committed_result(ambiguous) |> arm_idle_timer()
-            {:reply, {:error, failure}, data}
-
           {:error, reason} ->
             emit_stale_command(reason, data)
-            {:reply, {:error, reason}, arm_idle_timer(data)}
+            data = data |> retain_failure_result(reason) |> arm_idle_timer()
+            {:reply, {:error, reason}, data}
         end
 
       {:error, reason} ->
@@ -283,6 +275,20 @@ defmodule Spectre.Session do
   defp retain_committed_result(data, %Result{} = result) do
     %{data | state: State.new(result.state), last_result: result}
   end
+
+  @spec retain_failure_result(map(), term()) :: map()
+  defp retain_failure_result(data, reason) do
+    case failure_result(reason) do
+      %Result{} = result -> retain_committed_result(data, result)
+      nil -> data
+    end
+  end
+
+  @spec failure_result(term()) :: Result.t() | nil
+  defp failure_result({:memory_persist_failed, _reason, %Result{} = result}), do: result
+  defp failure_result({:persistence_ambiguous, _reason, %Result{} = result}), do: result
+  defp failure_result({:persistence_journal_failed, _reason, %Result{} = result}), do: result
+  defp failure_result(_reason), do: nil
 
   @spec prepare_session_execution(Result.t(), map()) ::
           {:ok, Result.t()} | {:replay, Result.t()} | {:error, term()}

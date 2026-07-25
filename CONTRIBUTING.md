@@ -14,7 +14,9 @@ mix test
 
 Spectre requires Elixir `~> 1.19`. Vettore is a normal runtime dependency.
 ExFastembed is optional; the committed strategy fixture keeps the default test
-suite offline and deterministic.
+suite offline and deterministic. The dedicated real-model profile in
+[Testing](docs/TESTING.md) must pass for changes to embedding persistence,
+semantic search, or the ExFastembed adapter.
 
 ## Before opening a pull request
 
@@ -30,9 +32,12 @@ mix docs
 git diff --check
 ```
 
-New behavior should include tests for failures and boundary conditions, not only
-the successful path. Changes to lifecycle state, persistence, policy matching,
-or side effects should demonstrate the relevant invariant in a regression test.
+New behavior should include executable tests for failures and boundary
+conditions, not only the successful output. Changes to lifecycle state,
+persistence, policy matching, providers, or side effects should assert callback
+order and cardinality, forbidden calls, state on both sides of a commit, and
+restart or replay behavior. Coverage and large case counts are supporting
+signals; they are not substitutes for those invariant assertions.
 
 ## Compatibility
 
@@ -51,4 +56,3 @@ For a breaking public change:
 
 Do not open a public issue for a suspected vulnerability. Follow the private
 reporting instructions in [SECURITY.md](SECURITY.md).
-

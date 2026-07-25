@@ -24,6 +24,9 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
       Context.halted?(context) ->
         {:cont, context}
 
+      exact_cache_hit?(context) ->
+        {:cont, Context.put_trace(context, {:semantic_skip, :exact_cache_hit})}
+
       Context.hard_candidate_locked?(context) ->
         {:cont, Context.put_trace(context, {:semantic_skip, :hard_candidate})}
 
@@ -36,6 +39,11 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
       true ->
         semantic_search(context)
     end
+  end
+
+  @spec exact_cache_hit?(Context.t()) :: boolean()
+  defp exact_cache_hit?(%Context{traces: traces}) do
+    Enum.any?(traces, &match?({:cache_accept, %Spectre.Route{accepted?: true}}, &1))
   end
 
   @spec semantic_search(Context.t()) :: {:cont, Context.t()}
@@ -55,7 +63,12 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
   @spec search_visible(Context.t(), String.t(), keyword(), [Spectre.Rule.t()], [atom()]) ::
           {:cont, Context.t()}
   defp search_visible(context, text, opts, visible_rules, visible_labels) do
-    case SemanticCache.lookup(text, Keyword.put(opts, :semantic_search?, true)) do
+    {reply, metadata} =
+      SemanticCache.lookup_with_metadata(text, Keyword.put(opts, :semantic_search?, true))
+
+    context = put_query_embedding(context, metadata)
+
+    case reply do
       {:ok, %{accepted?: true} = result} ->
         route =
           result
@@ -107,6 +120,14 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
          |> Context.put_trace({:semantic_skip, reason})}
     end
   end
+
+  @spec put_query_embedding(Context.t(), map()) :: Context.t()
+  defp put_query_embedding(context, %{query_embedding: embedding})
+       when is_list(embedding) and embedding != [] do
+    Context.put_semantic_cache_query_embedding(context, embedding)
+  end
+
+  defp put_query_embedding(context, _metadata), do: context
 
   @spec routeable_labels([Spectre.Rule.t()], term() | nil) :: :ok | {:skip, term()}
   defp routeable_labels([], reason) when not is_nil(reason), do: {:skip, reason}

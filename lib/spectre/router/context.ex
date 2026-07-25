@@ -15,6 +15,7 @@ defmodule Spectre.Router.Context do
     :route,
     :rules,
     :local_result,
+    :semantic_cache_query_embedding,
     :arbitration,
     candidates: [],
     halted?: false,
@@ -30,6 +31,7 @@ defmodule Spectre.Router.Context do
           route: Spectre.Route.t() | nil,
           rules: [Spectre.Rule.t()],
           local_result: map() | nil,
+          semantic_cache_query_embedding: [float()] | nil,
           arbitration: map() | nil,
           candidates: [Spectre.Router.Candidate.t()],
           halted?: boolean(),
@@ -106,6 +108,19 @@ defmodule Spectre.Router.Context do
   """
   @spec put_local_result(t(), map()) :: t()
   def put_local_result(%__MODULE__{} = context, result), do: %{context | local_result: result}
+
+  @doc false
+  @spec put_semantic_cache_query_embedding(t(), [float()]) :: t()
+  def put_semantic_cache_query_embedding(%__MODULE__{} = context, embedding)
+      when is_list(embedding) and embedding != [] do
+    %{context | semantic_cache_query_embedding: embedding}
+  end
+
+  @doc false
+  @spec clear_semantic_cache_query_embedding(t()) :: t()
+  def clear_semantic_cache_query_embedding(%__MODULE__{} = context) do
+    %{context | semantic_cache_query_embedding: nil}
+  end
 
   @doc """
   Stores the canonical privacy-safe arbitration explanation.

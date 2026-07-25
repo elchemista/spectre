@@ -368,7 +368,7 @@ defmodule Spectre.Runtime do
       case persisted do
         {:ok, %Result{} = committed} ->
           emit_persistence(:committed, committed, ctx)
-          Recorder.record_persistence(committed, ctx)
+          record_committed_persistence(committed, ctx)
 
         {:error, {:persistence_ambiguous, reason, %Result{} = ambiguous}} ->
           emit_persistence(:ambiguous, ambiguous, ctx)
@@ -383,6 +383,21 @@ defmodule Spectre.Runtime do
         {:error, _reason} = error ->
           error
       end
+    end
+  end
+
+  @spec record_committed_persistence(Result.t(), Context.t()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp record_committed_persistence(%Result{} = committed, %Context{} = ctx) do
+    case Recorder.record_persistence(committed, ctx) do
+      {:ok, %Result{} = recorded} ->
+        {:ok, recorded}
+
+      {:error, reason} ->
+        # State has already crossed its commit boundary. Preserve that fact for
+        # sessions and hosts even when a strict persistence-journal append
+        # fails afterward.
+        {:error, {:persistence_journal_failed, reason, committed}}
     end
   end
 
@@ -558,41 +573,97 @@ defmodule Spectre.Runtime do
           keyword()
         ) :: {:ok, Result.t()} | {:error, term()}
   defp persist_with_adapter(module, function, args, mode, result, expected, opts) do
-    reply =
-      Call.run(
-        :state,
-        fn -> module |> apply(function, args) |> normalize_persist_provider_reply() end,
-        Keyword.put(opts, :purpose, :state_persist)
-      )
+    run_state_persist(
+      module,
+      function,
+      args,
+      Keyword.put(opts, :purpose, :state_persist)
+    )
+    |> handle_persist_reply(mode, result, expected)
+  end
 
-    case reply do
-      {:ok, :persisted} ->
-        {:ok, mark_state_persisted(result, expected, mode)}
+  @spec handle_persist_reply(term(), :cas | :legacy, Result.t(), non_neg_integer()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp handle_persist_reply({:ok, :persisted}, mode, result, expected) do
+    {:ok, mark_state_persisted(result, expected, mode)}
+  end
 
-      {:ok, {:state, payload}} ->
-        with {:ok, state} <- normalize_loaded_state(payload, result.state.conversation_id),
-             :ok <- validate_persisted_revision(state, result.state.revision) do
-          result = %{result | state: state}
-          {:ok, mark_state_persisted(result, expected, mode)}
-        end
-
-      {:error, :stale_state} ->
-        {:error, {:stale_state, expected}}
-
-      {:error, {:stale_state, actual}} ->
-        {:error, {:stale_state, expected, actual}}
-
-      {:error, {:ambiguous, reason}} ->
-        ambiguous = mark_state_persisted(result, expected, :ambiguous)
-        {:error, {:persistence_ambiguous, reason, ambiguous}}
-
-      {:error, {:persistence_ambiguous, reason}} ->
-        ambiguous = mark_state_persisted(result, expected, :ambiguous)
-        {:error, {:persistence_ambiguous, reason, ambiguous}}
+  defp handle_persist_reply({:ok, {:state, payload}}, mode, result, expected) do
+    case normalize_persisted_state(payload, result) do
+      {:ok, %Result{} = persisted_result} ->
+        {:ok, mark_state_persisted(persisted_result, expected, mode)}
 
       {:error, reason} ->
-        {:error, reason}
+        ambiguous_persistence(result, expected, reason)
     end
+  end
+
+  defp handle_persist_reply({:error, :stale_state}, _mode, _result, expected) do
+    {:error, {:stale_state, expected}}
+  end
+
+  defp handle_persist_reply({:error, {:stale_state, actual}}, _mode, _result, expected) do
+    {:error, {:stale_state, expected, actual}}
+  end
+
+  defp handle_persist_reply({:error, {:ambiguous, reason}}, _mode, result, expected) do
+    ambiguous_persistence(result, expected, reason)
+  end
+
+  defp handle_persist_reply(
+         {:error, {:persistence_ambiguous, reason}},
+         _mode,
+         result,
+         expected
+       ) do
+    ambiguous_persistence(result, expected, reason)
+  end
+
+  defp handle_persist_reply(
+         {:error, %Failure{provider: :state, kind: kind} = failure},
+         _mode,
+         result,
+         expected
+       )
+       when kind != :configuration do
+    # The adapter worker was invoked. An exception, exit, crash, timeout, or
+    # invalid provider reply can happen after the durable write, so treating it
+    # as a definite failure would make a blind retry unsafe.
+    ambiguous_persistence(result, expected, failure)
+  end
+
+  defp handle_persist_reply(
+         {:error, {:invalid_persist_reply, _shape} = reason},
+         _mode,
+         result,
+         expected
+       ) do
+    ambiguous_persistence(result, expected, reason)
+  end
+
+  defp handle_persist_reply({:error, reason}, _mode, _result, _expected), do: {:error, reason}
+
+  defp run_state_persist(module, function, args, opts) do
+    Call.run(
+      :state,
+      fn -> module |> apply(function, args) |> normalize_persist_provider_reply() end,
+      opts
+    )
+  end
+
+  @spec normalize_persisted_state(term(), Result.t()) :: {:ok, Result.t()} | {:error, term()}
+  defp normalize_persisted_state(payload, %Result{} = result) do
+    with {:ok, state} <- normalize_loaded_state(payload, result.state.conversation_id),
+         :ok <- validate_persisted_revision(state, result.state.revision) do
+      {:ok, %{result | state: state}}
+    end
+  end
+
+  @spec ambiguous_persistence(Result.t(), non_neg_integer(), term()) ::
+          {:error, {:persistence_ambiguous, term(), Result.t()}}
+  defp ambiguous_persistence(%Result{} = result, expected, reason) do
+    ambiguous = mark_state_persisted(result, expected, :ambiguous)
+    {:error, {:persistence_ambiguous, reason, ambiguous}}
   end
 
   @spec normalize_persist_provider_reply(term()) :: {:ok, term()} | {:error, term()}

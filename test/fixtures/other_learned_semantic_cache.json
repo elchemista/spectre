@@ -1,6 +1,7 @@
 [
   {
     "label": "OTHER_RIGHT",
-    "text": "right"
+    "text": "right",
+    "embedding": [1.0, 0.0]
   }
 ]

@@ -36,7 +36,7 @@ Dataset files can be:
 - `.jsonl` one object per line
 
 Rows can use either `label` or `intent`. Labeled `.json` and `.jsonl` rows are
-also mirrored into the built-in semantic cache by default for cacheable routes:
+also mirrored into exact semantic-cache lookup by default for cacheable routes:
 
 ```json
 [
@@ -60,6 +60,12 @@ mix spectre.classifier.download_model --model intfloat/multilingual-e5-small
 mix spectre.classifier.train training/support/dataset.json priv/spectre/support
 ```
 
+Training writes a `semantic_cache.jsonl` companion into the artifact directory.
+It contains each training row together with the embedding already created
+during training. At runtime, Spectre filters it to cacheable routes and loads
+the saved vectors; it does not call the embedding provider once per dataset
+row.
+
 Configure the classifier:
 
 ```elixir
@@ -69,9 +75,9 @@ config :spectre, :classifier,
   embedding_adapter: Spectre.Classifier.Embeddings.ExFastembed
 ```
 
-Classifier artifacts use compact centroids by default. At runtime, Spectre
-indexes centroids with Vettore, so only one vector per label is mirrored into
-the native index.
+Classifier artifacts use compact centroids by default. At runtime, the local
+classifier indexes centroids with Vettore, while semantic-cache search uses the
+saved row vectors in `semantic_cache.jsonl`.
 
 For larger datasets, nearest-example routing can be worth the extra memory:
 
@@ -110,7 +116,14 @@ editable but unverified and are excluded from exact and semantic routing until
 
 This prevents an unverified classifier or LLM decision from immediately
 becoming ground truth. Review APIs still list quarantined rows, and snapshots
-preserve their verification state.
+preserve both their verification state and embedding.
+
+The runtime request invariant is:
+
+- an accepted exact-cache hit makes zero embedding calls;
+- a non-exact semantic lookup embeds only the incoming text once;
+- a newly learned row stores its embedding for later snapshots; and
+- loading a snapshot never regenerates every stored embedding.
 
 Built-in semantic indexes are bounded to four cached revisions per agent by
 default. Override this only when an agent intentionally uses several embedding

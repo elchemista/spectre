@@ -328,7 +328,7 @@ defmodule SpectreProductionReadinessTest do
     assert size > 1
   end
 
-  test "Session child specs recover abnormal exits and ignore stale idle generations" do
+  test "Session child specs are transient and stale idle generations are ignored" do
     assert %{restart: :transient} =
              Spectre.Session.child_spec(agent: SpectreProductionReadinessTest.Agent)
 

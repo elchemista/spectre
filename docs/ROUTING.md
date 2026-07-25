@@ -556,11 +556,28 @@ Spectre can store the user text as an editable online example. `cache: false`
 excludes offline rows, static route examples, and online examples for that
 route from semantic cache.
 
-Exact lookup runs without embeddings; semantic search embeds examples and
-indexes them with Vettore. If no router `via:` is configured, Spectre adds
-`:semantic_cache` automatically when cacheable rules exist. If a rule has an
-explicit route-level `via:`, it must include `:semantic_cache` for semantic
-cache to see that route.
+Exact lookup runs without embeddings. An accepted exact hit is terminal for
+semantic-cache evaluation, so later semantic search does not embed the same
+input.
+
+Semantic search loads only embeddings already stored in a classifier artifact
+or semantic-cache snapshot into Vettore, then embeds the incoming text once.
+It never regenerates the stored dataset embeddings during a request. Rows from
+legacy snapshots or raw datasets that do not contain an embedding remain
+available to exact lookup but are not eligible for vector search.
+
+The local Vettore projection is keyed by the stored row/vector content and
+index configuration. Row timestamps and request-only adapter options do not
+invalidate that projection.
+
+`mix spectre.classifier.train` writes `semantic_cache.jsonl` beside the
+classifier artifact. Spectre discovers that companion file from
+`artifact_dir:` and loads its saved row embeddings. Online learned rows also
+store their embedding in semantic-cache snapshots.
+
+If no router `via:` is configured, Spectre adds `:semantic_cache`
+automatically when cacheable rules exist. If a rule has an explicit route-level
+`via:`, it must include `:semantic_cache` for semantic cache to see that route.
 
 Clear the learned cache at runtime when examples, thresholds, or tenant data
 have changed:
@@ -583,8 +600,10 @@ Spectre.ask(MyApp.SupportAgent, "pricing please",
 
 For the built-in cache, clearing drops Spectre's in-memory Vettore cache and
 online learned rows for that agent by default. Static dataset rows are read from
-their configured sources again on the next lookup. Clearing does not edit source
-files, DSL declarations, or classifier artifacts.
+their configured sources again on the next lookup. Only rows with saved
+embeddings are reloaded into vector search; Spectre does not backfill missing
+vectors through the embedding provider. Clearing does not edit source files,
+DSL declarations, or classifier artifacts.
 
 Custom adapters still win. Configure one of these when your app owns the cache:
 
@@ -653,11 +672,11 @@ or a `semantic_cache:` module.
 
 There are two semantic-cache moments:
 
-1. Exact lookup runs early, before classifier fallback. A trusted hot cache hit
-   is cheap and stable.
-2. Semantic search runs later, after local classifier evidence. That lets a
-   broad vector search use classifier context without hiding deterministic or
-   high-confidence local evidence.
+1. Exact lookup runs early, before classifier fallback. An accepted hit is
+   hard evidence and skips semantic search, so it makes zero embedding calls.
+2. Semantic search runs later, after local classifier evidence. It embeds only
+   the incoming text and compares that vector with the embeddings loaded from
+   artifacts or snapshots.
 
 Return a route-like map:
 

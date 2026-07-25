@@ -120,9 +120,21 @@ journal MyApp.AuditJournal,
   on_error: :error
 ```
 
-Then a failed append returns `{:error, {:journal_append_failed, reason}}` from
-the turn. If state and audit records must commit atomically, use an application
-outbox in the same storage transaction rather than relying on a remote append.
+Before state persistence, a failed append returns
+`{:error, {:journal_append_failed, reason}}` from the turn.
+
+The persistence record is necessarily appended after compare-and-set. If that
+strict append fails, the state is already committed and Spectre returns
+`{:error, {:persistence_journal_failed,
+{:journal_append_failed, reason}, committed_result}}`. A Session retains the
+committed result so its in-memory revision does not move backward.
+Request-scoped callers should retain that result or reload durable state before
+continuing.
+
+If state and audit records must commit atomically, use an application outbox in
+the same storage transaction rather than relying on a remote append. A remote
+strict journal can report the post-commit failure, but it cannot roll the state
+write back.
 
 ## Correlation And Idempotency
 

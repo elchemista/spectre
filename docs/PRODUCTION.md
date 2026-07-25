@@ -38,7 +38,17 @@ end
 
 Treat `{:error, :stale_state}` as a concurrency signal. Treat
 `{:error, {:persistence_ambiguous, reason, result}}` as an uncertain commit and
-reconcile it from durable state before retrying external work.
+reconcile it from durable state before retrying external work. Spectre produces
+that ambiguous result not only when an adapter explicitly returns
+`{:error, {:ambiguous, reason}}`, but also when an invoked state callback
+raises, exits, throws, is killed, times out, or returns a malformed result. Any
+of those failures can happen after the store committed.
+
+With a strict synchronous persistence journal, compare-and-set can succeed
+before the audit append fails. That result is returned as
+`{:error, {:persistence_journal_failed, reason, committed_result}}`. A Session
+retains `committed_result`; request-scoped callers must do the same or reload
+the durable state. Do not retry the old revision as though no write occurred.
 
 ## Action idempotency
 
@@ -75,6 +85,9 @@ adapter when state must survive a process or node failure.
 
 Use finite `idle` or `shutdown` values for high-cardinality conversation
 workloads. Supervisors may recreate a session from durable state on demand.
+Sessions use transient restart semantics: abnormal exits restart under a
+supervisor, while normal dismiss and idle shutdown stay stopped. A failed
+initial restore must not leave a registered process behind.
 
 ## Provider deadlines
 
@@ -140,8 +153,11 @@ unverified online examples in sensitive flows.
 - Keep authorization in the action/provider boundary.
 - Keep prompt, journal, and telemetry content privacy-safe.
 - Configure session idle shutdown for unbounded conversation IDs.
-- Snapshot or externalize learned semantic-cache rows when needed.
+- Snapshot or externalize learned semantic-cache rows and their embeddings;
+  runtime snapshot loading must not regenerate stored vectors.
 - Run route evaluation against version-controlled cases before deployment.
 - Exercise policy rejection, timeout, stale state, and ambiguous persistence in
   application integration tests.
-
+- Inject failures immediately before and after each host-owned durable commit,
+  then assert callback cardinality, durable state, restart behavior, and
+  idempotent replay.

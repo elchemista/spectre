@@ -21,6 +21,23 @@ minor release may contain documented breaking API changes.
 
 - Semantic-cache collection cleanup now follows Vettore 0.3.2's dedicated
   supervised ETS ownership model.
+- Accepted exact semantic-cache hits now skip later vector search, and built-in
+  semantic search loads persisted row embeddings instead of issuing one remote
+  embedding request per cached row. Classifier training and cache snapshots
+  persist the vectors needed for request-time lookup, and online learning
+  reuses the query vector instead of embedding the same input twice.
+- Semantic-cache index processes now terminate with their cache owner, so an
+  owner restart cannot leave orphaned Vettore collections behind.
+- Invoked state callbacks that crash, exit, throw, are killed, time out, or
+  return malformed results are now treated as ambiguous writes. Sessions retain
+  the candidate state until durable reconciliation instead of silently moving
+  back to the previous revision.
+- Strict persistence-journal failures now carry the already committed result,
+  and Sessions retain it so an audit outage after compare-and-set cannot cause
+  state rollback or duplicate work on the old revision.
+- The application supervisor now tolerates a bounded burst across cache and
+  journal children instead of stopping the whole `:spectre` application while
+  those independent workers are being restarted.
 
 ## 0.1.0 — 2026-07-20
 

@@ -187,6 +187,14 @@ children = [
 `Spectre.summon/1` starts a session directly; prefer `summon/3` in production
 so a `Spectre.Supervisor` owns restart and shutdown behavior.
 
+Supervised sessions restart after abnormal exits and restore from the configured
+durable state adapter. Normal dismiss and idle shutdown do not restart a
+transient session. When a persistence callback may have committed before
+failing, the Session retains the candidate state and returns
+`{:error, {:persistence_ambiguous, reason, result}}`; after a post-commit strict
+journal failure it retains the committed state and returns
+`{:error, {:persistence_journal_failed, reason, result}}`.
+
 ## Route-only evaluation
 
 `Spectre.Router.evaluate/3` normalizes input and runs routing without loading
@@ -287,7 +295,8 @@ datasets are reviewable but read-only. Labels must still exist and allow
 semantic caching, preventing a stale snapshot from introducing an undeclared
 route.
 
-Snapshots can be kept in source control or moved between deployments:
+Snapshots include each online row's stored embedding and can be kept in source
+control or moved between deployments:
 
 ```elixir
 {:ok, path} =
@@ -299,6 +308,10 @@ Snapshots can be kept in source control or moved between deployments:
 {:ok, %{loaded: loaded, skipped: skipped}} =
   SemanticCache.load_snapshot(MyApp.SupportAgent, path, strict?: false)
 ```
+
+Loading a snapshot restores those vectors without invoking the embedding
+adapter. A legacy vectorless snapshot remains usable for exact lookup but is
+not rebuilt through remote embedding calls during a request.
 
 Custom cache modules implement `Spectre.Router.SemanticCache` callbacks.
 Mutation callbacks are optional; read-only custom caches can implement only

@@ -99,7 +99,8 @@ defmodule Spectre.Router.Plugs.SemanticCacheExact do
              Candidate.from_result(
                route,
                Support.route_rule(route, visible_rules),
-               route.strategy
+               route.strategy,
+               strength: :hard
              )
            )
            |> Context.put_trace({accept_trace, route})}

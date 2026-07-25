@@ -79,8 +79,9 @@ defmodule Spectre.Router.SemanticCache.Owner do
 
   @impl GenServer
   def init(:ok) do
+    Process.flag(:trap_exit, true)
     Enum.each(@table_specs, fn {name, options} -> create_table(name, options) end)
-    {:ok, %{}}
+    {:ok, %{collections: %{}}}
   end
 
   @impl GenServer
@@ -91,12 +92,24 @@ defmodule Spectre.Router.SemanticCache.Owner do
   def handle_call({:new_collection, opts}, _from, state) do
     # Collection lifecycle changes remain serialized with cache updates. Modern
     # Vettore versions place each ETS collection under their own supervised
-    # owner, so its lifetime is independent from both this server and callers.
-    {:reply, create_collection(opts), state}
+    # owner. Link those temporary owners back to this process so an abnormal
+    # semantic-cache owner exit cannot orphan vector stores that are no longer
+    # reachable from the rebuilt index table.
+    case create_collection(opts) do
+      {:ok, %Vettore.Collection{} = collection} ->
+        collection_owner = collection.store_state.owner
+        Process.link(collection_owner)
+
+        {:reply, {:ok, collection}, put_in(state, [:collections, collection_owner], collection)}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
   end
 
   def handle_call({:drop_collection, collection}, _from, state) do
-    {:reply, close_collection(collection), state}
+    owner = collection.store_state.owner
+    {:reply, close_collection(collection), update_in(state.collections, &Map.delete(&1, owner))}
   end
 
   def handle_call({:cache_index, key, index, capacity}, _from, state) do
@@ -105,6 +118,21 @@ defmodule Spectre.Router.SemanticCache.Owner do
 
   def handle_call({:clear_indexes, agent}, _from, state) do
     {:reply, clear_agent_indexes(agent), state}
+  end
+
+  @impl GenServer
+  def handle_info({:EXIT, collection_owner, _reason}, state) do
+    delete_indexes_owned_by(collection_owner)
+    {:noreply, update_in(state.collections, &Map.delete(&1, collection_owner))}
+  end
+
+  @impl GenServer
+  def terminate(_reason, state) do
+    state.collections
+    |> Map.values()
+    |> Enum.each(&close_collection/1)
+
+    :ok
   end
 
   @spec call_owner(term()) :: term()
@@ -170,6 +198,21 @@ defmodule Spectre.Router.SemanticCache.Owner do
     |> Enum.each(fn
       {{{:agent, ^agent}, _hash}, _index} = entry -> drop_cached_index(entry)
       _other -> :ok
+    end)
+
+    :ok
+  end
+
+  @spec delete_indexes_owned_by(pid()) :: :ok
+  defp delete_indexes_owned_by(collection_owner) do
+    @index_table
+    |> :ets.tab2list()
+    |> Enum.each(fn
+      {key, %{collection: %Vettore.Collection{store_state: %{owner: ^collection_owner}}}} ->
+        true = :ets.delete(@index_table, key)
+
+      _other ->
+        :ok
     end)
 
     :ok

@@ -19,6 +19,58 @@ The repository coverage threshold is 90%. Do not lower or exclude modules to
 make a change pass; add a meaningful test or explain why a private branch is
 unreachable and simplify the implementation.
 
+## What a contract test must prove
+
+A passing output assertion is not enough for code that crosses process,
+persistence, provider, or side-effect boundaries. A regression test should
+observe every relevant part of the invariant:
+
+1. the returned value or process outcome;
+2. the exact order and cardinality of callbacks that must run;
+3. callbacks that must **not** run;
+4. in-memory and durable state on both sides of the commit boundary; and
+5. restart, retry, or replay behavior after the injected failure.
+
+Coverage reports and large case matrices are useful diagnostics, but they are
+supplementary. They do not prove that a provider was called once, that an
+effect was not duplicated, or that a committed state survived a worker crash.
+
+## Executable lifecycle contracts
+
+`test/system_lifecycle_contract_test.exs` starts real supervised Spectre
+processes and exercises their lifecycle instead of only inspecting child
+specifications. It verifies:
+
+- required application children are alive and restart after abnormal exits;
+- semantic-cache collections die with their owner and ETS state is recreated
+  without orphaned collection processes;
+- sessions restore pending and terminal durable state after a crash;
+- normal dismiss and idle shutdown do not restart transient sessions;
+- every state-load failure shape leaves no registered zombie and a later start
+  can recover;
+- state writes that error before commit remain definite, while a callback that
+  commits and then raises, exits, throws, is killed, times out, or returns a
+  malformed result is treated as ambiguous;
+- a strict persistence-journal failure after compare-and-set retains the
+  already committed result; and
+- an action crash after the business commit retries the same idempotency key,
+  producing multiple attempts but one business effect.
+
+`test/turn_mechanics_contract_test.exs` drives the public `Spectre.turn/3`,
+policy continuation, and action continuation APIs through instrumented real
+adapters. It asserts the complete boundary order:
+
+```text
+input -> state load -> memory recall -> turn handler -> arbitration journal
+      -> render -> state compare-and-set -> persistence journal
+      -> memory persist
+```
+
+The suite kills the turn at every boundary and proves that no later callback
+runs, that durable revision changes only after the commit boundary, and that
+the next full turn recovers. It also proves handler-owned turns, trusted policy
+continuations, and idempotent terminal action replay.
+
 ## Strategy matrix
 
 `test/strategy_matrix_test.exs` defines ten agents with different prevailing
@@ -26,8 +78,8 @@ strategies:
 
 1. deterministic regex;
 2. local classifier over weak regex evidence;
-3. exact semantic cache;
-4. vector semantic search after an exact miss;
+3. exact semantic-cache adapter;
+4. semantic-cache adapter search after an exact miss;
 5. bag distance;
 6. Jaro distance;
 7. local FastEmbed-compatible embeddings;
@@ -39,13 +91,29 @@ Each agent executes 80 cases. Twenty are accepted routing scenarios and sixty
 exercise unmatched input, invalid state, unknown flow, invalid pipeline, empty
 input, serialized state, or malformed flow data. The resulting 800 cases keep
 the same route vocabulary while varying which strategy is allowed to prevail.
+The semantic-cache matrix agents are adapter doubles: they test precedence and
+visibility, not the built-in cache's persistence or provider-call behavior.
+
+## Built-in semantic-cache contract
+
+`test/semantic_cache_contract_test.exs` is the deterministic behavioral suite
+for the built-in cache. It asserts exact provider-call cardinality and the
+actual persisted vectors across exact hits, semantic hits, LLM-learned misses,
+legacy vectorless snapshots, clear, snapshot, and restore. These assertions are
+required even when a route's final label would have been correct.
+
+The scale tripwire loads 1,000 stored vectors whose text raises if it is ever
+sent to the embedding adapter. Loading and exact lookup make zero calls;
+semantic lookup makes exactly one call for the new query. A dimension mismatch
+must fail before even that query call.
 
 ## FastEmbed fixture
 
 The committed ETF fixture was generated from local ExFastembed vectors and is
-read through a deterministic test backend. The embedding strategy still calls
+read through a deterministic fake backend. The embedding strategy still calls
 the production `Spectre.Classifier.Embeddings.ExFastembed` adapter, so adapter
-normalization remains covered without downloading a model during CI.
+normalization is covered, but this fixture does **not** prove native model
+loading or inference.
 
 To regenerate it from a local ExFastembed checkout:
 
@@ -58,21 +126,61 @@ mix run scripts/generate_strategy_embeddings.exs -- \
 Review the resulting binary change and run the entire strategy matrix. Do not
 regenerate fixtures opportunistically in CI.
 
+## Real ExFastembed system test
+
+`test/real_ex_fastembed_semantic_cache_test.exs` runs separately from the
+offline suite. It compiles the actual ExFastembed Rust NIF, loads
+`Xenova/bge-small-en-v1.5`, and exercises the complete semantic-cache lifecycle:
+
+- train rows and persist their real vectors;
+- route an exact hit with zero inference calls;
+- route a semantic hit with exactly one query inference;
+- route a semantic miss and learn it with exactly one query inference;
+- snapshot and restore the learned vector without inference; and
+- route the restored exact hit with zero inference calls.
+
+Run it against a local ExFastembed checkout:
+
+```bash
+MIX_ENV=test \
+SPECTRE_EX_FASTEMBED_PATH=../ex_fastembed \
+SPECTRE_REAL_EMBEDDING_TESTS=1 \
+mix deps.get
+
+MIX_ENV=test \
+SPECTRE_EX_FASTEMBED_PATH=../ex_fastembed \
+SPECTRE_REAL_EMBEDDING_TESTS=1 \
+mix test test/real_ex_fastembed_semantic_cache_test.exs \
+  --include real_ex_fastembed
+```
+
+The normal `mix test` command excludes this tagged test so the unit suite stays
+deterministic. CI has a dedicated real-ExFastembed job; a fixture-only pass is
+not a substitute for that job.
+
 ## What requires a regression test
 
+- application startup, child ownership, abnormal restart, normal shutdown, and
+  resource cleanup;
+- session start, durable restore, idle stop, dismiss, crash, and on-demand
+  recovery;
+- every turn boundary in execution order, including forbidden downstream calls
+  after a failure;
 - every lifecycle source/status transition;
 - policy accept, reject, retry, exhaustion, expiry, and invalid labels;
-- stale and ambiguous persistence outcomes;
+- state before and after definite, stale, ambiguous, and post-commit journal
+  persistence outcomes;
 - provider success, declared error, invalid reply, timeout, exception, exit,
   throw, and cancellation;
 - prompt source, target, condition, trust, path, and size failures;
 - state codec migration and unsafe-value rejection;
-- action registration, ownership, Skill scope, and idempotent replay;
-- semantic-cache misses, thresholds, mutations, snapshot corruption, and index
-  ownership;
+- action registration, ownership, Skill scope, pre-commit failure,
+  commit-then-crash recovery, and idempotent replay;
+- semantic-cache provider-call cardinality, exact-hit short-circuiting, stored
+  vectors, dataset-size invariance, misses, thresholds, mutations, snapshot
+  restore, and index ownership;
 - privacy of journal, telemetry, evaluation receipt, and failure metadata.
 
 Application repositories should add end-to-end tests for their own state store,
 action idempotency, authorization, delivery, prompts, models, and recovery
 workflow. The Spectre suite cannot prove those host-owned boundaries.
-

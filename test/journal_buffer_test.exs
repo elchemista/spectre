@@ -122,6 +122,109 @@ defmodule SpectreJournalBufferTest do
     send(slow_worker, :release)
   end
 
+  test "reports successful and failed deliveries without poisoning the queue" do
+    buffer = start_buffer()
+    parent = self()
+
+    assert :ok =
+             Buffer.enqueue(
+               buffer,
+               fn ->
+                 send(parent, :successful_delivery)
+                 :ok
+               end,
+               buffer_size: 3
+             )
+
+    assert :ok =
+             Buffer.enqueue(
+               buffer,
+               fn ->
+                 send(parent, :failed_delivery)
+                 {:error, :store_unavailable}
+               end,
+               buffer_size: 3
+             )
+
+    assert_receive :successful_delivery
+    assert_receive :failed_delivery
+
+    assert %{completed: 1, failed: 1, queue_depth: 0, running?: false} =
+             eventually_stats(buffer, &(&1.completed == 1 and &1.failed == 1))
+  end
+
+  test "rejects malformed queue limits and overflow policies while preserving active work" do
+    buffer = start_buffer()
+    parent = self()
+
+    assert {:error, {:invalid_journal_buffer_size, 0}} =
+             Buffer.enqueue(buffer, fn -> :ok end, buffer_size: 0)
+
+    assert :ok = Buffer.enqueue(buffer, blocking_delivery(parent), buffer_size: 1)
+    assert_receive {:started, worker}
+
+    assert {:error, {:invalid_journal_overflow_policy, :overwrite}} =
+             Buffer.enqueue(buffer, fn -> send(parent, :unexpected) end,
+               buffer_size: 1,
+               overflow: :overwrite
+             )
+
+    assert %{dropped: 0, enqueued: 1, running_count: 1} = Buffer.stats(buffer)
+    send(worker, :release)
+    refute_receive :unexpected
+  end
+
+  test "ignores stale task replies, stale DOWN messages, and unrelated mailbox traffic" do
+    buffer = start_buffer()
+    initial = Buffer.stats(buffer)
+    stale = make_ref()
+
+    send(buffer, {stale, :ok})
+    send(buffer, {:DOWN, stale, :process, self(), :stale})
+    send(buffer, {:unrelated, :message})
+
+    assert eventually_stats(buffer, &(&1 == initial)) == initial
+    assert Process.alive?(buffer)
+
+    assert :ok =
+             Buffer.enqueue(buffer, fn -> send(self(), :wrong_process) end, buffer_size: 1)
+
+    assert eventually_stats(buffer, &(&1.completed == 1)).completed == 1
+  end
+
+  test "the application-owned default buffer supports the public convenience API" do
+    parent = self()
+
+    assert :ok =
+             Buffer.enqueue(fn ->
+               send(parent, :default_buffer_delivery)
+               :ok
+             end)
+
+    assert_receive :default_buffer_delivery
+  end
+
+  test "the default start_link contract can recreate the application buffer" do
+    supervisor = Process.whereis(Spectre.ApplicationSupervisor)
+    assert is_pid(supervisor)
+    assert :ok = Supervisor.terminate_child(supervisor, Buffer)
+    refute Process.whereis(Buffer)
+
+    on_exit(fn ->
+      if pid = Process.whereis(Buffer), do: GenServer.stop(pid, :normal)
+
+      case Supervisor.restart_child(supervisor, Buffer) do
+        {:ok, _pid} -> :ok
+        {:ok, _pid, _info} -> :ok
+        {:error, :running} -> :ok
+      end
+    end)
+
+    assert {:ok, standalone} = Buffer.start_link()
+    assert Process.whereis(Buffer) == standalone
+    assert %{queue_depth: 0, running_count: 0} = Buffer.stats()
+  end
+
   defp start_buffer do
     name = Module.concat(__MODULE__, "Buffer#{System.unique_integer([:positive])}")
     start_supervised!({Buffer, name: name})
@@ -136,4 +239,19 @@ defmodule SpectreJournalBufferTest do
       end
     end
   end
+
+  defp eventually_stats(buffer, predicate, attempts \\ 100)
+
+  defp eventually_stats(buffer, predicate, attempts) when attempts > 0 do
+    stats = Buffer.stats(buffer)
+
+    if predicate.(stats) do
+      stats
+    else
+      Process.sleep(10)
+      eventually_stats(buffer, predicate, attempts - 1)
+    end
+  end
+
+  defp eventually_stats(buffer, _predicate, 0), do: Buffer.stats(buffer)
 end
