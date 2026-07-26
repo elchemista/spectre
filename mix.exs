@@ -185,6 +185,11 @@ defmodule Spectre.MixProject do
           Spectre.Provider.Failure
         ],
         Actions: [
+          Spectre.Action,
+          Spectre.Action.Spec,
+          Spectre.Action.Provider,
+          Spectre.Action.Provider.Local,
+          Spectre.Action.Planner,
           Spectre.ActionConfig,
           Spectre.ActionDispatcher,
           Spectre.ActionExecutor,
@@ -192,6 +197,9 @@ defmodule Spectre.MixProject do
           Spectre.ActionPlanner,
           Spectre.ActionProtection,
           Spectre.Execution
+        ],
+        Extensions: [
+          Spectre.Extension
         ],
         "Classifiers and evaluation": [
           Spectre.Classifier,

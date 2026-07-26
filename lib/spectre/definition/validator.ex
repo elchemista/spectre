@@ -10,6 +10,8 @@ defmodule Spectre.Definition.Validator do
   @supported_skill_versions [1]
   @skill_forbidden_config [
     :actions,
+    :action_providers,
+    :action_planner,
     :state,
     :memory,
     :turn_handlers,
@@ -65,6 +67,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_policies(definition),
          :ok <- validate_injections(definition),
          :ok <- validate_mounts(definition),
+         :ok <- validate_extensions(definition),
          :ok <- validate_requirements(definition),
          :ok <- validate_protections(definition) do
       definition
@@ -190,9 +193,10 @@ defmodule Spectre.Definition.Validator do
        when kind in [:ask, :reply] and not is_nil(value) and is_list(opts),
        do: true
 
-  defp valid_handler?({kind, value, opts})
-       when kind in [:run, :action] and is_atom(value) and is_list(opts),
-       do: true
+  defp valid_handler?({:run, value, opts}) when is_atom(value) and is_list(opts), do: true
+
+  defp valid_handler?({:action, value, opts}) when is_list(opts),
+    do: Spectre.Action.valid_ref?(value)
 
   defp valid_handler?(_handler), do: false
 
@@ -318,7 +322,7 @@ defmodule Spectre.Definition.Validator do
 
         invalid =
             Enum.find(mount.bindings, fn {name, target} ->
-              not is_atom(name) or not is_atom(target) or
+              not is_atom(name) or not Spectre.Action.valid_ref?(target) or
                   not MapSet.member?(requirement_names, name)
             end) ->
           {:halt, {:error, {:invalid_skill_binding, mount.id, invalid}}}
@@ -334,6 +338,26 @@ defmodule Spectre.Definition.Validator do
 
   @spec valid_mount_id?(term()) :: boolean()
   defp valid_mount_id?(id), do: is_atom(id) or is_binary(id) or is_integer(id)
+
+  @spec validate_extensions(Definition.t()) :: :ok | {:error, term()}
+  defp validate_extensions(%Definition{kind: :skill, extensions: []}), do: :ok
+
+  defp validate_extensions(%Definition{kind: :skill, extensions: [_first | _rest]}),
+    do: {:error, :skills_cannot_mount_extensions}
+
+  defp validate_extensions(%Definition{extensions: extensions}) when is_list(extensions) do
+    if Enum.all?(extensions, &match?(%Spectre.Extension.Mount{}, &1)) do
+      case extensions |> Enum.map(& &1.id) |> duplicate() do
+        nil -> :ok
+        duplicate -> {:error, {:duplicate_extension, duplicate}}
+      end
+    else
+      {:error, :invalid_extension_mount}
+    end
+  end
+
+  defp validate_extensions(%Definition{extensions: extensions}),
+    do: {:error, {:invalid_extensions, extensions}}
 
   @spec validate_requirements(map()) :: :ok | {:error, term()}
   defp validate_requirements(%Definition{kind: :agent, requirements: [_first | _rest]}),

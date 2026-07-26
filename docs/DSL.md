@@ -128,6 +128,8 @@ actions MyApp.SupportActions, namespace: :support do
   protect(:delete_account, with: :delete_account_confirmation)
 end
 
+action_provider({:mcp, :github}, MyApp.GitHubProvider)
+
 shutdown(:timer.minutes(10))
 idle(:timer.minutes(5))
 history(50)
@@ -144,14 +146,32 @@ What they mean:
 - `classifier/2` provides classifier-specific LLM and local adapters.
 - `journal/2` configures structured decision recording.
 - `turn_handler/2` appends an optional owner of a complete normal turn.
-- `actions/2` stores `{module, opts}`. Those opts are also merged into
-  SpectreKinetic planning opts and receive `actions_module: module`.
+- `actions/2` mounts an ordinary Elixir module as the built-in `:local` action
+  provider.
+- `action_provider/3` mounts a provider under a stable atom, string, or
+  namespaced tuple.
+- `action_planner/2` sets the provider-neutral planner port. Companion packages
+  normally register it through their own `use Spectre.*` DSL.
 - `shutdown/1` and `idle/1` affect supervised sessions.
 - `history/1` controls chat history stored under `state.data.chat_history`.
 - `fail/2` configures monitor fallback prompt rendering.
 
 Per-call options such as `state: %Spectre.State{}` or `memory: value` can bypass
 adapters for tests or host-controlled replay.
+
+Companion libraries extend the same Agent after its core DSL is initialized:
+
+```elixir
+defmodule MyApp.Agent do
+  use Spectre.Agent
+  use Spectre.Kinetic,
+    actions: MyApp.Actions,
+    top_k: 5
+end
+```
+
+`use Spectre.Agent` remains the only Agent entry point. Each companion package
+registers its provider, planner, or other extension port on demand.
 
 ## `turn_handler` and `turn_handlers`
 
@@ -237,8 +257,9 @@ run(:local_function)
 action(:dangerous_or_external_action)
 ```
 
-`ask` renders a prompt, calls the model, strips Action Language from the visible
-reply, and asks SpectreKinetic to plan staged action effects if AL blocks exist.
+`ask` renders a prompt and calls the model. If an action planner is mounted, the
+planner may clean its syntax from the visible reply and return staged,
+provider-neutral actions. Without a planner the reply passes through normally.
 
 `reply` renders a deterministic response without calling the model. This is good
 for help, health checks, canned answers, and policy confirmations.
@@ -281,9 +302,15 @@ end
 `{Module, :function}` or functions. Spectre supports arity 3
 (`prompt, input, ctx`), arity 2 (`prompt, assigns`), and arity 1 (`assigns`).
 
-`action` options become pending-action fields: `args`, `status`, `al`, and
-`hooks`. If the action block includes `reply`, that reply is used for the policy
-request path without calling the model.
+`action` options become pending-action fields: `via`, `args`, `mode`, `status`,
+`al`, and `hooks`. A namespaced reference is also accepted directly:
+
+```elixir
+action({:mcp, :github, :create_issue}, args: %{title: "Bug"})
+```
+
+If the action block includes `reply`, that reply is used for the policy request
+path without calling the model.
 
 ## `interrupt`
 

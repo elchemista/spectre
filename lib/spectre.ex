@@ -3,8 +3,8 @@ defmodule Spectre do
   OTP-native conversational runtime for Elixir agents.
 
   `Spectre` owns the thin, boring middle of an agent: route a user turn, render
-  prompts, keep conversation state, stage Action Language, and enforce policy
-  gates before anything with side effects can execute.
+  prompts, keep conversation state, stage provider-neutral actions, and enforce
+  policy gates before anything with side effects can execute.
 
   The runtime is deliberately split into small boundaries:
 
@@ -192,8 +192,8 @@ defmodule Spectre do
   end
 
   @doc """
-  Executes the currently pending action effect, if the configured action module
-  exposes a matching function.
+  Executes the currently pending action effect through the provider mounted for
+  its `via` reference.
 
       {:ok, result} = Spectre.execute(state, ctx)
       {:ok, result} = Spectre.execute(MyAgent, approved_result)

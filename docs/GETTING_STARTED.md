@@ -498,7 +498,7 @@ Common groups are:
 - embedding and semantic-cache adapters;
 - `conversation_id`, `state`, `memory`, and prompt `assigns`;
 - chat-history limits;
-- SpectreKinetic planning and tool-selection options;
+- mounted action-planner and tool-selection options;
 - action execution context and idempotency metadata.
 
 Use explicit state and adapter overrides for deterministic tests. Avoid passing

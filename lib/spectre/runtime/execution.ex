@@ -152,6 +152,7 @@ defmodule Spectre.Execution do
       %{
         effect_id: effect.id,
         kind: effect.kind,
+        via: Effect.via(effect),
         name: effect.name,
         outcome: if(match?({:ok, _}, outcome), do: :ok, else: :error)
       },
@@ -171,7 +172,8 @@ defmodule Spectre.Execution do
 
       event = %{
         type: if(completed?, do: :effect_completed, else: :effect_failed),
-        kind: :action,
+        kind: effect.kind,
+        via: Effect.via(effect),
         name: effect.name,
         owner: effect.owner,
         scope: effect.scope,

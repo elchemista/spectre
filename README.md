@@ -370,8 +370,8 @@ adapters on startup, and can stop after an idle timeout.
   failure, and fallback contracts for routing providers.
 - [Training](docs/TRAINING.md) - datasets, classifier artifacts, verification,
   and semantic-cache training.
-- [Actions](docs/ACTIONS.md) - protected actions, policies, hooks,
-  SpectreKinetic, and Action Language planning.
+- [Actions](docs/ACTIONS.md) - generic providers, protected actions, policies,
+  hooks, and optional planner integrations.
 - [Memory](docs/MEMORY.md) - state adapters, memory adapters, persistence, and
   supervised sessions.
 - [Journal](docs/JOURNAL.md) - structured decision records, privacy defaults,
