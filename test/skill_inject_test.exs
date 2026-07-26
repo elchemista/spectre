@@ -805,16 +805,30 @@ defmodule SpectreSkillInjectTest do
     end
   end
 
-  test "malformed or undeclared Skill bindings fail while compiling the Agent" do
+  test "provider-neutral Skill bindings accept action refs and reject malformed entries" do
+    string_target =
+      Module.concat(__MODULE__, "StringTarget#{System.unique_integer([:positive])}")
+
+    compiled =
+      Code.compile_string("""
+      defmodule #{inspect(string_target)} do
+        use Spectre.Agent
+        skill SpectreSkillInjectTest.SupportSkill,
+          bind: [publish: "publish_report"]
+      end
+      """)
+
+    assert Enum.any?(compiled, fn {module, _binary} -> module == string_target end)
+
     invalid_target =
       Module.concat(__MODULE__, "InvalidTarget#{System.unique_integer([:positive])}")
 
-    assert_raise ArgumentError, ~r/invalid_skill_binding.*publish.*"publish_report"/, fn ->
+    assert_raise ArgumentError, ~r/invalid_skill_binding.*publish.*123/, fn ->
       Code.compile_string("""
       defmodule #{inspect(invalid_target)} do
         use Spectre.Agent
         skill SpectreSkillInjectTest.SupportSkill,
-          bind: [publish: "publish_report"]
+          bind: [publish: 123]
       end
       """)
     end

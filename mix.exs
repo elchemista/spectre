@@ -73,6 +73,10 @@ defmodule Spectre.MixProject do
     [
       {:jason, "~> 1.4"},
       {:vettore, "~> 0.3.2"},
+      {:spectre_kinetic,
+       github: "elchemista/spectre_kinetic",
+       branch: "agent/generic-action-separation",
+       only: :test},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}

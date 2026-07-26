@@ -30,14 +30,7 @@ defmodule Spectre.ActionPlanner do
         {:ok, %{reply_text: String.trim(text), effects: []}}
 
       planner ->
-        with {:ok, response} <-
-               safely(planner, :plan_response, fn ->
-                 apply(planner, :plan_response, [text, ctx, opts])
-               end),
-             {:ok, reply_text, actions} <- normalize_response(response),
-             {:ok, effects} <- stage_actions(actions, opts) do
-          {:ok, %{reply_text: reply_text, effects: effects}}
-        end
+        plan_response_with(planner, text, ctx, opts)
     end
   end
 
@@ -58,18 +51,7 @@ defmodule Spectre.ActionPlanner do
         {:error, :action_planner_not_configured}
 
       planner ->
-        if function_exported?(planner, :plan, 3) do
-          with {:ok, planned} <-
-                 safely(planner, :plan, fn ->
-                   apply(planner, :plan, [instruction, ctx, opts])
-                 end),
-               {:ok, action} <- unwrap_planned_action(planned),
-               {:ok, effect} <- stage_action(action, opts) do
-            {:ok, effect}
-          end
-        else
-          {:error, {:action_planner_callback_missing, planner, :plan, 3}}
-        end
+        plan_with(planner, instruction, ctx, opts)
     end
   end
 
@@ -90,16 +72,68 @@ defmodule Spectre.ActionPlanner do
         String.trim(text)
 
       planner ->
-        if function_exported?(planner, :clean_reply, 3) do
-          case safely(planner, :clean_reply, fn ->
-                 apply(planner, :clean_reply, [text, ctx, opts])
-               end) do
-            {:ok, clean} when is_binary(clean) -> clean
-            _error -> String.trim(text)
-          end
-        else
-          String.trim(text)
-        end
+        clean_reply_with(planner, text, ctx, opts)
+    end
+  end
+
+  @spec plan_response_with(module(), String.t(), Spectre.Context.t() | map(), keyword()) ::
+          {:ok, %{reply_text: String.t(), effects: [Effect.t()]}} | {:error, term()}
+  defp plan_response_with(planner, text, ctx, opts) do
+    with {:ok, response} <-
+           safely(planner, :plan_response, fn ->
+             planner.plan_response(text, ctx, opts)
+           end),
+         {:ok, reply_text, actions} <- normalize_response(response),
+         {:ok, effects} <- stage_actions(actions, opts) do
+      {:ok, %{reply_text: reply_text, effects: effects}}
+    end
+  end
+
+  @spec plan_with(module(), String.t(), Spectre.Context.t() | map(), keyword()) ::
+          {:ok, Effect.t()} | {:error, term()}
+  defp plan_with(planner, instruction, ctx, opts) do
+    cond do
+      not Code.ensure_loaded?(planner) ->
+        {:error, {:action_planner_not_loaded, planner}}
+
+      not function_exported?(planner, :plan, 3) ->
+        {:error, {:action_planner_callback_missing, planner, :plan, 3}}
+
+      true ->
+        invoke_plan(planner, instruction, ctx, opts)
+    end
+  end
+
+  @spec invoke_plan(module(), String.t(), Spectre.Context.t() | map(), keyword()) ::
+          {:ok, Effect.t()} | {:error, term()}
+  defp invoke_plan(planner, instruction, ctx, opts) do
+    with {:ok, planned} <-
+           safely(planner, :plan, fn ->
+             planner.plan(instruction, ctx, opts)
+           end),
+         {:ok, action} <- unwrap_planned_action(planned) do
+      stage_action(action, opts)
+    end
+  end
+
+  @spec clean_reply_with(module(), String.t(), Spectre.Context.t() | map(), keyword()) ::
+          String.t()
+  defp clean_reply_with(planner, text, ctx, opts) do
+    if Code.ensure_loaded?(planner) and function_exported?(planner, :clean_reply, 3) do
+      invoke_clean_reply(planner, text, ctx, opts)
+    else
+      String.trim(text)
+    end
+  end
+
+  @spec invoke_clean_reply(module(), String.t(), Spectre.Context.t() | map(), keyword()) ::
+          String.t()
+  defp invoke_clean_reply(planner, text, ctx, opts) do
+    case safely(planner, :clean_reply, fn ->
+           planner.clean_reply(text, ctx, opts)
+         end) do
+      {:ok, clean} when is_binary(clean) -> clean
+      _error -> String.trim(text)
     end
   end
 
@@ -168,7 +202,6 @@ defmodule Spectre.ActionPlanner do
 
   @spec unwrap_planned_action(term()) :: {:ok, Action.t() | map()} | {:error, term()}
   defp unwrap_planned_action({:ok, action}), do: {:ok, action}
-  defp unwrap_planned_action({:error, reason}), do: {:error, reason}
   defp unwrap_planned_action(action) when is_map(action), do: {:ok, action}
   defp unwrap_planned_action(other), do: {:error, {:invalid_action_planner_reply, other}}
 

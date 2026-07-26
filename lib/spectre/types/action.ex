@@ -75,9 +75,6 @@ defmodule Spectre.Action do
     })
   end
 
-  @doc """
-  Builds an action from an atom- or string-keyed map.
-  """
   @spec build(map()) :: t()
   defp build(attrs) when is_map(attrs) do
     name = attr(attrs, :name)
@@ -85,23 +82,17 @@ defmodule Spectre.Action do
     args = attr(attrs, :args) || %{}
     metadata = attr(attrs, :metadata) || %{}
 
-    unless valid_name?(name), do: raise(ArgumentError, "invalid action name: #{inspect(name)}")
-    unless valid_provider_ref?(via), do: raise(ArgumentError, "invalid action provider: #{inspect(via)}")
-    unless is_map(args), do: raise(ArgumentError, "action args must be a map")
-    unless is_map(metadata), do: raise(ArgumentError, "action metadata must be a map")
-
     mode = attr(attrs, :mode)
     planned_by = attr(attrs, :planned_by)
     schema_hash = attr(attrs, :schema_hash)
 
-    unless mode in [nil, :read, :write, :destructive],
-      do: raise(ArgumentError, "invalid action mode: #{inspect(mode)}")
-
-    unless is_nil(planned_by) or (is_atom(planned_by) and not is_nil(planned_by)),
-      do: raise(ArgumentError, "invalid action planner: #{inspect(planned_by)}")
-
-    unless is_nil(schema_hash) or (is_binary(schema_hash) and schema_hash != ""),
-      do: raise(ArgumentError, "invalid action schema hash: #{inspect(schema_hash)}")
+    validate_name!(name)
+    validate_provider_ref!(via)
+    validate_map!(args, "action args")
+    validate_map!(metadata, "action metadata")
+    validate_mode!(mode)
+    validate_planned_by!(planned_by)
+    validate_schema_hash!(schema_hash)
 
     %__MODULE__{
       name: name,
@@ -113,6 +104,45 @@ defmodule Spectre.Action do
       metadata: metadata
     }
   end
+
+  @spec validate_name!(term()) :: :ok
+  defp validate_name!(name) do
+    unless valid_name?(name),
+      do: raise(ArgumentError, "invalid action name: #{inspect(name)}")
+
+    :ok
+  end
+
+  @spec validate_provider_ref!(term()) :: :ok
+  defp validate_provider_ref!(via) do
+    unless valid_provider_ref?(via),
+      do: raise(ArgumentError, "invalid action provider: #{inspect(via)}")
+
+    :ok
+  end
+
+  @spec validate_map!(term(), String.t()) :: :ok
+  defp validate_map!(value, _label) when is_map(value), do: :ok
+  defp validate_map!(_value, label), do: raise(ArgumentError, "#{label} must be a map")
+
+  @spec validate_mode!(term()) :: :ok
+  defp validate_mode!(mode) when mode in [nil, :read, :write, :destructive], do: :ok
+  defp validate_mode!(mode), do: raise(ArgumentError, "invalid action mode: #{inspect(mode)}")
+
+  @spec validate_planned_by!(term()) :: :ok
+  defp validate_planned_by!(planned_by) when is_atom(planned_by), do: :ok
+
+  defp validate_planned_by!(planned_by),
+    do: raise(ArgumentError, "invalid action planner: #{inspect(planned_by)}")
+
+  @spec validate_schema_hash!(term()) :: :ok
+  defp validate_schema_hash!(nil), do: :ok
+
+  defp validate_schema_hash!(schema_hash) when is_binary(schema_hash) and schema_hash != "",
+    do: :ok
+
+  defp validate_schema_hash!(schema_hash),
+    do: raise(ArgumentError, "invalid action schema hash: #{inspect(schema_hash)}")
 
   @doc """
   Restores the provider-neutral action carried by an effect.
@@ -240,6 +270,7 @@ defmodule Spectre.Action do
   @spec valid_provider_ref?(term()) :: boolean()
   defp valid_provider_ref?(ref) when is_atom(ref), do: not is_nil(ref)
   defp valid_provider_ref?(ref) when is_binary(ref), do: ref != ""
+
   defp valid_provider_ref?(ref) when is_tuple(ref) do
     tuple_size(ref) > 0 and
       ref

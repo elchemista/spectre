@@ -47,22 +47,11 @@ defmodule Spectre.Action.Spec do
     action = Spectre.Action.new(%{name: name, via: via})
     schema_hash = hash(action.via, action.name, schema, mode)
 
-    unless is_nil(id) or (is_binary(id) and id != ""),
-      do: raise(ArgumentError, "invalid action spec id: #{inspect(id)}")
-
-    unless is_nil(description) or is_binary(description),
-      do: raise(ArgumentError, "invalid action description: #{inspect(description)}")
-
-    unless mode in [nil, :read, :write, :destructive],
-      do: raise(ArgumentError, "invalid action mode: #{inspect(mode)}")
-
-    unless is_map(metadata), do: raise(ArgumentError, "action spec metadata must be a map")
-
-    case attr(attrs, :schema_hash) do
-      nil -> :ok
-      ^schema_hash -> :ok
-      other -> raise ArgumentError, "action schema hash does not match schema: #{inspect(other)}"
-    end
+    validate_id!(id)
+    validate_description!(description)
+    validate_mode!(mode)
+    validate_metadata!(metadata)
+    validate_schema_hash!(attr(attrs, :schema_hash), schema_hash)
 
     %__MODULE__{
       id: id,
@@ -89,6 +78,35 @@ defmodule Spectre.Action.Spec do
     |> :crypto.hash(:erlang.term_to_binary({via, name, mode, schema}, [:deterministic]))
     |> Base.encode16(case: :lower)
   end
+
+  @spec validate_id!(term()) :: :ok
+  defp validate_id!(nil), do: :ok
+  defp validate_id!(id) when is_binary(id) and id != "", do: :ok
+  defp validate_id!(id), do: raise(ArgumentError, "invalid action spec id: #{inspect(id)}")
+
+  @spec validate_description!(term()) :: :ok
+  defp validate_description!(nil), do: :ok
+  defp validate_description!(description) when is_binary(description), do: :ok
+
+  defp validate_description!(description),
+    do: raise(ArgumentError, "invalid action description: #{inspect(description)}")
+
+  @spec validate_mode!(term()) :: :ok
+  defp validate_mode!(mode) when mode in [nil, :read, :write, :destructive], do: :ok
+  defp validate_mode!(mode), do: raise(ArgumentError, "invalid action mode: #{inspect(mode)}")
+
+  @spec validate_metadata!(term()) :: :ok
+  defp validate_metadata!(metadata) when is_map(metadata), do: :ok
+
+  defp validate_metadata!(_metadata),
+    do: raise(ArgumentError, "action spec metadata must be a map")
+
+  @spec validate_schema_hash!(term(), String.t()) :: :ok
+  defp validate_schema_hash!(nil, _expected), do: :ok
+  defp validate_schema_hash!(expected, expected), do: :ok
+
+  defp validate_schema_hash!(other, _expected),
+    do: raise(ArgumentError, "action schema hash does not match schema: #{inspect(other)}")
 
   @spec attr(map(), atom()) :: term()
   defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))

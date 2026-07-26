@@ -12,7 +12,8 @@ defmodule Spectre.Action.Provider do
 
   @type provider_result :: {:ok, term()} | {:error, term()}
 
-  @callback actions(keyword()) :: [Spec.t() | map()] | {:ok, [Spec.t() | map()]} | {:error, term()}
+  @callback actions(keyword()) ::
+              [Spec.t() | map()] | {:ok, [Spec.t() | map()]} | {:error, term()}
   @callback execute(Action.t(), Spectre.Context.t(), keyword()) :: term()
   @callback schema_hash(Action.t(), keyword()) :: String.t() | nil | {:ok, String.t() | nil}
 
@@ -28,9 +29,8 @@ defmodule Spectre.Action.Provider do
         {:error, {:action_provider_not_loaded, mount.id, mount.module}}
 
       function_exported?(mount.module, :actions, 1) ->
-        mount.module
-        |> apply(:actions, [provider_opts(mount)])
-        |> normalize_specs(mount)
+        module = mount.module
+        normalize_specs(module.actions(provider_opts(mount)), mount)
 
       true ->
         {:ok, []}
@@ -51,9 +51,9 @@ defmodule Spectre.Action.Provider do
   """
   @spec execute(Mount.t(), Action.t(), Spectre.Context.t()) :: provider_result()
   def execute(%Mount{id: id} = mount, %Action{via: id} = action, %Spectre.Context{} = ctx) do
-    with :ok <- verify_schema(mount, action),
-         {:ok, result} <- call_execute(mount, action, ctx) do
-      {:ok, result}
+    case verify_schema(mount, action) do
+      :ok -> call_execute(mount, action, ctx)
+      {:error, _reason} = error -> error
     end
   end
 
@@ -65,8 +65,9 @@ defmodule Spectre.Action.Provider do
 
   defp verify_schema(%Mount{} = mount, %Action{schema_hash: expected} = action) do
     if Code.ensure_loaded?(mount.module) and function_exported?(mount.module, :schema_hash, 2) do
-      mount.module
-      |> apply(:schema_hash, [action, provider_opts(mount)])
+      module = mount.module
+
+      module.schema_hash(action, provider_opts(mount))
       |> normalize_schema_hash(mount.id, expected)
     else
       mount
@@ -121,14 +122,12 @@ defmodule Spectre.Action.Provider do
         {:error, {:action_provider_not_loaded, mount.id, mount.module}}
 
       function_exported?(mount.module, :execute, 3) ->
-        mount.module
-        |> apply(:execute, [action, ctx, provider_opts(mount)])
-        |> normalize_execute_reply()
+        module = mount.module
+        normalize_execute_reply(module.execute(action, ctx, provider_opts(mount)))
 
       function_exported?(mount.module, :execute, 2) ->
-        mount.module
-        |> apply(:execute, [action, ctx])
-        |> normalize_execute_reply()
+        module = mount.module
+        normalize_execute_reply(module.execute(action, ctx))
 
       true ->
         {:error, {:invalid_action_provider, mount.id, mount.module}}
@@ -157,7 +156,8 @@ defmodule Spectre.Action.Provider do
          |> Map.put(:schema_hash, nil)
          |> Spec.new()
 
-       spec when is_map(spec) -> spec |> Map.put(:via, mount.id) |> Spec.new()
+       spec when is_map(spec) ->
+         spec |> Map.put(:via, mount.id) |> Spec.new()
      end)}
   rescue
     exception ->

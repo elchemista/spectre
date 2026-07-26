@@ -19,10 +19,12 @@ defmodule Spectre.ActionConfig do
   """
   @spec actions(module()) :: action_config()
   def actions(agent) when is_atom(agent) and not is_nil(agent) do
-    with {:ok, definition} <- Definition.fetch(agent) do
-      normalize_legacy_actions(Keyword.get(definition.config, :actions))
-    else
-      {:error, _reason} -> nil
+    case Definition.fetch(agent) do
+      {:ok, definition} ->
+        normalize_legacy_actions(Keyword.get(definition.config, :actions))
+
+      {:error, _reason} ->
+        nil
     end
   rescue
     _exception -> nil
@@ -88,27 +90,16 @@ defmodule Spectre.ActionConfig do
     definition = Definition.fetch!(agent)
 
     explicit =
-      case Keyword.get(definition.config, :action_planner) do
-        nil -> []
-        module when is_atom(module) and not is_nil(module) -> [{module, []}]
-        {module, opts} when is_atom(module) and not is_nil(module) and is_list(opts) ->
-          if Keyword.keyword?(opts),
-            do: [{module, opts}],
-            else: raise(ArgumentError, "action planner options must be a keyword list")
-
-        invalid -> raise ArgumentError, "invalid action planner: #{inspect(invalid)}"
-      end
+      definition.config
+      |> Keyword.get(:action_planner)
+      |> normalize_explicit_planner!()
 
     contributed =
       definition.extensions
       |> Enum.map(&Extension.action_planner/1)
       |> Enum.reject(&is_nil/1)
 
-    case explicit ++ contributed do
-      [] -> nil
-      [planner] -> planner
-      planners -> raise ArgumentError, "multiple action planners configured: #{inspect(planners)}"
-    end
+    select_planner!(explicit ++ contributed)
   end
 
   @doc """
@@ -140,6 +131,36 @@ defmodule Spectre.ActionConfig do
     do: {module, []}
 
   defp normalize_legacy_actions(_other), do: nil
+
+  @spec normalize_explicit_planner!(term()) :: [planner_config()]
+  defp normalize_explicit_planner!(nil), do: []
+
+  defp normalize_explicit_planner!(module) when is_atom(module) and not is_nil(module),
+    do: [{module, []}]
+
+  defp normalize_explicit_planner!({module, opts})
+       when is_atom(module) and not is_nil(module) and is_list(opts) do
+    validate_planner_opts!(opts)
+    [{module, opts}]
+  end
+
+  defp normalize_explicit_planner!(invalid),
+    do: raise(ArgumentError, "invalid action planner: #{inspect(invalid)}")
+
+  @spec validate_planner_opts!(list()) :: :ok
+  defp validate_planner_opts!(opts) do
+    unless Keyword.keyword?(opts),
+      do: raise(ArgumentError, "action planner options must be a keyword list")
+
+    :ok
+  end
+
+  @spec select_planner!([planner_config()]) :: planner_config()
+  defp select_planner!([]), do: nil
+  defp select_planner!([planner]), do: planner
+
+  defp select_planner!(planners),
+    do: raise(ArgumentError, "multiple action planners configured: #{inspect(planners)}")
 
   @spec normalize_provider_list!(term()) :: [Mount.t()]
   defp normalize_provider_list!(providers) when is_list(providers) do

@@ -303,9 +303,7 @@ defmodule Spectre.Definition do
 
   @spec legacy_definition(module()) :: {:ok, t()} | {:error, term()}
   defp legacy_definition(module) do
-    required = [:__spectre_config__, :__spectre_router__, :__spectre_rules__]
-
-    if Enum.all?(required, &function_exported?(module, &1, 0)) do
+    if function_exported?(module, :__spectre_config__, 0) do
       config = module.__spectre_config__()
 
       {:ok,
@@ -313,8 +311,8 @@ defmodule Spectre.Definition do
          id: module,
          owner: module,
          config: config,
-         router: module.__spectre_router__(),
-         rules: module.__spectre_rules__(),
+         router: optional_callback(module, :__spectre_router__, []),
+         rules: optional_callback(module, :__spectre_rules__, []),
          policies: optional_callback(module, :__spectre_policies__, %{}),
          protections: optional_callback(module, :__spectre_protections__, []),
          after_actions: optional_callback(module, :__spectre_after_actions__, []),

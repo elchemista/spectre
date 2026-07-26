@@ -50,6 +50,7 @@ defmodule Spectre.Definition.Validator do
   @dialyzer {:nowarn_function, validate_policies: 1}
   @dialyzer {:nowarn_function, validate_requirement_list: 1}
   @dialyzer {:nowarn_function, validate_protections: 1}
+  @dialyzer {:nowarn_function, validate_extensions: 1}
 
   @doc """
   Validates a compiled definition and raises `ArgumentError` on invalid DSL.

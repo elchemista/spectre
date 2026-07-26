@@ -265,7 +265,7 @@ defmodule SpectreSmallModuleBranchTest do
                %Effect{name: :physical_read, scope: :agent}
              )
 
-    assert :atom_policy ==
+    assert nil ==
              Spectre.ActionProtection.protected_by(
                agent,
                %Effect{

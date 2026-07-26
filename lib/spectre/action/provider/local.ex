@@ -9,20 +9,13 @@ defmodule Spectre.Action.Provider.Local do
   @behaviour Spectre.Action.Provider
 
   alias Spectre.Action
+  alias Spectre.Action.Spec
 
   @impl true
   def actions(opts) do
-    with {:ok, module} <- action_module(opts) do
-      if function_exported?(module, :__spectre_actions__, 0) do
-        case module.__spectre_actions__() do
-          specs when is_list(specs) ->
-            Enum.map(specs, &put_provider(&1, Keyword.get(opts, :provider_id, :local)))
-
-          other -> {:error, {:invalid_action_registry, module, other}}
-        end
-      else
-        []
-      end
+    case action_module(opts) do
+      {:ok, module} -> registered_actions(module, Keyword.get(opts, :provider_id, :local))
+      {:error, _reason} = error -> error
     end
   end
 
@@ -38,11 +31,11 @@ defmodule Spectre.Action.Provider.Local do
     end
   end
 
-  @spec put_provider(Spectre.Action.Spec.t() | map(), Spectre.Action.provider_ref()) ::
-          Spectre.Action.Spec.t() | map()
-  defp put_provider(%Spectre.Action.Spec{via: via} = spec, via), do: spec
+  @spec put_provider(Spec.t() | map(), Spectre.Action.provider_ref()) ::
+          Spec.t() | map()
+  defp put_provider(%Spec{via: via} = spec, via), do: spec
 
-  defp put_provider(%Spectre.Action.Spec{} = spec, via) do
+  defp put_provider(%Spec{} = spec, via) do
     spec
     |> Map.from_struct()
     |> Map.put(:via, via)
@@ -50,6 +43,24 @@ defmodule Spectre.Action.Provider.Local do
   end
 
   defp put_provider(spec, via) when is_map(spec), do: Map.put(spec, :via, via)
+
+  @spec registered_actions(module(), Spectre.Action.provider_ref()) ::
+          [Spec.t() | map()] | {:error, term()}
+  defp registered_actions(module, provider_id) do
+    if function_exported?(module, :__spectre_actions__, 0) do
+      normalize_registry(module.__spectre_actions__(), module, provider_id)
+    else
+      []
+    end
+  end
+
+  @spec normalize_registry(term(), module(), Spectre.Action.provider_ref()) ::
+          [Spec.t() | map()] | {:error, term()}
+  defp normalize_registry(specs, _module, provider_id) when is_list(specs),
+    do: Enum.map(specs, &put_provider(&1, provider_id))
+
+  defp normalize_registry(other, module, _provider_id),
+    do: {:error, {:invalid_action_registry, module, other}}
 
   @spec action_module(keyword()) :: {:ok, module()} | {:error, term()}
   defp action_module(opts) do
@@ -115,9 +126,9 @@ defmodule Spectre.Action.Provider.Local do
 
   defp action_arity_for_hash(_specs, _hash), do: nil
 
-  @spec normalize_spec(Spectre.Action.Spec.t() | map()) :: Spectre.Action.Spec.t()
-  defp normalize_spec(%Spectre.Action.Spec{} = spec), do: spec
-  defp normalize_spec(spec) when is_map(spec), do: Spectre.Action.Spec.new(spec)
+  @spec normalize_spec(Spec.t() | map()) :: Spec.t()
+  defp normalize_spec(%Spec{} = spec), do: spec
+  defp normalize_spec(spec) when is_map(spec), do: Spec.new(spec)
 
   @spec schema_value(term(), atom()) :: term()
   defp schema_value(map, key) when is_map(map),

@@ -55,8 +55,9 @@ defmodule Spectre.Extension do
     ensure_loaded!(mount)
 
     if function_exported?(mount.module, :action_providers, 1) do
-      mount.module
-      |> apply(:action_providers, [mount.opts])
+      module = mount.module
+
+      module.action_providers(mount.opts)
       |> List.wrap()
       |> Enum.map(&normalize_provider!/1)
     else
@@ -72,16 +73,10 @@ defmodule Spectre.Extension do
     ensure_loaded!(mount)
 
     if function_exported?(mount.module, :action_planner, 1) do
-      case apply(mount.module, :action_planner, [mount.opts]) do
-        nil -> nil
-        module when is_atom(module) and not is_nil(module) -> {module, []}
-        {module, opts} when is_atom(module) and not is_nil(module) and is_list(opts) ->
-          if Keyword.keyword?(opts),
-            do: {module, opts},
-            else: raise(ArgumentError, "action planner options must be a keyword list")
-
-        other -> raise ArgumentError, "invalid action planner contribution: #{inspect(other)}"
-      end
+      module = mount.module
+      normalize_planner!(module.action_planner(mount.opts))
+    else
+      nil
     end
   end
 
@@ -92,6 +87,23 @@ defmodule Spectre.Extension do
 
   defp normalize_provider!(other),
     do: raise(ArgumentError, "invalid action provider contribution: #{inspect(other)}")
+
+  @spec normalize_planner!(term()) :: {module(), keyword()} | nil
+  defp normalize_planner!(nil), do: nil
+
+  defp normalize_planner!(module) when is_atom(module) and not is_nil(module),
+    do: {module, []}
+
+  defp normalize_planner!({module, opts})
+       when is_atom(module) and not is_nil(module) and is_list(opts) do
+    unless Keyword.keyword?(opts),
+      do: raise(ArgumentError, "action planner options must be a keyword list")
+
+    {module, opts}
+  end
+
+  defp normalize_planner!(other),
+    do: raise(ArgumentError, "invalid action planner contribution: #{inspect(other)}")
 
   @spec ensure_loaded!(Mount.t()) :: :ok
   defp ensure_loaded!(%Mount{} = mount) do
