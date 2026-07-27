@@ -1,7 +1,47 @@
-defmodule SpectreKinetic do
-  defstruct actions: []
+defmodule SpectreTest.ActionPlanner do
+  @moduledoc false
 
-  def extract_al_scan(text) do
+  @behaviour Spectre.Action.Planner
+
+  @impl true
+  def plan_response(text, ctx, opts) do
+    scan = extract_al_scan(text)
+
+    notify({:action_planner_response, ctx, text, opts})
+
+    cond do
+      scan.entries == [] ->
+        {:ok, %{reply_text: scan.clean_text, actions: []}}
+
+      String.contains?(text, "INVALID CHAIN") ->
+        {:error, {:invalid_action_chain, :not_a_chain}}
+
+      String.contains?(text, "MALFORMED CHAIN") ->
+        {:error, {:invalid_planned_action, 1, :not_an_action}}
+
+      true ->
+        plan_entries(scan)
+    end
+  end
+
+  @impl true
+  def plan(instruction, ctx, opts) do
+    notify({:action_planner_plan, ctx, instruction, opts})
+
+    case instruction do
+      "HALTED" -> {:error, {:action_plan_halted, 0, :blocked}}
+      "REJECTED" -> {:error, {:action_plan_not_executable, 0, :rejected}}
+      "MISSING TOOL" -> {:error, {:action_plan_missing_tool, 0}}
+      "INVALID ARGS" -> {:error, {:invalid_action_args, 0, []}}
+      "NON MAP" -> {:ok, :not_an_action}
+      other -> {:ok, planned_action(other)}
+    end
+  end
+
+  @impl true
+  def clean_reply(text, _ctx, _opts), do: extract_al_scan(text).clean_text
+
+  defp extract_al_scan(text) do
     al_blocks =
       ~r/<al\b[^>]*>(.*?)<\/al>/is
       |> Regex.scan(text, capture: :all_but_first)
@@ -16,72 +56,51 @@ defmodule SpectreKinetic do
     %{clean_text: clean_text, entries: Enum.map(al_blocks, &%{raw: &1, al: &1, error: nil})}
   end
 
-  def plan(runtime, al, opts) do
-    notify({:kinetic_plan, runtime, al, opts})
+  defp plan_entries(%{clean_text: clean_text, entries: entries}) do
+    entries
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {%{al: al}, index}, {:ok, actions} ->
+      cond do
+        String.starts_with?(al, "REJECT") ->
+          {:halt, {:error, {:action_plan_not_executable, index, :rejected}}}
 
-    case al do
-      "HALTED" ->
-        {:ok, %{al: al, halted?: true, status: :blocked, selected_tool: "one/1", args: %{}}}
+        String.starts_with?(al, "MALFORMED") ->
+          {:halt, {:error, {:invalid_planned_action, index, :malformed_action}}}
 
-      "REJECTED" ->
-        {:ok, %{al: al, status: :rejected, selected_tool: "one/1", args: %{}}}
-
-      "MISSING TOOL" ->
-        {:ok, %{al: al, status: :ok, selected_tool: " ", args: %{}}}
-
-      "INVALID ARGS" ->
-        {:ok, %{al: al, status: :ok, selected_tool: "one/1", args: []}}
-
-      "NON MAP" ->
-        {:ok, :not_an_action}
-
-      _other ->
-        {:ok, %{al: al, status: :ok, selected_tool: "unmatched/1", args: %{}}}
+        true ->
+          {:cont, {:ok, [planned_action(al) | actions]}}
+      end
+    end)
+    |> case do
+      {:ok, actions} -> {:ok, %{reply_text: clean_text, actions: Enum.reverse(actions)}}
+      {:error, _reason} = error -> error
     end
   end
 
-  def plan_chain(_runtime, text, _opts) do
-    cond do
-      String.contains?(text, "INVALID CHAIN") ->
-        {:ok, :not_a_chain}
+  defp planned_action(al) do
+    {name, selected_tool, args} =
+      case al do
+        "EXACT ONE" ->
+          {:one, "Elixir.SpectreActionBoundaryContractTest.Actions.one/1", %{}}
 
-      String.contains?(text, "MALFORMED CHAIN") ->
-        {:ok,
-         %__MODULE__{
-           actions: [
-             %{al: "EXACT ONE", status: :ok, selected_tool: "one/1", args: %{}},
-             :not_an_action
-           ]
-         }}
+        "EXACT TWO" ->
+          {:two, "Elixir.SpectreActionBoundaryContractTest.Actions.two/2", %{}}
 
-      String.contains?(text, "VALID CHAIN") ->
-        {:ok,
-         %__MODULE__{
-           actions: [
-             %{
-               "al" => "EXACT ONE",
-               "status" => "ok",
-               "selected_tool" => "one/1",
-               "args" => %{}
-             },
-             %{al: "EXACT TWO", status: :ok, selected_tool: "two/2", args: %{}}
-           ]
-         }}
+        "CREATE PROJECT" <> _rest ->
+          {:create_project, "Elixir.SpectreTest.ProjectActions.create_project/2",
+           %{"title" => "ciao"}}
 
-      true ->
-        actions =
-          text
-          |> extract_al_scan()
-          |> Map.fetch!(:entries)
-          |> Enum.map(&plan_chain_action/1)
+        _other ->
+          {:unmatched, "unmatched/1", %{}}
+      end
 
-        {:ok, %__MODULE__{actions: actions}}
-    end
-  end
-
-  def load_runtime(opts) do
-    notify({:kinetic_load_runtime, opts})
-    {:ok, :kinetic_runtime}
+    Spectre.Action.new(%{
+      name: name,
+      via: :local,
+      args: args,
+      planned_by: __MODULE__,
+      metadata: %{al: al, selected_tool: selected_tool}
+    })
   end
 
   defp notify(message) do
@@ -90,34 +109,6 @@ defmodule SpectreKinetic do
     end
 
     :ok
-  end
-
-  defp plan_chain_action(%{al: "MALFORMED" <> _suffix}), do: :malformed_action
-
-  defp plan_chain_action(entry) do
-    %{
-      al: entry.al,
-      selected_tool: "Elixir.SpectreTest.ProjectActions.create_project/2",
-      args: %{"title" => "ciao"},
-      status: chain_action_status(entry.al)
-    }
-  end
-
-  defp chain_action_status("REJECT" <> _suffix), do: :rejected
-  defp chain_action_status(_al), do: :ok
-end
-
-defmodule SpectreKinetic.Tool.Extractor do
-  def extract_module(module) do
-    if pid = Application.get_env(:spectre, :coverage_action_boundary_pid) do
-      send(pid, {:kinetic_extract, module})
-    end
-
-    case module do
-      SpectreActionBoundaryContractTest.NoActionsAgent -> {:error, :extract_failed}
-      SpectreActionBoundaryContractTest.Hooks -> {:ok, [%{pid: self()}]}
-      _other -> {:ok, []}
-    end
   end
 end
 
@@ -357,6 +348,8 @@ defmodule SpectreTest.ProjectAgent do
   actions SpectreTest.ProjectActions do
     protect(:create_project, with: :terms)
   end
+
+  action_planner(SpectreTest.ActionPlanner)
 
   policy :terms do
     request(:accept_terms)
@@ -990,7 +983,7 @@ defmodule SpectreTest do
            ] =
              result.effects
 
-    assert Effect.source(effect) == :al
+    assert Effect.source(effect) == :planner
     effect_id = effect.id
 
     assert [

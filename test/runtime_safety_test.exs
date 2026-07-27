@@ -110,21 +110,24 @@ defmodule SpectreRuntimeSafetyTest do
     assert [
              %Effect{
                status: :failed,
-               error: %Spectre.Provider.Failure{
-                 provider: :action,
-                 kind: :exception,
-                 reason: RuntimeError
-               }
+               error:
+                 {:action_outcome_ambiguous,
+                  %Spectre.Provider.Failure{
+                    provider: :action,
+                    kind: :exception,
+                    reason: RuntimeError
+                  }}
              }
            ] = result.effects
 
     refute inspect(result.effects) =~ "boom"
   end
 
-  test "a selected tool cannot escape the configured action module" do
+  test "planner metadata cannot escape the registered action provider" do
     effect =
       Effect.stage(%{
-        name: :dangerous,
+        name: :succeed,
+        args: %{safe: true},
         payload: %{
           selected_tool: "Elixir.SpectreRuntimeSafetyTest.OtherActions.dangerous/1"
         }
@@ -134,12 +137,23 @@ defmodule SpectreRuntimeSafetyTest do
 
     assert {:ok, result} = Spectre.execute(state, %{agent: ActionAgent})
 
+    assert [%Effect{status: :completed, result: %{safe: true}}] = result.effects
+
+    forged =
+      Effect.stage(%{
+        name: :dangerous,
+        payload: %{via: :unmounted}
+      })
+
+    forged_state = State.put_pending_effect(%State{}, forged, nil)
+    assert {:ok, forged_result} = Spectre.execute(forged_state, %{agent: ActionAgent})
+
     assert [
              %Effect{
                status: :failed,
-               error: {:unauthorized_action_module, OtherActions, Actions}
+               error: {:unknown_action_provider, :unmounted}
              }
-           ] = result.effects
+           ] = forged_result.effects
   end
 
   test "effect identity is injected into the action context" do

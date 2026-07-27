@@ -48,9 +48,21 @@ def deps do
 end
 ```
 
-The host application owns the Kinetic action registry and business
-capabilities. Spectre consumes planned effects but does not execute model output
-as arbitrary Elixir code.
+Mount the planner explicitly on each Agent that needs it:
+
+```elixir
+defmodule MyApp.Agent do
+  use Spectre.Agent
+  use Spectre.Kinetic, actions: MyApp.Actions
+end
+```
+
+`use Spectre.Agent` remains the Agent entry point. Kinetic owns planning and
+registry mechanics and automatically mounts its provider for `MyApp.Actions`;
+the application does not implement an adapter. Omit `:actions` only when
+another extension, such as MCP or Lens, already registers the providers that
+Kinetic should plan. Spectre keeps ownership of policy, persistence, execution,
+and journal lifecycle.
 
 ## Optional ExFastembed integration
 

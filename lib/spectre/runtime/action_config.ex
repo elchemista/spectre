@@ -1,26 +1,30 @@
 defmodule Spectre.ActionConfig do
   @moduledoc """
-  Reads action-related configuration from an agent module.
+  Resolves provider-neutral action configuration from an Agent definition.
 
-  This module is intentionally small: it is the boundary between declarative
-  agent metadata and runtime action planning/execution.
+  `actions MyApp.Actions` remains the compatibility shorthand for one local
+  provider. Optional libraries contribute providers or a planner through
+  `Spectre.Extension`, keeping their implementation out of the core.
   """
 
+  alias Spectre.Action.Provider.Mount
+  alias Spectre.Definition
+  alias Spectre.Extension
+
   @type action_config :: {module(), keyword()} | nil
+  @type planner_config :: {module(), keyword()} | nil
 
   @doc """
-  Returns the configured action module and options for an agent.
-
-      {MyApp.Actions, opts} = Spectre.ActionConfig.actions(MyApp.Agent)
+  Returns the legacy local action module configuration.
   """
   @spec actions(module()) :: action_config()
   def actions(agent) when is_atom(agent) and not is_nil(agent) do
-    if Code.ensure_loaded?(agent) and function_exported?(agent, :__spectre_config__, 0) do
-      case Keyword.get(agent.__spectre_config__(), :actions) do
-        {module, opts} when is_atom(module) and is_list(opts) -> {module, opts}
-        module when is_atom(module) and not is_nil(module) -> {module, []}
-        _other -> nil
-      end
+    case Definition.fetch(agent) do
+      {:ok, definition} ->
+        normalize_legacy_actions(Keyword.get(definition.config, :actions))
+
+      {:error, _reason} ->
+        nil
     end
   rescue
     _exception -> nil
@@ -31,102 +35,165 @@ defmodule Spectre.ActionConfig do
   def actions(_agent), do: nil
 
   @doc """
-  Merges runtime options with action planner options.
-
-      opts = Spectre.ActionConfig.planner_opts(ctx, al_parser: MyParser)
+  Returns all provider mounts visible to an Agent.
   """
-  @spec planner_opts(Spectre.Context.t() | map(), keyword()) :: keyword()
-  def planner_opts(%{agent: agent}, opts) when is_list(opts) do
-    case actions(agent) do
-      {module, action_opts} ->
-        opts
-        |> Keyword.merge(action_opts)
-        |> Keyword.put_new(:actions_module, module)
+  @spec providers(module()) :: [Mount.t()]
+  def providers(agent) when is_atom(agent) and not is_nil(agent) do
+    definition = Definition.fetch!(agent)
 
-      nil ->
-        opts
+    configured =
+      definition.config
+      |> Keyword.get(:action_providers, [])
+      |> normalize_provider_list!()
+
+    contributed =
+      Enum.flat_map(definition.extensions, &Extension.action_providers/1)
+
+    legacy =
+      case normalize_legacy_actions(Keyword.get(definition.config, :actions)) do
+        {module, opts} ->
+          [
+            Mount.new(
+              :local,
+              Spectre.Action.Provider.Local,
+              Keyword.put(opts, :module, module)
+            )
+          ]
+
+        nil ->
+          []
+      end
+
+    unique_providers!(legacy ++ configured ++ contributed)
+  end
+
+  @doc """
+  Resolves a provider by its stable identifier.
+  """
+  @spec provider(module(), Spectre.Action.provider_ref()) :: {:ok, Mount.t()} | {:error, term()}
+  def provider(agent, id) do
+    case Enum.find(providers(agent), &(&1.id == id)) do
+      %Mount{} = mount -> {:ok, mount}
+      nil -> {:error, {:unknown_action_provider, id}}
     end
   end
 
   @doc """
-  Verifies that a dynamically selected tool belongs to the action module
-  configured by the agent and, when available, to that module's Kinetic
-  registry.
+  Returns the one configured action planner, if present.
+
+  An explicit `action_planner/2` declaration and extension-contributed planner
+  are mutually exclusive. Multiple planners are rejected instead of relying on
+  compile or mount order.
   """
-  @spec authorize_tool(module(), module(), atom(), non_neg_integer()) ::
-          :ok | {:error, term()}
-  def authorize_tool(agent, module, function, arity)
-      when is_atom(agent) and not is_nil(agent) and is_atom(module) and
-             is_atom(function) and is_integer(arity) do
-    case actions(agent) do
+  @spec planner(module()) :: planner_config()
+  def planner(agent) when is_atom(agent) and not is_nil(agent) do
+    definition = Definition.fetch!(agent)
+
+    explicit =
+      definition.config
+      |> Keyword.get(:action_planner)
+      |> normalize_explicit_planner!()
+
+    contributed =
+      definition.extensions
+      |> Enum.map(&Extension.action_planner/1)
+      |> Enum.reject(&is_nil/1)
+
+    select_planner!(explicit ++ contributed)
+  end
+
+  @doc """
+  Builds the options passed to the planner port.
+
+  Per-handler/runtime options override extension defaults.
+  """
+  @spec planner_opts(Spectre.Context.t() | map(), keyword()) :: keyword()
+  def planner_opts(%{agent: agent}, opts) when is_list(opts) do
+    providers = providers(agent)
+
+    case planner(agent) do
+      {module, planner_opts} ->
+        planner_opts
+        |> Keyword.merge(opts)
+        |> Keyword.put(:action_planner, module)
+        |> Keyword.put(:action_providers, providers)
+
       nil ->
-        {:error, :missing_actions_module}
-
-      {^module, _opts} ->
-        with true <- Code.ensure_loaded?(module),
-             true <- function_exported?(module, function, arity),
-             :ok <- authorize_registered_tool(module, function, arity) do
-          :ok
-        else
-          false -> {:error, {:undefined_action, module, function, arity}}
-          {:error, reason} -> {:error, reason}
-        end
-
-      {authorized_module, _opts} ->
-        {:error, {:unauthorized_action_module, module, authorized_module}}
+        Keyword.put(opts, :action_providers, providers)
     end
   end
 
-  @spec authorize_registered_tool(module(), atom(), non_neg_integer()) :: :ok | {:error, term()}
-  defp authorize_registered_tool(module, function, arity) do
-    if function_exported?(module, :__spectre_tools__, 0) do
-      module
-      |> registered_tools()
-      |> authorize_registered_tool_result(module, function, arity)
-    else
-      # A configured plain Elixir action module is itself the explicit registry.
-      :ok
+  @spec normalize_legacy_actions(term()) :: action_config()
+  defp normalize_legacy_actions({module, opts}) when is_atom(module) and is_list(opts),
+    do: {module, opts}
+
+  defp normalize_legacy_actions(module) when is_atom(module) and not is_nil(module),
+    do: {module, []}
+
+  defp normalize_legacy_actions(_other), do: nil
+
+  @spec normalize_explicit_planner!(term()) :: [planner_config()]
+  defp normalize_explicit_planner!(nil), do: []
+
+  defp normalize_explicit_planner!(module) when is_atom(module) and not is_nil(module),
+    do: [{module, []}]
+
+  defp normalize_explicit_planner!({module, opts})
+       when is_atom(module) and not is_nil(module) and is_list(opts) do
+    validate_planner_opts!(opts)
+    [{module, opts}]
+  end
+
+  defp normalize_explicit_planner!(invalid),
+    do: raise(ArgumentError, "invalid action planner: #{inspect(invalid)}")
+
+  @spec validate_planner_opts!(list()) :: :ok
+  defp validate_planner_opts!(opts) do
+    unless Keyword.keyword?(opts),
+      do: raise(ArgumentError, "action planner options must be a keyword list")
+
+    :ok
+  end
+
+  @spec select_planner!([planner_config()]) :: planner_config()
+  defp select_planner!([]), do: nil
+  defp select_planner!([planner]), do: planner
+
+  defp select_planner!(planners),
+    do: raise(ArgumentError, "multiple action planners configured: #{inspect(planners)}")
+
+  @spec normalize_provider_list!(term()) :: [Mount.t()]
+  defp normalize_provider_list!(providers) when is_list(providers) do
+    Enum.map(providers, fn
+      %Mount{} = mount -> mount
+      {id, module} -> Mount.new(id, module, [])
+      {id, module, opts} -> Mount.new(id, module, opts)
+      invalid -> raise ArgumentError, "invalid action provider: #{inspect(invalid)}"
+    end)
+  end
+
+  defp normalize_provider_list!(providers),
+    do: raise(ArgumentError, "invalid action providers: #{inspect(providers)}")
+
+  @spec unique_providers!([Mount.t()]) :: [Mount.t()]
+  defp unique_providers!(providers) do
+    case duplicate_provider_id(providers) do
+      nil -> providers
+      id -> raise ArgumentError, "duplicate action provider: #{inspect(id)}"
     end
   end
 
-  @spec authorize_registered_tool_result(
-          {:ok, [map()]} | {:error, term()},
-          module(),
-          atom(),
-          non_neg_integer()
-        ) :: :ok | {:error, term()}
-  defp authorize_registered_tool_result({:ok, tools}, module, function, arity) do
-    case Enum.any?(tools, &registered_tool?(&1, function, arity)) do
-      true -> :ok
-      false -> {:error, {:unregistered_action_tool, module, function, arity}}
+  @spec duplicate_provider_id([Mount.t()]) :: term() | nil
+  defp duplicate_provider_id(providers) do
+    providers
+    |> Enum.reduce_while(MapSet.new(), fn %Mount{id: id}, seen ->
+      if MapSet.member?(seen, id),
+        do: {:halt, id},
+        else: {:cont, MapSet.put(seen, id)}
+    end)
+    |> case do
+      %MapSet{} -> nil
+      id -> id
     end
   end
-
-  defp authorize_registered_tool_result({:error, reason}, _module, _function, _arity),
-    do: {:error, reason}
-
-  @spec registered_tools(module()) :: {:ok, [map()]} | {:error, term()}
-  defp registered_tools(module) do
-    case module.__spectre_tools__() do
-      tools when is_list(tools) -> {:ok, tools}
-      other -> {:error, {:invalid_action_registry, module, other}}
-    end
-  rescue
-    exception ->
-      {:error, {:action_registry_exception, module, exception}}
-  catch
-    kind, reason ->
-      {:error, {:action_registry_failure, module, kind, reason}}
-  end
-
-  @spec registered_tool?(map(), atom(), non_neg_integer()) :: boolean()
-  defp registered_tool?(tool, function, arity) when is_map(tool) do
-    tool_function = Map.get(tool, :function) || Map.get(tool, "function")
-    tool_arity = Map.get(tool, :arity) || Map.get(tool, "arity")
-
-    tool_function in [function, Atom.to_string(function)] and
-      tool_arity in [arity, Integer.to_string(arity)]
-  end
-
-  defp registered_tool?(_tool, _function, _arity), do: false
 end

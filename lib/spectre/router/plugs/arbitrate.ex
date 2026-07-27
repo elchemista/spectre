@@ -333,21 +333,32 @@ defmodule Spectre.Router.Plugs.Arbitrate do
 
   defp unprotected_route(_route, _context), do: :ok
 
-  @spec unprotected_action_route(Spectre.Route.t(), atom(), keyword(), module() | nil) ::
+  @spec unprotected_action_route(
+          Spectre.Route.t(),
+          Spectre.Action.ref(),
+          keyword(),
+          module() | nil
+        ) ::
           :ok | {:skip, :protected_route}
   defp unprotected_action_route(_route, _action, _handler_opts, nil), do: :ok
 
-  defp unprotected_action_route(route, action, handler_opts, agent) do
+  defp unprotected_action_route(route, action_ref, handler_opts, agent) do
+    action_opts = [
+      args: Keyword.get(handler_opts, :args, %{}),
+      mode: Keyword.get(handler_opts, :mode),
+      metadata: %{source: :dsl}
+    ]
+
+    action_opts =
+      if Keyword.has_key?(handler_opts, :via),
+        do: Keyword.put(action_opts, :via, Keyword.fetch!(handler_opts, :via)),
+        else: action_opts
+
     effect =
-      Spectre.Effect.stage_action(
-        %{
-          name: action,
-          args: Keyword.get(handler_opts, :args, %{}),
-          payload: %{source: :dsl}
-        },
-        route.owner || agent,
-        route.scope || :agent
-      )
+      action_ref
+      |> Spectre.Action.new(action_opts)
+      |> Spectre.Action.to_effect_attrs()
+      |> Spectre.Effect.stage_action(route.owner || agent, route.scope || :agent)
 
     if Spectre.ActionProtection.protected_by(agent, effect),
       do: {:skip, :protected_route},

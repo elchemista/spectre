@@ -235,6 +235,30 @@ defmodule Spectre.Effect do
   def selected_tool(%__MODULE__{payload: payload}), do: Map.get(payload, :selected_tool)
 
   @doc """
+  Returns the provider identifier encoded in an action effect.
+
+  Effects written before provider separation default to the local Elixir
+  provider.
+  """
+  @spec via(t()) :: Spectre.Action.provider_ref()
+  def via(%__MODULE__{payload: payload}),
+    do: Map.get(payload, :via) || Map.get(payload, "via") || :local
+
+  @doc """
+  Returns the planner that produced the action, when present.
+  """
+  @spec planned_by(t()) :: module() | atom() | nil
+  def planned_by(%__MODULE__{payload: payload}),
+    do: Map.get(payload, :planned_by) || Map.get(payload, "planned_by")
+
+  @doc """
+  Returns the approved provider schema hash, when present.
+  """
+  @spec schema_hash(t()) :: String.t() | nil
+  def schema_hash(%__MODULE__{payload: payload}),
+    do: Map.get(payload, :schema_hash) || Map.get(payload, "schema_hash")
+
+  @doc """
   Returns the Action Language text encoded in an action effect payload.
   """
   @spec al(t()) :: String.t() | nil

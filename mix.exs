@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -73,6 +73,10 @@ defmodule Spectre.MixProject do
     [
       {:jason, "~> 1.4"},
       {:vettore, "~> 0.3.2"},
+      {:spectre_kinetic,
+       github: "elchemista/spectre_kinetic",
+       branch: "agent/generic-action-separation",
+       only: :test},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
@@ -185,6 +189,11 @@ defmodule Spectre.MixProject do
           Spectre.Provider.Failure
         ],
         Actions: [
+          Spectre.Action,
+          Spectre.Action.Spec,
+          Spectre.Action.Provider,
+          Spectre.Action.Provider.Local,
+          Spectre.Action.Planner,
           Spectre.ActionConfig,
           Spectre.ActionDispatcher,
           Spectre.ActionExecutor,
@@ -192,6 +201,9 @@ defmodule Spectre.MixProject do
           Spectre.ActionPlanner,
           Spectre.ActionProtection,
           Spectre.Execution
+        ],
+        Extensions: [
+          Spectre.Extension
         ],
         "Classifiers and evaluation": [
           Spectre.Classifier,

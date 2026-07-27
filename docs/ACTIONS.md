@@ -2,9 +2,9 @@
 
 ## `policy` And `protect`
 
-Actions can be staged by deterministic DSL handlers or by Action Language in an
-LLM reply. Either way, dangerous actions should not execute just because text
-matched or a model emitted a tool instruction.
+Actions can be staged by deterministic DSL handlers or by an optional planner
+mounted on the Agent. Either way, dangerous actions should not execute just
+because text matched or a model proposed a tool instruction.
 
 `protect` connects an action to a policy. In real agents, keep this next to the
 action module with the block form:
@@ -112,12 +112,92 @@ actions(MyApp.SupportActions)
 Hooks run after a completed action effect exists. They are useful for audit
 trails, notifications, and delivery bookkeeping.
 
-## SpectreKinetic Integration
+## Generic Action Providers
 
-Spectre works very well today with `spectre_kinetic`.
+`action` is provider-neutral. Spectre owns staging, policy, persistence,
+idempotency, journal events, and terminal outcomes; a registered provider owns
+discovery and execution.
 
-When an `ask` handler receives an LLM reply, Spectre scans visible text and AL
-blocks through SpectreKinetic if it is loaded. For example, a model might return:
+The existing `actions MyApp.SupportActions` declaration is compatibility
+shorthand for the built-in `:local` provider and its map/context callback
+convention. It does not select Kinetic. Companion libraries mount their own
+providers on demand.
+
+Provider authors can use the low-level port directly:
+
+```elixir
+defmodule MyApp.GitHubProvider do
+  @behaviour Spectre.Action.Provider
+
+  def actions(_opts) do
+    [
+      Spectre.Action.Spec.new(
+        name: :create_issue,
+        via: {:mcp, :github},
+        description: "Creates a GitHub issue",
+        mode: :write,
+        schema: %{
+          type: "object",
+          required: ["title"],
+          properties: %{
+            "title" => %{type: "string"},
+            "body" => %{type: "string"}
+          }
+        }
+      )
+    ]
+  end
+
+  def execute(%Spectre.Action{name: :create_issue, args: args}, ctx, opts) do
+    MyApp.GitHubMCP.create_issue(args, ctx, opts)
+  end
+end
+```
+
+Mount and use it without changing the engine:
+
+```elixir
+defmodule MyApp.ProjectAgent do
+  use Spectre.Agent
+
+  action_provider({:mcp, :github}, MyApp.GitHubProvider)
+
+  protect({:mcp, :github, :create_issue},
+    with: :confirm_issue_creation
+  )
+
+  flow :github do
+    on :CREATE_ISSUE, regex: ~r/\bcreate.*\bissue\b/i do
+      action({:mcp, :github, :create_issue},
+        args: %{title: "Bug report"}
+      )
+    end
+  end
+end
+```
+
+A planner returns `%Spectre.Action{via: ..., name: ..., args: ...}`. It never
+selects an implementation module directly: dispatch resolves `via` against the
+providers compiled into the Agent. When a planned action carries a schema hash,
+Spectre verifies the provider still exposes that schema before execution.
+
+Optional libraries should register providers or a planner through
+`Spectre.Extension`. The public composition stays:
+
+```elixir
+use Spectre.Agent
+use Spectre.Kinetic, actions: MyApp.Actions
+```
+
+There is no alternate Agent engine and no `use Spectre` facade.
+
+## SpectreKinetic Planner
+
+`spectre_kinetic` is an on-demand implementation of the action planner port.
+Spectre does not detect or call it implicitly.
+
+When an Agent that mounts `Spectre.Kinetic` receives an LLM reply, the Kinetic
+adapter scans visible text and AL blocks. For example, a model might return:
 
 ```text
 I can create that project brief.
@@ -132,30 +212,32 @@ Kinetic for tool selection, slot mapping, and planning. The result is a
 `%Spectre.Effect{kind: :action}`. If the action is protected, Spectre opens a
 `%Spectre.Awaitable{kind: :policy}` before anything executes.
 
-Your action module can be a Kinetic tool module:
+Define application actions with Kinetic's existing code-first DSL:
 
 ```elixir
 defmodule MyApp.ProjectActions do
   use SpectreKinetic
 
-  @al "CREATE PROJECT title=<title>"
-  def create_project(%{"title" => title}, ctx) do
-    MyApp.Projects.create(ctx.assigns.user_id, %{title: title})
-  end
+  @al ~s(CREATE PROJECT WITH: TITLE="Marketplace MVP")
+  @doc "Creates a project"
+  @spec create_project(String.t()) :: {:ok, term()} | {:error, term()}
+  def create_project(title), do: MyApp.Projects.create(%{title: title})
 end
 ```
 
-Then wire it into Spectre:
+Mount that module through Kinetic on the Agent. This one `use` registers both
+the Kinetic planner and its built-in action provider; the application does not
+implement an adapter:
 
 ```elixir
 defmodule MyApp.ProjectAgent do
   use Spectre.Agent, prompt_root: "priv/agents/project/prompts"
+  use Spectre.Kinetic,
+    actions: MyApp.ProjectActions,
+    modes: [create_project: :write]
 
   model(MyApp.LLM)
-
-  actions MyApp.ProjectActions do
-    protect(:create_project, with: :terms)
-  end
+  protect({:kinetic, :create_project}, with: :terms)
 
   policy :terms do
     request(:accept_terms)
@@ -171,16 +253,38 @@ defmodule MyApp.ProjectAgent do
 end
 ```
 
+`Spectre.Kinetic.Actions` is the provider implementation supplied by the
+companion package. It is mounted internally by `use Spectre.Kinetic`; do not
+write `actions Spectre.Kinetic.Actions` in the Agent.
+
+When MCP, Lens, or another extension already supplies action providers, mount
+Kinetic without `:actions`:
+
+```elixir
+use Spectre.Agent
+use Spectre.MCP, servers: [...]
+use Spectre.Kinetic
+```
+
+Kinetic then plans against the providers registered by those extensions. If no
+`:actions` module and no other providers are mounted, the planner has no
+actions to select.
+
 Kinetic can load runtime data from:
 
-- `:spectre_kinetic_runtime` application config
+- the `runtime:` option passed to `use Spectre.Kinetic`
+- `:spectre_kinetic, :runtime`
 - `:spectre_kinetic, :compiled_registry`
 - `:spectre_kinetic, :registry_json`
 - `SPECTRE_KINETIC_COMPILED_REGISTRY`
 - `SPECTRE_KINETIC_REGISTRY_JSON`
-- extracted tools from the configured `actions` module
+- action specs exposed by the Agent's registered providers
 
-Spectre does not maintain a second AL parser. Kinetic owns AL extraction, tool
-registration, registry loading, planning, slot mapping, and planning
-classifiers. Spectre owns conversation routing, policy gates, state, effects,
-awaitables, and action execution boundaries.
+Before planning, Kinetic verifies that a borrowed or precompiled registry
+matches exactly the providers mounted on that Agent. Missing, changed, or
+unmounted registry entries are rejected.
+
+Spectre does not maintain a second AL parser or registry. Kinetic owns AL
+extraction, registry loading, tool selection, slot mapping, reranking, and
+planning classifiers. Spectre owns providers, conversation routing, policy
+gates, state, effects, awaitables, execution, and journal boundaries.

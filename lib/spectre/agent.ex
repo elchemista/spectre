@@ -16,8 +16,11 @@ defmodule Spectre.Agent do
     * `policy/2` declares approval/rejection gates for dangerous actions.
     * `protect/2` attaches an action name to a policy independently from the
       prompt or handler that produced the action.
-    * `actions/2`, `state/1`, and `memory/1` keep side effects at explicit
-      runtime boundaries.
+    * `actions/2` and `action_provider/3` keep side effects behind registered
+      providers.
+    * `action_planner/2` accepts provider-neutral plans without coupling the
+      runtime to a planning library.
+    * `state/1` and `memory/1` keep persistence at explicit runtime boundaries.
 
       defmodule MyApp.ProjectAgent do
         use Spectre.Agent, prompt_root: "priv/agents/project/prompts"
@@ -147,6 +150,11 @@ defmodule Spectre.Agent do
       )
 
       Module.register_attribute(__MODULE__, :spectre_requirements,
+        accumulate: true,
+        persist: false
+      )
+
+      Module.register_attribute(__MODULE__, :spectre_extensions,
         accumulate: true,
         persist: false
       )
@@ -320,6 +328,58 @@ defmodule Spectre.Agent do
         unquote(Macro.escape(after_actions)),
         &Module.put_attribute(__MODULE__, :spectre_after_actions, &1)
       )
+    end
+  end
+
+  @doc """
+  Registers an action provider under a stable identifier.
+
+  This is the low-level port used by optional Spectre libraries. Applications
+  using an ordinary Elixir module can keep the shorter `actions/2` DSL.
+
+      action_provider :browser, MyApp.BrowserProvider
+      action_provider {:mcp, :github}, MyApp.GitHubProvider
+  """
+  defmacro action_provider(id, module, opts \\ []) do
+    id = eval_action_arg(id, __CALLER__)
+    module = Macro.expand(module, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+    mount = Spectre.Action.Provider.Mount.new(id, module, opts)
+
+    quote do
+      providers = Keyword.get(@spectre_config, :action_providers, [])
+
+      @spectre_config Keyword.put(
+                        @spectre_config,
+                        :action_providers,
+                        providers ++ [unquote(Macro.escape(mount))]
+                      )
+    end
+  end
+
+  @doc """
+  Configures the provider-neutral action planner port.
+
+  Optional libraries normally mount this through their own DSL, for example
+  `use Spectre.Kinetic`. The explicit form is useful for application-specific
+  planners.
+  """
+  defmacro action_planner(module, opts \\ []) do
+    module = Macro.expand(module, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    unless is_atom(module) and not is_nil(module),
+      do: raise(ArgumentError, "action planner must be a module")
+
+    unless Keyword.keyword?(opts),
+      do: raise(ArgumentError, "action planner options must be a keyword list")
+
+    quote do
+      @spectre_config Keyword.put(
+                        @spectre_config,
+                        :action_planner,
+                        {unquote(module), unquote(Macro.escape(opts))}
+                      )
     end
   end
 
@@ -632,12 +692,14 @@ defmodule Spectre.Agent do
   Attaches an action to a policy gate.
 
   Protection is action-centric rather than prompt-centric on purpose: the same
-  dangerous action can be produced by DSL handlers or by AL extracted from an
-  LLM reply, and it must still pass the same policy.
+  dangerous action can be produced by DSL handlers or by an optional planner
+  inspecting an LLM reply, and it must still pass the same policy.
 
       protect :delete_account, with: :delete_account_confirmation
   """
   defmacro protect(action_or_opts, opts \\ []) do
+    action_or_opts = eval_action_arg(action_or_opts, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
     {action, opts} = normalize_protect_args(action_or_opts, opts)
     protection = %{action: action, policy: Keyword.fetch!(opts, :with)}
 
@@ -656,6 +718,7 @@ defmodule Spectre.Agent do
       after_action :delete_account, on: :delivered, run: :audit_delete_account
   """
   defmacro after_action(action, opts) do
+    action = eval_action_arg(action, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
     hook = after_action_hook(action, opts)
 
@@ -740,7 +803,8 @@ defmodule Spectre.Agent do
   end
 
   @doc """
-  Creates a handler that renders a prompt, calls the LLM, and stages AL actions.
+  Creates a handler that renders a prompt, calls the LLM, and lets the
+  configured planner stage provider-neutral actions.
 
       on :support_question do
         ask :support_answer
@@ -836,6 +900,9 @@ defmodule Spectre.Agent do
       def __spectre_requirements__, do: unquote(Macro.escape(metadata.requirements))
 
       @doc false
+      def __spectre_extensions__, do: unquote(Macro.escape(metadata.extensions))
+
+      @doc false
       def __spectre_prompt_root__ do
         Keyword.get(__spectre_config__(), :prompt_root, "priv/spectre/prompts")
       end
@@ -854,6 +921,7 @@ defmodule Spectre.Agent do
       injections: module |> Module.get_attribute(:spectre_injections) |> reverse_attribute(),
       skills: module |> Module.get_attribute(:spectre_skills) |> reverse_attribute(),
       requirements: module |> Module.get_attribute(:spectre_requirements) |> reverse_attribute(),
+      extensions: module |> Module.get_attribute(:spectre_extensions) |> reverse_attribute(),
       kind: Module.get_attribute(module, :spectre_kind) || :agent,
       id: Module.get_attribute(module, :spectre_definition_id) || module,
       version: Module.get_attribute(module, :spectre_definition_version) || 1
@@ -876,7 +944,8 @@ defmodule Spectre.Agent do
       after_actions: metadata.after_actions,
       injections: metadata.injections,
       requirements: metadata.requirements,
-      skills: metadata.skills
+      skills: metadata.skills,
+      extensions: metadata.extensions
     }
     |> Definition.new()
     |> Validator.validate!()
@@ -1146,12 +1215,17 @@ defmodule Spectre.Agent do
   defp parse_handler({:reply, _meta, [prompt, opts]}, caller),
     do: {:reply, prompt, eval_opts(opts, caller)}
 
-  defp parse_handler({:action, _meta, [action]}, _caller), do: {:action, action, []}
+  defp parse_handler({:action, _meta, [action]}, caller),
+    do: {:action, eval_action_arg(action, caller), []}
 
-  defp parse_handler({:action, _meta, [action, [do: block]]}, caller),
-    do: {:action, action, parse_action_block(action, block, caller)}
+  defp parse_handler({:action, _meta, [action, [do: block]]}, caller) do
+    action = eval_action_arg(action, caller)
+    {:action, action, parse_action_block(action, block, caller)}
+  end
 
   defp parse_handler({:action, _meta, [action, opts, [do: block]]}, caller) do
+    action = eval_action_arg(action, caller)
+
     opts =
       opts
       |> eval_opts(caller)
@@ -1161,7 +1235,7 @@ defmodule Spectre.Agent do
   end
 
   defp parse_handler({:action, _meta, [action, opts]}, caller),
-    do: {:action, action, eval_opts(opts, caller)}
+    do: {:action, eval_action_arg(action, caller), eval_opts(opts, caller)}
 
   defp parse_handler({:__block__, _meta, [one]}, caller), do: parse_handler(one, caller)
 
@@ -1206,7 +1280,7 @@ defmodule Spectre.Agent do
     |> Kernel.++(List.wrap(Keyword.get(opts, :checks, [])))
   end
 
-  @spec parse_action_block(atom(), Macro.t(), Macro.Env.t()) :: keyword()
+  @spec parse_action_block(Spectre.Action.ref(), Macro.t(), Macro.Env.t()) :: keyword()
   defp parse_action_block(action, block, caller) do
     block
     |> calls()
@@ -1223,6 +1297,7 @@ defmodule Spectre.Agent do
         Keyword.update(acc, :hooks, [hook], &[hook | &1])
 
       {:after_action, _meta, [hook_action, opts]}, acc ->
+        hook_action = eval_action_arg(hook_action, caller)
         hook = opts |> eval_opts(caller) |> then(&after_action_hook(hook_action, &1))
         Keyword.update(acc, :hooks, [hook], &[hook | &1])
 
@@ -1248,7 +1323,7 @@ defmodule Spectre.Agent do
         %{acc | protections: acc.protections ++ [protection]}
 
       {:after_action, _meta, [action, opts]}, acc ->
-        hook = after_action_hook(Macro.expand(action, caller), eval_opts(opts, caller))
+        hook = after_action_hook(eval_action_arg(action, caller), eval_opts(opts, caller))
         %{acc | after_actions: acc.after_actions ++ [hook]}
 
       other, _acc ->
@@ -1309,8 +1384,11 @@ defmodule Spectre.Agent do
   defp calls(one), do: [one]
 
   @spec eval_action_arg(term(), Macro.Env.t()) :: term()
-  defp eval_action_arg(arg, caller) when is_list(arg), do: eval_opts(arg, caller)
-  defp eval_action_arg(arg, caller), do: Macro.expand(arg, caller)
+  defp eval_action_arg(arg, caller) do
+    expanded = Macro.prewalk(arg, &Macro.expand(&1, caller))
+    {value, _binding} = Code.eval_quoted(expanded, [], caller)
+    value
+  end
 
   @spec eval_opts(term(), Macro.Env.t()) :: term()
   defp eval_opts(opts, caller) when is_list(opts) do

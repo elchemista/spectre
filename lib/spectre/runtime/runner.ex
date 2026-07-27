@@ -8,6 +8,7 @@ defmodule Spectre.Runner do
   may stage actions, but execution is separate.
   """
 
+  alias Spectre.Action
   alias Spectre.ActionConfig
   alias Spectre.ActionPlanner
   alias Spectre.ActionProtection
@@ -57,7 +58,8 @@ defmodule Spectre.Runner do
   end
 
   @doc """
-  Renders a prompt, calls the LLM, cleans visible replies, and stages AL actions.
+  Renders a prompt, calls the LLM, cleans visible replies, and lets the
+  configured planner stage provider-neutral actions.
 
       {:ok, result} = Spectre.Runner.ask(:support_answer, input, ctx)
 
@@ -83,13 +85,15 @@ defmodule Spectre.Runner do
 
   @spec ask_result(String.t(), Input.t(), Spectre.Context.t(), keyword(), boolean() | nil) ::
           {:ok, Result.t()} | {:error, term()}
-  defp ask_result(reply, input, ctx, _opts, true) do
+  defp ask_result(reply, input, ctx, opts, true) do
+    planner_opts = ActionConfig.planner_opts(ctx, opts)
+
     {:ok,
      %Result{
        input: input,
        route: ctx.route,
        state: ctx.state,
-       reply_text: ActionPlanner.clean_reply(reply)
+       reply_text: ActionPlanner.clean_reply(reply, ctx, planner_opts)
      }}
   end
 
@@ -176,28 +180,36 @@ defmodule Spectre.Runner do
 
       {:ok, result} = Spectre.Runner.action(:delete_account, input, ctx)
   """
-  @spec action(atom(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
+  @spec action(Action.ref(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, Result.t()} | {:error, term()}
-  def action(action, %Input{} = input, ctx, opts \\ []) when is_atom(action) do
+  def action(action_ref, %Input{} = input, ctx, opts \\ []) do
     ctx = normalize_ctx(ctx, input, [])
     ctx = %{ctx | opts: merge_prompt_opts(ctx.opts, opts)}
 
+    action_opts = [
+      args: Keyword.get(opts, :args, %{}),
+      mode: Keyword.get(opts, :mode),
+      planned_by: Keyword.get(opts, :planned_by),
+      schema_hash: Keyword.get(opts, :schema_hash),
+      metadata: %{
+        al: Keyword.get(opts, :al),
+        hooks: Keyword.get(opts, :hooks, []),
+        source: :dsl
+      }
+    ]
+
+    action_opts =
+      if Keyword.has_key?(opts, :via),
+        do: Keyword.put(action_opts, :via, Keyword.fetch!(opts, :via)),
+        else: action_opts
+
+    action = Action.new(action_ref, action_opts)
+
     effect =
-      Effect.stage_action(
-        %{
-          name: action,
-          args: Keyword.get(opts, :args, %{}),
-          mode: Keyword.get(opts, :mode),
-          status: Keyword.get(opts, :status, :pending),
-          payload: %{
-            al: Keyword.get(opts, :al),
-            hooks: Keyword.get(opts, :hooks, []),
-            source: :dsl
-          }
-        },
-        route_owner(ctx),
-        route_scope(ctx)
-      )
+      action
+      |> Action.to_effect_attrs()
+      |> Map.put(:status, Keyword.get(opts, :status, :pending))
+      |> Effect.stage_action(route_owner(ctx), route_scope(ctx))
 
     policy =
       Keyword.get(opts, :policy) ||
@@ -241,7 +253,7 @@ defmodule Spectre.Runner do
       |> Keyword.put(:effect_scope, route_scope(ctx))
 
     with {:ok, %{reply_text: reply_text, effects: effects}} <-
-           ActionPlanner.plan_response(reply, planner_opts) do
+           ActionPlanner.plan_response(reply, ctx, planner_opts) do
       stage_effects(reply_text, effects, input, ctx, opts)
     end
   end
@@ -269,7 +281,7 @@ defmodule Spectre.Runner do
       staged_effect = pending_effect(state)
 
       if policy do
-        # Protected AL actions immediately switch into the policy request flow.
+        # Protected planned actions immediately switch into the policy request flow.
         # The visible LLM reply is preserved and joined with the policy prompt.
         request_policy(policy, reply_text, [staged_effect], input, ctx, opts)
       else
@@ -289,7 +301,7 @@ defmodule Spectre.Runner do
   defp stage_effects(_reply_text, effects, _input, _ctx, _opts) when length(effects) > 1 do
     identities =
       Enum.map(effects, fn effect ->
-        %{id: effect.id, kind: effect.kind, name: effect.name}
+        %{id: effect.id, kind: effect.kind, via: Effect.via(effect), name: effect.name}
       end)
 
     {:error, {:multiple_action_effects_not_supported, identities}}
@@ -499,6 +511,7 @@ defmodule Spectre.Runner do
     %{
       type: type,
       kind: effect.kind,
+      via: Effect.via(effect),
       name: effect.name,
       owner: effect.owner,
       scope: effect.scope

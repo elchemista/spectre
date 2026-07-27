@@ -38,7 +38,7 @@ defmodule Spectre.Rule do
           {:ask, term(), keyword()}
           | {:run, atom(), keyword()}
           | {:reply, term(), keyword()}
-          | {:action, atom(), keyword()}
+          | {:action, Spectre.Action.ref(), keyword()}
 
   @type t :: %__MODULE__{
           label: atom(),

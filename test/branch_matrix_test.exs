@@ -8,11 +8,9 @@ defmodule SpectreBranchMatrixTest.RegisteredActions do
   def perform(value), do: {:ok, value}
   def unregistered(value), do: {:ok, value}
 
-  def __spectre_tools__ do
+  def __spectre_actions__ do
     [
-      %{function: :perform, arity: 1},
-      %{"function" => "perform", "arity" => "1"},
-      :invalid_entry
+      %{name: :perform, description: "Performs the registered action", schema: %{arity: 1}}
     ]
   end
 end
@@ -35,19 +33,19 @@ end
 defmodule SpectreBranchMatrixTest.BadRegistryActions do
   @moduledoc false
   def perform(value), do: value
-  def __spectre_tools__, do: :invalid
+  def __spectre_actions__, do: :invalid
 end
 
 defmodule SpectreBranchMatrixTest.RaisingRegistryActions do
   @moduledoc false
   def perform(value), do: value
-  def __spectre_tools__, do: raise("registry")
+  def __spectre_actions__, do: raise("registry")
 end
 
 defmodule SpectreBranchMatrixTest.ThrowingRegistryActions do
   @moduledoc false
   def perform(value), do: value
-  def __spectre_tools__, do: throw(:registry)
+  def __spectre_actions__, do: throw(:registry)
 end
 
 defmodule SpectreBranchMatrixTest.ActionAgent do
@@ -227,9 +225,13 @@ end
 defmodule SpectreBranchMatrixTest do
   use ExUnit.Case, async: true
 
+  alias Spectre.Action
+  alias Spectre.Action.Provider
+  alias Spectre.Action.Provider.Mount
   alias Spectre.ActionConfig
   alias Spectre.Awaitable
   alias Spectre.Classifier.Encoder
+  alias Spectre.Context
   alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Input.Pipeline, as: InputPipeline
@@ -503,71 +505,76 @@ defmodule SpectreBranchMatrixTest do
         ActionConfig.planner_opts(%{agent: SpectreBranchMatrixTest.ActionAgent}, timeout: 10)
 
       assert planner[:timeout] == 10
-      assert planner[:source] == :agent
-      assert planner[:actions_module] == plain
 
-      assert ActionConfig.planner_opts(%{agent: :missing_agent}, timeout: 10) == [timeout: 10]
+      assert [
+               %Mount{
+                 id: :local,
+                 module: Spectre.Action.Provider.Local,
+                 opts: provider_opts
+               }
+             ] = planner[:action_providers]
+
+      assert provider_opts[:source] == :agent
+      assert provider_opts[:module] == plain
+      refute Keyword.has_key?(planner, :action_planner)
+
+      assert_raise ArgumentError, ~r/invalid Spectre definition/, fn ->
+        ActionConfig.planner_opts(%{agent: :missing_agent}, timeout: 10)
+      end
     end
 
-    test "authorizes plain and registered tools and rejects every registry failure" do
+    test "discovers and safely invokes local action providers" do
+      agent = SpectreBranchMatrixTest.ActionAgent
       plain = SpectreBranchMatrixTest.PlainActions
 
-      assert :ok =
-               ActionConfig.authorize_tool(
-                 SpectreBranchMatrixTest.ActionAgent,
-                 plain,
-                 :perform,
-                 1
-               )
+      assert {:ok,
+              %Mount{
+                id: :local,
+                module: Spectre.Action.Provider.Local,
+                opts: provider_opts
+              } = mount} = ActionConfig.provider(agent, :local)
 
-      assert {:error, :missing_actions_module} =
-               ActionConfig.authorize_tool(:missing_agent, plain, :perform, 1)
+      assert provider_opts[:module] == plain
+      assert provider_opts[:source] == :agent
+      assert {:ok, []} = Provider.actions(mount)
 
-      assert {:error, {:unauthorized_action_module, _, ^plain}} =
-               ActionConfig.authorize_tool(
-                 SpectreBranchMatrixTest.ActionAgent,
-                 SpectreBranchMatrixTest.RegisteredActions,
-                 :perform,
-                 1
-               )
+      action = Action.new(:perform, via: :local, args: %{value: 1})
+      ctx = %Context{agent: agent, input: Input.new(""), state: %State{}}
 
-      assert {:error, {:undefined_action, ^plain, :missing, 1}} =
-               ActionConfig.authorize_tool(
-                 SpectreBranchMatrixTest.ActionAgent,
-                 plain,
-                 :missing,
-                 1
-               )
+      assert {:ok, %{value: 1}} = Provider.execute(mount, action, ctx)
 
-      registered = SpectreBranchMatrixTest.RegisteredActions
+      assert {:error, {:action_provider_mismatch, :other, :local}} =
+               Provider.execute(mount, %{action | via: :other}, ctx)
 
-      assert :ok =
-               ActionConfig.authorize_tool(
-                 SpectreBranchMatrixTest.RegisteredActionAgent,
-                 registered,
-                 :perform,
-                 1
-               )
+      assert {:error, {:unknown_action_provider, :missing}} =
+               ActionConfig.provider(agent, :missing)
 
-      assert {:error, {:unregistered_action_tool, ^registered, :unregistered, 1}} =
-               ActionConfig.authorize_tool(
-                 SpectreBranchMatrixTest.RegisteredActionAgent,
-                 registered,
-                 :unregistered,
-                 1
-               )
+      assert {:ok, registered_mount} =
+               ActionConfig.provider(SpectreBranchMatrixTest.RegisteredActionAgent, :local)
 
-      for {agent, module, expected} <- [
-            {SpectreBranchMatrixTest.BadRegistryAgent, SpectreBranchMatrixTest.BadRegistryActions,
-             :invalid_action_registry},
-            {SpectreBranchMatrixTest.RaisingRegistryAgent,
-             SpectreBranchMatrixTest.RaisingRegistryActions, :action_registry_exception},
-            {SpectreBranchMatrixTest.ThrowingRegistryAgent,
-             SpectreBranchMatrixTest.ThrowingRegistryActions, :action_registry_failure}
-          ] do
-        assert {:error, reason} = ActionConfig.authorize_tool(agent, module, :perform, 1)
-        assert elem(reason, 0) == expected
-      end
+      assert {:ok, [registered]} = Provider.actions(registered_mount)
+      assert registered.name == :perform
+      assert registered.via == :local
+      assert is_binary(registered.schema_hash)
+
+      assert {:ok, bad_mount} =
+               ActionConfig.provider(SpectreBranchMatrixTest.BadRegistryAgent, :local)
+
+      assert {:error,
+              {:invalid_action_registry, SpectreBranchMatrixTest.BadRegistryActions, :invalid}} =
+               Provider.actions(bad_mount)
+
+      assert {:ok, raising_mount} =
+               ActionConfig.provider(SpectreBranchMatrixTest.RaisingRegistryAgent, :local)
+
+      assert {:error, {:action_provider_exception, :local, :actions, RuntimeError}} =
+               Provider.actions(raising_mount)
+
+      assert {:ok, throwing_mount} =
+               ActionConfig.provider(SpectreBranchMatrixTest.ThrowingRegistryAgent, :local)
+
+      assert {:error, {:action_provider_failure, :local, :actions, :throw, :registry}} =
+               Provider.actions(throwing_mount)
     end
   end
 

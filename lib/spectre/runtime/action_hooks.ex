@@ -7,6 +7,7 @@ defmodule Spectre.ActionHooks do
   after the user-facing action result exists.
   """
 
+  alias Spectre.Action
   alias Spectre.Context
   alias Spectre.Effect
   alias Spectre.Provider.Call
@@ -15,7 +16,7 @@ defmodule Spectre.ActionHooks do
 
   @type hook_event :: :delivered
   @type hook :: %{
-          action: atom() | String.t(),
+          action: Spectre.Action.ref(),
           on: hook_event() | atom(),
           run: {module(), atom()} | function(),
           opts: keyword()
@@ -53,10 +54,10 @@ defmodule Spectre.ActionHooks do
   defp executed_actions(%Result{effects: effects}) do
     Enum.flat_map(effects, fn
       %Effect{kind: :action, status: :completed, result: {:ok, result}} = effect ->
-        [%{action: effect.name, effect: effect, result: result}]
+        [%{action: Action.from_effect(effect), effect: effect, result: result}]
 
       %Effect{kind: :action, status: :completed, result: result} = effect ->
-        [%{action: effect.name, effect: effect, result: result}]
+        [%{action: Action.from_effect(effect), effect: effect, result: result}]
 
       _effect ->
         []
@@ -79,14 +80,14 @@ defmodule Spectre.ActionHooks do
   @spec agent_hooks(module()) :: [hook()]
   defp agent_hooks(agent), do: Spectre.Definition.after_actions(agent)
 
-  @spec hooks_for([hook()], atom() | String.t() | nil, atom()) :: [hook()]
+  @spec hooks_for([hook()], Action.t(), atom()) :: [hook()]
   defp hooks_for(hooks, action, event) do
     Enum.filter(hooks, fn hook ->
       hook.on == event and action_matches?(hook.action, action)
     end)
   end
 
-  @spec hooks_for([hook()], atom() | String.t() | nil, atom(), Spectre.Definition.scope() | nil) ::
+  @spec hooks_for([hook()], Action.t(), atom(), Spectre.Definition.scope() | nil) ::
           [hook()]
   defp hooks_for(hooks, action, event, scope) do
     Enum.filter(hooks, fn hook ->
@@ -101,19 +102,9 @@ defmodule Spectre.ActionHooks do
   defp hook_scope_matches?(%{scope: scope}, scope), do: true
   defp hook_scope_matches?(_hook, _scope), do: false
 
-  @spec action_matches?(term(), term()) :: boolean()
-  defp action_matches?(left, right), do: normalize_action(left) == normalize_action(right)
-
-  @spec normalize_action(term()) :: term()
-  defp normalize_action(action) when is_atom(action), do: action
-
-  defp normalize_action(action) when is_binary(action) do
-    String.to_existing_atom(action)
-  rescue
-    ArgumentError -> action
-  end
-
-  defp normalize_action(action), do: action
+  @spec action_matches?(term(), Action.t()) :: boolean()
+  defp action_matches?(expected, %Action{} = action),
+    do: Action.matches_ref?(expected, action)
 
   @spec run_hook(hook(), term(), Context.t()) :: :ok | {:error, term()}
   defp run_hook(hook, action_result, %Context{} = ctx) do
