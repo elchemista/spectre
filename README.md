@@ -72,7 +72,7 @@ better integration boundary for applications because it returns one of:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.0"}
+    {:spectre, "~> 0.1.1"}
   ]
 end
 ```
