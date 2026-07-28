@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.1.1"
+  @version "0.1.2"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -10,6 +10,7 @@ defmodule Spectre.MixProject do
     "docs/ARCHITECTURE.md",
     "docs/INTEGRATIONS.md",
     "docs/DSL.md",
+    "docs/STACK.md",
     "docs/SKILLS.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
@@ -75,7 +76,7 @@ defmodule Spectre.MixProject do
       {:vettore, "~> 0.3.2"},
       {:spectre_kinetic,
        github: "elchemista/spectre_kinetic",
-       branch: "agent/generic-action-separation",
+       ref: "c043ed4fd26ac5cc7fa5725ef0f98bd6c27e4f99",
        only: :test},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -121,6 +122,7 @@ defmodule Spectre.MixProject do
           "docs/ARCHITECTURE.md",
           "docs/INTEGRATIONS.md",
           "docs/DSL.md",
+          "docs/STACK.md",
           "docs/SKILLS.md",
           "docs/API.md"
         ],
@@ -148,6 +150,7 @@ defmodule Spectre.MixProject do
       groups_for_modules: [
         "Core API": [
           Spectre,
+          Spectre.Stack,
           Spectre.Agent,
           Spectre.Turn.Handler,
           Spectre.Turn.Handler.Request,
@@ -203,7 +206,14 @@ defmodule Spectre.MixProject do
           Spectre.Execution
         ],
         Extensions: [
-          Spectre.Extension
+          Spectre.Extension,
+          Spectre.Stack.Contract.V1,
+          Spectre.Stack.Definition,
+          Spectre.Stack.Installable,
+          Spectre.Stack.Installation,
+          Spectre.Stack.Package,
+          Spectre.Stack.Ref,
+          Spectre.Stack.Runtime
         ],
         "Classifiers and evaluation": [
           Spectre.Classifier,

@@ -945,7 +945,8 @@ defmodule Spectre.Agent do
       injections: metadata.injections,
       requirements: metadata.requirements,
       skills: metadata.skills,
-      extensions: metadata.extensions
+      extensions: metadata.extensions,
+      stack: Keyword.get(metadata.config, :stack)
     }
     |> Definition.new()
     |> Validator.validate!()

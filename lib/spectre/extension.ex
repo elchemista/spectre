@@ -1,6 +1,6 @@
 defmodule Spectre.Extension do
   @moduledoc """
-  Minimal compile-time contract for on-demand Spectre libraries.
+  Legacy compile-time contract for on-demand Spectre libraries.
 
   Extensions are mounted after `use Spectre.Agent`:
 
@@ -10,7 +10,10 @@ defmodule Spectre.Extension do
 
   They contribute data and runtime ports to the single Spectre definition.
   They must not install their own `@before_compile` hook or manipulate private
-  Agent attributes.
+  Agent attributes. New ecosystem packages should publish a
+  `Spectre.Stack.Installable` manifest; Extension mounts remain
+  source-compatible and can be materialized through
+  `Spectre.Stack.Installation.from_extension_mount/1`.
   """
 
   alias Spectre.Action.Provider.Mount, as: ProviderMount

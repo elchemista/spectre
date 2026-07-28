@@ -17,6 +17,7 @@ defmodule Spectre.Definition do
             id: nil,
             version: @version,
             owner: nil,
+            stack: nil,
             prompt_root: "priv/spectre/prompts",
             config: [],
             router: [],
@@ -37,6 +38,7 @@ defmodule Spectre.Definition do
           id: term(),
           version: pos_integer(),
           owner: module(),
+          stack: module() | nil,
           prompt_root: String.t(),
           config: keyword(),
           router: keyword(),
@@ -317,6 +319,7 @@ defmodule Spectre.Definition do
          protections: optional_callback(module, :__spectre_protections__, []),
          after_actions: optional_callback(module, :__spectre_after_actions__, []),
          extensions: optional_callback(module, :__spectre_extensions__, []),
+         stack: Keyword.get(config, :stack),
          prompt_root: Keyword.get(config, :prompt_root, "priv/spectre/prompts")
        })}
     else

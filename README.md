@@ -72,7 +72,7 @@ better integration boundary for applications because it returns one of:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.1"}
+    {:spectre, "~> 0.1.2"}
   ]
 end
 ```
@@ -142,6 +142,33 @@ end
 The application still owns `MyApp.LLM`, `MyApp.SupportActions`,
 `MyApp.Embeddings`, prompt templates, durable storage, permissions, and the
 actual business operation.
+
+## Install Packages With A Stack
+
+`Spectre.Stack` resolves package manifests and configuration without a global
+capability registry:
+
+```elixir
+defmodule MyApp.AI do
+  use Spectre.Stack
+
+  install MyApp.Inference do
+    provider(:openrouter, MyApp.OpenRouter)
+    model(:fast, id: "small-model")
+  end
+end
+
+defmodule MyApp.Agent do
+  use Spectre.Agent, stack: MyApp.AI
+end
+```
+
+Package verbs are parsed only inside that package's install block. Installing
+an Action does not automatically expose or authorize it; later Flow, Work,
+Skill, and policy bindings select capabilities through logical Stack Refs.
+Runtime clients and secrets remain outside the compiled definition. See
+[Stack](docs/STACK.md) for the manifest contract, dependency validation,
+runtime supervision, and legacy adapters.
 
 ## Run And Dispatch A Turn
 
@@ -362,6 +389,8 @@ adapters on startup, and can stop after an idle timeout.
   pipeline, and prompts.
 - [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action
   requirements, prompts, policies, and complete examples.
+- [Stack](docs/STACK.md) - installable packages, immutable definitions,
+  logical references, and caller-owned runtime resources.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM

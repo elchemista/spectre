@@ -18,6 +18,7 @@ defmodule Spectre.Definition.Validator do
     :model,
     :classifier,
     :embedding,
+    :stack,
     :input_pipeline,
     :journal,
     :history,
@@ -61,6 +62,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_identity(definition),
          :ok <- validate_version(definition),
          :ok <- validate_skill_config(definition),
+         :ok <- validate_stack(definition),
          :ok <- validate_turn_handlers(definition),
          :ok <- validate_skill_router(definition),
          :ok <- validate_router(definition),
@@ -115,6 +117,16 @@ defmodule Spectre.Definition.Validator do
   end
 
   defp validate_skill_config(%Definition{}), do: :ok
+
+  @spec validate_stack(Definition.t()) :: :ok | {:error, term()}
+  defp validate_stack(%Definition{stack: nil}), do: :ok
+
+  defp validate_stack(%Definition{kind: :agent, stack: stack})
+       when is_atom(stack) and not is_nil(stack),
+       do: :ok
+
+  defp validate_stack(%Definition{stack: stack}),
+    do: {:error, {:invalid_stack, stack}}
 
   @spec validate_turn_handlers(Definition.t()) :: :ok | {:error, term()}
   defp validate_turn_handlers(%Definition{config: config}) do

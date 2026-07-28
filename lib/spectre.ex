@@ -32,6 +32,14 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
+  @version "0.1.2"
+
+  @doc """
+  Returns the running Spectre library version.
+  """
+  @spec version() :: String.t()
+  def version, do: @version
+
   @doc """
   Asks either an agent module or a supervised session to handle one turn.
 

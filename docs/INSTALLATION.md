@@ -9,7 +9,7 @@ Add Spectre to `mix.exs`:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.0"}
+    {:spectre, "~> 0.1.2"}
   ]
 end
 ```
@@ -34,6 +34,29 @@ To test unreleased changes directly from the repository:
 
 Pin a commit for production builds. Git `main` is not a compatibility promise.
 
+## Stack packages
+
+Packages that implement `Spectre.Stack.Installable` are installed explicitly:
+
+```elixir
+defmodule MyApp.AI do
+  use Spectre.Stack
+
+  install Spectre.Prism do
+    provider(:openrouter, MyApp.OpenRouter)
+    model(:fast, id: "small-model")
+  end
+end
+
+defmodule MyApp.Agent do
+  use Spectre.Agent, stack: MyApp.AI
+end
+```
+
+The package remains a normal Git dependency. Stack validates its manifest and
+compatibility while the application retains ownership of dependency pins and
+runtime credentials. See [Stack](STACK.md).
+
 ## Optional SpectreKinetic integration
 
 Spectre runs deterministic actions without SpectreKinetic. Add the companion
@@ -42,7 +65,7 @@ library when model replies use Action Language or tool planning:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.0"},
+    {:spectre, "~> 0.1.2"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic"}
   ]
 end
@@ -72,7 +95,7 @@ application that needs local embeddings:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.0"},
+    {:spectre, "~> 0.1.2"},
     {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"}
   ]
 end
