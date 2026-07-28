@@ -39,6 +39,31 @@ minor release may contain documented breaking API changes.
   journal children instead of stopping the whole `:spectre` application while
   those independent workers are being restarted.
 
+## 0.1.2 — 2026-07-28
+
+### Added
+
+- `Spectre.Stack` with package-local install DSL, immutable compiled
+  definitions, dependency ordering, compatibility/conflict validation, and
+  deterministic manifest digests.
+- Versioned `Spectre.Stack.Installable` and
+  `Spectre.Stack.Contract.V1` contracts for ecosystem packages.
+- Logical, version-fenced `Spectre.Stack.Ref` values and caller-owned runtime
+  supervision for explicitly declared resources.
+- Logical `stack:` references on Agent definitions, resolved only when the
+  Stack is used, with compile-time rejection of Skill-owned infrastructure.
+- Explicit legacy adapters for `Spectre.Extension.Mount` and
+  `Spectre.Action.Provider.Mount`.
+
+### Security and behavior guarantees
+
+- Package manifests and compiled configuration reject PID, port, reference,
+  and function values.
+- Installed Actions are not automatically exposed to the Agent planner or
+  authorized for execution.
+- Stack runtimes have no default global name, and stale resource Refs cannot
+  resolve against another definition.
+
 ## 0.1.0 — 2026-07-20
 
 First public preview.

@@ -13,6 +13,7 @@ defmodule Spectre.Action.Spec do
     :via,
     :description,
     :mode,
+    :visibility,
     :schema,
     :schema_hash,
     metadata: %{}
@@ -24,6 +25,7 @@ defmodule Spectre.Action.Spec do
           via: Spectre.Action.provider_ref(),
           description: String.t() | nil,
           mode: atom() | nil,
+          visibility: :deterministic | :planner | :both,
           schema: term(),
           schema_hash: String.t(),
           metadata: map()
@@ -43,6 +45,7 @@ defmodule Spectre.Action.Spec do
     id = attr(attrs, :id)
     description = attr(attrs, :description)
     mode = attr(attrs, :mode)
+    visibility = attr(attrs, :visibility) || :both
 
     action = Spectre.Action.new(%{name: name, via: via})
     schema_hash = hash(action.via, action.name, schema, mode)
@@ -50,6 +53,7 @@ defmodule Spectre.Action.Spec do
     validate_id!(id)
     validate_description!(description)
     validate_mode!(mode)
+    validate_visibility!(visibility)
     validate_metadata!(metadata)
     validate_schema_hash!(attr(attrs, :schema_hash), schema_hash)
 
@@ -59,6 +63,7 @@ defmodule Spectre.Action.Spec do
       via: action.via,
       description: description,
       mode: mode,
+      visibility: visibility,
       schema: schema,
       schema_hash: schema_hash,
       metadata: metadata
@@ -94,6 +99,19 @@ defmodule Spectre.Action.Spec do
   @spec validate_mode!(term()) :: :ok
   defp validate_mode!(mode) when mode in [nil, :read, :write, :destructive], do: :ok
   defp validate_mode!(mode), do: raise(ArgumentError, "invalid action mode: #{inspect(mode)}")
+
+  @doc """
+  Returns whether a spec may be exposed to a model-facing planner.
+  """
+  @spec planner_visible?(t()) :: boolean()
+  def planner_visible?(%__MODULE__{visibility: visibility}), do: visibility in [:planner, :both]
+
+  @spec validate_visibility!(term()) :: :ok
+  defp validate_visibility!(visibility) when visibility in [:deterministic, :planner, :both],
+    do: :ok
+
+  defp validate_visibility!(visibility),
+    do: raise(ArgumentError, "invalid action visibility: #{inspect(visibility)}")
 
   @spec validate_metadata!(term()) :: :ok
   defp validate_metadata!(metadata) when is_map(metadata), do: :ok

@@ -14,8 +14,8 @@ defmodule Spectre do
     * `Spectre.Router` collects route evidence and arbitrates a single route.
     * `Spectre.Runner` executes the route handler without directly performing
       protected side effects.
-    * `Spectre.ActionExecutor` is the explicit boundary for executing a pending
-      action after policy approval.
+    * `Spectre.Execution` is the explicit boundary for executing a pending
+      action or extension-owned effect after policy approval.
 
   A simple stateless call:
 
@@ -31,6 +31,14 @@ defmodule Spectre do
   alias Spectre.Input
   alias Spectre.Runtime
   alias Spectre.State
+
+  @version "0.1.2"
+
+  @doc """
+  Returns the running Spectre library version.
+  """
+  @spec version() :: String.t()
+  def version, do: @version
 
   @doc """
   Asks either an agent module or a supervised session to handle one turn.
@@ -192,8 +200,9 @@ defmodule Spectre do
   end
 
   @doc """
-  Executes the currently pending action effect through the provider mounted for
-  its `via` reference.
+  Executes the currently pending effect through its registered capability
+  boundary. Actions use their provider mount; other effect kinds use the
+  executor contributed by the owning extension.
 
       {:ok, result} = Spectre.execute(state, ctx)
       {:ok, result} = Spectre.execute(MyAgent, approved_result)

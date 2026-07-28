@@ -123,6 +123,55 @@ defmodule Spectre.Journal.Recorder do
     end
   end
 
+  @doc """
+  Records a privacy-safe operational event emitted by an optional extension.
+  """
+  @spec record_extension(module(), atom(), map(), keyword()) :: :ok | {:error, term()}
+  def record_extension(agent, event, metadata, opts)
+      when is_atom(agent) and is_atom(event) and is_map(metadata) and is_list(opts) do
+    opts =
+      case Spectre.Definition.fetch(agent) do
+        {:ok, definition} ->
+          case Keyword.fetch(definition.config, :journal) do
+            {:ok, journal} -> Keyword.put_new(opts, :journal, journal)
+            :error -> opts
+          end
+
+        {:error, _reason} ->
+          opts
+      end
+
+    case configuration(opts) do
+      :disabled ->
+        :ok
+
+      {:ok, store, config} ->
+        if event_enabled?(config, event) or event_enabled?(config, :extensions) do
+          record =
+            Record.new(%{
+              agent: agent,
+              turn_id: Keyword.get(opts, :turn_id),
+              trace_id: Keyword.get(opts, :trace_id),
+              sequence: Keyword.get(opts, :journal_sequence, 95),
+              phase: event,
+              decision: %{kind: event},
+              reason: %{code: event},
+              metadata: record_metadata(config, metadata, agent)
+            })
+
+          case deliver_value(record, store, config, :ok) do
+            {:ok, :ok} -> :ok
+            {:error, _reason} = error -> error
+          end
+        else
+          :ok
+        end
+
+      {:error, reason} ->
+        {:error, {:invalid_journal_configuration, reason}}
+    end
+  end
+
   @spec configuration(keyword()) :: :disabled | {:ok, module(), keyword()} | {:error, term()}
   defp configuration(opts) do
     with {:ok, store, config} <-
@@ -246,6 +295,8 @@ defmodule Spectre.Journal.Recorder do
        when type in [:effect_completed, :effect_failed, :effect_already_resolved],
        do: :execution
 
+  defp event_phase(:inference_completed), do: :inference
+
   defp event_phase(_type), do: :lifecycle
 
   @spec routing_record(Context.t(), keyword()) :: Record.t()
@@ -271,13 +322,19 @@ defmodule Spectre.Journal.Recorder do
           &candidate_evidence(&1, context.arbitration)
         ),
       input: recorded_input(context, config),
-      metadata: %{
-        thresholds: get_in(context.arbitration || %{}, [:thresholds]) || routing_thresholds(opts),
-        state_version: state_value(state, :state_version),
-        current_flow: state_value(state, :current_flow),
-        current_scope: state_value(state, :current_scope),
-        router_errors: context.errors |> Enum.reverse() |> Enum.map(&reason_code/1)
-      }
+      metadata:
+        record_metadata(
+          config,
+          %{
+            thresholds:
+              get_in(context.arbitration || %{}, [:thresholds]) || routing_thresholds(opts),
+            state_version: state_value(state, :state_version),
+            current_flow: state_value(state, :current_flow),
+            current_scope: state_value(state, :current_scope),
+            router_errors: context.errors |> Enum.reverse() |> Enum.map(&reason_code/1)
+          },
+          Keyword.get(opts, :spectre_agent)
+        )
     })
   end
 
@@ -302,9 +359,24 @@ defmodule Spectre.Journal.Recorder do
       effect: effect_summary(event),
       input: recorded_runtime_input(result, config),
       reply: recorded_runtime_reply(result, config),
-      metadata: record_metadata(config, %{state_version: state && state.state_version})
+      metadata:
+        record_metadata(
+          config,
+          runtime_metadata(event, %{state_version: state && state.state_version}),
+          Map.get(context, :agent)
+        )
     })
   end
+
+  @spec runtime_metadata(map(), map()) :: map()
+  defp runtime_metadata(%{type: :inference_completed} = event, metadata) do
+    Map.merge(
+      metadata,
+      Map.take(event, [:purpose, :selection, :usage, :latency_ms])
+    )
+  end
+
+  defp runtime_metadata(_event, metadata), do: metadata
 
   @spec persistence_record(Result.t(), map(), keyword()) :: Record.t()
   defp persistence_record(%Result{} = result, context, config) do
@@ -330,7 +402,11 @@ defmodule Spectre.Journal.Recorder do
         to_revision: Map.get(persistence, :revision)
       },
       metadata:
-        record_metadata(config, %{state_version: result.state && result.state.state_version})
+        record_metadata(
+          config,
+          %{state_version: result.state && result.state.state_version},
+          Map.get(context, :agent)
+        )
     })
   end
 
@@ -387,13 +463,56 @@ defmodule Spectre.Journal.Recorder do
     if Keyword.get(config, :include_reply, false), do: result.reply_text
   end
 
-  defp record_metadata(config, metadata) do
+  defp record_metadata(config, metadata, agent) do
+    metadata = put_stack_identity(metadata, agent)
+
     case Keyword.get(config, :retention) do
       nil -> metadata
       retention when is_map(retention) -> Map.put(metadata, :retention, retention)
       retention when is_list(retention) -> Map.put(metadata, :retention, Map.new(retention))
       retention -> Map.put(metadata, :retention, %{policy: retention})
     end
+  end
+
+  @spec put_stack_identity(map(), module() | nil) :: map()
+  defp put_stack_identity(metadata, agent) when is_atom(agent) and not is_nil(agent) do
+    case Spectre.Definition.fetch(agent) do
+      {:ok, %{stack: stack, stack_refs: refs}}
+      when is_atom(stack) and not is_nil(stack) and is_list(refs) ->
+        stack_identity =
+          case Spectre.Stack.Definition.fetch(stack) do
+            {:ok, definition} ->
+              %{
+                id: definition.id,
+                owner: stack,
+                digest: definition.digest,
+                installations: Enum.map(refs, &stack_installation_identity/1)
+              }
+
+            {:error, _reason} ->
+              %{
+                owner: stack,
+                installations: Enum.map(refs, &stack_installation_identity/1)
+              }
+          end
+
+        Map.put(metadata, :stack, stack_identity)
+
+      _other ->
+        metadata
+    end
+  end
+
+  defp put_stack_identity(metadata, _agent), do: metadata
+
+  @spec stack_installation_identity(Spectre.Stack.Ref.t()) :: map()
+  defp stack_installation_identity(%Spectre.Stack.Ref{} = ref) do
+    %{
+      id: ref.installation,
+      package: ref.package,
+      version: ref.version,
+      digest: ref.installation_digest
+    }
   end
 
   @spec host_state(Context.t()) :: Spectre.State.t() | nil

@@ -3,8 +3,6 @@
 Spectre is an OTP-native Elixir runtime for building agents whose routing,
 state, policies, and side effects remain explicit.
 
-[![Hex.pm](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
-[![HexDocs](https://img.shields.io/badge/hex-docs-purple.svg)](https://hexdocs.pm/spectre)
 [![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
 
 The goal is to describe the stable shape of an agent in one readable module
@@ -72,12 +70,12 @@ better integration boundary for applications because it returns one of:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.1"}
+    {:spectre, github: "elchemista/spectre"}
   ]
 end
 ```
 
-See [Installation](docs/INSTALLATION.md) for Git previews and optional
+See [Installation](docs/INSTALLATION.md) for GitHub pinning and optional
 SpectreKinetic and ExFastembed integrations.
 
 ## A Small Agent
@@ -142,6 +140,39 @@ end
 The application still owns `MyApp.LLM`, `MyApp.SupportActions`,
 `MyApp.Embeddings`, prompt templates, durable storage, permissions, and the
 actual business operation.
+
+## Install Packages With A Stack
+
+`Spectre.Stack` resolves package manifests and configuration without a global
+capability registry:
+
+```elixir
+defmodule MyApp.AI do
+  use Spectre.Stack
+
+  install MyApp.Inference do
+    provider(:openrouter, MyApp.OpenRouter)
+    model(:fast, id: "small-model")
+  end
+end
+
+defmodule MyApp.Agent do
+  use Spectre.Agent, stack: MyApp.AI
+end
+```
+
+Package verbs are parsed only inside that package's install block. When a
+package declares `agent_extensions`, selecting the Stack automatically binds
+those adapters to the Agent: installed configuration can therefore contribute
+inference selectors, memory, turn handlers, action providers, flow syntax, and
+effect executors without a second `use Package` call.
+
+Activation is not authorization. Installing an Action does not automatically
+make it planner-visible or grant permission to execute it; Flow, Work, Skill,
+and policy bindings still select and protect capabilities through logical
+Stack Refs. Runtime clients, processes, and secrets remain outside the compiled
+definition. See [Stack](docs/STACK.md) for the manifest contract, dependency
+validation, Agent binding, runtime supervision, and migration adapters.
 
 ## Run And Dispatch A Turn
 
@@ -317,12 +348,13 @@ case Spectre.Result.action_outcome(executed_result) do
 end
 ```
 
-`Spectre.execute/3` returns the terminal state; it does not silently write that
-state into an existing session. The host must durably store
+`Spectre.execute/3` dispatches `:action` through the configured Action provider
+and any other effect kind through the unique executor contributed by an
+installed Agent extension. It returns the terminal state; it does not silently
+write that state into an existing session. The host must durably store
 `executed_result.state`, or call `Spectre.reset(session, executed_result.state)`
-when using a live session. Action adapters also receive `:effect_id` and
-`:idempotency_key` in `ctx.opts` so the real side-effect boundary can deduplicate
-retries.
+when using a live session. Executors receive `:effect_id` and
+`:idempotency_key` so the real side-effect boundary can deduplicate retries.
 
 ## Conversation Sessions
 
@@ -362,6 +394,8 @@ adapters on startup, and can stop after an idle timeout.
   pipeline, and prompts.
 - [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action
   requirements, prompts, policies, and complete examples.
+- [Stack](docs/STACK.md) - installable packages, immutable definitions,
+  logical references, and caller-owned runtime resources.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM

@@ -4,6 +4,7 @@
 
 ```elixir
 use Spectre.Agent,
+  stack: MyApp.AI,
   prompt_root: "priv/agents/support/prompts",
   history: 20,
   shutdown: :timer.minutes(10)
@@ -15,6 +16,7 @@ Spectre uses `priv/spectre/prompts`.
 `use Spectre.Agent` also accepts normal config keys. The built-in ones are:
 
 - `:prompt_root`
+- `:stack`
 - `:shutdown`
 - `:history`
 - `:fail`
@@ -25,6 +27,11 @@ Spectre uses `priv/spectre/prompts`.
 Unknown keys are kept in `__spectre_config__/0`, so host applications can attach
 their own metadata. `:arbitrator` is copied into router config; the other keys
 stay in runtime config.
+
+`:stack` is a logical module reference to a `Spectre.Stack`. Defining an Agent
+does not load or validate that module; it is resolved only when the Stack is
+used. The binding does not automatically expose installed Operations or
+Actions. Skills inherit this reference and cannot configure their own Stack.
 
 ## `model`
 

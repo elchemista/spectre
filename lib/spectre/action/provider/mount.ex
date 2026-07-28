@@ -1,6 +1,10 @@
 defmodule Spectre.Action.Provider.Mount do
   @moduledoc """
   Trusted binding between a provider identifier and its implementation module.
+
+  This remains the legacy Agent-level binding while Stack packages migrate to
+  logical capability refs. It can be inspected as an immutable Stack
+  installation with `Spectre.Stack.Installation.from_provider_mount/1`.
   """
 
   defstruct [:id, :module, opts: []]

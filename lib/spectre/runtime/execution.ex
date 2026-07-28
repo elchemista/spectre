@@ -1,6 +1,6 @@
 defmodule Spectre.Execution do
   @moduledoc """
-  Pure-lifecycle execution workflow around `Spectre.ActionDispatcher`.
+  Pure-lifecycle execution workflow for action and extension-owned effects.
 
   Runtime owns the durable commits before and after this workflow; this module
   validates the effect, invokes the capability once, and applies exactly one
@@ -9,6 +9,8 @@ defmodule Spectre.Execution do
 
   alias Spectre.ActionDispatcher
   alias Spectre.Effect
+  alias Spectre.Effect.Executor, as: EffectExecutor
+  alias Spectre.EffectConfig
   alias Spectre.Lifecycle
   alias Spectre.Result
   alias Spectre.State
@@ -20,8 +22,10 @@ defmodule Spectre.Execution do
 
   The effect must belong to the Agent and scope carried by `ctx`. Unprotected
   `:pending` effects and policy-approved effects are dispatched through
-  `Spectre.ActionDispatcher`; `:waiting_policy`, terminal, unscoped, foreign,
-  and unsupported effects are rejected before any capability is invoked.
+  `Spectre.ActionDispatcher` for `:action`, or through a registered
+  `Spectre.Effect.Executor` for an extension-owned kind. `:waiting_policy`,
+  terminal, unscoped, foreign, and unsupported effects are rejected before
+  any capability is invoked.
 
   A terminal effect with the same identifier in `state.planned_effects` is
   replayed without invoking the capability again. Successful and failed
@@ -58,7 +62,7 @@ defmodule Spectre.Execution do
 
   defp dispatch_by_status(
          _state,
-         %Effect{kind: :action, status: :waiting_policy} = effect,
+         %Effect{status: :waiting_policy} = effect,
          _ctx,
          _opts
        ),
@@ -68,11 +72,20 @@ defmodule Spectre.Execution do
        when status in [:pending, :approved],
        do: execute_or_replay(state, effect, ctx, opts)
 
-  defp dispatch_by_status(_state, %Effect{kind: :action} = effect, _ctx, _opts),
-    do: {:error, {:effect_not_executable, effect.id, effect.status}}
+  defp dispatch_by_status(
+         state,
+         %Effect{kind: kind, status: status} = effect,
+         %{agent: agent} = ctx,
+         opts
+       )
+       when status in [:pending, :approved] do
+    with {:ok, _executor} <- EffectConfig.executor(agent, kind) do
+      execute_or_replay(state, effect, ctx, opts)
+    end
+  end
 
   defp dispatch_by_status(_state, %Effect{} = effect, _ctx, _opts),
-    do: {:error, {:unsupported_effect_kind, effect.kind}}
+    do: {:error, {:effect_not_executable, effect.id, effect.status}}
 
   @spec validate_effect_origin(Effect.t(), Spectre.Context.t() | map()) :: :ok | {:error, term()}
   defp validate_effect_origin(%Effect{scope: nil} = effect, _ctx),
@@ -139,7 +152,7 @@ defmodule Spectre.Execution do
 
   defp dispatch(state, effect, ctx, opts) do
     started_at = System.monotonic_time()
-    outcome = ActionDispatcher.dispatch(effect, ctx, opts)
+    outcome = dispatch_effect(effect, ctx, opts)
 
     duration =
       started_at
@@ -164,6 +177,14 @@ defmodule Spectre.Execution do
       {:error, reason} -> finish(state, effect, ctx, {:fail_effect, effect.id, reason})
     end
   end
+
+  @spec dispatch_effect(Effect.t(), Spectre.Context.t() | map(), keyword()) ::
+          {:ok, term()} | {:error, term()}
+  defp dispatch_effect(%Effect{kind: :action} = effect, ctx, opts),
+    do: ActionDispatcher.dispatch(effect, ctx, opts)
+
+  defp dispatch_effect(%Effect{} = effect, ctx, opts),
+    do: EffectExecutor.dispatch(effect, ctx, opts)
 
   defp finish(state, effect, ctx, command) do
     with {:ok, transition} <- Lifecycle.apply(state, command) do

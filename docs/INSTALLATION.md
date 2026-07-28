@@ -2,14 +2,14 @@
 
 Spectre requires Elixir `~> 1.19` and includes Vettore as a required dependency.
 
-## Hex
+## GitHub
 
 Add Spectre to `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.0"}
+    {:spectre, github: "elchemista/spectre"}
   ]
 end
 ```
@@ -24,15 +24,31 @@ mix compile
 Start with [Getting Started](GETTING_STARTED.md), then use the
 [Production Operations](PRODUCTION.md) checklist before deploying.
 
-## Git preview
+Pin a commit with `ref:` for reproducible production builds. The repository's
+default branch is not a compatibility promise.
 
-To test unreleased changes directly from the repository:
+## Stack packages
+
+Packages that implement `Spectre.Stack.Installable` are installed explicitly:
 
 ```elixir
-{:spectre, github: "elchemista/spectre", branch: "main"}
+defmodule MyApp.AI do
+  use Spectre.Stack
+
+  install Spectre.Prism do
+    provider(:openrouter, MyApp.OpenRouter)
+    model(:fast, id: "small-model")
+  end
+end
+
+defmodule MyApp.Agent do
+  use Spectre.Agent, stack: MyApp.AI
+end
 ```
 
-Pin a commit for production builds. Git `main` is not a compatibility promise.
+The package remains a normal Git dependency. Stack validates its manifest and
+compatibility while the application retains ownership of dependency pins and
+runtime credentials. See [Stack](STACK.md).
 
 ## Optional SpectreKinetic integration
 
@@ -42,7 +58,7 @@ library when model replies use Action Language or tool planning:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.0"},
+    {:spectre, github: "elchemista/spectre"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic"}
   ]
 end
@@ -72,7 +88,7 @@ application that needs local embeddings:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.0"},
+    {:spectre, github: "elchemista/spectre"},
     {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"}
   ]
 end

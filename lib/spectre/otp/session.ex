@@ -126,6 +126,12 @@ defmodule Spectre.Session do
   def state(server), do: GenServer.call(server, :state)
 
   @doc """
+  Returns the Agent module owned by a supervised session.
+  """
+  @spec agent(GenServer.server()) :: module()
+  def agent(server), do: GenServer.call(server, :agent)
+
+  @doc """
   Replaces the current in-memory state.
 
       :ok = Spectre.Session.reset(session, %Spectre.State{})
@@ -248,6 +254,7 @@ defmodule Spectre.Session do
   end
 
   def handle_call(:state, _from, data), do: {:reply, data.state, arm_idle_timer(data)}
+  def handle_call(:agent, _from, data), do: {:reply, data.agent, arm_idle_timer(data)}
 
   def handle_call({:reset, state}, _from, data) do
     data = data |> Map.merge(%{state: State.new(state), last_result: nil}) |> arm_idle_timer()

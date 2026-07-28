@@ -9,6 +9,7 @@ defmodule Spectre.Router do
   """
 
   alias Spectre.Input
+  alias Spectre.Flow.Constraint
   alias Spectre.Journal.Recorder
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
@@ -58,6 +59,7 @@ defmodule Spectre.Router do
       agent
       |> candidate_rules(state)
       |> maybe_interrupt_rules(opts)
+      |> Constraint.filter_and_order(input)
 
     labels = Enum.map(rules, & &1.label)
 

@@ -210,6 +210,7 @@ The model used for `ask` still comes from the mounting Agent.
 A Skill describes behavior; it does not create a session or establish a second
 runtime. The mounting Agent supplies:
 
+- the resolved Stack and capability bindings;
 - the router and arbitrator;
 - model, classifier, and embedding adapters;
 - the action module;
@@ -218,8 +219,8 @@ runtime. The mounting Agent supplies:
 
 Consequently, do not declare `model`, `classifier`, `embedding`, `router`,
 `actions`, `state`, `memory`, `journal`, `input_pipeline`, `history`, `idle`,
-`shutdown`, or `fail` inside a Skill. Invalid infrastructure declarations are
-rejected at compile time.
+`shutdown`, `fail`, or `stack` inside a Skill. Invalid infrastructure
+declarations are rejected at compile time.
 
 A Skill cannot mount another Skill. Compose multiple Skills at the Agent level:
 

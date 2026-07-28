@@ -6,6 +6,8 @@ defmodule Spectre.Definition.Validator do
   alias Spectre.Definition
   alias Spectre.Prompt.Operation
   alias Spectre.Skill.Mount
+  alias Spectre.Stack.Definition, as: StackDefinition
+  alias Spectre.Stack.Ref
 
   @supported_skill_versions [1]
   @skill_forbidden_config [
@@ -18,6 +20,7 @@ defmodule Spectre.Definition.Validator do
     :model,
     :classifier,
     :embedding,
+    :stack,
     :input_pipeline,
     :journal,
     :history,
@@ -61,6 +64,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_identity(definition),
          :ok <- validate_version(definition),
          :ok <- validate_skill_config(definition),
+         :ok <- validate_stack(definition),
          :ok <- validate_turn_handlers(definition),
          :ok <- validate_skill_router(definition),
          :ok <- validate_router(definition),
@@ -115,6 +119,43 @@ defmodule Spectre.Definition.Validator do
   end
 
   defp validate_skill_config(%Definition{}), do: :ok
+
+  @spec validate_stack(Definition.t()) :: :ok | {:error, term()}
+  defp validate_stack(%Definition{stack: nil, stack_refs: []}), do: :ok
+
+  defp validate_stack(%Definition{stack: nil, stack_refs: refs}),
+    do: {:error, {:stack_refs_without_stack, refs}}
+
+  defp validate_stack(%Definition{kind: :agent, stack: stack, stack_refs: refs})
+       when is_atom(stack) and not is_nil(stack) and is_list(refs) do
+    with {:ok, stack_definition} <- StackDefinition.fetch(stack),
+         :ok <- validate_stack_refs(stack_definition, refs) do
+      :ok
+    end
+  end
+
+  defp validate_stack(%Definition{stack: stack}),
+    do: {:error, {:invalid_stack, stack}}
+
+  @spec validate_stack_refs(StackDefinition.t(), [term()]) :: :ok | {:error, term()}
+  defp validate_stack_refs(stack_definition, refs) do
+    expected =
+      Enum.map(stack_definition.installations, fn installation ->
+        {:ok, ref} = StackDefinition.resolve(stack_definition, :package, installation.package.id)
+        ref
+      end)
+
+    cond do
+      Enum.any?(refs, &(not Ref.valid?(&1))) ->
+        {:error, {:invalid_stack_refs, refs}}
+
+      refs != expected ->
+        {:error, {:stack_binding_mismatch, refs, expected}}
+
+      true ->
+        :ok
+    end
+  end
 
   @spec validate_turn_handlers(Definition.t()) :: :ok | {:error, term()}
   defp validate_turn_handlers(%Definition{config: config}) do

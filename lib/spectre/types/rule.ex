@@ -30,6 +30,7 @@ defmodule Spectre.Rule do
     via: [],
     injections: [],
     definition_injections: [],
+    constraints: [],
     global?: false,
     opts: []
   ]
@@ -56,6 +57,7 @@ defmodule Spectre.Rule do
           via: [atom()],
           injections: [Spectre.Prompt.Operation.t()],
           definition_injections: [Spectre.Prompt.Operation.t()],
+          constraints: [Spectre.Flow.Constraint.t()],
           global?: boolean(),
           opts: keyword()
         }

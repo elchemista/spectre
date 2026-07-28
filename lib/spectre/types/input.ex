@@ -11,9 +11,16 @@ defmodule Spectre.Input do
       input = Spectre.Input.put_meta(input, :channel, :web)
   """
 
-  defstruct text: "", meta: %{}, raw: nil
+  alias Spectre.Input.Source
 
-  @type t :: %__MODULE__{text: String.t(), meta: map(), raw: term()}
+  defstruct text: "", meta: %{}, raw: nil, source: nil
+
+  @type t :: %__MODULE__{
+          text: String.t(),
+          meta: map(),
+          raw: term(),
+          source: Source.t() | nil
+        }
 
   @doc """
   Normalizes raw inbound input into a Spectre input struct.
@@ -30,7 +37,8 @@ defmodule Spectre.Input do
     %__MODULE__{
       text: text,
       meta: Map.get(input, :meta, Map.get(input, "meta", %{})),
-      raw: input
+      raw: input,
+      source: normalize_source(Map.get(input, :source, Map.get(input, "source")))
     }
   end
 
@@ -38,7 +46,8 @@ defmodule Spectre.Input do
     %__MODULE__{
       text: text,
       meta: Map.get(input, "meta", %{}),
-      raw: input
+      raw: input,
+      source: normalize_source(Map.get(input, "source"))
     }
   end
 
@@ -95,4 +104,8 @@ defmodule Spectre.Input do
   end
 
   defp normalize_key(key), do: key
+
+  @spec normalize_source(Source.t() | map() | keyword() | nil) :: Source.t() | nil
+  defp normalize_source(nil), do: nil
+  defp normalize_source(source), do: Source.new(source)
 end

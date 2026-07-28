@@ -12,6 +12,12 @@ execution, and persistence boundaries. All phases share stable turn/trace
 identities and exclude conversation content, effect arguments, action results,
 and provider errors by default.
 
+For a Stack-bound Agent, every record also carries authoritative deployment
+identity: Stack id, owner and digest plus each installation's id, package
+version, and digest. This lets an audit correlate behavior with the exact
+installed implementation without copying package configuration, secrets,
+clients, PIDs, connections, or other runtime handles.
+
 ## Configure A Store
 
 Declare a store on an agent:

@@ -9,6 +9,23 @@ struct fields, DSL forms, and adapter callbacks follow semantic versioning.
 Modules with `@moduledoc false`, undocumented generated functions, and private
 runtime data are implementation details.
 
+## Stack installation
+
+`Spectre.Stack` is the compile-time package boundary. A Stack definition is
+immutable and can resolve version-fenced `Spectre.Stack.Ref` values without
+starting a provider. `use Spectre.Agent, stack: ...` records the selected Stack
+and automatically registers every adapter listed in an installed package's
+`agent_extensions` manifest field. Those adapters may contribute Agent
+configuration, flow constraints and handlers, inference or action selection,
+memory, turn handlers, providers, and effect executors.
+
+This binding activates package behavior; it does not authorize every installed
+Operation or Action. Capability visibility and policy remain explicit.
+
+Use `Spectre.Stack.Runtime` only for explicitly started, caller-owned package
+resources. PID, connections, clients, and secrets never belong in
+`Spectre.Stack.Definition`.
+
 ## Choose the right turn API
 
 | Need | API | Result |
