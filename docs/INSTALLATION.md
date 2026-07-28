@@ -2,14 +2,14 @@
 
 Spectre requires Elixir `~> 1.19` and includes Vettore as a required dependency.
 
-## Hex
+## GitHub
 
 Add Spectre to `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.2"}
+    {:spectre, github: "elchemista/spectre"}
   ]
 end
 ```
@@ -24,15 +24,8 @@ mix compile
 Start with [Getting Started](GETTING_STARTED.md), then use the
 [Production Operations](PRODUCTION.md) checklist before deploying.
 
-## Git preview
-
-To test unreleased changes directly from the repository:
-
-```elixir
-{:spectre, github: "elchemista/spectre", branch: "main"}
-```
-
-Pin a commit for production builds. Git `main` is not a compatibility promise.
+Pin a commit with `ref:` for reproducible production builds. The repository's
+default branch is not a compatibility promise.
 
 ## Stack packages
 
@@ -65,7 +58,7 @@ library when model replies use Action Language or tool planning:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.2"},
+    {:spectre, github: "elchemista/spectre"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic"}
   ]
 end
@@ -95,7 +88,7 @@ application that needs local embeddings:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.2"},
+    {:spectre, github: "elchemista/spectre"},
     {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"}
   ]
 end

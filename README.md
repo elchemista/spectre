@@ -3,8 +3,6 @@
 Spectre is an OTP-native Elixir runtime for building agents whose routing,
 state, policies, and side effects remain explicit.
 
-[![Hex.pm](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
-[![HexDocs](https://img.shields.io/badge/hex-docs-purple.svg)](https://hexdocs.pm/spectre)
 [![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
 
 The goal is to describe the stable shape of an agent in one readable module
@@ -72,12 +70,12 @@ better integration boundary for applications because it returns one of:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.1.2"}
+    {:spectre, github: "elchemista/spectre"}
   ]
 end
 ```
 
-See [Installation](docs/INSTALLATION.md) for Git previews and optional
+See [Installation](docs/INSTALLATION.md) for GitHub pinning and optional
 SpectreKinetic and ExFastembed integrations.
 
 ## A Small Agent
