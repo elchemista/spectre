@@ -161,12 +161,18 @@ defmodule MyApp.Agent do
 end
 ```
 
-Package verbs are parsed only inside that package's install block. Installing
-an Action does not automatically expose or authorize it; later Flow, Work,
-Skill, and policy bindings select capabilities through logical Stack Refs.
-Runtime clients and secrets remain outside the compiled definition. See
-[Stack](docs/STACK.md) for the manifest contract, dependency validation,
-runtime supervision, and legacy adapters.
+Package verbs are parsed only inside that package's install block. When a
+package declares `agent_extensions`, selecting the Stack automatically binds
+those adapters to the Agent: installed configuration can therefore contribute
+inference selectors, memory, turn handlers, action providers, flow syntax, and
+effect executors without a second `use Package` call.
+
+Activation is not authorization. Installing an Action does not automatically
+make it planner-visible or grant permission to execute it; Flow, Work, Skill,
+and policy bindings still select and protect capabilities through logical
+Stack Refs. Runtime clients, processes, and secrets remain outside the compiled
+definition. See [Stack](docs/STACK.md) for the manifest contract, dependency
+validation, Agent binding, runtime supervision, and migration adapters.
 
 ## Run And Dispatch A Turn
 
@@ -342,12 +348,13 @@ case Spectre.Result.action_outcome(executed_result) do
 end
 ```
 
-`Spectre.execute/3` returns the terminal state; it does not silently write that
-state into an existing session. The host must durably store
+`Spectre.execute/3` dispatches `:action` through the configured Action provider
+and any other effect kind through the unique executor contributed by an
+installed Agent extension. It returns the terminal state; it does not silently
+write that state into an existing session. The host must durably store
 `executed_result.state`, or call `Spectre.reset(session, executed_result.state)`
-when using a live session. Action adapters also receive `:effect_id` and
-`:idempotency_key` in `ctx.opts` so the real side-effect boundary can deduplicate
-retries.
+when using a live session. Executors receive `:effect_id` and
+`:idempotency_key` so the real side-effect boundary can deduplicate retries.
 
 ## Conversation Sessions
 

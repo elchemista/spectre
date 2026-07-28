@@ -31,9 +31,15 @@ defmodule MyApp.Agent do
 end
 ```
 
-The compiled Agent stores the Stack module as a logical reference. It does not
-copy runtime clients, credentials, processes, or connections into the Agent
-definition.
+The compiled Agent stores the Stack module and immutable, digest-fenced
+installation references. For each package that declares `agent_extensions`,
+the Agent automatically registers the corresponding adapter with that
+package's compiled Stack configuration. A package can therefore activate its
+selector, memory adapter, turn handler, action provider, flow handler, or
+effect executor without asking the application to repeat `use Package`.
+
+It does not copy runtime clients, credentials, processes, or connections into
+the Agent definition.
 
 ## Installed Does Not Mean Authorized
 
@@ -43,12 +49,13 @@ Binding and policy remain separate:
 
 - package manifests declare capabilities;
 - Stack validates ownership and returns closed `Spectre.Stack.Ref` values;
+- package-declared Agent extensions activate the installed implementation;
 - a later Flow, Work, Skill, or policy binding selects which Refs are usable;
-- existing `actions/2`, `action_provider/3`, and Extension mounts retain their
-  legacy behavior during migration.
+- policy and the host still decide whether a staged effect may execute.
 
-Consequently, installing an Action package alone does not add its provider to
-`Spectre.ActionConfig`.
+An installed package may intentionally contribute an Action provider, but that
+does not make every operation planner-visible or bypass protection and host
+authorization.
 
 ## Installable Contract V1
 
@@ -64,6 +71,7 @@ defmodule MyApp.Inference do
     provides: [{:service, :inference}],
     operations: [{:inference, :complete}],
     resources: [:client],
+    agent_extensions: [MyApp.Inference.Extension],
     dsl: __MODULE__
 
   alias Spectre.Stack.DSL
@@ -85,6 +93,7 @@ The manifest fields are:
 - conflicts;
 - namespaced Operation and canonical `{provider, action}` refs;
 - runtime resource identifiers;
+- Agent extensions that adapt the installation into executable Agent behavior;
 - the optional package-local DSL module and portable metadata.
 
 `compile/3` is optional. Its result must be a map or keyword list containing
@@ -157,6 +166,13 @@ The runtime has no default registered name. Child identifiers are fenced by
 the Stack, Installation, package version, and digests, so stale Refs do not
 resolve. Existing core application children are not yet claimed to be
 per-Stack; their migration belongs to the Agent Instance and runtime phases.
+
+## Journal identity
+
+When a Journal recorder is configured, routing, runtime, persistence, and
+extension records include the authoritative Stack id, owner, digest, and the
+id/version/digest of every installation. Package configuration, credentials,
+PIDs, connections, and runtime handles are never copied into Journal metadata.
 
 ## Legacy Adapters
 

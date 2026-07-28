@@ -14,6 +14,9 @@ defmodule Spectre.Runner do
   alias Spectre.ActionProtection
   alias Spectre.Effect
   alias Spectre.Input
+  alias Spectre.Inference
+  alias Spectre.Inference.Request
+  alias Spectre.Inference.Response
   alias Spectre.Prompt
   alias Spectre.Prompt.Plan
   alias Spectre.Provider.Call
@@ -75,11 +78,24 @@ defmodule Spectre.Runner do
 
     with {:ok, %Plan{} = plan} <-
            Prompt.build(ctx.agent, prompt, ctx, prompt_opts),
-         {:ok, reply} <- Spectre.LLM.complete(plan, prompt_opts),
-         :ok <- validate_model_reply_size(reply, prompt_opts),
+         request_opts <-
+           Keyword.put(
+             prompt_opts,
+             :explicit_model_override?,
+             Keyword.has_key?(opts, :model)
+           ),
+         request <- Request.for_response(plan, ctx, request_opts),
+         {:ok, %Response{} = response} <- Inference.complete(ctx.agent, request, ctx),
+         :ok <- validate_model_reply_size(response.text, prompt_opts),
          {:ok, %Result{} = result} <-
-           ask_result(reply, input, ctx, prompt_opts, Keyword.get(opts, :policy_prompt?)) do
-      {:ok, put_prompt_metadata(result, plan)}
+           ask_result(
+             response.text,
+             input,
+             ctx,
+             prompt_opts,
+             Keyword.get(opts, :policy_prompt?)
+           ) do
+      {:ok, put_inference_metadata(result, plan, request, response)}
     end
   end
 
@@ -106,6 +122,49 @@ defmodule Spectre.Runner do
     %{result | metadata: metadata}
   end
 
+  @spec put_inference_metadata(Result.t(), Plan.t(), Request.t(), Response.t()) :: Result.t()
+  defp put_inference_metadata(%Result{} = result, %Plan{} = plan, request, response) do
+    selection = selection_summary(response.selection)
+
+    inference = %{
+      request_id: request.id,
+      purpose: request.purpose,
+      selection: selection,
+      usage: response.usage,
+      latency_ms: response.latency_ms,
+      provider_request_id: response.provider_request_id
+    }
+
+    event = %{
+      type: :inference_completed,
+      purpose: request.purpose,
+      selection: selection,
+      usage: response.usage,
+      latency_ms: response.latency_ms
+    }
+
+    result
+    |> put_prompt_metadata(plan)
+    |> then(fn result ->
+      %{result | metadata: Map.put(result.metadata, :inference, inference)}
+    end)
+    |> then(fn result -> %{result | events: result.events ++ [event]} end)
+  end
+
+  @spec selection_summary(Spectre.Inference.Selection.t()) :: map()
+  defp selection_summary(selection) do
+    Map.take(selection, [
+      :request_id,
+      :level,
+      :reason,
+      :selector,
+      :profile_hash,
+      :fallback_chain,
+      :attempt,
+      :metadata
+    ])
+  end
+
   @doc """
   Calls an agent-local function declared through a `run` handler.
 
@@ -126,11 +185,13 @@ defmodule Spectre.Runner do
   @spec call_run_function(module(), atom(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
   defp call_run_function(owner, function, input, ctx) do
+    loaded? = is_atom(owner) and not is_nil(owner) and Code.ensure_loaded?(owner)
+
     cond do
-      function_exported?(owner, function, 2) ->
+      loaded? and function_exported?(owner, function, 2) ->
         protected_run(fn -> apply(owner, function, [input, ctx]) end, input, ctx)
 
-      function_exported?(owner, function, 1) ->
+      loaded? and function_exported?(owner, function, 1) ->
         protected_run(fn -> apply(owner, function, [input]) end, input, ctx)
 
       true ->

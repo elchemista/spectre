@@ -41,6 +41,7 @@ defmodule Spectre.Provider.Call do
     semantic_cache: 30_000,
     prompt: 10_000,
     action: 60_000,
+    effect: 60_000,
     state: 10_000,
     memory: 10_000,
     journal: 10_000,
@@ -313,6 +314,7 @@ defmodule Spectre.Provider.Call do
   defp timeout_keys(:semantic_cache), do: [:semantic_cache_timeout, :provider_timeout]
   defp timeout_keys(:prompt), do: [:prompt_timeout, :provider_timeout]
   defp timeout_keys(:action), do: [:action_timeout, :tool_timeout, :provider_timeout]
+  defp timeout_keys(:effect), do: [:effect_timeout, :provider_timeout]
   defp timeout_keys(:state), do: [:state_timeout, :provider_timeout]
   defp timeout_keys(:memory), do: [:memory_timeout, :provider_timeout]
   defp timeout_keys(:journal), do: [:journal_timeout, :provider_timeout]

@@ -83,6 +83,7 @@ defmodule Spectre.Agent do
 
   alias Spectre.Definition
   alias Spectre.Definition.Validator
+  alias Spectre.Extension
   alias Spectre.Prompt.Operation
   alias Spectre.Skill.Mount
 
@@ -112,64 +113,47 @@ defmodule Spectre.Agent do
       raise ArgumentError, "Skills inherit the Agent router and cannot configure :arbitrator"
     end
 
-    quote bind_quoted: [
-            config: config,
-            router: router,
-            kind: kind,
-            definition_id: id,
-            definition_version: version
-          ] do
+    setup_module!(__CALLER__.module, config, router, kind, id, version)
+
+    quote do
       import Spectre.Agent
-
-      # Metadata is accumulated at compile time so runtime routing can inspect
-      # a compact immutable description instead of re-evaluating DSL blocks.
-      Module.register_attribute(__MODULE__, :spectre_config, persist: false)
-      Module.register_attribute(__MODULE__, :spectre_rules, accumulate: true, persist: false)
-      Module.register_attribute(__MODULE__, :spectre_policies, accumulate: true, persist: false)
-
-      Module.register_attribute(__MODULE__, :spectre_after_actions,
-        accumulate: true,
-        persist: false
-      )
-
-      Module.register_attribute(__MODULE__, :spectre_protections,
-        accumulate: true,
-        persist: false
-      )
-
-      Module.register_attribute(__MODULE__, :spectre_router, persist: false)
-
-      Module.register_attribute(__MODULE__, :spectre_injections,
-        accumulate: true,
-        persist: false
-      )
-
-      Module.register_attribute(__MODULE__, :spectre_skills,
-        accumulate: true,
-        persist: false
-      )
-
-      Module.register_attribute(__MODULE__, :spectre_requirements,
-        accumulate: true,
-        persist: false
-      )
-
-      Module.register_attribute(__MODULE__, :spectre_extensions,
-        accumulate: true,
-        persist: false
-      )
-
-      Module.register_attribute(__MODULE__, :spectre_kind, persist: false)
-      Module.register_attribute(__MODULE__, :spectre_definition_id, persist: false)
-      Module.register_attribute(__MODULE__, :spectre_definition_version, persist: false)
-
-      @spectre_config config
-      @spectre_router router
-      @spectre_kind kind
-      @spectre_definition_id definition_id
-      @spectre_definition_version definition_version
       @before_compile Spectre.Agent
     end
+  end
+
+  @spec setup_module!(module(), keyword(), keyword(), atom(), term(), pos_integer()) :: :ok
+  defp setup_module!(module, config, router, kind, definition_id, definition_version) do
+    # Register eagerly while `use Spectre.Agent` expands. Stack extensions are
+    # then visible to Flow handler parsing in the same module, while Agent
+    # remains the only owner of the eventual before-compile pass.
+    Module.register_attribute(module, :spectre_config, persist: false)
+    Module.register_attribute(module, :spectre_rules, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_policies, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_after_actions, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_protections, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_router, persist: false)
+    Module.register_attribute(module, :spectre_injections, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_skills, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_requirements, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_extensions, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_stack_refs, persist: false)
+    Module.register_attribute(module, :spectre_kind, persist: false)
+    Module.register_attribute(module, :spectre_definition_id, persist: false)
+    Module.register_attribute(module, :spectre_definition_version, persist: false)
+
+    Module.put_attribute(module, :spectre_config, config)
+    Module.put_attribute(module, :spectre_router, router)
+    Module.put_attribute(module, :spectre_kind, kind)
+    Module.put_attribute(module, :spectre_definition_id, definition_id)
+    Module.put_attribute(module, :spectre_definition_version, definition_version)
+
+    if kind == :agent do
+      Spectre.Stack.Binding.setup_agent!(module, Keyword.get(config, :stack))
+    else
+      Module.put_attribute(module, :spectre_stack_refs, [])
+    end
+
+    :ok
   end
 
   @doc """
@@ -741,7 +725,23 @@ defmodule Spectre.Agent do
       end
   """
   defmacro flow(name, do: block) do
-    rules = parse_flow_rules(name, block, __CALLER__)
+    rules = parse_flow_rules(name, [], block, __CALLER__)
+
+    quote do
+      unquote(Macro.escape(rules))
+      |> Enum.each(&Module.put_attribute(__MODULE__, :spectre_rules, &1))
+    end
+  end
+
+  @doc """
+  Declares a flow with extension-owned namespaced options.
+
+  Mounted extensions consume their own options during the Agent's single
+  compile pass. Unknown or unconsumed options fail compilation.
+  """
+  defmacro flow(name, opts, do: block) do
+    opts = eval_opts(opts, __CALLER__)
+    rules = parse_flow_rules(name, opts, block, __CALLER__)
 
     quote do
       unquote(Macro.escape(rules))
@@ -903,6 +903,9 @@ defmodule Spectre.Agent do
       def __spectre_extensions__, do: unquote(Macro.escape(metadata.extensions))
 
       @doc false
+      def __spectre_stack_refs__, do: unquote(Macro.escape(metadata.stack_refs))
+
+      @doc false
       def __spectre_prompt_root__ do
         Keyword.get(__spectre_config__(), :prompt_root, "priv/spectre/prompts")
       end
@@ -911,17 +914,33 @@ defmodule Spectre.Agent do
 
   @spec compile_metadata(module()) :: map()
   defp compile_metadata(module) do
+    extensions =
+      module
+      |> Module.get_attribute(:spectre_extensions)
+      |> reverse_attribute()
+      |> then(&Extension.compile_all!(module, &1))
+
+    rules =
+      module
+      |> Module.get_attribute(:spectre_rules)
+      |> Enum.reverse()
+      |> Enum.map(&compile_rule_constraints!(&1, extensions))
+
+    base_config = Module.get_attribute(module, :spectre_config) || []
+    config = Extension.merge_agent_config(base_config, extensions)
+
     %{
-      config: Module.get_attribute(module, :spectre_config) || [],
+      config: config,
       router: Module.get_attribute(module, :spectre_router) || [],
-      rules: module |> Module.get_attribute(:spectre_rules) |> Enum.reverse(),
+      rules: rules,
       policies: module |> Module.get_attribute(:spectre_policies) |> policy_map(),
       after_actions: Module.get_attribute(module, :spectre_after_actions) || [],
       protections: Module.get_attribute(module, :spectre_protections) || [],
       injections: module |> Module.get_attribute(:spectre_injections) |> reverse_attribute(),
       skills: module |> Module.get_attribute(:spectre_skills) |> reverse_attribute(),
       requirements: module |> Module.get_attribute(:spectre_requirements) |> reverse_attribute(),
-      extensions: module |> Module.get_attribute(:spectre_extensions) |> reverse_attribute(),
+      extensions: extensions,
+      stack_refs: Module.get_attribute(module, :spectre_stack_refs) || [],
       kind: Module.get_attribute(module, :spectre_kind) || :agent,
       id: Module.get_attribute(module, :spectre_definition_id) || module,
       version: Module.get_attribute(module, :spectre_definition_version) || 1
@@ -946,6 +965,7 @@ defmodule Spectre.Agent do
       requirements: metadata.requirements,
       skills: metadata.skills,
       extensions: metadata.extensions,
+      stack_refs: metadata.stack_refs,
       stack: Keyword.get(metadata.config, :stack)
     }
     |> Definition.new()
@@ -1056,8 +1076,27 @@ defmodule Spectre.Agent do
     end
   end
 
-  @spec parse_flow_rules(atom(), Macro.t(), Macro.Env.t()) :: [map()]
-  defp parse_flow_rules(flow, block, caller) do
+  @spec compile_rule_constraints!(map(), [Spectre.Extension.Mount.t()]) :: map()
+  defp compile_rule_constraints!(rule, extensions) do
+    {constraints, remaining} =
+      rule
+      |> Map.get(:flow_opts, [])
+      |> Extension.flow_constraints(extensions)
+
+    case remaining do
+      [] ->
+        rule
+        |> Map.delete(:flow_opts)
+        |> Map.put(:constraints, constraints)
+
+      unknown ->
+        raise ArgumentError,
+              "unknown flow options for #{inspect(rule.flow)}: #{inspect(Keyword.keys(unknown))}"
+    end
+  end
+
+  @spec parse_flow_rules(atom(), keyword(), Macro.t(), Macro.Env.t()) :: [map()]
+  defp parse_flow_rules(flow, flow_opts, block, caller) do
     {injection_calls, rule_calls} =
       block
       |> calls()
@@ -1072,11 +1111,13 @@ defmodule Spectre.Agent do
         label
         |> build_rule(flow, opts, block, caller, global?: false)
         |> Map.put(:injections, injections)
+        |> Map.put(:flow_opts, flow_opts)
 
       {:on, _meta, [label, opts, [do: block]]} ->
         label
         |> build_rule(flow, opts, block, caller, global?: false)
         |> Map.put(:injections, injections)
+        |> Map.put(:flow_opts, flow_opts)
 
       other ->
         raise ArgumentError, "invalid flow declaration: #{Macro.to_string(other)}"
@@ -1240,8 +1281,25 @@ defmodule Spectre.Agent do
 
   defp parse_handler({:__block__, _meta, [one]}, caller), do: parse_handler(one, caller)
 
-  defp parse_handler(other, _caller) do
-    raise ArgumentError, "expected ask/run/reply/action handler, got: #{Macro.to_string(other)}"
+  defp parse_handler(other, caller) do
+    case Extension.expand_handler(caller.module, other, caller) do
+      {:ok, expanded} when expanded != other ->
+        parse_handler(expanded, caller)
+
+      {:ok, ^other} ->
+        raise ArgumentError,
+              "Spectre extension returned the unchanged handler: #{Macro.to_string(other)}"
+
+      :ignore ->
+        case Macro.expand_once(other, caller) do
+          ^other ->
+            raise ArgumentError,
+                  "expected ask/run/reply/action handler, got: #{Macro.to_string(other)}"
+
+          expanded ->
+            parse_handler(expanded, caller)
+        end
+    end
   end
 
   @spec reject_training_opts!(keyword()) :: :ok

@@ -22,15 +22,18 @@ defmodule Spectre.Action.Provider do
   @doc """
   Returns normalized discovery specs for a mounted provider.
   """
-  @spec actions(Mount.t()) :: {:ok, [Spec.t()]} | {:error, term()}
-  def actions(%Mount{} = mount) do
+  @spec actions(Mount.t(), :planner | :all) :: {:ok, [Spec.t()]} | {:error, term()}
+  def actions(%Mount{} = mount, visibility \\ :planner) do
     cond do
       not Code.ensure_loaded?(mount.module) ->
         {:error, {:action_provider_not_loaded, mount.id, mount.module}}
 
       function_exported?(mount.module, :actions, 1) ->
         module = mount.module
-        normalize_specs(module.actions(provider_opts(mount)), mount)
+
+        with {:ok, specs} <- normalize_specs(module.actions(provider_opts(mount)), mount) do
+          {:ok, filter_visibility(specs, visibility)}
+        end
 
       true ->
         {:ok, []}
@@ -96,7 +99,7 @@ defmodule Spectre.Action.Provider do
 
   @spec current_spec_hash(Mount.t(), Action.t()) :: String.t() | nil | {:error, term()}
   defp current_spec_hash(%Mount{} = mount, %Action{} = action) do
-    case actions(mount) do
+    case actions(mount, :all) do
       {:ok, specs} ->
         hashes =
           specs
@@ -166,6 +169,13 @@ defmodule Spectre.Action.Provider do
 
   defp normalize_specs(other, %Mount{} = mount),
     do: {:error, {:invalid_action_specs, mount.id, other}}
+
+  @spec filter_visibility([Spec.t()], :planner | :all) :: [Spec.t()]
+  defp filter_visibility(specs, :all), do: specs
+  defp filter_visibility(specs, :planner), do: Enum.filter(specs, &Spec.planner_visible?/1)
+
+  defp filter_visibility(_specs, other),
+    do: raise(ArgumentError, "invalid action visibility filter: #{inspect(other)}")
 
   @spec provider_opts(Mount.t()) :: keyword()
   defp provider_opts(%Mount{} = mount),

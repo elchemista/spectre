@@ -20,6 +20,7 @@ defmodule Spectre.Stack.Package do
             operations: [],
             actions: [],
             resources: [],
+            agent_extensions: [],
             dsl: nil,
             metadata: %{},
             digest: nil
@@ -36,6 +37,7 @@ defmodule Spectre.Stack.Package do
           operations: [term()],
           actions: [term()],
           resources: [term()],
+          agent_extensions: [module()],
           dsl: module() | nil,
           metadata: map(),
           digest: String.t() | nil
@@ -91,6 +93,7 @@ defmodule Spectre.Stack.Package do
     validate_list!(package.operations, :operations)
     validate_list!(package.actions, :actions)
     validate_list!(package.resources, :resources)
+    validate_agent_extensions!(package.agent_extensions)
     validate_dsl!(package.dsl)
 
     unless is_map(package.metadata),
@@ -174,6 +177,30 @@ defmodule Spectre.Stack.Package do
 
   defp validate_dsl!(dsl),
     do: raise(ArgumentError, "package dsl must be a module or nil, got: #{inspect(dsl)}")
+
+  @spec validate_agent_extensions!(term()) :: :ok
+  defp validate_agent_extensions!(extensions) when is_list(extensions) do
+    case Enum.find(extensions, &(not is_atom(&1) or is_nil(&1))) do
+      nil ->
+        case duplicate(extensions) do
+          nil ->
+            :ok
+
+          module ->
+            raise ArgumentError,
+                  "duplicate package agent_extensions entry: #{inspect(module)}"
+        end
+
+      invalid ->
+        raise ArgumentError,
+              "package agent_extensions entries must be modules, got: #{inspect(invalid)}"
+    end
+  end
+
+  defp validate_agent_extensions!(extensions) do
+    raise ArgumentError,
+          "package agent_extensions must be a list, got: #{inspect(extensions)}"
+  end
 
   @spec duplicate([term()]) :: term() | nil
   defp duplicate(values) do

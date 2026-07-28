@@ -17,8 +17,10 @@ defmodule Spectre.LLM do
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
 
-  @callback complete(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  @callback complete_plan(Plan.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @callback complete(String.t(), keyword()) ::
+              {:ok, String.t() | Spectre.Inference.Response.t()} | {:error, term()}
+  @callback complete_plan(Plan.t(), keyword()) ::
+              {:ok, String.t() | Spectre.Inference.Response.t()} | {:error, term()}
 
   @optional_callbacks complete_plan: 2
 
@@ -38,6 +40,21 @@ defmodule Spectre.LLM do
     prompt
     |> do_complete(opts)
     |> maybe_fallback(prompt, opts)
+  end
+
+  @doc """
+  Executes exactly one configured model without applying the legacy fallback.
+
+  `Spectre.Inference` uses this primitive so one boundary owns retry and
+  profile fallback decisions.
+  """
+  @spec complete_once(prompt(), keyword()) ::
+          {:ok, String.t() | Spectre.Inference.Response.t() | map()} | {:error, term()}
+  def complete_once(prompt, opts \\ [])
+
+  def complete_once(prompt, opts)
+      when (is_binary(prompt) or is_struct(prompt, Plan)) and is_list(opts) do
+    do_complete(prompt, opts)
   end
 
   @spec do_complete(prompt(), keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -107,7 +124,8 @@ defmodule Spectre.LLM do
     protected_call(model, prompt, Keyword.delete(opts, :model))
   end
 
-  @spec protected_call(term(), prompt(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @spec protected_call(term(), prompt(), keyword()) ::
+          {:ok, String.t() | Spectre.Inference.Response.t() | map()} | {:error, term()}
   defp protected_call(model, prompt, opts) do
     adapter_opts = Call.adapter_opts(opts)
 
@@ -117,12 +135,16 @@ defmodule Spectre.LLM do
            opts
          ) do
       {:ok, text} when is_binary(text) -> {:ok, text}
+      {:ok, %Spectre.Inference.Response{}} = response -> response
+      {:ok, %{text: text}} = response when is_binary(text) -> response
       {:error, _reason} = error -> error
     end
   end
 
   @spec normalize_model_reply(term()) :: {:ok, String.t()} | {:error, term()} | term()
   defp normalize_model_reply({:ok, text} = reply) when is_binary(text), do: reply
+  defp normalize_model_reply({:ok, %Spectre.Inference.Response{}} = reply), do: reply
+  defp normalize_model_reply({:ok, %{text: text}} = reply) when is_binary(text), do: reply
 
   defp normalize_model_reply({:ok, other}),
     do: {:error, Failure.invalid_reply(:llm, other)}

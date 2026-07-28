@@ -81,8 +81,9 @@ same turn decisions.
 | Prompt trust and composition | `Spectre.Prompt.Plan` |
 | Provider isolation and deadlines | `Spectre.Provider.Call` |
 | Optional ownership of a complete normal turn | `Spectre.Turn.Handler` |
-| Capability invocation | `Spectre.ActionDispatcher` |
-| Action terminal transition | `Spectre.Execution` |
+| Action capability invocation | `Spectre.ActionDispatcher` |
+| Extension-owned effect invocation | `Spectre.Effect.Executor` |
+| Effect terminal transition | `Spectre.Execution` |
 | Durable storage and authorization | host application |
 
 No model adapter, classifier, router plug, or action module should mutate
@@ -160,7 +161,8 @@ infrastructure:
 - semantic-cache adapters through `Spectre.Router.SemanticCache`;
 - external conversation owners through ordered `Spectre.Turn.Handler`
   adapters;
-- action registries and optional SpectreKinetic planning.
+- action registries and optional SpectreKinetic planning;
+- package-scoped effect executors through `Spectre.Extension`.
 
 All provider-style callbacks execute behind documented failure and timeout
 boundaries. See [Provider Resilience](PROVIDERS.md).

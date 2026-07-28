@@ -13,8 +13,14 @@ runtime data are implementation details.
 
 `Spectre.Stack` is the compile-time package boundary. A Stack definition is
 immutable and can resolve version-fenced `Spectre.Stack.Ref` values without
-starting a provider or exposing it to an Agent. `use Spectre.Agent, stack: ...`
-records the selected Stack; it does not authorize every installed capability.
+starting a provider. `use Spectre.Agent, stack: ...` records the selected Stack
+and automatically registers every adapter listed in an installed package's
+`agent_extensions` manifest field. Those adapters may contribute Agent
+configuration, flow constraints and handlers, inference or action selection,
+memory, turn handlers, providers, and effect executors.
+
+This binding activates package behavior; it does not authorize every installed
+Operation or Action. Capability visibility and policy remain explicit.
 
 Use `Spectre.Stack.Runtime` only for explicitly started, caller-owned package
 resources. PID, connections, clients, and secrets never belong in

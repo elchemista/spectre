@@ -280,12 +280,16 @@ defmodule Spectre.Runtime do
           {:ok, Keyword.get(opts, :memory)}
 
         is_atom(memory_module) && function_exported?(memory_module, :recall, 2) ->
+          memory_opts =
+            opts
+            |> Keyword.put(:state, state)
+            |> Keyword.put(:input, input)
+            |> Keyword.put(:agent, agent)
+
           Call.run(
             :memory,
             fn ->
-              normalize_provider_reply(
-                memory_module.recall(input.text, state: state, input: input)
-              )
+              normalize_provider_reply(memory_module.recall(input.text, memory_opts))
             end,
             Keyword.put(opts, :purpose, :memory_recall)
           )
@@ -830,6 +834,9 @@ defmodule Spectre.Runtime do
     |> maybe_put_config(config, :monitor_timeout)
     |> maybe_put_config(config, :callback_timeout)
     |> maybe_put_config(config, :turn_handler_timeout)
+    |> maybe_put_config(config, :effect_timeout)
+    |> maybe_put_config(config, :effect_payload_max_bytes)
+    |> maybe_put_config(config, :effect_result_max_bytes)
     |> maybe_put_config(config, :input_max_bytes)
     |> maybe_put_config(config, :memory_max_bytes)
     |> maybe_put_config(config, :memory_persist_max_bytes)

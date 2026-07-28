@@ -10,6 +10,7 @@ defmodule Spectre.Definition do
 
   alias Spectre.Extension.Mount, as: ExtensionMount
   alias Spectre.Skill.Mount
+  alias Spectre.Stack.Ref
 
   @version 1
 
@@ -18,6 +19,7 @@ defmodule Spectre.Definition do
             version: @version,
             owner: nil,
             stack: nil,
+            stack_refs: [],
             prompt_root: "priv/spectre/prompts",
             config: [],
             router: [],
@@ -39,6 +41,7 @@ defmodule Spectre.Definition do
           version: pos_integer(),
           owner: module(),
           stack: module() | nil,
+          stack_refs: [Ref.t()],
           prompt_root: String.t(),
           config: keyword(),
           router: keyword(),
@@ -320,6 +323,7 @@ defmodule Spectre.Definition do
          after_actions: optional_callback(module, :__spectre_after_actions__, []),
          extensions: optional_callback(module, :__spectre_extensions__, []),
          stack: Keyword.get(config, :stack),
+         stack_refs: optional_callback(module, :__spectre_stack_refs__, []),
          prompt_root: Keyword.get(config, :prompt_root, "priv/spectre/prompts")
        })}
     else

@@ -5,6 +5,7 @@ defmodule Spectre.Router.LLMClassifier do
 
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
+  alias Spectre.Prompt.Plan
   alias Spectre.Route
 
   @doc """
@@ -16,9 +17,9 @@ defmodule Spectre.Router.LLMClassifier do
   def classify(_text, [], _opts), do: {:error, :no_llm_classifier_labels}
 
   def classify(text, labels, opts) when is_binary(text) and is_list(labels) do
-    with {:ok, complete} <- complete_fun(opts),
-         {:ok, prompt_text} <- prompt(text, labels, opts),
-         {:ok, model_text} <- complete.(prompt_text, llm_opts(opts)),
+    with {:ok, prompt_text} <- prompt(text, labels, opts),
+         {:ok, plan} <- Plan.compose(prompt_text, [], [:agent]),
+         {:ok, model_text, inference_metadata} <- complete(plan, text, opts),
          {:ok, label} <- normalize_label(model_text, labels) do
       {:ok,
        Route.new(%{
@@ -28,7 +29,8 @@ defmodule Spectre.Router.LLMClassifier do
          scores: %{},
          accepted?: true,
          strategy: :llm_classifier,
-         raw: model_text
+         raw: model_text,
+         metadata: inference_metadata
        })}
     end
   rescue
@@ -62,14 +64,65 @@ defmodule Spectre.Router.LLMClassifier do
     not is_nil(classifier_model(opts) || Keyword.get(opts, :model))
   end
 
-  @spec complete_fun(keyword()) :: {:ok, function()} | {:error, term()}
-  defp complete_fun(opts) do
+  @spec complete(Plan.t(), String.t(), keyword()) ::
+          {:ok, String.t(), map()} | {:error, term()}
+  defp complete(plan, text, opts) do
     case classifier_model(opts) || Keyword.get(opts, :model) do
       nil ->
         {:error, :missing_llm_classifier_model}
 
       model ->
-        {:ok, &Spectre.LLM.complete(&1, complete_opts(opts, model, &2))}
+        complete_with_boundary(plan, text, complete_opts(opts, model, llm_opts(opts)))
+    end
+  end
+
+  @spec complete_with_boundary(Plan.t(), String.t(), keyword()) ::
+          {:ok, String.t(), map()} | {:error, term()}
+  defp complete_with_boundary(plan, text, opts) do
+    case Keyword.get(opts, :spectre_agent) do
+      agent when is_atom(agent) and not is_nil(agent) ->
+        input = Spectre.Input.new(text)
+
+        ctx = %Spectre.Context{
+          agent: agent,
+          input: input,
+          state: %Spectre.State{},
+          opts: opts
+        }
+
+        request = Spectre.Inference.Request.for_classification(plan, ctx, opts)
+
+        case Spectre.Inference.complete(agent, request, ctx) do
+          {:ok, response} ->
+            metadata = %{
+              inference: %{
+                request_id: request.id,
+                purpose: request.purpose,
+                selection:
+                  Map.take(response.selection, [
+                    :level,
+                    :reason,
+                    :selector,
+                    :profile_hash,
+                    :attempt
+                  ]),
+                latency_ms: response.latency_ms,
+                usage: response.usage
+              }
+            }
+
+            {:ok, response.text, metadata}
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      _no_agent ->
+        case Spectre.LLM.complete(plan, opts) do
+          {:ok, text} when is_binary(text) -> {:ok, text, %{}}
+          {:ok, %Spectre.Inference.Response{text: text}} -> {:ok, text, %{}}
+          {:error, _reason} = error -> error
+        end
     end
   end
 

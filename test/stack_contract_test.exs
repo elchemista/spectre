@@ -14,6 +14,24 @@ defmodule SpectreStackContractTest.Planner do
   @moduledoc false
 end
 
+defmodule SpectreStackContractTest.StackExtension do
+  @moduledoc false
+
+  @behaviour Spectre.Extension
+
+  @impl Spectre.Extension
+  def id, do: :inference
+
+  @impl Spectre.Extension
+  def api_version, do: 1
+
+  @impl Spectre.Extension
+  def compile(_owner, opts), do: {:ok, Keyword.fetch!(opts, :stack_config)}
+
+  @impl Spectre.Extension
+  def agent_config(config), do: [inference_stack: config]
+end
+
 defmodule SpectreStackContractTest.LegacyExtension do
   @moduledoc false
 
@@ -44,6 +62,7 @@ defmodule SpectreStackContractTest.InferencePackage do
     provides: [{:service, :inference}],
     operations: [{:inference, :complete}],
     resources: [:client],
+    agent_extensions: [SpectreStackContractTest.StackExtension],
     dsl: __MODULE__
 
   @impl Spectre.Stack.Installable
@@ -123,6 +142,18 @@ defmodule SpectreStackContractTest.Agent do
   use Spectre.Agent, stack: SpectreStackContractTest.Stack
 end
 
+defmodule SpectreStackContractTest.JournalStore do
+  @moduledoc false
+
+  @behaviour Spectre.Journal.Store
+
+  @impl true
+  def append(record, opts) do
+    send(Keyword.fetch!(opts, :pid), {:stack_journal_record, record})
+    :ok
+  end
+end
+
 defmodule SpectreStackContractTest do
   use ExUnit.Case, async: true
 
@@ -181,6 +212,7 @@ defmodule SpectreStackContractTest do
     assert package.version == "0.1.2"
     assert package.contract == 1
     assert package.spectre == "~> 0.1.2"
+    assert package.agent_extensions == [SpectreStackContractTest.StackExtension]
     assert is_binary(package.digest)
     assert V1.assert_installable!(InferencePackage) == package
 
@@ -225,8 +257,79 @@ defmodule SpectreStackContractTest do
     definition = Spectre.Definition.fetch!(StackAgent)
 
     assert definition.stack == TestStack
+
+    assert Enum.map(definition.stack_refs, & &1.package) == [
+             :inference,
+             :job_actions,
+             :first_search,
+             :second_search
+           ]
+
+    assert {:ok, mount} = Spectre.Extension.fetch(StackAgent, :inference)
+    assert mount.module == SpectreStackContractTest.StackExtension
+    assert {:ok, stack_config} = Spectre.Stack.config(StackAgent, :inference)
+    assert mount.compiled == stack_config
+    assert definition.config[:inference_stack] == mount.compiled
+
     assert Spectre.ActionConfig.providers(StackAgent) == []
     assert Spectre.ActionConfig.planner(StackAgent) == nil
+  end
+
+  test "journal records carry only immutable Stack identity and digests" do
+    result = %Spectre.Result{
+      state: %Spectre.State{},
+      events: [
+        %{
+          type: :effect_failed,
+          kind: :pulse,
+          name: :send,
+          effect_id: "effect-1",
+          error: :not_sent
+        }
+      ]
+    }
+
+    opts = [
+      turn_id: "stack-journal-turn",
+      trace_id: "stack-journal-trace",
+      journal:
+        {SpectreStackContractTest.JournalStore,
+         [
+           events: [:execution],
+           mode: :sync,
+           store_opts: [pid: self()]
+         ]}
+    ]
+
+    assert {:ok, ^result} =
+             Spectre.Journal.Recorder.record_result(result, %{
+               agent: StackAgent,
+               opts: opts
+             })
+
+    assert_receive {:stack_journal_record, %Spectre.Journal.Record{} = record}
+    stack = record.metadata.stack
+    definition = Definition.fetch!(TestStack)
+
+    assert stack.id == :contract_stack
+    assert stack.owner == TestStack
+    assert stack.digest == definition.digest
+
+    assert Enum.map(stack.installations, & &1.package) == [
+             :inference,
+             :job_actions,
+             :first_search,
+             :second_search
+           ]
+
+    assert Enum.all?(stack.installations, fn installation ->
+             installation.version == "0.1.2" and
+               is_binary(installation.digest) and
+               map_size(installation) == 4
+           end)
+
+    refute inspect(stack) =~ "small-model"
+    refute inspect(stack) =~ "environment"
   end
 
   test "starts isolated caller-owned runtimes and resolves only matching resource refs" do
@@ -590,13 +693,14 @@ defmodule SpectreStackContractTest do
 
     agent = unique_module("UnknownStackAgent")
 
-    compile_module("""
-    defmodule #{inspect(agent)} do
-      use Spectre.Agent, stack: Missing.Stack
+    assert_raise ArgumentError, ~r/cannot bind Spectre Stack/, fn ->
+      compile_module("""
+      defmodule #{inspect(agent)} do
+        use Spectre.Agent, stack: Missing.Stack
+      end
+      """)
     end
-    """)
 
-    assert Spectre.Definition.fetch!(agent).stack == Missing.Stack
     assert {:error, {:unknown_stack, Missing.Stack}} = Definition.fetch(Missing.Stack)
   end
 

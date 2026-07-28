@@ -63,6 +63,7 @@ defmodule Spectre.Stack.Installation do
     version = application_version(mount.module)
     providers = Extension.action_providers(mount)
     planner = Extension.action_planner(mount)
+    executors = Extension.effect_executors(mount)
 
     package =
       Package.new!(mount.module, %{
@@ -70,13 +71,14 @@ defmodule Spectre.Stack.Installation do
         version: version,
         contract: Installable.contract_version(),
         spectre: ">= 0.0.0",
-        provides: legacy_extension_provides(providers, planner),
+        provides: legacy_extension_provides(providers, planner, executors),
         metadata: %{legacy: :extension}
       })
 
     adapters = %{
       action_providers: providers,
-      action_planner: planner
+      action_planner: planner,
+      effect_executors: executors
     }
 
     build!(mount.id, package, mount.opts, adapters, true)
@@ -150,8 +152,8 @@ defmodule Spectre.Stack.Installation do
     raise ArgumentError, "invalid Stack installation: #{inspect(installation)}"
   end
 
-  @spec legacy_extension_provides([ProviderMount.t()], term()) :: [term()]
-  defp legacy_extension_provides(providers, planner) do
+  @spec legacy_extension_provides([ProviderMount.t()], term(), [term()]) :: [term()]
+  defp legacy_extension_provides(providers, planner, executors) do
     planner =
       case planner do
         nil -> []
@@ -161,7 +163,10 @@ defmodule Spectre.Stack.Installation do
     providers =
       Enum.map(providers, &{:service, {:action_provider, &1.id}})
 
-    planner ++ providers
+    executors =
+      Enum.map(executors, &{:service, {:effect_executor, &1.kind}})
+
+    planner ++ providers ++ executors
   end
 
   @spec application_version(module()) :: String.t()

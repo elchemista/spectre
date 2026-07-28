@@ -16,10 +16,13 @@ defmodule Spectre.Stack do
         end
       end
 
-  Installing a capability does not make it visible or authorized for an Agent.
-  Flow, Work, Skill, and policy binding remain separate phases.
+  Selecting the Stack from `use Spectre.Agent, stack: MyStack` activates every
+  package-declared Agent extension. Installed operations and planner-visible
+  actions still require explicit Flow, Work, Skill, or policy binding before
+  they are visible or authorized.
   """
 
+  alias Spectre.Stack.Binding
   alias Spectre.Stack.Definition
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Ref
@@ -104,6 +107,19 @@ defmodule Spectre.Stack do
   @spec resolve(module(), Definition.capability_kind(), term()) ::
           {:ok, Ref.t()} | {:error, term()}
   def resolve(stack, kind, id), do: Definition.resolve(stack, kind, id)
+
+  @doc """
+  Returns immutable configuration for a package bound to an Agent.
+  """
+  @spec config(module(), term()) :: {:ok, map() | keyword()} | {:error, term()}
+  def config(agent, package_or_installation), do: Binding.config(agent, package_or_installation)
+
+  @doc """
+  Returns the immutable installation selected through an Agent's Stack.
+  """
+  @spec installation(module(), term()) :: {:ok, Installation.t()} | {:error, term()}
+  def installation(agent, package_or_installation),
+    do: Binding.installation(agent, package_or_installation)
 
   @doc """
   Starts a caller-owned runtime for a Stack.

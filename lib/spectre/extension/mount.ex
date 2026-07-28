@@ -6,12 +6,14 @@ defmodule Spectre.Extension.Mount do
   it does not own a second Agent compiler or runtime.
   """
 
-  defstruct [:id, :module, opts: []]
+  defstruct [:id, :module, api_version: 0, opts: [], compiled: nil]
 
   @type t :: %__MODULE__{
           id: term(),
           module: module(),
-          opts: keyword()
+          api_version: non_neg_integer(),
+          opts: keyword(),
+          compiled: term()
         }
 
   @spec new(module(), keyword()) :: t()
@@ -30,6 +32,19 @@ defmodule Spectre.Extension.Mount do
         true -> module
       end
 
-    %__MODULE__{id: id, module: module, opts: Keyword.delete(opts, :as)}
+    api_version =
+      if function_exported?(module, :api_version, 0),
+        do: module.api_version(),
+        else: 0
+
+    unless is_integer(api_version) and api_version >= 0,
+      do: raise(ArgumentError, "invalid Spectre extension API version: #{inspect(api_version)}")
+
+    %__MODULE__{
+      id: id,
+      module: module,
+      api_version: api_version,
+      opts: Keyword.delete(opts, :as)
+    }
   end
 end
