@@ -295,6 +295,10 @@ defmodule Spectre.Session do
   defp failure_result({:memory_persist_failed, _reason, %Result{} = result}), do: result
   defp failure_result({:persistence_ambiguous, _reason, %Result{} = result}), do: result
   defp failure_result({:persistence_journal_failed, _reason, %Result{} = result}), do: result
+
+  defp failure_result({:run_journal_failed, _event, _reason, %Result{} = result}),
+    do: result
+
   defp failure_result(_reason), do: nil
 
   @spec prepare_session_execution(Result.t(), map()) ::

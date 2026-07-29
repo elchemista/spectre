@@ -21,15 +21,28 @@ defmodule Spectre.Runtime do
   alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Input.Pipeline
+  alias Spectre.Invocation
   alias Spectre.Journal.Recorder
   alias Spectre.Policy
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
   alias Spectre.Result
   alias Spectre.Router
+  alias Spectre.Run
+  alias Spectre.Run.Boundary
+  alias Spectre.Run.Ref
+  alias Spectre.Run.Request
+  alias Spectre.Run.Value
   alias Spectre.State
   alias Spectre.State.Codec
   alias Spectre.Turn.Handlers
+
+  @type step_result ::
+          {:continue, Run.t()}
+          | {:await, Invocation.t(), Run.t()}
+          | {:boundary, Boundary.t(), Run.t()}
+          | {:complete, Result.t(), Run.t()}
+          | {:error, term(), Run.t()}
 
   @doc """
   Handles one normalized input turn for an agent module.
@@ -43,17 +56,244 @@ defmodule Spectre.Runtime do
   """
   @spec handle(module(), Input.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def handle(agent, %Input{} = input, opts) do
-    opts = agent |> runtime_opts(opts) |> put_turn_identity()
+    case start(agent, input, opts) do
+      {:continue, %Run{} = run} ->
+        run
+        |> advance(opts)
+        |> legacy_result()
 
-    with {:ok, input} <- normalize_input(agent, input, opts),
-         {:ok, ctx} <- load_context(agent, input, opts),
+      {:error, reason, %Run{}} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Creates a resumable Run and loads only its logical input and state.
+
+  Runtime options and memory are intentionally not stored on the Run. They are
+  re-resolved on every subsequent step.
+  """
+  @spec start(module(), Input.t() | String.t() | map() | term(), keyword()) :: step_result()
+  def start(agent, input, opts \\ [])
+      when is_atom(agent) and not is_nil(agent) and is_list(opts) do
+    fallback = Run.new(agent, %Input{}, %State{})
+
+    case Run.validate_options(opts) do
+      :ok ->
+        start_validated(Run.new(agent, %Input{}, %State{}, opts), input, opts)
+
+      {:error, reason} ->
+        fail_run_step(
+          fallback,
+          reason,
+          put_run_identity(opts, fallback),
+          :run_start_failed
+        )
+    end
+  end
+
+  defp start_validated(%Run{} = seed, input, opts) do
+    input = Input.new(input)
+    seed = %{seed | input: input}
+    runtime_opts = seed.agent |> runtime_opts(opts) |> put_run_identity(seed)
+
+    case normalize_input(seed.agent, input, runtime_opts) do
+      {:ok, normalized} ->
+        case load_state(seed.agent, normalized, runtime_opts) do
+          {:ok, state} ->
+            run = %{seed | input: normalized, state: state}
+            record_run_step({:continue, run}, :run_started, runtime_opts)
+
+          {:error, reason} ->
+            fail_run_step(seed, reason, runtime_opts, :run_start_failed)
+        end
+
+      {:error, reason} ->
+        fail_run_step(seed, reason, runtime_opts, :run_start_failed)
+    end
+  rescue
+    exception ->
+      fail_run_step(
+        seed,
+        {:run_start_failed, exception.__struct__},
+        put_run_identity(opts, seed),
+        :run_start_failed
+      )
+  catch
+    kind, reason ->
+      fail_run_step(
+        seed,
+        {:run_start_failed, kind, reason},
+        put_run_identity(opts, seed),
+        :run_start_failed
+      )
+  end
+
+  @doc """
+  Advances a Run until it must await work, exposes a public boundary, or
+  completes.
+
+  The return vocabulary is closed:
+
+      {:continue, run}
+      {:await, invocation, run}
+      {:boundary, observable, run}
+      {:complete, result, run}
+      {:error, reason, run}
+  """
+  @spec advance(Run.t(), keyword()) :: step_result()
+  def advance(run, opts \\ [])
+
+  def advance(%Run{} = run, opts) when is_list(opts) do
+    do_advance(run, opts)
+  rescue
+    exception ->
+      fail_run_step(
+        run,
+        {:run_advance_failed, exception.__struct__},
+        put_run_identity(opts, run),
+        :run_advance_failed
+      )
+  catch
+    kind, reason ->
+      fail_run_step(
+        run,
+        {:run_advance_failed, kind, reason},
+        put_run_identity(opts, run),
+        :run_advance_failed
+      )
+  end
+
+  defp do_advance(%Run{status: :ready, cursor: :turn} = run, opts) do
+    opts = run.agent |> runtime_opts(opts) |> put_run_identity(run) |> put_turn_identity()
+
+    ctx = %Context{
+      agent: run.agent,
+      input: run.input,
+      state: run.state,
+      opts: opts,
+      assigns: Keyword.get(opts, :assigns, %{})
+    }
+
+    with {:ok, memory} <- load_memory(run.agent, run.input, run.state, opts),
+         ctx = %{ctx | memory: memory},
          {:ok, result} <- run_turn(ctx),
          result = put_runtime_identity(result, opts),
          result = record_history(result, ctx),
-         {:ok, result} <- Recorder.record_result(result, ctx) do
-      persist(result, ctx)
+         {:ok, result} <- Recorder.record_result(result, ctx),
+         {:ok, result} <- persist(result, ctx) do
+      finish_run_step(run, result, opts, :run_advanced)
+    else
+      {:error, reason} -> fail_run_step(run, reason, opts, :run_advance_failed)
     end
   end
+
+  defp do_advance(%Run{status: :boundary, cursor: :complete} = run, opts) do
+    opts = run.agent |> runtime_opts(opts) |> put_run_identity(run) |> put_turn_identity()
+    revision = run.revision + 1
+    completed = %{run | status: :complete, revision: revision, waiting: nil}
+    result = put_run_identity(completed.result, completed, complete_ref(completed))
+    completed = %{completed | result: result, state: result.state}
+    record_run_step({:complete, result, completed}, :run_completed, opts)
+  end
+
+  defp do_advance(%Run{status: :complete, result: %Result{} = result} = run, _opts),
+    do: {:complete, result, run}
+
+  defp do_advance(%Run{status: :failed} = run, _opts),
+    do: {:error, run.last_error || :run_failed, run}
+
+  defp do_advance(%Run{} = run, _opts),
+    do: {:error, {:run_requires_resume, run.id, run.revision, run.cursor}, run}
+
+  @doc """
+  Resumes a revision-fenced policy boundary or effect invocation.
+
+  Policy responses use `{:policy, ref, resolution}`. Effect work uses
+  `{:execute, invocation}` (or `{:execute, invocation_id}`). Stale, foreign,
+  and already-consumed references are rejected before lifecycle state changes.
+  """
+  @spec resume(Run.t(), term(), keyword()) :: step_result()
+  def resume(run, command, opts \\ [])
+
+  def resume(%Run{} = run, command, opts) when is_list(opts) do
+    do_resume(run, command, opts)
+  rescue
+    exception ->
+      fail_run_step(
+        run,
+        {:run_resume_failed, exception.__struct__},
+        put_run_identity(opts, run),
+        :run_resume_failed
+      )
+  catch
+    kind, reason ->
+      fail_run_step(
+        run,
+        {:run_resume_failed, kind, reason},
+        put_run_identity(opts, run),
+        :run_resume_failed
+      )
+  end
+
+  defp do_resume(
+         %Run{status: :boundary, cursor: :policy, waiting: %Boundary{} = boundary} = run,
+         {:policy, supplied_ref, resolution},
+         opts
+       ) do
+    case validate_boundary_fence(boundary, supplied_ref) do
+      :ok ->
+        opts =
+          run.agent
+          |> runtime_opts(opts)
+          |> put_run_identity(run)
+          |> Keyword.put(:input, run.input)
+
+        case resolve_policy(run.agent, run.result, resolution, opts) do
+          {:ok, %Result{} = result} ->
+            finish_run_step(run, result, opts, :run_resumed)
+
+          {:error, reason} ->
+            fail_run_step(run, reason, opts, :run_resume_failed)
+        end
+
+      {:error, reason} ->
+        reject_run_resume(run, reason, opts)
+    end
+  end
+
+  defp do_resume(
+         %Run{status: :awaiting, cursor: :effect, waiting: %Invocation{} = invocation} = run,
+         {:execute, supplied},
+         opts
+       ) do
+    case validate_invocation_fence(invocation, supplied) do
+      :ok ->
+        opts = run.agent |> runtime_opts(opts) |> put_run_identity(run)
+
+        case execute(run.agent, run.result, opts) do
+          {:ok, %Result{} = result} ->
+            finish_run_step(run, result, opts, :run_resumed)
+
+          {:error, reason} ->
+            fail_run_step(run, reason, opts, :run_resume_failed)
+        end
+
+      {:error, reason} ->
+        reject_run_resume(run, reason, opts)
+    end
+  end
+
+  defp do_resume(%Run{status: :complete} = run, _command, _opts),
+    do: {:error, {:run_already_complete, run.id, run.revision}, run}
+
+  defp do_resume(%Run{status: :failed} = run, _command, _opts),
+    do: {:error, {:run_failed, run.id, run.revision, run.last_error}, run}
+
+  defp do_resume(%Run{} = run, command, _opts),
+    do:
+      {:error, {:invalid_run_resume, run.id, run.revision, run.cursor, command_kind(command)},
+       run}
 
   @doc """
   Restores initial session state from the configured state adapter.
@@ -110,6 +350,7 @@ defmodule Spectre.Runtime do
 
     with {:ok, %Result{} = resolved} <- Policy.resolve(resolution, input, ctx),
          resolved = put_runtime_identity(resolved, opts),
+         resolved = advance_run_lineage(resolved, result),
          {:ok, %Result{} = resolved} <- Recorder.record_result(resolved, ctx),
          {:ok, %Result{} = persisted} <- persist_state(resolved, ctx) do
       {:ok, persisted}
@@ -155,6 +396,7 @@ defmodule Spectre.Runtime do
          {:ok, executed} <- Spectre.Execution.execute_pending(prepared.state, execution_ctx, opts),
          executed <- inherit_execution_context(executed, prepared),
          executed = put_runtime_identity(executed, opts),
+         executed = advance_run_lineage(executed, prepared),
          {:ok, executed} <- Recorder.record_result(executed, execution_ctx) do
       persist_state(executed, execution_ctx)
     end
@@ -279,7 +521,16 @@ defmodule Spectre.Runtime do
           # already performed retrieval before calling Spectre.
           {:ok, Keyword.get(opts, :memory)}
 
-        is_atom(memory_module) && function_exported?(memory_module, :recall, 2) ->
+        is_nil(memory_module) ->
+          {:ok, nil}
+
+        not is_atom(memory_module) ->
+          {:error, {:invalid_memory_adapter, memory_module}}
+
+        not Code.ensure_loaded?(memory_module) ->
+          {:error, {:memory_adapter_unavailable, memory_module}}
+
+        function_exported?(memory_module, :recall, 2) ->
           memory_opts =
             opts
             |> Keyword.put(:state, state)
@@ -438,6 +689,9 @@ defmodule Spectre.Runtime do
 
       :ok ->
         :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -755,6 +1009,355 @@ defmodule Spectre.Runtime do
     %{result | metadata: Map.put(result.metadata, :runtime_identity, identity)}
   end
 
+  @spec advance_run_lineage(Result.t(), Result.t()) :: Result.t()
+  defp advance_run_lineage(%Result{} = result, %Result{} = previous) do
+    case get_in(previous.metadata, [:run]) do
+      %{id: id, revision: revision} = prior
+      when is_binary(id) and is_integer(revision) and revision >= 0 ->
+        lineage =
+          prior
+          |> Map.take([:id, :trace_id])
+          |> Map.merge(%{
+            id: id,
+            revision: revision + 1,
+            step_id: get_in(result.metadata, [:runtime_identity, :turn_id])
+          })
+
+        %{result | metadata: Map.put(result.metadata, :run, lineage)}
+
+      _missing ->
+        result
+    end
+  end
+
+  @spec finish_run_step(Run.t(), Result.t(), keyword(), atom()) :: step_result()
+  defp finish_run_step(%Run{} = run, %Result{} = result, opts, event) do
+    revision = run.revision + 1
+    input = if match?(%Input{}, result.input), do: result.input, else: run.input
+    result = %{result | input: input}
+
+    step_id =
+      get_in(result.metadata, [:runtime_identity, :turn_id])
+      |> then(&(&1 || Keyword.get(opts, :turn_id)))
+      |> Value.logical_id("step")
+      |> Kernel.||(Spectre.Identity.uuid7())
+
+    base = %{
+      run
+      | input: input,
+        result: result,
+        state: State.new(result.state),
+        revision: revision,
+        step_id: step_id,
+        waiting: nil,
+        last_error: nil
+    }
+
+    awaitable = Result.open_awaitable(result)
+    effect = Result.pending_effect(result)
+
+    step =
+      cond do
+        match?(%Spectre.Awaitable{}, awaitable) ->
+          policy_boundary(base, result, awaitable)
+
+        match?(%Effect{}, effect) ->
+          effect_invocation(base, result, effect)
+
+        Result.visible_reply?(result) ->
+          reply_boundary(base, result)
+
+        true ->
+          complete_run(base, result)
+      end
+
+    record_run_step(step, step_event(step, event), opts)
+  end
+
+  @spec policy_boundary(Run.t(), Result.t(), Spectre.Awaitable.t()) :: step_result()
+  defp policy_boundary(%Run{} = run, %Result{} = result, awaitable) do
+    run = %{run | status: :boundary, cursor: :policy}
+    id = boundary_id(run, :policy, awaitable.id)
+    ref = Run.ref(run, :policy, id, awaitable.id)
+
+    boundary = %Boundary{
+      id: id,
+      kind: :needs,
+      ref: ref,
+      output: result.reply_text,
+      request: Request.from_awaitable(awaitable),
+      metadata: %{request_kind: :policy}
+    }
+
+    result = put_run_identity(result, run, ref)
+    run = %{run | result: result, waiting: boundary}
+    {:boundary, boundary, run}
+  end
+
+  @spec effect_invocation(Run.t(), Result.t(), Effect.t()) :: step_result()
+  defp effect_invocation(%Run{} = run, %Result{} = result, %Effect{} = effect) do
+    run = %{run | status: :awaiting, cursor: :effect}
+    id = boundary_id(run, :invocation, effect.id)
+    invocation = Invocation.from_effect(run, effect, id)
+    result = put_run_identity(result, run, invocation.ref)
+    run = %{run | result: result, waiting: invocation}
+    {:await, invocation, run}
+  end
+
+  @spec reply_boundary(Run.t(), Result.t()) :: step_result()
+  defp reply_boundary(%Run{} = run, %Result{} = result) do
+    run = %{run | status: :boundary, cursor: :complete}
+    id = boundary_id(run, :reply, nil)
+    ref = Run.ref(run, :reply, id)
+
+    boundary = %Boundary{
+      id: id,
+      kind: :reply,
+      ref: ref,
+      output: result.reply_text,
+      metadata: %{content_type: :text}
+    }
+
+    result = put_run_identity(result, run, ref)
+    run = %{run | result: result, waiting: boundary}
+    {:boundary, boundary, run}
+  end
+
+  @spec complete_run(Run.t(), Result.t()) :: step_result()
+  defp complete_run(%Run{} = run, %Result{} = result) do
+    run = %{run | status: :complete, cursor: :complete}
+    ref = complete_ref(run)
+    result = put_run_identity(result, run, ref)
+    run = %{run | result: result, waiting: nil}
+    {:complete, result, run}
+  end
+
+  @spec complete_ref(Run.t()) :: Ref.t()
+  defp complete_ref(%Run{} = run) do
+    id = boundary_id(run, :complete, nil)
+    Run.ref(run, :complete, id)
+  end
+
+  @spec put_run_identity(Result.t(), Run.t(), Ref.t()) :: Result.t()
+  defp put_run_identity(%Result{} = result, %Run{} = run, %Ref{} = ref) do
+    identity = %{
+      id: run.id,
+      revision: run.revision,
+      status: run.status,
+      cursor: run.cursor,
+      step_id: run.step_id,
+      trace_id: run.trace_id,
+      ref: ref
+    }
+
+    %{result | metadata: Map.put(result.metadata, :run, identity)}
+  end
+
+  @spec put_run_identity(keyword(), Run.t()) :: keyword()
+  defp put_run_identity(opts, %Run{} = run) when is_list(opts) do
+    opts
+    |> Keyword.put(:trace_id, run.trace_id)
+    |> Keyword.put(:run_id, run.id)
+    |> Keyword.put(:run_revision, run.revision)
+  end
+
+  @spec fail_run_step(Run.t(), term(), keyword(), atom()) :: step_result()
+  defp fail_run_step(%Run{} = run, reason, opts, event) do
+    result = committed_result(reason) || run.result
+
+    failed = %{
+      run
+      | status: :failed,
+        cursor: :complete,
+        revision: run.revision + 1,
+        waiting: nil,
+        last_error: reason,
+        result: result,
+        state: if(match?(%Result{}, result), do: State.new(result.state), else: run.state)
+    }
+
+    failed =
+      case result do
+        %Result{} ->
+          ref = Run.ref(failed, :error, boundary_id(failed, :error, failure_code(reason)))
+          %{failed | result: put_run_identity(result, failed, ref)}
+
+        nil ->
+          failed
+      end
+
+    _ = record_run_event(failed, event, opts)
+    {:error, reason, failed}
+  end
+
+  @spec committed_result(term()) :: Result.t() | nil
+  defp committed_result({_kind, _reason, %Result{} = result}), do: result
+  defp committed_result({_kind, _reason, _detail, %Result{} = result}), do: result
+  defp committed_result(_reason), do: nil
+
+  @spec legacy_result(step_result()) :: {:ok, Result.t()} | {:error, term()}
+  defp legacy_result({:await, %Invocation{}, %Run{result: %Result{} = result}}),
+    do: {:ok, result}
+
+  defp legacy_result({:boundary, %Boundary{}, %Run{result: %Result{} = result}}),
+    do: {:ok, result}
+
+  defp legacy_result({:complete, %Result{} = result, %Run{}}), do: {:ok, result}
+  defp legacy_result({:error, reason, %Run{}}), do: {:error, reason}
+  defp legacy_result({:continue, %Run{} = run}), do: run |> advance() |> legacy_result()
+
+  @spec validate_boundary_fence(Boundary.t(), term()) :: :ok | {:error, term()}
+  defp validate_boundary_fence(%Boundary{ref: expected}, %Boundary{ref: supplied}),
+    do: validate_ref(expected, supplied)
+
+  defp validate_boundary_fence(%Boundary{ref: expected}, %Ref{} = supplied),
+    do: validate_ref(expected, supplied)
+
+  defp validate_boundary_fence(%Boundary{id: id}, id), do: :ok
+
+  defp validate_boundary_fence(%Boundary{ref: expected}, supplied),
+    do: {:error, {:invalid_run_reference, expected, supplied}}
+
+  @spec validate_invocation_fence(Invocation.t(), term()) :: :ok | {:error, term()}
+  defp validate_invocation_fence(%Invocation{} = expected, %Invocation{} = supplied) do
+    if expected.id == supplied.id and expected.run_id == supplied.run_id and
+         expected.run_revision == supplied.run_revision and
+         expected.subject_id == supplied.subject_id do
+      :ok
+    else
+      {:error, {:stale_invocation, supplied.id, expected.id}}
+    end
+  end
+
+  defp validate_invocation_fence(%Invocation{ref: expected}, %Ref{} = supplied),
+    do: validate_ref(expected, supplied)
+
+  defp validate_invocation_fence(%Invocation{id: id}, id), do: :ok
+
+  defp validate_invocation_fence(%Invocation{id: expected}, supplied),
+    do: {:error, {:invalid_invocation_reference, supplied, expected}}
+
+  @spec validate_ref(Ref.t(), Ref.t()) :: :ok | {:error, term()}
+  defp validate_ref(%Ref{} = expected, %Ref{} = supplied) do
+    if expected == supplied do
+      :ok
+    else
+      {:error,
+       {:stale_run_reference, supplied.run_id, supplied.revision, expected.run_id,
+        expected.revision}}
+    end
+  end
+
+  @spec record_run_step(step_result(), atom(), keyword()) :: step_result()
+  defp record_run_step(step, event, opts) do
+    run = step_run(step)
+
+    result =
+      step
+      |> run_step_events(event)
+      |> Enum.reduce_while(:ok, fn current_event, :ok ->
+        case record_run_event(run, current_event, opts) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, current_event, reason}}
+        end
+      end)
+
+    case result do
+      :ok ->
+        step
+
+      {:error, _event, {:invalid_journal_configuration, _detail} = reason} ->
+        {:error, reason, run}
+
+      {:error, failed_event, reason} ->
+        failure =
+          case run.result do
+            %Result{} = result -> {:run_journal_failed, failed_event, reason, result}
+            nil -> {:run_journal_failed, failed_event, reason}
+          end
+
+        {:error, failure, run}
+    end
+  end
+
+  @spec record_run_event(Run.t(), atom(), keyword()) :: :ok | {:error, term()}
+  defp record_run_event(%Run{} = run, event, opts) do
+    journal_opts =
+      opts
+      |> put_run_identity(run)
+      |> Keyword.put(:turn_id, Value.token("run-event", {run.id, run.revision, event}))
+      |> Keyword.put(:journal_sequence, run_event_sequence(event))
+
+    Recorder.record_extension(
+      run.agent,
+      event,
+      %{
+        run_id: run.id,
+        run_revision: run.revision,
+        run_status: run.status,
+        run_cursor: run.cursor,
+        step_id: run.step_id
+      },
+      journal_opts
+    )
+  end
+
+  @spec step_run(step_result()) :: Run.t()
+  defp step_run({:continue, %Run{} = run}), do: run
+  defp step_run({:await, %Invocation{}, %Run{} = run}), do: run
+  defp step_run({:boundary, %Boundary{}, %Run{} = run}), do: run
+  defp step_run({:complete, %Result{}, %Run{} = run}), do: run
+
+  @spec step_event(step_result(), atom()) :: atom()
+  defp step_event(_step, :run_resumed), do: :run_resumed
+  defp step_event({:await, %Invocation{}, %Run{}}, :run_advanced), do: :run_awaiting
+  defp step_event({:boundary, %Boundary{}, %Run{}}, :run_advanced), do: :run_boundary
+  defp step_event({:complete, %Result{}, %Run{}}, :run_advanced), do: :run_completed
+
+  defp run_step_events(step, :run_resumed), do: [:run_resumed, outcome_event(step)]
+  defp run_step_events(_step, event), do: [event]
+
+  defp outcome_event({:await, %Invocation{}, %Run{}}), do: :run_awaiting
+  defp outcome_event({:boundary, %Boundary{}, %Run{}}), do: :run_boundary
+  defp outcome_event({:complete, %Result{}, %Run{}}), do: :run_completed
+
+  defp run_event_sequence(:run_started), do: 0
+  defp run_event_sequence(:run_start_failed), do: 1
+  defp run_event_sequence(:run_resumed), do: 94
+  defp run_event_sequence(:run_awaiting), do: 95
+  defp run_event_sequence(:run_boundary), do: 95
+  defp run_event_sequence(:run_completed), do: 96
+  defp run_event_sequence(:run_resume_rejected), do: 97
+  defp run_event_sequence(_event), do: 98
+
+  defp reject_run_resume(%Run{} = run, reason, opts) do
+    runtime_opts = run.agent |> runtime_opts(opts) |> put_run_identity(run)
+    _ = record_run_event(run, :run_resume_rejected, runtime_opts)
+    {:error, reason, run}
+  end
+
+  @spec boundary_id(Run.t(), atom(), term()) :: String.t()
+  defp boundary_id(%Run{} = run, kind, subject_id) do
+    digest =
+      {run.id, run.revision, kind, subject_id}
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.url_encode64(padding: false)
+
+    Atom.to_string(kind) <> ":" <> binary_part(digest, 0, 32)
+  end
+
+  @spec failure_code(term()) :: term()
+  defp failure_code({code, _detail}) when is_atom(code), do: code
+  defp failure_code({code, _detail, _more}) when is_atom(code), do: code
+  defp failure_code(code) when is_atom(code), do: code
+  defp failure_code(_reason), do: :run_failed
+
+  @spec command_kind(term()) :: atom()
+  defp command_kind({kind, _value}) when is_atom(kind), do: kind
+  defp command_kind({kind, _value, _more}) when is_atom(kind), do: kind
+  defp command_kind(_command), do: :unknown
+
   @spec definition_config(module()) :: keyword()
   defp definition_config(agent), do: Definition.fetch!(agent).config
 
@@ -769,8 +1372,22 @@ defmodule Spectre.Runtime do
   defp reply_shape(_value), do: :other
 
   @spec memory_callback(module() | term()) ::
-          {:ok, {:remember | :persist, 2 | 4, module()}} | :ok
+          {:ok, {:remember | :persist, 2 | 4, module()}}
+          | :ok
+          | {:error, term()}
+  defp memory_callback(nil), do: :ok
+
   defp memory_callback(module) when is_atom(module) do
+    if Code.ensure_loaded?(module) do
+      loaded_memory_callback(module)
+    else
+      {:error, {:memory_adapter_unavailable, module}}
+    end
+  end
+
+  defp memory_callback(module), do: {:error, {:invalid_memory_adapter, module}}
+
+  defp loaded_memory_callback(module) do
     cond do
       function_exported?(module, :remember, 4) -> {:ok, {:remember, 4, module}}
       function_exported?(module, :persist, 4) -> {:ok, {:persist, 4, module}}
@@ -779,8 +1396,6 @@ defmodule Spectre.Runtime do
       true -> :ok
     end
   end
-
-  defp memory_callback(_module), do: :ok
 
   @spec call_memory_callback(
           {:remember | :persist, 2 | 4, module()},
@@ -872,8 +1487,8 @@ defmodule Spectre.Runtime do
 
   @spec put_turn_identity(keyword()) :: keyword()
   defp put_turn_identity(opts) do
-    turn_id = Keyword.get(opts, :turn_id) || Spectre.Identity.uuid7()
-    trace_id = Keyword.get(opts, :trace_id) || turn_id
+    turn_id = Value.logical_id(Keyword.get(opts, :turn_id), "turn") || Spectre.Identity.uuid7()
+    trace_id = Value.logical_id(Keyword.get(opts, :trace_id), "trace") || turn_id
 
     opts
     |> Keyword.put(:turn_id, turn_id)

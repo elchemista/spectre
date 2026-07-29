@@ -14,6 +14,8 @@ defmodule Spectre do
     * `Spectre.Router` collects route evidence and arbitrates a single route.
     * `Spectre.Runner` executes the route handler without directly performing
       protected side effects.
+    * `Spectre.Run` carries a checkpointable continuation through the closed
+      `Spectre.Runtime.start/3`, `advance/2`, and `resume/3` protocol.
     * `Spectre.Execution` is the explicit boundary for executing a pending
       action or extension-owned effect after policy approval.
 
@@ -32,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.1.2"
+  @version "0.1.3"
 
   @doc """
   Returns the running Spectre library version.
@@ -70,10 +72,11 @@ defmodule Spectre do
   end
 
   @doc """
-  Runs one turn and reduces its result into the next host-facing decision.
+  Runs to the first observable boundary and returns its public Turn projection.
 
       {:ok, turn} = Spectre.turn(MyApp.Agent, "hello")
       {:reply, result} = turn.decision
+      {:reply, "Hello!", ref} = turn.observable
   """
   @spec turn(module() | GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
           {:ok, Spectre.Turn.t()} | {:error, term()}

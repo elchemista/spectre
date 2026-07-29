@@ -452,14 +452,22 @@ defmodule SpectreRuntimePersistenceContractTest do
     assert legacy2.metadata.state_persistence.mode == :legacy
     assert_receive {:persist2, 1, "legacy"}
 
-    for agent <- [
-          SpectreRuntimePersistenceContractTest.NoCallbackAgent,
-          SpectreRuntimePersistenceContractTest.NonModuleAdaptersAgent
-        ] do
-      assert {:ok, in_memory} = Spectre.ask(agent, "memory only", state: %State{})
-      assert in_memory.metadata.state_persistence.mode == :in_memory
-      assert in_memory.state.revision == 1
-    end
+    assert {:ok, in_memory} =
+             Spectre.ask(
+               SpectreRuntimePersistenceContractTest.NoCallbackAgent,
+               "memory only",
+               state: %State{}
+             )
+
+    assert in_memory.metadata.state_persistence.mode == :in_memory
+    assert in_memory.state.revision == 1
+
+    assert {:error, {:invalid_memory_adapter, 456}} =
+             Spectre.ask(
+               SpectreRuntimePersistenceContractTest.NonModuleAdaptersAgent,
+               "memory only",
+               state: %State{}
+             )
   end
 
   test "all supported memory persistence callbacks receive the committed turn" do
@@ -478,14 +486,12 @@ defmodule SpectreRuntimePersistenceContractTest do
       assert_receive {:memory_callback, ^function, ^arity, "remember", 1, ^agent}
     end
 
-    assert {:ok, no_memory_callback} =
+    assert {:error, {:invalid_memory_adapter, 456}} =
              Spectre.ask(
                SpectreRuntimePersistenceContractTest.NonModuleAdaptersAgent,
                "ignored memory",
                state: %State{}
              )
-
-    assert no_memory_callback.state.revision == 1
   end
 
   test "memory recall and persistence failures remain separate from committed state" do

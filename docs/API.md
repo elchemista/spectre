@@ -32,6 +32,8 @@ resources. PID, connections, clients, and secrets never belong in
 | --- | --- | --- |
 | Full runtime result | `Spectre.ask/3` | `{:ok, %Spectre.Result{}}` |
 | One host-facing decision | `Spectre.turn/3` | `{:ok, %Spectre.Turn{}}` |
+| Start a continuation | `Spectre.Runtime.start/3` | `{:continue, %Spectre.Run{}}` |
+| Drive a continuation | `Spectre.Runtime.advance/2`, `resume/3` | one closed Runtime step |
 | Routing only | `Spectre.Router.evaluate/3` | `{:ok, %Spectre.Router.Receipt{}}` |
 | Dataset evaluation | `Spectre.Eval.run/3` | `{:ok, %Spectre.Eval.Report{}}` |
 
@@ -54,23 +56,40 @@ result.awaitables
 result.state
 ```
 
-`turn/3` wraps the same runtime result and reduces it into the next operation
-the host should perform:
+`turn/3` starts and advances a Run to the first observable point. The Turn
+contains a transport-safe `ref`, the typed `boundary`, and a compact public
+`observable`:
 
 ```elixir
 {:ok, turn} = Spectre.turn(MyApp.SupportAgent, "create a project")
 
-case turn.decision do
-  {:awaiting, awaitable, result} -> present_policy(awaitable, result)
-  {:needs, effect, result} -> execute_or_enqueue(effect, result)
-  {:completed, completion, result} -> deliver_completion(completion, result)
-  {:reply, result} -> deliver(result.reply_text)
-  {:no_response, result} -> record_no_response(result)
+case turn.observable do
+  {:reply, output, ref} -> deliver_once(output, Spectre.Run.Ref.token(ref))
+  {:needs, %Spectre.Run.Boundary{} = request} -> present_policy(request)
+  {:awaiting, ref} -> enqueue(turn.boundary, ref)
 end
 ```
 
+`turn.decision` remains the lifecycle/result projection for local code that
+needs the complete Effect or Awaitable. Transport code should prefer
+`observable`, `boundary`, and `ref`. A terminal result without visible output
+is projected as `{:reply, nil, ref}`; delivery adapters should skip `nil`.
+
 Use `turn/3` for most HTTP, chat, and worker integrations. Use `ask/3` when the
 host needs to inspect multiple effects or build its own reducer.
+
+Use `Spectre.Runtime` only when the caller owns the continuation. Its return
+vocabulary is closed:
+
+```text
+{:continue, run}
+{:await, invocation, run}
+{:boundary, observable, run}
+{:complete, result, run}
+{:error, reason, run}
+```
+
+See [Resumable Runs](RUNS.md) for fencing, checkpointing, and recovery.
 
 ## Results and lifecycle queries
 

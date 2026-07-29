@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.1.2"
+  @version "0.1.3"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -11,6 +11,7 @@ defmodule Spectre.MixProject do
     "docs/INTEGRATIONS.md",
     "docs/DSL.md",
     "docs/STACK.md",
+    "docs/RUNS.md",
     "docs/SKILLS.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
@@ -123,6 +124,7 @@ defmodule Spectre.MixProject do
           "docs/INTEGRATIONS.md",
           "docs/DSL.md",
           "docs/STACK.md",
+          "docs/RUNS.md",
           "docs/SKILLS.md",
           "docs/API.md"
         ],
@@ -157,6 +159,12 @@ defmodule Spectre.MixProject do
           Spectre.Turn.Handler.Reply,
           Spectre.Skill,
           Spectre.Turn,
+          Spectre.Run,
+          Spectre.Run.Ref,
+          Spectre.Run.Boundary,
+          Spectre.Run.Request,
+          Spectre.Invocation,
+          Spectre.Runtime,
           Spectre.Session,
           Spectre.Supervisor
         ],
