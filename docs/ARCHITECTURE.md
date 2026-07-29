@@ -45,8 +45,24 @@ Runtime restore ──► Spectre.State + recalled memory
                                     persist state, then memory
 ```
 
-`Spectre.turn/3` wraps the result in a `Spectre.Turn` and reduces authoritative
-state to one host decision. It does not execute a staged effect.
+`Spectre.Runtime.start/3` creates the logical continuation, while `advance/2`
+re-resolves memory and runtime dependencies and stops at the first Invocation,
+public boundary, completion, or error. `resume/3` accepts only a reference
+fenced to that Run revision.
+
+`Spectre.turn/3` projects that first observable point into a `Spectre.Turn`.
+The Turn exposes a `Spectre.Run.Ref`, not the continuation itself. It does not
+execute a staged effect.
+
+```text
+start ──► {:continue, Run}
+              │
+           advance
+              ├──► {:await, Invocation, Run}
+              ├──► {:boundary, Boundary, Run}
+              ├──► {:complete, Result, Run}
+              └──► {:error, reason, Run}
+```
 
 ## One vocabulary, separate execution models
 
@@ -60,7 +76,7 @@ state:
 | `Spectre.Session` | serializes calls and retains the latest Spectre state |
 | `GenServer` or `gen_statem` | calls or adapts the local turn API while retaining its native OTP protocol |
 | `Spectre.Turn.Handler` | optionally claims an already-active dialogue before routing |
-| SpectreDirective | owns and snapshots a durable mission/plan across turns |
+| SpectreDirective | may describe a durable mission/plan, but does not replace or mutate the core Run reducer |
 | SpectrePulse | owns remote envelopes, correlation, task state, and delivery |
 
 This distinction matters under failure. A local handler timeout, an OTP process
@@ -77,6 +93,7 @@ same turn decisions.
 | Evidence collection | router plugs |
 | Final route choice | `Spectre.Router.Arbitrator` |
 | State transitions | `Spectre.Lifecycle` |
+| Logical continuation and step fencing | `Spectre.Run`, `Spectre.Runtime` |
 | Policy text/label matching | `Spectre.Policy.Matcher` |
 | Prompt trust and composition | `Spectre.Prompt.Plan` |
 | Provider isolation and deadlines | `Spectre.Provider.Call` |

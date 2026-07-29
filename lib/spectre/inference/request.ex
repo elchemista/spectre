@@ -151,7 +151,7 @@ defmodule Spectre.Inference.Request do
     unless is_binary(request.id) and request.id != "",
       do: raise(ArgumentError, "inference request id is required")
 
-    unless not is_nil(request.purpose), do: raise(ArgumentError, "inference purpose is required")
+    if is_nil(request.purpose), do: raise(ArgumentError, "inference purpose is required")
     unless match?(%Plan{}, request.plan), do: raise(ArgumentError, "inference plan is required")
 
     unless is_integer(request.attempt) and request.attempt > 0,

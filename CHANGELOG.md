@@ -6,8 +6,23 @@ minor release may contain documented breaking API changes.
 
 ## Unreleased
 
+## 0.1.3 — 2026-07-29
+
 ### Added
 
+- A serializable `%Spectre.Run{}` continuation and the closed
+  `Runtime.start/3 -> advance/2 -> resume/3` protocol.
+- Revision-fenced `Spectre.Run.Ref`, `Spectre.Run.Boundary`, and
+  `Spectre.Invocation` values, plus transport-safe `Spectre.Run.Request`
+  policy projections.
+- Versioned, atom-free Run checkpoint/restore with raw-envelope stripping,
+  typed logical Route projection, lifecycle validation, encoded-size limits,
+  and fail-closed rejection of PID, Port, reference, and function values in
+  authoritative data.
+- A public `Spectre.Turn` projection with `ref`, `boundary`, and `observable`
+  fields using the closed reply/awaiting/needs vocabulary; transport
+  idempotency can use `Spectre.Run.Ref.token/1`.
+- Privacy-safe Run lifecycle journal events, selectable with `events: [:run]`.
 - An ordered, optional `Spectre.Turn.Handler` boundary for external
   conversational runtimes. Open Spectre policies retain precedence; typed
   replies cannot replace state, routes, effects, or awaitables; failures and

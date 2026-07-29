@@ -40,7 +40,7 @@ defmodule Spectre.Inference.Selection do
     unless is_binary(selection.request_id) and selection.request_id != "",
       do: raise(ArgumentError, "selection request id is required")
 
-    unless not is_nil(selection.model), do: raise(ArgumentError, "selection model is required")
+    if is_nil(selection.model), do: raise(ArgumentError, "selection model is required")
     selection
   end
 

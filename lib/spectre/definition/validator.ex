@@ -128,9 +128,9 @@ defmodule Spectre.Definition.Validator do
 
   defp validate_stack(%Definition{kind: :agent, stack: stack, stack_refs: refs})
        when is_atom(stack) and not is_nil(stack) and is_list(refs) do
-    with {:ok, stack_definition} <- StackDefinition.fetch(stack),
-         :ok <- validate_stack_refs(stack_definition, refs) do
-      :ok
+    case StackDefinition.fetch(stack) do
+      {:ok, stack_definition} -> validate_stack_refs(stack_definition, refs)
+      {:error, _reason} = error -> error
     end
   end
 

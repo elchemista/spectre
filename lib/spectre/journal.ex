@@ -7,6 +7,8 @@ defmodule Spectre.Journal do
   the configured journal store.
   """
 
+  alias Spectre.Journal.Recorder
+
   @sensitive_keys [
     :text,
     :message,
@@ -26,7 +28,7 @@ defmodule Spectre.Journal do
   def record(agent, event, metadata, opts \\ [])
       when is_atom(agent) and is_atom(event) and is_map(metadata) and is_list(opts) do
     with :ok <- validate_metadata(metadata) do
-      Spectre.Journal.Recorder.record_extension(agent, event, metadata, opts)
+      Recorder.record_extension(agent, event, metadata, opts)
     end
   end
 

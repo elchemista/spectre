@@ -7,8 +7,8 @@ separate from chat history and logs:
 - journal records explain an individual runtime decision;
 - logs and telemetry describe operational health.
 
-The current implementation records routing/arbitration, policy, lifecycle,
-execution, and persistence boundaries. All phases share stable turn/trace
+The current implementation records Run, routing/arbitration, policy, lifecycle,
+execution, and persistence boundaries. All phases carry stable correlation
 identities and exclude conversation content, effect arguments, action results,
 and provider errors by default.
 
@@ -27,7 +27,7 @@ defmodule MyApp.SupportAgent do
   use Spectre.Agent
 
   journal MyApp.SpectreJournal,
-    events: [:routing, :policy, :lifecycle, :execution, :persistence],
+    events: [:run, :routing, :policy, :lifecycle, :execution, :persistence],
     mode: :async,
     on_error: :warn,
     sample_rate: 1.0,
@@ -158,6 +158,13 @@ Spectre.turn(MyApp.SupportAgent, input,
 
 Without a host-provided ID, each call is a new logical turn and receives a new
 identifier.
+
+Run lifecycle records keep the Run's shared `trace_id`, while their `turn_id`
+is derived deterministically from the Run id, revision, and event. This gives
+each lifecycle fact its own retry-stable journal identity. A successful
+`Runtime.resume/3` records both `:run_resumed` and the resulting
+`:run_awaiting`, `:run_boundary`, or `:run_completed` event; their sequences
+preserve that order.
 
 ## Sampling
 

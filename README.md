@@ -50,20 +50,26 @@ The host-facing types have separate roles:
 - `Spectre.State` is the authoritative conversation machine state.
 - `Spectre.Result` is the receipt for one transition: state, emitted effects,
   awaitables, reply text, route data, and audit events.
-- `Spectre.Turn` adds one normalized next-step decision for host dispatch.
+- `Spectre.Run` is the checkpointable continuation behind one unit of work.
+- `Spectre.Turn` is the public projection at the first observable boundary.
+- `Spectre.Invocation` describes one revision-fenced Effect execution request.
 - `Spectre.Effect` describes work and its lifecycle.
 - `Spectre.Awaitable` describes input the runtime is waiting for.
 
 `Spectre.ask/3` is the low-level result API. `Spectre.turn/3` is usually the
-better integration boundary for applications because it returns one of:
+better integration boundary for applications. Its `observable` is one of:
 
 ```elixir
-{:awaiting, awaitable, result}
-{:needs, effect, result}
-{:completed, completion, result}
-{:reply, result}
-{:no_response, result}
+{:reply, output, run_ref}
+{:awaiting, invocation_ref}
+{:needs, policy_boundary}
 ```
+
+Actor integrations that own continuations can use the closed
+`Spectre.Runtime.start/3`, `advance/2`, and `resume/3` protocol. Runtime clients,
+callbacks, and process handles are re-resolved rather than stored in a Run.
+The Invocation descriptor is available as `turn.boundary` when the observable
+is `{:awaiting, ref}`.
 
 ## Installation
 
@@ -396,6 +402,8 @@ adapters on startup, and can stop after an idle timeout.
   requirements, prompts, policies, and complete examples.
 - [Stack](docs/STACK.md) - installable packages, immutable definitions,
   logical references, and caller-owned runtime resources.
+- [Resumable Runs](docs/RUNS.md) - closed Runtime steps, revision fencing,
+  checkpoint/recovery, and the public Turn projection.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM

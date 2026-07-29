@@ -8,8 +8,8 @@ defmodule Spectre.Router do
   cache hits, and LLM fallback from overwriting each other prematurely.
   """
 
-  alias Spectre.Input
   alias Spectre.Flow.Constraint
+  alias Spectre.Input
   alias Spectre.Journal.Recorder
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure

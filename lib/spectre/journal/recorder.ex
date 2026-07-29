@@ -128,49 +128,51 @@ defmodule Spectre.Journal.Recorder do
   """
   @spec record_extension(module(), atom(), map(), keyword()) :: :ok | {:error, term()}
   def record_extension(agent, event, metadata, opts)
-      when is_atom(agent) and is_atom(event) and is_map(metadata) and is_list(opts) do
-    opts =
-      case Spectre.Definition.fetch(agent) do
-        {:ok, definition} ->
-          case Keyword.fetch(definition.config, :journal) do
-            {:ok, journal} -> Keyword.put_new(opts, :journal, journal)
-            :error -> opts
-          end
-
-        {:error, _reason} ->
-          opts
-      end
+      when is_atom(agent) and not is_nil(agent) and is_atom(event) and is_map(metadata) and
+             is_list(opts) do
+    opts = extension_opts(agent, opts)
 
     case configuration(opts) do
-      :disabled ->
-        :ok
-
-      {:ok, store, config} ->
-        if event_enabled?(config, event) or event_enabled?(config, :extensions) do
-          record =
-            Record.new(%{
-              agent: agent,
-              turn_id: Keyword.get(opts, :turn_id),
-              trace_id: Keyword.get(opts, :trace_id),
-              sequence: Keyword.get(opts, :journal_sequence, 95),
-              phase: event,
-              decision: %{kind: event},
-              reason: %{code: event},
-              metadata: record_metadata(config, metadata, agent)
-            })
-
-          case deliver_value(record, store, config, :ok) do
-            {:ok, :ok} -> :ok
-            {:error, _reason} = error -> error
-          end
-        else
-          :ok
-        end
-
-      {:error, reason} ->
-        {:error, {:invalid_journal_configuration, reason}}
+      :disabled -> :ok
+      {:ok, store, config} -> record_extension_event(agent, event, metadata, opts, store, config)
+      {:error, reason} -> {:error, {:invalid_journal_configuration, reason}}
     end
   end
+
+  def record_extension(agent, _event, _metadata, _opts),
+    do: {:error, {:invalid_journal_agent, agent}}
+
+  defp extension_opts(agent, opts) do
+    with {:ok, definition} <- Spectre.Definition.fetch(agent),
+         {:ok, journal} <- Keyword.fetch(definition.config, :journal) do
+      Keyword.put_new(opts, :journal, journal)
+    else
+      _missing -> opts
+    end
+  end
+
+  defp record_extension_event(agent, event, metadata, opts, store, config) do
+    if extension_event_enabled?(config, event) do
+      record =
+        Record.new(%{
+          agent: agent,
+          turn_id: Keyword.get(opts, :turn_id),
+          trace_id: Keyword.get(opts, :trace_id),
+          sequence: Keyword.get(opts, :journal_sequence, 95),
+          phase: event,
+          decision: %{kind: event},
+          reason: %{code: event},
+          metadata: record_metadata(config, metadata, agent)
+        })
+
+      normalize_extension_delivery(deliver_value(record, store, config, :ok))
+    else
+      :ok
+    end
+  end
+
+  defp normalize_extension_delivery({:ok, :ok}), do: :ok
+  defp normalize_extension_delivery({:error, _reason} = error), do: error
 
   @spec configuration(keyword()) :: :disabled | {:ok, module(), keyword()} | {:error, term()}
   defp configuration(opts) do
@@ -271,6 +273,29 @@ defmodule Spectre.Journal.Recorder do
     events = List.wrap(Keyword.get(config, :events, [:routing, :arbitration]))
     :all in events or phase in events
   end
+
+  defp extension_event_enabled?(config, event) do
+    event_enabled?(config, event) or
+      event_enabled?(config, :extensions) or
+      (run_event?(event) and event_enabled?(config, :run))
+  end
+
+  defp run_event?(event)
+       when event in [
+              :run_started,
+              :run_advanced,
+              :run_resumed,
+              :run_awaiting,
+              :run_boundary,
+              :run_completed,
+              :run_start_failed,
+              :run_advance_failed,
+              :run_resume_failed,
+              :run_resume_rejected
+            ],
+       do: true
+
+  defp run_event?(_event), do: false
 
   @spec runtime_event_enabled?(keyword(), term()) :: boolean()
   defp runtime_event_enabled?(config, event) when is_map(event) do

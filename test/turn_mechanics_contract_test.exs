@@ -294,6 +294,20 @@ defmodule SpectreTurnMechanicsContractTest do
     :memory_persist
   ]
 
+  @run_boundary_order [
+    :input,
+    :state_load,
+    :run_started,
+    :memory_recall,
+    :turn_handler,
+    :journal_arbitration,
+    :renderer,
+    :state_persist,
+    :journal_persistence,
+    :memory_persist,
+    :run_boundary
+  ]
+
   test "a routed turn crosses every boundary once, in order, and persists the final state" do
     ledger = start_ledger()
     conversation_id = unique_conversation("ordered")
@@ -311,19 +325,25 @@ defmodule SpectreTurnMechanicsContractTest do
              Enum.map(result.state.data.chat_history, &Map.drop(&1, [:at, :events]))
 
     events = Ledger.events(ledger)
-    assert event_tags(events) == @full_boundary_order
+    assert event_tags(events) == @run_boundary_order
 
     assert [
              {:input, "  HELLO  "},
              {:state_load, "hello"},
+             {:journal, :run_started, nil, run_started_id, "ordered-trace"},
              {:memory_recall, "hello", 0},
              {:turn_handler, "hello", 0},
              {:journal, :arbitration, 0, "ordered-turn", "ordered-trace"},
              {:renderer, :hello, "hello", 0},
              {:state_persist, 0, 1, "hello"},
              {:journal, :persistence, 1, "ordered-turn", "ordered-trace"},
-             {:memory_persist, "hello", 1}
+             {:memory_persist, "hello", 1},
+             {:journal, :run_boundary, nil, run_boundary_id, "ordered-trace"}
            ] = events
+
+    assert "run-event:" <> _digest = run_started_id
+    assert "run-event:" <> _digest = run_boundary_id
+    refute run_started_id == run_boundary_id
   end
 
   test "a handler-owned turn skips routing and rendering but still commits history and memory" do
@@ -349,12 +369,14 @@ defmodule SpectreTurnMechanicsContractTest do
     assert tags == [
              :input,
              :state_load,
+             :run_started,
              :memory_recall,
              :turn_handler,
              :journal_runtime,
              :state_persist,
              :journal_persistence,
-             :memory_persist
+             :memory_persist,
+             :run_boundary
            ]
 
     refute :journal_arbitration in tags
@@ -373,7 +395,14 @@ defmodule SpectreTurnMechanicsContractTest do
                runtime_opts(ledger, conversation_id, "recall-error-turn")
              )
 
-    assert event_tags(Ledger.events(ledger)) == [:input, :state_load, :memory_recall]
+    assert event_tags(Ledger.events(ledger)) == [
+             :input,
+             :state_load,
+             :run_started,
+             :memory_recall,
+             :run_advance_failed
+           ]
+
     assert Ledger.load_state(ledger, conversation_id).revision == 0
   end
 
@@ -394,6 +423,7 @@ defmodule SpectreTurnMechanicsContractTest do
         |> Enum.take_while(&(&1 != boundary))
         |> Kernel.++([boundary])
         |> maybe_append_ambiguous_persistence_record(boundary)
+        |> include_run_failure_events(boundary)
 
       assert event_tags(Ledger.events(ledger)) == expected_prefix
 
@@ -408,7 +438,7 @@ defmodule SpectreTurnMechanicsContractTest do
 
       assert {:reply, recovered_result} = recovered.decision
       assert recovered_result.state.revision == if(committed?, do: 2, else: 1)
-      assert event_tags(Ledger.events(ledger)) == @full_boundary_order
+      assert event_tags(Ledger.events(ledger)) == @run_boundary_order
     end)
   end
 
@@ -512,7 +542,25 @@ defmodule SpectreTurnMechanicsContractTest do
   defp event_tag({:journal, :persistence, _revision, _turn_id, _trace_id}),
     do: :journal_persistence
 
+  defp event_tag({:journal, phase, _revision, _turn_id, _trace_id})
+       when phase in [
+              :run_started,
+              :run_boundary,
+              :run_start_failed,
+              :run_advance_failed,
+              :run_resume_failed
+            ],
+       do: phase
+
   defp event_tag({:journal, _phase, _revision, _turn_id, _trace_id}), do: :journal_runtime
+
+  defp include_run_failure_events(tags, boundary) when boundary in [:input, :state_load],
+    do: tags ++ [:run_start_failed]
+
+  defp include_run_failure_events(tags, _boundary) do
+    {before_memory, from_memory} = Enum.split_while(tags, &(&1 != :memory_recall))
+    before_memory ++ [:run_started] ++ from_memory ++ [:run_advance_failed]
+  end
 
   defp assert_boundary_failure(:input, {InputPlug, %Failure{provider: :input, kind: :crash}}),
     do: :ok

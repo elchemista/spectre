@@ -86,6 +86,7 @@ defmodule Spectre.Agent do
   alias Spectre.Extension
   alias Spectre.Prompt.Operation
   alias Spectre.Skill.Mount
+  alias Spectre.Stack.Binding
 
   @doc """
   Imports the DSL and initializes compile-time metadata for an agent module.
@@ -148,7 +149,7 @@ defmodule Spectre.Agent do
     Module.put_attribute(module, :spectre_definition_version, definition_version)
 
     if kind == :agent do
-      Spectre.Stack.Binding.setup_agent!(module, Keyword.get(config, :stack))
+      Binding.setup_agent!(module, Keyword.get(config, :stack))
     else
       Module.put_attribute(module, :spectre_stack_refs, [])
     end

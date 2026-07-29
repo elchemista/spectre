@@ -484,7 +484,8 @@ defmodule SpectreTurnArbitrationTest do
 
       assert {:reply, ^result} = turn.decision
       assert turn.metadata.lifecycle == Result.lifecycle(result)
-      assert turn.opts == [source: :test]
+      assert turn.opts == []
+      assert turn.input.raw == nil
       assert turn.agent == SpectreTurnArbitrationTest
     end
   end

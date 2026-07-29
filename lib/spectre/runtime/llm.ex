@@ -13,18 +13,21 @@ defmodule Spectre.LLM do
   primary and structured fallback (or the reverse) can share one prompt plan.
   """
 
+  alias Spectre.Inference.Response
   alias Spectre.Prompt.Plan
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
 
   @callback complete(String.t(), keyword()) ::
-              {:ok, String.t() | Spectre.Inference.Response.t()} | {:error, term()}
+              {:ok, String.t() | Response.t() | map()} | {:error, term()}
   @callback complete_plan(Plan.t(), keyword()) ::
-              {:ok, String.t() | Spectre.Inference.Response.t()} | {:error, term()}
+              {:ok, String.t() | Response.t() | map()} | {:error, term()}
 
   @optional_callbacks complete_plan: 2
 
   @type prompt :: String.t() | Plan.t()
+  @type completion :: String.t() | Response.t() | map()
+  @type completion_result :: {:ok, completion()} | {:error, term()}
 
   @doc """
   Completes a rendered string or typed prompt plan through the configured model
@@ -32,7 +35,7 @@ defmodule Spectre.LLM do
 
       Spectre.LLM.complete("Say hello", model: {MyApp.LLM, :complete, model: "small"})
   """
-  @spec complete(prompt(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @spec complete(prompt(), keyword()) :: completion_result()
   def complete(prompt, opts \\ [])
 
   def complete(prompt, opts)
@@ -49,7 +52,7 @@ defmodule Spectre.LLM do
   profile fallback decisions.
   """
   @spec complete_once(prompt(), keyword()) ::
-          {:ok, String.t() | Spectre.Inference.Response.t() | map()} | {:error, term()}
+          completion_result()
   def complete_once(prompt, opts \\ [])
 
   def complete_once(prompt, opts)
@@ -57,7 +60,7 @@ defmodule Spectre.LLM do
     do_complete(prompt, opts)
   end
 
-  @spec do_complete(prompt(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @spec do_complete(prompt(), keyword()) :: completion_result()
   defp do_complete(prompt, opts) do
     cond do
       model = Keyword.get(opts, :model) ->
@@ -74,8 +77,7 @@ defmodule Spectre.LLM do
     end
   end
 
-  @spec maybe_fallback({:ok, String.t()} | {:error, term()}, prompt(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
+  @spec maybe_fallback(completion_result(), prompt(), keyword()) :: completion_result()
   defp maybe_fallback({:ok, _text} = ok, _prompt, _opts), do: ok
 
   defp maybe_fallback({:error, reason} = error, prompt, opts) do
@@ -114,7 +116,7 @@ defmodule Spectre.LLM do
           function() | module() | {module(), atom()} | {module(), atom(), keyword()} | term(),
           prompt(),
           keyword()
-        ) :: {:ok, String.t()} | {:error, term()}
+        ) :: completion_result()
   defp call_model({_module, _function, adapter_opts} = model, prompt, opts)
        when is_list(adapter_opts) do
     protected_call(model, prompt, model_opts(adapter_opts, opts))
@@ -124,8 +126,7 @@ defmodule Spectre.LLM do
     protected_call(model, prompt, Keyword.delete(opts, :model))
   end
 
-  @spec protected_call(term(), prompt(), keyword()) ::
-          {:ok, String.t() | Spectre.Inference.Response.t() | map()} | {:error, term()}
+  @spec protected_call(term(), prompt(), keyword()) :: completion_result()
   defp protected_call(model, prompt, opts) do
     adapter_opts = Call.adapter_opts(opts)
 
@@ -135,15 +136,15 @@ defmodule Spectre.LLM do
            opts
          ) do
       {:ok, text} when is_binary(text) -> {:ok, text}
-      {:ok, %Spectre.Inference.Response{}} = response -> response
+      {:ok, %Response{}} = response -> response
       {:ok, %{text: text}} = response when is_binary(text) -> response
       {:error, _reason} = error -> error
     end
   end
 
-  @spec normalize_model_reply(term()) :: {:ok, String.t()} | {:error, term()} | term()
+  @spec normalize_model_reply(term()) :: completion_result() | term()
   defp normalize_model_reply({:ok, text} = reply) when is_binary(text), do: reply
-  defp normalize_model_reply({:ok, %Spectre.Inference.Response{}} = reply), do: reply
+  defp normalize_model_reply({:ok, %Response{}} = reply), do: reply
   defp normalize_model_reply({:ok, %{text: text}} = reply) when is_binary(text), do: reply
 
   defp normalize_model_reply({:ok, other}),
@@ -212,8 +213,7 @@ defmodule Spectre.LLM do
   defp format_tuple_prompt(:complete_plan, :auto, plan), do: {:ok, plan}
   defp format_tuple_prompt(_function, _format, plan), do: {:ok, Plan.legacy(plan)}
 
-  @spec call_model_fun(function() | term(), prompt(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
+  @spec call_model_fun(function() | term(), prompt(), keyword()) :: completion_result()
   defp call_model_fun(fun, %Plan{} = plan, opts) do
     with {:ok, format} <- prompt_format(opts) do
       call_model_fun(fun, plan, opts, format)
