@@ -30,11 +30,11 @@ defmodule Spectre.Inference.Profile do
           latency_tier: :low | :medium | :high,
           fallback: [term()],
           metadata: map(),
-          profile_hash: String.t()
+          profile_hash: String.t() | nil
         }
 
   @spec new(t() | map() | keyword()) :: t()
-  def new(%__MODULE__{} = profile), do: profile
+  def new(%__MODULE__{} = profile), do: finalize(profile)
   def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
 
   def new(attrs) when is_map(attrs) do
@@ -46,8 +46,7 @@ defmodule Spectre.Inference.Profile do
       |> Map.update(:fallback, [], &List.wrap/1)
       |> then(&struct(__MODULE__, Map.take(&1, fields())))
 
-    validate!(profile)
-    %{profile | profile_hash: profile.profile_hash || hash(profile)}
+    finalize(profile)
   end
 
   @doc """
@@ -141,13 +140,12 @@ defmodule Spectre.Inference.Profile do
   defp tier_rank(:low), do: 10
   defp tier_rank(:medium), do: 20
   defp tier_rank(:high), do: 30
-  defp tier_rank(_unknown), do: 1_000
 
   @spec validate!(t()) :: :ok
   defp validate!(%__MODULE__{} = profile) do
-    unless not is_nil(profile.id), do: raise(ArgumentError, "profile id is required")
+    if is_nil(profile.id), do: raise(ArgumentError, "profile id is required")
     unless is_integer(profile.rank), do: raise(ArgumentError, "profile rank must be an integer")
-    unless not is_nil(profile.model), do: raise(ArgumentError, "profile model is required")
+    if is_nil(profile.model), do: raise(ArgumentError, "profile model is required")
 
     unless profile.privacy in [:local, :private_cloud, :cloud],
       do: raise(ArgumentError, "invalid profile privacy")
@@ -160,6 +158,17 @@ defmodule Spectre.Inference.Profile do
 
     unless is_map(profile.metadata), do: raise(ArgumentError, "profile metadata must be a map")
     :ok
+  end
+
+  @spec finalize(t()) :: t()
+  defp finalize(%__MODULE__{} = profile) do
+    validate!(profile)
+
+    case profile.profile_hash do
+      nil -> %{profile | profile_hash: hash(profile)}
+      hash when is_binary(hash) and hash != "" -> profile
+      _invalid -> raise ArgumentError, "profile hash must be a non-empty string"
+    end
   end
 
   @spec fields() :: [atom()]

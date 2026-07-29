@@ -31,6 +31,7 @@ defmodule Spectre.Extension do
   alias Spectre.Action.Provider.Mount, as: ProviderMount
   alias Spectre.Effect.Executor.Mount, as: ExecutorMount
   alias Spectre.Extension.Mount
+  alias Spectre.Flow.Constraint, as: FlowConstraint
 
   @api_version 1
 
@@ -73,19 +74,7 @@ defmodule Spectre.Extension do
   @spec register!(module(), module(), keyword()) :: :ok
   def register!(owner, extension, opts \\ [])
       when is_atom(owner) and is_atom(extension) and is_list(opts) do
-    unless Keyword.keyword?(opts),
-      do: raise(ArgumentError, "Spectre extension options must be a keyword list")
-
-    unless Module.has_attribute?(owner, :spectre_extensions) do
-      raise ArgumentError,
-            "#{inspect(extension)} must be used after `use Spectre.Agent` in #{inspect(owner)}"
-    end
-
-    unless Module.get_attribute(owner, :spectre_kind) == :agent do
-      raise ArgumentError,
-            "#{inspect(extension)} can only extend a Spectre Agent, got #{inspect(owner)}"
-    end
-
+    validate_registration!(owner, extension, opts)
     mount = Mount.new(extension, opts)
     ensure_supported_api!(mount)
 
@@ -95,23 +84,7 @@ defmodule Spectre.Extension do
       |> List.wrap()
       |> Enum.find(&(&1.id == mount.id))
 
-    case existing do
-      nil ->
-        setup!(owner, mount)
-        Module.put_attribute(owner, :spectre_extensions, mount)
-        :ok
-
-      %Mount{module: ^extension, opts: existing_opts}
-      when opts == [] and is_list(existing_opts) ->
-        if Keyword.has_key?(existing_opts, :stack_ref) do
-          :ok
-        else
-          duplicate_extension!(owner, mount, existing)
-        end
-
-      %Mount{} ->
-        duplicate_extension!(owner, mount, existing)
-    end
+    register_mount!(owner, extension, opts, mount, existing)
   end
 
   @doc false
@@ -193,22 +166,8 @@ defmodule Spectre.Extension do
     unless Keyword.keyword?(config),
       do: raise(ArgumentError, "Spectre Agent configuration must be a keyword list")
 
-    {defaults, owners} =
-      Enum.reduce(mounts, {[], %{}}, fn mount, {defaults, owners} ->
-        Enum.reduce(agent_config(mount), {defaults, owners}, fn {key, value}, {entries, seen} ->
-          case Map.fetch(seen, key) do
-            :error ->
-              {[{key, value} | entries], Map.put(seen, key, mount.id)}
+    {defaults, _owners} = Enum.reduce(mounts, {[], %{}}, &merge_mount_config/2)
 
-            {:ok, owner} ->
-              raise ArgumentError,
-                    "extensions #{inspect(owner)} and #{inspect(mount.id)} both " <>
-                      "contribute Agent configuration #{inspect(key)}"
-          end
-        end)
-      end)
-
-    _owners = owners
     defaults |> Enum.reverse() |> Keyword.merge(config)
   end
 
@@ -244,22 +203,7 @@ defmodule Spectre.Extension do
       |> Module.get_attribute(:spectre_extensions)
       |> List.wrap()
       |> Enum.reverse()
-      |> Enum.flat_map(fn mount ->
-        ensure_loaded!(mount)
-
-        if function_exported?(mount.module, :expand_handler, 3) do
-          module = mount.module
-
-          case module.expand_handler(handler, caller, mount.opts) do
-            :ignore -> []
-            {:ok, expanded} -> [{mount, expanded}]
-            {:error, reason} -> extension_error!(mount, :expand_handler, reason)
-            other -> extension_error!(mount, :expand_handler, {:invalid_reply, other})
-          end
-        else
-          []
-        end
-      end)
+      |> Enum.flat_map(&expand_handler_mount(&1, handler, caller))
 
     case matches do
       [] ->
@@ -393,10 +337,94 @@ defmodule Spectre.Extension do
   defp normalize_executor!(other),
     do: raise(ArgumentError, "invalid effect executor contribution: #{inspect(other)}")
 
-  @spec normalize_constraint!(Spectre.Flow.Constraint.t() | map() | keyword()) ::
-          Spectre.Flow.Constraint.t()
-  defp normalize_constraint!(%Spectre.Flow.Constraint{} = constraint), do: constraint
-  defp normalize_constraint!(constraint), do: Spectre.Flow.Constraint.new(constraint)
+  @spec normalize_constraint!(FlowConstraint.t() | map() | keyword()) :: FlowConstraint.t()
+  defp normalize_constraint!(%FlowConstraint{} = constraint), do: constraint
+  defp normalize_constraint!(constraint), do: FlowConstraint.new(constraint)
+
+  @spec validate_registration!(module(), module(), keyword()) :: :ok
+  defp validate_registration!(owner, extension, opts) do
+    unless Keyword.keyword?(opts),
+      do: raise(ArgumentError, "Spectre extension options must be a keyword list")
+
+    unless Module.has_attribute?(owner, :spectre_extensions) do
+      raise ArgumentError,
+            "#{inspect(extension)} must be used after `use Spectre.Agent` in #{inspect(owner)}"
+    end
+
+    unless Module.get_attribute(owner, :spectre_kind) == :agent do
+      raise ArgumentError,
+            "#{inspect(extension)} can only extend a Spectre Agent, got #{inspect(owner)}"
+    end
+
+    :ok
+  end
+
+  @spec register_mount!(module(), module(), keyword(), Mount.t(), Mount.t() | nil) :: :ok
+  defp register_mount!(owner, _extension, _opts, mount, nil) do
+    setup!(owner, mount)
+    Module.put_attribute(owner, :spectre_extensions, mount)
+    :ok
+  end
+
+  defp register_mount!(
+         owner,
+         extension,
+         [],
+         mount,
+         %Mount{module: existing_module, opts: existing_opts} = existing
+       )
+       when extension == existing_module and is_list(existing_opts) do
+    if Keyword.has_key?(existing_opts, :stack_ref),
+      do: :ok,
+      else: duplicate_extension!(owner, mount, existing)
+  end
+
+  defp register_mount!(owner, _extension, _opts, mount, %Mount{} = existing),
+    do: duplicate_extension!(owner, mount, existing)
+
+  @spec merge_mount_config(Mount.t(), {[term()], map()}) :: {[term()], map()}
+  defp merge_mount_config(%Mount{} = mount, {defaults, owners}) do
+    Enum.reduce(agent_config(mount), {defaults, owners}, fn entry, accumulated ->
+      merge_config_entry(entry, accumulated, mount)
+    end)
+  end
+
+  @spec merge_config_entry({term(), term()}, {[term()], map()}, Mount.t()) ::
+          {[term()], map()}
+  defp merge_config_entry({key, value}, {entries, seen}, %Mount{} = mount) do
+    case Map.fetch(seen, key) do
+      :error ->
+        {[{key, value} | entries], Map.put(seen, key, mount.id)}
+
+      {:ok, owner} ->
+        raise ArgumentError,
+              "extensions #{inspect(owner)} and #{inspect(mount.id)} both " <>
+                "contribute Agent configuration #{inspect(key)}"
+    end
+  end
+
+  @spec expand_handler_mount(Mount.t(), Macro.t(), Macro.Env.t()) ::
+          [{Mount.t(), Macro.t()}]
+  defp expand_handler_mount(%Mount{} = mount, handler, caller) do
+    ensure_loaded!(mount)
+
+    if function_exported?(mount.module, :expand_handler, 3),
+      do: call_expand_handler(mount, handler, caller),
+      else: []
+  end
+
+  @spec call_expand_handler(Mount.t(), Macro.t(), Macro.Env.t()) ::
+          [{Mount.t(), Macro.t()}]
+  defp call_expand_handler(%Mount{} = mount, handler, caller) do
+    module = mount.module
+
+    case module.expand_handler(handler, caller, mount.opts) do
+      :ignore -> []
+      {:ok, expanded} -> [{mount, expanded}]
+      {:error, reason} -> extension_error!(mount, :expand_handler, reason)
+      other -> extension_error!(mount, :expand_handler, {:invalid_reply, other})
+    end
+  end
 
   @spec normalize_planner!(term()) :: {module(), keyword()} | nil
   defp normalize_planner!(nil), do: nil

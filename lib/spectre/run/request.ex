@@ -37,25 +37,27 @@ defmodule Spectre.Run.Request do
   @doc false
   @spec from_awaitable(Awaitable.t()) :: t()
   def from_awaitable(%Awaitable{} = awaitable) do
-    {:ok, id} = Value.opaque_id(awaitable.id, "request")
-    {:ok, subject_id} = Value.opaque_id(awaitable.subject_id, "subject")
+    with {:ok, id} <- Value.opaque_id(awaitable.id, "request"),
+         {:ok, subject_id} <- Value.opaque_id(awaitable.subject_id, "subject") do
+      request =
+        %__MODULE__{
+          id: id,
+          kind: awaitable.kind,
+          name: awaitable.name,
+          subject_id: subject_id,
+          label: awaitable.label,
+          max_attempts: awaitable.max_attempts,
+          status: awaitable.status,
+          attempts: awaitable.attempts,
+          metadata: logical_metadata(awaitable.metadata)
+        }
 
-    request =
-      %__MODULE__{
-        id: id,
-        kind: awaitable.kind,
-        name: awaitable.name,
-        subject_id: subject_id,
-        label: awaitable.label,
-        max_attempts: awaitable.max_attempts,
-        status: awaitable.status,
-        attempts: awaitable.attempts,
-        metadata: logical_metadata(awaitable.metadata)
-      }
-
-    case Value.validate(request, [:request]) do
-      :ok -> request
-      {:error, reason} -> raise ArgumentError, "non-portable Run request: #{inspect(reason)}"
+      case Value.validate(request, [:request]) do
+        :ok -> request
+        {:error, reason} -> raise_nonportable_request(reason)
+      end
+    else
+      {:error, reason} -> raise_nonportable_request(reason)
     end
   end
 
@@ -67,4 +69,8 @@ defmodule Spectre.Run.Request do
   end
 
   defp logical_metadata(_metadata), do: %{}
+
+  defp raise_nonportable_request(reason) do
+    raise ArgumentError, "non-portable Run request: #{inspect(reason)}"
+  end
 end

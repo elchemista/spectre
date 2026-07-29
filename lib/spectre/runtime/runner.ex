@@ -13,10 +13,10 @@ defmodule Spectre.Runner do
   alias Spectre.ActionPlanner
   alias Spectre.ActionProtection
   alias Spectre.Effect
-  alias Spectre.Input
   alias Spectre.Inference
   alias Spectre.Inference.Request
   alias Spectre.Inference.Response
+  alias Spectre.Input
   alias Spectre.Prompt
   alias Spectre.Prompt.Plan
   alias Spectre.Provider.Call

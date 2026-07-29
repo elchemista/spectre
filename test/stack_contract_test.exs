@@ -158,6 +158,8 @@ defmodule SpectreStackContractTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Action.Provider.Mount, as: ProviderMount
+  alias Spectre.Journal.Record
+  alias Spectre.Journal.Recorder
   alias Spectre.Stack.Contract.V1
   alias Spectre.Stack.Definition
   alias Spectre.Stack.Installation
@@ -301,13 +303,9 @@ defmodule SpectreStackContractTest do
          ]}
     ]
 
-    assert {:ok, ^result} =
-             Spectre.Journal.Recorder.record_result(result, %{
-               agent: StackAgent,
-               opts: opts
-             })
+    assert {:ok, ^result} = Recorder.record_result(result, %{agent: StackAgent, opts: opts})
 
-    assert_receive {:stack_journal_record, %Spectre.Journal.Record{} = record}
+    assert_receive {:stack_journal_record, %Record{} = record}
     stack = record.metadata.stack
     definition = Definition.fetch!(TestStack)
 

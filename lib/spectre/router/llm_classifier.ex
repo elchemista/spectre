@@ -3,10 +3,16 @@ defmodule Spectre.Router.LLMClassifier do
   One-label LLM fallback classifier for Spectre routes.
   """
 
+  alias Spectre.Context
+  alias Spectre.Inference
+  alias Spectre.Inference.Request
+  alias Spectre.Inference.Response
+  alias Spectre.Input
+  alias Spectre.Prompt.Plan
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
-  alias Spectre.Prompt.Plan
   alias Spectre.Route
+  alias Spectre.State
 
   @doc """
   Asks a configured LLM completion function to return exactly one label.
@@ -81,18 +87,18 @@ defmodule Spectre.Router.LLMClassifier do
   defp complete_with_boundary(plan, text, opts) do
     case Keyword.get(opts, :spectre_agent) do
       agent when is_atom(agent) and not is_nil(agent) ->
-        input = Spectre.Input.new(text)
+        input = Input.new(text)
 
-        ctx = %Spectre.Context{
+        ctx = %Context{
           agent: agent,
           input: input,
-          state: %Spectre.State{},
+          state: %State{},
           opts: opts
         }
 
-        request = Spectre.Inference.Request.for_classification(plan, ctx, opts)
+        request = Request.for_classification(plan, ctx, opts)
 
-        case Spectre.Inference.complete(agent, request, ctx) do
+        case Inference.complete(agent, request, ctx) do
           {:ok, response} ->
             metadata = %{
               inference: %{
@@ -120,7 +126,7 @@ defmodule Spectre.Router.LLMClassifier do
       _no_agent ->
         case Spectre.LLM.complete(plan, opts) do
           {:ok, text} when is_binary(text) -> {:ok, text, %{}}
-          {:ok, %Spectre.Inference.Response{text: text}} -> {:ok, text, %{}}
+          {:ok, %Response{text: text}} -> {:ok, text, %{}}
           {:error, _reason} = error -> error
         end
     end

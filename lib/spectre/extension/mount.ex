@@ -18,33 +18,54 @@ defmodule Spectre.Extension.Mount do
 
   @spec new(module(), keyword()) :: t()
   def new(module, opts) when is_atom(module) and not is_nil(module) and is_list(opts) do
-    unless Keyword.keyword?(opts),
-      do: raise(ArgumentError, "Spectre extension options must be a keyword list")
-
-    unless Code.ensure_loaded?(module) do
-      raise ArgumentError, "unknown Spectre extension module: #{inspect(module)}"
-    end
-
-    id =
-      cond do
-        Keyword.has_key?(opts, :as) -> Keyword.fetch!(opts, :as)
-        function_exported?(module, :id, 0) -> module.id()
-        true -> module
-      end
-
-    api_version =
-      if function_exported?(module, :api_version, 0),
-        do: module.api_version(),
-        else: 0
-
-    unless is_integer(api_version) and api_version >= 0,
-      do: raise(ArgumentError, "invalid Spectre extension API version: #{inspect(api_version)}")
+    validate_options!(opts)
+    ensure_loaded!(module)
+    api_version = api_version(module)
+    validate_api_version!(api_version)
 
     %__MODULE__{
-      id: id,
+      id: mount_id(module, opts),
       module: module,
       api_version: api_version,
       opts: Keyword.delete(opts, :as)
     }
+  end
+
+  @spec validate_options!(keyword()) :: :ok
+  defp validate_options!(opts) do
+    unless Keyword.keyword?(opts),
+      do: raise(ArgumentError, "Spectre extension options must be a keyword list")
+
+    :ok
+  end
+
+  @spec ensure_loaded!(module()) :: :ok
+  defp ensure_loaded!(module) do
+    unless Code.ensure_loaded?(module),
+      do: raise(ArgumentError, "unknown Spectre extension module: #{inspect(module)}")
+
+    :ok
+  end
+
+  @spec mount_id(module(), keyword()) :: term()
+  defp mount_id(module, opts) do
+    cond do
+      Keyword.has_key?(opts, :as) -> Keyword.fetch!(opts, :as)
+      function_exported?(module, :id, 0) -> module.id()
+      true -> module
+    end
+  end
+
+  @spec api_version(module()) :: term()
+  defp api_version(module) do
+    if function_exported?(module, :api_version, 0), do: module.api_version(), else: 0
+  end
+
+  @spec validate_api_version!(term()) :: :ok
+  defp validate_api_version!(api_version) do
+    unless is_integer(api_version) and api_version >= 0,
+      do: raise(ArgumentError, "invalid Spectre extension API version: #{inspect(api_version)}")
+
+    :ok
   end
 end
