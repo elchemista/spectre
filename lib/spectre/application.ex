@@ -6,6 +6,8 @@ defmodule Spectre.Application do
   @impl Application
   def start(_type, _args) do
     children = [
+      {Registry, keys: :unique, name: Spectre.Instance.Registry},
+      {Spectre.Subject.Registry, name: Spectre.Subject.Registry},
       Spectre.Router.SemanticCache.Owner,
       {Task.Supervisor, name: Spectre.Journal.TaskSupervisor},
       Spectre.Journal.Buffer

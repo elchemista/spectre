@@ -136,7 +136,8 @@ defmodule Spectre.Session do
 
       :ok = Spectre.Session.reset(session, %Spectre.State{})
   """
-  @spec reset(GenServer.server(), State.t() | map() | keyword()) :: :ok
+  @spec reset(GenServer.server(), State.t() | map() | keyword()) ::
+          :ok | {:error, :instance_busy}
   def reset(server, state \\ %State{}) do
     GenServer.call(server, {:reset, state})
   end

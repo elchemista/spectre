@@ -73,6 +73,7 @@ state:
 | Participant | Role in a turn |
 | --- | --- |
 | Agent module | evaluates one stateless/local call through `Spectre.turn/3` |
+| `Spectre.Instance` | owns the ordered State and multiple Runs for one `AgentRef + Subject` |
 | `Spectre.Session` | serializes calls and retains the latest Spectre state |
 | `GenServer` or `gen_statem` | calls or adapts the local turn API while retaining its native OTP protocol |
 | `Spectre.Turn.Handler` | optionally claims an already-active dialogue before routing |
@@ -94,6 +95,8 @@ same turn decisions.
 | Final route choice | `Spectre.Router.Arbitrator` |
 | State transitions | `Spectre.Lifecycle` |
 | Logical continuation and step fencing | `Spectre.Run`, `Spectre.Runtime` |
+| Subject-scoped Run ownership and scheduling | `Spectre.Instance` |
+| Exact external-identity resolution | `Spectre.Subject.Registry` |
 | Policy text/label matching | `Spectre.Policy.Matcher` |
 | Prompt trust and composition | `Spectre.Prompt.Plan` |
 | Provider isolation and deadlines | `Spectre.Provider.Call` |

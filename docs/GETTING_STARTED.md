@@ -389,20 +389,24 @@ For a durable state adapter, save `executed_result.state` in the host transactio
 or execution workflow. This post-execution ownership is intentionally explicit
 in the current API.
 
-## 9. Use A Conversation Session
+## 9. Use A Subject-Scoped Agent Instance
 
-A session serializes turns and keeps the latest state:
+An Instance serializes the ordered State for one canonical Subject while
+retaining each Run separately:
 
 ```elixir
-{:ok, session} =
-  Spectre.summon(
-    agent: MyApp.SupportAgent,
-    conversation_id: "chat-123",
+subject = Spectre.Subject.new({:account, account.id})
+
+{:ok, instance} =
+  Spectre.instance(
+    MyApp.SpectreSupervisor,
+    MyApp.SupportAgent,
+    subject,
     idle: :timer.minutes(10)
   )
 
 {:ok, awaiting_turn} =
-  Spectre.turn(session, "delete my account")
+  Spectre.turn(instance, "delete my account")
 
 {:ok, approved_turn} =
   Spectre.Turn.resolve_policy(
@@ -413,17 +417,19 @@ A session serializes turns and keeps the latest state:
 {:needs, _effect, approved_result} =
   approved_turn.decision
 
-Spectre.state(session)
+Spectre.state(instance)
 # => approved_result.state
 ```
 
-Sessions restore configured durable state on startup when no explicit state is
-provided. They retain the committed state even when memory persistence reports
-a strict failure.
+Instances restore configured durable State on startup when no explicit state
+is provided. They retain the committed state even when memory persistence
+reports a strict failure. Calls without an explicit `:subject` can still use
+the legacy conversation-scoped `Spectre.Session`.
 
-Use one serialization boundary per conversation. Concurrent stateless calls
-that load the same snapshot still require host-side optimistic locking or a
-conversation lock.
+Resolve authenticated channel identities to the canonical Subject before
+looking up the Instance. Concurrent stateless calls that load the same snapshot
+still require host-side optimistic locking. See
+[Agent Instances and Subjects](INSTANCES.md).
 
 ## 10. Build A Host Dispatcher
 
