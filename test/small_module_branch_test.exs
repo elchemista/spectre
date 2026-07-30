@@ -138,6 +138,15 @@ defmodule SpectreSmallModuleBranchTest do
     assert changed.halted?
     assert changed.traces == [:routed]
     assert changed.errors == [:failed]
+
+    assert Context.lifecycle_run_id(original) == nil
+
+    assert Context.lifecycle_run_id(%{
+             opts: [instance_run_lifecycle?: true, run_id: "run-owned"]
+           }) == "run-owned"
+
+    assert Context.lifecycle_run_id(%{opts: [run_id: "ordinary-runtime"]}) == nil
+    assert Context.lifecycle_run_id(%{opts: [instance_run_lifecycle?: true, run_id: ""]}) == nil
   end
 
   test "identity returns UUIDv7 and stable keys for binary and arbitrary terms" do

@@ -219,6 +219,24 @@ that can be implemented as a trusted Spectre action whose adapter dispatches
 through Pulse. A more general agent-effect executor should be added only when
 the Pulse task contract is concrete.
 
+An integration that stages a non-Action Effect directly must preserve the
+Instance Run lifecycle:
+
+```elixir
+run_id = Spectre.Context.lifecycle_run_id(ctx)
+effect = Spectre.Effect.bind_run(effect, run_id)
+
+with {:ok, transition} <-
+       Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, policy}) do
+  staged = Spectre.State.pending_effect(transition.to, run_id)
+  {:ok, %{result | state: transition.to, effects: [staged]}}
+end
+```
+
+The scoped lookup is significant when several Runs share one subject State.
+For stateless calls and `Spectre.Session`, `lifecycle_run_id/1` returns `nil`
+and the same code keeps the single-lifecycle compatibility behavior.
+
 Pulse needs a `Turn.Handler` only when an already-active local or delegated
 task must claim subsequent input before normal Agent routing. Registering a
 global Pulse handler merely to decode every envelope would mix transport with

@@ -119,7 +119,14 @@ defmodule Spectre.Effect do
     }
   end
 
-  @doc false
+  @doc """
+  Associates an Effect with its owning Instance Run.
+
+  Extension-owned Effect builders should use
+  `Spectre.Context.lifecycle_run_id/1` and bind the returned value before
+  staging. Passing `nil` preserves the stateless and Session compatibility
+  lifecycle.
+  """
   @spec bind_run(t(), String.t() | nil) :: t()
   def bind_run(%__MODULE__{} = effect, run_id)
       when is_nil(run_id) or (is_binary(run_id) and run_id != "") do

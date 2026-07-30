@@ -34,6 +34,27 @@ defmodule Spectre.Context do
         }
 
   @doc """
+  Returns the Run that owns lifecycle values staged through this context.
+
+  Subject-scoped `Spectre.Instance` calls opt into per-Run lifecycle
+  ownership. Stateless Runtime calls and conversation Sessions return `nil`
+  and keep the legacy single-lifecycle contract. Extension-owned Effect
+  builders should bind this value to every staged Effect and use the scoped
+  `Spectre.State` lifecycle queries with the same value.
+  """
+  @spec lifecycle_run_id(t() | map()) :: String.t() | nil
+  def lifecycle_run_id(%{opts: opts}) when is_list(opts) do
+    if Keyword.get(opts, :instance_run_lifecycle?, false) do
+      case Keyword.get(opts, :run_id) do
+        run_id when is_binary(run_id) and run_id != "" -> run_id
+        _missing_or_invalid -> nil
+      end
+    end
+  end
+
+  def lifecycle_run_id(_context), do: nil
+
+  @doc """
   Marks the context as halted.
 
       ctx = Spectre.Context.halt(ctx)

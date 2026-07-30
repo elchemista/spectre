@@ -19,6 +19,9 @@ minor release may contain documented breaking API changes.
 - State schema v5 persists Run ownership and supports bounded collections of
   independent pending Effects and Awaitables. Schema v2-v4 snapshots remain
   readable and legacy unowned lifecycle is claimed by its first Instance Run.
+- `Spectre.Context.lifecycle_run_id/1` and `Spectre.Effect.bind_run/2` give
+  extension-owned Effect builders the same per-Run lifecycle contract used by
+  core Actions.
 
 ### Compatibility
 
