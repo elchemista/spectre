@@ -12,14 +12,14 @@ defmodule Spectre.State.Codec do
   alias Spectre.Effect
   alias Spectre.State
 
-  @state_version 4
+  @state_version 5
   @max_json_bytes 2_000_000
-  @max_pending_effects 1
-  @max_planned_effects 32
-  @max_awaitables 64
+  @max_pending_effects 256
+  @max_planned_effects 512
+  @max_awaitables 512
   @max_memory_refs 256
   @max_trace_entries 256
-  @supported_versions [2, 3, 4]
+  @supported_versions [2, 3, 4, 5]
   @effect_statuses [:pending, :waiting_policy, :approved, :completed, :failed, :cancelled]
   @awaitable_statuses [:open, :accepted, :rejected, :cancelled, :expired]
   @effect_kinds [:action]
@@ -34,12 +34,20 @@ defmodule Spectre.State.Codec do
     id idempotency_key kind name mode policy result error args status payload metadata
   )
 
-  @effect_keys ~w(
+  @effect_v4_keys ~w(
     id idempotency_key kind name owner scope mode policy result error args status payload metadata
   )
 
-  @awaitable_keys ~w(
+  @effect_keys ~w(
+    id idempotency_key kind name owner scope run_id mode policy result error args status payload metadata
+  )
+
+  @legacy_awaitable_keys ~w(
     id kind name subject_id label max_attempts status attempts metadata
+  )
+
+  @awaitable_keys ~w(
+    id kind name subject_id run_id label max_attempts status attempts metadata
   )
 
   @doc """
@@ -111,7 +119,8 @@ defmodule Spectre.State.Codec do
            decode_collection(attrs, "pending_effects", &decode_effect(&1, version)),
          {:ok, planned_effects} <-
            decode_collection(attrs, "planned_effects", &decode_effect(&1, version)),
-         {:ok, awaitables} <- decode_collection(attrs, "awaitables", &decode_awaitable/1),
+         {:ok, awaitables} <-
+           decode_collection(attrs, "awaitables", &decode_awaitable(&1, version)),
          {:ok, memory_refs} <- decode_field(attrs, "memory_refs", []),
          {:ok, data} <- decode_field(attrs, "data", %{}),
          :ok <- validate_state_data(data),
@@ -152,6 +161,7 @@ defmodule Spectre.State.Codec do
          {:ok, name} <- encode_value(effect.name),
          {:ok, owner} <- encode_value(effect.owner),
          {:ok, scope} <- encode_value(effect.scope),
+         {:ok, run_id} <- encode_value(effect.run_id),
          {:ok, policy} <- encode_value(effect.policy),
          {:ok, result} <- encode_value(effect.result),
          {:ok, error} <- encode_value(effect.error),
@@ -166,6 +176,7 @@ defmodule Spectre.State.Codec do
          "name" => name,
          "owner" => owner,
          "scope" => scope,
+         "run_id" => run_id,
          "mode" => encode_optional_atom(effect.mode),
          "policy" => policy,
          "result" => result,
@@ -198,6 +209,7 @@ defmodule Spectre.State.Codec do
          :ok <- require_map(args, :effect_args),
          :ok <- require_map(payload, :effect_payload),
          :ok <- require_map(metadata, :effect_metadata),
+         {:ok, run_id} <- decode_lifecycle_run_id(attrs, version, :effect),
          {:ok, owner, scope, payload} <- decode_effect_origin(attrs, payload, version) do
       {:ok,
        %Effect{
@@ -207,6 +219,7 @@ defmodule Spectre.State.Codec do
          name: name,
          owner: owner,
          scope: scope,
+         run_id: run_id,
          mode: mode,
          policy: policy,
          result: result,
@@ -233,7 +246,7 @@ defmodule Spectre.State.Codec do
     end
   end
 
-  defp decode_effect_origin(attrs, payload, @state_version) do
+  defp decode_effect_origin(attrs, payload, version) when version in [4, 5] do
     with {:ok, owner} <- decode_field(attrs, "owner", nil),
          {:ok, scope} <- decode_field(attrs, "scope", nil),
          :ok <- validate_effect_origin(owner, scope) do
@@ -243,6 +256,7 @@ defmodule Spectre.State.Codec do
 
   @spec effect_keys(integer()) :: [String.t()]
   defp effect_keys(version) when version in [2, 3], do: @legacy_effect_keys
+  defp effect_keys(4), do: @effect_v4_keys
   defp effect_keys(@state_version), do: @effect_keys
 
   @spec origin_value(map(), :owner | :scope) :: term()
@@ -279,6 +293,7 @@ defmodule Spectre.State.Codec do
          {:ok, id} <- encode_value(awaitable.id),
          {:ok, name} <- encode_value(awaitable.name),
          {:ok, subject_id} <- encode_value(awaitable.subject_id),
+         {:ok, run_id} <- encode_value(awaitable.run_id),
          {:ok, label} <- encode_value(awaitable.label),
          {:ok, metadata} <- encode_value(awaitable.metadata) do
       {:ok,
@@ -287,6 +302,7 @@ defmodule Spectre.State.Codec do
          "kind" => Atom.to_string(awaitable.kind),
          "name" => name,
          "subject_id" => subject_id,
+         "run_id" => run_id,
          "label" => label,
          "max_attempts" => awaitable.max_attempts,
          "status" => Atom.to_string(awaitable.status),
@@ -298,13 +314,15 @@ defmodule Spectre.State.Codec do
 
   defp encode_awaitable(other), do: {:error, {:invalid_awaitable, value_shape(other)}}
 
-  @spec decode_awaitable(term()) :: {:ok, Awaitable.t()} | {:error, term()}
-  defp decode_awaitable(attrs) when is_map(attrs) do
-    with {:ok, attrs} <- normalize_schema_map(attrs, @awaitable_keys, :awaitable),
+  @spec decode_awaitable(term(), integer()) :: {:ok, Awaitable.t()} | {:error, term()}
+  defp decode_awaitable(attrs, version) when is_map(attrs) do
+    with {:ok, attrs} <-
+           normalize_schema_map(attrs, awaitable_keys(version), :awaitable),
          {:ok, id} <- decode_required_field(attrs, "id"),
          {:ok, kind} <- decode_enum(attrs, "kind", @awaitable_kinds),
          {:ok, name} <- decode_required_field(attrs, "name"),
          {:ok, subject_id} <- decode_required_field(attrs, "subject_id"),
+         {:ok, run_id} <- decode_lifecycle_run_id(attrs, version, :awaitable),
          {:ok, label} <- decode_field(attrs, "label", nil),
          {:ok, max_attempts} <- optional_positive_integer(attrs, "max_attempts"),
          {:ok, status} <- decode_enum(attrs, "status", @awaitable_statuses),
@@ -317,6 +335,7 @@ defmodule Spectre.State.Codec do
          kind: kind,
          name: name,
          subject_id: subject_id,
+         run_id: run_id,
          label: label,
          max_attempts: max_attempts,
          status: status,
@@ -326,8 +345,12 @@ defmodule Spectre.State.Codec do
     end
   end
 
-  defp decode_awaitable(other),
+  defp decode_awaitable(other, _version),
     do: {:error, {:invalid_awaitable_payload, value_shape(other)}}
+
+  @spec awaitable_keys(integer()) :: [String.t()]
+  defp awaitable_keys(version) when version in [2, 3, 4], do: @legacy_awaitable_keys
+  defp awaitable_keys(@state_version), do: @awaitable_keys
 
   @spec validate_state(State.t()) :: :ok | {:error, term()}
   defp validate_state(%State{} = state) do
@@ -338,7 +361,10 @@ defmodule Spectre.State.Codec do
          :ok <-
            validate_collection_size(state.planned_effects, :planned_effects, @max_planned_effects),
          :ok <- validate_collection_size(state.awaitables, :awaitables, @max_awaitables),
-         :ok <- validate_collection_size(state.memory_refs, :memory_refs, @max_memory_refs) do
+         :ok <- validate_collection_size(state.memory_refs, :memory_refs, @max_memory_refs),
+         :ok <- validate_pending_scopes(state.pending_effects),
+         :ok <- validate_open_awaitable_scopes(state.awaitables),
+         :ok <- validate_open_awaitable_ownership(state.pending_effects, state.awaitables) do
       validate_collection_size(state.trace, :trace, @max_trace_entries)
     end
   end
@@ -378,6 +404,76 @@ defmodule Spectre.State.Codec do
       else: {:error, {:state_collection_too_large, name, size, max}}
   end
 
+  @spec validate_pending_scopes(list()) :: :ok | {:error, term()}
+  defp validate_pending_scopes(effects) do
+    effects
+    |> Enum.reduce_while(MapSet.new(), fn
+      %Effect{run_id: run_id}, seen ->
+        scope = lifecycle_scope(run_id)
+
+        if MapSet.member?(seen, scope),
+          do: {:halt, {:error, {:duplicate_pending_effect_scope, run_id}}},
+          else: {:cont, MapSet.put(seen, scope)}
+
+      other, _seen ->
+        {:halt, {:error, {:invalid_effect, value_shape(other)}}}
+    end)
+    |> case do
+      %MapSet{} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec validate_open_awaitable_scopes(list()) :: :ok | {:error, term()}
+  defp validate_open_awaitable_scopes(awaitables) do
+    awaitables
+    |> Enum.reduce_while(MapSet.new(), fn
+      %Awaitable{status: :open, run_id: run_id}, seen ->
+        scope = lifecycle_scope(run_id)
+
+        if MapSet.member?(seen, scope),
+          do: {:halt, {:error, {:duplicate_open_awaitable_scope, run_id}}},
+          else: {:cont, MapSet.put(seen, scope)}
+
+      %Awaitable{}, seen ->
+        {:cont, seen}
+
+      other, _seen ->
+        {:halt, {:error, {:invalid_awaitable, value_shape(other)}}}
+    end)
+    |> case do
+      %MapSet{} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp lifecycle_scope(nil), do: :global
+  defp lifecycle_scope(run_id), do: {:run, run_id}
+
+  @spec validate_open_awaitable_ownership([Effect.t()], [Awaitable.t()]) ::
+          :ok | {:error, term()}
+  defp validate_open_awaitable_ownership(effects, awaitables) do
+    awaitables
+    |> Enum.filter(&(&1.status == :open))
+    |> Enum.reduce_while(:ok, fn awaitable, :ok ->
+      case Enum.find(effects, &(&1.id == awaitable.subject_id)) do
+        %Effect{run_id: run_id, status: :waiting_policy}
+        when run_id == awaitable.run_id ->
+          {:cont, :ok}
+
+        %Effect{run_id: run_id} when run_id != awaitable.run_id ->
+          {:halt,
+           {:error, {:invalid_policy_lifecycle_owner, awaitable.id, awaitable.run_id, run_id}}}
+
+        %Effect{status: status} ->
+          {:halt, {:error, {:invalid_policy_subject_status, awaitable.id, status}}}
+
+        nil ->
+          {:cont, :ok}
+      end
+    end)
+  end
+
   @spec validate_effect(Effect.t()) :: :ok | {:error, term()}
   defp validate_effect(%Effect{} = effect) do
     with :ok <- validate_effect_identity(effect),
@@ -399,9 +495,17 @@ defmodule Spectre.State.Codec do
   @spec validate_effect_ownership(Effect.t()) :: :ok | {:error, term()}
   defp validate_effect_ownership(%Effect{} = effect) do
     cond do
-      not is_nil(effect.owner) and not is_atom(effect.owner) -> {:error, :invalid_effect_owner}
-      not valid_effect_scope?(effect.scope) -> {:error, {:invalid_effect_scope, effect.scope}}
-      true -> :ok
+      not is_nil(effect.owner) and not is_atom(effect.owner) ->
+        {:error, :invalid_effect_owner}
+
+      not valid_effect_scope?(effect.scope) ->
+        {:error, {:invalid_effect_scope, effect.scope}}
+
+      not valid_lifecycle_run_id?(effect.run_id) ->
+        {:error, {:invalid_lifecycle_run_id, :effect, effect.run_id}}
+
+      true ->
+        :ok
     end
   end
 
@@ -429,6 +533,9 @@ defmodule Spectre.State.Codec do
 
       not is_map(awaitable.metadata) ->
         {:error, :invalid_awaitable_metadata}
+
+      not valid_lifecycle_run_id?(awaitable.run_id) ->
+        {:error, {:invalid_lifecycle_run_id, :awaitable, awaitable.run_id}}
 
       true ->
         :ok
@@ -695,6 +802,26 @@ defmodule Spectre.State.Codec do
   @spec decode_revision(map(), integer()) :: {:ok, non_neg_integer()} | {:error, term()}
   defp decode_revision(attrs, 2), do: optional_non_neg_integer(attrs, "revision", 0)
   defp decode_revision(attrs, _version), do: optional_non_neg_integer(attrs, "revision", 0)
+
+  @spec decode_lifecycle_run_id(map(), integer(), :effect | :awaitable) ::
+          {:ok, String.t() | nil} | {:error, term()}
+  defp decode_lifecycle_run_id(_attrs, version, _entity) when version in [2, 3, 4],
+    do: {:ok, nil}
+
+  defp decode_lifecycle_run_id(attrs, @state_version, entity) do
+    with {:ok, run_id} <- decode_field(attrs, "run_id", nil),
+         true <- valid_lifecycle_run_id?(run_id) do
+      {:ok, run_id}
+    else
+      false -> {:error, {:invalid_lifecycle_run_id, entity, Map.get(attrs, "run_id")}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec valid_lifecycle_run_id?(term()) :: boolean()
+  defp valid_lifecycle_run_id?(nil), do: true
+  defp valid_lifecycle_run_id?(run_id) when is_binary(run_id), do: run_id != ""
+  defp valid_lifecycle_run_id?(_run_id), do: false
 
   @spec validate_version(integer()) :: :ok | {:error, term()}
   defp validate_version(version) when version in @supported_versions, do: :ok

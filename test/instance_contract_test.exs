@@ -464,7 +464,7 @@ defmodule SpectreInstanceContractTest do
     end)
   end
 
-  test "a queued caller is released if another Run opens the global lifecycle lock" do
+  test "a queued caller proceeds when another Run opens an Effect boundary" do
     instance = start_instance()
     test_pid = self()
 
@@ -489,10 +489,10 @@ defmodule SpectreInstanceContractTest do
     assert {:ok, %Turn{observable: {:needs, _boundary}} = needs} =
              Task.await(owner, 5_000)
 
-    assert {:error, {:instance_lifecycle_locked, owner_run_id}} =
+    assert {:ok, %Turn{observable: {:reply, "hello:hello", blocked_ref}}} =
              Task.await(blocked, 5_000)
 
-    assert owner_run_id == needs.ref.run_id
+    refute blocked_ref.run_id == needs.ref.run_id
   end
 
   test "an abnormally terminated worker fences and terminalizes its Run" do
@@ -570,10 +570,10 @@ defmodule SpectreInstanceContractTest do
     send(instance, {:spectre, :invocation_result, invocation_id, forged})
     assert map_size(Instance.info(instance).invocations) == 1
 
-    assert {:error, {:instance_lifecycle_locked, locked_run}} =
-             Spectre.turn(instance, "hello")
+    queued = Task.async(fn -> Spectre.turn(instance, "hello") end)
 
-    assert locked_run == invocation_ref.run_id
+    assert_eventually(fn -> Instance.info(instance).ready != [] end)
+    refute Task.yield(queued, 0)
 
     send(action_worker, :finish_action)
 
@@ -582,6 +582,11 @@ defmodule SpectreInstanceContractTest do
 
     assert reply_ref.run_id == invocation_ref.run_id
     assert reply_ref.revision > invocation_ref.revision
+
+    assert {:ok, %Turn{observable: {:reply, "hello:hello", queued_ref}}} =
+             Task.await(queued, 5_000)
+
+    refute queued_ref.run_id == invocation_ref.run_id
 
     assert_eventually(fn ->
       match?(
@@ -682,6 +687,97 @@ defmodule SpectreInstanceContractTest do
              )
 
     assert_receive {:instance_action, :work, %{source: :instance}}
+  end
+
+  test "policy and Effect lifecycle is owned independently by each conversation Run" do
+    instance = start_instance()
+
+    first =
+      Input.new(%{
+        text: "work",
+        source:
+          Source.new(
+            kind: :telegram,
+            mount: "primary",
+            conversation_id: "shared-provider-id"
+          )
+      })
+
+    second =
+      Input.new(%{
+        text: "work",
+        source:
+          Source.new(
+            kind: :web,
+            mount: "primary",
+            conversation_id: "shared-provider-id"
+          )
+      })
+
+    assert {:ok, %Turn{observable: {:needs, _}} = first_needs} =
+             Spectre.turn(instance, first)
+
+    assert {:ok, %Turn{observable: {:needs, _}} = second_needs} =
+             Spectre.turn(instance, second)
+
+    refute first_needs.ref.run_id == second_needs.ref.run_id
+
+    state = Spectre.state(instance)
+
+    assert state.pending_effects
+           |> Enum.map(& &1.run_id)
+           |> Enum.sort() ==
+             Enum.sort([first_needs.ref.run_id, second_needs.ref.run_id])
+
+    assert state.awaitables
+           |> Enum.filter(&(&1.status == :open))
+           |> Enum.map(& &1.run_id)
+           |> Enum.sort() ==
+             Enum.sort([first_needs.ref.run_id, second_needs.ref.run_id])
+
+    assert {:error, {:ambiguous_instance_policy, ambiguous_runs}} =
+             Spectre.turn(instance, "yes")
+
+    assert Enum.sort(ambiguous_runs) ==
+             Enum.sort([first_needs.ref.run_id, second_needs.ref.run_id])
+
+    approve_first = %{first | text: "yes"}
+    approve_second = %{second | text: "yes"}
+
+    assert {:ok, %Turn{observable: {:awaiting, first_invocation}}} =
+             Spectre.turn(instance, approve_first)
+
+    assert first_invocation.run_id == first_needs.ref.run_id
+
+    assert {:ok, %Turn{observable: {:awaiting, second_invocation}}} =
+             Spectre.turn(instance, approve_second)
+
+    assert second_invocation.run_id == second_needs.ref.run_id
+
+    assert {:ok, %Turn{observable: {:reply, "worked", _}}} =
+             Spectre.resume(
+               instance,
+               first_invocation,
+               {:execute, first_invocation},
+               test_pid: self()
+             )
+
+    assert_receive {:instance_action, :work, %{source: :instance}}
+
+    assert Enum.map(Spectre.state(instance).pending_effects, & &1.run_id) == [
+             second_invocation.run_id
+           ]
+
+    assert {:ok, %Turn{observable: {:reply, "worked", _}}} =
+             Spectre.resume(
+               instance,
+               second_invocation,
+               {:execute, second_invocation},
+               test_pid: self()
+             )
+
+    assert_receive {:instance_action, :work, %{source: :instance}}
+    assert Spectre.state(instance).pending_effects == []
   end
 
   test "an Instance terminates when its custom Registry disappears" do

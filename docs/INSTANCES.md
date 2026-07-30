@@ -1,6 +1,6 @@
 # Agent Instances and Subjects
 
-Spectre 0.1.4 adds a long-lived owner for the ordered state of one logical
+Spectre provides a long-lived owner for the ordered state of one logical
 Agent and one canonical Subject:
 
 ```text
@@ -110,19 +110,24 @@ by Instance generation, Run id and revision, Invocation id, and dispatch id.
 Late, duplicate, foreign, and stale receipts are ignored. The Instance remains
 responsive while the capability is in flight.
 
-When a Run owns a policy boundary, ordinary input such as
-`Spectre.turn(instance, "yes")` resumes that exact Run, preserving the legacy
-conversation contract and Run revision fence. An Effect boundary must instead
-be resumed explicitly with its Invocation ref.
+Each Effect and policy Awaitable staged by an Instance carries its owning Run
+id. Several Runs can therefore wait independently at policy or Effect
+boundaries while sharing the Subject's ordered State. Ordinary input is
+matched to an open policy Run by its channel conversation origin. If no origin
+is available, the legacy shortcut is safe only when exactly one policy is
+open; several possible owners return `{:ambiguous_instance_policy, run_ids}`.
+An Effect boundary is always resumed explicitly with its Invocation ref.
 
-The 0.1.4 lifecycle still stores the single active Effect in
-`Spectre.State`. While a Run owns that Effect boundary, a second
-lifecycle-changing turn returns `{:instance_lifecycle_locked, run_id}`. A
-caller queued before another Run opens the global lifecycle boundary is
-released with the same error rather than being suspended indefinitely. Moving
-the lifecycle constraint onto each Run belongs to the next phase.
+The Instance still applies one state-changing Move at a time. Before a
+retained Run advances, it is rebased onto the latest committed shared State,
+including lifecycle entries owned by other Runs. Capability Invocations use a
+separate state lock: calls arriving while one is in flight stay queued and
+continue after its terminal state has been committed.
 
-### Provider scheduling limit in 0.1.4
+Stateless Runtime calls and conversation-scoped Sessions do not opt into
+per-Run lifecycle ownership and retain the single pending Effect contract.
+
+### Provider scheduling limit in 0.1.5
 
 The GenServer mailbox never executes input plugs, routing, model calls, memory
 callbacks, renderers, or Actions directly. An ordinary Move runs those bounded

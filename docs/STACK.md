@@ -65,9 +65,9 @@ A package implements `Spectre.Stack.Installable`:
 defmodule MyApp.Inference do
   use Spectre.Stack.Installable,
     id: :inference,
-    version: "0.1.4",
+    version: "0.1.5",
     contract: 1,
-    spectre: "~> 0.1.4",
+    spectre: "~> 0.1.5",
     provides: [{:service, :inference}],
     operations: [{:inference, :complete}],
     resources: [:client],
@@ -114,7 +114,7 @@ Package dependencies use closed descriptors:
 
 ```elixir
 requires: [
-  {:package, :inference, "~> 0.1.4"},
+  {:package, :inference, "~> 0.1.5"},
   {:service, :continuity},
   {:contract, :memory_store}
 ]

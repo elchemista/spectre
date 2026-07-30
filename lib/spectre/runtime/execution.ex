@@ -47,7 +47,7 @@ defmodule Spectre.Execution do
   """
   @spec execute_pending(State.t(), Spectre.Context.t() | map(), keyword()) :: result()
   def execute_pending(%State{} = state, ctx, opts \\ []) do
-    case State.pending_effect(state) do
+    case State.pending_effect(state, lifecycle_run_id(ctx)) do
       nil -> no_pending_effect(state, ctx)
       %Effect{} = effect -> execute_effect(state, effect, ctx, opts)
     end
@@ -223,4 +223,13 @@ defmodule Spectre.Execution do
   defp format_action_result({:ok, value}), do: format_action_result(value)
   defp format_action_result(value) when is_binary(value), do: value
   defp format_action_result(value), do: inspect(value, limit: 8, printable_limit: 600)
+
+  @spec lifecycle_run_id(Spectre.Context.t() | map()) :: String.t() | nil
+  defp lifecycle_run_id(%{opts: opts}) when is_list(opts) do
+    if Keyword.get(opts, :instance_run_lifecycle?, false),
+      do: Keyword.get(opts, :run_id),
+      else: nil
+  end
+
+  defp lifecycle_run_id(_ctx), do: nil
 end

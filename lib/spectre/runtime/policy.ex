@@ -57,12 +57,16 @@ defmodule Spectre.Policy do
   @spec awaiting?(State.t()) :: boolean()
   def awaiting?(%State{} = state), do: State.awaiting_policy?(state)
 
+  @doc false
+  @spec awaiting?(State.t(), String.t() | nil) :: boolean()
+  def awaiting?(%State{} = state, run_id), do: State.awaiting_policy?(state, run_id)
+
   @doc """
   Resumes the active policy with the user's latest input.
   """
   @spec resume(Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
   def resume(%Input{} = input, %{state: %State{} = state} = ctx) do
-    case State.open_policy_awaitable(state) do
+    case State.open_policy_awaitable(state, lifecycle_run_id(ctx)) do
       %Awaitable{name: policy_name} ->
         case find_policy(ctx.agent, policy_name) do
           %__MODULE__{} = policy -> resume_policy(policy, input, ctx)
@@ -135,8 +139,11 @@ defmodule Spectre.Policy do
 
   @spec approve(t(), atom(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
-  defp approve(policy, label, input, %{state: state}) do
-    with {:ok, transition} <- Lifecycle.resolve_policy(state, :accept, label) do
+  defp approve(policy, label, input, %{state: state} = ctx) do
+    current = State.open_policy_awaitable(state, lifecycle_run_id(ctx))
+
+    with %Awaitable{} <- current,
+         {:ok, transition} <- Lifecycle.resolve_policy(state, current.id, :accept, label) do
       approved = transition.effect
       awaitable = transition.awaitable
 
@@ -165,44 +172,54 @@ defmodule Spectre.Policy do
            }
          ]
        }}
+    else
+      nil -> {:error, :no_open_policy}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @spec reject(t(), atom(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
-  defp reject(policy, label, input, %{state: state}) do
-    {:ok, transition} = Lifecycle.resolve_policy(state, :reject, label)
-    cancelled = transition.effect
+  defp reject(policy, label, input, %{state: state} = ctx) do
+    current = State.open_policy_awaitable(state, lifecycle_run_id(ctx))
 
-    {:ok,
-     %Result{
-       input: input,
-       state: transition.to,
-       reply_text: "",
-       effects: [cancelled],
-       awaitables: [transition.awaitable],
-       events: [
-         %{
-           type: :awaitable_rejected,
-           kind: :policy,
-           name: policy_identifier(policy),
-           label: label
-         },
-         %{
-           type: :effect_cancelled,
-           kind: :action,
-           name: cancelled.name,
-           owner: cancelled.owner,
-           scope: cancelled.scope,
-           effect_id: cancelled.id,
-           reason: {:policy_rejected, label}
-         }
-       ]
-     }}
+    with %Awaitable{} <- current,
+         {:ok, transition} <- Lifecycle.resolve_policy(state, current.id, :reject, label) do
+      cancelled = transition.effect
+
+      {:ok,
+       %Result{
+         input: input,
+         state: transition.to,
+         reply_text: "",
+         effects: [cancelled],
+         awaitables: [transition.awaitable],
+         events: [
+           %{
+             type: :awaitable_rejected,
+             kind: :policy,
+             name: policy_identifier(policy),
+             label: label
+           },
+           %{
+             type: :effect_cancelled,
+             kind: :action,
+             name: cancelled.name,
+             owner: cancelled.owner,
+             scope: cancelled.scope,
+             effect_id: cancelled.id,
+             reason: {:policy_rejected, label}
+           }
+         ]
+       }}
+    else
+      nil -> {:error, :no_open_policy}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @spec retry(t(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp retry(policy, input, %{state: state} = ctx) do
-    current = State.open_policy_awaitable(state)
+    current = State.open_policy_awaitable(state, lifecycle_run_id(ctx))
     {:ok, transition} = Lifecycle.apply(state, {:policy_attempt, current.id})
     awaitable = transition.awaitable
     state = transition.to
@@ -244,22 +261,24 @@ defmodule Spectre.Policy do
   end
 
   @spec cancel_attempts(t(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
-  defp cancel_attempts(policy, input, %{state: state}) do
-    {:ok, transition} = Lifecycle.apply(state, {:cancel_pending, :policy_attempts_exceeded})
-    state = transition.to
-    awaitable = Enum.find(state.awaitables, &(&1.kind == :policy and &1.status == :cancelled))
+  defp cancel_attempts(policy, input, %{state: state} = ctx) do
+    command =
+      case lifecycle_run_id(ctx) do
+        nil -> {:cancel_pending, :policy_attempts_exceeded}
+        run_id -> {:cancel_pending, :policy_attempts_exceeded, run_id}
+      end
 
-    cancelled =
-      state.planned_effects
-      |> Enum.filter(&match_cancelled?(&1, :policy_attempts_exceeded))
-      |> Enum.take(-transition.metadata.count)
+    {:ok, transition} = Lifecycle.apply(state, command)
+    state = transition.to
+    awaitable = transition.awaitable
+    cancelled = List.wrap(transition.effect)
 
     {:ok,
      %Result{
        input: input,
        state: state,
        effects: cancelled,
-       awaitables: [awaitable],
+       awaitables: List.wrap(awaitable),
        events: [
          %{type: :awaitable_cancelled, kind: :policy, name: policy_identifier(policy)}
          | Enum.map(cancelled, &cancelled_event(&1, :policy_attempts_exceeded))
@@ -294,7 +313,7 @@ defmodule Spectre.Policy do
       {:ok,
        %{
          result
-         | awaitables: ctx.state.awaitables,
+         | awaitables: current_policy_awaitables(ctx),
            events: [
              %{type: :awaitable_pending, kind: :policy, name: policy_identifier(policy)}
              | result.events
@@ -308,18 +327,14 @@ defmodule Spectre.Policy do
      %Result{
        input: input,
        state: ctx.state,
-       awaitables: ctx.state.awaitables,
+       awaitables: current_policy_awaitables(ctx),
        events: [%{type: :awaitable_pending, kind: :policy, name: policy_identifier(policy)}]
      }}
   end
 
-  @spec match_cancelled?(Effect.t(), term()) :: boolean()
-  defp match_cancelled?(%Effect{} = effect, reason),
-    do: effect.status == :cancelled and Effect.outcome(effect) == {:cancelled, reason}
-
   @spec active_policy(Spectre.Context.t() | map()) :: {:ok, t()} | {:error, term()}
-  defp active_policy(%{agent: agent, state: %State{} = state}) do
-    case State.open_policy_awaitable(state) do
+  defp active_policy(%{agent: agent, state: %State{} = state} = ctx) do
+    case State.open_policy_awaitable(state, lifecycle_run_id(ctx)) do
       %Awaitable{name: policy_name} ->
         case find_policy(agent, policy_name) do
           %__MODULE__{} = policy -> {:ok, policy}
@@ -372,8 +387,8 @@ defmodule Spectre.Policy do
   defp policy_identifier(%__MODULE__{reference: reference}), do: reference
 
   @spec policy_owner(Spectre.Context.t() | map()) :: module()
-  defp policy_owner(%{agent: agent, state: %State{} = state}) do
-    case State.open_policy_awaitable(state) do
+  defp policy_owner(%{agent: agent, state: %State{} = state} = ctx) do
+    case State.open_policy_awaitable(state, lifecycle_run_id(ctx)) do
       %Awaitable{name: reference} ->
         scope = Spectre.Definition.policy_scope(reference)
         Spectre.Definition.for_scope!(agent, scope).owner
@@ -382,6 +397,22 @@ defmodule Spectre.Policy do
         agent
     end
   end
+
+  @spec current_policy_awaitables(Spectre.Context.t() | map()) :: [Awaitable.t()]
+  defp current_policy_awaitables(%{state: %State{} = state} = ctx) do
+    state
+    |> State.open_policy_awaitable(lifecycle_run_id(ctx))
+    |> List.wrap()
+  end
+
+  @spec lifecycle_run_id(Spectre.Context.t() | map()) :: String.t() | nil
+  defp lifecycle_run_id(%{opts: opts}) when is_list(opts) do
+    if Keyword.get(opts, :instance_run_lifecycle?, false),
+      do: Keyword.get(opts, :run_id),
+      else: nil
+  end
+
+  defp lifecycle_run_id(_ctx), do: nil
 
   @spec fields() :: [atom()]
   defp fields do

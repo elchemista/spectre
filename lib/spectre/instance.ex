@@ -8,10 +8,9 @@ defmodule Spectre.Instance do
   boundary. The legacy `Spectre.Session` remains available for
   conversation-scoped 0.1.x integrations.
 
-  The 0.1.4 lifecycle still permits one active Effect boundary across the
-  legacy `%Spectre.State{}`. Ready Runs remain queued behind that boundary
-  until it is resumed; moving that constraint fully onto each Run is the next
-  migration phase.
+  Each retained Run owns its Effect and policy lifecycle. Capability
+  invocation remains serialized through the Instance state lock so commits,
+  compare-and-swap persistence, and idempotency stay deterministic.
   """
 
   use GenServer
@@ -416,22 +415,25 @@ defmodule Spectre.Instance do
   defp submit(input, opts, projection, from, data) do
     data = prune_for_new_run(data)
 
-    case lifecycle_owner(data) do
-      nil ->
+    case policy_owner(data, input, opts) do
+      :none ->
         if map_size(data.runs) >= data.max_runs do
           {:reply, {:error, :instance_run_capacity_reached}, arm_idle_timer(data)}
         else
           reserve_submitted_run(input, opts, projection, from, data)
         end
 
-      owner ->
+      {:ok, %Run{} = owner} ->
         submit_lifecycle_input(input, opts, projection, from, owner, data)
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
 
-  defp submit_lifecycle_input(input, opts, projection, from, owner, data) do
-    case Map.get(data.runs, owner) do
-      %Run{status: :boundary, cursor: :policy, waiting: %Boundary{}} = run ->
+  defp submit_lifecycle_input(input, opts, projection, from, %Run{} = run, data) do
+    case run do
+      %Run{status: :boundary, cursor: :policy, waiting: %Boundary{}} ->
         if run_active?(data, run.id) do
           {:reply, {:error, {:run_already_active, run.id}}, arm_idle_timer(data)}
         else
@@ -448,8 +450,8 @@ defmodule Spectre.Instance do
           {:noreply, data |> enqueue(entry, true) |> put_caller(run.id, from)}
         end
 
-      _effect_or_invalid ->
-        {:reply, {:error, {:instance_lifecycle_locked, owner}}, arm_idle_timer(data)}
+      _invalid ->
+        {:reply, {:error, {:run_not_waiting_for_policy, run.id}}, arm_idle_timer(data)}
     end
   end
 
@@ -488,10 +490,12 @@ defmodule Spectre.Instance do
   end
 
   defp dispatch_invocation(run, command, opts, projection, from, data) do
+    run = rebase_run(run, data.state)
+    data = put_run(data, run)
+
     with %Invocation{} = invocation <- run.waiting,
          false <- run_active?(data, run.id),
-         nil <- data.state_lock,
-         true <- run.state.revision == data.state.revision do
+         nil <- data.state_lock do
       runtime_opts = runtime_opts(data, opts, run.input)
       dispatch_id = Spectre.Identity.uuid7()
       capability = make_ref()
@@ -557,10 +561,6 @@ defmodule Spectre.Instance do
 
       %{} ->
         {:reply, {:error, :instance_state_locked}, arm_idle_timer(data)}
-
-      false ->
-        {:reply, {:error, {:stale_instance_run, run.id, run.state.revision, data.state.revision}},
-         arm_idle_timer(data)}
     end
   end
 
@@ -769,13 +769,9 @@ defmodule Spectre.Instance do
 
   defp start_advance_worker(data, entry) do
     run = Map.fetch!(data.runs, entry.run_id)
-
-    run =
-      if initial_move?(entry, run) do
-        %{run | state: data.state}
-      else
-        run
-      end
+    state = State.claim_run_lifecycle(data.state, run.id)
+    run = rebase_run(run, state)
+    data = %{data | state: state}
 
     entry = prepare_entry(entry, run, data)
     dispatch_id = Spectre.Identity.uuid7()
@@ -802,13 +798,6 @@ defmodule Spectre.Instance do
     |> disarm_idle_timer()
   end
 
-  defp initial_move?(%{operation: {:start, _input}}, %Run{}), do: true
-
-  defp initial_move?(%{operation: :advance}, %Run{status: :ready, cursor: :turn}),
-    do: true
-
-  defp initial_move?(_entry, _run), do: false
-
   defp prepare_entry(%{operation: {:start, input}} = entry, run, data) do
     opts =
       data
@@ -824,8 +813,15 @@ defmodule Spectre.Instance do
     %{entry | opts: opts, state_revision: data.state.revision}
   end
 
-  defp prepare_entry(entry, _run, data),
-    do: %{entry | state_revision: data.state.revision}
+  defp prepare_entry(entry, run, data) do
+    opts =
+      entry.opts
+      |> Keyword.put(:state, data.state)
+      |> Keyword.put(:run_id, run.id)
+      |> Keyword.put(:trace_id, run.trace_id)
+
+    %{entry | opts: opts, state_revision: data.state.revision}
+  end
 
   defp spawn_advance_worker(owner, run, entry, dispatch_id, capability) do
     spawn_worker(fn ->
@@ -866,7 +862,6 @@ defmodule Spectre.Instance do
             |> reply_caller(run.id, {:error, reason})
             |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
             |> record_terminal(run)
-            |> reject_lifecycle_blocked_ready()
             |> maybe_schedule()
             |> arm_idle_timer()
 
@@ -878,7 +873,6 @@ defmodule Spectre.Instance do
             |> reply_caller(run.id, {:error, reason})
             |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
             |> record_terminal(failed)
-            |> reject_lifecycle_blocked_ready()
             |> maybe_schedule()
             |> arm_idle_timer()
 
@@ -890,7 +884,6 @@ defmodule Spectre.Instance do
             |> reply_caller(run.id, {:error, reason})
             |> tap(&emit(:run_move_degraded, &1, %{count: 1, run_id: run.id}))
             |> maybe_finalize_degraded_run(degraded)
-            |> reject_lifecycle_blocked_ready()
             |> maybe_schedule()
             |> arm_idle_timer()
 
@@ -956,7 +949,6 @@ defmodule Spectre.Instance do
       data = if terminal_run?(run), do: record_terminal(data, run), else: data
 
       data
-      |> reject_lifecycle_blocked_ready()
       |> maybe_schedule()
       |> arm_idle_timer()
     else
@@ -1061,47 +1053,6 @@ defmodule Spectre.Instance do
     maybe_schedule(data)
   end
 
-  defp reject_lifecycle_blocked_ready(data) do
-    case lifecycle_owner(data) do
-      nil ->
-        data
-
-      owner ->
-        {kept, blocked} =
-          data.ready
-          |> :queue.to_list()
-          |> Enum.split_with(fn run_id ->
-            run_id == owner or get_in(data.entries, [run_id, :internal?]) == true
-          end)
-
-        data = %{
-          data
-          | ready: Enum.reduce(kept, :queue.new(), &:queue.in(&1, &2)),
-            queued: MapSet.new(kept),
-            entries: Map.take(data.entries, kept)
-        }
-
-        Enum.reduce(blocked, data, &reject_lifecycle_run(&2, &1, owner))
-    end
-  end
-
-  defp reject_lifecycle_run(data, run_id, owner) do
-    reason = {:instance_lifecycle_locked, owner}
-
-    case Map.get(data.runs, run_id) do
-      %Run{} = run ->
-        failed = terminalize_failed_run(run, reason)
-
-        data
-        |> put_run(failed)
-        |> reply_caller(run_id, {:error, reason})
-        |> record_terminal(failed)
-
-      nil ->
-        reply_caller(data, run_id, {:error, reason})
-    end
-  end
-
   defp maybe_schedule(%{scheduled: true} = data), do: data
   defp maybe_schedule(%{active: active} = data) when not is_nil(active), do: data
   defp maybe_schedule(%{state_lock: lock} = data) when not is_nil(lock), do: data
@@ -1117,17 +1068,8 @@ defmodule Spectre.Instance do
   end
 
   defp maybe_schedule_run(data, run_id) do
-    if schedulable_run?(data, run_id) do
-      send(self(), {:spectre, :advance, run_id})
-      %{data | scheduled: true}
-    else
-      data
-    end
-  end
-
-  defp schedulable_run?(data, run_id) do
-    lifecycle_owner(data) in [nil, run_id] or
-      match?(%{internal?: true}, Map.get(data.entries, run_id))
+    send(self(), {:spectre, :advance, run_id})
+    %{data | scheduled: true}
   end
 
   defp pop_ready(data, expected_run_id) do
@@ -1241,12 +1183,80 @@ defmodule Spectre.Instance do
 
   defp run_ref_matches?(_run, _supplied), do: false
 
-  defp lifecycle_owner(data) do
-    Enum.find_value(data.runs, fn
-      {run_id, %Run{status: :awaiting, cursor: :effect, waiting: %Invocation{}}} -> run_id
-      {run_id, %Run{status: :boundary, cursor: :policy, waiting: %Boundary{}}} -> run_id
-      _entry -> nil
-    end)
+  defp policy_owner(data, input, opts) do
+    policies =
+      data.runs
+      |> Map.values()
+      |> Enum.filter(&policy_boundary?/1)
+      |> Enum.sort_by(& &1.id)
+
+    origin_conversation_id =
+      first_present([
+        Keyword.get(opts, :origin_conversation_id),
+        Keyword.get(opts, :conversation_id),
+        input_conversation_id(input)
+      ])
+
+    conversation_ref = conversation_key(input, origin_conversation_id)
+    origin_conversation_ref = origin_conversation_key(origin_conversation_id)
+    source_missing? = conversation_source_missing?(input)
+
+    matches =
+      Enum.filter(
+        policies,
+        &policy_origin_matches?(
+          &1,
+          conversation_ref,
+          origin_conversation_ref,
+          source_missing?
+        )
+      )
+
+    select_policy_owner(matches, policies, origin_conversation_id)
+  end
+
+  defp policy_origin_matches?(
+         %Run{metadata: metadata},
+         conversation_ref,
+         origin_conversation_ref,
+         source_missing?
+       ) do
+    exact? =
+      not is_nil(conversation_ref) and
+        Map.get(metadata, :conversation_ref) == conversation_ref
+
+    fallback? =
+      source_missing? and not is_nil(origin_conversation_ref) and
+        Map.get(metadata, :origin_conversation_ref) == origin_conversation_ref
+
+    exact? or fallback?
+  end
+
+  defp select_policy_owner([%Run{} = run], _policies, _origin), do: {:ok, run}
+
+  defp select_policy_owner([_first, _second | _rest] = matches, _policies, _origin),
+    do: {:error, {:ambiguous_instance_policy, Enum.map(matches, & &1.id)}}
+
+  defp select_policy_owner([], _policies, origin) when not is_nil(origin), do: :none
+  defp select_policy_owner([], [%Run{} = run], nil), do: {:ok, run}
+
+  defp select_policy_owner([], [_first, _second | _rest] = policies, nil),
+    do: {:error, {:ambiguous_instance_policy, Enum.map(policies, & &1.id)}}
+
+  defp select_policy_owner([], [], nil), do: :none
+
+  defp policy_boundary?(%Run{
+         status: :boundary,
+         cursor: :policy,
+         waiting: %Boundary{kind: :needs}
+       }),
+       do: true
+
+  defp policy_boundary?(_run), do: false
+
+  defp conversation_source_missing?(input) do
+    source = input_source(input)
+    is_nil(source_field(source, :kind)) and is_nil(source_field(source, :mount))
   end
 
   defp run_active?(data, run_id) do
@@ -1463,6 +1473,32 @@ defmodule Spectre.Instance do
 
   defp put_run(data, %Run{} = run), do: %{data | runs: Map.put(data.runs, run.id, run)}
 
+  defp rebase_run(%Run{} = run, %State{} = state) do
+    result =
+      case run.result do
+        %Result{} = result ->
+          metadata =
+            case Map.get(result.metadata, :state_persistence) do
+              persistence when is_map(persistence) ->
+                Map.put(
+                  result.metadata,
+                  :state_persistence,
+                  Map.put(persistence, :revision, state.revision)
+                )
+
+              _missing ->
+                result.metadata
+            end
+
+          %{result | state: state, metadata: metadata}
+
+        nil ->
+          nil
+      end
+
+    %{run | state: state, result: result}
+  end
+
   defp busy?(data) do
     not is_nil(data.active) or not is_nil(data.state_lock) or
       not :queue.is_empty(data.ready) or map_size(data.invocations) > 0
@@ -1533,6 +1569,7 @@ defmodule Spectre.Instance do
       |> Keyword.put(:subject, data.subject)
       |> Keyword.put(:subject_id, data.subject.id)
       |> Keyword.put(:conversation_id, Keyword.fetch!(data.base_opts, :conversation_id))
+      |> Keyword.put(:instance_run_lifecycle?, true)
       |> maybe_put(:origin_conversation_id, origin_conversation_id)
 
     metadata =
@@ -1544,7 +1581,8 @@ defmodule Spectre.Instance do
         instance_ref: data.ref,
         agent_ref: data.agent_ref,
         subject: data.subject,
-        conversation_ref: conversation_key(input, origin_conversation_id)
+        conversation_ref: conversation_key(input, origin_conversation_id),
+        origin_conversation_ref: origin_conversation_key(origin_conversation_id)
       })
 
     Keyword.put(opts, :run_metadata, metadata)
@@ -1613,6 +1651,15 @@ defmodule Spectre.Instance do
 
     case Value.validate(value, [:instance, :conversation]) do
       :ok -> Value.token("conversation", value)
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp origin_conversation_key(nil), do: nil
+
+  defp origin_conversation_key(conversation_id) do
+    case Value.validate(conversation_id, [:instance, :origin_conversation]) do
+      :ok -> Value.token("origin-conversation", conversation_id)
       {:error, _reason} -> nil
     end
   end

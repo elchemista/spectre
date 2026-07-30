@@ -16,6 +16,7 @@ defmodule Spectre.Effect do
     :name,
     :owner,
     :scope,
+    :run_id,
     :mode,
     :policy,
     :result,
@@ -36,6 +37,7 @@ defmodule Spectre.Effect do
           name: atom() | String.t() | nil,
           owner: module() | nil,
           scope: Spectre.Definition.scope() | nil,
+          run_id: String.t() | nil,
           args: map(),
           status: status(),
           mode: atom() | nil,
@@ -105,6 +107,7 @@ defmodule Spectre.Effect do
         ),
       owner: owner,
       scope: scope,
+      run_id: get_attr(attrs, :run_id),
       args: attr_or(attrs, :args, %{}),
       status: attr_or(attrs, :status, :pending),
       mode: get_attr(attrs, :mode),
@@ -114,6 +117,20 @@ defmodule Spectre.Effect do
       payload: drop_origin(payload),
       metadata: attr_or(attrs, :metadata, %{})
     }
+  end
+
+  @doc """
+  Associates an Effect with its owning Instance Run.
+
+  Extension-owned Effect builders should use
+  `Spectre.Context.lifecycle_run_id/1` and bind the returned value before
+  staging. Passing `nil` preserves the stateless and Session compatibility
+  lifecycle.
+  """
+  @spec bind_run(t(), String.t() | nil) :: t()
+  def bind_run(%__MODULE__{} = effect, run_id)
+      when is_nil(run_id) or (is_binary(run_id) and run_id != "") do
+    %{effect | run_id: run_id}
   end
 
   @doc """

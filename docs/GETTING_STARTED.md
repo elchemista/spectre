@@ -426,6 +426,12 @@ is provided. They retain the committed state even when memory persistence
 reports a strict failure. Calls without an explicit `:subject` can still use
 the legacy conversation-scoped `Spectre.Session`.
 
+An Instance assigns each pending Effect and policy Awaitable to its Run. This
+allows different channel conversations for the same Subject to wait or be
+approved independently. State commits and capability execution remain ordered;
+a turn received during an in-flight Invocation waits and then resumes from the
+latest committed State.
+
 Resolve authenticated channel identities to the canonical Subject before
 looking up the Instance. Concurrent stateless calls that load the same snapshot
 still require host-side optimistic locking. See

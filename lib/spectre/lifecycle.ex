@@ -12,7 +12,8 @@ defmodule Spectre.Lifecycle do
   alias Spectre.State
   alias Spectre.Transition
 
-  @history_limit 32
+  @history_limit 512
+  @awaitable_history_limit 512
   @trace_limit 256
 
   @type result :: {:ok, Transition.t()} | {:error, term()}
@@ -23,7 +24,9 @@ defmodule Spectre.Lifecycle do
           | {:complete_effect, term(), term()}
           | {:fail_effect, term(), term()}
           | {:cancel_pending, term()}
+          | {:cancel_pending, term(), String.t()}
           | {:resolve_policy, :accept | :reject, atom()}
+          | {:resolve_policy, term(), :accept | :reject, atom()}
           | {:policy_attempt, term()}
           | {:expire_policy, term()}
           | {:replay_effect, term()}
@@ -52,8 +55,14 @@ defmodule Spectre.Lifecycle do
 
   def apply(%State{} = state, {:cancel_pending, reason}), do: cancel_pending(state, reason)
 
+  def apply(%State{} = state, {:cancel_pending, reason, run_id}) when is_binary(run_id),
+    do: cancel_pending(state, reason, run_id)
+
   def apply(%State{} = state, {:resolve_policy, kind, label}),
     do: resolve_policy(state, kind, label)
+
+  def apply(%State{} = state, {:resolve_policy, awaitable_id, kind, label}),
+    do: resolve_policy(state, awaitable_id, kind, label)
 
   def apply(%State{} = state, {:policy_attempt, awaitable_id}),
     do: policy_attempt(state, awaitable_id)
@@ -106,8 +115,7 @@ defmodule Spectre.Lifecycle do
   @spec stage(State.t(), Effect.t(), term()) :: result()
   def stage(%State{} = state, %Effect{} = effect, policy \\ nil) do
     cond do
-      State.pending_effect(state) ->
-        current = State.pending_effect(state)
+      current = pending_effect_for_run(state, effect.run_id) ->
         {:error, {:pending_effect_not_resolved, current.id, current.status}}
 
       effect.status != :pending ->
@@ -118,7 +126,7 @@ defmodule Spectre.Lifecycle do
 
         to = %{
           state
-          | pending_effects: [staged],
+          | pending_effects: append_pending(state.pending_effects, staged),
             planned_effects: append_history(state.planned_effects, staged)
         }
 
@@ -130,9 +138,9 @@ defmodule Spectre.Lifecycle do
 
         to = %{
           state
-          | pending_effects: [staged],
+          | pending_effects: append_pending(state.pending_effects, staged),
             planned_effects: append_history(state.planned_effects, staged),
-            awaitables: [awaitable]
+            awaitables: append_awaitable(state.awaitables, awaitable)
         }
 
         {:ok,
@@ -294,6 +302,49 @@ defmodule Spectre.Lifecycle do
   end
 
   @doc """
+  Cancels pending lifecycle work owned by one Run.
+  """
+  @spec cancel_pending(State.t(), term(), String.t()) :: result()
+  def cancel_pending(%State{} = state, reason, run_id)
+      when is_binary(run_id) and run_id != "" do
+    cancelled =
+      state.pending_effects
+      |> Enum.filter(&(&1.run_id == run_id))
+      |> Enum.map(&Effect.cancel(&1, reason))
+
+    awaitables =
+      Enum.map(state.awaitables, fn
+        %Awaitable{run_id: ^run_id, status: :open} = awaitable ->
+          Awaitable.cancel(awaitable)
+
+        awaitable ->
+          awaitable
+      end)
+
+    to =
+      %{
+        state
+        | pending_effects: Enum.reject(state.pending_effects, &(&1.run_id == run_id)),
+          awaitables: awaitables,
+          planned_effects: Enum.reduce(cancelled, state.planned_effects, &append_history(&2, &1))
+      }
+      |> put_trace(%{
+        type: :cancel_pending,
+        reason: reason,
+        run_id: run_id,
+        at: DateTime.utc_now()
+      })
+
+    {:ok,
+     Transition.new(:pending_cancelled, state, to,
+       effect: List.first(cancelled),
+       awaitable: Enum.find(awaitables, &(&1.run_id == run_id and &1.status == :cancelled)),
+       entity_id: List.first(cancelled) && List.first(cancelled).id,
+       metadata: %{count: length(cancelled), reason: reason, run_id: run_id}
+     )}
+  end
+
+  @doc """
   Resolves the active policy and its gated effect atomically.
   """
   @spec resolve_policy(State.t(), :accept | :reject, atom()) :: result()
@@ -310,6 +361,27 @@ defmodule Spectre.Lifecycle do
 
   def resolve_policy(%State{}, kind, label),
     do: {:error, {:invalid_policy_resolution, kind, label}}
+
+  @doc """
+  Resolves one explicitly identified policy awaitable.
+  """
+  @spec resolve_policy(State.t(), term(), :accept | :reject, atom()) :: result()
+  def resolve_policy(%State{} = state, awaitable_id, kind, label)
+      when kind in [:accept, :reject] and is_atom(label) do
+    case Enum.find(
+           state.awaitables,
+           &(&1.id == awaitable_id and &1.kind == :policy and &1.status == :open)
+         ) do
+      %Awaitable{} = awaitable ->
+        resolve_policy_awaitable(state, awaitable, kind, label)
+
+      nil ->
+        {:error, :no_open_policy}
+    end
+  end
+
+  def resolve_policy(%State{}, awaitable_id, kind, label),
+    do: {:error, {:invalid_policy_resolution, awaitable_id, kind, label}}
 
   @doc """
   Records one unmatched policy response without resolving the policy.
@@ -455,6 +527,7 @@ defmodule Spectre.Lifecycle do
   @spec resolve_policy_awaitable(State.t(), Awaitable.t(), :accept | :reject, atom()) :: result()
   defp resolve_policy_awaitable(state, awaitable, :accept, label) do
     with %Effect{} = effect <- pending_effect(state, awaitable.subject_id),
+         :ok <- validate_policy_lifecycle_owner(effect, awaitable),
          true <- effect.status == :waiting_policy do
       approved = Effect.approve(effect)
       resolved = Awaitable.accept(awaitable, label)
@@ -462,7 +535,7 @@ defmodule Spectre.Lifecycle do
       to =
         %{
           state
-          | pending_effects: [approved],
+          | pending_effects: replace_effect(state.pending_effects, approved),
             planned_effects: append_history(state.planned_effects, approved),
             awaitables: replace_awaitable(state.awaitables, resolved)
         }
@@ -483,12 +556,14 @@ defmodule Spectre.Lifecycle do
        )}
     else
       nil -> {:error, :pending_effect_not_found}
+      {:error, _reason} = error -> error
       false -> {:error, {:invalid_effect_transition, awaitable.subject_id, :unknown, :approved}}
     end
   end
 
   defp resolve_policy_awaitable(state, awaitable, :reject, label) do
     with %Effect{} = effect <- pending_effect(state, awaitable.subject_id),
+         :ok <- validate_policy_lifecycle_owner(effect, awaitable),
          true <- effect.status == :waiting_policy do
       cancelled = Effect.cancel(effect, {:policy_rejected, label})
       resolved = Awaitable.reject(awaitable, label)
@@ -496,7 +571,7 @@ defmodule Spectre.Lifecycle do
       to =
         %{
           state
-          | pending_effects: [],
+          | pending_effects: Enum.reject(state.pending_effects, &(&1.id == awaitable.subject_id)),
             planned_effects: append_history(state.planned_effects, cancelled),
             awaitables: replace_awaitable(state.awaitables, resolved)
         }
@@ -517,9 +592,19 @@ defmodule Spectre.Lifecycle do
        )}
     else
       nil -> {:error, :pending_effect_not_found}
+      {:error, _reason} = error -> error
       false -> {:error, {:invalid_effect_transition, awaitable.subject_id, :unknown, :cancelled}}
     end
   end
+
+  defp validate_policy_lifecycle_owner(
+         %Effect{run_id: run_id},
+         %Awaitable{run_id: run_id}
+       ),
+       do: :ok
+
+  defp validate_policy_lifecycle_owner(%Effect{}, %Awaitable{} = awaitable),
+    do: {:error, {:policy_lifecycle_run_mismatch, awaitable.id, awaitable.run_id}}
 
   @spec replay_or_missing(State.t(), term(), atom()) :: result()
   defp replay_or_missing(%State{} = state, effect_id, event) do
@@ -554,6 +639,30 @@ defmodule Spectre.Lifecycle do
 
   @spec append_history([Effect.t()], Effect.t()) :: [Effect.t()]
   defp append_history(effects, effect), do: Enum.take(effects, -(@history_limit - 1)) ++ [effect]
+
+  @spec append_pending([Effect.t()], Effect.t()) :: [Effect.t()]
+  defp append_pending(_effects, %Effect{run_id: nil} = effect), do: [effect]
+  defp append_pending(effects, %Effect{} = effect), do: effects ++ [effect]
+
+  @spec append_awaitable([Awaitable.t()], Awaitable.t()) :: [Awaitable.t()]
+  defp append_awaitable(_awaitables, %Awaitable{run_id: nil} = awaitable), do: [awaitable]
+
+  defp append_awaitable(awaitables, %Awaitable{} = awaitable) do
+    {open, terminal} = Enum.split_with(awaitables, &(&1.status == :open))
+    terminal_limit = max(@awaitable_history_limit - length(open) - 1, 0)
+    Enum.take(terminal, -terminal_limit) ++ open ++ [awaitable]
+  end
+
+  @spec pending_effect_for_run(State.t(), String.t() | nil) :: Effect.t() | nil
+  defp pending_effect_for_run(state, nil), do: State.pending_effect(state)
+  defp pending_effect_for_run(state, run_id), do: State.pending_effect(state, run_id)
+
+  @spec replace_effect([Effect.t()], Effect.t()) :: [Effect.t()]
+  defp replace_effect(effects, replacement) do
+    Enum.map(effects, fn effect ->
+      if effect.id == replacement.id, do: replacement, else: effect
+    end)
+  end
 
   @spec replace_awaitable([Awaitable.t()], Awaitable.t()) :: [Awaitable.t()]
   defp replace_awaitable(awaitables, replacement) do
