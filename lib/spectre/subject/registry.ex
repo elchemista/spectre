@@ -8,7 +8,7 @@ defmodule Spectre.Subject.Registry do
   destination-channel challenge protocol.
 
   Durable storage for these records belongs to the later continuity phase; the
-  0.1.4 registry deliberately exposes plain value objects that a store adapter
+  The registry deliberately exposes plain value objects that a store adapter
   can persist without process handles or secrets.
   """
 

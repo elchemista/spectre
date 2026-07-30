@@ -97,9 +97,12 @@ subject = Spectre.Subject.new({:account, account.id})
 ```
 
 Concurrent get-or-start calls converge on the same local PID. The Instance
-retains multiple Runs, schedules them through its mailbox, and dispatches
-Effect Invocations without blocking calls such as `info/1`. An authenticated
-channel must resolve its exact `Spectre.ExternalIdentity` through
+retains multiple Runs, gives each Run its own Effect/policy lifecycle, schedules
+ordered State changes through its mailbox, and dispatches Effect Invocations
+without blocking calls such as `info/1`. Actual capability execution remains
+serialized; calls arriving during an Invocation continue afterward from the
+latest committed State. An authenticated channel must resolve its exact
+`Spectre.ExternalIdentity` through
 `Spectre.Subject.Registry`; Spectre never merges Subjects from names, similar
 numbers, message text, or model output. See
 [Agent Instances and Subjects](docs/INSTANCES.md).
@@ -242,8 +245,9 @@ end
 ```
 
 `Spectre.Turn.Decision` always uses authoritative pending state before local
-transition lists. An open awaitable wins over a pending effect; a pending effect
-wins over a terminal completion; a completion wins over a visible reply.
+transition lists. Instance results scope that state to the owning Run. An open
+awaitable wins over a pending effect; a pending effect wins over a terminal
+completion; a completion wins over a visible reply.
 
 ## Reusable Skills
 

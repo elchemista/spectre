@@ -271,18 +271,19 @@ defmodule Spectre.Runner do
       |> Action.to_effect_attrs()
       |> Map.put(:status, Keyword.get(opts, :status, :pending))
       |> Effect.stage_action(route_owner(ctx), route_scope(ctx))
+      |> Effect.bind_run(lifecycle_run_id(ctx.opts))
 
     policy =
       Keyword.get(opts, :policy) ||
         ActionProtection.protected_by(ctx.agent, effect)
 
-    with :ok <- ensure_no_pending_effect(ctx.state),
+    with :ok <- ensure_no_pending_effect(ctx.state, lifecycle_run_id(ctx.opts)),
          {:ok, transition} <-
            Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, policy}) do
       state = transition.to
       ctx = %{ctx | state: state}
       # The lifecycle transition carries policy metadata/status into state.
-      effects = [pending_effect(state)]
+      effects = [pending_effect(state, lifecycle_run_id(ctx.opts))]
 
       cond do
         policy && Keyword.has_key?(opts, :reply) ->
@@ -332,14 +333,15 @@ defmodule Spectre.Runner do
   end
 
   defp stage_effects(reply_text, [effect], input, ctx, opts) do
+    effect = Effect.bind_run(effect, lifecycle_run_id(ctx.opts))
     policy = ActionProtection.protected_by(ctx.agent, effect)
 
-    with :ok <- ensure_no_pending_effect(ctx.state),
+    with :ok <- ensure_no_pending_effect(ctx.state, lifecycle_run_id(ctx.opts)),
          {:ok, transition} <-
            Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, policy}) do
       state = transition.to
       ctx = %{ctx | state: state}
-      staged_effect = pending_effect(state)
+      staged_effect = pending_effect(state, lifecycle_run_id(ctx.opts))
 
       if policy do
         # Protected planned actions immediately switch into the policy request flow.
@@ -615,9 +617,10 @@ defmodule Spectre.Runner do
   defp maybe_put_prompt_inject(opts, _key, nil), do: opts
   defp maybe_put_prompt_inject(opts, key, inject), do: Keyword.put(opts, key, inject)
 
-  @spec ensure_no_pending_effect(Spectre.State.t()) :: :ok | {:error, term()}
-  defp ensure_no_pending_effect(%Spectre.State{} = state) do
-    case Spectre.State.pending_effect(state) do
+  @spec ensure_no_pending_effect(Spectre.State.t(), String.t() | nil) ::
+          :ok | {:error, term()}
+  defp ensure_no_pending_effect(%Spectre.State{} = state, run_id) do
+    case Spectre.State.pending_effect(state, run_id) do
       nil ->
         :ok
 
@@ -626,8 +629,16 @@ defmodule Spectre.Runner do
     end
   end
 
-  @spec pending_effect(Spectre.State.t()) :: Effect.t()
-  defp pending_effect(%Spectre.State{} = state), do: Spectre.State.pending_effect(state)
+  @spec pending_effect(Spectre.State.t(), String.t() | nil) :: Effect.t()
+  defp pending_effect(%Spectre.State{} = state, run_id),
+    do: Spectre.State.pending_effect(state, run_id)
+
+  @spec lifecycle_run_id(keyword()) :: String.t() | nil
+  defp lifecycle_run_id(opts) do
+    if Keyword.get(opts, :instance_run_lifecycle?, false),
+      do: Keyword.get(opts, :run_id),
+      else: nil
+  end
 
   @spec join_reply(String.t(), String.t()) :: String.t()
   defp join_reply("", right), do: right

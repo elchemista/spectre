@@ -121,7 +121,7 @@ Checkpoint blobs are continuation state, not untrusted input. `restore/2`
 validates schema and lifecycle but does not authenticate a blob; use storage
 with integrity and access controls when a Run can authorize effects.
 
-## Ownership boundary in 0.1.4
+## Ownership boundary in 0.1.5
 
 A caller that directly uses `Spectre.Runtime` remains the single owner of its
 Run value. Checkpoint replay is at-least-once: restoring the same awaiting
@@ -135,6 +135,12 @@ Invocation work with an internal capability plus Instance generation, Run
 revision, Invocation id, and dispatch id. Only the owning Instance applies the
 returned continuation; stale, duplicate, foreign, and malformed receipts are
 ignored.
+
+Effects and policy Awaitables staged inside an Instance carry the owning Run
+id. This permits independent lifecycle boundaries across Runs while the
+Instance continues to serialize State commits and actual capability
+invocation. Direct Runtime callers and Sessions retain the unowned,
+single-lifecycle compatibility model.
 
 The local active-Run registry and Subject Registry are in-memory in this
 phase. Durable checkpoints, passivation, cross-node claims, and recovery are

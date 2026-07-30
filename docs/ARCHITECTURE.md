@@ -96,6 +96,7 @@ same turn decisions.
 | State transitions | `Spectre.Lifecycle` |
 | Logical continuation and step fencing | `Spectre.Run`, `Spectre.Runtime` |
 | Subject-scoped Run ownership and scheduling | `Spectre.Instance` |
+| Per-Run Effect and Awaitable ownership inside an Instance | `run_id` on lifecycle values |
 | Exact external-identity resolution | `Spectre.Subject.Registry` |
 | Policy text/label matching | `Spectre.Policy.Matcher` |
 | Prompt trust and composition | `Spectre.Prompt.Plan` |
@@ -114,6 +115,12 @@ Spectre state directly.
 `Spectre.State` is the authoritative snapshot. `Spectre.Result` is a receipt
 for one runtime operation; arrays inside a result do not override newer state.
 `Spectre.Transition` records one accepted lifecycle command.
+
+Inside a `Spectre.Instance`, pending Effects and open policy Awaitables are
+scoped by Run id. Several Runs may hold independent boundaries in the same
+authoritative State, while the Instance serializes commits and capability
+execution. Stateless Runtime calls and Sessions omit this ownership field and
+retain the single pending lifecycle.
 
 The protected-action path is:
 

@@ -226,7 +226,7 @@ subject = Spectre.Subject.new({:account, account.id})
 `Spectre.summon/1,3` selects the Instance runtime when `:subject` is supplied.
 Prefer supervised `Spectre.instance/4` in production. See
 [Agent Instances and Subjects](INSTANCES.md) for Run resume, identity linking,
-and the 0.1.4 single-Effect lifecycle constraint.
+per-Run lifecycle ownership, and serialized capability execution.
 
 ### Legacy conversation sessions
 

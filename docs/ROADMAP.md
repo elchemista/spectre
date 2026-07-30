@@ -652,7 +652,7 @@ Goal: prepare a versioned release rather than exposing internal refactors.
 Exit criteria:
 
 - one canonical host integration path is documented in Getting Started;
-- serialized state upgrades are tested through schema-v4 fixtures;
+- serialized state upgrades are tested through schema-v5 fixtures;
 - release notes and a changelog policy are present;
 - ExDoc builds without missing-reference warnings.
 

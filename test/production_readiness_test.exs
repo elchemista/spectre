@@ -372,7 +372,7 @@ defmodule SpectreProductionReadinessTest do
       end
 
     effect
-    |> Map.drop(["owner", "scope"])
+    |> Map.drop(["owner", "scope", "run_id"])
     |> Map.put("payload", payload)
   end
 end

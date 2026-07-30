@@ -6,6 +6,42 @@ minor release may contain documented breaking API changes.
 
 ## Unreleased
 
+## 0.1.5 — 2026-07-30
+
+### Added
+
+- Per-Run lifecycle ownership inside `Spectre.Instance`: staged Effects and
+  policy Awaitables now carry their owning `run_id`, allowing several retained
+  Runs to wait independently on policy or execution boundaries.
+- Conversation-aware policy resumption selects the matching Run from channel
+  origin metadata. The legacy no-origin shortcut remains available when
+  exactly one policy boundary is open; ambiguous input fails closed.
+- State schema v5 persists Run ownership and supports bounded collections of
+  independent pending Effects and Awaitables. Schema v2-v4 snapshots remain
+  readable and legacy unowned lifecycle is claimed by its first Instance Run.
+
+### Compatibility
+
+- Stateless calls and conversation-scoped `Spectre.Session` keep their
+  single-lifecycle behavior; Run ownership is enabled only by
+  `Spectre.Instance`.
+- Capability execution remains serialized by the Instance state lock. Calls
+  arriving during an Invocation stay queued and continue from the latest
+  committed State after the capability returns.
+- Prism and ordinary provider callbacks remain synchronous inside one bounded
+  Move worker. Generic provider Invocations still require a later serializable
+  mid-turn continuation.
+
+### Fixed
+
+- A policy or Effect boundary owned by one Run no longer rejects unrelated
+  Runs with `:instance_lifecycle_locked`.
+- Resuming a retained Run rebases it onto the latest shared Instance State
+  without losing other Runs' pending lifecycle or rolling persistence
+  revisions backward.
+- Policy acceptance, rejection, retry exhaustion, and Effect execution now
+  mutate only the explicitly owned lifecycle entries.
+
 ## 0.1.4 — 2026-07-30
 
 ### Added

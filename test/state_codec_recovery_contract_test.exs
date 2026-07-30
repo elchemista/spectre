@@ -26,9 +26,10 @@ defmodule SpectreStateCodecRecoveryContractTest do
     assert {:ok, encoded} = Codec.encode(%State{pending_effects: [effect]})
     [encoded_effect] = encoded["pending_effects"]
 
-    oversized = Map.put(encoded, "pending_effects", [encoded_effect, encoded_effect])
+    oversized =
+      Map.put(encoded, "pending_effects", List.duplicate(encoded_effect, 257))
 
-    assert {:error, {:state_collection_too_large, :pending_effects, 2, 1}} =
+    assert {:error, {:state_collection_too_large, :pending_effects, 257, 256}} =
              Codec.decode(oversized)
   end
 
@@ -43,10 +44,62 @@ defmodule SpectreStateCodecRecoveryContractTest do
 
     assert {:ok,
             %State{
-              state_version: 4,
+              state_version: 5,
               revision: 0,
               data: %{"legacy" => %{"plain" => 7}}
             }} = Codec.decode(atom_keyed)
+  end
+
+  test "schema v5 round-trips independent Run lifecycle and rejects duplicate ownership" do
+    first =
+      %{name: :publish}
+      |> Effect.stage_action(__MODULE__, :agent)
+      |> Effect.bind_run("run-a")
+      |> Effect.waiting_policy(:confirm)
+
+    second =
+      %{name: :archive}
+      |> Effect.stage_action(__MODULE__, :agent)
+      |> Effect.bind_run("run-b")
+      |> Effect.waiting_policy(:confirm)
+
+    state = %State{
+      pending_effects: [first, second],
+      planned_effects: [first, second],
+      awaitables: [
+        Awaitable.open_policy(:confirm, first),
+        Awaitable.open_policy(:confirm, second)
+      ]
+    }
+
+    assert {:ok, %{"state_version" => 5} = encoded} = Codec.encode(state)
+    assert {:ok, restored} = Codec.decode(encoded)
+    assert Enum.map(restored.pending_effects, & &1.run_id) == ["run-a", "run-b"]
+    assert Enum.map(restored.awaitables, & &1.run_id) == ["run-a", "run-b"]
+
+    duplicate =
+      put_in(
+        encoded,
+        ["pending_effects"],
+        [hd(encoded["pending_effects"]), hd(encoded["pending_effects"])]
+      )
+
+    assert {:error, {:duplicate_pending_effect_scope, "run-a"}} = Codec.decode(duplicate)
+
+    [first_awaitable, second_awaitable] = encoded["awaitables"]
+
+    mismatched =
+      put_in(
+        encoded,
+        ["awaitables"],
+        [
+          Map.put(first_awaitable, "run_id", "run-b"),
+          Map.put(second_awaitable, "run_id", "run-a")
+        ]
+      )
+
+    assert {:error, {:invalid_policy_lifecycle_owner, _, "run-b", "run-a"}} =
+             Codec.decode(mismatched)
   end
 
   test "duplicate normalized keys and non-schema keys fail closed" do

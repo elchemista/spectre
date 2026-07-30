@@ -404,7 +404,7 @@ defmodule Spectre.Runtime do
 
     result = %{result | state: state}
 
-    if terminal_execution_result?(result) do
+    if terminal_execution_result?(result, instance_lifecycle_run_id(opts)) do
       {:ok, result}
     else
       execute_pending_result(result, ctx, opts)
@@ -425,9 +425,12 @@ defmodule Spectre.Runtime do
     end
   end
 
-  @spec terminal_execution_result?(Result.t()) :: boolean()
-  defp terminal_execution_result?(%Result{state: %State{} = state, effects: effects}) do
-    is_nil(State.pending_effect(state)) and
+  @spec terminal_execution_result?(Result.t(), String.t() | nil) :: boolean()
+  defp terminal_execution_result?(
+         %Result{state: %State{} = state, effects: effects},
+         run_id
+       ) do
+    is_nil(State.pending_effect(state, run_id)) and
       Enum.any?(effects, fn
         %Effect{id: id} = effect ->
           Effect.terminal?(effect) and
@@ -461,7 +464,7 @@ defmodule Spectre.Runtime do
 
   @spec run_turn(Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp run_turn(%Context{state: state} = ctx) do
-    if Policy.awaiting?(state) do
+    if Policy.awaiting?(state, instance_lifecycle_run_id(ctx.opts)) do
       run_policy_turn(ctx)
     else
       case Handlers.dispatch(ctx) do
@@ -1057,7 +1060,11 @@ defmodule Spectre.Runtime do
   defp finish_run_step(%Run{} = run, %Result{} = result, opts, event) do
     revision = run.revision + 1
     input = if match?(%Input{}, result.input), do: result.input, else: run.input
-    result = %{result | input: input}
+
+    result =
+      result
+      |> Map.put(:input, input)
+      |> put_instance_lifecycle_run_id(opts, run.id)
 
     step_id =
       get_in(result.metadata, [:runtime_identity, :turn_id])
@@ -1076,8 +1083,9 @@ defmodule Spectre.Runtime do
         last_error: nil
     }
 
-    awaitable = Result.open_awaitable(result)
-    effect = Result.pending_effect(result)
+    run_id = instance_lifecycle_run_id(opts)
+    awaitable = Result.open_awaitable(result, run_id)
+    effect = Result.pending_effect(result, run_id)
 
     step =
       cond do
@@ -1524,6 +1532,22 @@ defmodule Spectre.Runtime do
     opts
     |> Keyword.put(:turn_id, turn_id)
     |> Keyword.put(:trace_id, trace_id)
+  end
+
+  @spec instance_lifecycle_run_id(keyword()) :: String.t() | nil
+  defp instance_lifecycle_run_id(opts) when is_list(opts) do
+    if Keyword.get(opts, :instance_run_lifecycle?, false),
+      do: Keyword.get(opts, :run_id),
+      else: nil
+  end
+
+  @spec put_instance_lifecycle_run_id(Result.t(), keyword(), String.t()) :: Result.t()
+  defp put_instance_lifecycle_run_id(%Result{} = result, opts, run_id) do
+    if Keyword.get(opts, :instance_run_lifecycle?, false) do
+      %{result | metadata: Map.put(result.metadata, :lifecycle_run_id, run_id)}
+    else
+      result
+    end
   end
 
   @spec record_history(Result.t(), Context.t()) :: Result.t()

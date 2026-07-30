@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.1.4"
+  @version "0.1.5"
 
   @doc """
   Returns the running Spectre library version.
@@ -97,7 +97,7 @@ defmodule Spectre do
 
       {:ok, pid} = Spectre.summon(agent: MyApp.Agent, subject: account.id)
 
-  Supplying `:subject` selects the 0.1.4 Agent Instance runtime. Calls without
+  Supplying `:subject` selects the Agent Instance runtime. Calls without
   it preserve the conversation-scoped Session compatibility path.
   """
   @spec summon(keyword()) :: GenServer.on_start()
@@ -231,10 +231,22 @@ defmodule Spectre do
   @spec cancel(Input.t() | String.t() | map(), Spectre.Context.t() | map()) ::
           {:ok, Spectre.Result.t()}
   def cancel(input, ctx) do
+    opts = Map.get(ctx, :opts, [])
+
+    run_id =
+      if Keyword.get(opts, :instance_run_lifecycle?, false),
+        do: Keyword.get(opts, :run_id),
+        else: nil
+
     state =
       ctx
       |> Map.get(:state, %State{})
-      |> State.cancel_pending()
+      |> State.cancel_pending(run_id)
+
+    awaitables =
+      if is_nil(run_id),
+        do: state.awaitables,
+        else: Enum.filter(state.awaitables, &(&1.run_id == run_id))
 
     {:ok,
      %Spectre.Result{
@@ -242,7 +254,7 @@ defmodule Spectre do
        state: state,
        reply_text: "",
        effects: [],
-       awaitables: state.awaitables,
+       awaitables: awaitables,
        events: [%{type: :cancelled}]
      }}
   end

@@ -41,12 +41,20 @@ defmodule Spectre.Result do
   transition-local awaitables carried by the result.
   """
   @spec open_awaitable(t()) :: Awaitable.t() | nil
-  def open_awaitable(%__MODULE__{state: %State{} = state}) do
-    State.open_policy_awaitable(state)
+  def open_awaitable(%__MODULE__{} = result) do
+    open_awaitable(result, lifecycle_run_id(result))
   end
 
-  def open_awaitable(%__MODULE__{awaitables: awaitables}) do
-    Enum.find(awaitables, &(&1.status == :open))
+  @doc false
+  @spec open_awaitable(t(), String.t() | nil) :: Awaitable.t() | nil
+  def open_awaitable(%__MODULE__{state: %State{} = state}, run_id) do
+    State.open_policy_awaitable(state, run_id)
+  end
+
+  def open_awaitable(%__MODULE__{awaitables: awaitables}, run_id) do
+    Enum.find(awaitables, fn awaitable ->
+      awaitable.status == :open and (is_nil(run_id) or awaitable.run_id == run_id)
+    end)
   end
 
   @doc """
@@ -54,10 +62,20 @@ defmodule Spectre.Result do
   state-less result assembled by a host.
   """
   @spec pending_effect(t()) :: Effect.t() | nil
-  def pending_effect(%__MODULE__{state: %State{} = state}), do: State.pending_effect(state)
+  def pending_effect(%__MODULE__{} = result) do
+    pending_effect(result, lifecycle_run_id(result))
+  end
 
-  def pending_effect(%__MODULE__{effects: effects}) do
-    Enum.find(effects, &(&1.status in [:pending, :waiting_policy, :approved]))
+  @doc false
+  @spec pending_effect(t(), String.t() | nil) :: Effect.t() | nil
+  def pending_effect(%__MODULE__{state: %State{} = state}, run_id),
+    do: State.pending_effect(state, run_id)
+
+  def pending_effect(%__MODULE__{effects: effects}, run_id) do
+    Enum.find(effects, fn effect ->
+      effect.status in [:pending, :waiting_policy, :approved] and
+        (is_nil(run_id) or effect.run_id == run_id)
+    end)
   end
 
   @doc """
@@ -114,4 +132,16 @@ defmodule Spectre.Result do
   """
   @spec lifecycle(t()) :: map()
   def lifecycle(%__MODULE__{} = result), do: Spectre.Lifecycle.projection(result)
+
+  @spec lifecycle_run_id(t()) :: String.t() | nil
+  defp lifecycle_run_id(%__MODULE__{} = result) do
+    case Map.get(result.metadata, :lifecycle_run_id) do
+      run_id when is_binary(run_id) ->
+        run_id
+
+      _missing ->
+        Enum.find_value(result.effects, & &1.run_id) ||
+          Enum.find_value(result.awaitables, & &1.run_id)
+    end
+  end
 end

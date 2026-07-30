@@ -7,7 +7,7 @@ defmodule Spectre.State do
   history, and trace events.
   """
 
-  @state_version 4
+  @state_version 5
   @max_trace_entries 256
 
   defstruct state_version: @state_version,
@@ -60,6 +60,19 @@ defmodule Spectre.State do
   def awaiting_policy?(%__MODULE__{} = state), do: not is_nil(open_policy_awaitable(state))
 
   @doc """
+  Returns true when the specified Run owns an open policy response.
+
+  This scoped form is used by `Spectre.Instance`. Omitting the Run id retains
+  the conversation-wide compatibility behavior used by stateless calls and
+  `Spectre.Session`.
+  """
+  @spec awaiting_policy?(t(), String.t() | nil) :: boolean()
+  def awaiting_policy?(%__MODULE__{} = state, nil), do: awaiting_policy?(state)
+
+  def awaiting_policy?(%__MODULE__{} = state, run_id) when is_binary(run_id),
+    do: not is_nil(open_policy_awaitable(state, run_id))
+
+  @doc """
   Stores a pending effect and optionally starts a policy gate for it.
   """
   @spec put_pending_effect(t(), Spectre.Effect.t(), term()) :: t()
@@ -100,6 +113,16 @@ defmodule Spectre.State do
     transition.to
   end
 
+  @doc false
+  @spec cancel_pending(t(), String.t() | nil) :: t()
+  def cancel_pending(%__MODULE__{} = state, nil), do: cancel_pending(state)
+
+  def cancel_pending(%__MODULE__{} = state, run_id)
+      when is_binary(run_id) and run_id != "" do
+    {:ok, transition} = Spectre.Lifecycle.cancel_pending(state, :cancel_pending, run_id)
+    transition.to
+  end
+
   @doc """
   Returns the next effect in the execution queue, or `nil` when it is empty.
 
@@ -112,6 +135,16 @@ defmodule Spectre.State do
   def pending_effect(%__MODULE__{}), do: nil
 
   @doc """
+  Returns the pending effect owned by one Run.
+  """
+  @spec pending_effect(t(), String.t() | nil) :: Spectre.Effect.t() | nil
+  def pending_effect(%__MODULE__{} = state, nil), do: pending_effect(state)
+
+  def pending_effect(%__MODULE__{} = state, run_id) when is_binary(run_id) do
+    Enum.find(state.pending_effects, &(&1.run_id == run_id))
+  end
+
+  @doc """
   Returns the currently open policy awaitable, if one exists.
 
   Closed, expired, and non-policy awaitables are ignored. Spectre enforces at
@@ -120,6 +153,63 @@ defmodule Spectre.State do
   @spec open_policy_awaitable(t()) :: Spectre.Awaitable.t() | nil
   def open_policy_awaitable(%__MODULE__{} = state) do
     Enum.find(state.awaitables, &(&1.kind == :policy and &1.status == :open))
+  end
+
+  @doc """
+  Returns the open policy awaitable owned by one Run.
+  """
+  @spec open_policy_awaitable(t(), String.t() | nil) :: Spectre.Awaitable.t() | nil
+  def open_policy_awaitable(%__MODULE__{} = state, nil), do: open_policy_awaitable(state)
+
+  def open_policy_awaitable(%__MODULE__{} = state, run_id) when is_binary(run_id) do
+    Enum.find(
+      state.awaitables,
+      &(&1.kind == :policy and &1.status == :open and &1.run_id == run_id)
+    )
+  end
+
+  @doc false
+  @spec claim_run_lifecycle(t(), String.t()) :: t()
+  def claim_run_lifecycle(%__MODULE__{} = state, run_id)
+      when is_binary(run_id) and run_id != "" do
+    case {pending_effect(state, run_id), Enum.find(state.pending_effects, &is_nil(&1.run_id))} do
+      {nil, %Spectre.Effect{} = effect} ->
+        claimed = Spectre.Effect.bind_run(effect, run_id)
+
+        pending_effects =
+          Enum.map(state.pending_effects, fn
+            %Spectre.Effect{id: id, run_id: nil} when id == effect.id -> claimed
+            current -> current
+          end)
+
+        planned_effects =
+          Enum.map(state.planned_effects, fn
+            %Spectre.Effect{id: id, run_id: nil} = current when id == effect.id ->
+              Spectre.Effect.bind_run(current, run_id)
+
+            current ->
+              current
+          end)
+
+        awaitables =
+          Enum.map(state.awaitables, fn
+            %Spectre.Awaitable{subject_id: id, run_id: nil} = awaitable when id == effect.id ->
+              %{awaitable | run_id: run_id}
+
+            awaitable ->
+              awaitable
+          end)
+
+        %{
+          state
+          | pending_effects: pending_effects,
+            planned_effects: planned_effects,
+            awaitables: awaitables
+        }
+
+      _owned_or_empty ->
+        state
+    end
   end
 
   @doc """

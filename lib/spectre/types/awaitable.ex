@@ -11,6 +11,7 @@ defmodule Spectre.Awaitable do
     :kind,
     :name,
     :subject_id,
+    :run_id,
     :label,
     :max_attempts,
     status: :open,
@@ -26,6 +27,7 @@ defmodule Spectre.Awaitable do
           name: term(),
           status: status(),
           subject_id: term(),
+          run_id: String.t() | nil,
           label: atom() | nil,
           attempts: non_neg_integer(),
           max_attempts: pos_integer() | nil,
@@ -37,10 +39,10 @@ defmodule Spectre.Awaitable do
   """
   @spec open_policy(term(), Spectre.Effect.t() | term(), keyword()) :: t()
   def open_policy(policy, subject, opts \\ []) when not is_nil(policy) do
-    subject_id =
+    {subject_id, run_id} =
       case subject do
-        %Spectre.Effect{id: id} -> id
-        id -> id
+        %Spectre.Effect{id: id, run_id: run_id} -> {id, run_id}
+        id -> {id, Keyword.get(opts, :run_id)}
       end
 
     %__MODULE__{
@@ -48,6 +50,7 @@ defmodule Spectre.Awaitable do
       kind: :policy,
       name: policy,
       subject_id: subject_id,
+      run_id: run_id,
       max_attempts: Keyword.get(opts, :max_attempts),
       metadata: Keyword.get(opts, :metadata, %{})
     }
