@@ -3,9 +3,10 @@ defmodule Spectre.Invocation do
   A concrete, revision-fenced request to execute one staged effect.
 
   Invocations describe work without embedding executable clients or callbacks.
-  In 0.1.3 the host returns the descriptor to `Spectre.Runtime.resume/3`; the
-  runtime then re-resolves the owning extension/provider and executes through
-  the canonical durable effect boundary.
+  A direct Runtime caller returns the descriptor to `Spectre.Runtime.resume/3`.
+  A `Spectre.Instance` instead retains the owning Run, dispatches the work
+  outside its mailbox, and accepts only a correlated internal receipt before
+  applying the returned continuation.
   """
 
   alias Spectre.Effect

@@ -6,6 +6,57 @@ minor release may contain documented breaking API changes.
 
 ## Unreleased
 
+## 0.1.4 — 2026-07-30
+
+### Added
+
+- Subject-scoped `Spectre.Instance` processes keyed by the portable
+  `Spectre.AgentRef + Spectre.Subject` pair, with race-safe lookup and
+  get-or-start through the application Registry.
+- An Instance-owned multi-Run scheduler with a deduplicated FIFO ready queue,
+  one mailbox-scheduled Move at a time, retained Run projections, bounded
+  terminal tombstones, and first-boundary `Spectre.Turn` replies.
+- A stable opaque `AgentRef + Subject` state scope plus privacy-safe tracking
+  of multiple channel conversation origins within the same Instance.
+- Correlated in-flight Effect/Action Invocation workers and internal
+  `Spectre.Invocation.Receipt` fencing across Instance generation, Run
+  revision, Invocation id, and dispatch id. Foreign, stale, duplicate, and
+  late receipts cannot mutate Instance state.
+- `Spectre.ExternalIdentity`, `Spectre.LinkIntent`, `Spectre.SubjectLink`, and
+  `Spectre.Subject.Registry` for explicit Agent-scoped identity resolution,
+  bounded one-time challenges, optional source confirmation, conflict
+  rejection, revocation, and privacy-safe Journal commits.
+- Public `Spectre.instance/4`, `lookup_instance/3`, and `resume/4` APIs.
+  `Spectre.summon/1,3` select the Instance runtime when an explicit `:subject`
+  is supplied.
+
+### Compatibility
+
+- Conversation-scoped `Spectre.Session` remains available unchanged when
+  `:subject` is omitted.
+- Ordinary user input resumes the exact policy-owning Run. Effect execution
+  remains an explicit Invocation boundary.
+- The single active Effect constraint remains on global `Spectre.State` in
+  this release. Instance serializes that lifecycle boundary; moving it onto
+  each Run is the next lifecycle phase.
+- Prism and ordinary provider calls remain synchronous inside one bounded Move
+  worker. The Instance mailbox stays responsive, but ready Runs wait for that
+  Move or its provider timeout; generic provider Invocations require a later
+  serializable mid-turn continuation.
+
+### Fixed
+
+- Run start, normalization, and initial scheduling no longer block the
+  Instance GenServer or observe stale committed State.
+- Duplicate and failed Run starts cannot overwrite retained Runs or exhaust
+  bounded capacity; terminal history and tombstones remain bounded.
+- Internal reply completion cannot roll shared Instance State back after
+  another Run commits.
+- Queued callers are released if another Run opens the global lifecycle lock,
+  and abnormal workers fail only their fenced Run.
+- Portable-value validation rejects improper lists without crashing the
+  Subject Registry.
+
 ## 0.1.3 — 2026-07-29
 
 ### Added

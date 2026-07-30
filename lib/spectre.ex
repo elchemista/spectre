@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.1.3"
+  @version "0.1.4"
 
   @doc """
   Returns the running Spectre library version.
@@ -93,13 +93,23 @@ defmodule Spectre do
   def turn(session, input, opts) when is_list(opts), do: session_turn(session, input, opts)
 
   @doc """
-  Summons a conversation-scoped session process directly.
+  Summons an Agent Instance or legacy Session process directly.
 
-      {:ok, pid} = Spectre.summon(agent: MyApp.Agent, conversation_id: "abc")
+      {:ok, pid} = Spectre.summon(agent: MyApp.Agent, subject: account.id)
+
+  Supplying `:subject` selects the 0.1.4 Agent Instance runtime. Calls without
+  it preserve the conversation-scoped Session compatibility path.
   """
   @spec summon(keyword()) :: GenServer.on_start()
   def summon(opts) when is_list(opts) do
-    Spectre.Session.start_link(opts)
+    if Keyword.has_key?(opts, :subject) do
+      case Spectre.Instance.start_link(opts) do
+        {:error, {:already_started, pid}} -> {:ok, pid}
+        other -> other
+      end
+    else
+      Spectre.Session.start_link(opts)
+    end
   end
 
   @doc """
@@ -111,6 +121,40 @@ defmodule Spectre do
           DynamicSupervisor.on_start_child()
   def summon(supervisor, agent, opts) when is_atom(agent) and is_list(opts) do
     Spectre.Supervisor.summon(supervisor, agent, opts)
+  end
+
+  @doc """
+  Starts or returns the unique supervised Instance for `agent + subject`.
+  """
+  @spec instance(
+          GenServer.server(),
+          module() | Spectre.AgentRef.t(),
+          Spectre.Subject.t() | term(),
+          keyword()
+        ) :: DynamicSupervisor.on_start_child()
+  def instance(supervisor, agent, subject, opts \\ []) do
+    Spectre.Supervisor.instance(supervisor, agent, subject, opts)
+  end
+
+  @doc """
+  Looks up the live local Instance for `agent + subject`.
+  """
+  @spec lookup_instance(
+          module() | Spectre.AgentRef.t(),
+          Spectre.Subject.t() | term(),
+          atom()
+        ) :: {:ok, pid()} | {:error, :instance_not_found}
+  def lookup_instance(agent, subject, registry \\ Spectre.Instance.Registry) do
+    Spectre.Instance.Registry.lookup(agent, subject, registry)
+  end
+
+  @doc """
+  Resumes a Run owned by an Agent Instance.
+  """
+  @spec resume(GenServer.server(), Spectre.Run.Ref.t(), term(), keyword()) ::
+          {:ok, Spectre.Turn.t()} | {:error, term()}
+  def resume(instance, %Spectre.Run.Ref{} = ref, command, opts \\ []) do
+    Spectre.Instance.resume(instance, ref, command, opts)
   end
 
   @doc """
@@ -136,7 +180,8 @@ defmodule Spectre do
 
       :ok = Spectre.reset(session, %Spectre.State{current_flow: :checkout})
   """
-  @spec reset(GenServer.server(), State.t() | map() | keyword()) :: :ok
+  @spec reset(GenServer.server(), State.t() | map() | keyword()) ::
+          :ok | {:error, :instance_busy}
   def reset(session, state \\ %State{}), do: Spectre.Session.reset(session, state)
 
   @doc """

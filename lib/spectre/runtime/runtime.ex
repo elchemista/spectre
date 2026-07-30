@@ -263,6 +263,29 @@ defmodule Spectre.Runtime do
   end
 
   defp do_resume(
+         %Run{status: :boundary, cursor: :policy, waiting: %Boundary{}} = run,
+         {:input, input},
+         opts
+       ) do
+    runtime_opts = run.agent |> runtime_opts(opts) |> put_run_identity(run)
+
+    case normalize_resume_input(run.agent, input, runtime_opts) do
+      {:ok, normalized} ->
+        run
+        |> Map.merge(%{
+          input: normalized,
+          status: :ready,
+          cursor: :turn,
+          waiting: nil
+        })
+        |> do_advance(runtime_opts)
+
+      {:error, reason} ->
+        reject_run_resume(run, reason, runtime_opts)
+    end
+  end
+
+  defp do_resume(
          %Run{status: :awaiting, cursor: :effect, waiting: %Invocation{} = invocation} = run,
          {:execute, supplied},
          opts
@@ -1475,6 +1498,14 @@ defmodule Spectre.Runtime do
          :ok <- validate_binary_size(input.text, :input, opts, :input_max_bytes, 64_000) do
       {:ok, input}
     end
+  end
+
+  defp normalize_resume_input(agent, input, opts) do
+    normalize_input(agent, Input.new(input), opts)
+  rescue
+    exception -> {:error, {:run_input_failed, exception.__struct__}}
+  catch
+    kind, reason -> {:error, {:run_input_failed, kind, reason}}
   end
 
   @spec maybe_put_config(keyword(), keyword(), atom()) :: keyword()

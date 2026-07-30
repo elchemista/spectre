@@ -177,7 +177,7 @@ Execution remains explicit and separate from approval:
 {:ok, value} = Spectre.Result.action_outcome(completed)
 ```
 
-Module/session execution persists transitions around the action boundary and
+Module/Instance/Session execution persists transitions around the action boundary and
 checks idempotency. `Spectre.execute(state, context)` is the lower-level form
 for integrations that own those concerns themselves. See [Actions and Policy
 Gates](ACTIONS.md) for action return values, protection, and hooks.
@@ -196,32 +196,50 @@ After an external delivery succeeds, lifecycle hooks can run independently:
 
 Use `Spectre.cancel/2` to cancel the active policy/effect boundary.
 
-## Stateful sessions
+## Stateful Agent Instances
 
 Calling an agent module is suitable for request-scoped runtimes backed by a
-durable state adapter. Sessions provide one OTP process per active
-conversation:
+durable state adapter. An Agent Instance provides one unique local owner for
+`AgentRef + Subject`, retains multiple Runs, and returns each call at its first
+observable boundary:
 
 ```elixir
 children = [
   {Spectre.Supervisor, name: MyApp.SpectreSupervisor}
 ]
 
+subject = Spectre.Subject.new({:account, account.id})
+
+{:ok, instance} =
+  Spectre.instance(
+    MyApp.SpectreSupervisor,
+    MyApp.SupportAgent,
+    subject
+  )
+
+{:ok, turn} = Spectre.turn(instance, "hello")
+%Spectre.State{} = Spectre.state(instance)
+{:ok, ^instance} = Spectre.lookup_instance(MyApp.SupportAgent, subject)
+:ok = Spectre.dismiss(MyApp.SpectreSupervisor, instance)
+```
+
+`Spectre.summon/1,3` selects the Instance runtime when `:subject` is supplied.
+Prefer supervised `Spectre.instance/4` in production. See
+[Agent Instances and Subjects](INSTANCES.md) for Run resume, identity linking,
+and the 0.1.4 single-Effect lifecycle constraint.
+
+### Legacy conversation sessions
+
+Omitting `:subject` retains the 0.1.x Session adapter:
+
+```elixir
 {:ok, session} =
   Spectre.summon(
     MyApp.SpectreSupervisor,
     MyApp.SupportAgent,
     conversation_id: "conversation-42"
   )
-
-{:ok, turn} = Spectre.turn(session, "hello")
-%Spectre.State{} = Spectre.state(session)
-:ok = Spectre.reset(session, restored_state)
-:ok = Spectre.dismiss(MyApp.SpectreSupervisor, session)
 ```
-
-`Spectre.summon/1` starts a session directly; prefer `summon/3` in production
-so a `Spectre.Supervisor` owns restart and shutdown behavior.
 
 Supervised sessions restart after abnormal exits and restore from the configured
 durable state adapter. Normal dismiss and idle shutdown do not restart a

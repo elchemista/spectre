@@ -113,8 +113,9 @@ cache outside ephemeral release directories.
 
 ## Minimal supervision
 
-The Spectre application starts its semantic-cache owner and journal buffer. Add
-a dynamic session supervisor only when using conversation processes:
+The Spectre application starts its local Instance Registry, Subject Registry,
+semantic-cache owner, and journal buffer. Add a dynamic supervisor when using
+subject-scoped Instances or legacy conversation Sessions:
 
 ```elixir
 children = [
@@ -122,5 +123,6 @@ children = [
 ]
 ```
 
-Stateless `Spectre.ask/3` and `Spectre.turn/3` calls do not require that session
-supervisor.
+Stateless `Spectre.ask/3` and `Spectre.turn/3` calls do not require that
+supervisor. See [Agent Instances and Subjects](INSTANCES.md) before adapting an
+authenticated channel identity.

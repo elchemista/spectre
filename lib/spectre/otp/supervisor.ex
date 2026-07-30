@@ -1,6 +1,6 @@
 defmodule Spectre.Supervisor do
   @moduledoc """
-  Dynamic supervisor for conversation-scoped Spectre sessions.
+  Dynamic supervisor for Spectre Sessions and Agent Instances.
 
   Add it to your application supervision tree:
 
@@ -8,15 +8,18 @@ defmodule Spectre.Supervisor do
         {Spectre.Supervisor, name: MyApp.SpectreSupervisor}
       ]
 
-  Then start sessions as conversations arrive:
+  Then start a subject-scoped Agent Instance:
 
       {:ok, pid} =
         Spectre.Supervisor.summon(
           MyApp.SpectreSupervisor,
           MyApp.Agents.ProjectAgent,
-          conversation_id: conversation.id,
+          subject: account.id,
           opts: [model: &MyApp.LLM.complete/2]
         )
+
+  Calls without `:subject` retain the legacy conversation-scoped
+  `Spectre.Session` behaviour.
   """
 
   use DynamicSupervisor
@@ -40,15 +43,34 @@ defmodule Spectre.Supervisor do
   end
 
   @doc """
-  Starts a supervised Spectre session under `supervisor`.
+  Starts a supervised Spectre Instance or legacy Session under `supervisor`.
 
-      {:ok, pid} = Spectre.Supervisor.summon(MySupervisor, MyAgent, conversation_id: "123")
+      {:ok, pid} = Spectre.Supervisor.summon(MySupervisor, MyAgent, subject: account.id)
   """
-  @spec summon(GenServer.server(), module(), [session_option()]) ::
+  @spec summon(GenServer.server(), module(), [session_option() | Spectre.Instance.option()]) ::
           DynamicSupervisor.on_start_child()
   def summon(supervisor \\ __MODULE__, agent, opts \\ []) when is_atom(agent) do
-    opts = Keyword.put(opts, :agent, agent)
-    DynamicSupervisor.start_child(supervisor, {Spectre.Session, opts})
+    case Keyword.fetch(opts, :subject) do
+      {:ok, subject} ->
+        Spectre.Instance.Registry.ensure_started(supervisor, agent, subject, opts)
+
+      :error ->
+        opts = Keyword.put(opts, :agent, agent)
+        DynamicSupervisor.start_child(supervisor, {Spectre.Session, opts})
+    end
+  end
+
+  @doc """
+  Starts or returns the unique Instance for `agent + subject`.
+  """
+  @spec instance(
+          GenServer.server(),
+          module() | Spectre.AgentRef.t(),
+          Spectre.Subject.t() | term(),
+          keyword()
+        ) :: DynamicSupervisor.on_start_child()
+  def instance(supervisor \\ __MODULE__, agent, subject, opts \\ []) do
+    Spectre.Instance.Registry.ensure_started(supervisor, agent, subject, opts)
   end
 
   @doc """

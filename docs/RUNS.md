@@ -121,15 +121,22 @@ Checkpoint blobs are continuation state, not untrusted input. `restore/2`
 validates schema and lifecycle but does not authenticate a blob; use storage
 with integrity and access controls when a Run can authorize effects.
 
-## Ownership boundary in 0.1.3
+## Ownership boundary in 0.1.4
 
-This release implements the pure-core continuation protocol. It intentionally
-does not introduce the later Agent Instance scheduler, a global Run registry,
-multi-Run fairness, or long-lived Invocation workers. A caller that directly
-uses `Spectre.Runtime` is the single owner of the current Run value.
-Checkpoint replay is at-least-once: restoring the same awaiting snapshot twice
-can retry the capability, and both attempts carry the same Effect idempotency
-key. Providers must deduplicate that key. A durable claim/in-flight ownership
-protocol belongs to the later Instance phase. Actor/transport packages may
-project refs, but must not invent a second reducer or mutate `Spectre.State`
-outside the core lifecycle.
+A caller that directly uses `Spectre.Runtime` remains the single owner of its
+Run value. Checkpoint replay is at-least-once: restoring the same awaiting
+snapshot twice can retry the capability, and both attempts carry the same
+Effect idempotency key. Providers must deduplicate that key.
+
+For a stateful actor, `Spectre.Instance` now owns multiple retained Runs for one
+`AgentRef + Subject`. It schedules a deduplicated FIFO ready queue through its
+mailbox, replies at the first observable boundary, and correlates in-flight
+Invocation work with an internal capability plus Instance generation, Run
+revision, Invocation id, and dispatch id. Only the owning Instance applies the
+returned continuation; stale, duplicate, foreign, and malformed receipts are
+ignored.
+
+The local active-Run registry and Subject Registry are in-memory in this
+phase. Durable checkpoints, passivation, cross-node claims, and recovery are
+separate continuity-plane responsibilities. See
+[Agent Instances and Subjects](INSTANCES.md).

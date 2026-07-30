@@ -53,6 +53,9 @@ The host-facing types have separate roles:
 - `Spectre.Run` is the checkpointable continuation behind one unit of work.
 - `Spectre.Turn` is the public projection at the first observable boundary.
 - `Spectre.Invocation` describes one revision-fenced Effect execution request.
+- `Spectre.Subject` is the canonical entity served across authenticated
+  channels.
+- `Spectre.Instance` owns that Subject's ordered State and retained Runs.
 - `Spectre.Effect` describes work and its lifecycle.
 - `Spectre.Awaitable` describes input the runtime is waiting for.
 
@@ -70,6 +73,36 @@ Actor integrations that own continuations can use the closed
 callbacks, and process handles are re-resolved rather than stored in a Run.
 The Invocation descriptor is available as `turn.boundary` when the observable
 is `{:awaiting, ref}`.
+
+## Run A Subject-Scoped Instance
+
+For stateful applications, one Instance is identified by the portable
+`AgentRef + Subject` pair rather than by a chat or process id:
+
+```elixir
+children = [
+  {Spectre.Supervisor, name: MyApp.SpectreSupervisor}
+]
+
+subject = Spectre.Subject.new({:account, account.id})
+
+{:ok, instance} =
+  Spectre.instance(
+    MyApp.SpectreSupervisor,
+    MyApp.SupportAgent,
+    subject
+  )
+
+{:ok, turn} = Spectre.turn(instance, "continue")
+```
+
+Concurrent get-or-start calls converge on the same local PID. The Instance
+retains multiple Runs, schedules them through its mailbox, and dispatches
+Effect Invocations without blocking calls such as `info/1`. An authenticated
+channel must resolve its exact `Spectre.ExternalIdentity` through
+`Spectre.Subject.Registry`; Spectre never merges Subjects from names, similar
+numbers, message text, or model output. See
+[Agent Instances and Subjects](docs/INSTANCES.md).
 
 ## Installation
 
@@ -356,13 +389,12 @@ end
 
 `Spectre.execute/3` dispatches `:action` through the configured Action provider
 and any other effect kind through the unique executor contributed by an
-installed Agent extension. It returns the terminal state; it does not silently
-write that state into an existing session. The host must durably store
-`executed_result.state`, or call `Spectre.reset(session, executed_result.state)`
-when using a live session. Executors receive `:effect_id` and
-`:idempotency_key` so the real side-effect boundary can deduplicate retries.
+installed Agent extension. The lower-level State/context form returns terminal
+state to its host owner; the live Instance and Session forms commit through
+their process owner. Executors receive `:effect_id` and `:idempotency_key` so
+the real side-effect boundary can deduplicate retries.
 
-## Conversation Sessions
+## Legacy Conversation Sessions
 
 ```elixir
 {:ok, session} =
@@ -404,6 +436,8 @@ adapters on startup, and can stop after an idle timeout.
   logical references, and caller-owned runtime resources.
 - [Resumable Runs](docs/RUNS.md) - closed Runtime steps, revision fencing,
   checkpoint/recovery, and the public Turn projection.
+- [Agent Instances and Subjects](docs/INSTANCES.md) - subject-scoped ownership,
+  multi-Run scheduling, Invocation receipts, and explicit identity linking.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM

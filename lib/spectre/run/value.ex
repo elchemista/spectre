@@ -26,14 +26,7 @@ defmodule Spectre.Run.Value do
   end
 
   def validate(value, path) when is_list(value) do
-    value
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
-      case validate(item, [index | path]) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+    validate_list(value, path, 0)
   end
 
   def validate(value, path) when is_tuple(value) do
@@ -200,26 +193,46 @@ defmodule Spectre.Run.Value do
   end
 
   defp prepare_list(values) do
-    Enum.reduce_while(values, :ok, fn value, :ok ->
-      case prepare(value) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+    prepare_list(values, 0)
   end
 
   defp encode_list(values, encoder) do
-    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, encoded} ->
-      case encoder.(value) do
-        {:ok, value} -> {:cont, {:ok, [value | encoded]}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
+    encode_list(values, encoder, [])
+  end
+
+  defp validate_list([], _path, _index), do: :ok
+
+  defp validate_list([item | tail], path, index) do
+    with :ok <- validate(item, [index | path]) do
+      validate_list(tail, path, index + 1)
+    end
+  end
+
+  defp validate_list(_improper_tail, path, index) do
+    {:error,
+     {:nonportable_run_value, Enum.reverse([{:improper_tail, index} | path]), :improper_list}}
+  end
+
+  defp prepare_list([], _index), do: :ok
+
+  defp prepare_list([value | tail], index) do
+    with :ok <- prepare(value), do: prepare_list(tail, index + 1)
+  end
+
+  defp prepare_list(_improper_tail, index),
+    do: {:error, {:invalid_encoded_run_list, {:improper_tail, index}}}
+
+  defp encode_list([], _encoder, encoded), do: {:ok, Enum.reverse(encoded)}
+
+  defp encode_list([value | tail], encoder, encoded) do
+    case encoder.(value) do
+      {:ok, value} -> encode_list(tail, encoder, [value | encoded])
       {:error, _reason} = error -> error
     end
   end
+
+  defp encode_list(_improper_tail, _encoder, _encoded),
+    do: {:error, :improper_run_list}
 
   defp decode_list(values, decoder), do: encode_list(values, decoder)
 
