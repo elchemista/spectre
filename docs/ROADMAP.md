@@ -110,7 +110,7 @@ shared provider boundary:
 - rejected candidates cannot become eligible merely because a rule assigned
   hard evidence strength;
 - the dynamically detected `ex_fastembed` integration is no longer declared as
-  a transitive Git dependency, so the Spectre Hex package can be built while
+  a transitive Git dependency, so the local release package can be built while
   host applications can still opt into the adapter explicitly.
 
 These facts remain local receipt data. No exporter, pricing layer, automatic

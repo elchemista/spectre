@@ -4,10 +4,11 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.1.x` is a public preview. Public modules, documented functions,
-struct fields, DSL forms, and adapter callbacks follow semantic versioning.
-Modules with `@moduledoc false`, undocumented generated functions, and private
-runtime data are implementation details.
+Spectre `0.1.x` is a public preview. The exact modules, callables, DSL forms,
+callbacks, types, and struct fields covered by the `0.1.6` compatibility
+promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). This
+guide explains that surface but does not enlarge it. Anything absent from the
+manifest is an implementation detail even when it is exported or visible.
 
 ## Stack installation
 

@@ -19,15 +19,17 @@ env:
   OTP_VERSION: "28.x"
 
 jobs:
-  tests:
-    name: Tests
+  quality:
+    name: Format, compile, test, Credo
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       MIX_ENV: test
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Elixir and Erlang/OTP
         id: beam
@@ -36,19 +38,97 @@ jobs:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
-      - name: Restore test build cache
+      - name: Restore quality build cache
         uses: actions/cache@v6
         with:
           path: |
             deps
             _build/test
-          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-test-${{ hashFiles('mix.lock') }}
+          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-quality-${{ hashFiles('mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
 
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile without warnings
+        run: mix compile --warnings-as-errors
+
       - name: Run tests
         run: mix test
+
+      - name: Run Credo
+        run: mix credo
+
+  dialyzer:
+    name: Dialyzer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MIX_ENV: dev
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Elixir and Erlang/OTP
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore Dialyzer PLT and build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/dev
+          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-dialyzer-${{ hashFiles('mix.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Run Dialyzer
+        run: mix dialyzer
+
+  package:
+    name: ExDoc and package dry-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      MIX_ENV: dev
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Elixir and Erlang/OTP
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore documentation build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/dev
+          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-package-${{ hashFiles('mix.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Build documentation
+        run: mix docs
+
+      - name: Validate package locally (no publish)
+        run: SPECTRE_HEX_BUILD=1 mix hex.build --unpack --output "$RUNNER_TEMP/hex-package"
 
   real-ex-fastembed:
     name: Real ExFastembed system test
@@ -63,6 +143,8 @@ jobs:
     steps:
       - name: Check out Spectre
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Check out ExFastembed
         uses: actions/checkout@v6
@@ -70,6 +152,7 @@ jobs:
           repository: elchemista/ex_fastembed
           ref: 02edfc604274077d8a02848dcfafd56797598d77
           path: ex_fastembed
+          persist-credentials: false
 
       - name: Set up Elixir and Erlang/OTP
         id: beam
@@ -97,65 +180,3 @@ jobs:
 
       - name: Run real embedding lifecycle test
         run: mix test test/real_ex_fastembed_semantic_cache_test.exs --include real_ex_fastembed
-
-  credo:
-    name: Credo
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    env:
-      MIX_ENV: dev
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Set up Elixir and Erlang/OTP
-        id: beam
-        uses: erlef/setup-beam@v1
-        with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
-
-      - name: Restore Credo build cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            deps
-            _build/dev
-          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-credo-${{ hashFiles('mix.lock') }}
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Run Credo
-        run: mix credo
-
-  dialyzer:
-    name: Dialyzer
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      MIX_ENV: dev
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Set up Elixir and Erlang/OTP
-        id: beam
-        uses: erlef/setup-beam@v1
-        with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
-
-      - name: Restore Dialyzer PLT and build cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            deps
-            _build/dev
-          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-dialyzer-${{ hashFiles('mix.lock') }}
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Run Dialyzer
-        run: mix dialyzer
