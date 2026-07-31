@@ -36,6 +36,15 @@ The permanent 0.1.6 State v5 and Run v1 fixtures remain recovery tests. New
 operational state is stored in the Instance's canonical checkpoint, not inside
 a conversational Run checkpoint.
 
+## Prefer `reason`/`act` over `ask`
+
+0.2.0 splits the ambiguous `ask` verb into two explicit handlers: `reason`
+calls the model without permitting action planning, and `act` calls the model
+and allows the closed action planner. `ask` keeps its 0.1.x behavior and
+continues to compile, so no Flow has to change to upgrade. It is scheduled for
+deprecation in a later 0.2.x release: migrate routes that must never stage
+actions to `reason`, and routes that intentionally use the planner to `act`.
+
 ## Opt in to canonical Instance checkpoints
 
 0.1.x state adapters persist conversational `Spectre.State`. The new
@@ -107,6 +116,19 @@ temporary Runner. Register it with `Spectre.register_vigil/4`; use
 
 Timer and trigger generations are fenced. Hosts must not replay raw timer
 messages themselves after updating a Vigil.
+
+For human or external waits, start echoing the public `view.wait_ref.id` and
+`view.wait_ref.generation` on every `trigger_loop/4` call. Then opt each
+Definition into strict fencing:
+
+```elixir
+security: %{trigger_correlation: :required}
+```
+
+The 0.2.x default still accepts legacy uncorrelated triggers and emits
+`[:spectre, :instance, :uncorrelated_operation_trigger]` telemetry. Use that
+signal to find adapters that must migrate before the planned strict 0.3.0
+default.
 
 ## Register operations explicitly
 

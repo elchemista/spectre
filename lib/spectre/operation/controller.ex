@@ -5,6 +5,12 @@ defmodule Spectre.Operation.Controller do
   Controller callbacks are deterministic reducers. They run briefly inside
   the Agent owner; external work must be represented by a registered
   `Spectre.Operation.Request` and is executed by a temporary Runner.
+
+  A `kind: :directive` Definition with `can_start: [:work]` may return
+  `start_loops: [{:work, controller, input, opts}]` from a successful
+  `apply_result/4`. Each intent requires a stable `:intent_id`; the Agent
+  validates and commits the parent Result and every new Work atomically.
+  Work and Vigil controllers cannot acquire this capability.
   """
 
   alias Spectre.Operation.Definition

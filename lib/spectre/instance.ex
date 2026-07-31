@@ -160,25 +160,44 @@ defmodule Spectre.Instance do
   def run(server, %Ref{run_id: run_id}), do: run(server, run_id)
   def run(server, run_id), do: GenServer.call(server, {:instance_run, run_id})
 
-  @doc "Starts a precise Work owned by this Agent Instance."
+  @doc """
+  Starts a precise Work owned by this Agent Instance.
+
+  This is a host boundary. Operational Runners and their isolated executor
+  processes cannot call it; a Directive starts Work through a declared
+  Agent-side reducer intent.
+  """
   @spec start_work(GenServer.server(), module(), term(), keyword()) ::
           {:ok, OperationRef.t(), OperationView.t()} | {:error, term()}
   def start_work(server, controller, input, opts \\ []) when is_atom(controller) do
-    GenServer.call(server, {:operation_start, :work, controller, input, opts}, timeout(opts))
+    call_opts = Keyword.put(opts, :__spectre_callers__, operation_callers())
+    GenServer.call(server, {:operation_start, :work, controller, input, call_opts}, timeout(opts))
   end
 
   @doc "Registers a durable Vigil owned by this Agent Instance."
   @spec register_vigil(GenServer.server(), module(), term(), keyword()) ::
           {:ok, OperationRef.t(), OperationView.t()} | {:error, term()}
   def register_vigil(server, controller, input, opts \\ []) when is_atom(controller) do
-    GenServer.call(server, {:operation_start, :vigil, controller, input, opts}, timeout(opts))
+    call_opts = Keyword.put(opts, :__spectre_callers__, operation_callers())
+
+    GenServer.call(
+      server,
+      {:operation_start, :vigil, controller, input, call_opts},
+      timeout(opts)
+    )
   end
 
   @doc "Starts a library-owned controller on the shared operational runtime."
   @spec start_controller(GenServer.server(), module(), term(), keyword()) ::
           {:ok, OperationRef.t(), OperationView.t()} | {:error, term()}
   def start_controller(server, controller, input, opts \\ []) when is_atom(controller) do
-    GenServer.call(server, {:operation_start, :directive, controller, input, opts}, timeout(opts))
+    call_opts = Keyword.put(opts, :__spectre_callers__, operation_callers())
+
+    GenServer.call(
+      server,
+      {:operation_start, :directive, controller, input, call_opts},
+      timeout(opts)
+    )
   end
 
   @doc "Returns a committed read-only view of one operational loop."
@@ -250,7 +269,12 @@ defmodule Spectre.Instance do
   def stop_loop(server, loop, reason \\ :stopped, opts \\ []),
     do: control_loop(server, loop, :stop, reason, opts)
 
-  @doc "Delivers a declared timer/event/human trigger to a waiting loop."
+  @doc """
+  Delivers a declared timer/event/human trigger to a waiting loop.
+
+  Echo `view.wait_ref.id` as `:wait_id` and `view.wait_ref.generation` as
+  `:generation`. Definitions using strict trigger correlation require both.
+  """
   @spec trigger_loop(GenServer.server(), OperationRef.t() | String.t(), term(), keyword()) ::
           {:ok, OperationView.t()} | {:error, term()}
   def trigger_loop(server, loop, trigger, opts \\ []) do
@@ -519,8 +543,10 @@ defmodule Spectre.Instance do
 
   def handle_call({:operation_start, kind, controller, input, opts}, from, data) do
     caller = elem(from, 0)
+    callers = Enum.uniq([caller | Keyword.get(opts, :__spectre_callers__, [])])
+    opts = Keyword.delete(opts, :__spectre_callers__)
 
-    if nested_work?(data, caller, kind) do
+    if nested_work?(data, callers, kind) do
       {:reply, {:error, :work_cannot_start_work}, arm_idle_timer(data)}
     else
       env = operation_env(data)
@@ -616,7 +642,8 @@ defmodule Spectre.Instance do
          result <- OperationRuntime.request_control(loop, control, command, operation_env(data)) do
       case result do
         {:duplicate, duplicate_loop, duplicate_control} ->
-          {:reply, {:ok, OperationView.from_loop(duplicate_loop, duplicate_control)}, data}
+          {:reply, {:ok, OperationView.from_loop(duplicate_loop, duplicate_control)},
+           arm_idle_timer(data)}
 
         {:ok, next_loop, next_control, pid_action, event_specs} ->
           case commit_operational(data, next_loop, next_control, event_specs,
@@ -625,9 +652,10 @@ defmodule Spectre.Instance do
                  provenance: command.provenance,
                  transition: {:loop_control, action}
                ) do
-            {:ok, next, _events} ->
+            {:ok, next, committed_events} ->
               next =
                 next
+                |> maybe_emit_uncorrelated_operation_trigger(committed_events)
                 |> apply_runner_action(pid_action)
                 |> maybe_queue_after_transition(next_loop, next_control)
                 |> maybe_schedule_wait_timer(next_loop)
@@ -652,7 +680,7 @@ defmodule Spectre.Instance do
          :ok <- authorize_loop(loop, opts),
          {:ok, next_loop, next_control, event_specs} <-
            OperationRuntime.trigger(loop, control, trigger, opts, operation_env(data)),
-         {:ok, next, _events} <-
+         {:ok, next, committed_events} <-
            commit_operational(data, next_loop, next_control, event_specs,
              correlation_id: Keyword.get(opts, :correlation_id, Spectre.Identity.uuid7()),
              causation_id: Keyword.get(opts, :causation_id),
@@ -661,6 +689,7 @@ defmodule Spectre.Instance do
            ) do
       next =
         next
+        |> maybe_emit_uncorrelated_operation_trigger(committed_events)
         |> maybe_schedule_wait_timer(next_loop)
         |> queue_operation(next_loop)
         |> maybe_schedule_operations()
@@ -914,21 +943,26 @@ defmodule Spectre.Instance do
 
       ownership ->
         with {:ok, loop, control} <- operation_loop(data, result.loop_id),
-             {:ok, next_loop, next_control, event_specs} <-
+             {:ok, next_loop, next_control, event_specs, start_loop_intents} <-
                normalize_operation_result(
-                 OperationRuntime.apply_result(
+                 OperationRuntime.apply_result_with_start_loops(
                    loop,
                    control,
                    result,
                    operation_env(data, snapshot_id: ownership.snapshot_id)
                  )
                ),
+             {:ok, started_loops, already_started} <-
+               materialize_start_loop_intents(data, next_loop, result, start_loop_intents),
              {:ok, next, _events} <-
-               commit_operational(data, next_loop, next_control, event_specs,
-                 correlation_id: loop.correlation_id,
-                 causation_id: result.id,
-                 provenance: %{runner_attempt: result.attempt_id},
-                 transition: :operation_result
+               commit_operation_result_with_started_loops(
+                 data,
+                 next_loop,
+                 next_control,
+                 event_specs,
+                 result,
+                 started_loops,
+                 already_started
                ) do
           next =
             next
@@ -936,6 +970,7 @@ defmodule Spectre.Instance do
             |> maybe_remember_operation_result(next_loop, result, ownership.spec)
             |> maybe_queue_after_transition(next_loop, next_control)
             |> maybe_schedule_wait_timer(next_loop)
+            |> queue_started_loops(started_loops)
             |> maybe_schedule_operations()
 
           {:noreply, next}
@@ -2460,64 +2495,113 @@ defmodule Spectre.Instance do
   end
 
   defp commit_operational(data, loop, control, event_specs, opts) do
-    with :ok <- OperationLoop.validate(loop),
-         :ok <- Control.validate(control) do
-      do_commit_operational(data, loop, control, event_specs, opts)
+    entry = %{loop: loop, control: control, event_specs: event_specs, opts: opts}
+    commit_operational_batch(data, [entry], opts)
+  end
+
+  defp commit_operational_batch(data, entries, commit_opts) do
+    with :ok <- validate_operational_batch(entries) do
+      do_commit_operational_batch(data, entries, commit_opts)
     end
   end
 
-  defp do_commit_operational(data, loop, control, event_specs, opts) do
-    section = operation_section(loop.kind)
-    section_value = Map.put(canonical_value!(data, section), loop.id, loop)
-    control_value = Map.put(canonical_value!(data, :control), loop.id, control)
+  defp validate_operational_batch(entries) when is_list(entries) and entries != [] do
+    ids = Enum.map(entries, & &1.loop.id)
+
+    if Enum.uniq(ids) != ids do
+      {:error, :duplicate_operational_loop_in_transition}
+    else
+      Enum.reduce_while(entries, :ok, fn entry, :ok ->
+        with :ok <- OperationLoop.validate(entry.loop),
+             :ok <- Control.validate(entry.control) do
+          {:cont, :ok}
+        else
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  defp validate_operational_batch(_entries), do: {:error, :empty_operational_transition}
+
+  defp do_commit_operational_batch(data, entries, commit_opts) do
     next_revision = data.canonical.revision + 1
 
     events =
-      Enum.map(event_specs, fn spec ->
-        OperationEvent.new(loop, Map.fetch!(spec, :type),
-          agent_id: AgentRef.key(data.agent_ref),
-          revision: next_revision,
-          correlation_id: Keyword.get(opts, :correlation_id, loop.correlation_id),
-          causation_id: Keyword.get(opts, :causation_id),
-          provenance: Keyword.get(opts, :provenance, loop.provenance),
-          payload: Map.get(spec, :payload),
-          metadata: %{transition: Keyword.get(opts, :transition)}
-        )
+      Enum.flat_map(entries, fn %{loop: loop, event_specs: event_specs, opts: opts} ->
+        Enum.map(event_specs, fn spec ->
+          OperationEvent.new(loop, Map.fetch!(spec, :type),
+            agent_id: AgentRef.key(data.agent_ref),
+            revision: next_revision,
+            correlation_id: Keyword.get(opts, :correlation_id, loop.correlation_id),
+            causation_id: Keyword.get(opts, :causation_id),
+            provenance: Keyword.get(opts, :provenance, loop.provenance),
+            payload: Map.get(spec, :payload),
+            metadata: %{transition: Keyword.get(opts, :transition)}
+          )
+        end)
       end)
 
-    writes = %{
-      section => section_value,
-      control: control_value,
-      correlations: put_loop_correlation(data, loop, next_revision, opts)
-    }
+    writes = operational_batch_writes(data, entries, next_revision)
 
     writes =
       if events == [], do: writes, else: Map.put(writes, :events, append_events(data, events))
 
+    primary = hd(entries).loop
+
     with :ok <- validate_operation_events(data, events),
          {:ok, next} <-
            commit_canonical_sections(data, writes,
-             correlation_id: Keyword.get(opts, :correlation_id, loop.correlation_id),
-             causation_id: Keyword.get(opts, :causation_id),
-             provenance: Keyword.get(opts, :provenance, loop.provenance),
-             metadata: %{transition: Keyword.get(opts, :transition), loop_id: loop.id}
+             correlation_id: Keyword.get(commit_opts, :correlation_id, primary.correlation_id),
+             causation_id: Keyword.get(commit_opts, :causation_id),
+             provenance: Keyword.get(commit_opts, :provenance, primary.provenance),
+             metadata: %{
+               transition: Keyword.get(commit_opts, :transition),
+               loop_id: primary.id,
+               loop_ids: Enum.map(entries, & &1.loop.id)
+             }
            ) do
-      _ =
-        Spectre.Journal.record(
-          data.agent,
-          :operational_transition,
-          %{
-            loop_id: loop.id,
-            loop_kind: loop.kind,
-            loop_revision: loop.revision,
-            canonical_revision: next.canonical.revision,
-            transition: Keyword.get(opts, :transition)
-          },
-          data.base_opts
-        )
+      Enum.each(entries, fn %{loop: loop, opts: opts} ->
+        _ =
+          Spectre.Journal.record(
+            data.agent,
+            :operational_transition,
+            %{
+              loop_id: loop.id,
+              loop_kind: loop.kind,
+              loop_revision: loop.revision,
+              canonical_revision: next.canonical.revision,
+              transition: Keyword.get(opts, :transition)
+            },
+            data.base_opts
+          )
+      end)
 
       {:ok, route_committed_events(next, events), events}
     end
+  end
+
+  defp operational_batch_writes(data, entries, next_revision) do
+    section_writes =
+      Enum.reduce(entries, %{}, fn %{loop: loop}, acc ->
+        section = operation_section(loop.kind)
+        current = Map.get(acc, section, canonical_value!(data, section))
+        Map.put(acc, section, Map.put(current, loop.id, loop))
+      end)
+
+    controls =
+      Enum.reduce(entries, canonical_value!(data, :control), fn entry, acc ->
+        Map.put(acc, entry.loop.id, entry.control)
+      end)
+
+    correlations =
+      Enum.reduce(entries, canonical_value!(data, :correlations), fn entry, acc ->
+        put_loop_correlation(acc, entry.loop, next_revision, entry.opts)
+      end)
+
+    section_writes
+    |> Map.put(:control, controls)
+    |> Map.put(:correlations, correlations)
   end
 
   defp validate_operation_events(data, events) do
@@ -2995,8 +3079,7 @@ defmodule Spectre.Instance do
   defp delivery_consent_key(id) when is_binary(id), do: "delivery:consent:" <> id
   defp delivery_receipt_key(id) when is_binary(id), do: "delivery:receipt:" <> id
 
-  defp put_loop_correlation(data, loop, revision, opts) do
-    correlations = canonical_value!(data, :correlations)
+  defp put_loop_correlation(correlations, loop, revision, opts) do
     correlation_id = Keyword.get(opts, :correlation_id, loop.correlation_id)
 
     Map.put(correlations, correlation_id, %{
@@ -3121,13 +3204,19 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp nested_work?(data, caller, :work) do
+  defp nested_work?(data, callers, :work) do
     Enum.any?(data.operation_runners, fn {_attempt_id, ownership} ->
-      ownership.pid == caller and ownership.loop_kind == :work
+      ownership.pid in callers
     end)
   end
 
   defp nested_work?(_data, _caller, _kind), do: false
+
+  defp operation_callers do
+    [self() | List.wrap(Process.get(:"$callers"))]
+    |> Enum.filter(&is_pid/1)
+    |> Enum.uniq()
+  end
 
   defp queue_operation(data, %OperationLoop{} = loop) do
     key = {loop.kind, loop.id}
@@ -3215,7 +3304,7 @@ defmodule Spectre.Instance do
 
     with {:ok, next_loop, next_control, event_specs} <-
            OperationRuntime.advance_control(loop, control, operation_env(data)),
-         {:ok, next, _events} <-
+         {:ok, next, committed_events} <-
            commit_operational(data, next_loop, next_control, event_specs,
              correlation_id: command.correlation_id,
              causation_id: command.causation_id,
@@ -3223,6 +3312,7 @@ defmodule Spectre.Instance do
              transition: {:control_advanced, command.action}
            ) do
       next
+      |> maybe_emit_uncorrelated_operation_trigger(committed_events)
       |> maybe_queue_after_transition(next_loop, next_control)
       |> maybe_schedule_wait_timer(next_loop)
     else
@@ -3548,11 +3638,177 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp normalize_operation_result({:ok, loop, control, events}),
-    do: {:ok, loop, control, events}
+  defp normalize_operation_result({:ok, loop, control, events, start_loops}),
+    do: {:ok, loop, control, events, start_loops}
 
   defp normalize_operation_result({:duplicate, loop}), do: {:duplicate, loop}
   defp normalize_operation_result({:error, _reason} = error), do: error
+
+  defp materialize_start_loop_intents(_data, _parent, _result, []), do: {:ok, [], []}
+
+  defp materialize_start_loop_intents(data, parent, result, intents) do
+    Enum.reduce_while(intents, {:ok, [], []}, fn intent, {:ok, started, already} ->
+      child_id = Keyword.fetch!(intent.opts, :id)
+
+      case operation_loop(data, child_id) do
+        {:ok, existing, _control} ->
+          if started_by_same_intent?(existing, parent, intent) do
+            entry = %{intent_id: intent.intent_id, loop: existing}
+            {:cont, {:ok, started, [entry | already]}}
+          else
+            {:halt, {:error, {:duplicate_operational_loop, child_id}}}
+          end
+
+        {:error, :operation_loop_not_found} ->
+          case materialize_start_loop_intent(data, parent, result, intent) do
+            {:ok, child} -> {:cont, {:ok, [child | started], already}}
+            {:error, _reason} = error -> {:halt, error}
+          end
+      end
+    end)
+    |> case do
+      {:ok, started, already} -> {:ok, Enum.reverse(started), Enum.reverse(already)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # Start intents are idempotent: re-proposing an intent whose Work already
+  # exists with the same parent and intent provenance is a committed no-op.
+  # Only an id collision with different provenance rejects the transition.
+  defp started_by_same_intent?(existing, parent, intent) do
+    Map.get(existing.provenance, :parent_loop_id) == parent.id and
+      Map.get(existing.provenance, :loop_start_intent_id) == intent.intent_id
+  end
+
+  defp materialize_start_loop_intent(data, parent, result, intent) do
+    with {:ok, metadata} <- start_loop_intent_metadata(intent, parent) do
+      provenance =
+        parent.provenance
+        |> Map.put(:source, :directive)
+        |> Map.put(:parent_loop_id, parent.id)
+        |> Map.put(:loop_start_intent_id, intent.intent_id)
+
+      opts =
+        intent.opts
+        |> Keyword.put(:origin, parent.origin)
+        |> Keyword.put(:provenance, provenance)
+        |> Keyword.put(:turn_id, parent.source_turn_id)
+        |> Keyword.put(:authorized_origins, parent.authorized_origins)
+        |> Keyword.put(:visibility, parent.visibility)
+        |> Keyword.put(:destinations, parent.destinations)
+        |> Keyword.put(:causation_id, result.id)
+        |> Keyword.put(:metadata, metadata)
+
+      case OperationRuntime.start(
+             :work,
+             intent.controller,
+             intent.input,
+             opts,
+             operation_env(data)
+           ) do
+        {:ok, loop, control, event_specs} ->
+          commit_opts = [
+            correlation_id: loop.correlation_id,
+            causation_id: result.id,
+            provenance: provenance,
+            transition: {:loop_started_by, parent.id}
+          ]
+
+          {:ok,
+           %{
+             intent_id: intent.intent_id,
+             loop: loop,
+             control: control,
+             event_specs: event_specs,
+             opts: commit_opts
+           }}
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  defp start_loop_intent_metadata(intent, parent) do
+    case Keyword.get(intent.opts, :metadata, %{}) do
+      metadata when is_map(metadata) ->
+        {:ok,
+         metadata
+         |> Map.put(:parent_loop_id, parent.id)
+         |> Map.put(:parent_loop_kind, parent.kind)
+         |> Map.put(:loop_start_intent_id, intent.intent_id)}
+
+      _invalid ->
+        {:error, :invalid_operation_start_loop_metadata}
+    end
+  end
+
+  defp commit_operation_result_with_started_loops(
+         data,
+         parent,
+         parent_control,
+         event_specs,
+         result,
+         started_loops,
+         already_started
+       ) do
+    parent_events =
+      case {started_loops, already_started} do
+        {[], []} ->
+          event_specs
+
+        {started, already} ->
+          event_specs ++
+            [
+              %{
+                type: :loops_started,
+                payload: %{
+                  loops:
+                    Enum.map(started, &start_loop_event_entry(&1, false)) ++
+                      Enum.map(already, &start_loop_event_entry(&1, true))
+                }
+              }
+            ]
+      end
+
+    parent_opts = [
+      correlation_id: parent.correlation_id,
+      causation_id: result.id,
+      provenance: %{runner_attempt: result.attempt_id},
+      transition: :operation_result
+    ]
+
+    parent_entry = %{
+      loop: parent,
+      control: parent_control,
+      event_specs: parent_events,
+      opts: parent_opts
+    }
+
+    child_entries =
+      Enum.map(started_loops, fn child ->
+        Map.take(child, [:loop, :control, :event_specs, :opts])
+      end)
+
+    commit_operational_batch(data, [parent_entry | child_entries], parent_opts)
+  end
+
+  defp start_loop_event_entry(child, already_started?) do
+    %{
+      intent_id: child.intent_id,
+      id: child.loop.id,
+      kind: child.loop.kind,
+      already_started: already_started?
+    }
+  end
+
+  defp queue_started_loops(data, started_loops) do
+    Enum.reduce(started_loops, data, fn child, acc ->
+      acc
+      |> queue_operation(child.loop)
+      |> maybe_schedule_wait_timer(child.loop)
+    end)
+  end
 
   defp accept_operation_progress(data, progress) do
     ownership = Map.get(data.operation_runners, progress.attempt_id)
@@ -4664,5 +4920,16 @@ defmodule Spectre.Instance do
       },
       data.base_opts
     )
+  end
+
+  defp maybe_emit_uncorrelated_operation_trigger(data, events) do
+    if Enum.any?(events, fn event ->
+         event.type == :triggered and is_map(event.payload) and
+           Map.get(event.payload, :correlation) == :legacy
+       end) do
+      emit(:uncorrelated_operation_trigger, data, %{count: 1})
+    end
+
+    data
   end
 end

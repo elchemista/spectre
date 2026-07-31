@@ -74,6 +74,21 @@ defmodule SpectreOperationInstanceContractTest.Operations do
      )}
   end
 
+  def nested_start(_input, context) do
+    test_pid = Keyword.fetch!(context.opts, :test_pid)
+    {:ok, instance} = Spectre.lookup_instance(context.agent, context.subject)
+
+    result =
+      Spectre.start_work(
+        instance,
+        SpectreOperationInstanceContractTest.WaitingWork,
+        %{value: :nested}
+      )
+
+    send(test_pid, {:nested_start_result, result})
+    {:ok, %{nested_start_result: result}}
+  end
+
   defp callers(context) do
     case Process.get(:"$callers") do
       [_runner | _rest] = callers -> callers
@@ -146,6 +161,11 @@ defmodule SpectreOperationInstanceContractTest.Agent do
     input: :map,
     output: :map,
     remember: %{include: [:value, :artifacts, :receipt]}
+  )
+
+  operation(:nested_start, {SpectreOperationInstanceContractTest.Operations, :nested_start},
+    input: :map,
+    output: :map
   )
 end
 
@@ -239,6 +259,7 @@ defmodule SpectreOperationInstanceContractTest.SingleOperationWork do
   uses_operation(:timeout_once)
   uses_operation(:progress)
   uses_operation(:remember)
+  uses_operation(:nested_start)
 
   @impl true
   def init(input, _context), do: {:ok, %{input: input, done?: false, value: nil}}
@@ -303,6 +324,31 @@ defmodule SpectreOperationInstanceContractTest.WaitingWork do
   def complete(_state, _context), do: :continue
 end
 
+defmodule SpectreOperationInstanceContractTest.CorrelatedWaitingWork do
+  @moduledoc false
+
+  use Spectre.Work,
+    id: :correlated_waiting_work,
+    version: 1,
+    input: :map,
+    state: :map,
+    waits: [:external],
+    triggers: [:external],
+    security: %{trigger_correlation: :required}
+
+  @impl true
+  def init(input, _context), do: {:ok, input}
+
+  @impl true
+  def next(_state, _context), do: wait(:external)
+
+  @impl true
+  def apply_result(state, _request, _result, _context), do: {:ok, state}
+
+  @impl true
+  def complete(_state, _context), do: :continue
+end
+
 defmodule SpectreOperationInstanceContractTest.Vigil do
   @moduledoc false
 
@@ -328,6 +374,108 @@ defmodule SpectreOperationInstanceContractTest.Vigil do
 
   @impl true
   def handle_trigger(state, {:timer, _wait_id}, _context), do: {:ok, %{state | ready?: true}}
+end
+
+defmodule SpectreOperationInstanceContractTest.StartingDirectiveController do
+  @moduledoc false
+
+  @behaviour Spectre.Operation.Controller
+
+  alias Spectre.Operation.Definition
+  alias Spectre.Operation.Request
+
+  @impl true
+  def __spectre_loop_definition__ do
+    Definition.new(
+      id: :directive_starting_work,
+      version: 1,
+      kind: :directive,
+      input: :map,
+      state: :map,
+      imports: [:fetch_page],
+      can_start: [:work]
+    )
+  end
+
+  @impl true
+  def init(input, _context) do
+    {:ok,
+     %{
+       child_id: input.child_id,
+       child_controller:
+         Map.get(
+           input,
+           :child_controller,
+           SpectreOperationInstanceContractTest.WaitingWork
+         ),
+       done?: false
+     }}
+  end
+
+  @impl true
+  def next(%{done?: false}, _context), do: {:run, Request.new(:fetch_page, %{page: :seed})}
+  def next(%{done?: true, child_id: child_id}, _context), do: {:complete, child_id}
+
+  @impl true
+  def apply_result(state, _request, result, _context) do
+    child =
+      {:work, state.child_controller, %{value: result.value},
+       [intent_id: :page_reader, id: state.child_id, metadata: %{source: :directive_test}]}
+
+    {:ok, %{state | done?: true}, start_loops: [child]}
+  end
+
+  @impl true
+  def complete(%{done?: true, child_id: child_id}, _context),
+    do: {:complete, %{work_id: child_id}}
+
+  def complete(_state, _context), do: :continue
+end
+
+defmodule SpectreOperationInstanceContractTest.ReproposingDirectiveController do
+  @moduledoc false
+
+  @behaviour Spectre.Operation.Controller
+
+  alias Spectre.Operation.Definition
+  alias Spectre.Operation.Request
+
+  @impl true
+  def __spectre_loop_definition__ do
+    Definition.new(
+      id: :directive_reproposing_work,
+      version: 1,
+      kind: :directive,
+      input: :map,
+      state: :map,
+      imports: [:fetch_page],
+      can_start: [:work]
+    )
+  end
+
+  @impl true
+  def init(input, _context), do: {:ok, %{child_id: input.child_id, rounds: 0}}
+
+  @impl true
+  def next(%{rounds: rounds}, _context) when rounds < 2,
+    do: {:run, Request.new(:fetch_page, %{page: :seed})}
+
+  def next(%{child_id: child_id}, _context), do: {:complete, child_id}
+
+  @impl true
+  def apply_result(state, _request, result, _context) do
+    child =
+      {:work, SpectreOperationInstanceContractTest.WaitingWork, %{value: result.value},
+       [intent_id: :page_reader, id: state.child_id]}
+
+    {:ok, %{state | rounds: state.rounds + 1}, start_loops: [child]}
+  end
+
+  @impl true
+  def complete(%{rounds: rounds, child_id: child_id}, _context) when rounds >= 2,
+    do: {:complete, %{work_id: child_id}}
+
+  def complete(_state, _context), do: :continue
 end
 
 defmodule SpectreOperationInstanceContractTest.DirectiveController do
@@ -422,8 +570,11 @@ defmodule SpectreOperationInstanceContractTest do
   @single_work SpectreOperationInstanceContractTest.SingleOperationWork
   @completing_work SpectreOperationInstanceContractTest.CompletingWork
   @waiting_work SpectreOperationInstanceContractTest.WaitingWork
+  @correlated_waiting_work SpectreOperationInstanceContractTest.CorrelatedWaitingWork
   @vigil SpectreOperationInstanceContractTest.Vigil
   @directive SpectreOperationInstanceContractTest.DirectiveController
+  @starting_directive SpectreOperationInstanceContractTest.StartingDirectiveController
+  @reproposing_directive SpectreOperationInstanceContractTest.ReproposingDirectiveController
   @routed_agent SpectreOperationInstanceContractTest.RoutedAgent
   @interaction_agent SpectreOperationInstanceContractTest.InteractionAgent
   @store SpectreOperationInstanceContractTest.CheckpointStore
@@ -667,6 +818,175 @@ defmodule SpectreOperationInstanceContractTest do
     send(worker, {:release_page, 1})
     assert {:ok, completed} = eventually_loop(instance, work_ref, &(&1.status == :terminal))
     assert completed.terminal_category == :completed
+  end
+
+  test "a Directive commits declared Work starts atomically with its Result" do
+    instance = start_instance()
+    parent_id = "directive-parent"
+    child_id = "directive-child"
+
+    assert {:ok, parent_ref, _view} =
+             Spectre.start_controller(
+               instance,
+               @starting_directive,
+               %{child_id: child_id},
+               id: parent_id,
+               correlation_id: "directive-parent-correlation",
+               origin: :chat,
+               authorized_origins: [:admin]
+             )
+
+    assert_receive {:page_attempt, :seed, _attempt, _runner, _worker}, 1_000
+
+    assert {:ok, parent} = eventually_loop(instance, parent_ref, &(&1.status == :terminal))
+    assert parent.terminal_category == :completed
+
+    assert {:ok, child} = eventually_loop(instance, child_id, &(&1.status == :waiting))
+    assert child.kind == :work
+    assert child.wait_ref.kind == :external
+
+    assert {:error, :operation_loop_not_visible} =
+             Spectre.loop(instance, child_id, origin: :other)
+
+    assert {:ok, ^child} = Spectre.loop(instance, child_id, origin: :chat)
+    assert {:ok, ^child} = Spectre.loop(instance, child_id, origin: :admin)
+
+    events = Spectre.operation_events(instance)
+
+    parent_event =
+      Enum.find(events, &(&1.loop_id == parent_id and &1.type == :loops_started))
+
+    child_event =
+      Enum.find(events, &(&1.loop_id == child_id and &1.type == :started))
+
+    assert parent_event
+    assert child_event
+    assert parent_event.revision == child_event.revision
+
+    assert parent_event.payload == %{
+             loops: [
+               %{intent_id: :page_reader, id: child_id, kind: :work, already_started: false}
+             ]
+           }
+
+    assert child_event.causation_id == parent_event.causation_id
+
+    assert {:ok, checkpoint} = Spectre.checkpoint(instance)
+    assert {:ok, canonical} = Codec.decode(checkpoint)
+    assert {:ok, directives} = Canonical.fetch(canonical, :directive)
+    assert {:ok, works} = Canonical.fetch(canonical, :work)
+    assert directives[parent_id].state.done?
+    assert works[child_id].metadata.parent_loop_id == parent_id
+    assert works[child_id].metadata.loop_start_intent_id == :page_reader
+  end
+
+  test "a Runner and its isolated executor cannot call start_work directly" do
+    instance = start_instance()
+
+    assert {:ok, ref, _view} =
+             Spectre.start_work(
+               instance,
+               @single_work,
+               %{operation: :nested_start},
+               id: "nested-start-parent"
+             )
+
+    assert_receive {:nested_start_result, {:error, :work_cannot_start_work}}, 1_000
+    assert {:ok, completed} = eventually_loop(instance, ref, &(&1.status == :terminal))
+    assert completed.terminal_category == :completed
+
+    refute Enum.any?(
+             elem(Spectre.loops(instance), 1),
+             &(&1.id != ref.id and &1.definition == :waiting_work)
+           )
+  end
+
+  test "a rejected Directive start intent cannot partially create its Work" do
+    instance = start_instance()
+    parent_id = "invalid-directive-parent"
+    child_id = "invalid-directive-child"
+
+    assert {:ok, parent_ref, _view} =
+             Spectre.start_controller(
+               instance,
+               @starting_directive,
+               %{child_id: child_id, child_controller: @directive},
+               id: parent_id
+             )
+
+    assert_receive {:page_attempt, :seed, _attempt, _runner, _worker}, 1_000
+    assert {:ok, parent} = eventually_loop(instance, parent_ref, &(&1.status == :terminal))
+    assert parent.terminal_category == :failed
+    assert {:error, :operation_loop_not_found} = Spectre.loop(instance, child_id)
+
+    refute Enum.any?(
+             Spectre.operation_events(instance),
+             &(&1.loop_id == child_id and &1.type == :started)
+           )
+  end
+
+  test "re-proposing an identical start intent is a committed no-op" do
+    instance = start_instance()
+    parent_id = "reproposing-directive-parent"
+    child_id = "reproposed-directive-child"
+
+    assert {:ok, parent_ref, _view} =
+             Spectre.start_controller(
+               instance,
+               @reproposing_directive,
+               %{child_id: child_id},
+               id: parent_id
+             )
+
+    assert_receive {:page_attempt, :seed, _first_attempt, _runner, _worker}, 1_000
+    assert_receive {:page_attempt, :seed, _second_attempt, _second_runner, _second_worker}, 1_000
+
+    assert {:ok, parent} = eventually_loop(instance, parent_ref, &(&1.status == :terminal))
+    assert parent.terminal_category == :completed
+
+    assert {:ok, child} = eventually_loop(instance, child_id, &(&1.status == :waiting))
+    assert child.kind == :work
+
+    events = Spectre.operation_events(instance)
+
+    started_payloads =
+      events
+      |> Enum.filter(&(&1.loop_id == parent_id and &1.type == :loops_started))
+      |> Enum.map(&hd(&1.payload.loops))
+      |> Enum.sort_by(& &1.already_started)
+
+    assert [
+             %{intent_id: :page_reader, id: ^child_id, already_started: false},
+             %{intent_id: :page_reader, id: ^child_id, already_started: true}
+           ] = started_payloads
+
+    assert Enum.count(events, &(&1.loop_id == child_id and &1.type == :started)) == 1
+  end
+
+  test "a durable trigger command without correlation emits deprecation telemetry" do
+    parent = self()
+
+    telemetry_handler = fn event, measurements, metadata ->
+      send(parent, {:operation_telemetry, event, measurements, metadata})
+    end
+
+    instance =
+      start_instance(opts: [test_pid: self(), telemetry_handler: telemetry_handler])
+
+    assert {:ok, ref, _view} = Spectre.start_work(instance, @waiting_work, %{value: :legacy})
+    assert {:ok, _waiting} = eventually_loop(instance, ref, &(&1.status == :waiting))
+
+    assert {:ok, _view} =
+             GenServer.call(instance, {:operation_control, ref.id, :trigger, :external, []})
+
+    assert_receive {:operation_telemetry, [:spectre, :instance, :uncorrelated_operation_trigger],
+                    %{count: 1}, _metadata},
+                   1_000
+
+    assert Enum.any?(
+             Spectre.operation_events(instance, types: [:triggered]),
+             &(&1.loop_id == ref.id and &1.payload.correlation == :legacy)
+           )
   end
 
   test "ambiguous checkpoint writes remain fenced until explicit reconciliation" do
@@ -993,6 +1313,59 @@ defmodule SpectreOperationInstanceContractTest do
     assert_raise ArgumentError, ~r/invalid operational loop reference/, fn ->
       Spectre.loop(instance, {:invalid, :reference})
     end
+  end
+
+  test "Instance warns on legacy triggers and enforces opted-in wait correlation" do
+    parent = self()
+
+    telemetry_handler = fn event, measurements, metadata ->
+      send(parent, {:operation_telemetry, event, measurements, metadata})
+    end
+
+    instance =
+      start_instance(opts: [test_pid: self(), telemetry_handler: telemetry_handler])
+
+    assert {:ok, legacy_ref, _view} =
+             Spectre.start_work(instance, @waiting_work, %{value: :legacy})
+
+    assert {:ok, legacy_wait} =
+             eventually_loop(instance, legacy_ref, &(&1.status == :waiting))
+
+    assert legacy_wait.wait_ref.id
+    assert {:ok, _view} = Spectre.trigger_loop(instance, legacy_ref, :external)
+
+    assert_receive {:operation_telemetry, [:spectre, :instance, :uncorrelated_operation_trigger],
+                    %{count: 1}, _metadata},
+                   1_000
+
+    assert Enum.any?(
+             Spectre.operation_events(instance, types: [:triggered]),
+             &(&1.loop_id == legacy_ref.id and &1.payload.correlation == :legacy)
+           )
+
+    assert {:ok, correlated_ref, _view} =
+             Spectre.start_work(instance, @correlated_waiting_work, %{value: :correlated})
+
+    assert {:ok, correlated_wait} =
+             eventually_loop(instance, correlated_ref, &(&1.status == :waiting))
+
+    assert {:error, {:operation_trigger_correlation_required, [:wait_id, :generation]}} =
+             Spectre.trigger_loop(instance, correlated_ref, :external)
+
+    assert {:ok, _view} =
+             Spectre.trigger_loop(instance, correlated_ref, :external,
+               wait_id: correlated_wait.wait_ref.id,
+               generation: correlated_wait.wait_ref.generation
+             )
+
+    refute_receive {:operation_telemetry, [:spectre, :instance, :uncorrelated_operation_trigger],
+                    _, _},
+                   50
+
+    assert Enum.any?(
+             Spectre.operation_events(instance, types: [:triggered]),
+             &(&1.loop_id == correlated_ref.id and &1.payload.correlation == :exact)
+           )
   end
 
   test "Instance commits Runner progress and post-commit memory events" do

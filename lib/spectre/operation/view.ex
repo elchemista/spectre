@@ -1,5 +1,11 @@
 defmodule Spectre.Operation.View do
-  @moduledoc "Privacy-safe, read-only projection of a committed operational loop."
+  @moduledoc """
+  Privacy-safe, read-only projection of a committed operational loop.
+
+  `wait_ref` exposes only the current wait id, kind, and trigger generation so
+  a caller can fence its reply. Progress, blocker, results, and artifacts are
+  independently controlled by the Definition's publication policy.
+  """
 
   # The projection is intentionally flat so consumers cannot traverse canonical state.
   # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
@@ -34,6 +40,7 @@ defmodule Spectre.Operation.View do
     :last_crash,
     :reconciliation,
     :next_trigger,
+    :wait_ref,
     :trigger_generation,
     :budget,
     metadata: %{}
@@ -59,11 +66,11 @@ defmodule Spectre.Operation.View do
       attempts: loop.attempts,
       retries: loop.retries,
       observations: loop.observations,
-      progress: loop.last_progress,
+      progress: published(loop, :publish_progress, loop.last_progress),
       checkpoint: redacted_checkpoint(loop),
       partial_results: published(loop, :publish_results, loop.results),
       artifacts: published(loop, :publish_artifacts, loop.artifacts),
-      blocker: loop.blocker,
+      blocker: published(loop, :publish_blocker, loop.blocker),
       updated_at: loop.updated_at,
       context_revision: loop.context_revision,
       revision: loop.revision,
@@ -74,6 +81,7 @@ defmodule Spectre.Operation.View do
       last_crash: loop.last_crash,
       reconciliation: reconciliation(loop),
       next_trigger: loop.wait && loop.wait.due_at,
+      wait_ref: wait_ref(loop),
       trigger_generation: loop.trigger_generation,
       budget: %{
         limits: loop.budget.limits,
@@ -81,6 +89,16 @@ defmodule Spectre.Operation.View do
         remaining: remaining_budget(loop.budget)
       },
       metadata: Map.take(loop.metadata, [:label, :progress_unit, :last_significant_change])
+    }
+  end
+
+  defp wait_ref(%{wait: nil}), do: nil
+
+  defp wait_ref(loop) do
+    %{
+      id: loop.wait.id,
+      kind: loop.wait.kind,
+      generation: loop.trigger_generation
     }
   end
 

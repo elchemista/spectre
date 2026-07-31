@@ -90,6 +90,29 @@ defmodule Spectre.Operation.Control do
     }
   end
 
+  @doc """
+  Forces the control plane terminal, rejecting any still-pending command.
+
+  A loop can reach a terminal outcome while a safe pause or update command is
+  still pending; the command can no longer be applied, so it is finished as
+  rejected before the terminal state is committed.
+  """
+  @spec terminalize(t(), term()) :: t()
+  def terminalize(%__MODULE__{} = control, reason \\ :loop_terminal) do
+    control =
+      case control.pending do
+        nil -> control
+        %Command{} = pending -> finish(control, Command.rejected(pending, reason))
+      end
+
+    %{
+      control
+      | state: :terminal,
+        desired_state: :terminal,
+        updated_at: System.system_time(:millisecond)
+    }
+  end
+
   @spec bump_generation(t()) :: t()
   def bump_generation(%__MODULE__{} = control),
     do: %{

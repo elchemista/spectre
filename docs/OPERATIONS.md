@@ -116,6 +116,50 @@ decides completion from committed controller state. Definitions declare their
 input, state, update schema, closed branches, blockers, waits, triggers,
 security policy, publication policy, and budget.
 
+An external controller with `kind: :directive` may additionally declare
+`can_start: [:work]`. Its successful reducer can then propose Work starts as
+part of the Result transition:
+
+```elixir
+def __spectre_loop_definition__ do
+  Spectre.Operation.Definition.new(
+    id: :research_mission,
+    version: 1,
+    kind: :directive,
+    input: :map,
+    state: :map,
+    can_start: [:work]
+  )
+end
+
+def apply_result(state, _request, result, _context) do
+  intent =
+    {:work, MyApp.ReadPages, %{pages: result.value.pages},
+     [intent_id: :read_pages, id: state.work_id]}
+
+  {:ok, %{state | phase: :waiting_for_pages}, start_loops: [intent]}
+end
+```
+
+`intent_id` is required and stable. If `:id` or `:correlation_id` is omitted,
+the runtime derives it deterministically from the parent loop and intent.
+Controller-supplied child options are limited to `:intent_id`, `:id`,
+`:correlation_id`, `:expires_at`, `:budget`, `:cognitive`, and `:metadata`.
+Origin, provenance, Subject visibility, authorized origins, destinations,
+Turn ownership, and causation are inherited or assigned by the Agent.
+
+The parent Result, parent state, child Work, child control state, correlations,
+and their events are committed at one canonical revision. Child
+initialization or validation failure rejects the whole transition.
+
+Intents are idempotent: re-proposing an intent whose Work already exists with
+the same parent and intent provenance is a committed no-op, reported in the
+`:loops_started` payload with `already_started: true`. Only an id collision
+with different provenance rejects the transition. A Work or
+Vigil Definition cannot declare `can_start`, and direct `start_work` calls
+from a Runner or its isolated executor are rejected. The supported boundary
+is a Directive reducer intent; the Runner never owns the capability.
+
 ## Operation kinds
 
 `Spectre.Operation.Spec` supports five provider-neutral kinds:
@@ -169,9 +213,48 @@ model output. Visibility is checked from Subject, origin, authorized origins,
 and the loop's visibility policy.
 
 The view exposes status, phase, progress, attempts, retries, partial results,
-published artifacts, budget, last update, pending control, next trigger, and
-reconciliation state. `artifact_policy` can redact results or artifacts from
-the public projection without removing them from canonical state.
+published artifacts, budget, last update, pending control, next trigger,
+`wait_ref`, and reconciliation state. `artifact_policy` can independently set
+`publish_results`, `publish_artifacts`, `publish_progress`, and
+`publish_blocker`; all default to `true`. Redaction changes only the public
+projection, never canonical state. `wait_ref` remains visible because it is a
+fencing token rather than blocker or progress content.
+
+## Correlate external triggers to one wait
+
+A waiting view exposes the complete reply handle:
+
+```elixir
+wait_ref = view.wait_ref
+
+{:ok, next_view} =
+  Spectre.trigger_loop(instance, ref, {:human, :approved},
+    wait_id: wait_ref.id,
+    generation: wait_ref.generation
+  )
+```
+
+The Definition can require both fields for human, external, event, and
+reconciliation waits:
+
+```elixir
+security: %{trigger_correlation: :required}
+```
+
+`security: %{require_trigger_correlation: true}` is the compatible boolean
+spelling. Missing fields return
+`{:operation_trigger_correlation_required, missing_fields}`; mismatched fields
+return the existing stale-wait or stale-generation error before the controller
+runs. Correlation fences replay and does not replace Subject/origin
+authorization.
+
+During the 0.2.x migration window the default is `:legacy`. An accepted
+partially or wholly uncorrelated trigger records `correlation: :legacy` in its
+committed `:triggered` event and emits
+`[:spectre, :instance, :uncorrelated_operation_trigger]` telemetry. Supplying
+both fields records `correlation: :exact`. The planned 0.3.0 default is
+`:required`; applications that intentionally retain legacy behavior will
+need an explicit opt-out.
 
 ## Pause, update, resume, renew, and stop
 
@@ -297,6 +380,24 @@ version, loop/control correspondence, event identity and revision, Subject
 ownership, consent and receipt targets, correlation references, and portable
 state. Active attempts are recovered with a new Agent epoch, snapshot,
 attempt id, and fencing token.
+
+### Bounded replay and audit windows
+
+The retained windows are part of the 0.2.x contract:
+
+- the canonical transition journal retains the newest 512 transitions;
+- canonical change-id replay detection retains the newest 1,024 applied
+  changes;
+- each loop control plane retains the newest 128 completed commands;
+- the committed operational-event projection retains the newest 512 events.
+
+These are count-based, currently fixed limits. A duplicate canonical change
+or completed control command is guaranteed to be recognized only while its
+receipt remains in the corresponding window. Eviction permits the identifier
+to be treated as new; it does not make an external side effect safe to repeat.
+External effects still need their own durable idempotency or reconciliation
+contract. The transition journal and event projection are audit/observation
+retention, not additional deduplication stores.
 
 ## Events, Flow routing, and delivery
 

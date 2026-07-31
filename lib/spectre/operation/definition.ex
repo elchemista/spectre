@@ -4,7 +4,9 @@ defmodule Spectre.Operation.Definition do
 
   The definition is code-owned discovery data. Checkpoints retain only its
   controller module, stable identity and version, then resolve it again after
-  restart.
+  restart. Directive Definitions may explicitly grant `can_start: [:work]`;
+  trigger correlation and public projection policy remain declarative parts
+  of the Definition.
   """
 
   alias Spectre.Operation.Budget
@@ -29,6 +31,7 @@ defmodule Spectre.Operation.Definition do
     blockers: [],
     waits: [],
     triggers: [],
+    can_start: [],
     update_fields: [],
     security: %{},
     artifact_policy: %{},
@@ -51,6 +54,7 @@ defmodule Spectre.Operation.Definition do
           blockers: [atom() | String.t()],
           waits: [atom()],
           triggers: [atom()],
+          can_start: [:work],
           update_fields: [:all | atom() | String.t()],
           security: map(),
           artifact_policy: map(),
@@ -80,6 +84,7 @@ defmodule Spectre.Operation.Definition do
       blockers: List.wrap(attr(attrs, :blockers, [])),
       waits: List.wrap(attr(attrs, :waits, [])),
       triggers: List.wrap(attr(attrs, :triggers, [])),
+      can_start: List.wrap(attr(attrs, :can_start, [])),
       update_fields: List.wrap(attr(attrs, :update_fields, [])),
       security: attr(attrs, :security, %{}),
       artifact_policy: attr(attrs, :artifact_policy, %{}),
@@ -176,6 +181,12 @@ defmodule Spectre.Operation.Definition do
 
       not valid_atom_ids?(definition.triggers) ->
         {:error, :invalid_loop_definition_triggers}
+
+      not valid_start_capabilities?(definition.can_start) ->
+        {:error, :invalid_loop_definition_start_capabilities}
+
+      definition.can_start != [] and definition.kind != :directive ->
+        {:error, :loop_start_capability_requires_directive}
 
       not valid_update_fields?(definition.update_fields) ->
         {:error, :invalid_loop_definition_update_fields}
@@ -313,17 +324,28 @@ defmodule Spectre.Operation.Definition do
 
   defp valid_update_fields?(_fields), do: false
 
+  defp valid_start_capabilities?(capabilities) when is_list(capabilities),
+    do: Enum.uniq(capabilities) == capabilities and Enum.all?(capabilities, &(&1 == :work))
+
+  defp valid_start_capabilities?(_capabilities), do: false
+
   defp valid_security?(security) when is_map(security) do
     allowed_origins = attr(security, :allowed_origins, [])
     allowed_destinations = attr(security, :allowed_destinations, [])
     allowed_visibility = attr(security, :allowed_visibility, [:origin, :subject])
     immediate? = attr(security, :allow_immediate_pause, false)
+    trigger_correlation = attr(security, :trigger_correlation)
+    trigger_correlation_set? = Map.has_key?(security, :trigger_correlation)
+    require_trigger_correlation = attr(security, :require_trigger_correlation)
 
     is_list(allowed_origins) and Enum.uniq(allowed_origins) == allowed_origins and
       is_list(allowed_destinations) and Enum.uniq(allowed_destinations) == allowed_destinations and
       is_list(allowed_visibility) and allowed_visibility != [] and
       Enum.uniq(allowed_visibility) == allowed_visibility and
-      Enum.all?(allowed_visibility, &(&1 in [:origin, :subject])) and is_boolean(immediate?)
+      Enum.all?(allowed_visibility, &(&1 in [:origin, :subject])) and is_boolean(immediate?) and
+      (not trigger_correlation_set? or trigger_correlation in [:legacy, :required]) and
+      (is_nil(require_trigger_correlation) or is_boolean(require_trigger_correlation)) and
+      compatible_trigger_correlation?(trigger_correlation, require_trigger_correlation)
   end
 
   defp valid_security?(_security), do: false
@@ -333,12 +355,16 @@ defmodule Spectre.Operation.Definition do
     max_count = attr(policy, :max_count, 256)
     publish_results? = attr(policy, :publish_results, true)
     publish_artifacts? = attr(policy, :publish_artifacts, true)
+    publish_progress? = attr(policy, :publish_progress, true)
+    publish_blocker? = attr(policy, :publish_blocker, true)
 
     is_list(allowed_kinds) and Enum.uniq(allowed_kinds) == allowed_kinds and
       Enum.all?(allowed_kinds, &valid_id?/1) and
       is_integer(max_count) and max_count >= 0 and max_count <= 256 and
       is_boolean(publish_results?) and
-      is_boolean(publish_artifacts?)
+      is_boolean(publish_artifacts?) and
+      is_boolean(publish_progress?) and
+      is_boolean(publish_blocker?)
   end
 
   defp valid_artifact_policy?(_policy), do: false
@@ -362,6 +388,7 @@ defmodule Spectre.Operation.Definition do
       blockers: definition.blockers,
       waits: definition.waits,
       triggers: definition.triggers,
+      can_start: definition.can_start,
       update_fields: definition.update_fields,
       security: definition.security,
       artifact_policy: definition.artifact_policy,
@@ -376,4 +403,10 @@ defmodule Spectre.Operation.Definition do
 
   defp attr(map, key, default \\ nil),
     do: Map.get(map, key, default)
+
+  defp compatible_trigger_correlation?(_policy, nil), do: true
+  defp compatible_trigger_correlation?(nil, _required?), do: true
+  defp compatible_trigger_correlation?(:required, true), do: true
+  defp compatible_trigger_correlation?(:legacy, false), do: true
+  defp compatible_trigger_correlation?(_policy, _required?), do: false
 end

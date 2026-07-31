@@ -30,6 +30,17 @@ defmodule Spectre.Operation.Runtime do
   @artifact_limit 256
   @update_limit 128
   @invalidation_limit 256
+  @start_loop_limit 32
+  @start_loop_option_keys [
+    :intent_id,
+    :id,
+    :correlation_id,
+    :expires_at,
+    :budget,
+    :cognitive,
+    :metadata
+  ]
+  @externally_driven_waits [:human, :external, :event, :reconciliation]
 
   @type event_spec :: %{required(:type) => atom(), optional(:payload) => term()}
   @type env :: map()
@@ -80,7 +91,7 @@ defmodule Spectre.Operation.Runtime do
           visibility: Keyword.get(opts, :visibility, :origin),
           destinations: List.wrap(Keyword.get(opts, :destinations, [])),
           cognitive: cognitive,
-          metadata: Map.put(metadata, :publication, publication_policy(definition))
+          metadata: policy_metadata(metadata, definition)
         }
 
         with :ok <- validate_loop_security(definition, loop),
@@ -137,13 +148,14 @@ defmodule Spectre.Operation.Runtime do
         else
           {dimension, consumed, limit} ->
             exhausted = terminal_budget(loop, dimension, consumed, limit, env)
+            {terminal, rejected} = terminal_control(control)
 
-            {:transition, exhausted, %{control | state: :terminal},
-             [event(:budget_exhausted, budget_event(dimension, consumed, limit))]}
+            {:transition, exhausted, terminal,
+             [event(:budget_exhausted, budget_event(dimension, consumed, limit)) | rejected]}
 
           {:wait, %Wait{} = wait} ->
             next = loop |> put_wait(wait) |> Loop.touch(at: now(env))
-            {:transition, next, control, [event(:waiting, %{kind: wait.kind})]}
+            {:transition, next, control, [event(:waiting, wait_event(wait, loop))]}
 
           {:blocked, blocker} ->
             wait = Wait.new(:human, reason: blocker, payload: blocker)
@@ -154,17 +166,18 @@ defmodule Spectre.Operation.Runtime do
               |> put_wait(wait)
               |> Loop.touch(at: now(env))
 
-            {:transition, next, control, [event(:blocked, %{wait_id: wait.id})]}
+            {:transition, next, control, [event(:blocked, wait_event(wait, loop))]}
 
           {:complete, value} ->
             next = complete(loop, value, env)
-            {:transition, next, %{control | state: :terminal}, [event(:completed)]}
+            {terminal, rejected} = terminal_control(control)
+            {:transition, next, terminal, [event(:completed) | rejected]}
 
           {:error, reason} ->
             next = fail(loop, reason, env)
+            {terminal, rejected} = terminal_control(control)
 
-            {:transition, next, %{control | state: :terminal},
-             [event(:failed, %{reason: reason})]}
+            {:transition, next, terminal, [event(:failed, %{reason: reason}) | rejected]}
         end
     end
   end
@@ -173,13 +186,41 @@ defmodule Spectre.Operation.Runtime do
   @spec apply_result(Loop.t(), Control.t(), Result.t(), env()) ::
           {:ok, Loop.t(), Control.t(), [event_spec()]} | {:duplicate, Loop.t()} | {:error, term()}
   def apply_result(%Loop{} = loop, %Control{} = control, %Result{} = result, env) do
+    case apply_result_with_start_loops(loop, control, result, env) do
+      {:ok, next_loop, next_control, events, []} ->
+        {:ok, next_loop, next_control, events}
+
+      {:ok, _next_loop, _next_control, _events, _start_loops} ->
+        {:error, :operation_start_loops_require_agent_commit}
+
+      other ->
+        other
+    end
+  end
+
+  @doc false
+  @spec apply_result_with_start_loops(Loop.t(), Control.t(), Result.t(), env()) ::
+          {:ok, Loop.t(), Control.t(), [event_spec()], [map()]}
+          | {:duplicate, Loop.t()}
+          | {:error, term()}
+  def apply_result_with_start_loops(
+        %Loop{} = loop,
+        %Control{} = control,
+        %Result{} = result,
+        env
+      ) do
     with :ok <- validate_result(loop, control, result, env),
          {:ok, definition} <- current_definition(loop),
          {:ok, spec} <- Registry.resolve(Map.fetch!(env, :agent), definition, result.operation) do
       case result.status do
-        :ok -> reduce_success(loop, control, definition, spec, result, env)
-        :error -> reduce_failure(loop, control, spec, result.error, result, env)
-        :ambiguous -> reduce_ambiguous(loop, control, spec, result.error, result, env)
+        :ok ->
+          reduce_success(loop, control, definition, spec, result, env)
+
+        :error ->
+          without_start_loops(reduce_failure(loop, control, spec, result.error, result, env))
+
+        :ambiguous ->
+          without_start_loops(reduce_ambiguous(loop, control, spec, result.error, result, env))
       end
     else
       {:duplicate, _result_id} -> {:duplicate, loop}
@@ -199,7 +240,8 @@ defmodule Spectre.Operation.Runtime do
 
       {:error, reason} ->
         next = fail(loop, {:completion_callback_failed, reason}, env)
-        {:ok, next, %{control | state: :terminal}, [event(:failed, %{reason: reason})]}
+        {terminal, rejected} = terminal_control(control)
+        {:ok, next, terminal, [event(:failed, %{reason: reason}) | rejected]}
     end
   end
 
@@ -273,6 +315,13 @@ defmodule Spectre.Operation.Runtime do
 
       true ->
         with {:ok, definition} <- current_definition(loop),
+             {:ok, correlation_mode} <-
+               validate_trigger_correlation(
+                 definition,
+                 loop.wait,
+                 expected_wait,
+                 expected_generation
+               ),
              :ok <- validate_delivered_trigger(definition, loop, trigger, expected_wait),
              :ok <- portable(trigger, [:loop, loop.id, :trigger]),
              {:ok, callback_result} <- trigger_callback(loop, trigger, env),
@@ -289,7 +338,15 @@ defmodule Spectre.Operation.Runtime do
             |> Map.update!(:trigger_generation, &(&1 + 1))
             |> Loop.touch(at: now(env))
 
-          {:ok, next, control, [event(:triggered, %{trigger: trigger_class(trigger)})]}
+          {:ok, next, control,
+           [
+             event(:triggered, %{
+               trigger: trigger_class(trigger),
+               wait_id: loop.wait.id,
+               generation: loop.trigger_generation,
+               correlation: correlation_mode
+             })
+           ]}
         end
     end
   end
@@ -363,7 +420,8 @@ defmodule Spectre.Operation.Runtime do
 
       {:fail, failure} ->
         terminal = fail(clear_attempt(loop), failure, env)
-        {:ok, terminal, %{control | state: :terminal}, [event(:attempt_crashed), event(:failed)]}
+        {terminal_ctrl, rejected} = terminal_control(control)
+        {:ok, terminal, terminal_ctrl, [event(:attempt_crashed), event(:failed) | rejected]}
     end
   end
 
@@ -383,6 +441,8 @@ defmodule Spectre.Operation.Runtime do
          :ok <- validate_cost(result.usage, option(opts, :cost)),
          artifacts <- result.artifacts ++ List.wrap(option(opts, :artifacts, [])),
          :ok <- validate_artifacts(definition, loop, artifacts),
+         {:ok, start_loops} <-
+           normalize_start_loops(definition, loop, option(opts, :start_loops, [])),
          :ok <- portable(opts, [:loop, loop.id, :transition]) do
       usage = normalize_map(result.usage)
       cost = Map.get(usage, :cost, Map.get(usage, "cost", option(opts, :cost, 0)))
@@ -416,35 +476,58 @@ defmodule Spectre.Operation.Runtime do
         observation_event(loop.kind, significance, result)
       ]
 
-      {:ok, next, control, Enum.reject(events, &is_nil/1)}
+      {:ok, next, control, Enum.reject(events, &is_nil/1), start_loops}
     end
   end
 
   defp reduce_failure(loop, control, spec, reason, result, env) do
     attempt = loop.attempt
     reason_class = reason_class(reason)
+    retryable? = Retry.retry?(spec.retry, reason_class, attempt.retry_number + 1)
+    exhaustion = budget_exhaustion(loop, env)
 
-    if Retry.retry?(spec.retry, reason_class, attempt.retry_number + 1) and
-         is_nil(Budget.exhausted(loop.budget, now(env))) do
-      delay = Retry.delay(spec.retry, attempt.retry_number + 1)
+    cond do
+      retryable? and is_nil(exhaustion) ->
+        delay = Retry.delay(spec.retry, attempt.retry_number + 1)
 
-      retry_transition(
-        %{loop | last_result: result, last_error: reason},
-        control,
-        spec,
-        reason,
-        delay,
-        env
-      )
-    else
-      terminal =
-        loop
-        |> clear_attempt()
-        |> Map.put(:last_result, result)
-        |> Map.put(:last_error, reason)
-        |> fail(reason, env)
+        retry_transition(
+          %{loop | last_result: result, last_error: reason},
+          control,
+          spec,
+          reason,
+          delay,
+          env
+        )
 
-      {:ok, terminal, %{control | state: :terminal}, [event(:attempt_failed), event(:failed)]}
+      retryable? ->
+        {dimension, consumed, limit} = exhaustion
+
+        exhausted =
+          loop
+          |> clear_attempt()
+          |> Map.put(:last_result, result)
+          |> Map.put(:last_error, reason)
+          |> terminal_budget(dimension, consumed, limit, env)
+
+        {terminal_ctrl, rejected} = terminal_control(control)
+
+        {:ok, exhausted, terminal_ctrl,
+         [
+           event(:attempt_failed),
+           event(:budget_exhausted, budget_event(dimension, consumed, limit))
+           | rejected
+         ]}
+
+      true ->
+        terminal =
+          loop
+          |> clear_attempt()
+          |> Map.put(:last_result, result)
+          |> Map.put(:last_error, reason)
+          |> fail(reason, env)
+
+        {terminal_ctrl, rejected} = terminal_control(control)
+        {:ok, terminal, terminal_ctrl, [event(:attempt_failed), event(:failed) | rejected]}
     end
   end
 
@@ -490,7 +573,13 @@ defmodule Spectre.Operation.Runtime do
       |> Map.put(:budget, Budget.consume(loop.budget, retries: 1))
       |> Loop.touch(at: now(env))
 
-    {:ok, next, control, [event(:retry_scheduled, %{delay_ms: delay, retry: retry_number})]}
+    {:ok, next, control,
+     [
+       event(
+         :retry_scheduled,
+         wait_event(wait, loop, %{delay_ms: delay, retry: retry_number})
+       )
+     ]}
   end
 
   defp reconcile_transition(loop, control, spec, reason, env) do
@@ -520,7 +609,7 @@ defmodule Spectre.Operation.Runtime do
       |> Map.put(:last_error, {:side_effect_outcome_unknown, reason})
       |> Loop.touch(at: now(env))
 
-    {:ok, next, control, [event(:side_effect_outcome_unknown, %{wait_id: wait.id})]}
+    {:ok, next, control, [event(:side_effect_outcome_unknown, wait_event(wait, loop))]}
   end
 
   defp apply_completion_decision(loop, control, decision, env)
@@ -533,9 +622,10 @@ defmodule Spectre.Operation.Runtime do
       match?({_, _, _}, budget_exhaustion(loop, env)) ->
         {dimension, consumed, limit} = budget_exhaustion(loop, env)
         next = terminal_budget(loop, dimension, consumed, limit, env)
+        {terminal, rejected} = terminal_control(control)
 
-        {:ok, next, %{control | state: :terminal},
-         [event(:budget_exhausted, budget_event(dimension, consumed, limit))]}
+        {:ok, next, terminal,
+         [event(:budget_exhausted, budget_event(dimension, consumed, limit)) | rejected]}
 
       true ->
         next = loop |> Map.put(:status, :queued) |> Loop.touch(at: now(env))
@@ -545,7 +635,8 @@ defmodule Spectre.Operation.Runtime do
 
   defp apply_completion_decision(loop, control, {:complete, value}, env) do
     next = complete(loop, value, env)
-    {:ok, next, %{control | state: :terminal}, [event(:completed)]}
+    {terminal, rejected} = terminal_control(control)
+    {:ok, next, terminal, [event(:completed) | rejected]}
   end
 
   defp apply_completion_decision(loop, control, {:blocked, blocker}, env) do
@@ -560,22 +651,25 @@ defmodule Spectre.Operation.Runtime do
         |> Map.put(:blocker, blocker)
         |> Loop.touch(at: now(env))
 
-      {:ok, next, control, [event(:blocked, %{wait_id: wait.id})]}
+      {:ok, next, control, [event(:blocked, wait_event(wait, loop))]}
     else
       {:error, reason} ->
         next = fail(loop, reason, env)
-        {:ok, next, %{control | state: :terminal}, [event(:failed, %{reason: reason})]}
+        {terminal, rejected} = terminal_control(control)
+        {:ok, next, terminal, [event(:failed, %{reason: reason}) | rejected]}
     end
   end
 
   defp apply_completion_decision(loop, control, {:error, reason}, env) do
     next = fail(loop, reason, env)
-    {:ok, next, %{control | state: :terminal}, [event(:failed)]}
+    {terminal, rejected} = terminal_control(control)
+    {:ok, next, terminal, [event(:failed) | rejected]}
   end
 
   defp apply_completion_decision(loop, control, decision, env) do
     next = fail(loop, {:invalid_completion_decision, decision}, env)
-    {:ok, next, %{control | state: :terminal}, [event(:failed)]}
+    {terminal, rejected} = terminal_control(control)
+    {:ok, next, terminal, [event(:failed) | rejected]}
   end
 
   defp apply_control_request(loop, control, env) do
@@ -752,7 +846,12 @@ defmodule Spectre.Operation.Runtime do
   end
 
   defp finish_trigger_command(loop, control, command, env) do
-    case trigger(loop, control, command.payload, [], env) do
+    trigger_opts = [
+      wait_id: option(command.metadata, :wait_id),
+      generation: option(command.metadata, :generation)
+    ]
+
+    case trigger(loop, control, command.payload, trigger_opts, env) do
       {:ok, next, _trigger_control, events} ->
         next_control = Control.finish(control, Command.applied(command))
         {:ok, next, next_control, events}
@@ -878,6 +977,18 @@ defmodule Spectre.Operation.Runtime do
       |> Loop.touch(at: now(env))
 
     {:ok, next, control, [event(:control_rejected, %{action: command.action, reason: reason})]}
+  end
+
+  # A terminal transition can race with a pending safe pause/update command.
+  # The command can no longer be applied, so it is rejected in the same
+  # transition; otherwise the terminal control plane would fail validation and
+  # the terminal outcome could never be committed.
+  defp terminal_control(%Control{pending: nil} = control),
+    do: {%{control | state: :terminal}, []}
+
+  defp terminal_control(%Control{pending: %Command{} = pending} = control) do
+    {Control.terminalize(control, :loop_terminal),
+     [event(:control_rejected, %{action: pending.action, reason: :loop_terminal})]}
   end
 
   defp recover_active_attempt(loop, control, definition, env) do
@@ -1023,6 +1134,131 @@ defmodule Spectre.Operation.Runtime do
 
   defp normalize_reducer({:error, reason}), do: {:error, reason}
   defp normalize_reducer(other), do: {:error, {:invalid_controller_reducer, other}}
+
+  defp without_start_loops({:ok, loop, control, events}),
+    do: {:ok, loop, control, events, []}
+
+  defp normalize_start_loops(_definition, _loop, []), do: {:ok, []}
+  defp normalize_start_loops(_definition, _loop, nil), do: {:ok, []}
+
+  defp normalize_start_loops(definition, loop, intents) when is_list(intents) do
+    cond do
+      length(intents) > @start_loop_limit ->
+        {:error, {:operation_start_loop_limit_exceeded, @start_loop_limit}}
+
+      :work not in definition.can_start ->
+        {:error, {:operation_loop_start_not_authorized, loop.kind, :work}}
+
+      true ->
+        with {:ok, normalized} <- normalize_start_loop_intents(intents, loop),
+             :ok <- validate_unique_start_loop_intents(normalized) do
+          {:ok, normalized}
+        end
+    end
+  end
+
+  defp normalize_start_loops(_definition, _loop, intents),
+    do: {:error, {:invalid_operation_start_loops, intents}}
+
+  defp normalize_start_loop_intents(intents, loop) do
+    intents
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {intent, index}, {:ok, acc} ->
+      case normalize_start_loop_intent(intent, loop, index) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp normalize_start_loop_intent({:work, controller, input, opts}, loop, index)
+       when is_atom(controller) and not is_nil(controller) and is_list(opts) do
+    if Keyword.keyword?(opts) do
+      normalize_start_loop_keyword_intent(controller, input, opts, loop, index)
+    else
+      {:error, {:invalid_operation_start_loop_options, index}}
+    end
+  end
+
+  defp normalize_start_loop_intent(intent, _loop, index),
+    do: {:error, {:invalid_operation_start_loop_intent, index, intent}}
+
+  defp normalize_start_loop_keyword_intent(controller, input, opts, loop, index) do
+    option_keys = Keyword.keys(opts)
+    unknown_options = option_keys -- @start_loop_option_keys
+
+    cond do
+      Enum.uniq(option_keys) != option_keys ->
+        {:error, {:duplicate_operation_start_loop_option, index}}
+
+      unknown_options != [] ->
+        {:error, {:unsupported_operation_start_loop_options, index, unknown_options}}
+
+      true ->
+        intent_id = Keyword.get(opts, :intent_id)
+
+        with :ok <- validate_start_loop_intent_id(intent_id, index),
+             child_id <-
+               Keyword.get(opts, :id, Value.token("operation-loop", {loop.id, intent_id})),
+             correlation_id <-
+               Keyword.get(
+                 opts,
+                 :correlation_id,
+                 Value.token("operation-correlation", {loop.id, intent_id})
+               ),
+             :ok <- validate_start_loop_identity(child_id, :id, index),
+             :ok <- validate_start_loop_identity(correlation_id, :correlation_id, index),
+             normalized_opts <-
+               opts
+               |> Keyword.delete(:intent_id)
+               |> Keyword.put(:id, child_id)
+               |> Keyword.put(:correlation_id, correlation_id),
+             intent <- %{
+               intent_id: intent_id,
+               kind: :work,
+               controller: controller,
+               input: input,
+               opts: normalized_opts
+             },
+             :ok <- portable(intent, [:loop, loop.id, :start_loop, intent_id]) do
+          {:ok, intent}
+        end
+    end
+  end
+
+  defp validate_start_loop_intent_id(value, _index)
+       when (is_atom(value) and not is_nil(value)) or (is_binary(value) and value != ""),
+       do: :ok
+
+  defp validate_start_loop_intent_id(_value, index),
+    do: {:error, {:operation_start_loop_intent_id_required, index}}
+
+  defp validate_start_loop_identity(value, _field, _index)
+       when is_binary(value) and value != "",
+       do: :ok
+
+  defp validate_start_loop_identity(_value, field, index),
+    do: {:error, {:invalid_operation_start_loop_identity, index, field}}
+
+  defp validate_unique_start_loop_intents(intents) do
+    intent_ids = Enum.map(intents, & &1.intent_id)
+    loop_ids = Enum.map(intents, &Keyword.fetch!(&1.opts, :id))
+
+    cond do
+      Enum.uniq(intent_ids) != intent_ids ->
+        {:error, :duplicate_operation_start_loop_intent_id}
+
+      Enum.uniq(loop_ids) != loop_ids ->
+        {:error, :duplicate_operation_start_loop_id}
+
+      true ->
+        :ok
+    end
+  end
 
   defp normalize_update({:ok, state, effective_input}),
     do: {:ok, state, effective_input, %{}}
@@ -1202,8 +1438,26 @@ defmodule Spectre.Operation.Runtime do
   defp publication_policy(%Definition{artifact_policy: policy}) do
     %{
       publish_results: option(policy, :publish_results, true),
-      publish_artifacts: option(policy, :publish_artifacts, true)
+      publish_artifacts: option(policy, :publish_artifacts, true),
+      publish_progress: option(policy, :publish_progress, true),
+      publish_blocker: option(policy, :publish_blocker, true)
     }
+  end
+
+  defp policy_metadata(metadata, definition) do
+    metadata
+    |> Map.put(:publication, publication_policy(definition))
+    |> Map.put(:trigger_correlation, trigger_correlation_policy(definition))
+  end
+
+  defp trigger_correlation_policy(%Definition{security: security}) do
+    case Map.fetch(security, :trigger_correlation) do
+      {:ok, policy} ->
+        policy
+
+      :error ->
+        if(option(security, :require_trigger_correlation, false), do: :required, else: :legacy)
+    end
   end
 
   defp artifact_limit(%Definition{artifact_policy: policy}),
@@ -1284,7 +1538,7 @@ defmodule Spectre.Operation.Runtime do
       not Loop.terminal?(loop) and control.state == :terminal ->
         {:error, :nonterminal_loop_with_terminal_control}
 
-      loop.status == :paused and control.state != :paused ->
+      loop.status == :paused and control.state not in [:paused, :pause_requested] ->
         {:error, :paused_loop_without_paused_control}
 
       control.state == :paused and loop.status != :paused ->
@@ -1293,7 +1547,12 @@ defmodule Spectre.Operation.Runtime do
       loop.status == :pause_requested and control.state != :pause_requested ->
         {:error, :pause_requested_loop_without_matching_control}
 
-      control.state == :pause_requested and loop.status != :pause_requested ->
+      # A safe pause/update stays pending while the active attempt's Result,
+      # retry or reconciliation transition commits first; those intermediate
+      # statuses are legitimately checkpointed and the pending command is
+      # advanced on the next scheduled transition after restore.
+      control.state == :pause_requested and
+          loop.status not in [:pause_requested, :paused, :evaluating, :waiting, :reconciling] ->
         {:error, :pause_requested_control_without_matching_loop}
 
       is_nil(control.pending) and loop.status == :pause_requested ->
@@ -1359,7 +1618,7 @@ defmodule Spectre.Operation.Runtime do
     do: validate_wait(definition, wait)
 
   defp refresh_definition_policy(loop, definition, env) do
-    metadata = Map.put(loop.metadata, :publication, publication_policy(definition))
+    metadata = policy_metadata(loop.metadata, definition)
 
     refreshed = %{
       loop
@@ -1607,8 +1866,14 @@ defmodule Spectre.Operation.Runtime do
     marker == request.id
   end
 
-  defp put_wait(loop, wait),
-    do: %{loop | status: :waiting, wait: wait, attempt: nil, operation: nil}
+  defp put_wait(loop, wait) do
+    wait =
+      if is_nil(wait.generation),
+        do: %{wait | generation: loop.trigger_generation},
+        else: wait
+
+    %{loop | status: :waiting, wait: wait, attempt: nil, operation: nil}
+  end
 
   defp maybe_increment_observations(%Loop{kind: :vigil} = loop),
     do: %{loop | observations: loop.observations + 1}
@@ -1659,9 +1924,7 @@ defmodule Spectre.Operation.Runtime do
   defp authorized_origins(origin, opts),
     do: Enum.uniq([origin | List.wrap(Keyword.get(opts, :authorized_origins, []))])
 
-  defp validate_branch(%Definition{branches: branches}, %Request{branch: nil})
-       when map_size(branches) >= 0,
-       do: :ok
+  defp validate_branch(%Definition{}, %Request{branch: nil}), do: :ok
 
   defp validate_branch(%Definition{branches: branches}, %Request{} = request) do
     case Map.fetch(branches, request.branch) do
@@ -1734,6 +1997,31 @@ defmodule Spectre.Operation.Runtime do
 
   defp validate_delivered_trigger(definition, _loop, trigger, _expected_wait),
     do: validate_trigger(definition, trigger)
+
+  defp validate_trigger_correlation(
+         definition,
+         %Wait{kind: kind},
+         expected_wait,
+         expected_generation
+       ) do
+    missing =
+      []
+      |> maybe_missing_correlation(:wait_id, expected_wait)
+      |> maybe_missing_correlation(:generation, expected_generation)
+
+    if trigger_correlation_policy(definition) == :required and
+         kind in @externally_driven_waits and missing != [] do
+      {:error, {:operation_trigger_correlation_required, Enum.reverse(missing)}}
+    else
+      {:ok, if(missing == [], do: :exact, else: :legacy)}
+    end
+  end
+
+  defp validate_trigger_correlation(_definition, nil, _expected_wait, _expected_generation),
+    do: {:error, :operation_trigger_wait_missing}
+
+  defp maybe_missing_correlation(missing, field, nil), do: [field | missing]
+  defp maybe_missing_correlation(missing, _field, _value), do: missing
 
   defp trigger_callback(loop, trigger, env) do
     context = controller_context(loop, Map.put(env, :trigger, trigger))
@@ -1855,6 +2143,17 @@ defmodule Spectre.Operation.Runtime do
       number: attempt.number,
       context_revision: attempt.context_revision
     }
+  end
+
+  defp wait_event(wait, loop, extra \\ %{}) do
+    Map.merge(
+      %{
+        kind: wait.kind,
+        wait_id: wait.id,
+        generation: loop.trigger_generation
+      },
+      extra
+    )
   end
 
   defp event(type, payload \\ %{}), do: %{type: type, payload: payload}

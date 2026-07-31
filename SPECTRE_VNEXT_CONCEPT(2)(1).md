@@ -2361,9 +2361,17 @@ durevole e riconciliazione per riferimento stabile. Una consegna effimera non
 è sufficiente. La forma di questo adapter è **da progettare**.
 
 L’attuale decisione Directive `{:invoke, target}` esegue una funzione, un
-modulo o un MFA autorizzato. Non è già un lancio Work. L’adapter con cui il
-controller Directive richiede al runtime operativo Spectre di creare un Work
-è **da progettare**.
+modulo o un MFA autorizzato. Non è già un lancio Work. Il confine core con cui
+il controller Directive richiede al runtime operativo Spectre di creare un
+Work è invece chiuso: una Definition `kind: :directive` dichiara
+`can_start: [:work]` e il reducer `apply_result/4` può restituire
+`start_loops: [{:work, controller, input, opts}]`. Ogni intent possiede un
+`intent_id` stabile. L’Agent valida e committa Result Directive, stato parent,
+Work, control, correlazioni ed eventi nella stessa revisione canonica. Se una
+parte fallisce, nessuna parte della transizione viene committata.
+
+La nuova DSL Wayfinder che costruirà questi intent resta responsabilità di
+`spectre_directive`; il contratto runtime sottostante non è più aperto.
 
 Questa facoltà non viola la regola “un Work non crea Work”: una Mission
 Directive non è semanticamente una Work Definition, anche se usa lo stesso
@@ -3198,6 +3206,99 @@ Dopo il freeze:
 
 ---
 
+## 15.1. Decisioni chiuse post-`0.2.0`
+
+Questa sezione chiude quattro confini runtime senza anticipare la nuova DSL
+Wayfinder di `spectre_directive`.
+
+### Avvio Work da Directive come transizione canonica
+
+Un Runner non avvia Work tramite l’API host. La capacità appartiene soltanto
+al reducer Agent-side di una Definition `kind: :directive` che dichiara
+`can_start: [:work]`. Un Result riuscito può proporre:
+
+```elixir
+{:ok, state,
+ start_loops: [
+   {:work, MyApp.PageReader, input,
+    [intent_id: :page_reader, id: stable_work_id]}
+ ]}
+```
+
+`intent_id` è obbligatorio e stabile. `id` e `correlation_id`, se omessi,
+derivano deterministicamente da parent e intent. Un intent può configurare
+soltanto identità, scadenza, budget, vincoli cognitivi e metadata del Work.
+Subject, origine, visibilità, origini autorizzate, destinazioni, provenienza,
+Turn e causazione vengono ereditati o imposti dall’Agent.
+
+L’Agent materializza al massimo 32 intent per Result e committa nella stessa
+revisione canonica:
+
+- stato e Result del loop Directive;
+- Work e control state iniziali;
+- correlazioni;
+- evento parent con i riferimenti stabili;
+- eventi `:started` dei Work.
+
+Il commit è atomico: errore di Definition, init, validazione o policy di un
+solo Work rifiuta l’intera transizione. Gli intent sono inoltre idempotenti
+nella materializzazione: riproporre un intent il cui Work esiste già con la
+stessa provenienza parent e intent è un no-op committato, marcato
+`already_started: true` nell’evento `:loops_started`. Soltanto una collisione
+di id con provenienza diversa rifiuta la transizione. Work e Vigil non possono
+dichiarare `can_start`. Le chiamate dirette da Runner o executor isolati a
+`start_work` vengono rifiutate e restano soltanto difesa in profondità; il
+confine supportato è l’intent del reducer.
+
+### Fencing dichiarativo dei trigger esterni
+
+Il wait è il contratto di correlazione. La vista pubblica espone sempre:
+
+```elixir
+%{wait_ref: %{id: wait_id, generation: generation, kind: kind}}
+```
+
+Con `security: %{trigger_correlation: :required}` — oppure con l’alias 0.2.x
+`require_trigger_correlation: true` — una risposta a wait `:human`,
+`:external`, `:event` o `:reconciliation` deve riecheggiare sia `wait_id` sia
+`generation`. Il runtime rifiuta campi mancanti o stale prima del callback.
+La correlazione non sostituisce l’autorizzazione per Subject e origine.
+
+In `0.2.x` il default resta `:legacy` per compatibilità. Ogni trigger accettato
+senza la coppia completa registra `correlation: :legacy` nell’evento committed
+ed emette telemetry di deprecazione; una coppia completa registra `:exact`.
+In `0.3.0` il default previsto diventa `:required` e l’eventuale opt-out deve
+essere esplicito e osservabile.
+
+### Pubblicazione separata di progress e blocker
+
+`artifact_policy` include `publish_progress` e `publish_blocker`, entrambi
+`true` per default, oltre a `publish_results` e `publish_artifacts`. Un valore
+`false` redige soltanto la proiezione pubblica; il dato canonico resta intatto.
+`wait_ref` non viene redatto perché contiene fencing e non il payload del
+blocker.
+
+### Finestre bounded come parte del contratto
+
+Per `0.2.x` le finestre sono count-based e fissate a:
+
+- 512 transizioni nel journal canonico;
+- 1.024 change id applicati per il replay detection canonico;
+- 128 comandi completati nella history di ciascun control plane;
+- 512 eventi operativi nella proiezione committed.
+
+La garanzia di riconoscere un change id o command id duplicato termina quando
+il relativo receipt viene espulso. Il journal e la proiezione eventi sono
+finestre di audit, non ulteriori registri di deduplicazione. Nessuna di queste
+finestre sostituisce idempotenza o riconciliazione durevole del side effect
+esterno. Una futura configurabilità deve preservare questi significati e
+rendere visibile il valore effettivo.
+
+La semantica 0.2.x di `origin` resta invariata in questo addendum: non viene
+introdotta ora una sentinella `:host` né una nuova obbligatorietà.
+
+---
+
 ## 16. Decisioni volutamente aperte
 
 Queste cose non vengono decise da questo concept:
@@ -3384,7 +3485,23 @@ Il design è corretto quando:
     conferma prevista dalla modalità della Mission;
 89. pausa o interruzione non assumono che un side effect già partito sia stato
     annullato;
-90. pausa o stop Directive non fermano implicitamente i Work collegati.
+90. pausa o stop Directive non fermano implicitamente i Work collegati;
+91. un Runner o un executor isolato non può avviare direttamente un Work;
+92. soltanto una Definition Directive con `can_start: [:work]` può proporre
+    intent di avvio;
+93. Result Directive e Work proposti diventano visibili tutti nella stessa
+    revisione canonica oppure nessuno viene committato;
+94. ogni Work proposto conserva un riferimento stabile derivato da un intent
+    idempotente e la riproposta dello stesso intent non duplica né fallisce il
+    Work già avviato;
+95. una Definition con correlazione trigger richiesta rifiuta risposte senza
+    `wait_id` e generazione esatti prima di eseguire il callback;
+96. la vista pubblica espone il `wait_ref` necessario al fencing anche quando
+    blocker o progress sono redatti;
+97. progress, blocker, risultati e artifact possiedono controlli di
+    pubblicazione indipendenti;
+98. le finestre bounded di replay, command history, journal ed eventi sono
+    documentate senza confondere audit e deduplicazione dei side effect.
 
 ---
 

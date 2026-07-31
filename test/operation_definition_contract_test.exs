@@ -209,6 +209,8 @@ defmodule SpectreOperationDefinitionContractTest do
       {%{domain: :invalid}, {:invalid_operation_domain, :valid}},
       {%{kind: :cognitive, domain: [], executor: {@callbacks, :execute}},
        {:empty_cognitive_domain, :valid}},
+      {%{kind: :cognitive, executor: {@callbacks, :execute}},
+       {:unbounded_cognitive_operation, :valid}},
       {%{domain: [:one, :one]}, {:duplicate_operation_domain_value, :valid}},
       {%{kind: :planner, catalog: [], executor: {@callbacks, :execute}},
        {:empty_operation_catalog, :valid}},
@@ -275,7 +277,9 @@ defmodule SpectreOperationDefinitionContractTest do
         allowed_kinds: [:report],
         max_count: 1,
         publish_results: true,
-        publish_artifacts: false
+        publish_artifacts: false,
+        publish_progress: true,
+        publish_blocker: false
       },
       on_budget_exhausted: :terminate
     }
@@ -304,12 +308,26 @@ defmodule SpectreOperationDefinitionContractTest do
       {%{blockers: [:approval, :approval]}, :invalid_loop_definition_blockers},
       {%{waits: ["external"]}, :invalid_loop_definition_waits},
       {%{triggers: [:external, :external]}, :invalid_loop_definition_triggers},
+      {%{can_start: [:vigil]}, :invalid_loop_definition_start_capabilities},
+      {%{can_start: [:work, :work]}, :invalid_loop_definition_start_capabilities},
+      {%{can_start: [:work]}, :loop_start_capability_requires_directive},
       {%{update_fields: [:all, :all]}, :invalid_loop_definition_update_fields},
       {%{on_budget_exhausted: :ignore}, :invalid_loop_budget_exhaustion_behavior},
       {%{security: []}, :invalid_loop_definition_security},
       {%{security: %{allowed_visibility: []}}, :invalid_loop_definition_security},
+      {%{security: %{trigger_correlation: :sometimes}}, :invalid_loop_definition_security},
+      {%{security: %{trigger_correlation: nil}}, :invalid_loop_definition_security},
+      {%{security: %{require_trigger_correlation: :yes}}, :invalid_loop_definition_security},
+      {%{
+         security: %{
+           trigger_correlation: :required,
+           require_trigger_correlation: false
+         }
+       }, :invalid_loop_definition_security},
       {%{artifact_policy: []}, :invalid_loop_artifact_policy},
       {%{artifact_policy: %{max_count: 257}}, :invalid_loop_artifact_policy},
+      {%{artifact_policy: %{publish_progress: :yes}}, :invalid_loop_artifact_policy},
+      {%{artifact_policy: %{publish_blocker: :yes}}, :invalid_loop_artifact_policy},
       {%{metadata: []}, :invalid_loop_definition_metadata}
     ]
 
@@ -334,9 +352,26 @@ defmodule SpectreOperationDefinitionContractTest do
                id: "normalized",
                version: "v1",
                kind: :directive,
+               can_start: [:work],
+               security: %{require_trigger_correlation: true},
                operations: %{local: Map.from_struct(operation)},
                branches: [main: :local]
              )
+
+    assert :ok =
+             Definition.validate(%{
+               valid
+               | security: %{require_trigger_correlation: true}
+             })
+
+    assert :ok =
+             Definition.validate(%{
+               valid
+               | security: %{
+                   trigger_correlation: :required,
+                   require_trigger_correlation: true
+                 }
+             })
 
     assert %Definition{branches: %{}} =
              Definition.new(

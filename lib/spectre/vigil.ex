@@ -143,6 +143,7 @@ defmodule Spectre.Vigil do
         blockers: Keyword.get(opts, :blockers, []),
         waits: Keyword.get(opts, :waits, Keyword.get(opts, :triggers, [])),
         triggers: Keyword.get(opts, :triggers, []),
+        can_start: Keyword.get(opts, :can_start, []),
         update_fields: Keyword.get(opts, :update_fields, []),
         security: Keyword.get(opts, :security, %{}),
         artifact_policy: Keyword.get(opts, :artifact_policy, %{}),

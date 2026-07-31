@@ -98,6 +98,26 @@ This is the preferred regression location for behavior that crosses all three
 loops. Lower-level runtime tests should still be used for exhaustive malformed
 envelopes and individual transition matrices.
 
+## Autonomous Work and internal Flow example
+
+`test/autonomous_work_flow_example_test.exs` is the executable companion to the
+autonomous recipe in Getting Started. It starts a Work directly from the host,
+without `Spectre.turn/3`, a human Source, or Beam, and verifies this sequence:
+
+1. the Work collects initial evidence in one temporary Runner;
+2. the Work commits an `:external` wait and the Runner is gone;
+3. the committed `:waiting` event creates an ordinary internal Flow Run;
+4. the Flow reads the committed Work view and chooses a schema-valid query;
+5. the Flow delivers a correlated trigger whose causation is the waiting event;
+6. the Work reducer stores that response and a new Runner executes the query;
+7. the terminal outcome, Flow decision, events, provenance, and empty Runner
+   set are all asserted from committed state.
+
+The example deliberately uses public `0.2.0` APIs rather than introducing a
+pseudo Work-to-Flow DSL. It proves the current application-level event/trigger
+bridge; lower-level contracts remain responsible for malformed triggers,
+duplicates, stale generations, and restart matrices.
+
 ## Strategy matrix
 
 `test/strategy_matrix_test.exs` defines ten agents with different prevailing

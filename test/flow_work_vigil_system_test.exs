@@ -596,8 +596,9 @@ defmodule SpectreFlowWorkVigilSystemTest do
 
     assert {:ok, checkpoint} = Spectre.checkpoint(instance)
     child_id = {Instance, Instance.ref(instance).key}
+    old_worker_monitor = Process.monitor(old_worker)
     assert :ok = stop_supervised(child_id)
-    refute Process.alive?(old_worker)
+    assert_receive {:DOWN, ^old_worker_monitor, :process, _pid, _reason}, 1_000
 
     restored = start_instance(subject: subject, canonical_checkpoint: checkpoint)
 

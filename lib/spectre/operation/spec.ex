@@ -125,6 +125,9 @@ defmodule Spectre.Operation.Spec do
       spec.kind == :cognitive and spec.domain == [] ->
         {:error, {:empty_cognitive_domain, spec.id}}
 
+      spec.kind == :cognitive and is_nil(spec.domain) and is_nil(spec.output) ->
+        {:error, {:unbounded_cognitive_operation, spec.id}}
+
       is_list(spec.domain) and Enum.uniq(spec.domain) != spec.domain ->
         {:error, {:duplicate_operation_domain_value, spec.id}}
 

@@ -202,6 +202,37 @@ defmodule SpectreOperationRuntimeControlContractTest.Work do
   def budget_exhausted(_state, _exhaustion, _context), do: :terminate
 end
 
+defmodule SpectreOperationRuntimeControlContractTest.CorrelatedWork do
+  @moduledoc false
+
+  use Spectre.Work,
+    id: :correlated_runtime_work,
+    version: 1,
+    input: :map,
+    state: :map,
+    waits: [:external],
+    triggers: [:external, :human],
+    blockers: [:approval],
+    security: %{require_trigger_correlation: true},
+    artifact_policy: %{publish_progress: false, publish_blocker: false}
+
+  @impl true
+  def init(input, _context), do: {:ok, input}
+
+  @impl true
+  def next(%{mode: :block}, _context), do: blocked(:approval)
+  def next(_state, _context), do: wait(:external)
+
+  @impl true
+  def apply_result(state, _request, _result, _context), do: {:ok, state}
+
+  @impl true
+  def complete(_state, _context), do: :continue
+
+  @impl true
+  def handle_trigger(state, _trigger, _context), do: {:ok, state}
+end
+
 defmodule SpectreOperationRuntimeControlContractTest do
   use ExUnit.Case, async: true
 
@@ -210,9 +241,11 @@ defmodule SpectreOperationRuntimeControlContractTest do
   alias Spectre.Operation.Control.Command
   alias Spectre.Operation.Result
   alias Spectre.Operation.Runtime
+  alias Spectre.Operation.View
 
   @agent SpectreOperationRuntimeControlContractTest.Agent
   @work SpectreOperationRuntimeControlContractTest.Work
+  @correlated_work SpectreOperationRuntimeControlContractTest.CorrelatedWork
 
   test "declared wait, blocker, completion and failure boundaries are deterministic" do
     env = env()
@@ -301,6 +334,112 @@ defmodule SpectreOperationRuntimeControlContractTest do
         assert failed_control.state == :terminal
       end
     )
+  end
+
+  test "external waits can require exact trigger correlation and publish a safe wait ref" do
+    env = env()
+
+    {:ok, loop, control, _events} =
+      Runtime.start(:work, @correlated_work, %{mode: :wait}, [], env)
+
+    assert {:transition, waiting, ^control, [%{type: :waiting, payload: wait_payload}]} =
+             Runtime.prepare(loop, control, env)
+
+    assert wait_payload == %{
+             kind: :external,
+             wait_id: waiting.wait.id,
+             generation: waiting.trigger_generation
+           }
+
+    assert {:error, {:operation_trigger_correlation_required, [:wait_id, :generation]}} =
+             Runtime.trigger(waiting, control, :external, [], env)
+
+    assert {:error, {:operation_trigger_correlation_required, [:generation]}} =
+             Runtime.trigger(waiting, control, :external, [wait_id: waiting.wait.id], env)
+
+    assert {:error, {:operation_trigger_correlation_required, [:wait_id]}} =
+             Runtime.trigger(
+               waiting,
+               control,
+               :external,
+               [generation: waiting.trigger_generation],
+               env
+             )
+
+    assert {:ok, _triggered, ^control, [%{type: :triggered, payload: payload}]} =
+             Runtime.trigger(
+               waiting,
+               control,
+               :external,
+               [wait_id: waiting.wait.id, generation: waiting.trigger_generation],
+               env
+             )
+
+    assert payload.correlation == :exact
+    assert payload.wait_id == waiting.wait.id
+    assert payload.generation == waiting.trigger_generation
+
+    {:ok, legacy_loop, legacy_control, _events} =
+      Runtime.start(:work, @work, %{mode: :wait}, [], env)
+
+    {:transition, legacy_waiting, ^legacy_control, _events} =
+      Runtime.prepare(legacy_loop, legacy_control, env)
+
+    assert {:ok, _legacy_triggered, ^legacy_control,
+            [%{type: :triggered, payload: %{correlation: :legacy}}]} =
+             Runtime.trigger(legacy_waiting, legacy_control, :external, [], env)
+  end
+
+  test "public views independently redact sensitive progress and blockers" do
+    env = env()
+
+    {:ok, loop, control, _events} =
+      Runtime.start(:work, @correlated_work, %{mode: :block}, [], env)
+
+    {:transition, blocked, ^control, [%{type: :blocked, payload: payload}]} =
+      Runtime.prepare(loop, control, env)
+
+    blocked = %{blocked | last_progress: %{secret: "halfway"}}
+    view = View.from_loop(blocked, control)
+
+    assert view.progress == :redacted
+    assert view.blocker == :redacted
+
+    assert view.wait_ref == %{
+             id: blocked.wait.id,
+             kind: :human,
+             generation: blocked.trigger_generation
+           }
+
+    assert payload.wait_id == view.wait_ref.id
+    assert payload.generation == view.wait_ref.generation
+  end
+
+  test "a Work reducer cannot acquire the capability to start another Work" do
+    env = env()
+
+    intent =
+      {:work, @work, %{mode: :wait}, [intent_id: :forbidden_child, id: "forbidden-child"]}
+
+    {:ok, loop, control, _events} =
+      Runtime.start(
+        :work,
+        @work,
+        %{transition_opts: %{start_loops: [intent]}},
+        [],
+        env
+      )
+
+    {:run, active, attempt, _spec, _request, false, _events} =
+      Runtime.prepare(loop, control, env)
+
+    assert {:error, {:operation_loop_start_not_authorized, :work, :work}} =
+             Runtime.apply_result_with_start_loops(
+               active,
+               control,
+               Result.new(attempt, :ok, %{items: []}),
+               env
+             )
   end
 
   test "safe and immediate controls preserve boundaries, fencing and terminal stop" do

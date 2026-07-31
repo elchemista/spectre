@@ -6,6 +6,61 @@ minor release may contain documented breaking API changes.
 
 ## Unreleased
 
+### Added
+
+- Directive Definitions can declare `can_start: [:work]` and return stable
+  `start_loops` intents from `apply_result/4`; the parent Result, child Work,
+  controls, correlations, and events commit atomically at one canonical
+  revision. Re-proposing an intent whose Work already exists with the same
+  parent and intent provenance is a committed no-op reported as
+  `already_started: true`; only an id collision with different provenance
+  rejects the transition.
+- Definition security can opt into exact external-trigger fencing with
+  `trigger_correlation: :required` or the compatible
+  `require_trigger_correlation: true` spelling. Public loop views now expose
+  `wait_ref`, and committed trigger events distinguish `:exact` from
+  compatible `:legacy` correlation.
+- Publication policy now controls progress and blocker projection
+  independently with `publish_progress` and `publish_blocker`.
+
+### Fixed
+
+- A terminal outcome (failure, crash, completion, budget, expiry) that races a
+  pending safe pause/update command now rejects that command with
+  `:loop_terminal` inside the same committed transition, instead of leaving
+  the loop permanently wedged behind an uncommittable control plane.
+- Checkpoints taken between a committed Result and the advancement of a
+  pending safe pause/update command are accepted on restart; recovery resumes
+  the control sequence instead of stopping the Instance with
+  `:operational_recovery_failed`.
+- A retry allowed by policy but denied by an exhausted budget or a passed
+  expiry now produces the typed `:budget_exhausted`/`:expired` outcome with
+  limit and consumption, instead of a generic `:failed` outcome.
+- Duplicate control commands re-arm the Instance idle timer like every other
+  control reply.
+
+### Changed
+
+- Accepted uncorrelated 0.2.x triggers emit
+  `[:spectre, :instance, :uncorrelated_operation_trigger]` telemetry so hosts
+  can migrate before correlation becomes strict by default in 0.3.0. The
+  telemetry now also covers legacy triggers delivered through durable
+  `:trigger` control commands, not only direct trigger calls.
+- Documented the fixed replay and retention windows: 512 canonical journal
+  transitions, 1,024 applied change ids, 128 completed control commands per
+  loop, and 512 committed operational events.
+- Cognitive operations must declare a closed `domain` or an `output`
+  validator; a spec with neither is rejected as
+  `{:unbounded_cognitive_operation, id}`.
+- Documented the `reason`, `act` and `work` Flow verbs and the deprecation
+  path of the legacy `ask` verb in the DSL and migration guides.
+
+### Safety
+
+- Work starts attempted directly by any operational Runner, including through
+  the isolated executor call boundary, are rejected; only Agent-side Directive
+  reducer intents can create Work from an operational transition.
+
 ## 0.2.0 — 2026-07-31
 
 ### Added
