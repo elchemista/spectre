@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.1.5"
+  @version "0.1.6"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -24,6 +24,7 @@ defmodule Spectre.MixProject do
     "docs/PRODUCTION.md",
     "docs/TESTING.md",
     "docs/API.md",
+    "docs/PUBLIC_API.md",
     "docs/INSTALLATION.md",
     "docs/ROADMAP.md",
     "CONTRIBUTING.md",
@@ -76,10 +77,6 @@ defmodule Spectre.MixProject do
     [
       {:jason, "~> 1.4"},
       {:vettore, "~> 0.3.2"},
-      {:spectre_kinetic,
-       github: "elchemista/spectre_kinetic",
-       ref: "c043ed4fd26ac5cc7fa5725ef0f98bd6c27e4f99",
-       only: :test},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
@@ -128,7 +125,8 @@ defmodule Spectre.MixProject do
           "docs/RUNS.md",
           "docs/INSTANCES.md",
           "docs/SKILLS.md",
-          "docs/API.md"
+          "docs/API.md",
+          "docs/PUBLIC_API.md"
         ],
         "Runtime guides": [
           "docs/ROUTING.md",

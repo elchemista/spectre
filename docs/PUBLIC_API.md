@@ -1,0 +1,273 @@
+# Spectre public API — 0.1.6 baseline
+
+This file is the normative public API manifest for the recoverable `0.1.6`
+baseline. Compatibility guarantees apply only to the modules and callables
+listed below. Any module, function, macro, or callback not listed here is an
+implementation detail even when it is exported or visible in generated docs.
+
+Default arguments are expanded into every callable arity. For the listed
+modules, documented types, opaque types, and documented struct fields are also
+public. Modules with no callable row expose only their documented module,
+type, and struct contract.
+
+## Manifest
+
+- `Mix.Tasks.Spectre.Classifier.Dataset`
+- `Mix.Tasks.Spectre.Classifier.DownloadModel`
+- `Mix.Tasks.Spectre.Classifier.Train`
+- `Mix.Tasks.Spectre.Eval`
+- `Spectre`
+  - functions: `after_action/4`, `after_action/5`, `ask/2`, `ask/3`, `cancel/2`, `dismiss/2`, `execute/2`, `execute/3`, `instance/3`, `instance/4`, `lookup_instance/2`, `lookup_instance/3`, `reset/1`, `reset/2`, `resolve_policy/3`, `resolve_policy/4`, `resume/3`, `resume/4`, `state/1`, `summon/1`, `summon/3`, `turn/2`, `turn/3`, `version/0`
+- `Spectre.Action`
+  - functions: `from_effect/1`, `matches_ref?/2`, `new/1`, `ref/1`, `split_ref/1`, `to_effect_attrs/1`, `valid_ref?/1`
+- `Spectre.Action.Planner`
+  - callbacks: `clean_reply/3`, `plan/3`, `plan_response/3`
+- `Spectre.Action.Provider`
+  - functions: `actions/1`, `actions/2`, `execute/3`
+  - callbacks: `actions/1`, `execute/3`, `schema_hash/2`
+- `Spectre.Action.Provider.Local`
+- `Spectre.Action.Provider.Mount`
+- `Spectre.Action.Spec`
+  - functions: `hash/3`, `new/1`, `planner_visible?/1`
+- `Spectre.ActionConfig`
+  - functions: `actions/1`, `planner/1`, `planner_opts/2`, `provider/2`, `providers/1`
+- `Spectre.ActionDispatcher`
+  - functions: `dispatch/2`, `dispatch/3`
+- `Spectre.ActionExecutor`
+  - functions: `execute_pending/2`, `execute_pending/3`
+- `Spectre.ActionHooks`
+  - functions: `run/4`, `run/5`
+- `Spectre.ActionPlanner`
+  - functions: `clean_reply/1`, `clean_reply/2`, `plan/1`, `plan/2`, `plan_response/1`, `plan_response/2`
+- `Spectre.ActionProtection`
+  - functions: `protected_by/2`, `protected_by/3`
+- `Spectre.Agent`
+  - macros: `__using__/1`, `action/1`, `action/2`, `action_planner/1`, `action_planner/2`, `action_provider/2`, `action_provider/3`, `actions/1`, `actions/2`, `actions/3`, `after_action/2`, `arbitrator/1`, `arbitrator/2`, `ask/1`, `ask/2`, `classifier/1`, `classifier/2`, `embedding/1`, `embedding/2`, `fail/1`, `fail/2`, `flow/2`, `flow/3`, `history/1`, `idle/1`, `inject/1`, `inject/2`, `input_pipeline/1`, `interrupt/2`, `interrupt/3`, `journal/1`, `journal/2`, `memory/1`, `model/1`, `model/2`, `policy/2`, `protect/1`, `protect/2`, `reply/1`, `reply/2`, `requires_action/1`, `requires_action/2`, `requires_tool/1`, `requires_tool/2`, `router/1`, `run/1`, `run/2`, `shutdown/1`, `skill/1`, `skill/2`, `state/1`, `turn_handler/1`, `turn_handler/2`, `turn_handlers/1`
+- `Spectre.AgentRef`
+  - functions: `key/1`, `new/1`, `new/2`
+- `Spectre.Awaitable`
+  - functions: `accept/2`, `cancel/1`, `expire/1`, `increment/1`, `open_policy/2`, `open_policy/3`, `reject/2`
+- `Spectre.Classifier`
+  - functions: `child_spec/1`, `classify/1`, `classify/2`, `classify_once/2`, `start_link/0`, `start_link/1`
+- `Spectre.Classifier.Embedding`
+  - callbacks: `download/2`, `embed/2`, `load/2`
+- `Spectre.Classifier.Embeddings.ExFastembed`
+- `Spectre.Classifier.Encoder`
+  - functions: `default_model/0`, `download/0`, `download/1`, `download/2`, `embed/1`, `embed/2`, `load/0`, `load/1`, `load/2`
+- `Spectre.Classifier.Math`
+  - functions: `centroid/1`, `cosine/2`, `normalize/1`, `raw_cosine_score/1`
+- `Spectre.Classifier.Trainer`
+  - functions: `train/2`, `train/3`
+- `Spectre.Context`
+  - functions: `halt/1`, `lifecycle_run_id/1`, `put_error/2`, `put_trace/2`
+- `Spectre.Definition`
+  - functions: `after_actions/1`, `fetch/1`, `fetch!/1`, `for_scope/2`, `for_scope!/2`, `injections/2`, `mount/2`, `new/1`, `policy/2`, `policy_name/1`, `policy_ref/2`, `policy_scope/1`, `prompt_root/2`, `protections/1`, `rules/1`
+- `Spectre.Definition.Validator`
+  - functions: `validate!/1`
+- `Spectre.Effect`
+  - functions: `al/1`, `approve/1`, `bind_run/2`, `cancel/1`, `cancel/2`, `complete/2`, `effect_key/1`, `executable?/1`, `fail/2`, `hooks/1`, `idempotency_key/1`, `outcome/1`, `owner/1`, `planned_by/1`, `restore/1`, `schema_hash/1`, `scope/1`, `selected_tool/1`, `source/1`, `stage/1`, `stage_action/3`, `terminal?/1`, `via/1`, `waiting_policy/2`
+- `Spectre.Effect.Executor`
+  - functions: `dispatch/2`, `dispatch/3`
+  - callbacks: `execute/3`
+- `Spectre.Effect.Executor.Mount`
+- `Spectre.EffectConfig`
+  - functions: `executor/2`, `executors/1`
+- `Spectre.Eval`
+  - functions: `load/1`, `run/2`, `run/3`
+- `Spectre.Eval.Case`
+  - functions: `expected_routes/1`, `new/1`
+- `Spectre.Eval.Report`
+  - functions: `acceptable?/1`, `acceptable?/2`, `format/1`, `new/1`, `to_map/1`
+- `Spectre.Eval.Result`
+  - functions: `new/2`, `to_map/1`
+- `Spectre.Execution`
+  - functions: `execute_pending/2`, `execute_pending/3`
+- `Spectre.Extension`
+  - functions: `action_planner/1`, `action_providers/1`, `effect_executors/1`, `expand_handler/3`, `fetch/2`, `merge_agent_config/2`, `register!/2`, `register!/3`
+  - callbacks: `action_planner/1`, `action_providers/1`, `agent_config/1`, `api_version/0`, `compile/2`, `effect_executors/1`, `expand_handler/3`, `flow_constraints/2`, `id/0`, `inference_selector/1`, `setup/2`
+- `Spectre.Extension.Mount`
+- `Spectre.ExternalIdentity`
+  - functions: `from_source/1`, `from_source/2`, `key/1`, `new/1`
+- `Spectre.Flow.Constraint`
+  - functions: `filter_and_order/2`, `match?/2`
+- `Spectre.Identity`
+  - functions: `idempotency_key/1`, `uuid7/0`
+- `Spectre.Inference`
+- `Spectre.Inference.Constraints`
+  - functions: `from_options/1`, `from_options/2`, `merge/2`
+- `Spectre.Inference.Profile`
+  - functions: `compatible?/3`
+- `Spectre.Inference.Request`
+  - functions: `for_classification/3`, `for_response/3`
+- `Spectre.Inference.Response`
+- `Spectre.Inference.Selection`
+- `Spectre.Inference.Selector`
+  - callbacks: `select/4`
+- `Spectre.Inference.Selector.Default`
+- `Spectre.Input`
+  - functions: `fetch_meta/2`, `merge_meta/2`, `new/1`, `put_meta/3`
+- `Spectre.Input.Pipeline`
+  - functions: `init_specs/1`, `init_specs/2`, `run/3`
+- `Spectre.Input.Pipeline.Spec`
+- `Spectre.Input.Plug`
+  - callbacks: `call/3`, `init/1`
+- `Spectre.Input.Plugs.NormalizeText`
+- `Spectre.Input.Source`
+- `Spectre.Instance`
+  - functions: `ask/2`, `ask/3`, `info/1`, `ref/1`, `resume/3`, `resume/4`, `run/2`, `start_link/1`, `turn/2`, `turn/3`
+- `Spectre.Instance.Ref`
+  - functions: `new/2`, `new/3`
+- `Spectre.Instance.Registry`
+  - functions: `ensure_started/3`, `ensure_started/4`, `lookup/2`, `lookup/3`, `via/1`, `via/2`
+- `Spectre.Invocation`
+- `Spectre.Invocation.Receipt`
+- `Spectre.Journal`
+- `Spectre.Journal.Buffer`
+  - functions: `child_spec/1`, `enqueue/1`, `enqueue/2`, `stats/0`, `stats/1`
+- `Spectre.Journal.Record`
+  - functions: `new/1`, `restore/1`
+- `Spectre.Journal.Recorder`
+  - functions: `record_extension/4`, `record_persistence/2`, `record_result/2`, `record_routing/1`
+- `Spectre.Journal.Store`
+  - callbacks: `append/2`
+- `Spectre.LLM`
+  - functions: `complete/1`, `complete/2`, `complete_once/1`, `complete_once/2`
+  - callbacks: `complete/2`, `complete_plan/2`
+- `Spectre.Lifecycle`
+  - functions: `apply/2`, `approve_effect/2`, `cancel_pending/1`, `cancel_pending/2`, `cancel_pending/3`, `complete_effect/3`, `expire_policy/2`, `fail_effect/3`, `next/1`, `policy_attempt/2`, `projection/1`, `replay_effect/2`, `resolve_policy/3`, `resolve_policy/4`, `stage/2`, `stage/3`
+- `Spectre.LinkIntent`
+- `Spectre.Monitor`
+  - functions: `dispatch/3`, `fallback_text/3`, `fallback_text/4`
+- `Spectre.Pipeline`
+  - functions: `init_specs/1`, `init_specs!/1`, `run/2`
+  - macros: `__using__/1`, `pipeline/1`, `plug/1`, `plug/2`
+- `Spectre.Pipeline.Spec`
+- `Spectre.Policy`
+  - functions: `awaiting?/1`, `decide/2`, `new/1`, `resolve/3`, `resume/2`
+- `Spectre.Policy.Matcher`
+  - functions: `match/2`
+- `Spectre.Policy.Resolution`
+  - functions: `new/3`, `new/4`, `to_tuple/1`
+- `Spectre.Prompt`
+  - functions: `build/3`, `build/4`, `render/3`, `render/4`, `resolve/3`, `resolve/4`
+- `Spectre.Prompt.Fragment`
+  - functions: `base/1`, `new/2`, `new/3`
+- `Spectre.Prompt.Operation`
+  - functions: `new/2`, `new/3`, `normalize/2`, `put_scope/2`
+- `Spectre.Prompt.Plan`
+  - functions: `compose/3`, `legacy/1`, `metadata/1`, `sections/1`
+- `Spectre.Provider.Call`
+  - functions: `run/2`, `run/3`
+- `Spectre.Provider.Failure`
+- `Spectre.Result`
+  - functions: `action_outcome/1`, `completions/1`, `latest_completion/1`, `lifecycle/1`, `open_awaitable/1`, `pending_effect/1`, `visible_reply?/1`
+- `Spectre.Route`
+  - functions: `from_rule/3`, `new/1`
+- `Spectre.Router`
+  - functions: `candidate_rules/2`, `evaluate/2`, `evaluate/3`, `route/2`, `route_context/2`, `route_from_context/1`
+- `Spectre.Router.Arbitration`
+  - functions: `from_context/1`
+- `Spectre.Router.Arbitrator`
+  - callbacks: `decide/2`
+- `Spectre.Router.Arbitrators.Default`
+  - functions: `explain/2`
+- `Spectre.Router.Candidate`
+  - functions: `from_result/3`, `from_result/4`, `from_rule/3`, `from_rule/4`, `new/1`, `to_route/1`, `to_route/2`
+- `Spectre.Router.Context`
+  - functions: `add_candidate/2`, `add_candidates/2`, `halt/1`, `halted?/1`, `hard_candidate?/1`, `hard_candidate_locked?/1`, `put_arbitration/2`, `put_error/2`, `put_input/2`, `put_local_result/2`, `put_route/2`, `put_trace/2`
+- `Spectre.Router.DefaultPipeline`
+- `Spectre.Router.LLMClassifier`
+  - functions: `available?/1`, `classify/2`, `classify/3`, `enabled?/1`
+- `Spectre.Router.LocalClassifier`
+  - functions: `classify/2`
+- `Spectre.Router.Plug`
+  - callbacks: `call/2`, `init/1`
+- `Spectre.Router.Plugs.Arbitrate`
+- `Spectre.Router.Plugs.BagDistance`
+- `Spectre.Router.Plugs.EmbeddingSimilarity`
+- `Spectre.Router.Plugs.JaroDistance`
+- `Spectre.Router.Plugs.LLMFallback`
+- `Spectre.Router.Plugs.LocalClassifier`
+- `Spectre.Router.Plugs.Regex`
+- `Spectre.Router.Plugs.SemanticCacheExact`
+- `Spectre.Router.Plugs.SemanticCacheSearch`
+- `Spectre.Router.Plugs.Terminalize`
+- `Spectre.Router.Receipt`
+  - functions: `from_context/2`, `from_error/2`
+- `Spectre.Router.SemanticCache`
+  - functions: `clear/1`, `clear/2`, `delete/2`, `delete/3`, `examples/1`, `examples/2`, `get_example/2`, `get_example/3`, `load_snapshot/2`, `load_snapshot/3`, `lookup/2`, `put/3`, `relabel/3`, `relabel/4`, `snapshot/1`, `snapshot/2`, `verify/2`, `verify/3`
+  - callbacks: `clear/2`, `delete/3`, `examples/2`, `get_example/3`, `load_snapshot/3`, `lookup/2`, `put/3`, `relabel/4`, `snapshot/2`, `verify/3`
+- `Spectre.Router.SemanticCache.Learned`
+  - functions: `clear/1`, `clear/2`, `delete/2`, `delete/3`, `examples/1`, `examples/2`, `get_example/2`, `get_example/3`, `load_snapshot/2`, `load_snapshot/3`, `lookup/2`, `online_revision/1`, `put/3`, `relabel/3`, `relabel/4`, `rows/1`, `snapshot/1`, `snapshot/2`, `verify/2`, `verify/3`
+- `Spectre.Router.SemanticCache.Owner`
+  - functions: `child_spec/1`
+- `Spectre.Router.Support`
+  - functions: `ambiguity_reason/2`, `ambiguous_labels/2`, `ambiguous_labels/3`, `fallback_route/3`, `format_reason/1`, `labels_for/1`, `log/3`, `log_route/4`, `route_from_result/4`, `route_from_rule/4`, `rules_for/2`, `rules_for/3`, `summarize_local/1`, `terminalize/2`, `with_labels/2`
+- `Spectre.Rule`
+  - functions: `checks_match?/2`, `match?/2`, `new/1`
+- `Spectre.Run`
+  - functions: `checkpoint/1`, `checkpoint/2`, `ref/3`, `ref/4`, `restore/1`, `restore/2`
+- `Spectre.Run.Boundary`
+- `Spectre.Run.Ref`
+  - functions: `token/1`
+- `Spectre.Run.Request`
+- `Spectre.Runner`
+  - functions: `action/3`, `action/4`, `ask/3`, `ask/4`, `reply/3`, `reply/4`, `run/2`, `run_function/3`
+- `Spectre.Runtime`
+  - functions: `advance/1`, `advance/2`, `execute/2`, `execute/3`, `handle/3`, `load_context/3`, `resolve_policy/3`, `resolve_policy/4`, `restore_state/2`, `resume/2`, `resume/3`, `start/2`, `start/3`
+- `Spectre.Session`
+  - functions: `agent/1`, `ask/2`, `ask/3`, `child_spec/1`, `execute/2`, `execute/3`, `reset/1`, `reset/2`, `resolve_policy/3`, `resolve_policy/4`, `start_link/1`, `state/1`, `turn/2`, `turn/3`
+- `Spectre.Skill`
+  - macros: `__using__/1`
+- `Spectre.Skill.Mount`
+  - functions: `new/3`, `scope/1`
+- `Spectre.Stack`
+  - functions: `config/2`, `definition/1`, `installation/2`, `resolve/3`, `start_link/1`, `start_link/2`
+  - macros: `__using__/0`, `__using__/1`, `install/1`, `install/2`, `install/3`
+- `Spectre.Stack.Binding`
+  - functions: `config/2`, `installation/2`, `refs/1`
+- `Spectre.Stack.Contract.V1`
+  - functions: `assert_installable!/1`, `verify_installable/1`, `verify_manifest/2`, `version/0`
+- `Spectre.Stack.DSL`
+  - functions: `compile!/3`
+- `Spectre.Stack.Definition`
+  - functions: `fetch/1`, `fetch!/1`, `installation/2`, `manifest/1`, `resolve/3`, `validate/1`, `validate!/1`
+- `Spectre.Stack.Installable`
+  - functions: `contract_version/0`, `verify/1`, `verify/2`, `verify!/1`, `verify!/2`
+  - macros: `__using__/1`
+  - callbacks: `child_specs/2`, `compile/3`, `manifest/0`
+- `Spectre.Stack.Installation`
+  - functions: `from_extension_mount/1`, `from_provider_mount/1`
+- `Spectre.Stack.Package`
+  - functions: `compatible?/2`, `entry_id/1`, `new!/2`
+- `Spectre.Stack.Ref`
+  - functions: `key/1`, `valid?/1`
+- `Spectre.Stack.Runtime`
+  - functions: `child_spec/1`, `child_specs/1`, `child_specs/2`, `resolve/2`, `start_link/1`, `start_link/2`
+- `Spectre.State`
+  - functions: `approve_pending_effect/2`, `awaiting_policy?/1`, `awaiting_policy?/2`, `bump_revision/1`, `cancel_pending/1`, `clear_open_awaitables/1`, `clear_pending/1`, `complete_pending_effect/2`, `fail_pending_effect/2`, `new/1`, `open_policy_awaitable/1`, `open_policy_awaitable/2`, `pending_effect/1`, `pending_effect/2`, `put_pending_effect/3`, `record_turn/4`, `replace_awaitable/2`, `resolved_effect/2`, `trace/2`
+- `Spectre.State.Codec`
+  - functions: `decode/1`, `decode!/1`, `encode/1`, `encode_json/1`
+- `Spectre.State.Store`
+  - callbacks: `compare_and_swap/5`, `load/3`
+- `Spectre.Subject`
+  - functions: `key/1`, `new/1`, `new/2`
+- `Spectre.Subject.Registry`
+  - functions: `bind/3`, `bind/4`, `confirm_link/3`, `confirm_link/4`, `confirm_source/2`, `confirm_source/3`, `intent/1`, `links/2`, `open_link/4`, `open_link/5`, `resolve/2`, `revoke/1`, `revoke/2`, `start_link/0`, `start_link/1`
+- `Spectre.SubjectLink`
+- `Spectre.Supervisor`
+  - functions: `child_spec/1`, `dismiss/1`, `dismiss/2`, `instance/2`, `instance/3`, `instance/4`, `start_link/0`, `start_link/1`, `summon/1`, `summon/2`, `summon/3`
+- `Spectre.Telemetry`
+  - functions: `emit/1`, `emit/2`, `emit/3`, `emit/4`
+- `Spectre.Training.Dataset`
+  - functions: `from_agent/1`, `from_agent/2`
+- `Spectre.Transition`
+- `Spectre.Turn`
+  - functions: `from_result/4`, `from_step/4`, `resolve_policy/2`, `resolve_policy/3`, `run/2`, `run/3`
+- `Spectre.Turn.Decision`
+  - functions: `decide/1`
+- `Spectre.Turn.Handler`
+  - callbacks: `handle_turn/2`
+- `Spectre.Turn.Handler.Reply`
+  - functions: `new/1`, `new/2`
+- `Spectre.Turn.Handler.Request`

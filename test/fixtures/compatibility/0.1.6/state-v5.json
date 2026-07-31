@@ -1,0 +1,317 @@
+{
+  "awaitables": [
+    {
+      "attempts": 1,
+      "id": "awaitable-state-v5-001",
+      "kind": "policy",
+      "label": null,
+      "max_attempts": 3,
+      "metadata": {
+        "$spectre": "map",
+        "entries": [
+          [
+            {
+              "$spectre": "atom",
+              "value": "prompt"
+            },
+            "Confirm publication?"
+          ]
+        ]
+      },
+      "name": {
+        "$spectre": "atom",
+        "value": "confirm_publish"
+      },
+      "run_id": "run-compat-001",
+      "status": "open",
+      "subject_id": "effect-state-v5-001"
+    }
+  ],
+  "conversation_id": {
+    "$spectre": "tuple",
+    "values": [
+      {
+        "$spectre": "atom",
+        "value": "beam"
+      },
+      {
+        "$spectre": "atom",
+        "value": "telegram"
+      },
+      "chat-42"
+    ]
+  },
+  "current_flow": {
+    "$spectre": "atom",
+    "value": "publishing"
+  },
+  "current_scope": {
+    "$spectre": "tuple",
+    "values": [
+      {
+        "$spectre": "atom",
+        "value": "skill"
+      },
+      {
+        "$spectre": "atom",
+        "value": "baseline"
+      }
+    ]
+  },
+  "data": {
+    "$spectre": "map",
+    "entries": [
+      [
+        {
+          "$spectre": "atom",
+          "value": "checkpoint"
+        },
+        {
+          "$spectre": "atom",
+          "value": "waiting"
+        }
+      ],
+      [
+        {
+          "$spectre": "atom",
+          "value": "locale"
+        },
+        "it"
+      ],
+      [
+        {
+          "$spectre": "atom",
+          "value": "captured_at"
+        },
+        {
+          "$spectre": "datetime",
+          "value": "2026-07-31T08:15:00Z"
+        }
+      ]
+    ]
+  },
+  "memory_refs": [
+    {
+      "$spectre": "tuple",
+      "values": [
+        {
+          "$spectre": "atom",
+          "value": "memory"
+        },
+        "note-7"
+      ]
+    }
+  ],
+  "pending_effects": [
+    {
+      "args": {
+        "$spectre": "map",
+        "entries": [
+          [
+            "document_id",
+            "doc-42"
+          ]
+        ]
+      },
+      "error": null,
+      "id": "effect-state-v5-001",
+      "idempotency_key": "state-v5-effect-001",
+      "kind": "action",
+      "metadata": {
+        "$spectre": "map",
+        "entries": [
+          [
+            {
+              "$spectre": "atom",
+              "value": "fixture"
+            },
+            "0.1.6"
+          ]
+        ]
+      },
+      "mode": "write",
+      "name": {
+        "$spectre": "atom",
+        "value": "publish"
+      },
+      "owner": {
+        "$spectre": "atom",
+        "value": "Elixir.Spectre"
+      },
+      "payload": {
+        "$spectre": "map",
+        "entries": [
+          [
+            {
+              "$spectre": "atom",
+              "value": "via"
+            },
+            {
+              "$spectre": "atom",
+              "value": "local"
+            }
+          ],
+          [
+            {
+              "$spectre": "atom",
+              "value": "source"
+            },
+            {
+              "$spectre": "atom",
+              "value": "dsl"
+            }
+          ],
+          [
+            {
+              "$spectre": "atom",
+              "value": "created_at"
+            },
+            {
+              "$spectre": "datetime",
+              "value": "2026-07-31T08:15:00Z"
+            }
+          ]
+        ]
+      },
+      "policy": {
+        "$spectre": "atom",
+        "value": "confirm_publish"
+      },
+      "result": null,
+      "run_id": "run-compat-001",
+      "scope": {
+        "$spectre": "tuple",
+        "values": [
+          {
+            "$spectre": "atom",
+            "value": "skill"
+          },
+          {
+            "$spectre": "atom",
+            "value": "baseline"
+          }
+        ]
+      },
+      "status": "waiting_policy"
+    }
+  ],
+  "planned_effects": [
+    {
+      "args": {
+        "$spectre": "map",
+        "entries": [
+          [
+            "document_id",
+            "doc-42"
+          ]
+        ]
+      },
+      "error": null,
+      "id": "effect-state-v5-001",
+      "idempotency_key": "state-v5-effect-001",
+      "kind": "action",
+      "metadata": {
+        "$spectre": "map",
+        "entries": [
+          [
+            {
+              "$spectre": "atom",
+              "value": "fixture"
+            },
+            "0.1.6"
+          ]
+        ]
+      },
+      "mode": "write",
+      "name": {
+        "$spectre": "atom",
+        "value": "publish"
+      },
+      "owner": {
+        "$spectre": "atom",
+        "value": "Elixir.Spectre"
+      },
+      "payload": {
+        "$spectre": "map",
+        "entries": [
+          [
+            {
+              "$spectre": "atom",
+              "value": "via"
+            },
+            {
+              "$spectre": "atom",
+              "value": "local"
+            }
+          ],
+          [
+            {
+              "$spectre": "atom",
+              "value": "source"
+            },
+            {
+              "$spectre": "atom",
+              "value": "dsl"
+            }
+          ],
+          [
+            {
+              "$spectre": "atom",
+              "value": "created_at"
+            },
+            {
+              "$spectre": "datetime",
+              "value": "2026-07-31T08:15:00Z"
+            }
+          ]
+        ]
+      },
+      "policy": {
+        "$spectre": "atom",
+        "value": "confirm_publish"
+      },
+      "result": null,
+      "run_id": "run-compat-001",
+      "scope": {
+        "$spectre": "tuple",
+        "values": [
+          {
+            "$spectre": "atom",
+            "value": "skill"
+          },
+          {
+            "$spectre": "atom",
+            "value": "baseline"
+          }
+        ]
+      },
+      "status": "waiting_policy"
+    }
+  ],
+  "revision": 12,
+  "state_version": 5,
+  "trace": [
+    {
+      "$spectre": "map",
+      "entries": [
+        [
+          {
+            "$spectre": "atom",
+            "value": "run_id"
+          },
+          "run-compat-001"
+        ],
+        [
+          {
+            "$spectre": "atom",
+            "value": "event"
+          },
+          {
+            "$spectre": "atom",
+            "value": "policy_opened"
+          }
+        ]
+      ]
+    }
+  ]
+}

@@ -127,7 +127,7 @@ continue after its terminal state has been committed.
 Stateless Runtime calls and conversation-scoped Sessions do not opt into
 per-Run lifecycle ownership and retain the single pending Effect contract.
 
-### Provider scheduling limit in 0.1.5
+### Provider scheduling limit in 0.1.x
 
 The GenServer mailbox never executes input plugs, routing, model calls, memory
 callbacks, renderers, or Actions directly. An ordinary Move runs those bounded

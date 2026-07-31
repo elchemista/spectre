@@ -27,6 +27,19 @@ a map, not a magic trick.
 > a minor `0.x` release. Internal modules marked with `@moduledoc false` are not
 > part of the compatibility contract.
 
+## 0.1.6 Recoverable Baseline
+
+Version `0.1.6` is a consolidation-only release: it adds no runtime feature and
+makes no intentional breaking change. The initially guaranteed toolchain is
+Elixir 1.19 on Erlang/OTP 28. Uniform CI runs formatting, compilation with
+warnings as errors, tests, non-strict Credo, Dialyzer, ExDoc, and local package
+validation with no publication. The normative surface is the
+[public API manifest](docs/PUBLIC_API.md).
+
+Permanent State v5 and Run v1 fixtures under
+`test/fixtures/compatibility/0.1.6` protect recovery while `0.2.0` evolves. Core
+has no dependency on Kinetic, including in its test environment.
+
 ## Lifecycle At A Glance
 
 ```text
@@ -461,6 +474,8 @@ adapters on startup, and can stop after an idle timeout.
 - [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
   matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
+- [0.1.6 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+  compatibility surface for the recoverable baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.
 

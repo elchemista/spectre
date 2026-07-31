@@ -121,7 +121,7 @@ Checkpoint blobs are continuation state, not untrusted input. `restore/2`
 validates schema and lifecycle but does not authenticate a blob; use storage
 with integrity and access controls when a Run can authorize effects.
 
-## Ownership boundary in 0.1.5
+## Ownership boundary in 0.1.x
 
 A caller that directly uses `Spectre.Runtime` remains the single owner of its
 Run value. Checkpoint replay is at-least-once: restoring the same awaiting
