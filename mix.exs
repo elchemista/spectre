@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.1.6"
+  @version "0.2.0"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -13,6 +13,8 @@ defmodule Spectre.MixProject do
     "docs/STACK.md",
     "docs/RUNS.md",
     "docs/INSTANCES.md",
+    "docs/OPERATIONS.md",
+    "docs/MIGRATING_TO_0_2.md",
     "docs/SKILLS.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
@@ -60,7 +62,7 @@ defmodule Spectre.MixProject do
   end
 
   defp description do
-    "OTP-native conversational runtime for Elixir agents."
+    "OTP-native conversational and operational runtime for Elixir agents."
   end
 
   defp package do
@@ -124,6 +126,8 @@ defmodule Spectre.MixProject do
           "docs/STACK.md",
           "docs/RUNS.md",
           "docs/INSTANCES.md",
+          "docs/OPERATIONS.md",
+          "docs/MIGRATING_TO_0_2.md",
           "docs/SKILLS.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
@@ -221,6 +225,46 @@ defmodule Spectre.MixProject do
           Spectre.ActionPlanner,
           Spectre.ActionProtection,
           Spectre.Execution
+        ],
+        "Operational loops": [
+          Spectre.Work,
+          Spectre.Vigil,
+          Spectre.Operation.Controller,
+          Spectre.Operation.Definition,
+          Spectre.Operation.Spec,
+          Spectre.Operation.Registry,
+          Spectre.Operation.Runtime,
+          Spectre.Operation.Loop,
+          Spectre.Operation.Ref,
+          Spectre.Operation.View,
+          Spectre.Operation.Request,
+          Spectre.Operation.Wait,
+          Spectre.Operation.Attempt,
+          Spectre.Operation.Result,
+          Spectre.Operation.Progress,
+          Spectre.Operation.Execution,
+          Spectre.Operation.ExecutionContext,
+          Spectre.Operation.Executor,
+          Spectre.Operation.Runner,
+          Spectre.Operation.RunnerSupervisor,
+          Spectre.Operation.Monitor,
+          Spectre.Operation.Control,
+          Spectre.Operation.Control.Command,
+          Spectre.Operation.Budget,
+          Spectre.Operation.Retry,
+          Spectre.Operation.Outcome,
+          Spectre.Operation.Update,
+          Spectre.Operation.Artifact,
+          Spectre.Operation.Event,
+          Spectre.Operation.Events,
+          Spectre.Operation.Memory,
+          Spectre.Operation.Policy,
+          Spectre.Operation.Validator,
+          Spectre.Operation.Delivery,
+          Spectre.Operation.Delivery.Consent,
+          Spectre.Operation.Delivery.Policy,
+          Spectre.Operation.Delivery.Receipt,
+          Spectre.Instance.CheckpointStore
         ],
         Extensions: [
           Spectre.Extension,

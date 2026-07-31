@@ -25,6 +25,26 @@ defmodule SpectreAgentDSLTest.ReplyRenderer do
   def render(prompt, input, _ctx), do: "#{prompt}:#{input.text}"
 end
 
+defmodule SpectreAgentDSLTest.Work do
+  use Spectre.Work,
+    id: :dsl_example_work,
+    version: 1,
+    input: :map,
+    state: :map
+
+  @impl true
+  def init(input, _context), do: {:ok, input}
+
+  @impl true
+  def next(state, _context), do: complete(state)
+
+  @impl true
+  def apply_result(state, _request, _result, _context), do: {:ok, state}
+
+  @impl true
+  def complete(state, _context), do: complete(state)
+end
+
 defmodule SpectreAgentDSLTest.InputPlug do
   @behaviour Spectre.Input.Plug
 
@@ -238,6 +258,18 @@ defmodule SpectreAgentDSLTest do
           run :run_locally, mode: :fast
         end
 
+        on :REASON, regex: ~r/^reason$/i do
+          reason :reason_prompt, temperature: 0
+        end
+
+        on :ACT, regex: ~r/^act$/i do
+          act :act_prompt, temperature: 0
+        end
+
+        on :WORK, regex: ~r/^work$/i do
+          work SpectreAgentDSLTest.Work, input: %{value: 1}, reply_text: "started"
+        end
+
         on :REPLY, bag: ["one", nil, "two"] do
           reply :reply_prompt, renderer: {SpectreAgentDSLTest.ReplyRenderer, :render}
         end
@@ -252,7 +284,7 @@ defmodule SpectreAgentDSLTest do
       end
       """)
 
-    [ask, run, reply, action] = agent.__spectre_rules__()
+    [ask, run, reason, act, work, reply, action] = agent.__spectre_rules__()
 
     assert ask.label == :ASK
     assert ask.flow == :all_handlers
@@ -272,6 +304,12 @@ defmodule SpectreAgentDSLTest do
     assert run.regex == []
     refute Map.has_key?(run, :training)
     assert run.handler == {:run, :run_locally, [mode: :fast]}
+
+    assert reason.handler == {:reason, :reason_prompt, [temperature: 0]}
+    assert act.handler == {:act, :act_prompt, [temperature: 0]}
+
+    assert work.handler ==
+             {:work, SpectreAgentDSLTest.Work, [input: %{value: 1}, reply_text: "started"]}
 
     refute Map.has_key?(reply, :training)
     assert reply.bag == ["one", "two"]

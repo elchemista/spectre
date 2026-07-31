@@ -37,7 +37,10 @@ defmodule Spectre.Rule do
 
   @type handler ::
           {:ask, term(), keyword()}
+          | {:reason, term(), keyword()}
+          | {:act, term(), keyword()}
           | {:run, atom(), keyword()}
+          | {:work, module(), keyword()}
           | {:reply, term(), keyword()}
           | {:action, Spectre.Action.ref(), keyword()}
 

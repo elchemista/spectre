@@ -58,7 +58,7 @@ defmodule SpectreStackContractTest.InferencePackage do
     id: :inference,
     version: "0.1.2",
     contract: 1,
-    spectre: "~> 0.1.2",
+    spectre: ">= 0.1.2 and < 0.3.0",
     provides: [{:service, :inference}],
     operations: [{:inference, :complete}],
     resources: [:client],
@@ -90,7 +90,7 @@ defmodule SpectreStackContractTest.ActionPackage do
     id: :job_actions,
     version: "0.1.2",
     contract: 1,
-    spectre: "~> 0.1.2",
+    spectre: ">= 0.1.2 and < 0.3.0",
     requires: [{:service, :inference, "~> 0.1.2"}],
     provides: [:move_selection],
     actions: [{:jobs, :submit}]
@@ -103,7 +103,7 @@ defmodule SpectreStackContractTest.FirstSearchPackage do
     id: :first_search,
     version: "0.1.2",
     contract: 1,
-    spectre: "~> 0.1.2",
+    spectre: ">= 0.1.2 and < 0.3.0",
     actions: [{:first, :search}]
 end
 
@@ -114,7 +114,7 @@ defmodule SpectreStackContractTest.SecondSearchPackage do
     id: :second_search,
     version: "0.1.2",
     contract: 1,
-    spectre: "~> 0.1.2",
+    spectre: ">= 0.1.2 and < 0.3.0",
     actions: [{:second, :search}]
 end
 
@@ -156,6 +156,57 @@ end
 
 defmodule SpectreStackContractTest do
   use ExUnit.Case, async: true
+
+  @dynamic_modules %{
+    "MissingDependencyPackage" => [
+      SpectreStackContractTest.Dynamic.MissingDependencyPackage
+    ],
+    "MissingDependencyStack" => [SpectreStackContractTest.Dynamic.MissingDependencyStack],
+    "IncompatiblePackage" => [SpectreStackContractTest.Dynamic.IncompatiblePackage],
+    "IncompatibleStack" => [SpectreStackContractTest.Dynamic.IncompatibleStack],
+    "CycleFirst" => [SpectreStackContractTest.Dynamic.CycleFirst],
+    "CycleSecond" => [SpectreStackContractTest.Dynamic.CycleSecond],
+    "CycleStack" => [SpectreStackContractTest.Dynamic.CycleStack],
+    "DuplicateFirst" => [
+      SpectreStackContractTest.Dynamic.DuplicateFirst1,
+      SpectreStackContractTest.Dynamic.DuplicateFirst2,
+      SpectreStackContractTest.Dynamic.DuplicateFirst3
+    ],
+    "DuplicateSecond" => [
+      SpectreStackContractTest.Dynamic.DuplicateSecond1,
+      SpectreStackContractTest.Dynamic.DuplicateSecond2,
+      SpectreStackContractTest.Dynamic.DuplicateSecond3
+    ],
+    "DuplicateStack" => [
+      SpectreStackContractTest.Dynamic.DuplicateStack1,
+      SpectreStackContractTest.Dynamic.DuplicateStack2,
+      SpectreStackContractTest.Dynamic.DuplicateStack3
+    ],
+    "DuplicatePackageStack" => [SpectreStackContractTest.Dynamic.DuplicatePackageStack],
+    "CrashingManifest" => [SpectreStackContractTest.Dynamic.CrashingManifest],
+    "CrashingCompiler" => [SpectreStackContractTest.Dynamic.CrashingCompiler],
+    "CrashingCompilerStack" => [SpectreStackContractTest.Dynamic.CrashingCompilerStack],
+    "ThrowingCompiler" => [SpectreStackContractTest.Dynamic.ThrowingCompiler],
+    "ThrowingCompilerStack" => [SpectreStackContractTest.Dynamic.ThrowingCompilerStack],
+    "MalformedCompiler" => [SpectreStackContractTest.Dynamic.MalformedCompiler],
+    "MalformedCompilerStack" => [SpectreStackContractTest.Dynamic.MalformedCompilerStack],
+    "PidConfig" => [SpectreStackContractTest.Dynamic.PidConfig],
+    "PidConfigStack" => [SpectreStackContractTest.Dynamic.PidConfigStack],
+    "PortConfig" => [SpectreStackContractTest.Dynamic.PortConfig],
+    "PortConfigStack" => [SpectreStackContractTest.Dynamic.PortConfigStack],
+    "ReferenceConfig" => [SpectreStackContractTest.Dynamic.ReferenceConfig],
+    "ReferenceConfigStack" => [SpectreStackContractTest.Dynamic.ReferenceConfigStack],
+    "FunctionConfig" => [SpectreStackContractTest.Dynamic.FunctionConfig],
+    "FunctionConfigStack" => [SpectreStackContractTest.Dynamic.FunctionConfigStack],
+    "TamperedExport" => [SpectreStackContractTest.Dynamic.TamperedExport],
+    "InvalidDSLStack" => [SpectreStackContractTest.Dynamic.InvalidDSLStack],
+    "UndeclaredRuntimePackage" => [
+      SpectreStackContractTest.Dynamic.UndeclaredRuntimePackage
+    ],
+    "UndeclaredRuntimeStack" => [SpectreStackContractTest.Dynamic.UndeclaredRuntimeStack],
+    "StackSkill" => [SpectreStackContractTest.Dynamic.StackSkill],
+    "UnknownStackAgent" => [SpectreStackContractTest.Dynamic.UnknownStackAgent]
+  }
 
   alias Spectre.Action.Provider.Mount, as: ProviderMount
   alias Spectre.Journal.Record
@@ -213,7 +264,7 @@ defmodule SpectreStackContractTest do
     assert package.module == InferencePackage
     assert package.version == "0.1.2"
     assert package.contract == 1
-    assert package.spectre == "~> 0.1.2"
+    assert package.spectre == ">= 0.1.2 and < 0.3.0"
     assert package.agent_extensions == [SpectreStackContractTest.StackExtension]
     assert is_binary(package.digest)
     assert V1.assert_installable!(InferencePackage) == package
@@ -409,7 +460,7 @@ defmodule SpectreStackContractTest do
       use Spectre.Stack.Installable,
         id: :missing_dependency,
         version: "0.1.2",
-        spectre: "~> 0.1.2",
+        spectre: ">= 0.1.2 and < 0.3.0",
         requires: [{:package, :not_installed}]
     end
     """)
@@ -453,7 +504,7 @@ defmodule SpectreStackContractTest do
       use Spectre.Stack.Installable,
         id: :cycle_first,
         version: "0.1.2",
-        spectre: "~> 0.1.2",
+        spectre: ">= 0.1.2 and < 0.3.0",
         provides: [{:service, :cycle_first}],
         requires: [{:service, :cycle_second}]
     end
@@ -462,7 +513,7 @@ defmodule SpectreStackContractTest do
       use Spectre.Stack.Installable,
         id: :cycle_second,
         version: "0.1.2",
-        spectre: "~> 0.1.2",
+        spectre: ">= 0.1.2 and < 0.3.0",
         provides: [{:service, :cycle_second}],
         requires: [{:service, :cycle_first}]
     end
@@ -494,7 +545,7 @@ defmodule SpectreStackContractTest do
         use Spectre.Stack.Installable,
           id: #{inspect(first)},
           version: "0.1.2",
-          spectre: "~> 0.1.2",
+          spectre: ">= 0.1.2 and < 0.3.0",
           #{field}: #{entry}
       end
 
@@ -502,7 +553,7 @@ defmodule SpectreStackContractTest do
         use Spectre.Stack.Installable,
           id: #{inspect(second)},
           version: "0.1.2",
-          spectre: "~> 0.1.2",
+          spectre: ">= 0.1.2 and < 0.3.0",
           #{field}: #{entry}
       end
       """)
@@ -558,7 +609,7 @@ defmodule SpectreStackContractTest do
         use Spectre.Stack.Installable,
           id: #{inspect(package)},
           version: "0.1.2",
-          spectre: "~> 0.1.2"
+          spectre: ">= 0.1.2 and < 0.3.0"
 
         def compile(_opts, _block, _caller), do: #{body}
       end
@@ -590,7 +641,7 @@ defmodule SpectreStackContractTest do
         use Spectre.Stack.Installable,
           id: #{inspect(package)},
           version: "0.1.2",
-          spectre: "~> 0.1.2"
+          spectre: ">= 0.1.2 and < 0.3.0"
 
         def compile(_opts, _block, _caller), do: {:ok, %{unsafe: #{value}}}
       end
@@ -661,7 +712,7 @@ defmodule SpectreStackContractTest do
       use Spectre.Stack.Installable,
         id: :undeclared_runtime,
         version: "0.1.2",
-        spectre: "~> 0.1.2"
+        spectre: ">= 0.1.2 and < 0.3.0"
 
       def child_specs(_installation, _opts) do
         [{:not_declared, {Agent, fn -> :ok end}}]
@@ -705,10 +756,10 @@ defmodule SpectreStackContractTest do
   defp compile_module(source), do: Code.compile_string(source)
 
   defp unique_module(suffix) do
-    Module.concat([
-      SpectreStackContractTest,
-      Dynamic,
-      String.to_atom("#{suffix}#{System.unique_integer([:positive])}")
-    ])
+    modules = Map.fetch!(@dynamic_modules, suffix)
+    counter_key = {__MODULE__, :dynamic_module_counter, suffix}
+    index = Process.get(counter_key, 0)
+    Process.put(counter_key, index + 1)
+    Enum.fetch!(modules, index)
   end
 end

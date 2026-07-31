@@ -6,6 +6,78 @@ minor release may contain documented breaking API changes.
 
 ## Unreleased
 
+## 0.2.0 — 2026-07-31
+
+### Added
+
+- Added versioned `Spectre.Work` and `Spectre.Vigil` Definitions on one shared
+  operational runtime, plus support for authorized external controllers.
+- Added a closed operation catalog for registered functions, Actions, Effects,
+  planners, and finite-domain cognitive operations.
+- Added temporary one-attempt Runners under dynamic supervision, with Agent
+  ownership, epoch and fencing validation, progress throttling, timeout,
+  retry, crash recovery, and side-effect reconciliation.
+- Added durable pause, update, update-and-resume, resume, renew, stop, and
+  trigger commands with revision, provenance, and idempotency checks.
+- Added typed budgets and terminal outcomes for completion, cancellation,
+  expiry, failure, budget exhaustion, and ambiguous external outcomes.
+- Added read-only loop views, deterministic selectors, visibility checks,
+  committed operational events, local subscriptions, and optional routing of
+  selected events through normal Flow handling.
+- Added selective post-commit operation memory and artifact publication
+  policies.
+- Added consent, revocation, destination policy, deduplication, rate limits,
+  quiet hours, digest decisions, and durable delivery receipts without moving
+  transport I/O into core.
+- Added typed canonical sections for Flow, Work, Vigil, external controllers,
+  loop control, correlations, and committed events.
+- Added authorized read/write snapshots, section-fenced change sets,
+  monotonic commits, deterministic stale-conflict rejection, idempotent change
+  identifiers, and a bounded transition journal.
+- Added a strict portable checkpoint codec that preserves canonical and
+  per-section revisions, correlations, transition history, and applied-change
+  receipts across restart.
+- Added a compare-and-swap checkpoint store boundary, asynchronous coalesced
+  persistence, flush/status APIs, and explicit reconciliation after an
+  ambiguous write outcome.
+- Added an executable full-system Agent fixture covering Flow-started Work,
+  conversational inspection and update, Vigil registration and control,
+  operational-event routing, failure isolation, and joint checkpoint recovery.
+
+### Changed
+
+- `Spectre.Instance` is now the sole local owner of both conversational and
+  operational canonical state for one `AgentRef + Subject`.
+- Explicit operation idempotency keys now survive Action and Effect dispatcher
+  boundaries.
+- Generic map input without a `text` field is retained as raw structured input
+  with empty text instead of raising through `String.Chars`.
+- Agent Definitions can register application operations and opt selected
+  committed operation events back into the normal Flow router.
+- Agent Definition validation now accepts every public route handler supported
+  by the DSL and Runner, including `reason/2`, `act/2`, and `work/2`.
+
+### Safety
+
+- Canonical restore validates loop/control correspondence, Definition
+  compatibility, event revisions, Subject ownership, correlations, consent,
+  delivery receipts, and portable values before the Instance starts.
+- Stale, duplicate, foreign-epoch, wrong-fence, wrong-generation, and
+  semantically invalid Runner messages are rejected before commit.
+- Unknown non-idempotent side-effect outcomes are never retried automatically.
+- Runtime values never create atoms from untrusted strings; closed decoders use
+  existing atoms only. Ordinary atom serialization continues to use
+  `Atom.to_string/1`.
+
+### Compatibility
+
+- `Spectre.State`, `Spectre.Run`, Flow, Effect, Invocation, Session, and Turn
+  keep their 0.1.6 roles. Work is a separate operational domain and does not
+  rename Run.
+- State v5 and Run v1 recovery fixtures remain permanent compatibility tests.
+- See `docs/MIGRATING_TO_0_2.md` for canonical checkpoint adapters and
+  incremental operational adoption.
+
 ## 0.1.6 — 2026-07-31
 
 ### Changed

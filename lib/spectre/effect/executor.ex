@@ -53,7 +53,7 @@ defmodule Spectre.Effect.Executor do
       mount.opts
       |> Keyword.merge(opts)
       |> Keyword.put(:effect_id, effect.id)
-      |> Keyword.put(:idempotency_key, Effect.idempotency_key(effect))
+      |> Keyword.put_new(:idempotency_key, Effect.idempotency_key(effect))
       |> Keyword.put(:effect_owner, effect.owner)
       |> Keyword.put(:effect_scope, effect.scope)
       |> Keyword.put(:effect_kind, effect.kind)
