@@ -393,6 +393,8 @@ defmodule Spectre.Instance do
       :flow_state_committed,
       :operational_transition,
       :instance_key,
+      :records,
+      :ids,
       :delivery_decision,
       :delivery_policy,
       :receipt_id,

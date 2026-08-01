@@ -333,7 +333,8 @@ defmodule Spectre.Operation.Runtime.Controls do
          :ok <- Validator.validate(definition.state, state, {:loop_state, definition.id}),
          :ok <-
            Validator.validate(definition.input, effective_input, {:loop_input, definition.id}),
-         :ok <- Contract.validate_updated_fields(loop.effective_input, effective_input, definition),
+         :ok <-
+           Contract.validate_updated_fields(loop.effective_input, effective_input, definition),
          :ok <- Contract.validate_cognitive_update(option(opts, :cognitive, loop.cognitive)),
          :ok <- portable({state, effective_input, opts}, [:loop, loop.id, :update]),
          invalidations <- List.wrap(option(opts, :invalidations, [])),
