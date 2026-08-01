@@ -1,4 +1,4 @@
-# The Spectre Ecosystem
+# The Spectre System
 
 Spectre `0.2.0` is an OTP-native kernel for building conversational and
 operational agents in Elixir. It is deliberately not a package that owns every

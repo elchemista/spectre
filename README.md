@@ -478,7 +478,7 @@ adapters on startup, and can stop after an idle timeout.
 
 - [Getting Started](docs/GETTING_STARTED.md) - a complete agent and host
   lifecycle, including approval, rejection, retries, execution, and sessions.
-- [Ecosystem](ECOSYSTEM.md) - package responsibilities, compatibility,
+- [System Overview](SYSTEM.md) - package responsibilities, compatibility,
   composition examples, and the design rationale for a small core with
   explicit libraries.
 - [Architecture](docs/ARCHITECTURE.md) - ownership, lifecycle, trust, and host
