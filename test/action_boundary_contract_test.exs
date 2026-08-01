@@ -138,6 +138,168 @@ defmodule SpectreActionBoundaryContractTest.EmptyProvider do
   @moduledoc false
 end
 
+defmodule SpectreActionBoundaryContractTest.LocalCoverageActions do
+  @moduledoc false
+
+  alias Spectre.Action.Spec
+
+  def same(args), do: {:ok, {:same, args}}
+  def rewritten(args), do: {:ok, {:rewritten, args}}
+  def no_arity(args), do: {:ok, {:no_arity, args}}
+
+  def __spectre_actions__ do
+    [
+      Spec.new(name: :same, via: :local, schema: %{arity: 1}),
+      Spec.new(name: :rewritten, via: :foreign, schema: %{arity: 1}),
+      Spec.new(name: :no_arity, via: :local, schema: :opaque),
+      Spec.new(name: :missing, via: :local, schema: %{arity: 1})
+    ]
+  end
+end
+
+defmodule SpectreActionBoundaryContractTest.InvalidLocalRegistry do
+  @moduledoc false
+  def __spectre_actions__, do: :invalid
+end
+
+defmodule SpectreActionBoundaryContractTest.CoveragePlanner do
+  @moduledoc false
+
+  def plan("RAW MAP", _ctx, _opts), do: %{name: :one, via: :local}
+  def plan("INVALID", _ctx, _opts), do: :invalid
+  def plan("RAISE", _ctx, _opts), do: raise("planner raised")
+  def plan("THROW", _ctx, _opts), do: throw(:planner_threw)
+
+  def plan_response("STRING MAP", _ctx, _opts) do
+    %{"reply_text" => "visible", "actions" => [%{"name" => "one", "via" => "local"}]}
+  end
+
+  def plan_response("ACTION EFFECT", _ctx, _opts) do
+    %{reply_text: "visible", effects: [Spectre.Effect.stage(%{name: :one})]}
+  end
+
+  def plan_response("OTHER EFFECT", _ctx, _opts) do
+    %{reply_text: "visible", effects: [Spectre.Effect.stage(%{kind: :extension, name: :pulse})]}
+  end
+
+  def plan_response("NESTED ERROR", _ctx, _opts), do: {:ok, {:error, :nested_error}}
+  def plan_response("RAISE", _ctx, _opts), do: raise("response raised")
+  def plan_response("THROW", _ctx, _opts), do: throw(:response_threw)
+
+  def clean_reply("INVALID", _ctx, _opts), do: :invalid
+  def clean_reply("RAISE", _ctx, _opts), do: raise("clean raised")
+  def clean_reply(text, _ctx, _opts), do: "clean:" <> text
+end
+
+defmodule SpectreActionBoundaryContractTest.PlanOnlyPlanner do
+  @moduledoc false
+  def plan(_instruction, _ctx, _opts), do: {:ok, %{name: :one}}
+end
+
+defmodule SpectreActionBoundaryContractTest.ResponseOnlyPlanner do
+  @moduledoc false
+  def plan_response(text, _ctx, _opts), do: %{reply_text: text, actions: []}
+end
+
+defmodule SpectreActionBoundaryContractTest.RaisingDefinitionAgent do
+  @moduledoc false
+  def __spectre_definition__, do: raise("definition raised")
+end
+
+defmodule SpectreActionBoundaryContractTest.ThrowingDefinitionAgent do
+  @moduledoc false
+  def __spectre_definition__, do: throw(:definition_threw)
+end
+
+defmodule SpectreActionBoundaryContractTest.ConfiguredActionAgent do
+  @moduledoc false
+
+  def __spectre_definition__ do
+    %Spectre.Definition{
+      owner: __MODULE__,
+      config: [
+        action_planner: SpectreActionBoundaryContractTest.CoveragePlanner,
+        action_providers: [
+          Spectre.Action.Provider.Mount.new(
+            :mounted,
+            SpectreActionBoundaryContractTest.Provider
+          ),
+          {:tuple, SpectreActionBoundaryContractTest.Provider},
+          {:tuple_opts, SpectreActionBoundaryContractTest.Provider, [source: :coverage]}
+        ]
+      ]
+    }
+  end
+end
+
+defmodule SpectreActionBoundaryContractTest.InvalidProviderAgent do
+  @moduledoc false
+
+  def __spectre_definition__ do
+    %Spectre.Definition{owner: __MODULE__, config: [action_providers: [:invalid]]}
+  end
+end
+
+defmodule SpectreActionBoundaryContractTest.InvalidProviderListAgent do
+  @moduledoc false
+
+  def __spectre_definition__ do
+    %Spectre.Definition{owner: __MODULE__, config: [action_providers: :invalid]}
+  end
+end
+
+defmodule SpectreActionBoundaryContractTest.DuplicateProviderAgent do
+  @moduledoc false
+
+  def __spectre_definition__ do
+    provider = SpectreActionBoundaryContractTest.Provider
+
+    %Spectre.Definition{
+      owner: __MODULE__,
+      config: [action_providers: [{:duplicate, provider}, {:duplicate, provider}]]
+    }
+  end
+end
+
+defmodule SpectreActionBoundaryContractTest.InvalidPlannerAgent do
+  @moduledoc false
+
+  def __spectre_definition__ do
+    %Spectre.Definition{owner: __MODULE__, config: [action_planner: 123]}
+  end
+end
+
+defmodule SpectreActionBoundaryContractTest.InvalidPlannerOptsAgent do
+  @moduledoc false
+
+  def __spectre_definition__ do
+    planner = SpectreActionBoundaryContractTest.CoveragePlanner
+    %Spectre.Definition{owner: __MODULE__, config: [action_planner: {planner, [:invalid]}]}
+  end
+end
+
+defmodule SpectreActionBoundaryContractTest.PlannerExtension do
+  @moduledoc false
+  @behaviour Spectre.Extension
+
+  @impl true
+  def action_planner(_config), do: SpectreActionBoundaryContractTest.CoveragePlanner
+end
+
+defmodule SpectreActionBoundaryContractTest.MultiplePlannerAgent do
+  @moduledoc false
+
+  def __spectre_definition__ do
+    %Spectre.Definition{
+      owner: __MODULE__,
+      config: [action_planner: SpectreActionBoundaryContractTest.CoveragePlanner],
+      extensions: [
+        Spectre.Extension.Mount.new(SpectreActionBoundaryContractTest.PlannerExtension, [])
+      ]
+    }
+  end
+end
+
 defmodule SpectreActionBoundaryContractTest.Planner do
   @moduledoc false
 
@@ -621,6 +783,195 @@ defmodule SpectreActionBoundaryContractTest do
       |> Action.from_effect()
 
     assert restored.metadata == %{note: "keep"}
+  end
+
+  test "Action and Spec reject every malformed public value shape" do
+    existing = Action.new(:existing)
+    assert Action.new(existing) == existing
+    assert %Action{mode: :write} = Action.new(existing, mode: :write)
+    assert Action.ref(existing) == {:local, :existing}
+    assert Action.ref(Effect.stage(Action.to_effect_attrs(existing))) == {:local, :existing}
+    assert Action.ref({:remote, :jobs, :submit}) == {{:remote, :jobs}, :submit}
+    refute Action.matches_ref?({:al, "submit"}, existing)
+    refute Action.matches_ref?({:remote, :jobs, :submit}, existing)
+    refute Action.matches_ref?({:remote, nil}, existing)
+    refute Action.matches_ref?(123, existing)
+    assert Action.valid_ref?({:remote, :jobs, :submit})
+    refute Action.valid_ref?({"", :submit})
+    refute Action.valid_ref?({:remote, ""})
+    refute Action.valid_ref?({:remote, 123, :submit})
+    refute Action.valid_ref?(123)
+
+    for {attrs, message} <- [
+          {%{name: nil}, "invalid action name"},
+          {%{name: :ok, via: ""}, "invalid action provider"},
+          {%{name: :ok, args: []}, "action args must be a map"},
+          {%{name: :ok, metadata: []}, "action metadata must be a map"},
+          {%{name: :ok, mode: :unknown}, "invalid action mode"},
+          {%{name: :ok, planned_by: "planner"}, "invalid action planner"},
+          {%{name: :ok, schema_hash: ""}, "invalid action schema hash"}
+        ] do
+      assert_raise ArgumentError, ~r/#{message}/, fn -> Action.new(attrs) end
+    end
+
+    spec = Spec.new(id: "spec", name: :ok, schema: %{type: :object})
+    assert Spec.hash(:local, :ok, %{type: :object}) == spec.schema_hash
+    assert Spec.new(Map.put(Map.from_struct(spec), :schema_hash, spec.schema_hash)) == spec
+
+    for {attrs, message} <- [
+          {[id: :invalid, name: :ok], "invalid action spec id"},
+          {[name: :ok, description: 1], "invalid action description"},
+          {[name: :ok, mode: :unknown], "invalid action mode"},
+          {[name: :ok, visibility: :hidden], "invalid action visibility"},
+          {[name: :ok, metadata: []], "metadata must be a map"},
+          {[name: :ok, schema_hash: "stale"], "schema hash does not match"}
+        ] do
+      assert_raise ArgumentError, ~r/#{message}/, fn -> Spec.new(attrs) end
+    end
+  end
+
+  test "local provider covers rewritten specs, binary names and schema failures" do
+    local = Spectre.Action.Provider.Local
+    actions = SpectreActionBoundaryContractTest.LocalCoverageActions
+
+    assert {:error, {:invalid_local_action_module, nil}} = local.actions([])
+
+    assert {:error, {:unknown_action_module, SpectreActionBoundaryContractTest.Missing}} =
+             local.actions(module: SpectreActionBoundaryContractTest.Missing)
+
+    assert [same, rewritten, no_arity, missing] = local.actions(module: actions)
+    assert same.via == :local
+    assert rewritten.via == :local
+    assert rewritten.schema_hash != Spec.new(name: :rewritten, via: :foreign).schema_hash
+
+    assert {:ok, {:same, %{value: 1}}} =
+             local.execute(Action.new("same", args: %{value: 1}), %{}, module: actions)
+
+    assert {:error, {:unknown_action_name, "coverage-unknown-action"}} =
+             local.execute(Action.new("coverage-unknown-action"), %{}, module: actions)
+
+    invalid_name = %{Action.new(:same) | name: 123}
+
+    assert {:error, {:invalid_action_name, 123}} =
+             local.execute(invalid_name, %{}, module: actions)
+
+    assert {:error, {:undefined_action, ^actions, :missing, 1}} =
+             local.execute(Action.new(:missing, schema_hash: missing.schema_hash), %{},
+               module: actions
+             )
+
+    assert {:error, {:unknown_action_schema, ^actions, :no_arity, no_arity_hash}} =
+             local.execute(
+               Action.new(:no_arity, schema_hash: no_arity.schema_hash),
+               %{},
+               module: actions
+             )
+
+    assert no_arity_hash == no_arity.schema_hash
+
+    invalid_registry = SpectreActionBoundaryContractTest.InvalidLocalRegistry
+
+    assert {:error, {:invalid_action_registry, ^invalid_registry, :invalid}} =
+             local.actions(module: invalid_registry)
+
+    assert {:error, {:unknown_action_schema, ^invalid_registry, :same, "hash"}} =
+             local.execute(Action.new(:same, schema_hash: "hash"), %{}, module: invalid_registry)
+  end
+
+  test "planner facade contains missing callbacks, legacy effects and callback failures" do
+    planner = SpectreActionBoundaryContractTest.CoveragePlanner
+    plan_only = SpectreActionBoundaryContractTest.PlanOnlyPlanner
+    response_only = SpectreActionBoundaryContractTest.ResponseOnlyPlanner
+    missing = SpectreActionBoundaryContractTest.MissingPlanner
+
+    assert ActionPlanner.clean_reply("  plain  ") == "plain"
+    assert ActionPlanner.clean_reply(" value ", action_planner: plan_only) == "value"
+    assert ActionPlanner.clean_reply("value", action_planner: planner) == "clean:value"
+    assert ActionPlanner.clean_reply("INVALID", action_planner: planner) == "INVALID"
+    assert ActionPlanner.clean_reply("RAISE", action_planner: planner) == "RAISE"
+
+    assert {:error, {:action_planner_not_loaded, ^missing}} =
+             ActionPlanner.plan("anything", action_planner: missing)
+
+    assert {:error, {:action_planner_callback_missing, ^response_only, :plan, 3}} =
+             ActionPlanner.plan("anything", action_planner: response_only)
+
+    assert {:ok, %Effect{name: :one}} =
+             ActionPlanner.plan("RAW MAP", action_planner: planner)
+
+    assert {:error, {:invalid_action_planner_reply, :invalid}} =
+             ActionPlanner.plan("INVALID", action_planner: planner)
+
+    assert {:error, {:action_planner_exception, ^planner, :plan, %RuntimeError{}}} =
+             ActionPlanner.plan("RAISE", action_planner: planner)
+
+    assert {:error, {:action_planner_failure, ^planner, :plan, :throw, :planner_threw}} =
+             ActionPlanner.plan("THROW", action_planner: planner)
+
+    assert {:ok, %{reply_text: "visible", effects: [%Effect{name: "one"}]}} =
+             ActionPlanner.plan_response("STRING MAP", action_planner: planner)
+
+    assert {:ok, %{effects: [%Effect{kind: :action, name: :one}]}} =
+             ActionPlanner.plan_response("ACTION EFFECT", action_planner: planner)
+
+    assert {:error, {:invalid_planned_action, 0, {:unsupported_planned_effect_kind, :extension}}} =
+             ActionPlanner.plan_response("OTHER EFFECT", action_planner: planner)
+
+    assert {:error, :nested_error} =
+             ActionPlanner.plan_response("NESTED ERROR", action_planner: planner)
+
+    assert {:error, {:action_planner_exception, ^planner, :plan_response, %RuntimeError{}}} =
+             ActionPlanner.plan_response("RAISE", action_planner: planner)
+
+    assert {:error, {:action_planner_failure, ^planner, :plan_response, :throw, :response_threw}} =
+             ActionPlanner.plan_response("THROW", action_planner: planner)
+  end
+
+  test "ActionConfig validates provider and planner configuration shapes" do
+    alias Spectre.ActionConfig
+
+    assert ActionConfig.actions(SpectreActionBoundaryContractTest.RaisingDefinitionAgent) == nil
+    assert ActionConfig.actions(SpectreActionBoundaryContractTest.ThrowingDefinitionAgent) == nil
+
+    configured = SpectreActionBoundaryContractTest.ConfiguredActionAgent
+
+    assert Enum.map(ActionConfig.providers(configured), & &1.id) == [
+             :mounted,
+             :tuple,
+             :tuple_opts
+           ]
+
+    assert ActionConfig.planner(configured) ==
+             {SpectreActionBoundaryContractTest.CoveragePlanner, []}
+
+    assert_raise ArgumentError, ~r/invalid action provider/, fn ->
+      ActionConfig.providers(SpectreActionBoundaryContractTest.InvalidProviderAgent)
+    end
+
+    assert_raise ArgumentError, ~r/invalid action providers/, fn ->
+      ActionConfig.providers(SpectreActionBoundaryContractTest.InvalidProviderListAgent)
+    end
+
+    assert_raise ArgumentError, ~r/duplicate action provider/, fn ->
+      ActionConfig.providers(SpectreActionBoundaryContractTest.DuplicateProviderAgent)
+    end
+
+    assert_raise ArgumentError, ~r/invalid action planner/, fn ->
+      ActionConfig.planner(SpectreActionBoundaryContractTest.InvalidPlannerAgent)
+    end
+
+    assert_raise ArgumentError, ~r/options must be a keyword list/, fn ->
+      ActionConfig.planner(SpectreActionBoundaryContractTest.InvalidPlannerOptsAgent)
+    end
+
+    assert_raise ArgumentError, ~r/multiple action planners/, fn ->
+      ActionConfig.planner(SpectreActionBoundaryContractTest.MultiplePlannerAgent)
+    end
+
+    assert opts = ActionConfig.planner_opts(%{agent: configured}, runtime: true)
+    assert opts[:runtime]
+    assert opts[:action_planner] == SpectreActionBoundaryContractTest.CoveragePlanner
+    assert length(opts[:action_providers]) == 3
   end
 
   defp effect(name, args, opts \\ []) do
