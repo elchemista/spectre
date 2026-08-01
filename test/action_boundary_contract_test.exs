@@ -247,10 +247,10 @@ end
 defmodule SpectreActionBoundaryContractTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.Action.Spec
   alias Spectre.Action
   alias Spectre.Action.Provider
   alias Spectre.Action.Provider.Mount
+  alias Spectre.Action.Spec
   alias Spectre.ActionDispatcher
   alias Spectre.ActionHooks
   alias Spectre.ActionPlanner
@@ -605,6 +605,22 @@ defmodule SpectreActionBoundaryContractTest do
                Effect.stage_action(%{name: :unprotected}, agent, :agent)
              )
            )
+  end
+
+  test "to_effect_attrs keeps non-empty metadata and drops empty payload values" do
+    action = Action.new(:navigate, via: :lens, metadata: %{note: "keep"})
+    attrs = Action.to_effect_attrs(action)
+
+    assert attrs.payload.action_metadata == %{note: "keep"}
+    refute Map.has_key?(attrs.payload, :planned_by)
+    refute Map.has_key?(attrs.payload, :hooks)
+
+    restored =
+      attrs
+      |> Effect.stage_action(@agent, :agent)
+      |> Action.from_effect()
+
+    assert restored.metadata == %{note: "keep"}
   end
 
   defp effect(name, args, opts \\ []) do
