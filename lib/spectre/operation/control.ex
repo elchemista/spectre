@@ -31,9 +31,20 @@ defmodule Spectre.Operation.Control do
           updated_at: non_neg_integer() | nil
         }
 
+  @doc """
+  Creates the control plane for one loop, starting in `:active` state.
+  """
   @spec new(String.t()) :: t()
   def new(loop_id) when is_binary(loop_id) and loop_id != "", do: %__MODULE__{loop_id: loop_id}
 
+  @doc """
+  Commits a control command as the single pending command.
+
+  Replays of an already seen command id return `{:duplicate, control}`;
+  a terminal control plane, a target mismatch or an already pending command
+  return `{:error, reason}`. Pause-like commands move the state to
+  `:pause_requested`.
+  """
   @spec request(t(), Command.t()) :: {:ok, t()} | {:duplicate, t()} | {:error, term()}
   def request(%__MODULE__{} = control, %Command{loop_id: loop_id} = command) do
     cond do
@@ -69,6 +80,12 @@ defmodule Spectre.Operation.Control do
     end
   end
 
+  @doc """
+  Records a command as finished, clearing the pending slot.
+
+  The finished command becomes `last_command` and the head of the bounded
+  history; the control state follows the command's `desired_state`.
+  """
   @spec finish(t(), Command.t()) :: t()
   def finish(%__MODULE__{} = control, %Command{} = command) do
     state =
@@ -113,6 +130,10 @@ defmodule Spectre.Operation.Control do
     }
   end
 
+  @doc """
+  Increments the fencing generation, invalidating attempts fenced on the
+  previous value.
+  """
   @spec bump_generation(t()) :: t()
   def bump_generation(%__MODULE__{} = control),
     do: %{
@@ -121,9 +142,16 @@ defmodule Spectre.Operation.Control do
         updated_at: System.system_time(:millisecond)
     }
 
+  @doc """
+  Returns `true` when the control plane has reached its terminal state.
+  """
   @spec terminal?(t()) :: boolean()
   def terminal?(%__MODULE__{state: state}), do: state == :terminal
 
+  @doc """
+  Returns `true` when a command id is pending, last applied, or in history —
+  the idempotency check behind `{:duplicate, control}` replies.
+  """
   @spec command_seen?(t(), String.t()) :: boolean()
   def command_seen?(%__MODULE__{} = control, id) do
     match?(%Command{id: ^id}, control.pending) or
@@ -131,6 +159,12 @@ defmodule Spectre.Operation.Control do
       Enum.any?(control.history, &(&1.id == id))
   end
 
+  @doc """
+  Validates the whole control plane: scalar fields, embedded commands,
+  history identity and state/pending consistency.
+
+  Returns `:ok` or `{:error, reason}` naming the first violated invariant.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = control) do
     cond do
@@ -164,6 +198,7 @@ defmodule Spectre.Operation.Control do
     end
   end
 
+  @spec validate_commands(t()) :: :ok | {:error, term()}
   defp validate_commands(control) do
     with :ok <- validate_command(control.pending, control.loop_id, [:committed], :pending),
          :ok <-
@@ -174,6 +209,7 @@ defmodule Spectre.Operation.Control do
     end
   end
 
+  @spec validate_command(term(), String.t(), [atom()], atom()) :: :ok | {:error, term()}
   defp validate_command(nil, _loop_id, _statuses, _field), do: :ok
 
   defp validate_command(%Command{loop_id: loop_id} = command, loop_id, statuses, field) do
@@ -192,6 +228,7 @@ defmodule Spectre.Operation.Control do
   defp validate_command(_invalid, _loop_id, _statuses, _field),
     do: {:error, :invalid_operation_control_command}
 
+  @spec validate_history([Command.t()], String.t()) :: :ok | {:error, term()}
   defp validate_history(history, loop_id) do
     Enum.reduce_while(history, :ok, fn command, :ok ->
       case validate_command(command, loop_id, [:applied, :rejected], :history) do
@@ -201,6 +238,7 @@ defmodule Spectre.Operation.Control do
     end)
   end
 
+  @spec validate_command_identity(t()) :: :ok | {:error, term()}
   defp validate_command_identity(control) do
     history_ids = Enum.map(control.history, & &1.id)
 
@@ -223,6 +261,7 @@ defmodule Spectre.Operation.Control do
     end
   end
 
+  @spec validate_control_state(t()) :: :ok | {:error, term()}
   defp validate_control_state(control) do
     cond do
       control.state == :terminal and not is_nil(control.pending) ->

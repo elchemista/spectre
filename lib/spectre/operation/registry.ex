@@ -26,8 +26,7 @@ defmodule Spectre.Operation.Registry do
   @spec agent_operations(module()) :: {:ok, map()} | {:error, term()}
   defp agent_operations(agent) do
     if Code.ensure_loaded?(agent) and function_exported?(agent, :__spectre_config__, 0) do
-      agent
-      |> apply(:__spectre_config__, [])
+      agent.__spectre_config__()
       |> Keyword.get(:operations, [])
       |> normalize()
     else

@@ -35,6 +35,12 @@ defmodule Spectre.Operation.Delivery.Receipt do
 
   @type t :: %__MODULE__{}
 
+  @doc """
+  Validates the receipt's identity, target, status, timestamps and portability.
+
+  Returns `:ok`, or `{:error, reason}` naming the first invalid field or the
+  status whose required fields are inconsistent.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = receipt) do
     cond do
@@ -70,6 +76,9 @@ defmodule Spectre.Operation.Delivery.Receipt do
     end
   end
 
+  @doc """
+  Same as `validate/1` but returns the receipt, raising `ArgumentError` when invalid.
+  """
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = receipt) do
     case validate(receipt) do
@@ -78,6 +87,14 @@ defmodule Spectre.Operation.Delivery.Receipt do
     end
   end
 
+  @doc """
+  Transitions an `:authorized` receipt to `:delivered` or `:failed`.
+
+  For `:delivered`, `detail` is stored as the external receipt and `at` as the
+  delivery time; for `:failed`, `detail` becomes the failure reason. Repeating a
+  transition with the same detail is idempotent. Returns `{:ok, receipt}` or
+  `{:error, reason}` when the transition is not allowed from the current status.
+  """
   @spec transition(t(), :delivered | :failed, term(), non_neg_integer()) ::
           {:ok, t()} | {:error, term()}
   def transition(receipt, outcome, detail, at \\ System.system_time(:millisecond))
@@ -112,6 +129,7 @@ defmodule Spectre.Operation.Delivery.Receipt do
   def transition(%__MODULE__{}, outcome, _detail, _at),
     do: {:error, {:invalid_delivery_outcome, outcome}}
 
+  @spec validate_status_fields(t()) :: :ok | {:error, atom()}
   defp validate_status_fields(%__MODULE__{status: :authorized} = receipt) do
     if is_nil(receipt.reason) and is_nil(receipt.not_before) and is_nil(receipt.delivered_at) and
          is_nil(receipt.external_receipt),
@@ -155,9 +173,11 @@ defmodule Spectre.Operation.Delivery.Receipt do
        else: {:error, :invalid_failed_delivery_receipt}
   end
 
+  @spec optional_time?(term()) :: boolean()
   defp optional_time?(nil), do: true
   defp optional_time?(value), do: is_integer(value) and value >= 0
 
+  @spec portable(t()) :: :ok | {:error, {:nonportable_delivery_receipt, term()}}
   defp portable(receipt) do
     case Value.validate(receipt, [:delivery, :receipt, receipt.id]) do
       :ok -> :ok

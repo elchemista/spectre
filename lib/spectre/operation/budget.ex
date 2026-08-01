@@ -30,6 +30,13 @@ defmodule Spectre.Operation.Budget do
           resources: map()
         }
 
+  @doc """
+  Builds a validated budget from a struct, map, keyword list or `nil`.
+
+  `nil` yields an unbounded budget. Limits may be given at the top level or under
+  `:limits`; a `:duration_ms` limit derives `deadline_at` from `now` unless a
+  deadline is given explicitly. Raises `ArgumentError` when the result is invalid.
+  """
   @spec new(t() | map() | keyword() | nil, non_neg_integer()) :: t()
   def new(value \\ nil, now \\ System.system_time(:millisecond))
 
@@ -127,6 +134,11 @@ defmodule Spectre.Operation.Budget do
     end
   end
 
+  @doc """
+  Validates the budget's limits, consumption counters, timestamps and portability.
+
+  Returns `:ok`, or `{:error, reason}` naming the first invalid field.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = budget) do
     cond do
@@ -170,6 +182,9 @@ defmodule Spectre.Operation.Budget do
     end
   end
 
+  @doc """
+  Same as `validate/1` but returns the budget, raising `ArgumentError` when invalid.
+  """
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = budget) do
     case validate(budget) do
@@ -178,6 +193,7 @@ defmodule Spectre.Operation.Budget do
     end
   end
 
+  @spec deadline(non_neg_integer(), term()) :: non_neg_integer() | nil
   defp deadline(_now, nil), do: nil
 
   defp deadline(now, duration) when is_number(duration) and duration >= 0,
@@ -185,6 +201,7 @@ defmodule Spectre.Operation.Budget do
 
   defp deadline(_now, _duration), do: nil
 
+  @spec attr(map(), atom(), term()) :: term()
   defp attr(map, key, default \\ nil),
     do: Map.get(map, key, default)
 end

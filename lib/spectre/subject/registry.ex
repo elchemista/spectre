@@ -7,7 +7,7 @@ defmodule Spectre.Subject.Registry do
   Linking requires either an explicit trusted bootstrap proof or the
   destination-channel challenge protocol.
 
-  Durable storage for these records belongs to the later continuity phase; the
+  Durable storage for these records belongs to the later continuity phase.
   The registry deliberately exposes plain value objects that a store adapter
   can persist without process handles or secrets.
   """
@@ -28,6 +28,13 @@ defmodule Spectre.Subject.Registry do
   defstruct links: %{}, resolutions: %{}, intents: %{}, opts: []
 
   @type server :: GenServer.server()
+
+  @typep state :: %__MODULE__{
+           links: %{optional(String.t()) => SubjectLink.t()},
+           resolutions: %{optional({term(), term()}) => String.t()},
+           intents: %{optional(String.t()) => LinkIntent.t()},
+           opts: keyword()
+         }
 
   @doc false
   @spec child_spec(keyword()) :: Supervisor.child_spec()
@@ -429,6 +436,8 @@ defmodule Spectre.Subject.Registry do
     {:reply, result, state}
   end
 
+  @spec destination_confirmation_reply(state(), LinkIntent.t(), keyword()) ::
+          {:reply, {:ok, SubjectLink.t() | LinkIntent.t()} | {:error, term()}, state()}
   defp destination_confirmation_reply(state, intent, opts) do
     if intent.source_confirmation? do
       awaiting = %{
@@ -447,6 +456,7 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec normalize_agent_ref(term()) :: {:ok, AgentRef.t()} | {:error, term()}
   defp normalize_agent_ref(%AgentRef{} = ref) do
     case AgentRef.validate(ref) do
       :ok -> {:ok, ref}
@@ -462,6 +472,7 @@ defmodule Spectre.Subject.Registry do
 
   defp normalize_agent_ref(other), do: {:error, {:invalid_agent_ref, other}}
 
+  @spec normalize_subject(term()) :: {:ok, Subject.t()} | {:error, term()}
   defp normalize_subject(%Subject{} = subject) do
     case Subject.validate(subject) do
       :ok -> {:ok, subject}
@@ -479,6 +490,7 @@ defmodule Spectre.Subject.Registry do
     exception -> {:error, {:invalid_subject, exception.__struct__}}
   end
 
+  @spec normalize_identity(term()) :: {:ok, ExternalIdentity.t()} | {:error, term()}
   defp normalize_identity(%ExternalIdentity{} = identity) do
     case ExternalIdentity.validate(identity) do
       :ok -> {:ok, identity}
@@ -488,6 +500,9 @@ defmodule Spectre.Subject.Registry do
 
   defp normalize_identity(other), do: {:error, {:invalid_external_identity, other}}
 
+  @spec bootstrap_proof(keyword()) ::
+          {:ok, String.t()}
+          | {:error, :invalid_subject_link_proof | :subject_link_proof_required}
   defp bootstrap_proof(opts) do
     case Keyword.fetch(opts, :proof) do
       {:ok, proof} when not is_nil(proof) ->
@@ -501,6 +516,8 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec ensure_resolution_available(state(), AgentRef.t(), Subject.t(), ExternalIdentity.t()) ::
+          :ok | {:error, term()}
   defp ensure_resolution_available(state, agent_ref, subject, identity) do
     case Map.get(state.resolutions, resolution_key(agent_ref, identity)) do
       nil ->
@@ -511,6 +528,8 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec resolution_available_for_link(state(), String.t(), Subject.t()) ::
+          :ok | {:error, term()}
   defp resolution_available_for_link(state, link_id, subject) do
     case Map.get(state.links, link_id) do
       %SubjectLink{status: :active, subject: linked_subject} ->
@@ -523,12 +542,16 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec existing_link_reply(state(), String.t(), Subject.t() | term()) ::
+          {:ok, SubjectLink.t()} | {:error, term()}
   defp existing_link_reply(state, link_id, subject) do
     with {:ok, subject} <- normalize_subject(subject) do
       existing_link_for_subject(state, link_id, subject)
     end
   end
 
+  @spec existing_link_for_subject(state(), String.t(), Subject.t()) ::
+          {:ok, SubjectLink.t()} | {:error, term()}
   defp existing_link_for_subject(state, link_id, subject) do
     case Map.get(state.links, link_id) do
       %SubjectLink{status: :active, subject: linked_subject} = link ->
@@ -541,6 +564,8 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec source_owns_subject(state(), AgentRef.t(), Subject.t(), ExternalIdentity.t()) ::
+          :ok | {:error, :source_identity_subject_mismatch | :source_identity_not_linked}
   defp source_owns_subject(state, agent_ref, subject, source) do
     with {:ok, link_id} <- fetch_resolution(state, agent_ref, source),
          %SubjectLink{status: :active, subject: linked_subject} <- Map.get(state.links, link_id),
@@ -552,6 +577,13 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec validate_destination_confirmation(
+          state(),
+          LinkIntent.t(),
+          ExternalIdentity.t(),
+          term(),
+          keyword()
+        ) :: {:ok, LinkIntent.t(), state()} | {:error, term(), state()}
   defp validate_destination_confirmation(state, intent, identity, challenge, opts) do
     now = now_ms(state, opts)
 
@@ -584,6 +616,8 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec commit_intent(state(), LinkIntent.t(), keyword()) ::
+          {:ok, SubjectLink.t(), state()} | {:error, term(), state()}
   defp commit_intent(state, intent, opts) do
     now = now_ms(state, opts)
 
@@ -595,6 +629,8 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec commit_current_intent(state(), LinkIntent.t(), keyword(), integer()) ::
+          {:ok, SubjectLink.t(), state()} | {:error, term(), state()}
   defp commit_current_intent(state, intent, opts, now) do
     with :ok <-
            source_owns_subject(
@@ -638,6 +674,8 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec reuse_existing_intent_link(state(), String.t(), LinkIntent.t()) ::
+          {:ok, SubjectLink.t(), state()} | {:error, term(), state()}
   defp reuse_existing_intent_link(state, link_id, intent) do
     case existing_link_reply(state, link_id, intent.subject) do
       {:ok, link} ->
@@ -656,6 +694,8 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec build_link(AgentRef.t(), Subject.t(), ExternalIdentity.t(), integer(), keyword()) ::
+          {:ok, SubjectLink.t()} | {:error, :invalid_subject_link_metadata}
   defp build_link(agent_ref, subject, identity, now, opts) do
     metadata = Keyword.get(opts, :metadata, %{})
 
@@ -675,6 +715,7 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec put_link(state(), SubjectLink.t()) :: state()
   defp put_link(state, %SubjectLink{} = link) do
     key = resolution_key(link.agent_ref, link.external_identity)
 
@@ -685,10 +726,12 @@ defmodule Spectre.Subject.Registry do
     }
   end
 
+  @spec put_intent(state(), LinkIntent.t()) :: state()
   defp put_intent(state, %LinkIntent{} = intent) do
     %{state | intents: Map.put(state.intents, intent.id, intent)}
   end
 
+  @spec fetch_intent(state(), term()) :: {:ok, LinkIntent.t()} | {:error, :unknown_link_intent}
   defp fetch_intent(state, intent_id) when is_binary(intent_id) do
     case Map.get(state.intents, intent_id) do
       %LinkIntent{} = intent -> {:ok, intent}
@@ -698,6 +741,8 @@ defmodule Spectre.Subject.Registry do
 
   defp fetch_intent(_state, _intent_id), do: {:error, :unknown_link_intent}
 
+  @spec fetch_resolution(state(), AgentRef.t(), ExternalIdentity.t()) ::
+          {:ok, String.t()} | {:error, :unlinked_external_identity}
   defp fetch_resolution(state, agent_ref, identity) do
     case Map.fetch(state.resolutions, resolution_key(agent_ref, identity)) do
       {:ok, link_id} -> {:ok, link_id}
@@ -705,10 +750,12 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec resolution_key(AgentRef.t(), ExternalIdentity.t()) :: {term(), term()}
   defp resolution_key(agent_ref, identity) do
     {AgentRef.key(agent_ref), ExternalIdentity.key(identity)}
   end
 
+  @spec record_link(state(), SubjectLink.t(), atom(), keyword()) :: :ok | {:error, term()}
   defp record_link(state, link, event, opts) do
     journal_opts = Keyword.merge(state.opts, opts)
 
@@ -727,6 +774,8 @@ defmodule Spectre.Subject.Registry do
     )
   end
 
+  @spec positive_option(keyword(), atom(), pos_integer()) ::
+          {:ok, pos_integer()} | {:error, {:invalid_link_intent_option, atom(), term()}}
   defp positive_option(opts, key, default) do
     case Keyword.get(opts, key, default) do
       value when is_integer(value) and value > 0 -> {:ok, value}
@@ -734,6 +783,8 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec boolean_option(keyword(), atom(), boolean()) ::
+          {:ok, boolean()} | {:error, {:invalid_link_intent_option, atom(), term()}}
   defp boolean_option(opts, key, default) do
     case Keyword.get(opts, key, default) do
       value when is_boolean(value) -> {:ok, value}
@@ -741,6 +792,7 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec now_ms(state(), keyword()) :: integer()
   defp now_ms(state, _command_opts) do
     if is_function(Keyword.get(state.opts, :clock), 0) do
       state.opts |> Keyword.fetch!(:clock) |> then(& &1.())
@@ -749,14 +801,17 @@ defmodule Spectre.Subject.Registry do
     end
   end
 
+  @spec challenge() :: String.t()
   defp challenge do
     24
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
   end
 
+  @spec digest(binary()) :: binary()
   defp digest(value) when is_binary(value), do: :crypto.hash(:sha256, value)
 
+  @spec valid_challenge?(term(), term()) :: boolean()
   defp valid_challenge?(challenge, expected) when is_binary(challenge) and is_binary(expected) do
     candidate = digest(challenge)
     byte_size(candidate) == byte_size(expected) and :crypto.hash_equals(candidate, expected)

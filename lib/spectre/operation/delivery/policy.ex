@@ -16,6 +16,12 @@ defmodule Spectre.Operation.Delivery.Policy do
 
   @type t :: %__MODULE__{}
 
+  @doc """
+  Builds a validated policy from a struct, map, keyword list or `nil`.
+
+  `nil` yields the default policy. Raises `ArgumentError` when the resulting
+  policy is invalid.
+  """
   @spec new(t() | map() | keyword() | nil) :: t()
   def new(nil), do: %__MODULE__{}
   def new(%__MODULE__{} = policy), do: validate!(policy)
@@ -37,6 +43,11 @@ defmodule Spectre.Operation.Delivery.Policy do
     |> validate!()
   end
 
+  @doc """
+  Validates the policy's flags, limits, quiet hours, offset, mode and portability.
+
+  Returns `:ok`, or `{:error, reason}` naming the first invalid field.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = policy) do
     cond do
@@ -77,6 +88,7 @@ defmodule Spectre.Operation.Delivery.Policy do
     end
   end
 
+  @spec validate!(t()) :: t()
   defp validate!(policy) do
     case validate(policy) do
       :ok -> policy
@@ -84,9 +96,11 @@ defmodule Spectre.Operation.Delivery.Policy do
     end
   end
 
+  @spec valid_unique_list?(term()) :: boolean()
   defp valid_unique_list?(values),
     do: is_list(values) and Enum.uniq(values) == values and Enum.all?(values, &(not is_nil(&1)))
 
+  @spec valid_quiet_hours?(term()) :: boolean()
   defp valid_quiet_hours?(nil), do: true
 
   defp valid_quiet_hours?({start_minute, end_minute}),
@@ -97,9 +111,11 @@ defmodule Spectre.Operation.Delivery.Policy do
 
   defp valid_quiet_hours?(_value), do: false
 
+  @spec valid_minutes?(term(), term()) :: boolean()
   defp valid_minutes?(start_minute, end_minute),
     do: start_minute in 0..1439 and end_minute in 0..1439 and start_minute != end_minute
 
+  @spec attr(map(), atom(), term()) :: term()
   defp attr(map, key, default \\ nil),
     do: Map.get(map, key, default)
 end

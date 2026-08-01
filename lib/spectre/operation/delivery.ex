@@ -8,6 +8,14 @@ defmodule Spectre.Operation.Delivery do
   alias Spectre.Operation.Loop
   alias Spectre.Run.Value
 
+  @doc """
+  Decides whether `event` may be proactively delivered to `destination` under `policy`.
+
+  Returns `{:ok, receipt}` when delivery is authorized, deferred (quiet hours) or
+  routed to a digest, `{:duplicate, receipt}` when a prior receipt in `history`
+  matches the dedupe key within its TTL, and `{:error, receipt}` when delivery is
+  denied; the receipt records the decision and its reason. No transport I/O occurs.
+  """
   @spec authorize(
           Event.t(),
           Loop.t(),
@@ -71,15 +79,28 @@ defmodule Spectre.Operation.Delivery do
     end
   end
 
+  @doc """
+  Marks an authorized receipt as delivered, recording the external receipt and time.
+
+  Returns `{:ok, receipt}` with the updated receipt, or `{:error, reason}` when the
+  transition is not allowed from the receipt's current status.
+  """
   @spec delivered(Receipt.t(), term(), non_neg_integer()) ::
           {:ok, Receipt.t()} | {:error, term()}
   def delivered(%Receipt{} = receipt, external_receipt, at \\ System.system_time(:millisecond)) do
     Receipt.transition(receipt, :delivered, external_receipt, at)
   end
 
+  @doc """
+  Marks an authorized receipt as failed with the given reason.
+
+  Returns `{:ok, receipt}` with the updated receipt, or `{:error, reason}` when the
+  transition is not allowed from the receipt's current status.
+  """
   @spec failed(Receipt.t(), term()) :: {:ok, Receipt.t()} | {:error, term()}
   def failed(%Receipt{} = receipt, reason), do: Receipt.transition(receipt, :failed, reason)
 
+  @spec denied(Receipt.t(), term()) :: {:error, Receipt.t()}
   defp denied(receipt, reason) do
     receipt = %{receipt | status: :denied, reason: reason}
 
@@ -89,6 +110,7 @@ defmodule Spectre.Operation.Delivery do
     end
   end
 
+  @spec accepted(Receipt.t()) :: {:ok, Receipt.t()} | {:error, Receipt.t()}
   defp accepted(receipt) do
     case Receipt.validate(receipt) do
       :ok -> {:ok, receipt}
@@ -96,6 +118,8 @@ defmodule Spectre.Operation.Delivery do
     end
   end
 
+  @spec valid_consent?(Consent.t() | nil, Loop.t(), term(), term(), non_neg_integer()) ::
+          boolean()
   defp valid_consent?(%Consent{} = consent, loop, destination, channel, now) do
     Consent.active?(consent, now) and consent.subject_id == loop.subject_id and
       consent.destination == destination and
@@ -106,6 +130,7 @@ defmodule Spectre.Operation.Delivery do
 
   defp valid_consent?(_consent, _loop, _destination, _channel, _now), do: false
 
+  @spec normalize_consent(term()) :: Consent.t() | nil
   defp normalize_consent(%Consent{} = consent), do: consent
 
   defp normalize_consent(value) when is_map(value) or is_list(value) do
@@ -116,6 +141,8 @@ defmodule Spectre.Operation.Delivery do
 
   defp normalize_consent(_value), do: nil
 
+  @spec duplicate_receipt([Receipt.t()], term(), non_neg_integer(), non_neg_integer()) ::
+          Receipt.t() | nil
   defp duplicate_receipt(history, key, ttl, now) do
     Enum.find(history, fn receipt ->
       valid_receipt?(receipt) and receipt.dedupe_key == key and
@@ -124,6 +151,7 @@ defmodule Spectre.Operation.Delivery do
     end)
   end
 
+  @spec rate_limited?([Receipt.t()], Policy.t(), term(), non_neg_integer()) :: boolean()
   defp rate_limited?(history, policy, destination, now) do
     Enum.count(history, fn receipt ->
       valid_receipt?(receipt) and receipt.destination == destination and
@@ -132,9 +160,11 @@ defmodule Spectre.Operation.Delivery do
     end) >= policy.max_deliveries
   end
 
+  @spec valid_receipt?(term()) :: boolean()
   defp valid_receipt?(%Receipt{} = receipt), do: Receipt.validate(receipt) == :ok
   defp valid_receipt?(_receipt), do: false
 
+  @spec quiet_hours_end(Policy.t(), non_neg_integer()) :: non_neg_integer() | nil
   defp quiet_hours_end(%Policy{quiet_hours: nil}, _now), do: nil
 
   defp quiet_hours_end(policy, now) do
@@ -153,14 +183,20 @@ defmodule Spectre.Operation.Delivery do
     end
   end
 
+  @spec quiet_hours(
+          {non_neg_integer(), non_neg_integer()}
+          | %{start: non_neg_integer(), end: non_neg_integer()}
+        ) :: {non_neg_integer(), non_neg_integer()}
   defp quiet_hours({start_minute, end_minute}), do: {start_minute, end_minute}
   defp quiet_hours(%{start: start_minute, end: end_minute}), do: {start_minute, end_minute}
 
+  @spec destination_field(term(), atom()) :: term() | nil
   defp destination_field(destination, :channel) when is_map(destination),
     do: Map.get(destination, :channel, Map.get(destination, "channel"))
 
   defp destination_field(_destination, _key), do: nil
 
+  @spec normalize_metadata(term()) :: map()
   defp normalize_metadata(value) when is_map(value), do: value
 
   defp normalize_metadata(value) when is_list(value),

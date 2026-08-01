@@ -7,8 +7,8 @@ defmodule Spectre.Operation.Runtime do
   canonical commit, supervision and scheduling.
   """
 
-  alias Spectre.Operation.Attempt
   alias Spectre.Operation.Artifact
+  alias Spectre.Operation.Attempt
   alias Spectre.Operation.Budget
   alias Spectre.Operation.Control
   alias Spectre.Operation.Control.Command

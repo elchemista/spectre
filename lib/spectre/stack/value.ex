@@ -1,6 +1,16 @@
 defmodule Spectre.Stack.Value do
-  @moduledoc false
+  @moduledoc """
+  Portability checks and identity helpers for stack entry values.
 
+  Stack definitions must be immutable data: no PIDs, ports, references or
+  functions at any depth. These helpers enforce that constraint and derive
+  deterministic digests and entry identifiers from portable values.
+  """
+
+  @doc """
+  Returns `true` when `value` contains no PID, port, reference, function or
+  improper list at any depth.
+  """
   @spec portable?(term()) :: boolean()
   def portable?(value) when is_pid(value) or is_port(value) or is_reference(value), do: false
   def portable?(value) when is_function(value), do: false
@@ -29,6 +39,11 @@ defmodule Spectre.Stack.Value do
 
   defp portable_list_tail?(_tail), do: false
 
+  @doc """
+  Returns `value` unchanged, raising `ArgumentError` when it is not portable.
+
+  `label` names the offending value in the error message.
+  """
   @spec ensure_portable!(term(), String.t()) :: term()
   def ensure_portable!(value, label) do
     unless portable?(value) do
@@ -39,6 +54,12 @@ defmodule Spectre.Stack.Value do
     value
   end
 
+  @doc """
+  Hashes `value` into a deterministic lowercase hex digest.
+
+  The same value always produces the same digest, so digests can detect
+  stack definition changes across restarts.
+  """
   @spec digest(term()) :: String.t()
   def digest(value) do
     value
@@ -47,10 +68,17 @@ defmodule Spectre.Stack.Value do
     |> Base.encode16(case: :lower)
   end
 
+  @doc """
+  Extracts the identifier of a stack entry: its `:id` field when present,
+  otherwise the entry itself.
+  """
   @spec entry_id(term()) :: term()
   def entry_id(%{id: id}), do: id
   def entry_id(entry), do: entry
 
+  @doc """
+  Returns `true` when `id` is a portable atom, binary, integer or tuple.
+  """
   @spec valid_id?(term()) :: boolean()
   def valid_id?(id) do
     not is_nil(id) and portable?(id) and

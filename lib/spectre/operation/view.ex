@@ -48,6 +48,13 @@ defmodule Spectre.Operation.View do
 
   @type t :: %__MODULE__{}
 
+  @doc """
+  Projects a committed loop and its control plane into a flat, redacted view.
+
+  Progress, partial results, artifacts, and blocker honor the loop's
+  publication policy and become `:redacted` when publication is disabled;
+  requests, updates, commands and cognitive data are reduced to safe fields.
+  """
   @spec from_loop(Spectre.Operation.Loop.t(), Spectre.Operation.Control.t()) :: t()
   def from_loop(%Spectre.Operation.Loop{} = loop, %Spectre.Operation.Control{} = control) do
     %__MODULE__{
@@ -92,6 +99,7 @@ defmodule Spectre.Operation.View do
     }
   end
 
+  @spec wait_ref(Spectre.Operation.Loop.t()) :: map() | nil
   defp wait_ref(%{wait: nil}), do: nil
 
   defp wait_ref(loop) do
@@ -102,6 +110,7 @@ defmodule Spectre.Operation.View do
     }
   end
 
+  @spec redacted_checkpoint(Spectre.Operation.Loop.t()) :: map()
   defp redacted_checkpoint(loop) do
     %{
       status: loop.status,
@@ -112,6 +121,7 @@ defmodule Spectre.Operation.View do
     }
   end
 
+  @spec redacted_request(Spectre.Operation.Request.t() | nil) :: map() | nil
   defp redacted_request(nil), do: nil
 
   defp redacted_request(request) do
@@ -123,6 +133,7 @@ defmodule Spectre.Operation.View do
     }
   end
 
+  @spec published(Spectre.Operation.Loop.t(), atom(), term()) :: term() | :redacted
   defp published(loop, key, value) do
     policy = Map.get(loop.metadata, :publication, Map.get(loop.metadata, "publication", %{}))
 
@@ -131,6 +142,7 @@ defmodule Spectre.Operation.View do
       else: :redacted
   end
 
+  @spec redacted_cognitive(map()) :: map()
   defp redacted_cognitive(cognitive) do
     Map.take(cognitive, [
       :requested_profile,
@@ -143,6 +155,7 @@ defmodule Spectre.Operation.View do
     ])
   end
 
+  @spec redacted_update(Spectre.Operation.Update.t() | nil) :: map() | nil
   defp redacted_update(nil), do: nil
 
   defp redacted_update(update) do
@@ -156,6 +169,7 @@ defmodule Spectre.Operation.View do
     }
   end
 
+  @spec redacted_command(Spectre.Operation.Control.Command.t() | nil) :: map() | nil
   defp redacted_command(nil), do: nil
 
   defp redacted_command(command) do
@@ -169,9 +183,13 @@ defmodule Spectre.Operation.View do
     }
   end
 
+  @spec reconciliation(Spectre.Operation.Loop.t()) :: :required | nil
   defp reconciliation(%{wait: %{kind: :reconciliation}}), do: :required
   defp reconciliation(_loop), do: nil
 
+  @spec remaining_budget(Spectre.Operation.Budget.t()) :: %{
+          optional(atom()) => number() | :infinity
+        }
   defp remaining_budget(budget) do
     Map.new([:steps, :attempts, :retries, :duration_ms, :cost], fn dimension ->
       {dimension, Spectre.Operation.Budget.remaining(budget, dimension)}

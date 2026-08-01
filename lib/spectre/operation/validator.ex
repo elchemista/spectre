@@ -1,8 +1,23 @@
 defmodule Spectre.Operation.Validator do
-  @moduledoc "Safe validation boundary for registered operation input, output and updates."
+  @moduledoc """
+  Safe validation boundary for registered operation input, output and updates.
+
+  Validators declared on an operation spec may be primitive type atoms
+  (`:map`, `:binary`, …), a module exporting `validate/1`, or an explicit
+  `{module, function}` pair. Custom validators are invoked defensively: a
+  missing module, a raise or a throw becomes a tagged `{:error, reason}`
+  instead of crashing the caller.
+  """
 
   @primitive [:any, :map, :list, :binary, :integer, :number, :atom, :boolean]
 
+  @doc """
+  Validates `value` against a declared validator.
+
+  A `nil` validator accepts everything. Custom validators may reply with
+  `:ok`, `true`, `{:ok, _}`, `false` or `{:error, reason}`; any other reply
+  is reported as `{:error, {:invalid_operation_validation_reply, ...}}`.
+  """
   @spec validate(term(), term(), term()) :: :ok | {:error, term()}
   def validate(nil, _value, _field), do: :ok
   def validate(:any, _value, _field), do: :ok
@@ -29,6 +44,11 @@ defmodule Spectre.Operation.Validator do
   def validate(validator, _value, field),
     do: {:error, {:invalid_operation_validator, field, validator}}
 
+  @doc """
+  Checks that `value` belongs to a declared domain of allowed values.
+
+  A `nil` domain accepts everything.
+  """
   @spec domain([term()] | nil, term(), term()) :: :ok | {:error, term()}
   def domain(nil, _value, _field), do: :ok
 
@@ -38,6 +58,7 @@ defmodule Spectre.Operation.Validator do
       else: {:error, {:operation_value_outside_domain, field, value}}
   end
 
+  @spec invoke(module(), atom(), term(), term()) :: :ok | {:error, term()}
   defp invoke(module, function, value, field) do
     cond do
       not Code.ensure_loaded?(module) ->
@@ -56,6 +77,7 @@ defmodule Spectre.Operation.Validator do
       {:error, {:operation_validator_failure, field, module, function, kind, reason}}
   end
 
+  @spec normalize(term(), term()) :: :ok | {:error, term()}
   defp normalize(:ok, _field), do: :ok
   defp normalize(true, _field), do: :ok
   defp normalize({:ok, _value}, _field), do: :ok
@@ -67,6 +89,7 @@ defmodule Spectre.Operation.Validator do
   defp normalize(other, field),
     do: {:error, {:invalid_operation_validation_reply, field, shape(other)}}
 
+  @spec shape(term()) :: atom() | {:tuple, non_neg_integer()}
   defp shape(value) when is_atom(value), do: :atom
   defp shape(value) when is_binary(value), do: :binary
   defp shape(value) when is_integer(value), do: :integer

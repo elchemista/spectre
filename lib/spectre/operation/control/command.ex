@@ -45,6 +45,14 @@ defmodule Spectre.Operation.Control.Command do
           metadata: map()
         }
 
+  @doc """
+  Builds a pending control command for `loop_id`.
+
+  `action` must be one of `:pause`, `:update`, `:resume`, `:stop`, `:renew`,
+  `:trigger` or `:update_and_resume`; the desired loop state is derived from it
+  unless `:desired_state` is given. Missing ids and `requested_at` default to
+  fresh UUIDv7s and the current time. Raises `ArgumentError` on an invalid mode.
+  """
   @spec new(String.t(), atom(), keyword()) :: t()
   def new(loop_id, action, opts \\ [])
       when is_binary(loop_id) and loop_id != "" and action in @actions and is_list(opts) do
@@ -67,16 +75,26 @@ defmodule Spectre.Operation.Control.Command do
     }
   end
 
+  @doc """
+  Marks the command as `:committed`, stamping `committed_at` with the current time.
+  """
   @spec committed(t()) :: t()
   def committed(%__MODULE__{} = command) do
     %{command | status: :committed, committed_at: System.system_time(:millisecond)}
   end
 
+  @doc """
+  Marks the command as `:applied`, stamping `completed_at` with the current time.
+  """
   @spec applied(t()) :: t()
   def applied(%__MODULE__{} = command) do
     %{command | status: :applied, completed_at: System.system_time(:millisecond)}
   end
 
+  @doc """
+  Marks the command as `:rejected` with `reason`, stamping `completed_at` with
+  the current time.
+  """
   @spec rejected(t(), term()) :: t()
   def rejected(%__MODULE__{} = command, reason) do
     %{
@@ -87,6 +105,7 @@ defmodule Spectre.Operation.Control.Command do
     }
   end
 
+  @spec desired_state(atom()) :: :active | :paused | :terminal | nil
   defp desired_state(:pause), do: :paused
   defp desired_state(:update), do: :paused
   defp desired_state(:update_and_resume), do: :active
@@ -94,6 +113,12 @@ defmodule Spectre.Operation.Control.Command do
   defp desired_state(:stop), do: :terminal
   defp desired_state(_action), do: nil
 
+  @doc """
+  Validates the command's identity, action, mode, timestamps and portability.
+
+  Returns `:ok`, or `{:error, reason}` naming the first invalid field or the
+  status whose timestamps are inconsistent.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = command) do
     cond do
@@ -146,6 +171,7 @@ defmodule Spectre.Operation.Control.Command do
     end
   end
 
+  @spec validate_status_timestamps(t()) :: :ok | {:error, atom()}
   defp validate_status_timestamps(%__MODULE__{status: :pending} = command) do
     if is_nil(command.committed_at) and is_nil(command.completed_at) and is_nil(command.rejection),
       do: :ok,
@@ -174,9 +200,11 @@ defmodule Spectre.Operation.Control.Command do
        else: {:error, :invalid_rejected_loop_control_timestamps}
   end
 
+  @spec ordered_time?(term(), term()) :: boolean()
   defp ordered_time?(value, floor),
     do: is_integer(value) and is_integer(floor) and value >= floor
 
+  @spec portable(t()) :: :ok | {:error, {:nonportable_loop_control, term()}}
   defp portable(command) do
     case Value.validate(command, [:loop_control, command.id]) do
       :ok -> :ok
@@ -184,8 +212,13 @@ defmodule Spectre.Operation.Control.Command do
     end
   end
 
+  @spec valid_binary?(term()) :: boolean()
   defp valid_binary?(value), do: is_binary(value) and value != ""
+
+  @spec optional_revision?(term()) :: boolean()
   defp optional_revision?(nil), do: true
   defp optional_revision?(value), do: non_negative_integer?(value)
+
+  @spec non_negative_integer?(term()) :: boolean()
   defp non_negative_integer?(value), do: is_integer(value) and value >= 0
 end

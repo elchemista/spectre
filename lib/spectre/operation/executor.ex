@@ -18,6 +18,14 @@ defmodule Spectre.Operation.Executor do
 
   @type result :: {:ok, term()} | {:error, term()} | {:ambiguous, term()}
 
+  @doc """
+  Runs one operation end to end: input validation, portability check, policy
+  authorization, kind-specific invocation and output/domain validation.
+
+  Returns `{:ok, execution}`, `{:error, reason}`, or `{:ambiguous, reason}`
+  when a side-effecting operation failed in a way whose outcome is unknown
+  (timeout, crash, declared ambiguity).
+  """
   @spec execute(Spec.t(), Request.t(), ExecutionContext.t()) :: result()
   def execute(%Spec{} = spec, %Request{} = request, %ExecutionContext{} = context) do
     result =
@@ -40,6 +48,13 @@ defmodule Spectre.Operation.Executor do
     end
   end
 
+  @doc """
+  Resolves an ambiguous outcome by calling the spec's `reconcile` executor
+  with the stored receipt, then validates the produced execution.
+
+  Returns `{:error, {:operation_not_reconcilable, id}}` when the spec has no
+  reconcile executor.
+  """
   @spec reconcile(Spec.t(), term(), ExecutionContext.t()) :: result()
   def reconcile(%Spec{reconcile: reconcile} = spec, receipt, %ExecutionContext{} = context) do
     if is_nil(reconcile) do
@@ -56,6 +71,7 @@ defmodule Spectre.Operation.Executor do
     end
   end
 
+  @spec validate_execution(Spec.t(), Execution.t()) :: :ok | {:error, term()}
   defp validate_execution(spec, %Execution{} = execution) do
     with :ok <- Execution.validate(execution),
          :ok <- Validator.validate(spec.output, execution.value, {:operation_output, spec.id}),
@@ -69,6 +85,8 @@ defmodule Spectre.Operation.Executor do
     end
   end
 
+  @spec cognitive_fallback(Spec.t(), Request.t(), ExecutionContext.t(), term()) ::
+          {:ok, Execution.t()} | {:error, term()}
   defp cognitive_fallback(
          %Spec{kind: :cognitive, fallback: fallback} = spec,
          request,
@@ -111,6 +129,7 @@ defmodule Spectre.Operation.Executor do
 
   defp cognitive_fallback(_spec, _request, _context, reason), do: {:error, reason}
 
+  @spec invoke(Spec.t(), Request.t(), ExecutionContext.t()) :: {:ok, term()} | {:error, term()}
   defp invoke(%Spec{kind: :function, executor: executor} = spec, request, context),
     do: call_registered(executor, request.input, context, spec)
 
@@ -160,6 +179,8 @@ defmodule Spectre.Operation.Executor do
     end
   end
 
+  @spec dispatch_effect(term(), Spec.t(), ExecutionContext.t()) ::
+          {:ok, term()} | {:error, term()}
   defp dispatch_effect(%Effect{kind: :action} = effect, spec, context),
     do: ActionDispatcher.dispatch(effect, spectre_context(context), operation_opts(spec, context))
 
@@ -169,12 +190,16 @@ defmodule Spectre.Operation.Executor do
   defp dispatch_effect(value, spec, _context),
     do: {:error, {:invalid_operation_effect, spec.id, shape(value)}}
 
+  @spec call_registered(Spec.executor(), term(), ExecutionContext.t(), Spec.t()) ::
+          {:ok, term()} | {:error, term()}
   defp call_registered({module, function}, input, context, spec),
     do: call_registered(module, function, input, context, spec)
 
   defp call_registered(module, input, context, spec) when is_atom(module),
     do: call_registered(module, :execute, input, context, spec)
 
+  @spec call_registered(module(), atom(), term(), ExecutionContext.t(), Spec.t()) ::
+          {:ok, term()} | {:error, term()}
   defp call_registered(module, function, input, context, spec) do
     cond do
       not Code.ensure_loaded?(module) ->
@@ -191,6 +216,8 @@ defmodule Spectre.Operation.Executor do
     end
   end
 
+  @spec bounded_call(Spec.t(), (-> {:ok, term()} | {:error, term()})) ::
+          {:ok, term()} | {:error, term()}
   defp bounded_call(spec, callback) do
     Call.run(
       :run,
@@ -200,12 +227,14 @@ defmodule Spectre.Operation.Executor do
     )
   end
 
+  @spec inference(term(), ExecutionContext.t()) :: {:ok, term()} | {:error, term()}
   defp inference(%InferenceRequest{} = request, context) do
     Inference.complete(context.agent, request, spectre_context(context))
   end
 
   defp inference(value, _context), do: {:error, {:invalid_cognitive_request, shape(value)}}
 
+  @spec spectre_context(ExecutionContext.t()) :: Spectre.Context.t()
   defp spectre_context(context) do
     input =
       case context.input do
@@ -227,6 +256,7 @@ defmodule Spectre.Operation.Executor do
     }
   end
 
+  @spec operation_opts(Spec.t(), ExecutionContext.t()) :: keyword()
   defp operation_opts(spec, context) do
     context.opts
     |> Keyword.put(:operation_id, spec.id)
@@ -234,10 +264,13 @@ defmodule Spectre.Operation.Executor do
     |> Keyword.put(:idempotency_key, context.attempt.idempotency_key)
   end
 
+  @spec normalize_reply(term()) :: {:ok, term()} | {:error, term()}
   defp normalize_reply({:ok, _value} = result), do: result
   defp normalize_reply({:error, _reason} = result), do: result
   defp normalize_reply(value), do: {:ok, value}
 
+  @spec classify_failure(Spec.t(), Failure.t()) ::
+          {:ambiguous, Failure.t()} | {:error, Failure.t()}
   defp classify_failure(spec, %Failure{kind: kind} = failure)
        when kind in [:timeout, :exception, :exit, :throw, :crash] and
               spec.side_effect != :none,
@@ -245,6 +278,7 @@ defmodule Spectre.Operation.Executor do
 
   defp classify_failure(_spec, failure), do: {:error, failure}
 
+  @spec classify_declared_error(Spec.t(), term()) :: {:ambiguous, term()} | {:error, term()}
   defp classify_declared_error(_spec, {:action_outcome_ambiguous, _reason} = reason),
     do: {:ambiguous, reason}
 
@@ -253,20 +287,24 @@ defmodule Spectre.Operation.Executor do
 
   defp classify_declared_error(_spec, reason), do: {:error, reason}
 
+  @spec selected_operation(term()) :: {:ok, term()} | {:error, term()}
   defp selected_operation(%{operation: operation}), do: {:ok, operation}
   defp selected_operation(%{"operation" => operation}), do: {:ok, operation}
   defp selected_operation(%Action{name: name}), do: {:ok, name}
   defp selected_operation(value) when is_atom(value) or is_binary(value), do: {:ok, value}
   defp selected_operation(value), do: {:error, {:invalid_planner_proposal, shape(value)}}
 
+  @spec domain_value(term()) :: term()
   defp domain_value(%Spectre.Inference.Response{text: text}), do: text
   defp domain_value(%{value: value}), do: value
   defp domain_value(value), do: value
 
+  @spec normalize_args(term()) :: map()
   defp normalize_args(value) when is_map(value), do: value
   defp normalize_args(nil), do: %{}
   defp normalize_args(value), do: %{value: value}
 
+  @spec portable(term(), [term()]) :: :ok | {:error, term()}
   defp portable(value, path) do
     case Spectre.Run.Value.validate(value, path) do
       :ok -> :ok
@@ -274,6 +312,7 @@ defmodule Spectre.Operation.Executor do
     end
   end
 
+  @spec shape(term()) :: atom() | {:tuple, non_neg_integer()}
   defp shape(value) when is_atom(value), do: :atom
   defp shape(value) when is_binary(value), do: :binary
   defp shape(value) when is_list(value), do: :list
