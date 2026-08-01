@@ -238,11 +238,11 @@ end
 defmodule SpectreOperationBoundaryContractTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.Instance.Ref, as: InstanceRef
-  alias Spectre.Instance.CheckpointStore
   alias Spectre.Action
   alias Spectre.Effect
   alias Spectre.Inference.Response, as: InferenceResponse
+  alias Spectre.Instance.CheckpointStore
+  alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Operation.Artifact
   alias Spectre.Operation.Attempt
   alias Spectre.Operation.Budget

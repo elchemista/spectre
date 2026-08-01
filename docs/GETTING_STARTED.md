@@ -1,8 +1,15 @@
 # Getting Started
 
-Spectre gives an Elixir application a deterministic runtime around an agent:
+This guide builds a support agent that answers questions and — the part most
+agent frameworks get wrong — deletes an account only after a deterministic
+confirmation policy passes and the host explicitly executes the effect. By the
+end you will have seen the full lifecycle: routing, policy approval, rejection,
+retries, execution, and supervised sessions.
+
+Spectre gives an Elixir application a deterministic lifecycle around an agent:
 input normalization, routing evidence, policy gates, state transitions, and an
-explicit boundary for side effects.
+explicit boundary for side effects. How the agent routes is your choice, from
+pure regex to an LLM classifier; what happens after a route is chosen never is.
 
 It does not own the application database, authorization rules, model provider,
 or business operation. Those remain ordinary Elixir modules.
@@ -105,7 +112,7 @@ defmodule MyApp.SupportAgent do
     on :TECHNICAL_SUPPORT,
       embedding: ["my integration is failing", "the API returns an error"],
       via: [:embedding, :classifier, :semantic_cache, :llm_classifier] do
-      ask(:technical_support)
+      reason(:technical_support)
     end
 
     on :DELETE_ACCOUNT,

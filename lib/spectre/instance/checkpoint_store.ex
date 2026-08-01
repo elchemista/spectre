@@ -26,6 +26,12 @@ defmodule Spectre.Instance.CheckpointStore do
 
   @optional_callbacks load: 2, compare_and_swap: 5
 
+  @doc """
+  Normalizes a user-facing store configuration into `nil` (checkpointing
+  disabled) or a canonical `{module, opts}` tuple.
+
+  Returns `{:error, {:invalid_checkpoint_store, value}}` for anything else.
+  """
   @spec normalize(config()) :: {:ok, nil | {module(), keyword()}} | {:error, term()}
   def normalize(value) when value in [nil, false], do: {:ok, nil}
 
@@ -38,6 +44,13 @@ defmodule Spectre.Instance.CheckpointStore do
 
   def normalize(value), do: {:error, {:invalid_checkpoint_store, value}}
 
+  @doc """
+  Loads the checkpoint for `ref` from a normalized store configuration.
+
+  Returns `:not_found` when checkpointing is disabled or the adapter does not
+  export `load/2`. Adapter exceptions and throws are captured and returned as
+  `{:error, term()}`; invalid adapter replies are rejected as well.
+  """
   @spec load(nil | {module(), keyword()}, Ref.t(), keyword()) ::
           :not_found | {:ok, String.t() | map()} | {:error, term()}
   def load(nil, _ref, _opts), do: :not_found
@@ -60,6 +73,13 @@ defmodule Spectre.Instance.CheckpointStore do
     kind, reason -> {:error, {:checkpoint_load_failure, module, kind, reason}}
   end
 
+  @doc """
+  Persists an encoded checkpoint through the adapter's `compare_and_swap/5`.
+
+  `expected` is the last acknowledged revision and `revision` the one being
+  written. Adapter exceptions, throws, and invalid replies are mapped to
+  `{:error, {:ambiguous, reason}}` because the write may still have committed.
+  """
   @spec persist(
           {module(), keyword()},
           Ref.t(),
@@ -95,6 +115,8 @@ defmodule Spectre.Instance.CheckpointStore do
     kind, reason -> {:error, {:ambiguous, {:checkpoint_persist_failure, module, kind, reason}}}
   end
 
+  @spec normalize_load(term(), module()) ::
+          :not_found | {:ok, String.t() | map()} | {:error, term()}
   defp normalize_load(:not_found, _module), do: :not_found
 
   defp normalize_load({:ok, value}, _module) when is_binary(value) or is_map(value),
@@ -105,6 +127,7 @@ defmodule Spectre.Instance.CheckpointStore do
   defp normalize_load(value, module),
     do: {:error, {:invalid_checkpoint_load_reply, module, value}}
 
+  @spec normalize_persist(term(), module()) :: :ok | {:error, term()}
   defp normalize_persist(:ok, _module), do: :ok
   defp normalize_persist({:ok, _receipt}, _module), do: :ok
   defp normalize_persist({:error, _reason} = error, _module), do: error

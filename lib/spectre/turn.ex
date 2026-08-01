@@ -171,6 +171,15 @@ defmodule Spectre.Turn do
     build_from_run(agent, input, opts, run, ref, nil, {:reply, nil, ref})
   end
 
+  @spec build_from_run(
+          module() | GenServer.server(),
+          term(),
+          keyword(),
+          Run.t(),
+          Ref.t(),
+          Boundary.t() | Invocation.t() | nil,
+          observable()
+        ) :: t()
   defp build_from_run(
          agent,
          _input,
@@ -197,6 +206,8 @@ defmodule Spectre.Turn do
     }
   end
 
+  @spec projection_from_result(Result.t(), decision(), Ref.t()) ::
+          {observable(), Boundary.t() | Invocation.t() | nil}
   defp projection_from_result(result, {:reply, _result}, %Ref{kind: :reply} = ref),
     do: reply_projection(result.reply_text, ref)
 
@@ -226,6 +237,7 @@ defmodule Spectre.Turn do
       else: {{:reply, nil, ref}, nil}
   end
 
+  @spec reply_projection(term(), Ref.t()) :: {{:reply, term(), Ref.t()}, Boundary.t()}
   defp reply_projection(output, ref) do
     boundary = %Boundary{
       id: ref.boundary_id,
@@ -238,6 +250,7 @@ defmodule Spectre.Turn do
     {{:reply, output, ref}, boundary}
   end
 
+  @spec result_ref(Result.t(), decision()) :: Ref.t()
   defp result_ref(%Result{} = result, decision) do
     case get_in(result.metadata, [:run, :ref]) do
       %Ref{} = ref ->
@@ -250,6 +263,7 @@ defmodule Spectre.Turn do
     end
   end
 
+  @spec legacy_result_ref(Result.t(), decision()) :: Ref.t()
   defp legacy_result_ref(%Result{} = result, decision) do
     run_id =
       get_in(result.metadata, [:run, :id]) ||
@@ -266,6 +280,8 @@ defmodule Spectre.Turn do
     Ref.new(run_id, revision, kind, boundary_id, subject_id)
   end
 
+  @spec projection_kind(Result.t(), decision()) ::
+          :reply | :policy | :invocation | :complete | :error
   defp projection_kind(result, decision) do
     cond do
       get_in(result.metadata, [:run, :status]) == :failed -> :error
@@ -279,6 +295,7 @@ defmodule Spectre.Turn do
     _exception -> fallback_decision_kind(decision)
   end
 
+  @spec projection_subject(Result.t(), decision()) :: term() | nil
   defp projection_subject(result, decision) do
     case projection_kind(result, decision) do
       :policy -> result |> Result.open_awaitable() |> Map.get(:id)
@@ -287,11 +304,13 @@ defmodule Spectre.Turn do
     end
   end
 
+  @spec fallback_decision_kind(decision()) :: :reply | :policy | :invocation | :complete
   defp fallback_decision_kind({:reply, _result}), do: :reply
   defp fallback_decision_kind({:awaiting, _awaitable, _result}), do: :policy
   defp fallback_decision_kind({:needs, _effect, _result}), do: :invocation
   defp fallback_decision_kind(_decision), do: :complete
 
+  @spec legacy_boundary_id(String.t(), non_neg_integer(), atom(), term()) :: String.t()
   defp legacy_boundary_id(run_id, revision, kind, subject_id) do
     digest =
       {run_id, revision, kind, subject_id}
@@ -302,9 +321,11 @@ defmodule Spectre.Turn do
     "legacy:" <> binary_part(digest, 0, 32)
   end
 
+  @spec logical_input(Spectre.Input.t() | String.t() | map()) :: Spectre.Input.t()
   defp logical_input(%Spectre.Input{} = input), do: Codec.logical_input(input)
   defp logical_input(input), do: input |> Spectre.Input.new() |> Codec.logical_input()
 
+  @spec logical_opts(keyword()) :: keyword()
   defp logical_opts(opts) do
     opts
     |> Keyword.take([
@@ -318,6 +339,7 @@ defmodule Spectre.Turn do
     |> Enum.filter(fn {_key, value} -> match?(:ok, Value.validate(value)) end)
   end
 
+  @spec logical_subject(term()) :: term() | nil
   defp logical_subject(subject) do
     case Value.validate(subject) do
       :ok -> subject
@@ -325,6 +347,7 @@ defmodule Spectre.Turn do
     end
   end
 
+  @spec valid_result_ref?(Result.t(), Ref.t(), atom()) :: boolean()
   defp valid_result_ref?(%Result{} = result, %Ref{} = ref, expected_kind) do
     run_id = get_in(result.metadata, [:run, :id])
     revision = get_in(result.metadata, [:run, :revision])
@@ -334,14 +357,17 @@ defmodule Spectre.Turn do
       optional_identity_matches?(revision, ref.revision)
   end
 
+  @spec valid_ref_shape?(Ref.t(), atom()) :: boolean()
   defp valid_ref_shape?(%Ref{} = ref, expected_kind) do
     nonempty_binary?(ref.run_id) and nonempty_binary?(ref.boundary_id) and
       is_integer(ref.revision) and ref.revision >= 0 and ref.kind == expected_kind and
       (is_nil(ref.subject_id) or is_binary(ref.subject_id))
   end
 
+  @spec nonempty_binary?(term()) :: boolean()
   defp nonempty_binary?(value), do: is_binary(value) and value != ""
 
+  @spec optional_identity_matches?(term(), term()) :: boolean()
   defp optional_identity_matches?(nil, _expected), do: true
   defp optional_identity_matches?(value, expected), do: value == expected
 end

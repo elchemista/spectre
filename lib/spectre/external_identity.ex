@@ -128,6 +128,7 @@ defmodule Spectre.ExternalIdentity do
     end
   end
 
+  @spec principal(map()) :: term() | nil
   defp principal(attrs) do
     value(
       attrs,
@@ -136,6 +137,8 @@ defmodule Spectre.ExternalIdentity do
     )
   end
 
+  @spec opaque_identity_id!(atom() | String.t(), atom() | String.t(), term(), term()) ::
+          String.t()
   defp opaque_identity_id!(provider, channel, endpoint, principal) do
     value = {provider, channel, endpoint, principal}
 
@@ -148,6 +151,7 @@ defmodule Spectre.ExternalIdentity do
     end
   end
 
+  @spec proof_ref!(term()) :: String.t() | nil
   defp proof_ref!(nil), do: nil
 
   defp proof_ref!(value) do
@@ -160,13 +164,16 @@ defmodule Spectre.ExternalIdentity do
     end
   end
 
+  @spec value(map(), atom(), term()) :: term()
   defp value(map, key, default \\ nil) do
     Map.get(map, key, Map.get(map, Atom.to_string(key), default))
   end
 
+  @spec validate_id(term()) :: :ok | {:error, {:invalid_external_identity_id, term()}}
   defp validate_id(id) when is_binary(id) and id != "", do: :ok
   defp validate_id(id), do: {:error, {:invalid_external_identity_id, id}}
 
+  @spec validate_namespace(:provider | :channel, term()) :: :ok | {:error, term()}
   defp validate_namespace(_kind, value) when is_atom(value) and not is_nil(value), do: :ok
   defp validate_namespace(_kind, value) when is_binary(value) and value != "", do: :ok
 
@@ -178,17 +185,23 @@ defmodule Spectre.ExternalIdentity do
     {:error, {:invalid_external_identity_channel, value}}
   end
 
+  @spec validate_authenticated_at(term()) ::
+          :ok | {:error, {:invalid_external_identity_authentication, term()}}
   defp validate_authenticated_at(value) when is_integer(value) and value >= 0, do: :ok
 
   defp validate_authenticated_at(value),
     do: {:error, {:invalid_external_identity_authentication, value}}
 
+  @spec validate_proof_ref(term()) ::
+          :ok | {:error, {:invalid_external_identity_proof_ref, term()}}
   defp validate_proof_ref(nil), do: :ok
   defp validate_proof_ref(value) when is_binary(value) and value != "", do: :ok
 
   defp validate_proof_ref(value),
     do: {:error, {:invalid_external_identity_proof_ref, value}}
 
+  @spec validate_metadata(term()) ::
+          :ok | {:error, {:invalid_external_identity_metadata, term()}}
   defp validate_metadata(metadata) when is_map(metadata), do: :ok
 
   defp validate_metadata(metadata),

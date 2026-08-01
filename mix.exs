@@ -5,6 +5,7 @@ defmodule Spectre.MixProject do
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
+    "SYSTEM.md",
     "CHANGELOG.md",
     "docs/GETTING_STARTED.md",
     "docs/ARCHITECTURE.md",
@@ -46,7 +47,8 @@ defmodule Spectre.MixProject do
       description: description(),
       package: package(),
       dialyzer: [
-        plt_add_apps: [:mix]
+        plt_add_apps: [:mix],
+        flags: [:no_opaque]
       ],
       docs: docs(),
       source_url: @source_url,
@@ -69,7 +71,8 @@ defmodule Spectre.MixProject do
     [
       name: "spectre",
       maintainers: ["elchemista"],
-      files: ~w(lib docs mix.exs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
+      files:
+        ~w(lib docs mix.exs README.md SYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url}
     ]
@@ -81,7 +84,8 @@ defmodule Spectre.MixProject do
       {:vettore, "~> 0.3.2"},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:stream_data, "~> 1.4", only: :test, runtime: false}
     ] ++ real_embedding_test_deps()
   end
 
@@ -116,6 +120,7 @@ defmodule Spectre.MixProject do
       groups_for_extras: [
         "Start here": [
           "README.md",
+          "SYSTEM.md",
           "docs/GETTING_STARTED.md",
           "docs/INSTALLATION.md"
         ],

@@ -20,9 +20,19 @@ env:
 
 jobs:
   quality:
-    name: Format, compile, test, Credo
+    name: Quality (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.19.x"
+            otp: "28.x"
+            test_args: ""
+          - elixir: "1.20.x"
+            otp: "29.x"
+            test_args: "--cover"
     env:
       MIX_ENV: test
     steps:
@@ -35,8 +45,8 @@ jobs:
         id: beam
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
 
       - name: Restore quality build cache
         uses: actions/cache@v6
@@ -56,7 +66,7 @@ jobs:
         run: mix compile --warnings-as-errors
 
       - name: Run tests
-        run: mix test
+        run: mix test ${{ matrix.test_args }}
 
       - name: Run Credo
         run: mix credo

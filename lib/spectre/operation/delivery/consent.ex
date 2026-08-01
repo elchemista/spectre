@@ -18,7 +18,13 @@ defmodule Spectre.Operation.Delivery.Consent do
 
   @type t :: %__MODULE__{}
 
-  @spec new(map() | keyword()) :: t()
+  @doc """
+  Builds a validated consent from a struct, map or keyword list.
+
+  Missing `id` and `granted_at` default to a fresh UUIDv7 and the current time.
+  Raises `ArgumentError` when the resulting consent is invalid.
+  """
+  @spec new(t() | map() | keyword()) :: t()
   def new(%__MODULE__{} = consent), do: validate!(consent)
   def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
 
@@ -38,6 +44,10 @@ defmodule Spectre.Operation.Delivery.Consent do
     validate!(consent)
   end
 
+  @doc """
+  Returns `true` when the consent is neither revoked nor expired at `now`
+  (milliseconds); `false` otherwise, including for a non-integer `now`.
+  """
   @spec active?(t(), non_neg_integer()) :: boolean()
   def active?(%__MODULE__{} = consent, now) when is_integer(now) and now >= 0 do
     is_nil(consent.revoked_at) and
@@ -46,6 +56,12 @@ defmodule Spectre.Operation.Delivery.Consent do
 
   def active?(%__MODULE__{}, _now), do: false
 
+  @doc """
+  Revokes the consent at `at` (milliseconds), returning the updated consent.
+
+  Idempotent: an already revoked consent is returned unchanged. Raises
+  `ArgumentError` when the revocation time precedes the grant time.
+  """
   @spec revoke(t(), non_neg_integer()) :: t()
   def revoke(consent, at \\ System.system_time(:millisecond))
 
@@ -57,6 +73,11 @@ defmodule Spectre.Operation.Delivery.Consent do
     %{consent | revoked_at: at} |> validate!()
   end
 
+  @doc """
+  Validates the consent's identity, timestamps, channels and portability.
+
+  Returns `:ok`, or `{:error, reason}` naming the first invalid field.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = consent) do
     cond do
@@ -95,6 +116,7 @@ defmodule Spectre.Operation.Delivery.Consent do
     end
   end
 
+  @spec validate!(t()) :: t()
   defp validate!(consent) do
     case validate(consent) do
       :ok -> consent
@@ -102,6 +124,7 @@ defmodule Spectre.Operation.Delivery.Consent do
     end
   end
 
+  @spec attr(map(), atom(), term()) :: term()
   defp attr(map, key, default \\ nil),
     do: Map.get(map, key, default)
 end

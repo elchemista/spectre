@@ -10,8 +10,8 @@ defmodule Spectre.Operation.Runner do
   use GenServer
 
   alias Spectre.Operation.Attempt
-  alias Spectre.Operation.ExecutionContext
   alias Spectre.Operation.Execution
+  alias Spectre.Operation.ExecutionContext
   alias Spectre.Operation.Executor
   alias Spectre.Operation.Progress
   alias Spectre.Operation.Request

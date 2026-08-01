@@ -298,11 +298,9 @@ defmodule Spectre.Action do
 
   @spec compact_payload(map()) :: map()
   defp compact_payload(payload) do
-    Map.reject(payload, fn
-      {_key, nil} -> true
-      {_key, []} -> true
-      {_key, %{}} -> true
-      _entry -> false
+    # `%{}` as a pattern matches any map, so empty maps need an equality check.
+    Map.reject(payload, fn {_key, value} ->
+      is_nil(value) or value == [] or value == %{}
     end)
   end
 

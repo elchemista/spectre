@@ -213,7 +213,7 @@ flow :sales do
     regex: ~r/\b(quote|estimate|proposal)\b/i,
     embedding: ["can you estimate this project?", "send me a proposal"],
     learn: true do
-    ask(:quote_request)
+    reason(:quote_request)
   end
 end
 ```
@@ -310,7 +310,7 @@ on :PRICING, regex: ~r/\bprice\b/i do
 end
 
 on :SMART_TURN, learn: true do
-  ask(:smart_turn_prompt, temperature: 0.2)
+  reason(:smart_turn_prompt, temperature: 0.2)
 end
 
 on :CREATE_PROJECT, regex: ~r/\bstart project\b/i do
@@ -422,7 +422,7 @@ With:
 use Spectre.Agent, prompt_root: "priv/agents/support/prompts"
 ```
 
-`ask(:technical_support)` resolves:
+`reason(:technical_support)` resolves:
 
 ```text
 priv/agents/support/prompts/technical_support.text.heex

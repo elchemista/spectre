@@ -62,6 +62,13 @@ defmodule Spectre.Operation.Definition do
           metadata: map()
         }
 
+  @doc """
+  Builds a validated definition from a struct, map or keyword list.
+
+  Operation entries are normalized into a map of `Spec.t()` keyed by
+  operation id. Raises `ArgumentError` on invalid attributes or duplicate
+  operation ids.
+  """
   @spec new(t() | map() | keyword()) :: t()
   def new(%__MODULE__{} = definition), do: validate!(definition)
   def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
@@ -94,6 +101,13 @@ defmodule Spectre.Operation.Definition do
     |> validate!()
   end
 
+  @doc """
+  Resolves the definition exposed by a controller module, trying
+  `__spectre_loop_definition__/0` first and then `definition/0`.
+
+  Any raise or throw from the controller is captured and returned as a
+  tagged `{:error, reason}` tuple, never propagated.
+  """
   @spec load(module()) :: {:ok, t()} | {:error, term()}
   def load(controller) when is_atom(controller) and not is_nil(controller) do
     cond do
@@ -117,6 +131,11 @@ defmodule Spectre.Operation.Definition do
       {:error, {:operational_controller_definition_failure, controller, kind, reason}}
   end
 
+  @doc """
+  Fetches the registered operation spec for `id`.
+
+  Returns `{:ok, spec}` or `{:error, {:operation_not_registered, id}}`.
+  """
   @spec operation(t(), atom() | String.t()) :: {:ok, Spec.t()} | {:error, term()}
   def operation(%__MODULE__{operations: operations}, id) do
     case Map.fetch(operations, id) do
@@ -125,6 +144,14 @@ defmodule Spectre.Operation.Definition do
     end
   end
 
+  @doc """
+  Decides whether a stored checkpoint contract is compatible with the
+  current one.
+
+  Equal contracts are always compatible; otherwise the controller's optional
+  `checkpoint_compatible?/2` is consulted. Any crash in the callback counts
+  as incompatible.
+  """
   @spec compatible?(module(), term(), term()) :: boolean()
   def compatible?(controller, stored, current) do
     cond do
@@ -143,6 +170,12 @@ defmodule Spectre.Operation.Definition do
     _kind, _reason -> false
   end
 
+  @doc """
+  Checks every invariant of the definition, including portability of its
+  declarative data and validity of every registered operation spec.
+
+  Returns `:ok` or `{:error, reason}` naming the first violated invariant.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = definition) do
     cond do
@@ -210,6 +243,10 @@ defmodule Spectre.Operation.Definition do
     end
   end
 
+  @doc """
+  Same as `validate/1` but returns the definition on success and raises
+  `ArgumentError` on failure.
+  """
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = definition) do
     case validate(definition) do
@@ -218,6 +255,7 @@ defmodule Spectre.Operation.Definition do
     end
   end
 
+  @spec normalize_loaded(module(), term()) :: {:ok, t()} | {:error, term()}
   defp normalize_loaded(_controller, %__MODULE__{} = definition), do: {:ok, new(definition)}
 
   defp normalize_loaded(_controller, value) when is_map(value) or is_list(value),
@@ -226,6 +264,7 @@ defmodule Spectre.Operation.Definition do
   defp normalize_loaded(controller, value),
     do: {:error, {:invalid_operational_controller_definition, controller, value}}
 
+  @spec normalize_operations(list() | map()) :: %{optional(atom() | String.t()) => Spec.t()}
   defp normalize_operations(operations) when is_list(operations) do
     operations
     |> Enum.map(&Spec.new/1)
@@ -256,6 +295,7 @@ defmodule Spectre.Operation.Definition do
     end)
   end
 
+  @spec normalize_branches(term()) :: term()
   defp normalize_branches(nil), do: %{}
 
   defp normalize_branches(value) when is_list(value),
@@ -267,6 +307,7 @@ defmodule Spectre.Operation.Definition do
 
   defp normalize_branches(value), do: value
 
+  @spec validate_operations(%{optional(atom() | String.t()) => term()}) :: :ok | {:error, term()}
   defp validate_operations(operations) do
     Enum.reduce_while(operations, :ok, fn
       {id, %Spec{id: id} = spec}, :ok ->
@@ -280,14 +321,17 @@ defmodule Spectre.Operation.Definition do
     end)
   end
 
+  @spec valid_id?(term()) :: boolean()
   defp valid_id?(value) when is_atom(value), do: not is_nil(value)
   defp valid_id?(value) when is_binary(value), do: value != ""
   defp valid_id?(_value), do: false
 
+  @spec valid_version?(term()) :: boolean()
   defp valid_version?(value) when is_integer(value), do: value > 0
   defp valid_version?(value) when is_binary(value), do: value != ""
   defp valid_version?(_value), do: false
 
+  @spec valid_branches?(term(), map(), [atom() | String.t()]) :: boolean()
   defp valid_branches?(branches, operations, imports) when is_map(branches) do
     known = MapSet.new(Map.keys(operations) ++ imports)
 
@@ -299,6 +343,7 @@ defmodule Spectre.Operation.Definition do
 
   defp valid_branches?(_branches, _operations, _imports), do: false
 
+  @spec valid_imports?(term(), map()) :: boolean()
   defp valid_imports?(imports, operations) when is_list(imports) do
     Enum.all?(imports, &valid_id?/1) and Enum.uniq(imports) == imports and
       Enum.all?(imports, &(not Map.has_key?(operations, &1)))
@@ -306,14 +351,17 @@ defmodule Spectre.Operation.Definition do
 
   defp valid_imports?(_imports, _operations), do: false
 
+  @spec valid_ids?(term()) :: boolean()
   defp valid_ids?(values),
     do: is_list(values) and Enum.all?(values, &valid_id?/1) and Enum.uniq(values) == values
 
+  @spec valid_atom_ids?(term()) :: boolean()
   defp valid_atom_ids?(values),
     do:
       is_list(values) and Enum.all?(values, &(is_atom(&1) and not is_nil(&1))) and
         Enum.uniq(values) == values
 
+  @spec valid_update_fields?(term()) :: boolean()
   defp valid_update_fields?(fields) when is_list(fields) do
     Enum.uniq(fields) == fields and
       Enum.all?(fields, fn
@@ -324,11 +372,13 @@ defmodule Spectre.Operation.Definition do
 
   defp valid_update_fields?(_fields), do: false
 
+  @spec valid_start_capabilities?(term()) :: boolean()
   defp valid_start_capabilities?(capabilities) when is_list(capabilities),
     do: Enum.uniq(capabilities) == capabilities and Enum.all?(capabilities, &(&1 == :work))
 
   defp valid_start_capabilities?(_capabilities), do: false
 
+  @spec valid_security?(term()) :: boolean()
   defp valid_security?(security) when is_map(security) do
     allowed_origins = attr(security, :allowed_origins, [])
     allowed_destinations = attr(security, :allowed_destinations, [])
@@ -350,6 +400,7 @@ defmodule Spectre.Operation.Definition do
 
   defp valid_security?(_security), do: false
 
+  @spec valid_artifact_policy?(term()) :: boolean()
   defp valid_artifact_policy?(policy) when is_map(policy) do
     allowed_kinds = attr(policy, :allowed_kinds, [])
     max_count = attr(policy, :max_count, 256)
@@ -369,6 +420,7 @@ defmodule Spectre.Operation.Definition do
 
   defp valid_artifact_policy?(_policy), do: false
 
+  @spec valid_validator?(term()) :: boolean()
   defp valid_validator?(nil), do: true
 
   defp valid_validator?(validator)
@@ -381,6 +433,7 @@ defmodule Spectre.Operation.Definition do
   defp valid_validator?(module) when is_atom(module), do: true
   defp valid_validator?(_validator), do: false
 
+  @spec portable_definition_data(t()) :: :ok | {:error, term()}
   defp portable_definition_data(definition) do
     value = %{
       checkpoint: definition.checkpoint,
@@ -401,9 +454,11 @@ defmodule Spectre.Operation.Definition do
     end
   end
 
+  @spec attr(map(), atom(), term()) :: term()
   defp attr(map, key, default \\ nil),
     do: Map.get(map, key, default)
 
+  @spec compatible_trigger_correlation?(term(), term()) :: boolean()
   defp compatible_trigger_correlation?(_policy, nil), do: true
   defp compatible_trigger_correlation?(nil, _required?), do: true
   defp compatible_trigger_correlation?(:required, true), do: true

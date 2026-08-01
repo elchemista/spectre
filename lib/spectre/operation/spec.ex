@@ -56,6 +56,13 @@ defmodule Spectre.Operation.Spec do
           metadata: map()
         }
 
+  @doc """
+  Builds a validated spec from a struct, map or keyword list.
+
+  Missing fields fall back to defaults (`kind: :function`, `timeout: 30_000`,
+  a kind-dependent `side_effect`). Raises `ArgumentError` when the resulting
+  spec is invalid.
+  """
   @spec new(t() | map() | keyword()) :: t()
   def new(%__MODULE__{} = spec), do: validate!(spec)
   def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
@@ -83,6 +90,13 @@ defmodule Spectre.Operation.Spec do
     |> validate!()
   end
 
+  @doc """
+  Checks every invariant of the spec, including that its portable contract
+  fields survive checkpoint serialization.
+
+  Returns `:ok` or `{:error, reason}` with a tagged tuple naming the first
+  violated invariant.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = spec) do
     cond do
@@ -155,6 +169,10 @@ defmodule Spectre.Operation.Spec do
     end
   end
 
+  @doc """
+  Same as `validate/1` but returns the spec on success and raises
+  `ArgumentError` on failure.
+  """
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = spec) do
     case validate(spec) do
@@ -163,6 +181,7 @@ defmodule Spectre.Operation.Spec do
     end
   end
 
+  @spec valid_executor?(%__MODULE__{}) :: boolean()
   defp valid_executor?(%__MODULE__{kind: kind, executor: executor})
        when kind in [:function, :cognitive, :planner],
        do: valid_executor_ref?(executor, false)
@@ -173,6 +192,7 @@ defmodule Spectre.Operation.Spec do
   defp valid_executor?(%__MODULE__{kind: :effect, executor: executor}),
     do: is_nil(executor) or valid_executor_ref?(executor, false)
 
+  @spec valid_executor_ref?(term(), boolean()) :: boolean()
   defp valid_executor_ref?(nil, optional?), do: optional?
 
   defp valid_executor_ref?({module, function}, _optional?),
@@ -181,6 +201,7 @@ defmodule Spectre.Operation.Spec do
   defp valid_executor_ref?(module, _optional?) when is_atom(module), do: true
   defp valid_executor_ref?(_value, _optional?), do: false
 
+  @spec valid_validator?(term()) :: boolean()
   defp valid_validator?(nil), do: true
 
   defp valid_validator?(validator)
@@ -189,17 +210,21 @@ defmodule Spectre.Operation.Spec do
 
   defp valid_validator?(validator), do: valid_executor_ref?(validator, false)
 
+  @spec valid_policy?(term()) :: boolean()
   defp valid_policy?(:registered), do: true
   defp valid_policy?(value), do: valid_executor_ref?(value, false)
 
+  @spec valid_id?(term()) :: boolean()
   defp valid_id?(value) when is_atom(value), do: not is_nil(value)
   defp valid_id?(value) when is_binary(value), do: value != ""
   defp valid_id?(_value), do: false
 
+  @spec default_side_effect(atom()) :: :non_idempotent | :none
   defp default_side_effect(:action), do: :non_idempotent
   defp default_side_effect(:effect), do: :non_idempotent
   defp default_side_effect(_kind), do: :none
 
+  @spec validate_portable_contract(%__MODULE__{}) :: :ok | {:error, term()}
   defp validate_portable_contract(spec) do
     contract = %{
       id: spec.id,
@@ -218,6 +243,7 @@ defmodule Spectre.Operation.Spec do
     end
   end
 
+  @spec attr(map(), atom(), term()) :: term()
   defp attr(map, key, default \\ nil),
     do: Map.get(map, key, default)
 end

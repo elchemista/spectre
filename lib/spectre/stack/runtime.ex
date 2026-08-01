@@ -122,16 +122,19 @@ defmodule Spectre.Stack.Runtime do
           [{term(), Supervisor.child_spec()}]
         ) :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
   defp normalize_installation_specs(definition, installation, specs) do
-    Enum.reduce_while(specs, {:ok, []}, fn {resource_id, child_spec}, {:ok, acc} ->
-      with :ok <- declared_resource(installation, resource_id),
-           {:ok, ref} <- Definition.resolve(definition, :resource, resource_id),
-           :ok <- owned_ref(installation, ref),
-           {:ok, normalized} <- normalize_child_spec(child_spec, ref) do
-        {:cont, {:ok, acc ++ [normalized]}}
-      else
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+    result =
+      Enum.reduce_while(specs, {:ok, []}, fn {resource_id, child_spec}, {:ok, acc} ->
+        with :ok <- declared_resource(installation, resource_id),
+             {:ok, ref} <- Definition.resolve(definition, :resource, resource_id),
+             :ok <- owned_ref(installation, ref),
+             {:ok, normalized} <- normalize_child_spec(child_spec, ref) do
+          {:cont, {:ok, [normalized | acc]}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    with {:ok, specs} <- result, do: {:ok, Enum.reverse(specs)}
   end
 
   @spec declared_resource(Installation.t(), term()) :: :ok | {:error, term()}

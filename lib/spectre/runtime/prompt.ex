@@ -237,12 +237,15 @@ defmodule Spectre.Prompt do
   @spec resolve_operations(module(), [Operation.t()], Spectre.Context.t() | map(), keyword()) ::
           {:ok, [Plan.resolution()]} | {:error, term()}
   defp resolve_operations(agent, operations, ctx, opts) do
-    Enum.reduce_while(operations, {:ok, []}, fn operation, {:ok, resolutions} ->
-      case resolve_operation(agent, operation, ctx, opts) do
-        {:ok, resolution} -> {:cont, {:ok, resolutions ++ [resolution]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+    result =
+      Enum.reduce_while(operations, {:ok, []}, fn operation, {:ok, resolutions} ->
+        case resolve_operation(agent, operation, ctx, opts) do
+          {:ok, resolution} -> {:cont, {:ok, [resolution | resolutions]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    with {:ok, resolutions} <- result, do: {:ok, Enum.reverse(resolutions)}
   end
 
   @spec resolve_operation(module(), Operation.t(), Spectre.Context.t() | map(), keyword()) ::

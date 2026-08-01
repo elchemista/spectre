@@ -54,8 +54,6 @@ defmodule Spectre.Classifier.Math do
   defp average(vectors) do
     count = length(vectors)
 
-    vectors
-    |> Enum.zip_with(fn values -> Enum.sum(values) / count end)
-    |> Enum.map(&(&1 / 1))
+    Enum.zip_with(vectors, fn values -> Enum.sum(values) / count end)
   end
 end

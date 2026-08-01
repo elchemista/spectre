@@ -9,10 +9,10 @@ defmodule Spectre.Operation.Loop do
   alias Spectre.Operation.Attempt
   alias Spectre.Operation.Budget
   alias Spectre.Operation.Outcome
-  alias Spectre.Operation.Update
-  alias Spectre.Operation.Wait
   alias Spectre.Operation.Request
   alias Spectre.Operation.Result
+  alias Spectre.Operation.Update
+  alias Spectre.Operation.Wait
 
   @schema_version 1
   @kinds [:work, :vigil, :directive]
@@ -168,20 +168,38 @@ defmodule Spectre.Operation.Loop do
           metadata: map()
         }
 
+  @doc """
+  Returns `true` when the loop has reached terminal status with a committed
+  outcome.
+  """
   @spec terminal?(t()) :: boolean()
   def terminal?(%__MODULE__{status: :terminal, outcome: %Outcome{}}), do: true
   def terminal?(%__MODULE__{}), do: false
 
+  @doc """
+  Returns `true` when no fenced Attempt is in flight, i.e. no temporary
+  Runner exists for this loop.
+  """
   @spec quiescent?(t()) :: boolean()
   def quiescent?(%__MODULE__{attempt: nil}), do: true
   def quiescent?(%__MODULE__{}), do: false
 
+  @doc """
+  Returns `true` when the loop may start a new attempt: it is quiescent,
+  has no outcome, and sits in `:queued`, `:evaluating` or `:reconciling`.
+  """
   @spec runnable?(t()) :: boolean()
   def runnable?(%__MODULE__{status: status, attempt: nil, outcome: nil}),
     do: status in [:queued, :evaluating, :reconciling]
 
   def runnable?(%__MODULE__{}), do: false
 
+  @doc """
+  Bumps the revision and refreshes `updated_at`.
+
+  Accepts `:at` (milliseconds) to override the timestamp; defaults to the
+  current system time.
+  """
   @spec touch(t(), keyword()) :: t()
   def touch(%__MODULE__{} = loop, opts \\ []) do
     %{
@@ -191,6 +209,13 @@ defmodule Spectre.Operation.Loop do
     }
   end
 
+  @doc """
+  Checks every invariant of the checkpoint envelope: status/field coherence,
+  identity, counters, timestamps, collection limits, nested structs and
+  portability of the whole value.
+
+  Returns `:ok` or `{:error, reason}` naming the first violated invariant.
+  """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = loop) do
     cond do
@@ -286,6 +311,7 @@ defmodule Spectre.Operation.Loop do
     end
   end
 
+  @spec validate_nested(%__MODULE__{}) :: :ok | {:error, term()}
   defp validate_nested(loop) do
     with :ok <- Budget.validate(loop.budget),
          :ok <- validate_optional(loop.attempt, &Attempt.validate/1, :attempt),
@@ -301,6 +327,8 @@ defmodule Spectre.Operation.Loop do
     end
   end
 
+  @spec validate_optional(term(), (term() -> :ok | {:error, term()}), atom()) ::
+          :ok | {:error, term()}
   defp validate_optional(nil, _validator, _field), do: :ok
 
   defp validate_optional(value, validator, field) do
@@ -312,6 +340,7 @@ defmodule Spectre.Operation.Loop do
     FunctionClauseError -> {:error, {:invalid_operational_loop_field, field}}
   end
 
+  @spec validate_updates([term()]) :: :ok | {:error, term()}
   defp validate_updates(updates) do
     ids =
       Enum.map(updates, fn
@@ -335,6 +364,7 @@ defmodule Spectre.Operation.Loop do
     end
   end
 
+  @spec validate_update_consistency(%__MODULE__{}) :: :ok | {:error, term()}
   defp validate_update_consistency(%__MODULE__{updates: [], last_update: nil}), do: :ok
 
   defp validate_update_consistency(%__MODULE__{updates: [latest | _], last_update: latest}),
@@ -343,6 +373,7 @@ defmodule Spectre.Operation.Loop do
   defp validate_update_consistency(%__MODULE__{}),
     do: {:error, :operational_loop_last_update_mismatch}
 
+  @spec validate_attempt_consistency(%__MODULE__{}) :: :ok | {:error, term()}
   defp validate_attempt_consistency(%__MODULE__{attempt: nil}), do: :ok
 
   defp validate_attempt_consistency(%__MODULE__{attempt: attempt} = loop) do
@@ -377,17 +408,21 @@ defmodule Spectre.Operation.Loop do
     end
   end
 
+  @spec valid_identity?(%__MODULE__{}) :: boolean()
   defp valid_identity?(loop) do
     Enum.all?([loop.id, loop.subject_id, loop.correlation_id], &(is_binary(&1) and &1 != "")) and
       (is_nil(loop.causation_id) or (is_binary(loop.causation_id) and loop.causation_id != ""))
   end
 
+  @spec valid_version?(term()) :: boolean()
   defp valid_version?(value),
     do: (is_integer(value) and value > 0) or (is_binary(value) and value != "")
 
+  @spec valid_name?(term()) :: boolean()
   defp valid_name?(value),
     do: (is_atom(value) and not is_nil(value)) or (is_binary(value) and value != "")
 
+  @spec valid_counters?(%__MODULE__{}) :: boolean()
   defp valid_counters?(loop) do
     Enum.all?(
       [
@@ -404,12 +439,14 @@ defmodule Spectre.Operation.Loop do
     )
   end
 
+  @spec valid_timestamps?(%__MODULE__{}) :: boolean()
   defp valid_timestamps?(loop) do
     is_integer(loop.created_at) and loop.created_at >= 0 and is_integer(loop.updated_at) and
       loop.updated_at >= loop.created_at and
       (is_nil(loop.expires_at) or (is_integer(loop.expires_at) and loop.expires_at >= 0))
   end
 
+  @spec valid_collections?(%__MODULE__{}) :: boolean()
   defp valid_collections?(loop) do
     is_list(loop.updates) and length(loop.updates) <= @update_limit and
       is_list(loop.invalidations) and length(loop.invalidations) <= @invalidation_limit and

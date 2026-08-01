@@ -1,5 +1,12 @@
 defmodule Spectre.Run.Codec do
-  @moduledoc false
+  @moduledoc """
+  Serializes a `Spectre.Run` to and from its portable checkpoint binary.
+
+  Encoding projects the run down to its logical, transport-safe form (raw
+  input, PIDs, refs, and functions are dropped) and wraps it in a versioned
+  envelope. Decoding validates the envelope, the run shape, and the lifecycle
+  invariants of the checkpointed boundary before returning the run.
+  """
 
   alias Spectre.Awaitable
   alias Spectre.Effect
@@ -15,10 +22,21 @@ defmodule Spectre.Run.Codec do
   alias Spectre.Run.Value
   alias Spectre.State
 
+  # A decoded run whose fields have not been validated yet: the struct is
+  # guaranteed, the field types are not, so validators must not assume Run.t().
+  @typep raw_run :: %Run{}
+
   @format "spectre/run"
   @version 1
   @default_max_bytes 2_000_000
 
+  @doc """
+  Encodes a run into a deterministic, versioned checkpoint binary.
+
+  The run is validated before encoding and the resulting binary is rejected
+  with `{:error, {:run_checkpoint_too_large, size, max}}` when it exceeds
+  `:max_bytes` (default #{@default_max_bytes}).
+  """
   @spec encode(Run.t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def encode(%Run{} = run, opts) when is_list(opts) do
     max_bytes = max_bytes(opts)
@@ -43,6 +61,13 @@ defmodule Spectre.Run.Codec do
     exception -> {:error, {:run_checkpoint_encode_failed, exception.__struct__}}
   end
 
+  @doc """
+  Decodes a checkpoint binary produced by `encode/2` back into a `Spectre.Run`.
+
+  Enforces the size limit, rejects compressed or unknown envelopes, and
+  revalidates the run's shape and lifecycle invariants, so an untrusted
+  checkpoint can never yield an inconsistent run.
+  """
   @spec decode(binary(), keyword()) :: {:ok, Run.t()} | {:error, term()}
   def decode(binary, opts) when is_binary(binary) and is_list(opts) do
     max_bytes = max_bytes(opts)
@@ -58,6 +83,7 @@ defmodule Spectre.Run.Codec do
     end
   end
 
+  @spec checkpoint_projection(Run.t()) :: Run.t()
   defp checkpoint_projection(%Run{} = run) do
     input = checkpoint_input(run.input)
     result = checkpoint_result(run.result, input)
@@ -76,8 +102,10 @@ defmodule Spectre.Run.Codec do
     }
   end
 
+  @spec checkpoint_input(Input.t()) :: Input.t()
   defp checkpoint_input(%Input{} = input), do: logical_input(input)
 
+  @spec checkpoint_source(Source.t() | nil) :: Source.t() | nil
   defp checkpoint_source(nil), do: nil
 
   defp checkpoint_source(%Source{} = source) do
@@ -91,6 +119,7 @@ defmodule Spectre.Run.Codec do
     }
   end
 
+  @spec checkpoint_result(Result.t() | nil, Input.t()) :: Result.t() | nil
   defp checkpoint_result(nil, _input), do: nil
 
   defp checkpoint_result(%Result{} = result, input) do
@@ -102,6 +131,7 @@ defmodule Spectre.Run.Codec do
     }
   end
 
+  @spec route_projection(Route.t() | map() | term()) :: Route.t() | nil
   defp route_projection(nil), do: nil
 
   defp route_projection(%Route{} = route) do
@@ -124,6 +154,7 @@ defmodule Spectre.Run.Codec do
 
   defp route_projection(_route), do: nil
 
+  @spec portable_metadata(term()) :: map()
   defp portable_metadata(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, item}, acc ->
       with {:ok, projected_key} <- portable_projection(key),
@@ -137,6 +168,7 @@ defmodule Spectre.Run.Codec do
 
   defp portable_metadata(_value), do: %{}
 
+  @spec identity_value(term()) :: term() | nil
   defp identity_value(value) do
     case Value.validate(value, [:source_identity]) do
       :ok -> value
@@ -144,6 +176,7 @@ defmodule Spectre.Run.Codec do
     end
   end
 
+  @spec portable_projection(term()) :: {:ok, term()} | :drop
   defp portable_projection(value)
        when is_pid(value) or is_port(value) or is_reference(value) or is_function(value),
        do: :drop
@@ -181,11 +214,14 @@ defmodule Spectre.Run.Codec do
   defp portable_projection(value) when is_map(value), do: {:ok, portable_metadata(value)}
   defp portable_projection(value), do: {:ok, value}
 
+  @spec validate_binary_size(binary(), pos_integer()) ::
+          :ok | {:error, {:run_checkpoint_too_large, non_neg_integer(), pos_integer()}}
   defp validate_binary_size(binary, max_bytes) when byte_size(binary) <= max_bytes, do: :ok
 
   defp validate_binary_size(binary, max_bytes),
     do: {:error, {:run_checkpoint_too_large, byte_size(binary), max_bytes}}
 
+  @spec decode_term(binary()) :: {:ok, term()} | {:error, term()}
   defp decode_term(<<131, 80, _compressed::binary>>),
     do: {:error, :compressed_run_checkpoint_not_supported}
 
@@ -195,6 +231,7 @@ defmodule Spectre.Run.Codec do
     _exception -> {:error, :invalid_run_checkpoint}
   end
 
+  @spec decode_envelope(term()) :: {:ok, term()} | {:error, term()}
   defp decode_envelope(%{"format" => @format, "version" => @version, "run" => encoded_run}),
     do: {:ok, encoded_run}
 
@@ -203,6 +240,7 @@ defmodule Spectre.Run.Codec do
 
   defp decode_envelope(_envelope), do: {:error, :invalid_run_checkpoint}
 
+  @spec validate_run(term()) :: :ok | {:error, term()}
   defp validate_run(%Run{run_version: @version} = run) do
     with :ok <- validate_run_shape(run), do: validate_run_invariants(run)
   end
@@ -212,6 +250,7 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run(_run), do: {:error, :invalid_run}
 
+  @spec validate_run_shape(raw_run()) :: :ok | {:error, term()}
   defp validate_run_shape(%Run{input: %Input{}, state: %State{}} = run) do
     with :ok <- validate_run_identity(run),
          :ok <- validate_run_position(run),
@@ -223,6 +262,7 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run_shape(_run), do: {:error, :invalid_run}
 
+  @spec validate_run_identity(raw_run()) :: :ok | {:error, :invalid_run_identity}
   defp validate_run_identity(%Run{id: id, agent: agent, trace_id: trace_id})
        when is_binary(id) and id != "" and is_atom(agent) and not is_nil(agent) and
               is_binary(trace_id) and trace_id != "",
@@ -230,6 +270,7 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run_identity(_run), do: {:error, :invalid_run_identity}
 
+  @spec validate_run_position(raw_run()) :: :ok | {:error, :invalid_run_position}
   defp validate_run_position(%Run{status: status, cursor: cursor})
        when status in [:ready, :boundary, :awaiting, :complete, :failed] and
               cursor in [:turn, :policy, :effect, :complete],
@@ -237,6 +278,7 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run_position(_run), do: {:error, :invalid_run_position}
 
+  @spec validate_run_revision(raw_run()) :: :ok | {:error, :invalid_run_revision}
   defp validate_run_revision(%Run{revision: revision, step_id: step_id})
        when is_integer(revision) and revision >= 0 and
               (is_nil(step_id) or is_binary(step_id)),
@@ -244,6 +286,7 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run_revision(_run), do: {:error, :invalid_run_revision}
 
+  @spec validate_run_lineage(raw_run()) :: :ok | {:error, :invalid_run_lineage}
   defp validate_run_lineage(%Run{causation_id: causation_id, correlation_id: correlation_id})
        when (is_nil(causation_id) or is_binary(causation_id)) and
               (is_nil(correlation_id) or is_binary(correlation_id)),
@@ -251,9 +294,11 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run_lineage(_run), do: {:error, :invalid_run_lineage}
 
+  @spec validate_run_metadata(raw_run()) :: :ok | {:error, :invalid_run_metadata}
   defp validate_run_metadata(%Run{metadata: metadata}) when is_map(metadata), do: :ok
   defp validate_run_metadata(_run), do: {:error, :invalid_run_metadata}
 
+  @spec validate_run_invariants(raw_run()) :: :ok | {:error, term()}
   defp validate_run_invariants(%Run{
          status: :ready,
          cursor: :turn,
@@ -409,6 +454,7 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run_invariants(_run), do: {:error, :invalid_run_lifecycle}
 
+  @spec validate_result(Run.t(), Result.t()) :: :ok | {:error, term()}
   defp validate_result(%Run{input: input, state: state} = run, %Result{} = result) do
     cond do
       result.input != input ->
@@ -422,6 +468,8 @@ defmodule Spectre.Run.Codec do
     end
   end
 
+  @spec validate_result_identity(Run.t(), Result.t()) ::
+          :ok | {:error, :invalid_run_result_identity | :invalid_run_reference}
   defp validate_result_identity(
          %Run{} = run,
          %Result{
@@ -448,14 +496,17 @@ defmodule Spectre.Run.Codec do
 
   defp validate_result_identity(_run, _result), do: {:error, :invalid_run_result_identity}
 
+  @spec result_ref(Result.t()) :: Ref.t() | term() | nil
   defp result_ref(%Result{} = result), do: get_in(result.metadata, [:run, :ref])
 
+  @spec validate_no_open_work(Result.t()) :: :ok | {:error, :invalid_run_terminal_work}
   defp validate_no_open_work(%Result{} = result) do
     if is_nil(Result.open_awaitable(result)) and is_nil(Result.pending_effect(result)),
       do: :ok,
       else: {:error, :invalid_run_terminal_work}
   end
 
+  @spec request_matches_awaitable?(Request.t(), Awaitable.t()) :: boolean()
   defp request_matches_awaitable?(%Request{} = request, %Awaitable{} = awaitable) do
     request.kind == awaitable.kind and request.name == awaitable.name and
       request.label == awaitable.label and request.max_attempts == awaitable.max_attempts and
@@ -463,6 +514,7 @@ defmodule Spectre.Run.Codec do
       request.metadata == awaitable.metadata
   end
 
+  @spec invocation_matches_effect?(Invocation.t(), Effect.t()) :: boolean()
   defp invocation_matches_effect?(%Invocation{} = invocation, %Effect{} = effect) do
     invocation.kind == :effect and invocation.operation == {effect.kind, effect.name} and
       invocation.idempotency_key == Effect.idempotency_key(effect) and
@@ -471,6 +523,7 @@ defmodule Spectre.Run.Codec do
       invocation.metadata == %{mode: effect.mode, status: effect.status}
   end
 
+  @spec active_awaitable_id(Result.t()) :: term() | nil
   defp active_awaitable_id(%Result{} = result) do
     case Result.open_awaitable(result) do
       %Awaitable{id: id} -> id
@@ -478,6 +531,7 @@ defmodule Spectre.Run.Codec do
     end
   end
 
+  @spec active_effect_id(Result.t()) :: term() | nil
   defp active_effect_id(%Result{} = result) do
     case Result.pending_effect(result) do
       %Effect{id: id} -> id
@@ -485,6 +539,7 @@ defmodule Spectre.Run.Codec do
     end
   end
 
+  @spec expected_boundary_id(Run.t(), atom(), term()) :: String.t()
   defp expected_boundary_id(%Run{} = run, kind, subject_id) do
     digest =
       {run.id, run.revision, kind, subject_id}
@@ -495,12 +550,14 @@ defmodule Spectre.Run.Codec do
     Atom.to_string(kind) <> ":" <> binary_part(digest, 0, 32)
   end
 
+  @spec validate_ref(Run.t(), Ref.t()) :: :ok | {:error, :invalid_run_reference}
   defp validate_ref(%Run{} = run, %Ref{} = ref) do
     if ref.run_id == run.id and ref.revision == run.revision and valid_ref_shape?(ref),
       do: :ok,
       else: {:error, :invalid_run_reference}
   end
 
+  @spec valid_ref_shape?(Ref.t()) :: boolean()
   defp valid_ref_shape?(%Ref{} = ref) do
     nonempty_binary?(ref.run_id) and nonempty_binary?(ref.boundary_id) and
       is_integer(ref.revision) and ref.revision >= 0 and
@@ -508,8 +565,10 @@ defmodule Spectre.Run.Codec do
       (is_nil(ref.subject_id) or is_binary(ref.subject_id))
   end
 
+  @spec nonempty_binary?(term()) :: boolean()
   defp nonempty_binary?(value), do: is_binary(value) and value != ""
 
+  @spec max_bytes(keyword()) :: pos_integer()
   defp max_bytes(opts) do
     case Keyword.get(opts, :max_bytes, @default_max_bytes) do
       value when is_integer(value) and value > 0 -> value
