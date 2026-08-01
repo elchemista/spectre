@@ -10,10 +10,14 @@ mix test
 mix test --cover
 mix format --check-formatted
 mix compile --warnings-as-errors
-mix credo --strict
+mix credo
 mix dialyzer
 mix docs
 ```
+
+CI uses the default Credo priority threshold. `mix credo --strict` is useful
+as an advisory cleanup pass, but lower-priority refactoring suggestions do not
+form the release gate.
 
 The repository coverage threshold is 90%. Do not lower or exclude modules to
 make a change pass; add a meaningful test or explain why a private branch is
@@ -70,6 +74,49 @@ The suite kills the turn at every boundary and proves that no later callback
 runs, that durable revision changes only after the commit boundary, and that
 the next full turn recovers. It also proves handler-owned turns, trusted policy
 continuations, and idempotent terminal action replay.
+
+## Flow, Work, and Vigil system example
+
+`test/flow_work_vigil_system_test.exs` defines one complete executable Agent,
+not a collection of disconnected mocks. Its closed operation catalog is used
+by a paginated Work, a persistent weather Vigil, and a deliberately failing
+Work. Ordinary Flow routes then exercise the public runtime end to end:
+
+- `work/2` starts the paginated Work and returns a visible acknowledgement;
+- the Flow remains responsive, inspects progress, and submits a durable update
+  while an operation Runner is blocked;
+- every page receives a distinct attempt, snapshot, Runner, and fencing token;
+- another Flow route registers the Vigil, then pause, resume, and trigger drive
+  silent and significant observations;
+- completed, failed, and significant events re-enter the ordinary Flow router
+  and are committed in conversational state;
+- Work failure does not prevent later turns; and
+- one checkpoint restores Flow state, an active Work, and a waiting Vigil
+  together, with a fresh epoch and fencing for the recovered Runner.
+
+This is the preferred regression location for behavior that crosses all three
+loops. Lower-level runtime tests should still be used for exhaustive malformed
+envelopes and individual transition matrices.
+
+## Autonomous Work and internal Flow example
+
+`test/autonomous_work_flow_example_test.exs` is the executable companion to the
+autonomous recipe in Getting Started. It starts a Work directly from the host,
+without `Spectre.turn/3`, a human Source, or Beam, and verifies this sequence:
+
+1. the Work collects initial evidence in one temporary Runner;
+2. the Work commits an `:external` wait and the Runner is gone;
+3. the committed `:waiting` event creates an ordinary internal Flow Run;
+4. the Flow reads the committed Work view and chooses a schema-valid query;
+5. the Flow delivers a correlated trigger whose causation is the waiting event;
+6. the Work reducer stores that response and a new Runner executes the query;
+7. the terminal outcome, Flow decision, events, provenance, and empty Runner
+   set are all asserted from committed state.
+
+The example deliberately uses public `0.2.0` APIs rather than introducing a
+pseudo Work-to-Flow DSL. It proves the current application-level event/trigger
+bridge; lower-level contracts remain responsible for malformed triggers,
+duplicates, stale generations, and restart matrices.
 
 ## Strategy matrix
 

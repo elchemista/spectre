@@ -5,6 +5,73 @@ agent may classify input and propose work, but only deterministic lifecycle and
 policy code can make that work executable. The host application remains the
 owner of storage, credentials, authorization, model clients, and side effects.
 
+## Canonical Agent state
+
+The `0.2.0` architecture keeps one Agent Instance as the local canonical state
+owner while allowing slow operations to run elsewhere. Its internal canonical
+state is split into typed Flow, Work, Vigil, Directive, control, correlation,
+and event sections. Every accepted change advances one global revision and the
+revision of only the sections it replaces.
+
+An immutable snapshot declares separate read and write scopes. A change based
+on an older global revision may still commit when every section it writes is
+unchanged; a stale change to an already modified section is rejected. A
+read-only snapshot cannot produce a state change. Accepted changes are
+correlated, journaled, idempotent by change identifier, and included in a
+portable checkpoint with their per-section revision fences.
+
+`Spectre.State` and `Spectre.Run` remain the conversational state and
+continuation contracts. Work and Vigil are separate operational domains owned
+by the same Instance; they do not overload or rename Run.
+
+Canonical persistence uses a strict, versioned JSON codec and an optional
+compare-and-swap store. Writes are serialized and coalesced outside the
+GenServer mailbox. An adapter that cannot determine whether a write committed
+returns an ambiguous result; the Instance fences further automatic writes
+until explicit reconciliation loads and validates the stored checkpoint.
+
+## Operational loops
+
+```text
+Flow / host command
+        │
+        ▼
+Spectre.Instance ── canonical Work/Vigil/controller + Control
+        │
+        ├─ creates revision-fenced snapshot and Attempt
+        │
+        ▼
+temporary Runner ── one registered operation ──► Progress / Result
+        │                                           │
+        └──────────────── terminates ◄───────────────┘
+                                                    │
+                                                    ▼
+                                           Instance validates,
+                                           reduces, and commits
+```
+
+The Runner owns no canonical state and never decides semantic retry. The
+Instance validates loop id, attempt id, epoch, fencing token, context revision,
+control generation, and trigger generation before applying Progress or Result.
+Every subsequent operation receives a new snapshot, Attempt, and Runner.
+
+Work, Vigil, and authorized external controllers implement one deterministic
+controller contract. Operations are immutable catalog entries resolved from
+code after restart. Waiting loops retain data and timers, not live Runners.
+Side effects declare whether they are idempotent, reconcilable, or
+non-idempotent so a crash cannot be mistaken for proof that nothing happened.
+
+Control commands are canonical transitions. A safe pause reaches a boundary;
+an explicitly authorized immediate pause fences the active attempt without
+claiming to undo external work. Updates pass through the controller's declared
+schema and fields, advance the context revision, and invalidate stale results.
+A stop produces a terminal outcome and cannot be resumed.
+
+Committed operational events may be observed locally or routed back through
+the existing Flow router. Event significance, visibility, delivery
+authorization, and transport remain separate decisions. See
+[Work, Vigil, and the operational runtime](OPERATIONS.md).
+
 ## One turn
 
 ```text

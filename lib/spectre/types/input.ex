@@ -51,6 +51,8 @@ defmodule Spectre.Input do
     }
   end
 
+  def new(input) when is_map(input), do: %__MODULE__{raw: input}
+
   def new(input), do: %__MODULE__{text: to_string(input), raw: input}
 
   @doc """

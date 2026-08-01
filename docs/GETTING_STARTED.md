@@ -489,6 +489,418 @@ telemetry:
 } = Spectre.Result.lifecycle(result)
 ```
 
+## 11. Agent Recipes
+
+The handler and runtime boundary should match the kind of work being requested.
+These are the common choices:
+
+| Need | Use | What happens |
+| --- | --- | --- |
+| Fixed answer | `reply/2` | A deterministic renderer returns text without an LLM |
+| Model answer without tools | `reason/2` | The configured model runs with action planning disabled |
+| Model answer with a closed action catalog | `act/2` | The model may propose only registered, authorized actions |
+| Application orchestration | `run/2` | An Agent-local Elixir function returns a `Spectre.Result` |
+| Known side effect | `action/2` | Spectre stages an Effect and applies its policy |
+| Precise durable procedure | `work/2` or `Spectre.start_work/4` | A Work advances through checkpointed operation attempts |
+| Repeated observation | `Spectre.register_vigil/4` | A Vigil observes, waits, and reacts to declared triggers |
+
+### A Small Deterministic Agent
+
+Use a renderer when the answer is fixed and does not benefit from a model:
+
+```elixir
+defmodule MyApp.SystemReplies do
+  def render(:alive, _input, _context), do: "alive"
+  def render(:version, _input, _context), do: MyApp.version()
+end
+
+defmodule MyApp.SystemAgent do
+  use Spectre.Agent
+
+  router(via: [:regex])
+
+  flow :system do
+    on :HEALTH, regex: ~r/^health$/i do
+      reply(:alive, renderer: {MyApp.SystemReplies, :render})
+    end
+
+    on :VERSION, regex: ~r/^version$/i do
+      reply(:version, renderer: {MyApp.SystemReplies, :render})
+    end
+  end
+end
+
+{:ok, %Spectre.Turn{observable: {:reply, "alive", _ref}}} =
+  Spectre.turn(MyApp.SystemAgent, "health")
+```
+
+This is useful for health checks, menus, exact product facts, and other routes
+where generated text would only add latency or uncertainty.
+
+### A Reasoning Agent Without Side Effects
+
+`reason/2` renders a prompt and calls the configured model, but explicitly
+disables action planning:
+
+```elixir
+defmodule MyApp.ExplainerAgent do
+  use Spectre.Agent, prompt_root: "priv/agents/explainer/prompts"
+
+  model(MyApp.LLM)
+  router(via: [:regex, :classifier])
+
+  flow :explanations do
+    on :EXPLAIN_ERROR, regex: ~r/^explain\s+.+/i do
+      reason(:explain_error, temperature: 0.1)
+    end
+  end
+end
+```
+
+Use `act/2` only when the Agent has a closed action planner and the selected
+route is allowed to stage those actions. Use `action/2` when the operation is
+already known and no model selection is needed.
+
+### An Agent-Local Elixir Handler
+
+`run/2` is useful for normal application orchestration that should remain in a
+Flow but does not need an LLM:
+
+```elixir
+defmodule MyApp.AccountAgent do
+  use Spectre.Agent
+
+  router(via: [:regex])
+
+  flow :account do
+    on :STATUS, regex: ~r/^account status$/i do
+      run(:account_status)
+    end
+  end
+
+  def account_status(input, context) do
+    subject_id = Keyword.fetch!(context.opts, :subject_id)
+    account = MyApp.Accounts.fetch!(subject_id)
+
+    {:ok,
+     %Spectre.Result{
+       input: input,
+       route: context.route,
+       state: context.state,
+       reply_text: "Account status: #{account.status}"
+     }}
+  end
+end
+```
+
+Keep the function short. Slow, retryable, or multi-step operations belong in a
+Work so they do not own the conversational Run.
+
+### Start A Precise Work From Chat
+
+First declare the application operation and a finite Work:
+
+```elixir
+defmodule MyApp.Reports do
+  def build(%{request: request}, _context) do
+    {:ok, %{request: request, artifact: MyApp.ReportStore.build(request)}}
+  end
+end
+
+defmodule MyApp.ReportWork do
+  use Spectre.Work,
+    id: :build_report,
+    version: 1,
+    input: :binary,
+    state: :map,
+    budget: [steps: 2, attempts: 3]
+
+  uses_operation(:build_report)
+
+  @impl true
+  def init(request, _context), do: {:ok, %{request: request, result: nil}}
+
+  @impl true
+  def next(%{request: request, result: nil}, _context) do
+    run(:build_report, %{request: request}, phase: :building)
+  end
+
+  def next(%{result: result}, _context), do: complete(result)
+
+  @impl true
+  def apply_result(state, _request, result, _context) do
+    {:ok, %{state | result: result.value}}
+  end
+
+  @impl true
+  def complete(%{result: nil}, _context), do: :continue
+  def complete(%{result: result}, _context), do: complete(result)
+end
+
+defmodule MyApp.ReportAgent do
+  use Spectre.Agent
+
+  router(via: [:regex])
+
+  operation(:build_report, {MyApp.Reports, :build},
+    input: :map,
+    output: :map,
+    side_effect: :idempotent,
+    retry: [max_attempts: 3]
+  )
+
+  flow :reports do
+    on :BUILD_REPORT, regex: ~r/^build report\s+.+/i do
+      work(MyApp.ReportWork,
+        input: :text,
+        origin: :chat,
+        reply_text: "Report started"
+      )
+    end
+  end
+end
+```
+
+The `work/2` handler requires a subject-scoped Instance because that Instance
+owns the Work checkpoint:
+
+```elixir
+{:ok, %Spectre.Turn{decision: {:reply, result}}} =
+  Spectre.turn(instance, "build report for July")
+
+work_ref = result.metadata.operation_ref
+{:ok, view} = Spectre.loop(instance, work_ref)
+```
+
+The acknowledgement completes the current Turn. The Work continues through
+temporary Runners and remains inspectable independently.
+
+### Start The Same Work Without Chat
+
+A host, scheduler, bootstrap callback, or internal event can start the Work
+directly. There is no synthetic user message and no Beam dependency:
+
+```elixir
+{:ok, work_ref, initial_view} =
+  Spectre.start_work(instance, MyApp.ReportWork, "report for July",
+    origin: :scheduler,
+    correlation_id: scheduled_job.id,
+    provenance: %{source: :scheduler, job_id: scheduled_job.id}
+  )
+
+{:ok, current_view} = Spectre.loop(instance, work_ref)
+```
+
+Use this form for cron jobs, application bootstrap, queues, and other autonomous
+hosts. It uses the same Work Definition, budgets, Runner isolation, and
+checkpoint rules as a Work started from a Flow.
+
+### Let A Work Ask An Internal Flow And Resume
+
+The current public API can model an autonomous exchange with a declared wait
+and trigger boundary:
+
+```text
+host starts Work
+  -> Work commits an external wait
+  -> :waiting event opens an internal Flow Run
+  -> Flow reads the committed Work view
+  -> Flow returns a schema-checked trigger
+  -> Work reducer accepts the response
+  -> a new Runner continues the Work
+```
+
+The Work declares exactly where it can wait and exactly which response it
+accepts:
+
+```elixir
+defmodule MyApp.AutonomousResearch do
+  use Spectre.Work,
+    id: :autonomous_research,
+    version: 1,
+    input: :map,
+    state: :map,
+    waits: [:external],
+    triggers: [:external],
+    budget: [steps: 10, attempts: 10]
+
+  uses_operation(:collect_context)
+  uses_operation(:research_query)
+
+  def init(%{topic: topic}, _context) do
+    {:ok, %{topic: topic, phase: :collect, evidence: nil, response: nil}}
+  end
+
+  def next(%{phase: :collect, topic: topic}, _context) do
+    run(:collect_context, %{topic: topic}, phase: :collecting)
+  end
+
+  def next(%{phase: :ask_agent}, _context) do
+    wait(:external,
+      key: :next_query,
+      payload: %{response_schema: %{query: :string, source: :string}}
+    )
+  end
+
+  def next(%{phase: :research, response: response}, _context) do
+    run(:research_query, response, phase: :researching)
+  end
+
+  def apply_result(state, %{operation: :collect_context}, result, _context) do
+    {:ok, %{state | phase: :ask_agent, evidence: result.value}, phase: :awaiting_agent}
+  end
+
+  def apply_result(state, %{operation: :research_query}, result, _context) do
+    {:ok, %{state | phase: :done, evidence: result.value}, phase: :finished}
+  end
+
+  def handle_trigger(state, {:external, %{query: query, source: source}}, _context)
+      when is_binary(query) and query != "" and is_binary(source) and source != "" do
+    {:ok, %{state | phase: :research, response: %{query: query, source: source}}}
+  end
+
+  def handle_trigger(_state, response, _context),
+    do: {:error, {:invalid_internal_response, response}}
+
+  def complete(%{phase: :done, evidence: result}, _context), do: complete(result)
+  def complete(_state, _context), do: :continue
+end
+```
+
+Route only the committed event classes the Agent intends to consume:
+
+```elixir
+defmodule MyApp.ResearchAgent do
+  use Spectre.Agent
+
+  router(via: [:regex])
+  route_operation_events([:waiting])
+
+  operation(:collect_context, {MyApp.ResearchOperations, :collect_context},
+    input: :map,
+    output: :map,
+    side_effect: :none
+  )
+
+  operation(:research_query, {MyApp.ResearchOperations, :research_query},
+    input: :map,
+    output: :map,
+    side_effect: :idempotent,
+    retry: [max_attempts: 3]
+  )
+
+  flow :autonomous_work do
+    on :AUTONOMOUS_WORK_REQUEST, regex: ~r/^$/ do
+      run(:answer_work_request)
+    end
+  end
+
+  def answer_work_request(
+        %{meta: %{spectre_event: %Spectre.Operation.Event{type: :waiting} = event}} = input,
+        context
+      ) do
+    instance = Keyword.fetch!(context.opts, :instance_pid)
+
+    with {:ok, %{definition: :autonomous_research, phase: :awaiting_agent} = view} <-
+           Spectre.loop(instance, event.loop_id),
+         response <- MyApp.ResearchPolicy.choose(view.partial_results),
+         {:ok, resumed} <-
+           Spectre.trigger_loop(instance, event.loop_id, {:external, response},
+             correlation_id: event.correlation_id,
+             causation_id: event.id,
+             provenance: %{source: :internal_flow, operation_event_id: event.id}
+           ) do
+      {:ok,
+       %Spectre.Result{
+         input: input,
+         route: context.route,
+         state: context.state,
+         metadata: %{internal_response: response, operation_view: resumed}
+       }}
+    else
+      {:ok, %Spectre.Operation.View{}} ->
+        {:ok,
+         %Spectre.Result{
+           input: input,
+           route: context.route,
+           state: context.state,
+           metadata: %{operation_event_ignored?: true}
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+end
+```
+
+The internal Flow can use deterministic policy, Mnemonic, or a constrained
+inference before constructing `response`. It produces no `reply_text`, so it
+finishes without a human reply or channel delivery. The Flow must verify the
+event type, Work Definition, phase, visibility, and response shape; it must not
+turn the Work into an open-ended planner. Use Directive when the procedure
+itself must be discovered.
+
+This is an application-level bridge built from current `0.2.0` APIs, not a new
+Work DSL verb. The complete executable version is
+`test/autonomous_work_flow_example_test.exs`; its assertions are summarized in
+[Testing](TESTING.md#autonomous-work-and-internal-flow-example).
+
+### Observe Repeatedly With A Vigil
+
+Register a Vigil when the loop must remain known between timer or event
+triggers:
+
+```elixir
+{:ok, vigil_ref, _view} =
+  Spectre.register_vigil(instance, MyApp.WeatherVigil, %{city: "Rome"},
+    origin: :scheduler,
+    correlation_id: "weather-rome"
+  )
+
+{:ok, paused} = Spectre.pause_loop(instance, vigil_ref)
+{:ok, resumed} = Spectre.resume_loop(instance, vigil_ref)
+
+{:ok, _queued} =
+  Spectre.trigger_loop(instance, vigil_ref, :external,
+    generation: resumed.trigger_generation
+  )
+```
+
+No Runner stays alive while the Vigil waits. Updating its declared resources or
+frequency should use `update_loop/4` or `update_and_resume_loop/4`, so stale
+triggers are fenced by the new generation.
+
+### Inspect, Update, And Stop Operational Loops
+
+Use committed views instead of reading process state:
+
+```elixir
+{:ok, active} = Spectre.loops(instance, status: [:active, :waiting, :paused])
+
+# This Work Definition declares `update_fields: [:sources]`.
+{:ok, selected} =
+  Spectre.resolve_loop(instance,
+    kind: :work,
+    definition: :web_research,
+    active: true
+  )
+
+{:ok, paused} = Spectre.pause_loop(instance, selected.id)
+
+{:ok, resumed} =
+  Spectre.update_and_resume_loop(instance, selected.id, %{sources: new_urls},
+    correlation_id: turn_id,
+    provenance: %{source: :chat, turn_id: turn_id}
+  )
+
+{:ok, stopped} = Spectre.stop_loop(instance, selected.id, :cancelled_by_user)
+```
+
+An update succeeds only for fields declared by the controller. Pause is
+reversible; stop is terminal. When `resolve_loop/3` finds multiple candidates,
+it returns an ambiguity instead of selecting one heuristically.
+
 ## How Options Flow
 
 Runtime reads compiled DSL metadata; it does not re-evaluate DSL blocks for each
@@ -525,7 +937,9 @@ Spectre owns:
 - deterministic policy matching;
 - effect and awaitable lifecycle state;
 - turn decisions and audit events;
-- session serialization and idle lifecycle.
+- session serialization and idle lifecycle;
+- canonical Instance state, operational scheduling, Runner fencing, and
+  committed loop views.
 
 The application owns:
 
@@ -533,8 +947,10 @@ The application owns:
 - prompt contents;
 - user authorization and tenant boundaries;
 - durable state storage and concurrency control;
+- registered operation implementations and their external idempotency records;
 - action transactions and idempotency records;
 - delivery, retries, monitoring, and audit retention.
 
 Continue with [Actions](ACTIONS.md), [Routing](ROUTING.md),
-[Memory](MEMORY.md), and the architectural [Roadmap](ROADMAP.md).
+[Memory](MEMORY.md), [Work and Vigil](OPERATIONS.md), and the architectural
+[Roadmap](ROADMAP.md).

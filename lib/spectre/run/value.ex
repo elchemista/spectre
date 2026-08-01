@@ -254,18 +254,15 @@ defmodule Spectre.Run.Value do
   defp load_module(module_name) do
     module_chars = String.to_charlist(module_name)
 
-    case Enum.find(:code.all_available(), fn {available, _path, _loaded?} ->
-           available == module_chars
-         end) do
-      {^module_chars, _path, _loaded?} ->
-        module = :erlang.list_to_atom(module_chars)
-
-        if Code.ensure_loaded?(module),
-          do: {:ok, module},
-          else: {:error, {:unknown_run_module, module_name}}
-
-      nil ->
-        {:error, {:unknown_run_module, module_name}}
+    with {:ok, module} <- existing_atom(module_name),
+         true <-
+           Enum.any?(:code.all_available(), fn {available, _path, _loaded?} ->
+             available == module_chars
+           end),
+         true <- Code.ensure_loaded?(module) do
+      {:ok, module}
+    else
+      _unknown -> {:error, {:unknown_run_module, module_name}}
     end
   end
 

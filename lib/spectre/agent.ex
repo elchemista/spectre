@@ -343,6 +343,87 @@ defmodule Spectre.Agent do
   end
 
   @doc """
+  Registers an application operation for Work, Vigil and external controllers.
+
+  The executor is a stable module or `{module, function}` reference. Runtime
+  inputs and outputs are validated against this immutable registry entry;
+  models and planners cannot inject executable modules or arbitrary MFAs.
+
+      operation :read_logs, {MyApp.Operations, :read_logs},
+        input: :map,
+        output: :map,
+        side_effect: :none,
+        timeout: 15_000
+  """
+  defmacro operation(id, executor, opts \\ []) do
+    id = eval_action_arg(id, __CALLER__)
+    executor = eval_action_arg(executor, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    spec =
+      opts
+      |> Map.new()
+      |> Map.put(:id, id)
+      |> Map.put_new(:kind, :function)
+      |> Map.put(:executor, executor)
+      |> Spectre.Operation.Spec.new()
+
+    quote do
+      operations = Keyword.get(@spectre_config, :operations, [])
+
+      if Enum.any?(operations, &(&1.id == unquote(Macro.escape(id)))) do
+        raise ArgumentError, "duplicate Spectre operation: #{inspect(unquote(Macro.escape(id)))}"
+      end
+
+      @spectre_config Keyword.put(
+                        @spectre_config,
+                        :operations,
+                        operations ++ [unquote(Macro.escape(spec))]
+                      )
+    end
+  end
+
+  @doc """
+  Configures which committed operational events re-enter the normal Flow router.
+
+  Use `:all`, a list of event types, or `false`. Events are converted to
+  `Spectre.Input` values and still need to match ordinary `on` rules; this does
+  not install a second event matcher.
+
+      route_operation_events [:completed, :blocked, :observation_significant]
+  """
+  defmacro route_operation_events(types \\ :all) do
+    types = eval_action_arg(types, __CALLER__)
+
+    unless types in [:all, false] or
+             (is_list(types) and Enum.all?(types, &(is_atom(&1) and not is_nil(&1)))) do
+      raise ArgumentError, "route_operation_events expects :all, false, or event atoms"
+    end
+
+    quote do
+      @spectre_config Keyword.put(
+                        @spectre_config,
+                        :route_operation_events,
+                        unquote(Macro.escape(types))
+                      )
+    end
+  end
+
+  @doc "Configures the canonical checkpoint adapter used by Agent Instances."
+  defmacro checkpoint_store(module, opts \\ []) do
+    module = Macro.expand(module, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    quote do
+      @spectre_config Keyword.put(
+                        @spectre_config,
+                        :checkpoint_store,
+                        {unquote(module), unquote(Macro.escape(opts))}
+                      )
+    end
+  end
+
+  @doc """
   Configures the provider-neutral action planner port.
 
   Optional libraries normally mount this through their own DSL, for example
@@ -817,6 +898,20 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc "Calls the configured model without permitting action planning."
+  defmacro reason(prompt, opts \\ []) do
+    quote do
+      {:__spectre_handler__, :reason, unquote(prompt), unquote(opts)}
+    end
+  end
+
+  @doc "Calls the configured model and permits the closed action planner."
+  defmacro act(prompt, opts \\ []) do
+    quote do
+      {:__spectre_handler__, :act, unquote(prompt), unquote(opts)}
+    end
+  end
+
   @doc """
   Creates a handler that calls an agent-local function.
 
@@ -843,6 +938,13 @@ defmodule Spectre.Agent do
   defmacro reply(prompt, opts \\ []) do
     quote do
       {:__spectre_handler__, :reply, unquote(prompt), unquote(opts)}
+    end
+  end
+
+  @doc "Starts a separate precise Work owned by the current Agent Instance."
+  defmacro work(controller, opts \\ []) do
+    quote do
+      {:__spectre_handler__, :work, unquote(controller), unquote(opts)}
     end
   end
 
@@ -1248,6 +1350,16 @@ defmodule Spectre.Agent do
   defp parse_handler({:ask, _meta, [prompt, opts]}, caller),
     do: {:ask, prompt, eval_opts(opts, caller)}
 
+  defp parse_handler({:reason, _meta, [prompt]}, _caller), do: {:reason, prompt, []}
+
+  defp parse_handler({:reason, _meta, [prompt, opts]}, caller),
+    do: {:reason, prompt, eval_opts(opts, caller)}
+
+  defp parse_handler({:act, _meta, [prompt]}, _caller), do: {:act, prompt, []}
+
+  defp parse_handler({:act, _meta, [prompt, opts]}, caller),
+    do: {:act, prompt, eval_opts(opts, caller)}
+
   defp parse_handler({:run, _meta, [function]}, _caller), do: {:run, function, []}
 
   defp parse_handler({:run, _meta, [function, opts]}, caller),
@@ -1257,6 +1369,12 @@ defmodule Spectre.Agent do
 
   defp parse_handler({:reply, _meta, [prompt, opts]}, caller),
     do: {:reply, prompt, eval_opts(opts, caller)}
+
+  defp parse_handler({:work, _meta, [controller]}, caller),
+    do: {:work, Macro.expand(controller, caller), []}
+
+  defp parse_handler({:work, _meta, [controller, opts]}, caller),
+    do: {:work, Macro.expand(controller, caller), eval_opts(opts, caller)}
 
   defp parse_handler({:action, _meta, [action]}, caller),
     do: {:action, eval_action_arg(action, caller), []}
@@ -1295,7 +1413,7 @@ defmodule Spectre.Agent do
         case Macro.expand_once(other, caller) do
           ^other ->
             raise ArgumentError,
-                  "expected ask/run/reply/action handler, got: #{Macro.to_string(other)}"
+                  "expected ask/run/reply/action handler or reason/act/work handler, got: #{Macro.to_string(other)}"
 
           expanded ->
             parse_handler(expanded, caller)

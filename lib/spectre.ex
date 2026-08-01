@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.1.6"
+  @version "0.2.0"
 
   @doc """
   Returns the running Spectre library version.
@@ -156,6 +156,87 @@ defmodule Spectre do
   def resume(instance, %Spectre.Run.Ref{} = ref, command, opts \\ []) do
     Spectre.Instance.resume(instance, ref, command, opts)
   end
+
+  @doc "Starts a precise Work on an Agent Instance."
+  defdelegate start_work(instance, controller, input, opts \\ []), to: Spectre.Instance
+
+  @doc "Registers a durable Vigil on an Agent Instance."
+  defdelegate register_vigil(instance, controller, input, opts \\ []), to: Spectre.Instance
+
+  @doc "Starts an authorized external controller on the shared runtime."
+  defdelegate start_controller(instance, controller, input, opts \\ []), to: Spectre.Instance
+
+  @doc "Returns one committed operational-loop view."
+  defdelegate loop(instance, ref, opts \\ []), to: Spectre.Instance
+
+  @doc "Lists visible committed operational loops."
+  defdelegate loops(instance, opts \\ []), to: Spectre.Instance
+
+  @doc "Resolves exactly one visible operational loop without model guessing."
+  defdelegate resolve_loop(instance, selector \\ nil, opts \\ []), to: Spectre.Instance
+
+  @doc "Requests a reversible loop pause."
+  defdelegate pause_loop(instance, ref, opts \\ []), to: Spectre.Instance
+
+  @doc "Applies a version-fenced loop update."
+  defdelegate update_loop(instance, ref, update, opts \\ []), to: Spectre.Instance
+
+  @doc "Applies the durable pause-update-resume sequence."
+  defdelegate update_and_resume_loop(instance, ref, update, opts \\ []), to: Spectre.Instance
+
+  @doc "Resumes a reversibly paused loop."
+  defdelegate resume_loop(instance, ref, opts \\ []), to: Spectre.Instance
+
+  @doc "Renews a nonterminal Work, Vigil or controller expiry."
+  defdelegate renew_loop(instance, ref, expires_at, opts \\ []), to: Spectre.Instance
+
+  @doc "Stops a loop terminally."
+  defdelegate stop_loop(instance, ref, reason \\ :stopped, opts \\ []), to: Spectre.Instance
+
+  @doc "Delivers a declared trigger to a waiting loop."
+  defdelegate trigger_loop(instance, ref, trigger, opts \\ []), to: Spectre.Instance
+
+  @doc "Returns the strict JSON canonical Agent checkpoint."
+  defdelegate checkpoint(instance), to: Spectre.Instance
+
+  @doc "Waits for durable persistence of the current canonical revision."
+  defdelegate flush_checkpoint(instance, opts \\ []), to: Spectre.Instance
+
+  @doc "Returns canonical checkpoint persistence status."
+  defdelegate checkpoint_status(instance), to: Spectre.Instance
+
+  @doc "Reconciles an ambiguous canonical-checkpoint write before any retry."
+  defdelegate reconcile_checkpoint(instance, opts \\ []), to: Spectre.Instance
+
+  @doc "Returns committed operational events."
+  defdelegate operation_events(instance, opts \\ []), to: Spectre.Instance
+
+  @doc "Stores revocable proactive-delivery consent."
+  defdelegate put_delivery_consent(instance, consent, opts \\ []), to: Spectre.Instance
+
+  @doc "Revokes proactive-delivery consent."
+  defdelegate revoke_delivery_consent(instance, consent_id, opts \\ []), to: Spectre.Instance
+
+  @doc "Runs deterministic proactive-delivery authorization without sending."
+  defdelegate authorize_delivery(instance, event_id, destination, policy, opts \\ []),
+    to: Spectre.Instance
+
+  @doc "Records a Beam/host transport outcome against an authorization receipt."
+  defdelegate record_delivery(instance, receipt_id, outcome, detail, opts \\ []),
+    to: Spectre.Instance
+
+  @doc "Returns committed delivery audit receipts."
+  defdelegate delivery_receipts(instance, opts \\ []), to: Spectre.Instance
+
+  @doc "Subscribes the caller to committed local operational events."
+  defdelegate subscribe_operation_events(instance_or_ref, opts \\ []),
+    to: Spectre.Operation.Events,
+    as: :subscribe
+
+  @doc "Removes the caller's local operational-event subscription."
+  defdelegate unsubscribe_operation_events(instance_or_ref),
+    to: Spectre.Operation.Events,
+    as: :unsubscribe
 
   @doc """
   Dismisses a session supervised by `Spectre.Supervisor`.

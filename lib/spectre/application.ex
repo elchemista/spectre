@@ -8,7 +8,11 @@ defmodule Spectre.Application do
     children = [
       {Registry, keys: :unique, name: Spectre.Instance.Registry},
       {Spectre.Subject.Registry, name: Spectre.Subject.Registry},
+      {Registry, keys: :duplicate, name: Spectre.Operation.EventRegistry},
       Spectre.Router.SemanticCache.Owner,
+      Spectre.Operation.RunnerSupervisor,
+      {Task.Supervisor, name: Spectre.Operation.TaskSupervisor},
+      {Task.Supervisor, name: Spectre.Instance.CheckpointTaskSupervisor},
       {Task.Supervisor, name: Spectre.Journal.TaskSupervisor},
       Spectre.Journal.Buffer
     ]

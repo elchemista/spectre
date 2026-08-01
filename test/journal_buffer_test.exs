@@ -211,7 +211,15 @@ defmodule SpectreJournalBufferTest do
     refute Process.whereis(Buffer)
 
     on_exit(fn ->
-      if pid = Process.whereis(Buffer), do: GenServer.stop(pid, :normal)
+      if pid = Process.whereis(Buffer) do
+        Process.unlink(pid)
+
+        try do
+          if Process.alive?(pid), do: GenServer.stop(pid, :normal)
+        catch
+          :exit, _reason -> :ok
+        end
+      end
 
       case Supervisor.restart_child(supervisor, Buffer) do
         {:ok, _pid} -> :ok
@@ -221,6 +229,7 @@ defmodule SpectreJournalBufferTest do
     end)
 
     assert {:ok, standalone} = Buffer.start_link()
+    Process.unlink(standalone)
     assert Process.whereis(Buffer) == standalone
     assert %{queue_depth: 0, running_count: 0} = Buffer.stats()
   end

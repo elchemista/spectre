@@ -4,11 +4,12 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.1.x` is a public preview. The exact modules, callables, DSL forms,
-callbacks, types, and struct fields covered by the `0.1.6` compatibility
-promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). This
-guide explains that surface but does not enlarge it. Anything absent from the
-manifest is an implementation detail even when it is exported or visible.
+Spectre `0.2.0` is the first vNext core release. The exact modules, callables,
+DSL forms, callbacks, types, and struct fields covered by its compatibility
+promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
+0.1.6 conversational baseline remains included. This guide explains that
+surface but does not enlarge it. Anything absent from the manifest is an
+implementation detail even when it is exported or visible.
 
 ## Stack installation
 
@@ -35,6 +36,9 @@ resources. PID, connections, clients, and secrets never belong in
 | One host-facing decision | `Spectre.turn/3` | `{:ok, %Spectre.Turn{}}` |
 | Start a continuation | `Spectre.Runtime.start/3` | `{:continue, %Spectre.Run{}}` |
 | Drive a continuation | `Spectre.Runtime.advance/2`, `resume/3` | one closed Runtime step |
+| Start precise background work | `Spectre.start_work/4` | operational ref and committed view |
+| Register durable observation | `Spectre.register_vigil/4` | operational ref and committed view |
+| Inspect or control a loop | `loop/3`, `pause_loop/3`, `update_and_resume_loop/4` | redacted committed view |
 | Routing only | `Spectre.Router.evaluate/3` | `{:ok, %Spectre.Router.Receipt{}}` |
 | Dataset evaluation | `Spectre.Eval.run/3` | `{:ok, %Spectre.Eval.Report{}}` |
 
@@ -241,6 +245,42 @@ Prefer supervised `Spectre.instance/4` in production. See
 [Agent Instances and Subjects](INSTANCES.md) for Run resume, identity linking,
 per-Run lifecycle ownership, and serialized capability execution.
 
+### Operational Work and Vigil
+
+An Instance also owns durable operational loops that outlive the initiating
+Turn. Start a versioned Work, inspect its read-only view, and control it with
+revision-fenced commands:
+
+```elixir
+{:ok, ref, _view} =
+  Spectre.start_work(instance, MyApp.ReadPages, %{pages: [1, 2, 3]})
+
+{:ok, progress} = Spectre.loop(instance, ref)
+{:ok, paused} = Spectre.pause_loop(instance, ref)
+
+{:ok, resumed} =
+  Spectre.update_and_resume_loop(instance, ref, %{pages: [4]},
+    command_id: command_id,
+    correlation_id: turn_id
+  )
+```
+
+Use `register_vigil/4` for recurring observations that wait without retaining a
+Runner. `start_controller/4` admits an authorized external controller onto the
+same runtime; it does not give that library ownership of canonical state.
+
+`loops/2` lists visible loops. `resolve_loop/3` returns either one exact match
+or an explicit ambiguity error. `stop_loop/4` is terminal; pause is reversible.
+
+Canonical persistence is available through `checkpoint/1`,
+`flush_checkpoint/2`, `checkpoint_status/1`, and
+`reconcile_checkpoint/2`. Committed events are read with
+`operation_events/2` or a local subscription. Delivery consent and receipts
+authorize transport but do not perform it.
+
+See [Work, Vigil, and the operational runtime](OPERATIONS.md) for Definition,
+operation, Runner, recovery, checkpoint, event, and delivery contracts.
+
 ### Legacy conversation sessions
 
 Omitting `:subject` retains the 0.1.x Session adapter:
@@ -419,6 +459,8 @@ functions:
 | --- | --- |
 | `Spectre.LLM` | Complete rendered prompts and return normalized provider output |
 | `Spectre.State.Store` | Load and compare-and-swap durable conversation state |
+| `Spectre.Instance.CheckpointStore` | Load and compare-and-swap the complete canonical Instance checkpoint |
+| `Spectre.Operation.Controller` | Reduce deterministic Work, Vigil, or external-controller transitions |
 | `Spectre.Classifier.Embedding` | Produce embedding vectors |
 | `Spectre.Router.SemanticCache` | Lookup and optionally review learned routes |
 | `Spectre.Journal.Store` | Append structured audit records idempotently |

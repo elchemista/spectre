@@ -1,9 +1,42 @@
 # Roadmap
 
-Spectre should remain a focused OTP-native runtime, not become a framework that
-owns application business logic. The next phase is architectural hardening:
-make lifecycle ownership obvious, make invalid transitions impossible, and make
-host integration smaller.
+Spectre remains a focused OTP-native runtime rather than a framework that owns
+application business logic. Version 0.2.0 completes the vNext core foundation;
+future work extends adapters and distributed integration without adding a
+second owner for Agent or operational state.
+
+## 0.2.0 vNext core — complete
+
+The 0.2.0 implementation was completed in dependency order:
+
+1. canonical Agent state, typed sections, revisioned snapshots,
+   conflict-aware merge, transition journal, and portable CAS checkpoints;
+2. shared operational runtime, isolated one-attempt Runners, fencing, retry,
+   recovery, durable control, budgets, and precise Work;
+3. Flow integration, read-only views, visibility, event routing, and
+   disambiguation;
+4. core Vigil with durable waits, timer generations, significance, and the
+   same Runner topology;
+5. provider-neutral function, Action, Effect, planner, cognitive, memory, and
+   external-controller boundaries;
+6. governed consent and delivery receipts, followed by restart, race,
+   corruption, and coverage hardening.
+
+The 0.1.6 conversational recovery baseline remains protected. Work and Vigil
+are additive domains; Run was not renamed. See
+[Migrating to 0.2.0](MIGRATING_TO_0_2.md).
+
+## After 0.2.0
+
+- Keep `0.2.x` changes compatible with the published Work, Vigil, controller,
+  checkpoint, control, event, and delivery contracts.
+- Move concrete Lens, Kinetic, Prism, Mnemonic, Directive, Beam, and Pulse
+  integrations forward in their own repositories against explicit minimum
+  Spectre versions.
+- Add distributed claims or remote handoff only after preserving the local
+  single-owner and fencing invariants.
+- Keep Mission, Wayfinder, transport, model clients, credentials, and durable
+  application storage in their owning libraries or host applications.
 
 ## What Already Works
 

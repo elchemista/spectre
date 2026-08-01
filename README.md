@@ -22,10 +22,29 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.1.x` is a public preview. Runtime invariants are hardened and the
-> full suite exceeds 90% line coverage, but documented APIs may still evolve in
-> a minor `0.x` release. Internal modules marked with `@moduledoc false` are not
-> part of the compatibility contract.
+> Spectre `0.2.0` is the first vNext core release. The full suite exceeds 90%
+> line coverage, but documented APIs may still evolve in a minor `0.x`
+> release. Internal modules marked with `@moduledoc false` are not part of the
+> compatibility contract.
+
+## 0.2.0 Operational Runtime
+
+Version `0.2.0` implements the vNext core around one canonical Agent Instance
+owner. It adds typed Flow, Work, Vigil, external-controller, control,
+correlation, and event sections; monotonic revisions; authorized snapshots;
+conflict-aware merge; transition journaling; and strict portable restart
+checkpoints.
+
+Precise Work and durable Vigil loops share isolated one-attempt Runners,
+Agent-decided retry and recovery, revision fencing, budgets, pause/update/resume
+control, read-only views, committed events, selective memory, and governed
+delivery receipts. External libraries can provide operations or controllers
+without becoming state owners.
+
+`Spectre.State` remains conversational state and `Spectre.Run` remains a
+checkpointable conversational continuation; neither was renamed to Work. See
+[Work, Vigil, and the operational runtime](docs/OPERATIONS.md) and
+[Migrating from 0.1.x](docs/MIGRATING_TO_0_2.md).
 
 ## 0.1.6 Recoverable Baseline
 
@@ -37,8 +56,8 @@ validation with no publication. The normative surface is the
 [public API manifest](docs/PUBLIC_API.md).
 
 Permanent State v5 and Run v1 fixtures under
-`test/fixtures/compatibility/0.1.6` protect recovery while `0.2.0` evolves. Core
-has no dependency on Kinetic, including in its test environment.
+`test/fixtures/compatibility/0.1.6` continue to protect recovery in `0.2.0`.
+Core has no dependency on Kinetic, including in its test environment.
 
 ## Lifecycle At A Glance
 
@@ -69,6 +88,9 @@ The host-facing types have separate roles:
 - `Spectre.Subject` is the canonical entity served across authenticated
   channels.
 - `Spectre.Instance` owns that Subject's ordered State and retained Runs.
+- `Spectre.Work` defines a precise terminating operational procedure.
+- `Spectre.Vigil` defines a durable observation loop between triggers.
+- `Spectre.Operation.View` exposes committed loop state without ownership.
 - `Spectre.Effect` describes work and its lifecycle.
 - `Spectre.Awaitable` describes input the runtime is waiting for.
 
@@ -112,13 +134,28 @@ subject = Spectre.Subject.new({:account, account.id})
 Concurrent get-or-start calls converge on the same local PID. The Instance
 retains multiple Runs, gives each Run its own Effect/policy lifecycle, schedules
 ordered State changes through its mailbox, and dispatches Effect Invocations
-without blocking calls such as `info/1`. Actual capability execution remains
-serialized; calls arriving during an Invocation continue afterward from the
-latest committed State. An authenticated channel must resolve its exact
+without blocking calls such as `info/1`. Conversational Effect execution
+remains serialized; operational attempts use their own bounded Runner pool.
+Calls arriving during an Invocation continue afterward from the latest
+committed State. An authenticated channel must resolve its exact
 `Spectre.ExternalIdentity` through
 `Spectre.Subject.Registry`; Spectre never merges Subjects from names, similar
 numbers, message text, or model output. See
 [Agent Instances and Subjects](docs/INSTANCES.md).
+
+The same Instance can own independent operational loops:
+
+```elixir
+{:ok, work_ref, _view} =
+  Spectre.start_work(instance, MyApp.ReadPages, %{pages: [1, 2, 3]})
+
+{:ok, progress} = Spectre.loop(instance, work_ref)
+{:ok, paused} = Spectre.pause_loop(instance, work_ref)
+{:ok, resumed} = Spectre.resume_loop(instance, work_ref)
+```
+
+Each operation attempt runs in a temporary Runner outside the Instance
+mailbox. Waiting Work and Vigil loops retain no live Runner.
 
 ## Installation
 
@@ -455,6 +492,10 @@ adapters on startup, and can stop after an idle timeout.
   checkpoint/recovery, and the public Turn projection.
 - [Agent Instances and Subjects](docs/INSTANCES.md) - subject-scoped ownership,
   multi-Run scheduling, Invocation receipts, and explicit identity linking.
+- [Work, Vigil, and the Operational Runtime](docs/OPERATIONS.md) - Definitions,
+  Runners, control, checkpoints, events, and governed delivery.
+- [Migrating to 0.2.0](docs/MIGRATING_TO_0_2.md) - compatibility, checkpoint
+  adapters, and incremental adoption from 0.1.x.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM
@@ -474,8 +515,8 @@ adapters on startup, and can stop after an idle timeout.
 - [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
   matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
-- [0.1.6 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
-  compatibility surface for the recoverable baseline.
+- [0.2.0 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+  compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.
 

@@ -6,9 +6,10 @@ application-level authorization, persistence, queues, or observability.
 
 ## Release status
 
-`0.1.x` is a public preview. Runtime invariants are tested and the suite exceeds
-90% line coverage, but public APIs may still change in a minor `0.x` release.
-Pin a compatible minor version and read `CHANGELOG.md` before upgrading.
+`0.2.0` is the first vNext core release. Runtime invariants are tested and the
+suite exceeds 90% line coverage, but public APIs may still change in a minor
+`0.x` release. Pin a compatible minor version and read `CHANGELOG.md` before
+upgrading. The exact compatibility boundary is listed in `PUBLIC_API.md`.
 
 ## State persistence
 
@@ -49,6 +50,20 @@ before the audit append fails. That result is returned as
 `{:error, {:persistence_journal_failed, reason, committed_result}}`. A Session
 retains `committed_result`; request-scoped callers must do the same or reload
 the durable state. Do not retry the old revision as though no write occurred.
+
+### Canonical Instance checkpoints
+
+`Spectre.State.Store` persists conversational state. Work, Vigil, external
+controller, control, event, consent, and receipt sections belong to the
+Instance's complete canonical checkpoint and use the separate
+`Spectre.Instance.CheckpointStore` compare-and-swap boundary.
+
+Configure a durable checkpoint store for any operational loop that must
+survive process or node loss. If a write can have committed before an adapter
+timeout or crash, return `{:error, {:ambiguous, reason}}`. Spectre fences
+further automatic writes until `Spectre.reconcile_checkpoint/2` loads and
+validates durable state. Monitor `checkpoint_status/1`, and use
+`flush_checkpoint/2` as a deployment or graceful-shutdown barrier.
 
 ## Action idempotency
 
@@ -148,7 +163,11 @@ unverified online examples in sensitive flows.
 
 - Pin Spectre and read the changelog.
 - Use durable state with optimistic revisions where concurrency is possible.
+- Persist canonical Instance checkpoints before relying on Work or Vigil
+  recovery, and reconcile every ambiguous compare-and-swap result.
 - Make business actions idempotent by effect key.
+- Give every operational side effect an accurate `:idempotent`,
+  `:reconcilable`, or `:non_idempotent` declaration.
 - Configure finite provider deadlines.
 - Keep authorization in the action/provider boundary.
 - Keep prompt, journal, and telemetry content privacy-safe.

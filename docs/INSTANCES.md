@@ -127,7 +127,47 @@ continue after its terminal state has been committed.
 Stateless Runtime calls and conversation-scoped Sessions do not opt into
 per-Run lifecycle ownership and retain the single pending Effect contract.
 
-### Provider scheduling limit in 0.1.x
+## Operational loops on the same Instance
+
+In 0.2.0 the same Instance also owns the canonical state of Work, Vigil, and
+authorized external controllers. Conversational Runs and operational loops
+remain separate domains, but all committed changes are serialized by this one
+Subject-scoped owner.
+
+```elixir
+{:ok, work_ref, _view} =
+  Spectre.start_work(instance, MyApp.ExportReport, %{report_id: report_id})
+
+{:ok, vigil_ref, _view} =
+  Spectre.register_vigil(instance, MyApp.AccountVigil, %{account_id: account_id})
+
+{:ok, work} = Spectre.loop(instance, work_ref)
+{:ok, vigil} = Spectre.loop(instance, vigil_ref)
+```
+
+The Instance has a bounded operational Runner pool, configured with
+`:max_operation_runners`. Each Runner receives a revision-fenced snapshot,
+executes one registered operation attempt outside the Instance mailbox, sends
+one correlated Result, and terminates. A waiting or paused loop retains no
+Runner. Retry, recovery, control, and canonical commit decisions remain with
+the Instance.
+
+Use `loops/2` for visible projections and `resolve_loop/3` when a natural
+command may identify a loop by kind, Definition, status, or origin. Multiple
+matches return an explicit ambiguity error. Pause, update, resume, renew,
+trigger, and stop are durable commands; stop is terminal while pause is
+reversible.
+
+The complete canonical graph can be persisted through
+`Spectre.Instance.CheckpointStore`. Configure `:checkpoint_store` on Instance
+startup and use `flush_checkpoint/2`, `checkpoint_status/1`, and
+`reconcile_checkpoint/2` at the host boundary. An ambiguous compare-and-swap
+write erects a persistence fence and is never retried automatically.
+
+See [Work, Vigil, and the operational runtime](OPERATIONS.md) for controller,
+operation, recovery, event, and delivery contracts.
+
+### Conversational Move scheduling
 
 The GenServer mailbox never executes input plugs, routing, model calls, memory
 callbacks, renderers, or Actions directly. An ordinary Move runs those bounded
@@ -141,6 +181,9 @@ staged Effect/Action execution, including Lens when it is mounted as an
 Action. A generic provider Invocation requires a serializable mid-turn
 continuation and typed provider receipt; it is intentionally not simulated by
 renaming the whole Move or running stale-State workers concurrently.
+
+This conversational one-Move limit is independent from the bounded
+operational Runner pool described above.
 
 ## External identities and explicit linking
 

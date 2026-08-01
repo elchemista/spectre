@@ -2,18 +2,22 @@ defmodule Spectre.Instance.State do
   @moduledoc false
 
   alias Spectre.AgentRef
+  alias Spectre.Instance.Canonical
   alias Spectre.Instance.Ref
   alias Spectre.Result
   alias Spectre.Run
   alias Spectre.State, as: AgentState
   alias Spectre.Subject
 
+  # The private owner state mirrors independent OTP resources and canonical sections.
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct [
     :agent,
     :agent_ref,
     :subject,
     :ref,
     :state,
+    :canonical,
     :last_result,
     :active,
     :state_lock,
@@ -23,9 +27,17 @@ defmodule Spectre.Instance.State do
     :max_runs,
     :max_tombstones,
     :generation,
+    :runner_supervisor,
+    :max_operation_runners,
+    :checkpoint_store,
+    :checkpoint_mode,
+    :checkpoint_persisted,
+    :checkpoint_reconciliation,
+    :checkpoint_reconcile_inflight,
     :registry,
     :registry_monitor,
     scheduled: false,
+    operation_scheduled: false,
     conversations: %{},
     runs: %{},
     ready: :queue.new(),
@@ -37,6 +49,19 @@ defmodule Spectre.Instance.State do
     completed: :queue.new(),
     terminal_recorded: MapSet.new(),
     tombstones: %{},
+    tombstone_order: :queue.new(),
+    operation_ready: :queue.new(),
+    operation_queued: MapSet.new(),
+    operation_runners: %{},
+    operation_monitors: %{},
+    operation_attempt_timers: %{},
+    operation_timers: %{},
+    operation_progress_clock: %{},
+    checkpoint_revision: 0,
+    checkpoint_inflight: nil,
+    checkpoint_pending: nil,
+    checkpoint_error: nil,
+    checkpoint_waiters: [],
     idle_generation: 0
   ]
 
@@ -46,6 +71,7 @@ defmodule Spectre.Instance.State do
           subject: Subject.t(),
           ref: Ref.t(),
           state: AgentState.t(),
+          canonical: Canonical.t(),
           last_result: Result.t() | nil,
           active: map() | nil,
           state_lock: map() | nil,
@@ -55,9 +81,17 @@ defmodule Spectre.Instance.State do
           max_runs: pos_integer(),
           max_tombstones: non_neg_integer(),
           generation: String.t(),
+          runner_supervisor: GenServer.server(),
+          max_operation_runners: pos_integer(),
+          checkpoint_store: nil | {module(), keyword()},
+          checkpoint_mode: :async | :manual,
+          checkpoint_persisted: Canonical.t() | nil,
+          checkpoint_reconciliation: map() | nil,
+          checkpoint_reconcile_inflight: map() | nil,
           registry: atom(),
           registry_monitor: reference() | nil,
           scheduled: boolean(),
+          operation_scheduled: boolean(),
           conversations: %{optional(String.t()) => map()},
           runs: %{optional(String.t()) => Run.t()},
           ready: :queue.queue(String.t()),
@@ -69,6 +103,19 @@ defmodule Spectre.Instance.State do
           completed: :queue.queue(String.t()),
           terminal_recorded: MapSet.t(String.t()),
           tombstones: %{optional(String.t()) => map()},
+          tombstone_order: :queue.queue(String.t()),
+          operation_ready: :queue.queue({atom(), String.t()}),
+          operation_queued: MapSet.t({atom(), String.t()}),
+          operation_runners: %{optional(String.t()) => map()},
+          operation_monitors: %{optional(pid()) => String.t()},
+          operation_attempt_timers: %{optional(String.t()) => map()},
+          operation_timers: %{optional(String.t()) => map()},
+          operation_progress_clock: %{optional(String.t()) => non_neg_integer()},
+          checkpoint_revision: non_neg_integer(),
+          checkpoint_inflight: map() | nil,
+          checkpoint_pending: Canonical.t() | nil,
+          checkpoint_error: term(),
+          checkpoint_waiters: [{GenServer.from(), non_neg_integer()}],
           idle_generation: non_neg_integer()
         }
 end

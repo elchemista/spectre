@@ -35,6 +35,16 @@ defmodule Spectre.Runner do
     ask(prompt, ctx.input, ctx, handler_opts)
   end
 
+  def run(%Route{handler: {:reason, prompt, handler_opts}} = route, ctx) do
+    ctx = %{ctx | route: route}
+    ask(prompt, ctx.input, ctx, Keyword.put(handler_opts, :plan_actions?, false))
+  end
+
+  def run(%Route{handler: {:act, prompt, handler_opts}} = route, ctx) do
+    ctx = %{ctx | route: route}
+    ask(prompt, ctx.input, ctx, Keyword.put(handler_opts, :plan_actions?, true))
+  end
+
   def run(%Route{handler: {:run, function, handler_opts}} = route, ctx) do
     ctx = %{ctx | route: route, opts: Keyword.merge(ctx.opts, handler_opts)}
     run_function(function, ctx.input, ctx)
@@ -43,6 +53,11 @@ defmodule Spectre.Runner do
   def run(%Route{handler: {:reply, prompt, handler_opts}} = route, ctx) do
     ctx = %{ctx | route: route}
     reply(prompt, ctx.input, ctx, handler_opts)
+  end
+
+  def run(%Route{handler: {:work, controller, handler_opts}} = route, ctx) do
+    ctx = %{ctx | route: route}
+    start_work(controller, ctx.input, ctx, handler_opts)
   end
 
   def run(%Route{handler: {:action, action, handler_opts}} = route, ctx) do
@@ -113,8 +128,81 @@ defmodule Spectre.Runner do
      }}
   end
 
-  defp ask_result(reply, input, ctx, opts, _policy_prompt?),
-    do: plan_reply(reply, input, ctx, opts)
+  defp ask_result(reply, input, ctx, opts, _policy_prompt?) do
+    if Keyword.get(opts, :plan_actions?, true) do
+      plan_reply(reply, input, ctx, opts)
+    else
+      planner_opts = ActionConfig.planner_opts(ctx, opts)
+
+      {:ok,
+       %Result{
+         input: input,
+         route: ctx.route,
+         state: ctx.state,
+         reply_text: ActionPlanner.clean_reply(reply, ctx, planner_opts)
+       }}
+    end
+  end
+
+  @doc false
+  @spec start_work(module(), Input.t(), Spectre.Context.t(), keyword()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def start_work(controller, %Input{} = input, ctx, opts) when is_atom(controller) do
+    case Keyword.get(ctx.opts, :instance_pid) do
+      instance when is_pid(instance) ->
+        work_input = work_input(input, opts)
+
+        operation_opts =
+          opts
+          |> Keyword.drop([:input, :reply, :reply_text, :renderer])
+          |> Keyword.put_new(:origin, input.source)
+          |> Keyword.put_new(:turn_id, Keyword.get(ctx.opts, :run_id))
+          |> Keyword.put_new(:causation_id, Keyword.get(ctx.opts, :run_id))
+
+        with {:ok, ref, view} <-
+               Spectre.Instance.start_work(instance, controller, work_input, operation_opts),
+             {:ok, result} <- work_acknowledgement(input, ctx, opts) do
+          metadata =
+            result.metadata
+            |> Map.put(:operation_ref, ref)
+            |> Map.put(:operation_view, view)
+
+          event = %{type: :work_started, loop_id: ref.id, controller: ref.controller}
+          {:ok, %{result | metadata: metadata, events: result.events ++ [event]}}
+        end
+
+      _missing ->
+        {:error, :work_handler_requires_agent_instance}
+    end
+  end
+
+  defp work_input(input, opts) do
+    case Keyword.get(opts, :input, :normalized_input) do
+      :normalized_input -> input
+      :raw -> input.raw
+      :text -> input.text
+      value -> value
+    end
+  end
+
+  defp work_acknowledgement(input, ctx, opts) do
+    cond do
+      Keyword.has_key?(opts, :reply) ->
+        reply(Keyword.fetch!(opts, :reply), input, ctx, Keyword.drop(opts, [:input, :reply]))
+
+      is_binary(Keyword.get(opts, :reply_text)) ->
+        {:ok,
+         %Result{
+           input: input,
+           route: ctx.route,
+           state: ctx.state,
+           reply_text: Keyword.fetch!(opts, :reply_text)
+         }}
+
+      true ->
+        {:ok, %Result{input: input, route: ctx.route, state: ctx.state}}
+    end
+  end
 
   @spec put_prompt_metadata(Result.t(), Plan.t()) :: Result.t()
   defp put_prompt_metadata(%Result{} = result, %Plan{} = plan) do

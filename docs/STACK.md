@@ -67,7 +67,7 @@ defmodule MyApp.Inference do
     id: :inference,
     version: "0.1.5",
     contract: 1,
-    spectre: "~> 0.1.5",
+    spectre: ">= 0.1.5 and < 0.3.0",
     provides: [{:service, :inference}],
     operations: [{:inference, :complete}],
     resources: [:client],

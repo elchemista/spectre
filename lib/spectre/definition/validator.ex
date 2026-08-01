@@ -232,10 +232,14 @@ defmodule Spectre.Definition.Validator do
 
   @spec valid_handler?(term()) :: boolean()
   defp valid_handler?({kind, value, opts})
-       when kind in [:ask, :reply] and not is_nil(value) and is_list(opts),
+       when kind in [:ask, :reason, :act, :reply] and not is_nil(value) and is_list(opts),
        do: true
 
   defp valid_handler?({:run, value, opts}) when is_atom(value) and is_list(opts), do: true
+
+  defp valid_handler?({:work, controller, opts})
+       when is_atom(controller) and not is_nil(controller) and is_list(opts),
+       do: true
 
   defp valid_handler?({:action, value, opts}) when is_list(opts),
     do: Spectre.Action.valid_ref?(value)

@@ -85,7 +85,7 @@ defmodule Spectre.ActionDispatcher do
   defp effect_execution_opts(%Effect{} = effect, opts) do
     opts
     |> Keyword.put(:effect_id, effect.id)
-    |> Keyword.put(:idempotency_key, Effect.idempotency_key(effect))
+    |> Keyword.put_new(:idempotency_key, Effect.idempotency_key(effect))
     |> Keyword.put(:effect_owner, effect.owner)
     |> Keyword.put(:effect_scope, effect.scope)
     |> Keyword.put(:action_provider, Effect.via(effect))

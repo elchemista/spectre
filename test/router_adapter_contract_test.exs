@@ -26,10 +26,19 @@ defmodule SpectreRouterAdapterContractTest do
 
   alias Spectre.Input
   alias Spectre.Router.Context
+  alias Spectre.Router.DefaultPipeline
   alias Spectre.Router.LLMClassifier
   alias Spectre.Router.Plugs.EmbeddingSimilarity
   alias Spectre.Router.Plugs.LLMFallback
   alias Spectre.Rule
+
+  test "the declared default pipeline executes end to end" do
+    assert {:ok, %Context{} = routed} =
+             DefaultPipeline.call(context("nothing", [], classification_log?: false))
+
+    assert routed.halted?
+    assert routed.route.label == :unknown
+  end
 
   test "LLM classifier normalizes prompts and labels and contains every callback failure class" do
     assert {:error, :missing_llm_classifier_model} = LLMClassifier.classify("hello", [:HELLO])

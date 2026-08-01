@@ -255,18 +255,33 @@ Input plugs are the usual place to add that metadata.
 
 ## Handlers
 
-Spectre has four route handlers:
+Spectre has seven route handlers:
 
 ```elixir
-ask(:prompt_name)
+reason(:prompt_name)
+act(:prompt_name)
 reply(:prompt_name)
 run(:local_function)
+work(:work_controller)
 action(:dangerous_or_external_action)
+ask(:prompt_name)
 ```
 
-`ask` renders a prompt and calls the model. If an action planner is mounted, the
-planner may clean its syntax from the visible reply and return staged,
-provider-neutral actions. Without a planner the reply passes through normally.
+`reason` renders a prompt and calls the model without permitting action
+planning. Use it when the route should only think or answer.
+
+`act` renders a prompt, calls the model, and lets the mounted planner stage
+provider-neutral actions from the closed catalog. Use it when the model may
+choose among explicitly permitted operations.
+
+`work` starts a separate precise Work owned by the current Agent Instance and
+lets the Turn finish while the Work advances on the operational runtime.
+
+`ask` is the legacy 0.1.x verb: it behaves like `act` when a planner is
+mounted and like `reason` otherwise. It remains supported for compatibility,
+but new Flows should prefer the unambiguous `reason`/`act` split; `ask` will
+be deprecated in a future release (see the
+[migration guide](MIGRATING_TO_0_2.md)).
 
 `reply` renders a deterministic response without calling the model. This is good
 for help, health checks, canned answers, and policy confirmations.
