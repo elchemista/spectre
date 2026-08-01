@@ -19,6 +19,7 @@ defmodule Spectre.Instance do
   alias Spectre.Input
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec, as: CanonicalCodec
+  alias Spectre.Instance.Canonical.Validator, as: CanonicalValidator
   alias Spectre.Instance.CheckpointStore
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Registry, as: InstanceRegistry
@@ -47,7 +48,6 @@ defmodule Spectre.Instance do
   alias Spectre.Run.Value
   alias Spectre.Runtime
   alias Spectre.State
-  alias Spectre.State.Codec, as: StateCodec
   alias Spectre.Subject
   alias Spectre.Turn
 
@@ -4446,194 +4446,8 @@ defmodule Spectre.Instance do
      reason_class(reconciliation.reason)}
   end
 
-  defp validate_canonical_instance(canonical, instance_ref) do
-    with :ok <- Canonical.validate(canonical),
-         {:ok, %State{} = flow} <- Canonical.fetch(canonical, :flow),
-         :ok <- validate_canonical_flow(flow),
-         {:ok, loops} <- validate_canonical_loops(canonical),
-         :ok <- validate_canonical_controls(canonical, loops, instance_ref),
-         :ok <- validate_canonical_events(canonical, loops),
-         :ok <- validate_canonical_correlations(canonical, loops, instance_ref) do
-      :ok
-    else
-      {:ok, value} -> {:error, {:invalid_canonical_flow_state, value}}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_canonical_flow(%State{} = state) do
-    case StateCodec.encode(state) do
-      {:ok, _encoded} -> :ok
-      {:error, reason} -> {:error, {:invalid_canonical_flow_state, reason}}
-    end
-  end
-
-  defp validate_canonical_loops(canonical) do
-    Enum.reduce_while([:work, :vigil, :directive], {:ok, %{}}, fn kind, {:ok, loops} ->
-      with {:ok, section} <- Canonical.fetch(canonical, kind),
-           true <- is_map(section) and not is_struct(section),
-           {:ok, validated} <- validate_canonical_loop_section(section, kind) do
-        if Enum.any?(Map.keys(validated), &Map.has_key?(loops, &1)) do
-          {:halt, {:error, :duplicate_canonical_operational_loop}}
-        else
-          {:cont, {:ok, Map.merge(loops, validated)}}
-        end
-      else
-        false -> {:halt, {:error, {:invalid_canonical_loop_section, kind}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp validate_canonical_loop_section(section, kind) do
-    Enum.reduce_while(section, {:ok, %{}}, fn
-      {id, %OperationLoop{id: id, kind: ^kind} = loop}, {:ok, loops}
-      when is_binary(id) and id != "" ->
-        case OperationLoop.validate(loop) do
-          :ok -> {:cont, {:ok, Map.put(loops, id, loop)}}
-          {:error, reason} -> {:halt, {:error, {:invalid_canonical_loop, id, reason}}}
-        end
-
-      {id, _loop}, _acc ->
-        {:halt, {:error, {:invalid_canonical_loop_entry, kind, id}}}
-    end)
-  end
-
-  defp validate_canonical_controls(canonical, loops, instance_ref) do
-    with {:ok, controls} <- Canonical.fetch(canonical, :control),
-         true <- is_map(controls) and not is_struct(controls),
-         true <- MapSet.new(Map.keys(controls)) == MapSet.new(Map.keys(loops)) do
-      env = %{
-        agent: instance_ref.agent_ref.definition,
-        subject_id: instance_ref.subject.id,
-        epoch: "checkpoint-validation",
-        snapshot_id: "checkpoint-validation",
-        canonical_revision: canonical.revision,
-        committed: %{},
-        now: System.system_time(:millisecond)
-      }
-
-      Enum.reduce_while(loops, :ok, fn {id, loop}, :ok ->
-        case Map.fetch(controls, id) do
-          {:ok, %Control{loop_id: ^id} = control} ->
-            case OperationRuntime.validate_checkpoint(loop, control, env) do
-              :ok ->
-                {:cont, :ok}
-
-              {:error, reason} ->
-                {:halt, {:error, {:invalid_canonical_operational_checkpoint, id, reason}}}
-            end
-
-          _invalid ->
-            {:halt, {:error, {:invalid_canonical_loop_control, id}}}
-        end
-      end)
-    else
-      false -> {:error, :canonical_loop_control_set_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_canonical_events(canonical, loops) do
-    with {:ok, events} <- Canonical.fetch(canonical, :events),
-         true <- is_map(events) and not is_struct(events),
-         true <- MapSet.new(Map.keys(events)) == MapSet.new([:records, :ids]),
-         records when is_list(records) <- Map.get(events, :records),
-         ids when is_map(ids) and not is_struct(ids) <- Map.get(events, :ids),
-         true <- length(records) <= @operation_event_limit,
-         :ok <- validate_canonical_event_records(records, loops, canonical.revision),
-         true <- ids == Map.new(records, &{&1.id, &1.revision}) do
-      :ok
-    else
-      false -> {:error, :invalid_canonical_operation_events}
-      nil -> {:error, :invalid_canonical_operation_events}
-      {:error, _reason} = error -> error
-      _invalid -> {:error, :invalid_canonical_operation_events}
-    end
-  end
-
-  defp validate_canonical_event_records(records, loops, canonical_revision) do
-    ids =
-      Enum.map(records, fn
-        %OperationEvent{id: id} -> id
-        _invalid -> nil
-      end)
-
-    if Enum.uniq(ids) != ids do
-      {:error, :duplicate_canonical_operation_event}
-    else
-      Enum.reduce_while(records, :ok, fn
-        %OperationEvent{} = event, :ok ->
-          case {OperationEvent.validate(event), Map.get(loops, event.loop_id)} do
-            {:ok, %OperationLoop{kind: kind}}
-            when kind == event.loop_kind and
-                   event.revision <= canonical_revision ->
-              {:cont, :ok}
-
-            {:ok, _loop} ->
-              {:halt, {:error, {:operation_event_loop_mismatch, event.id}}}
-
-            {{:error, reason}, _loop} ->
-              {:halt, {:error, {:invalid_canonical_operation_event, event.id, reason}}}
-          end
-
-        _invalid, :ok ->
-          {:halt, {:error, :invalid_canonical_operation_event}}
-      end)
-    end
-  end
-
-  defp validate_canonical_correlations(canonical, loops, instance_ref) do
-    with {:ok, correlations} <- Canonical.fetch(canonical, :correlations),
-         true <- is_map(correlations) and not is_struct(correlations),
-         :ok <- validate_canonical_instance_key(correlations, instance_ref) do
-      Enum.reduce_while(correlations, :ok, fn
-        {:instance_key, _key}, :ok ->
-          {:cont, :ok}
-
-        {_key, %DeliveryConsent{} = consent}, :ok ->
-          case DeliveryConsent.validate(consent) do
-            :ok when consent.subject_id == instance_ref.subject.id -> {:cont, :ok}
-            :ok -> {:halt, {:error, :delivery_consent_subject_mismatch}}
-            {:error, reason} -> {:halt, {:error, {:invalid_delivery_consent, reason}}}
-          end
-
-        {_key, %DeliveryReceipt{} = receipt}, :ok ->
-          case {DeliveryReceipt.validate(receipt), Map.get(loops, receipt.loop_id)} do
-            {:ok, %OperationLoop{subject_id: subject_id}}
-            when subject_id == receipt.subject_id and subject_id == instance_ref.subject.id ->
-              {:cont, :ok}
-
-            {:ok, _loop} ->
-              {:halt, {:error, :delivery_receipt_loop_mismatch}}
-
-            {{:error, reason}, _loop} ->
-              {:halt, {:error, {:invalid_delivery_receipt, reason}}}
-          end
-
-        {_key, %{loop_id: loop_id, loop_kind: kind, revision: revision}}, :ok
-        when is_binary(loop_id) and is_integer(revision) and revision >= 0 and
-               revision <= canonical.revision ->
-          case Map.get(loops, loop_id) do
-            %OperationLoop{kind: ^kind} -> {:cont, :ok}
-            _missing -> {:halt, {:error, :canonical_loop_correlation_mismatch}}
-          end
-
-        {_key, _extension_value}, :ok ->
-          {:cont, :ok}
-      end)
-    else
-      false -> {:error, :invalid_canonical_correlations}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_canonical_instance_key(correlations, instance_ref) do
-    case Map.get(correlations, :instance_key) do
-      key when key == instance_ref.key -> :ok
-      _other -> {:error, :canonical_checkpoint_instance_mismatch}
-    end
-  end
+  defp validate_canonical_instance(canonical, instance_ref),
+    do: CanonicalValidator.validate(canonical, instance_ref, event_limit: @operation_event_limit)
 
   defp reason_class(%{kind: kind}) when is_atom(kind), do: kind
   defp reason_class({kind, _detail}) when is_atom(kind), do: kind

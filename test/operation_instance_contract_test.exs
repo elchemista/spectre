@@ -1897,6 +1897,7 @@ defmodule SpectreOperationInstanceContractTest do
       )
 
     invalid_consent = %{wrong_subject_consent | id: "", subject_id: subject.id}
+    valid_consent = %{wrong_subject_consent | id: "valid-consent", subject_id: subject.id}
 
     receipt =
       struct!(DeliveryReceipt, %{
@@ -1924,6 +1925,16 @@ defmodule SpectreOperationInstanceContractTest do
       {put_canonical_section(canonical, :control, %{ref.id => :invalid}),
        {:invalid_canonical_loop_control, ref.id}},
       {put_canonical_section(canonical, :events, []), :invalid_canonical_operation_events},
+      {put_canonical_section(canonical, :events, %{records: nil, ids: %{}}),
+       :invalid_canonical_operation_events},
+      {put_canonical_section(canonical, :events, %{records: [], ids: nil}),
+       :invalid_canonical_operation_events},
+      {put_canonical_section(canonical, :events, %{records: [], ids: %{}, extra: true}),
+       :invalid_canonical_operation_events},
+      {put_canonical_section(canonical, :events, %{
+         records: List.duplicate(event, 513),
+         ids: %{event.id => event.revision}
+       }), :invalid_canonical_operation_events},
       {put_canonical_section(canonical, :events, %{records: [:invalid], ids: %{}}),
        :invalid_canonical_operation_event},
       {put_canonical_section(canonical, :events, %{
@@ -1962,6 +1973,11 @@ defmodule SpectreOperationInstanceContractTest do
       {put_canonical_section(
          canonical,
          :correlations,
+         Map.put(correlations, :wrong_consent_key, valid_consent)
+       ), :delivery_consent_key_mismatch},
+      {put_canonical_section(
+         canonical,
+         :correlations,
          Map.put(correlations, :mismatched_receipt, %{receipt | loop_id: "missing-loop"})
        ), :delivery_receipt_loop_mismatch},
       {put_canonical_section(
@@ -1972,7 +1988,12 @@ defmodule SpectreOperationInstanceContractTest do
       {put_canonical_section(
          canonical,
          :correlations,
-         Map.put(correlations, :missing_loop, %{
+         Map.put(correlations, :wrong_receipt_key, receipt)
+       ), :delivery_receipt_key_mismatch},
+      {put_canonical_section(
+         canonical,
+         :correlations,
+         Map.put(correlations, "missing-loop-correlation", %{
            loop_id: "missing-loop",
            loop_kind: :work,
            revision: canonical.revision
@@ -1980,9 +2001,68 @@ defmodule SpectreOperationInstanceContractTest do
        ), :canonical_loop_correlation_mismatch},
       {put_canonical_section(
          canonical,
+         :correlations,
+         Map.put(correlations, loop.correlation_id, %{loop_id: ref.id})
+       ), :invalid_canonical_loop_correlation},
+      {put_canonical_section(
+         canonical,
+         :correlations,
+         Map.put(correlations, "wrong-loop-kind-correlation", %{
+           loop_id: ref.id,
+           loop_kind: :vigil,
+           revision: canonical.revision
+         })
+       ), :canonical_loop_correlation_mismatch},
+      {put_canonical_section(
+         canonical,
+         :correlations,
+         Map.put(correlations, "future-loop-correlation", %{
+           loop_id: ref.id,
+           loop_kind: :work,
+           revision: canonical.revision + 1
+         })
+       ), :invalid_canonical_loop_correlation},
+      {put_canonical_section(
+         canonical,
+         :correlations,
+         Map.put(correlations, "invalid-causation-correlation", %{
+           loop_id: ref.id,
+           loop_kind: :work,
+           revision: canonical.revision,
+           causation_id: :invalid
+         })
+       ), :invalid_canonical_loop_correlation},
+      {put_canonical_section(
+         canonical,
+         :correlations,
+         Map.put(correlations, "extra-field-correlation", %{
+           loop_id: ref.id,
+           loop_kind: :work,
+           revision: canonical.revision,
+           unexpected: true
+         })
+       ), :invalid_canonical_loop_correlation},
+      {put_canonical_section(
+         canonical,
+         :correlations,
+         Map.put(correlations, :non_binary_correlation_key, %{
+           loop_id: ref.id,
+           loop_kind: :work,
+           revision: canonical.revision
+         })
+       ), :invalid_canonical_loop_correlation},
+      {put_canonical_section(
+         canonical,
          :control,
          %{ref.id => %{control | loop_id: "another-loop"}}
-       ), {:invalid_canonical_loop_control, ref.id}}
+       ), {:invalid_canonical_loop_control, ref.id}},
+      {put_canonical_section(
+         canonical,
+         :control,
+         %{ref.id => %{control | state: :terminal}}
+       ),
+       {:invalid_canonical_operational_checkpoint, ref.id,
+        :nonterminal_loop_with_terminal_control}}
     ]
 
     previous_trap_exit = Process.flag(:trap_exit, true)
@@ -1999,6 +2079,31 @@ defmodule SpectreOperationInstanceContractTest do
                  opts: [test_pid: self()]
                )
     end)
+
+    extended_correlations =
+      correlations
+      |> Map.put("delivery:consent:#{valid_consent.id}", valid_consent)
+      |> Map.put("delivery:receipt:#{receipt.id}", receipt)
+      |> Map.put("extension:scalar", :kept)
+      |> Map.put("extension:opaque", %{
+        revision: canonical.revision,
+        extension_revision: canonical.revision,
+        payload: %{status: :kept}
+      })
+
+    extended = put_canonical_section(canonical, :correlations, extended_correlations)
+    assert {:ok, encoded} = Codec.encode_json(extended)
+
+    assert {:ok, restored} =
+             Instance.start_link(
+               agent: @agent,
+               subject: subject,
+               canonical_checkpoint: encoded,
+               idle: false,
+               opts: [test_pid: self()]
+             )
+
+    GenServer.stop(restored)
 
     Process.flag(:trap_exit, previous_trap_exit)
   end

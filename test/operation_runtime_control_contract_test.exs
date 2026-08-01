@@ -233,6 +233,54 @@ defmodule SpectreOperationRuntimeControlContractTest.CorrelatedWork do
   def handle_trigger(state, _trigger, _context), do: {:ok, state}
 end
 
+defmodule SpectreOperationRuntimeControlContractTest.StartingDirective do
+  @moduledoc false
+
+  @behaviour Spectre.Operation.Controller
+
+  alias Spectre.Operation.Definition
+  alias Spectre.Operation.Request
+
+  @impl true
+  def __spectre_loop_definition__ do
+    Definition.new(
+      id: :runtime_starting_directive,
+      version: 1,
+      kind: :directive,
+      input: :map,
+      state: :map,
+      can_start: [:work],
+      operations: [
+        [
+          id: :directive_echo,
+          executor: {SpectreOperationRuntimeControlContractTest.Operations, :execute},
+          input: :map,
+          output: :map
+        ]
+      ]
+    )
+  end
+
+  @impl true
+  def init(input, _context), do: {:ok, %{child: input.child, done?: false}}
+
+  @impl true
+  def next(%{done?: false}, _context),
+    do: {:run, Request.new(:directive_echo, %{value: :seed})}
+
+  def next(%{done?: true}, _context), do: {:complete, :started}
+
+  @impl true
+  def apply_result(state, _request, _result, _context) do
+    child = {:work, state.child, %{}, [intent_id: :child, id: "runtime-child"]}
+    {:ok, %{state | done?: true}, start_loops: [child]}
+  end
+
+  @impl true
+  def complete(%{done?: true}, _context), do: {:complete, :started}
+  def complete(_state, _context), do: :continue
+end
+
 defmodule SpectreOperationRuntimeControlContractTest do
   use ExUnit.Case, async: true
 
@@ -246,6 +294,7 @@ defmodule SpectreOperationRuntimeControlContractTest do
   @agent SpectreOperationRuntimeControlContractTest.Agent
   @work SpectreOperationRuntimeControlContractTest.Work
   @correlated_work SpectreOperationRuntimeControlContractTest.CorrelatedWork
+  @starting_directive SpectreOperationRuntimeControlContractTest.StartingDirective
 
   test "declared wait, blocker, completion and failure boundaries are deterministic" do
     env = env()
@@ -440,6 +489,30 @@ defmodule SpectreOperationRuntimeControlContractTest do
                Result.new(attempt, :ok, %{items: []}),
                env
              )
+  end
+
+  test "the public reducer refuses to hide Directive child starts outside the Agent commit" do
+    env = env()
+
+    {:ok, loop, control, _events} =
+      Runtime.start(:directive, @starting_directive, %{child: @work}, [], env)
+
+    {:run, active, attempt, _spec, _request, false, _events} =
+      Runtime.prepare(loop, control, env)
+
+    result = Result.new(attempt, :ok, %{value: :seed})
+
+    assert {:error, :operation_start_loops_require_agent_commit} =
+             Runtime.apply_result(active, control, result, env)
+
+    assert {:ok, evaluating, ^control, [%{type: :attempt_committed}], [intent]} =
+             Runtime.apply_result_with_start_loops(active, control, result, env)
+
+    assert evaluating.status == :evaluating
+    assert evaluating.attempt == nil
+    assert intent.intent_id == :child
+    assert intent.controller == @work
+    assert intent.opts[:id] == "runtime-child"
   end
 
   test "safe and immediate controls preserve boundaries, fencing and terminal stop" do
