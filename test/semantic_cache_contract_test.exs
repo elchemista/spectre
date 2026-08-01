@@ -178,7 +178,7 @@ defmodule SpectreSemanticCacheContractTest do
     Process.exit(old_owner, :kill)
 
     assert_receive {:DOWN, ^owner_monitor, :process, ^old_owner, :killed}
-    new_owner = eventually(fn -> replacement_pid(Owner, old_owner) end)
+    new_owner = eventually(fn -> ready_replacement_owner(Owner, Learned, old_owner) end)
     assert :ets.info(Learned, :owner) == new_owner
     assert index_entries() == []
 
@@ -408,6 +408,13 @@ defmodule SpectreSemanticCacheContractTest do
     case Process.whereis(name) do
       pid when is_pid(pid) and pid != old_pid -> pid
       _other -> nil
+    end
+  end
+
+  defp ready_replacement_owner(name, table, old_pid) do
+    case replacement_pid(name, old_pid) do
+      pid when is_pid(pid) -> if :ets.info(table, :owner) == pid, do: pid
+      nil -> nil
     end
   end
 
