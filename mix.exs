@@ -47,7 +47,8 @@ defmodule Spectre.MixProject do
       description: description(),
       package: package(),
       dialyzer: [
-        plt_add_apps: [:mix]
+        plt_add_apps: [:mix],
+        flags: [:no_opaque]
       ],
       docs: docs(),
       source_url: @source_url,
