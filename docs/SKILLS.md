@@ -175,7 +175,7 @@ protects the bound concrete action, the Agent's protection takes precedence.
 
 ## Prompts And Injections
 
-A Skill may set its own `prompt_root:` and use the same `ask`, `reply`, and
+A Skill may set its own `prompt_root:` and use the same `reason`, `reply`, and
 `inject` declarations as an Agent:
 
 ```elixir
@@ -189,7 +189,7 @@ defmodule MyApp.Skills.Answers do
 
   flow :answers do
     on :ANSWER, regex: ~r/^answer:/i do
-      ask(:answer)
+      reason(:answer)
     end
   end
 end
@@ -197,13 +197,13 @@ end
 
 For a selected Skill route, Agent-level injections are composed with that
 Skill's injections. Prompt names declared by the Skill resolve below its own
-prompt root. In this example, `ask(:answer)` resolves:
+prompt root. In this example, `reason(:answer)` resolves:
 
 ```text
 priv/skills/answers/prompts/answer.text.heex
 ```
 
-The model used for `ask` still comes from the mounting Agent.
+The model used for `reason` still comes from the mounting Agent.
 
 ## What A Skill Inherits
 
