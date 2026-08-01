@@ -103,6 +103,37 @@ The short distinctions are useful:
 - Beam crosses **human or provider channel boundaries**.
 - Pulse crosses **Agent-to-Agent protocol boundaries**.
 
+## The Names
+
+Ecosystem packages carry evocative names rather than descriptive ones, on
+purpose: a descriptive name such as "model-selection-middleware" goes stale
+the moment a package grows, while a metaphor stays stable. Learn them once —
+each name encodes the package's one job:
+
+- **Prism** splits light into its components. Spectre Prism splits "call the
+  model" into declared inference profiles and selects the one whose
+  constraints — privacy, modality, cost, latency, depth — all hold.
+- **Kinetic** is motion held ready. Spectre Kinetic turns declared application
+  functions into a registry of candidate Actions and plans which one to
+  propose. The energy becomes movement only when the core approves execution.
+- **Mnemonic** is a memory aid, not the memory itself. Spectre Mnemonic
+  recalls context for a turn; it never becomes canonical state.
+- **Directive** is a mission order. Spectre Directive advances one mission and
+  its living plan across many inputs.
+- **Lens** is how the agent sees. Spectre Lens provides browser perception and
+  browser actions, with everything it sees marked untrusted until explicitly
+  converted.
+- **Beam** carries signal between the agent and humans — and yes, it also runs
+  on the BEAM. Spectre Beam normalizes provider channels such as Telegram and
+  WhatsApp into Spectre input and delivery.
+- **Pulse** is a signal between peers. Spectre Pulse moves versioned envelopes
+  between agents over any transport.
+
+The core vocabulary follows the same rule: a **Vigil** keeps watch (a durable
+observation loop between triggers); **Work** is exactly what it says (a
+bounded, terminating operational procedure); a **Subject** is who the work is
+about; an **Instance** is the process that owns both for that Subject.
+
 ## Compatibility With Spectre 0.2.0
 
 The `0.2.0` release train aligns every package and every Stack manifest on the
@@ -613,6 +644,27 @@ single authority.
 This is not separation for its own sake. The Stack still gives applications one
 place to compose capabilities, and Agent extensions remove repetitive glue.
 The difference is that composition stays visible, versioned, and reversible.
+
+### The compass: OTP and the actor model
+
+Spectre's design questions are answered by one compass: what is the OTP shape
+of this problem? The mapping is already direct, and future concepts will keep
+converging on it rather than drifting toward framework-specific abstractions:
+
+| Spectre concept | Actor-model ancestor |
+| --- | --- |
+| Instance | a process that owns its state and serializes writes through its mailbox |
+| Runner | a supervised one-shot task: one attempt, isolated crash, no shared state |
+| Vigil | a timer- and event-driven loop that holds no live process while waiting |
+| Effect / Invocation | an explicit message across a boundary, never a hidden call |
+| Checkpoint | what a restart restores: intent and lifecycle, not dead connections |
+| Pulse envelope | location-transparent message passing without shared state |
+
+A new capability enters the ecosystem the same way every time: find the single
+owner, make every boundary a message, make recovery a restart. If a proposed
+feature has no clean actor-model shape — shared mutable state, ambient
+authority, a hidden synchronous call — that is evidence against the feature,
+not against the model.
 
 ## Rules For Ecosystem Packages
 

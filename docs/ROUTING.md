@@ -3,6 +3,36 @@
 Spectre routing is evidence-first. Router plugs collect candidates, then an
 arbitrator decides which candidate becomes the route.
 
+## The Determinism Dial
+
+Routing is not deterministic by decree — it is deterministic by configuration,
+and the Agent author holds the dial. The `via:` chain runs from providers
+whose output is a pure function of the input (`:regex`, `:bag`, `:jaro`)
+through statistical evidence (`:embedding`, `:classifier`, `:semantic_cache`)
+up to `:llm_classifier`, where a model chooses between the declared labels.
+Pick the segment of that spectrum the application needs:
+
+- A compliance-sensitive flow can route on regex alone and treat everything
+  else as unmatched.
+- A general assistant can let the LLM classifier resolve whatever cheaper
+  evidence leaves inconclusive.
+- Most agents sit in between: deterministic matches win first, semantic
+  evidence covers paraphrases, and the model is the tie-breaker of last
+  resort.
+
+Three guarantees hold at every position of the dial:
+
+1. The model chooses **between declared labels only**; it cannot invent a
+   route.
+2. Evidence is collected in order, so cheaper and more predictable providers
+   always get the first claim.
+3. Routing only selects the handler. Policy gates, Effect lifecycle, and
+   explicit execution are unchanged no matter how the route was chosen — a
+   route proposed by an LLM has exactly the same authority as one matched by
+   a regex: none, until the lifecycle grants it.
+
+## Configuration
+
 The common configuration is `via:`:
 
 ```elixir
@@ -153,7 +183,7 @@ on :BILLING,
   regex: ~r/\b(invoice|billing)\b/i,
   embedding: ["question about an invoice"],
   via: [:regex, :embedding, :classifier] do
-  ask(:billing)
+  reason(:billing)
 end
 ```
 
@@ -505,7 +535,7 @@ flow :sales do
       "prepare a project proposal"
     ],
     via: [:regex, :embedding] do
-    ask(:project_proposal)
+    reason(:project_proposal)
   end
 end
 ```

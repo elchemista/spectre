@@ -5,6 +5,14 @@ state, policies, and side effects remain explicit.
 
 [![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
 
+Spectre treats an agent the way OTP treats a system: a supervised set of
+processes with one canonical owner for every piece of state, explicit messages
+at every boundary, and recovery designed in from the start. If you know
+GenServer, supervision trees, and "let it crash", you already have the mental
+model — Spectre applies it to conversations, model calls, and tool execution.
+This direction is deliberate and permanent: as the ecosystem evolves, its
+concepts converge on OTP and the actor model, never away from them.
+
 The goal is to describe the stable shape of an agent in one readable module
 without hiding application logic behind a large callback framework. The DSL
 declares repetitive structure; normal Elixir modules still own business rules,
@@ -17,6 +25,11 @@ Spectre is intentionally built around a safety boundary:
 - approval changes state but does not execute the work;
 - execution happens only through an explicit host call;
 - every terminal outcome is returned as data.
+
+The lifecycle around that boundary is always deterministic. How the agent
+*decides* — the routing — is a dial the agent author controls, from pure regex
+to a fully model-driven LLM classifier; see
+[Routing: a dial, not a dogma](#routing-a-dial-not-a-dogma).
 
 The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
@@ -233,6 +246,42 @@ The application still owns `MyApp.LLM`, `MyApp.SupportActions`,
 `MyApp.Embeddings`, prompt templates, durable storage, permissions, and the
 actual business operation.
 
+## Routing: A Dial, Not A Dogma
+
+Two different things decide what an agent does, and Spectre refuses to blur
+them:
+
+- The **lifecycle** is always deterministic. Once a route is chosen, policy
+  gates, Effect states, approvals, and execution follow fixed rules that no
+  model output can override.
+- The **decision** — which route handles this input — is exactly as
+  deterministic as the agent author configures it to be.
+
+The `via:` list is that dial. Each entry is an evidence provider, ordered from
+cheapest and most predictable to most flexible:
+
+```elixir
+# Fully deterministic: only explicit patterns route; everything else
+# falls through.
+router(via: [:regex])
+
+# Hybrid: deterministic matches win first, semantic evidence covers
+# paraphrases.
+router(via: [:regex, :embedding, :classifier])
+
+# Model-in-the-loop: the arbitrator may ask an LLM to choose between
+# declared labels when cheaper evidence is inconclusive.
+router(via: [:regex, :embedding, :classifier, :semantic_cache, :llm_classifier])
+```
+
+With `:llm_classifier` in the chain, routing is genuinely model-driven — but
+only between labels the Agent declares, only after cheaper evidence was not
+decisive, and never with the power to invent a route, skip a policy, or execute
+an Effect. A refunds bot can run pure regex; an open-ended assistant can lean
+on the LLM; both get the same deterministic lifecycle around the decision.
+See [Routing](docs/ROUTING.md) for evidence providers, arbitration, and custom
+pipelines.
+
 ## Install Packages With A Stack
 
 `Spectre.Stack` resolves package manifests and configuration without a global
@@ -265,6 +314,129 @@ and policy bindings still select and protect capabilities through logical
 Stack Refs. Runtime clients, processes, and secrets remain outside the compiled
 definition. See [Stack](docs/STACK.md) for the manifest contract, dependency
 validation, Agent binding, runtime supervision, and migration adapters.
+
+## Two Realistic Agents
+
+The support agent above is deliberately minimal. These two compositions show
+what a useful agent looks like with one satellite package each.
+
+### Answer questions from your database (core + Kinetic)
+
+Each query is an ordinary function. The `@al` attribute, doc, and typespec are
+all Kinetic needs to build its planning registry — no JSON schemas, no tool
+catalog in the prompt:
+
+```elixir
+defmodule MyApp.Warehouse do
+  use SpectreKinetic
+
+  @al ~s(COUNT ORDERS WITH: ACCOUNT="acme" PERIOD="last_month")
+  @doc "Counts orders placed by an account in a period."
+  @spec count_orders(String.t(), String.t()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def count_orders(account, period),
+    do: MyApp.Reports.count_orders(account, period)
+
+  @al ~s(TOP CUSTOMERS WITH: LIMIT="5")
+  @doc "Lists the accounts with the most orders."
+  @spec top_customers(String.t()) :: {:ok, [map()]} | {:error, term()}
+  def top_customers(limit), do: MyApp.Reports.top_customers(limit)
+end
+
+defmodule MyApp.AnalyticsAgent do
+  use Spectre.Agent
+
+  use Spectre.Kinetic,
+    actions: MyApp.Warehouse,
+    modes: [count_orders: :read, top_customers: :read]
+
+  model(MyApp.LLM, purpose: :smart)
+
+  router(via: [:regex, :llm_classifier])
+
+  flow :analytics do
+    on :DATA_QUESTION,
+      regex: ~r/\b(how many|orders|customers|revenue)\b/i do
+      act(:data_question)
+    end
+  end
+end
+```
+
+Ask a question:
+
+```elixir
+{:ok, turn} =
+  Spectre.turn(MyApp.AnalyticsAgent,
+    "how many orders did acme place last month?"
+  )
+```
+
+`act` renders the prompt and calls the model; the model answers in compact
+Action Language (`COUNT ORDERS WITH: ACCOUNT="acme" PERIOD="last_month"`);
+Kinetic maps it onto `MyApp.Warehouse.count_orders/2` with validated, canonical
+argument names. The planner never touches the database: the selected Action is
+staged as a `:read` Effect, and the query runs only when the host executes the
+`{:needs, effect, result}` decision. Add `protect(...)` to any function that
+writes, and the same policy machinery from the support example guards it.
+
+### Read a page and answer (core + Lens)
+
+Lens gives the agent browser perception through a Stack, with browser
+processes kept in an explicitly started runtime:
+
+```elixir
+defmodule MyApp.AI do
+  use Spectre.Stack
+
+  install Spectre.Lens, planner_exposure: [:look, :discover] do
+    backend(SpectreLens.Browsers.Lightpanda,
+      instances: 1,
+      protocol: SpectreLens.Protocol.Lightpanda
+    )
+  end
+end
+
+defmodule MyApp.ResearchAgent do
+  use Spectre.Agent, stack: MyApp.AI
+
+  model(MyApp.LLM, purpose: :smart)
+
+  router(via: [:regex])
+
+  flow :research do
+    on :CHECK_RELEASES, regex: ~r/\brelease page\b/i do
+      action({:lens, :look},
+        args: %{
+          url: "https://github.com/elchemista/spectre/releases",
+          opts: [include: [:markdown, :links]]
+        },
+        mode: :read
+      )
+    end
+  end
+end
+```
+
+Run it with the browser runtime supplied at the boundary, never stored in the
+definition:
+
+```elixir
+{:ok, stack_runtime} =
+  Spectre.Stack.start_link(MyApp.AI, packages: [lens: [binary: "/opt/lightpanda"]])
+
+{:ok, turn} =
+  Spectre.turn(MyApp.ResearchAgent, "check the release page",
+    stack_runtime: stack_runtime
+  )
+```
+
+The deterministic route stages the `:look` Action; executing it returns the
+page as structured data marked `trust: :untrusted`, which the host converts
+with `agent_context/2` before any model sees it. Because the Stack declares
+`planner_exposure: [:look, :discover]`, an `act` route may also let the model
+plan browsing — but only over those two operations, and every browser step
+still passes through the same staged-Effect lifecycle.
 
 ## Run And Dispatch A Turn
 
