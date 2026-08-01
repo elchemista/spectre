@@ -17,17 +17,21 @@ defmodule Spectre.Instance do
 
   alias Spectre.AgentRef
   alias Spectre.Input
-  alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec, as: CanonicalCodec
-  alias Spectre.Instance.Canonical.Validator, as: CanonicalValidator
+  alias Spectre.Instance.Checkpoint
   alias Spectre.Instance.CheckpointStore
+  alias Spectre.Instance.Commit
+  alias Spectre.Instance.Conversation
+  alias Spectre.Instance.Deliveries
+  alias Spectre.Instance.Loops
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Registry, as: InstanceRegistry
+  alias Spectre.Instance.Runs
   alias Spectre.Instance.State, as: InstanceState
+  alias Spectre.Instance.Telemetry, as: InstanceTelemetry
+  alias Spectre.Instance.Timers
   alias Spectre.Invocation
   alias Spectre.Invocation.Receipt
-  alias Spectre.Operation.Control
-  alias Spectre.Operation.Control.Command, as: ControlCommand
   alias Spectre.Operation.Delivery
   alias Spectre.Operation.Delivery.Consent, as: DeliveryConsent
   alias Spectre.Operation.Delivery.Policy, as: DeliveryPolicy
@@ -55,7 +59,6 @@ defmodule Spectre.Instance do
   @default_max_tombstones 256
   @default_max_operation_runners 8
   @operation_event_limit 512
-  @delivery_receipt_limit 512
 
   @type option ::
           {:agent, module()}
@@ -204,7 +207,7 @@ defmodule Spectre.Instance do
   @spec loop(GenServer.server(), OperationRef.t() | String.t(), keyword()) ::
           {:ok, OperationView.t()} | {:error, term()}
   def loop(server, loop, opts \\ []) do
-    GenServer.call(server, {:operation_view, operation_id(loop), opts}, timeout(opts))
+    GenServer.call(server, {:operation_view, Loops.operation_id(loop), opts}, timeout(opts))
   end
 
   @doc "Lists committed Work, Vigil and controller views visible to the caller."
@@ -278,7 +281,11 @@ defmodule Spectre.Instance do
   @spec trigger_loop(GenServer.server(), OperationRef.t() | String.t(), term(), keyword()) ::
           {:ok, OperationView.t()} | {:error, term()}
   def trigger_loop(server, loop, trigger, opts \\ []) do
-    GenServer.call(server, {:operation_trigger, operation_id(loop), trigger, opts}, timeout(opts))
+    GenServer.call(
+      server,
+      {:operation_trigger, Loops.operation_id(loop), trigger, opts},
+      timeout(opts)
+    )
   end
 
   @doc "Encodes the complete canonical Agent checkpoint as strict JSON."
@@ -361,6 +368,55 @@ defmodule Spectre.Instance do
     GenServer.call(server, {:delivery_receipts, opts}, timeout(opts))
   end
 
+  @doc false
+  @spec operation_event_limit() :: pos_integer()
+  def operation_event_limit, do: @operation_event_limit
+
+  # Canonical checkpoints are decoded with String.to_existing_atom/1 under the
+  # contract that loading this producer module registers every atom the commit
+  # machinery writes (see the 0.2.0 compatibility fixture). The writes now live
+  # in Instance.Commit, Instance.Deliveries and Instance.Checkpoint, so their
+  # metadata, provenance and event vocabulary must stay literal here.
+  @doc false
+  @spec canonical_vocabulary() :: [atom()]
+  def canonical_vocabulary do
+    [
+      :transition,
+      :loop_id,
+      :loop_ids,
+      :loop_kind,
+      :revision,
+      :causation_id,
+      :source,
+      :run_id,
+      :flow,
+      :flow_state_committed,
+      :operational_transition,
+      :instance_key,
+      :delivery_decision,
+      :delivery_policy,
+      :receipt_id,
+      :consent_id,
+      :delivery_authorized,
+      :delivery_deferred,
+      :delivery_digest_queued,
+      :delivery_denied,
+      :delivery_recorded,
+      :delivery_failed,
+      :authorized,
+      :deferred,
+      :digest,
+      :denied,
+      :delivered,
+      :failed,
+      :status,
+      :reason,
+      :state_persistence,
+      :conversation_ref,
+      :origin_conversation_ref
+    ]
+  end
+
   @impl GenServer
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -379,11 +435,11 @@ defmodule Spectre.Instance do
              Keyword.get(opts, :max_operation_runners, @default_max_operation_runners)
            ),
          base_opts <- base_opts(opts, instance_ref),
-         {:ok, checkpoint_store} <- checkpoint_store(agent, opts, base_opts),
-         {:ok, checkpoint_mode} <- checkpoint_mode(opts, checkpoint_store),
+         {:ok, checkpoint_store} <- Checkpoint.store_config(agent, opts, base_opts),
+         {:ok, checkpoint_mode} <- Checkpoint.mode(opts, checkpoint_store),
          {:ok, state} <- restore_initial_state(agent, opts, base_opts),
          {:ok, state, canonical, checkpoint_revision} <-
-           restore_initial_canonical(opts, state, checkpoint_store, base_opts),
+           Checkpoint.restore_canonical(opts, state, checkpoint_store, base_opts),
          {:ok, registry_monitor} <- monitor_registry(registry, instance_ref) do
       data = %InstanceState{
         agent: agent,
@@ -414,7 +470,7 @@ defmodule Spectre.Instance do
 
           {:ok,
            data
-           |> schedule_restored_timers()
+           |> Timers.schedule_restored()
            |> maybe_schedule_operations()
            |> arm_idle_timer()}
 
@@ -440,7 +496,7 @@ defmodule Spectre.Instance do
         from,
         data
       ) do
-    case owned_run(data, supplied_ref) do
+    case Runs.owned_run(data, supplied_ref) do
       {:ok, run} ->
         cond do
           run_active?(data, run.id) ->
@@ -470,7 +526,7 @@ defmodule Spectre.Instance do
 
   # Compatibility with Spectre.Session and Spectre.Turn.resolve_policy/3.
   def handle_call({:resolve_policy, %Result{} = supplied, resolution, opts}, from, data) do
-    with {:ok, run} <- owned_result_run(data, supplied),
+    with {:ok, run} <- Runs.owned_result_run(data, supplied),
          false <- run_active?(data, run.id),
          %Boundary{kind: :needs, ref: boundary_ref} <- run.waiting do
       entry = %{
@@ -494,7 +550,7 @@ defmodule Spectre.Instance do
 
   # Compatibility with Spectre.execute/3 for a live Instance.
   def handle_call({:execute, %Result{} = supplied, opts}, from, data) do
-    case owned_result_run(data, supplied, true) do
+    case Runs.owned_result_run(data, supplied, true) do
       {:ok, %Run{waiting: %Invocation{} = invocation} = run} ->
         dispatch_invocation(
           run,
@@ -506,7 +562,7 @@ defmodule Spectre.Instance do
         )
 
       {:ok, %Run{result: %Result{} = result} = run} ->
-        if terminal_result?(result) do
+        if Runs.terminal_result?(result) do
           {:reply, {:ok, result}, arm_idle_timer(data)}
         else
           {:reply, {:error, {:run_not_waiting_for_invocation, run.id}}, arm_idle_timer(data)}
@@ -529,7 +585,7 @@ defmodule Spectre.Instance do
     reply =
       case Map.get(data.runs, run_id) do
         %Run{} = run ->
-          {:ok, run_projection(run)}
+          {:ok, Runs.run_projection(run)}
 
         nil ->
           case Map.fetch(data.tombstones, run_id) do
@@ -549,13 +605,13 @@ defmodule Spectre.Instance do
     if nested_work?(data, callers, kind) do
       {:reply, {:error, :work_cannot_start_work}, arm_idle_timer(data)}
     else
-      env = operation_env(data)
+      env = Loops.operation_env(data)
 
       case OperationRuntime.start(kind, controller, input, opts, env) do
         {:ok, loop, control, event_specs} ->
-          case operation_loop(data, loop.id) do
+          case Loops.operation_loop(data, loop.id) do
             {:ok, existing, existing_control} ->
-              if same_loop_request?(existing, loop) do
+              if Loops.same_loop_request?(existing, loop) do
                 view = OperationView.from_loop(existing, existing_control)
                 {:reply, {:ok, OperationRef.from_loop(existing), view}, arm_idle_timer(data)}
               else
@@ -586,8 +642,8 @@ defmodule Spectre.Instance do
 
   def handle_call({:operation_view, loop_id, opts}, _from, data) do
     reply =
-      with {:ok, loop, control} <- operation_loop(data, loop_id),
-           :ok <- authorize_loop(loop, opts) do
+      with {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
+           :ok <- Loops.authorize_loop(loop, opts) do
         {:ok, OperationView.from_loop(loop, control)}
       end
 
@@ -597,9 +653,9 @@ defmodule Spectre.Instance do
   def handle_call({:operation_views, opts}, _from, data) do
     views =
       data
-      |> all_operation_loops()
+      |> Loops.all_operation_loops()
       |> Enum.filter(fn {loop, _control} ->
-        match?(:ok, authorize_loop(loop, opts)) and loop_filter?(loop, opts)
+        match?(:ok, Loops.authorize_loop(loop, opts)) and Loops.loop_filter?(loop, opts)
       end)
       |> Enum.map(fn {loop, control} -> OperationView.from_loop(loop, control) end)
 
@@ -609,9 +665,9 @@ defmodule Spectre.Instance do
   def handle_call({:operation_resolve, selector, opts}, _from, data) do
     matches =
       data
-      |> all_operation_loops()
+      |> Loops.all_operation_loops()
       |> Enum.filter(fn {loop, _control} ->
-        match?(:ok, authorize_loop(loop, opts)) and selector_matches?(loop, selector)
+        match?(:ok, Loops.authorize_loop(loop, opts)) and Loops.selector_matches?(loop, selector)
       end)
 
     reply =
@@ -636,10 +692,11 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:operation_control, loop_id, action, payload, opts}, _from, data) do
-    with {:ok, loop, control} <- operation_loop(data, loop_id),
-         :ok <- authorize_loop(loop, opts),
-         {:ok, command} <- control_command(loop, action, payload, opts),
-         result <- OperationRuntime.request_control(loop, control, command, operation_env(data)) do
+    with {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
+         :ok <- Loops.authorize_loop(loop, opts),
+         {:ok, command} <- Loops.control_command(loop, action, payload, opts),
+         result <-
+           OperationRuntime.request_control(loop, control, command, Loops.operation_env(data)) do
       case result do
         {:duplicate, duplicate_loop, duplicate_control} ->
           {:reply, {:ok, OperationView.from_loop(duplicate_loop, duplicate_control)},
@@ -658,7 +715,7 @@ defmodule Spectre.Instance do
                 |> maybe_emit_uncorrelated_operation_trigger(committed_events)
                 |> apply_runner_action(pid_action)
                 |> maybe_queue_after_transition(next_loop, next_control)
-                |> maybe_schedule_wait_timer(next_loop)
+                |> Timers.maybe_schedule_wait_timer(next_loop)
                 |> maybe_schedule_operations()
 
               {:reply, {:ok, OperationView.from_loop(next_loop, next_control)}, next}
@@ -676,10 +733,10 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:operation_trigger, loop_id, trigger, opts}, _from, data) do
-    with {:ok, loop, control} <- operation_loop(data, loop_id),
-         :ok <- authorize_loop(loop, opts),
+    with {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
+         :ok <- Loops.authorize_loop(loop, opts),
          {:ok, next_loop, next_control, event_specs} <-
-           OperationRuntime.trigger(loop, control, trigger, opts, operation_env(data)),
+           OperationRuntime.trigger(loop, control, trigger, opts, Loops.operation_env(data)),
          {:ok, next, committed_events} <-
            commit_operational(data, next_loop, next_control, event_specs,
              correlation_id: Keyword.get(opts, :correlation_id, Spectre.Identity.uuid7()),
@@ -690,7 +747,7 @@ defmodule Spectre.Instance do
       next =
         next
         |> maybe_emit_uncorrelated_operation_trigger(committed_events)
-        |> maybe_schedule_wait_timer(next_loop)
+        |> Timers.maybe_schedule_wait_timer(next_loop)
         |> queue_operation(next_loop)
         |> maybe_schedule_operations()
 
@@ -713,7 +770,7 @@ defmodule Spectre.Instance do
       inflight_revision: data.checkpoint_inflight && data.checkpoint_inflight.revision,
       pending_revision: data.checkpoint_pending && data.checkpoint_pending.revision,
       error: data.checkpoint_error,
-      reconciliation_required: checkpoint_reconciliation_status(data.checkpoint_reconciliation)
+      reconciliation_required: Checkpoint.reconciliation_status(data.checkpoint_reconciliation)
     }
 
     {:reply, status, arm_idle_timer(data)}
@@ -728,12 +785,12 @@ defmodule Spectre.Instance do
         {:reply, {:ok, data.checkpoint_revision}, arm_idle_timer(data)}
 
       not is_nil(data.checkpoint_reconciliation) ->
-        {:reply, {:error, checkpoint_reconciliation_error(data)}, arm_idle_timer(data)}
+        {:reply, {:error, Checkpoint.reconciliation_error(data)}, arm_idle_timer(data)}
 
       true ->
         target = data.canonical.revision
         next = %{data | checkpoint_waiters: [{from, target} | data.checkpoint_waiters]}
-        {:noreply, force_checkpoint(next)}
+        {:noreply, Checkpoint.force(next)}
     end
   end
 
@@ -749,7 +806,7 @@ defmodule Spectre.Instance do
         {:reply, {:error, :checkpoint_operation_in_progress}, arm_idle_timer(data)}
 
       true ->
-        {:noreply, start_checkpoint_reconciliation(data, from)}
+        {:noreply, Checkpoint.start_reconciliation(data, from)}
     end
   end
 
@@ -759,11 +816,11 @@ defmodule Spectre.Instance do
 
     events =
       data
-      |> canonical_value!(:events)
+      |> Loops.canonical_value!(:events)
       |> Map.get(:records, [])
       |> Enum.filter(fn event ->
         (is_nil(types) or event.type in List.wrap(types)) and
-          operation_event_visible?(data, event, opts)
+          Loops.event_visible?(data, event, opts)
       end)
       |> Enum.take(limit)
 
@@ -771,9 +828,9 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:delivery_consent_put, value, opts}, _from, data) do
-    with {:ok, consent} <- normalize_delivery_consent(value),
-         :ok <- validate_delivery_consent_subject(consent, data),
-         {:ok, next} <- commit_delivery_consent(data, consent, opts, :delivery_consent_granted) do
+    with {:ok, consent} <- Deliveries.normalize_consent(value),
+         :ok <- Deliveries.validate_consent_subject(consent, data),
+         {:ok, next} <- Deliveries.commit_consent(data, consent, opts, :delivery_consent_granted) do
       {:reply, {:ok, consent}, next}
     else
       {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
@@ -781,9 +838,9 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:delivery_consent_revoke, consent_id, opts}, _from, data) do
-    with {:ok, consent} <- fetch_delivery_consent(data, consent_id),
+    with {:ok, consent} <- Deliveries.fetch_consent(data, consent_id),
          revoked <- DeliveryConsent.revoke(consent),
-         {:ok, next} <- commit_delivery_consent(data, revoked, opts, :delivery_consent_revoked) do
+         {:ok, next} <- Deliveries.commit_consent(data, revoked, opts, :delivery_consent_revoked) do
       {:reply, {:ok, revoked}, next}
     else
       {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
@@ -791,13 +848,16 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:delivery_authorize, event_id, destination, policy_value, opts}, _from, data) do
-    with {:ok, event} <- committed_operation_event(data, event_id),
-         {:ok, loop, _control} <- operation_loop(data, event.loop_id),
-         :ok <- authorize_loop(loop, opts),
-         {:ok, policy} <- normalize_delivery_policy(policy_value) do
+    with {:ok, event} <- Deliveries.committed_operation_event(data, event_id),
+         {:ok, loop, _control} <- Loops.operation_loop(data, event.loop_id),
+         :ok <- Loops.authorize_loop(loop, opts),
+         {:ok, policy} <- Deliveries.normalize_policy(policy_value) do
       now = Keyword.get(opts, :now, System.system_time(:millisecond))
-      consent = Keyword.get(opts, :consent) || find_delivery_consent(data, loop, destination, now)
-      history = committed_delivery_receipts(data)
+
+      consent =
+        Keyword.get(opts, :consent) || Deliveries.find_consent(data, loop, destination, now)
+
+      history = Deliveries.committed_receipts(data)
 
       case Delivery.authorize(
              event,
@@ -828,10 +888,10 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:delivery_record, receipt_id, outcome, detail, opts}, _from, data) do
-    with {:ok, receipt} <- fetch_delivery_receipt(data, receipt_id),
-         {:ok, loop, _control} <- operation_loop(data, receipt.loop_id),
-         :ok <- authorize_loop(loop, opts),
-         {:ok, updated} <- update_delivery_receipt(receipt, outcome, detail),
+    with {:ok, receipt} <- Deliveries.fetch_receipt(data, receipt_id),
+         {:ok, loop, _control} <- Loops.operation_loop(data, receipt.loop_id),
+         :ok <- Loops.authorize_loop(loop, opts),
+         {:ok, updated} <- Deliveries.update_receipt(receipt, outcome, detail),
          {:ok, next} <- commit_delivery_receipt(data, loop, updated, opts) do
       {:reply, {:ok, updated}, next}
     else
@@ -844,8 +904,8 @@ defmodule Spectre.Instance do
 
     receipts =
       data
-      |> committed_delivery_receipts()
-      |> Enum.filter(&delivery_receipt_visible?(data, &1, opts))
+      |> Deliveries.committed_receipts()
+      |> Enum.filter(&Deliveries.receipt_visible?(data, &1, opts))
       |> Enum.sort_by(& &1.decided_at, :desc)
       |> Enum.take(limit)
 
@@ -861,7 +921,7 @@ defmodule Spectre.Instance do
         |> State.new()
         |> put_conversation_id(Keyword.fetch!(data.base_opts, :conversation_id))
 
-      case commit_canonical_sections(data, %{flow: state},
+      case Commit.canonical_sections(data, %{flow: state},
              correlation_id: Spectre.Identity.uuid7(),
              provenance: %{source: :instance_reset},
              metadata: %{transition: :flow_state_reset}
@@ -907,7 +967,7 @@ defmodule Spectre.Instance do
         {:spectre, :invocation_result, invocation_id, %Receipt{} = receipt},
         data
       ) do
-    case validate_invocation_receipt(data, invocation_id, receipt) do
+    case Runs.validate_invocation_receipt(data, invocation_id, receipt) do
       {:ok, ownership} ->
         data =
           data
@@ -942,14 +1002,14 @@ defmodule Spectre.Instance do
         {:noreply, data}
 
       ownership ->
-        with {:ok, loop, control} <- operation_loop(data, result.loop_id),
+        with {:ok, loop, control} <- Loops.operation_loop(data, result.loop_id),
              {:ok, next_loop, next_control, event_specs, start_loop_intents} <-
                normalize_operation_result(
                  OperationRuntime.apply_result_with_start_loops(
                    loop,
                    control,
                    result,
-                   operation_env(data, snapshot_id: ownership.snapshot_id)
+                   Loops.operation_env(data, snapshot_id: ownership.snapshot_id)
                  )
                ),
              {:ok, started_loops, already_started} <-
@@ -969,7 +1029,7 @@ defmodule Spectre.Instance do
             |> finish_operation_runner(ownership)
             |> maybe_remember_operation_result(next_loop, result, ownership.spec)
             |> maybe_queue_after_transition(next_loop, next_control)
-            |> maybe_schedule_wait_timer(next_loop)
+            |> Timers.maybe_schedule_wait_timer(next_loop)
             |> queue_started_loops(started_loops)
             |> maybe_schedule_operations()
 
@@ -1019,16 +1079,16 @@ defmodule Spectre.Instance do
         {:spectre, :operation_timer, loop_id, wait_id, generation},
         data
       ) do
-    case consume_operation_timer(data, loop_id, wait_id, generation) do
+    case Timers.consume_wait_timer(data, loop_id, wait_id, generation) do
       {:ok, data} ->
-        with {:ok, loop, control} <- operation_loop(data, loop_id),
+        with {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
              {:ok, next_loop, next_control, event_specs} <-
                OperationRuntime.trigger(
                  loop,
                  control,
                  {:timer, wait_id},
                  [wait_id: wait_id, generation: generation],
-                 operation_env(data)
+                 Loops.operation_env(data)
                ),
              {:ok, next, _events} <-
                commit_operational(data, next_loop, next_control, event_specs,
@@ -1055,12 +1115,12 @@ defmodule Spectre.Instance do
         {:spectre, :operation_attempt_timeout, loop_id, attempt_id, fencing_token},
         data
       ) do
-    case consume_operation_attempt_timer(data, loop_id, attempt_id, fencing_token) do
+    case Timers.consume_attempt_timer(data, loop_id, attempt_id, fencing_token) do
       {:ok, ownership, next} ->
         _ = RunnerSupervisor.stop_runner(next.runner_supervisor, ownership.pid)
         next = finish_operation_runner(next, ownership)
 
-        with {:ok, loop, control} <- operation_loop(next, loop_id),
+        with {:ok, loop, control} <- Loops.operation_loop(next, loop_id),
              %OperationLoop{attempt: %{id: ^attempt_id, fencing_token: ^fencing_token}} <- loop,
              {:ok, next_loop, next_control, event_specs} <-
                OperationRuntime.runner_down(
@@ -1068,7 +1128,7 @@ defmodule Spectre.Instance do
                  control,
                  ownership.spec,
                  :timeout,
-                 operation_env(next, snapshot_id: ownership.snapshot_id)
+                 Loops.operation_env(next, snapshot_id: ownership.snapshot_id)
                ),
              {:ok, committed, _events} <-
                commit_operational(next, next_loop, next_control, event_specs,
@@ -1080,7 +1140,7 @@ defmodule Spectre.Instance do
           committed =
             committed
             |> maybe_queue_after_transition(next_loop, next_control)
-            |> maybe_schedule_wait_timer(next_loop)
+            |> Timers.maybe_schedule_wait_timer(next_loop)
             |> maybe_schedule_operations()
 
           {:noreply, committed}
@@ -1097,7 +1157,7 @@ defmodule Spectre.Instance do
         {:spectre, :operation_memory_result, loop_id, result_id, outcome},
         data
       ) do
-    with {:ok, loop, control} <- operation_loop(data, loop_id),
+    with {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
          true <- operation_result_committed?(data, loop, result_id),
          event_type <- if(outcome == :ok, do: :memory_committed, else: :memory_commit_failed),
          {:ok, next, _events} <-
@@ -1126,24 +1186,17 @@ defmodule Spectre.Instance do
         {:spectre, :checkpoint_result, token, revision, result},
         %{checkpoint_inflight: %{token: token, revision: revision} = inflight} = data
       ) do
-    data = finish_checkpoint_task(data)
+    data = Checkpoint.finish_task(data)
 
     case result do
       :ok ->
-        next =
-          data
-          |> Map.put(:checkpoint_revision, revision)
-          |> Map.put(:checkpoint_persisted, inflight.canonical)
-          |> Map.put(:checkpoint_reconciliation, nil)
-          |> Map.put(:checkpoint_error, nil)
-          |> reply_checkpoint_waiters()
-          |> start_pending_checkpoint()
+        next = Checkpoint.persisted(data, inflight, revision)
 
         emit(:checkpoint_persisted, next, %{count: 1, revision: revision})
         {:noreply, arm_idle_timer(next)}
 
       {:error, reason} ->
-        next = checkpoint_persist_failed(data, inflight, reason)
+        next = Checkpoint.persist_failed(data, inflight, reason)
 
         emit(:checkpoint_failed, next, %{count: 1, revision: revision})
         {:noreply, arm_idle_timer(next)}
@@ -1154,9 +1207,9 @@ defmodule Spectre.Instance do
         {:spectre, :checkpoint_reconcile_result, token, result},
         %{checkpoint_reconcile_inflight: %{token: token, from: from}} = data
       ) do
-    data = finish_checkpoint_reconciliation_task(data)
+    data = Checkpoint.finish_reconciliation_task(data)
 
-    case reconcile_checkpoint_result(data, result) do
+    case Checkpoint.apply_reconciliation(data, result) do
       {:ok, next, revision} ->
         GenServer.reply(from, {:ok, revision})
         emit(:checkpoint_reconciled, next, %{count: 1, revision: revision})
@@ -1229,7 +1282,7 @@ defmodule Spectre.Instance do
 
   defp receive_advance_result(data, active, outcome) do
     with %Run{} = current <- Map.get(data.runs, active.run_id),
-         :ok <- validate_move_outcome(outcome, current, active.entry) do
+         :ok <- Runs.validate_move_outcome(outcome, current, active.entry) do
       data = finish_worker(data, active.pid)
       apply_step(outcome, active.entry, %{data | active: nil})
     else
@@ -1276,9 +1329,9 @@ defmodule Spectre.Instance do
   end
 
   defp submit(input, opts, projection, from, data) do
-    data = prune_for_new_run(data)
+    data = Runs.prune_for_new_run(data)
 
-    case policy_owner(data, input, opts) do
+    case Conversation.policy_owner(data, input, opts) do
       :none ->
         if map_size(data.runs) >= data.max_runs do
           {:reply, {:error, :instance_run_capacity_reached}, arm_idle_timer(data)}
@@ -1353,8 +1406,8 @@ defmodule Spectre.Instance do
   end
 
   defp dispatch_invocation(run, command, opts, projection, from, data) do
-    run = rebase_run(run, data.state)
-    data = put_run(data, run)
+    run = Runs.rebase_run(run, data.state)
+    data = Runs.put_run(data, run)
 
     with %Invocation{} = invocation <- run.waiting,
          false <- run_active?(data, run.id),
@@ -1454,186 +1507,10 @@ defmodule Spectre.Instance do
     end)
   end
 
-  defp validate_invocation_receipt(data, invocation_id, %Receipt{} = receipt) do
-    ownership = Map.get(data.invocations, invocation_id)
-
-    cond do
-      is_nil(ownership) ->
-        {:error, :unknown_invocation}
-
-      receipt.invocation_id != invocation_id ->
-        {:error, :invocation_id_mismatch}
-
-      receipt.run_id != ownership.run_id or
-          receipt.run_revision != ownership.run_revision ->
-        {:error, :run_fence_mismatch}
-
-      receipt.generation != ownership.generation or
-          receipt.dispatch_id != ownership.dispatch_id ->
-        {:error, :dispatch_fence_mismatch}
-
-      receipt.capability !== ownership.capability ->
-        {:error, :invalid_receipt_capability}
-
-      true ->
-        with %Run{} = current <- Map.get(data.runs, ownership.run_id),
-             true <- current.revision == ownership.run_revision,
-             %Invocation{id: ^invocation_id} <- current.waiting,
-             :ok <- validate_receipt_outcome(receipt.outcome, current) do
-          {:ok, ownership}
-        else
-          _invalid -> {:error, :invalid_receipt_outcome}
-        end
-    end
-  end
-
-  defp validate_receipt_outcome({:continue, %Run{} = returned}, current),
-    do: validate_returned_run(returned, current, :advanced)
-
-  defp validate_receipt_outcome(
-         {:await, %Invocation{} = invocation, %Run{} = returned},
-         current
-       ) do
-    with true <- returned.waiting == invocation,
-         :ok <- validate_returned_run(returned, current, :advanced) do
-      :ok
-    else
-      _invalid -> {:error, :invalid_await_receipt}
-    end
-  end
-
-  defp validate_receipt_outcome(
-         {:boundary, %Boundary{} = boundary, %Run{} = returned},
-         current
-       ) do
-    with true <- returned.waiting == boundary,
-         :ok <- validate_returned_run(returned, current, :advanced) do
-      :ok
-    else
-      _invalid -> {:error, :invalid_boundary_receipt}
-    end
-  end
-
-  defp validate_receipt_outcome(
-         {:complete, %Result{} = result, %Run{} = returned},
-         current
-       ) do
-    with true <- returned.result == result,
-         true <- returned.status == :complete and is_nil(returned.waiting),
-         :ok <- validate_returned_run(returned, current, :advanced) do
-      :ok
-    else
-      _invalid -> {:error, :invalid_completion_receipt}
-    end
-  end
-
-  defp validate_receipt_outcome({:error, _reason, %Run{} = returned}, current) do
-    cond do
-      returned == current ->
-        :ok
-
-      returned.revision == current.revision + 1 ->
-        validate_returned_run(returned, current, :advanced)
-
-      true ->
-        {:error, :invalid_error_receipt}
-    end
-  end
-
-  defp validate_receipt_outcome(_outcome, _current),
-    do: {:error, :invalid_receipt_shape}
-
-  defp validate_move_outcome(
-         {:continue, %Run{} = returned},
-         current,
-         %{operation: {:start, _input}}
-       ) do
-    validate_started_run(returned, current)
-  end
-
-  defp validate_move_outcome(
-         {:error, _reason, %Run{} = returned},
-         current,
-         %{operation: {:start, _input}}
-       ) do
-    if returned.status == :failed,
-      do: validate_receipt_outcome({:error, nil, returned}, current),
-      else: validate_started_run(returned, current)
-  end
-
-  defp validate_move_outcome(outcome, current, _entry),
-    do: validate_receipt_outcome(outcome, current)
-
-  defp validate_started_run(%Run{} = returned, %Run{} = current) do
-    with :ok <- validate_run_identity(returned, current),
-         :ok <- validate_started_shape(returned, current),
-         true <- returned.state.revision == current.state.revision do
-      :ok
-    else
-      false -> {:error, :state_revision_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_run_identity(returned, current) do
-    if {returned.id, returned.agent, returned.trace_id} ==
-         {current.id, current.agent, current.trace_id},
-       do: :ok,
-       else: {:error, :run_lineage_mismatch}
-  end
-
-  defp validate_started_shape(returned, current) do
-    if {returned.revision, returned.status, returned.cursor, returned.waiting, returned.result} ==
-         {current.revision, :ready, :turn, nil, nil},
-       do: :ok,
-       else: {:error, :invalid_started_run}
-  end
-
-  defp validate_returned_run(%Run{} = returned, %Run{} = current, :advanced) do
-    cond do
-      returned.id != current.id or returned.agent != current.agent or
-          returned.trace_id != current.trace_id ->
-        {:error, :run_lineage_mismatch}
-
-      returned.revision != current.revision + 1 ->
-        {:error, :run_revision_mismatch}
-
-      returned.state.revision not in [current.state.revision, current.state.revision + 1] ->
-        {:error, :state_revision_mismatch}
-
-      not valid_result_lineage?(returned) ->
-        {:error, :result_lineage_mismatch}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp valid_result_lineage?(%Run{result: nil}), do: true
-
-  defp valid_result_lineage?(%Run{result: %Result{} = result} = run) do
-    case get_in(result.metadata, [:run]) do
-      %{
-        id: id,
-        revision: revision,
-        status: status,
-        cursor: cursor,
-        ref: %Ref{run_id: ref_run_id, revision: ref_revision}
-      } ->
-        id == run.id and revision == run.revision and status == run.status and
-          cursor == run.cursor and ref_run_id == run.id and ref_revision == run.revision
-
-      _missing ->
-        false
-    end
-  end
-
-  defp valid_result_lineage?(_run), do: false
-
   defp start_advance_worker(data, entry) do
     run = Map.fetch!(data.runs, entry.run_id)
     state = State.claim_run_lifecycle(data.state, run.id)
-    run = rebase_run(run, state)
+    run = Runs.rebase_run(run, state)
     data = %{data | state: state}
 
     entry = prepare_entry(entry, run, data)
@@ -1720,22 +1597,22 @@ defmodule Spectre.Instance do
         data = apply_returned_run(data, run, entry)
 
         cond do
-          terminal_run?(run) ->
+          Runs.terminal_run?(run) ->
             data
             |> reply_caller(run.id, {:error, reason})
             |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
-            |> record_terminal(run)
+            |> Runs.record_terminal(run)
             |> maybe_schedule()
             |> arm_idle_timer()
 
           start_operation?(entry) ->
-            failed = terminalize_failed_run(run, reason)
+            failed = Runs.terminalize_failed_run(run, reason)
 
             data
-            |> put_run(failed)
+            |> Runs.put_run(failed)
             |> reply_caller(run.id, {:error, reason})
             |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
-            |> record_terminal(failed)
+            |> Runs.record_terminal(failed)
             |> maybe_schedule()
             |> arm_idle_timer()
 
@@ -1743,7 +1620,7 @@ defmodule Spectre.Instance do
             degraded = %{run | last_error: reason}
 
             data
-            |> put_run(degraded)
+            |> Runs.put_run(degraded)
             |> reply_caller(run.id, {:error, reason})
             |> tap(&emit(:run_move_degraded, &1, %{count: 1, run_id: run.id}))
             |> maybe_finalize_degraded_run(degraded)
@@ -1803,13 +1680,13 @@ defmodule Spectre.Instance do
   end
 
   defp apply_successful_step(step, entry, data) do
-    run = step_run(step)
+    run = Runs.step_run(step)
 
     if entry.state_revision == data.state.revision or state_neutral_step?(entry, run) do
       data = apply_returned_run(data, run, entry)
       data = reply_projection(data, entry, step)
       data = maybe_finalize_reply(data, step)
-      data = if terminal_run?(run), do: record_terminal(data, run), else: data
+      data = if Runs.terminal_run?(run), do: Runs.record_terminal(data, run), else: data
 
       data
       |> maybe_schedule()
@@ -1823,9 +1700,9 @@ defmodule Spectre.Instance do
     reason =
       {:stale_instance_state, run.id, entry.state_revision, data.state.revision}
 
-    failed = terminalize_failed_run(run, reason)
-    data = data |> put_run(failed) |> reply_caller(run.id, {:error, reason})
-    data |> record_terminal(failed) |> maybe_schedule() |> arm_idle_timer()
+    failed = Runs.terminalize_failed_run(run, reason)
+    data = data |> Runs.put_run(failed) |> reply_caller(run.id, {:error, reason})
+    data |> Runs.record_terminal(failed) |> maybe_schedule() |> arm_idle_timer()
   end
 
   defp maybe_record_started_conversation(
@@ -1833,7 +1710,7 @@ defmodule Spectre.Instance do
          %{operation: {:start, _input}, opts: opts},
          run
        ),
-       do: record_conversation(data, run, opts)
+       do: Conversation.record_conversation(data, run, opts)
 
   defp maybe_record_started_conversation(data, _entry, _run), do: data
 
@@ -1857,7 +1734,7 @@ defmodule Spectre.Instance do
     if next_state == data.state do
       next
     else
-      commit_flow_state(next, next_state, run)
+      Commit.flow_state(next, next_state, run)
     end
   end
 
@@ -1867,7 +1744,7 @@ defmodule Spectre.Instance do
     reply =
       case entry.projection do
         :turn -> {:ok, Turn.from_step(self(), entry.input, entry.opts, step)}
-        :result -> {:ok, step_result(step)}
+        :result -> {:ok, Runs.step_result(step)}
       end
 
     reply_caller(data, entry.run_id, reply)
@@ -1978,156 +1855,6 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp owned_result_run(data, %Result{} = result, allow_terminal_replay? \\ false) do
-    case get_in(result.metadata, [:run, :id]) do
-      run_id when is_binary(run_id) ->
-        owned_result_run_by_id(data, result, run_id, allow_terminal_replay?)
-
-      _missing ->
-        {:error, :result_has_no_run_reference}
-    end
-  end
-
-  defp owned_result_run_by_id(data, result, run_id, allow_terminal_replay?) do
-    case Map.get(data.runs, run_id) do
-      %Run{} = run ->
-        validate_owned_result(run, result, allow_terminal_replay?)
-
-      nil ->
-        {:error, {:unknown_instance_run, run_id}}
-    end
-  end
-
-  defp validate_owned_result(run, result, allow_terminal_replay?) do
-    supplied_ref = get_in(result.metadata, [:run, :ref])
-
-    cond do
-      run_ref_matches?(run, supplied_ref) ->
-        {:ok, run}
-
-      allow_terminal_replay? and terminal_replay?(result, run.result) ->
-        {:ok, run}
-
-      is_nil(supplied_ref) ->
-        {:error, :result_has_no_run_reference}
-
-      true ->
-        {:error, {:stale_instance_run_reference, run.id}}
-    end
-  end
-
-  defp owned_run(data, %Ref{} = supplied_ref) do
-    case Map.get(data.runs, supplied_ref.run_id) do
-      %Run{status: status} when status in [:complete, :failed] ->
-        {:error, {:instance_run_terminal, supplied_ref.run_id, status}}
-
-      %Run{} = run ->
-        if run_ref_matches?(run, supplied_ref),
-          do: {:ok, run},
-          else:
-            {:error,
-             {:stale_instance_run_reference, supplied_ref.run_id, supplied_ref.revision,
-              run.revision}}
-
-      nil ->
-        {:error, {:unknown_instance_run, supplied_ref.run_id}}
-    end
-  end
-
-  defp run_ref_matches?(
-         %Run{revision: revision, waiting: %{ref: %Ref{} = expected}},
-         %Ref{} = supplied
-       ),
-       do: expected.revision == revision and expected == supplied
-
-  defp run_ref_matches?(
-         %Run{revision: revision, result: %Result{} = result},
-         %Ref{} = supplied
-       ) do
-    case get_in(result.metadata, [:run, :ref]) do
-      %Ref{revision: ^revision} = expected -> expected == supplied
-      _missing_or_stale -> false
-    end
-  end
-
-  defp run_ref_matches?(_run, _supplied), do: false
-
-  defp policy_owner(data, input, opts) do
-    policies =
-      data.runs
-      |> Map.values()
-      |> Enum.filter(&policy_boundary?/1)
-      |> Enum.sort_by(& &1.id)
-
-    origin_conversation_id =
-      first_present([
-        Keyword.get(opts, :origin_conversation_id),
-        Keyword.get(opts, :conversation_id),
-        input_conversation_id(input)
-      ])
-
-    conversation_ref = conversation_key(input, origin_conversation_id)
-    origin_conversation_ref = origin_conversation_key(origin_conversation_id)
-    source_missing? = conversation_source_missing?(input)
-
-    matches =
-      Enum.filter(
-        policies,
-        &policy_origin_matches?(
-          &1,
-          conversation_ref,
-          origin_conversation_ref,
-          source_missing?
-        )
-      )
-
-    select_policy_owner(matches, policies, origin_conversation_id)
-  end
-
-  defp policy_origin_matches?(
-         %Run{metadata: metadata},
-         conversation_ref,
-         origin_conversation_ref,
-         source_missing?
-       ) do
-    exact? =
-      not is_nil(conversation_ref) and
-        Map.get(metadata, :conversation_ref) == conversation_ref
-
-    fallback? =
-      source_missing? and not is_nil(origin_conversation_ref) and
-        Map.get(metadata, :origin_conversation_ref) == origin_conversation_ref
-
-    exact? or fallback?
-  end
-
-  defp select_policy_owner([%Run{} = run], _policies, _origin), do: {:ok, run}
-
-  defp select_policy_owner([_first, _second | _rest] = matches, _policies, _origin),
-    do: {:error, {:ambiguous_instance_policy, Enum.map(matches, & &1.id)}}
-
-  defp select_policy_owner([], _policies, origin) when not is_nil(origin), do: :none
-  defp select_policy_owner([], [%Run{} = run], nil), do: {:ok, run}
-
-  defp select_policy_owner([], [_first, _second | _rest] = policies, nil),
-    do: {:error, {:ambiguous_instance_policy, Enum.map(policies, & &1.id)}}
-
-  defp select_policy_owner([], [], nil), do: :none
-
-  defp policy_boundary?(%Run{
-         status: :boundary,
-         cursor: :policy,
-         waiting: %Boundary{kind: :needs}
-       }),
-       do: true
-
-  defp policy_boundary?(_run), do: false
-
-  defp conversation_source_missing?(input) do
-    source = input_source(input)
-    is_nil(source_field(source, :kind)) and is_nil(source_field(source, :mount))
-  end
-
   defp run_active?(data, run_id) do
     match?(%{run_id: ^run_id}, data.active) or
       MapSet.member?(data.queued, run_id) or
@@ -2143,7 +1870,7 @@ defmodule Spectre.Instance do
     failure = {:instance_worker_down, worker.kind, reason}
     run = Map.get(data.runs, worker.run_id)
 
-    failed = if run, do: terminalize_failed_run(run, failure), else: nil
+    failed = if run, do: Runs.terminalize_failed_run(run, failure), else: nil
 
     data =
       data
@@ -2154,9 +1881,9 @@ defmodule Spectre.Instance do
         Enum.reject(data.invocations, fn {_id, value} -> value.pid == pid end) |> Map.new()
       )
 
-    data = if failed, do: put_run(data, failed), else: data
+    data = if failed, do: Runs.put_run(data, failed), else: data
     data = reply_caller(data, worker.run_id, {:error, failure})
-    data = if failed, do: record_terminal(data, failed), else: data
+    data = if failed, do: Runs.record_terminal(data, failed), else: data
     data |> maybe_schedule() |> arm_idle_timer()
   end
 
@@ -2169,7 +1896,7 @@ defmodule Spectre.Instance do
   rescue
     exception ->
       failed =
-        terminalize_failed_run(
+        Runs.terminalize_failed_run(
           run,
           {:instance_worker_exception, exception.__struct__}
         )
@@ -2177,43 +1904,10 @@ defmodule Spectre.Instance do
       {:error, failed.last_error, failed}
   catch
     kind, reason ->
-      failed = terminalize_failed_run(run, {:instance_worker_failure, kind, reason})
+      failed = Runs.terminalize_failed_run(run, {:instance_worker_failure, kind, reason})
 
       {:error, failed.last_error, failed}
   end
-
-  defp terminalize_failed_run(%Run{} = run, failure) do
-    failed = %{
-      run
-      | status: :failed,
-        cursor: :complete,
-        revision: run.revision + 1,
-        waiting: nil,
-        last_error: failure
-    }
-
-    put_failure_lineage(failed)
-  end
-
-  defp put_failure_lineage(%Run{result: %Result{} = result} = run) do
-    boundary_id = Value.token("instance-error", {run.id, run.revision})
-    ref = Ref.new(run.id, run.revision, :error, boundary_id)
-
-    lineage = %{
-      id: run.id,
-      revision: run.revision,
-      status: run.status,
-      cursor: run.cursor,
-      step_id: run.step_id,
-      trace_id: run.trace_id,
-      ref: ref
-    }
-
-    result = %{result | metadata: Map.put(result.metadata, :run, lineage)}
-    %{run | result: result}
-  end
-
-  defp put_failure_lineage(%Run{} = run), do: run
 
   defp finish_worker(data, pid) do
     case Map.pop(data.workers, pid) do
@@ -2227,155 +1921,10 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp step_run({:await, %Invocation{}, %Run{} = run}), do: run
-  defp step_run({:boundary, %Boundary{}, %Run{} = run}), do: run
-  defp step_run({:complete, %Result{}, %Run{} = run}), do: run
-
-  defp step_result({:await, %Invocation{}, %Run{result: result}}), do: result
-  defp step_result({:boundary, %Boundary{}, %Run{result: result}}), do: result
-  defp step_result({:complete, %Result{} = result, %Run{}}), do: result
   defp state_neutral_step?(entry, %Run{}), do: not entry_commits_state?(entry)
 
   defp entry_commits_state?(entry),
     do: Map.get(entry, :commit_state?, not Map.get(entry, :internal?, false))
-
-  defp terminal_run?(%Run{status: status}), do: status in [:complete, :failed]
-
-  defp terminal_result?(%Result{} = result) do
-    is_nil(Spectre.Result.pending_effect(result)) and
-      Enum.any?(result.effects, &Spectre.Effect.terminal?/1)
-  end
-
-  defp terminal_replay?(%Result{} = supplied, %Result{} = current) do
-    terminal_result?(supplied) and terminal_result?(current) and
-      terminal_effects(supplied) == terminal_effects(current)
-  end
-
-  defp terminal_replay?(_supplied, _current), do: false
-
-  defp terminal_effects(%Result{} = result) do
-    result.effects
-    |> Enum.filter(&Spectre.Effect.terminal?/1)
-    |> Enum.map(&{&1.id, &1.status})
-    |> Enum.sort()
-  end
-
-  defp record_terminal(data, %Run{} = run) do
-    if MapSet.member?(data.terminal_recorded, run.id) do
-      data
-    else
-      completed = :queue.in(run.id, data.completed)
-
-      %{
-        data
-        | completed: completed,
-          terminal_recorded: MapSet.put(data.terminal_recorded, run.id)
-      }
-      |> prune_terminal()
-    end
-  end
-
-  defp prune_terminal(data) when map_size(data.runs) <= data.max_runs, do: data
-
-  defp prune_terminal(data) do
-    case :queue.out(data.completed) do
-      {{:value, run_id}, completed} ->
-        case Map.get(data.runs, run_id) do
-          %Run{} = run ->
-            tombstone = run_projection(run)
-
-            next = %{
-              data
-              | runs: Map.delete(data.runs, run_id),
-                completed: completed,
-                terminal_recorded: MapSet.delete(data.terminal_recorded, run_id),
-                tombstones: Map.put(data.tombstones, run_id, tombstone),
-                tombstone_order: :queue.in(run_id, data.tombstone_order)
-            }
-
-            next |> prune_tombstones() |> prune_terminal()
-
-          nil ->
-            prune_terminal(%{data | completed: completed})
-        end
-
-      {:empty, _completed} ->
-        data
-    end
-  end
-
-  defp prune_for_new_run(data) when map_size(data.runs) < data.max_runs, do: data
-
-  defp prune_for_new_run(data) do
-    case :queue.out(data.completed) do
-      {{:value, run_id}, completed} ->
-        case Map.get(data.runs, run_id) do
-          %Run{} = run ->
-            next = %{
-              data
-              | runs: Map.delete(data.runs, run_id),
-                completed: completed,
-                terminal_recorded: MapSet.delete(data.terminal_recorded, run_id),
-                tombstones: Map.put(data.tombstones, run_id, run_projection(run)),
-                tombstone_order: :queue.in(run_id, data.tombstone_order)
-            }
-
-            next |> prune_tombstones() |> prune_for_new_run()
-
-          nil ->
-            prune_for_new_run(%{data | completed: completed})
-        end
-
-      {:empty, _completed} ->
-        data
-    end
-  end
-
-  defp prune_tombstones(%{max_tombstones: max} = data)
-       when map_size(data.tombstones) <= max,
-       do: data
-
-  defp prune_tombstones(data) do
-    case :queue.out(data.tombstone_order) do
-      {{:value, run_id}, order} ->
-        prune_tombstones(%{
-          data
-          | tombstones: Map.delete(data.tombstones, run_id),
-            tombstone_order: order
-        })
-
-      {:empty, _order} ->
-        %{data | tombstones: %{}}
-    end
-  end
-
-  defp put_run(data, %Run{} = run), do: %{data | runs: Map.put(data.runs, run.id, run)}
-
-  defp rebase_run(%Run{} = run, %State{} = state) do
-    result =
-      case run.result do
-        %Result{} = result ->
-          metadata =
-            case Map.get(result.metadata, :state_persistence) do
-              persistence when is_map(persistence) ->
-                Map.put(
-                  result.metadata,
-                  :state_persistence,
-                  Map.put(persistence, :revision, state.revision)
-                )
-
-              _missing ->
-                result.metadata
-            end
-
-          %{result | state: state, metadata: metadata}
-
-        nil ->
-          nil
-      end
-
-    %{run | state: state, result: result}
-  end
 
   defp busy?(data) do
     not is_nil(data.active) or not is_nil(data.state_lock) or
@@ -2385,8 +1934,8 @@ defmodule Spectre.Instance do
   end
 
   defp live_runs?(data) do
-    Enum.any?(data.runs, fn {_id, run} -> not terminal_run?(run) end) or
-      Enum.any?(all_operation_loops(data), fn {loop, _control} ->
+    Enum.any?(data.runs, fn {_id, run} -> not Runs.terminal_run?(run) end) or
+      Enum.any?(Loops.all_operation_loops(data), fn {loop, _control} ->
         not OperationLoop.terminal?(loop)
       end)
   end
@@ -2400,7 +1949,7 @@ defmodule Spectre.Instance do
       state_revision: data.state.revision,
       canonical_revision: data.canonical.revision,
       conversations: data.conversations,
-      runs: Map.new(data.runs, fn {id, run} -> {id, run_projection(run)} end),
+      runs: Map.new(data.runs, fn {id, run} -> {id, Runs.run_projection(run)} end),
       ready: :queue.to_list(data.ready),
       active_run: data.active && data.active.run_id,
       invocations:
@@ -2413,7 +1962,7 @@ defmodule Spectre.Instance do
         end),
       tombstones: data.tombstones,
       operational_loops:
-        Map.new(all_operation_loops(data), fn {loop, control} ->
+        Map.new(Loops.all_operation_loops(data), fn {loop, control} ->
           {loop.id, OperationView.from_loop(loop, control)}
         end),
       operation_runners:
@@ -2423,269 +1972,24 @@ defmodule Spectre.Instance do
     }
   end
 
-  defp run_projection(%Run{} = run) do
-    %{
-      id: run.id,
-      revision: run.revision,
-      status: run.status,
-      cursor: run.cursor,
-      waiting: waiting_kind(run.waiting),
-      ref: run.result && get_in(run.result.metadata, [:run, :ref])
-    }
-  end
-
-  defp waiting_kind(%Invocation{}), do: :invocation
-  defp waiting_kind(%Boundary{kind: kind}), do: kind
-  defp waiting_kind(nil), do: nil
-
   defp control_loop(server, loop, action, payload, opts) do
     GenServer.call(
       server,
-      {:operation_control, operation_id(loop), action, payload, opts},
+      {:operation_control, Loops.operation_id(loop), action, payload, opts},
       timeout(opts)
     )
   end
 
-  defp operation_id(%OperationRef{id: id}), do: id
-  defp operation_id(id) when is_binary(id) and id != "", do: id
-
-  defp operation_id(value),
-    do: raise(ArgumentError, "invalid operational loop reference: #{inspect(value)}")
-
-  defp operation_section(:work), do: :work
-  defp operation_section(:vigil), do: :vigil
-  defp operation_section(:directive), do: :directive
-
-  defp operation_loop(data, loop_id) do
-    Enum.find_value(
-      [:work, :vigil, :directive],
-      {:error, :operation_loop_not_found},
-      fn section ->
-        case Map.get(canonical_value!(data, section), loop_id) do
-          %OperationLoop{} = loop ->
-            controls = canonical_value!(data, :control)
-            control = Map.get(controls, loop.id, Control.new(loop.id))
-            {:ok, loop, control}
-
-          nil ->
-            false
-        end
-      end
-    )
-  end
-
-  defp all_operation_loops(data) do
-    controls = canonical_value!(data, :control)
-
-    [:work, :vigil, :directive]
-    |> Enum.flat_map(fn section -> Map.values(canonical_value!(data, section)) end)
-    |> Enum.filter(&match?(%OperationLoop{}, &1))
-    |> Enum.sort_by(&{&1.created_at, &1.id})
-    |> Enum.map(fn loop -> {loop, Map.get(controls, loop.id, Control.new(loop.id))} end)
-  end
-
-  defp canonical_value!(%{canonical: canonical}, section) do
-    case Canonical.fetch(canonical, section) do
-      {:ok, value} ->
-        value
-
-      {:error, reason} ->
-        raise "invalid canonical section #{inspect(section)}: #{inspect(reason)}"
-    end
-  end
-
   defp commit_operational(data, loop, control, event_specs, opts) do
-    entry = %{loop: loop, control: control, event_specs: event_specs, opts: opts}
-    commit_operational_batch(data, [entry], opts)
-  end
-
-  defp commit_operational_batch(data, entries, commit_opts) do
-    with :ok <- validate_operational_batch(entries) do
-      do_commit_operational_batch(data, entries, commit_opts)
-    end
-  end
-
-  defp validate_operational_batch(entries) when is_list(entries) and entries != [] do
-    ids = Enum.map(entries, & &1.loop.id)
-
-    if Enum.uniq(ids) != ids do
-      {:error, :duplicate_operational_loop_in_transition}
-    else
-      Enum.reduce_while(entries, :ok, fn entry, :ok ->
-        with :ok <- OperationLoop.validate(entry.loop),
-             :ok <- Control.validate(entry.control) do
-          {:cont, :ok}
-        else
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-    end
-  end
-
-  defp validate_operational_batch(_entries), do: {:error, :empty_operational_transition}
-
-  defp do_commit_operational_batch(data, entries, commit_opts) do
-    next_revision = data.canonical.revision + 1
-
-    events =
-      Enum.flat_map(entries, fn %{loop: loop, event_specs: event_specs, opts: opts} ->
-        Enum.map(event_specs, fn spec ->
-          OperationEvent.new(loop, Map.fetch!(spec, :type),
-            agent_id: AgentRef.key(data.agent_ref),
-            revision: next_revision,
-            correlation_id: Keyword.get(opts, :correlation_id, loop.correlation_id),
-            causation_id: Keyword.get(opts, :causation_id),
-            provenance: Keyword.get(opts, :provenance, loop.provenance),
-            payload: Map.get(spec, :payload),
-            metadata: %{transition: Keyword.get(opts, :transition)}
-          )
-        end)
-      end)
-
-    writes = operational_batch_writes(data, entries, next_revision)
-
-    writes =
-      if events == [], do: writes, else: Map.put(writes, :events, append_events(data, events))
-
-    primary = hd(entries).loop
-
-    with :ok <- validate_operation_events(data, events),
-         {:ok, next} <-
-           commit_canonical_sections(data, writes,
-             correlation_id: Keyword.get(commit_opts, :correlation_id, primary.correlation_id),
-             causation_id: Keyword.get(commit_opts, :causation_id),
-             provenance: Keyword.get(commit_opts, :provenance, primary.provenance),
-             metadata: %{
-               transition: Keyword.get(commit_opts, :transition),
-               loop_id: primary.id,
-               loop_ids: Enum.map(entries, & &1.loop.id)
-             }
-           ) do
-      Enum.each(entries, fn %{loop: loop, opts: opts} ->
-        _ =
-          Spectre.Journal.record(
-            data.agent,
-            :operational_transition,
-            %{
-              loop_id: loop.id,
-              loop_kind: loop.kind,
-              loop_revision: loop.revision,
-              canonical_revision: next.canonical.revision,
-              transition: Keyword.get(opts, :transition)
-            },
-            data.base_opts
-          )
-      end)
-
+    with {:ok, next, events} <- Commit.operational(data, loop, control, event_specs, opts) do
       {:ok, route_committed_events(next, events), events}
     end
   end
 
-  defp operational_batch_writes(data, entries, next_revision) do
-    section_writes =
-      Enum.reduce(entries, %{}, fn %{loop: loop}, acc ->
-        section = operation_section(loop.kind)
-        current = Map.get(acc, section, canonical_value!(data, section))
-        Map.put(acc, section, Map.put(current, loop.id, loop))
-      end)
-
-    controls =
-      Enum.reduce(entries, canonical_value!(data, :control), fn entry, acc ->
-        Map.put(acc, entry.loop.id, entry.control)
-      end)
-
-    correlations =
-      Enum.reduce(entries, canonical_value!(data, :correlations), fn entry, acc ->
-        put_loop_correlation(acc, entry.loop, next_revision, entry.opts)
-      end)
-
-    section_writes
-    |> Map.put(:control, controls)
-    |> Map.put(:correlations, correlations)
-  end
-
-  defp validate_operation_events(data, events) do
-    existing = Map.get(canonical_value!(data, :events), :records, [])
-    ids = Enum.map(events, & &1.id)
-
-    if Enum.uniq(ids) != ids do
-      {:error, :duplicate_operation_event_id}
-    else
-      Enum.reduce_while(events, :ok, fn event, :ok ->
-        previous = Enum.find(existing, &(&1.id == event.id))
-
-        case {OperationEvent.validate(event), previous} do
-          {:ok, nil} when event.revision == data.canonical.revision + 1 ->
-            {:cont, :ok}
-
-          {:ok, ^event} ->
-            {:cont, :ok}
-
-          {:ok, nil} ->
-            {:halt, {:error, {:invalid_operation_event_revision, event.revision}}}
-
-          {:ok, _conflict} ->
-            {:halt, {:error, {:operation_event_id_conflict, event.id}}}
-
-          {{:error, _reason} = error, _previous} ->
-            {:halt, error}
-        end
-      end)
+  defp commit_operational_batch(data, entries, commit_opts) do
+    with {:ok, next, events} <- Commit.operational_batch(data, entries, commit_opts) do
+      {:ok, route_committed_events(next, events), events}
     end
-  end
-
-  defp commit_canonical_sections(data, writes, opts) do
-    names = Map.keys(writes)
-
-    with {:ok, snapshot} <-
-           Canonical.snapshot(data.canonical,
-             read: names,
-             write: names,
-             correlation_id: Keyword.fetch!(opts, :correlation_id),
-             causation_id: Keyword.get(opts, :causation_id)
-           ),
-         {:ok, change} <-
-           Canonical.change(snapshot, writes,
-             provenance: Keyword.get(opts, :provenance, %{}),
-             metadata: Keyword.get(opts, :metadata, %{})
-           ),
-         {:ok, canonical, _transition} <- Canonical.commit(data.canonical, change) do
-      next = %{data | canonical: canonical}
-
-      case Map.fetch(writes, :flow) do
-        {:ok, %State{} = state} -> {:ok, maybe_checkpoint(%{next | state: state})}
-        :error -> {:ok, maybe_checkpoint(next)}
-      end
-    end
-  end
-
-  defp commit_flow_state(data, %State{} = state, %Run{} = run) do
-    case commit_canonical_sections(data, %{flow: state},
-           correlation_id: run.id,
-           causation_id: run.trace_id,
-           provenance: %{source: :flow, run_id: run.id},
-           metadata: %{transition: :flow_state_committed}
-         ) do
-      {:ok, next} -> next
-      {:error, reason} -> raise "canonical Flow commit failed: #{inspect(reason)}"
-    end
-  end
-
-  defp append_events(data, events) do
-    current = canonical_value!(data, :events)
-    current_records = Map.get(current, :records, [])
-    ids = Map.get(current, :ids, %{})
-    existing_ids = MapSet.new(Enum.map(current_records, & &1.id))
-    events = Enum.reject(events, &MapSet.member?(existing_ids, &1.id))
-    records = Enum.take(events ++ current_records, @operation_event_limit)
-    retained = MapSet.new(Enum.map(records, & &1.id))
-
-    ids =
-      ids
-      |> Map.take(MapSet.to_list(retained))
-      |> Map.merge(Map.new(events, &{&1.id, &1.revision}))
-
-    %{records: records, ids: ids}
   end
 
   defp route_committed_events(data, []), do: data
@@ -2707,7 +2011,7 @@ defmodule Spectre.Instance do
   defp route_operation_event?(_event, _invalid), do: false
 
   defp enqueue_operation_event(event, data) do
-    data = prune_for_new_run(data)
+    data = Runs.prune_for_new_run(data)
 
     if map_size(data.runs) >= data.max_runs do
       emit(:operation_event_route_dropped, data, %{count: 1, event_id: event.id})
@@ -2765,442 +2069,9 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp normalize_delivery_consent(%DeliveryConsent{} = consent) do
-    with :ok <- DeliveryConsent.validate(consent), do: {:ok, consent}
-  end
-
-  defp normalize_delivery_consent(value) when is_map(value) or is_list(value) do
-    {:ok, DeliveryConsent.new(value)}
-  rescue
-    exception -> {:error, {:invalid_delivery_consent, Exception.message(exception)}}
-  end
-
-  defp normalize_delivery_consent(value), do: {:error, {:invalid_delivery_consent, value}}
-
-  defp normalize_delivery_policy(%DeliveryPolicy{} = policy) do
-    with :ok <- DeliveryPolicy.validate(policy), do: {:ok, policy}
-  end
-
-  defp normalize_delivery_policy(value) when is_map(value) or is_list(value) or is_nil(value) do
-    {:ok, DeliveryPolicy.new(value)}
-  rescue
-    exception -> {:error, {:invalid_delivery_policy, Exception.message(exception)}}
-  end
-
-  defp normalize_delivery_policy(value), do: {:error, {:invalid_delivery_policy, value}}
-
-  defp validate_delivery_consent_subject(consent, data) do
-    if consent.subject_id == data.subject.id,
-      do: :ok,
-      else: {:error, :delivery_consent_subject_mismatch}
-  end
-
-  defp commit_delivery_consent(data, consent, opts, transition) do
-    key = delivery_consent_key(consent.id)
-    correlations = canonical_value!(data, :correlations)
-
-    with :ok <- DeliveryConsent.validate(consent),
-         :ok <-
-           validate_delivery_consent_transition(Map.get(correlations, key), consent, transition) do
-      if Map.get(correlations, key) == consent do
-        {:ok, data}
-      else
-        correlations = Map.put(correlations, key, consent)
-
-        with {:ok, next} <-
-               commit_canonical_sections(data, %{correlations: correlations},
-                 correlation_id: Keyword.get(opts, :correlation_id, consent.id),
-                 causation_id: Keyword.get(opts, :causation_id),
-                 provenance: Keyword.get(opts, :provenance, %{source: :delivery_policy}),
-                 metadata: %{transition: transition, consent_id: consent.id}
-               ) do
-          _ =
-            Spectre.Journal.record(
-              data.agent,
-              transition,
-              %{consent_id: consent.id, canonical_revision: next.canonical.revision},
-              data.base_opts
-            )
-
-          {:ok, next}
-        end
-      end
-    end
-  end
-
-  defp validate_delivery_consent_transition(
-         nil,
-         %DeliveryConsent{revoked_at: nil},
-         :delivery_consent_granted
-       ),
-       do: :ok
-
-  defp validate_delivery_consent_transition(nil, _consent, :delivery_consent_granted),
-    do: {:error, :cannot_grant_revoked_delivery_consent}
-
-  defp validate_delivery_consent_transition(
-         %DeliveryConsent{} = current,
-         next,
-         :delivery_consent_revoked
-       ) do
-    immutable = [
-      :id,
-      :subject_id,
-      :origin,
-      :destination,
-      :granted_at,
-      :expires_at,
-      :channels,
-      :metadata
-    ]
-
-    if Map.take(current, immutable) == Map.take(next, immutable) and
-         (current.revoked_at == next.revoked_at or
-            (is_nil(current.revoked_at) and is_integer(next.revoked_at))) do
-      :ok
-    else
-      {:error, :invalid_delivery_consent_revocation_transition}
-    end
-  end
-
-  defp validate_delivery_consent_transition(%DeliveryConsent{} = current, next, _transition) do
-    if current == next,
-      do: :ok,
-      else: {:error, {:delivery_consent_id_conflict, next.id}}
-  end
-
-  defp validate_delivery_consent_transition(_invalid, _next, _transition),
-    do: {:error, :invalid_existing_delivery_consent}
-
-  defp fetch_delivery_consent(_data, consent_id)
-       when not is_binary(consent_id) or consent_id == "",
-       do: {:error, :invalid_delivery_consent_id}
-
-  defp fetch_delivery_consent(data, consent_id) do
-    case Map.get(canonical_value!(data, :correlations), delivery_consent_key(consent_id)) do
-      %DeliveryConsent{} = consent -> {:ok, consent}
-      _missing -> {:error, :delivery_consent_not_found}
-    end
-  end
-
-  defp find_delivery_consent(data, loop, destination, now) do
-    data
-    |> canonical_value!(:correlations)
-    |> Map.values()
-    |> Enum.filter(&match?(%DeliveryConsent{}, &1))
-    |> Enum.sort_by(& &1.granted_at, :desc)
-    |> Enum.find(fn consent ->
-      consent.subject_id == loop.subject_id and consent.destination == destination and
-        DeliveryConsent.active?(consent, now)
-    end)
-  end
-
-  defp committed_operation_event(data, event_id) do
-    event =
-      data
-      |> canonical_value!(:events)
-      |> Map.get(:records, [])
-      |> Enum.find(&(&1.id == event_id))
-
-    if match?(%OperationEvent{}, event),
-      do: {:ok, event},
-      else: {:error, :operation_event_not_found}
-  end
-
-  defp operation_event_visible?(data, %OperationEvent{} = event, opts) do
-    case operation_loop(data, event.loop_id) do
-      {:ok, loop, _control} -> match?(:ok, authorize_loop(loop, opts))
-      {:error, _reason} -> false
-    end
-  end
-
-  defp committed_delivery_receipts(data) do
-    data
-    |> canonical_value!(:correlations)
-    |> Map.values()
-    |> Enum.filter(fn
-      %DeliveryReceipt{} = receipt -> match?(:ok, DeliveryReceipt.validate(receipt))
-      _other -> false
-    end)
-  end
-
-  defp delivery_receipt_visible?(data, %DeliveryReceipt{} = receipt, opts) do
-    case operation_loop(data, receipt.loop_id) do
-      {:ok, loop, _control} ->
-        receipt.subject_id == loop.subject_id and match?(:ok, authorize_loop(loop, opts))
-
-      {:error, _reason} ->
-        false
-    end
-  end
-
-  defp fetch_delivery_receipt(_data, receipt_id)
-       when not is_binary(receipt_id) or receipt_id == "",
-       do: {:error, :invalid_delivery_receipt_id}
-
-  defp fetch_delivery_receipt(data, receipt_id) do
-    case Map.get(canonical_value!(data, :correlations), delivery_receipt_key(receipt_id)) do
-      %DeliveryReceipt{} = receipt -> {:ok, receipt}
-      _missing -> {:error, :delivery_receipt_not_found}
-    end
-  end
-
-  defp update_delivery_receipt(receipt, :delivered, external_receipt),
-    do: Delivery.delivered(receipt, external_receipt)
-
-  defp update_delivery_receipt(receipt, :failed, reason),
-    do: Delivery.failed(receipt, reason)
-
-  defp update_delivery_receipt(_receipt, outcome, _detail),
-    do: {:error, {:invalid_delivery_outcome, outcome}}
-
   defp commit_delivery_receipt(data, loop, receipt, opts) do
-    correlations = canonical_value!(data, :correlations)
-    key = delivery_receipt_key(receipt.id)
-    existing = Map.get(correlations, key)
-
-    with :ok <- DeliveryReceipt.validate(receipt),
-         :ok <- validate_delivery_receipt_owner(receipt, loop),
-         :ok <- validate_delivery_receipt_transition(existing, receipt) do
-      if existing == receipt do
-        {:ok, data}
-      else
-        correlations =
-          correlations
-          |> Map.put(key, receipt)
-          |> trim_delivery_receipts()
-
-        revision = data.canonical.revision + 1
-        event_type = delivery_event_type(receipt.status)
-
-        event =
-          OperationEvent.new(loop, event_type,
-            agent_id: AgentRef.key(data.agent_ref),
-            revision: revision,
-            correlation_id: Keyword.get(opts, :correlation_id, loop.correlation_id),
-            causation_id: receipt.event_id,
-            provenance: Keyword.get(opts, :provenance, %{source: :delivery_policy}),
-            payload: %{receipt_id: receipt.id, status: receipt.status, reason: receipt.reason},
-            metadata: %{transition: :delivery_decision}
-          )
-
-        writes = %{
-          correlations: correlations,
-          events: append_events(data, [event])
-        }
-
-        with :ok <- validate_operation_events(data, [event]),
-             {:ok, next} <-
-               commit_canonical_sections(data, writes,
-                 correlation_id: event.correlation_id,
-                 causation_id: event.causation_id,
-                 provenance: event.provenance,
-                 metadata: %{transition: :delivery_decision, receipt_id: receipt.id}
-               ) do
-          _ =
-            Spectre.Journal.record(
-              data.agent,
-              :delivery_decision,
-              %{
-                receipt_id: receipt.id,
-                loop_id: loop.id,
-                status: receipt.status,
-                canonical_revision: next.canonical.revision
-              },
-              data.base_opts
-            )
-
-          {:ok, route_committed_events(next, [event])}
-        end
-      end
-    end
-  end
-
-  defp validate_delivery_receipt_owner(receipt, loop) do
-    if receipt.loop_id == loop.id and receipt.subject_id == loop.subject_id,
-      do: :ok,
-      else: {:error, :delivery_receipt_owner_mismatch}
-  end
-
-  defp validate_delivery_receipt_transition(nil, _receipt), do: :ok
-  defp validate_delivery_receipt_transition(receipt, receipt), do: :ok
-
-  defp validate_delivery_receipt_transition(
-         %DeliveryReceipt{status: :authorized} = current,
-         %DeliveryReceipt{status: status} = next
-       )
-       when status in [:delivered, :failed] do
-    immutable = [
-      :id,
-      :event_id,
-      :loop_id,
-      :subject_id,
-      :destination,
-      :channel,
-      :consent_id,
-      :dedupe_key,
-      :decided_at,
-      :not_before,
-      :metadata
-    ]
-
-    if Map.take(current, immutable) == Map.take(next, immutable),
-      do: :ok,
-      else: {:error, :delivery_receipt_identity_changed}
-  end
-
-  defp validate_delivery_receipt_transition(
-         %DeliveryReceipt{} = current,
-         %DeliveryReceipt{} = next
-       ),
-       do: {:error, {:invalid_delivery_receipt_transition, current.status, next.status}}
-
-  defp validate_delivery_receipt_transition(_invalid, _next),
-    do: {:error, :invalid_existing_delivery_receipt}
-
-  defp trim_delivery_receipts(correlations) do
-    receipts =
-      correlations
-      |> Enum.filter(fn {_key, value} -> match?(%DeliveryReceipt{}, value) end)
-      |> Enum.sort_by(fn {_key, receipt} -> receipt.decided_at end, :desc)
-
-    receipts
-    |> Enum.drop(@delivery_receipt_limit)
-    |> Enum.reduce(correlations, fn {key, _receipt}, acc -> Map.delete(acc, key) end)
-  end
-
-  defp delivery_event_type(:authorized), do: :delivery_authorized
-  defp delivery_event_type(:deferred), do: :delivery_deferred
-  defp delivery_event_type(:digest), do: :delivery_digest_queued
-  defp delivery_event_type(:denied), do: :delivery_denied
-  defp delivery_event_type(:delivered), do: :delivery_recorded
-  defp delivery_event_type(:failed), do: :delivery_failed
-
-  defp delivery_consent_key(id) when is_binary(id), do: "delivery:consent:" <> id
-  defp delivery_receipt_key(id) when is_binary(id), do: "delivery:receipt:" <> id
-
-  defp put_loop_correlation(correlations, loop, revision, opts) do
-    correlation_id = Keyword.get(opts, :correlation_id, loop.correlation_id)
-
-    Map.put(correlations, correlation_id, %{
-      loop_id: loop.id,
-      loop_kind: loop.kind,
-      revision: revision,
-      causation_id: Keyword.get(opts, :causation_id)
-    })
-  end
-
-  defp same_loop_request?(existing, requested) do
-    existing.kind == requested.kind and existing.controller == requested.controller and
-      existing.controller_version == requested.controller_version and
-      existing.base_input == requested.base_input and
-      existing.correlation_id == requested.correlation_id
-  end
-
-  defp authorize_loop(loop, opts) do
-    supplied_subject = Keyword.get(opts, :subject_id)
-    origin = Keyword.get(opts, :origin)
-
-    cond do
-      not is_nil(supplied_subject) and supplied_subject != loop.subject_id ->
-        {:error, :operation_loop_not_visible}
-
-      is_nil(origin) ->
-        :ok
-
-      loop.visibility == :subject ->
-        :ok
-
-      origin == loop.origin or origin in loop.authorized_origins ->
-        :ok
-
-      true ->
-        {:error, :operation_loop_not_visible}
-    end
-  end
-
-  defp loop_filter?(loop, opts) do
-    kind = Keyword.get(opts, :kind)
-    controller = Keyword.get(opts, :controller)
-    status = Keyword.get(opts, :status)
-
-    (is_nil(kind) or loop.kind == kind) and
-      (is_nil(controller) or loop.controller == controller) and
-      (is_nil(status) or loop.status in List.wrap(status))
-  end
-
-  defp selector_matches?(loop, nil), do: not OperationLoop.terminal?(loop)
-  defp selector_matches?(loop, %OperationRef{id: id}), do: loop.id == id
-  defp selector_matches?(loop, id) when is_binary(id), do: loop.id == id
-
-  defp selector_matches?(loop, selector) when is_list(selector),
-    do: selector_matches?(loop, Map.new(selector))
-
-  defp selector_matches?(loop, selector) when is_map(selector) do
-    selector = atomize_selector(selector)
-
-    Enum.all?(selector, fn
-      {:id, value} -> loop.id == value
-      {:kind, value} -> loop.kind == value
-      {:controller, value} -> loop.controller == value or loop.controller_id == value
-      {:definition, value} -> loop.controller_id == value
-      {:status, value} -> loop.status in List.wrap(value)
-      {:phase, value} -> loop.phase == value
-      {:origin, value} -> loop.origin == value
-      {:turn_id, value} -> loop.source_turn_id == value
-      {:correlation_id, value} -> loop.correlation_id == value
-      {:active, true} -> not OperationLoop.terminal?(loop)
-      {:active, false} -> OperationLoop.terminal?(loop)
-      {_unknown, _value} -> false
-    end)
-  end
-
-  defp selector_matches?(_loop, _selector), do: false
-
-  defp atomize_selector(selector) do
-    Map.new(selector, fn {key, value} ->
-      normalized =
-        case key do
-          "id" -> :id
-          "kind" -> :kind
-          "controller" -> :controller
-          "definition" -> :definition
-          "status" -> :status
-          "phase" -> :phase
-          "origin" -> :origin
-          "turn_id" -> :turn_id
-          "correlation_id" -> :correlation_id
-          "active" -> :active
-          other -> other
-        end
-
-      {normalized, value}
-    end)
-  end
-
-  defp control_command(loop, action, payload, opts) do
-    mode = Keyword.get(opts, :mode, :safe)
-
-    if mode == :immediate and not Keyword.get(opts, :authorize_immediate?, false) do
-      {:error, :immediate_loop_interruption_not_authorized}
-    else
-      command =
-        ControlCommand.new(loop.id, action,
-          id: Keyword.get(opts, :command_id, Spectre.Identity.uuid7()),
-          payload: payload,
-          mode: mode,
-          desired_state: Keyword.get(opts, :desired_state),
-          correlation_id: Keyword.get(opts, :correlation_id, Spectre.Identity.uuid7()),
-          causation_id: Keyword.get(opts, :causation_id),
-          provenance: Keyword.get(opts, :provenance, %{}),
-          base_revision: Keyword.get(opts, :revision),
-          metadata: Keyword.get(opts, :metadata, %{})
-        )
-
-      case Value.validate(command, [:loop_control, loop.id]) do
-        :ok -> {:ok, command}
-        {:error, reason} -> {:error, {:nonportable_loop_control, reason}}
-      end
+    with {:ok, next, events} <- Deliveries.commit_receipt(data, loop, receipt, opts) do
+      {:ok, route_committed_events(next, events)}
     end
   end
 
@@ -3275,7 +2146,7 @@ defmodule Spectre.Instance do
   end
 
   defp advance_operation(data, {_kind, loop_id}) do
-    case operation_loop(data, loop_id) do
+    case Loops.operation_loop(data, loop_id) do
       {:ok, loop, control} ->
         cond do
           not is_nil(control.pending) and OperationLoop.quiescent?(loop) ->
@@ -3288,7 +2159,7 @@ defmodule Spectre.Instance do
             prepare_operation(data, loop, control)
 
           loop.status == :waiting ->
-            maybe_schedule_wait_timer(data, loop)
+            Timers.maybe_schedule_wait_timer(data, loop)
 
           true ->
             data
@@ -3303,7 +2174,7 @@ defmodule Spectre.Instance do
     command = control.pending
 
     with {:ok, next_loop, next_control, event_specs} <-
-           OperationRuntime.advance_control(loop, control, operation_env(data)),
+           OperationRuntime.advance_control(loop, control, Loops.operation_env(data)),
          {:ok, next, committed_events} <-
            commit_operational(data, next_loop, next_control, event_specs,
              correlation_id: command.correlation_id,
@@ -3314,7 +2185,7 @@ defmodule Spectre.Instance do
       next
       |> maybe_emit_uncorrelated_operation_trigger(committed_events)
       |> maybe_queue_after_transition(next_loop, next_control)
-      |> maybe_schedule_wait_timer(next_loop)
+      |> Timers.maybe_schedule_wait_timer(next_loop)
     else
       {:error, reason} ->
         emit(:operation_control_failed, data, %{
@@ -3329,7 +2200,7 @@ defmodule Spectre.Instance do
 
   defp evaluate_operation(data, loop, control) do
     with {:ok, next_loop, next_control, event_specs} <-
-           OperationRuntime.evaluate(loop, control, operation_env(data)),
+           OperationRuntime.evaluate(loop, control, Loops.operation_env(data)),
          {:ok, next, _events} <-
            commit_operational(data, next_loop, next_control, event_specs,
              correlation_id: loop.correlation_id,
@@ -3339,7 +2210,7 @@ defmodule Spectre.Instance do
            ) do
       next
       |> maybe_queue_after_transition(next_loop, next_control)
-      |> maybe_schedule_wait_timer(next_loop)
+      |> Timers.maybe_schedule_wait_timer(next_loop)
     else
       {:error, reason} ->
         emit(:operation_evaluation_failed, data, %{
@@ -3353,7 +2224,7 @@ defmodule Spectre.Instance do
   end
 
   defp prepare_operation(data, loop, control) do
-    env = operation_snapshot_env(data, loop)
+    env = Loops.operation_snapshot_env(data, loop)
 
     case OperationRuntime.prepare(loop, control, env) do
       {:run, next_loop, attempt, spec, request, reconcile?, event_specs} ->
@@ -3365,7 +2236,7 @@ defmodule Spectre.Instance do
              ) do
           {:ok, committed, _events} ->
             committed
-            |> maybe_schedule_wait_timer(next_loop)
+            |> Timers.maybe_schedule_wait_timer(next_loop)
             |> start_operation_runner(
               next_loop,
               control,
@@ -3394,7 +2265,7 @@ defmodule Spectre.Instance do
           {:ok, next, _events} ->
             next
             |> maybe_queue_after_transition(next_loop, next_control)
-            |> maybe_schedule_wait_timer(next_loop)
+            |> Timers.maybe_schedule_wait_timer(next_loop)
 
           {:error, _reason} ->
             data
@@ -3453,7 +2324,7 @@ defmodule Spectre.Instance do
             | operation_runners: Map.put(data.operation_runners, attempt.id, ownership),
               operation_monitors: Map.put(data.operation_monitors, pid, attempt.id)
           }
-          |> schedule_operation_attempt_timeout(loop, attempt)
+          |> Timers.schedule_attempt_timeout(loop, attempt)
           |> disarm_idle_timer()
 
         :ok = Runner.execute(pid)
@@ -3470,7 +2341,7 @@ defmodule Spectre.Instance do
            control,
            spec,
            {:runner_start_failed, reason},
-           operation_env(data)
+           Loops.operation_env(data)
          ) do
       {:ok, next_loop, next_control, event_specs} ->
         case commit_operational(data, next_loop, next_control, event_specs,
@@ -3481,7 +2352,7 @@ defmodule Spectre.Instance do
           {:ok, next, _events} ->
             next
             |> maybe_queue_after_transition(next_loop, next_control)
-            |> maybe_schedule_wait_timer(next_loop)
+            |> Timers.maybe_schedule_wait_timer(next_loop)
 
           {:error, _reason} ->
             data
@@ -3501,56 +2372,12 @@ defmodule Spectre.Instance do
     |> Keyword.put(:subject_id, data.subject.id)
   end
 
-  defp operation_snapshot_env(data, loop) do
-    section = operation_section(loop.kind)
-
-    {:ok, snapshot} =
-      Canonical.snapshot(data.canonical,
-        read: [:flow, :work, :vigil, :directive, :control, :correlations],
-        write: [section],
-        correlation_id: loop.correlation_id
-      )
-
-    operation_env(data,
-      snapshot_id: snapshot.id,
-      canonical_revision: snapshot.base_revision
-    )
-  end
-
-  defp operation_env(data, opts \\ []) do
-    committed = %{
-      work: committed_views(data, :work),
-      vigil: committed_views(data, :vigil),
-      directive: committed_views(data, :directive)
-    }
-
-    %{
-      agent: data.agent,
-      subject_id: data.subject.id,
-      epoch: data.generation,
-      snapshot_id: Keyword.get(opts, :snapshot_id, Spectre.Identity.uuid7()),
-      canonical_revision: Keyword.get(opts, :canonical_revision, data.canonical.revision),
-      committed: committed,
-      now: System.system_time(:millisecond)
-    }
-  end
-
-  defp committed_views(data, section) do
-    controls = canonical_value!(data, :control)
-
-    data
-    |> canonical_value!(section)
-    |> Map.new(fn {id, loop} ->
-      {id, OperationView.from_loop(loop, Map.get(controls, id, Control.new(id)))}
-    end)
-  end
-
   defp operation_runner_down(data, pid, monitor, attempt_id, reason) do
     case Map.get(data.operation_runners, attempt_id) do
       %{pid: ^pid, monitor: ^monitor} = ownership ->
         data = drop_operation_runner(data, ownership)
 
-        with {:ok, loop, control} <- operation_loop(data, ownership.loop_id),
+        with {:ok, loop, control} <- Loops.operation_loop(data, ownership.loop_id),
              %OperationLoop{attempt: %{id: ^attempt_id}} <- loop,
              {:ok, next_loop, next_control, event_specs} <-
                OperationRuntime.runner_down(
@@ -3558,7 +2385,7 @@ defmodule Spectre.Instance do
                  control,
                  ownership.spec,
                  reason,
-                 operation_env(data, snapshot_id: ownership.snapshot_id)
+                 Loops.operation_env(data, snapshot_id: ownership.snapshot_id)
                ),
              {:ok, next, _events} <-
                commit_operational(data, next_loop, next_control, event_specs,
@@ -3568,7 +2395,7 @@ defmodule Spectre.Instance do
                ) do
           next
           |> maybe_queue_after_transition(next_loop, next_control)
-          |> maybe_schedule_wait_timer(next_loop)
+          |> Timers.maybe_schedule_wait_timer(next_loop)
           |> maybe_schedule_operations()
         else
           _stale_or_invalid -> maybe_schedule_operations(data)
@@ -3587,7 +2414,7 @@ defmodule Spectre.Instance do
   defp reject_operation_result(data, ownership, result, reason) do
     data = finish_operation_runner(data, ownership)
 
-    with {:ok, loop, control} <- operation_loop(data, result.loop_id),
+    with {:ok, loop, control} <- Loops.operation_loop(data, result.loop_id),
          %OperationLoop{attempt: %{id: attempt_id}} when attempt_id == ownership.attempt_id <-
            loop,
          {:ok, next_loop, next_control, event_specs} <-
@@ -3596,7 +2423,7 @@ defmodule Spectre.Instance do
              control,
              ownership.spec,
              {:invalid_operation_result, reason},
-             operation_env(data, snapshot_id: ownership.snapshot_id)
+             Loops.operation_env(data, snapshot_id: ownership.snapshot_id)
            ),
          {:ok, next, _events} <-
            commit_operational(data, next_loop, next_control, event_specs,
@@ -3607,7 +2434,7 @@ defmodule Spectre.Instance do
            ) do
       next
       |> maybe_queue_after_transition(next_loop, next_control)
-      |> maybe_schedule_wait_timer(next_loop)
+      |> Timers.maybe_schedule_wait_timer(next_loop)
       |> maybe_schedule_operations()
     else
       _invalid -> maybe_schedule_operations(data)
@@ -3615,7 +2442,7 @@ defmodule Spectre.Instance do
   end
 
   defp drop_operation_runner(data, ownership) do
-    data = cancel_operation_attempt_timer(data, ownership.attempt_id)
+    data = Timers.cancel_attempt_timer(data, ownership.attempt_id)
 
     %{
       data
@@ -3650,7 +2477,7 @@ defmodule Spectre.Instance do
     Enum.reduce_while(intents, {:ok, [], []}, fn intent, {:ok, started, already} ->
       child_id = Keyword.fetch!(intent.opts, :id)
 
-      case operation_loop(data, child_id) do
+      case Loops.operation_loop(data, child_id) do
         {:ok, existing, _control} ->
           if started_by_same_intent?(existing, parent, intent) do
             entry = %{intent_id: intent.intent_id, loop: existing}
@@ -3704,7 +2531,7 @@ defmodule Spectre.Instance do
              intent.controller,
              intent.input,
              opts,
-             operation_env(data)
+             Loops.operation_env(data)
            ) do
         {:ok, loop, control, event_specs} ->
           commit_opts = [
@@ -3806,7 +2633,7 @@ defmodule Spectre.Instance do
     Enum.reduce(started_loops, data, fn child, acc ->
       acc
       |> queue_operation(child.loop)
-      |> maybe_schedule_wait_timer(child.loop)
+      |> Timers.maybe_schedule_wait_timer(child.loop)
     end)
   end
 
@@ -3825,7 +2652,7 @@ defmodule Spectre.Instance do
          } <- ownership,
          true <- loop_id == progress.loop_id and token == progress.fencing_token,
          true <- ownership.spec.id == ownership.operation,
-         {:ok, loop, control} <- operation_loop(data, loop_id),
+         {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
          %{id: attempt_id, epoch: epoch} <- loop.attempt,
          true <- attempt_id == progress.attempt_id and epoch == progress.epoch,
          true <- progress.context_revision == context_revision,
@@ -3908,7 +2735,7 @@ defmodule Spectre.Instance do
 
   defp operation_result_committed?(data, loop, result_id) do
     match?(%OperationResult{id: ^result_id}, loop.last_result) or
-      Enum.any?(Map.get(canonical_value!(data, :events), :records, []), fn event ->
+      Enum.any?(Map.get(Loops.canonical_value!(data, :events), :records, []), fn event ->
         event.loop_id == loop.id and event.causation_id == result_id
       end)
   end
@@ -3917,121 +2744,10 @@ defmodule Spectre.Instance do
   defp memory_status({:error, _reason}), do: :failed
   defp memory_status(_outcome), do: :failed
 
-  defp schedule_operation_attempt_timeout(data, loop, attempt) do
-    data = cancel_operation_attempt_timer(data, attempt.id)
-
-    reference =
-      Process.send_after(
-        self(),
-        {:spectre, :operation_attempt_timeout, loop.id, attempt.id, attempt.fencing_token},
-        attempt.timeout
-      )
-
-    timer = %{
-      ref: reference,
-      loop_id: loop.id,
-      attempt_id: attempt.id,
-      fencing_token: attempt.fencing_token,
-      due_at: attempt.started_at + attempt.timeout
-    }
-
-    %{
-      data
-      | operation_attempt_timers: Map.put(data.operation_attempt_timers, attempt.id, timer)
-    }
-  end
-
-  defp cancel_operation_attempt_timer(data, attempt_id) do
-    case Map.pop(data.operation_attempt_timers, attempt_id) do
-      {nil, timers} ->
-        %{data | operation_attempt_timers: timers}
-
-      {%{ref: reference}, timers} ->
-        if is_reference(reference), do: Process.cancel_timer(reference)
-        %{data | operation_attempt_timers: timers}
-    end
-  end
-
-  defp consume_operation_attempt_timer(data, loop_id, attempt_id, fencing_token) do
-    with %{loop_id: ^loop_id, fencing_token: ^fencing_token} <-
-           Map.get(data.operation_attempt_timers, attempt_id),
-         %{attempt_id: ^attempt_id, loop_id: ^loop_id, fencing_token: ^fencing_token} = ownership <-
-           Map.get(data.operation_runners, attempt_id) do
-      next = %{
-        data
-        | operation_attempt_timers: Map.delete(data.operation_attempt_timers, attempt_id)
-      }
-
-      {:ok, ownership, next}
-    else
-      _stale -> :stale
-    end
-  end
-
-  defp maybe_schedule_wait_timer(
-         data,
-         %OperationLoop{status: :waiting, wait: %{kind: kind}} = loop
-       )
-       when kind in [:timer, :retry] do
-    due_at = loop.wait.due_at
-
-    if is_integer(due_at) do
-      data = cancel_operation_timer(data, loop.id)
-      delay = max(due_at - System.system_time(:millisecond), 0)
-
-      reference =
-        Process.send_after(
-          self(),
-          {:spectre, :operation_timer, loop.id, loop.wait.id, loop.trigger_generation},
-          delay
-        )
-
-      timer = %{
-        ref: reference,
-        wait_id: loop.wait.id,
-        generation: loop.trigger_generation,
-        due_at: due_at
-      }
-
-      %{data | operation_timers: Map.put(data.operation_timers, loop.id, timer)}
-    else
-      data
-    end
-  end
-
-  defp maybe_schedule_wait_timer(data, %OperationLoop{} = loop),
-    do: cancel_operation_timer(data, loop.id)
-
-  defp cancel_operation_timer(data, loop_id) do
-    case Map.pop(data.operation_timers, loop_id) do
-      {nil, timers} ->
-        %{data | operation_timers: timers}
-
-      {%{ref: reference}, timers} ->
-        if is_reference(reference), do: Process.cancel_timer(reference)
-        %{data | operation_timers: timers}
-    end
-  end
-
-  defp consume_operation_timer(data, loop_id, wait_id, generation) do
-    case Map.get(data.operation_timers, loop_id) do
-      %{wait_id: ^wait_id, generation: ^generation} ->
-        {:ok, %{data | operation_timers: Map.delete(data.operation_timers, loop_id)}}
-
-      _stale ->
-        :stale
-    end
-  end
-
-  defp schedule_restored_timers(data) do
-    Enum.reduce(all_operation_loops(data), data, fn {loop, _control}, acc ->
-      maybe_schedule_wait_timer(acc, loop)
-    end)
-  end
-
   defp recover_operational_state(data) do
-    Enum.reduce_while(all_operation_loops(data), {:ok, data}, fn {loop, control}, {:ok, acc} ->
-      case OperationRuntime.recover(loop, control, operation_env(acc)) do
+    Enum.reduce_while(Loops.all_operation_loops(data), {:ok, data}, fn {loop, control},
+                                                                       {:ok, acc} ->
+      case OperationRuntime.recover(loop, control, Loops.operation_env(acc)) do
         {:ok, ^loop, ^control, []} ->
           next = maybe_queue_after_transition(acc, loop, control)
           {:cont, {:ok, next}}
@@ -4056,403 +2772,19 @@ defmodule Spectre.Instance do
     end)
   end
 
-  defp restore_initial_canonical(opts, state, checkpoint_store, base_opts) do
-    case Keyword.fetch(opts, :canonical_checkpoint) do
-      {:ok, checkpoint} ->
-        with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-             :ok <- validate_canonical_instance(canonical, Keyword.fetch!(opts, :instance_ref)),
-             {:ok, %State{} = flow_state} <- Canonical.fetch(canonical, :flow) do
-          expected = Keyword.get(opts, :checkpoint_expected_revision, 0)
-          {:ok, flow_state, canonical, expected}
-        else
-          {:ok, value} -> {:error, {:invalid_canonical_flow_state, value}}
-          {:error, _reason} = error -> error
-        end
-
-      :error ->
-        restore_stored_or_new_canonical(opts, state, checkpoint_store, base_opts)
-    end
-  end
-
-  defp restore_stored_or_new_canonical(opts, state, checkpoint_store, base_opts) do
-    instance_ref = Keyword.fetch!(opts, :instance_ref)
-
-    case CheckpointStore.load(checkpoint_store, instance_ref, base_opts) do
-      {:ok, checkpoint} ->
-        with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-             :ok <- validate_canonical_instance(canonical, instance_ref),
-             {:ok, %State{} = flow_state} <- Canonical.fetch(canonical, :flow) do
-          {:ok, flow_state, canonical, canonical.revision}
-        else
-          {:ok, value} -> {:error, {:invalid_canonical_flow_state, value}}
-          {:error, _reason} = error -> error
-        end
-
-      :not_found ->
-        new_canonical_state(instance_ref, state)
-
-      {:error, reason} ->
-        {:error, {:canonical_checkpoint_load_failed, reason}}
-    end
-  end
-
-  defp new_canonical_state(instance_ref, state) do
-    Canonical.new(%{
-      flow: state,
-      work: %{},
-      vigil: %{},
-      directive: %{},
-      control: %{},
-      correlations: %{instance_key: instance_ref.key},
-      events: %{records: [], ids: %{}}
-    })
-    |> case do
-      {:ok, canonical} -> {:ok, state, canonical, 0}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp checkpoint_store(agent, opts, base_opts) do
-    config = agent.__spectre_config__()
-
-    value =
-      first_configured([
-        {opts, :checkpoint_store},
-        {base_opts, :checkpoint_store},
-        {config, :checkpoint_store}
-      ])
-
-    CheckpointStore.normalize(value)
-  end
-
-  defp checkpoint_mode(opts, checkpoint_store) do
-    default = if checkpoint_store, do: :async, else: :manual
-    value = Keyword.get(opts, :checkpoint_mode, default)
-
-    if value in [:async, :manual],
-      do: {:ok, value},
-      else: {:error, {:invalid_checkpoint_mode, value}}
-  end
-
-  defp maybe_checkpoint(%{checkpoint_store: nil} = data), do: data
-  defp maybe_checkpoint(%{checkpoint_mode: :manual} = data), do: data
-  defp maybe_checkpoint(data), do: enqueue_checkpoint(data, data.canonical)
-
-  defp force_checkpoint(data), do: enqueue_checkpoint(data, data.canonical, true)
-
-  defp enqueue_checkpoint(data, canonical, force? \\ false) do
-    cond do
-      canonical.revision <= data.checkpoint_revision ->
-        reply_checkpoint_waiters(data)
-
-      not is_nil(data.checkpoint_reconciliation) ->
-        %{data | checkpoint_pending: newest_checkpoint(data.checkpoint_pending, canonical)}
-
-      not is_nil(data.checkpoint_inflight) ->
-        %{data | checkpoint_pending: newest_checkpoint(data.checkpoint_pending, canonical)}
-
-      not force? and data.checkpoint_mode == :manual ->
-        %{data | checkpoint_pending: newest_checkpoint(data.checkpoint_pending, canonical)}
-
-      true ->
-        start_checkpoint_task(%{data | checkpoint_error: nil}, canonical)
-    end
-  end
-
-  defp newest_checkpoint(nil, canonical), do: canonical
-
-  defp newest_checkpoint(current, canonical) do
-    if current.revision >= canonical.revision, do: current, else: canonical
-  end
-
-  defp start_checkpoint_task(data, canonical) do
-    owner = self()
-    token = Spectre.Identity.uuid7()
-    revision = canonical.revision
-    expected = data.checkpoint_revision
-    store = data.checkpoint_store
-    ref = data.ref
-    opts = data.base_opts
-
-    callback = fn ->
-      result =
-        with {:ok, encoded} <- CanonicalCodec.encode_json(canonical) do
-          CheckpointStore.persist(store, ref, encoded, expected, revision, opts)
-        end
-
-      send(owner, {:spectre, :checkpoint_result, token, revision, result})
-    end
-
-    case Task.Supervisor.start_child(Spectre.Instance.CheckpointTaskSupervisor, callback) do
-      {:ok, pid} ->
-        monitor = Process.monitor(pid)
-
-        %{
-          data
-          | checkpoint_inflight: %{
-              token: token,
-              revision: revision,
-              expected_revision: expected,
-              canonical: canonical,
-              pid: pid,
-              monitor: monitor
-            },
-            checkpoint_pending: nil
-        }
-
-      {:error, reason} ->
-        failure = {:checkpoint_task_start_failed, reason}
-
-        data
-        |> Map.put(:checkpoint_error, failure)
-        |> Map.put(:checkpoint_pending, newest_checkpoint(data.checkpoint_pending, canonical))
-        |> fail_checkpoint_waiters(failure)
-    end
-  end
-
-  defp finish_checkpoint_task(%{checkpoint_inflight: %{monitor: monitor}} = data) do
-    Process.demonitor(monitor, [:flush])
-    %{data | checkpoint_inflight: nil}
-  end
-
   # A normal task sends its result before terminating. Keep the fence until that
   # message is reduced; an abnormal DOWN has no trustworthy commit outcome.
   defp checkpoint_task_down(data, :normal), do: data
 
-  defp checkpoint_task_down(data, reason) do
-    failure = {:checkpoint_task_down, reason}
-    inflight = data.checkpoint_inflight
-
-    data
-    |> finish_checkpoint_task()
-    |> mark_checkpoint_reconciliation(inflight, failure)
-    |> arm_idle_timer()
-  end
-
-  defp start_pending_checkpoint(%{checkpoint_reconciliation: reconciliation} = data)
-       when not is_nil(reconciliation),
-       do: data
-
-  defp start_pending_checkpoint(%{checkpoint_pending: nil} = data), do: data
-
-  defp start_pending_checkpoint(data) do
-    pending = data.checkpoint_pending
-
-    if pending.revision <= data.checkpoint_revision do
-      %{data | checkpoint_pending: nil}
-    else
-      start_checkpoint_task(data, pending)
-    end
-  end
-
-  defp reply_checkpoint_waiters(data) do
-    {ready, waiting} =
-      Enum.split_with(data.checkpoint_waiters, fn {_from, target} ->
-        target <= data.checkpoint_revision
-      end)
-
-    Enum.each(ready, fn {from, _target} ->
-      GenServer.reply(from, {:ok, data.checkpoint_revision})
-    end)
-
-    %{data | checkpoint_waiters: waiting}
-  end
-
-  defp fail_checkpoint_waiters(data, reason) do
-    Enum.each(data.checkpoint_waiters, fn {from, _target} ->
-      GenServer.reply(from, {:error, reason})
-    end)
-
-    %{data | checkpoint_waiters: []}
-  end
-
-  defp checkpoint_persist_failed(data, inflight, reason) do
-    if checkpoint_reconciliation_required?(reason) do
-      mark_checkpoint_reconciliation(data, inflight, reason)
-    else
-      data
-      |> Map.put(:checkpoint_error, reason)
-      |> Map.put(:checkpoint_pending, newest_checkpoint(data.checkpoint_pending, data.canonical))
-      |> fail_checkpoint_waiters(reason)
-    end
-  end
-
-  defp mark_checkpoint_reconciliation(data, inflight, reason) do
-    reconciliation = %{
-      revision: inflight.revision,
-      expected_revision: inflight.expected_revision,
-      canonical: inflight.canonical,
-      base: data.checkpoint_persisted,
-      reason: reason
-    }
-
-    error = {:checkpoint_reconciliation_required, inflight.revision, reason}
-
-    data
-    |> Map.put(:checkpoint_reconciliation, reconciliation)
-    |> Map.put(:checkpoint_error, error)
-    |> Map.put(:checkpoint_pending, newest_checkpoint(data.checkpoint_pending, data.canonical))
-    |> fail_checkpoint_waiters(error)
-  end
-
-  defp checkpoint_reconciliation_required?({:ambiguous, _reason}), do: true
-  defp checkpoint_reconciliation_required?(:conflict), do: true
-
-  defp checkpoint_reconciliation_required?({kind, _reason})
-       when kind in [:conflict, :stale],
-       do: true
-
-  defp checkpoint_reconciliation_required?({kind, _a, _b})
-       when kind in [:conflict, :stale],
-       do: true
-
-  defp checkpoint_reconciliation_required?(_reason), do: false
-
-  defp start_checkpoint_reconciliation(data, from) do
-    owner = self()
-    token = Spectre.Identity.uuid7()
-    store = data.checkpoint_store
-    ref = data.ref
-    opts = data.base_opts
-
-    callback = fn ->
-      result = CheckpointStore.load(store, ref, opts)
-      send(owner, {:spectre, :checkpoint_reconcile_result, token, result})
-    end
-
-    case Task.Supervisor.start_child(Spectre.Instance.CheckpointTaskSupervisor, callback) do
-      {:ok, pid} ->
-        monitor = Process.monitor(pid)
-
-        %{
-          data
-          | checkpoint_reconcile_inflight: %{
-              token: token,
-              pid: pid,
-              monitor: monitor,
-              from: from
-            }
-        }
-
-      {:error, reason} ->
-        failure = {:checkpoint_reconciliation_task_start_failed, reason}
-        GenServer.reply(from, {:error, failure})
-        %{data | checkpoint_error: failure}
-    end
-  end
-
-  defp finish_checkpoint_reconciliation_task(
-         %{checkpoint_reconcile_inflight: %{monitor: monitor}} = data
-       ) do
-    Process.demonitor(monitor, [:flush])
-    %{data | checkpoint_reconcile_inflight: nil}
-  end
+  defp checkpoint_task_down(data, reason),
+    do: data |> Checkpoint.task_down(reason) |> arm_idle_timer()
 
   defp checkpoint_reconciliation_task_down(data, :normal), do: data
 
-  defp checkpoint_reconciliation_task_down(data, reason) do
-    %{from: from} = data.checkpoint_reconcile_inflight
-    failure = {:checkpoint_reconciliation_task_down, reason}
-    GenServer.reply(from, {:error, failure})
+  defp checkpoint_reconciliation_task_down(data, reason),
+    do: data |> Checkpoint.reconciliation_task_down(reason) |> arm_idle_timer()
 
-    data
-    |> finish_checkpoint_reconciliation_task()
-    |> Map.put(:checkpoint_error, failure)
-    |> arm_idle_timer()
-  end
-
-  defp reconcile_checkpoint_result(data, result) do
-    reconciliation = data.checkpoint_reconciliation
-
-    case decode_reconciled_checkpoint(result, data.ref) do
-      :not_found when reconciliation.expected_revision == 0 ->
-        checkpoint_not_committed(data)
-
-      {:ok, stored} when stored == reconciliation.canonical ->
-        checkpoint_committed(data, stored)
-
-      {:ok, stored} when not is_nil(reconciliation.base) and stored == reconciliation.base ->
-        checkpoint_not_committed(data)
-
-      {:ok, stored} ->
-        reason =
-          {:checkpoint_reconciliation_conflict, reconciliation.expected_revision,
-           reconciliation.revision, stored.revision}
-
-        {:error, %{data | checkpoint_error: reason}, reason}
-
-      :not_found ->
-        reason = {:checkpoint_reconciliation_missing_base, reconciliation.expected_revision}
-        {:error, %{data | checkpoint_error: reason}, reason}
-
-      {:error, reason} ->
-        {:error, %{data | checkpoint_error: reason}, reason}
-    end
-  end
-
-  defp decode_reconciled_checkpoint(:not_found, _instance_ref), do: :not_found
-
-  defp decode_reconciled_checkpoint({:ok, checkpoint}, instance_ref) do
-    with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-         :ok <- validate_canonical_instance(canonical, instance_ref) do
-      {:ok, canonical}
-    end
-  end
-
-  defp decode_reconciled_checkpoint({:error, reason}, _instance_ref),
-    do: {:error, {:checkpoint_reconciliation_load_failed, reason}}
-
-  defp checkpoint_committed(data, stored) do
-    revision = stored.revision
-
-    next =
-      data
-      |> Map.put(:checkpoint_revision, revision)
-      |> Map.put(:checkpoint_persisted, stored)
-      |> Map.put(:checkpoint_reconciliation, nil)
-      |> Map.put(:checkpoint_error, nil)
-      |> reply_checkpoint_waiters()
-      |> start_pending_checkpoint()
-
-    {:ok, next, revision}
-  end
-
-  defp checkpoint_not_committed(data) do
-    revision = data.checkpoint_revision
-
-    next =
-      data
-      |> Map.put(:checkpoint_reconciliation, nil)
-      |> Map.put(:checkpoint_error, nil)
-      |> start_pending_checkpoint()
-
-    {:ok, next, revision}
-  end
-
-  defp checkpoint_reconciliation_status(nil), do: nil
-
-  defp checkpoint_reconciliation_status(reconciliation) do
-    %{
-      revision: reconciliation.revision,
-      expected_revision: reconciliation.expected_revision,
-      reason: reason_class(reconciliation.reason)
-    }
-  end
-
-  defp checkpoint_reconciliation_error(data) do
-    reconciliation = data.checkpoint_reconciliation
-
-    {:checkpoint_reconciliation_required, reconciliation.revision,
-     reason_class(reconciliation.reason)}
-  end
-
-  defp validate_canonical_instance(canonical, instance_ref),
-    do: CanonicalValidator.validate(canonical, instance_ref, event_limit: @operation_event_limit)
-
-  defp reason_class(%{kind: kind}) when is_atom(kind), do: kind
-  defp reason_class({kind, _detail}) when is_atom(kind), do: kind
-  defp reason_class(reason) when is_atom(reason), do: reason
-  defp reason_class(_reason), do: :error
+  defp reason_class(reason), do: InstanceTelemetry.reason_class(reason)
 
   defp normalize_event_limit(value) when is_integer(value) and value >= 0,
     do: min(value, @operation_event_limit)
@@ -4461,10 +2793,10 @@ defmodule Spectre.Instance do
 
   defp runtime_opts(data, opts, input) do
     origin_conversation_id =
-      first_present([
+      Conversation.first_present([
         Keyword.get(opts, :origin_conversation_id),
         Keyword.get(opts, :conversation_id),
-        input_conversation_id(input)
+        Conversation.input_conversation_id(input)
       ])
 
     opts =
@@ -4495,8 +2827,8 @@ defmodule Spectre.Instance do
         instance_ref: data.ref,
         agent_ref: data.agent_ref,
         subject: data.subject,
-        conversation_ref: conversation_key(input, origin_conversation_id),
-        origin_conversation_ref: origin_conversation_key(origin_conversation_id)
+        conversation_ref: Conversation.conversation_key(input, origin_conversation_id),
+        origin_conversation_ref: Conversation.origin_conversation_key(origin_conversation_id)
       })
 
     Keyword.put(opts, :run_metadata, metadata)
@@ -4524,74 +2856,6 @@ defmodule Spectre.Instance do
               "invalid Instance state_conversation_id: #{inspect(reason)}"
     end
   end
-
-  defp record_conversation(data, %Run{} = run, opts) do
-    origin_conversation_id =
-      first_present([
-        Keyword.get(opts, :origin_conversation_id),
-        input_conversation_id(run.input)
-      ])
-
-    case conversation_key(run.input, origin_conversation_id) do
-      nil ->
-        data
-
-      key ->
-        source = input_source(run.input)
-        current = Map.get(data.conversations, key, %{count: 0})
-
-        conversation =
-          current
-          |> Map.put(:key, key)
-          |> Map.put(:channel, source_field(source, :kind))
-          |> Map.put(:mount, source_field(source, :mount))
-          |> Map.put(:last_run_id, run.id)
-          |> Map.update!(:count, &(&1 + 1))
-
-        %{data | conversations: Map.put(data.conversations, key, conversation)}
-    end
-  end
-
-  defp conversation_key(_input, nil), do: nil
-
-  defp conversation_key(input, conversation_id) do
-    source = input_source(input)
-
-    value = {
-      source_field(source, :kind),
-      source_field(source, :mount),
-      conversation_id
-    }
-
-    case Value.validate(value, [:instance, :conversation]) do
-      :ok -> Value.token("conversation", value)
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp origin_conversation_key(nil), do: nil
-
-  defp origin_conversation_key(conversation_id) do
-    case Value.validate(conversation_id, [:instance, :origin_conversation]) do
-      :ok -> Value.token("origin-conversation", conversation_id)
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp input_conversation_id(input),
-    do: input |> input_source() |> source_field(:conversation_id)
-
-  defp input_source(input) when is_map(input),
-    do: Map.get(input, :source, Map.get(input, "source"))
-
-  defp input_source(_input), do: nil
-
-  defp source_field(source, key) when is_map(source),
-    do: Map.get(source, key, Map.get(source, Atom.to_string(key)))
-
-  defp source_field(_source, _key), do: nil
-
-  defp first_present(values), do: Enum.find(values, &(not is_nil(&1)))
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
@@ -4722,19 +2986,8 @@ defmodule Spectre.Instance do
     end)
   end
 
-  defp emit(event, data, measurements) do
-    Spectre.Telemetry.emit(
-      [:instance, event],
-      measurements,
-      %{
-        agent: data.agent,
-        agent_ref: AgentRef.key(data.agent_ref),
-        subject: Subject.key(data.subject),
-        generation: data.generation
-      },
-      data.base_opts
-    )
-  end
+  defp emit(event, data, measurements),
+    do: InstanceTelemetry.emit(event, data, measurements)
 
   defp maybe_emit_uncorrelated_operation_trigger(data, events) do
     if Enum.any?(events, fn event ->
