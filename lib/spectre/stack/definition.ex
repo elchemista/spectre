@@ -274,7 +274,8 @@ defmodule Spectre.Stack.Definition do
         visit!(installation, dependency_index, %{}, state)
       end)
 
-    ordered
+    # visit! prepends in post-order, so the reverse is the topological order.
+    Enum.reverse(ordered)
   end
 
   @spec visit!(
@@ -308,7 +309,7 @@ defmodule Spectre.Stack.Definition do
             visit!(dependency, dependency_index, visiting, dependency_state)
           end)
 
-        {Map.put(visited, package.id, true), ordered ++ [installation]}
+        {Map.put(visited, package.id, true), [installation | ordered]}
     end
   end
 
