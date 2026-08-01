@@ -84,7 +84,7 @@ Each abstraction has one job and one owner.
 | Package | Use it when you need | It deliberately does not own |
 | --- | --- | --- |
 | `spectre` | Agent definitions, routing, policy, state, Runs, Instances, Work, Vigil, execution lifecycle, checkpoints | provider SDKs, credentials, business authorization, application side effects |
-| `spectre_prism` | Constraint-aware model/profile selection by purpose, modality, privacy, cost, latency, and capability | provider clients, provider scheduling, Run or Instance lifecycle |
+| `spectre_prism` | Constraint-aware model/profile selection by purpose, modality, privacy, cost, latency, and capability, with optional bundled provider adapters | credentials, live provider sessions, provider scheduling, Run or Instance lifecycle |
 | `spectre_kinetic` | Tool retrieval and validated Action planning from Action Language | authorization or execution of the selected Action |
 | `spectre_mnemonic` | Active and durable memory, recall, search, consolidation, provenance, and subject-scoped context | canonical Agent state or the application database |
 | `spectre_directive` | A resumable mission and evolving-plan loop with correlated questions, invocations, and outcomes | general memory, tool discovery, core Work scheduling, or Instance ownership |
@@ -384,9 +384,11 @@ end
 ```
 
 Use Prism when several inference capabilities differ in privacy, modality,
-context window, latency, cost, or depth. The application still supplies
-provider clients and secrets. Prism selects; Spectre performs the inference
-step and owns the Run boundary.
+context window, latency, cost, or depth. Prism ships optional adapters for
+OpenAI, OpenRouter, Ollama, and Gemini behind an injectable HTTP transport;
+credentials are resolved only at runtime, and live provider sessions remain
+caller-owned and outside the compiled Stack. Prism selects; Spectre performs
+the inference step and owns the Run boundary.
 
 ## Spectre Kinetic: Plan Closed Actions
 
