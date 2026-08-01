@@ -17,6 +17,19 @@ defmodule Spectre.Instance.Loops do
   alias Spectre.Operation.View, as: OperationView
   alias Spectre.Run.Value
 
+  @selector_keys %{
+    "id" => :id,
+    "kind" => :kind,
+    "controller" => :controller,
+    "definition" => :definition,
+    "status" => :status,
+    "phase" => :phase,
+    "origin" => :origin,
+    "turn_id" => :turn_id,
+    "correlation_id" => :correlation_id,
+    "active" => :active
+  }
+
   @doc "Extracts a loop id from a public reference, raising on invalid shapes."
   @spec operation_id(OperationRef.t() | String.t() | term()) :: String.t()
   def operation_id(%OperationRef{id: id}), do: id
@@ -240,22 +253,7 @@ defmodule Spectre.Instance.Loops do
 
   defp atomize_selector(selector) do
     Map.new(selector, fn {key, value} ->
-      normalized =
-        case key do
-          "id" -> :id
-          "kind" -> :kind
-          "controller" -> :controller
-          "definition" -> :definition
-          "status" -> :status
-          "phase" -> :phase
-          "origin" -> :origin
-          "turn_id" -> :turn_id
-          "correlation_id" -> :correlation_id
-          "active" -> :active
-          other -> other
-        end
-
-      {normalized, value}
+      {Map.get(@selector_keys, key, key), value}
     end)
   end
 end

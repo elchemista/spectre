@@ -64,33 +64,12 @@ defmodule Spectre.Instance.Deliveries do
   def commit_consent(%InstanceState{} = data, consent, opts, transition) do
     key = delivery_consent_key(consent.id)
     correlations = Loops.canonical_value!(data, :correlations)
+    existing = Map.get(correlations, key)
 
     with :ok <- DeliveryConsent.validate(consent),
          :ok <-
-           validate_delivery_consent_transition(Map.get(correlations, key), consent, transition) do
-      if Map.get(correlations, key) == consent do
-        {:ok, data}
-      else
-        correlations = Map.put(correlations, key, consent)
-
-        with {:ok, next} <-
-               Commit.canonical_sections(data, %{correlations: correlations},
-                 correlation_id: Keyword.get(opts, :correlation_id, consent.id),
-                 causation_id: Keyword.get(opts, :causation_id),
-                 provenance: Keyword.get(opts, :provenance, %{source: :delivery_policy}),
-                 metadata: %{transition: transition, consent_id: consent.id}
-               ) do
-          _ =
-            Spectre.Journal.record(
-              data.agent,
-              transition,
-              %{consent_id: consent.id, canonical_revision: next.canonical.revision},
-              data.base_opts
-            )
-
-          {:ok, next}
-        end
-      end
+           validate_delivery_consent_transition(existing, consent, transition) do
+      maybe_commit_consent(data, correlations, key, existing, consent, opts, transition)
     end
   end
 
@@ -204,57 +183,95 @@ defmodule Spectre.Instance.Deliveries do
     with :ok <- DeliveryReceipt.validate(receipt),
          :ok <- validate_delivery_receipt_owner(receipt, loop),
          :ok <- validate_delivery_receipt_transition(existing, receipt) do
-      if existing == receipt do
-        {:ok, data, []}
-      else
-        correlations =
-          correlations
-          |> Map.put(key, receipt)
-          |> trim_delivery_receipts()
+      maybe_commit_receipt(data, loop, receipt, opts, correlations, key, existing)
+    end
+  end
 
-        revision = data.canonical.revision + 1
-        event_type = delivery_event_type(receipt.status)
+  defp maybe_commit_consent(
+         data,
+         _correlations,
+         _key,
+         existing,
+         consent,
+         _opts,
+         _transition
+       )
+       when existing == consent,
+       do: {:ok, data}
 
-        event =
-          OperationEvent.new(loop, event_type,
-            agent_id: AgentRef.key(data.agent_ref),
-            revision: revision,
-            correlation_id: Keyword.get(opts, :correlation_id, loop.correlation_id),
-            causation_id: receipt.event_id,
-            provenance: Keyword.get(opts, :provenance, %{source: :delivery_policy}),
-            payload: %{receipt_id: receipt.id, status: receipt.status, reason: receipt.reason},
-            metadata: %{transition: :delivery_decision}
-          )
+  defp maybe_commit_consent(data, correlations, key, _existing, consent, opts, transition) do
+    correlations = Map.put(correlations, key, consent)
 
-        writes = %{
-          correlations: correlations,
-          events: Commit.append_events(data, [event])
-        }
+    with {:ok, next} <-
+           Commit.canonical_sections(data, %{correlations: correlations},
+             correlation_id: Keyword.get(opts, :correlation_id, consent.id),
+             causation_id: Keyword.get(opts, :causation_id),
+             provenance: Keyword.get(opts, :provenance, %{source: :delivery_policy}),
+             metadata: %{transition: transition, consent_id: consent.id}
+           ) do
+      _ =
+        Spectre.Journal.record(
+          data.agent,
+          transition,
+          %{consent_id: consent.id, canonical_revision: next.canonical.revision},
+          data.base_opts
+        )
 
-        with :ok <- Commit.validate_operation_events(data, [event]),
-             {:ok, next} <-
-               Commit.canonical_sections(data, writes,
-                 correlation_id: event.correlation_id,
-                 causation_id: event.causation_id,
-                 provenance: event.provenance,
-                 metadata: %{transition: :delivery_decision, receipt_id: receipt.id}
-               ) do
-          _ =
-            Spectre.Journal.record(
-              data.agent,
-              :delivery_decision,
-              %{
-                receipt_id: receipt.id,
-                loop_id: loop.id,
-                status: receipt.status,
-                canonical_revision: next.canonical.revision
-              },
-              data.base_opts
-            )
+      {:ok, next}
+    end
+  end
 
-          {:ok, next, [event]}
-        end
-      end
+  defp maybe_commit_receipt(data, _loop, receipt, _opts, _correlations, _key, existing)
+       when existing == receipt,
+       do: {:ok, data, []}
+
+  defp maybe_commit_receipt(data, loop, receipt, opts, correlations, key, _existing) do
+    correlations =
+      correlations
+      |> Map.put(key, receipt)
+      |> trim_delivery_receipts()
+
+    revision = data.canonical.revision + 1
+    event_type = delivery_event_type(receipt.status)
+
+    event =
+      OperationEvent.new(loop, event_type,
+        agent_id: AgentRef.key(data.agent_ref),
+        revision: revision,
+        correlation_id: Keyword.get(opts, :correlation_id, loop.correlation_id),
+        causation_id: receipt.event_id,
+        provenance: Keyword.get(opts, :provenance, %{source: :delivery_policy}),
+        payload: %{receipt_id: receipt.id, status: receipt.status, reason: receipt.reason},
+        metadata: %{transition: :delivery_decision}
+      )
+
+    writes = %{
+      correlations: correlations,
+      events: Commit.append_events(data, [event])
+    }
+
+    with :ok <- Commit.validate_operation_events(data, [event]),
+         {:ok, next} <-
+           Commit.canonical_sections(data, writes,
+             correlation_id: event.correlation_id,
+             causation_id: event.causation_id,
+             provenance: event.provenance,
+             metadata: %{transition: :delivery_decision, receipt_id: receipt.id}
+           ) do
+      _ =
+        Spectre.Journal.record(
+          data.agent,
+          :delivery_decision,
+          %{
+            receipt_id: receipt.id,
+            loop_id: loop.id,
+            status: receipt.status,
+            canonical_revision: next.canonical.revision
+          },
+          data.base_opts
+        )
+
+      {:ok, next, [event]}
     end
   end
 

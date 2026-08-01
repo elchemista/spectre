@@ -114,25 +114,29 @@ defmodule Spectre.Instance.Commit do
       {:error, :duplicate_operation_event_id}
     else
       Enum.reduce_while(events, :ok, fn event, :ok ->
-        previous = Enum.find(existing, &(&1.id == event.id))
-
-        case {OperationEvent.validate(event), previous} do
-          {:ok, nil} when event.revision == data.canonical.revision + 1 ->
-            {:cont, :ok}
-
-          {:ok, ^event} ->
-            {:cont, :ok}
-
-          {:ok, nil} ->
-            {:halt, {:error, {:invalid_operation_event_revision, event.revision}}}
-
-          {:ok, _conflict} ->
-            {:halt, {:error, {:operation_event_id_conflict, event.id}}}
-
-          {{:error, _reason} = error, _previous} ->
-            {:halt, error}
-        end
+        validate_operation_event(data, existing, event)
       end)
+    end
+  end
+
+  defp validate_operation_event(data, existing, event) do
+    previous = Enum.find(existing, &(&1.id == event.id))
+
+    case {OperationEvent.validate(event), previous} do
+      {:ok, nil} when event.revision == data.canonical.revision + 1 ->
+        {:cont, :ok}
+
+      {:ok, ^event} ->
+        {:cont, :ok}
+
+      {:ok, nil} ->
+        {:halt, {:error, {:invalid_operation_event_revision, event.revision}}}
+
+      {:ok, _conflict} ->
+        {:halt, {:error, {:operation_event_id_conflict, event.id}}}
+
+      {{:error, _reason} = error, _previous} ->
+        {:halt, error}
     end
   end
 
@@ -142,18 +146,20 @@ defmodule Spectre.Instance.Commit do
     if Enum.uniq(ids) != ids do
       {:error, :duplicate_operational_loop_in_transition}
     else
-      Enum.reduce_while(entries, :ok, fn entry, :ok ->
-        with :ok <- OperationLoop.validate(entry.loop),
-             :ok <- Control.validate(entry.control) do
-          {:cont, :ok}
-        else
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
+      Enum.reduce_while(entries, :ok, &validate_operational_entry/2)
     end
   end
 
   defp validate_operational_batch(_entries), do: {:error, :empty_operational_transition}
+
+  defp validate_operational_entry(entry, :ok) do
+    with :ok <- OperationLoop.validate(entry.loop),
+         :ok <- Control.validate(entry.control) do
+      {:cont, :ok}
+    else
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
 
   defp do_commit_operational_batch(data, entries, commit_opts) do
     next_revision = data.canonical.revision + 1
