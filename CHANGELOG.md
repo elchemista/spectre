@@ -8,6 +8,9 @@ minor release may contain documented breaking API changes.
 
 ### Added
 
+- Added `ECOSYSTEM.md`, documenting the 0.2.0 package compatibility matrix,
+  composition patterns, complete Stack examples, library responsibilities,
+  and the architectural rationale for a small core with explicit satellites.
 - Directive Definitions can declare `can_start: [:work]` and return stable
   `start_loops` intents from `apply_result/4`; the parent Result, child Work,
   controls, correlations, and events commit atomically at one canonical

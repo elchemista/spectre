@@ -5,6 +5,7 @@ defmodule Spectre.MixProject do
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
+    "ECOSYSTEM.md",
     "CHANGELOG.md",
     "docs/GETTING_STARTED.md",
     "docs/ARCHITECTURE.md",
@@ -69,7 +70,8 @@ defmodule Spectre.MixProject do
     [
       name: "spectre",
       maintainers: ["elchemista"],
-      files: ~w(lib docs mix.exs README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
+      files:
+        ~w(lib docs mix.exs README.md ECOSYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url}
     ]
@@ -116,6 +118,7 @@ defmodule Spectre.MixProject do
       groups_for_extras: [
         "Start here": [
           "README.md",
+          "ECOSYSTEM.md",
           "docs/GETTING_STARTED.md",
           "docs/INSTALLATION.md"
         ],
