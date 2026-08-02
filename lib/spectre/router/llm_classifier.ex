@@ -146,11 +146,64 @@ defmodule Spectre.Router.LLMClassifier do
     |> Keyword.put(:model, model)
   end
 
+  @doc """
+  Renders visible labels as a flow-grouped taxonomy block.
+
+  Labels declared inside flows are grouped under their `flow_path`, one flow
+  header per line ending with `/`, nested flows indented below their parent.
+  Labels without a flow stay at the root level. When no visible rule declares
+  a flow the output is the plain flat label list, one label per line.
+
+      tree = Spectre.Router.LLMClassifier.label_tree([:PAY_CARD], rules)
+  """
+  @spec label_tree([atom()], [Spectre.Rule.t() | map()]) :: String.t()
+  def label_tree(labels, rules) when is_list(labels) and is_list(rules) do
+    paths = Map.new(rules, &{Map.get(&1, :label), rule_flow_path(&1)})
+    entries = Enum.map(labels, &{Map.get(paths, &1, []), &1})
+
+    entries
+    |> render_tree_level([], 0)
+    |> IO.iodata_to_binary()
+    |> String.trim_trailing()
+  end
+
+  @spec rule_flow_path(Spectre.Rule.t() | map()) :: [atom()]
+  defp rule_flow_path(rule) do
+    case Map.get(rule, :flow_path) do
+      [_head | _tail] = path -> path
+      _missing_or_empty -> rule |> Map.get(:flow) |> List.wrap()
+    end
+  end
+
+  @spec render_tree_level([{[atom()], atom()}], [atom()], non_neg_integer()) :: iodata()
+  defp render_tree_level(entries, prefix, depth) do
+    {direct, nested} = Enum.split_with(entries, fn {path, _label} -> path == prefix end)
+    indent = String.duplicate("  ", depth)
+
+    direct_lines = Enum.map(direct, fn {_path, label} -> [indent, to_string(label), "\n"] end)
+
+    nested_blocks =
+      nested
+      |> Enum.map(fn {path, _label} -> Enum.at(path, depth) end)
+      |> Enum.uniq()
+      |> Enum.map(fn segment ->
+        children = Enum.filter(nested, fn {path, _label} -> Enum.at(path, depth) == segment end)
+
+        [
+          [indent, to_string(segment), "/\n"],
+          render_tree_level(children, prefix ++ [segment], depth + 1)
+        ]
+      end)
+
+    [direct_lines, nested_blocks]
+  end
+
   @spec prompt(String.t(), [atom()], keyword()) :: {:ok, String.t()} | {:error, term()}
   defp prompt(text, labels, opts) do
     base = %{
       text: text,
       labels: labels,
+      label_tree: label_tree(labels, Keyword.get(opts, :spectre_rules, [])),
       recent_chat: Keyword.get(opts, :recent_chat, "none"),
       evidence: Keyword.get(opts, :classifier_evidence, [])
     }
@@ -196,18 +249,19 @@ defmodule Spectre.Router.LLMClassifier do
   defp normalize_assigns(_assigns), do: %{}
 
   @spec default_prompt(map()) :: String.t()
-  defp default_prompt(%{
-         text: text,
-         labels: labels,
-         recent_chat: recent_chat,
-         evidence: evidence
-       }) do
+  defp default_prompt(
+         %{
+           text: text,
+           labels: labels,
+           recent_chat: recent_chat,
+           evidence: evidence
+         } = assigns
+       ) do
     """
     Classify the latest message into exactly ONE label.
     Reply with the label only, no explanation.
 
-    Available labels:
-    #{Enum.map_join(labels, "\n", &to_string/1)}
+    #{labels_section(assigns, labels)}
 
     Recent chat:
     #{recent_chat}
@@ -218,6 +272,20 @@ defmodule Spectre.Router.LLMClassifier do
     Latest message:
     #{text}
     """
+  end
+
+  @spec labels_section(map(), [atom()]) :: String.t()
+  defp labels_section(assigns, labels) do
+    flat = Enum.map_join(labels, "\n", &to_string/1)
+
+    case Map.get(assigns, :label_tree, flat) do
+      ^flat ->
+        "Available labels:\n#{flat}"
+
+      tree ->
+        "Available labels, grouped by conversation flow " <>
+          "(indented under their group; lines ending with \"/\" are groups, not labels):\n#{tree}"
+    end
   end
 
   @spec format_evidence([map()] | term()) :: String.t()

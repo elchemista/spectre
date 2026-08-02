@@ -292,6 +292,26 @@ empty route-level `via:` result to every rule, and it never calls the model with
 an empty label set. Model output must identify exactly one known label; an
 explanation, multiple labels, or an unknown label becomes a safe unknown route.
 
+The default classifier prompt presents labels grouped by their flow taxonomy.
+Labels declared in [nested flows](DSL.md#flow-and-on) appear indented under
+their flow path (lines ending with `/` are groups, not labels), so one model
+call resolves the whole hierarchy at once:
+
+```
+Available labels, grouped by conversation flow ...:
+checkout/
+  PAY_CARD
+  PAY_TRANSFER
+  shipping/
+    TRACK_PARCEL
+support/
+  REFUND
+```
+
+The reply contract is unchanged: the model answers with exactly one leaf
+label. Custom classifier prompt functions receive the rendered block as the
+`label_tree` assign next to the flat `labels` list.
+
 Provider rank only matters after eligibility. It is not a magic override; it is
 how the default arbitrator sorts candidates once they have already cleared their
 thresholds. The built-in rank is:

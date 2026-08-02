@@ -805,9 +805,25 @@ defmodule Spectre.Agent do
           ask :project_create
         end
       end
+
+  Flows nest. A nested flow is a taxonomy grouping: each rule keeps the full
+  path in `flow_path` while `flow` stays the innermost name. `inject`
+  declarations and flow options are inherited by nested flows.
+
+      flow :checkout do
+        on :PAY_CARD, embedding: ["pay by card"] do
+          act :pay_card
+        end
+
+        flow :shipping do
+          on :TRACK_PARCEL, embedding: ["where is my parcel?"] do
+            reason :track_parcel
+          end
+        end
+      end
   """
   defmacro flow(name, do: block) do
-    rules = parse_flow_rules(name, [], block, __CALLER__)
+    rules = parse_flow_rules([name], [], block, __CALLER__, [])
 
     quote do
       unquote(Macro.escape(rules))
@@ -819,11 +835,12 @@ defmodule Spectre.Agent do
   Declares a flow with extension-owned namespaced options.
 
   Mounted extensions consume their own options during the Agent's single
-  compile pass. Unknown or unconsumed options fail compilation.
+  compile pass. Unknown or unconsumed options fail compilation. Nested flows
+  inherit the options of their ancestors; their own options win on conflict.
   """
   defmacro flow(name, opts, do: block) do
     opts = eval_opts(opts, __CALLER__)
-    rules = parse_flow_rules(name, opts, block, __CALLER__)
+    rules = parse_flow_rules([name], opts, block, __CALLER__, [])
 
     quote do
       unquote(Macro.escape(rules))
@@ -842,7 +859,7 @@ defmodule Spectre.Agent do
       end
   """
   defmacro interrupt(label, opts, do: block) do
-    rule = build_rule(label, nil, opts, block, __CALLER__, global?: true)
+    rule = build_rule(label, [], opts, block, __CALLER__, global?: true)
 
     quote do
       @spectre_rules unquote(Macro.escape(rule))
@@ -854,7 +871,7 @@ defmodule Spectre.Agent do
   """
   defmacro interrupt(label, opts) do
     {opts, block} = split_do!(opts)
-    rule = build_rule(label, nil, opts, block, __CALLER__, global?: true)
+    rule = build_rule(label, [], opts, block, __CALLER__, global?: true)
 
     quote do
       @spectre_rules unquote(Macro.escape(rule))
@@ -1198,33 +1215,54 @@ defmodule Spectre.Agent do
     end
   end
 
-  @spec parse_flow_rules(atom(), keyword(), Macro.t(), Macro.Env.t()) :: [map()]
-  defp parse_flow_rules(flow, flow_opts, block, caller) do
+  @spec parse_flow_rules([atom()], keyword(), Macro.t(), Macro.Env.t(), [Operation.t()]) ::
+          [map()]
+  defp parse_flow_rules(path, flow_opts, block, caller, inherited_injections) do
     {injection_calls, rule_calls} =
       block
       |> calls()
       |> Enum.split_with(&injection_call?/1)
 
-    injections = Enum.map(injection_calls, &parse_flow_injection(&1, caller))
+    injections =
+      inherited_injections ++ Enum.map(injection_calls, &parse_flow_injection(&1, caller))
 
-    Enum.map(rule_calls, fn
+    Enum.flat_map(rule_calls, fn
       {:on, _meta, [label, opts]} ->
         {opts, block} = split_do!(opts)
-
-        label
-        |> build_rule(flow, opts, block, caller, global?: false)
-        |> Map.put(:injections, injections)
-        |> Map.put(:flow_opts, flow_opts)
+        [flow_rule(label, path, opts, block, caller, injections, flow_opts)]
 
       {:on, _meta, [label, opts, [do: block]]} ->
-        label
-        |> build_rule(flow, opts, block, caller, global?: false)
-        |> Map.put(:injections, injections)
-        |> Map.put(:flow_opts, flow_opts)
+        [flow_rule(label, path, opts, block, caller, injections, flow_opts)]
+
+      {:flow, _meta, [name, opts]} when is_atom(name) ->
+        {opts, nested_block} = split_do!(opts)
+        nested_opts = Keyword.merge(flow_opts, eval_opts(opts, caller))
+        parse_flow_rules(path ++ [name], nested_opts, nested_block, caller, injections)
+
+      {:flow, _meta, [name, opts, [do: nested_block]]} when is_atom(name) ->
+        nested_opts = Keyword.merge(flow_opts, eval_opts(opts, caller))
+        parse_flow_rules(path ++ [name], nested_opts, nested_block, caller, injections)
 
       other ->
         raise ArgumentError, "invalid flow declaration: #{Macro.to_string(other)}"
     end)
+  end
+
+  @spec flow_rule(
+          atom(),
+          [atom()],
+          Macro.t(),
+          Macro.t(),
+          Macro.Env.t(),
+          [Operation.t()],
+          keyword()
+        ) ::
+          map()
+  defp flow_rule(label, path, opts, block, caller, injections, flow_opts) do
+    label
+    |> build_rule(path, opts, block, caller, global?: false)
+    |> Map.put(:injections, injections)
+    |> Map.put(:flow_opts, flow_opts)
   end
 
   @spec injection_call?(Macro.t()) :: boolean()
@@ -1294,14 +1332,15 @@ defmodule Spectre.Agent do
     }
   end
 
-  @spec build_rule(atom(), atom() | nil, Macro.t(), Macro.t(), Macro.Env.t(), keyword()) :: map()
-  defp build_rule(label, flow, opts_ast, block, caller, extra) do
+  @spec build_rule(atom(), [atom()], Macro.t(), Macro.t(), Macro.Env.t(), keyword()) :: map()
+  defp build_rule(label, flow_path, opts_ast, block, caller, extra) do
     opts = eval_opts(opts_ast, caller)
     reject_training_opts!(opts)
 
     %{
       label: label,
-      flow: flow,
+      flow: List.last(flow_path),
+      flow_path: flow_path,
       handler: parse_handler(block, caller),
       regex: List.wrap(Keyword.get(opts, :regex, [])),
       bag: examples_from_opts(opts, :bag),

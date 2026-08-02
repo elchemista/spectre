@@ -278,9 +278,17 @@ defmodule Spectre.Definition.Validator do
   @spec flow_injection_scopes([map()]) :: [{term(), [Operation.t()]}]
   defp flow_injection_scopes(rules) do
     rules
-    |> Enum.reject(&is_nil(Map.get(&1, :flow)))
-    |> Enum.uniq_by(&Map.get(&1, :flow))
-    |> Enum.map(&{{:flow, Map.get(&1, :flow)}, Map.get(&1, :injections, [])})
+    |> Enum.reject(&(rule_flow_path(&1) == []))
+    |> Enum.uniq_by(&rule_flow_path/1)
+    |> Enum.map(&{{:flow, rule_flow_path(&1)}, Map.get(&1, :injections, [])})
+  end
+
+  @spec rule_flow_path(map()) :: [atom()]
+  defp rule_flow_path(rule) do
+    case Map.get(rule, :flow_path) do
+      [_head | _tail] = path -> path
+      _missing_or_empty -> rule |> Map.get(:flow) |> List.wrap()
+    end
   end
 
   @spec handler_injection_scopes([map()]) :: [{term(), [Operation.t()]}]

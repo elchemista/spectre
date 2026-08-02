@@ -152,8 +152,7 @@ defmodule Spectre.Router.Evaluator do
   defp normalize_current_flow(agent, flow) when is_binary(flow) do
     available_flows =
       agent.__spectre_rules__()
-      |> Enum.map(&Map.get(&1, :flow))
-      |> Enum.reject(&is_nil/1)
+      |> Enum.flat_map(&rule_flow_names/1)
       |> Enum.uniq()
 
     case Enum.find(available_flows, &(canonical_flow(&1) == canonical_flow(flow))) do
@@ -163,6 +162,14 @@ defmodule Spectre.Router.Evaluator do
   end
 
   defp normalize_current_flow(_agent, flow), do: {:error, {:invalid_evaluation_flow, flow}}
+
+  @spec rule_flow_names(map()) :: [atom()]
+  defp rule_flow_names(rule) do
+    case Map.get(rule, :flow_path) do
+      [_head | _tail] = path -> path
+      _missing_or_empty -> rule |> Map.get(:flow) |> List.wrap()
+    end
+  end
 
   @spec canonical_flow(atom() | String.t()) :: String.t()
   defp canonical_flow(flow), do: flow |> to_string() |> String.upcase()

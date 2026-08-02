@@ -218,6 +218,39 @@ flow :sales do
 end
 ```
 
+Flows nest. A nested `flow` is a taxonomy grouping, not a separate routing
+pass: all rules stay in one flat candidate list, and every rule keeps the full
+path of the flows it was declared in.
+
+```elixir
+flow :checkout do
+  on :PAY_CARD, embedding: ["pay by card"] do
+    act(:pay_card)
+  end
+
+  flow :shipping do
+    on :TRACK_PARCEL, embedding: ["where is my parcel?"] do
+      reason(:track_parcel)
+    end
+  end
+end
+```
+
+Nesting affects three things:
+
+- The compiled rule stores `flow_path` (here `[:checkout, :shipping]` for
+  `:TRACK_PARCEL`) while `flow` stays the innermost name (`:shipping`).
+- `state.current_flow` matches by membership in `flow_path`, so
+  `current_flow: :checkout` prioritizes the whole `:checkout` subtree while
+  `current_flow: :shipping` prioritizes only that branch.
+- The LLM fallback classifier receives the labels grouped by flow path as an
+  indented taxonomy instead of a flat list, which helps it discriminate
+  sibling intents. See [Routing](ROUTING.md).
+
+Route labels stay globally unique across all flows; nesting changes grouping,
+never names. `inject` declarations and flow options are inherited by nested
+flows (a nested flow's own options win on conflict).
+
 A route can include:
 
 - `regex:` one regex or a list of regexes

@@ -8,6 +8,20 @@ minor release may contain documented breaking API changes.
 
 ### Added
 
+- `flow` declarations now nest. A nested flow is a taxonomy grouping: rules
+  keep the full path in the new `Spectre.Rule.flow_path` field while `flow`
+  stays the innermost name, labels stay globally unique, and `inject`
+  declarations plus flow options are inherited by nested flows.
+  `state.current_flow` now prioritizes by membership in `flow_path`, so
+  setting a parent flow prioritizes its whole subtree. String flows passed to
+  `Spectre.Router.evaluate/3` resolve nested flow names as well.
+- The default LLM fallback classifier prompt groups visible labels by flow
+  taxonomy (indented, one `flow/` header per group) instead of a flat list,
+  and custom classifier prompt functions receive the rendered block as the
+  new `label_tree` assign. The rendering is exposed as
+  `Spectre.Router.LLMClassifier.label_tree/2`. Agents with no flows keep the
+  flat list and the previous prompt wording.
+
 - Added `SYSTEM.md`, documenting the 0.2.0 package compatibility matrix,
   composition patterns, complete Stack examples, library responsibilities,
   and the architectural rationale for a small core with explicit satellites.
