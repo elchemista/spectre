@@ -1,3 +1,22 @@
+defmodule NestedFlowTest.ChannelExtension do
+  @moduledoc false
+  @behaviour Spectre.Extension
+
+  @impl true
+  def id, do: :nested_flow_channel
+
+  @impl true
+  def flow_constraints(opts, _config) do
+    case Keyword.pop(opts, :channel) do
+      {nil, remaining} ->
+        {[], remaining}
+
+      {channel, remaining} ->
+        {[%Spectre.Flow.Constraint{namespace: :channel, values: [channel]}], remaining}
+    end
+  end
+end
+
 defmodule NestedFlowTest do
   use ExUnit.Case, async: true
 
@@ -138,6 +157,70 @@ defmodule NestedFlowTest do
           flow :inner do
             on :SAME, regex: ~r/two/ do
               reply :two
+            end
+          end
+        end
+        """)
+      end
+    end
+
+    test "compact on and flow forms work inside nested flows" do
+      agent =
+        compile_agent("""
+        flow :outer do
+          on :COMPACT_ON, regex: ~r/^compact$/i, do: reply(:compact)
+
+          flow :inner, do: on(:COMPACT_INNER, regex: ~r/^inner$/i, do: reply(:inner))
+        end
+        """)
+
+      assert %Rule{flow_path: [:outer], handler: {:reply, :compact, []}} =
+               rule(agent, :COMPACT_ON)
+
+      assert %Rule{flow_path: [:outer, :inner], handler: {:reply, :inner, []}} =
+               rule(agent, :COMPACT_INNER)
+    end
+
+    test "nested flows inherit extension flow options, own options win" do
+      agent =
+        compile_agent("""
+        Spectre.Extension.register!(__MODULE__, NestedFlowTest.ChannelExtension)
+
+        flow :outer, channel: :web do
+          on :OUTER_RULE, regex: ~r/outer/ do
+            reply :outer
+          end
+
+          flow :inherits do
+            on :INHERITED_RULE, regex: ~r/inherited/ do
+              reply :inherited
+            end
+          end
+
+          flow :overrides, channel: :app do
+            on :OVERRIDDEN_RULE, regex: ~r/overridden/ do
+              reply :overridden
+            end
+          end
+        end
+        """)
+
+      assert [%{namespace: :channel, values: [:web]}] = rule(agent, :OUTER_RULE).constraints
+      assert [%{namespace: :channel, values: [:web]}] = rule(agent, :INHERITED_RULE).constraints
+      assert [%{namespace: :channel, values: [:app]}] = rule(agent, :OVERRIDDEN_RULE).constraints
+    end
+
+    test "an injection duplicated between parent and nested flow is rejected" do
+      assert_raise ArgumentError, ~r/duplicate_injection/, fn ->
+        compile_agent("""
+        flow :outer do
+          inject :note, into: :context
+
+          flow :inner do
+            inject :note, into: :context
+
+            on :INNER_RULE, regex: ~r/inner/ do
+              reply :inner
             end
           end
         end
@@ -385,6 +468,140 @@ defmodule NestedFlowTest do
       assert prompt =~ "Agent context:\nSupport agent for the Acme web shop."
       assert prompt =~ "Active conversation flow: checkout/shipping"
       assert prompt =~ "Prefer labels inside this flow"
+    end
+
+    test "custom classifier prompt functions receive the new assigns" do
+      rules = [
+        Rule.new(%{label: :PAY_CARD, flow_path: [:checkout], embedding: ["pay by card"]})
+      ]
+
+      test_pid = self()
+
+      prompt_fun = fn assigns ->
+        send(test_pid, {:classifier_assigns, assigns})
+        {:ok, "custom prompt"}
+      end
+
+      model = fn _prompt, _opts -> {:ok, "PAY_CARD"} end
+
+      assert {:ok, _route} =
+               LLMClassifier.classify("card please", [:PAY_CARD],
+                 model: model,
+                 spectre_rules: rules,
+                 classifier: [prompt: prompt_fun, context: "Acme shop agent."],
+                 classifier_assigns: %{state: %State{current_flow: :checkout}}
+               )
+
+      assert_received {:classifier_assigns, assigns}
+      assert assigns.labels == [:PAY_CARD]
+      assert assigns.label_tree == ~s(checkout/\n  PAY_CARD — e.g. "pay by card")
+      assert assigns.label_groups?
+      assert assigns.agent_context == "Acme shop agent."
+      assert assigns.active_flow == "checkout"
+    end
+
+    test "label_examples caps to the configured limit and survives invalid values" do
+      rules = [
+        Rule.new(%{
+          label: :PAY_CARD,
+          flow_path: [:checkout],
+          embedding: ["pay by card", "use my visa"]
+        })
+      ]
+
+      test_pid = self()
+
+      model = fn prompt, _opts ->
+        send(test_pid, {:classifier_prompt, prompt})
+        {:ok, "PAY_CARD"}
+      end
+
+      assert {:ok, _route} =
+               LLMClassifier.classify("card", [:PAY_CARD],
+                 model: model,
+                 spectre_rules: rules,
+                 classifier: [label_examples: 1]
+               )
+
+      assert_received {:classifier_prompt, prompt}
+      assert prompt =~ ~s(PAY_CARD — e.g. "pay by card")
+      refute prompt =~ "use my visa"
+
+      assert {:ok, _route} =
+               LLMClassifier.classify("card", [:PAY_CARD],
+                 model: model,
+                 spectre_rules: rules,
+                 classifier: [label_examples: :invalid]
+               )
+
+      assert_received {:classifier_prompt, prompt}
+      assert prompt =~ ~s(PAY_CARD — e.g. "pay by card"; "use my visa")
+    end
+
+    test "an active flow missing from the visible rules renders its plain name" do
+      rules = [Rule.new(%{label: :HELP, regex: ~r/help/})]
+
+      test_pid = self()
+
+      model = fn prompt, _opts ->
+        send(test_pid, {:classifier_prompt, prompt})
+        {:ok, "HELP"}
+      end
+
+      assert {:ok, _route} =
+               LLMClassifier.classify("help", [:HELP],
+                 model: model,
+                 spectre_rules: rules,
+                 classifier_assigns: %{state: %State{current_flow: :onboarding}}
+               )
+
+      assert_received {:classifier_prompt, prompt}
+      assert prompt =~ "Active conversation flow: onboarding"
+    end
+
+    test "the arbitrated router pipeline wires state.current_flow into the prompt" do
+      agent =
+        compile_agent("""
+        router(via: [:regex, :llm_classifier], semantic_cache?: false, classification_log?: false)
+
+        flow :outer do
+          flow :inner do
+            on :INNER_ROUTE, embedding: ["continue the inner flow"] do
+              reply :inner
+            end
+          end
+        end
+
+        flow :other do
+          on :OTHER_ROUTE, embedding: ["something else entirely"] do
+            reply :other
+          end
+        end
+        """)
+
+      test_pid = self()
+
+      model = fn prompt, _opts ->
+        send(test_pid, {:classifier_prompt, prompt})
+        {:ok, "INNER_ROUTE"}
+      end
+
+      input = Input.new("keep going")
+
+      assert {:ok, route} =
+               Router.route(input, %Spectre.Context{
+                 agent: agent,
+                 input: input,
+                 state: %State{current_flow: :inner},
+                 opts: [model: model]
+               })
+
+      assert route.label == :INNER_ROUTE
+      assert_received {:classifier_prompt, prompt}
+
+      assert prompt =~ "You are the intent router for the agent"
+      assert prompt =~ "Active conversation flow: outer/inner"
+      assert prompt =~ "outer/\n  inner/\n    INNER_ROUTE"
     end
 
     test "a flat agent without flows keeps the plain prompt sections" do
