@@ -27,6 +27,7 @@ defmodule Spectre.Definition do
             policies: %{},
             protections: [],
             after_actions: [],
+            before_actions: [],
             injections: [],
             requirements: [],
             skills: [],
@@ -49,6 +50,7 @@ defmodule Spectre.Definition do
           policies: map(),
           protections: [map()],
           after_actions: [map()],
+          before_actions: [map()],
           injections: [term()],
           requirements: [map()],
           skills: [Mount.t()],
@@ -213,6 +215,21 @@ defmodule Spectre.Definition do
   end
 
   @doc """
+  Returns the Agent's pre-execution action guards after logical binding.
+
+  Guards are Agent-owned infrastructure: Skills cannot contribute them.
+  """
+  @spec before_actions(module()) :: [map()]
+  def before_actions(agent) do
+    definition = fetch!(agent)
+
+    Enum.map(
+      definition.before_actions,
+      &materialize_action_hook(&1, definition.owner, :agent, %{})
+    )
+  end
+
+  @doc """
   Returns every Agent and mounted-Skill action hook after logical binding.
   """
   @spec after_actions(module()) :: [map()]
@@ -321,6 +338,7 @@ defmodule Spectre.Definition do
          policies: optional_callback(module, :__spectre_policies__, %{}),
          protections: optional_callback(module, :__spectre_protections__, []),
          after_actions: optional_callback(module, :__spectre_after_actions__, []),
+         before_actions: optional_callback(module, :__spectre_before_actions__, []),
          extensions: optional_callback(module, :__spectre_extensions__, []),
          stack: Keyword.get(config, :stack),
          stack_refs: optional_callback(module, :__spectre_stack_refs__, []),

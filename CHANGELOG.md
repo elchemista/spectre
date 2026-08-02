@@ -8,6 +8,25 @@ minor release may contain documented breaking API changes.
 
 ### Added
 
+- `Spectre.Turn.Dispatcher` drives a `%Spectre.Turn{}` decision to a delivered
+  outcome so hosts stop hand-writing the decision switch: it delivers replies,
+  auto-resolves policies the host can already satisfy
+  (`satisfied_resolution/2`), executes pending effects, and falls back to
+  `fallback_reply/2`/`no_response/2` for empty outcomes. `deliver_reply/3` is
+  the only required callback and the loop is bounded.
+- `before_action :action, run: {M, :f}` registers a pre-execution guard on the
+  action lifecycle. Guards run after routing, planning, and policy approval,
+  and can return `{:suppress, reply_text}` to cancel the pending effect and
+  answer with a normal reply (emitting `:effect_suppressed`), or `{:error,
+  reason}` to fail closed. `:all` matches every action; Skills cannot declare
+  guards; invalid guard replies fail the effect instead of allowing it.
+- `history limit, summary: {M, :f}` folds chat-history entries evicted from
+  the window into a rolling summary under `state.data.chat_summary` instead
+  of dropping them. The default LLM classifier prompt shows the summary as
+  "Conversation summary (older turns)" next to the recent chat, and custom
+  classifier prompts receive it as the `chat_summary` assign. A crashing
+  summarizer keeps the previous summary and never blocks the turn.
+
 - `flow` declarations now nest. A nested flow is a taxonomy grouping: rules
   keep the full path in the new `Spectre.Rule.flow_path` field while `flow`
   stays the innermost name, labels stay globally unique, and `inject`

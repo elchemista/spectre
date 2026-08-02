@@ -161,6 +161,16 @@ What they mean:
   normally register it through their own `use Spectre.*` DSL.
 - `shutdown/1` and `idle/1` affect supervised sessions.
 - `history/1` controls chat history stored under `state.data.chat_history`.
+  The runtime appends one entry per completed turn; the host never maintains
+  the window itself. With `history 50, summary: {M, :f}` the turns evicted
+  from the window are folded into a rolling summary under
+  `state.data.chat_summary` — the summarizer receives
+  `(current_summary_or_nil, evicted_entries)` and returns the new summary
+  string; on error the previous summary is kept. The summary is also shown to
+  the LLM fallback classifier as conversation context.
+- `before_action/2` registers a pre-execution guard that can veto an action
+  with a reply (`{:suppress, text}`) based on host state. See
+  [Actions](ACTIONS.md#before_action-guards).
 - `fail/2` configures monitor fallback prompt rendering.
 
 Per-call options such as `state: %Spectre.State{}` or `memory: value` can bypass

@@ -335,7 +335,23 @@ defmodule Spectre.Router.LLMClassifier do
           nil
       end
 
-    Map.put_new(assigns, :active_flow, active)
+    assigns
+    |> Map.put_new(:active_flow, active)
+    |> Map.put_new(:chat_summary, state_chat_summary(assigns))
+  end
+
+  @spec state_chat_summary(map()) :: String.t() | nil
+  defp state_chat_summary(assigns) do
+    case Map.get(assigns, :state) do
+      %{data: data} when is_map(data) ->
+        case Map.get(data, :chat_summary, Map.get(data, "chat_summary")) do
+          summary when is_binary(summary) and summary != "" -> summary
+          _missing -> nil
+        end
+
+      _no_state ->
+        nil
+    end
   end
 
   @spec format_active_flow(atom(), [Spectre.Rule.t() | map()]) :: String.t()
@@ -389,26 +405,29 @@ defmodule Spectre.Router.LLMClassifier do
 
   @spec context_sections(map()) :: String.t()
   defp context_sections(assigns) do
-    agent_context =
-      case Map.get(assigns, :agent_context) do
-        context when is_binary(context) and context != "" ->
-          "\nAgent context:\n#{context}\n"
+    [
+      context_section(assigns, :agent_context, &"\nAgent context:\n#{&1}\n"),
+      context_section(
+        assigns,
+        :active_flow,
+        &("\nActive conversation flow: #{&1}\n" <>
+            "Prefer labels inside this flow when the message plausibly continues it.\n")
+      ),
+      context_section(
+        assigns,
+        :chat_summary,
+        &"\nConversation summary (older turns):\n#{&1}\n"
+      )
+    ]
+    |> Enum.join()
+  end
 
-        _missing ->
-          ""
-      end
-
-    active_flow =
-      case Map.get(assigns, :active_flow) do
-        flow when is_binary(flow) and flow != "" ->
-          "\nActive conversation flow: #{flow}\n" <>
-            "Prefer labels inside this flow when the message plausibly continues it.\n"
-
-        _missing ->
-          ""
-      end
-
-    agent_context <> active_flow
+  @spec context_section(map(), atom(), (String.t() -> String.t())) :: String.t()
+  defp context_section(assigns, key, render) do
+    case Map.get(assigns, key) do
+      value when is_binary(value) and value != "" -> render.(value)
+      _missing -> ""
+    end
   end
 
   @spec format_evidence([map()] | term()) :: String.t()

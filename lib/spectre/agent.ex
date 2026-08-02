@@ -131,6 +131,7 @@ defmodule Spectre.Agent do
     Module.register_attribute(module, :spectre_rules, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_policies, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_after_actions, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_before_actions, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_protections, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_router, persist: false)
     Module.register_attribute(module, :spectre_injections, accumulate: true, persist: false)
@@ -679,10 +680,24 @@ defmodule Spectre.Agent do
   Configures how many completed turns are stored in chat history.
 
       history 50
+
+  With `summary:`, turns evicted from the window are folded into a rolling
+  summary kept under `state.data.chat_summary` instead of being dropped. The
+  summarizer receives `(current_summary_or_nil, evicted_entries)` and returns
+  the new summary string; on error the previous summary is kept and the
+  entries are dropped as before.
+
+      history 50, summary: {MyApp.Chat, :compact}
   """
-  defmacro history(limit) do
-    quote bind_quoted: [limit: limit] do
+  defmacro history(limit, opts \\ []) do
+    opts = eval_opts(opts, __CALLER__)
+
+    quote bind_quoted: [limit: limit, opts: opts] do
       @spectre_config Keyword.put(@spectre_config, :history, limit)
+
+      if summary = Keyword.get(opts, :summary) do
+        @spectre_config Keyword.put(@spectre_config, :history_summary, summary)
+      end
     end
   end
 
@@ -790,6 +805,31 @@ defmodule Spectre.Agent do
 
     quote do
       @spectre_after_actions unquote(Macro.escape(hook))
+    end
+  end
+
+  @doc """
+  Registers a pre-execution guard for an action effect.
+
+  Guards run right before the capability is invoked, after routing, planning,
+  and any policy approval. A guard returning `:allow` lets execution proceed;
+  `{:suppress, reply_text}` cancels the pending effect without invoking the
+  capability and returns a normal reply result carrying that text. Use guards
+  for host-state vetoes that no route or policy can see, such as "this user
+  already has an open draft".
+
+      before_action :create_project, run: {MyApp.Guards, :no_duplicate_draft}
+
+  The guard receives `(action, ctx)` — also accepted as arity 1 (`action`) or
+  a local agent function via an atom. `:all` matches every action.
+  """
+  defmacro before_action(action, opts) do
+    action = eval_action_arg(action, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+    guard = before_action_guard(action, opts)
+
+    quote do
+      @spectre_before_actions unquote(Macro.escape(guard))
     end
   end
 
@@ -1011,6 +1051,9 @@ defmodule Spectre.Agent do
       def __spectre_after_actions__, do: unquote(Macro.escape(metadata.after_actions))
 
       @doc false
+      def __spectre_before_actions__, do: unquote(Macro.escape(metadata.before_actions))
+
+      @doc false
       def __spectre_injections__, do: unquote(Macro.escape(metadata.injections))
 
       @doc false
@@ -1055,6 +1098,8 @@ defmodule Spectre.Agent do
       rules: rules,
       policies: module |> Module.get_attribute(:spectre_policies) |> policy_map(),
       after_actions: Module.get_attribute(module, :spectre_after_actions) || [],
+      before_actions:
+        module |> Module.get_attribute(:spectre_before_actions) |> reverse_attribute(),
       protections: Module.get_attribute(module, :spectre_protections) || [],
       injections: module |> Module.get_attribute(:spectre_injections) |> reverse_attribute(),
       skills: module |> Module.get_attribute(:spectre_skills) |> reverse_attribute(),
@@ -1081,6 +1126,7 @@ defmodule Spectre.Agent do
       policies: metadata.policies,
       protections: metadata.protections,
       after_actions: metadata.after_actions,
+      before_actions: metadata.before_actions,
       injections: metadata.injections,
       requirements: metadata.requirements,
       skills: metadata.skills,
@@ -1579,6 +1625,15 @@ defmodule Spectre.Agent do
       on: Keyword.fetch!(opts, :on),
       run: Keyword.fetch!(opts, :run),
       opts: Keyword.drop(opts, [:on, :run])
+    }
+  end
+
+  @spec before_action_guard(term(), keyword()) :: map()
+  defp before_action_guard(action, opts) when is_list(opts) do
+    %{
+      action: action,
+      run: Keyword.fetch!(opts, :run),
+      opts: Keyword.drop(opts, [:run])
     }
   end
 

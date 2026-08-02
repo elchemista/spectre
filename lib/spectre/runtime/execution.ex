@@ -151,6 +151,14 @@ defmodule Spectre.Execution do
   end
 
   defp dispatch(state, effect, ctx, opts) do
+    case Spectre.ActionGuards.check(effect, ctx, opts) do
+      :allow -> dispatch_allowed(state, effect, ctx, opts)
+      {:suppress, reply_text} -> suppress(state, effect, ctx, reply_text)
+      {:error, reason} -> finish(state, effect, ctx, {:fail_effect, effect.id, reason})
+    end
+  end
+
+  defp dispatch_allowed(state, effect, ctx, opts) do
     started_at = System.monotonic_time()
     outcome = dispatch_effect(effect, ctx, opts)
 
@@ -175,6 +183,34 @@ defmodule Spectre.Execution do
     case outcome do
       {:ok, value} -> finish(state, effect, ctx, {:complete_effect, effect.id, value})
       {:error, reason} -> finish(state, effect, ctx, {:fail_effect, effect.id, reason})
+    end
+  end
+
+  @spec suppress(State.t(), Effect.t(), Spectre.Context.t() | map(), String.t()) :: result()
+  defp suppress(state, effect, ctx, reply_text) do
+    with {:ok, transition} <- Lifecycle.apply(state, {:cancel_pending, {:suppressed, effect.id}}) do
+      cancelled = transition.effect || Effect.cancel(effect, {:suppressed, effect.id})
+
+      {:ok,
+       %Result{
+         input: Map.get(ctx, :input),
+         state: transition.to,
+         effects: [cancelled],
+         reply_text: reply_text,
+         events: [
+           %{
+             type: :effect_suppressed,
+             kind: effect.kind,
+             via: Effect.via(effect),
+             name: effect.name,
+             owner: effect.owner,
+             scope: effect.scope,
+             effect_id: effect.id,
+             effect: cancelled
+           }
+         ],
+         metadata: %{execution_transition: transition}
+       }}
     end
   end
 

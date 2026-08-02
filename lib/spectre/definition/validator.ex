@@ -74,6 +74,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_mounts(definition),
          :ok <- validate_extensions(definition),
          :ok <- validate_requirements(definition),
+         :ok <- validate_before_actions(definition),
          :ok <- validate_protections(definition) do
       definition
     else
@@ -467,7 +468,10 @@ defmodule Spectre.Definition.Validator do
       end)
 
     configured_actions =
-      Enum.map(definition.protections ++ definition.after_actions, &Map.get(&1, :action))
+      Enum.map(
+        definition.protections ++ definition.after_actions ++ definition.before_actions,
+        &Map.get(&1, :action)
+      )
 
     Enum.uniq(rule_actions ++ configured_actions)
   end
@@ -478,6 +482,23 @@ defmodule Spectre.Definition.Validator do
        do: true
 
   defp valid_requirement?(_requirement), do: false
+
+  @spec validate_before_actions(map()) :: :ok | {:error, term()}
+  defp validate_before_actions(%Definition{kind: :skill, before_actions: [guard | _rest]}),
+    do: {:error, {:skill_before_action_not_supported, guard}}
+
+  defp validate_before_actions(%Definition{before_actions: guards}) when is_list(guards) do
+    case Enum.find(guards, fn guard ->
+           not is_map(guard) or not Map.has_key?(guard, :action) or
+             is_nil(Map.get(guard, :run))
+         end) do
+      nil -> :ok
+      guard -> {:error, {:invalid_before_action, guard}}
+    end
+  end
+
+  defp validate_before_actions(%Definition{before_actions: guards}),
+    do: {:error, {:invalid_before_actions, guards}}
 
   @spec validate_protections(map()) :: :ok | {:error, term()}
   defp validate_protections(%Definition{
