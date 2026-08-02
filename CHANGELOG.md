@@ -16,11 +16,16 @@ minor release may contain documented breaking API changes.
   setting a parent flow prioritizes its whole subtree. String flows passed to
   `Spectre.Router.evaluate/3` resolve nested flow names as well.
 - The default LLM fallback classifier prompt groups visible labels by flow
-  taxonomy (indented, one `flow/` header per group) instead of a flat list,
-  and custom classifier prompt functions receive the rendered block as the
-  new `label_tree` assign. The rendering is exposed as
-  `Spectre.Router.LLMClassifier.label_tree/2`. Agents with no flows keep the
-  flat list and the previous prompt wording.
+  taxonomy (indented, one `flow/` header per group) instead of a flat list.
+  Each label carries up to two example phrases from its `embedding:`/`bag:`/
+  `jaro:` declarations (`classifier ..., label_examples: n` tunes the cap,
+  `0` disables). The prompt now also states the routed agent module, an
+  optional agent description (`classifier ..., context: "..."`), and the
+  active `state.current_flow` rendered as its full nested path. Custom
+  classifier prompt functions receive the new `label_tree`, `agent`,
+  `agent_context`, and `active_flow` assigns, and the tree rendering is
+  exposed as `Spectre.Router.LLMClassifier.label_tree/3`. Agents with no
+  flows keep the flat label list.
 
 - Added `SYSTEM.md`, documenting the 0.2.0 package compatibility matrix,
   composition patterns, complete Stack examples, library responsibilities,

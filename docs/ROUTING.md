@@ -294,23 +294,41 @@ explanation, multiple labels, or an unknown label becomes a safe unknown route.
 
 The default classifier prompt presents labels grouped by their flow taxonomy.
 Labels declared in [nested flows](DSL.md#flow-and-on) appear indented under
-their flow path (lines ending with `/` are groups, not labels), so one model
-call resolves the whole hierarchy at once:
+their flow path (lines ending with `/` are groups, not labels), each label
+followed by up to two example phrases taken from its `embedding:`, `bag:`, and
+`jaro:` declarations, so one model call resolves the whole hierarchy at once:
 
 ```
-Available labels, grouped by conversation flow ...:
+You are the intent router for the agent MyApp.ShopAgent.
+Classify the user's latest message into exactly ONE label.
+...
+Available labels, grouped by conversation flow. ...:
 checkout/
-  PAY_CARD
-  PAY_TRANSFER
+  PAY_CARD — e.g. "pay by card"; "use my visa"
+  PAY_TRANSFER — e.g. "pay by bank transfer"
   shipping/
-    TRACK_PARCEL
+    TRACK_PARCEL — e.g. "where is my parcel?"
 support/
-  REFUND
+  REFUND — e.g. "i want a refund"
+
+Agent context:
+Support agent for the Acme web shop.
+
+Active conversation flow: checkout/shipping
+Prefer labels inside this flow when the message plausibly continues it.
+
+Recent chat:
+User: ...
+Assistant: ...
 ```
 
-The reply contract is unchanged: the model answers with exactly one leaf
-label. Custom classifier prompt functions receive the rendered block as the
-`label_tree` assign next to the flat `labels` list.
+The agent line comes from the routed agent module; the optional `Agent
+context:` section from `classifier ..., context: "..."`; the active flow from
+`state.current_flow` (rendered as its full nested path); the recent chat from
+`state.data.chat_history`. The reply contract is unchanged: the model answers
+with exactly one leaf label. Custom classifier prompt functions receive the
+rendered block as the `label_tree` assign next to the flat `labels` list, plus
+`agent`, `agent_context`, and `active_flow`.
 
 Provider rank only matters after eligibility. It is not a magic override; it is
 how the default arbitrator sorts candidates once they have already cleared their
@@ -471,7 +489,10 @@ Important options:
 - `:classifier_local` can be a module or `{module, function}`.
 - `:artifact_dir` points Spectre's local classifier to trained artifacts.
 - `classifier MyApp.SmallLLM, prompt: ..., llm_opts: ...` customizes the LLM
-  classifier.
+  classifier. Two more `classifier` options shape the default prompt:
+  `context: "one-line description of the agent"` adds an `Agent context:`
+  section, and `label_examples: n` caps the example phrases rendered next to
+  each label (default 2, `0` disables them).
 - `:recent_chat` overrides the chat included in the default LLM classifier
   prompt. Otherwise Spectre uses up to five entries from
   `state.data.chat_history`.

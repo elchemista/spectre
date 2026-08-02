@@ -154,12 +154,24 @@ defmodule Spectre.Router.LLMClassifier do
   Labels without a flow stay at the root level. When no visible rule declares
   a flow the output is the plain flat label list, one label per line.
 
+  Each label carries up to `:examples` (default 2) example phrases taken from
+  the rule's `embedding:`, `bag:`, and `jaro:` declarations, rendered as
+  `LABEL — e.g. "phrase"; "phrase"`. Pass `examples: 0` to disable.
+
       tree = Spectre.Router.LLMClassifier.label_tree([:PAY_CARD], rules)
   """
-  @spec label_tree([atom()], [Spectre.Rule.t() | map()]) :: String.t()
-  def label_tree(labels, rules) when is_list(labels) and is_list(rules) do
-    paths = Map.new(rules, &{Map.get(&1, :label), rule_flow_path(&1)})
-    entries = Enum.map(labels, &{Map.get(paths, &1, []), &1})
+  @spec label_tree([atom()], [Spectre.Rule.t() | map()], keyword()) :: String.t()
+  def label_tree(labels, rules, opts \\ []) when is_list(labels) and is_list(rules) do
+    examples = Keyword.get(opts, :examples, 2)
+
+    meta =
+      Map.new(rules, &{Map.get(&1, :label), {rule_flow_path(&1), rule_examples(&1, examples)}})
+
+    entries =
+      Enum.map(labels, fn label ->
+        {path, phrases} = Map.get(meta, label, {[], []})
+        {path, label, phrases}
+      end)
 
     entries
     |> render_tree_level([], 0)
@@ -175,19 +187,35 @@ defmodule Spectre.Router.LLMClassifier do
     end
   end
 
-  @spec render_tree_level([{[atom()], atom()}], [atom()], non_neg_integer()) :: iodata()
+  @spec rule_examples(Spectre.Rule.t() | map(), non_neg_integer()) :: [String.t()]
+  defp rule_examples(_rule, 0), do: []
+
+  defp rule_examples(rule, limit) do
+    [:embedding, :bag, :jaro]
+    |> Enum.flat_map(&List.wrap(Map.get(rule, &1, [])))
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+    |> Enum.take(limit)
+  end
+
+  @spec render_tree_level([{[atom()], atom(), [String.t()]}], [atom()], non_neg_integer()) ::
+          iodata()
   defp render_tree_level(entries, prefix, depth) do
-    {direct, nested} = Enum.split_with(entries, fn {path, _label} -> path == prefix end)
+    {direct, nested} = Enum.split_with(entries, fn {path, _label, _phrases} -> path == prefix end)
     indent = String.duplicate("  ", depth)
 
-    direct_lines = Enum.map(direct, fn {_path, label} -> [indent, to_string(label), "\n"] end)
+    direct_lines =
+      Enum.map(direct, fn {_path, label, phrases} ->
+        [indent, to_string(label), example_suffix(phrases), "\n"]
+      end)
 
     nested_blocks =
       nested
-      |> Enum.map(fn {path, _label} -> Enum.at(path, depth) end)
+      |> Enum.map(fn {path, _label, _phrases} -> Enum.at(path, depth) end)
       |> Enum.uniq()
       |> Enum.map(fn segment ->
-        children = Enum.filter(nested, fn {path, _label} -> Enum.at(path, depth) == segment end)
+        children =
+          Enum.filter(nested, fn {path, _label, _phrases} -> Enum.at(path, depth) == segment end)
 
         [
           [indent, to_string(segment), "/\n"],
@@ -198,12 +226,25 @@ defmodule Spectre.Router.LLMClassifier do
     [direct_lines, nested_blocks]
   end
 
+  @spec example_suffix([String.t()]) :: iodata()
+  defp example_suffix([]), do: []
+
+  defp example_suffix(phrases) do
+    [" — e.g. ", Enum.map_join(phrases, "; ", &"\"#{&1}\"")]
+  end
+
   @spec prompt(String.t(), [atom()], keyword()) :: {:ok, String.t()} | {:error, term()}
   defp prompt(text, labels, opts) do
+    rules = Keyword.get(opts, :spectre_rules, [])
+
     base = %{
       text: text,
       labels: labels,
-      label_tree: label_tree(labels, Keyword.get(opts, :spectre_rules, [])),
+      label_tree: label_tree(labels, rules, examples: label_example_limit(opts)),
+      label_groups?:
+        Enum.any?(rules, &(Map.get(&1, :label) in labels and rule_flow_path(&1) != [])),
+      agent: Keyword.get(opts, :spectre_agent),
+      agent_context: opts |> classifier_config() |> Keyword.get(:context),
       recent_chat: Keyword.get(opts, :recent_chat, "none"),
       evidence: Keyword.get(opts, :classifier_evidence, [])
     }
@@ -213,6 +254,7 @@ defmodule Spectre.Router.LLMClassifier do
       |> Keyword.get(:classifier_assigns, %{})
       |> normalize_assigns()
       |> Map.merge(base)
+      |> put_active_flow(rules)
 
     case classifier_prompt(opts) do
       fun when is_function(fun, 1) ->
@@ -258,11 +300,11 @@ defmodule Spectre.Router.LLMClassifier do
          } = assigns
        ) do
     """
-    Classify the latest message into exactly ONE label.
+    #{intro_section(assigns)}
     Reply with the label only, no explanation.
 
     #{labels_section(assigns, labels)}
-
+    #{context_sections(assigns)}
     Recent chat:
     #{recent_chat}
 
@@ -274,18 +316,99 @@ defmodule Spectre.Router.LLMClassifier do
     """
   end
 
+  @spec label_example_limit(keyword()) :: non_neg_integer()
+  defp label_example_limit(opts) do
+    case opts |> classifier_config() |> Keyword.get(:label_examples, 2) do
+      limit when is_integer(limit) and limit >= 0 -> limit
+      _invalid -> 2
+    end
+  end
+
+  @spec put_active_flow(map(), [Spectre.Rule.t() | map()]) :: map()
+  defp put_active_flow(assigns, rules) do
+    active =
+      case Map.get(assigns, :state) do
+        %{current_flow: flow} when is_atom(flow) and not is_nil(flow) ->
+          format_active_flow(flow, rules)
+
+        _no_state ->
+          nil
+      end
+
+    Map.put_new(assigns, :active_flow, active)
+  end
+
+  @spec format_active_flow(atom(), [Spectre.Rule.t() | map()]) :: String.t()
+  defp format_active_flow(flow, rules) do
+    rules
+    |> Enum.map(&rule_flow_path/1)
+    |> Enum.find([flow], &(flow in &1))
+    |> Enum.take_while(&(&1 != flow))
+    |> Kernel.++([flow])
+    |> Enum.map_join("/", &to_string/1)
+  end
+
+  @spec intro_section(map()) :: String.t()
+  defp intro_section(assigns) do
+    case Map.get(assigns, :agent) do
+      agent when is_atom(agent) and not is_nil(agent) ->
+        "You are the intent router for the agent #{inspect(agent)}.\n" <>
+          "Classify the user's latest message into exactly ONE label."
+
+      _no_agent ->
+        "Classify the latest message into exactly ONE label."
+    end
+  end
+
   @spec labels_section(map(), [atom()]) :: String.t()
   defp labels_section(assigns, labels) do
     flat = Enum.map_join(labels, "\n", &to_string/1)
+    tree = Map.get(assigns, :label_tree, flat)
+    grouped? = Map.get(assigns, :label_groups?, tree != flat)
+    examples? = String.contains?(tree, " — e.g. ")
 
-    case Map.get(assigns, :label_tree, flat) do
-      ^flat ->
-        "Available labels:\n#{flat}"
+    header =
+      ["Available labels"]
+      |> append_if(grouped?, [
+        ", grouped by conversation flow.",
+        " Indentation shows the hierarchy; lines ending with \"/\"",
+        " are flow groups, not valid answers"
+      ])
+      |> append_if(examples?, [
+        ". The quoted phrases after a label are examples of user messages",
+        " that belong to it"
+      ])
+      |> IO.iodata_to_binary()
 
-      tree ->
-        "Available labels, grouped by conversation flow " <>
-          "(indented under their group; lines ending with \"/\" are groups, not labels):\n#{tree}"
-    end
+    "#{header}:\n#{tree}"
+  end
+
+  @spec append_if(iodata(), boolean(), iodata()) :: iodata()
+  defp append_if(iodata, true, extra), do: [iodata, extra]
+  defp append_if(iodata, false, _extra), do: iodata
+
+  @spec context_sections(map()) :: String.t()
+  defp context_sections(assigns) do
+    agent_context =
+      case Map.get(assigns, :agent_context) do
+        context when is_binary(context) and context != "" ->
+          "\nAgent context:\n#{context}\n"
+
+        _missing ->
+          ""
+      end
+
+    active_flow =
+      case Map.get(assigns, :active_flow) do
+        flow when is_binary(flow) and flow != "" ->
+          "\nActive conversation flow: #{flow}\n" <>
+            "Prefer labels inside this flow when the message plausibly continues it.\n"
+
+        _missing ->
+          ""
+      end
+
+    agent_context <> active_flow
   end
 
   @spec format_evidence([map()] | term()) :: String.t()

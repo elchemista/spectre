@@ -311,5 +311,107 @@ defmodule NestedFlowTest do
       assert LLMClassifier.label_tree([:KNOWN, :UNKNOWN], rules) ==
                "UNKNOWN\nsales/\n  KNOWN"
     end
+
+    test "labels carry declared example phrases, capped and deduplicated" do
+      rules = [
+        Rule.new(%{
+          label: :PAY_CARD,
+          flow_path: [:checkout],
+          embedding: ["pay by card", "use my visa", "third example"]
+        }),
+        Rule.new(%{label: :REFUND, flow_path: [:support], bag: ["i want a refund"]})
+      ]
+
+      tree = LLMClassifier.label_tree([:PAY_CARD, :REFUND], rules)
+
+      assert tree ==
+               String.trim_trailing("""
+               checkout/
+                 PAY_CARD — e.g. "pay by card"; "use my visa"
+               support/
+                 REFUND — e.g. "i want a refund"
+               """)
+
+      refute tree =~ "third example"
+    end
+
+    test "examples can be disabled" do
+      rules = [Rule.new(%{label: :PAY_CARD, flow_path: [:checkout], embedding: ["pay by card"]})]
+
+      assert LLMClassifier.label_tree([:PAY_CARD], rules, examples: 0) ==
+               "checkout/\n  PAY_CARD"
+    end
+  end
+
+  describe "classifier prompt context" do
+    test "classify renders agent context, active flow and label examples" do
+      rules = [
+        Rule.new(%{
+          label: :PAY_CARD,
+          flow_path: [:checkout],
+          embedding: ["pay by card", "use my visa"]
+        }),
+        Rule.new(%{
+          label: :TRACK_PARCEL,
+          flow_path: [:checkout, :shipping],
+          embedding: ["where is my parcel?"]
+        }),
+        Rule.new(%{label: :REFUND, flow_path: [:support], bag: ["i want a refund"]})
+      ]
+
+      test_pid = self()
+
+      model = fn prompt, _opts ->
+        send(test_pid, {:classifier_prompt, prompt})
+        {:ok, "REFUND"}
+      end
+
+      assert {:ok, route} =
+               LLMClassifier.classify(
+                 "give me my money back",
+                 [:PAY_CARD, :TRACK_PARCEL, :REFUND],
+                 model: model,
+                 spectre_rules: rules,
+                 classifier: [context: "Support agent for the Acme web shop."],
+                 classifier_assigns: %{state: %State{current_flow: :shipping}}
+               )
+
+      assert route.label == :REFUND
+      assert_received {:classifier_prompt, prompt}
+
+      assert prompt =~ "Available labels, grouped by conversation flow."
+      assert prompt =~ "The quoted phrases after a label are examples"
+      assert prompt =~ ~s(PAY_CARD — e.g. "pay by card"; "use my visa")
+      assert prompt =~ "Agent context:\nSupport agent for the Acme web shop."
+      assert prompt =~ "Active conversation flow: checkout/shipping"
+      assert prompt =~ "Prefer labels inside this flow"
+    end
+
+    test "a flat agent without flows keeps the plain prompt sections" do
+      rules = [
+        Rule.new(%{label: :PING, regex: ~r/ping/}),
+        Rule.new(%{label: :HELP, regex: ~r/help/})
+      ]
+
+      test_pid = self()
+
+      model = fn prompt, _opts ->
+        send(test_pid, {:classifier_prompt, prompt})
+        {:ok, "HELP"}
+      end
+
+      assert {:ok, _route} =
+               LLMClassifier.classify("how does this work?", [:PING, :HELP],
+                 model: model,
+                 spectre_rules: rules
+               )
+
+      assert_received {:classifier_prompt, prompt}
+
+      assert prompt =~ "Available labels:\nPING\nHELP"
+      refute prompt =~ "grouped by conversation flow"
+      refute prompt =~ "Agent context:"
+      refute prompt =~ "Active conversation flow:"
+    end
   end
 end
