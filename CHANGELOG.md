@@ -6,7 +6,50 @@ minor release may contain documented breaking API changes.
 
 ## Unreleased
 
+### Fixed
+
+- A failed probabilistic strategy (LLM classifier error, arbitration failure)
+  now recovers to the agent's declared `:UNKNOWN` rule when it has a handler
+  whose checks match the input, so the agent's explicit fallback behavior runs
+  instead of returning an unroutable lowercase `:unknown` route and an empty
+  reply. The recovered route uses strategy `:unknown_fallback` and preserves
+  the failure metadata (`local`, `fallback_error`).
+- `Spectre.State.Codec` output is now safe for JSON database columns:
+  binaries that JSONB cannot store verbatim (invalid UTF-8 or embedded zero
+  bytes, e.g. compact lifecycle ids) are encoded as tagged Base64 values and
+  decoded transparently. Legacy payloads still decode.
+- `Spectre.Classifier` interns its artifact schema atoms when the module
+  loads, so release VMs decode classifier artifacts with `binary_to_term/2`
+  in `:safe` mode without the host pre-loading internal Spectre atoms.
+
 ### Added
+
+- `Spectre.Reply.Sanitizer` strips Spectre control tokens (`<al>`,
+  `<intent>`, `<reply>` wrappers, `INTENT:`/`AL:` control lines, `<think>`
+  blocks, HTML comments) from model output before it becomes `reply_text`.
+  It is the runtime default wherever LLM text turns into a visible reply;
+  pass `sanitize_reply: false` to opt out, or mount an action planner with
+  `clean_reply/3` to own the cleanup entirely.
+- `Spectre.LLM.provider_opts/2` strips every runtime-context key the core
+  attaches to adapter calls (plus any `spectre_*`-prefixed key), so LLM
+  adapters forward provider options without maintaining hand-written
+  allowlists. `Spectre.LLM.runtime_opt_keys/0` exposes the list.
+- `Spectre.Router.SemanticCache.learn_eligibility/2` and `learnable?/2` own
+  the learn-safety rules hosts used to re-implement: routes served from the
+  cache itself, rules without `learn: true`, and routes staging
+  policy-protected actions are skipped with an explaining reason.
+- `Spectre.Router.SemanticCache.update_example/4` edits an online learned
+  example in place (`:text` re-embeds through the configured adapter,
+  `:label` must stay cacheable, `:verified` toggles review state), replacing
+  the snapshot round-trip hosts used for edits. Custom cache adapters may
+  implement the new optional `update_example/4` callback.
+- `Spectre.Journal.Record.to_json_map/1` renders a journal record as a
+  JSON-safe, string-keyed map (atoms→strings, tuples→lists, calendar types→
+  ISO-8601, fallback `inspect/2`) for direct persistence by store adapters.
+- `Spectre.ensure_instance/4` starts or reuses an Instance and always returns
+  `{:ok, pid}` or `{:error, reason}`, normalizing the supervisor's richer
+  start shapes. `Spectre.Instance.trace_id/1` exposes the per-generation
+  trace identifier without reaching into `info/1`.
 
 - `Spectre.Turn.Dispatcher` drives a `%Spectre.Turn{}` decision to a delivered
   outcome so hosts stop hand-writing the decision switch: it delivers replies,
