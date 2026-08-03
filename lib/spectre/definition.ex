@@ -372,15 +372,37 @@ defmodule Spectre.Definition do
         nil,
         &bind_handler(&1, bindings, requirement_modes, owner, scope)
       )
-      |> Map.update(:injections, [], &materialize_rule_injections(&1, scope, rule.flow))
+      |> Map.update(:injections, [], &materialize_rule_injections(&1, scope, rule))
       |> Map.put(:definition_injections, materialize_injections(definition_injections, scope))
     end)
   end
 
-  @spec materialize_rule_injections([term()], scope(), atom() | nil) :: [term()]
-  defp materialize_rule_injections(injections, scope, flow) do
-    Enum.map(injections, &put_operation_scope(&1, {:flow, scope, flow}))
+  @spec materialize_rule_injections([term()], scope(), map()) :: [term()]
+  defp materialize_rule_injections(injections, scope, rule) do
+    Enum.map(injections, fn operation ->
+      flow_path = operation_flow_path(operation, rule)
+      put_operation_scope(operation, {:flow, scope, runtime_flow_scope(flow_path)})
+    end)
   end
+
+  @spec operation_flow_path(term(), map()) :: [atom()]
+  defp operation_flow_path(
+         %{__struct__: Spectre.Prompt.Operation, scope: {:flow_path, [_head | _tail] = path}},
+         _rule
+       ),
+       do: path
+
+  defp operation_flow_path(_operation, rule) do
+    case Map.get(rule, :flow_path) do
+      [_head | _tail] = path -> path
+      _missing_or_empty -> rule |> Map.get(:flow) |> List.wrap()
+    end
+  end
+
+  @spec runtime_flow_scope([atom()]) :: atom() | [atom()] | nil
+  defp runtime_flow_scope([flow]), do: flow
+  defp runtime_flow_scope([_head | _tail] = path), do: path
+  defp runtime_flow_scope([]), do: nil
 
   @spec materialize_injections([term()], scope()) :: [term()]
   defp materialize_injections(injections, scope) do

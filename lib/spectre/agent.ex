@@ -1274,7 +1274,7 @@ defmodule Spectre.Agent do
       |> Enum.split_with(&injection_call?/1)
 
     injections =
-      inherited_injections ++ Enum.map(injection_calls, &parse_flow_injection(&1, caller))
+      inherited_injections ++ Enum.map(injection_calls, &parse_flow_injection(&1, caller, path))
 
     Enum.flat_map(rule_calls, fn
       {:on, _meta, [label, opts]} ->
@@ -1319,19 +1319,19 @@ defmodule Spectre.Agent do
   defp injection_call?({:inject, _meta, _args}), do: true
   defp injection_call?(_call), do: false
 
-  @spec parse_flow_injection(Macro.t(), Macro.Env.t()) :: Operation.t()
-  defp parse_flow_injection({:inject, meta, [id]}, caller) do
+  @spec parse_flow_injection(Macro.t(), Macro.Env.t(), [atom()]) :: Operation.t()
+  defp parse_flow_injection({:inject, meta, [id]}, caller, path) do
     operation_opts = [source_line: Keyword.get(meta, :line, caller.line)]
-    Operation.new(Macro.expand(id, caller), operation_opts)
+    Operation.new(Macro.expand(id, caller), operation_opts, {:flow_path, path})
   end
 
-  defp parse_flow_injection({:inject, meta, [id, opts]}, caller) do
+  defp parse_flow_injection({:inject, meta, [id, opts]}, caller, path) do
     operation_opts =
       opts
       |> eval_opts(caller)
       |> Keyword.put_new(:source_line, Keyword.get(meta, :line, caller.line))
 
-    Operation.new(Macro.expand(id, caller), operation_opts)
+    Operation.new(Macro.expand(id, caller), operation_opts, {:flow_path, path})
   end
 
   @spec parse_policy(atom(), Macro.t(), Macro.Env.t()) :: map()

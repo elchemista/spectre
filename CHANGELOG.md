@@ -8,6 +8,17 @@ minor release may contain documented breaking API changes.
 
 ### Fixed
 
+- Nested-flow prompt injections now retain the flow path where each injection
+  was declared. Parent and child `start`/`end` operations therefore compose as
+  proper nested scopes, and repeated inner-flow names under different parents
+  no longer collapse onto the same runtime scope.
+- A warm `Spectre.Classifier` now accepts every GenServer name form (including
+  `{:via, ...}`), retains its startup embedding/configuration options for later
+  calls, and still lets explicit per-call options override them.
+- Training and semantic-cache datasets skip unsupported label shapes instead
+  of raising. JSONL and multi-source accumulation is now linear, and semantic
+  cache imports index cacheable rules by label once instead of scanning every
+  rule for every row.
 - `classifier ..., context: ...` and `label_examples: ...` now remain in the
   classifier configuration instead of leaking into adapter options, so both
   settings reach default and custom classifier prompts. Flow-taxonomy prompt

@@ -32,17 +32,20 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
   @doc "Collects rows from every configured offline dataset source."
   @spec offline_dataset_rows(keyword()) :: {:ok, [Learned.row()]} | {:error, term()}
   def offline_dataset_rows(opts) do
-    rules = cacheable_rules(opts)
+    rules_by_label = opts |> cacheable_rules() |> index_rules_by_label()
 
-    opts
-    |> sources()
-    |> Enum.reject(&(&1 in [true, false, nil]))
-    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
-      case collect_entry(entry, rules, opts) do
-        {:ok, rows} -> {:cont, {:ok, acc ++ rows}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+    result =
+      opts
+      |> sources()
+      |> Enum.reject(&(&1 in [true, false, nil]))
+      |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+        case collect_entry(entry, rules_by_label, opts) do
+          {:ok, rows} -> {:cont, {:ok, Enum.reverse(rows, acc)}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    reverse_rows(result)
   end
 
   @doc "Builds rows from route examples declared on cacheable rules."
@@ -93,17 +96,20 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
   end
 
   defp collect_jsonl_text(text, path, rules, opts) do
-    text
-    |> dataset_lines()
-    |> Enum.reduce_while({:ok, []}, fn line, {:ok, acc} ->
-      collect_jsonl_line(line, acc, path, rules, opts)
-    end)
+    result =
+      text
+      |> dataset_lines()
+      |> Enum.reduce_while({:ok, []}, fn line, {:ok, acc} ->
+        collect_jsonl_line(line, acc, path, rules, opts)
+      end)
+
+    reverse_rows(result)
   end
 
   defp collect_jsonl_line(line, acc, path, rules, opts) do
     case Jason.decode(line) do
       {:ok, decoded} ->
-        {:cont, {:ok, acc ++ source_rows(decoded, rules, opts, path)}}
+        {:cont, {:ok, Enum.reverse(source_rows(decoded, rules, opts, path), acc)}}
 
       {:error, reason} ->
         {:halt, {:error, {:invalid_learning_jsonl_row, path, reason}}}
@@ -136,11 +142,31 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
     end
   end
 
-  defp matching_rules(label, _rules) when label in [nil, ""], do: []
-
-  defp matching_rules(label, rules) do
-    Enum.filter(rules, &same_label?(label, &1.label))
+  defp matching_rules(label, rules_by_label) do
+    case canonical_label(label) do
+      nil -> []
+      label -> Map.get(rules_by_label, label, [])
+    end
   end
+
+  defp index_rules_by_label(rules) do
+    rules
+    |> Enum.reduce(%{}, fn rule, acc ->
+      Map.update(acc, canonical_label(rule.label), [rule], &[rule | &1])
+    end)
+    |> Map.new(fn {label, matching} -> {label, Enum.reverse(matching)} end)
+  end
+
+  defp canonical_label(nil), do: nil
+
+  defp canonical_label(label)
+       when is_atom(label) or is_binary(label) or is_integer(label) or is_float(label),
+       do: label |> to_string() |> String.upcase()
+
+  defp canonical_label(_label), do: nil
+
+  defp reverse_rows({:ok, rows}), do: {:ok, Enum.reverse(rows)}
+  defp reverse_rows({:error, _reason} = error), do: error
 
   defp offline_dataset_row(agent, %Rule{} = rule, text, path, source) do
     normalized = normalize_text(text)

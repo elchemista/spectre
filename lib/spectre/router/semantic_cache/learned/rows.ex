@@ -55,9 +55,15 @@ defmodule Spectre.Router.SemanticCache.Learned.Rows do
   @spec dataset_lines(String.t()) :: [String.t()]
   def dataset_lines(text) do
     text
-    |> String.split("\n")
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
+    |> String.splitter("\n")
+    |> Enum.reduce([], fn line, lines ->
+      case String.trim(line) do
+        "" -> lines
+        "#" <> _comment -> lines
+        line -> [line | lines]
+      end
+    end)
+    |> Enum.reverse()
   end
 
   @doc "Returns true for nil or empty strings."
@@ -68,12 +74,16 @@ defmodule Spectre.Router.SemanticCache.Learned.Rows do
 
   @doc "Compares a source label with a rule label case-insensitively."
   @spec same_label?(term(), atom()) :: boolean()
-  def same_label?(source_label, label) do
+  def same_label?(source_label, label)
+      when (is_atom(source_label) or is_binary(source_label) or is_integer(source_label) or
+              is_float(source_label)) and is_atom(label) and not is_nil(source_label) do
     source_label
     |> to_string()
     |> String.upcase()
     |> Kernel.==(label |> to_string() |> String.upcase())
   end
+
+  def same_label?(_source_label, _label), do: false
 
   @doc "Fixed timestamp used for immutable static rows."
   @spec static_timestamp() :: DateTime.t()

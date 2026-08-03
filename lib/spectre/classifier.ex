@@ -56,6 +56,9 @@ defmodule Spectre.Classifier do
   @doc """
   Starts a classifier process that keeps the artifact loaded.
 
+  Startup options are retained for warm classifications. Options supplied to
+  `classify/2` override them for that call.
+
       {:ok, pid} = Spectre.Classifier.start_link(artifact_dir: "artifacts/spectre")
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -72,11 +75,15 @@ defmodule Spectre.Classifier do
   """
   @spec classify(String.t(), keyword()) :: {:ok, Route.t()} | {:error, term()}
   def classify(text, opts \\ []) when is_binary(text) do
-    opts = classifier_opts(opts)
-    name = Keyword.get(opts, :name, @default_name)
+    configured_opts = classifier_opts(opts)
+    name = Keyword.get(configured_opts, :name, @default_name)
 
-    if Process.whereis(name) do
-      GenServer.call(name, {:classify, text, opts}, Keyword.get(opts, :timeout, 30_000))
+    if GenServer.whereis(name) do
+      GenServer.call(
+        name,
+        {:classify, text, opts},
+        Keyword.get(configured_opts, :timeout, 30_000)
+      )
     else
       classify_once(text, opts)
     end
@@ -97,7 +104,7 @@ defmodule Spectre.Classifier do
   @impl GenServer
   def init(opts) do
     opts = classifier_opts(opts)
-    state = load_state(opts)
+    state = opts |> load_state() |> Map.put(:opts, opts)
 
     cond do
       state.ready? ->
@@ -125,7 +132,8 @@ defmodule Spectre.Classifier do
 
   @impl GenServer
   def handle_call({:classify, text, opts}, _from, state) do
-    {:reply, do_classify(text, state, opts), state}
+    call_opts = Keyword.merge(state.opts, opts)
+    {:reply, do_classify(text, state, call_opts), state}
   end
 
   @spec load_state(keyword()) :: map()

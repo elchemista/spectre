@@ -473,7 +473,9 @@ defmodule SpectreCoverageCompletionTest do
     @tag :tmp_dir
     test "runs ready and unavailable GenServer modes", %{tmp_dir: tmp} do
       write_classifier(tmp, classifier_artifact(:centroid_head))
-      ready_name = SpectreCoverageCompletionTest.ReadyClassifier
+      registry = SpectreCoverageCompletionTest.ClassifierRegistry
+      start_supervised!({Registry, keys: :unique, name: registry})
+      ready_name = {:via, Registry, {registry, :ready}}
 
       ready =
         start_supervised!(
@@ -488,9 +490,12 @@ defmodule SpectreCoverageCompletionTest do
       assert Process.alive?(ready)
 
       assert {:ok, %{label: "ALPHA"}} =
-               Classifier.classify("alpha",
+               Classifier.classify("alpha", name: ready_name)
+
+      assert {:ok, %{label: "BETA"}} =
+               Classifier.classify("beta",
                  name: ready_name,
-                 embed: fn _text, _opts -> {:ok, [1.0, 0.0]} end
+                 embed: fn _text, _opts -> {:ok, [0.0, 1.0]} end
                )
 
       assert :ok = stop_supervised(Classifier)
@@ -827,7 +832,13 @@ defmodule SpectreCoverageCompletionTest do
 
       File.write!(
         valid,
-        Jason.encode!([123, %{text: "", label: "ALPHA"}, %{text: "alpha", label: ""}])
+        Jason.encode!([
+          123,
+          %{text: "", label: "ALPHA"},
+          %{text: "alpha", label: ""},
+          %{text: "bad object label", label: %{nested: "ALPHA"}},
+          %{text: "bad list label", label: ["ALPHA"]}
+        ])
       )
 
       assert {:error, {:invalid_learning_json, ^json}} =
@@ -835,6 +846,34 @@ defmodule SpectreCoverageCompletionTest do
 
       assert {:ok, [%{text: "", label: :ALPHA}]} =
                Learned.examples(@agent, source: :offline_dataset, semantic_cache_source: valid)
+    end
+
+    @tag :tmp_dir
+    test "offline datasets preserve row and source order", %{tmp_dir: tmp} do
+      first = Path.join(tmp, "first.json")
+      second = Path.join(tmp, "second.jsonl")
+
+      File.write!(
+        first,
+        Jason.encode!([
+          %{text: "first alpha", label: "ALPHA"},
+          %{text: "second beta", label: "BETA"}
+        ])
+      )
+
+      File.write!(
+        second,
+        Jason.encode!(%{text: "third alpha", label: "ALPHA"}) <> "\n"
+      )
+
+      opts =
+        learned_opts()
+        |> Keyword.put(:semantic_cache_source, [first, second])
+
+      assert {:ok, rows} =
+               Spectre.Router.SemanticCache.Learned.Sources.offline_dataset_rows(opts)
+
+      assert Enum.map(rows, & &1.text) == ["first alpha", "second beta", "third alpha"]
     end
   end
 
