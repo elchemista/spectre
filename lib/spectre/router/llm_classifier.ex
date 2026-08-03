@@ -174,7 +174,10 @@ defmodule Spectre.Router.LLMClassifier do
       end)
 
     entries
-    |> render_tree_level([], 0)
+    |> Enum.reduce(new_tree_node(), fn {path, label, phrases}, tree ->
+      put_tree_entry(tree, path, label, phrases)
+    end)
+    |> render_tree_node(0)
     |> IO.iodata_to_binary()
     |> String.trim_trailing()
   end
@@ -198,28 +201,49 @@ defmodule Spectre.Router.LLMClassifier do
     |> Enum.take(limit)
   end
 
-  @spec render_tree_level([{[atom()], atom(), [String.t()]}], [atom()], non_neg_integer()) ::
-          iodata()
-  defp render_tree_level(entries, prefix, depth) do
-    {direct, nested} = Enum.split_with(entries, fn {path, _label, _phrases} -> path == prefix end)
+  @spec new_tree_node() :: map()
+  defp new_tree_node, do: %{labels: [], child_order: [], children: %{}}
+
+  @spec put_tree_entry(map(), [atom()], atom(), [String.t()]) :: map()
+  defp put_tree_entry(tree, [], label, phrases) do
+    %{tree | labels: [{label, phrases} | tree.labels]}
+  end
+
+  defp put_tree_entry(tree, [segment | rest], label, phrases) do
+    case Map.fetch(tree.children, segment) do
+      {:ok, child} ->
+        updated_child = put_tree_entry(child, rest, label, phrases)
+        %{tree | children: Map.put(tree.children, segment, updated_child)}
+
+      :error ->
+        child = put_tree_entry(new_tree_node(), rest, label, phrases)
+
+        %{
+          tree
+          | child_order: [segment | tree.child_order],
+            children: Map.put(tree.children, segment, child)
+        }
+    end
+  end
+
+  @spec render_tree_node(map(), non_neg_integer()) :: iodata()
+  defp render_tree_node(tree, depth) do
     indent = String.duplicate("  ", depth)
 
     direct_lines =
-      Enum.map(direct, fn {_path, label, phrases} ->
+      tree.labels
+      |> Enum.reverse()
+      |> Enum.map(fn {label, phrases} ->
         [indent, to_string(label), example_suffix(phrases), "\n"]
       end)
 
     nested_blocks =
-      nested
-      |> Enum.map(fn {path, _label, _phrases} -> Enum.at(path, depth) end)
-      |> Enum.uniq()
+      tree.child_order
+      |> Enum.reverse()
       |> Enum.map(fn segment ->
-        children =
-          Enum.filter(nested, fn {path, _label, _phrases} -> Enum.at(path, depth) == segment end)
-
         [
           [indent, to_string(segment), "/\n"],
-          render_tree_level(children, prefix ++ [segment], depth + 1)
+          tree.children |> Map.fetch!(segment) |> render_tree_node(depth + 1)
         ]
       end)
 
@@ -236,13 +260,16 @@ defmodule Spectre.Router.LLMClassifier do
   @spec prompt(String.t(), [atom()], keyword()) :: {:ok, String.t()} | {:error, term()}
   defp prompt(text, labels, opts) do
     rules = Keyword.get(opts, :spectre_rules, [])
+    visible_labels = MapSet.new(labels)
 
     base = %{
       text: text,
       labels: labels,
       label_tree: label_tree(labels, rules, examples: label_example_limit(opts)),
       label_groups?:
-        Enum.any?(rules, &(Map.get(&1, :label) in labels and rule_flow_path(&1) != [])),
+        Enum.any?(rules, fn rule ->
+          MapSet.member?(visible_labels, Map.get(rule, :label)) and rule_flow_path(rule) != []
+        end),
       agent: Keyword.get(opts, :spectre_agent),
       agent_context: opts |> classifier_config() |> Keyword.get(:context),
       recent_chat: Keyword.get(opts, :recent_chat, "none"),

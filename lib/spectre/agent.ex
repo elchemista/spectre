@@ -1192,6 +1192,8 @@ defmodule Spectre.Agent do
     :with,
     :prompt,
     :llm_opts,
+    :context,
+    :label_examples,
     :local,
     :classify,
     :artifact_dir,
@@ -1220,6 +1222,8 @@ defmodule Spectre.Agent do
     ]
     |> maybe_put_classifier_option(:prompt, Keyword.get(opts, :prompt))
     |> maybe_put_classifier_option(:llm_opts, Keyword.get(opts, :llm_opts))
+    |> maybe_put_classifier_option(:context, Keyword.get(opts, :context))
+    |> maybe_put_classifier_option(:label_examples, Keyword.get(opts, :label_examples))
     |> maybe_put_classifier_option(:local, Keyword.get(opts, :local))
     |> maybe_put_classifier_option(:local_opts, Keyword.take(opts, @local_classifier_keys))
   end

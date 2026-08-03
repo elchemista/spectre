@@ -8,6 +8,11 @@ minor release may contain documented breaking API changes.
 
 ### Fixed
 
+- `classifier ..., context: ...` and `label_examples: ...` now remain in the
+  classifier configuration instead of leaking into adapter options, so both
+  settings reach default and custom classifier prompts. Flow-taxonomy prompt
+  rendering now builds an ordered tree in one pass, avoiding quadratic work
+  across large sets of sibling flows.
 - A failed probabilistic strategy (LLM classifier error, arbitration failure)
   now recovers to the agent's declared `:UNKNOWN` rule when it has a handler
   whose checks match the input, so the agent's explicit fallback behavior runs
