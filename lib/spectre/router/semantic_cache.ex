@@ -22,6 +22,8 @@ defmodule Spectre.Router.SemanticCache do
   @callback examples(module(), keyword()) :: {:ok, [map()]} | {:error, term()}
   @callback get_example(module(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   @callback relabel(module(), String.t(), atom(), keyword()) :: {:ok, map()} | {:error, term()}
+  @callback update_example(module(), String.t(), map(), keyword()) ::
+              {:ok, map()} | {:error, term()}
   @callback delete(module(), String.t(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
   @callback verify(module(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   @callback snapshot(module(), keyword()) :: {:ok, term()} | {:error, term()}
@@ -32,11 +34,21 @@ defmodule Spectre.Router.SemanticCache do
                       examples: 2,
                       get_example: 3,
                       relabel: 4,
+                      update_example: 4,
                       delete: 3,
                       verify: 3,
                       snapshot: 2,
                       load_snapshot: 3,
                       clear: 2
+
+  # Route strategies that mean "this classification came out of the cache
+  # itself" — learning them back would only amplify the cache's own output.
+  @cache_strategies [
+    :semantic_cache,
+    :semantic_cache_exact,
+    :semantic_cache_search,
+    :semantic_cache_learned
+  ]
 
   @doc """
   Looks up a message in the configured semantic cache.
@@ -191,6 +203,81 @@ defmodule Spectre.Router.SemanticCache do
   end
 
   @doc """
+  Edits an online learned example in place.
+
+  Supported attrs: `:text` (re-embedded through the configured embedding
+  adapter), `:label` (must name a cacheable route), and `:verified`.
+
+      {:ok, updated} =
+        Spectre.Router.SemanticCache.update_example(MyApp.Agent, id, %{label: :PRICING})
+  """
+  @spec update_example(module(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def update_example(agent, id, attrs, opts \\ []) do
+    with_runtime_opts(agent, opts, &update_example_with_opts(agent, id, attrs, &1))
+  end
+
+  @doc """
+  Explains whether a resolved route should be learned into the semantic cache.
+
+  Returns `:ok` when learning is safe, or `{:skip, reason}` with one of
+  `:missing_route`, `:route_not_accepted`, `:semantic_cache_route` (the route
+  was served from the cache itself), `:route_not_found`,
+  `:route_not_learnable` (the matched rule is not `learn: true`), or
+  `:protected_action` (the route stages a policy-protected action — learning
+  it would let the cache bypass future consent classification).
+
+      case SemanticCache.learn_eligibility(MyApp.Agent, result.route) do
+        :ok -> SemanticCache.put(text, result.route, opts)
+        {:skip, _reason} -> :ok
+      end
+  """
+  @spec learn_eligibility(module(), Spectre.Route.t() | map() | nil) :: :ok | {:skip, atom()}
+  def learn_eligibility(agent, route)
+
+  def learn_eligibility(_agent, nil), do: {:skip, :missing_route}
+
+  def learn_eligibility(agent, %{label: label} = route) when is_atom(agent) do
+    cond do
+      Map.get(route, :accepted?) != true -> {:skip, :route_not_accepted}
+      Map.get(route, :strategy) in @cache_strategies -> {:skip, :semantic_cache_route}
+      true -> rule_eligibility(agent, label, route)
+    end
+  end
+
+  def learn_eligibility(_agent, _route), do: {:skip, :missing_route}
+
+  @doc """
+  Convenience boolean form of `learn_eligibility/2`.
+  """
+  @spec learnable?(module(), Spectre.Route.t() | map() | nil) :: boolean()
+  def learnable?(agent, route), do: learn_eligibility(agent, route) == :ok
+
+  @spec rule_eligibility(module(), atom(), map()) :: :ok | {:skip, atom()}
+  defp rule_eligibility(agent, label, route) do
+    case Enum.find(spectre_rules(agent), &(&1.label == label)) do
+      nil -> {:skip, :route_not_found}
+      %{learn: true} -> action_eligibility(agent, route)
+      %{} -> {:skip, :route_not_learnable}
+    end
+  end
+
+  @spec action_eligibility(module(), map()) :: :ok | {:skip, atom()}
+  defp action_eligibility(agent, %{handler: {:action, action, handler_opts}}) do
+    effect =
+      Spectre.Effect.stage_action(
+        %{name: action, args: Keyword.get(handler_opts, :args, %{}), payload: %{source: :dsl}},
+        agent,
+        :agent
+      )
+
+    if Spectre.ActionProtection.protected_by(agent, effect),
+      do: {:skip, :protected_action},
+      else: :ok
+  end
+
+  defp action_eligibility(_agent, _route), do: :ok
+
+  @doc """
   Deletes an online learned example.
   """
   @spec delete(module(), String.t(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
@@ -327,6 +414,14 @@ defmodule Spectre.Router.SemanticCache do
   defp relabel_with_opts(agent, id, new_label, opts) do
     adapter_or_builtin(opts, :relabel, [agent, id, new_label, opts], fn ->
       Learned.relabel(agent, id, new_label, opts)
+    end)
+  end
+
+  @spec update_example_with_opts(module(), String.t(), map(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  defp update_example_with_opts(agent, id, attrs, opts) do
+    adapter_or_builtin(opts, :update_example, [agent, id, attrs, opts], fn ->
+      Learned.update_example(agent, id, attrs, opts)
     end)
   end
 

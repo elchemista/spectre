@@ -248,6 +248,76 @@ defmodule SpectreEcosystemIntegrationTest do
     end
   end
 
+  describe "LLM adapter boundary" do
+    test "provider_opts strips runtime context and spectre_* keys" do
+      opts = [
+        temperature: 0.2,
+        max_tokens: 64,
+        state: %State{},
+        route: :fake,
+        model: "x",
+        spectre_rules: [],
+        recent_chat: [],
+        test_pid: self()
+      ]
+
+      assert Spectre.LLM.provider_opts(opts, [:test_pid]) == [temperature: 0.2, max_tokens: 64]
+      assert :state in Spectre.LLM.runtime_opt_keys()
+    end
+  end
+
+  describe "instance host ergonomics" do
+    test "ensure_instance normalizes start shapes and trace_id is stable per generation" do
+      supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+      subject = "eco-conversation-#{System.unique_integer([:positive])}"
+
+      assert {:ok, pid} = Spectre.ensure_instance(supervisor, EcoAgent, subject, idle: false)
+      assert {:ok, ^pid} = Spectre.ensure_instance(supervisor, EcoAgent, subject, idle: false)
+
+      assert {:ok, trace_id} = Spectre.Instance.trace_id(pid)
+      assert is_binary(trace_id)
+      assert {:ok, ^trace_id} = Spectre.Instance.trace_id(pid)
+
+      :ok = DynamicSupervisor.terminate_child(supervisor, pid)
+      assert {:error, {:instance_unreachable, _reason}} = Spectre.Instance.trace_id(pid)
+    end
+  end
+
+  describe "journal store boundary" do
+    test "to_json_map produces a JSON-encodable string-keyed map" do
+      record =
+        Spectre.Journal.Record.new(%{
+          agent: EcoAgent,
+          phase: :execution,
+          decision: %{outcome: :ok, tuple: {:a, 1}},
+          effect: %{name: :sync_crm, args: %{scope: :all}},
+          metadata: %{pid_like: self()}
+        })
+
+      map = Spectre.Journal.Record.to_json_map(record)
+
+      assert map["phase"] == "execution"
+      assert map["agent"] == "Elixir.SpectreEcosystemIntegrationTest.EcoAgent"
+      assert map["decision"] == %{"outcome" => "ok", "tuple" => ["a", 1]}
+      assert is_binary(map["occurred_at"])
+      assert is_binary(map["metadata"]["pid_like"])
+      assert {:ok, _json} = Jason.encode(map)
+    end
+  end
+
+  describe "release-boot contracts" do
+    test "classifier artifact schema atoms are interned by loading the module" do
+      atoms = Spectre.Classifier.artifact_schema_atoms()
+
+      assert :example_index in atoms
+      assert :centroids in atoms
+
+      artifact = Map.new(atoms, &{&1, :ok})
+      binary = :erlang.term_to_binary(artifact)
+      assert ^artifact = :erlang.binary_to_term(binary, [:safe])
+    end
+  end
+
   describe "rolling summary across persistence (Pulse/Mnemonic pattern)" do
     test "chat_summary survives a State.Codec round-trip" do
       state = %State{data: %{chat_summary: "user wants a crm", chat_history: []}}

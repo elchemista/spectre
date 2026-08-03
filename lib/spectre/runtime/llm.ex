@@ -29,6 +29,74 @@ defmodule Spectre.LLM do
   @type completion :: String.t() | Response.t() | map()
   @type completion_result :: {:ok, completion()} | {:error, term()}
 
+  # Keys the Spectre runtime attaches to the adapter keyword list for its own
+  # bookkeeping and prompt context. Providers never accept them, so adapters
+  # strip them with provider_opts/2 before building an HTTP/SDK call.
+  @runtime_opt_keys [
+    :adapter,
+    :model,
+    :fallback,
+    :primary_error,
+    :purpose,
+    :prompt_format,
+    :explicit_model_override?,
+    :sanitize_reply,
+    :plan_actions?,
+    :policy_prompt?,
+    :agent,
+    :input,
+    :state,
+    :route,
+    :policy,
+    :memory,
+    :assigns,
+    :history,
+    :recent_chat,
+    :conversation_id,
+    :turn_id,
+    :trace_id,
+    :run_id,
+    :operation_id,
+    :message,
+    :actions_module,
+    :classifier_assigns
+  ]
+
+  @doc """
+  Returns the option keys the Spectre runtime injects into adapter calls.
+  """
+  @spec runtime_opt_keys() :: [atom()]
+  def runtime_opt_keys, do: @runtime_opt_keys
+
+  @doc """
+  Strips Spectre runtime context from an adapter keyword list.
+
+  Everything the runtime attaches for its own purposes — routing context,
+  state, prompt assigns, model bookkeeping — is removed, along with any
+  `spectre_*`-prefixed key, leaving only options intended for the provider.
+  Adapters call this instead of maintaining their own allowlists:
+
+      def complete(prompt, opts) do
+        provider_opts = Spectre.LLM.provider_opts(opts, [:test_pid])
+        MyHTTP.post(url, body, provider_opts)
+      end
+
+  `extra_keys` removes host-specific keys on top of the runtime set.
+  """
+  @spec provider_opts(keyword(), [atom()]) :: keyword()
+  def provider_opts(opts, extra_keys \\ []) when is_list(opts) and is_list(extra_keys) do
+    Enum.reject(opts, fn
+      {key, _value} when is_atom(key) ->
+        key in @runtime_opt_keys or key in extra_keys or spectre_prefixed?(key)
+
+      _other ->
+        false
+    end)
+  end
+
+  @spec spectre_prefixed?(atom()) :: boolean()
+  defp spectre_prefixed?(key), do: String.starts_with?(Atom.to_string(key), "spectre_")
+
   @doc """
   Completes a rendered string or typed prompt plan through the configured model
   adapter or function.

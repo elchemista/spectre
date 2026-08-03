@@ -10,6 +10,7 @@ defmodule Spectre.ActionPlanner do
 
   alias Spectre.Action
   alias Spectre.Effect
+  alias Spectre.Reply.Sanitizer
 
   @doc """
   Plans actions found in a model response.
@@ -27,7 +28,7 @@ defmodule Spectre.ActionPlanner do
       when is_binary(text) and is_map(ctx) and is_list(opts) do
     case planner_module(opts) do
       nil ->
-        {:ok, %{reply_text: String.trim(text), effects: []}}
+        {:ok, %{reply_text: Sanitizer.sanitize(text, opts), effects: []}}
 
       planner ->
         plan_response_with(planner, text, ctx, opts)
@@ -56,8 +57,11 @@ defmodule Spectre.ActionPlanner do
   end
 
   @doc """
-  Removes planner syntax from a visible model reply when the mounted planner
-  supports that operation.
+  Removes planner syntax from a visible model reply.
+
+  A mounted planner with a `clean_reply/3` callback owns the cleanup;
+  otherwise `Spectre.Reply.Sanitizer` strips Spectre control tokens
+  (`sanitize_reply: false` opts out).
   """
   @spec clean_reply(String.t(), keyword()) :: String.t()
   def clean_reply(text, opts \\ []) when is_binary(text) and is_list(opts) do
@@ -69,7 +73,7 @@ defmodule Spectre.ActionPlanner do
       when is_binary(text) and is_map(ctx) and is_list(opts) do
     case planner_module(opts) do
       nil ->
-        String.trim(text)
+        Sanitizer.sanitize(text, opts)
 
       planner ->
         clean_reply_with(planner, text, ctx, opts)
@@ -122,7 +126,7 @@ defmodule Spectre.ActionPlanner do
     if Code.ensure_loaded?(planner) and function_exported?(planner, :clean_reply, 3) do
       invoke_clean_reply(planner, text, ctx, opts)
     else
-      String.trim(text)
+      Sanitizer.sanitize(text, opts)
     end
   end
 

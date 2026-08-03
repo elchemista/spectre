@@ -11,6 +11,7 @@ defmodule Spectre.Router.Support do
   require Logger
 
   alias Spectre.Route
+  alias Spectre.Router.Candidate
   alias Spectre.Rule
 
   @label_only_strategies [:classifier, :llm_classifier, :llm, :semantic_cache]
@@ -183,8 +184,34 @@ defmodule Spectre.Router.Support do
   Builds a degraded fallback route from local classifier metadata.
   """
   @spec fallback_route([atom()], map(), term()) :: Route.t()
-  def fallback_route(labels, %{label: label, confidence: confidence} = local_result, reason)
-      when is_atom(label) and is_number(confidence) and confidence >= 0.75 do
+  def fallback_route(labels, local_result, reason) do
+    local_degraded_route(labels, local_result, reason) ||
+      unknown_route(labels, local_result, reason)
+  end
+
+  @doc """
+  Builds the degraded route for a failed probabilistic strategy.
+
+  Recovery order: a confident local classifier result first, then the agent's
+  declared `:UNKNOWN` rule (when it has a handler whose checks match the input)
+  so the agent's explicit fallback behavior runs instead of an empty reply, and
+  only then the bare `:unknown` route. Failure metadata (`local`,
+  `fallback_error`) is preserved on the recovered route.
+  """
+  @spec fallback_route([Rule.t()], Spectre.Input.t() | nil, [atom()], map(), term()) :: Route.t()
+  def fallback_route(rules, input, labels, local_result, reason) when is_list(rules) do
+    local_degraded_route(labels, local_result, reason) ||
+      recovered_unknown_route(rules, input, labels, local_result, reason) ||
+      unknown_route(labels, local_result, reason)
+  end
+
+  @spec local_degraded_route([atom()], map(), term()) :: Route.t() | nil
+  defp local_degraded_route(
+         labels,
+         %{label: label, confidence: confidence} = local_result,
+         reason
+       )
+       when is_atom(label) and is_number(confidence) and confidence >= 0.75 do
     local_result
     |> Map.put(:accepted?, true)
     |> Map.put(:strategy, :local_classifier_degraded)
@@ -193,7 +220,41 @@ defmodule Spectre.Router.Support do
     |> Route.new()
   end
 
-  def fallback_route(labels, local_result, reason) do
+  defp local_degraded_route(_labels, _local_result, _reason), do: nil
+
+  @spec recovered_unknown_route([Rule.t()], Spectre.Input.t() | nil, [atom()], map(), term()) ::
+          Route.t() | nil
+  defp recovered_unknown_route(rules, input, labels, local_result, reason) do
+    case Enum.find(rules, &unknown_rule_matches?(&1, input)) do
+      %Rule{} = rule ->
+        route =
+          rule
+          |> Candidate.from_rule(:unknown_fallback, input && input.text,
+            score: 0.0,
+            accepted?: false
+          )
+          |> Candidate.to_route(labels)
+
+        %{route | local: local_result, fallback_error: reason}
+
+      nil ->
+        nil
+    end
+  end
+
+  @spec unknown_rule_matches?(Rule.t(), Spectre.Input.t() | nil) :: boolean()
+  defp unknown_rule_matches?(%Rule{label: :UNKNOWN, handler: handler} = rule, input)
+       when not is_nil(handler) do
+    case input do
+      %Spectre.Input{} -> Rule.checks_match?(rule, input)
+      _no_input -> rule.checks == []
+    end
+  end
+
+  defp unknown_rule_matches?(%Rule{}, _input), do: false
+
+  @spec unknown_route([atom()], map(), term()) :: Route.t()
+  defp unknown_route(labels, local_result, reason) do
     Route.new(%{
       label: :unknown,
       confidence: nil,

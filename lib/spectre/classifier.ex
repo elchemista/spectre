@@ -25,6 +25,34 @@ defmodule Spectre.Classifier do
   @centroid_collection "spectre_classifier_centroids"
   @example_collection "spectre_classifier_examples"
 
+  # Artifacts decode with binary_to_term/2 in :safe mode, which refuses to
+  # create new atoms. Listing the artifact schema atoms here interns them when
+  # this module loads, so a fresh release VM can decode a trusted artifact
+  # without the host pre-loading internal Spectre atoms itself.
+  @artifact_schema_atoms [
+    :accept_threshold,
+    :centroids,
+    :dimensions,
+    :encoder_model,
+    :example_counts,
+    :example_index,
+    :examples,
+    :high_confidence_threshold,
+    :id,
+    :kind,
+    :label,
+    :labels,
+    :margin_threshold,
+    :mode,
+    :trained_at,
+    :vector,
+    :version
+  ]
+
+  @doc false
+  @spec artifact_schema_atoms() :: [atom()]
+  def artifact_schema_atoms, do: @artifact_schema_atoms
+
   @doc """
   Starts a classifier process that keeps the artifact loaded.
 

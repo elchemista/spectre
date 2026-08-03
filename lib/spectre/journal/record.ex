@@ -81,6 +81,49 @@ defmodule Spectre.Journal.Record do
   end
 
   @doc """
+  Converts a record into a JSON-safe, string-keyed map for persistence.
+
+  Record fields carry arbitrary runtime terms — atoms, tuples, structs,
+  DateTimes — that JSON columns cannot store. This conversion is lossy but
+  total: atoms become strings, tuples become lists, structs lose their module,
+  calendar types render ISO-8601, and anything else falls back to `inspect/2`.
+  Journal store adapters can persist the result directly:
+
+      def append(record, _opts) do
+        record |> Record.to_json_map() |> MyRepo.insert_journal_row()
+      end
+  """
+  @spec to_json_map(t()) :: map()
+  def to_json_map(%__MODULE__{} = record) do
+    record
+    |> Map.from_struct()
+    |> Map.new(fn {key, value} -> {Atom.to_string(key), json_safe(value)} end)
+  end
+
+  @spec json_safe(term()) :: term()
+  defp json_safe(nil), do: nil
+  defp json_safe(value) when is_boolean(value) or is_binary(value) or is_number(value), do: value
+  defp json_safe(value) when is_atom(value), do: Atom.to_string(value)
+  defp json_safe(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp json_safe(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
+  defp json_safe(%Date{} = value), do: Date.to_iso8601(value)
+  defp json_safe(%Time{} = value), do: Time.to_iso8601(value)
+  defp json_safe(%{__struct__: _module} = value), do: value |> Map.from_struct() |> json_safe()
+  defp json_safe(value) when is_list(value), do: Enum.map(value, &json_safe/1)
+  defp json_safe(value) when is_tuple(value), do: value |> Tuple.to_list() |> json_safe()
+
+  defp json_safe(value) when is_map(value) do
+    Map.new(value, fn {key, item} -> {json_key(key), json_safe(item)} end)
+  end
+
+  defp json_safe(value), do: inspect(value, limit: 20, printable_limit: 500)
+
+  @spec json_key(term()) :: String.t()
+  defp json_key(key) when is_binary(key), do: key
+  defp json_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp json_key(key), do: inspect(key, limit: 10, printable_limit: 100)
+
+  @doc """
   Restores a persisted schema-v1 record while tolerating unknown additive
   fields. Legacy maps without a schema version are migrated to version 1.
   """

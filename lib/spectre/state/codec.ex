@@ -168,10 +168,12 @@ defmodule Spectre.State.Codec do
          {:ok, args} <- encode_value(effect.args),
          {:ok, payload} <- encode_value(effect.payload),
          {:ok, metadata} <- encode_value(effect.metadata) do
+      {:ok, idempotency_key} = encode_value(effect.idempotency_key)
+
       {:ok,
        %{
          "id" => id,
-         "idempotency_key" => effect.idempotency_key,
+         "idempotency_key" => idempotency_key,
          "kind" => Atom.to_string(effect.kind),
          "name" => name,
          "owner" => owner,
@@ -558,8 +560,20 @@ defmodule Spectre.State.Codec do
 
   @spec encode_value(term()) :: {:ok, term()} | {:error, term()}
   defp encode_value(value)
-       when is_nil(value) or is_boolean(value) or is_number(value) or is_binary(value),
+       when is_nil(value) or is_boolean(value) or is_number(value),
        do: {:ok, value}
+
+  # Binaries that JSONB cannot store verbatim (invalid UTF-8 or embedded
+  # zero bytes, e.g. compact lifecycle ids) are tagged and Base64-wrapped so
+  # hosts can persist the codec output in a JSON column without their own
+  # envelope. Plain text stays readable.
+  defp encode_value(value) when is_binary(value) do
+    if String.valid?(value) and not String.contains?(value, <<0>>) do
+      {:ok, value}
+    else
+      {:ok, %{"$spectre" => "binary", "value" => Base.encode64(value)}}
+    end
+  end
 
   defp encode_value(value) when is_atom(value) do
     {:ok, %{"$spectre" => "atom", "value" => Atom.to_string(value)}}
@@ -615,6 +629,13 @@ defmodule Spectre.State.Codec do
 
   defp decode_value(%{"$spectre" => "atom", "value" => value}) when is_binary(value) do
     existing_atom(value)
+  end
+
+  defp decode_value(%{"$spectre" => "binary", "value" => value}) when is_binary(value) do
+    case Base.decode64(value) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, {:invalid_encoded_binary, value}}
+    end
   end
 
   defp decode_value(%{"$spectre" => "datetime", "value" => value}) when is_binary(value) do
@@ -746,9 +767,17 @@ defmodule Spectre.State.Codec do
   @spec required_binary(map(), String.t()) :: {:ok, String.t()} | {:error, term()}
   defp required_binary(attrs, key) do
     case Map.fetch(attrs, key) do
-      {:ok, value} when is_binary(value) -> {:ok, value}
-      {:ok, value} -> {:error, {:invalid_binary, key, value_shape(value)}}
-      :error -> {:error, {:missing_field, key}}
+      {:ok, %{"$spectre" => "binary"} = tagged} ->
+        decode_value(tagged)
+
+      {:ok, value} when is_binary(value) ->
+        {:ok, value}
+
+      {:ok, value} ->
+        {:error, {:invalid_binary, key, value_shape(value)}}
+
+      :error ->
+        {:error, {:missing_field, key}}
     end
   end
 

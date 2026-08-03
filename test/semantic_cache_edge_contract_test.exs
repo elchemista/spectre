@@ -45,6 +45,46 @@ defmodule SpectreSemanticCacheEdgeContractTest.Agent do
   end
 end
 
+defmodule SpectreSemanticCacheEdgeContractTest.LearnActions do
+  @moduledoc false
+
+  def guarded(_args, _ctx), do: {:ok, %{}}
+  def open(_args, _ctx), do: {:ok, %{}}
+end
+
+defmodule SpectreSemanticCacheEdgeContractTest.LearnAgent do
+  @moduledoc false
+  use Spectre.Agent
+
+  router(via: [:regex], semantic_cache?: false, classification_log?: false)
+  actions(SpectreSemanticCacheEdgeContractTest.LearnActions)
+
+  protect(:guarded, with: :consent)
+
+  policy :consent do
+    accept(:yes_consent, regex: ~r/^yes$/i)
+    reject(:no_consent, regex: ~r/^no$/i)
+  end
+
+  flow :learning do
+    on :LEARNED, regex: ~r/^learn$/, learn: true, cache: false do
+      reply(:learned)
+    end
+
+    on :STATIC, regex: ~r/^static$/, cache: false do
+      reply(:static)
+    end
+
+    on :GUARDED, regex: ~r/^guarded$/, learn: true, cache: false do
+      action(:guarded)
+    end
+
+    on :OPEN, regex: ~r/^open$/, learn: true, cache: false do
+      action(:open)
+    end
+  end
+end
+
 defmodule SpectreSemanticCacheEdgeContractTest.FailingIndex do
   @moduledoc false
 
@@ -152,6 +192,72 @@ defmodule SpectreSemanticCacheEdgeContractTest do
     assert :ok = SemanticCache.clear(@agent, opts)
     on_exit(fn -> SemanticCache.clear(@agent, opts) end)
     {:ok, opts: opts}
+  end
+
+  test "update_example edits text, label, and verification in place", %{opts: opts} do
+    assert {:ok, row} = Learned.put("original text", %{label: :CACHE, accepted?: true}, opts)
+    refute row.verified?
+
+    assert {:ok, updated} =
+             SemanticCache.update_example(
+               @agent,
+               row.id,
+               %{text: "nuovo testo", label: :OTHER, verified: true},
+               opts
+             )
+
+    assert updated.text == "nuovo testo"
+    assert updated.normalized_text == "nuovo testo"
+    assert updated.label == :OTHER
+    assert updated.verified?
+    assert_received {:edge_embedding_call, "nuovo testo"}
+
+    assert {:ok, fetched} = SemanticCache.get_example(@agent, row.id, opts)
+    assert fetched.label == :OTHER
+    assert fetched.text == "nuovo testo"
+
+    assert {:error, {:uncacheable_label, :NO_CACHE}} =
+             SemanticCache.update_example(@agent, row.id, %{label: :NO_CACHE}, opts)
+
+    assert {:error, :blank_text} =
+             SemanticCache.update_example(@agent, row.id, %{text: "   "}, opts)
+
+    assert {:error, :not_found} =
+             SemanticCache.update_example(@agent, "missing-id", %{label: :OTHER}, opts)
+  end
+
+  test "learn_eligibility encodes the core learn-safety rules" do
+    agent = SpectreSemanticCacheEdgeContractTest.LearnAgent
+
+    route = fn label, extra ->
+      Map.merge(%{label: label, accepted?: true, strategy: :regex}, extra)
+    end
+
+    assert SemanticCache.learn_eligibility(agent, nil) == {:skip, :missing_route}
+    assert SemanticCache.learn_eligibility(agent, route.(:LEARNED, %{})) == :ok
+    assert SemanticCache.learnable?(agent, route.(:LEARNED, %{}))
+
+    assert SemanticCache.learn_eligibility(agent, route.(:LEARNED, %{accepted?: false})) ==
+             {:skip, :route_not_accepted}
+
+    assert SemanticCache.learn_eligibility(
+             agent,
+             route.(:LEARNED, %{strategy: :semantic_cache_search})
+           ) == {:skip, :semantic_cache_route}
+
+    assert SemanticCache.learn_eligibility(agent, route.(:MISSING, %{})) ==
+             {:skip, :route_not_found}
+
+    assert SemanticCache.learn_eligibility(agent, route.(:STATIC, %{})) ==
+             {:skip, :route_not_learnable}
+
+    assert SemanticCache.learn_eligibility(
+             agent,
+             route.(:GUARDED, %{handler: {:action, :guarded, []}})
+           ) == {:skip, :protected_action}
+
+    assert SemanticCache.learn_eligibility(agent, route.(:OPEN, %{handler: {:action, :open, []}})) ==
+             :ok
   end
 
   test "stored embeddings are validated, reused, and accepted through the Route API", %{

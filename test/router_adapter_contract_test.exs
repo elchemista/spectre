@@ -214,6 +214,36 @@ defmodule SpectreRouterAdapterContractTest do
     assert {:cont, ^halted} = EmbeddingSimilarity.call(halted, [])
   end
 
+  test "a failed probabilistic strategy recovers to the declared :UNKNOWN rule" do
+    unknown_rule = rule(:UNKNOWN, [])
+    rules = [rule(:BILLING, [], via: [:llm_classifier]), unknown_rule]
+
+    assert {:cont, recovered} =
+             context("bill", rules,
+               llm_fallback?: true,
+               model: fn _prompt, _opts -> {:error, :classifier_down} end
+             )
+             |> LLMFallback.call([])
+
+    assert recovered.route.label == :UNKNOWN
+    assert recovered.route.handler == {:reply, :UNKNOWN, []}
+    assert recovered.route.strategy == :unknown_fallback
+    refute recovered.route.accepted?
+    assert recovered.route.fallback_error != nil
+
+    without_unknown = [rule(:BILLING, [], via: [:llm_classifier])]
+
+    assert {:cont, bare} =
+             context("bill", without_unknown,
+               llm_fallback?: true,
+               model: fn _prompt, _opts -> {:error, :classifier_down} end
+             )
+             |> LLMFallback.call([])
+
+    assert bare.route.label == :unknown
+    assert bare.route.handler == nil
+  end
+
   test "legacy LLM fallback accepts visible labels and degrades safely when disabled or ambiguous" do
     visible_rules = [
       rule(:BILLING, [], via: [:llm_classifier]),
