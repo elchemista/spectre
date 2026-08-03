@@ -76,7 +76,13 @@ defmodule Spectre.Turn.Dispatcher do
   @doc "Delivers the outcome of a vetoed effect. Default: `deliver_reply/3` with the result text."
   @callback suppressed(Effect.t(), Result.t(), keyword()) :: {:ok, term()} | {:error, term()}
 
-  @doc "Delivers an executed action result. Default: `deliver_reply/3` with the result text."
+  @doc """
+  Delivers an executed action result. Default: `deliver_reply/3` with the result text.
+
+  The completion is the terminal `%Spectre.Effect{}`: `status: :completed` after a
+  normal execution, `status: :cancelled` when a `before_action` guard suppressed
+  the capability call (the result text then carries the guard's reply).
+  """
   @callback action_result(term(), Result.t(), keyword()) :: {:ok, term()} | {:error, term()}
 
   @doc "Reply used when the result text is empty. Default: `nil` (fall through to `no_response/2`)."
