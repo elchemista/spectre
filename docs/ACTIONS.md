@@ -112,6 +112,41 @@ actions(MyApp.SupportActions)
 Hooks run after a completed action effect exists. They are useful for audit
 trails, notifications, and delivery bookkeeping.
 
+## `before_action` Guards
+
+Guards are the pre-execution veto point. They run right before the capability
+is invoked — after routing, planning, and any policy approval — so they can
+stop an action because of host state no route or policy can see: an open
+draft, a role restriction, a quota.
+
+```elixir
+before_action :create_project, run: {MyApp.Guards, :no_duplicate_draft}
+```
+
+```elixir
+defmodule MyApp.Guards do
+  def no_duplicate_draft(_action, ctx) do
+    if MyApp.Projects.open_draft?(ctx.assigns.user_id) do
+      {:suppress, "You already have an open draft. Finish or cancel it first."}
+    else
+      :allow
+    end
+  end
+end
+```
+
+A guard receives `(action, ctx)` and returns:
+
+- `:allow` (or `:ok`) — execution proceeds
+- `{:suppress, reply_text}` — the pending effect is cancelled without invoking
+  the capability; the turn resolves as a normal reply carrying that text and
+  an `:effect_suppressed` event
+- `{:error, reason}` — the effect fails closed
+
+`:all` guards every action. Guards run in declaration order and the first
+non-`:allow` outcome wins. They are Agent-owned infrastructure: Skills cannot
+declare them. An invalid guard reply fails the effect instead of allowing it.
+
 ## Generic Action Providers
 
 `action` is provider-neutral. Spectre owns staging, policy, persistence,

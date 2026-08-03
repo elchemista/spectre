@@ -211,6 +211,84 @@ defmodule Spectre.Router.SemanticCache.Learned do
   def relabel(agent, id, label, _opts), do: {:error, {:invalid_relabel, agent, id, label}}
 
   @doc """
+  Edits an online learned example in place.
+
+  Supported attrs: `:text` (re-embedded through the configured embedding
+  adapter), `:label` (must name a cacheable route), and `:verified`. Static
+  route examples and offline dataset rows are read-only and return
+  `{:error, :read_only_example}`.
+
+      {:ok, updated} =
+        Learned.update_example(MyApp.Agent, id, %{text: "nuovo testo", label: :PRICING})
+
+  A successful mutation increments `online_revision/1` and refreshes the local
+  semantic index.
+  """
+  @spec update_example(module(), String.t(), map(), keyword()) :: {:ok, row()} | {:error, term()}
+  def update_example(agent, id, attrs, opts \\ [])
+
+  def update_example(agent, id, attrs, opts)
+      when is_atom(agent) and is_binary(id) and is_map(attrs) do
+    with {:ok, opts} <- agent_opts(agent, opts),
+         {:ok, row} <- mutable_or_read_only_row(agent, id, opts),
+         {:ok, row} <- apply_example_label(row, attrs, opts),
+         {:ok, row} <- apply_example_text(row, attrs, opts) do
+      now = DateTime.utc_now()
+
+      updated =
+        row
+        |> apply_example_verified(attrs, now)
+        |> Map.put(:updated_at, now)
+
+      Online.put_row(updated)
+      Online.bump_revision(agent)
+      _index_status = warm_index(opts)
+      {:ok, updated}
+    end
+  end
+
+  def update_example(agent, id, attrs, _opts),
+    do: {:error, {:invalid_example_update, agent, id, attrs}}
+
+  @spec apply_example_label(row(), map(), keyword()) :: {:ok, row()} | {:error, term()}
+  defp apply_example_label(row, %{label: label}, opts) when is_atom(label) do
+    with {:ok, label} <- routeable_label(label, opts),
+         :ok <- cacheable_label(label, opts) do
+      {:ok, Map.put(row, :label, label)}
+    end
+  end
+
+  defp apply_example_label(_row, %{label: label}, _opts),
+    do: {:error, {:invalid_example_label, label}}
+
+  defp apply_example_label(row, _attrs, _opts), do: {:ok, row}
+
+  @spec apply_example_text(row(), map(), keyword()) :: {:ok, row()} | {:error, term()}
+  defp apply_example_text(row, %{text: text}, opts) when is_binary(text) do
+    with {:ok, text} <- valid_text(text),
+         {:ok, embedding} <- Index.stored_embedding(text, %{}, nil, opts) do
+      {:ok,
+       Map.merge(row, %{text: text, normalized_text: normalize_text(text), embedding: embedding})}
+    end
+  end
+
+  defp apply_example_text(_row, %{text: text}, _opts),
+    do: {:error, {:invalid_example_text, text}}
+
+  defp apply_example_text(row, _attrs, _opts), do: {:ok, row}
+
+  @spec apply_example_verified(row(), map(), DateTime.t()) :: row()
+  defp apply_example_verified(row, %{verified: verified}, now) when is_boolean(verified) do
+    if verified do
+      row |> Map.put(:verified?, true) |> put_metadata(:verified_at, now)
+    else
+      Map.put(row, :verified?, false)
+    end
+  end
+
+  defp apply_example_verified(row, _attrs, _now), do: row
+
+  @doc """
   Deletes an online learned example.
 
   Static route examples and offline dataset rows are read-only. The function

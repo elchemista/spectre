@@ -6,7 +6,88 @@ minor release may contain documented breaking API changes.
 
 ## Unreleased
 
+### Fixed
+
+- A failed probabilistic strategy (LLM classifier error, arbitration failure)
+  now recovers to the agent's declared `:UNKNOWN` rule when it has a handler
+  whose checks match the input, so the agent's explicit fallback behavior runs
+  instead of returning an unroutable lowercase `:unknown` route and an empty
+  reply. The recovered route uses strategy `:unknown_fallback` and preserves
+  the failure metadata (`local`, `fallback_error`).
+- `Spectre.State.Codec` output is now safe for JSON database columns:
+  binaries that JSONB cannot store verbatim (invalid UTF-8 or embedded zero
+  bytes, e.g. compact lifecycle ids) are encoded as tagged Base64 values and
+  decoded transparently. Legacy payloads still decode.
+- `Spectre.Classifier` interns its artifact schema atoms when the module
+  loads, so release VMs decode classifier artifacts with `binary_to_term/2`
+  in `:safe` mode without the host pre-loading internal Spectre atoms.
+
 ### Added
+
+- `Spectre.Reply.Sanitizer` strips Spectre control tokens (`<al>`,
+  `<intent>`, `<reply>` wrappers, `INTENT:`/`AL:` control lines, `<think>`
+  blocks, HTML comments) from model output before it becomes `reply_text`.
+  It is the runtime default wherever LLM text turns into a visible reply;
+  pass `sanitize_reply: false` to opt out, or mount an action planner with
+  `clean_reply/3` to own the cleanup entirely.
+- `Spectre.LLM.provider_opts/2` strips every runtime-context key the core
+  attaches to adapter calls (plus any `spectre_*`-prefixed key), so LLM
+  adapters forward provider options without maintaining hand-written
+  allowlists. `Spectre.LLM.runtime_opt_keys/0` exposes the list.
+- `Spectre.Router.SemanticCache.learn_eligibility/2` and `learnable?/2` own
+  the learn-safety rules hosts used to re-implement: routes served from the
+  cache itself, rules without `learn: true`, and routes staging
+  policy-protected actions are skipped with an explaining reason.
+- `Spectre.Router.SemanticCache.update_example/4` edits an online learned
+  example in place (`:text` re-embeds through the configured adapter,
+  `:label` must stay cacheable, `:verified` toggles review state), replacing
+  the snapshot round-trip hosts used for edits. Custom cache adapters may
+  implement the new optional `update_example/4` callback.
+- `Spectre.Journal.Record.to_json_map/1` renders a journal record as a
+  JSON-safe, string-keyed map (atoms→strings, tuples→lists, calendar types→
+  ISO-8601, fallback `inspect/2`) for direct persistence by store adapters.
+- `Spectre.ensure_instance/4` starts or reuses an Instance and always returns
+  `{:ok, pid}` or `{:error, reason}`, normalizing the supervisor's richer
+  start shapes. `Spectre.Instance.trace_id/1` exposes the per-generation
+  trace identifier without reaching into `info/1`.
+
+- `Spectre.Turn.Dispatcher` drives a `%Spectre.Turn{}` decision to a delivered
+  outcome so hosts stop hand-writing the decision switch: it delivers replies,
+  auto-resolves policies the host can already satisfy
+  (`satisfied_resolution/2`), executes pending effects, and falls back to
+  `fallback_reply/2`/`no_response/2` for empty outcomes. `deliver_reply/3` is
+  the only required callback and the loop is bounded.
+- `before_action :action, run: {M, :f}` registers a pre-execution guard on the
+  action lifecycle. Guards run after routing, planning, and policy approval,
+  and can return `{:suppress, reply_text}` to cancel the pending effect and
+  answer with a normal reply (emitting `:effect_suppressed`), or `{:error,
+  reason}` to fail closed. `:all` matches every action; Skills cannot declare
+  guards; invalid guard replies fail the effect instead of allowing it.
+- `history limit, summary: {M, :f}` folds chat-history entries evicted from
+  the window into a rolling summary under `state.data.chat_summary` instead
+  of dropping them. The default LLM classifier prompt shows the summary as
+  "Conversation summary (older turns)" next to the recent chat, and custom
+  classifier prompts receive it as the `chat_summary` assign. A crashing
+  summarizer keeps the previous summary and never blocks the turn.
+
+- `flow` declarations now nest. A nested flow is a taxonomy grouping: rules
+  keep the full path in the new `Spectre.Rule.flow_path` field while `flow`
+  stays the innermost name, labels stay globally unique, and `inject`
+  declarations plus flow options are inherited by nested flows.
+  `state.current_flow` now prioritizes by membership in `flow_path`, so
+  setting a parent flow prioritizes its whole subtree. String flows passed to
+  `Spectre.Router.evaluate/3` resolve nested flow names as well.
+- The default LLM fallback classifier prompt groups visible labels by flow
+  taxonomy (indented, one `flow/` header per group) instead of a flat list.
+  Each label carries up to two example phrases from its `embedding:`/`bag:`/
+  `jaro:` declarations (`classifier ..., label_examples: n` tunes the cap,
+  `0` disables). The prompt now also states the routed agent module, an
+  optional agent description (`classifier ..., context: "..."`), and the
+  active `state.current_flow` rendered as its full nested path. Custom
+  classifier prompt functions receive the new `label_tree`, `agent`,
+  `agent_context`, and `active_flow` assigns, and the tree rendering is
+  exposed as `Spectre.Router.LLMClassifier.label_tree/3`. Agents with no
+  flows keep the flat label list.
 
 - Added `SYSTEM.md`, documenting the 0.2.0 package compatibility matrix,
   composition patterns, complete Stack examples, library responsibilities,

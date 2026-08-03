@@ -21,6 +21,37 @@ defmodule SpectreStateCodecRecoveryContractTest do
     end
   end
 
+  test "binaries unsafe for JSONB are tagged, round-trip, and never emit \\u0000" do
+    raw_id = <<0, 255, 7, 0>>
+
+    state = %State{
+      revision: 1,
+      conversation_id: "jsonb-safety",
+      data: %{lifecycle_id: raw_id, note: "plain text stays plain"}
+    }
+
+    assert {:ok, json} = Codec.encode_json(state)
+    refute json =~ "\\u0000"
+    assert json =~ "plain text stays plain"
+
+    assert {:ok, decoded} = Codec.decode(json)
+    assert decoded.data.lifecycle_id == raw_id
+    assert decoded.data.note == "plain text stays plain"
+  end
+
+  test "an effect idempotency key with unsafe bytes survives the round-trip" do
+    effect = %{
+      Effect.stage_action(%{name: :publish}, __MODULE__, :agent)
+      | idempotency_key: "effect:" <> <<1, 0, 2>>
+    }
+
+    assert {:ok, json} = Codec.encode_json(%State{pending_effects: [effect]})
+    refute json =~ "\\u0000"
+
+    assert {:ok, decoded} = Codec.decode(json)
+    assert [%Effect{idempotency_key: "effect:" <> <<1, 0, 2>>}] = decoded.pending_effects
+  end
+
   test "decoding enforces collection bounds before recovered state becomes live" do
     effect = Effect.stage_action(%{name: :publish}, __MODULE__, :agent)
     assert {:ok, encoded} = Codec.encode(%State{pending_effects: [effect]})

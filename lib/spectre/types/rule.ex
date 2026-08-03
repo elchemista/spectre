@@ -19,6 +19,7 @@ defmodule Spectre.Rule do
     :flow,
     :handler,
     :owner,
+    flow_path: [],
     scope: :agent,
     regex: [],
     bag: [],
@@ -47,6 +48,7 @@ defmodule Spectre.Rule do
   @type t :: %__MODULE__{
           label: atom(),
           flow: atom() | nil,
+          flow_path: [atom()],
           handler: handler(),
           owner: module() | nil,
           scope: Spectre.Definition.scope(),
@@ -77,6 +79,7 @@ defmodule Spectre.Rule do
       |> normalize_regex()
       |> reject_training_metadata()
       |> normalize_checks()
+      |> normalize_flow_path()
 
     struct(__MODULE__, Map.take(attrs, fields()))
   end
@@ -127,6 +130,14 @@ defmodule Spectre.Rule do
   defp invalid_training!(key, value) do
     raise ArgumentError,
           "#{inspect(key)} is not supported; keep examples in labeled dataset files, got: #{inspect(value)}"
+  end
+
+  @spec normalize_flow_path(map()) :: map()
+  defp normalize_flow_path(attrs) do
+    case Map.get(attrs, :flow_path) do
+      [_head | _tail] -> attrs
+      _missing_or_empty -> Map.put(attrs, :flow_path, attrs |> Map.get(:flow) |> List.wrap())
+    end
   end
 
   @spec normalize_checks(map()) :: map()

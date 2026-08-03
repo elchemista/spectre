@@ -497,7 +497,12 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   end
 
   defp fallback_route(context, reason) do
-    context.labels
-    |> Support.fallback_route(%{strategy: :arbitration, error: reason}, reason)
+    Support.fallback_route(
+      context.rules,
+      context.input,
+      context.labels,
+      %{strategy: :arbitration, error: reason},
+      reason
+    )
   end
 end

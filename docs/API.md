@@ -83,6 +83,34 @@ is projected as `{:reply, nil, ref}`; delivery adapters should skip `nil`.
 Use `turn/3` for most HTTP, chat, and worker integrations. Use `ask/3` when the
 host needs to inspect multiple effects or build its own reducer.
 
+### Dispatching decisions without a hand-written switch
+
+Most hosts branch on `turn.decision` the same way: deliver replies, execute
+approved effects, surface policy requests, and pick a fallback when nothing is
+deliverable. `Spectre.Turn.Dispatcher` owns that loop; the host implements
+only delivery:
+
+```elixir
+defmodule MyApp.ChatDelivery do
+  @behaviour Spectre.Turn.Dispatcher
+
+  @impl true
+  def deliver_reply(text, _result, opts) do
+    MyApp.Chat.send(Keyword.fetch!(opts, :conversation_id), text)
+  end
+end
+
+{:ok, turn} = Spectre.turn(instance, message.text, opts)
+{:ok, _delivered} = Spectre.Turn.Dispatcher.dispatch(turn, MyApp.ChatDelivery, opts)
+```
+
+`deliver_reply/3` is the only required callback. Optional callbacks refine the
+protocol: `no_response/2`, `policy_request/3`, `satisfied_resolution/2` (lets
+the dispatcher auto-resolve a policy the host already knows the answer to and
+continue in the same turn), `execute?/3` and `suppressed/3` (a final runtime
+veto), `action_result/3`, and `fallback_reply/2` for empty outcomes. The loop
+is bounded and every callback receives the merged turn options.
+
 Use `Spectre.Runtime` only when the caller owns the continuation. Its return
 vocabulary is closed:
 

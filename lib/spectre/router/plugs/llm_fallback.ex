@@ -105,7 +105,7 @@ defmodule Spectre.Router.Plugs.LLMFallback do
 
   @spec fallback_route(Context.t(), [atom()], map(), term()) :: {:cont, Context.t()}
   defp fallback_route(%Context{} = context, labels, local_result, reason) do
-    route = Support.fallback_route(labels, local_result, reason)
+    route = Support.fallback_route(context.rules, context.input, labels, local_result, reason)
 
     {:cont,
      context

@@ -1009,8 +1009,73 @@ defmodule Spectre.Runtime do
         Keyword.get(definition_config(agent), :history, 20)
       )
 
-    %{result | state: State.record_turn(result.state, result.input, result, limit)}
+    summarizer =
+      Keyword.get(
+        opts,
+        :chat_summary,
+        Keyword.get(definition_config(agent), :history_summary)
+      )
+
+    state =
+      result.state
+      |> summarize_evicted_history(limit, summarizer)
+      |> State.record_turn(result.input, result, limit)
+
+    %{result | state: state}
   end
+
+  # Folds the entries about to fall out of the history window into a rolling
+  # summary before `State.record_turn/4` drops them. A failing summarizer keeps
+  # the previous summary so history recording never blocks the turn.
+  @spec summarize_evicted_history(State.t(), pos_integer() | false | nil, term()) :: State.t()
+  defp summarize_evicted_history(%State{} = state, limit, summarizer)
+       when is_integer(limit) and limit > 0 and not is_nil(summarizer) do
+    history = Map.get(state.data, :chat_history, [])
+    evicted_count = max(length(history) + 1 - limit, 0)
+
+    case Enum.take(history, evicted_count) do
+      [] ->
+        state
+
+      evicted ->
+        current = Map.get(state.data, :chat_summary)
+
+        case run_summarizer(summarizer, current, evicted) do
+          {:ok, summary} when is_binary(summary) ->
+            %{state | data: Map.put(state.data, :chat_summary, summary)}
+
+          _error_or_invalid ->
+            state
+        end
+    end
+  end
+
+  defp summarize_evicted_history(%State{} = state, _limit, _summarizer), do: state
+
+  @spec run_summarizer(term(), String.t() | nil, [map()]) :: {:ok, String.t()} | :error
+  defp run_summarizer({module, function}, current, evicted)
+       when is_atom(module) and is_atom(function) do
+    normalize_summary(apply(module, function, [current, evicted]))
+  rescue
+    _exception -> :error
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp run_summarizer(fun, current, evicted) when is_function(fun, 2) do
+    normalize_summary(fun.(current, evicted))
+  rescue
+    _exception -> :error
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp run_summarizer(_summarizer, _current, _evicted), do: :error
+
+  @spec normalize_summary(term()) :: {:ok, String.t()} | :error
+  defp normalize_summary(summary) when is_binary(summary), do: {:ok, summary}
+  defp normalize_summary({:ok, summary}) when is_binary(summary), do: {:ok, summary}
+  defp normalize_summary(_other), do: :error
 
   @spec policy_resolution_input(Result.t(), keyword()) :: Input.t()
   defp policy_resolution_input(%Result{} = result, opts) do

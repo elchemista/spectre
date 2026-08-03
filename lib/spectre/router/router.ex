@@ -108,6 +108,10 @@ defmodule Spectre.Router do
   Interrupts are first so global commands like cancel/help remain responsive.
   Current-flow rules come next to make multi-turn flows stable. Remaining rules
   are kept as fallback candidates so users can still change topic.
+
+  Flows nest, so `current_flow` matches any rule whose `flow_path` contains the
+  flow name: setting `current_flow: :checkout` prioritizes rules declared in
+  `:checkout` and in every flow nested below it.
   """
   @spec candidate_rules(module(), State.t()) :: [Rule.t()]
   def candidate_rules(agent, %State{current_flow: current_flow, current_scope: current_scope}) do
@@ -118,7 +122,8 @@ defmodule Spectre.Router do
     current =
       if current_flow do
         Enum.filter(normal, fn rule ->
-          rule.flow == current_flow and (is_nil(current_scope) or rule.scope == current_scope)
+          current_flow in rule.flow_path and
+            (is_nil(current_scope) or rule.scope == current_scope)
         end)
       else
         []

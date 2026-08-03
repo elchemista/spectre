@@ -137,6 +137,28 @@ defmodule Spectre do
   end
 
   @doc """
+  Starts or reuses the Instance for `agent + subject`, always returning
+  `{:ok, pid}` or `{:error, reason}`.
+
+  `instance/4` mirrors the underlying supervisor's richer return shapes
+  (`{:ok, pid}`, `{:ok, pid, info}`, `{:error, {:already_started, pid}}`).
+  Hosts that only need the pid use this normalized form:
+
+      {:ok, pid} = Spectre.ensure_instance(MySup, MyAgent, "conversation:42")
+  """
+  @spec ensure_instance(GenServer.server(), module() | Spectre.AgentRef.t(), term(), keyword()) ::
+          {:ok, pid()} | {:error, term()}
+  def ensure_instance(supervisor, agent, subject, opts \\ []) do
+    case instance(supervisor, agent, subject, opts) do
+      {:ok, pid} when is_pid(pid) -> {:ok, pid}
+      {:ok, pid, _info} when is_pid(pid) -> {:ok, pid}
+      {:error, {:already_started, pid}} when is_pid(pid) -> {:ok, pid}
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:invalid_instance_start, other}}
+    end
+  end
+
+  @doc """
   Looks up the live local Instance for `agent + subject`.
   """
   @spec lookup_instance(

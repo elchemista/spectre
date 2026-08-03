@@ -157,6 +157,26 @@ defmodule Spectre.Instance do
   def ref(server), do: GenServer.call(server, :instance_ref)
 
   @doc """
+  Returns the Instance's trace identifier.
+
+  One trace spans one Instance generation: a new id is minted whenever the
+  agent process (re)starts, which matches journal session semantics. Returns
+  `{:error, reason}` instead of raising when the Instance is unreachable, so
+  hosts can fall back to their own identifier.
+
+      {:ok, trace_id} = Spectre.Instance.trace_id(instance)
+  """
+  @spec trace_id(GenServer.server()) :: {:ok, String.t()} | {:error, term()}
+  def trace_id(server) do
+    case info(server) do
+      %{generation: generation} when is_binary(generation) -> {:ok, generation}
+      other -> {:error, {:invalid_instance_info, other}}
+    end
+  catch
+    :exit, reason -> {:error, {:instance_unreachable, reason}}
+  end
+
+  @doc """
   Returns a compact view of one retained Run or tombstone.
   """
   @spec run(GenServer.server(), String.t() | Ref.t()) :: {:ok, map()} | {:error, term()}
