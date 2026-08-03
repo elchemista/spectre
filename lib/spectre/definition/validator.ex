@@ -487,7 +487,7 @@ defmodule Spectre.Definition.Validator do
   defp validate_before_actions(%Definition{kind: :skill, before_actions: [guard | _rest]}),
     do: {:error, {:skill_before_action_not_supported, guard}}
 
-  defp validate_before_actions(%Definition{before_actions: guards}) when is_list(guards) do
+  defp validate_before_actions(%Definition{before_actions: guards}) do
     case Enum.find(guards, fn guard ->
            not is_map(guard) or not Map.has_key?(guard, :action) or
              is_nil(Map.get(guard, :run))
@@ -496,9 +496,6 @@ defmodule Spectre.Definition.Validator do
       guard -> {:error, {:invalid_before_action, guard}}
     end
   end
-
-  defp validate_before_actions(%Definition{before_actions: guards}),
-    do: {:error, {:invalid_before_actions, guards}}
 
   @spec validate_protections(map()) :: :ok | {:error, term()}
   defp validate_protections(%Definition{
