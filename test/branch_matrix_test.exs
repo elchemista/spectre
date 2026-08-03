@@ -623,6 +623,36 @@ defmodule SpectreBranchMatrixTest do
     end
 
     @tag :tmp_dir
+    test "dataset preserves source order and skips malformed label shapes", %{tmp_dir: tmp} do
+      first = Path.join(tmp, "first.jsonl")
+      second = Path.join(tmp, "second.json")
+
+      File.write!(
+        first,
+        [
+          Jason.encode!(%{text: "first", label: "ALPHA"}),
+          Jason.encode!(%{text: "bad object", label: %{nested: "ALPHA"}}),
+          Jason.encode!(%{text: "second", label: "BETA"})
+        ]
+        |> Enum.join("\n")
+      )
+
+      File.write!(
+        second,
+        Jason.encode!([
+          %{text: "third", label: "ALPHA"},
+          %{text: "bad list", label: ["BETA"]}
+        ])
+      )
+
+      assert {:ok, rows} =
+               Dataset.from_agent(SpectreBranchMatrixTest.CacheAgent, source: [first, second])
+
+      assert Enum.map(rows, &{&1.text, &1.label}) ==
+               [{"first", "ALPHA"}, {"second", "BETA"}, {"third", "ALPHA"}]
+    end
+
+    @tag :tmp_dir
     test "dataset reports invalid agents, sources, formats, and JSONL", %{tmp_dir: tmp} do
       assert {:error, {:invalid_agent, URI}} = Dataset.from_agent(URI)
 

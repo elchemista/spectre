@@ -17,6 +17,15 @@ defmodule NestedFlowTest.ChannelExtension do
   end
 end
 
+defmodule NestedFlowTest.InjectionProvider do
+  @moduledoc false
+
+  def outer_start, do: "OUTER_START"
+  def outer_end, do: "OUTER_END"
+  def inner_start, do: "INNER_START"
+  def inner_end, do: "INNER_END"
+end
+
 defmodule NestedFlowTest do
   use ExUnit.Case, async: true
 
@@ -26,12 +35,12 @@ defmodule NestedFlowTest do
   alias Spectre.Rule
   alias Spectre.State
 
-  defp compile_agent(source) do
+  defp compile_agent(source, opts \\ []) do
     module = Module.concat(__MODULE__, "Agent#{System.unique_integer([:positive])}")
 
     source = """
     defmodule #{inspect(module)} do
-      use Spectre.Agent
+      use Spectre.Agent, #{inspect(opts)}
 
       #{source}
     end
@@ -253,6 +262,56 @@ defmodule NestedFlowTest do
 
       assert outer_ids == [:outer_note]
       assert inner_ids == [:outer_note, :inner_note]
+    end
+
+    test "nested flow injections retain declaration scopes and compose hierarchically" do
+      agent =
+        compile_agent(
+          """
+          flow :outer do
+            inject :outer_start,
+              from: {NestedFlowTest.InjectionProvider, :outer_start},
+              into: :context,
+              position: :start
+
+            inject :outer_end,
+              from: {NestedFlowTest.InjectionProvider, :outer_end},
+              into: :context,
+              position: :end
+
+            flow :inner do
+              inject :inner_start,
+                from: {NestedFlowTest.InjectionProvider, :inner_start},
+                into: :context,
+                position: :start
+
+              inject :inner_end,
+                from: {NestedFlowTest.InjectionProvider, :inner_end},
+                into: :context,
+                position: :end
+
+              on :INNER_RULE, regex: ~r/^nested scope$/ do
+                ask :base
+              end
+            end
+          end
+          """,
+          prompt_root: "test/fixtures/skill_inject/skill"
+        )
+
+      input = Input.new("nested scope")
+      base = %Spectre.Context{agent: agent, input: input, state: %State{}, opts: []}
+      assert {:ok, route} = Router.route(input, base)
+      assert {:ok, plan} = Spectre.Prompt.build(agent, :base, %{base | route: route})
+
+      scopes = Map.new(plan.operations, &{&1.id, &1.scope})
+
+      assert scopes.outer_start == {:flow, :agent, :outer}
+      assert scopes.outer_end == {:flow, :agent, :outer}
+      assert scopes.inner_start == {:flow, :agent, [:outer, :inner]}
+      assert scopes.inner_end == {:flow, :agent, [:outer, :inner]}
+
+      assert plan.rendered =~ ~r/OUTER_START.*INNER_START.*INNER_END.*OUTER_END/s
     end
   end
 

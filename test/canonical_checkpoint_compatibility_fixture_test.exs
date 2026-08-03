@@ -56,8 +56,8 @@ defmodule SpectreCanonicalCheckpointCompatibilityFixtureTest do
   alias Spectre.Operation.Control
   alias Spectre.Operation.Event
   alias Spectre.Operation.Loop
-  alias Spectre.Operation.Wait
   alias Spectre.Operation.View
+  alias Spectre.Operation.Wait
   alias Spectre.State
   alias Spectre.Subject
 

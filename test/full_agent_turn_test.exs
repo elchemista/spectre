@@ -44,10 +44,10 @@ defmodule SpectreFullAgentTurnTest.ClassifierLLM do
       send(pid, {:full_agent_llm_classifier, prompt, opts})
     end
 
-    if prompt =~ "portfolio" do
-      {:ok, "PORTFOLIO"}
-    else
-      {:ok, "UNKNOWN"}
+    cond do
+      prompt =~ "classify track classified delivery" -> {:ok, "TRACK_DELIVERY"}
+      prompt =~ "classify show portfolio please" -> {:ok, "PORTFOLIO"}
+      true -> {:ok, "UNKNOWN"}
     end
   end
 end
@@ -56,7 +56,12 @@ defmodule SpectreFullAgentTurnTest.ClassifierPrompt do
   @moduledoc false
 
   def build(assigns) do
-    "classify #{assigns.text} among #{Enum.join(assigns.labels, ",")}"
+    """
+    classify #{assigns.text} among:
+    #{assigns.label_tree}
+    agent context: #{assigns.agent_context || "none"}
+    active flow: #{assigns.active_flow || "none"}
+    """
   end
 end
 
@@ -83,7 +88,9 @@ defmodule SpectreFullAgentTurnTest.Agent do
   classifier(SpectreFullAgentTurnTest.ClassifierLLM,
     prompt: &SpectreFullAgentTurnTest.ClassifierPrompt.build/1,
     local: SpectreFullAgentTurnTest.LocalClassifier,
-    llm_opts: [max_tokens: 8]
+    llm_opts: [max_tokens: 8],
+    context: "Project workspace agent with delivery tracking.",
+    label_examples: 1
   )
 
   router(via: [:regex, :bag, :classifier, :llm_classifier])
@@ -149,6 +156,15 @@ defmodule SpectreFullAgentTurnTest.Agent do
       via: [:regex],
       cache: false do
       run(:silent)
+    end
+
+    flow :delivery do
+      on :TRACK_DELIVERY,
+        embedding: ["where is my delivery?", "track my package"],
+        via: [:llm_classifier],
+        cache: false do
+        reply(:delivery_status, renderer: {SpectreFullAgentTurnTest.Renderer, :render})
+      end
     end
   end
 
@@ -219,6 +235,30 @@ defmodule SpectreFullAgentTurnTest do
     assert prompt =~ "PORTFOLIO"
     assert Keyword.fetch!(classifier_opts, :purpose) == :classifier
     assert Keyword.fetch!(classifier_opts, :max_tokens) == 8
+  end
+
+  test "routes a nested flow through the full agent and exposes its classifier context" do
+    state = %State{current_flow: :delivery}
+
+    assert {:ok, nested_turn} = turn("track classified delivery", state: state)
+    assert {:reply, nested_result} = nested_turn.decision
+    assert nested_result.route.label == :TRACK_DELIVERY
+    assert nested_result.route.flow == :delivery
+    assert nested_result.route.rule.flow_path == [:workspace, :delivery]
+    assert nested_result.route.strategy == :llm_classifier
+
+    assert nested_result.reply_text ==
+             "reply:delivery_status:track classified delivery"
+
+    assert_receive {:full_agent_local_classifier, "track classified delivery"}
+    assert_receive {:full_agent_llm_classifier, prompt, classifier_opts}
+    assert prompt =~ "workspace/"
+    assert prompt =~ "  delivery/\n    TRACK_DELIVERY — e.g. \"where is my delivery?\""
+    refute prompt =~ "track my package"
+    assert prompt =~ "agent context: Project workspace agent with delivery tracking."
+    assert prompt =~ "active flow: workspace/delivery"
+    refute Keyword.has_key?(classifier_opts, :context)
+    refute Keyword.has_key?(classifier_opts, :label_examples)
   end
 
   test "returns no_response for a routed handler with no visible output or effect" do

@@ -83,13 +83,15 @@ defmodule Spectre.Training.Dataset do
   defp collect_sources(labels, opts) do
     sources = sources(opts)
 
-    sources
-    |> Enum.reduce_while({:ok, []}, fn target, {:ok, rows} ->
-      case collect_entry(target, labels) do
-        {:ok, target_rows} -> {:cont, {:ok, rows ++ target_rows}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+    result =
+      Enum.reduce_while(sources, {:ok, []}, fn target, {:ok, rows} ->
+        case collect_entry(target, labels) do
+          {:ok, target_rows} -> {:cont, {:ok, Enum.reverse(target_rows, rows)}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    reverse_rows(result)
   end
 
   defp sources(opts) do
@@ -147,30 +149,36 @@ defmodule Spectre.Training.Dataset do
   @spec collect_jsonl_file(String.t(), MapSet.t(String.t())) :: {:ok, [row()]} | {:error, term()}
   defp collect_jsonl_file(path, labels) do
     with {:ok, text} <- File.read(path) do
-      text
-      |> dataset_lines()
-      |> Enum.reduce_while({:ok, []}, fn line, {:ok, rows} ->
-        collect_jsonl_line(line, rows, path, labels)
-      end)
-    end
-  end
+      result =
+        text
+        |> String.splitter("\n")
+        |> Enum.reduce_while({:ok, []}, fn line, {:ok, rows} ->
+          collect_jsonl_line(String.trim(line), rows, path, labels)
+        end)
 
-  @spec dataset_lines(String.t()) :: [String.t()]
-  defp dataset_lines(text) do
-    text
-    |> String.split("\n")
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
+      reverse_rows(result)
+    end
   end
 
   @spec collect_jsonl_line(String.t(), [row()], String.t(), MapSet.t(String.t())) ::
           {:cont, {:ok, [row()]}} | {:halt, {:error, term()}}
+  defp collect_jsonl_line("", rows, _path, _labels), do: {:cont, {:ok, rows}}
+  defp collect_jsonl_line("#" <> _comment, rows, _path, _labels), do: {:cont, {:ok, rows}}
+
   defp collect_jsonl_line(line, rows, path, labels) do
     case Jason.decode(line) do
-      {:ok, decoded} -> {:cont, {:ok, rows ++ normalize_source_row(decoded, labels)}}
-      {:error, reason} -> {:halt, {:error, {:invalid_jsonl_row, path, reason}}}
+      {:ok, decoded} ->
+        {:cont, {:ok, Enum.reverse(normalize_source_row(decoded, labels), rows)}}
+
+      {:error, reason} ->
+        {:halt, {:error, {:invalid_jsonl_row, path, reason}}}
     end
   end
+
+  @spec reverse_rows({:ok, [row()]} | {:error, term()}) ::
+          {:ok, [row()]} | {:error, term()}
+  defp reverse_rows({:ok, rows}), do: {:ok, Enum.reverse(rows)}
+  defp reverse_rows({:error, _reason} = error), do: error
 
   @spec normalize_source_row(term(), MapSet.t(String.t())) :: [row()]
   defp normalize_source_row(%{"text" => text} = source, labels) when is_binary(text) do
@@ -210,7 +218,12 @@ defmodule Spectre.Training.Dataset do
 
   @spec label_id(term()) :: String.t()
   defp label_id(nil), do: ""
-  defp label_id(label), do: label |> to_string() |> String.upcase()
+
+  defp label_id(label)
+       when is_atom(label) or is_binary(label) or is_integer(label) or is_float(label),
+       do: label |> to_string() |> String.upcase()
+
+  defp label_id(_label), do: ""
 
   @spec blank?(term()) :: boolean()
   defp blank?(nil), do: true
