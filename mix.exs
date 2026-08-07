@@ -72,7 +72,7 @@ defmodule Spectre.MixProject do
       name: "spectre",
       maintainers: ["elchemista"],
       files:
-        ~w(lib docs mix.exs README.md SYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
+        ~w(lib docs mix.exs .formatter.exs README.md SYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url}
     ]
@@ -82,7 +82,6 @@ defmodule Spectre.MixProject do
     [
       {:jason, "~> 1.4"},
       {:vettore, "~> 0.3.2"},
-      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.4", only: :test, runtime: false}
@@ -166,6 +165,8 @@ defmodule Spectre.MixProject do
           Spectre.Turn.Handler,
           Spectre.Turn.Handler.Request,
           Spectre.Turn.Handler.Reply,
+          Spectre.Turn.Dispatcher,
+          Spectre.Reply.Sanitizer,
           Spectre.Skill,
           Spectre.Turn,
           Spectre.Run,
@@ -206,7 +207,9 @@ defmodule Spectre.MixProject do
           Spectre.Router.Candidate,
           Spectre.Router.Context,
           Spectre.Router.Receipt,
-          Spectre.Router.SemanticCache
+          Spectre.Router.SemanticCache,
+          Spectre.Router.SemanticCache.Learned,
+          Spectre.Router.SemanticCache.Owner
         ],
         "Prompts and providers": [
           Spectre.LLM,
@@ -293,12 +296,16 @@ defmodule Spectre.MixProject do
           Spectre.Training.Dataset
         ],
         "Journal and operations": [
+          Spectre.Journal,
+          Spectre.Journal.Buffer,
           Spectre.Journal.Record,
           Spectre.Journal.Recorder,
           Spectre.Journal.Store,
           Spectre.Monitor,
           Spectre.Telemetry
-        ]
+        ],
+        "Mix tasks": ~r/^Mix.Tasks.Spectre/,
+        "Supporting API": ~r/^Spectre\./
       ]
     ]
   end

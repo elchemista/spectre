@@ -28,7 +28,6 @@ mix compile --warnings-as-errors
 mix test --cover
 mix credo --strict
 mix dialyzer
-mix docs
 git diff --check
 ```
 

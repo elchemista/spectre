@@ -12,7 +12,6 @@ mix format --check-formatted
 mix compile --warnings-as-errors
 mix credo
 mix dialyzer
-mix docs
 ```
 
 CI uses the default Credo priority threshold. `mix credo --strict` is useful

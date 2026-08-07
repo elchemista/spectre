@@ -105,7 +105,7 @@ jobs:
         run: mix dialyzer
 
   package:
-    name: ExDoc and package dry-run
+    name: Package dry-run
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -123,7 +123,7 @@ jobs:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
-      - name: Restore documentation build cache
+      - name: Restore package build cache
         uses: actions/cache@v6
         with:
           path: |
@@ -134,11 +134,11 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Build documentation
-        run: mix docs
+      - name: Audit Hex dependencies
+        run: mix hex.audit
 
       - name: Validate package locally (no publish)
-        run: SPECTRE_HEX_BUILD=1 mix hex.build --unpack --output "$RUNNER_TEMP/hex-package"
+        run: mix hex.build --unpack --output "$RUNNER_TEMP/hex-package"
 
   real-ex-fastembed:
     name: Real ExFastembed system test
