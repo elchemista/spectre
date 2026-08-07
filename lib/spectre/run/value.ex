@@ -60,12 +60,26 @@ defmodule Spectre.Run.Value do
   @spec encode(term()) :: {:ok, term()} | {:error, term()}
   def encode(value)
 
+  def encode(value) when is_binary(value) do
+    if String.valid?(value) and not String.contains?(value, <<0>>) do
+      {:ok, value}
+    else
+      {:ok, %{@tag => "binary", "value" => Base.encode64(value)}}
+    end
+  end
+
   def encode(value)
-      when is_nil(value) or is_boolean(value) or is_number(value) or is_binary(value),
+      when is_nil(value) or is_boolean(value) or is_number(value),
       do: {:ok, value}
 
   def encode(value) when is_atom(value) do
-    {:ok, %{@tag => "atom", "value" => Atom.to_string(value)}}
+    atom = Atom.to_string(value)
+
+    if jsonb_string?(atom) do
+      {:ok, %{@tag => "atom", "value" => atom}}
+    else
+      {:ok, %{@tag => "atom_binary", "value" => Base.encode64(atom)}}
+    end
   end
 
   def encode(%{__struct__: module} = value) do
@@ -151,6 +165,15 @@ defmodule Spectre.Run.Value do
 
   def decode(%{@tag => "atom", "value" => value}) when is_binary(value) do
     existing_atom(value)
+  end
+
+  def decode(%{@tag => "atom_binary", "value" => value}) when is_binary(value) do
+    with {:ok, atom} <- decode_base64(value, :invalid_encoded_run_atom),
+         do: existing_atom(atom)
+  end
+
+  def decode(%{@tag => "binary", "value" => value}) when is_binary(value) do
+    decode_base64(value, :invalid_encoded_run_binary)
   end
 
   def decode(%{@tag => "tuple", "values" => values}) when is_list(values) do
@@ -312,6 +335,16 @@ defmodule Spectre.Run.Value do
   rescue
     ArgumentError -> {:error, {:unknown_run_atom, value}}
   end
+
+  defp decode_base64(value, error) do
+    case Base.decode64(value) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, {error, value}}
+    end
+  end
+
+  defp jsonb_string?(value),
+    do: String.valid?(value) and not String.contains?(value, <<0>>)
 
   @spec load_module(String.t()) ::
           {:ok, module()} | {:error, {:unknown_run_module, String.t()}}

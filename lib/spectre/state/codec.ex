@@ -576,7 +576,13 @@ defmodule Spectre.State.Codec do
   end
 
   defp encode_value(value) when is_atom(value) do
-    {:ok, %{"$spectre" => "atom", "value" => Atom.to_string(value)}}
+    atom = Atom.to_string(value)
+
+    if jsonb_string?(atom) do
+      {:ok, %{"$spectre" => "atom", "value" => atom}}
+    else
+      {:ok, %{"$spectre" => "atom_binary", "value" => Base.encode64(atom)}}
+    end
   end
 
   defp encode_value(%DateTime{} = value) do
@@ -631,11 +637,14 @@ defmodule Spectre.State.Codec do
     existing_atom(value)
   end
 
+  defp decode_value(%{"$spectre" => "atom_binary", "value" => value})
+       when is_binary(value) do
+    with {:ok, atom} <- decode_base64(value, :invalid_encoded_atom),
+         do: existing_atom(atom)
+  end
+
   defp decode_value(%{"$spectre" => "binary", "value" => value}) when is_binary(value) do
-    case Base.decode64(value) do
-      {:ok, decoded} -> {:ok, decoded}
-      :error -> {:error, {:invalid_encoded_binary, value}}
-    end
+    decode_base64(value, :invalid_encoded_binary)
   end
 
   defp decode_value(%{"$spectre" => "datetime", "value" => value}) when is_binary(value) do
@@ -698,18 +707,19 @@ defmodule Spectre.State.Codec do
 
   @spec encode_list(list(), (term() -> {:ok, term()} | {:error, term()})) ::
           {:ok, list()} | {:error, term()}
-  defp encode_list(values, encoder) do
-    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, encoded} ->
-      case encoder.(value) do
-        {:ok, value} -> {:cont, {:ok, [value | encoded]}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
+  defp encode_list(values, encoder), do: encode_list(values, encoder, [])
+
+  defp encode_list([], _encoder, encoded), do: {:ok, Enum.reverse(encoded)}
+
+  defp encode_list([value | tail], encoder, encoded) do
+    case encoder.(value) do
+      {:ok, value} -> encode_list(tail, encoder, [value | encoded])
       {:error, _reason} = error -> error
     end
   end
+
+  defp encode_list(_improper_tail, _encoder, _encoded),
+    do: {:error, :improper_state_list}
 
   @spec decode_list(list(), (term() -> {:ok, term()} | {:error, term()})) ::
           {:ok, list()} | {:error, term()}
@@ -870,6 +880,16 @@ defmodule Spectre.State.Codec do
   rescue
     ArgumentError -> {:error, {:unknown_atom, value}}
   end
+
+  defp decode_base64(value, error) do
+    case Base.decode64(value) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, {error, value}}
+    end
+  end
+
+  defp jsonb_string?(value),
+    do: String.valid?(value) and not String.contains?(value, <<0>>)
 
   @spec value_shape(term()) :: term()
   defp value_shape(value) when is_atom(value), do: :atom
