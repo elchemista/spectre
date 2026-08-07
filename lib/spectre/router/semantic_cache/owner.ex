@@ -14,7 +14,9 @@ defmodule Spectre.Router.SemanticCache.Owner do
   @index_table Spectre.Router.SemanticCache.Learned
   @online_table Module.concat(Spectre.Router.SemanticCache.Learned, Online)
   @revision_table Module.concat(Spectre.Router.SemanticCache.Learned, Revisions)
-  @tables [@index_table, @online_table, @revision_table]
+  @source_table Module.concat(Spectre.Router.SemanticCache.Learned.Sources, Cache)
+  @embedding_table Module.concat(Spectre.Router.Plugs.EmbeddingSimilarity, Cache)
+  @tables [@index_table, @online_table, @revision_table, @source_table, @embedding_table]
 
   @table_specs %{
     @index_table => [
@@ -29,12 +31,29 @@ defmodule Spectre.Router.SemanticCache.Owner do
       :public,
       :set,
       :compressed,
-      read_concurrency: true
+      read_concurrency: true,
+      write_concurrency: true
     ],
     @revision_table => [
       :named_table,
       :public,
       :set,
+      write_concurrency: true
+    ],
+    @source_table => [
+      :named_table,
+      :public,
+      :set,
+      :compressed,
+      read_concurrency: true,
+      write_concurrency: true
+    ],
+    @embedding_table => [
+      :named_table,
+      :public,
+      :set,
+      :compressed,
+      read_concurrency: true,
       write_concurrency: true
     ]
   }

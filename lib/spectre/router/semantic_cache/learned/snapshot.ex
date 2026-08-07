@@ -56,7 +56,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Snapshot do
       Enum.reduce(entries, {0, 0, []}, fn entry, {loaded, skipped, errors} ->
         case load_entry(agent, entry, opts) do
           {:ok, row} ->
-            Online.put_row(row)
+            Online.put_row(row, opts)
             {loaded + 1, skipped, errors}
 
           {:skip, reason} ->

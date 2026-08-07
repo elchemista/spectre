@@ -493,7 +493,7 @@ defmodule Spectre.Router.LLMClassifier do
     end
   end
 
-  @spec normalize_label(term(), [atom()]) :: {:ok, atom()}
+  @spec normalize_label(term(), [atom()]) :: {:ok, atom()} | {:error, term()}
   defp normalize_label(text, labels) do
     normalized = text |> clean_model_label() |> canonical_label()
 

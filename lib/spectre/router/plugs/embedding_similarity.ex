@@ -20,7 +20,11 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
   alias Spectre.Provider.Failure
   alias Spectre.Router.Candidate
   alias Spectre.Router.Context
+  alias Spectre.Router.SemanticCache.Owner
   alias Spectre.Router.Support
+
+  @example_cache_table Module.concat(__MODULE__, Cache)
+  @default_example_cache_capacity 2_048
 
   @impl Spectre.Router.Plug
   def init(opts), do: opts
@@ -64,7 +68,7 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
     scored =
       rule.embedding
       |> Enum.flat_map(fn example ->
-        case embed(example, opts) do
+        case embed_example(example, opts) do
           {:ok, vector} -> [{example, Math.cosine(query, vector)}]
           {:error, _reason} -> []
         end
@@ -110,6 +114,99 @@ defmodule Spectre.Router.Plugs.EmbeddingSimilarity do
          ) do
       {:ok, vector} when is_list(vector) -> {:ok, vector}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp embed_example(text, opts) do
+    if Keyword.get(opts, :embedding_example_cache?, true) do
+      key = {embedding_cache_identity(opts), text}
+
+      case cached_embedding(key) do
+        {:ok, vector} ->
+          {:ok, vector}
+
+        :miss ->
+          text |> embed(opts) |> cache_example_result(key, opts)
+      end
+    else
+      embed(text, opts)
+    end
+  end
+
+  defp cache_example_result({:ok, vector} = result, key, opts) do
+    cache_embedding(key, vector, opts)
+    result
+  end
+
+  defp cache_example_result({:error, _reason} = error, _key, _opts), do: error
+
+  defp embedding_cache_identity(opts) do
+    {
+      Keyword.get(opts, :spectre_agent),
+      Keyword.get(opts, :embedding),
+      Keyword.get(opts, :embedding_model),
+      Keyword.get(opts, :embedding_cache_namespace)
+    }
+  end
+
+  defp cached_embedding(key) do
+    case embedding_cache_table() do
+      {:ok, table} ->
+        case :ets.lookup(table, key) do
+          [{^key, vector, _inserted_at}] -> {:ok, vector}
+          [] -> :miss
+        end
+
+      {:error, _reason} ->
+        :miss
+    end
+  end
+
+  defp cache_embedding(key, vector, opts) do
+    case embedding_cache_table() do
+      {:ok, table} ->
+        :ets.insert_new(table, {key, vector, System.unique_integer([:positive, :monotonic])})
+        enforce_example_cache_capacity(table, example_cache_capacity(opts))
+
+      {:error, _reason} ->
+        :ok
+    end
+
+    :ok
+  end
+
+  defp embedding_cache_table do
+    Owner.ensure_table(@example_cache_table, [
+      :named_table,
+      :public,
+      :set,
+      :compressed,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
+  end
+
+  defp enforce_example_cache_capacity(_table, :unlimited), do: :ok
+
+  defp enforce_example_cache_capacity(table, capacity) do
+    overflow = :ets.info(table, :size) - capacity
+
+    if overflow > 0 do
+      table
+      |> :ets.tab2list()
+      |> Enum.sort_by(fn {_key, _vector, inserted_at} -> inserted_at end)
+      |> Enum.take(overflow)
+      |> Enum.each(fn {key, _vector, _inserted_at} -> :ets.delete(table, key) end)
+    end
+
+    :ok
+  end
+
+  defp example_cache_capacity(opts) do
+    case Keyword.get(opts, :embedding_example_cache_capacity, @default_example_cache_capacity) do
+      :unlimited -> :unlimited
+      value when is_integer(value) and value > 0 -> value
+      _invalid -> @default_example_cache_capacity
     end
   end
 

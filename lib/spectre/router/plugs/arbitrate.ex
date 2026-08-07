@@ -121,6 +121,16 @@ defmodule Spectre.Router.Plugs.Arbitrate do
           {:ok, route} ->
             finish_llm_route(context, route, visible_rules)
 
+          {:clarify, text} ->
+            finish_llm_clarification(context, text, :llm_rearbitration_clarified)
+
+          {:llm, _arbitration} ->
+            finish_llm_clarification(
+              context,
+              "Please rephrase your request.",
+              :llm_rearbitration_unresolved
+            )
+
           other ->
             {:error, {:invalid_llm_arbitration_result, other}}
         end
@@ -146,6 +156,17 @@ defmodule Spectre.Router.Plugs.Arbitrate do
      |> Context.clear_semantic_cache_query_embedding()
      |> Context.put_route(route)
      |> Context.put_trace({:llm_arbitration_skipped, reason})
+     |> Context.halt()}
+  end
+
+  defp finish_llm_clarification(%Context{} = context, text, reason) do
+    route = clarify_route(context, text)
+
+    {:cont,
+     context
+     |> Context.clear_semantic_cache_query_embedding()
+     |> Context.put_route(route)
+     |> Context.put_trace({reason, text})
      |> Context.halt()}
   end
 
@@ -449,6 +470,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   defp call_arbitrator(%Arbitration{} = arbitration, opts) do
     {module, arbitrator_opts} = arbitrator(opts)
     merged = Keyword.merge(arbitrator_opts, opts)
+    _loaded? = Code.ensure_loaded?(module)
 
     if function_exported?(module, :explain, 2) do
       module.explain(arbitration, merged)

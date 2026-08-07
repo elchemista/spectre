@@ -59,7 +59,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @spec lookup_with_metadata(String.t(), keyword()) ::
           {:ok, map(), map()} | {:error, term(), map()}
   def lookup_with_metadata(text, opts) when is_binary(text) and is_list(opts) do
-    with {:ok, rows} <- rows(opts),
+    with {:ok, rows} <- rows(Keyword.put(opts, :semantic_cache_runtime_lookup?, true)),
          [_ | _] <- rows do
       if Keyword.get(opts, :semantic_search?, false) do
         Index.search(text, rows, opts)
@@ -107,7 +107,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
           updated_at: now
         })
 
-      Online.put_row(row)
+      Online.put_row(row, opts)
       Online.bump_revision(agent)
       _index_status = warm_index(opts)
       {:ok, row}
@@ -201,7 +201,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
         |> Map.put(:updated_at, DateTime.utc_now())
         |> put_metadata(:verified_at, DateTime.utc_now())
 
-      Online.put_row(updated)
+      Online.put_row(updated, opts)
       Online.bump_revision(agent)
       _index_status = warm_index(opts)
       {:ok, updated}
@@ -240,7 +240,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
         |> apply_example_verified(attrs, now)
         |> Map.put(:updated_at, now)
 
-      Online.put_row(updated)
+      Online.put_row(updated, opts)
       Online.bump_revision(agent)
       _index_status = warm_index(opts)
       {:ok, updated}
@@ -350,7 +350,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
         |> Map.put(:updated_at, now)
         |> put_metadata(:verified_at, now)
 
-      Online.put_row(updated)
+      Online.put_row(updated, opts)
       Online.bump_revision(agent)
       _index_status = warm_index(opts)
       {:ok, updated}

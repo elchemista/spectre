@@ -15,11 +15,15 @@ defmodule Spectre.Router.SemanticCache.Learned.Online do
 
   @online_table __MODULE__
   @revision_table Spectre.Router.SemanticCache.Learned.Revisions
+  @default_online_capacity 1_000
 
   @doc "Stores or replaces one online row under its agent and id."
-  @spec put_row(Learned.row()) :: :ok
-  def put_row(%{agent: agent, id: id} = row) do
+  @spec put_row(Learned.row(), keyword()) :: :ok
+  def put_row(row, opts \\ [])
+
+  def put_row(%{agent: agent, id: id} = row, opts) when is_list(opts) do
     :ets.insert(online_table(), {{agent, id}, row})
+    enforce_capacity(agent, opts)
     :ok
   end
 
@@ -44,8 +48,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Online do
   def rows(agent, opts) do
     labels = opts |> cacheable_rules() |> Map.new(&{&1.label, true})
 
-    online_table()
-    |> :ets.tab2list()
+    agent_entries(agent)
     |> Enum.flat_map(fn
       {{^agent, _id}, %{label: label} = row} ->
         if Map.has_key?(labels, label) and usable_row?(row, opts), do: [row], else: []
@@ -58,8 +61,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Online do
   @doc "Finds the agent's online row with the given normalized text, or nil."
   @spec find_by_normalized(module(), String.t()) :: Learned.row() | nil
   def find_by_normalized(agent, normalized) do
-    online_table()
-    |> :ets.tab2list()
+    agent_entries(agent)
     |> Enum.find_value(fn
       {{^agent, _id}, %{normalized_text: ^normalized} = row} -> row
       _other -> nil
@@ -87,13 +89,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Online do
   @doc "Deletes every online row of one agent."
   @spec clear_rows(module()) :: :ok
   def clear_rows(agent) do
-    online_table()
-    |> :ets.tab2list()
-    |> Enum.each(fn
-      {{^agent, id}, _row} -> :ets.delete(@online_table, {agent, id})
-      _other -> :ok
-    end)
-
+    :ets.match_delete(online_table(), {{agent, :_}, :_})
     :ok
   end
 
@@ -118,7 +114,8 @@ defmodule Spectre.Router.SemanticCache.Learned.Online do
       :public,
       :set,
       :compressed,
-      read_concurrency: true
+      read_concurrency: true,
+      write_concurrency: true
     ])
   end
 
@@ -136,4 +133,49 @@ defmodule Spectre.Router.SemanticCache.Learned.Online do
   defp usable_row?(row, opts) do
     row.verified? or Keyword.get(opts, :semantic_cache_include_unverified?, false)
   end
+
+  defp agent_entries(agent),
+    do: :ets.match_object(online_table(), {{agent, :_}, :_})
+
+  defp enforce_capacity(agent, opts) do
+    case online_capacity(opts) do
+      :unlimited ->
+        :ok
+
+      capacity ->
+        entries = agent_entries(agent)
+
+        entries
+        |> Enum.sort_by(
+          fn {{_agent, id}, row} ->
+            {timestamp_order(Map.get(row, :updated_at)),
+             timestamp_order(Map.get(row, :inserted_at)), id}
+          end,
+          :desc
+        )
+        |> Enum.drop(capacity)
+        |> Enum.each(fn {{^agent, id}, _row} -> :ets.delete(online_table(), {agent, id}) end)
+    end
+  end
+
+  defp online_capacity(opts) do
+    configured =
+      case Application.get_env(:spectre, :semantic_cache, []) do
+        config when is_list(config) ->
+          Keyword.get(config, :online_capacity, @default_online_capacity)
+
+        _other ->
+          @default_online_capacity
+      end
+
+    case Keyword.get(opts, :semantic_cache_online_capacity, configured) do
+      :unlimited -> :unlimited
+      value when is_integer(value) and value > 0 -> value
+      _invalid -> @default_online_capacity
+    end
+  end
+
+  defp timestamp_order(%DateTime{} = value), do: DateTime.to_unix(value, :microsecond)
+  defp timestamp_order(value) when is_integer(value), do: value
+  defp timestamp_order(_value), do: 0
 end

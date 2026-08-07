@@ -106,6 +106,21 @@ defmodule SpectreRouterArbitrationContractTest do
     assert with_unknown_rule.route.label == :UNKNOWN
     assert with_unknown_rule.route.handler == {:reply, :UNKNOWN, []}
 
+    assert {:cont, unresolved} =
+             base
+             |> with_opts(
+               arbitrator: SpectreRouterArbitrationContractTest.DecideOnlyArbitrator,
+               custom_decision: :llm,
+               llm_classifier?: true,
+               model: fn _prompt, _opts -> {:ok, "ROUTE"} end
+             )
+             |> Arbitrate.call([])
+
+    assert unresolved.halted?
+    assert unresolved.route.label == :unknown
+    assert unresolved.route.raw == "Please rephrase your request."
+    assert {:llm_rearbitration_unresolved, "Please rephrase your request."} in unresolved.traces
+
     for {extra_opts, expected_reason} <- [
           {[llm_classifier?: false], :llm_classifier_disabled},
           {[llm_classifier?: true], :missing_llm_classifier_model},
@@ -191,7 +206,7 @@ defmodule SpectreRouterArbitrationContractTest do
       assert is_list(assigns.evidence)
     end
 
-    assert {:error, {:invalid_llm_arbitration_result, {:clarify, _text}}} =
+    assert {:cont, clarified} =
              context("route this request", [rule(:ROUTE)])
              |> with_opts(
                arbitrator: SpectreRouterArbitrationContractTest.LLMArbitrator,
@@ -200,6 +215,10 @@ defmodule SpectreRouterArbitrationContractTest do
                model: fn _prompt, _opts -> {:ok, "ROUTE"} end
              )
              |> Arbitrate.call([])
+
+    assert clarified.halted?
+    assert clarified.route.label == :unknown
+    assert clarified.route.raw == "invalid second decision"
 
     assert {:cont, failed} =
              context("route this request", [rule(:ROUTE)])

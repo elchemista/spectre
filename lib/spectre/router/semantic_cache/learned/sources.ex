@@ -10,14 +10,25 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
 
   import Spectre.Router.SemanticCache.Learned.Rows
 
+  require Logger
+
   alias Spectre.Router.SemanticCache.Learned
+  alias Spectre.Router.SemanticCache.Owner
   alias Spectre.Rule
+
+  @cache_table Module.concat(__MODULE__, Cache)
 
   @doc "Returns offline dataset rows when static rows and mirroring are enabled."
   @spec maybe_offline_dataset_rows(keyword()) :: {:ok, [Learned.row()]} | {:error, term()}
   def maybe_offline_dataset_rows(opts) do
     if static_rows_enabled?(opts) and mirror_training_dataset?(opts) do
-      offline_dataset_rows(opts)
+      case offline_dataset_rows(opts) do
+        {:error, _reason} = error ->
+          runtime_source_result(error, opts)
+
+        result ->
+          result
+      end
     else
       {:ok, []}
     end
@@ -33,11 +44,19 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
   @spec offline_dataset_rows(keyword()) :: {:ok, [Learned.row()]} | {:error, term()}
   def offline_dataset_rows(opts) do
     rules_by_label = opts |> cacheable_rules() |> index_rules_by_label()
+    entries = opts |> sources() |> Enum.reject(&(&1 in [true, false, nil]))
+    agent = Keyword.get(opts, :spectre_agent, :anonymous)
+    signature = source_signature(entries, rules_by_label, opts)
 
+    case cached_rows(agent, signature) do
+      {:hit, result} -> result
+      :miss -> collect_and_cache(agent, signature, entries, rules_by_label, opts)
+    end
+  end
+
+  defp collect_and_cache(agent, signature, entries, rules_by_label, opts) do
     result =
-      opts
-      |> sources()
-      |> Enum.reject(&(&1 in [true, false, nil]))
+      entries
       |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
         case collect_entry(entry, rules_by_label, opts) do
           {:ok, rows} -> {:cont, {:ok, Enum.reverse(rows, acc)}}
@@ -45,7 +64,18 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
         end
       end)
 
-    reverse_rows(result)
+    result = reverse_rows(result)
+
+    if match?({:error, _reason}, result) do
+      {:error, reason} = result
+
+      Logger.warning(
+        "spectre semantic-cache offline source unavailable reason=#{inspect(reason, limit: 20, printable_limit: 300)}"
+      )
+    end
+
+    cache_rows(agent, signature, result)
+    result
   end
 
   @doc "Builds rows from route examples declared on cacheable rules."
@@ -295,5 +325,70 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
     |> Map.drop(["embedding", :embedding, "vector", :vector])
     |> Enum.reject(fn {_key, value} -> is_binary(value) and byte_size(value) > 2_000 end)
     |> Map.new()
+  end
+
+  defp source_signature(entries, rules_by_label, opts) do
+    rules =
+      rules_by_label
+      |> Enum.sort_by(fn {label, _rules} -> label end)
+      |> Enum.map(fn {label, rules} ->
+        {label, Enum.map(rules, &Map.take(&1, [:label, :learn, :embedding, :bag, :jaro]))}
+      end)
+
+    {
+      Keyword.get(opts, :spectre_agent, :anonymous),
+      Enum.map(entries, &source_version/1),
+      rules
+    }
+  end
+
+  defp source_version(path) do
+    case File.stat(path) do
+      {:ok, stat} -> {path, stat.size, stat.mtime, stat.ctime, stat.inode, stat.type}
+      {:error, reason} -> {path, :error, reason}
+    end
+  end
+
+  defp cached_rows(agent, signature) do
+    case Owner.ensure_table(@cache_table, [
+           :named_table,
+           :public,
+           :set,
+           :compressed,
+           read_concurrency: true,
+           write_concurrency: true
+         ]) do
+      {:ok, table} ->
+        case :ets.lookup(table, agent) do
+          [{^agent, ^signature, result}] -> {:hit, result}
+          _missing_or_stale -> :miss
+        end
+
+      {:error, _reason} ->
+        :miss
+    end
+  end
+
+  defp runtime_source_result(error, opts) do
+    runtime? = Keyword.get(opts, :semantic_cache_runtime_lookup?, false)
+    strict? = Keyword.get(opts, :semantic_cache_source_strict?, false)
+
+    if runtime? and not strict?, do: {:ok, []}, else: error
+  end
+
+  defp cache_rows(agent, signature, result) do
+    case Owner.ensure_table(@cache_table, [
+           :named_table,
+           :public,
+           :set,
+           :compressed,
+           read_concurrency: true,
+           write_concurrency: true
+         ]) do
+      {:ok, table} -> :ets.insert(table, {agent, signature, result})
+      {:error, _reason} -> false
+    end
+
+    :ok
   end
 end

@@ -238,11 +238,15 @@ defmodule Spectre.Router.SemanticCache do
 
   def learn_eligibility(agent, %{label: label} = route) when is_atom(agent) do
     cond do
+      not valid_agent?(agent) -> {:skip, :invalid_agent}
       Map.get(route, :accepted?) != true -> {:skip, :route_not_accepted}
       Map.get(route, :strategy) in @cache_strategies -> {:skip, :semantic_cache_route}
       true -> rule_eligibility(agent, label, route)
     end
   end
+
+  def learn_eligibility(agent, _route) when not is_atom(agent) or is_nil(agent),
+    do: {:skip, :invalid_agent}
 
   def learn_eligibility(_agent, _route), do: {:skip, :missing_route}
 

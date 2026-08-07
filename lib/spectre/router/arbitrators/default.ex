@@ -201,6 +201,9 @@ defmodule Spectre.Router.Arbitrators.Default do
       fn -> agreement(candidates) end,
       fn -> confident_provider(candidates, :local_classifier) end,
       fn -> confident_provider(candidates, :embedding) end,
+      fn -> confident_provider(candidates, :semantic_cache_exact) end,
+      fn -> confident_provider(candidates, :semantic_cache_search) end,
+      fn -> confident_provider(candidates, :semantic_cache) end,
       fn -> confident_provider(candidates, :bag) end,
       fn -> confident_provider(candidates, :jaro) end
     ]
@@ -351,6 +354,8 @@ defmodule Spectre.Router.Arbitrators.Default do
   defp provider_rank(:local_classifier), do: 5
   defp provider_rank(:embedding), do: 4
   defp provider_rank(:semantic_cache), do: 3
+  defp provider_rank(:semantic_cache_exact), do: 3
+  defp provider_rank(:semantic_cache_search), do: 3
   defp provider_rank(:bag), do: 2
   defp provider_rank(:jaro), do: 2
   defp provider_rank(:regex), do: 1

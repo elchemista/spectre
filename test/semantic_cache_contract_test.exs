@@ -352,6 +352,50 @@ defmodule SpectreSemanticCacheContractTest do
     refute_embedding_call()
   end
 
+  test "online learned rows evict the oldest entry at the configured per-agent bound", %{
+    opts: opts
+  } do
+    bounded_opts = Keyword.put(opts, :semantic_cache_online_capacity, 2)
+
+    rows = [
+      %{
+        id: "bounded-oldest",
+        text: "bounded oldest",
+        label: :RIGHT,
+        verified?: true,
+        embedding: [1.0, 0.0],
+        updated_at: ~U[2026-01-01 00:00:00Z]
+      },
+      %{
+        id: "bounded-middle",
+        text: "bounded middle",
+        label: :RIGHT,
+        verified?: true,
+        embedding: [1.0, 0.0],
+        updated_at: ~U[2026-02-01 00:00:00Z]
+      },
+      %{
+        id: "bounded-newest",
+        text: "bounded newest",
+        label: :LEFT,
+        verified?: true,
+        embedding: [0.0, 1.0],
+        updated_at: ~U[2026-03-01 00:00:00Z]
+      }
+    ]
+
+    assert {:ok, %{loaded: 3, skipped: 0}} =
+             SemanticCache.load_snapshot(@agent, rows, bounded_opts)
+
+    assert {:ok, retained} = SemanticCache.examples(@agent, bounded_opts)
+
+    assert MapSet.new(Enum.map(retained, & &1.id)) ==
+             MapSet.new(["bounded-middle", "bounded-newest"])
+
+    assert {:error, :not_found} =
+             SemanticCache.get_example(@agent, "bounded-oldest", bounded_opts)
+  end
+
   defp opts do
     Keyword.merge(@agent.__spectre_config__(),
       spectre_agent: @agent,
