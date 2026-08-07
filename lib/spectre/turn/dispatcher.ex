@@ -105,19 +105,33 @@ defmodule Spectre.Turn.Dispatcher do
   """
   @spec dispatch(Turn.t(), module(), keyword()) :: {:ok, term()} | {:error, term()}
   def dispatch(%Turn{} = turn, handler, opts \\ []) when is_atom(handler) do
-    dispatch_decision(turn, handler, Keyword.merge(turn.opts, opts), @max_steps)
+    opts = Keyword.merge(turn.opts, opts)
+    dispatch_decision(turn, handler, opts, @max_steps)
   end
 
   @spec dispatch_decision(Turn.t(), module(), keyword(), non_neg_integer()) ::
           {:ok, term()} | {:error, term()}
-  defp dispatch_decision(%Turn{decision: decision}, _handler, _opts, 0),
-    do: {:error, {:dispatch_loop_exceeded, elem(decision, 0)}}
-
   defp dispatch_decision(%Turn{decision: {:reply, result}}, handler, opts, _steps),
     do: deliver_or_fallback(handler, result, opts)
 
   defp dispatch_decision(%Turn{decision: {:no_response, result}}, handler, opts, _steps),
     do: callback(handler, :no_response, [result, opts], fn -> {:ok, :no_response} end)
+
+  defp dispatch_decision(
+         %Turn{decision: {:completed, completion, result}},
+         handler,
+         opts,
+         _steps
+       ) do
+    callback(handler, :action_result, [completion, result, opts], fn ->
+      deliver_or_fallback(handler, result, opts)
+    end)
+  end
+
+  # Only policy resolution and effect execution consume the budget. A
+  # terminal decision reached by the final allowed transition is deliverable.
+  defp dispatch_decision(%Turn{decision: decision}, _handler, _opts, 0),
+    do: {:error, {:dispatch_loop_exceeded, elem(decision, 0)}}
 
   defp dispatch_decision(
          %Turn{decision: {:awaiting, %Awaitable{} = awaitable, result}} = turn,
@@ -155,17 +169,6 @@ defmodule Spectre.Turn.Dispatcher do
         deliver_or_fallback(handler, result, opts)
       end)
     end
-  end
-
-  defp dispatch_decision(
-         %Turn{decision: {:completed, completion, result}},
-         handler,
-         opts,
-         _steps
-       ) do
-    callback(handler, :action_result, [completion, result, opts], fn ->
-      deliver_or_fallback(handler, result, opts)
-    end)
   end
 
   @spec deliver_or_fallback(module(), Result.t(), keyword()) :: {:ok, term()} | {:error, term()}

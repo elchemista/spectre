@@ -70,10 +70,9 @@ defmodule Spectre.ActionGuards do
 
   @spec guard_matches?(map(), Effect.t()) :: boolean()
   defp guard_matches?(%{action: :all}, _effect), do: true
-  defp guard_matches?(%{action: action}, %Effect{name: action}), do: true
 
-  defp guard_matches?(%{action: action}, %Effect{name: name}),
-    do: to_string(action) == to_string(name)
+  defp guard_matches?(%{action: action}, %Effect{} = effect),
+    do: Action.matches_ref?(action, effect)
 
   @spec run_guards([map()], Action.t(), Spectre.Context.t() | map(), keyword()) :: outcome()
   defp run_guards(guards, action, ctx, opts) do

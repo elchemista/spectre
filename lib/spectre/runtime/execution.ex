@@ -188,7 +188,16 @@ defmodule Spectre.Execution do
 
   @spec suppress(State.t(), Effect.t(), Spectre.Context.t() | map(), String.t()) :: result()
   defp suppress(state, effect, ctx, reply_text) do
-    with {:ok, transition} <- Lifecycle.apply(state, {:cancel_pending, {:suppressed, effect.id}}) do
+    command =
+      case effect.run_id || lifecycle_run_id(ctx) do
+        run_id when is_binary(run_id) and run_id != "" ->
+          {:cancel_pending, {:suppressed, effect.id}, run_id}
+
+        _stateless ->
+          {:cancel_pending, {:suppressed, effect.id}}
+      end
+
+    with {:ok, transition} <- Lifecycle.apply(state, command) do
       cancelled = transition.effect || Effect.cancel(effect, {:suppressed, effect.id})
 
       {:ok,

@@ -1097,10 +1097,11 @@ defmodule Spectre.Agent do
       router: Module.get_attribute(module, :spectre_router) || [],
       rules: rules,
       policies: module |> Module.get_attribute(:spectre_policies) |> policy_map(),
-      after_actions: Module.get_attribute(module, :spectre_after_actions) || [],
+      after_actions:
+        module |> Module.get_attribute(:spectre_after_actions) |> reverse_attribute(),
       before_actions:
         module |> Module.get_attribute(:spectre_before_actions) |> reverse_attribute(),
-      protections: Module.get_attribute(module, :spectre_protections) || [],
+      protections: module |> Module.get_attribute(:spectre_protections) |> reverse_attribute(),
       injections: module |> Module.get_attribute(:spectre_injections) |> reverse_attribute(),
       skills: module |> Module.get_attribute(:spectre_skills) |> reverse_attribute(),
       requirements: module |> Module.get_attribute(:spectre_requirements) |> reverse_attribute(),

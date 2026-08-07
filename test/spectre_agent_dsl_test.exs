@@ -383,9 +383,9 @@ defmodule SpectreAgentDSLTest do
       """)
 
     assert agent.__spectre_protections__() == [
-             %{action: {:function, "MyApp.delete/1"}, policy: :confirm_function},
+             %{action: :delete_account, policy: :confirm_delete},
              %{action: {:al, "DELETE ACCOUNT"}, policy: :confirm_al},
-             %{action: :delete_account, policy: :confirm_delete}
+             %{action: {:function, "MyApp.delete/1"}, policy: :confirm_function}
            ]
   end
 

@@ -22,6 +22,11 @@ defmodule SpectreReplySanitizerTest do
     assert Sanitizer.sanitize("a<al>1</al>b<al>2</al>c") == "abc"
   end
 
+  test "Unicode case folding never shifts block offsets and wrapper tags ignore case" do
+    assert Sanitizer.sanitize("İstanbul <THINK>gizli</tHiNk> cevap") == "İstanbul  cevap"
+    assert Sanitizer.sanitize("<RePlY>Città già pronta</rEpLy>") == "Città già pronta"
+  end
+
   test "unterminated blocks are left alone" do
     assert Sanitizer.sanitize("hello <al>dangling") == "hello <al>dangling"
   end

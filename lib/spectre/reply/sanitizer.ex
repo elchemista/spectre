@@ -53,13 +53,14 @@ defmodule Spectre.Reply.Sanitizer do
   # repetitions, without regex backtracking on adversarial input.
   @spec strip_between(String.t(), String.t(), String.t()) :: String.t()
   defp strip_between(text, open, close) do
-    lower = String.downcase(text)
-
-    with {start, _open_size} <- :binary.match(lower, open),
-         search_from = start + byte_size(open),
-         {relative_stop, close_size} <-
-           :binary.match(binary_part(lower, search_from, byte_size(lower) - search_from), close) do
-      stop = search_from + relative_stop + close_size
+    # Regex indexes refer to the original binary. Searching a downcased copy
+    # and slicing the original is unsafe because Unicode case folding can
+    # change byte length (for example, "İ" becomes "i̇"). The patterns are
+    # escaped literals, so this remains a bounded, non-backtracking search.
+    with {start, open_size} <- literal_match(text, open),
+         search_from = start + open_size,
+         {close_start, close_size} <- literal_match(text, close, search_from) do
+      stop = close_start + close_size
       before_part = binary_part(text, 0, start)
       after_part = binary_part(text, stop, byte_size(text) - stop)
       strip_between(before_part <> after_part, open, close)
@@ -71,12 +72,19 @@ defmodule Spectre.Reply.Sanitizer do
   @spec strip_tags(String.t(), [String.t()]) :: String.t()
   defp strip_tags(text, tags) do
     Enum.reduce(tags, text, fn tag, acc ->
-      acc
-      |> String.replace("<#{tag}>", "")
-      |> String.replace("</#{tag}>", "")
-      |> String.replace("<#{String.upcase(tag)}>", "")
-      |> String.replace("</#{String.upcase(tag)}>", "")
+      Regex.replace(Regex.compile!("</?#{Regex.escape(tag)}\\s*>", "iu"), acc, "")
     end)
+  end
+
+  @spec literal_match(String.t(), String.t(), non_neg_integer()) ::
+          {non_neg_integer(), non_neg_integer()} | :nomatch
+  defp literal_match(text, literal, offset \\ 0) do
+    regex = Regex.compile!(Regex.escape(literal), "iu")
+
+    case Regex.run(regex, text, return: :index, offset: offset) do
+      [{start, size}] -> {start, size}
+      nil -> :nomatch
+    end
   end
 
   @spec strip_control_lines(String.t(), [String.t()]) :: String.t()
