@@ -1,12 +1,5 @@
 defmodule Spectre.Instance.Deliveries do
-  @moduledoc """
-  Proactive-delivery ledger for `Spectre.Instance`.
-
-  Normalizes and validates delivery consents, policies and receipts, and
-  commits their transitions into the canonical `:correlations` section with
-  the corresponding delivery events. Committed events are returned unrouted;
-  the Instance owns feeding them back into the Run scheduler.
-  """
+  @moduledoc false
 
   alias Spectre.AgentRef
   alias Spectre.Instance.Commit
@@ -155,16 +148,28 @@ defmodule Spectre.Instance.Deliveries do
     end
   end
 
-  @doc "Applies a transport outcome to an authorized receipt."
+  @doc "Re-authorizes a deferred/digest receipt or applies a transport outcome."
   @spec update_receipt(DeliveryReceipt.t(), atom(), term()) ::
           {:ok, DeliveryReceipt.t()} | {:error, term()}
-  def update_receipt(receipt, :delivered, external_receipt),
-    do: Delivery.delivered(receipt, external_receipt)
+  def update_receipt(receipt, outcome, detail), do: update_receipt(receipt, outcome, detail, [])
 
-  def update_receipt(receipt, :failed, reason),
+  @spec update_receipt(DeliveryReceipt.t(), atom(), term(), keyword()) ::
+          {:ok, DeliveryReceipt.t()} | {:error, term()}
+  def update_receipt(receipt, :authorized, _detail, opts),
+    do: Delivery.authorized(receipt, Keyword.get(opts, :now, System.system_time(:millisecond)))
+
+  def update_receipt(receipt, :delivered, external_receipt, opts),
+    do:
+      Delivery.delivered(
+        receipt,
+        external_receipt,
+        Keyword.get(opts, :now, System.system_time(:millisecond))
+      )
+
+  def update_receipt(receipt, :failed, reason, _opts),
     do: Delivery.failed(receipt, reason)
 
-  def update_receipt(_receipt, outcome, _detail),
+  def update_receipt(_receipt, outcome, _detail, _opts),
     do: {:error, {:invalid_delivery_outcome, outcome}}
 
   @doc """
@@ -329,10 +334,11 @@ defmodule Spectre.Instance.Deliveries do
   defp validate_delivery_receipt_transition(receipt, receipt), do: :ok
 
   defp validate_delivery_receipt_transition(
-         %DeliveryReceipt{status: :authorized} = current,
-         %DeliveryReceipt{status: status} = next
+         %DeliveryReceipt{status: current_status} = current,
+         %DeliveryReceipt{status: next_status} = next
        )
-       when status in [:delivered, :failed] do
+       when (current_status == :authorized and next_status in [:delivered, :failed]) or
+              (current_status in [:deferred, :digest] and next_status == :authorized) do
     immutable = [
       :id,
       :event_id,
@@ -343,7 +349,6 @@ defmodule Spectre.Instance.Deliveries do
       :consent_id,
       :dedupe_key,
       :decided_at,
-      :not_before,
       :metadata
     ]
 

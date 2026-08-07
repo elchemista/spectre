@@ -58,6 +58,8 @@ defmodule Spectre.Instance do
   @default_max_runs 256
   @default_max_tombstones 256
   @default_max_operation_runners 8
+  @default_terminal_loop_retention 256
+  @default_correlation_retention 1_024
   @operation_event_limit 512
 
   @type option ::
@@ -77,6 +79,8 @@ defmodule Spectre.Instance do
           | {:checkpoint_mode, :async | :manual}
           | {:runner_supervisor, GenServer.server()}
           | {:max_operation_runners, pos_integer()}
+          | {:operation_terminal_loop_retention, non_neg_integer() | :unlimited}
+          | {:operation_correlation_retention, non_neg_integer() | :unlimited}
 
   @doc false
   @spec child_spec(keyword()) :: Supervisor.child_spec()
@@ -371,8 +375,14 @@ defmodule Spectre.Instance do
     )
   end
 
-  @doc "Records the transport outcome for a previously authorized receipt."
-  @spec record_delivery(GenServer.server(), String.t(), :delivered | :failed, term(), keyword()) ::
+  @doc "Re-authorizes a deferred/digest receipt or records its transport outcome."
+  @spec record_delivery(
+          GenServer.server(),
+          String.t(),
+          :authorized | :delivered | :failed,
+          term(),
+          keyword()
+        ) ::
           {:ok, DeliveryReceipt.t()} | {:error, term()}
   def record_delivery(server, receipt_id, outcome, detail, opts \\ []) do
     GenServer.call(
@@ -457,6 +467,28 @@ defmodule Spectre.Instance do
              Keyword.get(opts, :max_operation_runners, @default_max_operation_runners)
            ),
          base_opts <- base_opts(opts, instance_ref),
+         {:ok, terminal_loop_retention} <-
+           instance_retention(
+             first_configured([
+               {opts, :operation_terminal_loop_retention},
+               {base_opts, :operation_terminal_loop_retention}
+             ]),
+             :operation_terminal_loop_retention,
+             @default_terminal_loop_retention
+           ),
+         {:ok, correlation_retention} <-
+           instance_retention(
+             first_configured([
+               {opts, :operation_correlation_retention},
+               {base_opts, :operation_correlation_retention}
+             ]),
+             :operation_correlation_retention,
+             @default_correlation_retention
+           ),
+         base_opts <-
+           base_opts
+           |> Keyword.put(:operation_terminal_loop_retention, terminal_loop_retention)
+           |> Keyword.put(:operation_correlation_retention, correlation_retention),
          {:ok, checkpoint_store} <- Checkpoint.store_config(agent, opts, base_opts),
          {:ok, checkpoint_mode} <- Checkpoint.mode(opts, checkpoint_store),
          {:ok, state} <- restore_initial_state(agent, opts, base_opts),
@@ -913,7 +945,7 @@ defmodule Spectre.Instance do
     with {:ok, receipt} <- Deliveries.fetch_receipt(data, receipt_id),
          {:ok, loop, _control} <- Loops.operation_loop(data, receipt.loop_id),
          :ok <- Loops.authorize_loop(loop, opts),
-         {:ok, updated} <- Deliveries.update_receipt(receipt, outcome, detail),
+         {:ok, updated} <- Deliveries.update_receipt(receipt, outcome, detail, opts),
          {:ok, next} <- commit_delivery_receipt(data, loop, updated, opts) do
       {:reply, {:ok, updated}, next}
     else
@@ -1198,9 +1230,9 @@ defmodule Spectre.Instance do
              provenance: %{source: :operation_memory},
              transition: :operation_memory
            ) do
-      {:noreply, next}
+      {:noreply, arm_idle_timer(next)}
     else
-      _stale -> {:noreply, data}
+      _stale -> {:noreply, arm_idle_timer(data)}
     end
   end
 
@@ -1428,12 +1460,12 @@ defmodule Spectre.Instance do
   end
 
   defp dispatch_invocation(run, command, opts, projection, from, data) do
-    run = Runs.rebase_run(run, data.state)
-    data = Runs.put_run(data, run)
-
     with %Invocation{} = invocation <- run.waiting,
          false <- run_active?(data, run.id),
+         nil <- other_active_run(data, run.id),
          nil <- data.state_lock do
+      run = Runs.rebase_run(run, data.state)
+      data = Runs.put_run(data, run)
       runtime_opts = runtime_opts(data, opts, run.input)
       dispatch_id = Spectre.Identity.uuid7()
       capability = make_ref()
@@ -1494,13 +1526,25 @@ defmodule Spectre.Instance do
       nil ->
         {:reply, {:error, {:run_not_waiting_for_invocation, run.id}}, arm_idle_timer(data)}
 
+      %Boundary{} ->
+        {:reply, {:error, {:run_not_waiting_for_invocation, run.id}}, arm_idle_timer(data)}
+
       true ->
         {:reply, {:error, {:run_already_active, run.id}}, arm_idle_timer(data)}
+
+      {:instance_busy, active_run_id} ->
+        {:reply, {:error, {:instance_busy, active_run_id}}, arm_idle_timer(data)}
 
       %{} ->
         {:reply, {:error, :instance_state_locked}, arm_idle_timer(data)}
     end
   end
+
+  defp other_active_run(%{active: nil}, _run_id), do: nil
+  defp other_active_run(%{active: %{run_id: run_id}}, run_id), do: nil
+
+  defp other_active_run(%{active: active}, _run_id),
+    do: {:instance_busy, Map.get(active, :run_id)}
 
   defp spawn_invocation_worker(
          owner,
@@ -1616,45 +1660,50 @@ defmodule Spectre.Instance do
     case outcome do
       {:error, reason, %Run{} = run} ->
         current = Map.get(data.runs, run.id)
-        data = apply_returned_run(data, run, entry)
 
-        cond do
-          Runs.terminal_run?(run) ->
-            data
-            |> reply_caller(run.id, {:error, reason})
-            |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
-            |> Runs.record_terminal(run)
-            |> maybe_schedule()
-            |> arm_idle_timer()
+        case apply_returned_run(data, run, entry) do
+          {:ok, data} ->
+            cond do
+              Runs.terminal_run?(run) ->
+                data
+                |> reply_caller(run.id, {:error, reason})
+                |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
+                |> Runs.record_terminal(run)
+                |> maybe_schedule()
+                |> arm_idle_timer()
 
-          start_operation?(entry) ->
-            failed = Runs.terminalize_failed_run(run, reason)
+              start_operation?(entry) ->
+                failed = Runs.terminalize_failed_run(run, reason)
 
-            data
-            |> Runs.put_run(failed)
-            |> reply_caller(run.id, {:error, reason})
-            |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
-            |> Runs.record_terminal(failed)
-            |> maybe_schedule()
-            |> arm_idle_timer()
+                data
+                |> Runs.put_run(failed)
+                |> reply_caller(run.id, {:error, reason})
+                |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
+                |> Runs.record_terminal(failed)
+                |> maybe_schedule()
+                |> arm_idle_timer()
 
-          advanced_run?(current, run) ->
-            degraded = %{run | last_error: reason}
+              advanced_run?(current, run) ->
+                degraded = %{run | last_error: reason}
 
-            data
-            |> Runs.put_run(degraded)
-            |> reply_caller(run.id, {:error, reason})
-            |> tap(&emit(:run_move_degraded, &1, %{count: 1, run_id: run.id}))
-            |> maybe_finalize_degraded_run(degraded)
-            |> maybe_schedule()
-            |> arm_idle_timer()
+                data
+                |> Runs.put_run(degraded)
+                |> reply_caller(run.id, {:error, reason})
+                |> tap(&emit(:run_move_degraded, &1, %{count: 1, run_id: run.id}))
+                |> maybe_finalize_degraded_run(degraded)
+                |> maybe_schedule()
+                |> arm_idle_timer()
 
-          true ->
-            data
-            |> reply_caller(run.id, {:error, reason})
-            |> tap(&emit(:run_resume_rejected, &1, %{count: 1, run_id: run.id}))
-            |> maybe_schedule()
-            |> arm_idle_timer()
+              true ->
+                data
+                |> reply_caller(run.id, {:error, reason})
+                |> tap(&emit(:run_resume_rejected, &1, %{count: 1, run_id: run.id}))
+                |> maybe_schedule()
+                |> arm_idle_timer()
+            end
+
+          {:error, commit_reason} ->
+            fail_run_commit(data, run, commit_reason)
         end
 
       step ->
@@ -1681,21 +1730,24 @@ defmodule Spectre.Instance do
 
   defp apply_successful_step({:continue, %Run{} = run}, entry, data) do
     if entry.state_revision == data.state.revision or state_neutral_step?(entry, run) do
-      data =
-        data
-        |> apply_returned_run(run, entry)
-        |> maybe_record_started_conversation(entry, run)
+      case apply_returned_run(data, run, entry) do
+        {:ok, data} ->
+          data = maybe_record_started_conversation(data, entry, run)
 
-      continuation = %{
-        entry
-        | operation: :advance,
-          input: run.input,
-          state_revision: data.state.revision
-      }
+          continuation = %{
+            entry
+            | operation: :advance,
+              input: run.input,
+              state_revision: data.state.revision
+          }
 
-      data
-      |> enqueue_continuation(continuation, start_operation?(entry))
-      |> arm_idle_timer()
+          data
+          |> enqueue_continuation(continuation, start_operation?(entry))
+          |> arm_idle_timer()
+
+        {:error, reason} ->
+          fail_run_commit(data, run, reason)
+      end
     else
       reject_stale_step(data, entry, run)
     end
@@ -1705,14 +1757,19 @@ defmodule Spectre.Instance do
     run = Runs.step_run(step)
 
     if entry.state_revision == data.state.revision or state_neutral_step?(entry, run) do
-      data = apply_returned_run(data, run, entry)
-      data = reply_projection(data, entry, step)
-      data = maybe_finalize_reply(data, step)
-      data = if Runs.terminal_run?(run), do: Runs.record_terminal(data, run), else: data
+      case apply_returned_run(data, run, entry) do
+        {:ok, data} ->
+          data = reply_projection(data, entry, step)
+          data = maybe_finalize_reply(data, step)
+          data = if Runs.terminal_run?(run), do: Runs.record_terminal(data, run), else: data
 
-      data
-      |> maybe_schedule()
-      |> arm_idle_timer()
+          data
+          |> maybe_schedule()
+          |> arm_idle_timer()
+
+        {:error, reason} ->
+          fail_run_commit(data, run, reason)
+      end
     else
       reject_stale_step(data, entry, run)
     end
@@ -1754,10 +1811,22 @@ defmodule Spectre.Instance do
     }
 
     if next_state == data.state do
-      next
+      {:ok, next}
     else
       Commit.flow_state(next, next_state, run)
     end
+  end
+
+  defp fail_run_commit(data, %Run{} = run, reason) do
+    failed = Runs.terminalize_failed_run(%{run | state: data.state}, reason)
+
+    data
+    |> Runs.put_run(failed)
+    |> reply_caller(run.id, {:error, reason})
+    |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id, reason: reason}))
+    |> Runs.record_terminal(failed)
+    |> maybe_schedule()
+    |> arm_idle_timer()
   end
 
   defp reply_projection(data, %{internal?: true}, _step), do: data
@@ -2143,12 +2212,15 @@ defmodule Spectre.Instance do
   defp maybe_schedule_operations(data) do
     capacity? = map_size(data.operation_runners) < data.max_operation_runners
 
-    if not data.operation_scheduled and not :queue.is_empty(data.operation_ready) and capacity? do
-      send(self(), {:spectre, :operation_schedule})
-      %{data | operation_scheduled: true}
-    else
-      data
-    end
+    next =
+      if not data.operation_scheduled and not :queue.is_empty(data.operation_ready) and capacity? do
+        send(self(), {:spectre, :operation_schedule})
+        %{data | operation_scheduled: true}
+      else
+        data
+      end
+
+    arm_idle_timer(next)
   end
 
   defp maybe_queue_after_transition(data, loop, control) do
@@ -2497,22 +2569,26 @@ defmodule Spectre.Instance do
 
   defp materialize_start_loop_intents(data, parent, result, intents) do
     Enum.reduce_while(intents, {:ok, [], []}, fn intent, {:ok, started, already} ->
-      child_id = Keyword.fetch!(intent.opts, :id)
+      case Keyword.fetch(intent.opts, :id) do
+        {:ok, child_id} ->
+          case Loops.operation_loop(data, child_id) do
+            {:ok, existing, _control} ->
+              if started_by_same_intent?(existing, parent, intent) do
+                entry = %{intent_id: intent.intent_id, loop: existing}
+                {:cont, {:ok, started, [entry | already]}}
+              else
+                {:halt, {:error, {:duplicate_operational_loop, child_id}}}
+              end
 
-      case Loops.operation_loop(data, child_id) do
-        {:ok, existing, _control} ->
-          if started_by_same_intent?(existing, parent, intent) do
-            entry = %{intent_id: intent.intent_id, loop: existing}
-            {:cont, {:ok, started, [entry | already]}}
-          else
-            {:halt, {:error, {:duplicate_operational_loop, child_id}}}
+            {:error, :operation_loop_not_found} ->
+              case materialize_start_loop_intent(data, parent, result, intent) do
+                {:ok, child} -> {:cont, {:ok, [child | started], already}}
+                {:error, _reason} = error -> {:halt, error}
+              end
           end
 
-        {:error, :operation_loop_not_found} ->
-          case materialize_start_loop_intent(data, parent, result, intent) do
-            {:ok, child} -> {:cont, {:ok, [child | started], already}}
-            {:error, _reason} = error -> {:halt, error}
-          end
+        :error ->
+          {:halt, {:error, {:operation_start_loop_id_missing, intent.intent_id}}}
       end
     end)
     |> case do
@@ -2738,7 +2814,7 @@ defmodule Spectre.Instance do
 
     case Task.Supervisor.start_child(Spectre.Operation.TaskSupervisor, callback) do
       {:ok, _pid} ->
-        data
+        disarm_idle_timer(data)
 
       {:error, reason} ->
         send(
@@ -2747,7 +2823,7 @@ defmodule Spectre.Instance do
            {:error, {:memory_task_start_failed, reason}}}
         )
 
-        data
+        disarm_idle_timer(data)
     end
   end
 
@@ -2976,6 +3052,16 @@ defmodule Spectre.Instance do
 
   defp non_negative_integer(value),
     do: {:error, {:invalid_instance_max_tombstones, value}}
+
+  defp instance_retention(nil, _key, default), do: {:ok, default}
+  defp instance_retention(:unlimited, _key, _default), do: {:ok, :unlimited}
+
+  defp instance_retention(value, _key, _default)
+       when is_integer(value) and value >= 0,
+       do: {:ok, value}
+
+  defp instance_retention(value, key, _default),
+    do: {:error, {:invalid_instance_retention, key, value}}
 
   defp timeout(opts), do: Keyword.get(opts, :timeout, :timer.minutes(5))
 

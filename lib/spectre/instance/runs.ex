@@ -1,12 +1,5 @@
 defmodule Spectre.Instance.Runs do
-  @moduledoc """
-  Run bookkeeping for `Spectre.Instance`.
-
-  Validates worker receipts and returned Run lineage against the retained
-  owner copy, resolves Run ownership from public references, and maintains
-  the bounded retained-Run and tombstone windows. All functions are pure
-  over the private owner state.
-  """
+  @moduledoc false
 
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Invocation

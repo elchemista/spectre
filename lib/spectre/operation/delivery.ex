@@ -79,6 +79,12 @@ defmodule Spectre.Operation.Delivery do
     end
   end
 
+  @doc "Promotes a due deferred or digest receipt back to `:authorized`."
+  @spec authorized(Receipt.t(), non_neg_integer()) :: {:ok, Receipt.t()} | {:error, term()}
+  def authorized(%Receipt{} = receipt, at \\ System.system_time(:millisecond)) do
+    Receipt.transition(receipt, :authorized, nil, at)
+  end
+
   @doc """
   Marks an authorized receipt as delivered, recording the external receipt and time.
 

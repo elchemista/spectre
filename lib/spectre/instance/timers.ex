@@ -1,12 +1,5 @@
 defmodule Spectre.Instance.Timers do
-  @moduledoc """
-  Operational timer management for `Spectre.Instance`.
-
-  Owns the per-loop wait timers and per-attempt watchdog timers, including
-  the generation and fencing-token checks that drop stale firings. Timers
-  send canonical `{:spectre, ...}` messages to the calling Instance process,
-  so every function must run inside the owner.
-  """
+  @moduledoc false
 
   alias Spectre.Instance.Loops
   alias Spectre.Instance.State, as: InstanceState

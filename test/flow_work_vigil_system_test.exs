@@ -195,7 +195,8 @@ defmodule SpectreFlowWorkVigilSystemTest.Agent do
   operation(:fetch_example_page, {Operations, :fetch_page},
     input: :map,
     output: :map,
-    side_effect: :none
+    side_effect: :none,
+    retry: [max_attempts: 2, base_delay_ms: 0]
   )
 
   operation(:read_example_weather, {Operations, :read_weather},

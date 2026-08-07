@@ -1,12 +1,5 @@
 defmodule Spectre.Instance.Commit do
-  @moduledoc """
-  Canonical commit machinery for `Spectre.Instance`.
-
-  Applies validated section writes through `Spectre.Instance.Canonical`
-  snapshots, appends bounded operation events, records journal entries and
-  enqueues checkpoints. Committed events are returned to the caller, which
-  owns routing them into the Run scheduler.
-  """
+  @moduledoc false
 
   alias Spectre.AgentRef
   alias Spectre.Instance.Canonical
@@ -14,6 +7,7 @@ defmodule Spectre.Instance.Commit do
   alias Spectre.Instance.Loops
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Operation.Control
+  alias Spectre.Operation.Delivery.Receipt, as: DeliveryReceipt
   alias Spectre.Operation.Event, as: OperationEvent
   alias Spectre.Operation.Loop, as: OperationLoop
   alias Spectre.Run
@@ -70,8 +64,9 @@ defmodule Spectre.Instance.Commit do
     end
   end
 
-  @doc "Commits the Flow state advanced by a Run, raising on canonical failure."
-  @spec flow_state(InstanceState.t(), State.t(), Run.t()) :: InstanceState.t()
+  @doc "Commits the Flow state advanced by a Run without crashing the owning Instance."
+  @spec flow_state(InstanceState.t(), State.t(), Run.t()) ::
+          {:ok, InstanceState.t()} | {:error, term()}
   def flow_state(%InstanceState{} = data, %State{} = state, %Run{} = run) do
     case canonical_sections(data, %{flow: state},
            correlation_id: run.id,
@@ -79,8 +74,8 @@ defmodule Spectre.Instance.Commit do
            provenance: %{source: :flow, run_id: run.id},
            metadata: %{transition: :flow_state_committed}
          ) do
-      {:ok, next} -> next
-      {:error, reason} -> raise "canonical Flow commit failed: #{inspect(reason)}"
+      {:ok, next} -> {:ok, next}
+      {:error, reason} -> {:error, {:canonical_flow_commit_failed, reason}}
     end
   end
 
@@ -184,6 +179,8 @@ defmodule Spectre.Instance.Commit do
     writes =
       if events == [], do: writes, else: Map.put(writes, :events, append_events(data, events))
 
+    writes = prune_operational_state(data, writes)
+
     primary = hd(entries).loop
 
     with :ok <- validate_operation_events(data, events),
@@ -250,5 +247,136 @@ defmodule Spectre.Instance.Commit do
       revision: revision,
       causation_id: Keyword.get(opts, :causation_id)
     })
+  end
+
+  defp prune_operational_state(data, writes) do
+    section_maps =
+      Map.new([:work, :vigil, :directive], fn section ->
+        {section, Map.get(writes, section, Loops.canonical_value!(data, section))}
+      end)
+
+    section_maps = prune_terminal_loops(section_maps, terminal_loop_retention(data.base_opts))
+
+    retained_loops =
+      section_maps
+      |> Map.values()
+      |> Enum.reduce(%{}, &Map.merge(&2, &1))
+
+    retained_ids = retained_loops |> Map.keys() |> MapSet.new()
+
+    controls =
+      writes
+      |> Map.get(:control, Loops.canonical_value!(data, :control))
+      |> Map.take(MapSet.to_list(retained_ids))
+
+    correlations =
+      writes
+      |> Map.get(:correlations, Loops.canonical_value!(data, :correlations))
+      |> prune_correlations(retained_loops, correlation_retention(data.base_opts))
+
+    events =
+      writes
+      |> Map.get(:events, Loops.canonical_value!(data, :events))
+      |> prune_events(retained_ids)
+
+    writes
+    |> Map.merge(section_maps)
+    |> Map.put(:control, controls)
+    |> Map.put(:correlations, correlations)
+    |> Map.put(:events, events)
+  end
+
+  defp prune_terminal_loops(section_maps, :unlimited), do: section_maps
+
+  defp prune_terminal_loops(section_maps, limit) do
+    retained_terminal_ids =
+      section_maps
+      |> Map.values()
+      |> Enum.flat_map(&Map.values/1)
+      |> Enum.filter(&OperationLoop.terminal?/1)
+      |> Enum.sort_by(&{&1.updated_at, &1.id}, :desc)
+      |> Enum.take(limit)
+      |> MapSet.new(& &1.id)
+
+    Map.new(section_maps, fn {section, loops} ->
+      retained =
+        Map.reject(loops, fn {_id, loop} ->
+          OperationLoop.terminal?(loop) and not MapSet.member?(retained_terminal_ids, loop.id)
+        end)
+
+      {section, retained}
+    end)
+  end
+
+  defp prune_correlations(correlations, retained_loops, limit) do
+    retained_ids = retained_loops |> Map.keys() |> MapSet.new()
+    primary_correlation_ids = retained_loops |> Map.values() |> MapSet.new(& &1.correlation_id)
+
+    {loop_entries, other_entries} =
+      Enum.split_with(correlations, fn
+        {_key, %{loop_id: loop_id, loop_kind: kind, revision: revision}}
+        when is_binary(loop_id) and kind in [:work, :vigil, :directive] and
+               is_integer(revision) ->
+          true
+
+        _other ->
+          false
+      end)
+
+    {primary_entries, historical_entries} =
+      loop_entries
+      |> Enum.filter(fn {_key, correlation} ->
+        MapSet.member?(retained_ids, correlation.loop_id)
+      end)
+      |> Enum.split_with(fn {key, _correlation} ->
+        MapSet.member?(primary_correlation_ids, key)
+      end)
+
+    loop_entries = primary_entries ++ maybe_limit_correlations(historical_entries, limit)
+
+    other_entries =
+      Enum.reject(other_entries, fn
+        {_key, %DeliveryReceipt{loop_id: loop_id}} ->
+          not MapSet.member?(retained_ids, loop_id)
+
+        _other ->
+          false
+      end)
+
+    Map.new(other_entries ++ loop_entries)
+  end
+
+  defp maybe_limit_correlations(entries, :unlimited), do: entries
+
+  defp maybe_limit_correlations(entries, limit) do
+    entries
+    |> Enum.sort_by(fn {key, correlation} -> {correlation.revision, key} end, :desc)
+    |> Enum.take(limit)
+  end
+
+  defp prune_events(events, retained_ids) do
+    records =
+      events
+      |> Map.get(:records, [])
+      |> Enum.filter(&MapSet.member?(retained_ids, &1.loop_id))
+      |> Enum.take(Spectre.Instance.operation_event_limit())
+
+    record_ids = MapSet.new(records, & &1.id)
+    ids = events |> Map.get(:ids, %{}) |> Map.take(MapSet.to_list(record_ids))
+    %{records: records, ids: ids}
+  end
+
+  defp terminal_loop_retention(opts),
+    do: retention_limit(opts, :operation_terminal_loop_retention, 256)
+
+  defp correlation_retention(opts),
+    do: retention_limit(opts, :operation_correlation_retention, 1_024)
+
+  defp retention_limit(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      :unlimited -> :unlimited
+      value when is_integer(value) and value >= 0 -> value
+      _invalid -> default
+    end
   end
 end

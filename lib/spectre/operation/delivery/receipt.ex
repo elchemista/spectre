@@ -88,14 +88,15 @@ defmodule Spectre.Operation.Delivery.Receipt do
   end
 
   @doc """
-  Transitions an `:authorized` receipt to `:delivered` or `:failed`.
+  Re-authorizes a due `:deferred`/`:digest` receipt, or transitions an
+  `:authorized` receipt to `:delivered` or `:failed`.
 
   For `:delivered`, `detail` is stored as the external receipt and `at` as the
   delivery time; for `:failed`, `detail` becomes the failure reason. Repeating a
   transition with the same detail is idempotent. Returns `{:ok, receipt}` or
   `{:error, reason}` when the transition is not allowed from the current status.
   """
-  @spec transition(t(), :delivered | :failed, term(), non_neg_integer()) ::
+  @spec transition(t(), :authorized | :delivered | :failed, term(), non_neg_integer()) ::
           {:ok, t()} | {:error, term()}
   def transition(receipt, outcome, detail, at \\ System.system_time(:millisecond))
 
@@ -110,6 +111,26 @@ defmodule Spectre.Operation.Delivery.Receipt do
   def transition(%__MODULE__{status: :failed, reason: detail} = receipt, :failed, detail, _at),
     do: with(:ok <- validate(receipt), do: {:ok, receipt})
 
+  def transition(%__MODULE__{status: :authorized} = receipt, :authorized, _detail, _at),
+    do: with(:ok <- validate(receipt), do: {:ok, receipt})
+
+  def transition(
+        %__MODULE__{status: :deferred, not_before: not_before} = receipt,
+        :authorized,
+        _detail,
+        at
+      )
+      when is_integer(not_before) and is_integer(at) and at >= not_before do
+    updated = %{receipt | status: :authorized, reason: nil, not_before: nil}
+    with :ok <- validate(updated), do: {:ok, updated}
+  end
+
+  def transition(%__MODULE__{status: :digest} = receipt, :authorized, _detail, at)
+      when is_integer(at) and at >= receipt.decided_at do
+    updated = %{receipt | status: :authorized, reason: nil}
+    with :ok <- validate(updated), do: {:ok, updated}
+  end
+
   def transition(%__MODULE__{status: :authorized} = receipt, :delivered, detail, at)
       when is_integer(at) and at >= 0 do
     updated = %{receipt | status: :delivered, delivered_at: at, external_receipt: detail}
@@ -123,7 +144,7 @@ defmodule Spectre.Operation.Delivery.Receipt do
   end
 
   def transition(%__MODULE__{} = receipt, outcome, _detail, _at)
-      when outcome in [:delivered, :failed],
+      when outcome in [:authorized, :delivered, :failed],
       do: {:error, {:invalid_delivery_receipt_transition, receipt.status, outcome}}
 
   def transition(%__MODULE__{}, outcome, _detail, _at),

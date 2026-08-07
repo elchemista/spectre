@@ -1,11 +1,5 @@
 defmodule Spectre.Instance.Conversation do
-  @moduledoc """
-  Conversation correlation for `Spectre.Instance`.
-
-  Derives stable conversation tokens from input sources, records per
-  conversation activity, and resolves which retained Run at a policy
-  boundary owns a new lifecycle input.
-  """
+  @moduledoc false
 
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Run

@@ -338,8 +338,8 @@ defmodule Spectre.Operation.Runtime do
     end
   end
 
-  def runner_down(%Loop{} = loop, _control, _spec, _reason, _env),
-    do: {:error, {:loop_has_no_active_attempt, loop.id}}
+  def runner_down(%Loop{}, _control, _spec, _reason, _env),
+    do: {:error, :loop_has_no_active_attempt}
 
   defp next_request(
          %Loop{status: :reconciling, next_operation: %Request{} = request},

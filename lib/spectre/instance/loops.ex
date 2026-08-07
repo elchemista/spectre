@@ -1,11 +1,5 @@
 defmodule Spectre.Instance.Loops do
-  @moduledoc """
-  Committed operational-loop views for `Spectre.Instance`.
-
-  Reads Work, Vigil and Directive loops out of the canonical sections,
-  resolves selectors and caller visibility, and builds the reduced
-  environments handed to `Spectre.Operation.Runtime`.
-  """
+  @moduledoc false
 
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.State, as: InstanceState

@@ -125,7 +125,14 @@ defmodule SpectreOperationInstanceContractTest.Agent do
 
   operation(:fetch_page, {SpectreOperationInstanceContractTest.Operations, :fetch_page},
     input: :map,
-    output: :map
+    output: :map,
+    retry: [max_attempts: 2, base_delay_ms: 0, max_delay_ms: 0, retry_on: [:crash]]
+  )
+
+  operation(:no_retry_crash, {SpectreOperationInstanceContractTest.Operations, :crashable},
+    input: :map,
+    output: :map,
+    retry: [max_attempts: 1, retry_on: [:crash]]
   )
 
   operation(:flaky, {SpectreOperationInstanceContractTest.Operations, :flaky},
@@ -256,6 +263,7 @@ defmodule SpectreOperationInstanceContractTest.SingleOperationWork do
 
   uses_operation(:flaky)
   uses_operation(:crashable)
+  uses_operation(:no_retry_crash)
   uses_operation(:timeout_once)
   uses_operation(:progress)
   uses_operation(:remember)
@@ -362,11 +370,12 @@ defmodule SpectreOperationInstanceContractTest.Vigil do
   uses_operation(:observe)
 
   @impl true
-  def init(input, _context), do: {:ok, %{input: input, ready?: true}}
+  def init(input, _context),
+    do: {:ok, %{input: input, ready?: true, delay_ms: Map.get(input, :delay_ms, 100)}}
 
   @impl true
   def next(%{ready?: true, input: input}, _context), do: observe(:observe, input)
-  def next(%{ready?: false}, context), do: wait_for(100, context)
+  def next(%{ready?: false, delay_ms: delay_ms}, context), do: wait_for(delay_ms, context)
 
   @impl true
   def apply_result(state, _request, _result, _context),
@@ -735,6 +744,103 @@ defmodule SpectreOperationInstanceContractTest do
     send(new_worker, {:release_page, 7})
     assert {:ok, view} = eventually_loop(restored, ref, &(&1.status == :terminal))
     assert view.terminal_category == :completed
+  end
+
+  test "recovery obeys retry policy and terminalizes an exhausted crash attempt" do
+    subject = unique_subject("recovery-retry-policy")
+    instance = start_instance(subject: subject)
+
+    assert {:ok, ref, _view} =
+             Spectre.start_work(
+               instance,
+               @single_work,
+               %{operation: :no_retry_crash, value: :poisoned},
+               id: "no-retry-recovery-loop"
+             )
+
+    assert_receive {:crashable_attempt, old_attempt, old_runner}, 1_000
+    assert old_attempt.retry_number == 0
+    assert {:ok, checkpoint} = Spectre.checkpoint(instance)
+    assert :ok = stop_supervised({Instance, Instance.ref(instance).key})
+    refute Process.alive?(old_runner)
+
+    restored = start_instance(subject: subject, canonical_checkpoint: checkpoint)
+
+    refute_receive {:crashable_attempt, _attempt, _runner}, 100
+    assert {:ok, failed} = eventually_loop(restored, ref, &(&1.status == :terminal))
+    assert failed.terminal_category == :failed
+    assert failed.retries == 0
+  end
+
+  test "CheckpointStore kill-and-restore recovers an attempt and re-arms wait timers" do
+    {:ok, store} =
+      start_supervised(
+        {Agent, fn -> %{checkpoint: nil, revision: 0, behavior: :ok, writes: 0} end},
+        id: {:restart_checkpoint_store, System.unique_integer([:positive])}
+      )
+
+    subject = unique_subject("checkpoint-store-restart")
+
+    instance =
+      start_instance(
+        subject: subject,
+        checkpoint_store: {@store, [store: store]},
+        checkpoint_mode: :async
+      )
+
+    old_trace = Instance.trace_id(instance)
+
+    assert {:ok, work_ref, _view} =
+             Spectre.start_work(
+               instance,
+               @single_work,
+               %{operation: :crashable, value: :durable},
+               id: "stored-active-work"
+             )
+
+    assert_receive {:crashable_attempt, old_attempt, old_runner}, 1_000
+
+    assert {:ok, vigil_ref, _view} =
+             Spectre.register_vigil(
+               instance,
+               @vigil,
+               %{city: "Rome", delay_ms: 2_000},
+               id: "stored-timer-vigil"
+             )
+
+    assert_receive {:vigil_attempt, _initial_vigil_attempt, _initial_vigil_runner}, 1_000
+    assert {:ok, _waiting} = eventually_loop(instance, vigil_ref, &(&1.status == :waiting))
+
+    assert {:ok, persisted_revision} = Spectre.flush_checkpoint(instance, timeout: 2_000)
+    assert persisted_revision > 0
+    assert :ok = stop_supervised({Instance, Instance.ref(instance).key})
+    refute Process.alive?(old_runner)
+
+    restored =
+      start_instance(
+        subject: subject,
+        checkpoint_store: {@store, [store: store]},
+        checkpoint_mode: :async
+      )
+
+    refute Instance.trace_id(restored) == old_trace
+    assert_receive {:crashable_attempt, recovered_attempt, recovered_runner}, 1_000
+    assert recovered_attempt.retry_number == 1
+    assert recovered_attempt.id != old_attempt.id
+    assert recovered_attempt.fencing_token != old_attempt.fencing_token
+    assert recovered_attempt.epoch != old_attempt.epoch
+    assert recovered_runner != old_runner
+
+    assert {:ok, completed} = eventually_loop(restored, work_ref, &(&1.status == :terminal))
+    assert completed.terminal_category == :completed
+
+    assert_receive {:vigil_attempt, timer_attempt, _timer_runner}, 3_000
+    assert timer_attempt.number >= 2
+    assert {:ok, _waiting} = eventually_loop(restored, vigil_ref, &(&1.status == :waiting))
+
+    assert {:ok, restored_revision} = Spectre.flush_checkpoint(restored, timeout: 2_000)
+    assert restored_revision > persisted_revision
+    assert Agent.get(store, & &1.revision) == restored_revision
   end
 
   test "pending update recovery is atomic and never retries an unknown effect boundary" do
@@ -1616,10 +1722,20 @@ defmodule SpectreOperationInstanceContractTest do
                destination,
                [consent_required: false, mode: :digest],
                origin: :chat,
+               now: 10,
                dedupe_key: "digest"
              )
 
     assert digest.status == :digest
+
+    assert {:ok, digest_authorized} =
+             Spectre.record_delivery(instance, digest.id, :authorized, nil,
+               origin: :chat,
+               now: 10
+             )
+
+    assert digest_authorized.status == :authorized
+    assert is_nil(digest_authorized.reason)
 
     assert {:ok, deferred} =
              Spectre.authorize_delivery(
@@ -1634,6 +1750,33 @@ defmodule SpectreOperationInstanceContractTest do
 
     assert deferred.status == :deferred
     assert deferred.not_before == 60 * 60_000
+
+    assert {:error, {:invalid_delivery_receipt_transition, :deferred, :authorized}} =
+             Spectre.record_delivery(instance, deferred.id, :authorized, nil,
+               origin: :chat,
+               now: deferred.not_before - 1
+             )
+
+    assert {:ok, deferred_authorized} =
+             Spectre.record_delivery(instance, deferred.id, :authorized, nil,
+               origin: :chat,
+               now: deferred.not_before
+             )
+
+    assert deferred_authorized.status == :authorized
+    assert is_nil(deferred_authorized.not_before)
+
+    assert {:ok, deferred_delivered} =
+             Spectre.record_delivery(
+               instance,
+               deferred.id,
+               :delivered,
+               %{transport_id: "deferred-transport"},
+               origin: :chat,
+               now: deferred.not_before
+             )
+
+    assert deferred_delivered.status == :delivered
 
     assert {:ok, authorized} =
              Spectre.authorize_delivery(
@@ -1810,6 +1953,80 @@ defmodule SpectreOperationInstanceContractTest do
     assert revision > 0
   end
 
+  test "canonical retention bounds terminal loops, controls, correlations and events" do
+    instance =
+      start_instance(
+        operation_terminal_loop_retention: 2,
+        operation_correlation_retention: 1
+      )
+
+    terminal_ids = Enum.map(1..4, &"retained-terminal-#{&1}")
+
+    Enum.each(terminal_ids, fn id ->
+      assert {:ok, ref, _view} =
+               Spectre.start_work(instance, @completing_work, %{id: id}, id: id)
+
+      assert {:ok, completed} = eventually_loop(instance, ref, &(&1.status == :terminal))
+      assert completed.terminal_category == :completed
+    end)
+
+    assert {:ok, active_ref, _view} =
+             Spectre.start_work(instance, @waiting_work, %{value: :active},
+               id: "retained-active",
+               correlation_id: "retention-primary"
+             )
+
+    assert {:ok, _waiting} = eventually_loop(instance, active_ref, &(&1.status == :waiting))
+
+    Enum.each(1..3, fn cycle ->
+      assert {:ok, _paused} =
+               Spectre.pause_loop(instance, active_ref,
+                 command_id: "retention-pause-#{cycle}",
+                 correlation_id: "retention-control-#{cycle * 2 - 1}"
+               )
+
+      assert {:ok, _resumed} =
+               Spectre.resume_loop(instance, active_ref,
+                 command_id: "retention-resume-#{cycle}",
+                 correlation_id: "retention-control-#{cycle * 2}"
+               )
+
+      assert {:ok, _waiting} = eventually_loop(instance, active_ref, &(&1.status == :waiting))
+    end)
+
+    assert {:ok, checkpoint} = Spectre.checkpoint(instance)
+    assert {:ok, canonical} = Codec.decode(checkpoint)
+
+    assert :ok =
+             Spectre.Instance.Canonical.Validator.validate(canonical, Instance.ref(instance),
+               event_limit: Instance.operation_event_limit()
+             )
+
+    assert {:ok, work} = Canonical.fetch(canonical, :work)
+    retained_ids = MapSet.new(["retained-terminal-3", "retained-terminal-4", active_ref.id])
+    assert MapSet.new(Map.keys(work)) == retained_ids
+
+    assert {:ok, controls} = Canonical.fetch(canonical, :control)
+    assert MapSet.new(Map.keys(controls)) == retained_ids
+
+    assert {:ok, events} = Canonical.fetch(canonical, :events)
+    assert Enum.all?(events.records, &MapSet.member?(retained_ids, &1.loop_id))
+    assert map_size(events.ids) == length(events.records)
+
+    assert {:ok, correlations} = Canonical.fetch(canonical, :correlations)
+
+    active_correlations =
+      correlations
+      |> Enum.filter(fn
+        {_key, %{loop_id: loop_id}} -> loop_id == active_ref.id
+        _other -> false
+      end)
+      |> Map.new()
+
+    assert MapSet.new(Map.keys(active_correlations)) ==
+             MapSet.new(["retention-primary", "retention-control-6"])
+  end
+
   test "Instance startup validates ownership and bounded scheduler options" do
     assert_raise ArgumentError, ~r/custom :name is not supported/, fn ->
       Instance.start_link(agent: @agent, subject: unique_subject("named"), name: :forbidden)
@@ -1854,6 +2071,20 @@ defmodule SpectreOperationInstanceContractTest do
                base
                |> Keyword.put(:subject, unique_subject("invalid-checkpoint-mode"))
                |> Keyword.put(:checkpoint_mode, :invalid)
+             )
+
+    assert {:error, {:invalid_instance_retention, :operation_terminal_loop_retention, -1}} =
+             Instance.start_link(
+               base
+               |> Keyword.put(:subject, unique_subject("invalid-terminal-retention"))
+               |> Keyword.put(:operation_terminal_loop_retention, -1)
+             )
+
+    assert {:error, {:invalid_instance_retention, :operation_correlation_retention, :bad}} =
+             Instance.start_link(
+               base
+               |> Keyword.put(:subject, unique_subject("invalid-correlation-retention"))
+               |> Keyword.put(:operation_correlation_retention, :bad)
              )
 
     Process.flag(:trap_exit, previous_trap_exit)

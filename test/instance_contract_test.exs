@@ -665,6 +665,55 @@ defmodule SpectreInstanceContractTest do
     refute_receive {:instance_action, :work, _args}
   end
 
+  test "execute does not stale a waiting Run while another ask is advancing" do
+    instance = start_instance()
+
+    assert {:ok, %Turn{decision: {:needs, _effect, _result}} = pending} =
+             Spectre.turn(instance, "slow action")
+
+    parent = self()
+
+    advancing =
+      Task.async(fn ->
+        Spectre.turn(instance, "slow reply", test_pid: parent)
+      end)
+
+    assert_receive {:instance_render_started, "slow reply", renderer}, 1_000
+
+    assert {:error, {:instance_busy, active_run_id}} =
+             Spectre.execute(instance, pending.result, test_pid: self())
+
+    assert active_run_id != pending.ref.run_id
+
+    assert {:ok,
+            %{
+              status: :awaiting,
+              waiting: :invocation,
+              ref: %Ref{run_id: pending_run_id}
+            }} = Instance.run(instance, pending.ref.run_id)
+
+    assert pending_run_id == pending.ref.run_id
+
+    send(renderer, :finish_render)
+    assert {:ok, %Turn{decision: {:reply, _result}}} = Task.await(advancing, 5_000)
+
+    # The caller reply and the Instance's scheduler bookkeeping are separate
+    # messages. Wait until the completed advance has released the active slot
+    # before asserting that the retained invocation can execute.
+    assert_eventually(fn -> Instance.info(instance).active_run == nil end)
+
+    execution =
+      Task.async(fn ->
+        Spectre.execute(instance, pending.result, test_pid: parent)
+      end)
+
+    assert_receive {:instance_slow_action_started, worker}, 1_000
+    send(worker, :finish_action)
+
+    assert {:ok, %Spectre.Result{state: %State{pending_effects: []}}} =
+             Task.await(execution, 5_000)
+  end
+
   test "ordinary turn input resumes the policy owner Run without opening a new Run" do
     instance = start_instance()
 
@@ -767,6 +816,8 @@ defmodule SpectreInstanceContractTest do
     assert Enum.map(Spectre.state(instance).pending_effects, & &1.run_id) == [
              second_invocation.run_id
            ]
+
+    assert_eventually(fn -> Instance.info(instance).active_run == nil end)
 
     assert {:ok, %Turn{observable: {:reply, "worked", _}}} =
              Spectre.resume(

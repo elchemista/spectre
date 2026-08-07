@@ -1,11 +1,5 @@
 defmodule Spectre.Instance.Telemetry do
-  @moduledoc """
-  Instance-scoped telemetry emission and failure-reason redaction.
-
-  Events are emitted under the `[:instance, event]` prefix with the owning
-  Agent, Subject and scheduler generation as metadata so operational tooling
-  can correlate measurements without reading private owner state.
-  """
+  @moduledoc false
 
   alias Spectre.AgentRef
   alias Spectre.Instance.State, as: InstanceState

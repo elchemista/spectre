@@ -18,6 +18,7 @@ defmodule Spectre.Operation.Runtime.Recovery do
   alias Spectre.Operation.Outcome
   alias Spectre.Operation.Registry
   alias Spectre.Operation.Request
+  alias Spectre.Operation.Retry
   alias Spectre.Operation.Runtime.Contract
   alias Spectre.Operation.Runtime.Controls
   alias Spectre.Operation.Runtime.Results
@@ -212,15 +213,70 @@ defmodule Spectre.Operation.Runtime.Recovery do
 
   defp recover_attempt_by_side_effect(loop, control, spec, env) do
     case spec.side_effect do
-      side_effect when side_effect in [:none, :idempotent] ->
+      side_effect
+      when side_effect in [:none, :idempotent] and not is_nil(control.pending) ->
         next = loop |> clear_attempt() |> Map.put(:status, :queued) |> Loop.touch(at: now(env))
-        {:ok, next, control, [event(:attempt_recovered, %{strategy: :retry})]}
+        {:ok, next, control, [event(:attempt_recovered, %{strategy: :pending_control})]}
+
+      side_effect when side_effect in [:none, :idempotent] ->
+        recover_retryable_attempt(loop, control, spec, env)
 
       :reconcilable ->
         Results.reconcile_transition(loop, control, spec, :agent_restarted, env)
 
       :non_idempotent ->
         Results.ambiguous_wait(loop, control, :agent_restarted, env)
+    end
+  end
+
+  defp recover_retryable_attempt(loop, control, spec, env) do
+    attempt = loop.attempt
+    retry_number = attempt.retry_number + 1
+    retryable? = Retry.retry?(spec.retry, :crash, retry_number)
+    exhaustion = budget_exhaustion(loop, env)
+    reason = {:runner_crashed, :agent_restarted}
+
+    cond do
+      retryable? and is_nil(exhaustion) ->
+        delay = Retry.delay(spec.retry, retry_number)
+
+        case Results.retry_transition(loop, control, spec, reason, delay, env) do
+          {:ok, next, next_control, events} ->
+            {:ok, next, next_control,
+             [event(:attempt_recovered, %{strategy: :retry, retry: retry_number}) | events]}
+        end
+
+      retryable? ->
+        {dimension, consumed, limit} = exhaustion
+
+        next =
+          loop
+          |> clear_attempt()
+          |> Map.put(:last_error, reason)
+          |> terminal_budget(dimension, consumed, limit, env)
+
+        {terminal, rejected} = terminal_control(control)
+
+        {:ok, next, terminal,
+         [
+           event(:attempt_recovered, %{strategy: :budget_exhausted}),
+           event(:budget_exhausted, budget_event(dimension, consumed, limit))
+           | rejected
+         ]}
+
+      true ->
+        failure = {:operation_recovery_retry_exhausted, spec.id, attempt.retry_number}
+
+        next =
+          loop
+          |> clear_attempt()
+          |> Map.put(:last_error, failure)
+          |> fail(failure, env)
+
+        {terminal, rejected} = terminal_control(control)
+
+        {:ok, next, terminal,
+         [event(:attempt_recovered, %{strategy: :failed}), event(:failed) | rejected]}
     end
   end
 

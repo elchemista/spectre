@@ -1,14 +1,5 @@
 defmodule Spectre.Instance.Checkpoint do
-  @moduledoc """
-  Canonical checkpoint lifecycle for `Spectre.Instance`.
-
-  Owns restore of the canonical Agent state at init, asynchronous persistence
-  through the configured `Spectre.Instance.CheckpointStore`, and explicit
-  reconciliation of writes whose commit outcome was ambiguous. Every function
-  takes and returns the private owner state; process side effects (task
-  spawning, monitors, `GenServer.reply/2`) are only performed when called from
-  within the owning Instance process.
-  """
+  @moduledoc false
 
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec, as: CanonicalCodec
