@@ -175,12 +175,13 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.0"}
   ]
 end
 ```
 
-See [Installation](docs/INSTALLATION.md) for GitHub pinning and optional
+See [Installation](docs/INSTALLATION.md) for GitHub installation, development
+snapshot pinning, and optional
 SpectreKinetic and ExFastembed integrations.
 
 ## A Small Agent

@@ -18,7 +18,7 @@ type, and struct contract.
 - `Mix.Tasks.Spectre.Classifier.Train`
 - `Mix.Tasks.Spectre.Eval`
 - `Spectre`
-  - functions: `after_action/4`, `after_action/5`, `ask/2`, `ask/3`, `authorize_delivery/4`, `authorize_delivery/5`, `cancel/2`, `checkpoint/1`, `checkpoint_status/1`, `delivery_receipts/1`, `delivery_receipts/2`, `dismiss/2`, `execute/2`, `execute/3`, `flush_checkpoint/1`, `flush_checkpoint/2`, `instance/3`, `instance/4`, `lookup_instance/2`, `lookup_instance/3`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `reset/1`, `reset/2`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resolve_policy/3`, `resolve_policy/4`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `start_controller/3`, `start_controller/4`, `start_work/3`, `start_work/4`, `state/1`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `subscribe_operation_events/1`, `subscribe_operation_events/2`, `summon/1`, `summon/3`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `unsubscribe_operation_events/1`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`, `version/0`
+  - functions: `after_action/4`, `after_action/5`, `ask/2`, `ask/3`, `authorize_delivery/4`, `authorize_delivery/5`, `cancel/2`, `checkpoint/1`, `checkpoint_status/1`, `delivery_receipts/1`, `delivery_receipts/2`, `dismiss/2`, `ensure_instance/3`, `ensure_instance/4`, `execute/2`, `execute/3`, `flush_checkpoint/1`, `flush_checkpoint/2`, `instance/3`, `instance/4`, `lookup_instance/2`, `lookup_instance/3`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `reset/1`, `reset/2`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resolve_policy/3`, `resolve_policy/4`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `start_controller/3`, `start_controller/4`, `start_work/3`, `start_work/4`, `state/1`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `subscribe_operation_events/1`, `subscribe_operation_events/2`, `summon/1`, `summon/3`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `unsubscribe_operation_events/1`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`, `version/0`
 - `Spectre.Action`
   - functions: `from_effect/1`, `matches_ref?/2`, `new/1`, `ref/1`, `split_ref/1`, `to_effect_attrs/1`, `valid_ref?/1`
 - `Spectre.Action.Planner`
@@ -43,7 +43,7 @@ type, and struct contract.
 - `Spectre.ActionProtection`
   - functions: `protected_by/2`, `protected_by/3`
 - `Spectre.Agent`
-  - macros: `__using__/1`, `act/1`, `act/2`, `action/1`, `action/2`, `action_planner/1`, `action_planner/2`, `action_provider/2`, `action_provider/3`, `actions/1`, `actions/2`, `actions/3`, `after_action/2`, `arbitrator/1`, `arbitrator/2`, `ask/1`, `ask/2`, `checkpoint_store/1`, `checkpoint_store/2`, `classifier/1`, `classifier/2`, `embedding/1`, `embedding/2`, `fail/1`, `fail/2`, `flow/2`, `flow/3`, `history/1`, `idle/1`, `inject/1`, `inject/2`, `input_pipeline/1`, `interrupt/2`, `interrupt/3`, `journal/1`, `journal/2`, `memory/1`, `model/1`, `model/2`, `operation/2`, `operation/3`, `policy/2`, `protect/1`, `protect/2`, `reason/1`, `reason/2`, `reply/1`, `reply/2`, `requires_action/1`, `requires_action/2`, `requires_tool/1`, `requires_tool/2`, `route_operation_events/0`, `route_operation_events/1`, `router/1`, `run/1`, `run/2`, `shutdown/1`, `skill/1`, `skill/2`, `state/1`, `turn_handler/1`, `turn_handler/2`, `turn_handlers/1`, `work/1`, `work/2`
+  - macros: `__using__/1`, `act/1`, `act/2`, `action/1`, `action/2`, `action_planner/1`, `action_planner/2`, `action_provider/2`, `action_provider/3`, `actions/1`, `actions/2`, `actions/3`, `after_action/2`, `arbitrator/1`, `arbitrator/2`, `ask/1`, `ask/2`, `before_action/2`, `checkpoint_store/1`, `checkpoint_store/2`, `classifier/1`, `classifier/2`, `embedding/1`, `embedding/2`, `fail/1`, `fail/2`, `flow/2`, `flow/3`, `history/1`, `history/2`, `idle/1`, `inject/1`, `inject/2`, `input_pipeline/1`, `interrupt/2`, `interrupt/3`, `journal/1`, `journal/2`, `memory/1`, `model/1`, `model/2`, `operation/2`, `operation/3`, `policy/2`, `protect/1`, `protect/2`, `reason/1`, `reason/2`, `reply/1`, `reply/2`, `requires_action/1`, `requires_action/2`, `requires_tool/1`, `requires_tool/2`, `route_operation_events/0`, `route_operation_events/1`, `router/1`, `run/1`, `run/2`, `shutdown/1`, `skill/1`, `skill/2`, `state/1`, `turn_handler/1`, `turn_handler/2`, `turn_handlers/1`, `work/1`, `work/2`
 - `Spectre.AgentRef`
   - functions: `key/1`, `new/1`, `new/2`
 - `Spectre.Awaitable`
@@ -115,7 +115,7 @@ type, and struct contract.
 - `Spectre.Input.Plugs.NormalizeText`
 - `Spectre.Input.Source`
 - `Spectre.Instance`
-  - functions: `ask/2`, `ask/3`, `authorize_delivery/4`, `authorize_delivery/5`, `checkpoint/1`, `checkpoint_status/1`, `delivery_receipts/1`, `delivery_receipts/2`, `flush_checkpoint/1`, `flush_checkpoint/2`, `info/1`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `ref/1`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `run/2`, `start_controller/3`, `start_controller/4`, `start_link/1`, `start_work/3`, `start_work/4`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`
+  - functions: `ask/2`, `ask/3`, `authorize_delivery/4`, `authorize_delivery/5`, `checkpoint/1`, `checkpoint_status/1`, `delivery_receipts/1`, `delivery_receipts/2`, `flush_checkpoint/1`, `flush_checkpoint/2`, `info/1`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `ref/1`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `run/2`, `start_controller/3`, `start_controller/4`, `start_link/1`, `start_work/3`, `start_work/4`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `trace_id/1`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`
 - `Spectre.Instance.CheckpointStore`
   - functions: `load/3`, `normalize/1`, `persist/6`
   - callbacks: `compare_and_swap/5`, `load/2`
@@ -140,7 +140,7 @@ type, and struct contract.
 - `Spectre.Operation.Definition`
   - functions: `compatible?/3`, `load/1`, `new/1`, `operation/2`, `validate/1`, `validate!/1`
 - `Spectre.Operation.Delivery`
-  - functions: `authorize/5`, `authorize/6`, `delivered/2`, `delivered/3`, `failed/2`
+  - functions: `authorize/5`, `authorize/6`, `authorized/1`, `authorized/2`, `delivered/2`, `delivered/3`, `failed/2`
 - `Spectre.Operation.Delivery.Consent`
   - functions: `active?/2`, `new/1`, `revoke/1`, `revoke/2`, `validate/1`
 - `Spectre.Operation.Delivery.Policy`
@@ -183,13 +183,13 @@ type, and struct contract.
 - `Spectre.Journal.Buffer`
   - functions: `child_spec/1`, `enqueue/1`, `enqueue/2`, `stats/0`, `stats/1`
 - `Spectre.Journal.Record`
-  - functions: `new/1`, `restore/1`
+  - functions: `new/1`, `restore/1`, `to_json_map/1`
 - `Spectre.Journal.Recorder`
   - functions: `record_extension/4`, `record_persistence/2`, `record_result/2`, `record_routing/1`
 - `Spectre.Journal.Store`
   - callbacks: `append/2`
 - `Spectre.LLM`
-  - functions: `complete/1`, `complete/2`, `complete_once/1`, `complete_once/2`
+  - functions: `complete/1`, `complete/2`, `complete_once/1`, `complete_once/2`, `provider_opts/1`, `provider_opts/2`, `runtime_opt_keys/0`
   - callbacks: `complete/2`, `complete_plan/2`
 - `Spectre.Lifecycle`
   - functions: `apply/2`, `approve_effect/2`, `cancel_pending/1`, `cancel_pending/2`, `cancel_pending/3`, `complete_effect/3`, `expire_policy/2`, `fail_effect/3`, `next/1`, `policy_attempt/2`, `projection/1`, `replay_effect/2`, `resolve_policy/3`, `resolve_policy/4`, `stage/2`, `stage/3`
@@ -219,6 +219,8 @@ type, and struct contract.
 - `Spectre.Provider.Failure`
 - `Spectre.Result`
   - functions: `action_outcome/1`, `completions/1`, `latest_completion/1`, `lifecycle/1`, `open_awaitable/1`, `pending_effect/1`, `visible_reply?/1`
+- `Spectre.Reply.Sanitizer`
+  - functions: `sanitize/1`, `sanitize/2`
 - `Spectre.Route`
   - functions: `from_rule/3`, `new/1`
 - `Spectre.Router`
@@ -253,10 +255,10 @@ type, and struct contract.
 - `Spectre.Router.Receipt`
   - functions: `from_context/2`, `from_error/2`
 - `Spectre.Router.SemanticCache`
-  - functions: `clear/1`, `clear/2`, `delete/2`, `delete/3`, `examples/1`, `examples/2`, `get_example/2`, `get_example/3`, `load_snapshot/2`, `load_snapshot/3`, `lookup/2`, `put/3`, `relabel/3`, `relabel/4`, `snapshot/1`, `snapshot/2`, `verify/2`, `verify/3`
-  - callbacks: `clear/2`, `delete/3`, `examples/2`, `get_example/3`, `load_snapshot/3`, `lookup/2`, `put/3`, `relabel/4`, `snapshot/2`, `verify/3`
+  - functions: `clear/1`, `clear/2`, `delete/2`, `delete/3`, `examples/1`, `examples/2`, `get_example/2`, `get_example/3`, `learn_eligibility/2`, `learnable?/2`, `load_snapshot/2`, `load_snapshot/3`, `lookup/2`, `put/3`, `relabel/3`, `relabel/4`, `snapshot/1`, `snapshot/2`, `update_example/3`, `update_example/4`, `verify/2`, `verify/3`
+  - callbacks: `clear/2`, `delete/3`, `examples/2`, `get_example/3`, `load_snapshot/3`, `lookup/2`, `put/3`, `relabel/4`, `snapshot/2`, `update_example/4`, `verify/3`
 - `Spectre.Router.SemanticCache.Learned`
-  - functions: `clear/1`, `clear/2`, `delete/2`, `delete/3`, `examples/1`, `examples/2`, `get_example/2`, `get_example/3`, `load_snapshot/2`, `load_snapshot/3`, `lookup/2`, `online_revision/1`, `put/3`, `relabel/3`, `relabel/4`, `rows/1`, `snapshot/1`, `snapshot/2`, `verify/2`, `verify/3`
+  - functions: `clear/1`, `clear/2`, `delete/2`, `delete/3`, `examples/1`, `examples/2`, `get_example/2`, `get_example/3`, `load_snapshot/2`, `load_snapshot/3`, `lookup/2`, `online_revision/1`, `put/3`, `relabel/3`, `relabel/4`, `rows/1`, `snapshot/1`, `snapshot/2`, `update_example/3`, `update_example/4`, `verify/2`, `verify/3`
 - `Spectre.Router.SemanticCache.Owner`
   - functions: `child_spec/1`
 - `Spectre.Router.Support`
@@ -322,6 +324,9 @@ type, and struct contract.
 - `Spectre.Transition`
 - `Spectre.Turn`
   - functions: `from_result/4`, `from_step/4`, `resolve_policy/2`, `resolve_policy/3`, `run/2`, `run/3`
+- `Spectre.Turn.Dispatcher`
+  - functions: `dispatch/2`, `dispatch/3`
+  - callbacks: `action_result/3`, `deliver_reply/3`, `execute?/3`, `fallback_reply/2`, `no_response/2`, `policy_request/3`, `satisfied_resolution/2`, `suppressed/3`
 - `Spectre.Turn.Decision`
   - functions: `decide/1`
 - `Spectre.Turn.Handler`

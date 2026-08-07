@@ -137,15 +137,15 @@ about; an **Instance** is the process that owns both for that Subject.
 ## Compatibility With Spectre 0.2.0
 
 The `0.2.0` release train aligns every package and every Stack manifest on the
-same minor contract:
+same minor contract. Packages are distributed from GitHub as release tags:
 
 ```elixir
-{:spectre, "~> 0.2.0"}
+{:spectre, github: "elchemista/spectre", tag: "0.2.0"}
 ```
 
-`~> 0.2.0` accepts compatible `0.2.x` releases and rejects `0.3.0`. This is
-intentional while the ecosystem is pre-1.0: a new minor may contain documented
-contract changes.
+Release tags follow Semantic Versioning: `0.2.x` tags remain compatible within
+the minor, while `0.3.0` may contain documented contract changes. This is
+intentional while the ecosystem is pre-1.0.
 
 | Package | Release | Spectre requirement |
 | --- | ---: | ---: |
@@ -168,14 +168,14 @@ For released packages, install only the capabilities the application needs:
 ```elixir
 defp deps do
   [
-    {:spectre, "~> 0.2.0"},
-    {:spectre_prism, "~> 0.2.0"},
-    {:spectre_kinetic, "~> 0.2.0"},
-    {:spectre_mnemonic, "~> 0.2.0"},
-    {:spectre_directive, "~> 0.2.0"},
-    {:spectre_lens, "~> 0.2.0"},
-    {:spectre_beam, "~> 0.2.0"},
-    {:spectre_pulse, "~> 0.2.0"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.0"},
+    {:spectre_prism, github: "elchemista/spectre_prism", tag: "0.2.0"},
+    {:spectre_kinetic, github: "elchemista/spectre_kinetic", tag: "0.2.0"},
+    {:spectre_mnemonic, github: "elchemista/spectre_mnemonic", tag: "0.2.0"},
+    {:spectre_directive, github: "elchemista/spectre_directive", tag: "0.2.0"},
+    {:spectre_lens, github: "elchemista/spectre_lens", tag: "0.2.0"},
+    {:spectre_beam, github: "elchemista/spectre_beam", tag: "0.2.0"},
+    {:spectre_pulse, github: "elchemista/spectre_pulse", tag: "0.2.0"}
   ]
 end
 ```

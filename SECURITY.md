@@ -6,9 +6,9 @@ and validate data inside their action and provider adapters.
 
 ## Supported versions
 
-During the public-preview period, security fixes are released for the latest
-`0.x` minor version. Users should upgrade to the newest patch before reporting
-a problem already addressed in the changelog.
+Security fixes are released for the latest supported `0.x` minor version.
+Users should upgrade to the newest patch before reporting a problem already
+addressed in the changelog.
 
 ## Reporting a vulnerability
 
@@ -35,4 +35,3 @@ behavior remains probabilistic.
 
 See [Architecture](docs/ARCHITECTURE.md), [Provider Resilience](docs/PROVIDERS.md),
 and [Production Operations](docs/PRODUCTION.md) for the complete trust model.
-

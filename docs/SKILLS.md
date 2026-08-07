@@ -252,5 +252,5 @@ To add a Skill:
 5. Bind each required action with `bind: [logical_name: :concrete_name]`.
 6. Call `Spectre.ask/3` or `Spectre.turn/3` on the Agent, not on the Skill.
 
-See also [DSL](DSL.md), [Actions](ACTIONS.md), and
-[`Spectre.Skill`](https://hexdocs.pm/spectre/Spectre.Skill.html).
+See also [DSL](DSL.md), [Actions](ACTIONS.md), and the `Spectre.Skill`
+moduledoc in [`lib/spectre/skill.ex`](../lib/spectre/skill.ex).

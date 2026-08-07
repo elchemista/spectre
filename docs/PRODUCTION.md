@@ -65,6 +65,27 @@ further automatic writes until `Spectre.reconcile_checkpoint/2` loads and
 validates durable state. Monitor `checkpoint_status/1`, and use
 `flush_checkpoint/2` as a deployment or graceful-shutdown barrier.
 
+Canonical operational history is bounded by default. An Instance retains the
+256 most recently updated terminal loops and up to 1,024 additional historical
+correlations, while always preserving live loops and their primary
+correlations. Tune the limits when starting the Instance:
+
+```elixir
+operation_terminal_loop_retention: 256,
+operation_correlation_retention: 1_024
+```
+
+Both options accept a non-negative integer or `:unlimited`. Use `:unlimited`
+only with an external compaction policy: every checkpoint serializes the full
+canonical value. The Subject Registry independently defaults to 4,096 live
+link intents and 1,024 terminal audit intents (`link_intent_capacity` and
+`link_intent_retention`), for a bounded maximum of 5,120 retained intents.
+
+Nested custom structs in conversational state are restored from their module
+name and fields. That is a storage representation, not a struct migration
+protocol: keep the module loadable and backward compatible, or persist an
+application-owned versioned map and migrate it before constructing the struct.
+
 ## Action idempotency
 
 Every effect has an `id` and `idempotency_key`. Store the key at the real
@@ -154,6 +175,13 @@ The built-in cache is owned by a supervised process and survives individual
 request-process exits, but its online rows are ETS data. Snapshot verified rows
 or use a custom durable adapter when learned examples must survive application
 restarts.
+
+Online rows are capped at 1,000 per Agent by default and the least recently
+updated rows are evicted. Set `semantic_cache_online_capacity` per call or
+`:online_capacity` under `config :spectre, :semantic_cache`; `:unlimited` is
+available only for hosts that enforce their own retention. Rule-example
+embeddings use a separate 2,048-entry bounded cache and can be tuned with
+`embedding_example_cache_capacity`.
 
 Only cache routes that are safe to replay as classifications. Keep destructive
 or highly contextual routes at `cache: false`, and require review before using

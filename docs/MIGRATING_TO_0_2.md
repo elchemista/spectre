@@ -7,12 +7,12 @@ does not need to be renamed to adopt Work or Vigil.
 
 ## Dependency and toolchain
 
-Update the dependency to 0.2:
+Update the dependency to the 0.2.0 release tag:
 
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.2.0"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.0"}
   ]
 end
 ```

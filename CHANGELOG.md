@@ -4,10 +4,37 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
-## Unreleased
+## 0.2.0 — 2026-08-08
 
 ### Fixed
 
+- Reply sanitization now uses Unicode-safe, case-insensitive matching without
+  applying byte offsets from a transformed string to the original reply.
+- `before_action` suppression is scoped to the owning Run, provider-qualified
+  guard references no longer raise, and `protect`/`after_action` declarations
+  retain source order.
+- Canonical checkpoints, Run values, and journal JSON maps now encode every
+  JSONB-hostile binary consistently and restore journal phase/time values.
+- Semantic-cache candidates retain their intended arbitration precedence;
+  post-LLM clarification results remain clarifications; unloaded custom
+  arbitrators are loaded before capability checks.
+- The bounded Turn dispatcher delivers a terminal decision reached by its
+  final allowed transition instead of reporting a loop overflow after effects
+  have committed.
+- Invalid Flow state and malformed Instance intents now fail only their owning
+  Run/intent instead of terminating the whole Instance. Concurrent `execute/3`
+  calls also reject while another Run advances without staling the waiting Run.
+- Recovery now honors retry policy and budget for crashed attempts, journal
+  buffering preserves FIFO order within a partition, and deferred/digest
+  delivery receipts can be re-authorized after their delivery window opens.
+- Terminal operation loops, correlations, Subject link intents, semantic-cache
+  online examples, and rule-example embeddings now have bounded retention or
+  bounded reusable caches with explicit configuration.
+- History limits and summarizer callbacks are validated, operational budgets
+  reject unknown keys, and stable term digests use deterministic encoding.
+- Instance idle shutdown is re-armed after operational/checkpoint activity;
+  malformed optional offline semantic-cache sources degrade at runtime with a
+  warning instead of disabling routing.
 - Nested-flow prompt injections now retain the flow path where each injection
   was declared. Parent and child `start`/`end` operations therefore compose as
   proper nested scopes, and repeated inner-flow names under different parents
@@ -160,8 +187,6 @@ minor release may contain documented breaking API changes.
 - Work starts attempted directly by any operational Runner, including through
   the isolated executor call boundary, are rejected; only Agent-side Directive
   reducer intents can create Work from an operational transition.
-
-## 0.2.0 — 2026-07-31
 
 ### Added
 

@@ -4,12 +4,13 @@ Spectre requires Elixir `~> 1.19` and includes Vettore as a required dependency.
 
 ## GitHub
 
-Add Spectre to `mix.exs`:
+Spectre is not published on Hex. Install it from GitHub, pinned to the
+release tag:
 
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.0"}
   ]
 end
 ```
@@ -21,11 +22,27 @@ mix deps.get
 mix compile
 ```
 
+Import Spectre's formatter metadata so `mix format` preserves the documented
+DSL style without parentheses:
+
+```elixir
+# .formatter.exs
+[
+  import_deps: [:spectre],
+  inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
+]
+```
+
 Start with [Getting Started](GETTING_STARTED.md), then use the
 [Production Operations](PRODUCTION.md) checklist before deploying.
 
-Pin a commit with `ref:` for reproducible production builds. The repository's
-default branch is not a compatibility promise.
+For unreleased development snapshots, pin an exact commit with `ref:` instead
+of a release tag. The repository's default branch is not a compatibility
+promise:
+
+```elixir
+{:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"}
+```
 
 ## Stack packages
 
@@ -58,7 +75,7 @@ library when model replies use Action Language or tool planning:
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre"},
+    {:spectre, github: "elchemista/spectre", tag: "0.2.0"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic"}
   ]
 end
@@ -88,7 +105,7 @@ application that needs local embeddings:
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre"},
+    {:spectre, github: "elchemista/spectre", tag: "0.2.0"},
     {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"}
   ]
 end
