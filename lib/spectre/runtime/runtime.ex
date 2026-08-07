@@ -1002,18 +1002,18 @@ defmodule Spectre.Runtime do
 
   @spec record_history(Result.t(), Context.t()) :: Result.t()
   defp record_history(%Result{} = result, %Context{agent: agent, opts: opts}) do
+    configured_limit = Keyword.get(definition_config(agent), :history, 50)
+
     limit =
-      Keyword.get(
-        opts,
-        :chat_history_limit,
-        Keyword.get(definition_config(agent), :history, 20)
-      )
+      opts
+      |> Keyword.get(:chat_history_limit, configured_limit)
+      |> normalize_history_limit(configured_limit)
 
     summarizer =
       Keyword.get(
         opts,
-        :chat_summary,
-        Keyword.get(definition_config(agent), :history_summary)
+        :history_summary,
+        Keyword.get(opts, :chat_summary, Keyword.get(definition_config(agent), :history_summary))
       )
 
     state =
@@ -1023,6 +1023,19 @@ defmodule Spectre.Runtime do
 
     %{result | state: state}
   end
+
+  defp normalize_history_limit(value, _fallback) when value in [nil, false, 0], do: value
+  defp normalize_history_limit(value, _fallback) when is_integer(value) and value > 0, do: value
+
+  defp normalize_history_limit(_invalid, fallback)
+       when fallback in [nil, false, 0],
+       do: fallback
+
+  defp normalize_history_limit(_invalid, fallback)
+       when is_integer(fallback) and fallback > 0,
+       do: fallback
+
+  defp normalize_history_limit(_invalid, _fallback), do: 50
 
   # Folds the entries about to fall out of the history window into a rolling
   # summary before `State.record_turn/4` drops them. A failing summarizer keeps

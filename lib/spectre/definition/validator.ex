@@ -64,6 +64,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_identity(definition),
          :ok <- validate_version(definition),
          :ok <- validate_skill_config(definition),
+         :ok <- validate_history(definition),
          :ok <- validate_stack(definition),
          :ok <- validate_turn_handlers(definition),
          :ok <- validate_skill_router(definition),
@@ -120,6 +121,40 @@ defmodule Spectre.Definition.Validator do
   end
 
   defp validate_skill_config(%Definition{}), do: :ok
+
+  @spec validate_history(Definition.t()) :: :ok | {:error, term()}
+  defp validate_history(%Definition{config: config, owner: owner}) do
+    limit = Keyword.get(config, :history, 50)
+    summarizer = Keyword.get(config, :history_summary)
+
+    with :ok <- validate_history_limit(limit),
+         do: validate_history_summarizer(summarizer, owner)
+  end
+
+  defp validate_history_limit(limit) when limit in [nil, false, 0], do: :ok
+  defp validate_history_limit(limit) when is_integer(limit) and limit > 0, do: :ok
+  defp validate_history_limit(limit), do: {:error, {:invalid_history_limit, limit}}
+
+  defp validate_history_summarizer(nil, _owner), do: :ok
+  defp validate_history_summarizer(fun, _owner) when is_function(fun, 2), do: :ok
+
+  defp validate_history_summarizer({module, function}, owner)
+       when is_atom(module) and not is_nil(module) and is_atom(function) and
+              not is_nil(function) do
+    defined? =
+      if module == owner and Module.open?(module) do
+        Module.defines?(module, {function, 2}, :def)
+      else
+        Code.ensure_loaded?(module) and function_exported?(module, function, 2)
+      end
+
+    if defined?,
+      do: :ok,
+      else: {:error, {:invalid_history_summarizer, {module, function}}}
+  end
+
+  defp validate_history_summarizer(value, _owner),
+    do: {:error, {:invalid_history_summarizer, value}}
 
   @spec validate_stack(Definition.t()) :: :ok | {:error, term()}
   defp validate_stack(%Definition{stack: nil, stack_refs: []}), do: :ok

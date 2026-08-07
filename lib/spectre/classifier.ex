@@ -31,6 +31,7 @@ defmodule Spectre.Classifier do
   # without the host pre-loading internal Spectre atoms itself.
   @artifact_schema_atoms [
     :accept_threshold,
+    :centroid,
     :centroids,
     :dimensions,
     :encoder_model,

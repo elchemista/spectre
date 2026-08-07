@@ -64,8 +64,16 @@ defmodule Spectre.Route do
 
       route = Spectre.Route.new(label: :hello, accepted?: true)
   """
-  @spec new(map() | t()) :: t()
+  @spec new(map() | keyword() | t()) :: t()
   def new(%__MODULE__{} = route), do: route
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs) do
+      attrs |> Map.new() |> new()
+    else
+      raise ArgumentError, "expected route attributes to be a keyword list"
+    end
+  end
 
   def new(attrs) when is_map(attrs) do
     struct(__MODULE__, Map.take(attrs, fields()))

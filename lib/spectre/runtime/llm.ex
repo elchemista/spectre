@@ -44,8 +44,10 @@ defmodule Spectre.LLM do
     :plan_actions?,
     :policy_prompt?,
     :agent,
+    :agent_ref,
     :input,
     :state,
+    :state_persistence,
     :route,
     :policy,
     :memory,
@@ -53,13 +55,54 @@ defmodule Spectre.LLM do
     :history,
     :recent_chat,
     :conversation_id,
+    :origin_conversation_id,
+    :conversation_ref,
+    :origin_conversation_ref,
     :turn_id,
     :trace_id,
     :run_id,
+    :run_revision,
+    :run_metadata,
     :operation_id,
+    :subject,
+    :subject_id,
+    :instance_pid,
+    :instance_run_lifecycle?,
+    :correlation_id,
+    :causation_id,
+    :provenance,
+    :journal_sequence,
     :message,
     :actions_module,
-    :classifier_assigns
+    :actions,
+    :action_planner,
+    :classifier_assigns,
+    :classifier,
+    :classifier_evidence,
+    :classifier_history,
+    :embedding,
+    :journal,
+    :chat_summary,
+    :history_summary,
+    :chat_history_limit,
+    :turn_handlers,
+    :input_pipeline,
+    :router,
+    :arbitrator,
+    :local_result,
+    :local_opts,
+    :semantic_cache,
+    :semantic_cache_query_embedding,
+    :inference_profile,
+    :provider_retry,
+    :provider_fallback,
+    :usage,
+    :telemetry_metadata,
+    :runtime_inject,
+    :handler_inject,
+    :prompt_scope,
+    :inference_purpose,
+    :modalities
   ]
 
   @doc """
@@ -87,7 +130,8 @@ defmodule Spectre.LLM do
   def provider_opts(opts, extra_keys \\ []) when is_list(opts) and is_list(extra_keys) do
     Enum.reject(opts, fn
       {key, _value} when is_atom(key) ->
-        key in @runtime_opt_keys or key in extra_keys or spectre_prefixed?(key)
+        key in @runtime_opt_keys or key in extra_keys or runtime_family_key?(key) or
+          spectre_prefixed?(key)
 
       _other ->
         false
@@ -96,6 +140,12 @@ defmodule Spectre.LLM do
 
   @spec spectre_prefixed?(atom()) :: boolean()
   defp spectre_prefixed?(key), do: String.starts_with?(Atom.to_string(key), "spectre_")
+
+  @spec runtime_family_key?(atom()) :: boolean()
+  defp runtime_family_key?(key) do
+    name = Atom.to_string(key)
+    String.ends_with?(name, "_timeout") or String.ends_with?(name, "_max_bytes")
+  end
 
   @doc """
   Completes a rendered string or typed prompt plan through the configured model

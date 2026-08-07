@@ -180,7 +180,7 @@ defmodule Spectre.Stack.Package do
 
   @spec validate_agent_extensions!(term()) :: :ok
   defp validate_agent_extensions!(extensions) when is_list(extensions) do
-    case Enum.find(extensions, &(not is_atom(&1) or is_nil(&1))) do
+    case Enum.find_index(extensions, &(not is_atom(&1) or is_nil(&1))) do
       nil ->
         case duplicate(extensions) do
           nil ->
@@ -191,7 +191,9 @@ defmodule Spectre.Stack.Package do
                   "duplicate package agent_extensions entry: #{inspect(module)}"
         end
 
-      invalid ->
+      index ->
+        invalid = Enum.at(extensions, index)
+
         raise ArgumentError,
               "package agent_extensions entries must be modules, got: #{inspect(invalid)}"
     end

@@ -256,6 +256,12 @@ defmodule SpectreEcosystemIntegrationTest do
         state: %State{},
         route: :fake,
         model: "x",
+        classifier: [model: "classifier"],
+        embedding: :embedder,
+        journal: :audit,
+        chat_summary: "older turns",
+        router_timeout: 100,
+        effect_result_max_bytes: 1_000,
         spectre_rules: [],
         recent_chat: [],
         test_pid: self()

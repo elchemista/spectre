@@ -45,7 +45,11 @@ defmodule Spectre.Operation.Budget do
   def new(value, now) when is_list(value), do: value |> Map.new() |> new(now)
 
   def new(value, now) when is_map(value) and is_integer(now) and now >= 0 do
+    validate_input_keys!(value)
     raw_limits = attr(value, :limits, value)
+    if Map.has_key?(value, :limits), do: validate_limit_keys!(raw_limits)
+    raw_consumed = attr(value, :consumed, %{})
+    validate_consumed_keys!(raw_consumed)
     duration = attr(raw_limits, :duration_ms)
 
     limits =
@@ -54,8 +58,7 @@ defmodule Spectre.Operation.Budget do
       end)
 
     consumed =
-      value
-      |> attr(:consumed, %{})
+      raw_consumed
       |> then(fn consumed ->
         %{
           steps: attr(consumed, :steps, 0),
@@ -204,4 +207,37 @@ defmodule Spectre.Operation.Budget do
   @spec attr(map(), atom(), term()) :: term()
   defp attr(map, key, default \\ nil),
     do: Map.get(map, key, default)
+
+  defp validate_input_keys!(value) do
+    allowed = @dimensions ++ [:limits, :consumed, :started_at, :deadline_at, :resources]
+
+    case Enum.find(Map.keys(value), &(&1 not in allowed)) do
+      nil -> :ok
+      key -> raise ArgumentError, "unknown operational budget key: #{inspect(key)}"
+    end
+  end
+
+  defp validate_limit_keys!(limits) when is_map(limits) do
+    case Enum.find(Map.keys(limits), &(&1 not in @dimensions)) do
+      nil -> :ok
+      key -> raise ArgumentError, "unknown operational budget limit: #{inspect(key)}"
+    end
+  end
+
+  defp validate_limit_keys!(limits) do
+    raise ArgumentError, "invalid operational budget limits: #{inspect(limits)}"
+  end
+
+  defp validate_consumed_keys!(consumed) when is_map(consumed) do
+    allowed = [:steps, :attempts, :retries, :cost]
+
+    case Enum.find(Map.keys(consumed), &(&1 not in allowed)) do
+      nil -> :ok
+      key -> raise ArgumentError, "unknown operational budget consumption: #{inspect(key)}"
+    end
+  end
+
+  defp validate_consumed_keys!(consumed) do
+    raise ArgumentError, "invalid operational budget consumption: #{inspect(consumed)}"
+  end
 end
