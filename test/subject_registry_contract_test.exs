@@ -314,6 +314,86 @@ defmodule SpectreSubjectRegistryContractTest do
              )
   end
 
+  test "link intents have bounded live capacity and bounded audit retention", %{clock: clock} do
+    bounded =
+      start_supervised!(
+        {SubjectRegistry,
+         name: nil,
+         id: {:bounded_subject_registry, System.unique_integer([:positive])},
+         clock: fn -> Agent.get(clock, & &1) end,
+         link_intent_capacity: 3,
+         link_intent_retention: 1}
+      )
+
+    subject = Subject.new("bounded-intents")
+    source = identity(:telegram, "bounded-source")
+
+    assert {:ok, _link} =
+             SubjectRegistry.bind(bounded, @agent, subject, source, proof: "bounded-proof")
+
+    set_clock(clock, 1_000)
+    first_destination = identity(:matrix, "bounded-first")
+
+    assert {:ok, first, first_challenge} =
+             SubjectRegistry.open_link(bounded, @agent, subject, source, first_destination)
+
+    set_clock(clock, 2_000)
+    second_destination = identity(:signal, "bounded-second")
+
+    assert {:ok, second, second_challenge} =
+             SubjectRegistry.open_link(bounded, @agent, subject, source, second_destination)
+
+    set_clock(clock, 3_000)
+    third_destination = identity(:whatsapp, "bounded-third")
+
+    assert {:ok, third, _third_challenge} =
+             SubjectRegistry.open_link(bounded, @agent, subject, source, third_destination)
+
+    assert {:error, :link_intent_capacity_reached} =
+             SubjectRegistry.open_link(
+               bounded,
+               @agent,
+               subject,
+               source,
+               identity(:email, "bounded-overflow")
+             )
+
+    assert {:ok, %SubjectLink{}} =
+             SubjectRegistry.confirm_link(
+               bounded,
+               first.id,
+               first_destination,
+               first_challenge
+             )
+
+    assert {:ok, %SubjectLink{}} =
+             SubjectRegistry.confirm_link(
+               bounded,
+               second.id,
+               second_destination,
+               second_challenge
+             )
+
+    assert {:error, :unknown_link_intent} = SubjectRegistry.intent(bounded, first.id)
+    assert {:ok, %LinkIntent{status: :committed}} = SubjectRegistry.intent(bounded, second.id)
+    assert {:ok, %LinkIntent{status: :pending}} = SubjectRegistry.intent(bounded, third.id)
+
+    assert {:ok, _fourth, _challenge} =
+             SubjectRegistry.open_link(
+               bounded,
+               @agent,
+               subject,
+               source,
+               identity(:email, "bounded-fourth")
+             )
+
+    assert {:ok, %SubjectRegistry{}} =
+             SubjectRegistry.init(link_intent_capacity: 1, link_intent_retention: 1)
+
+    assert {:stop, {:invalid_link_intent_option, :link_intent_retention, -1}} =
+             SubjectRegistry.init(link_intent_capacity: 1, link_intent_retention: -1)
+  end
+
   test "a failed Journal append does not publish a link", %{registry: registry} do
     subject = Subject.new("journal-atomicity")
     identity = identity(:telegram, "journal-principal")

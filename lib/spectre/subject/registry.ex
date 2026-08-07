@@ -24,6 +24,8 @@ defmodule Spectre.Subject.Registry do
 
   @default_ttl :timer.minutes(10)
   @default_attempts 3
+  @default_intent_capacity 4_096
+  @default_intent_retention 1_024
 
   defstruct links: %{}, resolutions: %{}, intents: %{}, opts: []
 
@@ -248,7 +250,19 @@ defmodule Spectre.Subject.Registry do
 
   @impl GenServer
   def init(opts) do
-    {:ok, %__MODULE__{opts: opts}}
+    with {:ok, capacity} <-
+           positive_option(opts, :link_intent_capacity, @default_intent_capacity),
+         {:ok, retention} <-
+           non_negative_option(opts, :link_intent_retention, @default_intent_retention) do
+      opts =
+        opts
+        |> Keyword.put(:link_intent_capacity, capacity)
+        |> Keyword.put(:link_intent_retention, retention)
+
+      {:ok, %__MODULE__{opts: opts}}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
   end
 
   @impl GenServer
@@ -285,8 +299,12 @@ defmodule Spectre.Subject.Registry do
         _from,
         state
       ) do
+    now = now_ms(state, opts)
+    state = prune_intents(state, now)
+
     result =
-      with {:ok, agent_ref} <- normalize_agent_ref(agent),
+      with :ok <- ensure_intent_capacity(state),
+           {:ok, agent_ref} <- normalize_agent_ref(agent),
            {:ok, subject} <- normalize_subject(subject),
            {:ok, source} <- normalize_identity(source),
            {:ok, destination} <- normalize_identity(destination),
@@ -297,7 +315,6 @@ defmodule Spectre.Subject.Registry do
            {:ok, source_confirmation?} <-
              boolean_option(opts, :source_confirmation?, false) do
         challenge = challenge()
-        now = now_ms(state, opts)
 
         intent = %LinkIntent{
           id: Identity.uuid7(),
@@ -728,8 +745,40 @@ defmodule Spectre.Subject.Registry do
 
   @spec put_intent(state(), LinkIntent.t()) :: state()
   defp put_intent(state, %LinkIntent{} = intent) do
-    %{state | intents: Map.put(state.intents, intent.id, intent)}
+    state
+    |> Map.put(:intents, Map.put(state.intents, intent.id, intent))
+    |> prune_intents(now_ms(state, []))
   end
+
+  defp ensure_intent_capacity(state) do
+    live_count = Enum.count(state.intents, fn {_id, intent} -> live_intent?(intent) end)
+
+    if live_count < Keyword.fetch!(state.opts, :link_intent_capacity),
+      do: :ok,
+      else: {:error, :link_intent_capacity_reached}
+  end
+
+  defp prune_intents(state, now) do
+    retention = Keyword.fetch!(state.opts, :link_intent_retention)
+
+    {live, historical} =
+      Enum.split_with(state.intents, fn {_id, intent} ->
+        live_intent?(intent, now)
+      end)
+
+    retained_history =
+      historical
+      |> Enum.sort_by(fn {id, intent} -> {intent.expires_at, intent.revision, id} end, :desc)
+      |> Enum.take(retention)
+
+    %{state | intents: Map.new(live ++ retained_history)}
+  end
+
+  defp live_intent?(intent),
+    do: intent.status in [:pending, :awaiting_source]
+
+  defp live_intent?(intent, now),
+    do: live_intent?(intent) and intent.expires_at > now
 
   @spec fetch_intent(state(), term()) :: {:ok, LinkIntent.t()} | {:error, :unknown_link_intent}
   defp fetch_intent(state, intent_id) when is_binary(intent_id) do
@@ -779,6 +828,15 @@ defmodule Spectre.Subject.Registry do
   defp positive_option(opts, key, default) do
     case Keyword.get(opts, key, default) do
       value when is_integer(value) and value > 0 -> {:ok, value}
+      value -> {:error, {:invalid_link_intent_option, key, value}}
+    end
+  end
+
+  @spec non_negative_option(keyword(), atom(), non_neg_integer()) ::
+          {:ok, non_neg_integer()} | {:error, {:invalid_link_intent_option, atom(), term()}}
+  defp non_negative_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value >= 0 -> {:ok, value}
       value -> {:error, {:invalid_link_intent_option, key, value}}
     end
   end
