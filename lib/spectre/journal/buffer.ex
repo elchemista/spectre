@@ -138,39 +138,40 @@ defmodule Spectre.Journal.Buffer do
     do: {:error, {:invalid_journal_buffer_size, buffer_size}, state}
 
   @spec dispatch(map()) :: map()
-  defp dispatch(state), do: dispatch(state, :queue.len(state.queue))
-
-  @spec dispatch(map(), non_neg_integer()) :: map()
-  defp dispatch(state, 0), do: state
-
-  defp dispatch(%{running: running, concurrency: concurrency} = state, _remaining)
+  defp dispatch(%{running: running, concurrency: concurrency} = state)
        when map_size(running) >= concurrency,
        do: state
 
-  defp dispatch(state, remaining) do
-    case :queue.out(state.queue) do
-      {{:value, {partition, delivery, enqueued_at} = queued}, queue} ->
-        if Map.has_key?(state.running, partition) do
-          state
-          |> Map.put(:queue, :queue.in(queued, queue))
-          |> dispatch(remaining - 1)
-        else
-          task = Task.Supervisor.async_nolink(Spectre.Journal.TaskSupervisor, delivery)
-
-          running = %{
-            reference: task.ref,
-            enqueued_at: enqueued_at,
-            partition: partition
-          }
-
-          state
-          |> Map.put(:queue, queue)
-          |> put_in([:running, partition], running)
-          |> dispatch(remaining - 1)
-        end
-
-      {:empty, _queue} ->
+  defp dispatch(state) do
+    case take_dispatchable(:queue.to_list(state.queue), state.running, []) do
+      :none ->
         state
+
+      {:ok, {partition, delivery, enqueued_at}, remaining} ->
+        task = Task.Supervisor.async_nolink(Spectre.Journal.TaskSupervisor, delivery)
+
+        running = %{
+          reference: task.ref,
+          enqueued_at: enqueued_at,
+          partition: partition
+        }
+
+        state
+        |> Map.put(:queue, :queue.from_list(remaining))
+        |> put_in([:running, partition], running)
+        |> dispatch()
+    end
+  end
+
+  # Scan without rotating blocked entries. This keeps each partition's FIFO
+  # order even when another partition uses the final concurrency slot.
+  defp take_dispatchable([], _running, _skipped), do: :none
+
+  defp take_dispatchable([{partition, _delivery, _at} = queued | rest], running, skipped) do
+    if Map.has_key?(running, partition) do
+      take_dispatchable(rest, running, [queued | skipped])
+    else
+      {:ok, queued, Enum.reverse(skipped, rest)}
     end
   end
 

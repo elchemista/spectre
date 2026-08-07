@@ -122,6 +122,55 @@ defmodule SpectreJournalBufferTest do
     send(slow_worker, :release)
   end
 
+  test "filling the final worker slot never reverses FIFO within a blocked partition" do
+    buffer = start_buffer()
+    parent = self()
+
+    assert :ok =
+             Buffer.enqueue(buffer, blocking_delivery(parent),
+               buffer_size: 5,
+               partition: :a
+             )
+
+    assert_receive {:started, a1}
+
+    assert :ok =
+             Buffer.enqueue(buffer, blocking_delivery(parent),
+               buffer_size: 5,
+               partition: :c
+             )
+
+    assert_receive {:started, c1}
+
+    a2 = fn ->
+      send(parent, {:a2_started, self()})
+
+      receive do
+        :release -> :ok
+      end
+    end
+
+    assert :ok = Buffer.enqueue(buffer, a2, buffer_size: 5, partition: :a)
+    assert :ok = Buffer.enqueue(buffer, blocking_delivery(parent), buffer_size: 5, partition: :b)
+
+    assert :ok =
+             Buffer.enqueue(buffer, fn -> send(parent, :a3_started) end,
+               buffer_size: 5,
+               partition: :a
+             )
+
+    send(c1, :release)
+    assert_receive {:started, b1}
+
+    send(a1, :release)
+    assert_receive {:a2_started, a2_worker}
+    refute_receive :a3_started, 50
+
+    send(a2_worker, :release)
+    assert_receive :a3_started
+    send(b1, :release)
+  end
+
   test "reports successful and failed deliveries without poisoning the queue" do
     buffer = start_buffer()
     parent = self()
