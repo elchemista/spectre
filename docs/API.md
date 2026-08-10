@@ -4,23 +4,58 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.5` extends the vNext core with first-class generational Skill
-state, explicit rollback branches, reference-safe retention, and schema-4
-checkpoints. The exact modules, callables, DSL forms, callbacks, types, and
+Spectre `0.2.7` adds declarative runtime Skills and versioned Routing
+projections while retaining every 0.2.6 conformance gate and the schema-4
+Skill-state runtime. The
+exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
 0.1.6 conversational baseline remains included. This guide explains that
 surface but does not enlarge it. Anything absent from the manifest is an
 implementation detail even when it is exported or visible.
 
+## Verify the foundation before an upgrade
+
+Use `Spectre.Foundation.Conformance` to decode, migrate, validate, and rewrite
+representative State, Run, and canonical Instance checkpoints. Use
+`verify_definition/2` for both fixture bytes and compiled
+Definition+Manifest pairs. Satellite suites should pass their entire package
+set to `Spectre.Stack.Conformance.run/2` so cross-package requirements,
+conflicts, compatibility, and ownership collisions are checked together. See
+[Foundation Conformance](FOUNDATION_CONFORMANCE.md).
+
 ## Canonical behavior identity
 
 Use `Spectre.Definition.canonical/2` to lower a compiled Agent or Skill into
 portable typed data, then `Spectre.Definition.Canonical.ref/1` for its content
 identity. `Spectre.Projection.generate/1` returns the exact Audit projection;
-its digest also binds the generator ID and version. These APIs inspect declared
-behavior only: they do not activate a Definition or grant authority. See
+`generate/3` with `Spectre.Projection.Routing` derives a non-executable route
+view bound to a versioned `Spectre.Router.IndexProfile`. Projection digests
+bind the generator ID, version, and generated content. These APIs inspect
+declared behavior only: they do not activate a Definition or grant authority. See
 [Canonical Definitions and Audit Projections](CANONICAL_DEFINITIONS.md).
+
+## Mount a declarative runtime Skill
+
+Use `Spectre.Skill.Definition.new/1` for data-only runtime Skills or
+`from_compiled/2` for a compiled Skill. Both expose the same semantic IR. A
+trusted host creates `Spectre.Skill.Runtime` with an effective Authority
+Envelope, kernel prompt reserve, and per-Skill ceiling, then performs lifecycle
+changes with revision CAS.
+
+Canonical runtime loads rederive prompt budgets and validate host-owned
+fragment governance. This validation also applies to in-memory Canonical and
+prebuilt Skill Definition structs; mount never treats their fields as already
+trusted. JSON string operation refs are resolved only against the closed Agent
+registry through `Spectre.Operation.Registry.resolve_id/2`; no atom or
+executable entry is created from runtime data.
+
+`respond/4` returns either a closed reply or a registered
+`Spectre.Operation.Request`; it never executes the operation. Disable and
+replacement keep old Definition generations only while exact pinned
+continuations remain. Malformed routing input and non-map Canonical route or
+requirement entries return structured errors rather than raising. See
+[Runtime Skills and Routing Projections](RUNTIME_SKILLS.md).
 
 ## Publish and resolve canonical behavior
 

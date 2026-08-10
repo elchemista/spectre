@@ -4,6 +4,89 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.7 — 2026-08-10
+
+### Added
+
+- Added `Spectre.Skill.Definition`, a single canonical wrapper for compiled and
+  runtime-authored Skills. Equivalent origins expose equal semantic IR while
+  exact Refs retain origin and publisher provenance.
+- Added data-only runtime Flows with exact routing, closed reply fragments, and
+  references to operations already registered by the host Agent. The compiled
+  DSL gains `requires_operation/2` and `call_operation/2` over the same IR.
+- Added structured `Spectre.Skill.Applicability`, executable positive/negative
+  anti-hijack examples, and fail-closed conflict and ambiguity handling.
+- Added versioned per-Skill prompt budgets and
+  `Spectre.Router.IndexProfile`. Runtime mount reserves the kernel window,
+  checks granted budget classes, and accounts for retained draining
+  generations.
+- Added `Spectre.Projection.Routing`, a deterministic non-executable projection
+  with a profile-bound disposable cache key.
+- Added immutable `Spectre.Skill.Runtime` mount, replace, and disable lifecycle
+  with authority capabilities, revision CAS, exact Definition-pinned
+  continuations, and drain completion.
+- Added the permanent 0.2.7 runtime Skill and Routing projection fixture.
+
+### Migration and safety
+
+- Runtime Definitions reject code references, AST, executable prompt
+  templates, uncapped fragments, undeclared or unregistered operations,
+  ambiguous routes, failed anti-hijack examples, and authority gaps.
+- Runtime operation handlers return a portable `Spectre.Operation.Request`;
+  Spectre does not execute it or widen authority. Publication, activation, and
+  lifecycle changes remain explicit host actions.
+- Canonical runtime Skill loads rederive prompt usage from the restored
+  fragments, require every fragment cap, and reject declared budget counters
+  that do not exactly match the derived evidence.
+- Runtime fragment placement, trust, provenance, and granted priority are
+  assigned by Spectre rather than accepted from authored data. Composite
+  placeholder values fail closed instead of invoking arbitrary string
+  protocols.
+- JSON string operation references resolve only to matching IDs already in the
+  host Agent registry, without creating atoms. Forbidden applicability tags
+  remain exclusion filters and cannot increase routing specificity.
+- Canonical Skill structs and prebuilt `Spectre.Skill.Definition` values are
+  revalidated at load and mount. Malformed route, requirement, prompt, or
+  Routing-projection collections return indexed errors instead of protocol or
+  function-clause exceptions.
+- Negative anti-hijack examples now fail when one or several routes match.
+  Inputs that cannot be normalized return `{:invalid_skill_input, shape}` from
+  Skill routing and response boundaries instead of crashing `String.Chars`.
+- State remains writer v5, Run remains writer v2, and canonical Instance
+  checkpoints remain schema 4. All 0.2.6 foundation and Stack gates remain in
+  the release suite.
+- Generated callbacks, goal-driven Work, autonomous Forge behavior, empirical
+  reflection, and governance remain outside this gate.
+
+## 0.2.6 — 2026-08-10
+
+### Added
+
+- Added `Spectre.Foundation.Conformance`, an ExUnit-independent public gate
+  that performs real decode, migration, current validation, and re-encoding
+  for State, Run, and canonical Instance checkpoints.
+- Added Definition/Manifest conformance for canonical bytes and compiled
+  module-first values, including stable Definition, authority, closure, and
+  Manifest evidence.
+- Added `Spectre.Stack.Conformance`, which compiles a complete satellite
+  package matrix through the real Stack invariants and rejects incompatible
+  versions, missing requirements, conflicts, duplicate packages, and
+  capability ownership collisions.
+- Added a permanent 0.2.6 golden fixture that pins every core compatibility
+  artifact from 0.1.6 through 0.2.5 and the complete schema/contract matrix.
+
+### Migration and safety
+
+- No durable writer changed: State remains v5, Run remains v2, and canonical
+  Instance checkpoints remain schema 4. Definition, Manifest, Candidate, and
+  Stack contracts are unchanged.
+- Added integrated compiled Agent+Skill, legacy migration, corruption, and
+  Stack composition coverage. Existing restart, activation-race, owner-fence,
+  and ambiguous persistence suites remain part of the same release gate.
+- Added migration documentation for 0.2.6 and an explicit 0.2-to-0.3 ledger.
+  Runtime-authored values must lower into the existing canonical models, and
+  publication or activation remains an explicit host action.
+
 ## 0.2.5 — 2026-08-10
 
 ### Added

@@ -196,7 +196,8 @@ defmodule Spectre.Stack.Contract.V2 do
         prompt_fragment_digests: Keyword.get(opts, :prompt_fragment_digests, []),
         projection_generators:
           Keyword.get(opts, :projection_generators, [
-            %{id: "spectre.projection.audit", version: 1}
+            %{id: "spectre.projection.audit", version: 1},
+            %{id: "spectre.projection.routing", version: 1}
           ]),
         state_schema_ref: Keyword.get(opts, :state_schema_ref, "spectre.instance.canonical/1"),
         state_codec_ref:

@@ -4,6 +4,12 @@
 one immutable environment. It replaces implicit global extension discovery
 with explicit installation and logical references.
 
+For release and umbrella integration tests, pass the complete package set to
+`Spectre.Stack.Conformance.run/2`. It invokes the same compiler invariants as
+an Agent Stack and catches compatibility, dependency, conflict, ordering, and
+ownership failures that isolated manifest checks cannot see. See
+[Foundation Conformance](FOUNDATION_CONFORMANCE.md).
+
 ## Define a Stack
 
 ```elixir

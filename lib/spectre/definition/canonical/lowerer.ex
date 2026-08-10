@@ -7,7 +7,9 @@ defmodule Spectre.Definition.Canonical.Lowerer do
   alias Spectre.Definition.Canonical.PromptLowerer
   alias Spectre.Definition.Component
   alias Spectre.Definition.Ref
+  alias Spectre.Skill.Applicability
   alias Spectre.Skill.Mount
+  alias Spectre.Skill.PromptBudget
 
   @component_specs [
     {:identity, "spectre.definition.identity/1", :must_understand},
@@ -70,6 +72,7 @@ defmodule Spectre.Definition.Canonical.Lowerer do
          {:ok, policies} <-
            Data.lower(definition.policies, owner: definition.owner, path: [:policies]),
          {:ok, prompts} <- PromptLowerer.lower(definition, opts),
+         {:ok, prompt_fragments} <- prompt_fragments_payload(definition, prompts),
          {:ok, requirements} <- requirements_payload(definition),
          {:ok, skills} <- skills_payload(definition, opts),
          {:ok, compiled_runtime} <- compiled_runtime_payload(definition),
@@ -81,7 +84,7 @@ defmodule Spectre.Definition.Canonical.Lowerer do
          applicability: applicability,
          routing: routing,
          policies: %{declarations: policies},
-         prompt_fragments: %{fragments: prompts},
+         prompt_fragments: prompt_fragments,
          requirements: requirements,
          skills: %{mounts: skills},
          compiled_runtime: compiled_runtime,
@@ -134,7 +137,8 @@ defmodule Spectre.Definition.Canonical.Lowerer do
         |> Enum.uniq()
     }
 
-    with {:ok, declared} <-
+    with :ok <- validate_skill_applicability(definition.kind, declared),
+         {:ok, declared} <-
            Data.structural(declared,
              owner: definition.owner,
              path: [:applicability, :declared]
@@ -145,6 +149,30 @@ defmodule Spectre.Definition.Canonical.Lowerer do
              path: [:applicability, :inferred]
            ) do
       {:ok, %{declared: declared, inferred: inferred}}
+    end
+  end
+
+  @spec validate_skill_applicability(Definition.kind(), term()) :: :ok | {:error, term()}
+  defp validate_skill_applicability(:agent, _declared), do: :ok
+
+  defp validate_skill_applicability(:skill, declared) do
+    case Applicability.new(declared) do
+      {:ok, _applicability} -> :ok
+      {:error, reason} -> {:error, {:invalid_compiled_skill_applicability, reason}}
+    end
+  end
+
+  @spec prompt_fragments_payload(Definition.t(), [map()]) ::
+          {:ok, map()} | {:error, term()}
+  defp prompt_fragments_payload(%Definition{kind: :agent}, prompts),
+    do: {:ok, %{fragments: prompts}}
+
+  defp prompt_fragments_payload(%Definition{kind: :skill} = definition, prompts) do
+    cap = Keyword.get(definition.config, :prompt_budget, 512)
+
+    case PromptBudget.new(prompts, token_cap: cap) do
+      {:ok, budget} -> {:ok, %{fragments: prompts, budget: PromptBudget.to_data(budget)}}
+      {:error, reason} -> {:error, {:invalid_compiled_skill_prompt_budget, reason}}
     end
   end
 
@@ -220,6 +248,27 @@ defmodule Spectre.Definition.Canonical.Lowerer do
            Data.structural(action, owner: owner, path: [:routing, :rules, index, :action]),
          {:ok, opts} <- lower_handler_opts(opts, owner, index) do
       {:ok, %{kind: :action, action: action, opts: opts}}
+    end
+  end
+
+  defp lower_handler({:operation, operation, opts}, owner, index) when is_list(opts) do
+    input = Keyword.get(opts, :input, :input)
+
+    with {:ok, operation} <-
+           Data.structural(operation,
+             owner: owner,
+             path: [:routing, :rules, index, :operation]
+           ),
+         {:ok, input} <-
+           Data.structural(input,
+             owner: owner,
+             path: [:routing, :rules, index, :operation_input]
+           ),
+         {:ok, opts} <-
+           opts
+           |> Keyword.delete(:input)
+           |> lower_handler_opts(owner, index) do
+      {:ok, %{kind: :operation, operation_ref: operation, input: input, opts: opts}}
     end
   end
 
@@ -302,7 +351,13 @@ defmodule Spectre.Definition.Canonical.Lowerer do
   @spec compiled_runtime_payload(Definition.t()) :: {:ok, map()} | {:error, term()}
   defp compiled_runtime_payload(definition) do
     config =
-      Keyword.drop(definition.config, [:description, :metadata, :applicability, :prompt_root])
+      Keyword.drop(definition.config, [
+        :description,
+        :metadata,
+        :applicability,
+        :prompt_root,
+        :prompt_budget
+      ])
 
     Data.lower(
       %{
@@ -327,6 +382,11 @@ defmodule Spectre.Definition.Canonical.Lowerer do
        generators: [
          %{
            id: "spectre.projection.audit",
+           version: 1,
+           contract_ref: "spectre.projection/1"
+         },
+         %{
+           id: "spectre.projection.routing",
            version: 1,
            contract_ref: "spectre.projection/1"
          }

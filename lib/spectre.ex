@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.2.5"
+  @version "0.2.7"
 
   @doc """
   Returns the running Spectre library version.
