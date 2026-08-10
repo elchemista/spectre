@@ -4,9 +4,10 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.7` adds declarative runtime Skills and versioned Routing
-projections while retaining every 0.2.6 conformance gate and the schema-4
-Skill-state runtime. The
+Spectre `0.2.8` adds portable data-driven Work programs, exact Execution
+materialization, prompt receipts, typed handoffs, registered state migrations,
+and no-Effect rehearsal while retaining every earlier conformance gate and
+the schema-4 Skill-state runtime. The
 exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
@@ -56,6 +57,26 @@ replacement keep old Definition generations only while exact pinned
 continuations remain. Malformed routing input and non-map Canonical route or
 requirement entries return structured errors rather than raising. See
 [Runtime Skills and Routing Projections](RUNTIME_SKILLS.md).
+
+## Materialize and start data-driven Work
+
+Use `Spectre.Execution.Program.new/1` for JSON-shaped Work data or
+`Spectre.Execution.Program.from_compiled/1` for a module built with
+`Spectre.Execution.Work`. Runtime Skills carry the same Program IR and route
+to it by stable id.
+
+`Spectre.Execution.Materializer.materialize/4` resolves one mounted Skill
+route and seals its exact Definition, Program, input evidence, prompt
+plans/receipts, continuation, and Execution projection. Verify that value and
+start it through `Spectre.start_execution/3`. The ordinary loop query and
+pause/update/resume/stop APIs apply because data Work uses the existing
+operational runtime rather than a parallel executor.
+
+`Spectre.Execution.Handoff` carries typed Flow/Work exchanges;
+`Spectre.Execution.Migration` prepares and commits pure registered state
+migrations; and `Spectre.Execution.Rehearsal.run/4` replays exact recordings
+without dispatching real Effects. See
+[Data-driven execution](DATA_DRIVEN_EXECUTION.md).
 
 ## Publish and resolve canonical behavior
 

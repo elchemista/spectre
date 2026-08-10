@@ -35,13 +35,30 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.7` adds data-only runtime Skills, deterministic Routing
-> projections, host-governed mount/replace/disable, per-Skill prompt budgets,
-> and exact Definition-pinned continuation draining. Durable writer schemas are
-> unchanged. The full suite exceeds 90%
+> Spectre `0.2.8` adds portable data-driven Work programs, exact Execution
+> materialization/projections, effective prompt receipts, typed handoffs,
+> registered state migrations, and no-Effect rehearsal on the existing fenced
+> operational runtime. Durable writer schemas are unchanged. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.2.8 Data-driven Execution
+
+Version `0.2.8` lowers compiled and JSON-shaped precise Work declarations
+into one immutable `Spectre.Execution.Program` IR. Step, inference, predicate,
+and migration references resolve only to operations already registered and
+authorized by the host Agent. Finite graphs, explicit budgets, bounded repeats,
+closed expressions, and declared amendment paths keep authored data from
+becoming code or authority.
+
+A mounted runtime Skill can materialize an exact Work with Definition,
+Program, input evidence, prompt plan/receipt, route, and continuation lineage.
+`Spectre.start_execution/3` runs that sealed value through the existing
+operation executor, checkpoint, recovery, retry, and control lifecycle. Typed
+Flow/Work handoffs and deterministic rehearsal remain explicit host
+boundaries. See [Data-driven execution](docs/DATA_DRIVEN_EXECUTION.md) and
+[Migrating to 0.2.8](docs/MIGRATING_TO_0_2_8.md).
 
 ## 0.2.7 Runtime Skills and Routing Projections
 
@@ -271,7 +288,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.7"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.8"}
   ]
 end
 ```
@@ -793,6 +810,8 @@ adapters on startup, and can stop after an idle timeout.
   golden fixtures, and application/satellite conformance rollout.
 - [Migrating to 0.2.7](docs/MIGRATING_TO_0_2_7.md) - runtime Skill authority,
   prompt budgeting, Routing projections, and continuation drains.
+- [Migrating to 0.2.8](docs/MIGRATING_TO_0_2_8.md) - data Work programs,
+  materialization, prompt receipts, handoffs, migrations, and rehearsal.
 - [Preparing for 0.3](docs/MIGRATING_TO_0_3.md) - the compatibility ledger and
   required lowering path for reflective runtime work.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
@@ -816,7 +835,9 @@ adapters on startup, and can stop after an idle timeout.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
 - [Runtime Skills](docs/RUNTIME_SKILLS.md) - declarative Skill construction,
   host lifecycle, operation requests, prompt budgets, and Routing projections.
-- [0.2.7 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [Data-driven Execution](docs/DATA_DRIVEN_EXECUTION.md) - portable Work IR,
+  shared execution lifecycle, receipts, handoffs, migrations, and rehearsal.
+- [0.2.8 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.
