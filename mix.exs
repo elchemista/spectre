@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.2.1"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -11,6 +11,7 @@ defmodule Spectre.MixProject do
     "docs/ARCHITECTURE.md",
     "docs/INTEGRATIONS.md",
     "docs/DSL.md",
+    "docs/CANONICAL_DEFINITIONS.md",
     "docs/STACK.md",
     "docs/RUNS.md",
     "docs/INSTANCES.md",
@@ -127,6 +128,7 @@ defmodule Spectre.MixProject do
           "docs/ARCHITECTURE.md",
           "docs/INTEGRATIONS.md",
           "docs/DSL.md",
+          "docs/CANONICAL_DEFINITIONS.md",
           "docs/STACK.md",
           "docs/RUNS.md",
           "docs/INSTANCES.md",
@@ -158,6 +160,14 @@ defmodule Spectre.MixProject do
         ]
       ],
       groups_for_modules: [
+        "Canonical definitions and projections": [
+          Spectre.Canonical.Value,
+          Spectre.Definition.Canonical,
+          Spectre.Definition.Component,
+          Spectre.Definition.Ref,
+          Spectre.Projection,
+          Spectre.Projection.Audit
+        ],
         "Core API": [
           Spectre,
           Spectre.Stack,
