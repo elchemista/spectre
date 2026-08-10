@@ -65,17 +65,24 @@ further automatic writes until `Spectre.reconcile_checkpoint/2` loads and
 validates durable state. Monitor `checkpoint_status/1`, and use
 `flush_checkpoint/2` as a deployment or graceful-shutdown barrier.
 
-Checkpoint schema 2 includes the current Definition Activation and retained
-Run continuations. Configure the same durable `Spectre.Definition.Store` on
-restart so Spectre can re-read every pinned Definition and verify its closure.
-The bundled in-memory Definition Store is not valid beside a durable
-Checkpoint Store.
+Checkpoint schema 4 includes the current Definition Activation, retained Run
+continuations, Definition lifecycle and event records, and private Skill-state
+branches. Configure the same durable `Spectre.Definition.Store` on restart so
+Spectre can re-read every pinned Definition and verify its closure. The bundled
+in-memory Definition Store is not valid beside a durable Checkpoint Store.
 
 Before upgrading an existing checkpoint namespace to 0.2.3, implement
 `migrate_instance_key/5` atomically and drain old owners. A local Registry is
 not a distributed ownership guarantee; multi-node deployments must also
 configure a linearizable `Spectre.Instance.Owner` lease adapter. See
 [Migrating to 0.2.3](MIGRATING_TO_0_2_3.md).
+
+Before upgrading live checkpoint namespaces to 0.2.5, quiesce schema-3
+writers. Once schema 4 has been written, 0.2.4 cannot restore that checkpoint.
+Inventory host-side references before marking any Skill-state branch
+GC-eligible: core sees its Activation, Runs, operations, and child branches,
+but not application tables or backups. See
+[Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
 
 Canonical operational history is bounded by default. An Instance retains the
 256 most recently updated terminal loops and up to 1,024 additional historical
@@ -205,6 +212,8 @@ unverified online examples in sensitive flows.
 - Use durable state with optimistic revisions where concurrency is possible.
 - Persist canonical Instance checkpoints before relying on Work or Vigil
   recovery, and reconcile every ambiguous compare-and-swap result.
+- Quiesce old checkpoint writers during schema upgrades, and retain private
+  Skill-state branches until both core and host-side references are retired.
 - Make business actions idempotent by effect key.
 - Give every operational side effect an accurate `:idempotent`,
   `:reconcilable`, or `:non_idempotent` declaration.

@@ -105,6 +105,19 @@ See [Stable Identity, Activation, and Definition-Pinned Runs](IDENTITY_ACTIVATIO
 for the publication flow and [Migrating to 0.2.3](MIGRATING_TO_0_2_3.md) for
 legacy key migration.
 
+### Private Skill state
+
+Canonical schema 4 also retains private Skill state as Definition-owned,
+generational branches. The active branch is selected by the current
+Activation; older branches remain dormant until an explicit resume, fork,
+migration, abandonment, or reference-safe retention transition. Activating
+A → B → A never merges B's state into A.
+
+State reads and writes remain serialized by the same Instance owner. Writes
+require exact schema, generation, and revision checks plus current Definition
+authority and owner fencing. See [Generational Skill State](SKILL_STATE.md)
+and [Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
+
 ## Run ownership and observable boundaries
 
 Each input creates a Run retained by the Instance. The ready queue is FIFO and
@@ -197,8 +210,10 @@ startup and use `flush_checkpoint/2`, `checkpoint_status/1`, and
 `reconcile_checkpoint/2` at the host boundary. An ambiguous compare-and-swap
 write erects a persistence fence and is never retried automatically.
 
-Schema-2 checkpoints also retain the current Activation and every retained
-Run. When a legacy Instance key is found, the adapter's
+Current schema-4 checkpoints retain the Activation, every retained Run,
+Definition lifecycle and event records, and the complete private Skill-state
+branch graph. Readers still accept schemas 1 through 3 and supply missing
+sections during restore. When a legacy Instance key is found, the adapter's
 `migrate_instance_key/5` callback must atomically expose the migrated bytes
 under the stable Ref. Divergent histories under old and new keys are rejected.
 

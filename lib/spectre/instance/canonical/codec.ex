@@ -1,13 +1,17 @@
 defmodule Spectre.Instance.Canonical.Codec do
   @moduledoc false
 
+  alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Section
   alias Spectre.Instance.Canonical.Sections
   alias Spectre.Instance.Canonical.Transition
+  alias Spectre.Instance.Lifecycle
   alias Spectre.Run.Value
 
-  @checkpoint_version 2
+  @checkpoint_version 4
+  @event_checkpoint_version 3
+  @activation_checkpoint_version 2
   @legacy_checkpoint_version 1
   @max_json_bytes 8_000_000
 
@@ -31,7 +35,18 @@ defmodule Spectre.Instance.Canonical.Codec do
     "events" => :events
   }
 
-  @section_names Map.merge(@legacy_section_names, %{"activation" => :activation, "runs" => :runs})
+  @activation_section_names Map.merge(@legacy_section_names, %{
+                              "activation" => :activation,
+                              "runs" => :runs
+                            })
+
+  @event_section_names Map.merge(@activation_section_names, %{
+                         "lifecycles" => :lifecycles,
+                         "event_admissions" => :event_admissions,
+                         "event_quarantine" => :event_quarantine
+                       })
+
+  @section_names Map.put(@event_section_names, "skill_states", :skill_states)
 
   @spec encode(Canonical.t()) :: {:ok, map()} | {:error, term()}
   def encode(%Canonical{} = state) do
@@ -76,11 +91,12 @@ defmodule Spectre.Instance.Canonical.Codec do
          {:ok, revision} <- non_negative_integer(checkpoint, "revision"),
          {:ok, sections} <-
            decode_sections(Map.fetch!(checkpoint, "sections"), checkpoint_version),
+         {:ok, sections} <- migrate_sections(sections, checkpoint_version),
          {:ok, journal} <- decode_journal(Map.fetch!(checkpoint, "journal")),
          {:ok, applied_changes} <-
            decode_applied_changes(Map.fetch!(checkpoint, "applied_changes")) do
       state = %Canonical{
-        schema_version: 2,
+        schema_version: 4,
         revision: revision,
         sections: sections,
         journal: journal,
@@ -144,6 +160,37 @@ defmodule Spectre.Instance.Canonical.Codec do
 
   defp decode_sections(value, _checkpoint_version),
     do: {:error, {:invalid_canonical_sections, shape(value)}}
+
+  @spec migrate_sections(Sections.t(), pos_integer()) ::
+          {:ok, Sections.t()} | {:error, term()}
+  defp migrate_sections(%Sections{} = sections, @activation_checkpoint_version) do
+    {:ok, activation_section} = Sections.fetch(sections, :activation)
+
+    case activation_section.value do
+      %Activation{} = activation ->
+        lifecycle = Lifecycle.from_activation(activation)
+
+        migrated =
+          Sections.put(
+            sections,
+            :lifecycles,
+            %Section{
+              revision: activation_section.revision,
+              value: %{Lifecycle.key(lifecycle) => lifecycle}
+            }
+          )
+
+        {:ok, migrated}
+
+      nil ->
+        {:ok, sections}
+
+      value ->
+        {:error, {:invalid_canonical_activation, value}}
+    end
+  end
+
+  defp migrate_sections(%Sections{} = sections, _checkpoint_version), do: {:ok, sections}
 
   @spec decode_section(term(), Sections.name()) :: {:ok, Section.t()} | {:error, term()}
   defp decode_section(section, name) when is_map(section) and not is_struct(section) do
@@ -323,13 +370,19 @@ defmodule Spectre.Instance.Canonical.Codec do
 
   @spec checkpoint_version(term()) :: :ok | {:error, term()}
   defp checkpoint_version(@checkpoint_version), do: :ok
+  defp checkpoint_version(@event_checkpoint_version), do: :ok
+  defp checkpoint_version(@activation_checkpoint_version), do: :ok
   defp checkpoint_version(@legacy_checkpoint_version), do: :ok
   defp checkpoint_version(version), do: {:error, {:unsupported_canonical_checkpoint, version}}
 
   defp section_names(@checkpoint_version), do: @section_names
+  defp section_names(@event_checkpoint_version), do: @event_section_names
+  defp section_names(@activation_checkpoint_version), do: @activation_section_names
   defp section_names(@legacy_checkpoint_version), do: @legacy_section_names
 
-  defp state_schema_version(@checkpoint_version, 2), do: :ok
+  defp state_schema_version(@checkpoint_version, 4), do: :ok
+  defp state_schema_version(@event_checkpoint_version, 3), do: :ok
+  defp state_schema_version(@activation_checkpoint_version, 2), do: :ok
   defp state_schema_version(@legacy_checkpoint_version, 1), do: :ok
 
   defp state_schema_version(_checkpoint_version, version),
@@ -390,6 +443,10 @@ defmodule Spectre.Instance.Canonical.Codec do
   defp section_name(:events), do: "events"
   defp section_name(:activation), do: "activation"
   defp section_name(:runs), do: "runs"
+  defp section_name(:lifecycles), do: "lifecycles"
+  defp section_name(:event_admissions), do: "event_admissions"
+  defp section_name(:event_quarantine), do: "event_quarantine"
+  defp section_name(:skill_states), do: "skill_states"
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_list(value), do: :list

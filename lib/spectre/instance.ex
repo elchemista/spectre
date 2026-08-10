@@ -17,8 +17,10 @@ defmodule Spectre.Instance do
 
   alias Spectre.AgentRef
   alias Spectre.Definition.Candidate.Ref, as: CandidateRef
+  alias Spectre.Definition.Ref, as: DefinitionRef
   alias Spectre.Definition.Resolver, as: DefinitionResolver
   alias Spectre.Definition.Store, as: DefinitionStore
+  alias Spectre.Event.Envelope, as: EventEnvelope
   alias Spectre.Execution.Closure
   alias Spectre.Input
   alias Spectre.Instance.Activation
@@ -29,11 +31,14 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Commit
   alias Spectre.Instance.Conversation
   alias Spectre.Instance.Deliveries
+  alias Spectre.Instance.Events
+  alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.Loops
   alias Spectre.Instance.Owner
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Registry, as: InstanceRegistry
   alias Spectre.Instance.Runs
+  alias Spectre.Instance.SkillStates
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Instance.Telemetry, as: InstanceTelemetry
   alias Spectre.Instance.Timers
@@ -58,6 +63,7 @@ defmodule Spectre.Instance do
   alias Spectre.Run.Ref
   alias Spectre.Run.Value
   alias Spectre.Runtime
+  alias Spectre.Skill.StateBinding
   alias Spectre.State
   alias Spectre.Subject
   alias Spectre.Turn
@@ -192,6 +198,106 @@ defmodule Spectre.Instance do
   def activate(server, candidate_ref, opts \\ []) do
     GenServer.call(server, {:instance_activate, candidate_ref, opts}, timeout(opts))
   end
+
+  @doc "Returns the active or explicitly selected branch for a stable Skill id."
+  @spec skill_state(GenServer.server(), atom() | String.t(), keyword()) ::
+          {:ok, StateBinding.t()} | {:error, term()}
+  def skill_state(server, skill_id, opts \\ []) do
+    GenServer.call(server, {:skill_state_fetch, skill_id, opts}, timeout(opts))
+  end
+
+  @doc "Lists non-purged Skill-state branches newest-generation first."
+  @spec skill_state_branches(GenServer.server(), atom() | String.t(), keyword()) ::
+          {:ok, [StateBinding.t()]} | {:error, term()}
+  def skill_state_branches(server, skill_id, opts \\ []) do
+    GenServer.call(server, {:skill_state_list, skill_id, opts}, timeout(opts))
+  end
+
+  @doc "Updates one active Skill-state branch through schema, generation and revision fences."
+  @spec update_skill_state(GenServer.server(), atom() | String.t(), term(), keyword()) ::
+          {:ok, StateBinding.t()} | {:error, term()}
+  def update_skill_state(server, skill_id, value, opts \\ []) do
+    GenServer.call(server, {:skill_state_update, skill_id, value, opts}, timeout(opts))
+  end
+
+  @doc "Transitions one dormant Skill-state branch through the retention lifecycle."
+  @spec transition_skill_state_retention(
+          GenServer.server(),
+          atom() | String.t(),
+          String.t(),
+          StateBinding.retention(),
+          keyword()
+        ) :: {:ok, StateBinding.t()} | {:error, term()}
+  def transition_skill_state_retention(server, skill_id, branch_id, retention, opts \\ []) do
+    GenServer.call(
+      server,
+      {:skill_state_retention, skill_id, branch_id, retention, opts},
+      timeout(opts)
+    )
+  end
+
+  @doc """
+  Admits an ownership-based Event Envelope on the Instance sequencer.
+
+  The origin is retained as evidence. Replies and progress are owned by their
+  continuation's pinned Definition; new input is owned by the active
+  Definition. Unresolvable or ambiguous continuations are quarantined.
+  """
+  @spec admit_event(GenServer.server(), EventEnvelope.t() | map() | keyword(), keyword()) ::
+          {:ok, EventEnvelope.t()} | {:error, term()}
+  def admit_event(server, event, opts \\ []) do
+    GenServer.call(server, {:event_admit, event, opts}, timeout(opts))
+  end
+
+  @doc "Returns committed admitted Event Envelopes, newest first."
+  @spec admitted_events(GenServer.server(), keyword()) :: [EventEnvelope.t()]
+  def admitted_events(server, opts \\ []),
+    do: GenServer.call(server, {:event_list, :admitted, opts}, timeout(opts))
+
+  @doc "Returns quarantined Event Envelopes, newest first."
+  @spec quarantined_events(GenServer.server(), keyword()) :: [EventEnvelope.t()]
+  def quarantined_events(server, opts \\ []),
+    do: GenServer.call(server, {:event_list, :quarantined, opts}, timeout(opts))
+
+  @doc "Returns the current lifecycle axes for one Definition or `:active`."
+  @spec definition_lifecycle(GenServer.server(), DefinitionRef.t() | String.t() | :active) ::
+          {:ok, Lifecycle.t()} | {:error, term()}
+  def definition_lifecycle(server, definition_ref \\ :active),
+    do: GenServer.call(server, {:definition_lifecycle, definition_ref})
+
+  @doc "Transitions one Definition lifecycle axis through revision CAS."
+  @spec transition_definition_lifecycle(
+          GenServer.server(),
+          DefinitionRef.t() | String.t() | :active,
+          Lifecycle.axis(),
+          atom(),
+          keyword()
+        ) :: {:ok, Lifecycle.t()} | {:error, term()}
+  def transition_definition_lifecycle(server, definition_ref, axis, value, opts \\ []) do
+    GenServer.call(
+      server,
+      {:definition_lifecycle_transition, definition_ref, axis, value, opts},
+      timeout(opts)
+    )
+  end
+
+  @doc "Moves a Definition to draining: continuations remain admissible, new work does not."
+  @spec drain_definition(
+          GenServer.server(),
+          DefinitionRef.t() | String.t() | :active,
+          keyword()
+        ) :: {:ok, Lifecycle.t()} | {:error, term()}
+  def drain_definition(server, definition_ref \\ :active, opts \\ []),
+    do: transition_definition_lifecycle(server, definition_ref, :admission, :draining, opts)
+
+  @doc "Revokes current Definition authority and advances its authority epoch."
+  @spec revoke_definition(
+          GenServer.server(),
+          DefinitionRef.t() | String.t() | :active,
+          keyword()
+        ) :: {:ok, Lifecycle.t()} | {:error, term()}
+  def revoke_definition(server, definition_ref \\ :active, opts \\ []),
+    do: transition_definition_lifecycle(server, definition_ref, :authority, :revoked, opts)
 
   @doc """
   Returns the Instance's trace identifier.
@@ -600,25 +706,31 @@ defmodule Spectre.Instance do
       ) do
     case Runs.owned_run(data, supplied_ref) do
       {:ok, run} ->
-        cond do
-          run_active?(data, run.id) ->
-            {:reply, {:error, {:run_already_active, run.id}}, data}
+        case Events.authorize(data, run.definition_ref, :continuation) do
+          :ok ->
+            cond do
+              run_active?(data, run.id) ->
+                {:reply, {:error, {:run_already_active, run.id}}, data}
 
-          execute_command?(command) ->
-            dispatch_invocation(run, command, opts, :turn, from, data)
+              execute_command?(command) ->
+                dispatch_invocation(run, command, opts, :turn, from, data)
 
-          true ->
-            entry = %{
-              run_id: run.id,
-              operation: {:resume, command},
-              projection: :turn,
-              input: run.input,
-              opts: runtime_opts(data, opts, run.input),
-              state_revision: data.state.revision,
-              internal?: false
-            }
+              true ->
+                entry = %{
+                  run_id: run.id,
+                  operation: {:resume, command},
+                  projection: :turn,
+                  input: run.input,
+                  opts: runtime_opts(data, opts, run.input),
+                  state_revision: data.state.revision,
+                  internal?: false
+                }
 
-            {:noreply, data |> enqueue(entry, true) |> put_caller(run.id, from)}
+                {:noreply, data |> enqueue(entry, true) |> put_caller(run.id, from)}
+            end
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, arm_idle_timer(data)}
         end
 
       {:error, reason} ->
@@ -629,6 +741,7 @@ defmodule Spectre.Instance do
   # Compatibility with Spectre.Session and Spectre.Turn.resolve_policy/3.
   def handle_call({:resolve_policy, %Result{} = supplied, resolution, opts}, from, data) do
     with {:ok, run} <- Runs.owned_result_run(data, supplied),
+         :ok <- Events.authorize(data, run.definition_ref, :continuation),
          false <- run_active?(data, run.id),
          %Boundary{kind: :needs, ref: boundary_ref} <- run.waiting do
       entry = %{
@@ -682,6 +795,37 @@ defmodule Spectre.Instance do
   def handle_call(:instance_activation, _from, data),
     do: {:reply, data.activation, arm_idle_timer(data)}
 
+  def handle_call({:skill_state_fetch, skill_id, opts}, _from, data) do
+    {:reply, SkillStates.fetch(data, skill_id, opts), arm_idle_timer(data)}
+  end
+
+  def handle_call({:skill_state_list, skill_id, opts}, _from, data) do
+    {:reply, SkillStates.list(data, skill_id, opts), arm_idle_timer(data)}
+  end
+
+  def handle_call({:skill_state_update, skill_id, value, opts}, _from, data) do
+    with :ok <- owner_guard(data, :commit),
+         {:ok, binding, next} <- SkillStates.update(data, skill_id, value, opts) do
+      {:reply, {:ok, binding}, arm_idle_timer(next)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  def handle_call(
+        {:skill_state_retention, skill_id, branch_id, retention, opts},
+        _from,
+        data
+      ) do
+    with :ok <- owner_guard(data, :commit),
+         {:ok, binding, next} <-
+           SkillStates.transition_retention(data, skill_id, branch_id, retention, opts) do
+      {:reply, {:ok, binding}, arm_idle_timer(next)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
   def handle_call({:instance_activate, candidate_ref, opts}, _from, data) do
     with {:ok, expected_generation} <- activation_expected_generation(opts),
          :ok <- owner_guard(data, :activation_commit),
@@ -692,11 +836,11 @@ defmodule Spectre.Instance do
              candidate_ref,
              activation_resolver_opts(data, opts)
            ),
-         {:ok, prospective} <-
+         {:ok, prospective, skill_states} <-
            build_activation(data, candidate_resolution, expected_generation, opts),
          {:ok, activation} <-
            Activation.compare_and_swap(data.activation, expected_generation, prospective),
-         {:ok, next} <- commit_activation(data, activation) do
+         {:ok, next} <- commit_activation(data, activation, skill_states) do
       {:reply, {:ok, activation}, arm_idle_timer(next)}
     else
       :not_found ->
@@ -710,6 +854,44 @@ defmodule Spectre.Instance do
 
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  def handle_call({:event_admit, event, opts}, _from, data) do
+    with :ok <- owner_guard(data, :admission),
+         {:ok, envelope, next} <- Events.admit(data, event, opts) do
+      {:reply, {:ok, envelope}, arm_idle_timer(next)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  def handle_call({:event_list, status, opts}, _from, data)
+      when status in [:admitted, :quarantined] do
+    {:reply, Events.list(data, status, opts), arm_idle_timer(data)}
+  end
+
+  def handle_call({:definition_lifecycle, value}, _from, data) do
+    reply =
+      with {:ok, definition_ref} <- resolve_definition_ref(data, value) do
+        {:ok, Events.lifecycle(data, definition_ref)}
+      end
+
+    {:reply, reply, arm_idle_timer(data)}
+  end
+
+  def handle_call(
+        {:definition_lifecycle_transition, value, axis, status, opts},
+        _from,
+        data
+      ) do
+    with :ok <- owner_guard(data, :commit),
+         {:ok, definition_ref} <- resolve_definition_ref(data, value),
+         {:ok, lifecycle, next} <-
+           Events.transition_lifecycle(data, definition_ref, axis, status, opts) do
+      {:reply, {:ok, lifecycle}, arm_idle_timer(next)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
 
@@ -738,38 +920,40 @@ defmodule Spectre.Instance do
     callers = Enum.uniq([caller | Keyword.get(opts, :__spectre_callers__, [])])
     opts = Keyword.delete(opts, :__spectre_callers__)
 
+    active_definition_ref = Events.active_definition_ref(data)
+
     if nested_work?(data, callers, kind) do
       {:reply, {:error, :work_cannot_start_work}, arm_idle_timer(data)}
     else
-      env = Loops.operation_env(data)
+      with :ok <- Events.authorize(data, active_definition_ref, :new_admission),
+           env <- Loops.operation_env(data),
+           {:ok, loop, control, event_specs} <-
+             OperationRuntime.start(kind, controller, input, opts, env) do
+        case Loops.operation_loop(data, loop.id) do
+          {:ok, existing, existing_control} ->
+            if Loops.same_loop_request?(existing, loop) do
+              view = OperationView.from_loop(existing, existing_control)
+              {:reply, {:ok, OperationRef.from_loop(existing), view}, arm_idle_timer(data)}
+            else
+              {:reply, {:error, {:duplicate_operational_loop, loop.id}}, arm_idle_timer(data)}
+            end
 
-      case OperationRuntime.start(kind, controller, input, opts, env) do
-        {:ok, loop, control, event_specs} ->
-          case Loops.operation_loop(data, loop.id) do
-            {:ok, existing, existing_control} ->
-              if Loops.same_loop_request?(existing, loop) do
-                view = OperationView.from_loop(existing, existing_control)
-                {:reply, {:ok, OperationRef.from_loop(existing), view}, arm_idle_timer(data)}
-              else
-                {:reply, {:error, {:duplicate_operational_loop, loop.id}}, arm_idle_timer(data)}
-              end
+          {:error, :operation_loop_not_found} ->
+            case commit_operational(data, loop, control, event_specs,
+                   correlation_id: loop.correlation_id,
+                   provenance: loop.provenance,
+                   transition: :loop_started
+                 ) do
+              {:ok, next, _events} ->
+                next = next |> queue_operation(loop) |> maybe_schedule_operations()
+                view = OperationView.from_loop(loop, control)
+                {:reply, {:ok, OperationRef.from_loop(loop), view}, disarm_idle_timer(next)}
 
-            {:error, :operation_loop_not_found} ->
-              case commit_operational(data, loop, control, event_specs,
-                     correlation_id: loop.correlation_id,
-                     provenance: loop.provenance,
-                     transition: :loop_started
-                   ) do
-                {:ok, next, _events} ->
-                  next = next |> queue_operation(loop) |> maybe_schedule_operations()
-                  view = OperationView.from_loop(loop, control)
-                  {:reply, {:ok, OperationRef.from_loop(loop), view}, disarm_idle_timer(next)}
-
-                {:error, reason} ->
-                  {:reply, {:error, reason}, arm_idle_timer(data)}
-              end
-          end
-
+              {:error, reason} ->
+                {:reply, {:error, reason}, arm_idle_timer(data)}
+            end
+        end
+      else
         {:error, reason} ->
           {:reply, {:error, reason}, arm_idle_timer(data)}
       end
@@ -871,6 +1055,12 @@ defmodule Spectre.Instance do
   def handle_call({:operation_trigger, loop_id, trigger, opts}, _from, data) do
     with {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
          :ok <- Loops.authorize_loop(loop, opts),
+         :ok <-
+           Events.authorize(
+             data,
+             Events.operation_definition_ref(data, loop),
+             :continuation
+           ),
          {:ok, next_loop, next_control, event_specs} <-
            OperationRuntime.trigger(loop, control, trigger, opts, Loops.operation_env(data)),
          {:ok, next, committed_events} <-
@@ -1478,14 +1668,23 @@ defmodule Spectre.Instance do
 
     case Conversation.policy_owner(data, input, opts) do
       :none ->
-        if map_size(data.runs) >= data.max_runs do
-          {:reply, {:error, :instance_run_capacity_reached}, arm_idle_timer(data)}
-        else
-          reserve_submitted_run(input, opts, projection, from, data)
+        case Events.authorize(data, Events.active_definition_ref(data), :new_admission) do
+          :ok ->
+            if map_size(data.runs) >= data.max_runs do
+              {:reply, {:error, :instance_run_capacity_reached}, arm_idle_timer(data)}
+            else
+              reserve_submitted_run(input, opts, projection, from, data)
+            end
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, arm_idle_timer(data)}
         end
 
       {:ok, %Run{} = owner} ->
-        submit_lifecycle_input(input, opts, projection, from, owner, data)
+        case Events.authorize(data, owner.definition_ref, :continuation) do
+          :ok -> submit_lifecycle_input(input, opts, projection, from, owner, data)
+          {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+        end
 
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
@@ -1554,6 +1753,7 @@ defmodule Spectre.Instance do
 
   defp dispatch_invocation(run, command, opts, projection, from, data) do
     with :ok <- owner_guard(data, :effect_dispatch),
+         :ok <- Events.authorize(data, run.definition_ref, :dispatch),
          %Invocation{} = invocation <- run.waiting,
          false <- run_active?(data, run.id),
          nil <- other_active_run(data, run.id),
@@ -1672,6 +1872,17 @@ defmodule Spectre.Instance do
 
   defp start_advance_worker(data, entry) do
     run = Map.fetch!(data.runs, entry.run_id)
+
+    operation =
+      if match?({:start, _input}, entry.operation), do: :new_admission, else: :continuation
+
+    case Events.authorize(data, run.definition_ref, operation) do
+      :ok -> do_start_advance_worker(data, entry, run)
+      {:error, reason} -> fail_run_commit(data, run, reason)
+    end
+  end
+
+  defp do_start_advance_worker(data, entry, run) do
     state = State.claim_run_lifecycle(data.state, run.id)
     run = Runs.rebase_run(run, state)
     data = %{data | state: state}
@@ -2490,10 +2701,15 @@ defmodule Spectre.Instance do
   end
 
   defp start_operation_runner(data, loop, control, attempt, spec, request, reconcile?) do
-    case owner_guard(data, :effect_dispatch) do
-      :ok ->
-        do_start_operation_runner(data, loop, control, attempt, spec, request, reconcile?)
-
+    with :ok <- owner_guard(data, :effect_dispatch),
+         :ok <-
+           Events.authorize(
+             data,
+             Events.operation_definition_ref(data, loop),
+             :dispatch
+           ) do
+      do_start_operation_runner(data, loop, control, attempt, spec, request, reconcile?)
+    else
       {:error, reason} ->
         emit(:operation_dispatch_blocked, data, %{
           count: 1,
@@ -3085,9 +3301,10 @@ defmodule Spectre.Instance do
 
   defp build_activation(data, %{candidate: candidate, resolution: resolution}, _expected, opts) do
     current_generation = Activation.generation(data.activation)
-    current_epoch = Activation.authority_epoch(data.activation)
+    current_epoch = Events.current_authority_epoch(data)
+    activated_at = Keyword.get(opts, :activated_at, System.system_time(:millisecond))
 
-    state_bindings =
+    base_bindings =
       Keyword.get_lazy(opts, :state_bindings, fn ->
         case data.activation do
           %Activation{state_bindings: bindings} -> bindings
@@ -3101,28 +3318,42 @@ defmodule Spectre.Instance do
         instance_ref: data.ref.key
       })
 
-    Activation.new(candidate, resolution,
-      generation: current_generation + 1,
-      authority_epoch: Keyword.get(opts, :authority_epoch, current_epoch),
-      owner_fencing_token: data.owner_lease.fencing_token,
-      state_bindings: state_bindings,
-      activated_at: Keyword.get(opts, :activated_at, System.system_time(:millisecond)),
-      provenance: provenance
-    )
+    with {:ok, skill_states, skill_bindings} <-
+           SkillStates.prepare_activation(
+             data,
+             resolution.definition_ref,
+             Keyword.put(opts, :activated_at, activated_at)
+           ),
+         {:ok, state_bindings} <-
+           SkillStates.merge_activation_bindings(base_bindings, skill_bindings),
+         {:ok, activation} <-
+           Activation.new(candidate, resolution,
+             generation: current_generation + 1,
+             authority_epoch: Keyword.get(opts, :authority_epoch, current_epoch),
+             owner_fencing_token: data.owner_lease.fencing_token,
+             state_bindings: state_bindings,
+             activated_at: activated_at,
+             provenance: provenance
+           ) do
+      {:ok, activation, skill_states}
+    end
   end
 
-  defp commit_activation(data, %Activation{} = activation) do
+  defp commit_activation(data, %Activation{} = activation, skill_states) do
     with :ok <- owner_guard(data, :activation_commit),
          :ok <- activation_checkpoint_ready(data),
+         {:ok, lifecycles} <- Events.activation_lifecycles(data, activation),
          {:ok, snapshot} <-
            Canonical.snapshot(data.canonical,
-             read: [:activation],
-             write: [:activation],
+             read: [:activation, :lifecycles, :skill_states],
+             write: [:activation, :lifecycles, :skill_states],
              correlation_id: activation.activation_receipt,
              causation_id: CandidateRef.to_string(activation.candidate_ref)
            ),
          {:ok, change} <-
-           Canonical.change(snapshot, %{activation: activation},
+           Canonical.change(
+             snapshot,
+             %{activation: activation, lifecycles: lifecycles, skill_states: skill_states},
              provenance: %{source: :activation, instance_ref: data.ref.key},
              metadata: %{
                transition: :definition_activated,
@@ -3199,7 +3430,13 @@ defmodule Spectre.Instance do
   defp activation_resolver_opts(data, opts) do
     data.base_opts
     |> Keyword.merge(opts)
-    |> Keyword.drop([:timeout, :expected_generation, :authority_epoch, :state_bindings])
+    |> Keyword.drop([
+      :timeout,
+      :expected_generation,
+      :authority_epoch,
+      :state_bindings,
+      :skill_state_transitions
+    ])
     |> Keyword.put(:checkpoint_store, data.checkpoint_store)
   end
 
@@ -3236,6 +3473,38 @@ defmodule Spectre.Instance do
   defp owner_guard(data, operation) do
     Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
   end
+
+  defp resolve_definition_ref(data, :active), do: {:ok, Events.active_definition_ref(data)}
+
+  defp resolve_definition_ref(_data, %DefinitionRef{} = definition_ref) do
+    if DefinitionRef.valid?(definition_ref),
+      do: {:ok, definition_ref},
+      else: {:error, {:invalid_definition_lifecycle_ref, definition_ref}}
+  end
+
+  defp resolve_definition_ref(data, value) when is_binary(value) do
+    known =
+      [data.activation && data.activation.definition_ref]
+      |> Kernel.++(Enum.map(data.runs, fn {_id, run} -> run.definition_ref end))
+      |> Kernel.++(
+        case Canonical.fetch(data.canonical, :lifecycles) do
+          {:ok, lifecycles} ->
+            Enum.map(lifecycles, fn {_key, lifecycle} -> lifecycle.definition_ref end)
+
+          _invalid ->
+            []
+        end
+      )
+      |> Enum.reject(&is_nil/1)
+
+    case Enum.find(known, &(DefinitionRef.to_string(&1) == value)) do
+      %DefinitionRef{} = definition_ref -> {:ok, definition_ref}
+      nil -> DefinitionRef.parse(value)
+    end
+  end
+
+  defp resolve_definition_ref(_data, value),
+    do: {:error, {:invalid_definition_lifecycle_ref, value}}
 
   defp restore_activation(canonical, definition_store, checkpoint_store, base_opts) do
     with {:ok, activation} <- Canonical.fetch(canonical, :activation) do

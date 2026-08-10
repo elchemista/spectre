@@ -64,7 +64,9 @@ requires a Definition Store whose adapter reports `:durable`.
   Spectre.activate(instance, candidate_ref,
     expected_generation: 0,
     authority_epoch: 12,
-    state_bindings: %{"flow_schema" => 5},
+    skill_state_transitions: %{
+      planner: {:init, "my_app/planner-state/1", %{"step" => "collect"}}
+    },
     provenance: %{approved_by: "deployment:2026-08-10"}
   )
 ```
@@ -95,14 +97,15 @@ Run A starts under Definition A
         └── resumed Run A still uses Definition A
 ```
 
-Canonical checkpoint schema 2 stores the Activation and all retained Run
-checkpoints. On restart, Spectre re-resolves every non-legacy pinned Definition
-and verifies its closure digest before accepting work. A missing or changed
-artifact fails closed.
+Canonical checkpoint schema 2 introduced storage for the Activation and all
+retained Run checkpoints. On restart, Spectre re-resolves every non-legacy
+pinned Definition and verifies its closure digest before accepting work. A
+missing or changed artifact fails closed.
 
-Run checkpoint schema 1 and canonical checkpoint schema 1 remain readable at
-the import boundary. They are migrated immediately in memory; current writers
-emit schema 2 only. See [Migrating to 0.2.3](MIGRATING_TO_0_2_3.md).
+Run checkpoint schema 1 and canonical checkpoint schemas 1 and 2 remain
+readable at the import boundary. They are migrated immediately in memory;
+current canonical writers emit schema 4. See
+[Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
 
 ## Canonical owner and fencing
 
