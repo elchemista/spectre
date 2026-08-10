@@ -95,7 +95,9 @@ and attempt limits.
 state, or last operation result; embed a portable fixed value; or assemble a
 map/list from those values. State writes use declared paths. Negative indices,
 duplicate atom/string key forms, modules, MFAs, PIDs, functions, references,
-and non-portable values fail closed.
+and non-portable values fail closed. Program-authored literals and metadata
+normalize recursively to JSON-stable values (non-contract atoms become their
+string names), and expression nesting is bounded before identity is digested.
 
 The host owns operation code:
 
@@ -120,7 +122,9 @@ end
 `side_effect: :none` operations. `infer` nodes resolve only to registered
 cognitive operations and carry typed inference constraints. JSON operation
 names are bridged only to an identically named existing registry entry; no
-atom or executable code is created from authored data.
+atom or executable code is created from authored data. Known inference enum
+strings normalize to the existing contract atoms, while unknown enum values
+are rejected instead of depending on the VM atom table.
 
 ## Materialization and execution
 
@@ -149,7 +153,10 @@ receipts, and Execution projection happen once. Starting execution revalidates
 the materialization and feeds the exact Program to the shared operational
 runtime. The Instance APIs `loop/2`, `loops/1`, `pause_loop/2`,
 `update_and_resume_loop/3`, `resume_loop/2`, and `stop_loop/2` retain
-their normal semantics.
+their normal semantics. `Materialization.verify/1` repeats the construction
+binding for mount, route, continuation, input, plans, receipts, and mandatory
+projection evidence; a self-consistent materialization digest cannot hide
+drift between those fields and its projection.
 
 An amendment can change only state paths listed in `mutable_paths`. It cannot
 replace the Program, input, history, receipts, prompt plans, Definition Ref, or
@@ -161,7 +168,9 @@ continues under a fresh epoch and snapshot fence.
 An `infer` node refers to a governed prompt fragment in the owning Skill.
 `Spectre.Prompt.Materializer` renders only declared scalar placeholders and
 returns both a typed `Spectre.Prompt.Plan` and
-`Spectre.Prompt.Receipt`. The receipt binds:
+`Spectre.Prompt.Receipt`. Replacement is a single pass over the original
+template, so placeholder-like text inside a resolved value is never expanded
+again. The receipt binds:
 
 - the exact Definition Ref and fragment digest;
 - rendered bytes and their digest, without copying prompt text;

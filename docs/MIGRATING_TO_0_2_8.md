@@ -51,12 +51,25 @@ unregistered operations.
 
 Canonical object expressions now reload idempotently from
 `Program.to_data/1`. Negative list indices cannot read or mutate trailing
-elements. Erlang modules are rejected alongside Elixir modules.
+elements. Erlang modules are rejected alongside Elixir modules. Authored
+literal atoms and metadata normalize to JSON-stable strings, while inference
+constraint strings normalize only to their known contract enums. Deep
+expressions fail with a bounded validation error before canonical digesting.
 
 Materialization revalidates Program, prompt plan, receipt, projection,
 Definition Ref, continuation, input schema, and every digest. Amendments can
 touch only declared state paths and cannot replace input, Program, history, or
-lineage. Handoffs require exact Definition, target Work, and input equality.
+lineage. Verification also recalculates the projection binding for mount,
+route, continuation, input, prompt receipts, and mandatory input evidence;
+`verify/1` is therefore as strict as construction. Handoffs require exact
+Definition, target Work, and input equality.
+
+Migration receipt operation refs are normalized before digesting and survive
+ordinary JSON transport. Prompt substitution is single-pass over the original
+template, so a resolved scalar containing `{{...}}` remains data. A raw
+canonical Skill supplied to `mount/4` must declare `origin: :runtime`;
+compiled Skills continue to mount through their trusted module or validated
+Definition path.
 
 Retry budget enforcement distinguishes the initial attempt from an actual
 retry: `retries: 0` still permits the first attempt, while a configured retry

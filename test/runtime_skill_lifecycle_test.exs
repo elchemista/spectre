@@ -410,6 +410,15 @@ defmodule SpectreRuntimeSkillLifecycleTest do
     assert {:ok, mounted} = Runtime.mount(runtime, "lookup", canonical, expected_revision: 0)
     assert {:ok, %{mount_id: "lookup"}} = Runtime.status(mounted, "lookup")
 
+    forged_compiled =
+      canonical
+      |> Map.from_struct()
+      |> Map.put(:origin, :compiled)
+      |> Canonical.new!()
+
+    assert {:error, {:skill_mount_requires_runtime_origin, :compiled}} =
+             Runtime.mount(runtime, :forged, forged_compiled, expected_revision: 0)
+
     constrained =
       Runtime.new!(Agent, authority(),
         kernel_prompt_tokens: 128,

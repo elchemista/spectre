@@ -90,6 +90,7 @@ defmodule SpectreDataDrivenExecutionTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Authority.Envelope
+  alias Spectre.Canonical.Value
   alias Spectre.Definition.Canonical
   alias Spectre.Execution.Expression
   alias Spectre.Execution.Handoff
@@ -113,6 +114,7 @@ defmodule SpectreDataDrivenExecutionTest do
   alias Spectre.Prompt.Plan
   alias Spectre.Skill.Definition, as: SkillDefinition
   alias Spectre.Skill.Runtime, as: SkillRuntime
+  alias Spectre.Skill.Runtime.Response
   alias Spectre.Subject
   alias SpectreDataDrivenExecutionTest.Agent
   alias SpectreDataDrivenExecutionTest.CompiledSkill
@@ -145,6 +147,69 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert Program.to_data(compiled) == Program.to_data(runtime)
     assert compiled.digest == runtime.digest
+  end
+
+  test "Program identity survives JSON with inference constraints and authored atoms" do
+    program =
+      Program.new!(%{
+        id: :json_transport,
+        entry: :infer,
+        input: :map,
+        state: :map,
+        initial: {:fixed, %{status: :ready}},
+        budget: %{steps: 2, attempts: 2},
+        metadata: %{mode: :safe},
+        nodes: [
+          %{
+            id: :infer,
+            kind: :infer,
+            operation: :infer,
+            prompt: :prompt,
+            constraints: %{
+              minimum_level: :deep,
+              preferred_level: :deep,
+              risk: :medium,
+              privacy: :local_only,
+              maximum_cost_tier: :medium
+            },
+            next: :failed,
+            metadata: %{source: :fixture}
+          },
+          %{id: :failed, kind: :fail, reason: :boom}
+        ]
+      })
+
+    assert {:ok, restored} =
+             program
+             |> Program.to_data()
+             |> Jason.encode!()
+             |> Jason.decode!()
+             |> Program.from_data()
+
+    assert restored == program
+    assert restored.digest == program.digest
+  end
+
+  test "deep runtime Work data is rejected without crashing Skill ingestion" do
+    expression =
+      Enum.reduce(1..200, {:fixed, "leaf"}, fn _depth, nested ->
+        %{kind: :list, items: [nested]}
+      end)
+
+    program = %{
+      id: :deep_work,
+      entry: :done,
+      initial: expression,
+      budget: %{steps: 1, attempts: 1},
+      nodes: [%{id: :done, kind: :complete, output: :state}]
+    }
+
+    assert {:error, {:invalid_runtime_work, 0, {:execution_expression_depth_exceeded, 48}}} =
+             SkillDefinition.new(%{
+               id: :deep_skill,
+               publisher_ref: "host:depth-test",
+               works: [program]
+             })
   end
 
   test "a compiled Skill data Work lowers to the same route/program IR as runtime data" do
@@ -573,6 +638,21 @@ defmodule SpectreDataDrivenExecutionTest do
              end)
              |> Program.new()
 
+    conflicting_profile =
+      inference_program()
+      |> Program.to_data()
+      |> Map.update!(:nodes, fn nodes ->
+        Enum.map(nodes, fn
+          %{kind: :infer} = node -> Map.put(node, :profile_ref, :fast)
+          node -> node
+        end)
+      end)
+
+    assert {:error,
+            {:invalid_execution_node, _index,
+             {:conflicting_execution_inference_profile, :deep, :fast}}} =
+             Program.new(conflicting_profile)
+
     assert {:error, :duplicate_execution_object_key} =
              Expression.normalize(%{
                kind: :object,
@@ -638,6 +718,25 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert {:error, {:materialization, :digest_mismatch}} =
              Materialization.verify(%{materialization | digest: String.duplicate("0", 64)})
+
+    for changed <- [
+          %{materialization | mount_id: :different_mount},
+          %{materialization | route_label: :different_route},
+          %{materialization | continuation_id: "different-continuation"},
+          %{materialization | input: %{"different" => true}}
+        ] do
+      changed = %{
+        changed
+        | digest:
+            changed
+            |> Materialization.to_data()
+            |> Map.delete(:digest)
+            |> Value.digest!()
+      }
+
+      assert {:error, :execution_materialization_projection_mismatch} =
+               Materialization.verify(changed)
+    end
 
     assert {:error, :projection_digest_mismatch} =
              Materialization.verify(%{
@@ -743,6 +842,60 @@ defmodule SpectreDataDrivenExecutionTest do
              Projection.generate(skill.canonical, ExecutionProjection, projection_opts)
 
     assert projection.content.program.digest == program.digest
+
+    response = %Response{
+      kind: :work,
+      mount_id: materialization.mount_id,
+      definition_ref: SkillDefinition.ref(skill),
+      route_label: materialization.route_label,
+      work_ref: program.id,
+      work_input: materialization.input,
+      program_digest: program.digest,
+      continuation_id: materialization.continuation_id
+    }
+
+    assert {:error, :execution_materialization_projection_evidence_missing} =
+             Materialization.new(
+               skill,
+               response,
+               program,
+               materialization.input,
+               materialization.plans,
+               materialization.prompt_receipts,
+               projection
+             )
+
+    assert {:ok, mismatched_evidence} =
+             Projection.generate(
+               skill.canonical,
+               ExecutionProjection,
+               Keyword.put(projection_opts, :evidence, %{different: true})
+             )
+
+    assert {:error, :execution_materialization_projection_evidence_mismatch} =
+             Materialization.new(
+               skill,
+               response,
+               program,
+               materialization.input,
+               materialization.plans,
+               materialization.prompt_receipts,
+               mismatched_evidence
+             )
+
+    missing_evidence = %{materialization | projection: projection}
+
+    missing_evidence = %{
+      missing_evidence
+      | digest:
+          missing_evidence
+          |> Materialization.to_data()
+          |> Map.delete(:digest)
+          |> Value.digest!()
+    }
+
+    assert {:error, :execution_materialization_projection_evidence_missing} =
+             Materialization.verify(missing_evidence)
 
     assert {:error, {:invalid_execution_projection_options, :list}} =
              ExecutionProjection.project(skill.canonical, [:not_keyword])
@@ -898,6 +1051,15 @@ defmodule SpectreDataDrivenExecutionTest do
     assert receipt.source_state_digest == migration.source_state_digest
     assert {:ok, ^receipt} = receipt |> MigrationReceipt.to_data() |> MigrationReceipt.from_data()
 
+    assert {:ok, json_receipt} =
+             receipt
+             |> MigrationReceipt.to_data()
+             |> Jason.encode!()
+             |> Jason.decode!()
+             |> MigrationReceipt.from_data()
+
+    assert json_receipt == receipt
+
     assert {:error, {:invalid_operation_value, _, :map, :list}} =
              Migration.commit(migration, Execution.new([]), Agent)
 
@@ -957,6 +1119,25 @@ defmodule SpectreDataDrivenExecutionTest do
                Agent,
                materialization.input
              )
+  end
+
+  test "prompt materialization replaces only placeholders from the original template" do
+    program = inference_program()
+    runtime = mounted_runtime(runtime_skill(program, prompt?: true, route: "infer"))
+
+    assert {:ok, materialization, _runtime} =
+             Materializer.materialize(
+               runtime,
+               "infer",
+               %{audience: "{{input.text}}", scope: :execution},
+               expected_revision: 1
+             )
+
+    plan = Map.fetch!(materialization.plans, "prompt")
+    assert plan.rendered == "Summarize infer for {{input.text}}"
+
+    [receipt] = materialization.prompt_receipts
+    assert receipt.rendered_digest == Value.digest!(plan.rendered)
   end
 
   test "rehearsal consumes exact recordings and never dispatches real Effects" do

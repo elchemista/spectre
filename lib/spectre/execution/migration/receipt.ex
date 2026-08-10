@@ -39,15 +39,18 @@ defmodule Spectre.Execution.Migration.Receipt do
   @doc false
   @spec new(map()) :: {:ok, t()} | {:error, term()}
   def new(attrs) when is_map(attrs) do
-    with :ok <- known_new_fields(attrs) do
+    with :ok <- known_new_fields(attrs),
+         {:ok, operation_ref} <- normalize_operation_ref(Map.get(attrs, :operation_ref)) do
       data =
         attrs
         |> Map.take(fields())
         |> Map.put(:schema_version, @schema_version)
+        |> Map.put(:operation_ref, operation_ref)
         |> Map.delete(:digest)
 
-      with :ok <- validate_data(data) do
-        {:ok, struct!(__MODULE__, Map.put(data, :digest, Value.digest!(data)))}
+      with :ok <- validate_data(data),
+           {:ok, digest} <- Value.digest(data) do
+        {:ok, struct!(__MODULE__, Map.put(data, :digest, digest))}
       end
     end
   rescue
@@ -66,11 +69,14 @@ defmodule Spectre.Execution.Migration.Receipt do
 
   def from_data(value) when is_map(value) do
     with {:ok, value} <- exact_fields(value),
+         {:ok, operation_ref} <- normalize_operation_ref(Map.get(value, :operation_ref)),
+         value <- Map.put(value, :operation_ref, operation_ref),
          receipt <- struct!(__MODULE__, value),
          data <- receipt |> Map.from_struct() |> Map.delete(:digest),
          :ok <- validate_data(data),
          true <- digest?(receipt.digest),
-         true <- receipt.digest == Value.digest!(data) do
+         {:ok, digest} <- Value.digest(data),
+         true <- receipt.digest == digest do
       {:ok, receipt}
     else
       false -> {:error, :execution_migration_receipt_digest_mismatch}
@@ -122,8 +128,16 @@ defmodule Spectre.Execution.Migration.Receipt do
   defp digest?(_value), do: false
 
   @spec stable_ref?(term()) :: boolean()
-  defp stable_ref?(value),
-    do: (is_atom(value) and not is_nil(value)) or (is_binary(value) and value != "")
+  defp stable_ref?(value), do: is_binary(value) and value != ""
+
+  @spec normalize_operation_ref(term()) :: {:ok, String.t()} | {:error, term()}
+  defp normalize_operation_ref(value) when is_atom(value) and not is_nil(value),
+    do: {:ok, Atom.to_string(value)}
+
+  defp normalize_operation_ref(value) when is_binary(value) and value != "", do: {:ok, value}
+
+  defp normalize_operation_ref(_value),
+    do: {:error, :invalid_execution_migration_receipt_operation}
 
   @spec known_new_fields(map()) :: :ok | {:error, term()}
   defp known_new_fields(value) do

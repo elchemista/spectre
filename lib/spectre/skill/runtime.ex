@@ -306,8 +306,11 @@ defmodule Spectre.Skill.Runtime do
   defp normalize_definition(%SkillDefinition{} = definition),
     do: {:error, {:invalid_skill_mount_source, shape(definition)}}
 
-  defp normalize_definition(%Canonical{} = canonical),
+  defp normalize_definition(%Canonical{origin: :runtime} = canonical),
     do: SkillDefinition.from_canonical(canonical)
+
+  defp normalize_definition(%Canonical{origin: origin}),
+    do: {:error, {:skill_mount_requires_runtime_origin, origin}}
 
   defp normalize_definition(module) when is_atom(module),
     do: SkillDefinition.from_compiled(module)

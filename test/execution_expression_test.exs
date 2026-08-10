@@ -188,6 +188,79 @@ defmodule Spectre.Execution.ExpressionTest do
              Expression.normalize({:fixed, self()})
   end
 
+  test "deep authored expressions fail closed without raising" do
+    expression =
+      Enum.reduce(1..200, {:fixed, "leaf"}, fn _depth, nested ->
+        %{kind: :list, items: [nested]}
+      end)
+
+    assert {:error, {:execution_expression_depth_exceeded, _maximum}} =
+             Expression.normalize(expression)
+  end
+
+  test "Program literals normalize to JSON-stable data and reject lossy values" do
+    assert {:ok, expression} =
+             Expression.normalize_program(%{
+               kind: :object,
+               fields: %{
+                 status: {:fixed, :ready},
+                 values: %{
+                   kind: :list,
+                   items: [{:fixed, :one}, {:fixed, %{mode: :safe}}]
+                 }
+               }
+             })
+
+    assert {:ok,
+            %{
+              "status" => "ready",
+              "values" => ["one", %{"mode" => "safe"}]
+            }} = Expression.evaluate(expression, %{})
+
+    assert {:ok,
+            %{
+              "empty" => [],
+              "flag" => true,
+              "nothing" => nil,
+              "number" => 1,
+              "ratio" => 0.5
+            }} =
+             Expression.normalize_literal(%{
+               empty: [],
+               flag: true,
+               nothing: nil,
+               number: 1,
+               ratio: 0.5
+             })
+
+    assert {:error, {:nonportable_execution_literal, {:duplicate_json_key, "key"}}} =
+             Expression.normalize_literal(%{:key => 1, "key" => 2})
+
+    assert {:error, {:nonportable_execution_literal, {:unsupported_json_map_key, [], :other}}} =
+             Expression.normalize_literal(%{1 => "integer key"})
+
+    assert {:error, {:nonportable_execution_literal, {:unsupported_json_value, [], :tuple}}} =
+             Expression.normalize_literal({:data, 1})
+
+    assert {:error, {:nonportable_execution_literal, {:improper_list, [], 1}}} =
+             Expression.normalize_literal([1 | 2])
+
+    assert {:error, {:nonportable_execution_literal, {:invalid_utf8, []}}} =
+             Expression.normalize_literal(<<255>>)
+
+    assert {:error, {:nonportable_execution_literal, {:unsupported_json_value, [], :tuple}}} =
+             Expression.normalize_program(%{
+               kind: :object,
+               fields: %{bad: {:fixed, {:data, 1}}}
+             })
+
+    assert {:error, {:nonportable_execution_literal, {:unsupported_json_value, [], :tuple}}} =
+             Expression.normalize_program(%{
+               kind: :list,
+               items: [{:fixed, {:data, 1}}]
+             })
+  end
+
   defp evaluate_path(env, source, path) do
     Expression.evaluate(%{kind: :source, source: source, path: path}, env)
   end

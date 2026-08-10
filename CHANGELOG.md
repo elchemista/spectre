@@ -47,6 +47,18 @@ minor release may contain documented breaking API changes.
 - Canonical object expressions reload idempotently; negative list indices are
   rejected. Materialization, projection, prompt, handoff, migration, and
   rehearsal digests are recomputed at their load/admission boundaries.
+- Program inference enums, authored literals, metadata, and migration
+  operation refs now have one JSON-stable canonical form, so
+  `to_data -> JSON -> from_data` preserves exact Program/receipt identity.
+  Authored expression depth is capped before digesting and constructors return
+  errors instead of raising on hostile nesting.
+- Materialization verification now rebinds projection mount, route,
+  continuation, input, and mandatory input evidence exactly as construction
+  does. Prompt placeholders are rendered in one pass, so resolved values are
+  never reinterpreted as template syntax.
+- Raw canonical Skill mounts require `origin: :runtime`; compiled Skills must
+  enter through their trusted module/Definition path and cannot use origin
+  data to skip runtime load policy.
 - Fixed retry-budget accounting so `retries: 0` permits the initial attempt
   and an authorized retry is not denied after its counter is consumed.
 - State remains writer v5, Run remains writer v2, and canonical Instance

@@ -11,28 +11,35 @@ defmodule Spectre.Execution.Expression do
 
   @sources [:input, :state, :last_result]
   @kinds [:source, :fixed, :object, :list]
+  @maximum_depth 48
 
   @type t :: map()
 
   @doc "Normalizes one authored expression into its canonical closed form."
   @spec normalize(term()) :: {:ok, t()} | {:error, term()}
-  def normalize(value) when value in @sources,
+  def normalize(value), do: normalize(value, 0)
+
+  defp normalize(_value, depth) when depth > @maximum_depth,
+    do: {:error, {:execution_expression_depth_exceeded, @maximum_depth}}
+
+  defp normalize(value, _depth) when value in @sources,
     do: {:ok, %{kind: :source, source: value, path: []}}
 
-  def normalize(value) when is_binary(value) and value in ~w(input state last_result) do
+  defp normalize(value, _depth)
+       when is_binary(value) and value in ~w(input state last_result) do
     {:ok, %{kind: :source, source: String.to_existing_atom(value), path: []}}
   end
 
-  def normalize({:fixed, value}), do: fixed(value)
+  defp normalize({:fixed, value}, _depth), do: fixed(value)
 
-  def normalize({:path, source, path}) do
+  defp normalize({:path, source, path}, _depth) do
     with {:ok, source} <- source(source),
          {:ok, path} <- path(path, allow_empty?: true) do
       {:ok, %{kind: :source, source: source, path: path}}
     end
   end
 
-  def normalize(value) when is_map(value) and not is_struct(value) do
+  defp normalize(value, depth) when is_map(value) and not is_struct(value) do
     fields = [:kind, :source, :path, :value, :fields, :items]
 
     with :ok <- reject_ambiguous_keys(value, fields) do
@@ -41,14 +48,14 @@ defmodule Spectre.Execution.Expression do
       case enum(Map.get(value, :kind), @kinds) do
         {:ok, :source} -> normalize_source(value)
         {:ok, :fixed} -> normalize_fixed(value)
-        {:ok, :object} -> normalize_object(value)
-        {:ok, :list} -> normalize_list(value)
+        {:ok, :object} -> normalize_object(value, depth)
+        {:ok, :list} -> normalize_list(value, depth)
         {:error, _reason} = error -> error
       end
     end
   end
 
-  def normalize(value), do: {:error, {:invalid_execution_expression, shape(value)}}
+  defp normalize(value, _depth), do: {:error, {:invalid_execution_expression, shape(value)}}
 
   @doc "Evaluates a normalized expression against a reduced data environment."
   @spec evaluate(t(), map()) :: {:ok, term()} | {:error, term()}
@@ -115,11 +122,11 @@ defmodule Spectre.Execution.Expression do
     end
   end
 
-  @spec normalize_object(map()) :: {:ok, t()} | {:error, term()}
-  defp normalize_object(value) do
+  @spec normalize_object(map(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
+  defp normalize_object(value, depth) do
     with :ok <- exact_keys(value, [:kind, :fields]),
          fields when is_map(fields) or is_list(fields) <- Map.get(value, :fields),
-         {:ok, fields} <- normalize_fields(fields) do
+         {:ok, fields} <- normalize_fields(fields, depth + 1) do
       {:ok, %{kind: :object, fields: fields}}
     else
       {:error, _reason} = error -> error
@@ -127,11 +134,11 @@ defmodule Spectre.Execution.Expression do
     end
   end
 
-  @spec normalize_list(map()) :: {:ok, t()} | {:error, term()}
-  defp normalize_list(value) do
+  @spec normalize_list(map(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
+  defp normalize_list(value, depth) do
     with :ok <- exact_keys(value, [:kind, :items]),
          items when is_list(items) <- Map.get(value, :items),
-         {:ok, items} <- normalize_items(items) do
+         {:ok, items} <- normalize_items(items, depth + 1) do
       {:ok, %{kind: :list, items: items}}
     else
       {:error, _reason} = error -> error
@@ -149,12 +156,66 @@ defmodule Spectre.Execution.Expression do
     end
   end
 
-  @spec normalize_fields(map() | [map()]) :: {:ok, [map()]} | {:error, term()}
-  defp normalize_fields(fields) when is_map(fields) do
+  @doc false
+  @spec normalize_program(term()) :: {:ok, t()} | {:error, term()}
+  def normalize_program(value) do
+    with {:ok, expression} <- normalize(value), do: normalize_program_literals(expression)
+  end
+
+  @doc false
+  @spec normalize_literal(term()) :: {:ok, term()} | {:error, term()}
+  def normalize_literal(value) do
+    with :ok <- reject_executable_value(value),
+         {:ok, value} <- normalize_json_value(value, []) do
+      case Value.validate(value) do
+        :ok -> {:ok, value}
+        {:error, reason} -> {:error, {:nonportable_execution_literal, reason}}
+      end
+    end
+  end
+
+  @spec normalize_program_literals(t()) :: {:ok, t()} | {:error, term()}
+  defp normalize_program_literals(%{kind: :fixed, value: value} = expression) do
+    with {:ok, value} <- normalize_literal(value), do: {:ok, %{expression | value: value}}
+  end
+
+  defp normalize_program_literals(%{kind: :object, fields: fields} = expression) do
+    fields
+    |> Enum.reduce_while({:ok, []}, fn field, {:ok, normalized} ->
+      case normalize_program_literals(field.value) do
+        {:ok, value} -> {:cont, {:ok, [%{field | value: value} | normalized]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, fields} -> {:ok, %{expression | fields: Enum.reverse(fields)}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp normalize_program_literals(%{kind: :list, items: items} = expression) do
+    items
+    |> Enum.reduce_while({:ok, []}, fn item, {:ok, normalized} ->
+      case normalize_program_literals(item) do
+        {:ok, item} -> {:cont, {:ok, [item | normalized]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, items} -> {:ok, %{expression | items: Enum.reverse(items)}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp normalize_program_literals(expression), do: {:ok, expression}
+
+  @spec normalize_fields(map() | [map()], non_neg_integer()) ::
+          {:ok, [map()]} | {:error, term()}
+  defp normalize_fields(fields, depth) when is_map(fields) do
     fields
     |> Enum.reduce_while({:ok, []}, fn {key, expression}, {:ok, acc} ->
       with {:ok, key} <- field_key(key),
-           {:ok, expression} <- normalize(expression) do
+           {:ok, expression} <- normalize(expression, depth) do
         {:cont, {:ok, [%{key: key, value: expression} | acc]}}
       else
         {:error, _reason} = error -> {:halt, error}
@@ -163,7 +224,7 @@ defmodule Spectre.Execution.Expression do
     |> finalize_fields()
   end
 
-  defp normalize_fields(fields) when is_list(fields) do
+  defp normalize_fields(fields, depth) when is_list(fields) do
     fields
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn
@@ -173,11 +234,17 @@ defmodule Spectre.Execution.Expression do
              :ok <- exact_keys(field, [:key, :value]),
              true <- Map.has_key?(field, :value),
              {:ok, key} <- field_key(Map.get(field, :key)),
-             {:ok, expression} <- normalize(Map.fetch!(field, :value)) do
+             {:ok, expression} <- normalize(Map.fetch!(field, :value), depth) do
           {:cont, {:ok, [%{key: key, value: expression} | acc]}}
         else
-          false -> {:halt, {:error, {:execution_object_field_requires_value, index}}}
-          {:error, reason} -> {:halt, {:error, {:invalid_execution_object_field, index, reason}}}
+          false ->
+            {:halt, {:error, {:execution_object_field_requires_value, index}}}
+
+          {:error, {:execution_expression_depth_exceeded, _maximum}} = error ->
+            {:halt, error}
+
+          {:error, reason} ->
+            {:halt, {:error, {:invalid_execution_object_field, index, reason}}}
         end
 
       {_field, index}, _acc ->
@@ -201,14 +268,20 @@ defmodule Spectre.Execution.Expression do
     error
   end
 
-  @spec normalize_items([term()]) :: {:ok, [t()]} | {:error, term()}
-  defp normalize_items(items) do
+  @spec normalize_items([term()], non_neg_integer()) :: {:ok, [t()]} | {:error, term()}
+  defp normalize_items(items, depth) do
     items
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, acc} ->
-      case normalize(item) do
-        {:ok, expression} -> {:cont, {:ok, [expression | acc]}}
-        {:error, reason} -> {:halt, {:error, {:invalid_execution_list_item, index, reason}}}
+      case normalize(item, depth) do
+        {:ok, expression} ->
+          {:cont, {:ok, [expression | acc]}}
+
+        {:error, {:execution_expression_depth_exceeded, _maximum}} = error ->
+          {:halt, error}
+
+        {:error, reason} ->
+          {:halt, {:error, {:invalid_execution_list_item, index, reason}}}
       end
     end)
     |> reverse_result()
@@ -334,26 +407,30 @@ defmodule Spectre.Execution.Expression do
     end
   end
 
-  @spec reject_executable_value(term(), [term()]) :: :ok | {:error, term()}
-  defp reject_executable_value(value, path \\ [])
+  @spec reject_executable_value(term(), [term()], non_neg_integer()) ::
+          :ok | {:error, term()}
+  defp reject_executable_value(value, path \\ [], depth \\ 0)
 
-  defp reject_executable_value({module, function}, path)
+  defp reject_executable_value(_value, _path, depth) when depth > @maximum_depth,
+    do: {:error, {:execution_expression_depth_exceeded, @maximum_depth}}
+
+  defp reject_executable_value({module, function}, path, depth)
        when is_atom(module) and is_atom(function) do
     if module_atom?(module),
       do: {:error, {:executable_execution_literal, Enum.reverse(path)}},
-      else: reject_children([module, function], path)
+      else: reject_children([module, function], path, depth + 1)
   end
 
-  defp reject_executable_value(value, path) when is_atom(value) do
+  defp reject_executable_value(value, path, _depth) when is_atom(value) do
     if module_atom?(value),
       do: {:error, {:module_execution_literal, Enum.reverse(path)}},
       else: :ok
   end
 
-  defp reject_executable_value(value, path) when is_map(value) do
+  defp reject_executable_value(value, path, depth) when is_map(value) do
     Enum.reduce_while(value, :ok, fn {key, item}, :ok ->
-      with :ok <- reject_executable_value(key, [{:key, key} | path]),
-           :ok <- reject_executable_value(item, [key | path]) do
+      with :ok <- reject_executable_value(key, [{:key, key} | path], depth + 1),
+           :ok <- reject_executable_value(item, [key | path], depth + 1) do
         {:cont, :ok}
       else
         {:error, _reason} = error -> {:halt, error}
@@ -361,25 +438,104 @@ defmodule Spectre.Execution.Expression do
     end)
   end
 
-  defp reject_executable_value(value, path) when is_list(value),
-    do: reject_children(value, path)
+  defp reject_executable_value(value, path, depth) when is_list(value),
+    do: reject_list(value, path, depth + 1, 0)
 
-  defp reject_executable_value(value, path) when is_tuple(value),
-    do: value |> Tuple.to_list() |> reject_children(path)
+  defp reject_executable_value(value, path, depth) when is_tuple(value),
+    do: value |> Tuple.to_list() |> reject_children(path, depth + 1)
 
-  defp reject_executable_value(_value, _path), do: :ok
+  defp reject_executable_value(_value, _path, _depth), do: :ok
 
-  @spec reject_children([term()], [term()]) :: :ok | {:error, term()}
-  defp reject_children(values, path) do
+  @spec reject_children([term()], [term()], non_neg_integer()) :: :ok | {:error, term()}
+  defp reject_children(values, path, depth) do
     values
     |> Enum.with_index()
     |> Enum.reduce_while(:ok, fn {value, index}, :ok ->
-      case reject_executable_value(value, [index | path]) do
+      case reject_executable_value(value, [index | path], depth) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
+
+  @spec reject_list(term(), [term()], non_neg_integer(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  defp reject_list([], _path, _depth, _index), do: :ok
+
+  defp reject_list([item | rest], path, depth, index) do
+    with :ok <- reject_executable_value(item, [index | path], depth) do
+      reject_list(rest, path, depth, index + 1)
+    end
+  end
+
+  defp reject_list(_improper, path, _depth, index),
+    do: {:error, {:nonportable_execution_literal, {:improper_list, Enum.reverse(path), index}}}
+
+  @spec normalize_json_value(term(), [term()]) :: {:ok, term()} | {:error, term()}
+  defp normalize_json_value(value, _path)
+       when is_nil(value) or is_boolean(value) or is_integer(value),
+       do: {:ok, value}
+
+  defp normalize_json_value(value, _path) when is_float(value), do: {:ok, value}
+
+  defp normalize_json_value(value, path) when is_binary(value) do
+    if String.valid?(value),
+      do: {:ok, value},
+      else: {:error, {:nonportable_execution_literal, {:invalid_utf8, Enum.reverse(path)}}}
+  end
+
+  defp normalize_json_value(value, _path) when is_atom(value),
+    do: {:ok, Atom.to_string(value)}
+
+  defp normalize_json_value(value, path) when is_list(value) do
+    value
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, normalized} ->
+      case normalize_json_value(item, [index | path]) do
+        {:ok, item} -> {:cont, {:ok, [item | normalized]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> reverse_result()
+  end
+
+  defp normalize_json_value(value, path) when is_map(value) and not is_struct(value) do
+    Enum.reduce_while(value, {:ok, %{}}, fn {key, item}, {:ok, normalized} ->
+      with {:ok, key} <- normalize_json_key(key, path),
+           false <- Map.has_key?(normalized, key),
+           {:ok, item} <- normalize_json_value(item, [key | path]) do
+        {:cont, {:ok, Map.put(normalized, key, item)}}
+      else
+        true ->
+          {:halt, {:error, {:nonportable_execution_literal, {:duplicate_json_key, key}}}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp normalize_json_value(value, path),
+    do:
+      {:error,
+       {:nonportable_execution_literal,
+        {:unsupported_json_value, Enum.reverse(path), shape(value)}}}
+
+  @spec normalize_json_key(term(), [term()]) :: {:ok, String.t()} | {:error, term()}
+  defp normalize_json_key(value, _path) when is_atom(value) and not is_nil(value),
+    do: {:ok, Atom.to_string(value)}
+
+  defp normalize_json_key(value, _path) when is_binary(value) do
+    if String.valid?(value),
+      do: {:ok, value},
+      else: {:error, {:nonportable_execution_literal, :invalid_utf8_map_key}}
+  end
+
+  defp normalize_json_key(value, path),
+    do:
+      {:error,
+       {:nonportable_execution_literal,
+        {:unsupported_json_map_key, Enum.reverse(path), shape(value)}}}
 
   @spec field_key(term()) :: {:ok, String.t()} | {:error, term()}
   defp field_key(value) when is_atom(value) and not is_nil(value),

@@ -147,9 +147,15 @@ defmodule Spectre.Execution.Materialization do
              Ref.to_string(definition_ref),
              plans
            ),
-         :ok <- Projection.verify_ref(materialization.projection, definition_ref),
          :ok <-
-           projection_shape(materialization.projection, definition_ref, program, plans, receipts),
+           verified_projection_binding(
+             materialization.projection,
+             definition_ref,
+             program,
+             materialization,
+             plans,
+             receipts
+           ),
          :ok <- continuation_id(materialization.continuation_id),
          {:ok, _mount_id} <- portable_value(materialization.mount_id, :mount_id),
          {:ok, _route_label} <- portable_value(materialization.route_label, :route_label),
@@ -299,17 +305,80 @@ defmodule Spectre.Execution.Materialization do
           [Receipt.t()]
         ) :: :ok | {:error, term()}
   defp projection_binding(projection, definition, program, response, input, plans, receipts) do
-    with :ok <- Projection.verify(projection, SkillDefinition.canonical(definition)),
-         :ok <- projection_shape(projection, definition.ref, program, plans, receipts),
-         content = projection.content,
-         true <- Map.get(content, :mount_id) == response.mount_id,
-         true <- Map.get(content, :route) == %{label: response.route_label},
-         true <- Map.get(content, :continuation_id) == response.continuation_id,
-         true <- Map.get(content, :input_evidence_digest) == Value.digest!(input) do
-      :ok
-    else
-      false -> {:error, :execution_materialization_projection_mismatch}
-      {:error, _reason} = error -> error
+    with :ok <- Projection.verify(projection, SkillDefinition.canonical(definition)) do
+      exact_projection_binding(
+        projection,
+        %{
+          definition_ref: definition.ref,
+          program: program,
+          mount_id: response.mount_id,
+          route_label: response.route_label,
+          continuation_id: response.continuation_id,
+          input: input
+        },
+        plans,
+        receipts
+      )
+    end
+  end
+
+  @spec verified_projection_binding(
+          Projection.t(),
+          Ref.t(),
+          Program.t(),
+          t(),
+          map(),
+          [Receipt.t()]
+        ) :: :ok | {:error, term()}
+  defp verified_projection_binding(
+         projection,
+         definition_ref,
+         program,
+         materialization,
+         plans,
+         receipts
+       ) do
+    with :ok <- Projection.verify_ref(projection, definition_ref) do
+      exact_projection_binding(
+        projection,
+        %{
+          definition_ref: definition_ref,
+          program: program,
+          mount_id: materialization.mount_id,
+          route_label: materialization.route_label,
+          continuation_id: materialization.continuation_id,
+          input: materialization.input
+        },
+        plans,
+        receipts
+      )
+    end
+  end
+
+  @spec exact_projection_binding(
+          Projection.t(),
+          map(),
+          map(),
+          [Receipt.t()]
+        ) :: :ok | {:error, term()}
+  defp exact_projection_binding(projection, binding, plans, receipts) do
+    with :ok <-
+           projection_shape(
+             projection,
+             binding.definition_ref,
+             binding.program,
+             plans,
+             receipts
+           ),
+         :ok <-
+           projection_lineage(
+             projection.content,
+             binding.mount_id,
+             binding.route_label,
+             binding.continuation_id,
+             binding.input
+           ) do
+      projection_evidence(projection, binding.input, receipts)
     end
   end
 
@@ -335,6 +404,39 @@ defmodule Spectre.Execution.Materialization do
 
       true ->
         :ok
+    end
+  end
+
+  @spec projection_lineage(map(), term(), term(), String.t(), term()) ::
+          :ok | {:error, term()}
+  defp projection_lineage(content, mount_id, route_label, continuation_id, input) do
+    with {:ok, input_digest} <- Value.digest(input) do
+      if Map.get(content, :mount_id) == mount_id and
+           Map.get(content, :route) == %{label: route_label} and
+           Map.get(content, :continuation_id) == continuation_id and
+           Map.get(content, :input_evidence_digest) == input_digest do
+        :ok
+      else
+        {:error, :execution_materialization_projection_mismatch}
+      end
+    end
+  end
+
+  @spec projection_evidence(Projection.t(), term(), [Receipt.t()]) ::
+          :ok | {:error, term()}
+  defp projection_evidence(%Projection{input_evidence_digest: nil}, _input, _receipts),
+    do: {:error, :execution_materialization_projection_evidence_missing}
+
+  defp projection_evidence(projection, input, receipts) do
+    with {:ok, input_digest} <- Value.digest(input),
+         {:ok, evidence_digest} <-
+           Value.digest(%{
+             input_evidence_digest: input_digest,
+             prompt_receipt_digests: Enum.map(receipts, & &1.digest)
+           }) do
+      if projection.input_evidence_digest == evidence_digest,
+        do: :ok,
+        else: {:error, :execution_materialization_projection_evidence_mismatch}
     end
   end
 

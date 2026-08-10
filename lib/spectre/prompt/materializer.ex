@@ -13,6 +13,8 @@ defmodule Spectre.Prompt.Materializer do
   alias Spectre.Prompt.Plan
   alias Spectre.Prompt.Receipt
 
+  @placeholder ~r/\{\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}\}/
+
   @doc "Renders one canonical fragment and produces its effective receipt."
   @spec materialize(Fragment.t(), term(), map(), String.t()) ::
           {:ok, Plan.t(), Receipt.t()} | {:error, term()}
@@ -48,16 +50,27 @@ defmodule Spectre.Prompt.Materializer do
   defp render_placeholders(placeholders, content, values) do
     placeholders
     |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.reduce_while({:ok, content, %{}}, fn {name, spec}, {:ok, rendered, evidence} ->
+    |> Enum.reduce_while({:ok, %{}, %{}}, fn {name, spec}, {:ok, replacements, evidence} ->
       case resolve_placeholder(name, spec, values) do
         {:ok, scalar, value} ->
-          {:cont,
-           {:ok, String.replace(rendered, "{{#{name}}}", scalar), Map.put(evidence, name, value)}}
+          {:cont, {:ok, Map.put(replacements, name, scalar), Map.put(evidence, name, value)}}
 
         {:error, _reason} = error ->
           {:halt, error}
       end
     end)
+    |> case do
+      {:ok, replacements, evidence} ->
+        rendered =
+          Regex.replace(@placeholder, content, fn _placeholder, name ->
+            Map.fetch!(replacements, name)
+          end)
+
+        {:ok, rendered, evidence}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @spec resolve_placeholder(String.t(), map(), map()) ::

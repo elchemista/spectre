@@ -21,6 +21,10 @@ defmodule Spectre.Execution.Program do
   @schema_version 1
   @node_kinds [:step, :infer, :decide, :repeat, :complete, :fail]
   @validators [:any, :map, :list, :binary, :integer, :number, :atom, :boolean]
+  @standard_levels [:fast, :balanced, :deep]
+  @risk_levels [:low, :medium, :high]
+  @privacy_levels [:cloud_allowed, :private_cloud_only, :local_only]
+  @cost_tiers [:low, :medium, :high]
   @constraint_fields [
     :minimum_level,
     :preferred_level,
@@ -130,7 +134,7 @@ defmodule Spectre.Execution.Program do
          {:ok, input} <- validator(Map.get(attrs, :input, :any), :input),
          {:ok, state} <- validator(Map.get(attrs, :state, :map), :state),
          {:ok, update} <- validator(Map.get(attrs, :update, :map), :update),
-         {:ok, initial} <- Expression.normalize(Map.get(attrs, :initial, :input)),
+         {:ok, initial} <- Expression.normalize_program(Map.get(attrs, :initial, :input)),
          {:ok, nodes} <- normalize_nodes(Map.get(attrs, :nodes)),
          :ok <- validate_graph(entry, nodes),
          {:ok, budget} <- normalize_budget(Map.get(attrs, :budget)),
@@ -161,17 +165,34 @@ defmodule Spectre.Execution.Program do
         digest: "pending"
       }
 
-      digest = Value.digest!(identity_data(base))
-
-      case Map.get(attrs, :digest) do
-        nil -> {:ok, %{base | digest: digest}}
-        ^digest -> {:ok, %{base | digest: digest}}
-        declared -> {:error, {:execution_program_digest_mismatch, declared, digest}}
-      end
+      finish_program(base, Map.get(attrs, :digest))
     end
   end
 
   def new(value), do: {:error, {:invalid_execution_program, shape(value)}}
+
+  @spec finish_program(t(), term()) :: {:ok, t()} | {:error, term()}
+  defp finish_program(base, declared) do
+    with {:ok, digest} <- canonical_program_digest(base),
+         :ok <- declared_program_digest(declared, digest) do
+      {:ok, %{base | digest: digest}}
+    end
+  end
+
+  @spec canonical_program_digest(t()) :: {:ok, String.t()} | {:error, term()}
+  defp canonical_program_digest(program) do
+    case Value.digest(identity_data(program)) do
+      {:ok, digest} -> {:ok, digest}
+      {:error, reason} -> {:error, {:noncanonical_execution_program, reason}}
+    end
+  end
+
+  @spec declared_program_digest(term(), String.t()) :: :ok | {:error, term()}
+  defp declared_program_digest(nil, _digest), do: :ok
+  defp declared_program_digest(digest, digest), do: :ok
+
+  defp declared_program_digest(declared, digest),
+    do: {:error, {:execution_program_digest_mismatch, declared, digest}}
 
   @doc "Builds a program or raises with its stable validation reason."
   @spec new!(t() | map() | keyword()) :: t()
@@ -439,7 +460,7 @@ defmodule Spectre.Execution.Program do
 
     with :ok <- exact_keys(node, allowed, :unknown_execution_node_fields),
          {:ok, operation} <- operation_name(node),
-         {:ok, input} <- Expression.normalize(Map.get(node, :input, :state)),
+         {:ok, input} <- Expression.normalize_program(Map.get(node, :input, :state)),
          {:ok, save_as} <- optional_path(Map.get(node, :save_as)),
          {:ok, next} <- stable_name(Map.get(node, :next), :execution_node_next),
          {:ok, metadata} <- portable_map(Map.get(node, :metadata, %{}), :node_metadata) do
@@ -506,7 +527,7 @@ defmodule Spectre.Execution.Program do
 
     with :ok <- exact_keys(node, allowed, :unknown_execution_node_fields),
          {:ok, predicate} <- predicate_name(node),
-         {:ok, input} <- Expression.normalize(Map.get(node, :input, :state)),
+         {:ok, input} <- Expression.normalize_program(Map.get(node, :input, :state)),
          {:ok, on_true} <- stable_name(Map.get(node, :on_true), :execution_node_on_true),
          {:ok, on_false} <- stable_name(Map.get(node, :on_false), :execution_node_on_false),
          {:ok, metadata} <- portable_map(Map.get(node, :metadata, %{}), :node_metadata) do
@@ -547,7 +568,7 @@ defmodule Spectre.Execution.Program do
     allowed = [:id, :kind, :output, :metadata]
 
     with :ok <- exact_keys(node, allowed, :unknown_execution_node_fields),
-         {:ok, output} <- Expression.normalize(Map.get(node, :output, :state)),
+         {:ok, output} <- Expression.normalize_program(Map.get(node, :output, :state)),
          {:ok, metadata} <- portable_map(Map.get(node, :metadata, %{}), :node_metadata) do
       {:ok, %{id: id, kind: :complete, output: output, metadata: metadata}}
     end
@@ -566,13 +587,13 @@ defmodule Spectre.Execution.Program do
   @spec normalize_failure_reason(term()) :: {:ok, Expression.t()} | {:error, term()}
   defp normalize_failure_reason(%{kind: kind} = reason)
        when kind in [:source, :fixed, :object, :list],
-       do: Expression.normalize(reason)
+       do: Expression.normalize_program(reason)
 
   defp normalize_failure_reason(%{"kind" => kind} = reason)
        when kind in ["source", "fixed", "object", "list"],
-       do: Expression.normalize(reason)
+       do: Expression.normalize_program(reason)
 
-  defp normalize_failure_reason(reason), do: Expression.normalize({:fixed, reason})
+  defp normalize_failure_reason(reason), do: Expression.normalize_program({:fixed, reason})
 
   @spec validate_graph(String.t(), map()) :: :ok | {:error, term()}
   defp validate_graph(entry, nodes) do
@@ -855,9 +876,8 @@ defmodule Spectre.Execution.Program do
          :ok <- reject_ambiguous_keys(value, @constraint_fields, :constraints),
          value <- atomize_known_keys(value, @constraint_fields),
          :ok <- exact_keys(value, @constraint_fields, :unknown_execution_inference_constraints),
-         {:ok, profile_ref} <- optional_name(Map.get(node, :profile_ref), :profile_ref) do
-      value = if profile_ref, do: Map.put(value, :preferred_level, profile_ref), else: value
-
+         {:ok, profile_ref} <- optional_name(Map.get(node, :profile_ref), :profile_ref),
+         {:ok, value} <- normalize_constraint_values(value, profile_ref) do
       try do
         constraints = Spectre.Inference.Constraints.new(value)
         {:ok, Map.from_struct(constraints)}
@@ -868,6 +888,91 @@ defmodule Spectre.Execution.Program do
     else
       false -> {:error, {:invalid_execution_inference_constraints, shape(value)}}
       {:error, _reason} = error -> error
+    end
+  end
+
+  @spec normalize_constraint_values(map(), String.t() | nil) ::
+          {:ok, map()} | {:error, term()}
+  defp normalize_constraint_values(value, profile_ref) do
+    with {:ok, value} <- normalize_level_constraint(value, :minimum_level),
+         {:ok, value} <- normalize_level_constraint(value, :preferred_level),
+         {:ok, value} <- normalize_enum_constraint(value, :risk, @risk_levels),
+         {:ok, value} <- normalize_enum_constraint(value, :privacy, @privacy_levels),
+         {:ok, value} <- normalize_enum_constraint(value, :maximum_cost_tier, @cost_tiers),
+         {:ok, profile_ref} <- normalize_level(profile_ref) do
+      bind_profile_ref(value, profile_ref)
+    end
+  end
+
+  @spec normalize_level_constraint(map(), atom()) :: {:ok, map()} | {:error, term()}
+  defp normalize_level_constraint(value, field) do
+    if Map.has_key?(value, field) do
+      with {:ok, normalized} <- normalize_level(Map.fetch!(value, field)) do
+        {:ok, Map.put(value, field, normalized)}
+      end
+    else
+      {:ok, value}
+    end
+  end
+
+  @spec normalize_level(term()) :: {:ok, atom() | String.t() | nil} | {:error, term()}
+  defp normalize_level(nil), do: {:ok, nil}
+  defp normalize_level(value) when value in @standard_levels, do: {:ok, value}
+
+  defp normalize_level(value) when is_binary(value) and value != "" do
+    case Enum.find(@standard_levels, &(Atom.to_string(&1) == value)) do
+      nil -> {:ok, value}
+      level -> {:ok, level}
+    end
+  end
+
+  defp normalize_level(value) when is_atom(value),
+    do: stable_name(value, :execution_inference_level)
+
+  defp normalize_level(value),
+    do: {:error, {:invalid_execution_inference_level, value}}
+
+  @spec normalize_enum_constraint(map(), atom(), [atom()]) ::
+          {:ok, map()} | {:error, term()}
+  defp normalize_enum_constraint(value, field, allowed) do
+    if Map.has_key?(value, field) do
+      with {:ok, normalized} <- normalize_enum_value(Map.fetch!(value, field), field, allowed) do
+        {:ok, Map.put(value, field, normalized)}
+      end
+    else
+      {:ok, value}
+    end
+  end
+
+  @spec normalize_enum_value(term(), atom(), [atom()]) ::
+          {:ok, atom() | nil} | {:error, term()}
+  defp normalize_enum_value(nil, _field, _allowed), do: {:ok, nil}
+
+  defp normalize_enum_value(item, field, allowed) when is_atom(item) do
+    if item in allowed,
+      do: {:ok, item},
+      else: {:error, {:invalid_execution_inference_constraint, field, item}}
+  end
+
+  defp normalize_enum_value(item, field, allowed) when is_binary(item) do
+    case Enum.find(allowed, &(Atom.to_string(&1) == item)) do
+      nil -> {:error, {:invalid_execution_inference_constraint, field, item}}
+      normalized -> {:ok, normalized}
+    end
+  end
+
+  defp normalize_enum_value(item, field, _allowed),
+    do: {:error, {:invalid_execution_inference_constraint, field, item}}
+
+  @spec bind_profile_ref(map(), atom() | String.t() | nil) ::
+          {:ok, map()} | {:error, term()}
+  defp bind_profile_ref(value, nil), do: {:ok, value}
+
+  defp bind_profile_ref(value, profile_ref) do
+    case Map.get(value, :preferred_level) do
+      nil -> {:ok, Map.put(value, :preferred_level, profile_ref)}
+      ^profile_ref -> {:ok, value}
+      preferred -> {:error, {:conflicting_execution_inference_profile, preferred, profile_ref}}
     end
   end
 
@@ -1022,9 +1127,12 @@ defmodule Spectre.Execution.Program do
 
   @spec portable_map(term(), atom()) :: {:ok, map()} | {:error, term()}
   defp portable_map(value, field) when is_map(value) and not is_struct(value) do
-    case Value.validate(value) do
-      :ok -> {:ok, value}
-      {:error, reason} -> {:error, {:nonportable_execution_program_field, field, reason}}
+    case Expression.normalize_literal(value) do
+      {:ok, normalized} ->
+        {:ok, normalized}
+
+      {:error, reason} ->
+        {:error, {:nonportable_execution_program_field, field, reason}}
     end
   end
 
