@@ -226,6 +226,10 @@ defmodule Spectre.Instance.Runs do
       revision: run.revision,
       status: run.status,
       cursor: run.cursor,
+      definition_ref: run.definition_ref,
+      activation_generation: run.activation_generation,
+      authority_epoch: run.authority_epoch,
+      closure_digest: run.closure_digest,
       waiting: waiting_kind(run.waiting),
       ref: run.result && get_in(run.result.metadata, [:run, :ref])
     }
@@ -311,10 +315,9 @@ defmodule Spectre.Instance.Runs do
   end
 
   defp validate_run_identity(returned, current) do
-    if {returned.id, returned.agent, returned.trace_id} ==
-         {current.id, current.agent, current.trace_id},
-       do: :ok,
-       else: {:error, :run_lineage_mismatch}
+    if run_identity(returned) == run_identity(current),
+      do: :ok,
+      else: {:error, :run_lineage_mismatch}
   end
 
   defp validate_started_shape(returned, current) do
@@ -326,8 +329,7 @@ defmodule Spectre.Instance.Runs do
 
   defp validate_returned_run(%Run{} = returned, %Run{} = current, :advanced) do
     cond do
-      returned.id != current.id or returned.agent != current.agent or
-          returned.trace_id != current.trace_id ->
+      run_identity(returned) != run_identity(current) ->
         {:error, :run_lineage_mismatch}
 
       returned.revision != current.revision + 1 ->
@@ -364,6 +366,19 @@ defmodule Spectre.Instance.Runs do
   end
 
   defp valid_result_lineage?(_run), do: false
+
+  defp run_identity(%Run{} = run) do
+    {
+      run.id,
+      run.agent,
+      run.trace_id,
+      run.definition_ref,
+      run.activation_generation,
+      run.authority_epoch,
+      run.closure_digest,
+      run.deployment_requirement
+    }
+  end
 
   defp owned_result_run_by_id(data, result, run_id, allow_terminal_replay?) do
     case Map.get(data.runs, run_id) do

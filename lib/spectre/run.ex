@@ -11,6 +11,9 @@ defmodule Spectre.Run do
   `restore/2`.
   """
 
+  alias Spectre.Canonical.Value, as: CanonicalValue
+  alias Spectre.Definition.Canonical, as: CanonicalDefinition
+  alias Spectre.Definition.Ref, as: DefinitionRef
   alias Spectre.Input
   alias Spectre.Result
   alias Spectre.Run.Codec
@@ -18,7 +21,7 @@ defmodule Spectre.Run do
   alias Spectre.Run.Value
   alias Spectre.State
 
-  @run_version 1
+  @run_version 2
 
   @enforce_keys [:id, :agent, :input, :state, :trace_id]
   defstruct run_version: @run_version,
@@ -35,6 +38,11 @@ defmodule Spectre.Run do
             trace_id: nil,
             causation_id: nil,
             correlation_id: nil,
+            definition_ref: nil,
+            activation_generation: 0,
+            authority_epoch: 0,
+            closure_digest: nil,
+            deployment_requirement: nil,
             metadata: %{},
             last_error: nil
 
@@ -56,6 +64,11 @@ defmodule Spectre.Run do
           trace_id: String.t(),
           causation_id: String.t() | nil,
           correlation_id: String.t() | nil,
+          definition_ref: DefinitionRef.t(),
+          activation_generation: non_neg_integer(),
+          authority_epoch: non_neg_integer(),
+          closure_digest: String.t(),
+          deployment_requirement: term() | nil,
           metadata: map(),
           last_error: term()
         }
@@ -66,6 +79,7 @@ defmodule Spectre.Run do
       when is_atom(agent) and not is_nil(agent) and is_list(opts) do
     id = Value.logical_id(Keyword.get(opts, :run_id), "run") || Spectre.Identity.uuid7()
     trace_id = Value.logical_id(Keyword.get(opts, :trace_id), "trace") || id
+    definition_ref = definition_ref(agent, opts)
 
     %__MODULE__{
       id: id,
@@ -75,6 +89,11 @@ defmodule Spectre.Run do
       trace_id: trace_id,
       causation_id: Value.logical_id(Keyword.get(opts, :causation_id), "cause"),
       correlation_id: Value.logical_id(Keyword.get(opts, :correlation_id), "correlation"),
+      definition_ref: definition_ref,
+      activation_generation: Keyword.get(opts, :activation_generation, 0),
+      authority_epoch: Keyword.get(opts, :authority_epoch, 0),
+      closure_digest: closure_digest(agent, definition_ref, opts),
+      deployment_requirement: Keyword.get(opts, :deployment_requirement),
       metadata: logical_metadata(Keyword.get(opts, :run_metadata, %{}))
     }
   end
@@ -85,7 +104,12 @@ defmodule Spectre.Run do
     with :ok <- validate_logical_option(opts, :run_id),
          :ok <- validate_logical_option(opts, :trace_id),
          :ok <- validate_logical_option(opts, :causation_id),
-         :ok <- validate_logical_option(opts, :correlation_id) do
+         :ok <- validate_logical_option(opts, :correlation_id),
+         :ok <- validate_definition_ref_option(opts),
+         :ok <- validate_non_negative_option(opts, :activation_generation),
+         :ok <- validate_non_negative_option(opts, :authority_epoch),
+         :ok <- validate_digest_option(opts, :closure_digest),
+         :ok <- validate_portable_option(opts, :deployment_requirement) do
       validate_metadata_option(opts)
     end
   end
@@ -116,6 +140,45 @@ defmodule Spectre.Run do
   @doc false
   @spec version() :: pos_integer()
   def version, do: @run_version
+
+  @doc false
+  @spec definition_ref(module(), keyword()) :: DefinitionRef.t()
+  def definition_ref(agent, opts \\ []) do
+    case Keyword.get(opts, :definition_ref) do
+      %DefinitionRef{} = ref ->
+        if DefinitionRef.valid?(ref), do: ref, else: raise_invalid_definition_ref(ref)
+
+      value when is_binary(value) ->
+        case DefinitionRef.parse(value) do
+          {:ok, ref} -> ref
+          {:error, _reason} -> raise_invalid_definition_ref(value)
+        end
+
+      nil ->
+        compiled_definition_ref(agent)
+
+      value ->
+        raise_invalid_definition_ref(value)
+    end
+  end
+
+  @doc false
+  @spec legacy_definition_ref(module()) :: DefinitionRef.t()
+  def legacy_definition_ref(agent) when is_atom(agent) and not is_nil(agent) do
+    digest = CanonicalValue.digest!(%{"legacy_compiled_agent" => Atom.to_string(agent)})
+    {:ok, ref} = DefinitionRef.parse("sha256:" <> digest)
+    ref
+  end
+
+  @doc false
+  @spec default_closure_digest(module(), DefinitionRef.t()) :: String.t()
+  def default_closure_digest(agent, %DefinitionRef{} = definition_ref) do
+    CanonicalValue.digest!(%{
+      "mode" => "compiled_unsealed",
+      "agent" => Atom.to_string(agent),
+      "definition_ref" => DefinitionRef.to_string(definition_ref)
+    })
+  end
 
   defp validate_logical_option(opts, key) do
     case Keyword.fetch(opts, key) do
@@ -151,4 +214,75 @@ defmodule Spectre.Run do
 
   defp logical_metadata(metadata) when is_map(metadata), do: metadata
   defp logical_metadata(_metadata), do: %{}
+
+  defp compiled_definition_ref(agent) do
+    case CanonicalDefinition.lower(agent) do
+      {:ok, canonical} -> CanonicalDefinition.ref(canonical)
+      {:error, _reason} -> legacy_definition_ref(agent)
+    end
+  rescue
+    _exception -> legacy_definition_ref(agent)
+  end
+
+  defp closure_digest(agent, definition_ref, opts) do
+    case Keyword.get(opts, :closure_digest) do
+      nil -> default_closure_digest(agent, definition_ref)
+      value when is_binary(value) and value != "" -> value
+      value -> raise ArgumentError, "invalid Run closure digest: #{inspect(value)}"
+    end
+  end
+
+  defp validate_definition_ref_option(opts) do
+    case Keyword.fetch(opts, :definition_ref) do
+      :error ->
+        :ok
+
+      {:ok, %DefinitionRef{} = ref} ->
+        if DefinitionRef.valid?(ref),
+          do: :ok,
+          else: {:error, {:invalid_run_option, :definition_ref}}
+
+      {:ok, value} when is_binary(value) ->
+        case DefinitionRef.parse(value) do
+          {:ok, _ref} -> :ok
+          {:error, reason} -> {:error, {:invalid_run_option, :definition_ref, reason}}
+        end
+
+      {:ok, value} ->
+        {:error, {:invalid_run_option, :definition_ref, value}}
+    end
+  end
+
+  defp validate_non_negative_option(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, value} when is_integer(value) and value >= 0 -> :ok
+      {:ok, value} -> {:error, {:invalid_run_option, key, value}}
+    end
+  end
+
+  defp validate_digest_option(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, value} when is_binary(value) and value != "" -> :ok
+      {:ok, value} -> {:error, {:invalid_run_option, key, value}}
+    end
+  end
+
+  defp validate_portable_option(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error ->
+        :ok
+
+      {:ok, value} ->
+        case Value.validate(value, [key]) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:invalid_run_option, key, reason}}
+        end
+    end
+  end
+
+  defp raise_invalid_definition_ref(value) do
+    raise ArgumentError, "invalid Run Definition Ref: #{inspect(value)}"
+  end
 end

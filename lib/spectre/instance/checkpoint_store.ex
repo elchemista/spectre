@@ -24,7 +24,15 @@ defmodule Spectre.Instance.CheckpointStore do
               keyword()
             ) :: :ok | {:ok, term()} | {:error, term()}
 
-  @optional_callbacks load: 2, compare_and_swap: 5
+  @callback migrate_instance_key(
+              Ref.t(),
+              Ref.t(),
+              String.t() | map(),
+              String.t(),
+              keyword()
+            ) :: :ok | {:ok, :moved | :aliased} | {:error, term()}
+
+  @optional_callbacks load: 2, compare_and_swap: 5, migrate_instance_key: 5
 
   @doc """
   Normalizes a user-facing store configuration into `nil` (checkpointing
@@ -115,6 +123,57 @@ defmodule Spectre.Instance.CheckpointStore do
     kind, reason -> {:error, {:ambiguous, {:checkpoint_persist_failure, module, kind, reason}}}
   end
 
+  @doc """
+  Atomically migrates a validated legacy Instance key to its stable key.
+
+  The adapter receives both the exact legacy checkpoint observed by core and
+  the migrated schema-2 checkpoint it must expose under `stable_ref`. It must
+  reject an existing divergent target and either move the source or leave a
+  controlled alias. Core verifies the target byte-for-byte after success.
+  """
+  @spec migrate_instance_key(
+          {module(), keyword()},
+          Ref.t(),
+          Ref.t(),
+          String.t() | map(),
+          String.t(),
+          keyword()
+        ) :: :ok | {:error, term()}
+  def migrate_instance_key(
+        {module, store_opts} = store,
+        %Ref{} = legacy_ref,
+        %Ref{} = stable_ref,
+        legacy_checkpoint,
+        migrated_checkpoint,
+        opts
+      )
+      when (is_binary(legacy_checkpoint) or is_map(legacy_checkpoint)) and
+             is_binary(migrated_checkpoint) do
+    with :ok <- ensure_migration_callback(module),
+         reply <-
+           module.migrate_instance_key(
+             legacy_ref,
+             stable_ref,
+             legacy_checkpoint,
+             migrated_checkpoint,
+             Keyword.merge(store_opts, opts)
+           ),
+         :ok <- normalize_migration(reply, module),
+         {:ok, ^migrated_checkpoint} <- load(store, stable_ref, opts) do
+      :ok
+    else
+      {:ok, _different} -> {:error, :instance_key_migration_readback_mismatch}
+      :not_found -> {:error, :instance_key_migration_not_visible}
+      {:error, _reason} = error -> error
+    end
+  rescue
+    exception ->
+      {:error, {:ambiguous, {:instance_key_migration_exception, module, exception.__struct__}}}
+  catch
+    kind, reason ->
+      {:error, {:ambiguous, {:instance_key_migration_failure, module, kind, reason}}}
+  end
+
   @spec normalize_load(term(), module()) ::
           :not_found | {:ok, String.t() | map()} | {:error, term()}
   defp normalize_load(:not_found, _module), do: :not_found
@@ -134,4 +193,27 @@ defmodule Spectre.Instance.CheckpointStore do
 
   defp normalize_persist(value, module),
     do: {:error, {:ambiguous, {:invalid_checkpoint_persist_reply, module, value}}}
+
+  defp ensure_migration_callback(module) do
+    cond do
+      not Code.ensure_loaded?(module) ->
+        {:error, {:checkpoint_store_not_loaded, module}}
+
+      not function_exported?(module, :migrate_instance_key, 5) ->
+        {:error, {:checkpoint_store_callback_missing, module, :migrate_instance_key, 5}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp normalize_migration(:ok, _module), do: :ok
+
+  defp normalize_migration({:ok, status}, _module) when status in [:moved, :aliased],
+    do: :ok
+
+  defp normalize_migration({:error, _reason} = error, _module), do: error
+
+  defp normalize_migration(value, module),
+    do: {:error, {:ambiguous, {:invalid_checkpoint_migration_reply, module, value}}}
 end

@@ -4,9 +4,10 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.2` extends the vNext core with sealed Manifest V2 publication and
-verified Definition resolution. The exact modules, callables, DSL forms,
-callbacks, types, and struct fields covered by its compatibility
+Spectre `0.2.3` extends the vNext core with stable Agent identity,
+generation-fenced Definition activation, Definition-pinned Runs, and schema-2
+checkpoints. The exact modules, callables, DSL forms, callbacks, types, and
+struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
 0.1.6 conversational baseline remains included. This guide explains that
 surface but does not enlarge it. Anything absent from the manifest is an
@@ -34,6 +35,34 @@ re-reads and verifies that artifact, and reports compiled-build drift as
 `:unobserved`, `:matched`, or a rejected/reported drift. See
 [Definition Store, Resolver, and Manifest V2](DEFINITION_STORE.md).
 
+## Activate a published Definition
+
+Trusted host code creates a minimal immutable Candidate from a published
+Definition, then passes only its Ref to the owning Instance:
+
+```elixir
+{:ok, candidate_ref} =
+  Spectre.Definition.Resolver.bootstrap_candidate(
+    definition_store,
+    definition_ref,
+    source: :compiled,
+    checkpoint_store: checkpoint_store
+  )
+
+{:ok, activation} =
+  Spectre.activate(instance, candidate_ref,
+    expected_generation: 0,
+    authority_epoch: 4
+  )
+
+^activation = Spectre.activation(instance)
+```
+
+The Instance re-reads Candidate, Definition, Manifest, and publication receipt
+inside its sequencer. New Runs pin the committed Definition and execution
+closure; open Runs preserve their prior pins. See
+[Stable Identity, Activation, and Definition-Pinned Runs](IDENTITY_ACTIVATION.md).
+
 ## Stack installation
 
 `Spectre.Stack` is the compile-time package boundary. A Stack definition is
@@ -59,6 +88,7 @@ resources. PID, connections, clients, and secrets never belong in
 | One host-facing decision | `Spectre.turn/3` | `{:ok, %Spectre.Turn{}}` |
 | Start a continuation | `Spectre.Runtime.start/3` | `{:continue, %Spectre.Run{}}` |
 | Drive a continuation | `Spectre.Runtime.advance/2`, `resume/3` | one closed Runtime step |
+| Activate a published Candidate | `Spectre.activate/3` | generation-fenced Activation snapshot |
 | Start precise background work | `Spectre.start_work/4` | operational ref and committed view |
 | Register durable observation | `Spectre.register_vigil/4` | operational ref and committed view |
 | Inspect or control a loop | `loop/3`, `pause_loop/3`, `update_and_resume_loop/4` | redacted committed view |

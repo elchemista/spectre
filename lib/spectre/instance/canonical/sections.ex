@@ -3,7 +3,17 @@ defmodule Spectre.Instance.Canonical.Sections do
 
   alias Spectre.Instance.Canonical.Section
 
-  @names [:flow, :work, :vigil, :directive, :control, :correlations, :events]
+  @names [
+    :flow,
+    :work,
+    :vigil,
+    :directive,
+    :control,
+    :correlations,
+    :events,
+    :activation,
+    :runs
+  ]
 
   defstruct flow: %Section{},
             work: %Section{},
@@ -11,9 +21,20 @@ defmodule Spectre.Instance.Canonical.Sections do
             directive: %Section{},
             control: %Section{},
             correlations: %Section{},
-            events: %Section{}
+            events: %Section{},
+            activation: %Section{value: nil},
+            runs: %Section{}
 
-  @type name :: :flow | :work | :vigil | :directive | :control | :correlations | :events
+  @type name ::
+          :flow
+          | :work
+          | :vigil
+          | :directive
+          | :control
+          | :correlations
+          | :events
+          | :activation
+          | :runs
 
   @type t :: %__MODULE__{
           flow: Section.t(),
@@ -22,7 +43,9 @@ defmodule Spectre.Instance.Canonical.Sections do
           directive: Section.t(),
           control: Section.t(),
           correlations: Section.t(),
-          events: Section.t()
+          events: Section.t(),
+          activation: Section.t(),
+          runs: Section.t()
         }
 
   @spec names() :: [name()]

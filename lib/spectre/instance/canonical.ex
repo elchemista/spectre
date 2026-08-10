@@ -8,7 +8,7 @@ defmodule Spectre.Instance.Canonical do
   alias Spectre.Instance.Canonical.Transition
   alias Spectre.Run.Value
 
-  @schema_version 1
+  @schema_version 2
   @journal_limit 512
   @applied_change_limit 1_024
 

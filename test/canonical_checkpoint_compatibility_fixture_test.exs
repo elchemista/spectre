@@ -75,7 +75,8 @@ defmodule SpectreCanonicalCheckpointCompatibilityFixtureTest do
     checkpoint = read_fixture!()
 
     assert {:ok, canonical} = Codec.decode(checkpoint)
-    assert canonical.schema_version == 1
+    assert canonical.schema_version == 2
+    assert {:ok, nil} = Canonical.fetch(canonical, :activation)
     assert canonical.revision > 0
 
     assert {:ok, %State{} = flow} = Canonical.fetch(canonical, :flow)
@@ -126,7 +127,12 @@ defmodule SpectreCanonicalCheckpointCompatibilityFixtureTest do
 
     assert {:ok, restored_checkpoint} = Spectre.checkpoint(instance)
     assert {:ok, restored} = Codec.decode(restored_checkpoint)
-    assert restored.revision == canonical.revision
+    assert restored.revision == canonical.revision + 1
+
+    assert {:ok, %{instance_key_migration: migration}} =
+             Canonical.fetch(restored, :correlations)
+
+    assert migration.legacy_instance_key != migration.stable_instance_key
   end
 
   defp assert_event_lifecycle(records, loop_id, kind) do

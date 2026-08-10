@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.2.2"
+  @version "0.2.3"
 
   @doc """
   Returns the running Spectre library version.
@@ -178,6 +178,12 @@ defmodule Spectre do
   def resume(instance, %Spectre.Run.Ref{} = ref, command, opts \\ []) do
     Spectre.Instance.resume(instance, ref, command, opts)
   end
+
+  @doc "Returns the currently committed Definition Activation for an Instance."
+  defdelegate activation(instance), to: Spectre.Instance
+
+  @doc "Activates a re-read bootstrap Candidate through generation CAS."
+  defdelegate activate(instance, candidate_ref, opts \\ []), to: Spectre.Instance
 
   @doc "Starts a precise Work on an Agent Instance."
   defdelegate start_work(instance, controller, input, opts \\ []), to: Spectre.Instance

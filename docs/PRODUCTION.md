@@ -65,6 +65,18 @@ further automatic writes until `Spectre.reconcile_checkpoint/2` loads and
 validates durable state. Monitor `checkpoint_status/1`, and use
 `flush_checkpoint/2` as a deployment or graceful-shutdown barrier.
 
+Checkpoint schema 2 includes the current Definition Activation and retained
+Run continuations. Configure the same durable `Spectre.Definition.Store` on
+restart so Spectre can re-read every pinned Definition and verify its closure.
+The bundled in-memory Definition Store is not valid beside a durable
+Checkpoint Store.
+
+Before upgrading an existing checkpoint namespace to 0.2.3, implement
+`migrate_instance_key/5` atomically and drain old owners. A local Registry is
+not a distributed ownership guarantee; multi-node deployments must also
+configure a linearizable `Spectre.Instance.Owner` lease adapter. See
+[Migrating to 0.2.3](MIGRATING_TO_0_2_3.md).
+
 Canonical operational history is bounded by default. An Instance retains the
 256 most recently updated terminal loops and up to 1,024 additional historical
 correlations, while always preserving live loops and their primary

@@ -9,6 +9,7 @@ defmodule Spectre.Run.Codec do
   """
 
   alias Spectre.Awaitable
+  alias Spectre.Definition.Ref, as: DefinitionRef
   alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Input.Source
@@ -27,8 +28,21 @@ defmodule Spectre.Run.Codec do
   @typep raw_run :: %Run{}
 
   @format "spectre/run"
-  @version 1
+  @version 2
+  @supported_versions [1, 2]
   @default_max_bytes 2_000_000
+  @result_identity_fields [
+    :id,
+    :revision,
+    :status,
+    :cursor,
+    :step_id,
+    :trace_id,
+    :definition_ref,
+    :activation_generation,
+    :authority_epoch,
+    :closure_digest
+  ]
 
   @doc """
   Encodes a run into a deterministic, versioned checkpoint binary.
@@ -74,9 +88,10 @@ defmodule Spectre.Run.Codec do
 
     with :ok <- validate_binary_size(binary, max_bytes),
          {:ok, envelope} <- decode_term(binary),
-         {:ok, encoded_run} <- decode_envelope(envelope),
+         {:ok, checkpoint_version, encoded_run} <- decode_envelope(envelope),
          :ok <- Value.prepare(encoded_run),
-         {:ok, run} <- Value.decode(encoded_run),
+         {:ok, decoded_run} <- Value.decode(encoded_run),
+         {:ok, run} <- migrate_run(checkpoint_version, decoded_run),
          :ok <- validate_run(run),
          :ok <- Value.validate(run, [:run]) do
       {:ok, run}
@@ -231,12 +246,13 @@ defmodule Spectre.Run.Codec do
     _exception -> {:error, :invalid_run_checkpoint}
   end
 
-  @spec decode_envelope(term()) :: {:ok, term()} | {:error, term()}
-  defp decode_envelope(%{"format" => @format, "version" => @version, "run" => encoded_run}),
-    do: {:ok, encoded_run}
+  @spec decode_envelope(term()) :: {:ok, pos_integer(), term()} | {:error, term()}
+  defp decode_envelope(%{"format" => @format, "version" => version, "run" => encoded_run})
+       when version in @supported_versions,
+       do: {:ok, version, encoded_run}
 
   defp decode_envelope(%{"format" => @format, "version" => version}),
-    do: {:error, {:unsupported_run_checkpoint_version, version, [@version]}}
+    do: {:error, {:unsupported_run_checkpoint_version, version, @supported_versions}}
 
   defp decode_envelope(_envelope), do: {:error, :invalid_run_checkpoint}
 
@@ -251,16 +267,21 @@ defmodule Spectre.Run.Codec do
   defp validate_run(_run), do: {:error, :invalid_run}
 
   @spec validate_run_shape(raw_run()) :: :ok | {:error, term()}
-  defp validate_run_shape(%Run{input: %Input{}, state: %State{}} = run) do
-    with :ok <- validate_run_identity(run),
-         :ok <- validate_run_position(run),
-         :ok <- validate_run_revision(run),
-         :ok <- validate_run_lineage(run) do
-      validate_run_metadata(run)
+  defp validate_run_shape(%Run{} = run) do
+    case {untrusted_field(run, :input), untrusted_field(run, :state)} do
+      {%Input{}, %State{}} ->
+        with :ok <- validate_run_identity(run),
+             :ok <- validate_run_position(run),
+             :ok <- validate_run_revision(run),
+             :ok <- validate_run_lineage(run),
+             :ok <- validate_run_pin(run) do
+          validate_run_metadata(run)
+        end
+
+      _other ->
+        {:error, :invalid_run}
     end
   end
-
-  defp validate_run_shape(_run), do: {:error, :invalid_run}
 
   @spec validate_run_identity(raw_run()) :: :ok | {:error, :invalid_run_identity}
   defp validate_run_identity(%Run{id: id, agent: agent, trace_id: trace_id})
@@ -294,9 +315,57 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run_lineage(_run), do: {:error, :invalid_run_lineage}
 
+  @spec validate_run_pin(raw_run()) :: :ok | {:error, :invalid_run_definition_pin}
+  defp validate_run_pin(%Run{} = run) do
+    if DefinitionRef.valid?(run.definition_ref) and
+         is_integer(run.activation_generation) and run.activation_generation >= 0 and
+         is_integer(run.authority_epoch) and run.authority_epoch >= 0 and
+         is_binary(run.closure_digest) and run.closure_digest != "" do
+      :ok
+    else
+      {:error, :invalid_run_definition_pin}
+    end
+  end
+
+  # Run.t() promises a map, but decoded external structs can violate that
+  # promise before this validator establishes trust.
+  @dialyzer {:nowarn_function, validate_run_metadata: 1}
   @spec validate_run_metadata(raw_run()) :: :ok | {:error, :invalid_run_metadata}
-  defp validate_run_metadata(%Run{metadata: metadata}) when is_map(metadata), do: :ok
-  defp validate_run_metadata(_run), do: {:error, :invalid_run_metadata}
+  defp validate_run_metadata(%Run{} = run) do
+    if is_map(untrusted_field(run, :metadata)),
+      do: :ok,
+      else: {:error, :invalid_run_metadata}
+  end
+
+  # `Value.decode/1` reconstructs structs at an untrusted persistence boundary.
+  # Indirection prevents the static Run.t() contract from erasing these runtime
+  # checks for forged or corrupt struct fields.
+  @spec untrusted_field(map(), atom()) :: term()
+  defp untrusted_field(container, field), do: Map.fetch!(container, field)
+
+  @spec migrate_run(pos_integer(), term()) :: {:ok, Run.t()} | {:error, term()}
+  defp migrate_run(2, %Run{run_version: 2} = run), do: {:ok, run}
+
+  defp migrate_run(1, %Run{run_version: 1} = run)
+       when is_atom(run.agent) and not is_nil(run.agent) do
+    definition_ref = Run.legacy_definition_ref(run.agent)
+
+    {:ok,
+     %{
+       run
+       | run_version: 2,
+         definition_ref: definition_ref,
+         activation_generation: 0,
+         authority_epoch: 0,
+         closure_digest: Run.default_closure_digest(run.agent, definition_ref),
+         deployment_requirement: nil
+     }}
+  end
+
+  defp migrate_run(checkpoint_version, %Run{run_version: run_version}),
+    do: {:error, {:run_checkpoint_schema_mismatch, checkpoint_version, run_version}}
+
+  defp migrate_run(_checkpoint_version, _value), do: {:error, :invalid_run}
 
   @spec validate_run_invariants(raw_run()) :: :ok | {:error, term()}
   defp validate_run_invariants(%Run{
@@ -473,21 +542,12 @@ defmodule Spectre.Run.Codec do
   defp validate_result_identity(
          %Run{} = run,
          %Result{
-           metadata: %{
-             run: %{
-               id: id,
-               revision: revision,
-               status: status,
-               cursor: cursor,
-               step_id: step_id,
-               trace_id: trace_id,
-               ref: %Ref{} = ref
-             }
-           }
+           metadata: %{run: %{ref: %Ref{} = ref} = identity}
          }
        ) do
-    if id == run.id and revision == run.revision and status == run.status and
-         cursor == run.cursor and step_id == run.step_id and trace_id == run.trace_id do
+    expected = run |> Map.from_struct() |> Map.take(@result_identity_fields)
+
+    if Map.take(identity, @result_identity_fields) == expected do
       validate_ref(run, ref)
     else
       {:error, :invalid_run_result_identity}

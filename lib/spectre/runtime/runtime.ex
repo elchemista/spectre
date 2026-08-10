@@ -684,6 +684,10 @@ defmodule Spectre.Runtime do
       cursor: run.cursor,
       step_id: run.step_id,
       trace_id: run.trace_id,
+      definition_ref: run.definition_ref,
+      activation_generation: run.activation_generation,
+      authority_epoch: run.authority_epoch,
+      closure_digest: run.closure_digest,
       ref: ref
     }
 
@@ -696,6 +700,10 @@ defmodule Spectre.Runtime do
     |> Keyword.put(:trace_id, run.trace_id)
     |> Keyword.put(:run_id, run.id)
     |> Keyword.put(:run_revision, run.revision)
+    |> Keyword.put(:definition_ref, run.definition_ref)
+    |> Keyword.put(:activation_generation, run.activation_generation)
+    |> Keyword.put(:authority_epoch, run.authority_epoch)
+    |> Keyword.put(:closure_digest, run.closure_digest)
   end
 
   @spec fail_run_step(Run.t(), term(), keyword(), atom()) :: step_result()
@@ -833,7 +841,11 @@ defmodule Spectre.Runtime do
         run_revision: run.revision,
         run_status: run.status,
         run_cursor: run.cursor,
-        step_id: run.step_id
+        step_id: run.step_id,
+        definition_ref: run.definition_ref,
+        activation_generation: run.activation_generation,
+        authority_epoch: run.authority_epoch,
+        closure_digest: run.closure_digest
       },
       journal_opts
     )

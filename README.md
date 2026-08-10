@@ -35,11 +35,27 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.2` adds sealed Manifest V2 publication and verified Definition
-> resolution to the vNext core. The full suite exceeds 90%
+> Spectre `0.2.3` separates stable Agent identity from active Definition,
+> adds generation-fenced activation and Definition-pinned Run recovery, and
+> writes canonical checkpoint schema 2. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.2.3 Stable Identity and Activation Foundation
+
+Version `0.2.3` keeps one logical Agent/Subject Instance across Definition and
+Stack changes. A trusted host publishes a minimal content-addressed Candidate,
+then activates it inside the Instance sequencer with generation CAS and an
+owner fencing token. New Runs pin that Definition and closure while Runs
+already open under an earlier Definition keep their original pin across
+restart.
+
+Run and canonical checkpoint writers now emit schema 2 and retain all live
+Run continuations. Legacy schemas remain readable, while legacy Instance keys
+move only through an explicit atomic Checkpoint Store migration. See
+[Stable Identity, Activation, and Definition-Pinned Runs](docs/IDENTITY_ACTIVATION.md)
+and [Migrating to 0.2.3](docs/MIGRATING_TO_0_2_3.md).
 
 ## 0.2.2 Definition Publication Foundation
 
@@ -49,8 +65,8 @@ through `Spectre.Definition.Store`, and revalidates Ref, Manifest, receipt,
 component contracts, and code drift through `Spectre.Definition.Resolver`.
 
 Stack Contract V1 remains a read-only module-first input. Its declarations are
-requests and receive no grant without an explicit host ceiling. This release
-does not yet activate Definitions or change Agent/Instance identity. See
+requests and receive no grant without an explicit host ceiling. That release
+did not yet activate Definitions or change Agent/Instance identity. See
 [Definition Store, Resolver, and Manifest V2](docs/DEFINITION_STORE.md).
 
 ## 0.2.1 Canonical Definition Foundation
@@ -200,7 +216,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.2"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.3"}
   ]
 end
 ```
@@ -691,6 +707,9 @@ adapters on startup, and can stop after an idle timeout.
 - [Definition Store, Resolver, and Manifest V2](docs/DEFINITION_STORE.md) -
   sealed authority/closure, immutable publication, conformance, and verified
   resolution contracts.
+- [Stable Identity, Activation, and Definition-Pinned Runs](docs/IDENTITY_ACTIVATION.md) -
+  stable Agent/Instance keys, bootstrap Candidates, activation CAS, Run pins,
+  owner fencing, and checkpoint schema 2.
 - [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action
   requirements, prompts, policies, and complete examples.
 - [Stack](docs/STACK.md) - installable packages, immutable definitions,
@@ -703,6 +722,8 @@ adapters on startup, and can stop after an idle timeout.
   Runners, control, checkpoints, events, and governed delivery.
 - [Migrating to 0.2.0](docs/MIGRATING_TO_0_2.md) - compatibility, checkpoint
   adapters, and incremental adoption from 0.1.x.
+- [Migrating to 0.2.3](docs/MIGRATING_TO_0_2_3.md) - legacy Instance-key
+  migration, Definition durability, owner leases, and schema-2 rollout.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM
@@ -722,7 +743,7 @@ adapters on startup, and can stop after an idle timeout.
 - [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
   matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
-- [0.2.2 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [0.2.3 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

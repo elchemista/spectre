@@ -7,7 +7,8 @@ defmodule Spectre.Instance.Canonical.Codec do
   alias Spectre.Instance.Canonical.Transition
   alias Spectre.Run.Value
 
-  @checkpoint_version 1
+  @checkpoint_version 2
+  @legacy_checkpoint_version 1
   @max_json_bytes 8_000_000
 
   @checkpoint_keys ~w(
@@ -20,7 +21,7 @@ defmodule Spectre.Instance.Canonical.Codec do
     changed_sections correlation_id causation_id provenance metadata committed_at
   )
 
-  @section_names %{
+  @legacy_section_names %{
     "flow" => :flow,
     "work" => :work,
     "vigil" => :vigil,
@@ -29,6 +30,8 @@ defmodule Spectre.Instance.Canonical.Codec do
     "correlations" => :correlations,
     "events" => :events
   }
+
+  @section_names Map.merge(@legacy_section_names, %{"activation" => :activation, "runs" => :runs})
 
   @spec encode(Canonical.t()) :: {:ok, map()} | {:error, term()}
   def encode(%Canonical{} = state) do
@@ -69,13 +72,15 @@ defmodule Spectre.Instance.Canonical.Codec do
          {:ok, checkpoint_version} <- non_negative_integer(checkpoint, "checkpoint_version"),
          :ok <- checkpoint_version(checkpoint_version),
          {:ok, state_version} <- non_negative_integer(checkpoint, "state_schema_version"),
+         :ok <- state_schema_version(checkpoint_version, state_version),
          {:ok, revision} <- non_negative_integer(checkpoint, "revision"),
-         {:ok, sections} <- decode_sections(Map.fetch!(checkpoint, "sections")),
+         {:ok, sections} <-
+           decode_sections(Map.fetch!(checkpoint, "sections"), checkpoint_version),
          {:ok, journal} <- decode_journal(Map.fetch!(checkpoint, "journal")),
          {:ok, applied_changes} <-
            decode_applied_changes(Map.fetch!(checkpoint, "applied_changes")) do
       state = %Canonical{
-        schema_version: state_version,
+        schema_version: 2,
         revision: revision,
         sections: sections,
         journal: journal,
@@ -115,14 +120,16 @@ defmodule Spectre.Instance.Canonical.Codec do
     end)
   end
 
-  @spec decode_sections(term()) :: {:ok, Sections.t()} | {:error, term()}
-  defp decode_sections(sections) when is_map(sections) and not is_struct(sections) do
-    expected = Map.keys(@section_names)
+  @spec decode_sections(term(), pos_integer()) :: {:ok, Sections.t()} | {:error, term()}
+  defp decode_sections(sections, checkpoint_version)
+       when is_map(sections) and not is_struct(sections) do
+    section_names = section_names(checkpoint_version)
+    expected = Map.keys(section_names)
 
     with :ok <- exact_keys(sections, expected, :sections) do
       Enum.reduce_while(sections, {:ok, %Sections{}}, fn
         {name, encoded}, {:ok, decoded} ->
-          section_name = Map.fetch!(@section_names, name)
+          section_name = Map.fetch!(section_names, name)
 
           case decode_section(encoded, section_name) do
             {:ok, section} ->
@@ -135,7 +142,8 @@ defmodule Spectre.Instance.Canonical.Codec do
     end
   end
 
-  defp decode_sections(value), do: {:error, {:invalid_canonical_sections, shape(value)}}
+  defp decode_sections(value, _checkpoint_version),
+    do: {:error, {:invalid_canonical_sections, shape(value)}}
 
   @spec decode_section(term(), Sections.name()) :: {:ok, Section.t()} | {:error, term()}
   defp decode_section(section, name) when is_map(section) and not is_struct(section) do
@@ -315,7 +323,17 @@ defmodule Spectre.Instance.Canonical.Codec do
 
   @spec checkpoint_version(term()) :: :ok | {:error, term()}
   defp checkpoint_version(@checkpoint_version), do: :ok
+  defp checkpoint_version(@legacy_checkpoint_version), do: :ok
   defp checkpoint_version(version), do: {:error, {:unsupported_canonical_checkpoint, version}}
+
+  defp section_names(@checkpoint_version), do: @section_names
+  defp section_names(@legacy_checkpoint_version), do: @legacy_section_names
+
+  defp state_schema_version(@checkpoint_version, 2), do: :ok
+  defp state_schema_version(@legacy_checkpoint_version, 1), do: :ok
+
+  defp state_schema_version(_checkpoint_version, version),
+    do: {:error, {:unsupported_canonical_version, version}}
 
   @spec transition_status(term()) :: {:ok, :committed} | {:error, term()}
   defp transition_status("committed"), do: {:ok, :committed}
@@ -370,6 +388,8 @@ defmodule Spectre.Instance.Canonical.Codec do
   defp section_name(:control), do: "control"
   defp section_name(:correlations), do: "correlations"
   defp section_name(:events), do: "events"
+  defp section_name(:activation), do: "activation"
+  defp section_name(:runs), do: "runs"
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_list(value), do: :list
