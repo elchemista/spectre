@@ -8,6 +8,7 @@ defmodule Spectre.Definition do
   without flattening away ownership.
   """
 
+  alias Spectre.Definition.Canonical
   alias Spectre.Extension.Mount, as: ExtensionMount
   alias Spectre.Skill.Mount
   alias Spectre.Stack.Ref
@@ -112,6 +113,20 @@ defmodule Spectre.Definition do
       {:error, reason} -> raise ArgumentError, "invalid Spectre definition: #{inspect(reason)}"
     end
   end
+
+  @doc """
+  Lowers a compiled Agent or Skill module into its portable canonical IR.
+
+  This snapshots governed prompt assets, replaces executable callbacks with
+  compiled code references, and returns the content-addressable Definition
+  envelope used by projections.
+  """
+  @spec canonical(module(), keyword()) :: {:ok, Canonical.t()} | {:error, term()}
+  def canonical(module, opts \\ []), do: Canonical.lower(module, opts)
+
+  @doc "Returns the canonical Definition or raises with its stable lowering reason."
+  @spec canonical!(module(), keyword()) :: Canonical.t()
+  def canonical!(module, opts \\ []), do: Canonical.lower!(module, opts)
 
   @doc """
   Returns every rule visible to an Agent with mount ownership materialized.
