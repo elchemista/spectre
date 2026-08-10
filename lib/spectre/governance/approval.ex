@@ -22,14 +22,15 @@ defmodule Spectre.Governance.Approval do
   def approve(store, candidate_ref, opts \\ [])
 
   def approve(store, candidate_ref, opts) when is_list(opts) do
-    with {:ok, candidate} <- fetch_candidate(store, candidate_ref, opts),
+    with {:ok, approved_at} <- transition_time(opts, :approved_at, :rejected_at, :approval),
+         {:ok, candidate} <- fetch_candidate(store, candidate_ref, opts),
          %CandidateState{state: :evaluated} = governance <- candidate.governance,
          {:ok, policy} <- policy(Keyword.get(opts, :policy)),
          {:ok, required_mode} <- Policy.required_mode(policy, governance.risk),
          {:ok, mode} <- mode(Keyword.get(opts, :mode, required_mode)),
          true <- Policy.allows?(policy, governance.risk, mode),
          {:ok, actor_ref} <- actor(Keyword.get(opts, :actor_ref), mode),
-         {:ok, receipt} <- approval_receipt(governance, mode, actor_ref, opts),
+         {:ok, receipt} <- approval_receipt(governance, mode, actor_ref, approved_at, opts),
          {:ok, receipt_ref} <- Store.publish_gate_receipt(store, receipt, store_opts(opts)),
          receipt_ref_string = ReceiptRef.to_string(receipt_ref),
          {:ok, governance} <-
@@ -38,7 +39,7 @@ defmodule Spectre.Governance.Approval do
              approval_receipt_ref: receipt_ref_string,
              lineage_refs: append_ref(governance.lineage_refs, candidate_ref)
            ),
-         {:ok, approved} <- advance_candidate(candidate, candidate_ref, governance, opts),
+         {:ok, approved} <- advance_candidate(candidate, candidate_ref, governance, approved_at),
          {:ok, approved_ref} <- Store.publish_candidate(store, approved, store_opts(opts)) do
       {:ok, approved_ref}
     else
@@ -59,11 +60,12 @@ defmodule Spectre.Governance.Approval do
   def reject(store, candidate_ref, opts \\ [])
 
   def reject(store, candidate_ref, opts) when is_list(opts) do
-    with {:ok, candidate} <- fetch_candidate(store, candidate_ref, opts),
+    with {:ok, rejected_at} <- transition_time(opts, :rejected_at, :approved_at, :rejection),
+         {:ok, candidate} <- fetch_candidate(store, candidate_ref, opts),
          %CandidateState{state: :evaluated} = governance <- candidate.governance,
          {:ok, actor_ref} <- rejection_actor(Keyword.get(opts, :actor_ref)),
          {:ok, reason} <- rejection_reason(Keyword.get(opts, :reason)),
-         {:ok, receipt} <- rejection_receipt(governance, actor_ref, reason, opts),
+         {:ok, receipt} <- rejection_receipt(governance, actor_ref, reason, rejected_at),
          {:ok, receipt_ref} <- Store.publish_gate_receipt(store, receipt, store_opts(opts)),
          receipt_ref_string = ReceiptRef.to_string(receipt_ref),
          {:ok, governance} <-
@@ -72,7 +74,7 @@ defmodule Spectre.Governance.Approval do
              approval_receipt_ref: receipt_ref_string,
              lineage_refs: append_ref(governance.lineage_refs, candidate_ref)
            ),
-         {:ok, rejected} <- advance_candidate(candidate, candidate_ref, governance, opts),
+         {:ok, rejected} <- advance_candidate(candidate, candidate_ref, governance, rejected_at),
          {:ok, rejected_ref} <- Store.publish_candidate(store, rejected, store_opts(opts)) do
       {:ok, rejected_ref}
     else
@@ -101,8 +103,7 @@ defmodule Spectre.Governance.Approval do
   defp actor(value, _mode) when is_binary(value) and value != "", do: {:ok, value}
   defp actor(value, mode), do: {:error, {:invalid_governance_approval_actor, mode, value}}
 
-  defp approval_receipt(governance, mode, actor_ref, opts) do
-    issued_at = Keyword.get(opts, :approved_at, System.system_time(:millisecond))
+  defp approval_receipt(governance, mode, actor_ref, issued_at, opts) do
     result = %{risk: governance.risk, mode: mode, actor_ref: actor_ref}
 
     Receipt.new(%{
@@ -134,8 +135,7 @@ defmodule Spectre.Governance.Approval do
   defp rejection_reason(value) when is_binary(value) and value != "", do: {:ok, value}
   defp rejection_reason(value), do: {:error, {:invalid_governance_rejection_reason, value}}
 
-  defp rejection_receipt(governance, actor_ref, reason, opts) do
-    issued_at = Keyword.get(opts, :rejected_at, System.system_time(:millisecond))
+  defp rejection_receipt(governance, actor_ref, reason, issued_at) do
     result = %{risk: governance.risk, actor_ref: actor_ref, reason: reason}
 
     Receipt.new(%{
@@ -161,21 +161,22 @@ defmodule Spectre.Governance.Approval do
     })
   end
 
-  defp advance_candidate(candidate, parent_ref, governance, opts) do
+  defp advance_candidate(candidate, parent_ref, governance, created_at) do
     with {:ok, parent_ref} <- normalize_candidate_ref(parent_ref) do
       candidate
       |> Map.from_struct()
       |> Map.put(:parent_ref, parent_ref)
       |> Map.put(:governance, governance)
-      |> Map.put(
-        :created_at,
-        Keyword.get(
-          opts,
-          :approved_at,
-          Keyword.get(opts, :rejected_at, System.system_time(:millisecond))
-        )
-      )
+      |> Map.put(:created_at, created_at)
       |> Candidate.new()
+    end
+  end
+
+  defp transition_time(opts, field, forbidden, kind) do
+    if Keyword.has_key?(opts, forbidden) do
+      {:error, {:ambiguous_governance_transition_timestamp, kind}}
+    else
+      {:ok, Keyword.get(opts, field, System.system_time(:millisecond))}
     end
   end
 

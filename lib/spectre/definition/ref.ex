@@ -42,7 +42,7 @@ defmodule Spectre.Definition.Ref do
   def parse("sha256:" <> digest, opts) when is_list(opts) do
     ref = %__MODULE__{
       algorithm: @algorithm,
-      digest: String.downcase(digest),
+      digest: digest,
       canonicalization_version: Keyword.get(opts, :canonicalization_version, 1),
       contract_version: Keyword.get(opts, :contract_version, 1)
     }
@@ -78,7 +78,7 @@ defmodule Spectre.Definition.Ref do
 
   @spec valid_digest?(term()) :: boolean()
   defp valid_digest?(digest) when is_binary(digest) and byte_size(digest) == @hex_bytes do
-    case Base.decode16(digest, case: :mixed) do
+    case Base.decode16(digest, case: :lower) do
       {:ok, decoded} -> byte_size(decoded) == @digest_bytes
       :error -> false
     end

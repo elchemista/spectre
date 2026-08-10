@@ -195,12 +195,25 @@ defmodule Spectre.Governance.Composer do
     end)
   end
 
-  defp restore_mounted_skill({mount, index}, {:ok, skills}) do
-    case get(mount, :definition) do
-      data when is_map(data) -> restore_mounted_skill_data(data, index, skills)
-      _compiled_without_snapshot -> {:cont, {:ok, skills}}
+  defp restore_mounted_skill({mount, index}, {:ok, skills}) when is_map(mount) do
+    case {get(mount, :id), get(mount, :definition)} do
+      {mount_id, data} when is_map(data) ->
+        if valid_mount_id?(mount_id) do
+          restore_mounted_skill_data(data, index, skills)
+        else
+          {:halt, {:error, {:invalid_governed_skill_mount, index, :invalid_mount_id}}}
+        end
+
+      {mount_id, _data} ->
+        reason =
+          if valid_mount_id?(mount_id), do: :definition_snapshot_required, else: :invalid_mount_id
+
+        {:halt, {:error, {:invalid_governed_skill_mount, index, reason}}}
     end
   end
+
+  defp restore_mounted_skill({_mount, index}, _acc),
+    do: {:halt, {:error, {:invalid_governed_skill_mount, index}}}
 
   defp restore_mounted_skill_data(data, index, skills) do
     with {:ok, canonical} <- Canonical.from_data(data),
@@ -411,6 +424,11 @@ defmodule Spectre.Governance.Composer do
   defp stable_ref(value) when is_atom(value), do: Atom.to_string(value)
   defp stable_ref(value) when is_binary(value), do: value
   defp stable_ref(value), do: Value.digest!(value)
+
+  defp valid_mount_id?(value) when is_binary(value) and value != "",
+    do: not String.starts_with?(value, "Elixir.")
+
+  defp valid_mount_id?(_value), do: false
 
   defp get(map, key, default \\ nil)
 

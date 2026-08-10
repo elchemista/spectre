@@ -9,7 +9,7 @@
     "change_set_digest": "5edb644c9b32388633107ad0d701f6ff64b0d0465b37d0cc72be84f3d5577949",
     "closure_digest": "5555555555555555555555555555555555555555555555555555555555555555",
     "evaluation_cases_digest": "6666666666666666666666666666666666666666666666666666666666666666",
-    "protected_cases_digest": "533037de478d71902409664ae14942094f4e8a6ac95cd46e81c659c9fff88ff1",
+    "protected_cases_digest": "287e02df6b5726aa502da6375ffe66836b5772af91bc639d687eff04dab7a4a9",
     "prompt_token_ceiling": null,
     "applicability_ceilings": {},
     "gate_receipt_refs": [],
@@ -19,7 +19,7 @@
     "observed_authority_epoch": 7,
     "observed_evidence_digest": "3333333333333333333333333333333333333333333333333333333333333333",
     "parent_definition_ref": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-    "proposal_digest": "996222296e9a3b29a2c6d76629670c19c35fe23eb4e69c9e7e6bb2c8223c93ef",
+    "proposal_digest": "157fc06f833b637ffb65e9ca729bfa8a9d29d4438c56133b5476d3a2b8f6bf4c",
     "report": null,
     "report_digest": null,
     "required_gates": [
@@ -66,11 +66,25 @@
     "candidate_cases_digest": "df8ac262ade59e6b93840c6ee89fe8b2157751011f5cca312f3ece003de55775",
     "candidate_owned_results": [],
     "candidate_score": 1.0,
+    "protected_cases": [
+      {
+        "allowed_routes": [],
+        "expected_outcome": "route",
+        "expected_route": null,
+        "expected_strategy": null,
+        "id": "protected-route",
+        "input": "lookup",
+        "llm": "allowed",
+        "max_duration_us": null,
+        "state": {},
+        "tags": []
+      }
+    ],
     "max_regressions": 0,
     "min_score_delta": 0.0,
     "parent_score": 1.0,
     "passed": true,
-    "protected_cases_digest": "533037de478d71902409664ae14942094f4e8a6ac95cd46e81c659c9fff88ff1",
+    "protected_cases_digest": "287e02df6b5726aa502da6375ffe66836b5772af91bc639d687eff04dab7a4a9",
     "protected_results": [
       {
         "candidate": {
@@ -91,15 +105,15 @@
   },
   "expected": {
     "change_set_digest": "5edb644c9b32388633107ad0d701f6ff64b0d0465b37d0cc72be84f3d5577949",
-    "evaluation_delta_digest": "9c073aadb437fc6b46a6818c35b0f2e31fbac91878d20291a0800afab4d6405e",
-    "gate_receipt_ref": "gate:sha256:9e6e0f7d4bf6c6ca126b9aa1aa9ca91dbb9cf31d5a73d9e46c48dea246342466",
+    "evaluation_delta_digest": "43dd54599b5b07c922e1bc828738b36b2335f3a2950cb84ae1fb30a60af96334",
+    "gate_receipt_ref": "gate:sha256:ae9e5e9d10ec261f5dacd77d3743bf0be4a4372872093a09f91b630bc5fec637",
     "gc_plan_digest": "9ecccd128e97b2ed2d6dc49683bb9e14497da96a5dd6cda11ec149d2614b30fd",
-    "human_report_digest": "963f51cd47d0ece3363b5af08f7c094aad9ffda085a8b0ad22d1a557824f1e7b",
-    "proposal_digest": "996222296e9a3b29a2c6d76629670c19c35fe23eb4e69c9e7e6bb2c8223c93ef"
+    "human_report_digest": "f4d70a74deea67530e6ee1f85ac8ddc5c4e3536a8ca7ba5c564f2d71e808b311",
+    "proposal_digest": "157fc06f833b637ffb65e9ca729bfa8a9d29d4438c56133b5476d3a2b8f6bf4c"
   },
   "gate_receipt": {
     "candidate_definition_ref": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-    "candidate_digest": "996222296e9a3b29a2c6d76629670c19c35fe23eb4e69c9e7e6bb2c8223c93ef",
+    "candidate_digest": "157fc06f833b637ffb65e9ca729bfa8a9d29d4438c56133b5476d3a2b8f6bf4c",
     "checker_id": "spectre.gate.structural",
     "checker_version": 1,
     "closure_digest": "5555555555555555555555555555555555555555555555555555555555555555",
@@ -166,17 +180,31 @@
   },
   "human_report": {
     "candidate_definition_ref": "sha256:985db74e66c8521b65353a577e6e156e0979075af301ad857cf6319cb6fcae6e",
-    "digest": "963f51cd47d0ece3363b5af08f7c094aad9ffda085a8b0ad22d1a557824f1e7b",
+    "digest": "f4d70a74deea67530e6ee1f85ac8ddc5c4e3536a8ca7ba5c564f2d71e808b311",
     "evaluation_delta": {
       "candidate_case_failures": [],
       "candidate_cases_digest": "df8ac262ade59e6b93840c6ee89fe8b2157751011f5cca312f3ece003de55775",
       "candidate_owned_results": [],
       "candidate_score": 1.0,
+      "protected_cases": [
+        {
+          "allowed_routes": [],
+          "expected_outcome": "route",
+          "expected_route": null,
+          "expected_strategy": null,
+          "id": "protected-route",
+          "input": "lookup",
+          "llm": "allowed",
+          "max_duration_us": null,
+          "state": {},
+          "tags": []
+        }
+      ],
       "max_regressions": 0,
       "min_score_delta": 0.0,
       "parent_score": 1.0,
       "passed": true,
-      "protected_cases_digest": "533037de478d71902409664ae14942094f4e8a6ac95cd46e81c659c9fff88ff1",
+      "protected_cases_digest": "287e02df6b5726aa502da6375ffe66836b5772af91bc639d687eff04dab7a4a9",
       "protected_results": [
         {
           "candidate": {
@@ -200,7 +228,7 @@
     ],
     "generator_id": "spectre.projection.human-report",
     "generator_version": 1,
-    "input_evidence_digest": "967502d9f4f4148e04bb91206c5649fb941a93cec320ceeb09191004d2e559d7",
+    "input_evidence_digest": "2b8957a33dd8cef923af94e6529fe2fddf57ba3c8b28ddc362841747d2fbbda0",
     "lineage_refs": [
       "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111"
     ],

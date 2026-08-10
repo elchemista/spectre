@@ -122,7 +122,7 @@ defmodule Spectre.Governance.CandidateState do
           closure_digest: String.t(),
           evaluation_cases_digest: String.t(),
           protected_cases_digest: String.t(),
-          prompt_token_ceiling: non_neg_integer() | nil,
+          prompt_token_ceiling: number() | nil,
           applicability_ceilings: map(),
           candidate_cases: [map()],
           candidate_case_ids: [String.t()],
@@ -467,7 +467,7 @@ defmodule Spectre.Governance.CandidateState do
       {value, index}, {:ok, normalized} when is_map(value) and not is_struct(value) ->
         with {:ok, normalized_value} <- Data.normalize_map(value),
              {:ok, evaluation_case} <- Case.new(normalized_value),
-             canonical = case_data(evaluation_case),
+             canonical = Case.to_data(evaluation_case),
              true <- canonical == normalized_value do
           {:cont, {:ok, [canonical | normalized]}}
         else
@@ -492,21 +492,6 @@ defmodule Spectre.Governance.CandidateState do
 
   defp candidate_cases(value),
     do: {:error, {:invalid_governance_candidate_field, :candidate_cases, value}}
-
-  defp case_data(evaluation_case) do
-    %{
-      "id" => evaluation_case.id,
-      "input" => evaluation_case.input,
-      "expected_route" => evaluation_case.expected_route,
-      "expected_strategy" => evaluation_case.expected_strategy,
-      "expected_outcome" => Atom.to_string(evaluation_case.expected_outcome),
-      "allowed_routes" => evaluation_case.allowed_routes,
-      "llm" => Atom.to_string(evaluation_case.llm),
-      "state" => evaluation_case.state,
-      "tags" => evaluation_case.tags,
-      "max_duration_us" => evaluation_case.max_duration_us
-    }
-  end
 
   defp state_migrations(values)
        when is_list(values) and length(values) <= @max_state_migrations do

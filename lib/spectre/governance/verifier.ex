@@ -48,7 +48,7 @@ defmodule Spectre.Governance.Verifier do
   def verify_activation(store, candidate_resolution, current, opts) when is_list(opts) do
     with %Activation{} = current <- current,
          :ok <- verify_current_base(candidate_resolution.candidate.governance, current),
-         :ok <- verify_common(store, candidate_resolution, opts) do
+         :ok <- verify_common(store, candidate_resolution, opts, :activation) do
       :ok
     else
       nil -> {:error, :governed_activation_requires_current_activation}
@@ -70,7 +70,7 @@ defmodule Spectre.Governance.Verifier do
     do: {:error, :governed_candidate_requires_governance_state}
 
   def verify_recovery(store, candidate_resolution, opts) when is_list(opts),
-    do: verify_common(store, candidate_resolution, opts)
+    do: verify_common(store, candidate_resolution, opts, :recovery)
 
   @spec verify_rollback(
           Store.config(),
@@ -90,7 +90,7 @@ defmodule Spectre.Governance.Verifier do
     with false <- target == current.definition_ref,
          :ok <- candidate_ancestor(store, target_candidate, current_candidate, opts),
          :ok <- definition_ancestor(store, target, current.definition_ref, opts),
-         :ok <- verify_common_or_bootstrap(store, candidate_resolution, opts),
+         :ok <- verify_common_or_bootstrap(store, candidate_resolution, opts, :rollback),
          {:ok, current_artifact} <-
            fetch_parent(store, Ref.to_string(current.definition_ref), opts),
          :ok <-
@@ -112,16 +112,22 @@ defmodule Spectre.Governance.Verifier do
   defp verify_common_or_bootstrap(
          _store,
          %{candidate: %Candidate{source: source, governance: nil}},
-         _opts
+         _opts,
+         _mode
        )
        when source in [:compiled, :trusted_host],
        do: :ok
 
-  defp verify_common_or_bootstrap(_store, %{candidate: %Candidate{governance: nil}}, _opts),
-    do: {:error, :governed_candidate_requires_governance_state}
+  defp verify_common_or_bootstrap(
+         _store,
+         %{candidate: %Candidate{governance: nil}},
+         _opts,
+         _mode
+       ),
+       do: {:error, :governed_candidate_requires_governance_state}
 
-  defp verify_common_or_bootstrap(store, candidate_resolution, opts),
-    do: verify_common(store, candidate_resolution, opts)
+  defp verify_common_or_bootstrap(store, candidate_resolution, opts, mode),
+    do: verify_common(store, candidate_resolution, opts, mode)
 
   defp verify_current_base(governance, current) do
     cond do
@@ -148,7 +154,8 @@ defmodule Spectre.Governance.Verifier do
   defp verify_common(
          store,
          %{candidate: %Candidate{} = candidate, resolution: resolution},
-         opts
+         opts,
+         mode
        ) do
     governance = candidate.governance
 
@@ -166,7 +173,7 @@ defmodule Spectre.Governance.Verifier do
            ),
          {:ok, receipts} <- fetch_receipts(store, governance.gate_receipt_refs, opts),
          :ok <- verify_report_evidence(governance, receipts),
-         :ok <- verify_gate_set(governance, receipts, opts) do
+         :ok <- verify_gate_set(governance, receipts, opts, mode) do
       verify_approval(governance, receipts, opts)
     end
   end
@@ -467,16 +474,16 @@ defmodule Spectre.Governance.Verifier do
     end)
   end
 
-  defp verify_gate_set(governance, receipts, opts) do
+  defp verify_gate_set(governance, receipts, opts, mode) do
     grouped = Enum.group_by(receipts, & &1.gate_class)
 
     with :ok <- unique_gate_classes(grouped),
          :ok <- reject_failed_receipts(receipts),
-         :ok <- verify_attached_gate_receipts(receipts, governance, opts) do
+         :ok <- verify_attached_gate_receipts(receipts, governance, opts, mode) do
       Enum.reduce_while(
         governance.required_gates,
         :ok,
-        &verify_gate(&1, &2, grouped, governance, opts)
+        &verify_gate(&1, &2, grouped, governance, opts, mode)
       )
     end
   end
@@ -511,31 +518,59 @@ defmodule Spectre.Governance.Verifier do
     end
   end
 
-  defp verify_attached_gate_receipts(receipts, governance, opts) do
+  defp verify_attached_gate_receipts(receipts, governance, opts, mode) do
     receipts
     |> Enum.reject(&(&1.gate_class == :approval))
     |> Enum.reduce_while(:ok, fn receipt, :ok ->
-      case Receipt.verify(receipt, governance, verification_opts(opts)) do
+      case verify_gate_receipt_evidence(receipt, governance, opts, mode) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp verify_gate(gate, :ok, grouped, governance, opts) do
+  defp verify_gate(gate, :ok, grouped, governance, opts, mode) do
     case Map.get(grouped, gate, []) do
-      [receipt] -> verify_gate_receipt(receipt, governance, opts)
+      [receipt] -> verify_gate_receipt(receipt, governance, opts, mode)
       [] -> {:halt, {:error, {:required_gate_receipt_missing, gate}}}
       _several -> {:halt, {:error, {:ambiguous_gate_receipts, gate}}}
     end
   end
 
-  defp verify_gate_receipt(receipt, governance, opts) do
-    case Receipt.verify(receipt, governance, verification_opts(opts)) do
+  defp verify_gate_receipt(receipt, governance, opts, mode) do
+    case verify_gate_receipt_evidence(receipt, governance, opts, mode) do
       :ok -> {:cont, :ok}
       {:error, _reason} = error -> {:halt, error}
     end
   end
+
+  defp verify_gate_receipt_evidence(receipt, governance, opts, mode) do
+    verification = verification_opts(opts)
+
+    case Receipt.verify(receipt, governance, verification) do
+      {:error, {:gate_receipt_expired, :semantic_live}} = error ->
+        if expired_semantic_live_allowed?(mode, opts) do
+          Receipt.verify(
+            receipt,
+            governance,
+            Keyword.put(verification, :now, receipt.expires_at - 1)
+          )
+        else
+          error
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp expired_semantic_live_allowed?(:recovery, opts),
+    do: Keyword.get(opts, :allow_expired_semantic_live_recovery?, false) == true
+
+  defp expired_semantic_live_allowed?(:rollback, opts),
+    do: Keyword.get(opts, :allow_expired_semantic_live_rollback?, false) == true
+
+  defp expired_semantic_live_allowed?(_mode, _opts), do: false
 
   defp verify_approval(governance, receipts, opts) do
     with [approval] <- Enum.filter(receipts, &(&1.gate_class == :approval)),

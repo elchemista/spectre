@@ -5,15 +5,20 @@ defmodule Spectre.Governance.EvaluationDelta do
   Parent/Candidate score deltas are computed only from protected cases. Cases
   introduced by the current Candidate are tracked separately and must pass,
   but can never improve its score or compensate for a protected regression.
+  Protected identity covers each complete canonical `Spectre.Eval.Case`, not
+  only its id, so changing an input, oracle, policy, state, or tag changes the
+  corpus digest.
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Eval.Case
   alias Spectre.Governance.Data
 
   @schema_version 1
   @max_results 10_000
   @fields [
     :schema_version,
+    :protected_cases,
     :protected_results,
     :candidate_owned_results,
     :protected_cases_digest,
@@ -30,6 +35,7 @@ defmodule Spectre.Governance.EvaluationDelta do
 
   @enforce_keys @fields
   defstruct schema_version: @schema_version,
+            protected_cases: [],
             protected_results: [],
             candidate_owned_results: [],
             protected_cases_digest: nil,
@@ -48,6 +54,7 @@ defmodule Spectre.Governance.EvaluationDelta do
         }
   @type t :: %__MODULE__{
           schema_version: pos_integer(),
+          protected_cases: [map()],
           protected_results: [map()],
           candidate_owned_results: [map()],
           protected_cases_digest: String.t(),
@@ -70,6 +77,7 @@ defmodule Spectre.Governance.EvaluationDelta do
       when is_list(parent_results) and is_list(candidate_results) and is_list(opts) and
              length(parent_results) <= @max_results and length(candidate_results) <= @max_results do
     candidate_case_ids = Keyword.get(opts, :candidate_case_ids, [])
+    protected_cases = Keyword.get(opts, :protected_cases)
     min_delta = Keyword.get(opts, :min_score_delta, 0.0)
     max_regressions = Keyword.get(opts, :max_regressions, 0)
 
@@ -77,8 +85,10 @@ defmodule Spectre.Governance.EvaluationDelta do
          :ok <- threshold(min_delta, max_regressions),
          {:ok, parent} <- normalize_results(parent_results, :parent),
          {:ok, candidate} <- normalize_results(candidate_results, :candidate),
-         {:ok, protected, owned} <- partition(parent, candidate, candidate_case_ids) do
-      build(protected, owned, min_delta, max_regressions)
+         {:ok, protected, owned} <- partition(parent, candidate, candidate_case_ids),
+         {:ok, protected_cases} <- normalize_protected_cases(protected_cases),
+         :ok <- protected_case_results(protected_cases, protected) do
+      build(protected_cases, protected, owned, min_delta, max_regressions)
     end
   end
 
@@ -95,11 +105,27 @@ defmodule Spectre.Governance.EvaluationDelta do
     end
   end
 
+  @doc "Computes the canonical digest of complete protected case content."
+  @spec protected_corpus_digest([Case.t() | map()]) :: {:ok, String.t()} | {:error, term()}
+  def protected_corpus_digest(cases) do
+    with {:ok, cases} <- normalize_protected_cases(cases), do: Value.digest(cases)
+  end
+
+  @doc "Computes the protected-corpus digest or raises with the stable reason."
+  @spec protected_corpus_digest!([Case.t() | map()]) :: String.t()
+  def protected_corpus_digest!(cases) do
+    case protected_corpus_digest(cases) do
+      {:ok, digest} -> digest
+      {:error, reason} -> raise ArgumentError, "invalid protected corpus: #{inspect(reason)}"
+    end
+  end
+
   @doc "Returns JSON-shaped evaluation evidence."
   @spec to_data(t()) :: map()
   def to_data(%__MODULE__{} = delta) do
     %{
       "schema_version" => delta.schema_version,
+      "protected_cases" => delta.protected_cases,
       "protected_results" => delta.protected_results,
       "candidate_owned_results" => delta.candidate_owned_results,
       "protected_cases_digest" => delta.protected_cases_digest,
@@ -123,11 +149,13 @@ defmodule Spectre.Governance.EvaluationDelta do
     with [] <- Map.keys(data) -- expected,
          [] <- expected -- Map.keys(data),
          @schema_version <- Map.get(data, "schema_version"),
+         {:ok, protected_cases} <- normalize_protected_cases(Map.get(data, "protected_cases")),
          {:ok, protected} <- restored_protected(Map.get(data, "protected_results")),
          {:ok, owned} <- restored_owned(Map.get(data, "candidate_owned_results")),
          :ok <- threshold(Map.get(data, "min_score_delta"), Map.get(data, "max_regressions")),
          {:ok, rebuilt} <-
            rebuild_restored(
+             protected_cases,
              protected,
              owned,
              Map.get(data, "min_score_delta"),
@@ -218,7 +246,7 @@ defmodule Spectre.Governance.EvaluationDelta do
     end
   end
 
-  defp build(protected, owned, min_delta, max_regressions) do
+  defp build(protected_cases, protected, owned, min_delta, max_regressions) do
     parent_score = protected |> Enum.map(&get_in(&1, ["parent", "score"])) |> average()
     candidate_score = protected |> Enum.map(&get_in(&1, ["candidate", "score"])) |> average()
     score_delta = candidate_score - parent_score
@@ -242,10 +270,10 @@ defmodule Spectre.Governance.EvaluationDelta do
     {:ok,
      %__MODULE__{
        schema_version: @schema_version,
+       protected_cases: protected_cases,
        protected_results: protected,
        candidate_owned_results: owned,
-       protected_cases_digest:
-         Value.digest!(Enum.map(protected, &get_in(&1, ["parent", "case_id"]))),
+       protected_cases_digest: Value.digest!(protected_cases),
        candidate_cases_digest: Value.digest!(Enum.map(owned, & &1["case_id"])),
        parent_score: parent_score,
        candidate_score: candidate_score,
@@ -301,17 +329,71 @@ defmodule Spectre.Governance.EvaluationDelta do
 
   defp restored_owned(_value), do: {:error, :invalid_evaluation_delta_candidate_results}
 
-  defp rebuild_restored(protected, owned, min_delta, max_regressions) do
+  defp rebuild_restored(protected_cases, protected, owned, min_delta, max_regressions) do
     parent_results = Enum.map(protected, & &1["parent"])
     candidate_results = Enum.map(protected, & &1["candidate"]) ++ owned
     candidate_case_ids = Enum.map(owned, & &1["case_id"])
 
     new(parent_results, candidate_results,
+      protected_cases: protected_cases,
       candidate_case_ids: candidate_case_ids,
       min_score_delta: min_delta,
       max_regressions: max_regressions
     )
   end
+
+  defp normalize_protected_cases(values)
+       when is_list(values) and values != [] and length(values) <= @max_results do
+    values
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, %{}}, fn {value, index}, {:ok, normalized} ->
+      with {:ok, evaluation_case} <- normalize_protected_case(value),
+           data = Case.to_data(evaluation_case),
+           {:ok, data} <- Data.normalize_map(data),
+           false <- Map.has_key?(normalized, data["id"]) do
+        {:cont, {:ok, Map.put(normalized, data["id"], data)}}
+      else
+        true ->
+          {:halt, {:error, {:duplicate_evaluation_protected_case, case_id(value)}}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:invalid_evaluation_protected_case, index, reason}}}
+      end
+    end)
+    |> then(fn
+      {:ok, normalized} ->
+        {:ok, normalized |> Map.values() |> Enum.sort_by(& &1["id"])}
+
+      {:error, _reason} = error ->
+        error
+    end)
+  end
+
+  defp normalize_protected_cases([]), do: {:error, :evaluation_delta_protected_corpus_required}
+
+  defp normalize_protected_cases(values) when is_list(values),
+    do: {:error, {:evaluation_delta_protected_case_limit_exceeded, length(values)}}
+
+  defp normalize_protected_cases(value),
+    do: {:error, {:invalid_evaluation_delta_field, :protected_cases, value}}
+
+  defp normalize_protected_case(%Case{} = evaluation_case),
+    do: evaluation_case |> Map.from_struct() |> Case.new()
+
+  defp normalize_protected_case(value), do: Case.new(value)
+
+  defp protected_case_results(protected_cases, protected_results) do
+    case_ids = Enum.map(protected_cases, & &1["id"])
+    result_ids = Enum.map(protected_results, &get_in(&1, ["parent", "case_id"]))
+
+    if case_ids == result_ids,
+      do: :ok,
+      else: {:error, {:evaluation_delta_protected_case_mismatch, case_ids, result_ids}}
+  end
+
+  defp case_id(%Case{id: id}), do: id
+  defp case_id(value) when is_map(value), do: get(value, :id)
+  defp case_id(_value), do: nil
 
   defp exact_restored(rebuilt, data) do
     if to_data(rebuilt) == data do

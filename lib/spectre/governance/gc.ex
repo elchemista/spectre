@@ -2,7 +2,8 @@ defmodule Spectre.Governance.GC do
   @moduledoc """
   Conservative administered GC planner for immutable governance artifacts.
 
-  Hosts provide a complete Candidate/Definition inventory plus all live
+  Hosts may provide a partial Candidate/Definition inventory for a conservative
+  retain-only plan, or explicitly mark it complete after including all live
   activation, Run, checkpoint, state-binding, and lineage references. Anything
   not explicitly marked `gc_eligible` remains retained. The result is a
   content-addressed `Plan`; deletion belongs to a backend transaction that can
@@ -51,8 +52,15 @@ defmodule Spectre.Governance.GC do
                protected_candidates,
                protected_definitions
              ) do
-        candidate_lineage_refs = candidate_lineage_refs(candidates)
-        definition_lineage_refs = definition_lineage_refs(definitions)
+        candidate_lineage_refs =
+          candidates
+          |> candidate_lineage_refs()
+          |> inventory_lineage_refs(candidate_inventory, complete?)
+
+        definition_lineage_refs =
+          definitions
+          |> definition_lineage_refs()
+          |> inventory_lineage_refs(definition_inventory, complete?)
 
         candidate_decisions =
           decide_candidates(
@@ -248,6 +256,17 @@ defmodule Spectre.Governance.GC do
       [] -> :ok
       missing -> {:error, {:incomplete_gc_inventory, kind, Enum.sort(missing)}}
     end
+  end
+
+  # A partial inventory cannot attest to artifacts it did not inspect. Those
+  # missing ancestors already force every decision to remain retained through
+  # `inventory_not_complete`; only in-inventory lineage belongs in the Plan's
+  # evidence. Complete inventories retain the full, closure-checked lineage.
+  defp inventory_lineage_refs(refs, _inventory, true), do: refs
+
+  defp inventory_lineage_refs(refs, inventory, false) do
+    inventory = MapSet.new(inventory)
+    Enum.filter(refs, &MapSet.member?(inventory, &1))
   end
 
   defp decide_candidates(candidates, complete?, protected, requested) do

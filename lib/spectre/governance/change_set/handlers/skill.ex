@@ -66,6 +66,8 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
          :ok <- authorize_applicability(definition, context, mount_id),
          {:ok, mounts, component} <- mounts(composition.definition),
          %{} = previous <- find_mount(mounts, mount_id),
+         {:ok, previous_definition} <- mounted_definition(previous),
+         :ok <- preserve_anti_hijack_corpus(previous_definition, definition),
          {:ok, bindings} <-
            optional_map(Map.get(payload, "bindings", get(previous, :bindings, %{})), :bindings),
          {:ok, opts} <- optional_map(Map.get(payload, "opts", get(previous, :opts, %{})), :opts),
@@ -141,6 +143,12 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
          {:ok, mounts, component} <- mounts(composition.definition),
          %{} = mount <- find_mount(mounts, mount_id),
          {:ok, definition} <- mounted_definition(mount),
+         {:ok, previous} <- SkillDefinition.from_canonical(definition),
+         :ok <-
+           preserve_anti_hijack_examples(
+             SkillDefinition.applicability(previous),
+             applicability
+           ),
          {:ok, definition} <- update_definition_applicability(definition, applicability),
          {:ok, wrapped} <- SkillDefinition.from_canonical(definition),
          {:ok, _evidence} <- SkillDefinition.anti_hijack(wrapped),
@@ -291,6 +299,28 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
        mount
        |> put(:definition_ref, canonical |> Canonical.ref() |> Ref.to_string())
        |> put(:definition, Canonical.to_data(canonical))}
+    end
+  end
+
+  defp preserve_anti_hijack_corpus(previous, next) do
+    with {:ok, previous} <- SkillDefinition.from_canonical(previous) do
+      preserve_anti_hijack_examples(
+        SkillDefinition.applicability(previous),
+        SkillDefinition.applicability(next)
+      )
+    end
+  end
+
+  defp preserve_anti_hijack_examples(previous, next) do
+    removed_positive = previous.positive -- next.positive
+    removed_negative = previous.negative -- next.negative
+
+    if removed_positive == [] and removed_negative == [] do
+      :ok
+    else
+      {:error,
+       {:skill_anti_hijack_corpus_reduction,
+        %{positive: removed_positive, negative: removed_negative}}}
     end
   end
 

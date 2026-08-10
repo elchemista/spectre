@@ -328,6 +328,7 @@ defmodule SpectreGovernanceGateTest do
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true, score: 1.0}],
         [%{case_id: "protected", passed: true, score: 1.0}],
+        protected_cases: [protected_case()],
         candidate_case_ids: []
       )
 
@@ -489,6 +490,7 @@ defmodule SpectreGovernanceGateTest do
                  %{case_id: "protected", passed: false, score: 0.0},
                  %{case_id: "candidate-owned", passed: true, score: 100.0}
                ],
+               protected_cases: [protected_case()],
                candidate_case_ids: ["candidate-owned"]
              )
 
@@ -560,7 +562,8 @@ defmodule SpectreGovernanceGateTest do
     delta =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: true}]
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
       )
 
     receipts = [
@@ -698,7 +701,8 @@ defmodule SpectreGovernanceGateTest do
     delta =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: true}]
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
       )
 
     required = [
@@ -890,7 +894,8 @@ defmodule SpectreGovernanceGateTest do
     partial =
       EvaluationDelta.new!(
         [%{case_id: "different-protected-case", passed: true}],
-        [%{case_id: "different-protected-case", passed: true}]
+        [%{case_id: "different-protected-case", passed: true}],
+        protected_cases: [protected_case("different-protected-case")]
       )
 
     assert {:error, {:evaluation_delta_protected_corpus_mismatch, expected, actual}} =
@@ -898,6 +903,20 @@ defmodule SpectreGovernanceGateTest do
 
     assert expected == governance.protected_cases_digest
     assert actual == partial.protected_cases_digest
+
+    changed_content =
+      EvaluationDelta.new!(
+        [%{case_id: "protected", passed: true}],
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [%{"id" => "protected", "input" => "different input"}]
+      )
+
+    assert changed_content.protected_cases_digest != governance.protected_cases_digest
+
+    assert {:error, {:evaluation_delta_protected_corpus_mismatch, ^expected, changed_digest}} =
+             Review.evaluate(store, composed_ref, changed_content, [])
+
+    assert changed_digest == changed_content.protected_cases_digest
   end
 
   test "ChangeSet and gate receipt identities survive canonical transport" do
@@ -928,6 +947,15 @@ defmodule SpectreGovernanceGateTest do
     assert CandidateState.proposal_digest(json_governance) == governance.proposal_digest
   end
 
+  test "Definition refs accept only their lowercase canonical spelling" do
+    lowercase = "sha256:" <> @digest
+    uppercase = "sha256:" <> String.upcase(@digest)
+
+    assert {:ok, ref} = DefinitionRef.parse(lowercase)
+    assert to_string(ref) == lowercase
+    assert {:error, {:invalid_definition_ref, _value}} = DefinitionRef.parse(uppercase)
+  end
+
   test "Candidate parent verification is linear instead of recursively rewalking ancestry" do
     server =
       start_supervised!({Memory, id: {:counted_governance, System.unique_integer([:positive])}})
@@ -946,7 +974,7 @@ defmodule SpectreGovernanceGateTest do
 
     assert {:ok, base} = Store.fetch_candidate(store, base_ref)
 
-    {last_ref, _last} =
+    {last_ref, last} =
       Enum.reduce(2..8, {base_ref, base}, fn created_at, {parent_ref, parent} ->
         child =
           parent
@@ -967,6 +995,15 @@ defmodule SpectreGovernanceGateTest do
       |> Enum.filter(&String.starts_with?(&1, "candidate/"))
 
     assert length(candidate_gets) == 2
+
+    missing_parent = to_string(last.parent_ref)
+
+    :sys.replace_state(server, fn state ->
+      update_in(state, [:entries], &Map.delete(&1, "candidate/" <> missing_parent))
+    end)
+
+    assert {:error, {:missing_candidate_parent, ^missing_parent}} =
+             Store.fetch_candidate(store, last_ref, skip_candidate_parent: true)
   end
 
   test "administered GC retains every live Activation reference" do
@@ -996,6 +1033,28 @@ defmodule SpectreGovernanceGateTest do
     plan_data = plan |> GCPlan.to_data() |> Jason.encode!() |> Jason.decode!()
     assert {:ok, ^plan} = GCPlan.from_data(plan_data)
     assert {:ok, ^plan} = plan |> GCPlan.encode() |> elem(1) |> GCPlan.decode()
+  end
+
+  test "partial GC inventories remain conservative without claiming unseen lineage" do
+    %{store: store, activation: activation} = baseline()
+    approved = approved_candidate(store, activation)
+
+    assert {:ok, plan} = GC.plan(store, [approved])
+    assert plan.inventory_complete == false
+    assert plan.candidate_lineage_refs == []
+    assert plan.definition_lineage_refs == []
+
+    assert Enum.all?(plan.candidate_decisions, fn decision ->
+             decision["decision"] == "retained" and
+               "inventory_not_complete" in decision["reasons"]
+           end)
+
+    assert Enum.all?(plan.definition_decisions, fn decision ->
+             decision["decision"] == "retained" and
+               "inventory_not_complete" in decision["reasons"]
+           end)
+
+    assert :ok = GCPlan.verify(plan)
   end
 
   test "the complete built-in vocabulary remains declarative and bounded" do
@@ -1216,7 +1275,8 @@ defmodule SpectreGovernanceGateTest do
     assert {:error, {:invalid_evaluation_case_result, :parent, 0, reason}} =
              EvaluationDelta.new(
                [%{:case_id => "protected", "case_id" => "different", :passed => true}],
-               [%{case_id: "protected", passed: true}]
+               [%{case_id: "protected", passed: true}],
+               protected_cases: [protected_case()]
              )
 
     assert match?({:invalid_evaluation_result_fields, _fields}, reason)
@@ -1228,6 +1288,7 @@ defmodule SpectreGovernanceGateTest do
                  %{case_id: "protected", passed: true},
                  %{case_id: "new", passed: true}
                ],
+               protected_cases: [protected_case()],
                candidate_case_ids: []
              )
   end
@@ -1276,7 +1337,8 @@ defmodule SpectreGovernanceGateTest do
     delta =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: true}]
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
       )
 
     receipts = [
@@ -1353,7 +1415,8 @@ defmodule SpectreGovernanceGateTest do
     delta =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: true}]
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
       )
 
     receipts = [
@@ -1410,6 +1473,75 @@ defmodule SpectreGovernanceGateTest do
       |> Supervisor.child_spec(id: id, restart: :temporary)
 
     assert {:error, {{:gate_receipt_expired, :semantic_live}, _child}} = start_supervised(spec)
+
+    recovery_spec =
+      {Instance,
+       agent: Agent,
+       subject: context.subject,
+       definition_store: context.store,
+       checkpoint_store: context.checkpoint_store,
+       opts: [
+         checker_versions: checker_versions,
+         allow_expired_semantic_live_recovery?: true
+       ],
+       idle: false}
+      |> Supervisor.child_spec(
+        id: {:governance_expired_recovery_override_instance, make_ref()},
+        restart: :temporary
+      )
+
+    assert {:ok, recovered} = start_supervised(recovery_spec)
+
+    assert %Instance.Activation{candidate_ref: ^approved_ref, generation: 2} =
+             Spectre.activation(recovered)
+  end
+
+  test "expired semantic evidence has separate host-only recovery and rollback escapes" do
+    %{store: store, instance: instance, activation: activation} = baseline()
+    {semantic_ref, checker_versions} = semantic_approved_candidate(store, activation)
+
+    assert {:ok, semantic_resolution} =
+             Resolver.resolve_candidate_for_activation(store, semantic_ref)
+
+    assert {:error, {:gate_receipt_expired, :semantic_live}} =
+             Verifier.verify_activation(store, semantic_resolution, activation,
+               now: 9,
+               checker_versions: checker_versions,
+               allow_expired_semantic_live_recovery?: true
+             )
+
+    assert {:ok, semantic_activation} =
+             Spectre.activate(instance, semantic_ref,
+               expected_generation: 1,
+               now: 7,
+               checker_versions: checker_versions
+             )
+
+    successor_ref = approved_candidate(store, semantic_activation, "successor")
+
+    assert {:ok, successor_activation} =
+             Spectre.activate(instance, successor_ref,
+               expected_generation: 2,
+               now: 7,
+               checker_versions: checker_versions
+             )
+
+    assert {:error, {:gate_receipt_expired, :semantic_live}} =
+             Spectre.rollback(instance, semantic_ref,
+               expected_generation: successor_activation.generation,
+               now: 9,
+               checker_versions: checker_versions
+             )
+
+    assert {:ok, rolled_back} =
+             Spectre.rollback(instance, semantic_ref,
+               expected_generation: successor_activation.generation,
+               now: 9,
+               checker_versions: checker_versions,
+               allow_expired_semantic_live_rollback?: true
+             )
+
+    assert rolled_back.candidate_ref == semantic_ref
   end
 
   test "checkpoint failure after durable publication leaves a safe orphan Candidate" do
@@ -1530,7 +1662,8 @@ defmodule SpectreGovernanceGateTest do
     delta =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: true}]
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
       )
 
     assert HumanReport.id() == "spectre.projection.human-report"
@@ -1790,6 +1923,7 @@ defmodule SpectreGovernanceGateTest do
                  %{case_id: "protected", passed: true},
                  %{case_id: "owned", passed: false}
                ],
+               protected_cases: [protected_case()],
                candidate_case_ids: ["owned"]
              )
 
@@ -1799,10 +1933,31 @@ defmodule SpectreGovernanceGateTest do
     valid =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: true}]
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
       )
 
     data = EvaluationDelta.to_data(valid)
+
+    assert EvaluationDelta.protected_corpus_digest!([
+             protected_case("b"),
+             protected_case("a")
+           ]) ==
+             EvaluationDelta.protected_corpus_digest!([
+               protected_case("a"),
+               protected_case("b")
+             ])
+
+    assert {:error, {:duplicate_evaluation_protected_case, "protected"}} =
+             EvaluationDelta.protected_corpus_digest([
+               protected_case(),
+               protected_case()
+             ])
+
+    assert {:error, :evaluation_delta_integrity_mismatch} =
+             data
+             |> put_in(["protected_cases", Access.at(0), "input"], "changed under same id")
+             |> EvaluationDelta.from_data()
 
     assert {:error, {:invalid_evaluation_delta_fields, ["unknown"]}} =
              data |> Map.put("unknown", true) |> EvaluationDelta.from_data()
@@ -2374,9 +2529,44 @@ defmodule SpectreGovernanceGateTest do
     assert_operation_error(
       registry,
       mounted,
-      put_in(applicability, ["payload", "applicability", "positive"], ["never matches"]),
+      put_in(
+        applicability,
+        ["payload", "applicability", "positive"],
+        ["lookup", "never matches"]
+      ),
       base_context,
       {:skill_anti_hijack_failed, %{positive_unmatched: ["never matches"], negative_matched: []}}
+    )
+
+    cleared_applicability =
+      applicability
+      |> put_in(["payload", "applicability", "positive"], [])
+      |> put_in(["payload", "applicability", "negative"], [])
+
+    corpus_reduction =
+      {:skill_anti_hijack_corpus_reduction,
+       %{positive: ["lookup"], negative: ["delete everything"]}}
+
+    assert_operation_error(
+      registry,
+      mounted,
+      cleared_applicability,
+      base_context,
+      corpus_reduction
+    )
+
+    cleared_replacement =
+      mount_operation()
+      |> Map.put("type", "replace_skill")
+      |> put_in(["payload", "definition", "applicability", "positive"], [])
+      |> put_in(["payload", "definition", "applicability", "negative"], [])
+
+    assert_operation_error(
+      registry,
+      mounted,
+      cleared_replacement,
+      base_context,
+      corpus_reduction
     )
 
     prompt_mount = put_in(mount_operation(), ["payload", "definition"], prompt_skill())
@@ -2507,6 +2697,20 @@ defmodule SpectreGovernanceGateTest do
              )
   end
 
+  test "governed composition accepts finite fractional token grants" do
+    authority = Envelope.new!(operations: ["lookup"], limits: %{max_tokens: 12.5})
+    %{store: store, activation: activation} = baseline(authority: authority)
+
+    assert {:ok, candidate_ref} =
+             Composer.compose(store, change_set(activation, [mount_operation()]),
+               activation: activation,
+               created_at: 2
+             )
+
+    assert {:ok, %Candidate{governance: %{prompt_token_ceiling: 12.5}}} =
+             Store.fetch_candidate(store, candidate_ref)
+  end
+
   test "constitutional constraints are normalized once and reverify mounted skills" do
     authority =
       Envelope.new!(
@@ -2536,6 +2740,12 @@ defmodule SpectreGovernanceGateTest do
     assert normalized_ceiling["required_tags"] == ["staff"]
 
     assert {:ok, %Constraints{prompt_token_ceiling: 20}} = Constraints.new(authority, [])
+
+    assert {:ok, %Constraints{prompt_token_ceiling: 12.5}} =
+             Constraints.new(
+               Envelope.new!(operations: ["lookup"], limits: %{max_tokens: 12.5}),
+               []
+             )
 
     assert {:ok, %Constraints{prompt_token_ceiling: 10}} =
              Constraints.new(Envelope.empty(), prompt_token_ceiling: 10)
@@ -2604,6 +2814,19 @@ defmodule SpectreGovernanceGateTest do
     assert {:error, :skill_applicability_ceiling_exceeded} =
              Constraints.within_applicability_ceiling(nonportable, nonportable)
 
+    corpus_ceiling =
+      Applicability.new!(
+        scopes: ["support"],
+        positive: ["lookup"],
+        negative: ["delete everything"]
+      )
+
+    assert {:error, :skill_applicability_ceiling_exceeded} =
+             Constraints.within_applicability_ceiling(
+               Applicability.new!(scopes: ["support"], positive: [], negative: []),
+               corpus_ceiling
+             )
+
     for widened <- [
           Applicability.new!(scopes: []),
           Applicability.new!(scopes: ["admin"]),
@@ -2636,6 +2859,22 @@ defmodule SpectreGovernanceGateTest do
     assert :ok =
              Constraints.verify_definition(
                plain.definition,
+               Envelope.new!(operations: ["lookup"]),
+               %Constraints{prompt_token_ceiling: nil, applicability_ceilings: %{}}
+             )
+
+    assert {:error, {:invalid_governed_skill_mount, 0, :definition_snapshot_required}} =
+             plain.definition
+             |> replace_skill_mounts(fn [mount] -> [Map.put(mount, "definition", nil)] end)
+             |> Constraints.verify_definition(
+               Envelope.new!(operations: ["lookup"]),
+               %Constraints{prompt_token_ceiling: nil, applicability_ceilings: %{}}
+             )
+
+    assert {:error, {:invalid_governed_skill_mount, 0, :invalid_mount_id}} =
+             plain.definition
+             |> replace_skill_mounts(fn [mount] -> [Map.put(mount, "id", "Elixir.System")] end)
+             |> Constraints.verify_definition(
                Envelope.new!(operations: ["lookup"]),
                %Constraints{prompt_token_ceiling: nil, applicability_ceilings: %{}}
              )
@@ -2826,7 +3065,8 @@ defmodule SpectreGovernanceGateTest do
     delta =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: true}]
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
       )
 
     replay = receipt(governance, :replay, 3, profile_ref: "recording:test")
@@ -2869,7 +3109,8 @@ defmodule SpectreGovernanceGateTest do
     failed_delta =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: false}]
+        [%{case_id: "protected", passed: false}],
+        protected_cases: [protected_case()]
       )
 
     assert {:ok, rejected_ref, _report} =
@@ -2903,6 +3144,14 @@ defmodule SpectreGovernanceGateTest do
     assert {:error, {:invalid_governance_approval_options, :bad}} =
              Approval.approve(store, reviewed_ref, :bad)
 
+    assert {:error, {:ambiguous_governance_transition_timestamp, :approval}} =
+             Approval.approve(store, reviewed_ref,
+               mode: :human,
+               actor_ref: "operator:test",
+               approved_at: 6,
+               rejected_at: 7
+             )
+
     assert {:error, {:invalid_governance_rejection_actor, nil}} =
              Approval.reject(store, reviewed_ref, reason: "unsafe")
 
@@ -2912,6 +3161,14 @@ defmodule SpectreGovernanceGateTest do
     assert {:error, {:invalid_governance_rejection_options, :bad}} =
              Approval.reject(store, reviewed_ref, :bad)
 
+    assert {:error, {:ambiguous_governance_transition_timestamp, :rejection}} =
+             Approval.reject(store, reviewed_ref,
+               actor_ref: "operator:test",
+               reason: "unsafe",
+               approved_at: 6,
+               rejected_at: 7
+             )
+
     assert {:ok, explicitly_rejected_ref} =
              Approval.reject(store, reviewed_ref,
                actor_ref: "operator:test",
@@ -2919,8 +3176,15 @@ defmodule SpectreGovernanceGateTest do
                rejected_at: 6
              )
 
-    assert {:ok, %Candidate{governance: %{state: :rejected}}} =
+    assert {:ok,
+            %Candidate{
+              created_at: 6,
+              governance: %{state: :rejected, approval_receipt_ref: rejection_receipt_ref}
+            }} =
              Store.fetch_candidate(store, explicitly_rejected_ref)
+
+    assert {:ok, %{issued_at: 6, status: :failed}} =
+             Store.fetch_gate_receipt(store, rejection_receipt_ref)
 
     assert {:error, {:candidate_not_evaluated, :rejected}} =
              Approval.approve(store, explicitly_rejected_ref,
@@ -3019,6 +3283,7 @@ defmodule SpectreGovernanceGateTest do
           %{case_id: "protected", passed: true},
           %{case_id: "candidate-owned", passed: true}
         ],
+        protected_cases: [protected_case()],
         candidate_case_ids: ["candidate-owned"]
       )
 
@@ -3221,7 +3486,8 @@ defmodule SpectreGovernanceGateTest do
     delta =
       EvaluationDelta.new!(
         [%{case_id: "protected", passed: true}],
-        [%{case_id: "protected", passed: true}]
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
       )
 
     receipts = [
@@ -3252,6 +3518,59 @@ defmodule SpectreGovernanceGateTest do
              )
 
     approved_ref
+  end
+
+  defp semantic_approved_candidate(store, activation) do
+    checker_versions =
+      Map.put(@checker_versions, :semantic_live, {"test.semantic_live", 1})
+
+    assert {:ok, composed_ref} =
+             Composer.compose(store, change_set(activation, [mount_operation()]),
+               activation: activation,
+               created_at: 2
+             )
+
+    assert {:ok, %Candidate{governance: governance}} =
+             Store.fetch_candidate(store, composed_ref)
+
+    delta =
+      EvaluationDelta.new!(
+        [%{case_id: "protected", passed: true}],
+        [%{case_id: "protected", passed: true}],
+        protected_cases: [protected_case()]
+      )
+
+    receipts = [
+      receipt(governance, :replay, 3, profile_ref: "recording:test"),
+      receipt(governance, :regression, 3),
+      receipt(governance, :semantic_live, 3,
+        profile_ref: "model:live",
+        expires_at: 8,
+        provenance: %{
+          source: :test_checker,
+          variability: %{
+            sample_count: 2,
+            measure_digest: Value.digest!(%{scores: [0.2, 0.8]})
+          }
+        }
+      )
+    ]
+
+    assert {:ok, evaluated_ref, _report} =
+             Review.evaluate(store, composed_ref, delta, receipts,
+               reviewed_at: 4,
+               now: 5,
+               checker_versions: checker_versions
+             )
+
+    assert {:ok, approved_ref} =
+             Approval.approve(store, evaluated_ref,
+               mode: :human,
+               actor_ref: "operator:test",
+               approved_at: 6
+             )
+
+    {approved_ref, checker_versions}
   end
 
   defp durable_baseline do
@@ -3466,7 +3785,7 @@ defmodule SpectreGovernanceGateTest do
       observed_evidence_digest: change_set.observed_evidence_digest,
       closure_digest: @digest,
       evaluation_cases_digest: @digest,
-      protected_cases_digest: Value.digest!(["protected"]),
+      protected_cases_digest: EvaluationDelta.protected_corpus_digest!([protected_case()]),
       prompt_token_ceiling: nil,
       applicability_ceilings: %{},
       candidate_cases: [],
@@ -3509,6 +3828,23 @@ defmodule SpectreGovernanceGateTest do
     end
   end
 
+  defp protected_case(id \\ "protected"), do: %{"id" => id, "input" => "lookup"}
+
+  defp replace_skill_mounts(definition, fun) do
+    assert {:ok, component} = Canonical.fetch_component(definition, :skills)
+    mounts = Map.get(component.payload, :mounts, Map.get(component.payload, "mounts"))
+    payload = Map.put(component.payload, :mounts, fun.(mounts))
+    replacement = Component.new!(%{component | payload: payload})
+
+    components =
+      Enum.map(definition.components, fn
+        %{component_type: :skills} -> replacement
+        other -> other
+      end)
+
+    Canonical.new!(%{definition | components: components})
+  end
+
   defp closure do
     Closure.new!(%{
       stack_ref: "spectre.stack:none",
@@ -3521,7 +3857,7 @@ defmodule SpectreGovernanceGateTest do
       model_profile_refs: [],
       recording_refs: [],
       build_fingerprints: %{"beam:Agent" => @digest},
-      evaluation_corpus_digest: Value.digest!(["protected"]),
+      evaluation_corpus_digest: EvaluationDelta.protected_corpus_digest!([protected_case()]),
       compatibility_mode: :native_v2
     })
   end

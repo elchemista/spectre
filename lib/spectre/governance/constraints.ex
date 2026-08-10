@@ -12,7 +12,7 @@ defmodule Spectre.Governance.Constraints do
   defstruct prompt_token_ceiling: nil, applicability_ceilings: %{}
 
   @type t :: %__MODULE__{
-          prompt_token_ceiling: non_neg_integer() | nil,
+          prompt_token_ceiling: number() | nil,
           applicability_ceilings: %{optional(String.t()) => map()}
         }
 
@@ -71,6 +71,8 @@ defmodule Spectre.Governance.Constraints do
       scopes_within_ceiling?(value.scopes, ceiling.scopes),
       subset?(ceiling.required_tags, value.required_tags),
       subset?(ceiling.forbidden_tags, value.forbidden_tags),
+      subset?(ceiling.positive, value.positive),
+      subset?(ceiling.negative, value.negative),
       subset?(ceiling.conflicts, value.conflicts)
     ]
 
@@ -185,25 +187,33 @@ defmodule Spectre.Governance.Constraints do
 
   defp restore_mount({mount, index}, {:ok, restored}) when is_map(mount) do
     case {get(mount, :id), get(mount, :definition)} do
-      {mount_id, data} when is_binary(mount_id) and mount_id != "" and is_map(data) ->
-        with {:ok, canonical} <- Canonical.from_data(data),
-             {:ok, skill} <- SkillDefinition.from_canonical(canonical) do
-          {:cont, {:ok, [{mount_id, skill} | restored]}}
+      {mount_id, data} when is_map(data) ->
+        if valid_mount_id?(mount_id) do
+          restore_mount_data(mount_id, data, index, restored)
         else
-          {:error, reason} ->
-            {:halt, {:error, {:invalid_governed_skill_mount, index, reason}}}
+          {:halt, {:error, {:invalid_governed_skill_mount, index, :invalid_mount_id}}}
         end
 
-      {_mount_id, data} when not is_map(data) ->
-        {:cont, {:ok, restored}}
+      {mount_id, _data} ->
+        reason =
+          if valid_mount_id?(mount_id), do: :definition_snapshot_required, else: :invalid_mount_id
 
-      _other ->
-        {:halt, {:error, {:invalid_governed_skill_mount, index}}}
+        {:halt, {:error, {:invalid_governed_skill_mount, index, reason}}}
     end
   end
 
   defp restore_mount({_mount, index}, _acc),
     do: {:halt, {:error, {:invalid_governed_skill_mount, index}}}
+
+  defp restore_mount_data(mount_id, data, index, restored) do
+    with {:ok, canonical} <- Canonical.from_data(data),
+         {:ok, skill} <- SkillDefinition.from_canonical(canonical) do
+      {:cont, {:ok, [{mount_id, skill} | restored]}}
+    else
+      {:error, reason} ->
+        {:halt, {:error, {:invalid_governed_skill_mount, index, reason}}}
+    end
+  end
 
   # An empty declaration is a wildcard. It cannot be a subset of a finite scope ceiling.
   defp scopes_within_ceiling?(_values, []), do: true
@@ -214,7 +224,12 @@ defmodule Spectre.Governance.Constraints do
     do: Enum.all?(left, fn item -> Enum.any?(right, &same_name?(&1, item)) end)
 
   defp prompt_ceiling(nil), do: {:ok, nil}
-  defp prompt_ceiling(value) when is_integer(value) and value >= 0, do: {:ok, value}
+
+  defp prompt_ceiling(value) when is_number(value) and value >= 0 do
+    if finite?(value),
+      do: {:ok, value},
+      else: {:error, {:invalid_governance_prompt_token_ceiling, value}}
+  end
 
   defp prompt_ceiling(value),
     do: {:error, {:invalid_governance_prompt_token_ceiling, value}}
@@ -223,6 +238,9 @@ defmodule Spectre.Governance.Constraints do
   defp strictest_ceiling(left, nil), do: left
   defp strictest_ceiling(nil, right), do: right
   defp strictest_ceiling(left, right), do: min(left, right)
+
+  defp finite?(value) when is_integer(value), do: true
+  defp finite?(value) when is_float(value), do: abs(value) < 1.0e308
 
   defp valid_mount_id?(value) when is_binary(value) and value != "",
     do: not String.starts_with?(value, "Elixir.")

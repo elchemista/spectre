@@ -155,11 +155,19 @@ defmodule Spectre.Definition.Store do
           :not_found | {:ok, Candidate.t()} | {:error, term()}
   def fetch_candidate(store, ref, opts \\ []) when is_list(opts) do
     with {:ok, normalized} <- normalize(store),
-         {:ok, ref} <- normalize_candidate_ref(ref),
-         {:ok, encoded} <- adapter_get(normalized, candidate_key(ref)),
+         {:ok, ref} <- normalize_candidate_ref(ref) do
+      fetch_candidate_from(normalized, ref, opts, true)
+    else
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp fetch_candidate_from(normalized, ref, opts, verify_parent?) do
+    with {:ok, encoded} <- adapter_get(normalized, candidate_key(ref)),
          {:ok, candidate} <- decode_candidate_artifact(encoded, ref),
          :ok <- verify_candidate_binding(normalized, candidate, opts),
-         :ok <- maybe_ensure_candidate_parent(normalized, candidate.parent_ref, opts),
+         :ok <-
+           ensure_fetched_candidate_parent(normalized, candidate.parent_ref, opts, verify_parent?),
          :ok <- verify_candidate_gate_receipts(normalized, candidate, opts) do
       {:ok, candidate}
     else
@@ -370,18 +378,17 @@ defmodule Spectre.Definition.Store do
   defp ensure_candidate_parent(_store, nil, _opts), do: :ok
 
   defp ensure_candidate_parent(store, %CandidateRef{} = parent_ref, opts) do
-    case fetch_candidate(store, parent_ref, Keyword.put(opts, :skip_candidate_parent, true)) do
+    case fetch_candidate_from(store, parent_ref, opts, false) do
       {:ok, _candidate} -> :ok
       :not_found -> {:error, {:missing_candidate_parent, CandidateRef.to_string(parent_ref)}}
       {:error, _reason} = error -> error
     end
   end
 
-  defp maybe_ensure_candidate_parent(store, parent_ref, opts) do
-    if Keyword.get(opts, :skip_candidate_parent, false),
-      do: :ok,
-      else: ensure_candidate_parent(store, parent_ref, opts)
-  end
+  defp ensure_fetched_candidate_parent(store, parent_ref, opts, true),
+    do: ensure_candidate_parent(store, parent_ref, opts)
+
+  defp ensure_fetched_candidate_parent(_store, _parent_ref, _opts, false), do: :ok
 
   @spec verify_candidate_gate_receipts({module(), keyword()}, Candidate.t(), keyword()) ::
           :ok | {:error, term()}

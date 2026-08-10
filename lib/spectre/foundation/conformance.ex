@@ -101,6 +101,7 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre.Execution.Rehearsal, :run, 4},
         {Spectre.Governance.ChangeSet, :new, 1},
         {Spectre.Governance.Composer, :compose, 3},
+        {Spectre.Governance.EvaluationDelta, :protected_corpus_digest, 1},
         {Spectre.Governance.Review, :evaluate, 5},
         {Spectre.Governance.Approval, :approve, 3},
         {Spectre.Governance.Approval, :reject, 3},

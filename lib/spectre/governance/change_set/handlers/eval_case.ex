@@ -44,32 +44,19 @@ defmodule Spectre.Governance.ChangeSet.Handlers.EvalCase do
   defp update_cases("add_eval_case", cases, evaluation_case) do
     if Enum.any?(cases, &(&1["id"] == evaluation_case.id)),
       do: {:error, {:duplicate_candidate_eval_case, evaluation_case.id}},
-      else: {:ok, cases ++ [to_data(evaluation_case)]}
+      else: {:ok, cases ++ [Case.to_data(evaluation_case)]}
   end
 
   defp update_cases("replace_eval_case", cases, evaluation_case) do
     if Enum.any?(cases, &(&1["id"] == evaluation_case.id)) do
       {:ok,
        Enum.map(cases, fn existing ->
-         if existing["id"] == evaluation_case.id, do: to_data(evaluation_case), else: existing
+         if existing["id"] == evaluation_case.id,
+           do: Case.to_data(evaluation_case),
+           else: existing
        end)}
     else
       {:error, {:candidate_eval_case_not_found, evaluation_case.id}}
     end
-  end
-
-  defp to_data(evaluation_case) do
-    %{
-      "id" => evaluation_case.id,
-      "input" => evaluation_case.input,
-      "expected_route" => evaluation_case.expected_route,
-      "expected_strategy" => evaluation_case.expected_strategy,
-      "expected_outcome" => Atom.to_string(evaluation_case.expected_outcome),
-      "allowed_routes" => evaluation_case.allowed_routes,
-      "llm" => Atom.to_string(evaluation_case.llm),
-      "state" => evaluation_case.state,
-      "tags" => evaluation_case.tags,
-      "max_duration_us" => evaluation_case.max_duration_us
-    }
   end
 end
