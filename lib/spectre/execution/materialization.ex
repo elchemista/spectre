@@ -316,8 +316,13 @@ defmodule Spectre.Execution.Materialization do
   @spec projection_shape(Projection.t(), Ref.t(), Program.t(), map(), [Receipt.t()]) ::
           :ok | {:error, term()}
   defp projection_shape(%Projection{} = projection, definition_ref, program, plans, receipts) do
-    content = projection.content
+    with :ok <- projection_identity(projection, definition_ref) do
+      projection_content(projection.content, program, plans, receipts)
+    end
+  end
 
+  @spec projection_identity(Projection.t(), Ref.t()) :: :ok | {:error, term()}
+  defp projection_identity(projection, definition_ref) do
     cond do
       projection.generator_id != "spectre.projection.execution" ->
         {:error, :execution_materialization_projection_generator_mismatch}
@@ -328,6 +333,15 @@ defmodule Spectre.Execution.Materialization do
       projection.definition_ref != definition_ref ->
         {:error, :execution_materialization_projection_definition_mismatch}
 
+      true ->
+        :ok
+    end
+  end
+
+  @spec projection_content(term(), Program.t(), map(), [Receipt.t()]) ::
+          :ok | {:error, term()}
+  defp projection_content(content, program, plans, receipts) do
+    cond do
       not is_map(content) ->
         {:error, :invalid_execution_materialization_projection}
 

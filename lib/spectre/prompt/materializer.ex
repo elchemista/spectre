@@ -36,31 +36,41 @@ defmodule Spectre.Prompt.Materializer do
       when is_map(context) do
     with {:ok, input} <- normalize_input(input) do
       values = Map.put(context, :input, %{text: input.text, meta: input.meta})
-
-      placeholders
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.reduce_while({:ok, content, %{}}, fn {name, spec}, {:ok, rendered, evidence} ->
-        case fetch_path(values, get(spec, :path, [])) do
-          {:ok, value} ->
-            case scalar(value) do
-              {:ok, scalar} ->
-                {:cont,
-                 {:ok, String.replace(rendered, "{{#{name}}}", scalar),
-                  Map.put(evidence, name, value)}}
-
-              {:error, shape} ->
-                {:halt, {:error, {:non_scalar_runtime_prompt_value, name, shape}}}
-            end
-
-          :error ->
-            {:halt, {:error, {:missing_runtime_prompt_value, name}}}
-        end
-      end)
+      render_placeholders(placeholders, content, values)
     end
   end
 
   def render(%Fragment{}, _input, context),
     do: {:error, {:invalid_prompt_materialization_context, shape(context)}}
+
+  @spec render_placeholders(map(), String.t(), map()) ::
+          {:ok, String.t(), map()} | {:error, term()}
+  defp render_placeholders(placeholders, content, values) do
+    placeholders
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.reduce_while({:ok, content, %{}}, fn {name, spec}, {:ok, rendered, evidence} ->
+      case resolve_placeholder(name, spec, values) do
+        {:ok, scalar, value} ->
+          {:cont,
+           {:ok, String.replace(rendered, "{{#{name}}}", scalar), Map.put(evidence, name, value)}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  @spec resolve_placeholder(String.t(), map(), map()) ::
+          {:ok, String.t(), term()} | {:error, term()}
+  defp resolve_placeholder(name, spec, values) do
+    with {:ok, value} <- fetch_path(values, get(spec, :path, [])),
+         {:ok, scalar} <- scalar(value) do
+      {:ok, scalar, value}
+    else
+      :error -> {:error, {:missing_runtime_prompt_value, name}}
+      {:error, shape} -> {:error, {:non_scalar_runtime_prompt_value, name, shape}}
+    end
+  end
 
   @spec plan(Fragment.t(), String.t()) :: {:ok, Plan.t()} | {:error, term()}
   defp plan(fragment, rendered) do

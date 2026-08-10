@@ -142,61 +142,110 @@ defmodule Spectre.Prompt.Receipt do
 
   @spec validate_data(map()) :: :ok | {:error, term()}
   defp validate_data(data) do
-    placement = data.placement
+    with :ok <- validate_schema(data),
+         :ok <- validate_generator(data),
+         :ok <- validate_definition_ref(data.definition_ref),
+         :ok <- validate_prompt_ref(data.prompt_ref),
+         :ok <- validate_evidence_digests(data),
+         :ok <- validate_bytes(data.bytes),
+         :ok <- validate_token_estimate(data.estimated_tokens, data.bytes),
+         :ok <- validate_placement(data.placement) do
+      validate_portable(data)
+    end
+  end
 
-    cond do
-      data.schema_version != @schema_version ->
-        {:error, {:unsupported_prompt_receipt_schema, data.schema_version}}
+  @spec validate_schema(map()) :: :ok | {:error, term()}
+  defp validate_schema(%{schema_version: @schema_version}), do: :ok
 
-      data.generator_id != @generator_id or data.generator_version != @generator_version ->
-        {:error, :prompt_receipt_generator_mismatch}
+  defp validate_schema(%{schema_version: schema_version}),
+    do: {:error, {:unsupported_prompt_receipt_schema, schema_version}}
 
-      not match?({:ok, %Ref{}}, Ref.parse(data.definition_ref)) ->
-        {:error, {:invalid_prompt_receipt_definition_ref, data.definition_ref}}
+  @spec validate_generator(map()) :: :ok | {:error, term()}
+  defp validate_generator(%{
+         generator_id: @generator_id,
+         generator_version: @generator_version
+       }),
+       do: :ok
 
-      not valid_stable_ref?(data.prompt_ref) ->
-        {:error, :invalid_prompt_receipt_prompt_ref}
+  defp validate_generator(_data), do: {:error, :prompt_receipt_generator_mismatch}
 
-      not Enum.all?(
-        [
-          data.fragment_digest,
-          data.rendered_digest,
-          data.input_evidence_digest,
-          data.provenance_digest
-        ],
-        &valid_digest?/1
-      ) ->
-        {:error, :invalid_prompt_receipt_evidence_digest}
+  @spec validate_definition_ref(term()) :: :ok | {:error, term()}
+  defp validate_definition_ref(definition_ref) do
+    case Ref.parse(definition_ref) do
+      {:ok, %Ref{}} -> :ok
+      _other -> {:error, {:invalid_prompt_receipt_definition_ref, definition_ref}}
+    end
+  end
 
-      not is_integer(data.bytes) or data.bytes < 0 ->
-        {:error, {:invalid_prompt_receipt_bytes, data.bytes}}
+  @spec validate_prompt_ref(term()) :: :ok | {:error, term()}
+  defp validate_prompt_ref(prompt_ref) do
+    if valid_stable_ref?(prompt_ref),
+      do: :ok,
+      else: {:error, :invalid_prompt_receipt_prompt_ref}
+  end
 
-      data.estimated_tokens != estimated_tokens_for_bytes(data.bytes) ->
-        {:error, :invalid_prompt_receipt_token_estimate}
+  @spec validate_evidence_digests(map()) :: :ok | {:error, term()}
+  defp validate_evidence_digests(data) do
+    digests = [
+      data.fragment_digest,
+      data.rendered_digest,
+      data.input_evidence_digest,
+      data.provenance_digest
+    ]
 
-      not valid_placement?(placement) ->
-        {:error, :invalid_prompt_receipt_placement}
+    if Enum.all?(digests, &valid_digest?/1),
+      do: :ok,
+      else: {:error, :invalid_prompt_receipt_evidence_digest}
+  end
 
-      true ->
-        case Value.validate(data) do
-          :ok -> :ok
-          {:error, reason} -> {:error, {:nonportable_prompt_receipt, reason}}
-        end
+  @spec validate_bytes(term()) :: :ok | {:error, term()}
+  defp validate_bytes(bytes) when is_integer(bytes) and bytes >= 0, do: :ok
+  defp validate_bytes(bytes), do: {:error, {:invalid_prompt_receipt_bytes, bytes}}
+
+  @spec validate_token_estimate(term(), non_neg_integer()) :: :ok | {:error, term()}
+  defp validate_token_estimate(estimate, bytes) do
+    if estimate == estimated_tokens_for_bytes(bytes),
+      do: :ok,
+      else: {:error, :invalid_prompt_receipt_token_estimate}
+  end
+
+  @spec validate_placement(term()) :: :ok | {:error, term()}
+  defp validate_placement(placement) do
+    if valid_placement?(placement),
+      do: :ok,
+      else: {:error, :invalid_prompt_receipt_placement}
+  end
+
+  @spec validate_portable(map()) :: :ok | {:error, term()}
+  defp validate_portable(data) do
+    case Value.validate(data) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:nonportable_prompt_receipt, reason}}
     end
   end
 
   @spec valid_placement?(map()) :: boolean()
   defp valid_placement?(placement) do
     valid_stable_ref?(placement.scope) and
-      placement.target in [:instructions, :context, :task] and
-      placement.position in [:start, :end, :replace] and
-      placement.trust in [:instruction, :data] and
-      placement.visibility in [:private, :agent, :operator, :public] and
-      placement.granted_priority in [:low, :normal, :high] and
-      placement.budget_class in [:small, :standard, :large] and
-      (is_nil(placement.token_cap) or
-         (is_integer(placement.token_cap) and placement.token_cap > 0))
+      valid_placement_enums?(placement) and valid_token_cap?(placement.token_cap)
   end
+
+  @spec valid_placement_enums?(map()) :: boolean()
+  defp valid_placement_enums?(placement) do
+    [
+      {placement.target, [:instructions, :context, :task]},
+      {placement.position, [:start, :end, :replace]},
+      {placement.trust, [:instruction, :data]},
+      {placement.visibility, [:private, :agent, :operator, :public]},
+      {placement.granted_priority, [:low, :normal, :high]},
+      {placement.budget_class, [:small, :standard, :large]}
+    ]
+    |> Enum.all?(fn {value, allowed} -> value in allowed end)
+  end
+
+  @spec valid_token_cap?(term()) :: boolean()
+  defp valid_token_cap?(nil), do: true
+  defp valid_token_cap?(token_cap), do: is_integer(token_cap) and token_cap > 0
 
   @spec exact_fields(map(), [atom()], atom()) :: {:ok, map()} | {:error, term()}
   defp exact_fields(value, expected, label) when is_map(value) and not is_struct(value) do

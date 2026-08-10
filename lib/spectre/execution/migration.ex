@@ -217,32 +217,53 @@ defmodule Spectre.Execution.Migration do
       operation_contract_digest: migration.operation_contract_digest
     }
 
-    cond do
-      not match?(%Request{}, request) ->
-        {:error, :invalid_execution_migration_request}
-
-      Request.validate(request) != :ok ->
-        {:error, :invalid_execution_migration_request}
-
-      request.id != expected_id ->
-        {:error, :execution_migration_request_id_mismatch}
-
-      request.operation != migration.operation_ref ->
-        {:error, :execution_migration_request_operation_mismatch}
-
-      request.input != expected_input ->
-        {:error, :execution_migration_request_input_mismatch}
-
-      request.phase != :state_migration or request.branch != migration.program.id ->
-        {:error, :execution_migration_request_routing_mismatch}
-
-      request.metadata != expected_metadata ->
-        {:error, :execution_migration_request_metadata_mismatch}
-
-      true ->
-        :ok
+    with :ok <- validate_request(request),
+         :ok <-
+           exact_request_value(request.id, expected_id, :execution_migration_request_id_mismatch),
+         :ok <-
+           exact_request_value(
+             request.operation,
+             migration.operation_ref,
+             :execution_migration_request_operation_mismatch
+           ),
+         :ok <-
+           exact_request_value(
+             request.input,
+             expected_input,
+             :execution_migration_request_input_mismatch
+           ),
+         :ok <-
+           exact_request_value(
+             request.phase,
+             :state_migration,
+             :execution_migration_request_routing_mismatch
+           ),
+         :ok <-
+           exact_request_value(
+             request.branch,
+             migration.program.id,
+             :execution_migration_request_routing_mismatch
+           ) do
+      exact_request_value(
+        request.metadata,
+        expected_metadata,
+        :execution_migration_request_metadata_mismatch
+      )
     end
   end
+
+  @spec validate_request(term()) :: :ok | {:error, term()}
+  defp validate_request(%Request{} = request) do
+    if Request.validate(request) == :ok,
+      do: :ok,
+      else: {:error, :invalid_execution_migration_request}
+  end
+
+  defp validate_request(_request), do: {:error, :invalid_execution_migration_request}
+
+  @spec exact_request_value(term(), term(), atom()) :: :ok | {:error, term()}
+  defp exact_request_value(value, value, _error), do: :ok
+  defp exact_request_value(_actual, _expected, error), do: {:error, error}
 
   @spec migration_receipt(t(), Execution.t(), String.t()) ::
           {:ok, Receipt.t()} | {:error, term()}

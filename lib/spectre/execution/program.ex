@@ -683,14 +683,19 @@ defmodule Spectre.Execution.Program do
       true ->
         active = MapSet.put(active, node)
         visited = MapSet.put(visited, node)
-
-        Enum.reduce_while(Map.get(graph, node, []), {visited, nil}, fn child, {seen, _cycle} ->
-          case dfs_cycle(child, graph, seen, active, [node | path]) do
-            {seen, nil} -> {:cont, {seen, nil}}
-            {seen, cycle} -> {:halt, {seen, cycle}}
-          end
-        end)
+        dfs_cycle_children(Map.get(graph, node, []), graph, visited, active, [node | path])
     end
+  end
+
+  @spec dfs_cycle_children([String.t()], map(), MapSet.t(), MapSet.t(), [String.t()]) ::
+          {MapSet.t(), [String.t()] | nil}
+  defp dfs_cycle_children(children, graph, visited, active, path) do
+    Enum.reduce_while(children, {visited, nil}, fn child, {seen, _cycle} ->
+      case dfs_cycle(child, graph, seen, active, path) do
+        {seen, nil} -> {:cont, {seen, nil}}
+        {seen, cycle} -> {:halt, {seen, cycle}}
+      end
+    end)
   end
 
   @spec walk([String.t()], map(), MapSet.t()) :: MapSet.t()

@@ -118,33 +118,46 @@ defmodule Spectre.Definition.Canonical.Lowerer do
       _handler -> []
     end)
     |> Enum.uniq()
-    |> Enum.reduce_while({:ok, %{}, %{}}, fn controller, {:ok, by_module, by_id} ->
-      if data_work_module?(controller) do
-        case Program.from_compiled(controller) do
-          {:ok, program} ->
-            case Map.fetch(by_id, program.id) do
-              {:ok, %Program{digest: digest}} when digest != program.digest ->
-                {:halt, {:error, {:conflicting_compiled_execution_program, program.id}}}
-
-              _existing ->
-                {:cont,
-                 {:ok, Map.put(by_module, controller, program),
-                  Map.put(by_id, program.id, program)}}
-            end
-
-          {:error, reason} ->
-            {:halt, {:error, {:invalid_compiled_execution_program, controller, reason}}}
-        end
-      else
-        {:cont, {:ok, by_module, by_id}}
-      end
-    end)
+    |> Enum.reduce_while({:ok, %{}, %{}}, &collect_execution_program/2)
     |> case do
       {:ok, by_module, by_id} ->
         {:ok, %{by_module: by_module, programs: by_id |> Map.values() |> Enum.sort_by(& &1.id)}}
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  @spec collect_execution_program(module(), {:ok, map(), map()}) ::
+          {:cont, {:ok, map(), map()}} | {:halt, {:error, term()}}
+  defp collect_execution_program(controller, {:ok, by_module, by_id}) do
+    case compiled_execution_program(controller) do
+      :skip ->
+        {:cont, {:ok, by_module, by_id}}
+
+      {:ok, program} ->
+        merge_execution_program(controller, program, by_module, by_id)
+
+      {:error, reason} ->
+        {:halt, {:error, {:invalid_compiled_execution_program, controller, reason}}}
+    end
+  end
+
+  @spec compiled_execution_program(module()) :: :skip | {:ok, Program.t()} | {:error, term()}
+  defp compiled_execution_program(controller) do
+    if data_work_module?(controller), do: Program.from_compiled(controller), else: :skip
+  end
+
+  @spec merge_execution_program(module(), Program.t(), map(), map()) ::
+          {:cont, {:ok, map(), map()}} | {:halt, {:error, term()}}
+  defp merge_execution_program(controller, program, by_module, by_id) do
+    case Map.fetch(by_id, program.id) do
+      {:ok, %Program{digest: digest}} when digest != program.digest ->
+        {:halt, {:error, {:conflicting_compiled_execution_program, program.id}}}
+
+      _existing ->
+        {:cont,
+         {:ok, Map.put(by_module, controller, program), Map.put(by_id, program.id, program)}}
     end
   end
 
@@ -403,15 +416,18 @@ defmodule Spectre.Definition.Canonical.Lowerer do
     programs
     |> Enum.flat_map(&Program.operation_refs/1)
     |> Enum.reduce(requirements, fn ref, merged ->
-      if Enum.any?(merged, fn requirement ->
-           requirement_kind(requirement) == :operation and
-             same_name?(requirement_name(requirement), ref)
-         end) do
+      if Enum.any?(merged, &execution_requirement?(&1, ref)) do
         merged
       else
         merged ++ [%{kind: :operation, name: ref, mode: :read, opts: []}]
       end
     end)
+  end
+
+  @spec execution_requirement?(term(), term()) :: boolean()
+  defp execution_requirement?(requirement, ref) do
+    requirement_kind(requirement) == :operation and
+      same_name?(requirement_name(requirement), ref)
   end
 
   defp requirement_kind(requirement) when is_map(requirement),

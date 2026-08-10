@@ -370,10 +370,9 @@ defmodule Spectre.Execution.Controller do
 
   @spec validate_history(term()) :: :ok | {:error, term()}
   defp validate_history(history) do
-    cond do
-      length(history) > @history_limit -> {:error, :execution_history_limit_exceeded}
-      true -> RunValue.validate(history, [:data_driven_execution_history])
-    end
+    if length(history) > @history_limit,
+      do: {:error, :execution_history_limit_exceeded},
+      else: RunValue.validate(history, [:data_driven_execution_history])
   end
 
   @spec validate_request_pin(Request.t(), Program.t(), map()) :: :ok | {:error, term()}
@@ -437,6 +436,16 @@ defmodule Spectre.Execution.Controller do
 
   @spec normalize_update(term()) :: {:ok, [map()]} | {:error, term()}
   defp normalize_update(payload) when is_map(payload) do
+    with {:ok, changes} <- update_changes(payload),
+         {:ok, normalized} <- normalize_changes(changes) do
+      unique_changes(normalized)
+    end
+  end
+
+  defp normalize_update(value), do: {:error, {:invalid_execution_update, shape(value)}}
+
+  @spec update_changes(map()) :: {:ok, [term()]} | {:error, term()}
+  defp update_changes(payload) do
     allowed = [:changes, "changes"]
     change_keys = Enum.filter(allowed, &Map.has_key?(payload, &1))
 
@@ -448,31 +457,33 @@ defmodule Spectre.Execution.Controller do
         {:error, :duplicate_execution_update_changes_field}
 
       true ->
-        changes = Map.get(payload, List.first(change_keys), [])
-
-        if is_list(changes) do
-          changes
-          |> Enum.with_index()
-          |> Enum.reduce_while({:ok, []}, fn {change, index}, {:ok, acc} ->
-            case normalize_change(change) do
-              {:ok, change} ->
-                {:cont, {:ok, [change | acc]}}
-
-              {:error, reason} ->
-                {:halt, {:error, {:invalid_execution_update_change, index, reason}}}
-            end
-          end)
-          |> case do
-            {:ok, normalized} -> unique_changes(Enum.reverse(normalized))
-            {:error, _reason} = error -> error
-          end
-        else
-          {:error, {:invalid_execution_update_changes, shape(changes)}}
-        end
+        changes_list(Map.get(payload, List.first(change_keys), []))
     end
   end
 
-  defp normalize_update(value), do: {:error, {:invalid_execution_update, shape(value)}}
+  @spec changes_list(term()) :: {:ok, [term()]} | {:error, term()}
+  defp changes_list(changes) when is_list(changes), do: {:ok, changes}
+
+  defp changes_list(changes),
+    do: {:error, {:invalid_execution_update_changes, shape(changes)}}
+
+  @spec normalize_changes([term()]) :: {:ok, [map()]} | {:error, term()}
+  defp normalize_changes(changes) do
+    changes
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {change, index}, {:ok, acc} ->
+      case normalize_change(change) do
+        {:ok, change} -> {:cont, {:ok, [change | acc]}}
+        {:error, reason} -> {:halt, {:error, {:invalid_execution_update_change, index, reason}}}
+      end
+    end)
+    |> reverse_changes()
+  end
+
+  @spec reverse_changes({:ok, [map()]} | {:error, term()}) ::
+          {:ok, [map()]} | {:error, term()}
+  defp reverse_changes({:ok, changes}), do: {:ok, Enum.reverse(changes)}
+  defp reverse_changes({:error, _reason} = error), do: error
 
   @spec unique_changes([map()]) :: {:ok, [map()]} | {:error, term()}
   defp unique_changes(changes) do
@@ -516,15 +527,18 @@ defmodule Spectre.Execution.Controller do
   @spec apply_changes(term(), [map()], [[term()]]) :: {:ok, term()} | {:error, term()}
   defp apply_changes(data, changes, mutable_paths) do
     Enum.reduce_while(changes, {:ok, data}, fn change, {:ok, current} ->
-      if change.path in mutable_paths do
-        case Expression.put(current, change.path, change.value) do
-          {:ok, updated} -> {:cont, {:ok, updated}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      else
-        {:halt, {:error, {:execution_update_path_not_mutable, change.path}}}
+      case apply_change(current, change, mutable_paths) do
+        {:ok, updated} -> {:cont, {:ok, updated}}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  @spec apply_change(term(), map(), [[term()]]) :: {:ok, term()} | {:error, term()}
+  defp apply_change(current, change, mutable_paths) do
+    if change.path in mutable_paths,
+      do: Expression.put(current, change.path, change.value),
+      else: {:error, {:execution_update_path_not_mutable, change.path}}
   end
 
   @spec metadata(Request.t(), atom()) :: term()

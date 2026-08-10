@@ -102,23 +102,33 @@ defmodule Spectre.Execution.Materializer do
 
     Enum.reduce_while(program.prompt_refs, {:ok, %{}, []}, fn prompt_ref,
                                                               {:ok, plans, receipts} ->
-      case Enum.find(fragments, &(stable_name(&1.id) == prompt_ref)) do
-        nil ->
-          {:halt, {:error, {:execution_prompt_fragment_missing, prompt_ref}}}
+      case prompt_materialization(prompt_ref, fragments, input, context, definition_ref) do
+        {:ok, plan, receipt} ->
+          {:cont, {:ok, Map.put(plans, prompt_ref, plan), [receipt | receipts]}}
 
-        fragment ->
-          case PromptMaterializer.materialize(fragment, input, context, definition_ref) do
-            {:ok, plan, receipt} ->
-              {:cont, {:ok, Map.put(plans, prompt_ref, plan), [receipt | receipts]}}
-
-            {:error, _reason} = error ->
-              {:halt, error}
-          end
+        {:error, _reason} = error ->
+          {:halt, error}
       end
     end)
     |> case do
       {:ok, plans, receipts} -> {:ok, plans, Enum.reverse(receipts)}
       {:error, _reason} = error -> error
+    end
+  end
+
+  @spec prompt_materialization(String.t(), [term()], term(), map(), String.t()) ::
+          {:ok, Spectre.Prompt.Plan.t(), Spectre.Prompt.Receipt.t()} | {:error, term()}
+  defp prompt_materialization(prompt_ref, fragments, input, context, definition_ref) do
+    with {:ok, fragment} <- prompt_fragment(prompt_ref, fragments) do
+      PromptMaterializer.materialize(fragment, input, context, definition_ref)
+    end
+  end
+
+  @spec prompt_fragment(String.t(), [term()]) :: {:ok, term()} | {:error, term()}
+  defp prompt_fragment(prompt_ref, fragments) do
+    case Enum.find(fragments, &(stable_name(&1.id) == prompt_ref)) do
+      nil -> {:error, {:execution_prompt_fragment_missing, prompt_ref}}
+      fragment -> {:ok, fragment}
     end
   end
 
