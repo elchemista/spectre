@@ -65,6 +65,14 @@ defmodule Spectre.Foundation.Conformance do
         routing_projection: 1,
         index_profile: 1
       },
+      data_execution: %{
+        program_schema: 1,
+        handoff_schema: 1,
+        prompt_receipt_schema: 1,
+        execution_projection: 1,
+        migration_receipt_schema: 1,
+        rehearsal_report_schema: 1
+      },
       stack: %{module_input_contract: 1, sealed_runtime_contract: 2},
       golden_path: [
         {Spectre, :ask, 2},
@@ -75,7 +83,13 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre.Definition, :manifest, 1},
         {Spectre.Skill.Definition, :new, 1},
         {Spectre.Skill.Runtime, :mount, 4},
-        {Spectre.Projection.Routing, :project, 2}
+        {Spectre.Projection.Routing, :project, 2},
+        {Spectre, :start_execution, 2},
+        {Spectre.Execution.Program, :new, 1},
+        {Spectre.Execution.Materializer, :materialize, 4},
+        {Spectre.Execution.Handoff, :new, 1},
+        {Spectre.Projection.Execution, :project, 2},
+        {Spectre.Execution.Rehearsal, :run, 4}
       ]
     }
   end

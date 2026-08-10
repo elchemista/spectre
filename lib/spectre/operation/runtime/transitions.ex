@@ -88,13 +88,24 @@ defmodule Spectre.Operation.Runtime.Transitions do
   end
 
   @doc "Returns the exhausted budget dimension, checking expiry first."
-  @spec budget_exhaustion(Loop.t(), map()) :: {atom(), term(), term()} | nil
-  def budget_exhaustion(%Loop{expires_at: expires_at} = loop, env) do
+  @spec budget_exhaustion(Loop.t(), map(), keyword()) :: {atom(), term(), term()} | nil
+  def budget_exhaustion(%Loop{expires_at: expires_at} = loop, env, opts \\ []) do
     current_time = now(env)
 
     if is_integer(expires_at) and expires_at <= current_time,
       do: {:duration_ms, :expired, expires_at},
-      else: Budget.exhausted(loop.budget, current_time)
+      else: exhausted_budget(loop.budget, current_time, Keyword.get(opts, :ignore, []))
+  end
+
+  @spec exhausted_budget(Budget.t(), non_neg_integer(), [Budget.dimension()]) ::
+          {Budget.dimension(), number(), number()} | nil
+  defp exhausted_budget(budget, current_time, ignored) do
+    budget =
+      Enum.reduce(ignored, budget, fn dimension, current ->
+        put_in(current, [Access.key!(:limits), dimension], nil)
+      end)
+
+    Budget.exhausted(budget, current_time)
   end
 
   @doc """

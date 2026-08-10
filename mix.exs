@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.7"
+  @version "0.2.8"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -27,9 +27,11 @@ defmodule Spectre.MixProject do
     "docs/MIGRATING_TO_0_2_5.md",
     "docs/MIGRATING_TO_0_2_6.md",
     "docs/MIGRATING_TO_0_2_7.md",
+    "docs/MIGRATING_TO_0_2_8.md",
     "docs/MIGRATING_TO_0_3.md",
     "docs/SKILLS.md",
     "docs/RUNTIME_SKILLS.md",
+    "docs/DATA_DRIVEN_EXECUTION.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
     "docs/PROVIDERS.md",
@@ -156,9 +158,11 @@ defmodule Spectre.MixProject do
           "docs/MIGRATING_TO_0_2_5.md",
           "docs/MIGRATING_TO_0_2_6.md",
           "docs/MIGRATING_TO_0_2_7.md",
+          "docs/MIGRATING_TO_0_2_8.md",
           "docs/MIGRATING_TO_0_3.md",
           "docs/SKILLS.md",
           "docs/RUNTIME_SKILLS.md",
+          "docs/DATA_DRIVEN_EXECUTION.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
         ],
@@ -288,6 +292,20 @@ defmodule Spectre.MixProject do
           Spectre.Execution
         ],
         "Operational loops": [
+          Spectre.Execution.Expression,
+          Spectre.Execution.Program,
+          Spectre.Execution.Work,
+          Spectre.Execution.Materialization,
+          Spectre.Execution.Materializer,
+          Spectre.Execution.Runtime,
+          Spectre.Execution.Handoff,
+          Spectre.Execution.Migration,
+          Spectre.Execution.Migration.Receipt,
+          Spectre.Execution.Rehearsal,
+          Spectre.Execution.Rehearsal.Report,
+          Spectre.Projection.Execution,
+          Spectre.Prompt.Materializer,
+          Spectre.Prompt.Receipt,
           Spectre.Work,
           Spectre.Vigil,
           Spectre.Operation.Controller,

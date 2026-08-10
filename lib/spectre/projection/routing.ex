@@ -141,7 +141,15 @@ defmodule Spectre.Projection.Routing do
         %{kind: kind, prompt: get(handler, :prompt)}
 
       kind when kind in [:run, :work] ->
-        %{kind: kind, executable_ref: :compiled_definition_only}
+        if kind == :work and not is_nil(get(handler, :work_ref)) do
+          %{
+            kind: :work,
+            work_ref: get(handler, :work_ref),
+            input: get(handler, :input, :input)
+          }
+        else
+          %{kind: kind, executable_ref: :compiled_definition_only}
+        end
 
       other ->
         %{kind: other}

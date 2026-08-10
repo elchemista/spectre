@@ -17,6 +17,8 @@ defmodule Spectre.Operation.Runtime do
   import Spectre.Operation.Runtime.Support
   import Spectre.Operation.Runtime.Transitions
 
+  alias Spectre.Execution.Controller, as: ExecutionController
+  alias Spectre.Execution.Program, as: ExecutionProgram
   alias Spectre.Operation.Attempt
   alias Spectre.Operation.Budget
   alias Spectre.Operation.Control
@@ -47,6 +49,50 @@ defmodule Spectre.Operation.Runtime do
              is_map(env) do
     with {:ok, definition} <- Definition.load(controller),
          :ok <- Contract.ensure_kind(definition, kind),
+         :ok <- Contract.validate_controller_contract(definition, controller) do
+      start_definition(kind, controller, definition, input, opts, env)
+    end
+  end
+
+  @doc "Starts a data-only Work on the same fenced operational runtime."
+  @spec start_program(ExecutionProgram.t(), term(), keyword(), env()) ::
+          {:ok, Loop.t(), Control.t(), [event_spec()]} | {:error, term()}
+  def start_program(%ExecutionProgram{} = program, input, opts, env)
+      when is_list(opts) and is_map(env) do
+    with {:ok, program} <- ExecutionProgram.new(program),
+         {:ok, agent} <- fetch_program_agent(env),
+         :ok <- ExecutionProgram.validate_bindings(program, agent),
+         {:ok, plans} <-
+           ExecutionProgram.normalize_plans(program, Keyword.get(opts, :plans, %{})),
+         {:ok, metadata} <- map_option(Keyword.get(opts, :metadata, %{}), :metadata),
+         {:ok, metadata} <- program_metadata(program, plans, opts, metadata) do
+      definition = ExecutionProgram.operation_definition(program)
+
+      env =
+        env
+        |> Map.put(:spectre_execution_program, ExecutionProgram.to_data(program))
+        |> Map.put(:spectre_execution_plans, plans)
+        |> Map.put(
+          :spectre_execution_materialization_digest,
+          Keyword.get(opts, :materialization_digest)
+        )
+
+      opts =
+        opts
+        |> Keyword.drop([:plans, :materialization_digest, :definition_ref])
+        |> Keyword.put(:metadata, metadata)
+
+      start_definition(:work, ExecutionController, definition, input, opts, env)
+    end
+  end
+
+  def start_program(%ExecutionProgram{}, _input, _opts, _env),
+    do: {:error, :invalid_data_driven_execution_start_options}
+
+  @spec start_definition(Loop.kind(), module(), Definition.t(), term(), keyword(), env()) ::
+          {:ok, Loop.t(), Control.t(), [event_spec()]} | {:error, term()}
+  defp start_definition(kind, controller, definition, input, opts, env) do
+    with :ok <- Contract.ensure_kind(definition, kind),
          :ok <- Contract.validate_controller_contract(definition, controller),
          :ok <- Validator.validate(definition.input, input, {:loop_input, definition.id}),
          :ok <- portable(input, [:loop, :input]),
@@ -101,6 +147,41 @@ defmodule Spectre.Operation.Runtime do
     end
   end
 
+  @spec fetch_program_agent(env()) :: {:ok, module()} | {:error, term()}
+  defp fetch_program_agent(env) do
+    case Map.fetch(env, :agent) do
+      {:ok, agent} when is_atom(agent) and not is_nil(agent) -> {:ok, agent}
+      {:ok, agent} -> {:error, {:invalid_execution_program_agent, agent}}
+      :error -> {:error, :execution_program_agent_missing}
+    end
+  end
+
+  @spec program_metadata(ExecutionProgram.t(), map(), keyword(), map()) ::
+          {:ok, map()} | {:error, term()}
+  defp program_metadata(program, plans, opts, metadata) do
+    materialization_digest = Keyword.get(opts, :materialization_digest)
+    definition_ref = Keyword.get(opts, :definition_ref)
+
+    cond do
+      not is_nil(materialization_digest) and
+          not (is_binary(materialization_digest) and materialization_digest != "") ->
+        {:error, {:invalid_execution_materialization_digest, materialization_digest}}
+
+      not is_nil(definition_ref) and not (is_binary(definition_ref) and definition_ref != "") ->
+        {:error, {:invalid_execution_definition_ref, definition_ref}}
+
+      true ->
+        reserved = %{
+          ExecutionController.program_key() => ExecutionProgram.to_data(program),
+          ExecutionController.plans_key() => plans,
+          ExecutionController.materialization_key() => materialization_digest,
+          :spectre_execution_definition_ref => definition_ref
+        }
+
+        {:ok, Map.merge(metadata, reserved)}
+    end
+  end
+
   defp pin_definition_metadata(metadata, env) do
     [
       definition_ref: :spectre_definition_ref,
@@ -133,7 +214,7 @@ defmodule Spectre.Operation.Runtime do
         {:error, {:loop_attempt_already_active, loop.attempt.id}}
 
       true ->
-        with nil <- budget_exhaustion(loop, env),
+        with nil <- budget_exhaustion(loop, env, ignore: [:retries]),
              {:ok, definition} <- Contract.current_definition(loop),
              {:ok, request, reconcile?} <- next_request(loop, definition, env),
              {:ok, spec} <-

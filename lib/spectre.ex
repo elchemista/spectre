@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.2.7"
+  @version "0.2.8"
 
   @doc """
   Returns the running Spectre library version.
@@ -230,6 +230,9 @@ defmodule Spectre do
 
   @doc "Starts a precise Work on an Agent Instance."
   defdelegate start_work(instance, controller, input, opts \\ []), to: Spectre.Instance
+
+  @doc "Starts a verified data-driven Work materialization on an Agent Instance."
+  defdelegate start_execution(instance, materialization, opts \\ []), to: Spectre.Instance
 
   @doc "Registers a durable Vigil on an Agent Instance."
   defdelegate register_vigil(instance, controller, input, opts \\ []), to: Spectre.Instance

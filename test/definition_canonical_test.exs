@@ -95,8 +95,8 @@ defmodule SpectreDefinitionCanonicalTest do
   alias SpectreDefinitionCanonicalTest.InvalidProjection
   alias SpectreDefinitionCanonicalTest.UnsafePromptAgent
 
-  test "release identifies the runtime Skill gate as 0.2.7" do
-    assert Spectre.version() == "0.2.7"
+  test "release identifies the data-driven execution gate as 0.2.8" do
+    assert Spectre.version() == "0.2.8"
   end
 
   test "compiled Agent and mounted Skill lower into one portable canonical envelope" do

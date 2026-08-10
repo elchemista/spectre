@@ -22,6 +22,8 @@ defmodule Spectre.Instance do
   alias Spectre.Definition.Store, as: DefinitionStore
   alias Spectre.Event.Envelope, as: EventEnvelope
   alias Spectre.Execution.Closure
+  alias Spectre.Execution.Materialization, as: ExecutionMaterialization
+  alias Spectre.Execution.Runtime, as: DataExecutionRuntime
   alias Spectre.Input
   alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
@@ -338,6 +340,36 @@ defmodule Spectre.Instance do
   def start_work(server, controller, input, opts \\ []) when is_atom(controller) do
     call_opts = Keyword.put(opts, :__spectre_callers__, operation_callers())
     GenServer.call(server, {:operation_start, :work, controller, input, call_opts}, timeout(opts))
+  end
+
+  @doc "Starts a verified data-driven Work on the shared operational runtime."
+  @spec start_execution(GenServer.server(), ExecutionMaterialization.t(), keyword()) ::
+          {:ok, OperationRef.t(), OperationView.t()} | {:error, term()}
+  def start_execution(server, materialization, opts \\ [])
+
+  def start_execution(server, %ExecutionMaterialization{} = materialization, opts)
+      when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      start_execution_call(server, materialization, opts)
+    else
+      {:error, :invalid_data_driven_execution_options}
+    end
+  end
+
+  def start_execution(_server, materialization, opts),
+    do:
+      {:error,
+       {:invalid_data_driven_execution_start, execution_shape(materialization),
+        execution_shape(opts)}}
+
+  defp start_execution_call(server, materialization, opts) do
+    call_opts = Keyword.put(opts, :__spectre_callers__, operation_callers())
+
+    GenServer.call(
+      server,
+      {:execution_start, materialization, call_opts},
+      timeout(opts)
+    )
   end
 
   @doc "Registers a durable Vigil owned by this Agent Instance."
@@ -956,6 +988,53 @@ defmodule Spectre.Instance do
       else
         {:error, reason} ->
           {:reply, {:error, reason}, arm_idle_timer(data)}
+      end
+    end
+  end
+
+  def handle_call(
+        {:execution_start, %ExecutionMaterialization{} = materialization, opts},
+        from,
+        data
+      ) do
+    caller = elem(from, 0)
+    callers = Enum.uniq([caller | Keyword.get(opts, :__spectre_callers__, [])])
+    opts = Keyword.delete(opts, :__spectre_callers__)
+    active_definition_ref = Events.active_definition_ref(data)
+
+    if nested_work?(data, callers, :work) do
+      {:reply, {:error, :work_cannot_start_work}, arm_idle_timer(data)}
+    else
+      with :ok <- Events.authorize(data, active_definition_ref, :new_admission),
+           env <- Loops.operation_env(data),
+           {:ok, loop, control, event_specs} <-
+             DataExecutionRuntime.start(materialization, opts, env) do
+        case Loops.operation_loop(data, loop.id) do
+          {:ok, existing, existing_control} ->
+            if Loops.same_loop_request?(existing, loop) do
+              view = OperationView.from_loop(existing, existing_control)
+              {:reply, {:ok, OperationRef.from_loop(existing), view}, arm_idle_timer(data)}
+            else
+              {:reply, {:error, {:duplicate_operational_loop, loop.id}}, arm_idle_timer(data)}
+            end
+
+          {:error, :operation_loop_not_found} ->
+            case commit_operational(data, loop, control, event_specs,
+                   correlation_id: loop.correlation_id,
+                   provenance: loop.provenance,
+                   transition: :data_driven_work_started
+                 ) do
+              {:ok, next, _events} ->
+                next = next |> queue_operation(loop) |> maybe_schedule_operations()
+                view = OperationView.from_loop(loop, control)
+                {:reply, {:ok, OperationRef.from_loop(loop), view}, disarm_idle_timer(next)}
+
+              {:error, reason} ->
+                {:reply, {:error, reason}, arm_idle_timer(data)}
+            end
+        end
+      else
+        {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
       end
     end
   end
@@ -3772,6 +3851,13 @@ defmodule Spectre.Instance do
     do: {:error, {:invalid_instance_retention, key, value}}
 
   defp timeout(opts), do: Keyword.get(opts, :timeout, :timer.minutes(5))
+
+  defp execution_shape(value) when is_map(value), do: :map
+  defp execution_shape(value) when is_list(value), do: :list
+  defp execution_shape(value) when is_binary(value), do: :binary
+  defp execution_shape(value) when is_tuple(value), do: :tuple
+  defp execution_shape(value) when is_atom(value), do: :atom
+  defp execution_shape(_value), do: :other
 
   defp monitor_registry(registry, instance_ref) when is_atom(registry) do
     case Process.whereis(registry) do

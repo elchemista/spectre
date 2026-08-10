@@ -61,6 +61,9 @@ defmodule Spectre.Operation.Runtime.Support do
       subject_id: Map.get(env, :subject_id),
       canonical_revision: Map.get(env, :canonical_revision, 0),
       committed: Map.get(env, :committed, %{}),
+      execution_program: Map.get(env, :spectre_execution_program),
+      execution_plans: Map.get(env, :spectre_execution_plans, %{}),
+      execution_materialization_digest: Map.get(env, :spectre_execution_materialization_digest),
       now: now(env)
     }
   end
@@ -83,6 +86,10 @@ defmodule Spectre.Operation.Runtime.Support do
       last_result: loop.last_result,
       committed: Map.get(env, :committed, %{}),
       trigger: Map.get(env, :trigger),
+      execution_program: Map.get(loop.metadata, Spectre.Execution.Controller.program_key()),
+      execution_plans: Map.get(loop.metadata, Spectre.Execution.Controller.plans_key(), %{}),
+      execution_materialization_digest:
+        Map.get(loop.metadata, Spectre.Execution.Controller.materialization_key()),
       now: now(env)
     }
   end
