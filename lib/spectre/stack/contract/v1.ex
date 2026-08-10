@@ -6,6 +6,7 @@ defmodule Spectre.Stack.Contract.V1 do
   without depending on ExUnit from production code.
   """
 
+  alias Spectre.Stack.Contract.V2
   alias Spectre.Stack.Installable
   alias Spectre.Stack.Package
 
@@ -43,4 +44,14 @@ defmodule Spectre.Stack.Contract.V1 do
   """
   @spec assert_installable!(module()) :: Package.t()
   def assert_installable!(module), do: Installable.verify!(module, @version)
+
+  @doc """
+  Reads a compiled V1 Stack and conservatively lowers it into Contract V2.
+
+  V1 declarations remain requests. Only capabilities present in the trusted
+  `:authority_ceiling` become effective grants in the returned contract.
+  """
+  @spec to_v2(Spectre.Stack.Definition.t() | module() | nil, keyword()) ::
+          {:ok, V2.t()} | {:error, term()}
+  def to_v2(stack, opts \\ []), do: V2.from_v1(stack, opts)
 end

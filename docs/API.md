@@ -4,8 +4,8 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.1` extends the first vNext core release with canonical Definition
-identity and Audit projections. The exact modules, callables, DSL forms,
+Spectre `0.2.2` extends the vNext core with sealed Manifest V2 publication and
+verified Definition resolution. The exact modules, callables, DSL forms,
 callbacks, types, and struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
 0.1.6 conversational baseline remains included. This guide explains that
@@ -20,6 +20,19 @@ identity. `Spectre.Projection.generate/1` returns the exact Audit projection;
 its digest also binds the generator ID and version. These APIs inspect declared
 behavior only: they do not activate a Definition or grant authority. See
 [Canonical Definitions and Audit Projections](CANONICAL_DEFINITIONS.md).
+
+## Publish and resolve canonical behavior
+
+`Spectre.Definition.manifest/2` composes the canonical Definition with a Stack
+Contract V2 authority envelope and execution closure. Existing Stack V1 data is
+read-only input: declared capabilities become effective only when an explicit
+`:authority_ceiling` grants them.
+
+`Spectre.Definition.Store.publish/4` writes Definition, Manifest, and
+publication receipt as one immutable artifact. `Spectre.Definition.Resolver`
+re-reads and verifies that artifact, and reports compiled-build drift as
+`:unobserved`, `:matched`, or a rejected/reported drift. See
+[Definition Store, Resolver, and Manifest V2](DEFINITION_STORE.md).
 
 ## Stack installation
 

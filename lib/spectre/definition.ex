@@ -9,8 +9,10 @@ defmodule Spectre.Definition do
   """
 
   alias Spectre.Definition.Canonical
+  alias Spectre.Definition.Manifest
   alias Spectre.Extension.Mount, as: ExtensionMount
   alias Spectre.Skill.Mount
+  alias Spectre.Stack.Contract.V2
   alias Spectre.Stack.Ref
 
   @version 1
@@ -127,6 +129,38 @@ defmodule Spectre.Definition do
   @doc "Returns the canonical Definition or raises with its stable lowering reason."
   @spec canonical!(module(), keyword()) :: Canonical.t()
   def canonical!(module, opts \\ []), do: Canonical.lower!(module, opts)
+
+  @doc """
+  Composes the compiled source into a sealed Definition Manifest V2.
+
+  Stack V1 declarations are treated as requests and intersected with the
+  trusted `:authority_ceiling`. Omitting that ceiling produces no grants.
+  """
+  @spec manifest(module(), keyword()) :: {:ok, Manifest.t()} | {:error, term()}
+  def manifest(module, opts \\ []) when is_atom(module) and is_list(opts) do
+    with {:ok, definition} <- fetch(module),
+         {:ok, canonical} <- Canonical.lower(definition, opts),
+         {:ok, stack_contract} <- V2.from_compiled(definition, canonical, opts) do
+      Manifest.new(
+        canonical,
+        stack_contract.authority,
+        stack_contract.execution_closure,
+        opts
+      )
+    end
+  end
+
+  @doc "Composes a compiled Definition Manifest or raises."
+  @spec manifest!(module(), keyword()) :: Manifest.t()
+  def manifest!(module, opts \\ []) do
+    case manifest(module, opts) do
+      {:ok, manifest} ->
+        manifest
+
+      {:error, reason} ->
+        raise ArgumentError, "cannot compose Definition Manifest: #{inspect(reason)}"
+    end
+  end
 
   @doc """
   Returns every rule visible to an Agent with mount ownership materialized.

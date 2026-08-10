@@ -130,3 +130,7 @@ activation CAS, runtime-authored Skills, or self-modification. It creates and
 verifies canonical data and its Audit projection only. Existing module-first
 Agents, Instance keys, Runs, checkpoints, and execution paths retain their
 0.2.0 behavior.
+
+Spectre 0.2.2 adds the first three publication primitives while retaining the
+same activation boundary. Continue with
+[Definition Store, Resolver, and Manifest V2](DEFINITION_STORE.md).
