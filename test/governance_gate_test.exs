@@ -218,6 +218,7 @@ defmodule SpectreGovernanceGateTest do
   alias Spectre.Governance.GC
   alias Spectre.Governance.GC.Plan, as: GCPlan
   alias Spectre.Governance.Review
+  alias Spectre.Governance.Verifier
   alias Spectre.Instance
   alias Spectre.Projection.HumanReport
   alias Spectre.Skill.Applicability
@@ -269,6 +270,8 @@ defmodule SpectreGovernanceGateTest do
 
     matrix = Conformance.matrix()
     assert matrix.release == "0.2.9"
+    assert {Spectre, :rollback, 3} in matrix.golden_path
+    assert {Approval, :reject, 3} in matrix.golden_path
 
     assert fixture["schemas"] == %{
              "change_set" => matrix.governance.change_set_schema,
@@ -392,6 +395,53 @@ defmodule SpectreGovernanceGateTest do
     assert rolled_back.generation == 3
     assert rolled_back.definition_ref == activation.definition_ref
     assert rolled_back.provenance.external_effects_rolled_back == false
+  end
+
+  test "activation and recovery reverify persisted constitutional constraints" do
+    %{store: store, activation: activation} = baseline()
+
+    ceiling = %{
+      scopes: ["support"],
+      required_tags: [],
+      forbidden_tags: [],
+      conflicts: []
+    }
+
+    approved_ref =
+      approved_candidate(store, activation, "lookup",
+        applicability_ceilings: %{"lookup" => ceiling}
+      )
+
+    assert {:ok, candidate_resolution} =
+             Resolver.resolve_candidate_for_activation(store, approved_ref)
+
+    wildcard_mount =
+      put_in(mount_operation(), ["payload", "definition", "applicability", "scopes"], [])
+
+    context = %{
+      authority: candidate_resolution.resolution.manifest.authority,
+      prompt_token_ceiling: nil,
+      mutable_config_paths: %{},
+      applicability_ceilings: %{},
+      registered_migrations: []
+    }
+
+    assert {:ok, wildcard} =
+             apply_operation(
+               Registry.default(),
+               Composition.new(Definition.canonical!(Agent)),
+               wildcard_mount,
+               context
+             )
+
+    drifted = put_in(candidate_resolution, [:resolution, :definition], wildcard.definition)
+    opts = [now: 7, checker_versions: @checker_versions]
+
+    assert {:error, :skill_applicability_ceiling_exceeded} =
+             Verifier.verify_activation(store, drifted, activation, opts)
+
+    assert {:error, :skill_applicability_ceiling_exceeded} =
+             Verifier.verify_recovery(store, drifted, opts)
   end
 
   test "stale ChangeSets and ungranted operations fail before publication" do
@@ -633,6 +683,69 @@ defmodule SpectreGovernanceGateTest do
              )
   end
 
+  test "review verifies freshness and checker policy for optional passed receipts" do
+    %{store: store, activation: activation} = baseline()
+
+    assert {:ok, composed_ref} =
+             Composer.compose(store, change_set(activation, [mount_operation()]),
+               activation: activation,
+               created_at: 2
+             )
+
+    assert {:ok, %Candidate{governance: governance}} =
+             Store.fetch_candidate(store, composed_ref)
+
+    delta =
+      EvaluationDelta.new!(
+        [%{case_id: "protected", passed: true}],
+        [%{case_id: "protected", passed: true}]
+      )
+
+    required = [
+      receipt(governance, :replay, 3, profile_ref: "recording:test"),
+      receipt(governance, :regression, 3)
+    ]
+
+    variability = %{
+      source: :test_checker,
+      variability: %{
+        sample_count: 2,
+        measure_digest: Value.digest!(%{scores: [0.2, 0.8]})
+      }
+    }
+
+    future =
+      receipt(governance, :semantic_live, 6,
+        profile_ref: "model:live",
+        expires_at: 10,
+        provenance: variability
+      )
+
+    checker_versions =
+      Map.put(@checker_versions, :semantic_live, {"test.semantic_live", 1})
+
+    assert {:error, {:gate_receipt_not_yet_valid, :semantic_live}} =
+             Review.evaluate(store, composed_ref, delta, required ++ [future],
+               reviewed_at: 4,
+               now: 5,
+               checker_versions: checker_versions
+             )
+
+    untrusted =
+      receipt(governance, :semantic_live, 3,
+        profile_ref: "model:live",
+        expires_at: 10,
+        provenance: variability
+      )
+
+    assert {:error, {:untrusted_gate_checker, :semantic_live, "test.semantic_live"}} =
+             Review.evaluate(store, composed_ref, delta, required ++ [untrusted],
+               reviewed_at: 4,
+               now: 5,
+               checker_versions: @checker_versions
+             )
+  end
+
   test "activation rejects a content-addressed but forged approval receipt" do
     %{store: store, instance: instance, activation: activation} = baseline()
     approved_ref = approved_candidate(store, activation)
@@ -688,6 +801,76 @@ defmodule SpectreGovernanceGateTest do
              Spectre.activate(instance, forged_ref,
                expected_generation: 1,
                now: 7,
+               checker_versions: @checker_versions
+             )
+  end
+
+  test "activation binds the persisted report delta to its evaluation receipt" do
+    %{store: store, instance: instance, activation: activation} = baseline()
+    approved_ref = approved_candidate(store, activation)
+    assert {:ok, approved} = Store.fetch_candidate(store, approved_ref, now: 7)
+    assert {:ok, evaluated} = Store.fetch_candidate(store, approved.parent_ref, now: 7)
+    governance = evaluated.governance
+
+    {evaluation_ref, evaluation_receipt} =
+      Enum.find_value(governance.gate_receipt_refs, fn ref ->
+        assert {:ok, receipt} = Store.fetch_gate_receipt(store, ref)
+        if receipt.gate_class == :evaluation_delta, do: {ref, receipt}
+      end)
+
+    forged_evaluation_receipt =
+      evaluation_receipt
+      |> Receipt.to_data()
+      |> Map.put("result_digest", Value.digest!(%{different_delta: true}))
+      |> Receipt.new!()
+
+    assert {:ok, forged_evaluation_ref} =
+             Store.publish_gate_receipt(store, forged_evaluation_receipt)
+
+    gate_receipt_refs =
+      governance.gate_receipt_refs
+      |> List.delete(evaluation_ref)
+      |> Kernel.++([to_string(forged_evaluation_ref)])
+      |> Enum.sort()
+
+    assert {:ok, parent_artifact} = Store.fetch(store, governance.parent_definition_ref)
+    assert {:ok, candidate_artifact} = Store.fetch(store, governance.candidate_definition_ref)
+    assert {:ok, delta} = EvaluationDelta.from_data(governance.report.evaluation_delta)
+
+    assert {:ok, report} =
+             HumanReport.project(parent_artifact.definition, candidate_artifact.definition,
+               evaluation_delta: delta,
+               lineage_refs: governance.report.lineage_refs,
+               gate_receipt_refs: gate_receipt_refs
+             )
+
+    forged_governance = %{
+      governance
+      | gate_receipt_refs: gate_receipt_refs,
+        report: report,
+        report_digest: report.digest
+    }
+
+    forged_evaluated =
+      evaluated
+      |> Map.from_struct()
+      |> Map.put(:governance, forged_governance)
+      |> Map.put(:created_at, evaluated.created_at + 1)
+      |> Candidate.new!()
+
+    assert {:ok, forged_evaluated_ref} = Store.publish_candidate(store, forged_evaluated)
+
+    assert {:ok, forged_approved_ref} =
+             Approval.approve(store, forged_evaluated_ref,
+               mode: :human,
+               actor_ref: "operator:test",
+               approved_at: 7
+             )
+
+    assert {:error, :governance_report_evaluation_delta_mismatch} =
+             Spectre.activate(instance, forged_approved_ref,
+               expected_generation: 1,
+               now: 8,
                checker_versions: @checker_versions
              )
   end
@@ -1151,6 +1334,84 @@ defmodule SpectreGovernanceGateTest do
              Spectre.activation(restarted)
   end
 
+  test "checkpoint recovery rejects governance evidence that expired after activation" do
+    context = durable_baseline()
+
+    checker_versions =
+      Map.put(@checker_versions, :semantic_live, {"test.semantic_live", 1})
+
+    assert {:ok, composed_ref} =
+             Composer.compose(context.store, change_set(context.activation, [mount_operation()]),
+               activation: context.activation,
+               checkpoint_store: context.checkpoint_store,
+               created_at: 2
+             )
+
+    assert {:ok, %Candidate{governance: governance}} =
+             Store.fetch_candidate(context.store, composed_ref)
+
+    delta =
+      EvaluationDelta.new!(
+        [%{case_id: "protected", passed: true}],
+        [%{case_id: "protected", passed: true}]
+      )
+
+    receipts = [
+      receipt(governance, :replay, 3, profile_ref: "recording:test"),
+      receipt(governance, :regression, 3),
+      receipt(governance, :semantic_live, 3,
+        profile_ref: "model:live",
+        expires_at: 8,
+        provenance: %{
+          source: :test_checker,
+          variability: %{
+            sample_count: 2,
+            measure_digest: Value.digest!(%{scores: [0.2, 0.8]})
+          }
+        }
+      )
+    ]
+
+    assert {:ok, evaluated_ref, _report} =
+             Review.evaluate(context.store, composed_ref, delta, receipts,
+               reviewed_at: 4,
+               now: 5,
+               checker_versions: checker_versions,
+               checkpoint_store: context.checkpoint_store
+             )
+
+    assert {:ok, approved_ref} =
+             Approval.approve(context.store, evaluated_ref,
+               mode: :human,
+               actor_ref: "operator:test",
+               approved_at: 6,
+               checkpoint_store: context.checkpoint_store
+             )
+
+    assert {:ok, %Instance.Activation{candidate_ref: ^approved_ref}} =
+             Spectre.activate(context.instance, approved_ref,
+               expected_generation: 1,
+               now: 7,
+               checker_versions: checker_versions
+             )
+
+    assert :ok = stop_supervised(context.instance_id)
+
+    id = {:governance_expired_recovery_instance, make_ref()}
+
+    spec =
+      {Instance,
+       agent: Agent,
+       subject: context.subject,
+       definition_store: context.store,
+       checkpoint_store: context.checkpoint_store,
+       opts: [checker_versions: checker_versions],
+       idle: false}
+      |> Supervisor.child_spec(id: id, restart: :temporary)
+
+    assert {:error, {{:gate_receipt_expired, :semantic_live}, _child}} = start_supervised(spec)
+  end
+
   test "checkpoint failure after durable publication leaves a safe orphan Candidate" do
     context = durable_baseline()
 
@@ -1611,6 +1872,12 @@ defmodule SpectreGovernanceGateTest do
 
     assert {:error, {:unknown_governance_change_set_fields, ["unknown"]}} =
              change_set |> ChangeSet.to_data() |> Map.put("unknown", true) |> ChangeSet.new()
+
+    assert {:error, {:invalid_governance_change_set_digest, _value}} =
+             change_set
+             |> ChangeSet.to_data()
+             |> Map.update!("observed_evidence_digest", &String.upcase/1)
+             |> ChangeSet.new()
 
     assert {:error, {:invalid_governance_change_set, :list}} =
              ChangeSet.new(reason: "one", reason: "two")
@@ -2833,14 +3100,48 @@ defmodule SpectreGovernanceGateTest do
       |> Enum.uniq()
 
     base_ref = to_string(activation.candidate_ref)
+    base_definition_ref = to_string(activation.definition_ref)
+
+    common_opts = [
+      definition_refs: definition_refs,
+      gc_eligible_candidate_refs: candidate_refs,
+      gc_eligible_definition_refs: definition_refs,
+      inventory_complete?: true
+    ]
+
+    for field <- [
+          :run_candidate_refs,
+          :checkpoint_candidate_refs,
+          :state_binding_candidate_refs,
+          :lineage_candidate_refs
+        ] do
+      assert {:ok, class_plan} =
+               GC.plan(store, candidate_refs, Keyword.put(common_opts, field, [base_ref]))
+
+      assert base_ref in class_plan.protected_candidate_refs
+    end
+
+    for field <- [
+          :run_definition_refs,
+          :checkpoint_definition_refs,
+          :state_binding_definition_refs,
+          :lineage_definition_refs
+        ] do
+      assert {:ok, class_plan} =
+               GC.plan(
+                 store,
+                 candidate_refs,
+                 Keyword.put(common_opts, field, [base_definition_ref])
+               )
+
+      assert base_definition_ref in class_plan.protected_definition_refs
+    end
 
     assert {:ok, plan} =
-             GC.plan(store, candidate_refs,
-               definition_refs: definition_refs,
-               gc_eligible_candidate_refs: candidate_refs,
-               gc_eligible_definition_refs: definition_refs,
-               run_candidate_refs: [base_ref],
-               inventory_complete?: true
+             GC.plan(
+               store,
+               candidate_refs,
+               Keyword.put(common_opts, :run_candidate_refs, [base_ref])
              )
 
     assert base_ref in plan.protected_candidate_refs

@@ -193,7 +193,8 @@ defmodule Spectre.Governance.Review do
 
     result =
       with :ok <- unique_gate_classes(grouped),
-           :ok <- reject_failed_receipts(receipts) do
+           :ok <- reject_failed_receipts(receipts),
+           :ok <- verify_attached_receipts(receipts, governance, opts) do
         Enum.reduce_while(
           governance.required_gates,
           :ok,
@@ -220,6 +221,15 @@ defmodule Spectre.Governance.Review do
       nil -> :ok
       receipt -> {:error, {:gate_receipt_failed, receipt.gate_class}}
     end
+  end
+
+  defp verify_attached_receipts(receipts, governance, opts) do
+    Enum.reduce_while(receipts, :ok, fn receipt, :ok ->
+      case Receipt.verify(receipt, governance, verification_opts(opts)) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp review_gate(gate, :ok, grouped, governance, opts) do

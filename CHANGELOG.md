@@ -45,8 +45,9 @@ minor release may contain documented breaking API changes.
   and proposal identities immediately before activation.
 - Required gate options can only add to the constitutional gate floor. The
   protected corpus is non-empty and digest-bound, evaluation thresholds cannot
-  permit score loss or regressions, and any attached failed receipt rejects the
-  Candidate. Semantic-live evidence requires profile, variability, and expiry.
+  permit score loss or regressions, and every attached receipt is revalidated
+  for status, time, and checker policy even when its class is optional.
+  Semantic-live evidence requires profile, variability, and expiry.
 - Prompt and applicability ceilings are sealed into Candidate identity and
   reverified during activation and recovery. Aggregate prompt reservations are
   capped, and wildcard applicability cannot pass a finite scope ceiling.
