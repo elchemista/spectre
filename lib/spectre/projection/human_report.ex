@@ -447,7 +447,7 @@ defmodule Spectre.Projection.HumanReport do
   end
 
   defp digest(value) when is_binary(value) and byte_size(value) == 64 do
-    if match?({:ok, <<_::256>>}, Base.decode16(value, case: :mixed)),
+    if match?({:ok, <<_::256>>}, Base.decode16(value, case: :lower)),
       do: :ok,
       else: {:error, {:invalid_human_report_digest, value}}
   end
@@ -464,7 +464,7 @@ defmodule Spectre.Projection.HumanReport do
 
   defp valid_ref?(value, prefix) when is_binary(value) do
     case String.split_at(value, byte_size(prefix)) do
-      {^prefix, digest} -> match?({:ok, <<_::256>>}, Base.decode16(digest, case: :mixed))
+      {^prefix, digest} -> match?({:ok, <<_::256>>}, Base.decode16(digest, case: :lower))
       _other -> false
     end
   end

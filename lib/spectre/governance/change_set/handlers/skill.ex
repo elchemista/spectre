@@ -10,6 +10,7 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
   alias Spectre.Definition.Ref
   alias Spectre.Governance.ChangeSet.Operation
   alias Spectre.Governance.Composition
+  alias Spectre.Governance.Constraints
   alias Spectre.Skill.Applicability
   alias Spectre.Skill.Definition, as: SkillDefinition
 
@@ -37,6 +38,7 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
          {:ok, mount_id} <- stable_name(Map.get(payload, "mount_id"), :mount_id),
          {:ok, definition} <- runtime_definition(Map.get(payload, "definition")),
          :ok <- authorize_definition(definition, context),
+         :ok <- authorize_applicability(definition, context, mount_id),
          {:ok, bindings} <- optional_map(Map.get(payload, "bindings", %{}), :bindings),
          {:ok, opts} <- optional_map(Map.get(payload, "opts", %{}), :opts),
          {:ok, mounts, component} <- mounts(composition.definition),
@@ -61,6 +63,7 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
          {:ok, mount_id} <- stable_name(Map.get(payload, "mount_id"), :mount_id),
          {:ok, definition} <- runtime_definition(Map.get(payload, "definition")),
          :ok <- authorize_definition(definition, context),
+         :ok <- authorize_applicability(definition, context, mount_id),
          {:ok, mounts, component} <- mounts(composition.definition),
          %{} = previous <- find_mount(mounts, mount_id),
          {:ok, bindings} <-
@@ -134,7 +137,7 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
          {:ok, mount_id} <- stable_name(Map.get(payload, "mount_id"), :mount_id),
          {:ok, applicability} <- Applicability.new(Map.get(payload, "applicability")),
          {:ok, ceiling} <- applicability_ceiling(context, mount_id),
-         :ok <- within_applicability_ceiling(applicability, ceiling),
+         :ok <- Constraints.within_applicability_ceiling(applicability, ceiling),
          {:ok, mounts, component} <- mounts(composition.definition),
          %{} = mount <- find_mount(mounts, mount_id),
          {:ok, definition} <- mounted_definition(mount),
@@ -180,6 +183,21 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
     else
       nil -> {:error, :governance_authority_required}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp authorize_applicability(definition, context, mount_id) do
+    case context |> Map.get(:applicability_ceilings, %{}) |> fetch_by_name(mount_id) do
+      nil ->
+        :ok
+
+      ceiling ->
+        with {:ok, ceiling} <- Applicability.new(ceiling) do
+          Constraints.within_applicability_ceiling(
+            SkillDefinition.applicability(definition),
+            ceiling
+          )
+        end
     end
   end
 
@@ -359,23 +377,6 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
       value -> Applicability.new(value)
     end
   end
-
-  defp within_applicability_ceiling(value, ceiling) do
-    checks = [
-      subset_or_unbounded?(value.scopes, ceiling.scopes),
-      subset?(ceiling.required_tags, value.required_tags),
-      subset?(ceiling.forbidden_tags, value.forbidden_tags),
-      subset?(ceiling.conflicts, value.conflicts)
-    ]
-
-    if Enum.all?(checks), do: :ok, else: {:error, :skill_applicability_ceiling_exceeded}
-  end
-
-  defp subset_or_unbounded?(_values, []), do: true
-  defp subset_or_unbounded?(values, ceiling), do: subset?(values, ceiling)
-
-  defp subset?(left, right),
-    do: Enum.all?(left, fn item -> Enum.any?(right, &same_name?(&1, item)) end)
 
   defp fetch_by_name(map, name) when is_map(map) do
     Enum.find_value(map, fn {key, value} -> if same_name?(key, name), do: value end)

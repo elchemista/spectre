@@ -106,7 +106,8 @@ defmodule Spectre.Gate.Receipt do
          :ok <- valid_window(issued_at, expires_at),
          {:ok, status} <- enum(value(attrs, :status), @statuses, :status),
          :ok <- digest(value(attrs, :result_digest), :result_digest),
-         {:ok, provenance} <- portable_map(value(attrs, :provenance, %{}), :provenance) do
+         {:ok, provenance} <- portable_map(value(attrs, :provenance, %{}), :provenance),
+         :ok <- require_semantic_live_evidence(gate_class, expires_at, provenance) do
       {:ok,
        %__MODULE__{
          schema_version: @schema_version,
@@ -301,12 +302,12 @@ defmodule Spectre.Gate.Receipt do
   defp definition_ref(value, field), do: {:error, {:invalid_gate_receipt_field, field, value}}
 
   defp valid_definition_ref?("sha256:" <> digest),
-    do: match?({:ok, <<_::256>>}, Base.decode16(digest, case: :mixed))
+    do: match?({:ok, <<_::256>>}, Base.decode16(digest, case: :lower))
 
   defp valid_definition_ref?(_value), do: false
 
   defp digest(value, _field) when is_binary(value) and byte_size(value) == 64 do
-    case Base.decode16(value, case: :mixed) do
+    case Base.decode16(value, case: :lower) do
       {:ok, <<_::256>>} -> :ok
       :error -> {:error, {:invalid_gate_receipt_digest, value}}
     end
@@ -336,6 +337,25 @@ defmodule Spectre.Gate.Receipt do
     do: {:error, {:gate_receipt_profile_required, gate}}
 
   defp require_profile(_gate, _profile), do: :ok
+
+  defp require_semantic_live_evidence(:semantic_live, nil, _provenance),
+    do: {:error, :semantic_live_receipt_expiry_required}
+
+  defp require_semantic_live_evidence(:semantic_live, _expires_at, provenance) do
+    case Map.get(provenance, "variability") do
+      %{"sample_count" => sample_count, "measure_digest" => measure_digest}
+      when is_integer(sample_count) and sample_count >= 2 ->
+        case digest(measure_digest, :variability_measure_digest) do
+          :ok -> :ok
+          {:error, _reason} -> {:error, :semantic_live_receipt_variability_required}
+        end
+
+      _value ->
+        {:error, :semantic_live_receipt_variability_required}
+    end
+  end
+
+  defp require_semantic_live_evidence(_gate, _expires_at, _provenance), do: :ok
 
   defp portable_map(value, field) when is_map(value) and not is_struct(value) do
     case Data.normalize_map(value) do

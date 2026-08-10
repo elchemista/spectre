@@ -10,7 +10,9 @@ defmodule Spectre.Governance.CandidateState do
 
   alias Spectre.Canonical.Value
   alias Spectre.Eval.Case
+  alias Spectre.Governance.Constraints
   alias Spectre.Governance.Data
+  alias Spectre.Projection.HumanReport
 
   @schema_version 1
   @max_candidate_cases 10_000
@@ -30,6 +32,16 @@ defmodule Spectre.Governance.CandidateState do
     :semantic_live,
     :evaluation_delta
   ]
+  @constitutional_gates [
+    :structural,
+    :authority,
+    :closure,
+    :prompt_budget,
+    :applicability,
+    :replay,
+    :regression,
+    :evaluation_delta
+  ]
   @fields [
     :schema_version,
     :proposal_digest,
@@ -42,6 +54,9 @@ defmodule Spectre.Governance.CandidateState do
     :observed_evidence_digest,
     :closure_digest,
     :evaluation_cases_digest,
+    :protected_cases_digest,
+    :prompt_token_ceiling,
+    :applicability_ceilings,
     :candidate_cases,
     :candidate_case_ids,
     :state_migrations,
@@ -51,6 +66,7 @@ defmodule Spectre.Governance.CandidateState do
     :gate_receipt_refs,
     :approval_receipt_ref,
     :report_digest,
+    :report,
     :lineage_refs
   ]
 
@@ -66,6 +82,9 @@ defmodule Spectre.Governance.CandidateState do
             observed_evidence_digest: nil,
             closure_digest: nil,
             evaluation_cases_digest: nil,
+            protected_cases_digest: nil,
+            prompt_token_ceiling: nil,
+            applicability_ceilings: %{},
             candidate_cases: [],
             candidate_case_ids: [],
             state_migrations: [],
@@ -75,6 +94,7 @@ defmodule Spectre.Governance.CandidateState do
             gate_receipt_refs: [],
             approval_receipt_ref: nil,
             report_digest: nil,
+            report: nil,
             lineage_refs: []
 
   @type gate_class ::
@@ -101,6 +121,9 @@ defmodule Spectre.Governance.CandidateState do
           observed_evidence_digest: String.t(),
           closure_digest: String.t(),
           evaluation_cases_digest: String.t(),
+          protected_cases_digest: String.t(),
+          prompt_token_ceiling: non_neg_integer() | nil,
+          applicability_ceilings: map(),
           candidate_cases: [map()],
           candidate_case_ids: [String.t()],
           state_migrations: [map()],
@@ -110,6 +133,7 @@ defmodule Spectre.Governance.CandidateState do
           gate_receipt_refs: [String.t()],
           approval_receipt_ref: String.t() | nil,
           report_digest: String.t() | nil,
+          report: HumanReport.t() | nil,
           lineage_refs: [String.t()]
         }
 
@@ -120,6 +144,11 @@ defmodule Spectre.Governance.CandidateState do
   @doc "Returns the supported non-approval gate classes."
   @spec gate_classes() :: [gate_class()]
   def gate_classes, do: @gate_classes
+
+  @doc "Returns the non-negotiable gate floor for a Candidate risk class."
+  @spec constitutional_gates(risk()) :: [gate_class()]
+  def constitutional_gates(:critical), do: @constitutional_gates ++ [:semantic_live]
+  def constitutional_gates(risk) when risk in [:low, :medium, :high], do: @constitutional_gates
 
   @doc "Builds and verifies a Candidate governance state."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
@@ -154,6 +183,12 @@ defmodule Spectre.Governance.CandidateState do
          :ok <- digest(value(attrs, :observed_evidence_digest), :observed_evidence_digest),
          :ok <- digest(value(attrs, :closure_digest), :closure_digest),
          :ok <- digest(value(attrs, :evaluation_cases_digest), :evaluation_cases_digest),
+         :ok <- digest(value(attrs, :protected_cases_digest), :protected_cases_digest),
+         {:ok, constraints} <-
+           Constraints.restore(
+             value(attrs, :prompt_token_ceiling),
+             value(attrs, :applicability_ceilings, %{})
+           ),
          {:ok, candidate_case_data} <- candidate_cases(value(attrs, :candidate_cases, [])),
          {:ok, candidate_case_ids} <-
            string_list(value(attrs, :candidate_case_ids, []), :candidate_case_ids),
@@ -161,6 +196,7 @@ defmodule Spectre.Governance.CandidateState do
          {:ok, state_migrations} <- state_migrations(value(attrs, :state_migrations, [])),
          {:ok, risk} <- enum(value(attrs, :risk), @risks, :risk),
          {:ok, required_gates} <- gate_list(value(attrs, :required_gates)),
+         :ok <- required_gate_floor(risk, required_gates),
          {:ok, state} <- enum(value(attrs, :state, :composed), @states, :state),
          {:ok, gate_refs} <-
            refs(
@@ -176,12 +212,27 @@ defmodule Spectre.Governance.CandidateState do
              :approval_receipt_ref
            ),
          :ok <- optional_digest(value(attrs, :report_digest), :report_digest),
+         {:ok, report} <- report(value(attrs, :report)),
          {:ok, lineage_refs} <-
            refs(
              value(attrs, :lineage_refs, []),
              "candidate:sha256:",
              :lineage_refs,
              @max_lineage_refs
+           ),
+         :ok <-
+           report_binding(
+             report,
+             %{
+               digest: value(attrs, :report_digest),
+               parent_definition_ref: parent_definition,
+               candidate_definition_ref: candidate_definition,
+               protected_cases_digest: value(attrs, :protected_cases_digest),
+               gate_receipt_refs: gate_refs,
+               approval_receipt_ref: approval_ref,
+               lineage_refs: lineage_refs,
+               state: state
+             }
            ) do
       data = %{
         schema_version: @schema_version,
@@ -194,6 +245,9 @@ defmodule Spectre.Governance.CandidateState do
         observed_evidence_digest: value(attrs, :observed_evidence_digest),
         closure_digest: value(attrs, :closure_digest),
         evaluation_cases_digest: value(attrs, :evaluation_cases_digest),
+        protected_cases_digest: value(attrs, :protected_cases_digest),
+        prompt_token_ceiling: constraints.prompt_token_ceiling,
+        applicability_ceilings: constraints.applicability_ceilings,
         candidate_cases: candidate_case_data,
         candidate_case_ids: candidate_case_ids,
         state_migrations: state_migrations,
@@ -203,6 +257,7 @@ defmodule Spectre.Governance.CandidateState do
         gate_receipt_refs: gate_refs,
         approval_receipt_ref: approval_ref,
         report_digest: value(attrs, :report_digest),
+        report: report,
         lineage_refs: lineage_refs
       }
 
@@ -245,6 +300,7 @@ defmodule Spectre.Governance.CandidateState do
         Keyword.get(opts, :approval_receipt_ref, current.approval_receipt_ref)
       )
       |> Map.put(:report_digest, Keyword.get(opts, :report_digest, current.report_digest))
+      |> Map.put(:report, Keyword.get(opts, :report, current.report))
       |> Map.put(:lineage_refs, Keyword.get(opts, :lineage_refs, current.lineage_refs))
       |> new()
     end
@@ -265,6 +321,9 @@ defmodule Spectre.Governance.CandidateState do
       "observed_evidence_digest" => state.observed_evidence_digest,
       "closure_digest" => state.closure_digest,
       "evaluation_cases_digest" => state.evaluation_cases_digest,
+      "protected_cases_digest" => state.protected_cases_digest,
+      "prompt_token_ceiling" => state.prompt_token_ceiling,
+      "applicability_ceilings" => state.applicability_ceilings,
       "candidate_cases" => state.candidate_cases,
       "candidate_case_ids" => state.candidate_case_ids,
       "state_migrations" => state.state_migrations,
@@ -274,6 +333,7 @@ defmodule Spectre.Governance.CandidateState do
       "gate_receipt_refs" => state.gate_receipt_refs,
       "approval_receipt_ref" => state.approval_receipt_ref,
       "report_digest" => state.report_digest,
+      "report" => state.report && HumanReport.to_data(state.report),
       "lineage_refs" => state.lineage_refs
     }
   end
@@ -294,6 +354,9 @@ defmodule Spectre.Governance.CandidateState do
       "observed_evidence_digest" => value(attrs, :observed_evidence_digest),
       "closure_digest" => value(attrs, :closure_digest),
       "evaluation_cases_digest" => value(attrs, :evaluation_cases_digest),
+      "protected_cases_digest" => value(attrs, :protected_cases_digest),
+      "prompt_token_ceiling" => value(attrs, :prompt_token_ceiling),
+      "applicability_ceilings" => value(attrs, :applicability_ceilings, %{}),
       "candidate_cases" => value(attrs, :candidate_cases, []),
       "candidate_case_ids" => value(attrs, :candidate_case_ids, []),
       "state_migrations" => value(attrs, :state_migrations, []),
@@ -304,7 +367,7 @@ defmodule Spectre.Governance.CandidateState do
   end
 
   defp allowed_transition(:composed, next) when next in [:evaluated, :rejected], do: :ok
-  defp allowed_transition(:evaluated, :approved), do: :ok
+  defp allowed_transition(:evaluated, next) when next in [:approved, :rejected], do: :ok
   defp allowed_transition(state, state), do: :ok
 
   defp allowed_transition(current, next),
@@ -346,6 +409,14 @@ defmodule Spectre.Governance.CandidateState do
   defp gate_list(value),
     do: {:error, {:invalid_governance_candidate_field, :required_gates, value}}
 
+  defp required_gate_floor(risk, gates) do
+    missing = constitutional_gates(risk) -- gates
+
+    if missing == [],
+      do: :ok,
+      else: {:error, {:governance_required_gate_floor_violated, missing}}
+  end
+
   defp enum(value, allowed, field) when is_binary(value) do
     case Enum.find(allowed, &(Atom.to_string(&1) == value)) do
       nil -> {:error, {:invalid_governance_candidate_field, field, value}}
@@ -363,10 +434,9 @@ defmodule Spectre.Governance.CandidateState do
   defp enum_string(value), do: value
 
   defp digest(value, _field) when is_binary(value) and byte_size(value) == 64 do
-    case Base.decode16(value, case: :mixed) do
-      {:ok, <<_::256>>} -> :ok
-      :error -> {:error, {:invalid_governance_candidate_digest, value}}
-    end
+    if match?({:ok, <<_::256>>}, Base.decode16(value, case: :lower)),
+      do: :ok,
+      else: {:error, {:invalid_governance_candidate_digest, value}}
   end
 
   defp digest(value, field), do: {:error, {:invalid_governance_candidate_digest, field, value}}
@@ -488,6 +558,61 @@ defmodule Spectre.Governance.CandidateState do
     end
   end
 
+  defp report(nil), do: {:ok, nil}
+
+  defp report(%HumanReport{} = report) do
+    report |> HumanReport.to_data() |> HumanReport.from_data()
+  end
+
+  defp report(value) when is_map(value) and not is_struct(value),
+    do: HumanReport.from_data(value)
+
+  defp report(value),
+    do: {:error, {:invalid_governance_candidate_field, :report, shape(value)}}
+
+  defp report_binding(nil, %{digest: nil, state: :composed}),
+    do: :ok
+
+  defp report_binding(nil, %{state: state}),
+    do: {:error, {:governance_candidate_report_required, state}}
+
+  defp report_binding(%HumanReport{} = report, binding) do
+    review_receipts = review_receipts(binding.gate_receipt_refs, binding.approval_receipt_ref)
+
+    cond do
+      binding.state == :composed ->
+        {:error, :composed_governance_candidate_cannot_have_report}
+
+      report.digest != binding.digest ->
+        {:error, :governance_candidate_report_digest_mismatch}
+
+      not report_definitions_match?(report, binding) ->
+        {:error, :governance_candidate_report_definition_mismatch}
+
+      report.evaluation_delta["protected_cases_digest"] != binding.protected_cases_digest ->
+        {:error, :governance_candidate_report_corpus_mismatch}
+
+      report.gate_receipt_refs != review_receipts ->
+        {:error, :governance_candidate_report_receipts_mismatch}
+
+      not subset?(report.lineage_refs, binding.lineage_refs) ->
+        {:error, :governance_candidate_report_lineage_mismatch}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp review_receipts(receipts, nil), do: receipts
+  defp review_receipts(receipts, approval), do: List.delete(receipts, approval)
+
+  defp report_definitions_match?(report, binding) do
+    report.parent_definition_ref == binding.parent_definition_ref and
+      report.candidate_definition_ref == binding.candidate_definition_ref
+  end
+
+  defp subset?(left, right), do: Enum.all?(left, &(&1 in right))
+
   defp refs(values, prefix, field, limit) when is_list(values) and length(values) <= limit do
     with {:ok, values} <- string_list(values, field),
          true <- Enum.all?(values, &valid_ref?(&1, prefix)) do
@@ -518,7 +643,7 @@ defmodule Spectre.Governance.CandidateState do
 
   defp valid_ref?(value, prefix) do
     case String.split_at(value, byte_size(prefix)) do
-      {^prefix, digest} -> match?({:ok, <<_::256>>}, Base.decode16(digest, case: :mixed))
+      {^prefix, digest} -> match?({:ok, <<_::256>>}, Base.decode16(digest, case: :lower))
       _other -> false
     end
   end

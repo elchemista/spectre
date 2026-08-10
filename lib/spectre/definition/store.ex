@@ -159,7 +159,7 @@ defmodule Spectre.Definition.Store do
          {:ok, encoded} <- adapter_get(normalized, candidate_key(ref)),
          {:ok, candidate} <- decode_candidate_artifact(encoded, ref),
          :ok <- verify_candidate_binding(normalized, candidate, opts),
-         :ok <- ensure_candidate_parent(normalized, candidate.parent_ref, opts),
+         :ok <- maybe_ensure_candidate_parent(normalized, candidate.parent_ref, opts),
          :ok <- verify_candidate_gate_receipts(normalized, candidate, opts) do
       {:ok, candidate}
     else
@@ -375,6 +375,12 @@ defmodule Spectre.Definition.Store do
       :not_found -> {:error, {:missing_candidate_parent, CandidateRef.to_string(parent_ref)}}
       {:error, _reason} = error -> error
     end
+  end
+
+  defp maybe_ensure_candidate_parent(store, parent_ref, opts) do
+    if Keyword.get(opts, :skip_candidate_parent, false),
+      do: :ok,
+      else: ensure_candidate_parent(store, parent_ref, opts)
   end
 
   @spec verify_candidate_gate_receipts({module(), keyword()}, Candidate.t(), keyword()) ::

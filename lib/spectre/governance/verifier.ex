@@ -1,11 +1,11 @@
 defmodule Spectre.Governance.Verifier do
   @moduledoc false
 
+  alias Spectre.Canonical.Value
   alias Spectre.Definition.Candidate
   alias Spectre.Definition.Candidate.Ref, as: CandidateRef
   alias Spectre.Definition.Ref
   alias Spectre.Definition.Store
-  alias Spectre.Canonical.Value
   alias Spectre.Execution.Closure
   alias Spectre.Gate.Receipt
   alias Spectre.Gate.Receipt.Ref, as: GateReceiptRef
@@ -13,7 +13,10 @@ defmodule Spectre.Governance.Verifier do
   alias Spectre.Governance.Authority
   alias Spectre.Governance.CandidateState
   alias Spectre.Governance.ChangeSet
+  alias Spectre.Governance.Constraints
+  alias Spectre.Governance.EvaluationDelta
   alias Spectre.Instance.Activation
+  alias Spectre.Projection.HumanReport
 
   @builtin_checkers %{
     structural: {"spectre.gate.structural", 1},
@@ -152,6 +155,7 @@ defmodule Spectre.Governance.Verifier do
     with :ok <- candidate_state(candidate, governance),
          :ok <- verify_promotion_lineage(store, candidate, opts),
          :ok <- verify_resolution(candidate, governance, resolution),
+         :ok <- verify_constitutional_constraints(governance, resolution),
          {:ok, parent} <- fetch_parent(store, governance.parent_definition_ref, opts),
          :ok <- verify_parent_manifest(parent.manifest, resolution.manifest, governance),
          :ok <- Authority.no_expansion(parent.manifest.authority, resolution.manifest.authority),
@@ -161,6 +165,7 @@ defmodule Spectre.Governance.Verifier do
              Keyword.get(opts, :registered_migrations, [])
            ),
          {:ok, receipts} <- fetch_receipts(store, governance.gate_receipt_refs, opts),
+         :ok <- verify_report_evidence(governance, receipts),
          :ok <- verify_gate_set(governance, receipts, opts) do
       verify_approval(governance, receipts, opts)
     end
@@ -319,12 +324,30 @@ defmodule Spectre.Governance.Verifier do
       governance.evaluation_cases_digest != evaluation_cases_digest ->
         {:error, :governed_candidate_evaluation_cases_mismatch}
 
+      governance.protected_cases_digest !=
+          resolution.manifest.execution_closure.evaluation_corpus_digest ->
+        {:error, :governed_candidate_protected_corpus_mismatch}
+
       change_set_ref not in candidate.provenance_refs or
           change_set_ref not in resolution.manifest.provenance_refs ->
         {:error, :governed_candidate_change_set_provenance_mismatch}
 
       true ->
         :ok
+    end
+  end
+
+  defp verify_constitutional_constraints(governance, resolution) do
+    with {:ok, constraints} <-
+           Constraints.restore(
+             governance.prompt_token_ceiling,
+             governance.applicability_ceilings
+           ) do
+      Constraints.verify_definition(
+        resolution.definition,
+        resolution.manifest.authority,
+        constraints
+      )
     end
   end
 
@@ -447,11 +470,44 @@ defmodule Spectre.Governance.Verifier do
   defp verify_gate_set(governance, receipts, opts) do
     grouped = Enum.group_by(receipts, & &1.gate_class)
 
-    Enum.reduce_while(
-      governance.required_gates,
-      :ok,
-      &verify_gate(&1, &2, grouped, governance, opts)
-    )
+    with :ok <- unique_gate_classes(grouped),
+         :ok <- reject_failed_receipts(receipts) do
+      Enum.reduce_while(
+        governance.required_gates,
+        :ok,
+        &verify_gate(&1, &2, grouped, governance, opts)
+      )
+    end
+  end
+
+  defp verify_report_evidence(%CandidateState{report: %HumanReport{} = report}, receipts) do
+    with {:ok, delta} <- EvaluationDelta.from_data(report.evaluation_delta),
+         [receipt] <- Enum.filter(receipts, &(&1.gate_class == :evaluation_delta)),
+         true <- receipt.result_digest == EvaluationDelta.digest(delta) do
+      :ok
+    else
+      [] -> {:error, {:required_gate_receipt_missing, :evaluation_delta}}
+      [_first, _second | _rest] -> {:error, {:ambiguous_gate_receipts, :evaluation_delta}}
+      false -> {:error, :governance_report_evaluation_delta_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp verify_report_evidence(%CandidateState{}, _receipts),
+    do: {:error, :governance_candidate_report_missing}
+
+  defp unique_gate_classes(grouped) do
+    case Enum.find(grouped, fn {_gate, receipts} -> length(receipts) != 1 end) do
+      nil -> :ok
+      {gate, _receipts} -> {:error, {:ambiguous_gate_receipts, gate}}
+    end
+  end
+
+  defp reject_failed_receipts(receipts) do
+    case Enum.find(receipts, &(&1.status == :failed)) do
+      nil -> :ok
+      receipt -> {:error, {:gate_receipt_failed, receipt.gate_class}}
+    end
   end
 
   defp verify_gate(gate, :ok, grouped, governance, opts) do
@@ -510,12 +566,7 @@ defmodule Spectre.Governance.Verifier do
          actor when is_binary(actor) and actor != "" <-
            Map.get(receipt.provenance, "actor_ref"),
          ^expected_risk <- Map.get(receipt.provenance, "risk"),
-         expected <-
-           Spectre.Canonical.Value.digest!(%{
-             risk: governance.risk,
-             mode: mode,
-             actor_ref: actor
-           }),
+         expected <- Value.digest!(%{risk: governance.risk, mode: mode, actor_ref: actor}),
          true <- receipt.result_digest == expected do
       :ok
     else

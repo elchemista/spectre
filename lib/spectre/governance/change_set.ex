@@ -281,7 +281,7 @@ defmodule Spectre.Governance.ChangeSet do
     do: {:error, {:invalid_governance_change_set_field, field, value}}
 
   defp validate_digest(value, _field) when is_binary(value) and byte_size(value) == 64 do
-    case Base.decode16(value, case: :mixed) do
+    case Base.decode16(value, case: :lower) do
       {:ok, <<_::256>>} -> :ok
       :error -> {:error, {:invalid_governance_change_set_digest, value}}
     end

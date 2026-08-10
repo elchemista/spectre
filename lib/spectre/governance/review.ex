@@ -64,6 +64,7 @@ defmodule Spectre.Governance.Review do
            CandidateState.transition(governance, state,
              gate_receipt_refs: refs,
              report_digest: report.digest,
+             report: report,
              lineage_refs: append_ref(governance.lineage_refs, candidate_ref)
            ),
          {:ok, reviewed} <- advance_candidate(candidate, candidate_ref, governance, opts),
@@ -101,11 +102,19 @@ defmodule Spectre.Governance.Review do
   defp verify_delta(governance, delta) do
     actual_ids = delta.candidate_owned_results |> Enum.map(& &1["case_id"]) |> Enum.sort()
 
-    if actual_ids == governance.candidate_case_ids,
-      do: :ok,
-      else:
+    cond do
+      delta.protected_cases_digest != governance.protected_cases_digest ->
+        {:error,
+         {:evaluation_delta_protected_corpus_mismatch, governance.protected_cases_digest,
+          delta.protected_cases_digest}}
+
+      actual_ids != governance.candidate_case_ids ->
         {:error,
          {:evaluation_delta_candidate_cases_mismatch, governance.candidate_case_ids, actual_ids}}
+
+      true ->
+        :ok
+    end
   end
 
   defp normalize_receipts(receipts, governance) do
@@ -183,16 +192,33 @@ defmodule Spectre.Governance.Review do
     grouped = Enum.group_by(receipts, & &1.gate_class)
 
     result =
-      Enum.reduce_while(
-        governance.required_gates,
-        :ok,
-        &review_gate(&1, &2, grouped, governance, opts)
-      )
+      with :ok <- unique_gate_classes(grouped),
+           :ok <- reject_failed_receipts(receipts) do
+        Enum.reduce_while(
+          governance.required_gates,
+          :ok,
+          &review_gate(&1, &2, grouped, governance, opts)
+        )
+      end
 
     case result do
       :ok -> {:ok, :evaluated}
       {:error, {:gate_receipt_failed, _gate}} -> {:ok, :rejected}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp unique_gate_classes(grouped) do
+    case Enum.find(grouped, fn {_gate, receipts} -> length(receipts) != 1 end) do
+      nil -> :ok
+      {gate, _receipts} -> {:error, {:ambiguous_gate_receipts, gate}}
+    end
+  end
+
+  defp reject_failed_receipts(receipts) do
+    case Enum.find(receipts, &(&1.status == :failed)) do
+      nil -> :ok
+      receipt -> {:error, {:gate_receipt_failed, receipt.gate_class}}
     end
   end
 

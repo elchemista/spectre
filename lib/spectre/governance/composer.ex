@@ -26,11 +26,11 @@ defmodule Spectre.Governance.Composer do
   alias Spectre.Governance.ChangeSet
   alias Spectre.Governance.ChangeSet.Registry
   alias Spectre.Governance.Composition
+  alias Spectre.Governance.Constraints
   alias Spectre.Instance.Activation
   alias Spectre.Skill.Definition, as: SkillDefinition
 
   @builtin_gates [:structural, :authority, :closure, :prompt_budget, :applicability]
-  @default_required_gates @builtin_gates ++ [:replay, :regression, :evaluation_delta]
   @checker_version 1
 
   @doc "Composes, publishes, and returns a governed Candidate Ref."
@@ -51,22 +51,26 @@ defmodule Spectre.Governance.Composer do
            ),
          :ok <- verify_parent_activation(parent, activation),
          {:ok, authority} <- effective_authority(parent.manifest.authority, opts),
+         {:ok, constraints} <- Constraints.new(authority, opts),
          {:ok, composition} <-
            Registry.apply(
              registry,
              change_set.operations,
              Composition.new(parent.definition),
-             composition_context(authority, opts)
+             composition_context(authority, constraints, opts)
            ),
          {:ok, definition} <- finalize_definition(composition.definition, change_set),
          {:ok, closure} <- derive_closure(parent.manifest.execution_closure, definition),
+         :ok <- require_protected_corpus(closure),
          :ok <- verify_composed_skills(definition),
+         :ok <- Constraints.verify_definition(definition, authority, constraints),
          :ok <- Authority.no_expansion(parent.manifest.authority, authority),
          {:ok, manifest} <-
            build_manifest(definition, authority, closure, parent, change_set, opts),
          {:ok, publication_receipt} <-
            Store.publish(store, definition, manifest, resolver_opts(opts)),
-         {:ok, governance} <- candidate_state(definition, closure, composition, change_set, opts),
+         {:ok, governance} <-
+           candidate_state(definition, closure, composition, constraints, change_set, opts),
          {:ok, receipts} <- builtin_receipts(governance, composition, manifest, opts),
          {:ok, receipt_refs} <- publish_receipts(store, receipts, resolver_opts(opts)),
          {:ok, governance} <- attach_receipts(governance, receipt_refs),
@@ -122,12 +126,12 @@ defmodule Spectre.Governance.Composer do
     end
   end
 
-  defp composition_context(authority, opts) do
+  defp composition_context(authority, constraints, opts) do
     %{
       authority: authority,
-      prompt_token_ceiling: Keyword.get(opts, :prompt_token_ceiling),
+      prompt_token_ceiling: constraints.prompt_token_ceiling,
       mutable_config_paths: Keyword.get(opts, :mutable_config_paths, %{}),
-      applicability_ceilings: Keyword.get(opts, :applicability_ceilings, %{}),
+      applicability_ceilings: constraints.applicability_ceilings,
       registered_migrations: Keyword.get(opts, :registered_migrations, [])
     }
   end
@@ -258,7 +262,7 @@ defmodule Spectre.Governance.Composer do
     )
   end
 
-  defp candidate_state(definition, closure, composition, change_set, opts) do
+  defp candidate_state(definition, closure, composition, constraints, change_set, opts) do
     candidate_case_ids = composition.eval_cases |> Enum.map(&Map.fetch!(&1, "id")) |> Enum.sort()
 
     evaluation_cases_digest =
@@ -267,36 +271,56 @@ defmodule Spectre.Governance.Composer do
         "candidate_cases" => composition.eval_cases
       })
 
-    required =
-      opts
-      |> Keyword.get(:required_gates, @default_required_gates)
-      |> maybe_semantic_gate(Keyword.get(opts, :require_semantic_live?, false))
-
-    CandidateState.new(%{
-      change_set_digest: ChangeSet.digest(change_set),
-      base_activation_receipt: change_set.base_activation_receipt,
-      base_candidate_ref: CandidateRef.to_string(change_set.base_candidate_ref),
-      parent_definition_ref: Ref.to_string(change_set.observed_definition_ref),
-      candidate_definition_ref: definition |> Canonical.ref() |> Ref.to_string(),
-      observed_authority_epoch: change_set.observed_authority_epoch,
-      observed_evidence_digest: change_set.observed_evidence_digest,
-      closure_digest: Closure.digest(closure),
-      evaluation_cases_digest: evaluation_cases_digest,
-      candidate_cases: composition.eval_cases,
-      candidate_case_ids: candidate_case_ids,
-      state_migrations: composition.state_migrations,
-      risk: composition.risk,
-      required_gates: required,
-      state: :composed,
-      gate_receipt_refs: [],
-      approval_receipt_ref: nil,
-      report_digest: nil,
-      lineage_refs: [CandidateRef.to_string(change_set.base_candidate_ref)]
-    })
+    with {:ok, required} <- required_gates(composition.risk, opts) do
+      CandidateState.new(%{
+        change_set_digest: ChangeSet.digest(change_set),
+        base_activation_receipt: change_set.base_activation_receipt,
+        base_candidate_ref: CandidateRef.to_string(change_set.base_candidate_ref),
+        parent_definition_ref: Ref.to_string(change_set.observed_definition_ref),
+        candidate_definition_ref: definition |> Canonical.ref() |> Ref.to_string(),
+        observed_authority_epoch: change_set.observed_authority_epoch,
+        observed_evidence_digest: change_set.observed_evidence_digest,
+        closure_digest: Closure.digest(closure),
+        evaluation_cases_digest: evaluation_cases_digest,
+        protected_cases_digest: closure.evaluation_corpus_digest,
+        prompt_token_ceiling: constraints.prompt_token_ceiling,
+        applicability_ceilings: constraints.applicability_ceilings,
+        candidate_cases: composition.eval_cases,
+        candidate_case_ids: candidate_case_ids,
+        state_migrations: composition.state_migrations,
+        risk: composition.risk,
+        required_gates: required,
+        state: :composed,
+        gate_receipt_refs: [],
+        approval_receipt_ref: nil,
+        report_digest: nil,
+        lineage_refs: [CandidateRef.to_string(change_set.base_candidate_ref)]
+      })
+    end
   end
 
-  defp maybe_semantic_gate(gates, false), do: gates
-  defp maybe_semantic_gate(gates, true), do: Enum.uniq(List.wrap(gates) ++ [:semantic_live])
+  defp required_gates(risk, opts) do
+    case Keyword.get(opts, :required_gates, []) do
+      gates when is_list(gates) ->
+        required = CandidateState.constitutional_gates(risk) ++ gates
+
+        required =
+          if Keyword.get(opts, :require_semantic_live?, false),
+            do: required ++ [:semantic_live],
+            else: required
+
+        {:ok, Enum.uniq(required)}
+
+      value ->
+        {:error, {:invalid_governance_required_gates, value}}
+    end
+  end
+
+  defp require_protected_corpus(%Closure{evaluation_corpus_digest: digest})
+       when is_binary(digest),
+       do: :ok
+
+  defp require_protected_corpus(%Closure{}), do: {:error, :governance_protected_corpus_required}
 
   defp builtin_receipts(governance, composition, manifest, opts) do
     issued_at = Keyword.get(opts, :created_at, System.system_time(:millisecond))

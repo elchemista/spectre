@@ -9,6 +9,9 @@
     "change_set_digest": "5edb644c9b32388633107ad0d701f6ff64b0d0465b37d0cc72be84f3d5577949",
     "closure_digest": "5555555555555555555555555555555555555555555555555555555555555555",
     "evaluation_cases_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+    "protected_cases_digest": "533037de478d71902409664ae14942094f4e8a6ac95cd46e81c659c9fff88ff1",
+    "prompt_token_ceiling": null,
+    "applicability_ceilings": {},
     "gate_receipt_refs": [],
     "lineage_refs": [
       "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -16,9 +19,17 @@
     "observed_authority_epoch": 7,
     "observed_evidence_digest": "3333333333333333333333333333333333333333333333333333333333333333",
     "parent_definition_ref": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-    "proposal_digest": "ce56bf4fc86e0ca524864c3960b9662d33d44f02ed01f2a6ca7d35cc09e74e73",
+    "proposal_digest": "996222296e9a3b29a2c6d76629670c19c35fe23eb4e69c9e7e6bb2c8223c93ef",
+    "report": null,
     "report_digest": null,
     "required_gates": [
+      "applicability",
+      "authority",
+      "closure",
+      "evaluation_delta",
+      "prompt_budget",
+      "regression",
+      "replay",
       "structural"
     ],
     "risk": "low",
@@ -81,14 +92,14 @@
   "expected": {
     "change_set_digest": "5edb644c9b32388633107ad0d701f6ff64b0d0465b37d0cc72be84f3d5577949",
     "evaluation_delta_digest": "9c073aadb437fc6b46a6818c35b0f2e31fbac91878d20291a0800afab4d6405e",
-    "gate_receipt_ref": "gate:sha256:e6195af7e13cb2b23f69cdf93e131a910c43d54e49320fa822cf3ce26c7c32e5",
-    "gc_plan_digest": "6ca0e65e5289e28195da49e69ee847fdb9543d0f701d6a74d0c2cdf193910a2b",
+    "gate_receipt_ref": "gate:sha256:9e6e0f7d4bf6c6ca126b9aa1aa9ca91dbb9cf31d5a73d9e46c48dea246342466",
+    "gc_plan_digest": "9ecccd128e97b2ed2d6dc49683bb9e14497da96a5dd6cda11ec149d2614b30fd",
     "human_report_digest": "963f51cd47d0ece3363b5af08f7c094aad9ffda085a8b0ad22d1a557824f1e7b",
-    "proposal_digest": "ce56bf4fc86e0ca524864c3960b9662d33d44f02ed01f2a6ca7d35cc09e74e73"
+    "proposal_digest": "996222296e9a3b29a2c6d76629670c19c35fe23eb4e69c9e7e6bb2c8223c93ef"
   },
   "gate_receipt": {
     "candidate_definition_ref": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-    "candidate_digest": "ce56bf4fc86e0ca524864c3960b9662d33d44f02ed01f2a6ca7d35cc09e74e73",
+    "candidate_digest": "996222296e9a3b29a2c6d76629670c19c35fe23eb4e69c9e7e6bb2c8223c93ef",
     "checker_id": "spectre.gate.structural",
     "checker_version": 1,
     "closure_digest": "5555555555555555555555555555555555555555555555555555555555555555",
@@ -134,7 +145,7 @@
     "definition_inventory": [
       "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     ],
-    "digest": "6ca0e65e5289e28195da49e69ee847fdb9543d0f701d6a74d0c2cdf193910a2b",
+    "digest": "9ecccd128e97b2ed2d6dc49683bb9e14497da96a5dd6cda11ec149d2614b30fd",
     "evidence_digest": "61313a3f194de829ecf14e5565bd099d116c63314681a539552c670eb3605004",
     "inventory_complete": true,
     "protected_candidate_refs": [
@@ -143,6 +154,8 @@
     "protected_definition_refs": [
       "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     ],
+    "candidate_lineage_refs": [],
+    "definition_lineage_refs": [],
     "requested_candidate_refs": [],
     "requested_definition_refs": [],
     "schema_version": 1,

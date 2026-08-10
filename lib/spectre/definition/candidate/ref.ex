@@ -57,7 +57,7 @@ defmodule Spectre.Definition.Candidate.Ref do
   end
 
   defp valid_digest?(digest) when is_binary(digest) and byte_size(digest) == @hex_bytes do
-    case Base.decode16(digest, case: :mixed) do
+    case Base.decode16(digest, case: :lower) do
       {:ok, decoded} -> byte_size(decoded) == @digest_bytes
       :error -> false
     end

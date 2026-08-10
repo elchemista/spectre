@@ -87,6 +87,7 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre, :turn, 2},
         {Spectre, :instance, 3},
         {Spectre, :activate, 2},
+        {Spectre, :rollback, 3},
         {Spectre.Definition, :canonical, 1},
         {Spectre.Definition, :manifest, 1},
         {Spectre.Skill.Definition, :new, 1},
@@ -102,6 +103,7 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre.Governance.Composer, :compose, 3},
         {Spectre.Governance.Review, :evaluate, 5},
         {Spectre.Governance.Approval, :approve, 3},
+        {Spectre.Governance.Approval, :reject, 3},
         {Spectre.Governance.GC, :plan, 3},
         {Spectre.Projection.HumanReport, :project, 3}
       ]

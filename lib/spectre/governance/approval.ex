@@ -53,6 +53,39 @@ defmodule Spectre.Governance.Approval do
   def approve(_store, _candidate_ref, opts),
     do: {:error, {:invalid_governance_approval_options, opts}}
 
+  @doc "Records an explicit host rejection of an evaluated Candidate."
+  @spec reject(Store.config(), CandidateRef.t() | String.t(), keyword()) ::
+          {:ok, CandidateRef.t()} | {:error, term()}
+  def reject(store, candidate_ref, opts \\ [])
+
+  def reject(store, candidate_ref, opts) when is_list(opts) do
+    with {:ok, candidate} <- fetch_candidate(store, candidate_ref, opts),
+         %CandidateState{state: :evaluated} = governance <- candidate.governance,
+         {:ok, actor_ref} <- rejection_actor(Keyword.get(opts, :actor_ref)),
+         {:ok, reason} <- rejection_reason(Keyword.get(opts, :reason)),
+         {:ok, receipt} <- rejection_receipt(governance, actor_ref, reason, opts),
+         {:ok, receipt_ref} <- Store.publish_gate_receipt(store, receipt, store_opts(opts)),
+         receipt_ref_string = ReceiptRef.to_string(receipt_ref),
+         {:ok, governance} <-
+           CandidateState.transition(governance, :rejected,
+             gate_receipt_refs: Enum.uniq(governance.gate_receipt_refs ++ [receipt_ref_string]),
+             approval_receipt_ref: receipt_ref_string,
+             lineage_refs: append_ref(governance.lineage_refs, candidate_ref)
+           ),
+         {:ok, rejected} <- advance_candidate(candidate, candidate_ref, governance, opts),
+         {:ok, rejected_ref} <- Store.publish_candidate(store, rejected, store_opts(opts)) do
+      {:ok, rejected_ref}
+    else
+      :not_found -> {:error, :governance_candidate_not_found}
+      %CandidateState{state: state} -> {:error, {:candidate_not_evaluated, state}}
+      nil -> {:error, :candidate_is_not_governed}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def reject(_store, _candidate_ref, opts),
+    do: {:error, {:invalid_governance_rejection_options, opts}}
+
   defp fetch_candidate(store, ref, opts), do: Store.fetch_candidate(store, ref, store_opts(opts))
 
   defp policy(nil), do: {:ok, Policy.default()}
@@ -95,13 +128,53 @@ defmodule Spectre.Governance.Approval do
     })
   end
 
+  defp rejection_actor(value) when is_binary(value) and value != "", do: {:ok, value}
+  defp rejection_actor(value), do: {:error, {:invalid_governance_rejection_actor, value}}
+
+  defp rejection_reason(value) when is_binary(value) and value != "", do: {:ok, value}
+  defp rejection_reason(value), do: {:error, {:invalid_governance_rejection_reason, value}}
+
+  defp rejection_receipt(governance, actor_ref, reason, opts) do
+    issued_at = Keyword.get(opts, :rejected_at, System.system_time(:millisecond))
+    result = %{risk: governance.risk, actor_ref: actor_ref, reason: reason}
+
+    Receipt.new(%{
+      gate_class: :approval,
+      candidate_digest: governance.proposal_digest,
+      parent_definition_ref: governance.parent_definition_ref,
+      candidate_definition_ref: governance.candidate_definition_ref,
+      closure_digest: governance.closure_digest,
+      checker_id: "spectre.approval.rejected",
+      checker_version: 1,
+      evaluation_cases_digest: governance.evaluation_cases_digest,
+      profile_ref: nil,
+      issued_at: issued_at,
+      expires_at: nil,
+      status: :failed,
+      result_digest: Value.digest!(result),
+      provenance: %{
+        source: :host_rejection,
+        actor_ref: actor_ref,
+        risk: governance.risk,
+        reason: reason
+      }
+    })
+  end
+
   defp advance_candidate(candidate, parent_ref, governance, opts) do
     with {:ok, parent_ref} <- normalize_candidate_ref(parent_ref) do
       candidate
       |> Map.from_struct()
       |> Map.put(:parent_ref, parent_ref)
       |> Map.put(:governance, governance)
-      |> Map.put(:created_at, Keyword.get(opts, :approved_at, System.system_time(:millisecond)))
+      |> Map.put(
+        :created_at,
+        Keyword.get(
+          opts,
+          :approved_at,
+          Keyword.get(opts, :rejected_at, System.system_time(:millisecond))
+        )
+      )
       |> Candidate.new()
     end
   end

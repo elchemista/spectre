@@ -23,6 +23,8 @@ defmodule Spectre.Governance.GC.Plan do
     :definition_decisions,
     :protected_candidate_refs,
     :protected_definition_refs,
+    :candidate_lineage_refs,
+    :definition_lineage_refs,
     :requested_candidate_refs,
     :requested_definition_refs,
     :evidence_digest,
@@ -38,6 +40,8 @@ defmodule Spectre.Governance.GC.Plan do
     :definition_decisions,
     :protected_candidate_refs,
     :protected_definition_refs,
+    :candidate_lineage_refs,
+    :definition_lineage_refs,
     :requested_candidate_refs,
     :requested_definition_refs,
     :evidence_digest,
@@ -52,6 +56,8 @@ defmodule Spectre.Governance.GC.Plan do
             definition_decisions: [],
             protected_candidate_refs: [],
             protected_definition_refs: [],
+            candidate_lineage_refs: [],
+            definition_lineage_refs: [],
             requested_candidate_refs: [],
             requested_definition_refs: [],
             evidence_digest: nil,
@@ -162,12 +168,18 @@ defmodule Spectre.Governance.GC.Plan do
            ref_list(data["protected_candidate_refs"], "candidate:sha256:"),
          {:ok, protected_definitions} <-
            ref_list(data["protected_definition_refs"], "sha256:"),
+         {:ok, candidate_lineage} <-
+           ref_list(data["candidate_lineage_refs"], "candidate:sha256:"),
+         {:ok, definition_lineage} <-
+           ref_list(data["definition_lineage_refs"], "sha256:"),
          {:ok, requested_candidates} <-
            ref_list(data["requested_candidate_refs"], "candidate:sha256:"),
          {:ok, requested_definitions} <-
            ref_list(data["requested_definition_refs"], "sha256:"),
          :ok <- subset(protected_candidates, candidate_inventory, :protected_candidates),
          :ok <- subset(protected_definitions, definition_inventory, :protected_definitions),
+         :ok <- subset(candidate_lineage, candidate_inventory, :candidate_lineage),
+         :ok <- subset(definition_lineage, definition_inventory, :definition_lineage),
          :ok <- subset(requested_candidates, candidate_inventory, :requested_candidates),
          :ok <- subset(requested_definitions, definition_inventory, :requested_definitions),
          {:ok, candidate_decisions} <-
@@ -177,15 +189,23 @@ defmodule Spectre.Governance.GC.Plan do
              definition_inventory,
              data["inventory_complete"],
              protected_candidates,
-             requested_candidates
+             requested_candidates,
+             candidate_lineage
            ),
+         retained_candidate_definitions =
+           candidate_decisions
+           |> Enum.filter(&(&1["decision"] == "retained"))
+           |> Enum.map(& &1["definition_ref"])
+           |> Enum.uniq(),
          {:ok, definition_decisions} <-
            definition_decisions(
              data["definition_decisions"],
              definition_inventory,
              data["inventory_complete"],
              protected_definitions,
-             requested_definitions
+             requested_definitions,
+             definition_lineage,
+             retained_candidate_definitions
            ),
          :ok <- retained_candidate_definitions(candidate_decisions, definition_decisions) do
       :ok
@@ -201,7 +221,8 @@ defmodule Spectre.Governance.GC.Plan do
          definition_inventory,
          complete?,
          protected,
-         requested
+         requested,
+         lineage
        )
        when is_list(decisions) do
     with {:ok, normalized} <-
@@ -210,7 +231,14 @@ defmodule Spectre.Governance.GC.Plan do
          true <-
            Enum.all?(normalized, &(&1["definition_ref"] in definition_inventory)),
          :ok <-
-           conservative_decisions(normalized, complete?, protected, requested) do
+           conservative_decisions(
+             normalized,
+             complete?,
+             protected,
+             requested,
+             lineage,
+             "candidate_lineage_reference"
+           ) do
       {:ok, normalized}
     else
       false -> {:error, :invalid_governance_gc_candidate_decisions}
@@ -218,15 +246,39 @@ defmodule Spectre.Governance.GC.Plan do
     end
   end
 
-  defp candidate_decisions(_value, _inventory, _definitions, _complete, _protected, _requested),
-    do: {:error, :invalid_governance_gc_candidate_decisions}
+  defp candidate_decisions(
+         _value,
+         _inventory,
+         _definitions,
+         _complete,
+         _protected,
+         _requested,
+         _lineage
+       ),
+       do: {:error, :invalid_governance_gc_candidate_decisions}
 
-  defp definition_decisions(decisions, inventory, complete?, protected, requested)
+  defp definition_decisions(
+         decisions,
+         inventory,
+         complete?,
+         protected,
+         requested,
+         lineage,
+         retained_candidates
+       )
        when is_list(decisions) do
     with {:ok, normalized} <-
            normalize_decisions(decisions, :definition, @definition_reason_order),
          true <- Enum.map(normalized, & &1["ref"]) == inventory,
-         :ok <- conservative_decisions(normalized, complete?, protected, requested) do
+         :ok <-
+           conservative_definition_decisions(
+             normalized,
+             complete?,
+             protected,
+             requested,
+             lineage,
+             retained_candidates
+           ) do
       {:ok, normalized}
     else
       false -> {:error, :invalid_governance_gc_definition_decisions}
@@ -234,8 +286,16 @@ defmodule Spectre.Governance.GC.Plan do
     end
   end
 
-  defp definition_decisions(_value, _inventory, _complete, _protected, _requested),
-    do: {:error, :invalid_governance_gc_definition_decisions}
+  defp definition_decisions(
+         _value,
+         _inventory,
+         _complete,
+         _protected,
+         _requested,
+         _lineage,
+         _retained_candidates
+       ),
+       do: {:error, :invalid_governance_gc_definition_decisions}
 
   defp normalize_decisions(decisions, kind, reason_order) do
     decisions
@@ -322,9 +382,17 @@ defmodule Spectre.Governance.GC.Plan do
   defp validate_reason_presence("retained", [_first | _rest]), do: :ok
   defp validate_reason_presence("retained", []), do: {:error, :retained_decision_requires_reason}
 
-  defp conservative_decisions(decisions, complete?, protected, requested) do
+  defp conservative_decisions(
+         decisions,
+         complete?,
+         protected,
+         requested,
+         lineage,
+         lineage_reason
+       ) do
     protected = MapSet.new(protected)
     requested = MapSet.new(requested)
+    lineage = MapSet.new(lineage)
 
     Enum.reduce_while(decisions, :ok, fn decision, :ok ->
       ref = decision["ref"]
@@ -335,20 +403,57 @@ defmodule Spectre.Governance.GC.Plan do
         |> maybe_reason(not complete?, "inventory_not_complete")
         |> maybe_reason(not MapSet.member?(requested, ref), "retention_not_gc_eligible")
         |> maybe_reason(MapSet.member?(protected, ref), "live_reference")
+        |> maybe_reason(MapSet.member?(lineage, ref), lineage_reason)
 
-      cond do
-        not Enum.all?(required, &(&1 in reasons)) ->
-          {:halt, {:error, {:unsafe_governance_gc_decision, ref}}}
-
-        decision["decision"] == "eligible" and
-            (not complete? or not MapSet.member?(requested, ref) or
-               MapSet.member?(protected, ref)) ->
-          {:halt, {:error, {:unsafe_governance_gc_eligibility, ref}}}
-
-        true ->
-          {:cont, :ok}
-      end
+      verify_exact_decision(decision, reasons, required, ref)
     end)
+  end
+
+  defp conservative_definition_decisions(
+         decisions,
+         complete?,
+         protected,
+         requested,
+         lineage,
+         retained_candidates
+       ) do
+    protected = MapSet.new(protected)
+    requested = MapSet.new(requested)
+    lineage = MapSet.new(lineage)
+    retained_candidates = MapSet.new(retained_candidates)
+
+    Enum.reduce_while(decisions, :ok, fn decision, :ok ->
+      ref = decision["ref"]
+      reasons = decision["reasons"]
+
+      required =
+        []
+        |> maybe_reason(not complete?, "inventory_not_complete")
+        |> maybe_reason(not MapSet.member?(requested, ref), "retention_not_gc_eligible")
+        |> maybe_reason(MapSet.member?(protected, ref), "live_reference")
+        |> maybe_reason(
+          MapSet.member?(retained_candidates, ref),
+          "retained_candidate_reference"
+        )
+        |> maybe_reason(MapSet.member?(lineage, ref), "definition_lineage_reference")
+
+      verify_exact_decision(decision, reasons, required, ref)
+    end)
+  end
+
+  defp verify_exact_decision(decision, reasons, required, ref) do
+    expected_decision = if required == [], do: "eligible", else: "retained"
+
+    cond do
+      reasons != required ->
+        {:halt, {:error, {:unsafe_governance_gc_decision, ref}}}
+
+      decision["decision"] != expected_decision ->
+        {:halt, {:error, {:unsafe_governance_gc_eligibility, ref}}}
+
+      true ->
+        {:cont, :ok}
+    end
   end
 
   defp retained_candidate_definitions(candidate_decisions, definition_decisions) do
@@ -377,7 +482,7 @@ defmodule Spectre.Governance.GC.Plan do
 
   defp valid_ref?(value, prefix) when is_binary(value) do
     case String.split_at(value, byte_size(prefix)) do
-      {^prefix, digest} -> match?({:ok, <<_::256>>}, Base.decode16(digest, case: :mixed))
+      {^prefix, digest} -> match?({:ok, <<_::256>>}, Base.decode16(digest, case: :lower))
       _other -> false
     end
   end
@@ -385,7 +490,7 @@ defmodule Spectre.Governance.GC.Plan do
   defp valid_ref?(_value, _prefix), do: false
 
   defp valid_digest(value) when is_binary(value) and byte_size(value) == 64 do
-    if match?({:ok, <<_::256>>}, Base.decode16(value, case: :mixed)),
+    if match?({:ok, <<_::256>>}, Base.decode16(value, case: :lower)),
       do: :ok,
       else: {:error, :invalid_governance_gc_evidence_digest}
   end
@@ -413,6 +518,8 @@ defmodule Spectre.Governance.GC.Plan do
       "definition_decisions" => Map.fetch!(attrs, :definition_decisions),
       "protected_candidate_refs" => Map.fetch!(attrs, :protected_candidate_refs),
       "protected_definition_refs" => Map.fetch!(attrs, :protected_definition_refs),
+      "candidate_lineage_refs" => Map.fetch!(attrs, :candidate_lineage_refs),
+      "definition_lineage_refs" => Map.fetch!(attrs, :definition_lineage_refs),
       "requested_candidate_refs" => Map.fetch!(attrs, :requested_candidate_refs),
       "requested_definition_refs" => Map.fetch!(attrs, :requested_definition_refs),
       "evidence_digest" => Map.fetch!(attrs, :evidence_digest)

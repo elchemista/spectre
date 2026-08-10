@@ -10,11 +10,13 @@ defmodule Spectre.Governance.GC do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Definition.Candidate
   alias Spectre.Definition.Candidate.Ref, as: CandidateRef
+  alias Spectre.Definition.Manifest
   alias Spectre.Definition.Ref
   alias Spectre.Definition.Store
-  alias Spectre.Governance.GC.Plan
   alias Spectre.Governance.Data
+  alias Spectre.Governance.GC.Plan
   alias Spectre.Instance.Activation
 
   @doc "Builds a conservative GC decision from an explicit inventory."
@@ -49,6 +51,9 @@ defmodule Spectre.Governance.GC do
                protected_candidates,
                protected_definitions
              ) do
+        candidate_lineage_refs = candidate_lineage_refs(candidates)
+        definition_lineage_refs = definition_lineage_refs(definitions)
+
         candidate_decisions =
           decide_candidates(
             candidates,
@@ -76,7 +81,9 @@ defmodule Spectre.Governance.GC do
           "candidates" => candidate_inventory,
           "definitions" => definition_inventory,
           "candidate_digests" => Enum.map(candidates, & &1.digest),
-          "definition_manifest_digests" => Enum.map(definitions, & &1.manifest_digest)
+          "definition_manifest_digests" => Enum.map(definitions, & &1.manifest_digest),
+          "candidate_lineage_refs" => candidate_lineage_refs,
+          "definition_lineage_refs" => definition_lineage_refs
         }
 
         Plan.build(%{
@@ -88,6 +95,8 @@ defmodule Spectre.Governance.GC do
           definition_decisions: definition_decisions,
           protected_candidate_refs: protected_candidates,
           protected_definition_refs: protected_definitions,
+          candidate_lineage_refs: candidate_lineage_refs,
+          definition_lineage_refs: definition_lineage_refs,
           requested_candidate_refs: requested_candidates,
           requested_definition_refs: requested_definitions,
           evidence_digest: Value.digest!(evidence)
@@ -105,7 +114,7 @@ defmodule Spectre.Governance.GC do
         {:ok, candidate} ->
           entry = %{
             ref: ref,
-            digest: candidate |> Spectre.Definition.Candidate.digest(),
+            digest: Candidate.digest(candidate),
             definition_ref: to_string(candidate.definition_ref),
             parent_ref: candidate.parent_ref && to_string(candidate.parent_ref),
             lineage_refs: (candidate.governance && candidate.governance.lineage_refs) || []
@@ -137,7 +146,7 @@ defmodule Spectre.Governance.GC do
         {:ok, artifact} ->
           entry = %{
             ref: ref,
-            manifest_digest: Spectre.Definition.Manifest.digest(artifact.manifest),
+            manifest_digest: Manifest.digest(artifact.manifest),
             parent_refs: Enum.map(artifact.manifest.parent_refs, &to_string/1)
           }
 
@@ -154,15 +163,23 @@ defmodule Spectre.Governance.GC do
   end
 
   defp protected_candidates(opts) do
-    explicit = Keyword.get(opts, :protected_candidate_refs, [])
+    fields = [
+      :protected_candidate_refs,
+      :run_candidate_refs,
+      :checkpoint_candidate_refs,
+      :state_binding_candidate_refs,
+      :lineage_candidate_refs
+    ]
+
+    configured = Enum.map(fields, &Keyword.get(opts, &1, []))
     activation = Keyword.get(opts, :activation)
 
     activation_ref =
       if match?(%Activation{}, activation), do: [to_string(activation.candidate_ref)], else: []
 
-    if is_list(explicit),
-      do: candidate_refs(explicit ++ activation_ref),
-      else: candidate_refs(explicit)
+    if Enum.all?(configured, &is_list/1),
+      do: candidate_refs(List.flatten(configured) ++ activation_ref),
+      else: {:error, {:invalid_gc_candidate_refs, :other}}
   end
 
   defp protected_definitions(opts) do
@@ -284,6 +301,21 @@ defmodule Spectre.Governance.GC do
         "reasons" => Enum.reverse(reasons)
       }
     end)
+  end
+
+  defp candidate_lineage_refs(candidates) do
+    candidates
+    |> Enum.flat_map(&[&1.parent_ref | &1.lineage_refs])
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp definition_lineage_refs(definitions) do
+    definitions
+    |> Enum.flat_map(& &1.parent_refs)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp add_reason(reasons, true, reason), do: [reason | reasons]

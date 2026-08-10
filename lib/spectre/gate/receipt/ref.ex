@@ -28,7 +28,7 @@ defmodule Spectre.Gate.Receipt.Ref do
   @spec valid?(term()) :: boolean()
   def valid?(%__MODULE__{algorithm: @algorithm, digest: digest})
       when is_binary(digest) and byte_size(digest) == 64,
-      do: match?({:ok, <<_::256>>}, Base.decode16(digest, case: :mixed))
+      do: match?({:ok, <<_::256>>}, Base.decode16(digest, case: :lower))
 
   def valid?(_value), do: false
 

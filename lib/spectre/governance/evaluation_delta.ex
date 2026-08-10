@@ -197,6 +197,9 @@ defmodule Spectre.Governance.EvaluationDelta do
     protected_candidate_ids = candidate_ids -- candidate_case_ids
 
     cond do
+      parent_ids == [] ->
+        {:error, :evaluation_delta_protected_corpus_required}
+
       parent_ids != protected_candidate_ids ->
         {:error, {:evaluation_delta_case_mismatch, parent_ids, protected_candidate_ids}}
 
@@ -328,7 +331,7 @@ defmodule Spectre.Governance.EvaluationDelta do
   defp ids(value, field), do: {:error, {:invalid_evaluation_delta_field, field, value}}
 
   defp threshold(min_delta, max_regressions)
-       when is_number(min_delta) and is_integer(max_regressions) and max_regressions >= 0 do
+       when is_number(min_delta) and min_delta >= 0 and max_regressions == 0 do
     if finite?(min_delta), do: :ok, else: {:error, :invalid_evaluation_delta_threshold}
   end
 
