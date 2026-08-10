@@ -12,6 +12,7 @@ defmodule Spectre.Definition.Validator do
   @supported_skill_versions [1]
   @skill_forbidden_config [
     :actions,
+    :operations,
     :action_providers,
     :action_planner,
     :state,
@@ -246,8 +247,13 @@ defmodule Spectre.Definition.Validator do
   defp validate_router(%Definition{router: router}), do: {:error, {:invalid_router, router}}
 
   @spec validate_rules(map()) :: :ok | {:error, term()}
-  defp validate_rules(%Definition{rules: rules}) when is_list(rules) do
+  defp validate_rules(%Definition{kind: kind, rules: rules}) when is_list(rules) do
     labels = Enum.map(rules, &Map.get(&1, :label))
+
+    invalid_operation =
+      if kind == :skill,
+        do: nil,
+        else: Enum.find(rules, &match?({:operation, _operation, _opts}, &1.handler))
 
     cond do
       invalid = Enum.find(labels, &(not is_atom(&1))) ->
@@ -258,6 +264,9 @@ defmodule Spectre.Definition.Validator do
 
       invalid = Enum.find(rules, &(not valid_handler?(Map.get(&1, :handler)))) ->
         {:error, {:invalid_rule_handler, Map.get(invalid, :label), Map.get(invalid, :handler)}}
+
+      invalid_operation ->
+        {:error, {:runtime_skill_operation_handler_is_skill_only, invalid_operation.label}}
 
       true ->
         :ok
@@ -279,6 +288,10 @@ defmodule Spectre.Definition.Validator do
 
   defp valid_handler?({:action, value, opts}) when is_list(opts),
     do: Spectre.Action.valid_ref?(value)
+
+  defp valid_handler?({:operation, value, opts})
+       when not is_nil(value) and is_list(opts),
+       do: Keyword.keyword?(opts)
 
   defp valid_handler?(_handler), do: false
 
@@ -404,10 +417,23 @@ defmodule Spectre.Definition.Validator do
   defp validate_mount_bindings(mounts) do
     Enum.reduce_while(mounts, :ok, fn mount, :ok ->
       skill = Definition.fetch!(mount.module)
-      requirement_names = MapSet.new(skill.requirements, & &1.name)
+
+      action_requirements =
+        Enum.reject(skill.requirements, &(Map.get(&1, :kind, :action) == :operation))
+
+      operation_requirement =
+        Enum.find(skill.requirements, &(Map.get(&1, :kind) == :operation))
+
+      requirement_names = MapSet.new(action_requirements, & &1.name)
 
       cond do
-        requirement = Enum.find(skill.requirements, &missing_binding?(&1, mount.bindings)) ->
+        operation_requirement ->
+          {:halt,
+           {:error,
+            {:runtime_operation_skill_requires_skill_runtime, mount.id,
+             operation_requirement.name}}}
+
+        requirement = Enum.find(action_requirements, &missing_binding?(&1, mount.bindings)) ->
           {:halt, {:error, {:missing_skill_binding, mount.id, requirement.name}}}
 
         invalid =
@@ -484,12 +510,46 @@ defmodule Spectre.Definition.Validator do
   @spec validate_skill_action_requirements(map(), [map()]) ::
           :ok | {:error, term()}
   defp validate_skill_action_requirements(definition, requirements) do
-    declared = MapSet.new(requirements, & &1.name)
+    declared_actions =
+      requirements
+      |> Enum.reject(&(Map.get(&1, :kind, :action) == :operation))
+      |> MapSet.new(& &1.name)
 
-    case Enum.find(skill_action_references(definition), &(not MapSet.member?(declared, &1))) do
-      nil -> :ok
+    declared_operations =
+      requirements
+      |> Enum.filter(&(Map.get(&1, :kind) == :operation))
+      |> MapSet.new(& &1.name)
+
+    case Enum.find(
+           skill_action_references(definition),
+           &(not MapSet.member?(declared_actions, &1))
+         ) do
+      nil -> validate_declared_skill_operations(definition, declared_operations)
       action -> {:error, {:undeclared_skill_action, action}}
     end
+  end
+
+  @spec validate_declared_skill_operations(map(), MapSet.t()) :: :ok | {:error, term()}
+  defp validate_declared_skill_operations(definition, declared_operations) do
+    case Enum.find(
+           skill_operation_references(definition),
+           &(not MapSet.member?(declared_operations, &1))
+         ) do
+      nil -> :ok
+      operation -> {:error, {:undeclared_skill_operation, operation}}
+    end
+  end
+
+  @spec skill_operation_references(map()) :: [term()]
+  defp skill_operation_references(definition) do
+    definition.rules
+    |> Enum.flat_map(fn rule ->
+      case Map.get(rule, :handler) do
+        {:operation, operation, _opts} -> [operation]
+        _handler -> []
+      end
+    end)
+    |> Enum.uniq()
   end
 
   @spec skill_action_references(map()) :: [term()]
@@ -512,8 +572,17 @@ defmodule Spectre.Definition.Validator do
   end
 
   @spec valid_requirement?(term()) :: boolean()
-  defp valid_requirement?(%{name: name, mode: mode})
+  defp valid_requirement?(%{kind: :operation, name: name, mode: :read, opts: opts})
+       when not is_nil(name) and is_list(opts),
+       do: Keyword.keyword?(opts)
+
+  defp valid_requirement?(%{kind: :action, name: name, mode: mode})
        when is_atom(name) and mode in [:read, :write, :destructive],
+       do: true
+
+  defp valid_requirement?(%{name: name, mode: mode} = requirement)
+       when not is_map_key(requirement, :kind) and is_atom(name) and
+              mode in [:read, :write, :destructive],
        do: true
 
   defp valid_requirement?(_requirement), do: false
@@ -582,6 +651,10 @@ defmodule Spectre.Definition.Validator do
 
   defp format_reason({:undeclared_skill_action, action}) do
     "Skill action #{inspect(action)} must be declared with requires_action/2"
+  end
+
+  defp format_reason({:undeclared_skill_operation, operation}) do
+    "Skill operation #{inspect(operation)} must be declared with requires_operation/2"
   end
 
   defp format_reason({:unknown_router_step, step}),

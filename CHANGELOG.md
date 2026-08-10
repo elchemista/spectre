@@ -4,6 +4,43 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.7 — 2026-08-10
+
+### Added
+
+- Added `Spectre.Skill.Definition`, a single canonical wrapper for compiled and
+  runtime-authored Skills. Equivalent origins expose equal semantic IR while
+  exact Refs retain origin and publisher provenance.
+- Added data-only runtime Flows with exact routing, closed reply fragments, and
+  references to operations already registered by the host Agent. The compiled
+  DSL gains `requires_operation/2` and `call_operation/2` over the same IR.
+- Added structured `Spectre.Skill.Applicability`, executable positive/negative
+  anti-hijack examples, and fail-closed conflict and ambiguity handling.
+- Added versioned per-Skill prompt budgets and
+  `Spectre.Router.IndexProfile`. Runtime mount reserves the kernel window,
+  checks granted budget classes, and accounts for retained draining
+  generations.
+- Added `Spectre.Projection.Routing`, a deterministic non-executable projection
+  with a profile-bound disposable cache key.
+- Added immutable `Spectre.Skill.Runtime` mount, replace, and disable lifecycle
+  with authority capabilities, revision CAS, exact Definition-pinned
+  continuations, and drain completion.
+- Added the permanent 0.2.7 runtime Skill and Routing projection fixture.
+
+### Migration and safety
+
+- Runtime Definitions reject code references, AST, executable prompt
+  templates, uncapped fragments, undeclared or unregistered operations,
+  ambiguous routes, failed anti-hijack examples, and authority gaps.
+- Runtime operation handlers return a portable `Spectre.Operation.Request`;
+  Spectre does not execute it or widen authority. Publication, activation, and
+  lifecycle changes remain explicit host actions.
+- State remains writer v5, Run remains writer v2, and canonical Instance
+  checkpoints remain schema 4. All 0.2.6 foundation and Stack gates remain in
+  the release suite.
+- Generated callbacks, goal-driven Work, autonomous Forge behavior, empirical
+  reflection, and governance remain outside this gate.
+
 ## 0.2.6 — 2026-08-10
 
 ### Added

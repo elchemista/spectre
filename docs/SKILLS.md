@@ -10,6 +10,14 @@ when a large Agent is easier to understand as several independently scoped
 capabilities. Keep behavior that is specific to one small Agent directly in
 that Agent.
 
+Starting with Spectre 0.2.7, trusted hosts may also construct data-only Skills
+through `Spectre.Skill.Definition` and manage them with
+`Spectre.Skill.Runtime`. They lower into the same canonical model, use only
+registered operation references and closed prompt fragments, and have a
+separate authority-checked lifecycle. See
+[Runtime Skills and Routing Projections](RUNTIME_SKILLS.md). The compiled mount
+path described below remains unchanged.
+
 ## The Smallest Complete Example
 
 Define the Skill with `use Spectre.Skill`:

@@ -244,6 +244,31 @@ defmodule Spectre.Agent do
   end
 
   @doc """
+  Declares an immutable Agent operation required by a reusable Skill.
+
+  Operations are resolved from the host Agent registry. A Skill can reference
+  their stable identifiers, but cannot register executors or inject executable
+  callbacks.
+
+      requires_operation :read_logs
+  """
+  defmacro requires_operation(name, opts \\ []) do
+    name = Macro.expand(name, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    requirement = %{
+      kind: :operation,
+      name: name,
+      mode: :read,
+      opts: opts
+    }
+
+    quote do
+      @spectre_requirements unquote(Macro.escape(requirement))
+    end
+  end
+
+  @doc """
   Configures the action adapter and optional action-level protections/hooks.
 
   Use the block form when the action module should be declared next to its
@@ -1022,6 +1047,22 @@ defmodule Spectre.Agent do
     end
   end
 
+  @doc """
+  Creates a declarative handler that requests a registered Agent operation.
+
+  The handler records only the operation identifier and portable input policy;
+  execution remains an explicit host boundary.
+
+      on :lookup, check: {:text, "lookup"} do
+        call_operation :lookup, input: :text
+      end
+  """
+  defmacro call_operation(operation, opts \\ []) do
+    quote do
+      {:__spectre_handler__, :operation, unquote(operation), unquote(opts)}
+    end
+  end
+
   # DSL callback generation necessarily contains several definition clauses.
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defmacro __before_compile__(env) do
@@ -1488,6 +1529,12 @@ defmodule Spectre.Agent do
   defp parse_handler({:action, _meta, [action, opts]}, caller),
     do: {:action, eval_action_arg(action, caller), eval_opts(opts, caller)}
 
+  defp parse_handler({:call_operation, _meta, [operation]}, caller),
+    do: {:operation, eval_action_arg(operation, caller), []}
+
+  defp parse_handler({:call_operation, _meta, [operation, opts]}, caller),
+    do: {:operation, eval_action_arg(operation, caller), eval_opts(opts, caller)}
+
   defp parse_handler({:__block__, _meta, [one]}, caller), do: parse_handler(one, caller)
 
   defp parse_handler(other, caller) do
@@ -1503,7 +1550,7 @@ defmodule Spectre.Agent do
         case Macro.expand_once(other, caller) do
           ^other ->
             raise ArgumentError,
-                  "expected ask/run/reply/action handler or reason/act/work handler, got: #{Macro.to_string(other)}"
+                  "expected ask/run/reply/action handler, call_operation, or reason/act/work handler, got: #{Macro.to_string(other)}"
 
           expanded ->
             parse_handler(expanded, caller)

@@ -44,6 +44,7 @@ defmodule Spectre.Rule do
           | {:work, module(), keyword()}
           | {:reply, term(), keyword()}
           | {:action, Spectre.Action.ref(), keyword()}
+          | {:operation, term(), keyword()}
 
   @type t :: %__MODULE__{
           label: atom(),

@@ -35,12 +35,27 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.6` adds executable foundation and Stack conformance gates,
-> one golden migration matrix from `0.1.6` through `0.2.5`, and the explicit
-> migration ledger toward `0.3`. Durable writer schemas are unchanged. The full suite exceeds 90%
+> Spectre `0.2.7` adds data-only runtime Skills, deterministic Routing
+> projections, host-governed mount/replace/disable, per-Skill prompt budgets,
+> and exact Definition-pinned continuation draining. Durable writer schemas are
+> unchanged. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.2.7 Runtime Skills and Routing Projections
+
+Version `0.2.7` lowers compiled and runtime-authored Skills into one canonical
+Definition model. Runtime Skills contain structured applicability, exact Flow
+routes, closed capped prompt fragments, and stable references to operations
+already registered by the host Agent—never callbacks or executable templates.
+
+Hosts manage mount, replacement, disable, and continuation release through
+authority-checked revision CAS. Ambiguous applicability fails closed; disabling
+a Skill immediately removes it from routing while exact Definition-pinned
+continuations drain. The kernel prompt reserve cannot be evicted by a mounted
+Skill. See [Runtime Skills and Routing Projections](docs/RUNTIME_SKILLS.md) and
+[Migrating to 0.2.7](docs/MIGRATING_TO_0_2_7.md).
 
 ## 0.2.6 Foundation Conformance Gate
 
@@ -256,7 +271,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.6"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.7"}
   ]
 end
 ```
@@ -776,6 +791,8 @@ adapters on startup, and can stop after an idle timeout.
   explicit Skill-state branch choices.
 - [Migrating to 0.2.6](docs/MIGRATING_TO_0_2_6.md) - unchanged writer schemas,
   golden fixtures, and application/satellite conformance rollout.
+- [Migrating to 0.2.7](docs/MIGRATING_TO_0_2_7.md) - runtime Skill authority,
+  prompt budgeting, Routing projections, and continuation drains.
 - [Preparing for 0.3](docs/MIGRATING_TO_0_3.md) - the compatibility ledger and
   required lowering path for reflective runtime work.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
@@ -797,7 +814,9 @@ adapters on startup, and can stop after an idle timeout.
 - [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
   matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
-- [0.2.6 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [Runtime Skills](docs/RUNTIME_SKILLS.md) - declarative Skill construction,
+  host lifecycle, operation requests, prompt budgets, and Routing projections.
+- [0.2.7 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

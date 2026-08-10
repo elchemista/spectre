@@ -4,6 +4,17 @@ defmodule Spectre.Operation.Registry do
   alias Spectre.Operation.Definition
   alias Spectre.Operation.Spec
 
+  @doc "Returns whether an operation id belongs to an Agent's closed registry."
+  @spec registered?(module(), term()) :: boolean()
+  def registered?(agent, id) when is_atom(agent) do
+    case agent_operations(agent) do
+      {:ok, operations} -> Map.has_key?(operations, id)
+      {:error, _reason} -> false
+    end
+  end
+
+  def registered?(_agent, _id), do: false
+
   @spec all(module(), Definition.t()) :: {:ok, %{optional(term()) => Spec.t()}} | {:error, term()}
   def all(agent, %Definition{} = definition) when is_atom(agent) do
     with {:ok, agent_operations} <- agent_operations(agent),

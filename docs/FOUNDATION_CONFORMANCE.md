@@ -96,6 +96,12 @@ The fixture is append-only evidence. A later release may add a new writer and
 reader without rewriting the historical bytes or changing what an older
 release produced.
 
+Spectre 0.2.7 extends the live matrix with runtime Skill Definition,
+applicability, prompt-budget, Routing projection, and index-profile schema
+versions. It does not rewrite the 0.2.6 digest manifest or change any durable
+State, Run, or Instance reader/writer contract. The separate
+`0.2.7/runtime-skill-routing-v1.json` fixture pins the new derived identities.
+
 ## What the gate does not authorize
 
 Conformance proves structural compatibility. It does not grant authority,

@@ -34,6 +34,15 @@ their private checkpoints and complete dependency set.
 This integrated gate does not replace the deeper restart, crash, race, owner
 fence, and ambiguous-commit suites below. A foundation release requires both.
 
+`test/runtime_skill_definition_test.exs` and
+`test/runtime_skill_lifecycle_test.exs` add the 0.2.7 gate. They prove
+compiled/runtime semantic equivalence, JSON-shaped data lowering, code-ref and
+prompt rejection, anti-hijack evaluation, versioned Routing projection
+identity, authority and revision fences, kernel prompt reservation,
+equal-specificity ambiguity, and Definition-pinned replace/disable drains. The
+permanent 0.2.7 fixture pins Definition, semantic, projection, and cache
+digests.
+
 ## What a contract test must prove
 
 A passing output assertion is not enough for code that crosses process,

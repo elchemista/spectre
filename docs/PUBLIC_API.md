@@ -1,6 +1,6 @@
-# Spectre public API — 0.2.6
+# Spectre public API — 0.2.7
 
-This file is the normative public API manifest for Spectre `0.2.6`. It retains
+This file is the normative public API manifest for Spectre `0.2.7`. It retains
 the recoverable `0.1.6` conversational surface and adds the vNext operational
 surface. Compatibility guarantees apply only to the modules and callables
 listed below. Any module, function, macro, or callback not listed here is an
@@ -43,7 +43,7 @@ type, and struct contract.
 - `Spectre.ActionProtection`
   - functions: `protected_by/2`, `protected_by/3`
 - `Spectre.Agent`
-  - macros: `__using__/1`, `act/1`, `act/2`, `action/1`, `action/2`, `action_planner/1`, `action_planner/2`, `action_provider/2`, `action_provider/3`, `actions/1`, `actions/2`, `actions/3`, `after_action/2`, `arbitrator/1`, `arbitrator/2`, `ask/1`, `ask/2`, `before_action/2`, `checkpoint_store/1`, `checkpoint_store/2`, `classifier/1`, `classifier/2`, `embedding/1`, `embedding/2`, `fail/1`, `fail/2`, `flow/2`, `flow/3`, `history/1`, `history/2`, `idle/1`, `inject/1`, `inject/2`, `input_pipeline/1`, `interrupt/2`, `interrupt/3`, `journal/1`, `journal/2`, `memory/1`, `model/1`, `model/2`, `operation/2`, `operation/3`, `policy/2`, `protect/1`, `protect/2`, `reason/1`, `reason/2`, `reply/1`, `reply/2`, `requires_action/1`, `requires_action/2`, `requires_tool/1`, `requires_tool/2`, `route_operation_events/0`, `route_operation_events/1`, `router/1`, `run/1`, `run/2`, `shutdown/1`, `skill/1`, `skill/2`, `state/1`, `turn_handler/1`, `turn_handler/2`, `turn_handlers/1`, `work/1`, `work/2`
+  - macros: `__using__/1`, `act/1`, `act/2`, `action/1`, `action/2`, `action_planner/1`, `action_planner/2`, `action_provider/2`, `action_provider/3`, `actions/1`, `actions/2`, `actions/3`, `after_action/2`, `arbitrator/1`, `arbitrator/2`, `ask/1`, `ask/2`, `before_action/2`, `call_operation/1`, `call_operation/2`, `checkpoint_store/1`, `checkpoint_store/2`, `classifier/1`, `classifier/2`, `embedding/1`, `embedding/2`, `fail/1`, `fail/2`, `flow/2`, `flow/3`, `history/1`, `history/2`, `idle/1`, `inject/1`, `inject/2`, `input_pipeline/1`, `interrupt/2`, `interrupt/3`, `journal/1`, `journal/2`, `memory/1`, `model/1`, `model/2`, `operation/2`, `operation/3`, `policy/2`, `protect/1`, `protect/2`, `reason/1`, `reason/2`, `reply/1`, `reply/2`, `requires_action/1`, `requires_action/2`, `requires_operation/1`, `requires_operation/2`, `requires_tool/1`, `requires_tool/2`, `route_operation_events/0`, `route_operation_events/1`, `router/1`, `run/1`, `run/2`, `shutdown/1`, `skill/1`, `skill/2`, `state/1`, `turn_handler/1`, `turn_handler/2`, `turn_handlers/1`, `work/1`, `work/2`
 - `Spectre.AgentRef`
   - functions: `from_data/1`, `from_id/1`, `from_id/2`, `key/1`, `legacy_key/1`, `new/1`, `new/2`, `schema_version/0`, `to_data/1`
 - `Spectre.Awaitable`
@@ -209,6 +209,8 @@ type, and struct contract.
   - functions: `from_loop/1`, `validate/1`, `validate!/1`
 - `Spectre.Operation.Request`
   - functions: `new/1`, `new/2`, `new/3`, `validate/1`, `validate!/1`
+- `Spectre.Operation.Registry`
+  - functions: `all/2`, `registered?/2`, `resolve/3`
 - `Spectre.Operation.Result`
   - functions: `new/3`, `new/4`, `validate/1`, `validate!/1`
 - `Spectre.Operation.Retry`
@@ -255,6 +257,8 @@ type, and struct contract.
   - callbacks: `id/0`, `project/2`, `version/0`
 - `Spectre.Projection.Audit`
   - functions: `id/0`, `project/2`, `version/0`
+- `Spectre.Projection.Routing`
+  - functions: `id/0`, `project/2`, `version/0`
 - `Spectre.Prompt`
   - functions: `build/3`, `build/4`, `render/3`, `render/4`, `resolve/3`, `resolve/4`
 - `Spectre.Prompt.Fragment`
@@ -284,6 +288,8 @@ type, and struct contract.
   - functions: `from_result/3`, `from_result/4`, `from_rule/3`, `from_rule/4`, `new/1`, `to_route/1`, `to_route/2`
 - `Spectre.Router.Context`
   - functions: `add_candidate/2`, `add_candidates/2`, `halt/1`, `halted?/1`, `hard_candidate?/1`, `hard_candidate_locked?/1`, `put_arbitration/2`, `put_error/2`, `put_input/2`, `put_local_result/2`, `put_route/2`, `put_trace/2`
+- `Spectre.Router.IndexProfile`
+  - functions: `default/0`, `digest/1`, `from_data/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`
 - `Spectre.Router.DefaultPipeline`
 - `Spectre.Router.LLMClassifier`
   - functions: `available?/1`, `classify/2`, `classify/3`, `enabled?/1`
@@ -328,6 +334,15 @@ type, and struct contract.
   - functions: `agent/1`, `ask/2`, `ask/3`, `child_spec/1`, `execute/2`, `execute/3`, `reset/1`, `reset/2`, `resolve_policy/3`, `resolve_policy/4`, `start_link/1`, `state/1`, `turn/2`, `turn/3`
 - `Spectre.Skill`
   - macros: `__using__/1`
+- `Spectre.Skill.Applicability`
+  - functions: `conflicts?/2`, `from_data/1`, `matches?/2`, `new/1`, `new!/1`, `schema_version/0`, `specificity/1`, `to_data/1`
+- `Spectre.Skill.Definition`
+  - functions: `anti_hijack/1`, `applicability/1`, `canonical/1`, `equivalent?/2`, `from_canonical/1`, `from_compiled/1`, `from_compiled/2`, `new/1`, `new!/1`, `operation_refs/1`, `origin/1`, `prompt_budget/1`, `prompt_fragments/1`, `ref/1`, `route/2`, `routes/1`, `runtime/1`, `semantic_ir/1`
+- `Spectre.Skill.PromptBudget`
+  - functions: `digest/1`, `from_data/1`, `new/1`, `new/2`, `new!/1`, `new!/2`, `schema_version/0`, `to_data/1`
+- `Spectre.Skill.Runtime`
+  - functions: `capability/1`, `claim_continuation/3`, `claim_continuation/4`, `continuation/2`, `disable/2`, `disable/3`, `mount/3`, `mount/4`, `mounts/1`, `new/2`, `new/3`, `new!/2`, `new!/3`, `release_continuation/2`, `release_continuation/3`, `replace/3`, `replace/4`, `respond/2`, `respond/3`, `respond/4`, `route/2`, `route/3`, `status/2`
+- `Spectre.Skill.Runtime.Response`
 - `Spectre.Skill.StateBinding`
   - functions: `activation_pointer/1`, `activation_pointer?/1`, `decode/1`, `encode/1`, `from_data/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`, `transition_retention/3`, `transition_status/3`, `update/3`
 - `Spectre.Skill.Mount`

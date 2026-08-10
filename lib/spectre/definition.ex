@@ -504,7 +504,9 @@ defmodule Spectre.Definition do
 
   @spec requirement_modes([map()]) :: map()
   defp requirement_modes(requirements) do
-    Map.new(requirements, fn requirement -> {requirement.name, requirement.mode} end)
+    requirements
+    |> Enum.reject(&(Map.get(&1, :kind, :action) == :operation))
+    |> Map.new(fn requirement -> {requirement.name, requirement.mode} end)
   end
 
   @spec materialize_protection(map(), scope(), map()) :: map()

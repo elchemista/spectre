@@ -58,6 +58,13 @@ defmodule Spectre.Foundation.Conformance do
         manifest_contract: 2,
         candidate_schema: 1
       },
+      skill_runtime: %{
+        definition_schema: 1,
+        applicability_schema: 1,
+        prompt_budget_schema: 1,
+        routing_projection: 1,
+        index_profile: 1
+      },
       stack: %{module_input_contract: 1, sealed_runtime_contract: 2},
       golden_path: [
         {Spectre, :ask, 2},
@@ -65,7 +72,10 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre, :instance, 3},
         {Spectre, :activate, 2},
         {Spectre.Definition, :canonical, 1},
-        {Spectre.Definition, :manifest, 1}
+        {Spectre.Definition, :manifest, 1},
+        {Spectre.Skill.Definition, :new, 1},
+        {Spectre.Skill.Runtime, :mount, 4},
+        {Spectre.Projection.Routing, :project, 2}
       ]
     }
   end
