@@ -95,6 +95,10 @@ defmodule SpectreDefinitionCanonicalTest do
   alias SpectreDefinitionCanonicalTest.InvalidProjection
   alias SpectreDefinitionCanonicalTest.UnsafePromptAgent
 
+  test "release identifies the canonical projection foundation as 0.2.1" do
+    assert Spectre.version() == "0.2.1"
+  end
+
   test "compiled Agent and mounted Skill lower into one portable canonical envelope" do
     assert {:ok, canonical} = Canonical.lower(Agent)
     assert Definition.canonical!(Agent) == canonical
@@ -266,6 +270,24 @@ defmodule SpectreDefinitionCanonicalTest do
                schema_ref: "spectre.sample/1",
                criticality: :optional,
                payload: %{}
+             )
+
+    assert {:error, {:secret_component_payload, [:api_key]}} =
+             Component.new(
+               component_type: :sample,
+               schema_ref: "spectre.sample/1",
+               criticality: :must_understand,
+               payload: %{api_key: "not-canonical"}
+             )
+
+    quoted = quote(do: System.get_env("SECRET"))
+
+    assert {:error, {:executable_component_ast, []}} =
+             Component.new(
+               component_type: :sample,
+               schema_ref: "spectre.sample/1",
+               criticality: :must_understand,
+               payload: quoted
              )
 
     assert_raise ArgumentError, ~r/invalid Definition component/, fn ->

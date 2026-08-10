@@ -1,6 +1,6 @@
-# Spectre public API — 0.2.0
+# Spectre public API — 0.2.1
 
-This file is the normative public API manifest for Spectre `0.2.0`. It retains
+This file is the normative public API manifest for Spectre `0.2.1`. It retains
 the recoverable `0.1.6` conversational surface and adds the vNext operational
 surface. Compatibility guarantees apply only to the modules and callables
 listed below. Any module, function, macro, or callback not listed here is an
@@ -48,6 +48,8 @@ type, and struct contract.
   - functions: `key/1`, `new/1`, `new/2`
 - `Spectre.Awaitable`
   - functions: `accept/2`, `cancel/1`, `expire/1`, `increment/1`, `open_policy/2`, `open_policy/3`, `reject/2`
+- `Spectre.Canonical.Value`
+  - functions: `decode/1`, `decode/2`, `digest/1`, `digest/2`, `digest!/1`, `digest!/2`, `digest_algorithm/0`, `encode/1`, `encode/2`, `encode!/1`, `encode!/2`, `validate/1`, `validate/2`, `version/0`
 - `Spectre.Classifier`
   - functions: `child_spec/1`, `classify/1`, `classify/2`, `classify_once/2`, `start_link/0`, `start_link/1`
 - `Spectre.Classifier.Embedding`
@@ -62,7 +64,13 @@ type, and struct contract.
 - `Spectre.Context`
   - functions: `halt/1`, `lifecycle_run_id/1`, `put_error/2`, `put_trace/2`
 - `Spectre.Definition`
-  - functions: `after_actions/1`, `fetch/1`, `fetch!/1`, `for_scope/2`, `for_scope!/2`, `injections/2`, `mount/2`, `new/1`, `policy/2`, `policy_name/1`, `policy_ref/2`, `policy_scope/1`, `prompt_root/2`, `protections/1`, `rules/1`
+  - functions: `after_actions/1`, `canonical/1`, `canonical/2`, `canonical!/1`, `canonical!/2`, `fetch/1`, `fetch!/1`, `for_scope/2`, `for_scope!/2`, `injections/2`, `mount/2`, `new/1`, `policy/2`, `policy_name/1`, `policy_ref/2`, `policy_scope/1`, `prompt_root/2`, `protections/1`, `rules/1`
+- `Spectre.Definition.Canonical`
+  - functions: `canonicalization_version/0`, `contract_version/0`, `decode/1`, `digest/1`, `encode/1`, `encode!/1`, `fetch_component/2`, `from_data/1`, `lower/1`, `lower/2`, `lower!/1`, `lower!/2`, `new/1`, `new!/1`, `ref/1`, `to_data/1`
+- `Spectre.Definition.Component`
+  - functions: `from_data/1`, `new/1`, `new!/1`, `to_data/1`
+- `Spectre.Definition.Ref`
+  - functions: `new/1`, `parse/1`, `parse/2`, `to_string/1`, `valid?/1`, `verify/2`
 - `Spectre.Definition.Validator`
   - functions: `validate!/1`
 - `Spectre.Effect`
@@ -206,10 +214,15 @@ type, and struct contract.
   - functions: `match/2`
 - `Spectre.Policy.Resolution`
   - functions: `new/3`, `new/4`, `to_tuple/1`
+- `Spectre.Projection`
+  - functions: `generate/1`, `generate/2`, `generate/3`, `verify/2`
+  - callbacks: `id/0`, `project/2`, `version/0`
+- `Spectre.Projection.Audit`
+  - functions: `id/0`, `project/2`, `version/0`
 - `Spectre.Prompt`
   - functions: `build/3`, `build/4`, `render/3`, `render/4`, `resolve/3`, `resolve/4`
 - `Spectre.Prompt.Fragment`
-  - functions: `base/1`, `new/2`, `new/3`
+  - functions: `base/1`, `canonical/1`, `canonical!/1`, `canonical_data/1`, `close_template/1`, `new/2`, `new/3`
 - `Spectre.Prompt.Operation`
   - functions: `new/2`, `new/3`, `normalize/2`, `put_scope/2`
 - `Spectre.Prompt.Plan`

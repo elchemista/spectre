@@ -242,14 +242,12 @@ defmodule Spectre.Definition.Canonical.Data do
   @spec module_atom?(atom()) :: boolean()
   defp module_atom?(module), do: module |> Atom.to_string() |> String.starts_with?("Elixir.")
 
-  @spec sensitive_key?(term()) :: boolean()
+  @spec sensitive_key?(atom() | String.t()) :: boolean()
   defp sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_key?()
 
   defp sensitive_key?(key) when is_binary(key) do
     MapSet.member?(@sensitive_keys, String.downcase(key))
   end
-
-  defp sensitive_key?(_key), do: false
 
   @spec unsupported_kind(term()) :: atom()
   defp unsupported_kind(value) when is_pid(value), do: :pid

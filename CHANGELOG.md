@@ -4,6 +4,45 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.1 — 2026-08-10
+
+### Added
+
+- Added `Spectre.Canonical.Value`, a versioned portable binary codec with
+  explicit value tags, canonical map-key ordering, atom-safe decode, bounded
+  collections/depth/size, and opt-in struct allowlists. Definition identity no
+  longer depends on Erlang external-term encoding.
+- Added typed `Spectre.Definition.Canonical` envelopes,
+  `Spectre.Definition.Component`, and content-addressed
+  `Spectre.Definition.Ref` values. Compiled Agents and mounted Skills lower into
+  one IR through `Spectre.Definition.canonical/2`.
+- Compiled prompt assets now lower into governed canonical fragments carrying
+  closed placeholder schemas, provenance, visibility, trust, priority, budget,
+  token cap, condition Ref, and digest metadata.
+- Added the deterministic projection interface and exact
+  `Spectre.Projection.Audit` generator. Projection digests bind Definition Ref,
+  generator ID/version, optional evidence digest, and content.
+- Added a canonical Definition compatibility fixture exercised by both OTP 28
+  and OTP 29 CI jobs, plus property coverage for map order and cross-process
+  digest stability.
+
+### Safety
+
+- Canonical data rejects PID, port, reference, function, improper-list,
+  non-byte-aligned bitstring, non-finite float, unknown atom, noncanonical map,
+  executable EEx, and known secret-bearing configuration boundaries.
+- Executable compiled callbacks and modules lower to explicit `compiled_only`
+  code Refs. Runtime Definition data contains neither callback functions nor
+  quoted AST.
+- Definition and projection digests attest integrity only; they do not imply
+  publisher trust, approval, or current authority.
+
+### Compatibility
+
+- Existing module-first Agents, Skills, Instance identity, Runs, checkpoints,
+  and execution semantics remain unchanged. Definition Store, Manifest V2,
+  activation, and runtime-authored Skills are not part of this release.
+
 ## 0.2.0 — 2026-08-08
 
 ### Fixed

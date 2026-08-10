@@ -4,12 +4,22 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.0` is the first vNext core release. The exact modules, callables,
-DSL forms, callbacks, types, and struct fields covered by its compatibility
+Spectre `0.2.1` extends the first vNext core release with canonical Definition
+identity and Audit projections. The exact modules, callables, DSL forms,
+callbacks, types, and struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
 0.1.6 conversational baseline remains included. This guide explains that
 surface but does not enlarge it. Anything absent from the manifest is an
 implementation detail even when it is exported or visible.
+
+## Canonical behavior identity
+
+Use `Spectre.Definition.canonical/2` to lower a compiled Agent or Skill into
+portable typed data, then `Spectre.Definition.Canonical.ref/1` for its content
+identity. `Spectre.Projection.generate/1` returns the exact Audit projection;
+its digest also binds the generator ID and version. These APIs inspect declared
+behavior only: they do not activate a Definition or grant authority. See
+[Canonical Definitions and Audit Projections](CANONICAL_DEFINITIONS.md).
 
 ## Stack installation
 

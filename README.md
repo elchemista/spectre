@@ -35,10 +35,23 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.0` is the first vNext core release. The full suite exceeds 90%
+> Spectre `0.2.1` adds content-addressed canonical Definitions and exact Audit
+> projections to the vNext core. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.2.1 Canonical Definition Foundation
+
+Version `0.2.1` lowers compiled Agents and Skills into a portable, typed
+Definition envelope. `Spectre.Definition.Ref` gives that envelope a stable
+SHA-256 identity; governed prompt assets become closed, provenance-bearing
+snapshots; and `Spectre.Projection.Audit` exposes the exact canonical structure
+without model-generated interpretation.
+
+This release does not change Instance activation, Run identity, checkpoints,
+or execution ownership. See
+[Canonical Definitions and Audit Projections](docs/CANONICAL_DEFINITIONS.md).
 
 ## 0.2.0 Operational Runtime
 
@@ -69,7 +82,7 @@ validation with no publication. The normative surface is the
 [public API manifest](docs/PUBLIC_API.md).
 
 Permanent State v5 and Run v1 fixtures under
-`test/fixtures/compatibility/0.1.6` continue to protect recovery in `0.2.0`.
+`test/fixtures/compatibility/0.1.6` continue to protect recovery in `0.2.x`.
 Core has no dependency on Kinetic, including in its test environment.
 
 ## Lifecycle At A Glance
@@ -175,7 +188,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.0"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.1"}
   ]
 end
 ```
@@ -660,6 +673,9 @@ adapters on startup, and can stop after an idle timeout.
   complete-turn ownership, Pulse protocol transport, and composition rules.
 - [DSL](docs/DSL.md) - agent macros, flows, handlers, policies, actions, input
   pipeline, and prompts.
+- [Canonical Definitions and Audit Projections](docs/CANONICAL_DEFINITIONS.md) -
+  portable Definition identity, governed prompt snapshots, and exact Audit
+  projection contracts.
 - [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action
   requirements, prompts, policies, and complete examples.
 - [Stack](docs/STACK.md) - installable packages, immutable definitions,
@@ -691,7 +707,7 @@ adapters on startup, and can stop after an idle timeout.
 - [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
   matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
-- [0.2.0 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [0.2.1 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

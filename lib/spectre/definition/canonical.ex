@@ -20,6 +20,11 @@ defmodule Spectre.Definition.Canonical do
   @kinds [:agent, :skill]
   @origins [:compiled, :runtime]
 
+  # `t()` describes a valid envelope, while `new/1` also validates malformed
+  # maps supplied at the public boundary. Dialyzer therefore considers the
+  # defensive non-list component clause unreachable in the valid call graph.
+  @dialyzer {:nowarn_function, validate_component_header: 1}
+
   @enforce_keys [
     :canonicalization_version,
     :contract_version,
