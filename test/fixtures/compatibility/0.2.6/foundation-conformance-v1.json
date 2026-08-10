@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "release": "0.2.6",
+  "foundation_contract": 1,
+  "durable_formats": {
+    "state": {"writer": 5, "readers": [2, 3, 4, 5]},
+    "run": {"writer": 2, "readers": [1, 2]},
+    "instance": {"writer": 4, "readers": [1, 2, 3, 4]}
+  },
+  "definition": {
+    "canonicalization": 1,
+    "contract": 1,
+    "manifest_schema": 1,
+    "manifest_contract": 2,
+    "candidate_schema": 1
+  },
+  "stack": {
+    "module_input_contract": 1,
+    "sealed_runtime_contract": 2
+  },
+  "files": [
+    {
+      "path": "0.1.6/state-v5.json",
+      "sha256": "6af500607010222fbf3d9f0be1d8b94adb0e1051140b3949470dcb28b45cee1d"
+    },
+    {
+      "path": "0.1.6/run-v1.checkpoint.base64",
+      "sha256": "7bbcf6f34a4add08f3d49f94a26869861ffe51d84a8170c4b58fda2784664cc5"
+    },
+    {
+      "path": "0.2.0/canonical-v1.json.base64",
+      "sha256": "ad93d3ce6cd5caf8970f995d6831dbcab942d3e88e00e445ed462313341b8e92"
+    },
+    {
+      "path": "0.2.1/definition-canonical-v1.base64",
+      "sha256": "6cf1865f57fa6300393a27ccde36b6f63761621f721a398569cde4d30ee16efa"
+    },
+    {
+      "path": "0.2.2/definition-manifest-v2.base64",
+      "sha256": "e198b6722a171d9d3fd6fd8ec398f7a64ee741ffee6a158ccbafd9d8f63c2483"
+    },
+    {
+      "path": "0.2.3/identity-activation-canonical-v2.json.base64",
+      "sha256": "1aeb0d6e310d8bb9137c29171e0bb4eb6dca72ac847fb80800f5da0e53bba488"
+    },
+    {
+      "path": "0.2.4/event-lifecycle-canonical-v3.json.base64",
+      "sha256": "79e6016e64b56a31ceb99e2f1c3e5070c0c39178c6dca63c58665f35d91ae299"
+    },
+    {
+      "path": "0.2.5/skill-state-canonical-v4.json.base64",
+      "sha256": "9588a1fd63496b8a80231dbf55bcca7df22f0529fbd3085d2a32251647ebca5f"
+    }
+  ]
+}

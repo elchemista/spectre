@@ -4,6 +4,35 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.6 — 2026-08-10
+
+### Added
+
+- Added `Spectre.Foundation.Conformance`, an ExUnit-independent public gate
+  that performs real decode, migration, current validation, and re-encoding
+  for State, Run, and canonical Instance checkpoints.
+- Added Definition/Manifest conformance for canonical bytes and compiled
+  module-first values, including stable Definition, authority, closure, and
+  Manifest evidence.
+- Added `Spectre.Stack.Conformance`, which compiles a complete satellite
+  package matrix through the real Stack invariants and rejects incompatible
+  versions, missing requirements, conflicts, duplicate packages, and
+  capability ownership collisions.
+- Added a permanent 0.2.6 golden fixture that pins every core compatibility
+  artifact from 0.1.6 through 0.2.5 and the complete schema/contract matrix.
+
+### Migration and safety
+
+- No durable writer changed: State remains v5, Run remains v2, and canonical
+  Instance checkpoints remain schema 4. Definition, Manifest, Candidate, and
+  Stack contracts are unchanged.
+- Added integrated compiled Agent+Skill, legacy migration, corruption, and
+  Stack composition coverage. Existing restart, activation-race, owner-fence,
+  and ambiguous persistence suites remain part of the same release gate.
+- Added migration documentation for 0.2.6 and an explicit 0.2-to-0.3 ledger.
+  Runtime-authored values must lower into the existing canonical models, and
+  publication or activation remains an explicit host action.
+
 ## 0.2.5 — 2026-08-10
 
 ### Added

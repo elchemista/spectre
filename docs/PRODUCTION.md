@@ -11,6 +11,13 @@ suite exceeds 90% line coverage, but public APIs may still change in a minor
 `0.x` release. Pin a compatible minor version and read `CHANGELOG.md` before
 upgrading. The exact compatibility boundary is listed in `PUBLIC_API.md`.
 
+Before deploying an upgrade, run `Spectre.Foundation.Conformance` against
+representative durable backups and verify every compiled Definition/Manifest
+pair. Umbrella applications and satellite suites should also run
+`Spectre.Stack.Conformance` against the complete installed package set. These
+gates complement, rather than replace, restart and side-effect idempotency
+tests. See [Foundation Conformance](FOUNDATION_CONFORMANCE.md).
+
 ## State persistence
 
 Use a durable state adapter for multi-process, multi-node, or restart-safe

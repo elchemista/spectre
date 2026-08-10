@@ -1,6 +1,6 @@
-# Spectre public API — 0.2.5
+# Spectre public API — 0.2.6
 
-This file is the normative public API manifest for Spectre `0.2.5`. It retains
+This file is the normative public API manifest for Spectre `0.2.6`. It retains
 the recoverable `0.1.6` conversational surface and adds the vNext operational
 surface. Compatibility guarantees apply only to the modules and callables
 listed below. Any module, function, macro, or callback not listed here is an
@@ -118,6 +118,8 @@ type, and struct contract.
 - `Spectre.Extension.Mount`
 - `Spectre.ExternalIdentity`
   - functions: `from_source/1`, `from_source/2`, `key/1`, `new/1`
+- `Spectre.Foundation.Conformance`
+  - functions: `contract_version/0`, `matrix/0`, `verify_checkpoint/1`, `verify_definition/2`, `verify_instance_checkpoint/1`, `verify_run/1`, `verify_state/1`
 - `Spectre.Event.Envelope`
   - functions: `admit/2`, `admitted?/1`, `classes/0`, `decode/1`, `encode/1`, `from_data/1`, `intent_digest/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`
 - `Spectre.Flow.Constraint`
@@ -339,6 +341,8 @@ type, and struct contract.
   - functions: `assert_installable!/1`, `to_v2/1`, `to_v2/2`, `verify_installable/1`, `verify_manifest/2`, `version/0`
 - `Spectre.Stack.Contract.V2`
   - functions: `from_compiled/2`, `from_compiled/3`, `from_v1/1`, `from_v1/2`, `from_v1!/1`, `from_v1!/2`, `new/2`, `new!/2`, `to_data/1`, `version/0`
+- `Spectre.Stack.Conformance`
+  - functions: `contract_version/0`, `run/1`, `run/2`
 - `Spectre.Stack.DSL`
   - functions: `compile!/3`
 - `Spectre.Stack.Definition`

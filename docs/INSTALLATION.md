@@ -10,7 +10,7 @@ release tag:
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.5"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.6"}
   ]
 end
 ```
@@ -75,7 +75,7 @@ library when model replies use Action Language or tool planning:
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.5"},
+    {:spectre, github: "elchemista/spectre", tag: "0.2.6"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic"}
   ]
 end
@@ -105,7 +105,7 @@ application that needs local embeddings:
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.5"},
+    {:spectre, github: "elchemista/spectre", tag: "0.2.6"},
     {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"}
   ]
 end

@@ -4,14 +4,24 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.5` extends the vNext core with first-class generational Skill
-state, explicit rollback branches, reference-safe retention, and schema-4
-checkpoints. The exact modules, callables, DSL forms, callbacks, types, and
+Spectre `0.2.6` adds executable durable-foundation, Definition, and complete
+Stack conformance gates while retaining the schema-4 Skill-state runtime. The
+exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
 0.1.6 conversational baseline remains included. This guide explains that
 surface but does not enlarge it. Anything absent from the manifest is an
 implementation detail even when it is exported or visible.
+
+## Verify the foundation before an upgrade
+
+Use `Spectre.Foundation.Conformance` to decode, migrate, validate, and rewrite
+representative State, Run, and canonical Instance checkpoints. Use
+`verify_definition/2` for both fixture bytes and compiled
+Definition+Manifest pairs. Satellite suites should pass their entire package
+set to `Spectre.Stack.Conformance.run/2` so cross-package requirements,
+conflicts, compatibility, and ownership collisions are checked together. See
+[Foundation Conformance](FOUNDATION_CONFORMANCE.md).
 
 ## Canonical behavior identity
 

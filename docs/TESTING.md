@@ -22,6 +22,18 @@ The repository coverage threshold is 90%. Do not lower or exclude modules to
 make a change pass; add a meaningful test or explain why a private branch is
 unreachable and simplify the implementation.
 
+## Foundation release gate
+
+`test/foundation_conformance_test.exs` verifies the permanent 0.2.6 digest
+manifest, migrates every guaranteed core fixture, exercises both fixture and
+compiled Agent+Skill Definition paths, compiles a cross-package Stack matrix,
+and rejects corrupt formats, incompatible versions, and ambiguous capability
+ownership. Applications should use the same public conformance modules for
+their private checkpoints and complete dependency set.
+
+This integrated gate does not replace the deeper restart, crash, race, owner
+fence, and ambiguous-commit suites below. A foundation release requires both.
+
 ## What a contract test must prove
 
 A passing output assertion is not enough for code that crosses process,

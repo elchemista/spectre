@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.5"
+  @version "0.2.6"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -16,6 +16,7 @@ defmodule Spectre.MixProject do
     "docs/IDENTITY_ACTIVATION.md",
     "docs/EVENT_LIFECYCLE.md",
     "docs/SKILL_STATE.md",
+    "docs/FOUNDATION_CONFORMANCE.md",
     "docs/STACK.md",
     "docs/RUNS.md",
     "docs/INSTANCES.md",
@@ -24,6 +25,8 @@ defmodule Spectre.MixProject do
     "docs/MIGRATING_TO_0_2_3.md",
     "docs/MIGRATING_TO_0_2_4.md",
     "docs/MIGRATING_TO_0_2_5.md",
+    "docs/MIGRATING_TO_0_2_6.md",
+    "docs/MIGRATING_TO_0_3.md",
     "docs/SKILLS.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
@@ -140,6 +143,7 @@ defmodule Spectre.MixProject do
           "docs/IDENTITY_ACTIVATION.md",
           "docs/EVENT_LIFECYCLE.md",
           "docs/SKILL_STATE.md",
+          "docs/FOUNDATION_CONFORMANCE.md",
           "docs/STACK.md",
           "docs/RUNS.md",
           "docs/INSTANCES.md",
@@ -148,6 +152,8 @@ defmodule Spectre.MixProject do
           "docs/MIGRATING_TO_0_2_3.md",
           "docs/MIGRATING_TO_0_2_4.md",
           "docs/MIGRATING_TO_0_2_5.md",
+          "docs/MIGRATING_TO_0_2_6.md",
+          "docs/MIGRATING_TO_0_3.md",
           "docs/SKILLS.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
@@ -188,6 +194,7 @@ defmodule Spectre.MixProject do
           Spectre.Definition.Store,
           Spectre.Definition.Store.Conformance,
           Spectre.Definition.Store.Memory,
+          Spectre.Foundation.Conformance,
           Spectre.Execution.Closure,
           Spectre.Projection,
           Spectre.Projection.Audit
@@ -195,6 +202,7 @@ defmodule Spectre.MixProject do
         "Core API": [
           Spectre,
           Spectre.Stack,
+          Spectre.Stack.Conformance,
           Spectre.Agent,
           Spectre.Turn.Handler,
           Spectre.Turn.Handler.Request,
