@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.2.8"
+  @version "0.2.9"
 
   @doc """
   Returns the running Spectre library version.
@@ -182,8 +182,11 @@ defmodule Spectre do
   @doc "Returns the currently committed Definition Activation for an Instance."
   defdelegate activation(instance), to: Spectre.Instance
 
-  @doc "Activates a re-read bootstrap Candidate through generation CAS."
+  @doc "Activates a re-read bootstrap or approved governed Candidate through generation CAS."
   defdelegate activate(instance, candidate_ref, opts \\ []), to: Spectre.Instance
+
+  @doc "Rolls activation back to an explicitly selected ancestor Candidate."
+  defdelegate rollback(instance, candidate_ref, opts \\ []), to: Spectre.Instance
 
   @doc "Returns one active or explicitly selected first-class Skill-state branch."
   defdelegate skill_state(instance, skill_id, opts \\ []), to: Spectre.Instance

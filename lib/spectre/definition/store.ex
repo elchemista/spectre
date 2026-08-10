@@ -19,10 +19,13 @@ defmodule Spectre.Definition.Store do
   alias Spectre.Definition.ContractRegistry
   alias Spectre.Definition.Manifest
   alias Spectre.Definition.Ref
+  alias Spectre.Gate.Receipt, as: GateReceipt
+  alias Spectre.Gate.Receipt.Ref, as: GateReceiptRef
   alias Spectre.Instance.CheckpointStore
 
   @artifact_schema 1
   @candidate_artifact_schema 1
+  @gate_receipt_artifact_schema 1
   @receipt_schema 1
 
   @type durability :: :volatile | :durable
@@ -117,7 +120,7 @@ defmodule Spectre.Definition.Store do
   end
 
   @doc """
-  Publishes one immutable bootstrap Candidate after re-reading its Definition.
+  Publishes one immutable bootstrap or governed Candidate after re-reading its Definition.
 
   The Candidate is stored under its content-addressed `Candidate.Ref`. Its
   Manifest digest and publication id must match the verified Definition
@@ -126,14 +129,15 @@ defmodule Spectre.Definition.Store do
   @spec publish_candidate(config(), Candidate.t(), keyword()) ::
           {:ok, CandidateRef.t()} | {:error, term()}
   def publish_candidate(store, %Candidate{} = candidate, opts \\ []) when is_list(opts) do
-    ref = Candidate.ref(candidate)
-    key = candidate_key(ref)
-    encoded = encode_candidate_artifact(candidate, ref)
-
-    with {:ok, normalized} <- normalize(store),
+    with {:ok, candidate} <- Candidate.new(candidate),
+         ref = Candidate.ref(candidate),
+         key = candidate_key(ref),
+         encoded = encode_candidate_artifact(candidate, ref),
+         {:ok, normalized} <- normalize(store),
          :ok <- validate_durability_pair(Keyword.get(opts, :checkpoint_store), normalized),
          :ok <- verify_candidate_binding(normalized, candidate, opts),
          :ok <- ensure_candidate_parent(normalized, candidate.parent_ref, opts),
+         :ok <- verify_candidate_gate_receipts(normalized, candidate, opts),
          :ok <- adapter_put(normalized, key, encoded),
          :ok <- verify_readback(normalized, key, encoded) do
       {:ok, ref}
@@ -141,7 +145,7 @@ defmodule Spectre.Definition.Store do
   end
 
   @doc """
-  Re-reads and verifies a bootstrap Candidate and its bound Definition.
+  Re-reads and verifies a Candidate, its bound Definition, and governance receipts.
 
   Supplying an in-memory Candidate struct is never an activation authority;
   callers must pass the returned Ref to this function or to
@@ -155,8 +159,40 @@ defmodule Spectre.Definition.Store do
          {:ok, encoded} <- adapter_get(normalized, candidate_key(ref)),
          {:ok, candidate} <- decode_candidate_artifact(encoded, ref),
          :ok <- verify_candidate_binding(normalized, candidate, opts),
-         :ok <- ensure_candidate_parent(normalized, candidate.parent_ref, opts) do
+         :ok <- ensure_candidate_parent(normalized, candidate.parent_ref, opts),
+         :ok <- verify_candidate_gate_receipts(normalized, candidate, opts) do
       {:ok, candidate}
+    else
+      :not_found -> :not_found
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Publishes one immutable governance gate receipt."
+  @spec publish_gate_receipt(config(), GateReceipt.t(), keyword()) ::
+          {:ok, GateReceiptRef.t()} | {:error, term()}
+  def publish_gate_receipt(store, %GateReceipt{} = receipt, opts \\ []) when is_list(opts) do
+    with {:ok, receipt} <- GateReceipt.new(receipt),
+         ref = GateReceipt.ref(receipt),
+         key = gate_receipt_key(ref),
+         encoded = encode_gate_receipt_artifact(receipt, ref),
+         {:ok, normalized} <- normalize(store),
+         :ok <- validate_durability_pair(Keyword.get(opts, :checkpoint_store), normalized),
+         :ok <- adapter_put(normalized, key, encoded),
+         :ok <- verify_readback(normalized, key, encoded) do
+      {:ok, ref}
+    end
+  end
+
+  @doc "Re-reads and verifies a governance gate receipt by content Ref."
+  @spec fetch_gate_receipt(config(), GateReceiptRef.t() | String.t(), keyword()) ::
+          :not_found | {:ok, GateReceipt.t()} | {:error, term()}
+  def fetch_gate_receipt(store, ref, opts \\ []) when is_list(opts) do
+    with {:ok, normalized} <- normalize(store),
+         {:ok, ref} <- normalize_gate_receipt_ref(ref),
+         {:ok, encoded} <- adapter_get(normalized, gate_receipt_key(ref)),
+         {:ok, receipt} <- decode_gate_receipt_artifact(encoded, ref) do
+      {:ok, receipt}
     else
       :not_found -> :not_found
       {:error, _reason} = error -> error
@@ -210,6 +246,10 @@ defmodule Spectre.Definition.Store do
   @spec candidate_artifact_schema_version() :: pos_integer()
   def candidate_artifact_schema_version, do: @candidate_artifact_schema
 
+  @doc "Returns the immutable gate-receipt artifact schema version."
+  @spec gate_receipt_artifact_schema_version() :: pos_integer()
+  def gate_receipt_artifact_schema_version, do: @gate_receipt_artifact_schema
+
   @spec publication_receipt(Canonical.t(), Manifest.t(), term(), durability()) :: receipt()
   defp publication_receipt(canonical, manifest, store_id, durability) do
     base = %{
@@ -262,6 +302,45 @@ defmodule Spectre.Definition.Store do
     end
   end
 
+  @spec encode_gate_receipt_artifact(GateReceipt.t(), GateReceiptRef.t()) :: binary()
+  defp encode_gate_receipt_artifact(receipt, ref) do
+    {:ok, encoded_receipt} = GateReceipt.encode(receipt)
+
+    Value.encode!(%{
+      "schema_version" => @gate_receipt_artifact_schema,
+      "gate_receipt_ref" => GateReceiptRef.to_string(ref),
+      "gate_receipt" => encoded_receipt
+    })
+  end
+
+  @spec decode_gate_receipt_artifact(binary(), GateReceiptRef.t()) ::
+          {:ok, GateReceipt.t()} | {:error, term()}
+  defp decode_gate_receipt_artifact(encoded, expected_ref) do
+    with {:ok,
+          %{
+            "schema_version" => @gate_receipt_artifact_schema,
+            "gate_receipt_ref" => stored_ref,
+            "gate_receipt" => encoded_receipt
+          }} <- Value.decode(encoded),
+         true <- stored_ref == GateReceiptRef.to_string(expected_ref),
+         {:ok, receipt} <- GateReceipt.decode(encoded_receipt),
+         :ok <- GateReceiptRef.verify(expected_ref, receipt) do
+      {:ok, receipt}
+    else
+      false ->
+        {:error, :gate_receipt_store_lookup_mismatch}
+
+      {:ok, %{"schema_version" => version}} ->
+        {:error, {:unsupported_gate_receipt_store_artifact_schema, version}}
+
+      {:ok, value} ->
+        {:error, {:invalid_gate_receipt_store_artifact, shape(value)}}
+
+      {:error, reason} ->
+        {:error, {:gate_receipt_store_artifact_invalid, reason}}
+    end
+  end
+
   @spec verify_candidate_binding({module(), keyword()}, Candidate.t(), keyword()) ::
           :ok | {:error, term()}
   defp verify_candidate_binding(store, candidate, opts) do
@@ -295,6 +374,67 @@ defmodule Spectre.Definition.Store do
       {:ok, _candidate} -> :ok
       :not_found -> {:error, {:missing_candidate_parent, CandidateRef.to_string(parent_ref)}}
       {:error, _reason} = error -> error
+    end
+  end
+
+  @spec verify_candidate_gate_receipts({module(), keyword()}, Candidate.t(), keyword()) ::
+          :ok | {:error, term()}
+  defp verify_candidate_gate_receipts(
+         _store,
+         %Candidate{source: source, governance: nil},
+         _opts
+       )
+       when source in [:compiled, :trusted_host],
+       do: :ok
+
+  defp verify_candidate_gate_receipts(_store, %Candidate{governance: nil}, _opts),
+    do: {:error, :governed_candidate_requires_governance_state}
+
+  defp verify_candidate_gate_receipts(
+         store,
+         %Candidate{source: :governed_host, governance: governance} = candidate,
+         opts
+       ) do
+    expected_definition = Ref.to_string(candidate.definition_ref)
+
+    cond do
+      governance.candidate_definition_ref != expected_definition ->
+        {:error, :candidate_governance_definition_mismatch}
+
+      governance.approval_receipt_ref &&
+          governance.approval_receipt_ref not in governance.gate_receipt_refs ->
+        {:error, :candidate_governance_approval_receipt_missing}
+
+      true ->
+        verify_gate_receipt_refs(store, governance.gate_receipt_refs, governance, opts)
+    end
+  end
+
+  defp verify_candidate_gate_receipts(_store, %Candidate{}, _opts),
+    do: {:error, :governed_candidate_requires_governed_source}
+
+  @spec verify_gate_receipt_refs(
+          {module(), keyword()},
+          [String.t()],
+          Spectre.Governance.CandidateState.t(),
+          keyword()
+        ) :: :ok | {:error, term()}
+  defp verify_gate_receipt_refs(store, refs, governance, opts) do
+    Enum.reduce_while(refs, :ok, &verify_gate_receipt_ref(&1, &2, store, governance, opts))
+  end
+
+  defp verify_gate_receipt_ref(ref, :ok, store, governance, opts) do
+    case fetch_gate_receipt(store, ref, opts) do
+      {:ok, receipt} -> verify_gate_receipt_binding(receipt, governance)
+      :not_found -> {:halt, {:error, {:candidate_gate_receipt_not_found, ref}}}
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
+
+  defp verify_gate_receipt_binding(receipt, governance) do
+    case GateReceipt.verify_binding(receipt, governance) do
+      :ok -> {:cont, :ok}
+      {:error, _reason} = error -> {:halt, error}
     end
   end
 
@@ -539,8 +679,26 @@ defmodule Spectre.Definition.Store do
   defp normalize_candidate_ref(value) when is_binary(value), do: CandidateRef.parse(value)
   defp normalize_candidate_ref(value), do: {:error, {:invalid_candidate_store_ref, value}}
 
+  @spec normalize_gate_receipt_ref(GateReceiptRef.t() | String.t()) ::
+          {:ok, GateReceiptRef.t()} | {:error, term()}
+  defp normalize_gate_receipt_ref(%GateReceiptRef{} = ref) do
+    if GateReceiptRef.valid?(ref),
+      do: {:ok, ref},
+      else: {:error, {:invalid_gate_receipt_store_ref, ref}}
+  end
+
+  defp normalize_gate_receipt_ref(value) when is_binary(value),
+    do: GateReceiptRef.parse(value)
+
+  defp normalize_gate_receipt_ref(value),
+    do: {:error, {:invalid_gate_receipt_store_ref, value}}
+
   @spec candidate_key(CandidateRef.t()) :: String.t()
   defp candidate_key(%CandidateRef{} = ref), do: "candidate/" <> CandidateRef.to_string(ref)
+
+  @spec gate_receipt_key(GateReceiptRef.t()) :: String.t()
+  defp gate_receipt_key(%GateReceiptRef{} = ref),
+    do: "gate-receipt/" <> GateReceiptRef.to_string(ref)
 
   @spec validate_pair(nil | {module(), keyword()}, durability()) :: :ok | {:error, term()}
   defp validate_pair(nil, _store_durability), do: :ok

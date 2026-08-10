@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.8"
+  @version "0.2.9"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -28,10 +28,12 @@ defmodule Spectre.MixProject do
     "docs/MIGRATING_TO_0_2_6.md",
     "docs/MIGRATING_TO_0_2_7.md",
     "docs/MIGRATING_TO_0_2_8.md",
+    "docs/MIGRATING_TO_0_2_9.md",
     "docs/MIGRATING_TO_0_3.md",
     "docs/SKILLS.md",
     "docs/RUNTIME_SKILLS.md",
     "docs/DATA_DRIVEN_EXECUTION.md",
+    "docs/GOVERNANCE.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
     "docs/PROVIDERS.md",
@@ -159,10 +161,12 @@ defmodule Spectre.MixProject do
           "docs/MIGRATING_TO_0_2_6.md",
           "docs/MIGRATING_TO_0_2_7.md",
           "docs/MIGRATING_TO_0_2_8.md",
+          "docs/MIGRATING_TO_0_2_9.md",
           "docs/MIGRATING_TO_0_3.md",
           "docs/SKILLS.md",
           "docs/RUNTIME_SKILLS.md",
           "docs/DATA_DRIVEN_EXECUTION.md",
+          "docs/GOVERNANCE.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
         ],
@@ -256,6 +260,23 @@ defmodule Spectre.MixProject do
           Spectre.Policy,
           Spectre.Policy.Matcher,
           Spectre.Policy.Resolution
+        ],
+        Governance: [
+          Spectre.Governance.ChangeSet,
+          Spectre.Governance.ChangeSet.Operation,
+          Spectre.Governance.ChangeSet.Handler,
+          Spectre.Governance.ChangeSet.Registry,
+          Spectre.Governance.Composer,
+          Spectre.Governance.CandidateState,
+          Spectre.Gate.Receipt,
+          Spectre.Gate.Receipt.Ref,
+          Spectre.Governance.EvaluationDelta,
+          Spectre.Governance.Review,
+          Spectre.Governance.Approval,
+          Spectre.Governance.Approval.Policy,
+          Spectre.Projection.HumanReport,
+          Spectre.Governance.GC,
+          Spectre.Governance.GC.Plan
         ],
         Routing: [
           Spectre.Router,

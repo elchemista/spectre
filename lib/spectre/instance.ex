@@ -24,6 +24,7 @@ defmodule Spectre.Instance do
   alias Spectre.Execution.Closure
   alias Spectre.Execution.Materialization, as: ExecutionMaterialization
   alias Spectre.Execution.Runtime, as: DataExecutionRuntime
+  alias Spectre.Governance.Verifier, as: GovernanceVerifier
   alias Spectre.Input
   alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
@@ -189,16 +190,24 @@ defmodule Spectre.Instance do
   def activation(server), do: GenServer.call(server, :instance_activation)
 
   @doc """
-  Activates a published bootstrap Candidate through generation CAS.
+  Activates a published bootstrap or approved governed Candidate through generation CAS.
 
   `:expected_generation` is mandatory and must be `0` for the first
   activation. Candidate, Definition, Manifest, and publication receipt are
   re-read from the configured Definition Store inside the Instance sequencer.
+  Governed Candidates additionally replay exact gate and approval evidence.
   """
   @spec activate(GenServer.server(), CandidateRef.t() | String.t(), keyword()) ::
           {:ok, Activation.t()} | {:error, term()}
   def activate(server, candidate_ref, opts \\ []) do
     GenServer.call(server, {:instance_activate, candidate_ref, opts}, timeout(opts))
+  end
+
+  @doc "Rolls activation back to an explicitly selected ancestor Candidate."
+  @spec rollback(GenServer.server(), CandidateRef.t() | String.t(), keyword()) ::
+          {:ok, Activation.t()} | {:error, term()}
+  def rollback(server, candidate_ref, opts \\ []) do
+    GenServer.call(server, {:instance_rollback, candidate_ref, opts}, timeout(opts))
   end
 
   @doc "Returns the active or explicitly selected branch for a stable Skill id."
@@ -868,6 +877,13 @@ defmodule Spectre.Instance do
              candidate_ref,
              activation_resolver_opts(data, opts)
            ),
+         :ok <-
+           GovernanceVerifier.verify_activation(
+             definition_store,
+             candidate_resolution,
+             data.activation,
+             activation_resolver_opts(data, opts)
+           ),
          {:ok, prospective, skill_states} <-
            build_activation(data, candidate_resolution, expected_generation, opts),
          {:ok, activation} <-
@@ -883,6 +899,50 @@ defmodule Spectre.Instance do
 
       {:error, reason} when reason in [:conflict, :stale] ->
         {:stop, {:activation_checkpoint_conflict, reason}, {:error, reason}, data}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  def handle_call({:instance_rollback, candidate_ref, opts}, _from, data) do
+    with {:ok, expected_generation} <- activation_expected_generation(opts),
+         :ok <- owner_guard(data, :activation_commit),
+         {:ok, definition_store} <- require_definition_store(data.definition_store),
+         {:ok, candidate_resolution} <-
+           DefinitionResolver.resolve_candidate_for_activation(
+             definition_store,
+             candidate_ref,
+             activation_resolver_opts(data, opts)
+           ),
+         :ok <-
+           GovernanceVerifier.verify_rollback(
+             definition_store,
+             candidate_resolution,
+             data.activation,
+             activation_resolver_opts(data, opts)
+           ),
+         rollback_opts =
+           Keyword.put(
+             opts,
+             :provenance,
+             %{source: :rollback, instance_ref: data.ref.key, external_effects_rolled_back: false}
+           ),
+         {:ok, prospective, skill_states} <-
+           build_activation(data, candidate_resolution, expected_generation, rollback_opts),
+         {:ok, activation} <-
+           Activation.compare_and_swap(data.activation, expected_generation, prospective),
+         {:ok, next} <- commit_activation(data, activation, skill_states) do
+      {:reply, {:ok, activation}, arm_idle_timer(next)}
+    else
+      :not_found ->
+        {:reply, {:error, :rollback_candidate_not_found}, arm_idle_timer(data)}
+
+      {:error, {:ambiguous, _detail} = reason} ->
+        {:stop, {:rollback_checkpoint_outcome_unknown, reason}, {:error, reason}, data}
+
+      {:error, reason} when reason in [:conflict, :stale] ->
+        {:stop, {:rollback_checkpoint_conflict, reason}, {:error, reason}, data}
 
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
@@ -3605,12 +3665,13 @@ defmodule Spectre.Instance do
        ) do
     opts = Keyword.put(base_opts, :checkpoint_store, checkpoint_store)
 
-    with {:ok, %{candidate: candidate, resolution: resolution}} <-
+    with {:ok, %{candidate: candidate, resolution: resolution} = candidate_resolution} <-
            DefinitionResolver.resolve_candidate_for_activation(
              definition_store,
              activation.candidate_ref,
              opts
            ),
+         :ok <- GovernanceVerifier.verify_recovery(definition_store, candidate_resolution, opts),
          {:ok, rebuilt} <-
            Activation.new(candidate, resolution,
              generation: activation.generation,

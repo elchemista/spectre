@@ -1,0 +1,208 @@
+{
+  "candidate_state": {
+    "approval_receipt_ref": null,
+    "base_activation_receipt": "activation:fixture:1",
+    "base_candidate_ref": "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "candidate_case_ids": [],
+    "candidate_cases": [],
+    "candidate_definition_ref": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "change_set_digest": "5edb644c9b32388633107ad0d701f6ff64b0d0465b37d0cc72be84f3d5577949",
+    "closure_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+    "evaluation_cases_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+    "gate_receipt_refs": [],
+    "lineage_refs": [
+      "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "observed_authority_epoch": 7,
+    "observed_evidence_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+    "parent_definition_ref": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "proposal_digest": "ce56bf4fc86e0ca524864c3960b9662d33d44f02ed01f2a6ca7d35cc09e74e73",
+    "report_digest": null,
+    "required_gates": [
+      "structural"
+    ],
+    "risk": "low",
+    "schema_version": 1,
+    "state": "composed",
+    "state_migrations": []
+  },
+  "change_set": {
+    "author_ref": "operator:fixture",
+    "base_activation_receipt": "activation:fixture:1",
+    "base_candidate_ref": "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "created_at": 1786316400000,
+    "observed_authority_epoch": 7,
+    "observed_definition_canonicalization_version": 1,
+    "observed_definition_contract_version": 1,
+    "observed_definition_ref": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "observed_evidence_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+    "operations": [
+      {
+        "payload": {
+          "mount_id": "legacy_lookup"
+        },
+        "type": "disable_skill"
+      }
+    ],
+    "provenance": {
+      "ticket": "FIXTURE-209"
+    },
+    "reason": "Pin the governance transport contract",
+    "schema_version": 1
+  },
+  "evaluation_delta": {
+    "candidate_case_failures": [],
+    "candidate_cases_digest": "df8ac262ade59e6b93840c6ee89fe8b2157751011f5cca312f3ece003de55775",
+    "candidate_owned_results": [],
+    "candidate_score": 1.0,
+    "max_regressions": 0,
+    "min_score_delta": 0.0,
+    "parent_score": 1.0,
+    "passed": true,
+    "protected_cases_digest": "533037de478d71902409664ae14942094f4e8a6ac95cd46e81c659c9fff88ff1",
+    "protected_results": [
+      {
+        "candidate": {
+          "case_id": "protected-route",
+          "passed": true,
+          "score": 1.0
+        },
+        "parent": {
+          "case_id": "protected-route",
+          "passed": true,
+          "score": 1.0
+        }
+      }
+    ],
+    "regressions": [],
+    "schema_version": 1,
+    "score_delta": 0.0
+  },
+  "expected": {
+    "change_set_digest": "5edb644c9b32388633107ad0d701f6ff64b0d0465b37d0cc72be84f3d5577949",
+    "evaluation_delta_digest": "9c073aadb437fc6b46a6818c35b0f2e31fbac91878d20291a0800afab4d6405e",
+    "gate_receipt_ref": "gate:sha256:e6195af7e13cb2b23f69cdf93e131a910c43d54e49320fa822cf3ce26c7c32e5",
+    "gc_plan_digest": "6ca0e65e5289e28195da49e69ee847fdb9543d0f701d6a74d0c2cdf193910a2b",
+    "human_report_digest": "963f51cd47d0ece3363b5af08f7c094aad9ffda085a8b0ad22d1a557824f1e7b",
+    "proposal_digest": "ce56bf4fc86e0ca524864c3960b9662d33d44f02ed01f2a6ca7d35cc09e74e73"
+  },
+  "gate_receipt": {
+    "candidate_definition_ref": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "candidate_digest": "ce56bf4fc86e0ca524864c3960b9662d33d44f02ed01f2a6ca7d35cc09e74e73",
+    "checker_id": "spectre.gate.structural",
+    "checker_version": 1,
+    "closure_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+    "evaluation_cases_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+    "expires_at": null,
+    "gate_class": "structural",
+    "issued_at": 1786316400100,
+    "parent_definition_ref": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "profile_ref": null,
+    "provenance": {
+      "source": "fixture"
+    },
+    "result_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+    "schema_version": 1,
+    "status": "passed"
+  },
+  "gc_plan": {
+    "candidate_decisions": [
+      {
+        "decision": "retained",
+        "definition_ref": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "reasons": [
+          "retention_not_gc_eligible",
+          "live_reference"
+        ],
+        "ref": "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ],
+    "candidate_inventory": [
+      "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "definition_decisions": [
+      {
+        "decision": "retained",
+        "reasons": [
+          "retention_not_gc_eligible",
+          "live_reference",
+          "retained_candidate_reference"
+        ],
+        "ref": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ],
+    "definition_inventory": [
+      "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "digest": "6ca0e65e5289e28195da49e69ee847fdb9543d0f701d6a74d0c2cdf193910a2b",
+    "evidence_digest": "61313a3f194de829ecf14e5565bd099d116c63314681a539552c670eb3605004",
+    "inventory_complete": true,
+    "protected_candidate_refs": [
+      "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "protected_definition_refs": [
+      "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "requested_candidate_refs": [],
+    "requested_definition_refs": [],
+    "schema_version": 1,
+    "store_identity": {
+      "adapter": "fixture",
+      "id": "governance-v1"
+    }
+  },
+  "human_report": {
+    "candidate_definition_ref": "sha256:985db74e66c8521b65353a577e6e156e0979075af301ad857cf6319cb6fcae6e",
+    "digest": "963f51cd47d0ece3363b5af08f7c094aad9ffda085a8b0ad22d1a557824f1e7b",
+    "evaluation_delta": {
+      "candidate_case_failures": [],
+      "candidate_cases_digest": "df8ac262ade59e6b93840c6ee89fe8b2157751011f5cca312f3ece003de55775",
+      "candidate_owned_results": [],
+      "candidate_score": 1.0,
+      "max_regressions": 0,
+      "min_score_delta": 0.0,
+      "parent_score": 1.0,
+      "passed": true,
+      "protected_cases_digest": "533037de478d71902409664ae14942094f4e8a6ac95cd46e81c659c9fff88ff1",
+      "protected_results": [
+        {
+          "candidate": {
+            "case_id": "protected-route",
+            "passed": true,
+            "score": 1.0
+          },
+          "parent": {
+            "case_id": "protected-route",
+            "passed": true,
+            "score": 1.0
+          }
+        }
+      ],
+      "regressions": [],
+      "schema_version": 1,
+      "score_delta": 0.0
+    },
+    "gate_receipt_refs": [
+      "gate:sha256:e6195af7e13cb2b23f69cdf93e131a910c43d54e49320fa822cf3ce26c7c32e5"
+    ],
+    "generator_id": "spectre.projection.human-report",
+    "generator_version": 1,
+    "input_evidence_digest": "967502d9f4f4148e04bb91206c5649fb941a93cec320ceeb09191004d2e559d7",
+    "lineage_refs": [
+      "candidate:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "parent_definition_ref": "sha256:985db74e66c8521b65353a577e6e156e0979075af301ad857cf6319cb6fcae6e",
+    "structural_changes": [],
+    "textual_changes": []
+  },
+  "release": "0.2.9",
+  "schema_version": 1,
+  "schemas": {
+    "candidate_state": 1,
+    "change_set": 1,
+    "evaluation_delta": 1,
+    "gate_receipt": 1,
+    "gc_plan": 1,
+    "human_report_generator": 1
+  }
+}
