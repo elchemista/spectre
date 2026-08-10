@@ -20,8 +20,9 @@ defmodule Spectre.Prompt.Materializer do
           {:ok, Plan.t(), Receipt.t()} | {:error, term()}
   def materialize(%Fragment{} = fragment, input, context, definition_ref)
       when is_map(context) do
-    with {:ok, input} <- normalize_input(input),
-         {:ok, rendered, evidence} <- render(fragment, input, context),
+    with {:ok, fragment} <- canonical_fragment(fragment),
+         {:ok, input} <- normalize_input(input),
+         {:ok, rendered, evidence} <- render_fragment(fragment, input, context),
          {:ok, plan} <- plan(fragment, rendered),
          {:ok, receipt} <- Receipt.new(fragment, rendered, definition_ref, evidence) do
       {:ok, plan, receipt}
@@ -34,16 +35,47 @@ defmodule Spectre.Prompt.Materializer do
   @doc "Renders one canonical fragment without exposing arbitrary string protocols."
   @spec render(Fragment.t(), Input.t() | term(), map()) ::
           {:ok, String.t(), map()} | {:error, term()}
-  def render(%Fragment{content: content, placeholders: placeholders}, input, context)
-      when is_map(context) do
-    with {:ok, input} <- normalize_input(input) do
-      values = Map.put(context, :input, %{text: input.text, meta: input.meta})
-      render_placeholders(placeholders, content, values)
+  def render(%Fragment{} = fragment, input, context) when is_map(context) do
+    with {:ok, fragment} <- canonical_fragment(fragment),
+         {:ok, input} <- normalize_input(input) do
+      render_fragment(fragment, input, context)
     end
   end
 
   def render(%Fragment{}, _input, context),
     do: {:error, {:invalid_prompt_materialization_context, shape(context)}}
+
+  @spec render_fragment(Fragment.t(), Input.t(), map()) ::
+          {:ok, String.t(), map()} | {:error, term()}
+  defp render_fragment(%Fragment{content: nil, id: id}, _input, _context),
+    do: {:error, {:dynamic_prompt_fragment_not_materializable, id}}
+
+  defp render_fragment(
+         %Fragment{content: content, placeholders: placeholders},
+         input,
+         context
+       ) do
+    values =
+      context
+      |> Map.delete("input")
+      |> Map.put(:input, %{text: input.text, meta: input.meta})
+
+    render_placeholders(placeholders, content, values)
+  end
+
+  @spec canonical_fragment(Fragment.t()) :: {:ok, Fragment.t()} | {:error, term()}
+  defp canonical_fragment(%Fragment{} = fragment) do
+    case fragment |> Map.from_struct() |> Fragment.canonical() do
+      {:ok, %Fragment{digest: digest} = canonical} when digest == fragment.digest ->
+        {:ok, canonical}
+
+      {:ok, %Fragment{}} ->
+        {:error, :prompt_materialization_fragment_digest_mismatch}
+
+      {:error, reason} ->
+        {:error, {:invalid_prompt_materialization_fragment, reason}}
+    end
+  end
 
   @spec render_placeholders(map(), String.t(), map()) ::
           {:ok, String.t(), map()} | {:error, term()}

@@ -46,7 +46,7 @@
     "recordings": [
       {
         "operation_ref": "external",
-        "input_digest": "7d79546fa649a2fbe24e40a105369a3010b0340dc39a4a88c470a276381d76e5",
+        "input_digest": "3959e0df8b4806cf1d5f7791b2422b16bb148ce5fcc95a3876fb4a65d1d7c374",
         "status": "ok",
         "value": {
           "value": 2
@@ -59,9 +59,9 @@
   },
   "expected": {
     "program_digest": "c20d219380c745af484a1d66230dbf227fec3f067e16fc961c81f84766639d45",
-    "input_evidence_digest": "7d79546fa649a2fbe24e40a105369a3010b0340dc39a4a88c470a276381d76e5",
-    "report_digest": "22ad564ada5ec8662a79457e5fa9dffa03fff9a2b9cdd5121a038eed29bb82b6",
-    "final_state_digest": "5616297fac518d874ffc60572e2e50bc2fd502417ac6f707ea8e0ed3fbe5ddcf",
+    "input_evidence_digest": "3959e0df8b4806cf1d5f7791b2422b16bb148ce5fcc95a3876fb4a65d1d7c374",
+    "report_digest": "6d385b6dccefc737c37260b6c6a3f44acf6ce5164468b93de1b4f952cdd5e1db",
+    "final_state_digest": "592086a0fd8c780b0a53836b4bf2c9710549ad173c590b331f658db739136a89",
     "operation_refs": ["external"],
     "status": "completed",
     "effect_dispatches": 0,

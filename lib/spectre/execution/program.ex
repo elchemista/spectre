@@ -360,14 +360,14 @@ defmodule Spectre.Execution.Program do
   end
 
   @spec valid_plan?(term()) :: boolean()
-  defp valid_plan?(%Plan{} = plan) when is_map(plan.metadata) do
+  defp valid_plan?(%Plan{rendered: rendered, metadata: metadata})
+       when is_binary(rendered) and is_map(metadata) do
     expected =
-      plan
-      |> Plan.legacy()
+      rendered
       |> then(&:crypto.hash(:sha256, &1))
       |> Base.encode16(case: :lower)
 
-    Map.get(plan.metadata, :hash) == expected
+    Map.get(metadata, :hash) == expected
   end
 
   defp valid_plan?(_plan), do: false
@@ -1057,30 +1057,32 @@ defmodule Spectre.Execution.Program do
 
   @spec operation_name(map()) :: {:ok, String.t()} | {:error, term()}
   defp operation_name(value),
-    do: aliased_name(value, :operation_ref, :operation)
+    do: aliased_name(value, :operation_ref, :operation, &registered_name/2)
 
   @spec predicate_name(map()) :: {:ok, String.t()} | {:error, term()}
   defp predicate_name(value),
-    do: aliased_name(value, :predicate_ref, :predicate)
+    do: aliased_name(value, :predicate_ref, :predicate, &registered_name/2)
 
   @spec prompt_name(map()) :: {:ok, String.t()} | {:error, term()}
   defp prompt_name(value),
-    do: aliased_name(value, :prompt_ref, :prompt)
+    do: aliased_name(value, :prompt_ref, :prompt, &stable_name/2)
 
-  @spec aliased_name(map(), atom(), atom()) :: {:ok, String.t()} | {:error, term()}
-  defp aliased_name(value, canonical, shorthand) do
+  @spec aliased_name(map(), atom(), atom(), (term(), atom() ->
+                                               {:ok, String.t()} | {:error, term()})) ::
+          {:ok, String.t()} | {:error, term()}
+  defp aliased_name(value, canonical, shorthand, validator) do
     case {Map.fetch(value, canonical), Map.fetch(value, shorthand)} do
       {{:ok, _canonical}, {:ok, _shorthand}} ->
         {:error, {:duplicate_execution_name, canonical, shorthand}}
 
       {{:ok, name}, :error} ->
-        stable_name(name, canonical)
+        validator.(name, canonical)
 
       {:error, {:ok, name}} ->
-        stable_name(name, canonical)
+        validator.(name, canonical)
 
       {:error, :error} ->
-        stable_name(nil, canonical)
+        validator.(nil, canonical)
     end
   end
 
@@ -1088,13 +1090,22 @@ defmodule Spectre.Execution.Program do
   defp stable_name(value, field) when is_atom(value) and not is_nil(value) do
     name = Atom.to_string(value)
 
-    if String.starts_with?(name, "Elixir.") or Code.ensure_loaded?(value),
+    if String.starts_with?(name, "Elixir."),
       do: {:error, {:execution_code_reference_forbidden, field}},
       else: {:ok, name}
   end
 
   defp stable_name(value, _field) when is_binary(value) and value != "", do: {:ok, value}
   defp stable_name(value, field), do: {:error, {:invalid_execution_name, field, value}}
+
+  @spec registered_name(term(), atom()) :: {:ok, String.t()} | {:error, term()}
+  defp registered_name(value, field) when is_atom(value) and not is_nil(value) do
+    if Code.ensure_loaded?(value),
+      do: {:error, {:execution_code_reference_forbidden, field}},
+      else: stable_name(value, field)
+  end
+
+  defp registered_name(value, field), do: stable_name(value, field)
 
   @spec optional_name(term(), atom()) :: {:ok, String.t() | nil} | {:error, term()}
   defp optional_name(nil, _field), do: {:ok, nil}

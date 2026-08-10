@@ -10,6 +10,7 @@ defmodule Spectre.Execution.Rehearsal do
 
   alias Spectre.Canonical.Value
   alias Spectre.Definition.Ref
+  alias Spectre.Execution.PortableDigest
   alias Spectre.Execution.Program
   alias Spectre.Execution.Rehearsal.Report
   alias Spectre.Operation.Control
@@ -371,38 +372,8 @@ defmodule Spectre.Execution.Rehearsal do
   end
 
   @spec portable_digest(term(), atom()) :: {:ok, String.t()} | {:error, term()}
-  defp portable_digest(value, field) do
-    with :ok <- RunValue.validate(value, [:execution_rehearsal, field]),
-         {:ok, encoded} <- RunValue.encode(value) do
-      encoded
-      |> canonical_run_value()
-      |> Value.digest()
-    end
-  end
-
-  @spec canonical_run_value(term()) :: term()
-  defp canonical_run_value(%{"$spectre" => "map", "entries" => entries} = value)
-       when is_list(entries) do
-    entries =
-      entries
-      |> Enum.map(fn [key, item] ->
-        [canonical_run_value(key), canonical_run_value(item)]
-      end)
-      |> Enum.sort_by(fn [key, _item] -> Value.encode!(key) end)
-
-    Map.put(value, "entries", entries)
-  end
-
-  defp canonical_run_value(value) when is_map(value) do
-    Map.new(value, fn {key, item} ->
-      {canonical_run_value(key), canonical_run_value(item)}
-    end)
-  end
-
-  defp canonical_run_value(value) when is_list(value),
-    do: Enum.map(value, &canonical_run_value/1)
-
-  defp canonical_run_value(value), do: value
+  defp portable_digest(value, field),
+    do: PortableDigest.digest(value, [:execution_rehearsal, field])
 
   @spec optional_value_digest(term()) :: {:ok, String.t() | nil} | {:error, term()}
   defp optional_value_digest(nil), do: {:ok, nil}

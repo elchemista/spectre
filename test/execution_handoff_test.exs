@@ -30,6 +30,19 @@ defmodule Spectre.Execution.HandoffTest do
     assert restored == handoff
     assert {:ok, ^handoff} = Handoff.new(handoff)
 
+    assert {:ok, timer_handoff} =
+             Handoff.flow_to_work(@definition_ref, :timer, :queue, %{})
+
+    assert timer_handoff.source.ref == "timer"
+    assert timer_handoff.target.ref == "queue"
+
+    assert {:ok, ^timer_handoff} =
+             timer_handoff
+             |> Handoff.to_data()
+             |> Jason.encode!()
+             |> Jason.decode!()
+             |> Handoff.from_data()
+
     assert {:ok, event_handoff} =
              Handoff.work_to_flow(@definition_ref, :resolve, :completed, %{"ticket" => 42})
 
@@ -123,7 +136,7 @@ defmodule Spectre.Execution.HandoffTest do
              Handoff.new(%{base | source: %{kind: :flow, ref: ""}})
 
     assert {:error, {:execution_handoff_code_reference_forbidden, :source}} =
-             Handoff.new(%{base | source: %{kind: :flow, ref: :os}})
+             Handoff.new(%{base | source: %{kind: :flow, ref: System}})
 
     assert {:error, {:invalid_execution_handoff_input, {:module_execution_literal, []}}} =
              Handoff.new(%{base | input: System})

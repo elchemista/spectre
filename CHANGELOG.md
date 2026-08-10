@@ -56,6 +56,18 @@ minor release may contain documented breaking API changes.
   continuation, input, and mandatory input evidence exactly as construction
   does. Prompt placeholders are rendered in one pass, so resolved values are
   never reinterpreted as template syntax.
+- Prompt materialization now revalidates the canonical fragment digest,
+  rejects dynamic fragments with a typed error, and reserves the `input`
+  namespace so context data cannot spoof input evidence. Malformed prompt
+  plans fail closed instead of reaching hashing code with invalid bytes.
+- Rehearsal uses the canonical evidence-digest domain whenever its values are
+  canonical, matching Execution projections and materializations. Structured
+  portable operation receipts use a deterministic tagged fallback in both
+  rehearsal and migration instead of raising during receipt construction.
+- Execution Closure and migration-receipt load paths now require exact durable
+  fields and valid version identities. Malformed keyword input is rejected
+  without raising, while inert ids such as `timer` and `queue` remain stable
+  even when an Erlang module with the same name is loaded.
 - Raw canonical Skill mounts require `origin: :runtime`; compiled Skills must
   enter through their trusted module/Definition path and cannot use origin
   data to skip runtime load policy.

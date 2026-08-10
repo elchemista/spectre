@@ -11,6 +11,7 @@ defmodule Spectre.Execution.Migration do
 
   alias Spectre.Canonical.Value
   alias Spectre.Execution.Migration.Receipt
+  alias Spectre.Execution.PortableDigest
   alias Spectre.Execution.Program
   alias Spectre.Operation.Execution
   alias Spectre.Operation.Registry
@@ -268,21 +269,26 @@ defmodule Spectre.Execution.Migration do
   @spec migration_receipt(t(), Execution.t(), String.t()) ::
           {:ok, Receipt.t()} | {:error, term()}
   defp migration_receipt(migration, execution, target_digest) do
-    operation_receipt_digest =
-      if is_nil(execution.receipt), do: nil, else: Value.digest!(execution.receipt)
-
-    Receipt.new(%{
-      migration_digest: migration.digest,
-      program_digest: migration.program.digest,
-      operation_ref: migration.operation_ref,
-      operation_contract_digest: migration.operation_contract_digest,
-      source_version: migration.source_version,
-      target_version: migration.target_version,
-      source_state_digest: migration.source_state_digest,
-      target_state_digest: target_digest,
-      operation_receipt_digest: operation_receipt_digest
-    })
+    with {:ok, operation_receipt_digest} <- operation_receipt_digest(execution.receipt) do
+      Receipt.new(%{
+        migration_digest: migration.digest,
+        program_digest: migration.program.digest,
+        operation_ref: migration.operation_ref,
+        operation_contract_digest: migration.operation_contract_digest,
+        source_version: migration.source_version,
+        target_version: migration.target_version,
+        source_state_digest: migration.source_state_digest,
+        target_state_digest: target_digest,
+        operation_receipt_digest: operation_receipt_digest
+      })
+    end
   end
+
+  @spec operation_receipt_digest(term()) :: {:ok, String.t() | nil} | {:error, term()}
+  defp operation_receipt_digest(nil), do: {:ok, nil}
+
+  defp operation_receipt_digest(receipt),
+    do: PortableDigest.digest(receipt, [:execution_migration, :operation_receipt])
 
   @spec identity_data(map()) :: map()
   defp identity_data(migration) do

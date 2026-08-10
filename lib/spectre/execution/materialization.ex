@@ -227,7 +227,12 @@ defmodule Spectre.Execution.Materialization do
       Enum.any?(normalized, fn {_ref, plan} -> not match?(%Plan{}, plan) end) ->
         {:error, :invalid_execution_materialization_prompt_plan}
 
-      Enum.any?(normalized, fn {_ref, plan} -> plan_hash(plan) != plan.metadata.hash end) ->
+      Enum.any?(normalized, fn {_ref, plan} -> not valid_plan_shape?(plan) end) ->
+        {:error, :invalid_execution_materialization_prompt_plan}
+
+      Enum.any?(normalized, fn {_ref, plan} ->
+        plan_hash(plan) != Map.get(plan.metadata, :hash)
+      end) ->
         {:error, :execution_materialization_prompt_plan_digest_mismatch}
 
       true ->
@@ -483,9 +488,15 @@ defmodule Spectre.Execution.Materialization do
   defp plan_digests(plans), do: Map.new(plans, fn {ref, plan} -> {ref, plan_hash(plan)} end)
 
   @spec plan_hash(Plan.t()) :: String.t()
-  defp plan_hash(%Plan{} = plan) do
-    plan |> Plan.legacy() |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
+  defp plan_hash(%Plan{rendered: rendered}) do
+    rendered |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
   end
+
+  @spec valid_plan_shape?(term()) :: boolean()
+  defp valid_plan_shape?(%Plan{rendered: rendered, metadata: metadata}),
+    do: is_binary(rendered) and is_map(metadata)
+
+  defp valid_plan_shape?(_value), do: false
 
   @spec exact_digest(term(), term(), atom()) :: :ok | {:error, term()}
   defp exact_digest(value, value, _field), do: :ok

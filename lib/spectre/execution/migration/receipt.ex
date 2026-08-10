@@ -109,7 +109,7 @@ defmodule Spectre.Execution.Migration.Receipt do
       not stable_ref?(data.operation_ref) ->
         {:error, :invalid_execution_migration_receipt_operation}
 
-      is_nil(data.source_version) or is_nil(data.target_version) ->
+      not stable_version?(data.source_version) or not stable_version?(data.target_version) ->
         {:error, :invalid_execution_migration_receipt_version}
 
       not is_nil(data.operation_receipt_digest) and
@@ -129,6 +129,11 @@ defmodule Spectre.Execution.Migration.Receipt do
 
   @spec stable_ref?(term()) :: boolean()
   defp stable_ref?(value), do: is_binary(value) and value != ""
+
+  @spec stable_version?(term()) :: boolean()
+  defp stable_version?(value) when is_integer(value), do: value > 0
+  defp stable_version?(value) when is_binary(value), do: value != ""
+  defp stable_version?(_value), do: false
 
   @spec normalize_operation_ref(term()) :: {:ok, String.t()} | {:error, term()}
   defp normalize_operation_ref(value) when is_atom(value) and not is_nil(value),

@@ -66,6 +66,33 @@ defmodule SpectreDataDrivenExecutionTest.CompiledWork do
   finish(:done, output: :state)
 end
 
+defmodule SpectreDataDrivenExecutionTest.CompiledFullWork do
+  @moduledoc false
+
+  use Spectre.Execution.Work,
+    id: :compiled_full_work,
+    version: 2,
+    entry: :repeat,
+    input: :map,
+    state: :map,
+    initial: :input,
+    budget: %{steps: 8, attempts: 8}
+
+  repeat(:repeat, body: :infer, next: :done, max_iterations: 1)
+  infer(:infer, operation: :infer, prompt: :prompt, save_as: ["answer"], next: :decide)
+
+  decide(:decide,
+    predicate: :continue,
+    input: :state,
+    on_true: :repeat,
+    on_false: :failed
+  )
+
+  fail(:failed, :predicate_rejected)
+  finish(:done)
+  migration(1, operation: :migrate)
+end
+
 defmodule SpectreDataDrivenExecutionTest.CompiledSkill do
   @moduledoc false
 
@@ -98,6 +125,7 @@ defmodule SpectreDataDrivenExecutionTest do
   alias Spectre.Execution.Materializer
   alias Spectre.Execution.Migration
   alias Spectre.Execution.Migration.Receipt, as: MigrationReceipt
+  alias Spectre.Execution.PortableDigest
   alias Spectre.Execution.Program
   alias Spectre.Execution.Rehearsal
   alias Spectre.Execution.Rehearsal.Report
@@ -111,12 +139,15 @@ defmodule SpectreDataDrivenExecutionTest do
   alias Spectre.Operation.View
   alias Spectre.Projection
   alias Spectre.Projection.Execution, as: ExecutionProjection
+  alias Spectre.Prompt.Fragment
+  alias Spectre.Prompt.Materializer, as: PromptMaterializer
   alias Spectre.Prompt.Plan
   alias Spectre.Skill.Definition, as: SkillDefinition
   alias Spectre.Skill.Runtime, as: SkillRuntime
   alias Spectre.Skill.Runtime.Response
   alias Spectre.Subject
   alias SpectreDataDrivenExecutionTest.Agent
+  alias SpectreDataDrivenExecutionTest.CompiledFullWork
   alias SpectreDataDrivenExecutionTest.CompiledSkill
   alias SpectreDataDrivenExecutionTest.CompiledWork
 
@@ -147,6 +178,66 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert Program.to_data(compiled) == Program.to_data(runtime)
     assert compiled.digest == runtime.digest
+  end
+
+  test "the compiled Work DSL lowers every closed node and migration form" do
+    assert {:ok, compiled} = Program.from_compiled(CompiledFullWork)
+
+    runtime =
+      Program.new!(%{
+        id: :compiled_full_work,
+        version: 2,
+        entry: :repeat,
+        input: :map,
+        state: :map,
+        initial: :input,
+        budget: %{steps: 8, attempts: 8},
+        migrations: [%{from: 1, operation: :migrate}],
+        nodes: [
+          %{id: :repeat, kind: :repeat, body: :infer, next: :done, max_iterations: 1},
+          %{
+            id: :infer,
+            kind: :infer,
+            operation: :infer,
+            prompt: :prompt,
+            save_as: ["answer"],
+            next: :decide
+          },
+          %{
+            id: :decide,
+            kind: :decide,
+            predicate: :continue,
+            input: :state,
+            on_true: :repeat,
+            on_false: :failed
+          },
+          %{id: :failed, kind: :fail, reason: :predicate_rejected},
+          %{id: :done, kind: :complete}
+        ]
+      })
+
+    assert compiled == runtime
+  end
+
+  test "inert Program identifiers do not depend on loaded Erlang module names" do
+    assert {:ok, program} =
+             Program.new(%{
+               id: :timer,
+               version: 1,
+               entry: :queue,
+               input: :map,
+               state: :map,
+               initial: :input,
+               budget: %{steps: 2, attempts: 2},
+               nodes: [
+                 %{id: :queue, kind: :step, operation: :echo, next: :done},
+                 %{id: :done, kind: :complete}
+               ]
+             })
+
+    assert program.id == "timer"
+    assert program.entry == "queue"
+    assert Map.has_key?(program.nodes, "queue")
   end
 
   test "Program identity survives JSON with inference constraints and authored atoms" do
@@ -1005,6 +1096,23 @@ defmodule SpectreDataDrivenExecutionTest do
     assert {:error, {:invalid_execution_materialization, :atom}} =
              Materializer.handoff(:invalid)
 
+    malformed_plan = %Plan{rendered: self(), metadata: %{hash: "not-a-plan-hash"}}
+
+    assert {:error, :invalid_execution_prompt_plan} =
+             Program.normalize_plans(program, %{"prompt" => malformed_plan})
+
+    assert {:error, :invalid_execution_materialization_prompt_plan} =
+             Materialization.verify(%{
+               materialization
+               | plans: %{"prompt" => malformed_plan}
+             })
+
+    assert {:error, {:invalid_execution_materialization_options, :list, :list}} =
+             Materializer.materialize(runtime, "infer", [], [])
+
+    assert {:error, :invalid_execution_materialization_options} =
+             Materializer.materialize(runtime, "infer", %{}, [:not_keyword])
+
     assert {:error, {:invalid_execution_materializer, :atom, :map, :list}} =
              Materializer.materialize(:invalid, %{}, %{}, [])
 
@@ -1060,6 +1168,33 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert json_receipt == receipt
 
+    structured_execution =
+      Execution.new(%{"schema" => 2, "value" => 42},
+        receipt:
+          Subject.new("migration-operation-receipt",
+            metadata: %{tags: [:registered, :migration]}
+          )
+      )
+
+    assert {:ok, _migrated, %MigrationReceipt{} = structured_receipt} =
+             Migration.commit(migration, structured_execution, Agent)
+
+    assert is_binary(structured_receipt.operation_receipt_digest)
+
+    assert {:ok, ^structured_receipt} =
+             structured_receipt
+             |> MigrationReceipt.to_data()
+             |> Jason.encode!()
+             |> Jason.decode!()
+             |> MigrationReceipt.from_data()
+
+    assert {:ok, _migrated, %MigrationReceipt{operation_receipt_digest: nil}} =
+             Migration.commit(
+               migration,
+               Execution.new(%{"schema" => 2, "value" => 42}),
+               Agent
+             )
+
     assert {:error, {:invalid_operation_value, _, :map, :list}} =
              Migration.commit(migration, Execution.new([]), Agent)
 
@@ -1070,6 +1205,66 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert {:error, :execution_migration_request_metadata_mismatch} =
              Migration.verify(%{migration | request: tampered_request})
+  end
+
+  test "migration receipts reject incomplete, ambiguous and nonsensical durable data" do
+    digest = String.duplicate("a", 64)
+
+    attrs = %{
+      migration_digest: digest,
+      program_digest: digest,
+      operation_ref: :migrate,
+      operation_contract_digest: digest,
+      source_version: 1,
+      target_version: "2",
+      source_state_digest: digest,
+      target_state_digest: digest,
+      operation_receipt_digest: nil
+    }
+
+    assert {:ok, %MigrationReceipt{} = receipt} = MigrationReceipt.new(attrs)
+    assert receipt.operation_ref == "migrate"
+    assert {:ok, ^receipt} = MigrationReceipt.from_data(receipt)
+
+    assert {:error, {:invalid_execution_migration_receipt, :tuple}} =
+             MigrationReceipt.new({:invalid, :receipt})
+
+    assert {:error, {:unknown_execution_migration_receipt_fields, [:unknown]}} =
+             attrs |> Map.put(:unknown, true) |> MigrationReceipt.new()
+
+    assert {:error, :invalid_execution_migration_receipt_operation} =
+             attrs |> Map.put(:operation_ref, nil) |> MigrationReceipt.new()
+
+    assert {:error, :invalid_execution_migration_receipt_version} =
+             attrs |> Map.put(:source_version, 0) |> MigrationReceipt.new()
+
+    data = MigrationReceipt.to_data(receipt)
+
+    assert {:error, :execution_migration_receipt_digest_mismatch} =
+             data |> Map.put(:digest, digest) |> MigrationReceipt.from_data()
+
+    assert {:error, :unknown_execution_migration_receipt_fields} =
+             data |> Map.put(:unknown, true) |> MigrationReceipt.from_data()
+
+    assert {:error, :missing_execution_migration_receipt_fields} =
+             data |> Map.delete(:digest) |> MigrationReceipt.from_data()
+
+    assert {:error, :duplicate_execution_migration_receipt_fields} =
+             data |> Map.put("schema_version", 1) |> MigrationReceipt.from_data()
+
+    assert {:error, {:unsupported_execution_migration_receipt_schema, 2}} =
+             data |> Map.put(:schema_version, 2) |> MigrationReceipt.from_data()
+
+    assert {:error, :invalid_execution_migration_receipt_digest} =
+             data |> Map.put(:migration_digest, "invalid") |> MigrationReceipt.from_data()
+
+    assert {:error, :invalid_execution_migration_operation_receipt_digest} =
+             data
+             |> Map.put(:operation_receipt_digest, "invalid")
+             |> MigrationReceipt.from_data()
+
+    assert {:error, {:invalid_execution_migration_receipt, :list}} =
+             MigrationReceipt.from_data([])
   end
 
   test "Flow/Work and Work/Work exchanges use closed typed handoffs" do
@@ -1140,10 +1335,115 @@ defmodule SpectreDataDrivenExecutionTest do
     assert receipt.rendered_digest == Value.digest!(plan.rendered)
   end
 
+  test "execution materialization refuses a selected non-Work route" do
+    skill =
+      SkillDefinition.new!(%{
+        id: :reply_only_execution_skill,
+        declared_version: 1,
+        publisher_ref: "host:data-execution-test",
+        applicability: %{
+          scopes: [:execution],
+          positive: ["reply"],
+          negative: ["do not reply"]
+        },
+        prompt_budget: 64,
+        prompt_fragments: [
+          %{id: :reply_prompt, content: "Reply {{input.text}}", token_cap: 16}
+        ],
+        flows: [
+          %{
+            id: :execution,
+            routes: [
+              %{
+                label: :reply,
+                match: {:exact, "reply"},
+                handler: {:reply, :reply_prompt}
+              }
+            ]
+          }
+        ]
+      })
+
+    runtime = mounted_runtime(skill)
+
+    assert {:error, {:runtime_skill_response_is_not_work, :reply}} =
+             Materializer.materialize(
+               runtime,
+               "reply",
+               %{scope: :execution},
+               expected_revision: 1
+             )
+  end
+
+  test "prompt materialization protects input evidence and rejects non-static fragments" do
+    fragment =
+      Fragment.canonical!(%{
+        id: :protected_input,
+        content: "Resolve {{input.text}} for {{audience}}",
+        scope: :execution,
+        target: :context,
+        position: :end,
+        source: %{kind: :runtime},
+        trust: :data,
+        placeholders: %{
+          "audience" => %{
+            path: ["audience"],
+            renderer_ref: "spectre.renderer.text/1"
+          },
+          "input.text" => %{
+            path: ["input", "text"],
+            renderer_ref: "spectre.renderer.text/1"
+          }
+        }
+      })
+
+    assert {:ok, "Resolve honest for operator",
+            %{"audience" => :operator, "input.text" => "honest"}} =
+             PromptMaterializer.render(fragment, "honest", %{
+               "input" => %{"text" => "string-spoof"},
+               input: %{text: "atom-spoof"},
+               audience: :operator
+             })
+
+    dynamic =
+      Fragment.canonical!(%{
+        id: :dynamic_context,
+        content: nil,
+        scope: :execution,
+        target: :context,
+        position: :end,
+        source: %{kind: :runtime},
+        trust: :data
+      })
+
+    assert {:error, {:dynamic_prompt_fragment_not_materializable, :dynamic_context}} =
+             PromptMaterializer.render(dynamic, "honest", %{})
+
+    assert {:error, :prompt_materialization_fragment_digest_mismatch} =
+             PromptMaterializer.render(
+               %{fragment | content: "Changed {{input.text}} for {{audience}}"},
+               "honest",
+               %{}
+             )
+
+    assert {:error,
+            {:invalid_prompt_materialization_fragment,
+             {:prompt_placeholder_schema_mismatch, [], ["audience", "input.text"]}}} =
+             PromptMaterializer.render(%{fragment | placeholders: %{}}, "honest", %{})
+
+    assert {:error, {:invalid_prompt_materialization_context, :list}} =
+             PromptMaterializer.render(fragment, "honest", [])
+
+    assert {:error, {:invalid_skill_input, :other}} =
+             PromptMaterializer.render(fragment, fn -> :not_data end, %{audience: :operator})
+  end
+
   test "rehearsal consumes exact recordings and never dispatches real Effects" do
     program = effect_program()
     initial = %{"value" => 1}
     assert {:ok, input_digest} = Rehearsal.input_digest(initial)
+    assert input_digest == Value.digest!(initial)
+    assert {:ok, ^input_digest} = PortableDigest.digest(initial)
 
     recordings = [
       %{
@@ -1261,6 +1561,103 @@ defmodule SpectreDataDrivenExecutionTest do
                ],
                agent: Agent
              )
+  end
+
+  test "rehearsal ingestion rejects malformed options and recording envelopes" do
+    program = effect_program()
+    initial = %{"value" => 1}
+    assert {:ok, input_digest} = Rehearsal.input_digest(initial)
+
+    recording = %{
+      operation_ref: "external",
+      input_digest: input_digest,
+      value: %{"value" => 2}
+    }
+
+    assert {:error, :invalid_execution_rehearsal_options} =
+             Rehearsal.run(program, initial, [recording], [:not_keyword])
+
+    assert {:error, {:invalid_execution_rehearsal_input, :atom, :list}} =
+             Rehearsal.run(program, initial, :invalid, [])
+
+    assert {:error, {:invalid_execution_rehearsal_agent, nil}} =
+             Rehearsal.run(program, initial, [recording])
+
+    assert {:error, {:invalid_execution_rehearsal_option, :plans, []}} =
+             Rehearsal.run(program, initial, [recording], agent: Agent, plans: [])
+
+    assert {:error, {:invalid_execution_rehearsal_digest, :materialization_digest, "invalid"}} =
+             Rehearsal.run(program, initial, [recording],
+               agent: Agent,
+               materialization_digest: "invalid"
+             )
+
+    assert {:error, {:invalid_execution_rehearsal_definition_ref, "invalid"}} =
+             Rehearsal.run(program, initial, [recording],
+               agent: Agent,
+               definition_ref: "invalid"
+             )
+
+    malformed = [
+      {{:invalid, :recording}, {:invalid_execution_rehearsal_recording_shape, :tuple}},
+      {recording |> Map.put(:status, :ok) |> Map.put("status", "ok"),
+       :duplicate_execution_rehearsal_recording_field},
+      {Map.put(recording, :unknown, true),
+       {:unknown_execution_rehearsal_recording_fields, [:unknown]}},
+      {Map.delete(recording, :operation_ref),
+       {:missing_execution_rehearsal_recording_field, :operation_ref}},
+      {%{recording | operation_ref: nil}, {:invalid_execution_rehearsal_operation, nil}},
+      {Map.delete(recording, :input_digest),
+       {:missing_execution_rehearsal_recording_field, :input_digest}},
+      {%{recording | input_digest: "invalid"},
+       {:invalid_execution_rehearsal_input_digest, "invalid"}},
+      {Map.put(recording, :status, :future), {:invalid_execution_rehearsal_status, :future}},
+      {recording |> Map.delete(:value) |> Map.put(:status, :ok),
+       :execution_rehearsal_recording_requires_value},
+      {Map.put(recording, :status, :error), :failed_execution_rehearsal_recording_has_value},
+      {recording |> Map.delete(:value) |> Map.put(:status, :error),
+       :execution_rehearsal_recording_requires_error},
+      {Map.put(recording, :usage, []),
+       {:invalid_execution_rehearsal_recording_map, :usage, :list}},
+      {Map.put(recording, :metadata, []),
+       {:invalid_execution_rehearsal_recording_map, :metadata, :list}}
+    ]
+
+    Enum.each(malformed, fn {value, reason} ->
+      assert {:error, {:invalid_execution_rehearsal_recording, 0, ^reason}} =
+               Rehearsal.run(program, initial, [value], agent: Agent)
+    end)
+
+    assert {:error,
+            {:invalid_execution_rehearsal_recording, 0, {:nonportable_run_value, _path, :pid}}} =
+             Rehearsal.run(
+               program,
+               initial,
+               [Map.put(recording, :receipt, self())],
+               agent: Agent
+             )
+
+    assert {:error, {:execution_rehearsal_recording_missing, 0, "external"}} =
+             Rehearsal.run(program, initial, [], agent: Agent)
+
+    assert {:error, {:unused_execution_rehearsal_recordings, 1}} =
+             Rehearsal.run(program, initial, [recording, recording], agent: Agent)
+
+    alias_recording = %{
+      operation: :external,
+      request_input_digest: input_digest,
+      value: %{"value" => 2},
+      receipt:
+        Subject.new("rehearsal-operation-receipt",
+          metadata: %{tags: [:recorded, :rehearsal]}
+        )
+    }
+
+    assert {:ok, %Report{} = report} =
+             Rehearsal.run(program, initial, [alias_recording], agent: Agent)
+
+    assert report.input_evidence_digest == Value.digest!(initial)
+    assert hd(report.trace).receipt_digest
   end
 
   test "the 0.2.8 fixture pins data Work and no-Effect rehearsal identities" do

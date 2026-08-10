@@ -248,7 +248,7 @@ defmodule Spectre.Execution.Handoff do
   defp stable_ref(value, field) when is_atom(value) and not is_nil(value) do
     name = Atom.to_string(value)
 
-    if String.starts_with?(name, "Elixir.") or Code.ensure_loaded?(value),
+    if String.starts_with?(name, "Elixir."),
       do: {:error, {:execution_handoff_code_reference_forbidden, field}},
       else: {:ok, name}
   end

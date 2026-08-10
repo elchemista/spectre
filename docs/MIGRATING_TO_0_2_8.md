@@ -51,10 +51,12 @@ unregistered operations.
 
 Canonical object expressions now reload idempotently from
 `Program.to_data/1`. Negative list indices cannot read or mutate trailing
-elements. Erlang modules are rejected alongside Elixir modules. Authored
-literal atoms and metadata normalize to JSON-stable strings, while inference
-constraint strings normalize only to their known contract enums. Deep
-expressions fail with a bounded validation error before canonical digesting.
+elements. Executable operation positions reject Erlang and Elixir module
+atoms, while inert ids such as `timer` and `queue` normalize by name without
+depending on which modules the VM has loaded. Authored literal atoms and
+metadata normalize to JSON-stable strings, while inference constraint strings
+normalize only to their known contract enums. Deep expressions fail with a
+bounded validation error before canonical digesting.
 
 Materialization revalidates Program, prompt plan, receipt, projection,
 Definition Ref, continuation, input schema, and every digest. Amendments can
@@ -66,7 +68,11 @@ Definition, target Work, and input equality.
 
 Migration receipt operation refs are normalized before digesting and survive
 ordinary JSON transport. Prompt substitution is single-pass over the original
-template, so a resolved scalar containing `{{...}}` remains data. A raw
+template, so a resolved scalar containing `{{...}}` remains data. Prompt
+materialization also revalidates fragment identity, rejects dynamic fragments,
+and prevents context maps from shadowing the normalized `input` namespace.
+Rehearsal evidence now shares the canonical digest domain used by projections,
+with a deterministic fallback for portable operational structs. A raw
 canonical Skill supplied to `mount/4` must declare `origin: :runtime`;
 compiled Skills continue to mount through their trusted module or validated
 Definition path.

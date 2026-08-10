@@ -170,7 +170,10 @@ An `infer` node refers to a governed prompt fragment in the owning Skill.
 returns both a typed `Spectre.Prompt.Plan` and
 `Spectre.Prompt.Receipt`. Replacement is a single pass over the original
 template, so placeholder-like text inside a resolved value is never expanded
-again. The receipt binds:
+again. The materializer revalidates the canonical fragment digest, accepts
+only static fragments, and owns the `input` namespace; context keys cannot
+replace the actual normalized input used by `input.*` placeholders. The
+receipt binds:
 
 - the exact Definition Ref and fragment digest;
 - rendered bytes and their digest, without copying prompt text;
@@ -201,7 +204,10 @@ call a Flow or start a Work by itself. Admission remains a host/runtime action.
 Program and returns a normal registered operation request. The host executes
 that request through its existing boundary. `Migration.commit/3` then
 revalidates the operation contract, input, output schema, request lineage, and
-digests before returning the migrated state and an integrity receipt.
+digests before returning the migrated state and an integrity receipt. A
+portable structured operation receipt is deterministically encoded before it
+is digested; it cannot crash migration commit merely because it is not a
+canonical plain map.
 
 There is no callback selected by state data, and migration preparation never
 executes the operation.
@@ -217,7 +223,9 @@ ambiguous, or malformed recordings fail closed.
 The returned `Spectre.Execution.Rehearsal.Report` records privacy-safe trace,
 retry/reconcile status, final-state and outcome digests, consumed recording
 count, and `effect_dispatches: 0`. Running the same Program, input, and
-recordings produces the same report digest.
+recordings produces the same report digest. Canonical inputs use the same
+evidence-digest domain as Execution projections and materializations;
+operational structs retain a deterministic tagged fallback.
 
 The permanent fixture at
 `test/fixtures/compatibility/0.2.8/data-driven-execution-v1.json` pins a
