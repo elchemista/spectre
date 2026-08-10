@@ -67,7 +67,14 @@ defmodule SpectreRuntimeSkillDefinitionTest do
            ]
 
     assert Registry.registered?(Agent, :lookup)
+    assert Registry.registered?(Agent, "lookup")
+    assert {:ok, :lookup} = Registry.resolve_id(Agent, "lookup")
     refute Registry.registered?(Agent, :missing)
+
+    unknown = "runtime-operation-#{System.unique_integer([:positive])}"
+    assert_raise ArgumentError, fn -> String.to_existing_atom(unknown) end
+    assert {:error, {:operation_not_registered, ^unknown}} = Registry.resolve_id(Agent, unknown)
+    assert_raise ArgumentError, fn -> String.to_existing_atom(unknown) end
   end
 
   test "operation handlers use the explicit Skill Runtime instead of the legacy Agent runner" do
@@ -217,6 +224,90 @@ defmodule SpectreRuntimeSkillDefinitionTest do
              |> SkillDefinition.new()
   end
 
+  test "runtime prompt governance is host-owned at construction and canonical load" do
+    authored =
+      reply_skill()
+      |> put_in(
+        [:prompt_fragments, Access.at(0)],
+        Map.merge(hd(reply_skill().prompt_fragments), %{
+          scope: :constitution,
+          target: :instructions,
+          position: :replace,
+          source: %{kind: :spoofed},
+          trust: :data,
+          placeholders: %{},
+          provenance: %{publisher_ref: "attacker"},
+          requested_priority: :high,
+          granted_priority: :high
+        })
+      )
+      |> SkillDefinition.new!()
+
+    assert [fragment] = SkillDefinition.prompt_fragments(authored)
+    assert fragment.scope == :skill
+    assert fragment.target == :task
+    assert fragment.position == :end
+    assert fragment.source == %{kind: :runtime_authored, publisher_ref: "host:test"}
+    assert fragment.trust == :instruction
+    assert fragment.provenance == %{publisher_ref: "host:test"}
+    assert fragment.requested_priority == :high
+    assert fragment.granted_priority == :normal
+
+    tampered =
+      authored.canonical
+      |> rewrite_component(:prompt_fragments, fn payload ->
+        [data] = payload.fragments
+
+        %{payload | fragments: [%{data | target: :instructions, granted_priority: :high}]}
+      end)
+      |> round_trip_canonical()
+
+    assert {:error,
+            {:runtime_skill_prompt_governance_violation, 0,
+             %{granted_priority: :high, target: :instructions}}} =
+             SkillDefinition.from_canonical(tampered)
+  end
+
+  test "canonical runtime prompt budgets are recomputed from fragment evidence" do
+    canonical = reply_skill() |> SkillDefinition.new!() |> SkillDefinition.canonical()
+
+    understated =
+      rewrite_component(canonical, :prompt_fragments, fn payload ->
+        put_in(payload, [:budget, :reserved_tokens], 1)
+      end)
+      |> round_trip_canonical()
+
+    assert {:error, {:canonical_skill_prompt_budget_mismatch, _declared, _derived}} =
+             SkillDefinition.from_canonical(understated)
+
+    oversized =
+      rewrite_component(canonical, :prompt_fragments, fn payload ->
+        [fragment] = payload.fragments
+
+        fragment =
+          fragment
+          |> Map.put(:content, String.duplicate("x", 40_000))
+          |> Map.put(:placeholders, %{})
+          |> Map.put(:token_cap, 1)
+
+        %{
+          payload
+          | fragments: [fragment],
+            budget: %{
+              schema_version: 1,
+              token_cap: 64,
+              reserved_tokens: 1,
+              estimated_tokens: 1,
+              fragment_count: 1
+            }
+        }
+      end)
+      |> round_trip_canonical()
+
+    assert {:error, {:skill_prompt_fragment_over_budget, 0, 10_000, 1}} =
+             SkillDefinition.from_canonical(oversized)
+  end
+
   test "Routing projection is deterministic and binds a versioned index profile" do
     definition = SkillDefinition.new!(reply_skill())
     canonical = SkillDefinition.canonical(definition)
@@ -266,6 +357,7 @@ defmodule SpectreRuntimeSkillDefinitionTest do
     assert matrix.skill_runtime.index_profile == 1
 
     Enum.each(matrix.golden_path, fn {module, function, arity} ->
+      assert Code.ensure_loaded?(module)
       assert function_exported?(module, function, arity)
     end)
   end
@@ -319,5 +411,31 @@ defmodule SpectreRuntimeSkillDefinitionTest do
         }
       ]
     }
+  end
+
+  defp rewrite_component(%Canonical{} = canonical, type, update) do
+    components =
+      Enum.map(canonical.components, fn component ->
+        if component.component_type == type do
+          Component.new!(
+            component_type: component.component_type,
+            schema_ref: component.schema_ref,
+            criticality: component.criticality,
+            payload: update.(component.payload)
+          )
+        else
+          component
+        end
+      end)
+
+    canonical
+    |> Map.from_struct()
+    |> Map.put(:components, components)
+    |> Canonical.new!()
+  end
+
+  defp round_trip_canonical(%Canonical{} = canonical) do
+    {:ok, decoded} = canonical |> Canonical.encode!() |> Canonical.decode()
+    decoded
   end
 end

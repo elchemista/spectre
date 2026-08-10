@@ -90,7 +90,12 @@ defmodule SpectreRuntimeSkillContractsTest do
       refute Applicability.matches?(applicability, %{scope: :support, tags: [:trusted, :admin]})
       refute Applicability.matches?(applicability, %{scope: :other, tags: [:trusted]})
       refute Applicability.matches?(applicability, :invalid_context)
-      assert Applicability.specificity(applicability) == 3
+      assert Applicability.specificity(applicability) == 2
+
+      assert applicability
+             |> Map.put(:forbidden_tags, Enum.map(1..50, &"absent-#{&1}"))
+             |> Applicability.specificity() == 2
+
       assert Applicability.conflicts?(applicability, :legacy)
       refute Applicability.conflicts?(applicability, :current)
 

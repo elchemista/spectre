@@ -43,6 +43,12 @@ also rejects failed anti-hijack examples, authority gaps, registry gaps,
 declared conflicts, or prompt overflow. Equal-specificity routing ambiguity
 returns an error.
 
+The canonical load path repeats the security-sensitive checks: prompt budgets
+are rederived from restored fragments, effective fragment governance fields
+must match Spectre's assignments, and JSON operation references must resolve
+to an existing host registry ID. Forbidden tags never contribute routing
+specificity, and non-scalar prompt placeholders return a structured error.
+
 Disabling no longer implies that owned in-flight work is rebound to a newer
 Skill. A live generation drains until its exact continuations are released.
 Replacement likewise retains an old Definition only for continuations already

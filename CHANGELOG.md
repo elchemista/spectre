@@ -35,6 +35,16 @@ minor release may contain documented breaking API changes.
 - Runtime operation handlers return a portable `Spectre.Operation.Request`;
   Spectre does not execute it or widen authority. Publication, activation, and
   lifecycle changes remain explicit host actions.
+- Canonical runtime Skill loads rederive prompt usage from the restored
+  fragments, require every fragment cap, and reject declared budget counters
+  that do not exactly match the derived evidence.
+- Runtime fragment placement, trust, provenance, and granted priority are
+  assigned by Spectre rather than accepted from authored data. Composite
+  placeholder values fail closed instead of invoking arbitrary string
+  protocols.
+- JSON string operation references resolve only to matching IDs already in the
+  host Agent registry, without creating atoms. Forbidden applicability tags
+  remain exclusion filters and cannot increase routing specificity.
 - State remains writer v5, Run remains writer v2, and canonical Instance
   checkpoints remain schema 4. All 0.2.6 foundation and Stack gates remain in
   the release suite.

@@ -124,7 +124,7 @@ defmodule Spectre.Skill.Applicability do
   @spec specificity(t()) :: non_neg_integer()
   def specificity(%__MODULE__{} = applicability) do
     scope_score = if applicability.scopes == [], do: 0, else: 1
-    scope_score + length(applicability.required_tags) + length(applicability.forbidden_tags)
+    scope_score + length(applicability.required_tags)
   end
 
   @doc "Returns true when this declaration conflicts with a mount or Skill id."

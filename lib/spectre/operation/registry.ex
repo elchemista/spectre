@@ -6,14 +6,23 @@ defmodule Spectre.Operation.Registry do
 
   @doc "Returns whether an operation id belongs to an Agent's closed registry."
   @spec registered?(module(), term()) :: boolean()
-  def registered?(agent, id) when is_atom(agent) do
-    case agent_operations(agent) do
-      {:ok, operations} -> Map.has_key?(operations, id)
-      {:error, _reason} -> false
+  def registered?(agent, id) when is_atom(agent),
+    do: match?({:ok, _registered_id}, resolve_id(agent, id))
+
+  def registered?(_agent, _id), do: false
+
+  @doc "Resolves an exact or JSON string operation reference in the Agent registry."
+  @spec resolve_id(module(), term()) :: {:ok, term()} | {:error, term()}
+  def resolve_id(agent, id) when is_atom(agent) do
+    with {:ok, operations} <- agent_operations(agent) do
+      case Map.fetch(operations, id) do
+        {:ok, _spec} -> {:ok, id}
+        :error -> resolve_string_alias(operations, id)
+      end
     end
   end
 
-  def registered?(_agent, _id), do: false
+  def resolve_id(_agent, id), do: {:error, {:operation_not_registered, id}}
 
   @spec all(module(), Definition.t()) :: {:ok, %{optional(term()) => Spec.t()}} | {:error, term()}
   def all(agent, %Definition{} = definition) when is_atom(agent) do
@@ -70,6 +79,16 @@ defmodule Spectre.Operation.Registry do
   end
 
   defp normalize(value), do: {:error, {:invalid_agent_operation_registry, value}}
+
+  @spec resolve_string_alias(map(), term()) :: {:ok, term()} | {:error, term()}
+  defp resolve_string_alias(operations, id) when is_binary(id) do
+    case Enum.find(Map.keys(operations), &(is_atom(&1) and Atom.to_string(&1) == id)) do
+      nil -> {:error, {:operation_not_registered, id}}
+      registered_id -> {:ok, registered_id}
+    end
+  end
+
+  defp resolve_string_alias(_operations, id), do: {:error, {:operation_not_registered, id}}
 
   defp ensure_imports(agent, imports) do
     case Enum.find(imports, &(not Map.has_key?(agent, &1))) do

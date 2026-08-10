@@ -63,6 +63,14 @@ defmodule Spectre.Skill.Definition do
     :condition_ref
   ]
 
+  @runtime_fragment_governance [
+    scope: :skill,
+    target: :task,
+    position: :end,
+    trust: :instruction,
+    granted_priority: :normal
+  ]
+
   @enforce_keys [:canonical, :ref]
   defstruct [:canonical, :ref]
 
@@ -359,11 +367,8 @@ defmodule Spectre.Skill.Definition do
     do: {:error, {:invalid_runtime_prompt_fragments, shape(value)}}
 
   @spec runtime_fragment(term(), String.t()) :: {:ok, Fragment.t()} | {:error, term()}
-  defp runtime_fragment(%Fragment{} = fragment, _publisher_ref) do
-    if is_binary(fragment.content),
-      do: Fragment.canonical(Fragment.canonical_data(fragment)),
-      else: {:error, :runtime_prompt_fragment_requires_closed_content}
-  end
+  defp runtime_fragment(%Fragment{} = fragment, publisher_ref),
+    do: fragment |> Fragment.canonical_data() |> runtime_fragment(publisher_ref)
 
   defp runtime_fragment(fragment, publisher_ref)
        when is_map(fragment) and not is_struct(fragment) do
@@ -375,13 +380,14 @@ defmodule Spectre.Skill.Definition do
          attrs <-
            attrs
            |> Map.put(:content, closed)
-           |> Map.put_new(:scope, :skill)
-           |> Map.put_new(:target, :task)
-           |> Map.put_new(:position, :end)
-           |> Map.put_new(:source, %{kind: :runtime_authored, publisher_ref: publisher_ref})
-           |> Map.put_new(:trust, :instruction)
-           |> Map.put_new(:placeholders, observed_placeholders)
-           |> Map.put_new(:provenance, %{publisher_ref: publisher_ref}),
+           |> Map.put(:scope, :skill)
+           |> Map.put(:target, :task)
+           |> Map.put(:position, :end)
+           |> Map.put(:source, %{kind: :runtime_authored, publisher_ref: publisher_ref})
+           |> Map.put(:trust, :instruction)
+           |> Map.put(:placeholders, observed_placeholders)
+           |> Map.put(:provenance, %{publisher_ref: publisher_ref})
+           |> Map.put(:granted_priority, :normal),
          {:ok, attrs} <- normalize_fragment_enums(attrs) do
       Fragment.canonical(attrs)
     end
@@ -694,10 +700,61 @@ defmodule Spectre.Skill.Definition do
   @spec canonical_fragments(Canonical.t()) :: {:ok, [Fragment.t()]} | {:error, term()}
   defp canonical_fragments(canonical) do
     with {:ok, payload} <- component_payload(canonical, :prompt_fragments),
-         fragments when is_list(fragments) <- get(payload, :fragments, []) do
-      restore_fragments(fragments)
+         fragments when is_list(fragments) <- get(payload, :fragments, []),
+         {:ok, fragments} <- restore_fragments(fragments),
+         :ok <- validate_runtime_fragment_governance(canonical, fragments) do
+      {:ok, fragments}
     else
+      {:error, _reason} = error -> error
       value -> {:error, {:invalid_canonical_skill_prompt_fragments, value}}
+    end
+  end
+
+  @spec validate_runtime_fragment_governance(Canonical.t(), [Fragment.t()]) ::
+          :ok | {:error, term()}
+  defp validate_runtime_fragment_governance(%Canonical{origin: :compiled}, _fragments), do: :ok
+
+  defp validate_runtime_fragment_governance(%Canonical{origin: :runtime} = canonical, fragments) do
+    with {:ok, publisher_ref} <- canonical_runtime_publisher_ref(canonical) do
+      expected =
+        @runtime_fragment_governance ++
+          [
+            source: %{kind: :runtime_authored, publisher_ref: publisher_ref},
+            provenance: %{publisher_ref: publisher_ref}
+          ]
+
+      validate_runtime_fragment_values(fragments, expected)
+    end
+  end
+
+  @spec validate_runtime_fragment_values([Fragment.t()], keyword()) ::
+          :ok | {:error, term()}
+  defp validate_runtime_fragment_values(fragments, expected) do
+    fragments
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {fragment, index}, :ok ->
+      violations =
+        expected
+        |> Enum.reject(fn {field, expected} -> Map.fetch!(fragment, field) == expected end)
+        |> Map.new(fn {field, _expected} -> {field, Map.fetch!(fragment, field)} end)
+
+      if violations == %{},
+        do: {:cont, :ok},
+        else: {:halt, {:error, {:runtime_skill_prompt_governance_violation, index, violations}}}
+    end)
+  end
+
+  @spec canonical_runtime_publisher_ref(Canonical.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  defp canonical_runtime_publisher_ref(canonical) do
+    with {:ok, identity} <- component_payload(canonical, :identity),
+         owner when is_map(owner) <- get(identity, :owner_ref, %{}),
+         publisher_ref when is_binary(publisher_ref) and publisher_ref != "" <-
+           get(owner, :publisher_ref) do
+      {:ok, publisher_ref}
+    else
+      {:error, _reason} = error -> error
+      value -> {:error, {:invalid_runtime_skill_publisher_ref, value}}
     end
   end
 
@@ -738,9 +795,33 @@ defmodule Spectre.Skill.Definition do
       case get(payload, :budget) do
         nil when canonical.origin == :compiled -> PromptBudget.new(fragments)
         nil -> {:error, :runtime_skill_missing_prompt_budget}
-        budget -> PromptBudget.from_data(budget)
+        budget -> verify_canonical_budget(canonical.origin, fragments, budget)
       end
     end
+  end
+
+  @spec verify_canonical_budget(:compiled | :runtime, [Fragment.t()], term()) ::
+          {:ok, PromptBudget.t()} | {:error, term()}
+  defp verify_canonical_budget(origin, fragments, budget) do
+    with {:ok, declared} <- PromptBudget.from_data(budget),
+         {:ok, derived} <-
+           PromptBudget.new(fragments,
+             token_cap: declared.token_cap,
+             reserved_tokens: declared.reserved_tokens,
+             require_fragment_caps?: origin == :runtime
+           ),
+         :ok <- exact_canonical_budget(declared, derived) do
+      {:ok, derived}
+    end
+  end
+
+  @spec exact_canonical_budget(PromptBudget.t(), PromptBudget.t()) :: :ok | {:error, term()}
+  defp exact_canonical_budget(budget, budget), do: :ok
+
+  defp exact_canonical_budget(declared, derived) do
+    {:error,
+     {:canonical_skill_prompt_budget_mismatch, PromptBudget.to_data(declared),
+      PromptBudget.to_data(derived)}}
   end
 
   @spec canonical_operation_refs(Canonical.t()) :: {:ok, [term()]} | {:error, term()}

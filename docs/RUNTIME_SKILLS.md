@@ -17,6 +17,11 @@ It cannot contain callbacks, modules, AST, generated handlers, dynamic prompt
 providers, publication authority, or activation authority. A runtime canonical
 Definition containing a compiled `code_ref` is rejected.
 
+JSON operation names remain strings in Definition identity. At mount and
+response time Spectre may resolve such a string only to an identically named
+ID already present in the host Agent registry; resolution never creates an
+atom or registers an executor.
+
 ## Equivalent compiled and runtime definitions
 
 A compiled Skill can refer to a closed Agent operation:
@@ -133,7 +138,9 @@ examples, and prompt-window overflow all fail before the revision changes.
 
 Routing evaluates only active mounts. If equally specific Skills both match,
 `route/3` returns `{:ambiguous_skill_applicability, ...}` rather than choosing
-one by map order.
+one by map order. Specificity counts positive eligibility constraints (scope
+and required tags). Forbidden tags only exclude matching contexts and cannot
+be added to manufacture routing priority.
 
 ## Operation boundary and draining
 
@@ -164,7 +171,16 @@ while a continuation still owns it.
 Runtime fragments require a positive `token_cap`; the sum of fragment caps must
 fit the Skill budget. Mount additionally checks the per-Skill ceiling, granted
 budget classes, every retained draining generation, and the total window after
-the kernel reserve. A large Skill can therefore never evict the kernel prompt.
+the kernel reserve. Loading a runtime Definition from canonical bytes restores
+the fragments and rederives estimated tokens, fragment count, and reserved
+tokens; mismatched declared counters or uncapped fragments are rejected. A
+large Skill can therefore never evict the kernel prompt through either the
+authoring or load path.
+
+Runtime-authored fragment data may request a priority, but Spectre assigns the
+effective scope, target, position, trust class, provenance, and granted
+priority. Closed placeholders render only scalar values. Missing or composite
+values return an error and never crash the host through `String.Chars`.
 
 ## Routing projection and cache identity
 

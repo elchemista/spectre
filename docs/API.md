@@ -43,6 +43,11 @@ trusted host creates `Spectre.Skill.Runtime` with an effective Authority
 Envelope, kernel prompt reserve, and per-Skill ceiling, then performs lifecycle
 changes with revision CAS.
 
+Canonical runtime loads rederive prompt budgets and validate host-owned
+fragment governance. JSON string operation refs are resolved only against the
+closed Agent registry through `Spectre.Operation.Registry.resolve_id/2`; no
+atom or executable entry is created from runtime data.
+
 `respond/4` returns either a closed reply or a registered
 `Spectre.Operation.Request`; it never executes the operation. Disable and
 replacement keep old Definition generations only while exact pinned

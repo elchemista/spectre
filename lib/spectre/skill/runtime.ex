@@ -408,17 +408,29 @@ defmodule Spectre.Skill.Runtime do
   @spec validate_operation_authority(t(), SkillDefinition.t()) :: :ok | {:error, term()}
   defp validate_operation_authority(runtime, definition) do
     Enum.reduce_while(SkillDefinition.operation_refs(definition), :ok, fn operation, :ok ->
-      cond do
-        not Envelope.allows?(runtime.authority, :operations, operation) ->
-          {:halt, {:error, {:skill_operation_not_authorized, operation}}}
-
-        not Registry.registered?(runtime.agent, operation) ->
-          {:halt, {:error, {:skill_operation_not_registered, operation}}}
-
-        true ->
-          {:cont, :ok}
+      case validate_operation_grant(runtime, operation) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  @spec validate_operation_grant(t(), term()) :: :ok | {:error, term()}
+  defp validate_operation_grant(runtime, operation) do
+    case Registry.resolve_id(runtime.agent, operation) do
+      {:ok, registered_operation} ->
+        authorize_registered_operation(runtime, registered_operation)
+
+      {:error, _reason} ->
+        {:error, {:skill_operation_not_registered, operation}}
+    end
+  end
+
+  @spec authorize_registered_operation(t(), term()) :: :ok | {:error, term()}
+  defp authorize_registered_operation(runtime, operation) do
+    if Envelope.allows?(runtime.authority, :operations, operation),
+      do: :ok,
+      else: {:error, {:skill_operation_not_authorized, operation}}
   end
 
   @spec validate_prompt_authority(t(), SkillDefinition.t(), entry() | nil) ::
@@ -556,11 +568,11 @@ defmodule Spectre.Skill.Runtime do
   defp operation_response(runtime, match, handler, input) do
     operation = get(handler, :operation_ref)
 
-    with true <- Registry.registered?(runtime.agent, operation),
-         true <- Envelope.allows?(runtime.authority, :operations, operation),
+    with {:ok, registered_operation} <- Registry.resolve_id(runtime.agent, operation),
+         true <- Envelope.allows?(runtime.authority, :operations, registered_operation),
          {:ok, operation_input} <- operation_input(get(handler, :input, :input), input) do
       request =
-        Request.new(operation, operation_input,
+        Request.new(registered_operation, operation_input,
           phase: :skill,
           branch: normalize_branch(match.mount_id),
           metadata: %{
@@ -585,8 +597,14 @@ defmodule Spectre.Skill.Runtime do
 
       {:ok, response, runtime}
     else
-      false -> {:error, {:runtime_skill_operation_unavailable, operation}}
-      {:error, _reason} = error -> error
+      false ->
+        {:error, {:runtime_skill_operation_unavailable, operation}}
+
+      {:error, {:operation_not_registered, _id}} ->
+        {:error, {:runtime_skill_operation_unavailable, operation}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -621,13 +639,35 @@ defmodule Spectre.Skill.Runtime do
     Enum.reduce_while(placeholders, {:ok, content}, fn {name, spec}, {:ok, rendered} ->
       case fetch_path(values, get(spec, :path, [])) do
         {:ok, value} ->
-          {:cont, {:ok, String.replace(rendered, "{{#{name}}}", to_string(value))}}
+          render_scalar_placeholder(rendered, name, value)
 
         :error ->
           {:halt, {:error, {:missing_runtime_prompt_value, name}}}
       end
     end)
   end
+
+  @spec render_scalar_placeholder(String.t(), String.t(), term()) ::
+          {:cont, {:ok, String.t()}} | {:halt, {:error, term()}}
+  defp render_scalar_placeholder(rendered, name, value) do
+    case scalar_prompt_value(name, value) do
+      {:ok, value} ->
+        {:cont, {:ok, String.replace(rendered, "{{#{name}}}", value)}}
+
+      {:error, _reason} = error ->
+        {:halt, error}
+    end
+  end
+
+  @spec scalar_prompt_value(String.t(), term()) :: {:ok, String.t()} | {:error, term()}
+  defp scalar_prompt_value(_name, value) when is_binary(value), do: {:ok, value}
+
+  defp scalar_prompt_value(_name, value)
+       when is_integer(value) or is_float(value) or is_atom(value),
+       do: {:ok, to_string(value)}
+
+  defp scalar_prompt_value(name, value),
+    do: {:error, {:non_scalar_runtime_prompt_value, name, shape(value)}}
 
   @spec fetch_path(term(), [String.t()]) :: {:ok, term()} | :error
   defp fetch_path(value, []), do: {:ok, value}

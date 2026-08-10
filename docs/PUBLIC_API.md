@@ -210,7 +210,7 @@ type, and struct contract.
 - `Spectre.Operation.Request`
   - functions: `new/1`, `new/2`, `new/3`, `validate/1`, `validate!/1`
 - `Spectre.Operation.Registry`
-  - functions: `all/2`, `registered?/2`, `resolve/3`
+  - functions: `all/2`, `registered?/2`, `resolve/3`, `resolve_id/2`
 - `Spectre.Operation.Result`
   - functions: `new/3`, `new/4`, `validate/1`, `validate!/1`
 - `Spectre.Operation.Retry`

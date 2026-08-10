@@ -108,6 +108,24 @@ defmodule SpectreRuntimeSkillLifecycleTest do
              Runtime.mount(conflict_runtime, :two, conflicting, expected_revision: 1)
   end
 
+  test "forbidden tags cannot inflate routing specificity" do
+    assert {:ok, runtime} =
+             Runtime.mount(runtime(), :honest, operation_skill(id: :honest), expected_revision: 0)
+
+    inflated_tags = Enum.map(1..50, &"not-present-#{&1}")
+
+    assert {:ok, runtime} =
+             Runtime.mount(
+               runtime,
+               :inflated,
+               operation_skill(id: :inflated, forbidden_tags: inflated_tags),
+               expected_revision: 1
+             )
+
+    assert {:error, {:ambiguous_skill_applicability, [:honest, :inflated]}} =
+             Runtime.route(runtime, "lookup", %{scope: :support})
+  end
+
   test "a large Skill cannot consume the kernel prompt reserve" do
     constrained =
       Runtime.new!(Agent, authority(limits: %{max_tokens: 256}),
@@ -200,6 +218,63 @@ defmodule SpectreRuntimeSkillLifecycleTest do
     assert response.output == "Hello hello"
     assert response.continuation_id == nil
     assert unchanged.revision == runtime.revision
+  end
+
+  test "composite placeholder values fail closed instead of crashing the host" do
+    assert {:ok, runtime} =
+             Runtime.mount(runtime(), :reply, reply_skill(16, "Value: {{input}}"),
+               expected_revision: 0
+             )
+
+    assert {:error, {:non_scalar_runtime_prompt_value, "input", :map}} =
+             Runtime.respond(runtime, "hello", %{scope: :chat}, expected_revision: 1)
+  end
+
+  test "JSON operation references resolve only through the host registry" do
+    skill =
+      SkillDefinition.new!(%{
+        "id" => "lookup-json",
+        "publisher_ref" => "host:test",
+        "applicability" => %{
+          "scopes" => ["support"],
+          "positive" => ["lookup"],
+          "negative" => ["admin"]
+        },
+        "operation_refs" => ["lookup"],
+        "flows" => [
+          %{
+            "id" => "support",
+            "routes" => [
+              %{
+                "label" => "LOOKUP",
+                "match" => %{"kind" => "exact", "value" => "lookup"},
+                "handler" => %{
+                  "kind" => "operation",
+                  "operation_ref" => "lookup",
+                  "input" => "text"
+                }
+              }
+            ]
+          }
+        ]
+      })
+
+    assert SkillDefinition.operation_refs(skill) == ["lookup"]
+
+    {:ok, canonical} =
+      skill.canonical
+      |> Spectre.Definition.Canonical.encode!()
+      |> Spectre.Definition.Canonical.decode()
+
+    assert {:ok, skill} = SkillDefinition.from_canonical(canonical)
+
+    assert {:ok, runtime} =
+             Runtime.mount(runtime(), :json, skill, expected_revision: 0)
+
+    assert {:ok, response, _runtime} =
+             Runtime.respond(runtime, "lookup", %{scope: "support"}, expected_revision: 1)
+
+    assert %Request{operation: :lookup, input: "lookup"} = response.operation_request
   end
 
   test "anti-hijack evaluation is enforced during mount" do
@@ -356,6 +431,7 @@ defmodule SpectreRuntimeSkillLifecycleTest do
     operation = Keyword.get(opts, :operation, :lookup)
     conflicts = Keyword.get(opts, :conflicts, [])
     positive = Keyword.get(opts, :positive, ["lookup"])
+    forbidden_tags = Keyword.get(opts, :forbidden_tags, [])
 
     SkillDefinition.new!(%{
       id: id,
@@ -363,6 +439,7 @@ defmodule SpectreRuntimeSkillLifecycleTest do
       publisher_ref: "host:test",
       applicability: %{
         scopes: [:support],
+        forbidden_tags: forbidden_tags,
         positive: positive,
         negative: ["admin"],
         conflicts: conflicts
@@ -384,14 +461,14 @@ defmodule SpectreRuntimeSkillLifecycleTest do
     })
   end
 
-  defp reply_skill(fragment_cap) do
+  defp reply_skill(fragment_cap, content \\ "Hello {{input.text}}") do
     SkillDefinition.new!(%{
       id: :reply,
       publisher_ref: "host:test",
       applicability: %{scopes: [:chat], positive: ["hello"], negative: ["bye"]},
       prompt_budget: fragment_cap,
       prompt_fragments: [
-        %{id: :reply, content: "Hello {{input.text}}", token_cap: fragment_cap}
+        %{id: :reply, content: content, token_cap: fragment_cap}
       ],
       flows: [
         %{
