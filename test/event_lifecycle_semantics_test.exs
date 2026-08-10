@@ -310,7 +310,7 @@ defmodule SpectreEventLifecycleSemanticsTest do
            ]
   end
 
-  test "schema 3 checkpoint preserves event admission and lifecycle across restart" do
+  test "current checkpoint preserves event admission and lifecycle across restart" do
     checkpoint_server = start_agent(%{})
     checkpoint_store = {CheckpointStore, server: checkpoint_server}
     subject = Subject.new("event-checkpoint-#{System.unique_integer([:positive])}")
@@ -354,7 +354,7 @@ defmodule SpectreEventLifecycleSemanticsTest do
     assert [%Envelope{id: "checkpointed-event"}] = Spectre.admitted_events(restarted)
     assert {:ok, %Lifecycle{admission: :draining}} = Spectre.definition_lifecycle(restarted)
     assert {:ok, checkpoint} = Spectre.checkpoint(restarted)
-    assert %{"checkpoint_version" => 3, "state_schema_version" => 3} = Jason.decode!(checkpoint)
+    assert %{"checkpoint_version" => 4, "state_schema_version" => 4} = Jason.decode!(checkpoint)
 
     :ok = GenServer.stop(restarted, :normal)
   end

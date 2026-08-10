@@ -205,6 +205,26 @@ priv/skills/answers/prompts/answer.text.heex
 
 The model used for `reason` still comes from the mounting Agent.
 
+## Private Generational State
+
+Starting with Spectre 0.2.5, a stable Skill id can own private state as a
+canonical `Spectre.Skill.StateBinding`. The Instance—not the Skill DSL—is the
+single sequencer for this state. Updates require the selected branch's exact
+schema Ref, generation, and revision, and are fenced by the active Definition
+and current Instance owner lease.
+
+Definition changes create explicit state history. In an A → B → A sequence,
+B's branch is never merged into A. If the target Definition already has a
+dormant branch, activation must explicitly resume, fork, migrate, or abandon
+it. The common stateless case and a target with no dormant branch need no
+choice.
+
+Use `Spectre.skill_state/3`, `Spectre.skill_state_branches/3`,
+`Spectre.update_skill_state/4`, and
+`Spectre.transition_skill_state_retention/5` at the trusted host boundary.
+See [Generational Skill State](SKILL_STATE.md) for activation examples,
+retention rules, and checkpoint compatibility.
+
 ## What A Skill Inherits
 
 A Skill describes behavior; it does not create a session or establish a second

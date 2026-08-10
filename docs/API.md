@@ -4,8 +4,8 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.4` extends the vNext core with ownership-based Event Envelopes,
-same-sequencer admission, independent Definition lifecycle axes, and schema-3
+Spectre `0.2.5` extends the vNext core with first-class generational Skill
+state, explicit rollback branches, reference-safe retention, and schema-4
 checkpoints. The exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
@@ -96,6 +96,31 @@ the current authority epoch and blocks admission, continuation, commit, retry,
 and Effect or operation dispatch. A Run's stored authority epoch records
 lineage; it never overrides the current lifecycle record.
 
+## Bind private Skill state to an Activation
+
+Pass `:skill_state_transitions` to `activate/3` to initialize state or make an
+explicit choice for a dormant target branch. A rollback never merges state:
+
+```elixir
+{:ok, _activation} =
+  Spectre.activate(instance, candidate_ref,
+    expected_generation: current_generation,
+    skill_state_transitions: %{
+      planner: {:resume, exact_branch_id}
+    }
+  )
+```
+
+The other explicit choices are `{:fork, schema_ref, state}`,
+`{:migrate, source_branch_id, schema_ref, state}`, and
+`{:abandon, branch_id}`. `{:init, schema_ref, state}` is valid only when no
+retained dormant target branch exists.
+
+Read through `skill_state/3` or `skill_state_branches/3`. Updates must present
+the current `expected_generation`, `expected_revision`, and
+`state_schema_ref`; Core also checks the active Definition and current owner
+fence before committing. See [Generational Skill State](SKILL_STATE.md).
+
 ## Stack installation
 
 `Spectre.Stack` is the compile-time package boundary. A Stack definition is
@@ -122,6 +147,7 @@ resources. PID, connections, clients, and secrets never belong in
 | Start a continuation | `Spectre.Runtime.start/3` | `{:continue, %Spectre.Run{}}` |
 | Drive a continuation | `Spectre.Runtime.advance/2`, `resume/3` | one closed Runtime step |
 | Activate a published Candidate | `Spectre.activate/3` | generation-fenced Activation snapshot |
+| Inspect or update private Skill state | `skill_state/3`, `update_skill_state/4` | generation- and revision-fenced binding |
 | Start precise background work | `Spectre.start_work/4` | operational ref and committed view |
 | Register durable observation | `Spectre.register_vigil/4` | operational ref and committed view |
 | Inspect or control a loop | `loop/3`, `pause_loop/3`, `update_and_resume_loop/4` | redacted committed view |

@@ -95,8 +95,8 @@ defmodule SpectreDefinitionCanonicalTest do
   alias SpectreDefinitionCanonicalTest.InvalidProjection
   alias SpectreDefinitionCanonicalTest.UnsafePromptAgent
 
-  test "release identifies the event ownership and lifecycle foundation as 0.2.4" do
-    assert Spectre.version() == "0.2.4"
+  test "release identifies the generational Skill-state foundation as 0.2.5" do
+    assert Spectre.version() == "0.2.5"
   end
 
   test "compiled Agent and mounted Skill lower into one portable canonical envelope" do

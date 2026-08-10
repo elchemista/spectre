@@ -38,6 +38,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Registry, as: InstanceRegistry
   alias Spectre.Instance.Runs
+  alias Spectre.Instance.SkillStates
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Instance.Telemetry, as: InstanceTelemetry
   alias Spectre.Instance.Timers
@@ -62,6 +63,7 @@ defmodule Spectre.Instance do
   alias Spectre.Run.Ref
   alias Spectre.Run.Value
   alias Spectre.Runtime
+  alias Spectre.Skill.StateBinding
   alias Spectre.State
   alias Spectre.Subject
   alias Spectre.Turn
@@ -195,6 +197,43 @@ defmodule Spectre.Instance do
           {:ok, Activation.t()} | {:error, term()}
   def activate(server, candidate_ref, opts \\ []) do
     GenServer.call(server, {:instance_activate, candidate_ref, opts}, timeout(opts))
+  end
+
+  @doc "Returns the active or explicitly selected branch for a stable Skill id."
+  @spec skill_state(GenServer.server(), atom() | String.t(), keyword()) ::
+          {:ok, StateBinding.t()} | {:error, term()}
+  def skill_state(server, skill_id, opts \\ []) do
+    GenServer.call(server, {:skill_state_fetch, skill_id, opts}, timeout(opts))
+  end
+
+  @doc "Lists non-purged Skill-state branches newest-generation first."
+  @spec skill_state_branches(GenServer.server(), atom() | String.t(), keyword()) ::
+          {:ok, [StateBinding.t()]} | {:error, term()}
+  def skill_state_branches(server, skill_id, opts \\ []) do
+    GenServer.call(server, {:skill_state_list, skill_id, opts}, timeout(opts))
+  end
+
+  @doc "Updates one active Skill-state branch through schema, generation and revision fences."
+  @spec update_skill_state(GenServer.server(), atom() | String.t(), term(), keyword()) ::
+          {:ok, StateBinding.t()} | {:error, term()}
+  def update_skill_state(server, skill_id, value, opts \\ []) do
+    GenServer.call(server, {:skill_state_update, skill_id, value, opts}, timeout(opts))
+  end
+
+  @doc "Transitions one dormant Skill-state branch through the retention lifecycle."
+  @spec transition_skill_state_retention(
+          GenServer.server(),
+          atom() | String.t(),
+          String.t(),
+          StateBinding.retention(),
+          keyword()
+        ) :: {:ok, StateBinding.t()} | {:error, term()}
+  def transition_skill_state_retention(server, skill_id, branch_id, retention, opts \\ []) do
+    GenServer.call(
+      server,
+      {:skill_state_retention, skill_id, branch_id, retention, opts},
+      timeout(opts)
+    )
   end
 
   @doc """
@@ -756,6 +795,37 @@ defmodule Spectre.Instance do
   def handle_call(:instance_activation, _from, data),
     do: {:reply, data.activation, arm_idle_timer(data)}
 
+  def handle_call({:skill_state_fetch, skill_id, opts}, _from, data) do
+    {:reply, SkillStates.fetch(data, skill_id, opts), arm_idle_timer(data)}
+  end
+
+  def handle_call({:skill_state_list, skill_id, opts}, _from, data) do
+    {:reply, SkillStates.list(data, skill_id, opts), arm_idle_timer(data)}
+  end
+
+  def handle_call({:skill_state_update, skill_id, value, opts}, _from, data) do
+    with :ok <- owner_guard(data, :commit),
+         {:ok, binding, next} <- SkillStates.update(data, skill_id, value, opts) do
+      {:reply, {:ok, binding}, arm_idle_timer(next)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  def handle_call(
+        {:skill_state_retention, skill_id, branch_id, retention, opts},
+        _from,
+        data
+      ) do
+    with :ok <- owner_guard(data, :commit),
+         {:ok, binding, next} <-
+           SkillStates.transition_retention(data, skill_id, branch_id, retention, opts) do
+      {:reply, {:ok, binding}, arm_idle_timer(next)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
   def handle_call({:instance_activate, candidate_ref, opts}, _from, data) do
     with {:ok, expected_generation} <- activation_expected_generation(opts),
          :ok <- owner_guard(data, :activation_commit),
@@ -766,11 +836,11 @@ defmodule Spectre.Instance do
              candidate_ref,
              activation_resolver_opts(data, opts)
            ),
-         {:ok, prospective} <-
+         {:ok, prospective, skill_states} <-
            build_activation(data, candidate_resolution, expected_generation, opts),
          {:ok, activation} <-
            Activation.compare_and_swap(data.activation, expected_generation, prospective),
-         {:ok, next} <- commit_activation(data, activation) do
+         {:ok, next} <- commit_activation(data, activation, skill_states) do
       {:reply, {:ok, activation}, arm_idle_timer(next)}
     else
       :not_found ->
@@ -3232,8 +3302,9 @@ defmodule Spectre.Instance do
   defp build_activation(data, %{candidate: candidate, resolution: resolution}, _expected, opts) do
     current_generation = Activation.generation(data.activation)
     current_epoch = Events.current_authority_epoch(data)
+    activated_at = Keyword.get(opts, :activated_at, System.system_time(:millisecond))
 
-    state_bindings =
+    base_bindings =
       Keyword.get_lazy(opts, :state_bindings, fn ->
         case data.activation do
           %Activation{state_bindings: bindings} -> bindings
@@ -3247,29 +3318,42 @@ defmodule Spectre.Instance do
         instance_ref: data.ref.key
       })
 
-    Activation.new(candidate, resolution,
-      generation: current_generation + 1,
-      authority_epoch: Keyword.get(opts, :authority_epoch, current_epoch),
-      owner_fencing_token: data.owner_lease.fencing_token,
-      state_bindings: state_bindings,
-      activated_at: Keyword.get(opts, :activated_at, System.system_time(:millisecond)),
-      provenance: provenance
-    )
+    with {:ok, skill_states, skill_bindings} <-
+           SkillStates.prepare_activation(
+             data,
+             resolution.definition_ref,
+             Keyword.put(opts, :activated_at, activated_at)
+           ),
+         {:ok, state_bindings} <-
+           SkillStates.merge_activation_bindings(base_bindings, skill_bindings),
+         {:ok, activation} <-
+           Activation.new(candidate, resolution,
+             generation: current_generation + 1,
+             authority_epoch: Keyword.get(opts, :authority_epoch, current_epoch),
+             owner_fencing_token: data.owner_lease.fencing_token,
+             state_bindings: state_bindings,
+             activated_at: activated_at,
+             provenance: provenance
+           ) do
+      {:ok, activation, skill_states}
+    end
   end
 
-  defp commit_activation(data, %Activation{} = activation) do
+  defp commit_activation(data, %Activation{} = activation, skill_states) do
     with :ok <- owner_guard(data, :activation_commit),
          :ok <- activation_checkpoint_ready(data),
          {:ok, lifecycles} <- Events.activation_lifecycles(data, activation),
          {:ok, snapshot} <-
            Canonical.snapshot(data.canonical,
-             read: [:activation, :lifecycles],
-             write: [:activation, :lifecycles],
+             read: [:activation, :lifecycles, :skill_states],
+             write: [:activation, :lifecycles, :skill_states],
              correlation_id: activation.activation_receipt,
              causation_id: CandidateRef.to_string(activation.candidate_ref)
            ),
          {:ok, change} <-
-           Canonical.change(snapshot, %{activation: activation, lifecycles: lifecycles},
+           Canonical.change(
+             snapshot,
+             %{activation: activation, lifecycles: lifecycles, skill_states: skill_states},
              provenance: %{source: :activation, instance_ref: data.ref.key},
              metadata: %{
                transition: :definition_activated,
@@ -3346,7 +3430,13 @@ defmodule Spectre.Instance do
   defp activation_resolver_opts(data, opts) do
     data.base_opts
     |> Keyword.merge(opts)
-    |> Keyword.drop([:timeout, :expected_generation, :authority_epoch, :state_bindings])
+    |> Keyword.drop([
+      :timeout,
+      :expected_generation,
+      :authority_epoch,
+      :state_bindings,
+      :skill_state_transitions
+    ])
     |> Keyword.put(:checkpoint_store, data.checkpoint_store)
   end
 

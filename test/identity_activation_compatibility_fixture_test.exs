@@ -24,7 +24,7 @@ defmodule SpectreIdentityActivationCompatibilityFixtureTest do
            } = encoded = Jason.decode!(checkpoint)
 
     assert {:ok, canonical} = Codec.decode(checkpoint)
-    assert canonical.schema_version == 3
+    assert canonical.schema_version == 4
     definition_ref_string = "sha256:" <> String.duplicate("a", 64)
 
     assert {:ok, %{^definition_ref_string => lifecycle}} =
@@ -67,7 +67,7 @@ defmodule SpectreIdentityActivationCompatibilityFixtureTest do
     assert run.state.data == %{"checkpoint" => "activation-pinned"}
 
     assert {:ok, reencoded} = Codec.encode(canonical)
-    assert reencoded["checkpoint_version"] == 3
+    assert reencoded["checkpoint_version"] == 4
     refute reencoded["checkpoint_version"] == encoded["checkpoint_version"]
     assert {:ok, ^canonical} = reencoded |> Jason.encode!() |> Codec.decode()
   end

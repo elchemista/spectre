@@ -25,8 +25,9 @@ defmodule SpectreEventLifecycleCompatibilityFixtureTest do
            } = Jason.decode!(checkpoint)
 
     assert {:ok, canonical} = Codec.decode(checkpoint)
-    assert canonical.schema_version == 3
+    assert canonical.schema_version == 4
     assert canonical.revision == 1
+    assert {:ok, %{}} = Canonical.fetch(canonical, :skill_states)
 
     assert {:ok,
             %{
@@ -73,6 +74,7 @@ defmodule SpectreEventLifecycleCompatibilityFixtureTest do
 
     assert is_binary(quarantined.admission_receipt)
     assert {:ok, encoded} = Codec.encode_json(canonical)
+    assert %{"checkpoint_version" => 4, "state_schema_version" => 4} = Jason.decode!(encoded)
     assert {:ok, ^canonical} = Codec.decode(encoded)
   end
 

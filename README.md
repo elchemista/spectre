@@ -35,12 +35,27 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.4` adds ownership-based Event Envelopes, same-sequencer
-> admission, independent Definition lifecycle axes, and canonical checkpoint
-> schema 3. The full suite exceeds 90%
+> Spectre `0.2.5` adds first-class generational Skill state, explicit branch
+> choices across Definition rollback, reference-safe retention, and canonical
+> checkpoint schema 4. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.2.5 Generational Skill State
+
+Version `0.2.5` stores private Skill state as receipt-bearing branches owned by
+exact Definition Refs. State writes are fenced by Skill id, schema Ref,
+generation, branch, revision, current Definition authority, and the Instance
+owner lease.
+
+When Definition A activates B and later rolls back to A, B's state remains a
+dormant branch and is never merged into A. Reactivating a Definition that owns
+a dormant branch requires an explicit `resume`, `fork`, `migrate`, or
+`abandon` choice. Conservative retention blocks collection while an
+Activation, Run, operation, or child branch still references state. See
+[Generational Skill State](docs/SKILL_STATE.md) and
+[Migrating to 0.2.5](docs/MIGRATING_TO_0_2_5.md).
 
 ## 0.2.4 Event Ownership and Lifecycle Fences
 
@@ -231,7 +246,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.4"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.5"}
   ]
 end
 ```
@@ -727,6 +742,8 @@ adapters on startup, and can stop after an idle timeout.
   owner fencing, and checkpoint schema 2.
 - [Event Ownership and Definition Lifecycle](docs/EVENT_LIFECYCLE.md) - event
   classes, continuation ownership, quarantine, and drain/revoke semantics.
+- [Generational Skill State](docs/SKILL_STATE.md) - private state bindings,
+  branch selection, rollback, migration, and reference-safe retention.
 - [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action
   requirements, prompts, policies, and complete examples.
 - [Stack](docs/STACK.md) - installable packages, immutable definitions,
@@ -743,6 +760,8 @@ adapters on startup, and can stop after an idle timeout.
   migration, Definition durability, owner leases, and schema-2 rollout.
 - [Migrating to 0.2.4](docs/MIGRATING_TO_0_2_4.md) - schema-3 rollout,
   ownership-based admission, and Definition lifecycle fences.
+- [Migrating to 0.2.5](docs/MIGRATING_TO_0_2_5.md) - schema-4 rollout and
+  explicit Skill-state branch choices.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM
@@ -762,7 +781,7 @@ adapters on startup, and can stop after an idle timeout.
 - [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
   matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
-- [0.2.4 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [0.2.5 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

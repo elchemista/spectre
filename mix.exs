@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.4"
+  @version "0.2.5"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -15,6 +15,7 @@ defmodule Spectre.MixProject do
     "docs/DEFINITION_STORE.md",
     "docs/IDENTITY_ACTIVATION.md",
     "docs/EVENT_LIFECYCLE.md",
+    "docs/SKILL_STATE.md",
     "docs/STACK.md",
     "docs/RUNS.md",
     "docs/INSTANCES.md",
@@ -22,6 +23,7 @@ defmodule Spectre.MixProject do
     "docs/MIGRATING_TO_0_2.md",
     "docs/MIGRATING_TO_0_2_3.md",
     "docs/MIGRATING_TO_0_2_4.md",
+    "docs/MIGRATING_TO_0_2_5.md",
     "docs/SKILLS.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
@@ -137,6 +139,7 @@ defmodule Spectre.MixProject do
           "docs/DEFINITION_STORE.md",
           "docs/IDENTITY_ACTIVATION.md",
           "docs/EVENT_LIFECYCLE.md",
+          "docs/SKILL_STATE.md",
           "docs/STACK.md",
           "docs/RUNS.md",
           "docs/INSTANCES.md",
@@ -144,6 +147,7 @@ defmodule Spectre.MixProject do
           "docs/MIGRATING_TO_0_2.md",
           "docs/MIGRATING_TO_0_2_3.md",
           "docs/MIGRATING_TO_0_2_4.md",
+          "docs/MIGRATING_TO_0_2_5.md",
           "docs/SKILLS.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
@@ -224,6 +228,7 @@ defmodule Spectre.MixProject do
         ],
         "Lifecycle and state": [
           Spectre.Instance.Lifecycle,
+          Spectre.Skill.StateBinding,
           Spectre.Lifecycle,
           Spectre.Transition,
           Spectre.State,

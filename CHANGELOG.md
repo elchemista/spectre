@@ -4,6 +4,49 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.5 — 2026-08-10
+
+### Added
+
+- Added first-class `Spectre.Skill.StateBinding` values with stable Skill id,
+  state schema Ref, generation, branch and parent ids, owning Definition Ref,
+  revision CAS, owner fence, active/dormant status, retention, provenance, and
+  a deterministic binding receipt.
+- Added canonical per-Skill state with one selected branch and retained branch
+  history. Public APIs inspect branches, update active state through schema,
+  generation, revision, authority, and owner fences, and transition dormant
+  branches through conservative retention.
+- Added activation-time `:skill_state_transitions`. `:resume`, `:fork`,
+  `:migrate`, and `:abandon` are explicit choices whenever a target Definition
+  already owns a dormant branch; `:init` is accepted only when no such branch
+  exists.
+- Added a permanent 0.2.5 compatibility fixture with dormant A and selected B
+  branches bound to a schema-4 Activation.
+
+### Migration and safety
+
+- Canonical checkpoint writers now emit schema 4. Readers accept schemas 1
+  through 4; schema-3 checkpoints gain an empty Skill-state section in memory.
+- Definition A → B → A never merges private Skill state. A rollback with a
+  dormant target branch fails until the host explicitly resumes, forks,
+  migrates, or abandons it. Branch identity and parent lineage remain distinct
+  even when schemas match.
+- Writes outside the selected Skill id, branch, owner Definition, or exact
+  state schema are rejected before commit. A saved generation or owner fence
+  cannot authorize a stale write.
+- GC is conservative. Active or Activation-referenced branches cannot become
+  eligible; retained Runs, operations, and child branches also block
+  collection. Purge retains a receipt-bearing tombstone and clears only state.
+- Definition artifact purge now treats every non-purged Skill-state binding as
+  a live reference.
+
+### Scope
+
+- State migration data is supplied by trusted host code; this release does not
+  run migration callbacks or copy/merge state implicitly. Shared Memory,
+  artifacts, external Effects, and experience evidence are not private Skill
+  state and are never rolled back by this mechanism.
+
 ## 0.2.4 — 2026-08-10
 
 ### Added

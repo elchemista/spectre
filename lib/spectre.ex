@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.2.4"
+  @version "0.2.5"
 
   @doc """
   Returns the running Spectre library version.
@@ -184,6 +184,25 @@ defmodule Spectre do
 
   @doc "Activates a re-read bootstrap Candidate through generation CAS."
   defdelegate activate(instance, candidate_ref, opts \\ []), to: Spectre.Instance
+
+  @doc "Returns one active or explicitly selected first-class Skill-state branch."
+  defdelegate skill_state(instance, skill_id, opts \\ []), to: Spectre.Instance
+
+  @doc "Lists first-class Skill-state branches."
+  defdelegate skill_state_branches(instance, skill_id, opts \\ []), to: Spectre.Instance
+
+  @doc "Updates one active Skill-state branch through schema and revision fences."
+  defdelegate update_skill_state(instance, skill_id, value, opts \\ []), to: Spectre.Instance
+
+  @doc "Transitions one dormant Skill-state branch retention status."
+  defdelegate transition_skill_state_retention(
+                instance,
+                skill_id,
+                branch_id,
+                retention,
+                opts \\ []
+              ),
+              to: Spectre.Instance
 
   @doc "Admits an ownership-based event through the Instance sequencer."
   defdelegate admit_event(instance, event, opts \\ []), to: Spectre.Instance

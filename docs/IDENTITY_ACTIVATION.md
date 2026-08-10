@@ -64,7 +64,9 @@ requires a Definition Store whose adapter reports `:durable`.
   Spectre.activate(instance, candidate_ref,
     expected_generation: 0,
     authority_epoch: 12,
-    state_bindings: %{"flow_schema" => 5},
+    skill_state_transitions: %{
+      planner: {:init, "my_app/planner-state/1", %{"step" => "collect"}}
+    },
     provenance: %{approved_by: "deployment:2026-08-10"}
   )
 ```
@@ -102,8 +104,8 @@ missing or changed artifact fails closed.
 
 Run checkpoint schema 1 and canonical checkpoint schemas 1 and 2 remain
 readable at the import boundary. They are migrated immediately in memory;
-current canonical writers emit schema 3. See
-[Migrating to 0.2.4](MIGRATING_TO_0_2_4.md).
+current canonical writers emit schema 4. See
+[Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
 
 ## Canonical owner and fencing
 

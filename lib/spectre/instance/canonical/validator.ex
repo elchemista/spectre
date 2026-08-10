@@ -5,6 +5,7 @@ defmodule Spectre.Instance.Canonical.Validator do
   alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Lifecycle
+  alias Spectre.Instance.SkillStates
   alias Spectre.Operation.Control
   alias Spectre.Operation.Delivery.Consent, as: DeliveryConsent
   alias Spectre.Operation.Delivery.Receipt, as: DeliveryReceipt
@@ -33,6 +34,8 @@ defmodule Spectre.Instance.Canonical.Validator do
          :ok <- validate_runs(runs),
          {:ok, lifecycles} <- Canonical.fetch(canonical, :lifecycles),
          :ok <- validate_lifecycles(lifecycles, activation),
+         {:ok, skill_states} <- Canonical.fetch(canonical, :skill_states),
+         :ok <- SkillStates.validate_activation(skill_states, activation),
          {:ok, event_admissions} <- Canonical.fetch(canonical, :event_admissions),
          :ok <-
            validate_event_envelopes(

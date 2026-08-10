@@ -8,6 +8,7 @@ defmodule Spectre.Instance.Events do
   alias Spectre.Instance.Commit
   alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.Loops
+  alias Spectre.Instance.SkillStates
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Invocation
   alias Spectre.Operation.Loop, as: OperationLoop
@@ -451,7 +452,7 @@ defmodule Spectre.Instance.Events do
         Enum.any?(data.runs, fn {_id, run} -> same_ref?(run.definition_ref, definition_ref) end) or
         Enum.any?(Loops.all_operation_loops(data), fn {loop, _control} ->
           same_ref?(operation_definition_ref(data, loop), definition_ref)
-        end)
+        end) or SkillStates.definition_referenced?(data, definition_ref)
 
     if referenced?,
       do: {:error, {:definition_retention_referenced, Lifecycle.key(lifecycle)}},
