@@ -132,5 +132,7 @@ Agents, Instance keys, Runs, checkpoints, and execution paths retain their
 0.2.0 behavior.
 
 Spectre 0.2.2 adds the first three publication primitives while retaining the
-same activation boundary. Continue with
-[Definition Store, Resolver, and Manifest V2](DEFINITION_STORE.md).
+same activation boundary. Spectre 0.2.3 then separates stable Agent identity
+from Definition identity and adds Candidate-backed activation plus Run pinning.
+Continue with [Definition Store, Resolver, and Manifest V2](DEFINITION_STORE.md)
+and [Stable Identity, Activation, and Definition-Pinned Runs](IDENTITY_ACTIVATION.md).

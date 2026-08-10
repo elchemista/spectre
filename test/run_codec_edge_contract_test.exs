@@ -12,7 +12,7 @@ defmodule SpectreRunCodecEdgeContractTest do
   alias Spectre.State
 
   test "Run options and identifiers fail closed for non-portable values" do
-    assert Run.version() == 1
+    assert Run.version() == 2
     assert :ok = Run.validate_options([])
     assert :ok = Run.validate_options(run_id: nil, trace_id: nil)
     assert {:error, {:invalid_run_option, :run_id, :empty}} = Run.validate_options(run_id: "")
@@ -141,18 +141,18 @@ defmodule SpectreRunCodecEdgeContractTest do
     unsupported =
       :erlang.term_to_binary(%{
         "format" => "spectre/run",
-        "version" => 2,
+        "version" => 3,
         "run" => nil
       })
 
-    assert {:error, {:unsupported_run_checkpoint_version, 2, [1]}} =
+    assert {:error, {:unsupported_run_checkpoint_version, 3, [1, 2]}} =
              Run.restore(unsupported)
 
     invalid = :erlang.term_to_binary(%{"format" => "other", "version" => 1, "run" => nil})
     assert {:error, :invalid_run_checkpoint} = Run.restore(invalid)
 
-    assert {:error, {:unsupported_run_version, 2, [1]}} =
-             Run.checkpoint(%{run | run_version: 2})
+    assert {:error, {:unsupported_run_version, 3, [2]}} =
+             Run.checkpoint(%{run | run_version: 3})
 
     assert {:ok, _checkpoint} = Run.checkpoint(run, [:ignored_non_keyword_entry])
   end
@@ -182,7 +182,7 @@ defmodule SpectreRunCodecEdgeContractTest do
     invalid_checkpoint =
       :erlang.term_to_binary(%{
         "format" => "spectre/run",
-        "version" => 1,
+        "version" => 2,
         "run" => encoded_run
       })
 

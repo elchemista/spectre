@@ -5,6 +5,7 @@ defmodule Spectre.Instance.Commit do
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Checkpoint
   alias Spectre.Instance.Loops
+  alias Spectre.Instance.Owner
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Operation.Control
   alias Spectre.Operation.Delivery.Receipt, as: DeliveryReceipt
@@ -42,7 +43,9 @@ defmodule Spectre.Instance.Commit do
   def canonical_sections(%InstanceState{} = data, writes, opts) do
     names = Map.keys(writes)
 
-    with {:ok, snapshot} <-
+    with :ok <-
+           Owner.assert_current(data.owner, data.ref, data.owner_lease, :commit, data.base_opts),
+         {:ok, snapshot} <-
            Canonical.snapshot(data.canonical,
              read: names,
              write: names,
@@ -68,14 +71,33 @@ defmodule Spectre.Instance.Commit do
   @spec flow_state(InstanceState.t(), State.t(), Run.t()) ::
           {:ok, InstanceState.t()} | {:error, term()}
   def flow_state(%InstanceState{} = data, %State{} = state, %Run{} = run) do
-    case canonical_sections(data, %{flow: state},
-           correlation_id: run.id,
-           causation_id: run.trace_id,
-           provenance: %{source: :flow, run_id: run.id},
-           metadata: %{transition: :flow_state_committed}
-         ) do
+    case run_state(data, state, run) do
       {:ok, next} -> {:ok, next}
       {:error, reason} -> {:error, {:canonical_flow_commit_failed, reason}}
+    end
+  end
+
+  @doc "Commits one Run checkpoint and its observed Flow state atomically."
+  @spec run_state(InstanceState.t(), State.t(), Run.t()) ::
+          {:ok, InstanceState.t()} | {:error, term()}
+  def run_state(%InstanceState{} = data, %State{} = state, %Run{} = run) do
+    with {:ok, checkpoint} <- Run.checkpoint(run),
+         {:ok, runs} <- Canonical.fetch(data.canonical, :runs) do
+      canonical_sections(data, %{flow: state, runs: Map.put(runs, run.id, checkpoint)},
+        correlation_id: run.id,
+        causation_id: run.trace_id,
+        provenance: %{source: :run, run_id: run.id},
+        metadata: %{
+          transition: :run_state_committed,
+          definition_ref: to_string(run.definition_ref),
+          activation_generation: run.activation_generation,
+          authority_epoch: run.authority_epoch
+        }
+      )
+    end
+    |> case do
+      {:ok, next} -> {:ok, next}
+      {:error, reason} -> {:error, {:canonical_run_commit_failed, reason}}
     end
   end
 

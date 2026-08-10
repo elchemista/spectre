@@ -97,8 +97,32 @@ the same Ref. After every successful callback, core reads the artifact back and
 compares it byte-for-byte before returning its receipt.
 
 Parent Definitions must already resolve. Therefore a process crash after
-publish but before a future activation CAS leaves only an immutable orphan; it
+publish but before an activation CAS leaves only an immutable orphan; it
 cannot leave an activation pointing at an unpublished Definition.
+
+## Publish a bootstrap Candidate
+
+Spectre 0.2.3 adds the minimal Candidate boundary used by activation. Trusted
+host code can publish a Candidate directly or derive one from a verified
+resolution:
+
+```elixir
+{:ok, candidate_ref} =
+  Spectre.Definition.Resolver.bootstrap_candidate(config, definition_ref,
+    source: :compiled,
+    checkpoint_store: checkpoint_store,
+    provenance_refs: ["deployment:2026-08-10"]
+  )
+```
+
+The Store verifies that the Candidate's Manifest digest and publication id
+match its Definition artifact and that any parent Candidate resolves. The
+Candidate Ref is content-addressed. Activation always re-fetches it by Ref;
+receiving a `%Spectre.Definition.Candidate{}` value directly grants no trust.
+
+This is deliberately a bootstrap record, not a promotion state machine. It
+does not run gates, apply runtime-authored ChangeSets, or authorize its own
+activation.
 
 ## Resolve and detect drift
 
@@ -122,10 +146,10 @@ fingerprints return an error by default. `on_drift: :report` preserves the
 drift as evidence but does not claim reproducibility or grant permission to
 execute it.
 
-`resolve_for_activation/3` is the publication protocol boundary for the next
-activation milestone: it validates Store durability and re-reads the complete
-artifact. Version 0.2.2 intentionally does not add Agent stable identity,
-activation CAS, checkpoint schema 2, Candidate promotion, or self-modification.
+`resolve_for_activation/3` validates Store durability and re-reads the complete
+artifact. In 0.2.3, `resolve_candidate_for_activation/3` also re-reads the
+Candidate and is the only resolution accepted by the Instance activation
+sequencer. See [Stable Identity, Activation, and Definition-Pinned Runs](IDENTITY_ACTIVATION.md).
 
 ## Conformance and compatibility
 
@@ -137,4 +161,5 @@ restart resolve identical data.
 The Manifest V2 fixture under `test/fixtures/compatibility/0.2.2` is decoded and
 re-encoded by both supported CI combinations: OTP 28/Elixir 1.19 and OTP
 29/Elixir 1.20. It binds the unchanged canonical Definition fixture introduced
-in 0.2.1.
+in 0.2.1. The 0.2.3 fixture additionally restores an Activation and its pinned
+Run from canonical checkpoint schema 2.

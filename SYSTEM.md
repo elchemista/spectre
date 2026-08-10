@@ -1,6 +1,6 @@
 # The Spectre System
 
-Spectre `0.2.2` is an OTP-native kernel for building conversational and
+Spectre `0.2.3` is an OTP-native kernel for building conversational and
 operational agents in Elixir. It is deliberately not a package that owns every
 model, tool, memory store, browser, transport, and workflow. Those capabilities
 live in focused libraries that integrate through explicit, versioned contracts.
@@ -62,6 +62,8 @@ what lets optional libraries compose without competing for ownership.
 | `Spectre.Definition.Manifest` | Sealed effective authority and execution closure for one Definition Ref | Spectre core + host ceiling |
 | `Spectre.Definition.Store` | Immutable publication and durable adapter boundary | host adapter |
 | `Spectre.Definition.Resolver` | Verified Definition, Manifest, receipt, contract, and drift resolution | Spectre core |
+| `Spectre.Definition.Candidate` | Immutable bootstrap proposal for one published Definition | trusted host + Spectre core |
+| `Spectre.Instance.Activation` | Generation-fenced current Definition snapshot | Spectre Instance sequencer |
 | `Spectre.Projection.Audit` | Exact deterministic view of a canonical Definition | Spectre core |
 | `Spectre.Subject` | Canonical application identity, independent of a channel identity | host application |
 | `Spectre.Instance` | Local canonical owner for one `AgentRef + Subject` | Spectre core |
@@ -145,7 +147,7 @@ The `0.2.x` release train aligns every package and every Stack manifest on the
 same minor contract. Packages are distributed from GitHub as release tags:
 
 ```elixir
-{:spectre, github: "elchemista/spectre", tag: "0.2.2"}
+{:spectre, github: "elchemista/spectre", tag: "0.2.3"}
 ```
 
 Release tags follow Semantic Versioning: `0.2.x` tags remain compatible within
@@ -154,7 +156,7 @@ intentional while the ecosystem is pre-1.0.
 
 | Package | Release | Spectre requirement |
 | --- | ---: | ---: |
-| `spectre` | `0.2.2` | — |
+| `spectre` | `0.2.3` | — |
 | `spectre_beam` | `0.2.0` | `~> 0.2.0` |
 | `spectre_directive` | `0.2.0` | `~> 0.2.0` |
 | `spectre_kinetic` | `0.2.0` | `~> 0.2.0` |
@@ -173,7 +175,7 @@ For released packages, install only the capabilities the application needs:
 ```elixir
 defp deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.2"},
+    {:spectre, github: "elchemista/spectre", tag: "0.2.3"},
     {:spectre_prism, github: "elchemista/spectre_prism", tag: "0.2.0"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic", tag: "0.2.0"},
     {:spectre_mnemonic, github: "elchemista/spectre_mnemonic", tag: "0.2.0"},

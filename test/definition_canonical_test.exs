@@ -95,8 +95,8 @@ defmodule SpectreDefinitionCanonicalTest do
   alias SpectreDefinitionCanonicalTest.InvalidProjection
   alias SpectreDefinitionCanonicalTest.UnsafePromptAgent
 
-  test "release identifies the Store and Manifest foundation as 0.2.2" do
-    assert Spectre.version() == "0.2.2"
+  test "release identifies the identity and activation foundation as 0.2.3" do
+    assert Spectre.version() == "0.2.3"
   end
 
   test "compiled Agent and mounted Skill lower into one portable canonical envelope" do

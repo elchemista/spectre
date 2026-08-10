@@ -16,7 +16,13 @@ defmodule Spectre.Instance do
   use GenServer
 
   alias Spectre.AgentRef
+  alias Spectre.Definition.Candidate.Ref, as: CandidateRef
+  alias Spectre.Definition.Resolver, as: DefinitionResolver
+  alias Spectre.Definition.Store, as: DefinitionStore
+  alias Spectre.Execution.Closure
   alias Spectre.Input
+  alias Spectre.Instance.Activation
+  alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec, as: CanonicalCodec
   alias Spectre.Instance.Checkpoint
   alias Spectre.Instance.CheckpointStore
@@ -24,6 +30,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Conversation
   alias Spectre.Instance.Deliveries
   alias Spectre.Instance.Loops
+  alias Spectre.Instance.Owner
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Registry, as: InstanceRegistry
   alias Spectre.Instance.Runs
@@ -77,6 +84,8 @@ defmodule Spectre.Instance do
           | {:canonical_checkpoint, String.t() | map()}
           | {:checkpoint_store, CheckpointStore.config()}
           | {:checkpoint_mode, :async | :manual}
+          | {:definition_store, DefinitionStore.config()}
+          | {:owner, Owner.config()}
           | {:runner_supervisor, GenServer.server()}
           | {:max_operation_runners, pos_integer()}
           | {:operation_terminal_loop_retention, non_neg_integer() | :unlimited}
@@ -109,9 +118,16 @@ defmodule Spectre.Instance do
     registry = Keyword.get(opts, :registry, InstanceRegistry)
     name = InstanceRegistry.via(ref, registry)
 
+    agent = ref.agent_ref.definition || Keyword.get(opts, :agent)
+
+    if is_nil(agent) do
+      raise ArgumentError,
+            "Spectre.Instance requires a compiled :agent source for a durable AgentRef"
+    end
+
     opts =
       opts
-      |> Keyword.put(:agent, ref.agent_ref.definition)
+      |> Keyword.put(:agent, agent)
       |> Keyword.put(:agent_ref, ref.agent_ref)
       |> Keyword.put(:subject, ref.subject)
       |> Keyword.put(:instance_ref, ref)
@@ -159,6 +175,23 @@ defmodule Spectre.Instance do
   """
   @spec ref(GenServer.server()) :: InstanceRef.t()
   def ref(server), do: GenServer.call(server, :instance_ref)
+
+  @doc "Returns the currently committed Definition Activation, if any."
+  @spec activation(GenServer.server()) :: Activation.t() | nil
+  def activation(server), do: GenServer.call(server, :instance_activation)
+
+  @doc """
+  Activates a published bootstrap Candidate through generation CAS.
+
+  `:expected_generation` is mandatory and must be `0` for the first
+  activation. Candidate, Definition, Manifest, and publication receipt are
+  re-read from the configured Definition Store inside the Instance sequencer.
+  """
+  @spec activate(GenServer.server(), CandidateRef.t() | String.t(), keyword()) ::
+          {:ok, Activation.t()} | {:error, term()}
+  def activate(server, candidate_ref, opts \\ []) do
+    GenServer.call(server, {:instance_activate, candidate_ref, opts}, timeout(opts))
+  end
 
   @doc """
   Returns the Instance's trace identifier.
@@ -491,10 +524,18 @@ defmodule Spectre.Instance do
            |> Keyword.put(:operation_correlation_retention, correlation_retention),
          {:ok, checkpoint_store} <- Checkpoint.store_config(agent, opts, base_opts),
          {:ok, checkpoint_mode} <- Checkpoint.mode(opts, checkpoint_store),
+         {:ok, definition_store} <- definition_store_config(agent, opts, base_opts),
+         :ok <- validate_definition_store_pair(checkpoint_store, definition_store),
          {:ok, state} <- restore_initial_state(agent, opts, base_opts),
          {:ok, state, canonical, checkpoint_revision} <-
            Checkpoint.restore_canonical(opts, state, checkpoint_store, base_opts),
-         {:ok, registry_monitor} <- monitor_registry(registry, instance_ref) do
+         {:ok, activation} <-
+           restore_activation(canonical, definition_store, checkpoint_store, base_opts),
+         {:ok, restored_runs} <-
+           restore_runs(canonical, definition_store, checkpoint_store, base_opts, max_runs),
+         {:ok, registry_monitor} <- monitor_registry(registry, instance_ref),
+         {:ok, owner, owner_lease} <-
+           Owner.claim(owner_config(agent, opts, base_opts), instance_ref, base_opts) do
       data = %InstanceState{
         agent: agent,
         agent_ref: agent_ref,
@@ -502,6 +543,13 @@ defmodule Spectre.Instance do
         ref: instance_ref,
         state: state,
         canonical: canonical,
+        activation: activation,
+        definition_store: definition_store,
+        owner: owner,
+        owner_lease: owner_lease,
+        runs: restored_runs,
+        completed: restored_completed_queue(restored_runs),
+        terminal_recorded: restored_terminal_ids(restored_runs),
         base_opts: base_opts,
         idle_timeout: idle_timeout(agent, opts, base_opts),
         max_runs: max_runs,
@@ -630,6 +678,40 @@ defmodule Spectre.Instance do
   def handle_call(:state, _from, data), do: {:reply, data.state, arm_idle_timer(data)}
   def handle_call(:agent, _from, data), do: {:reply, data.agent, arm_idle_timer(data)}
   def handle_call(:instance_ref, _from, data), do: {:reply, data.ref, arm_idle_timer(data)}
+
+  def handle_call(:instance_activation, _from, data),
+    do: {:reply, data.activation, arm_idle_timer(data)}
+
+  def handle_call({:instance_activate, candidate_ref, opts}, _from, data) do
+    with {:ok, expected_generation} <- activation_expected_generation(opts),
+         :ok <- owner_guard(data, :activation_commit),
+         {:ok, definition_store} <- require_definition_store(data.definition_store),
+         {:ok, candidate_resolution} <-
+           DefinitionResolver.resolve_candidate_for_activation(
+             definition_store,
+             candidate_ref,
+             activation_resolver_opts(data, opts)
+           ),
+         {:ok, prospective} <-
+           build_activation(data, candidate_resolution, expected_generation, opts),
+         {:ok, activation} <-
+           Activation.compare_and_swap(data.activation, expected_generation, prospective),
+         {:ok, next} <- commit_activation(data, activation) do
+      {:reply, {:ok, activation}, arm_idle_timer(next)}
+    else
+      :not_found ->
+        {:reply, {:error, :activation_candidate_not_found}, arm_idle_timer(data)}
+
+      {:error, {:ambiguous, _detail} = reason} ->
+        {:stop, {:activation_checkpoint_outcome_unknown, reason}, {:error, reason}, data}
+
+      {:error, reason} when reason in [:conflict, :stale] ->
+        {:stop, {:activation_checkpoint_conflict, reason}, {:error, reason}, data}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
 
   def handle_call(:instance_info, _from, data) do
     {:reply, info_projection(data), arm_idle_timer(data)}
@@ -1379,10 +1461,19 @@ defmodule Spectre.Instance do
       _none -> :ok
     end
 
+    _ = Owner.release(data.owner, data.ref, data.owner_lease, data.base_opts)
+
     :ok
   end
 
   defp submit(input, opts, projection, from, data) do
+    case owner_guard(data, :admission) do
+      :ok -> submit_owned(input, opts, projection, from, data)
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  defp submit_owned(input, opts, projection, from, data) do
     data = Runs.prune_for_new_run(data)
 
     case Conversation.policy_owner(data, input, opts) do
@@ -1445,13 +1536,15 @@ defmodule Spectre.Instance do
             internal?: false
           }
 
-          next =
-            data
-            |> Map.put(:runs, Map.put(data.runs, run.id, run))
-            |> enqueue(entry)
-            |> put_caller(run.id, from)
+          retained = %{data | runs: Map.put(data.runs, run.id, run)}
 
-          {:noreply, next}
+          case Commit.run_state(retained, data.state, run) do
+            {:ok, committed} ->
+              {:noreply, committed |> enqueue(entry) |> put_caller(run.id, from)}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, arm_idle_timer(data)}
+          end
         end
 
       {:error, reason} ->
@@ -1460,7 +1553,8 @@ defmodule Spectre.Instance do
   end
 
   defp dispatch_invocation(run, command, opts, projection, from, data) do
-    with %Invocation{} = invocation <- run.waiting,
+    with :ok <- owner_guard(data, :effect_dispatch),
+         %Invocation{} = invocation <- run.waiting,
          false <- run_active?(data, run.id),
          nil <- other_active_run(data, run.id),
          nil <- data.state_lock do
@@ -1537,6 +1631,9 @@ defmodule Spectre.Instance do
 
       %{} ->
         {:reply, {:error, :instance_state_locked}, arm_idle_timer(data)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
 
@@ -1794,25 +1891,23 @@ defmodule Spectre.Instance do
   defp maybe_record_started_conversation(data, _entry, _run), do: data
 
   defp apply_returned_run(data, %Run{} = run, entry) do
-    next_state =
-      if entry_commits_state?(entry) and entry.state_revision == data.state.revision do
-        run.state
-      else
-        data.state
-      end
+    with :ok <- owner_guard(data, :commit) do
+      next_state =
+        if entry_commits_state?(entry) and entry.state_revision == data.state.revision do
+          run.state
+        else
+          data.state
+        end
 
-    last_result = if match?(%Result{}, run.result), do: run.result, else: data.last_result
+      last_result = if match?(%Result{}, run.result), do: run.result, else: data.last_result
 
-    next = %{
-      data
-      | runs: Map.put(data.runs, run.id, run),
-        state: next_state,
-        last_result: last_result
-    }
+      next = %{
+        data
+        | runs: Map.put(data.runs, run.id, run),
+          state: next_state,
+          last_result: last_result
+      }
 
-    if next_state == data.state do
-      {:ok, next}
-    else
       Commit.flow_state(next, next_state, run)
     end
   end
@@ -2037,6 +2132,21 @@ defmodule Spectre.Instance do
       agent_ref: AgentRef.key(data.agent_ref),
       subject: Subject.key(data.subject),
       generation: data.generation,
+      activation:
+        case data.activation do
+          nil ->
+            nil
+
+          %Activation{} = activation ->
+            %{
+              definition_ref: activation.definition_ref,
+              candidate_ref: activation.candidate_ref,
+              generation: activation.generation,
+              authority_epoch: activation.authority_epoch,
+              closure_digest: activation.closure_digest
+            }
+        end,
+      owner_fencing_token: data.owner_lease.fencing_token,
       state_revision: data.state.revision,
       canonical_revision: data.canonical.revision,
       conversations: data.conversations,
@@ -2143,9 +2253,12 @@ defmodule Spectre.Instance do
               commit_state?: true
             }
 
-            data
-            |> Map.put(:runs, Map.put(data.runs, run.id, run))
-            |> enqueue(entry)
+            retained = %{data | runs: Map.put(data.runs, run.id, run)}
+
+            case Commit.run_state(retained, data.state, run) do
+              {:ok, committed} -> committed |> enqueue(entry)
+              {:error, _reason} -> data
+            end
           end
 
         {:error, reason} ->
@@ -2377,6 +2490,22 @@ defmodule Spectre.Instance do
   end
 
   defp start_operation_runner(data, loop, control, attempt, spec, request, reconcile?) do
+    case owner_guard(data, :effect_dispatch) do
+      :ok ->
+        do_start_operation_runner(data, loop, control, attempt, spec, request, reconcile?)
+
+      {:error, reason} ->
+        emit(:operation_dispatch_blocked, data, %{
+          count: 1,
+          loop_id: loop.id,
+          reason: reason_class(reason)
+        })
+
+        data
+    end
+  end
+
+  defp do_start_operation_runner(data, loop, control, attempt, spec, request, reconcile?) do
     runner_opts = [
       owner: self(),
       attempt: attempt,
@@ -2914,6 +3043,7 @@ defmodule Spectre.Instance do
       |> Keyword.put(:conversation_id, Keyword.fetch!(data.base_opts, :conversation_id))
       |> Keyword.put(:instance_run_lifecycle?, true)
       |> Keyword.put(:instance_pid, self())
+      |> put_activation_pin(data.activation)
       |> maybe_put(:origin_conversation_id, origin_conversation_id)
 
     metadata =
@@ -2930,6 +3060,315 @@ defmodule Spectre.Instance do
       })
 
     Keyword.put(opts, :run_metadata, metadata)
+  end
+
+  defp put_activation_pin(opts, nil), do: opts
+
+  defp put_activation_pin(opts, %Activation{} = activation) do
+    opts
+    |> Keyword.put(:definition_ref, activation.definition_ref)
+    |> Keyword.put(:activation_generation, activation.generation)
+    |> Keyword.put(:authority_epoch, activation.authority_epoch)
+    |> Keyword.put(:closure_digest, activation.closure_digest)
+  end
+
+  defp activation_expected_generation(opts) when is_list(opts) do
+    case Keyword.fetch(opts, :expected_generation) do
+      {:ok, generation} when is_integer(generation) and generation >= 0 -> {:ok, generation}
+      {:ok, value} -> {:error, {:invalid_expected_activation_generation, value}}
+      :error -> {:error, :expected_activation_generation_required}
+    end
+  end
+
+  defp activation_expected_generation(value),
+    do: {:error, {:invalid_activation_options, value}}
+
+  defp build_activation(data, %{candidate: candidate, resolution: resolution}, _expected, opts) do
+    current_generation = Activation.generation(data.activation)
+    current_epoch = Activation.authority_epoch(data.activation)
+
+    state_bindings =
+      Keyword.get_lazy(opts, :state_bindings, fn ->
+        case data.activation do
+          %Activation{state_bindings: bindings} -> bindings
+          nil -> %{}
+        end
+      end)
+
+    provenance =
+      Keyword.get(opts, :provenance, %{
+        source: :trusted_host,
+        instance_ref: data.ref.key
+      })
+
+    Activation.new(candidate, resolution,
+      generation: current_generation + 1,
+      authority_epoch: Keyword.get(opts, :authority_epoch, current_epoch),
+      owner_fencing_token: data.owner_lease.fencing_token,
+      state_bindings: state_bindings,
+      activated_at: Keyword.get(opts, :activated_at, System.system_time(:millisecond)),
+      provenance: provenance
+    )
+  end
+
+  defp commit_activation(data, %Activation{} = activation) do
+    with :ok <- owner_guard(data, :activation_commit),
+         :ok <- activation_checkpoint_ready(data),
+         {:ok, snapshot} <-
+           Canonical.snapshot(data.canonical,
+             read: [:activation],
+             write: [:activation],
+             correlation_id: activation.activation_receipt,
+             causation_id: CandidateRef.to_string(activation.candidate_ref)
+           ),
+         {:ok, change} <-
+           Canonical.change(snapshot, %{activation: activation},
+             provenance: %{source: :activation, instance_ref: data.ref.key},
+             metadata: %{
+               transition: :definition_activated,
+               activation_generation: activation.generation,
+               authority_epoch: activation.authority_epoch
+             }
+           ),
+         {:ok, canonical, _transition} <- Canonical.commit(data.canonical, change),
+         {:ok, persisted} <- persist_activation_checkpoint(data, canonical) do
+      _ =
+        Spectre.Journal.record(
+          data.agent,
+          :definition_activated,
+          %{
+            definition_ref: to_string(activation.definition_ref),
+            candidate_ref: CandidateRef.to_string(activation.candidate_ref),
+            activation_generation: activation.generation,
+            authority_epoch: activation.authority_epoch,
+            activation_receipt: activation.activation_receipt
+          },
+          data.base_opts
+        )
+
+      {:ok, %{persisted | canonical: canonical, activation: activation}}
+    end
+  end
+
+  defp activation_checkpoint_ready(%{checkpoint_store: nil}), do: :ok
+
+  defp activation_checkpoint_ready(data) do
+    cond do
+      not is_nil(data.checkpoint_reconciliation) ->
+        {:error, Checkpoint.reconciliation_error(data)}
+
+      not is_nil(data.checkpoint_inflight) or not is_nil(data.checkpoint_reconcile_inflight) ->
+        {:error, :activation_checkpoint_operation_in_progress}
+
+      not is_nil(data.checkpoint_pending) ->
+        {:error, :activation_checkpoint_pending}
+
+      data.checkpoint_revision != data.canonical.revision ->
+        {:error,
+         {:activation_checkpoint_not_current, data.checkpoint_revision, data.canonical.revision}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp persist_activation_checkpoint(%{checkpoint_store: nil} = data, _canonical),
+    do: {:ok, data}
+
+  defp persist_activation_checkpoint(data, canonical) do
+    with {:ok, encoded} <- CanonicalCodec.encode_json(canonical),
+         :ok <-
+           CheckpointStore.persist(
+             data.checkpoint_store,
+             data.ref,
+             encoded,
+             data.checkpoint_revision,
+             canonical.revision,
+             data.base_opts
+           ) do
+      {:ok,
+       %{
+         data
+         | checkpoint_revision: canonical.revision,
+           checkpoint_persisted: canonical,
+           checkpoint_error: nil
+       }}
+    end
+  end
+
+  defp activation_resolver_opts(data, opts) do
+    data.base_opts
+    |> Keyword.merge(opts)
+    |> Keyword.drop([:timeout, :expected_generation, :authority_epoch, :state_bindings])
+    |> Keyword.put(:checkpoint_store, data.checkpoint_store)
+  end
+
+  defp definition_store_config(agent, opts, base_opts) do
+    value =
+      first_configured([
+        {opts, :definition_store},
+        {base_opts, :definition_store},
+        {agent.__spectre_config__(), :definition_store}
+      ])
+
+    case value do
+      value when value in [nil, false] -> {:ok, nil}
+      value -> DefinitionStore.normalize(value)
+    end
+  end
+
+  defp validate_definition_store_pair(_checkpoint_store, nil), do: :ok
+
+  defp validate_definition_store_pair(checkpoint_store, definition_store),
+    do: DefinitionStore.validate_durability_pair(checkpoint_store, definition_store)
+
+  defp require_definition_store(nil), do: {:error, :definition_store_not_configured}
+  defp require_definition_store(store), do: {:ok, store}
+
+  defp owner_config(agent, opts, base_opts) do
+    first_configured([
+      {opts, :owner},
+      {base_opts, :owner},
+      {agent.__spectre_config__(), :owner}
+    ])
+  end
+
+  defp owner_guard(data, operation) do
+    Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
+  end
+
+  defp restore_activation(canonical, definition_store, checkpoint_store, base_opts) do
+    with {:ok, activation} <- Canonical.fetch(canonical, :activation) do
+      validate_restored_activation(activation, definition_store, checkpoint_store, base_opts)
+    end
+  end
+
+  defp validate_restored_activation(nil, _definition_store, _checkpoint_store, _base_opts),
+    do: {:ok, nil}
+
+  defp validate_restored_activation(%Activation{}, nil, _checkpoint_store, _base_opts),
+    do: {:error, :restored_activation_requires_definition_store}
+
+  defp validate_restored_activation(
+         %Activation{} = activation,
+         definition_store,
+         checkpoint_store,
+         base_opts
+       ) do
+    opts = Keyword.put(base_opts, :checkpoint_store, checkpoint_store)
+
+    with {:ok, %{candidate: candidate, resolution: resolution}} <-
+           DefinitionResolver.resolve_candidate_for_activation(
+             definition_store,
+             activation.candidate_ref,
+             opts
+           ),
+         {:ok, rebuilt} <-
+           Activation.new(candidate, resolution,
+             generation: activation.generation,
+             authority_epoch: activation.authority_epoch,
+             owner_fencing_token: activation.owner_fencing_token,
+             state_bindings: activation.state_bindings,
+             activated_at: activation.activated_at,
+             provenance: activation.provenance
+           ),
+         true <- rebuilt == activation do
+      {:ok, activation}
+    else
+      false -> {:error, :restored_activation_integrity_mismatch}
+      :not_found -> {:error, :restored_activation_candidate_not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_restored_activation(value, _definition_store, _checkpoint_store, _base_opts),
+    do: {:error, {:invalid_restored_activation, value}}
+
+  defp restore_runs(canonical, definition_store, checkpoint_store, base_opts, max_runs) do
+    with {:ok, checkpoints} <- Canonical.fetch(canonical, :runs),
+         true <- is_map(checkpoints) and not is_struct(checkpoints),
+         true <- map_size(checkpoints) <= max_runs do
+      Enum.reduce_while(checkpoints, {:ok, %{}}, fn {run_id, checkpoint}, {:ok, runs} ->
+        with true <- is_binary(run_id) and is_binary(checkpoint),
+             {:ok, %Run{id: ^run_id} = run} <- Run.restore(checkpoint),
+             :ok <-
+               validate_restored_run_definition(
+                 run,
+                 definition_store,
+                 checkpoint_store,
+                 base_opts
+               ) do
+          {:cont, {:ok, Map.put(runs, run_id, run)}}
+        else
+          false ->
+            {:halt, {:error, {:invalid_restored_run_checkpoint, run_id}}}
+
+          {:ok, %Run{id: other_id}} ->
+            {:halt, {:error, {:restored_run_id_mismatch, run_id, other_id}}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:restored_run_invalid, run_id, reason}}}
+        end
+      end)
+    else
+      false ->
+        {:error, {:restored_run_capacity_exceeded, map_size(canonical_runs(canonical)), max_runs}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp validate_restored_run_definition(
+         %Run{activation_generation: 0},
+         _definition_store,
+         _checkpoint_store,
+         _base_opts
+       ),
+       do: :ok
+
+  defp validate_restored_run_definition(%Run{}, nil, _checkpoint_store, _base_opts),
+    do: {:error, :pinned_run_requires_definition_store}
+
+  defp validate_restored_run_definition(run, definition_store, checkpoint_store, base_opts) do
+    opts = Keyword.put(base_opts, :checkpoint_store, checkpoint_store)
+
+    case DefinitionResolver.resolve_for_activation(definition_store, run.definition_ref, opts) do
+      {:ok, resolution} ->
+        expected = Closure.digest(resolution.manifest.execution_closure)
+
+        if expected == run.closure_digest,
+          do: :ok,
+          else: {:error, {:run_closure_digest_mismatch, run.closure_digest, expected}}
+
+      :not_found ->
+        {:error, {:pinned_run_definition_not_found, to_string(run.definition_ref)}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp canonical_runs(canonical) do
+    case Canonical.fetch(canonical, :runs) do
+      {:ok, runs} when is_map(runs) -> runs
+      _invalid -> %{}
+    end
+  end
+
+  defp restored_terminal_ids(runs) do
+    runs
+    |> Enum.filter(fn {_id, run} -> Runs.terminal_run?(run) end)
+    |> Enum.map(fn {id, _run} -> id end)
+    |> MapSet.new()
+  end
+
+  defp restored_completed_queue(runs) do
+    runs
+    |> restored_terminal_ids()
+    |> MapSet.to_list()
+    |> Enum.sort()
+    |> :queue.from_list()
   end
 
   defp base_opts(opts, instance_ref) do

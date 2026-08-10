@@ -13,6 +13,8 @@ defmodule Spectre.Definition.Store do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Definition.Candidate
+  alias Spectre.Definition.Candidate.Ref, as: CandidateRef
   alias Spectre.Definition.Canonical
   alias Spectre.Definition.ContractRegistry
   alias Spectre.Definition.Manifest
@@ -20,6 +22,7 @@ defmodule Spectre.Definition.Store do
   alias Spectre.Instance.CheckpointStore
 
   @artifact_schema 1
+  @candidate_artifact_schema 1
   @receipt_schema 1
 
   @type durability :: :volatile | :durable
@@ -114,6 +117,53 @@ defmodule Spectre.Definition.Store do
   end
 
   @doc """
+  Publishes one immutable bootstrap Candidate after re-reading its Definition.
+
+  The Candidate is stored under its content-addressed `Candidate.Ref`. Its
+  Manifest digest and publication id must match the verified Definition
+  artifact already present in the same trusted Store.
+  """
+  @spec publish_candidate(config(), Candidate.t(), keyword()) ::
+          {:ok, CandidateRef.t()} | {:error, term()}
+  def publish_candidate(store, %Candidate{} = candidate, opts \\ []) when is_list(opts) do
+    ref = Candidate.ref(candidate)
+    key = candidate_key(ref)
+    encoded = encode_candidate_artifact(candidate, ref)
+
+    with {:ok, normalized} <- normalize(store),
+         :ok <- validate_durability_pair(Keyword.get(opts, :checkpoint_store), normalized),
+         :ok <- verify_candidate_binding(normalized, candidate, opts),
+         :ok <- ensure_candidate_parent(normalized, candidate.parent_ref, opts),
+         :ok <- adapter_put(normalized, key, encoded),
+         :ok <- verify_readback(normalized, key, encoded) do
+      {:ok, ref}
+    end
+  end
+
+  @doc """
+  Re-reads and verifies a bootstrap Candidate and its bound Definition.
+
+  Supplying an in-memory Candidate struct is never an activation authority;
+  callers must pass the returned Ref to this function or to
+  `Spectre.Instance.activate/3`.
+  """
+  @spec fetch_candidate(config(), CandidateRef.t() | String.t(), keyword()) ::
+          :not_found | {:ok, Candidate.t()} | {:error, term()}
+  def fetch_candidate(store, ref, opts \\ []) when is_list(opts) do
+    with {:ok, normalized} <- normalize(store),
+         {:ok, ref} <- normalize_candidate_ref(ref),
+         {:ok, encoded} <- adapter_get(normalized, candidate_key(ref)),
+         {:ok, candidate} <- decode_candidate_artifact(encoded, ref),
+         :ok <- verify_candidate_binding(normalized, candidate, opts),
+         :ok <- ensure_candidate_parent(normalized, candidate.parent_ref, opts) do
+      {:ok, candidate}
+    else
+      :not_found -> :not_found
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Fetches and fully verifies one published artifact.
 
   Verification covers the lookup key, canonical Definition Ref, Manifest
@@ -156,6 +206,10 @@ defmodule Spectre.Definition.Store do
   @spec receipt_schema_version() :: pos_integer()
   def receipt_schema_version, do: @receipt_schema
 
+  @doc "Returns the immutable Candidate artifact schema version."
+  @spec candidate_artifact_schema_version() :: pos_integer()
+  def candidate_artifact_schema_version, do: @candidate_artifact_schema
+
   @spec publication_receipt(Canonical.t(), Manifest.t(), term(), durability()) :: receipt()
   defp publication_receipt(canonical, manifest, store_id, durability) do
     base = %{
@@ -167,6 +221,81 @@ defmodule Spectre.Definition.Store do
     }
 
     Map.put(base, :publication_id, Value.digest!(base))
+  end
+
+  @spec encode_candidate_artifact(Candidate.t(), CandidateRef.t()) :: binary()
+  defp encode_candidate_artifact(candidate, ref) do
+    {:ok, encoded_candidate} = Candidate.encode(candidate)
+
+    Value.encode!(%{
+      "schema_version" => @candidate_artifact_schema,
+      "candidate_ref" => CandidateRef.to_string(ref),
+      "candidate" => encoded_candidate
+    })
+  end
+
+  @spec decode_candidate_artifact(binary(), CandidateRef.t()) ::
+          {:ok, Candidate.t()} | {:error, term()}
+  defp decode_candidate_artifact(encoded, expected_ref) do
+    with {:ok,
+          %{
+            "schema_version" => @candidate_artifact_schema,
+            "candidate_ref" => stored_ref,
+            "candidate" => encoded_candidate
+          }} <- Value.decode(encoded),
+         true <- stored_ref == CandidateRef.to_string(expected_ref),
+         {:ok, candidate} <- Candidate.decode(encoded_candidate),
+         :ok <- CandidateRef.verify(expected_ref, candidate) do
+      {:ok, candidate}
+    else
+      false ->
+        {:error, :candidate_store_lookup_mismatch}
+
+      {:ok, %{"schema_version" => version}} ->
+        {:error, {:unsupported_candidate_store_artifact_schema, version}}
+
+      {:ok, value} ->
+        {:error, {:invalid_candidate_store_artifact, shape(value)}}
+
+      {:error, reason} ->
+        {:error, {:candidate_store_artifact_invalid, reason}}
+    end
+  end
+
+  @spec verify_candidate_binding({module(), keyword()}, Candidate.t(), keyword()) ::
+          :ok | {:error, term()}
+  defp verify_candidate_binding(store, candidate, opts) do
+    case fetch(store, candidate.definition_ref, opts) do
+      {:ok, artifact} ->
+        cond do
+          Manifest.digest(artifact.manifest) != candidate.manifest_digest ->
+            {:error, :candidate_manifest_digest_mismatch}
+
+          artifact.receipt.publication_id != candidate.publication_id ->
+            {:error, :candidate_publication_receipt_mismatch}
+
+          true ->
+            :ok
+        end
+
+      :not_found ->
+        {:error, {:candidate_definition_not_found, Ref.to_string(candidate.definition_ref)}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @spec ensure_candidate_parent({module(), keyword()}, CandidateRef.t() | nil, keyword()) ::
+          :ok | {:error, term()}
+  defp ensure_candidate_parent(_store, nil, _opts), do: :ok
+
+  defp ensure_candidate_parent(store, %CandidateRef{} = parent_ref, opts) do
+    case fetch_candidate(store, parent_ref, Keyword.put(opts, :skip_candidate_parent, true)) do
+      {:ok, _candidate} -> :ok
+      :not_found -> {:error, {:missing_candidate_parent, CandidateRef.to_string(parent_ref)}}
+      {:error, _reason} = error -> error
+    end
   end
 
   @spec encode_artifact(Canonical.t(), Manifest.t(), receipt()) :: binary()
@@ -398,6 +527,20 @@ defmodule Spectre.Definition.Store do
 
   defp normalize_ref(value) when is_binary(value), do: Ref.parse(value)
   defp normalize_ref(value), do: {:error, {:invalid_definition_store_ref, value}}
+
+  @spec normalize_candidate_ref(CandidateRef.t() | String.t()) ::
+          {:ok, CandidateRef.t()} | {:error, term()}
+  defp normalize_candidate_ref(%CandidateRef{} = ref) do
+    if CandidateRef.valid?(ref),
+      do: {:ok, ref},
+      else: {:error, {:invalid_candidate_store_ref, ref}}
+  end
+
+  defp normalize_candidate_ref(value) when is_binary(value), do: CandidateRef.parse(value)
+  defp normalize_candidate_ref(value), do: {:error, {:invalid_candidate_store_ref, value}}
+
+  @spec candidate_key(CandidateRef.t()) :: String.t()
+  defp candidate_key(%CandidateRef{} = ref), do: "candidate/" <> CandidateRef.to_string(ref)
 
   @spec validate_pair(nil | {module(), keyword()}, durability()) :: :ok | {:error, term()}
   defp validate_pair(nil, _store_durability), do: :ok

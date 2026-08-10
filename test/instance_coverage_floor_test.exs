@@ -79,6 +79,7 @@ defmodule SpectreInstanceCoverageFloorTest do
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec, as: CanonicalCodec
   alias Spectre.Instance.Checkpoint
+  alias Spectre.Instance.Owner.Lease
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Runs
   alias Spectre.Instance.State, as: InstanceState
@@ -856,6 +857,14 @@ defmodule SpectreInstanceCoverageFloorTest do
     state = %State{conversation_id: ref.key}
     canonical = canonical(ref, state, 0)
 
+    owner_lease =
+      Lease.new!(
+        owner_id: "instance-coverage-owner",
+        fencing_token: 1,
+        issued_at: 0,
+        metadata: %{instance_key: ref.key, scope: :single_owner_local}
+      )
+
     defaults = %{
       agent: @agent,
       agent_ref: agent_ref,
@@ -863,6 +872,10 @@ defmodule SpectreInstanceCoverageFloorTest do
       ref: ref,
       state: state,
       canonical: canonical,
+      activation: nil,
+      definition_store: nil,
+      owner: {Spectre.Instance.Owner.Local, []},
+      owner_lease: owner_lease,
       base_opts: [conversation_id: ref.key],
       idle_timeout: false,
       max_runs: 16,

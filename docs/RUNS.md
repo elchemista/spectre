@@ -99,6 +99,9 @@ it should not be serialized as an envelope.
 
 The versioned checkpoint:
 
+- writes Run checkpoint schema 2 with the exact Definition Ref, activation
+  generation, authority epoch, execution-closure digest, and optional portable
+  deployment requirement;
 - uses an atom-free tagged payload before typed decoding; modules are loaded
   from deployed code and only existing atoms are rehydrated, while unknown
   dynamic atoms fail closed;
@@ -113,9 +116,19 @@ The versioned checkpoint:
   encode and after restore;
 - enforces a configurable encoded-size limit (2 MB by default).
 
+The reader also accepts Run checkpoint schema 1. It immediately produces a
+schema-2 Run with an explicit generation-0 legacy Definition pin; current
+writers never emit schema 1.
+
 After restore, `advance/2` and `resume/3` resolve runtime dependencies again.
 Secrets and clients belong in runtime configuration or Stack resources, not in
 the checkpoint.
+
+Inside an Instance, retained Run checkpoints are stored atomically with the
+observed Flow state in canonical checkpoint schema 2. Activating Definition B
+changes the pin only for Runs admitted afterward: a Run already open under A
+continues under A, including after process restart. Restart re-resolves every
+non-legacy Definition and verifies the stored closure digest before resuming.
 
 Checkpoint blobs are continuation state, not untrusted input. `restore/2`
 validates schema and lifecycle but does not authenticate a blob; use storage

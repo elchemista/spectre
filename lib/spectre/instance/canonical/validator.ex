@@ -1,6 +1,7 @@
 defmodule Spectre.Instance.Canonical.Validator do
   @moduledoc false
 
+  alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
   alias Spectre.Operation.Control
   alias Spectre.Operation.Delivery.Consent, as: DeliveryConsent
@@ -8,6 +9,7 @@ defmodule Spectre.Instance.Canonical.Validator do
   alias Spectre.Operation.Event, as: OperationEvent
   alias Spectre.Operation.Loop, as: OperationLoop
   alias Spectre.Operation.Runtime, as: OperationRuntime
+  alias Spectre.Run
   alias Spectre.State
   alias Spectre.State.Codec, as: StateCodec
 
@@ -23,6 +25,10 @@ defmodule Spectre.Instance.Canonical.Validator do
     with :ok <- Canonical.validate(canonical),
          {:ok, %State{} = flow} <- Canonical.fetch(canonical, :flow),
          :ok <- validate_flow(flow),
+         {:ok, activation} <- Canonical.fetch(canonical, :activation),
+         :ok <- validate_activation(activation),
+         {:ok, runs} <- Canonical.fetch(canonical, :runs),
+         :ok <- validate_runs(runs),
          {:ok, loops} <- validate_loops(canonical),
          :ok <- validate_controls(canonical, loops, instance_ref),
          :ok <- validate_events(canonical, loops, event_limit),
@@ -40,6 +46,40 @@ defmodule Spectre.Instance.Canonical.Validator do
       {:error, reason} -> {:error, {:invalid_canonical_flow_state, reason}}
     end
   end
+
+  defp validate_activation(nil), do: :ok
+
+  defp validate_activation(%Activation{} = activation) do
+    case Activation.build(Map.from_struct(activation)) do
+      {:ok, ^activation} -> :ok
+      {:ok, _rebuilt} -> {:error, :canonical_activation_integrity_mismatch}
+      {:error, reason} -> {:error, {:invalid_canonical_activation, reason}}
+    end
+  end
+
+  defp validate_activation(value), do: {:error, {:invalid_canonical_activation, value}}
+
+  defp validate_runs(runs) when is_map(runs) and not is_struct(runs) do
+    Enum.reduce_while(runs, :ok, fn
+      {run_id, checkpoint}, :ok
+      when is_binary(run_id) and run_id != "" and is_binary(checkpoint) ->
+        case Run.restore(checkpoint) do
+          {:ok, %Run{id: ^run_id}} ->
+            {:cont, :ok}
+
+          {:ok, %Run{id: restored_id}} ->
+            {:halt, {:error, {:canonical_run_id_mismatch, run_id, restored_id}}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:invalid_canonical_run_checkpoint, run_id, reason}}}
+        end
+
+      {run_id, _checkpoint}, :ok ->
+        {:halt, {:error, {:invalid_canonical_run_entry, run_id}}}
+    end)
+  end
+
+  defp validate_runs(value), do: {:error, {:invalid_canonical_runs, value}}
 
   defp validate_loops(canonical) do
     Enum.reduce_while([:work, :vigil, :directive], {:ok, %{}}, fn kind, {:ok, loops} ->

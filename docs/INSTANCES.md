@@ -10,7 +10,9 @@ Spectre.AgentRef + Spectre.Subject -> one local Spectre.Instance
 An Instance is not addressed by a PID, chat id, sender name, phone number, or
 conversation id. Those values can change across restarts and channels. The
 logical pair is portable; `Spectre.Instance.Registry` maps it to the current
-local process.
+local process. Since 0.2.3, the AgentRef key contains only the logical Agent id.
+Its compiled module, declared version, and Stack digest are resolver hints and
+do not split the Instance when behavior changes.
 
 ## Start and find an Instance
 
@@ -71,6 +73,37 @@ integrations as `:origin_conversation_id`.
 count, and last-Run metadata. It never exposes the raw chat, thread, or session
 identifier. This lets one Subject share ordered state across authorized
 channels without treating a conversation id as identity proof.
+
+## Definition activation and ownership fencing
+
+An Instance can bind its stable identity to one current immutable Definition:
+
+```elixir
+{:ok, activation} =
+  Spectre.activate(instance, candidate_ref,
+    expected_generation: 0,
+    authority_epoch: 8
+  )
+
+^activation = Spectre.activation(instance)
+```
+
+The Candidate must already be published in the Instance's configured
+`:definition_store`. Activation re-reads the Candidate and all publication
+artifacts, checks generation CAS and the current owner fence, then commits the
+canonical activation section. A durable checkpoint write is synchronous at
+this boundary; conflict or ambiguity never falls back to the old or new value
+by guesswork.
+
+Every Instance claims a `Spectre.Instance.Owner.Lease`. The default local
+adapter is suitable only when one VM/local Registry is the canonical owner.
+Multi-node hosts must configure `:owner` with a linearizable lease and
+monotonic fencing token. Lease loss blocks admission, commits, activation, and
+Effect/operation dispatch.
+
+See [Stable Identity, Activation, and Definition-Pinned Runs](IDENTITY_ACTIVATION.md)
+for the publication flow and [Migrating to 0.2.3](MIGRATING_TO_0_2_3.md) for
+legacy key migration.
 
 ## Run ownership and observable boundaries
 
@@ -163,6 +196,11 @@ The complete canonical graph can be persisted through
 startup and use `flush_checkpoint/2`, `checkpoint_status/1`, and
 `reconcile_checkpoint/2` at the host boundary. An ambiguous compare-and-swap
 write erects a persistence fence and is never retried automatically.
+
+Schema-2 checkpoints also retain the current Activation and every retained
+Run. When a legacy Instance key is found, the adapter's
+`migrate_instance_key/5` callback must atomically expose the migrated bytes
+under the stable Ref. Divergent histories under old and new keys are rejected.
 
 See [Work, Vigil, and the operational runtime](OPERATIONS.md) for controller,
 operation, recovery, event, and delivery contracts.

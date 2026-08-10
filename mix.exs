@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.2"
+  @version "0.2.3"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -13,11 +13,13 @@ defmodule Spectre.MixProject do
     "docs/DSL.md",
     "docs/CANONICAL_DEFINITIONS.md",
     "docs/DEFINITION_STORE.md",
+    "docs/IDENTITY_ACTIVATION.md",
     "docs/STACK.md",
     "docs/RUNS.md",
     "docs/INSTANCES.md",
     "docs/OPERATIONS.md",
     "docs/MIGRATING_TO_0_2.md",
+    "docs/MIGRATING_TO_0_2_3.md",
     "docs/SKILLS.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
@@ -131,11 +133,13 @@ defmodule Spectre.MixProject do
           "docs/DSL.md",
           "docs/CANONICAL_DEFINITIONS.md",
           "docs/DEFINITION_STORE.md",
+          "docs/IDENTITY_ACTIVATION.md",
           "docs/STACK.md",
           "docs/RUNS.md",
           "docs/INSTANCES.md",
           "docs/OPERATIONS.md",
           "docs/MIGRATING_TO_0_2.md",
+          "docs/MIGRATING_TO_0_2_3.md",
           "docs/SKILLS.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
@@ -165,6 +169,8 @@ defmodule Spectre.MixProject do
         "Canonical definitions and projections": [
           Spectre.Authority.Envelope,
           Spectre.Canonical.Value,
+          Spectre.Definition.Candidate,
+          Spectre.Definition.Candidate.Ref,
           Spectre.Definition.Canonical,
           Spectre.Definition.Component,
           Spectre.Definition.ContractRegistry,
@@ -202,6 +208,10 @@ defmodule Spectre.MixProject do
           Spectre.SubjectLink,
           Spectre.Subject.Registry,
           Spectre.Instance,
+          Spectre.Instance.Activation,
+          Spectre.Instance.Owner,
+          Spectre.Instance.Owner.Lease,
+          Spectre.Instance.Owner.Local,
           Spectre.Instance.Ref,
           Spectre.Instance.Registry,
           Spectre.Session,

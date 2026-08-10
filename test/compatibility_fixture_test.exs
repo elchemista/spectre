@@ -98,7 +98,7 @@ defmodule SpectreCompatibilityFixtureTest do
 
     assert {:ok,
             %Run{
-              run_version: 1,
+              run_version: 2,
               id: "run-0.1.6-ready",
               agent: Spectre,
               status: :ready,
@@ -108,6 +108,11 @@ defmodule SpectreCompatibilityFixtureTest do
               causation_id: "cause-0.1.6",
               correlation_id: "correlation-0.1.6"
             } = run} = Run.restore(checkpoint)
+
+    assert %Spectre.Definition.Ref{} = run.definition_ref
+    assert run.activation_generation == 0
+    assert run.authority_epoch == 0
+    assert is_binary(run.closure_digest)
 
     assert run.input.text == "resume the 0.1.6 baseline"
     assert run.input.raw == nil

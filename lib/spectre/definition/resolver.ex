@@ -9,6 +9,8 @@ defmodule Spectre.Definition.Resolver do
   evidence only with the explicit `on_drift: :report` host policy.
   """
 
+  alias Spectre.Definition.Candidate
+  alias Spectre.Definition.Candidate.Ref, as: CandidateRef
   alias Spectre.Definition.Ref
   alias Spectre.Definition.Store
   alias Spectre.Execution.Closure
@@ -67,6 +69,44 @@ defmodule Spectre.Definition.Resolver do
   def resolve_for_activation(store, ref, opts \\ []) when is_list(opts) do
     with :ok <- Store.validate_durability_pair(Keyword.get(opts, :checkpoint_store), store) do
       resolve(store, ref, opts)
+    end
+  end
+
+  @doc """
+  Creates and publishes a minimal bootstrap Candidate from a verified
+  Definition resolution.
+
+  This boundary is for trusted host code and compiled Definition lowering;
+  runtime-authored ChangeSets and promotion gates are intentionally outside
+  the 0.2.3 scope.
+  """
+  @spec bootstrap_candidate(Store.config(), Ref.t() | String.t(), keyword()) ::
+          {:ok, CandidateRef.t()} | {:error, term()} | :not_found
+  def bootstrap_candidate(store, definition_ref, opts \\ []) when is_list(opts) do
+    with {:ok, resolution} <- resolve_for_activation(store, definition_ref, opts),
+         {:ok, candidate} <- Candidate.from_resolution(resolution, opts),
+         do: Store.publish_candidate(store, candidate, opts)
+  end
+
+  @doc """
+  Re-reads a Candidate by Ref and re-resolves its published Definition.
+
+  The returned pair is the only accepted input to the activation snapshot
+  constructor; a caller-supplied Candidate struct is never trusted.
+  """
+  @spec resolve_candidate_for_activation(
+          Store.config(),
+          CandidateRef.t() | String.t(),
+          keyword()
+        ) ::
+          {:ok, %{candidate: Candidate.t(), resolution: resolution()}}
+          | {:error, term()}
+          | :not_found
+  def resolve_candidate_for_activation(store, candidate_ref, opts \\ []) when is_list(opts) do
+    with :ok <- Store.validate_durability_pair(Keyword.get(opts, :checkpoint_store), store),
+         {:ok, candidate} <- Store.fetch_candidate(store, candidate_ref, opts),
+         {:ok, resolution} <- resolve_for_activation(store, candidate.definition_ref, opts) do
+      {:ok, %{candidate: candidate, resolution: resolution}}
     end
   end
 

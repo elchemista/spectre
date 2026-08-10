@@ -4,6 +4,51 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.3 — 2026-08-10
+
+### Added
+
+- Added stable AgentRef/Instance identity. Compiled module, declared Definition
+  version, and Stack digest are resolver hints rather than parts of the durable
+  key; the former key remains available only for controlled migration.
+- Added immutable bootstrap `Spectre.Definition.Candidate` artifacts and
+  content-addressed Candidate Refs. Activation always re-reads Candidate,
+  Definition, Manifest, and publication receipt from the trusted Definition
+  Store.
+- Added canonical `Spectre.Instance.Activation` snapshots with generation CAS,
+  authority epoch, execution closure, state bindings, owner fencing token,
+  provenance, and deterministic activation receipt.
+- Added the `Spectre.Instance.Owner` lease/fencing host contract. The bundled
+  local adapter is explicitly single-owner; distributed ownership remains a
+  host responsibility.
+- Added Definition pins to Runs and durable retention of all live Run
+  continuations in canonical Instance checkpoints. New Runs use the current
+  Activation while open Runs preserve their original Definition across
+  activation and restart.
+- Added a permanent 0.2.3 compatibility fixture containing checkpoint schema
+  2, an Activation, and its pinned Run.
+
+### Migration and safety
+
+- Run checkpoint and canonical checkpoint writers now emit schema 2. Readers
+  accept schemas 1 and 2 and immediately migrate legacy values to the current
+  in-memory representation.
+- `Spectre.Instance.CheckpointStore.migrate_instance_key/5` lets an adapter
+  atomically move an exact legacy checkpoint to its stable key. Core verifies
+  the migrated target byte-for-byte and rejects divergent old/new histories.
+- Activation is committed synchronously when durable checkpointing is enabled.
+  Stale generations, authority/fencing rollback, ambiguous writes, missing
+  artifacts, or closure drift fail closed.
+- Owner-fence loss blocks admission, canonical commit, activation, and Effect
+  or operation dispatch before the external boundary.
+
+### Scope
+
+- The Candidate is a trusted-host bootstrap record, not a governed promotion
+  state machine. Runtime-authored ChangeSets, gate receipts, self-activation,
+  event ownership across Definition versions, first-class Skill state, and
+  distributed consensus remain outside this release.
+
 ## 0.2.2 — 2026-08-10
 
 ### Added
