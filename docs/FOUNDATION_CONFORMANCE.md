@@ -102,6 +102,13 @@ versions. It does not rewrite the 0.2.6 digest manifest or change any durable
 State, Run, or Instance reader/writer contract. The separate
 `0.2.7/runtime-skill-routing-v1.json` fixture pins the new derived identities.
 
+Spectre 0.2.8 appends the data-execution schema matrix: Program, Handoff,
+effective Prompt Receipt, Execution projection, migration receipt, and
+rehearsal report are all schema 1. The separate
+`0.2.8/data-driven-execution-v1.json` fixture pins a portable Program and its
+no-Effect rehearsal identities. State, Run, and Instance writers/readers remain
+unchanged, and neither prior fixture is rewritten.
+
 ## What the gate does not authorize
 
 Conformance proves structural compatibility. It does not grant authority,

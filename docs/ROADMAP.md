@@ -5,6 +5,18 @@ application business logic. Version 0.2.0 completes the vNext core foundation;
 future work extends adapters and distributed integration without adding a
 second owner for Agent or operational state.
 
+## 0.2.8 data-driven execution — complete
+
+Compiled and runtime-authored precise Work now share one portable Program IR
+and the existing operational executor. The gate includes exact Execution
+materialization/projections, prompt receipts, bounded amendments, typed
+Flow/Work handoffs, registered pure state migrations, and deterministic
+no-Effect rehearsal. Runtime data cannot introduce code or authority.
+
+State remains writer v5, Run remains writer v2, and canonical Instance
+checkpoints remain schema 4. The next gate is governance; it must compose over
+these identities and host boundaries rather than add another executor.
+
 ## 0.2.0 vNext core — complete
 
 The 0.2.0 implementation was completed in dependency order:

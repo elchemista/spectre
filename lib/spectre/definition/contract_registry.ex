@@ -68,6 +68,12 @@ defmodule Spectre.Definition.ContractRegistry do
       version: 1
     },
     %{
+      component_type: :execution,
+      schema_ref: "spectre.definition.execution/1",
+      criticalities: [:must_understand],
+      version: 1
+    },
+    %{
       component_type: :projection,
       schema_ref: "spectre.definition.projection/1",
       criticalities: [:advisory],

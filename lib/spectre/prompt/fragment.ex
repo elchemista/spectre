@@ -42,7 +42,7 @@ defmodule Spectre.Prompt.Fragment do
 
   @type t :: %__MODULE__{
           id: term(),
-          content: String.t(),
+          content: String.t() | nil,
           scope: term(),
           target: Spectre.Prompt.Operation.target(),
           position: Spectre.Prompt.Operation.position(),

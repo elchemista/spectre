@@ -194,9 +194,16 @@ defmodule Spectre.Instance.Loops do
   @spec same_loop_request?(OperationLoop.t(), OperationLoop.t()) :: boolean()
   def same_loop_request?(existing, requested) do
     existing.kind == requested.kind and existing.controller == requested.controller and
+      existing.controller_id == requested.controller_id and
       existing.controller_version == requested.controller_version and
       existing.base_input == requested.base_input and
-      existing.correlation_id == requested.correlation_id
+      existing.correlation_id == requested.correlation_id and
+      same_execution_program?(existing, requested)
+  end
+
+  defp same_execution_program?(existing, requested) do
+    key = Spectre.Execution.Controller.program_key()
+    Map.get(existing.metadata, key) == Map.get(requested.metadata, key)
   end
 
   @doc "Builds the snapshot-fenced environment for preparing one loop attempt."

@@ -123,6 +123,92 @@ defmodule SpectreDefinitionManifestV2Test do
     assert byte_size(Closure.digest(closure)) == 64
   end
 
+  test "execution closure build and load boundaries reject malformed dependency evidence" do
+    closure = closure()
+    attrs = Map.from_struct(closure)
+    data = Closure.to_data(closure)
+
+    assert Closure.schema_version() == 1
+    assert {:ok, ^closure} = attrs |> Map.to_list() |> Closure.new()
+    assert {:ok, ^closure} = Closure.from_data(closure)
+
+    assert {:error, {:invalid_execution_closure, :list}} = Closure.new([:invalid])
+    assert {:error, {:invalid_execution_closure, :other}} = Closure.new(:invalid)
+
+    assert_raise ArgumentError, ~r/invalid execution closure/, fn ->
+      Closure.new!(%{})
+    end
+
+    assert {:error, {:unknown_execution_closure_fields, [:unknown]}} =
+             attrs |> Map.put(:unknown, true) |> Closure.new()
+
+    assert {:error, {:unsupported_execution_closure_schema, 2}} =
+             attrs |> Map.put(:schema_version, 2) |> Closure.new()
+
+    assert {:error, {:invalid_execution_closure_list, :package_refs, :other}} =
+             attrs |> Map.put(:package_refs, :invalid) |> Closure.new()
+
+    assert {:error, {:invalid_execution_closure_list, :package_refs}} =
+             attrs |> Map.put(:package_refs, [""]) |> Closure.new()
+
+    assert {:error, :incomplete_projection_generators} =
+             attrs |> Map.put(:projection_generators, []) |> Closure.new()
+
+    assert {:error, :invalid_projection_generators} =
+             attrs |> Map.put(:projection_generators, [%{}]) |> Closure.new()
+
+    duplicate_fingerprint = hd(closure.build_fingerprints)
+
+    assert {:error, {:duplicate_build_fingerprint, "beam:Agent"}} =
+             attrs
+             |> Map.put(:build_fingerprints, [duplicate_fingerprint, duplicate_fingerprint])
+             |> Closure.new()
+
+    assert {:error, :incomplete_build_fingerprints} =
+             attrs |> Map.put(:build_fingerprints, []) |> Closure.new()
+
+    assert {:error, :invalid_build_fingerprints} =
+             attrs |> Map.put(:build_fingerprints, [%{}]) |> Closure.new()
+
+    assert {:error, {:invalid_execution_closure_ref, :stack_ref, ""}} =
+             attrs |> Map.put(:stack_ref, "") |> Closure.new()
+
+    assert {:error, {:invalid_execution_closure_digest, "invalid"}} =
+             attrs |> Map.put(:evaluation_corpus_digest, "invalid") |> Closure.new()
+
+    assert {:error, {:invalid_execution_compatibility_mode, :future}} =
+             attrs |> Map.put(:compatibility_mode, :future) |> Closure.new()
+
+    assert {:error, {:unknown_execution_closure_data_fields, ["unknown"]}} =
+             data |> Map.put("unknown", true) |> Closure.from_data()
+
+    assert {:error, {:incomplete_execution_closure_data, "stack_ref"}} =
+             data |> Map.delete("stack_ref") |> Closure.from_data()
+
+    assert {:error, :invalid_projection_generators} =
+             data |> Map.put("projection_generators", [%{}]) |> Closure.from_data()
+
+    assert {:error, :invalid_build_fingerprints} =
+             data |> Map.put("build_fingerprints", %{}) |> Closure.from_data()
+
+    assert {:error, {:invalid_build_drift_policy, "future"}} =
+             data
+             |> put_in(["build_fingerprints", Access.at(0), "drift_policy"], "future")
+             |> Closure.from_data()
+
+    assert {:error, {:invalid_execution_compatibility_mode, "future"}} =
+             data |> Map.put("compatibility_mode", "future") |> Closure.from_data()
+
+    assert {:error, {:invalid_execution_closure_data, :tuple}} =
+             Closure.from_data({:invalid, :closure})
+
+    assert {:error, {:invalid_observed_build_fingerprints, :list}} =
+             Closure.compare_builds(closure, [])
+
+    assert {:error, {:object_code_unavailable, :spectre_missing_closure_module}} =
+             Closure.fingerprint(:spectre_missing_closure_module)
+  end
+
   test "loaded BEAM modules can be fingerprinted only by trusted composition code" do
     assert {:ok, digest} = Closure.fingerprint(Agent)
     assert byte_size(digest) == 64

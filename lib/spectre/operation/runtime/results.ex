@@ -268,8 +268,8 @@ defmodule Spectre.Operation.Runtime.Results do
         next = loop |> Map.put(:status, :paused) |> Loop.touch(at: now(env))
         {:ok, next, control, [event(:safe_boundary_reached)]}
 
-      match?({_, _, _}, budget_exhaustion(loop, env)) ->
-        {dimension, consumed, limit} = budget_exhaustion(loop, env)
+      match?({_, _, _}, budget_exhaustion(loop, env, ignore: [:retries])) ->
+        {dimension, consumed, limit} = budget_exhaustion(loop, env, ignore: [:retries])
         next = terminal_budget(loop, dimension, consumed, limit, env)
         {terminal, rejected} = terminal_control(control)
 

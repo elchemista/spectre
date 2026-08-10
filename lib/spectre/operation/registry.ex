@@ -27,8 +27,7 @@ defmodule Spectre.Operation.Registry do
   @spec all(module(), Definition.t()) :: {:ok, %{optional(term()) => Spec.t()}} | {:error, term()}
   def all(agent, %Definition{} = definition) when is_atom(agent) do
     with {:ok, agent_operations} <- agent_operations(agent),
-         :ok <- ensure_imports(agent_operations, definition.imports) do
-      imported = Map.take(agent_operations, definition.imports)
+         {:ok, imported} <- resolve_imports(agent_operations, definition.imports) do
       {:ok, Map.merge(imported, definition.operations)}
     end
   end
@@ -38,7 +37,7 @@ defmodule Spectre.Operation.Registry do
     with {:ok, operations} <- all(agent, definition) do
       case Map.fetch(operations, id) do
         {:ok, %Spec{} = spec} -> {:ok, spec}
-        :error -> {:error, {:operation_not_registered, id}}
+        :error -> resolve_spec_alias(operations, id)
       end
     end
   end
@@ -90,10 +89,47 @@ defmodule Spectre.Operation.Registry do
 
   defp resolve_string_alias(_operations, id), do: {:error, {:operation_not_registered, id}}
 
-  defp ensure_imports(agent, imports) do
-    case Enum.find(imports, &(not Map.has_key?(agent, &1))) do
-      nil -> :ok
-      id -> {:error, {:imported_operation_not_registered, id}}
+  @spec resolve_imports(map(), [term()]) :: {:ok, map()} | {:error, term()}
+  defp resolve_imports(agent, imports) do
+    Enum.reduce_while(imports, {:ok, %{}}, fn authored_id, {:ok, imported} ->
+      case resolve_import(agent, authored_id) do
+        {:ok, registered_id, spec} ->
+          {:cont, {:ok, Map.put(imported, registered_id, spec)}}
+
+        :error ->
+          {:halt, {:error, {:imported_operation_not_registered, authored_id}}}
+      end
+    end)
+  end
+
+  @spec resolve_import(map(), term()) :: {:ok, term(), Spec.t()} | :error
+  defp resolve_import(operations, id) do
+    case Map.fetch(operations, id) do
+      {:ok, %Spec{} = spec} ->
+        {:ok, id, spec}
+
+      :error when is_binary(id) ->
+        case Enum.find(operations, fn {registered_id, _spec} ->
+               is_atom(registered_id) and Atom.to_string(registered_id) == id
+             end) do
+          {registered_id, %Spec{} = spec} -> {:ok, registered_id, spec}
+          nil -> :error
+        end
+
+      :error ->
+        :error
     end
   end
+
+  @spec resolve_spec_alias(map(), term()) :: {:ok, Spec.t()} | {:error, term()}
+  defp resolve_spec_alias(operations, id) when is_binary(id) do
+    case Enum.find(operations, fn {registered_id, _spec} ->
+           is_atom(registered_id) and Atom.to_string(registered_id) == id
+         end) do
+      {_registered_id, %Spec{} = spec} -> {:ok, spec}
+      nil -> {:error, {:operation_not_registered, id}}
+    end
+  end
+
+  defp resolve_spec_alias(_operations, id), do: {:error, {:operation_not_registered, id}}
 end

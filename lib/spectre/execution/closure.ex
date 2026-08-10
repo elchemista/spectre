@@ -87,7 +87,12 @@ defmodule Spectre.Execution.Closure do
   @doc "Builds a complete, validated execution closure."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def new(%__MODULE__{} = closure), do: closure |> Map.from_struct() |> new()
-  def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs),
+      do: attrs |> Map.new() |> new(),
+      else: {:error, {:invalid_execution_closure, :list}}
+  end
 
   def new(attrs) when is_map(attrs) do
     with :ok <- validate_keys(attrs),
@@ -144,14 +149,18 @@ defmodule Spectre.Execution.Closure do
 
   @doc "Restores a closure from decoded canonical data."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(%{"schema_version" => schema_version} = data) do
-    with {:ok, generators} <- generators_from_data(Map.get(data, "projection_generators")),
+  def from_data(%__MODULE__{} = closure), do: closure |> to_data() |> from_data()
+
+  def from_data(data) when is_map(data) and not is_struct(data) do
+    with :ok <- validate_data_fields(data),
+         {:ok, generators} <- generators_from_data(Map.get(data, "projection_generators")),
          {:ok, fingerprints} <- fingerprints_from_data(Map.get(data, "build_fingerprints")),
          {:ok, compatibility_mode} <-
            compatibility_mode_from_data(Map.get(data, "compatibility_mode")) do
       attrs =
-        Enum.reduce(@required_fields, %{schema_version: schema_version}, fn field, acc ->
-          Map.put(acc, field, Map.get(data, Atom.to_string(field)))
+        Enum.reduce(@required_fields, %{schema_version: Map.get(data, "schema_version")}, fn
+          field, acc ->
+            Map.put(acc, field, Map.get(data, Atom.to_string(field)))
         end)
         |> Map.put(:projection_generators, generators)
         |> Map.put(:build_fingerprints, fingerprints)
@@ -162,6 +171,25 @@ defmodule Spectre.Execution.Closure do
   end
 
   def from_data(value), do: {:error, {:invalid_execution_closure_data, shape(value)}}
+
+  @spec validate_data_fields(map()) :: :ok | {:error, term()}
+  defp validate_data_fields(data) do
+    expected = ["schema_version" | Enum.map(@required_fields, &Atom.to_string/1)]
+    actual = Map.keys(data)
+    unknown = actual -- expected
+    missing = expected -- actual
+
+    cond do
+      unknown != [] ->
+        {:error, {:unknown_execution_closure_data_fields, Enum.sort_by(unknown, &inspect/1)}}
+
+      missing != [] ->
+        {:error, {:incomplete_execution_closure_data, List.first(missing)}}
+
+      true ->
+        :ok
+    end
+  end
 
   @doc "Returns the canonical SHA-256 digest of the closure."
   @spec digest(t()) :: String.t()

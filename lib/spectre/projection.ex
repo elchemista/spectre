@@ -88,28 +88,77 @@ defmodule Spectre.Projection do
   @doc "Verifies the digest and Definition binding of an existing projection."
   @spec verify(t(), Canonical.t()) :: :ok | {:error, term()}
   def verify(%__MODULE__{} = projection, %Canonical{} = canonical) do
-    definition_ref = Canonical.ref(canonical)
+    verify_ref(projection, Canonical.ref(canonical))
+  end
 
-    expected =
-      projection_digest(
-        definition_ref,
-        projection.generator_id,
-        projection.generator_version,
-        projection.input_evidence_digest,
-        projection.content
-      )
+  @doc false
+  @spec verify_ref(t(), Ref.t()) :: :ok | {:error, term()}
+  def verify_ref(%__MODULE__{} = projection, %Ref{} = definition_ref) do
+    with true <- Ref.valid?(definition_ref),
+         :ok <- validate_projection_shape(projection),
+         :ok <- validate_content(projection.content) do
+      expected =
+        projection_digest(
+          definition_ref,
+          projection.generator_id,
+          projection.generator_version,
+          projection.input_evidence_digest,
+          projection.content
+        )
 
+      cond do
+        projection.definition_ref != definition_ref ->
+          {:error, :projection_definition_mismatch}
+
+        projection.digest != expected ->
+          {:error, :projection_digest_mismatch}
+
+        true ->
+          :ok
+      end
+    else
+      false -> {:error, :invalid_projection_definition_ref}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def verify_ref(projection, definition_ref),
+    do: {:error, {:invalid_projection, shape(projection), shape(definition_ref)}}
+
+  @spec validate_projection_shape(t()) :: :ok | {:error, term()}
+  defp validate_projection_shape(projection) do
     cond do
-      projection.definition_ref != definition_ref ->
-        {:error, :projection_definition_mismatch}
+      not is_binary(projection.generator_id) or projection.generator_id == "" ->
+        {:error, :invalid_projection_generator_id}
 
-      projection.digest != expected ->
-        {:error, :projection_digest_mismatch}
+      not is_integer(projection.generator_version) or projection.generator_version <= 0 ->
+        {:error, :invalid_projection_generator_version}
+
+      not is_nil(projection.input_evidence_digest) and
+          not valid_digest?(projection.input_evidence_digest) ->
+        {:error, :invalid_projection_input_evidence_digest}
+
+      not valid_digest?(projection.digest) ->
+        {:error, :invalid_projection_digest}
 
       true ->
         :ok
     end
   end
+
+  @spec valid_digest?(term()) :: boolean()
+  defp valid_digest?(digest) when is_binary(digest) and byte_size(digest) == 64,
+    do: match?({:ok, _bytes}, Base.decode16(digest, case: :mixed))
+
+  defp valid_digest?(_digest), do: false
+
+  @spec shape(term()) :: atom()
+  defp shape(value) when is_map(value), do: :map
+  defp shape(value) when is_binary(value), do: :binary
+  defp shape(value) when is_list(value), do: :list
+  defp shape(value) when is_tuple(value), do: :tuple
+  defp shape(value) when is_atom(value), do: :atom
+  defp shape(_value), do: :other
 
   @spec validate_generator(module()) :: :ok | {:error, term()}
   defp validate_generator(generator) do

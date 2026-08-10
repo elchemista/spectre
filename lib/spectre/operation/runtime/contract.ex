@@ -10,6 +10,8 @@ defmodule Spectre.Operation.Runtime.Contract do
 
   import Spectre.Operation.Runtime.Support
 
+  alias Spectre.Execution.Controller, as: ExecutionController
+  alias Spectre.Execution.Program, as: ExecutionProgram
   alias Spectre.Operation.Artifact
   alias Spectre.Operation.Control.Command
   alias Spectre.Operation.Definition
@@ -24,7 +26,7 @@ defmodule Spectre.Operation.Runtime.Contract do
   @doc "Loads and validates the current definition for a committed loop."
   @spec current_definition(Loop.t()) :: {:ok, Definition.t()} | {:error, term()}
   def current_definition(loop) do
-    with {:ok, definition} <- Definition.load(loop.controller),
+    with {:ok, definition} <- load_definition(loop),
          :ok <- ensure_kind(definition, loop.kind),
          :ok <- ensure_definition_identity(definition, loop),
          :ok <- ensure_definition_compatibility(definition, loop),
@@ -34,6 +36,22 @@ defmodule Spectre.Operation.Runtime.Contract do
       {:error, _reason} = error -> error
     end
   end
+
+  @spec load_definition(Loop.t()) :: {:ok, Definition.t()} | {:error, term()}
+  defp load_definition(%Loop{controller: ExecutionController, metadata: metadata}) do
+    with data when is_map(data) <- Map.get(metadata, ExecutionController.program_key()),
+         {:ok, program} <- ExecutionProgram.from_data(data),
+         true <- program.digest == Map.get(data, :digest, Map.get(data, "digest")) do
+      {:ok, ExecutionProgram.operation_definition(program)}
+    else
+      nil -> {:error, :execution_program_missing_from_loop}
+      false -> {:error, :execution_program_digest_mismatch}
+      {:error, _reason} = error -> error
+      value -> {:error, {:invalid_execution_program_in_loop, shape(value)}}
+    end
+  end
+
+  defp load_definition(%Loop{} = loop), do: Definition.load(loop.controller)
 
   @doc "Requires the definition kind to match the requested loop kind."
   @spec ensure_kind(Definition.t(), Loop.kind()) :: :ok | {:error, term()}
@@ -357,4 +375,11 @@ defmodule Spectre.Operation.Runtime.Contract do
 
   defp maybe_missing_correlation(missing, field, nil), do: [field | missing]
   defp maybe_missing_correlation(missing, _field, _value), do: missing
+
+  defp shape(value) when is_map(value), do: :map
+  defp shape(value) when is_list(value), do: :list
+  defp shape(value) when is_binary(value), do: :binary
+  defp shape(value) when is_tuple(value), do: :tuple
+  defp shape(value) when is_atom(value), do: :atom
+  defp shape(_value), do: :other
 end

@@ -12,6 +12,7 @@ defmodule Spectre.Skill.Definition do
   alias Spectre.Definition.Canonical
   alias Spectre.Definition.Component
   alias Spectre.Definition.Ref
+  alias Spectre.Execution.Program
   alias Spectre.Input
   alias Spectre.Prompt.Fragment
   alias Spectre.Skill.Applicability
@@ -30,6 +31,10 @@ defmodule Spectre.Skill.Definition do
     {:projection, "spectre.definition.projection/1", :advisory}
   ]
 
+  @execution_component {:execution, "spectre.definition.execution/1", :must_understand}
+  @execution_schema_ref elem(@execution_component, 1)
+  @execution_criticality elem(@execution_component, 2)
+
   @runtime_fields [
     :id,
     :declared_version,
@@ -39,6 +44,7 @@ defmodule Spectre.Skill.Definition do
     :metadata,
     :applicability,
     :flows,
+    :works,
     :prompt_fragments,
     :operation_refs,
     :prompt_budget
@@ -105,8 +111,13 @@ defmodule Spectre.Skill.Definition do
          {:ok, fragments} <-
            runtime_fragments(Map.get(attrs, :prompt_fragments, []), publisher_ref),
          {:ok, budget} <- runtime_budget(fragments, Map.get(attrs, :prompt_budget, 512)),
-         {:ok, operation_refs} <- normalize_operation_refs(Map.get(attrs, :operation_refs, [])),
-         {:ok, rules} <- runtime_flows(Map.get(attrs, :flows, []), fragments, operation_refs),
+         {:ok, programs} <- runtime_programs(Map.get(attrs, :works, [])),
+         :ok <- validate_program_prompt_refs(programs, fragments),
+         {:ok, authored_operation_refs} <-
+           normalize_operation_refs(Map.get(attrs, :operation_refs, [])),
+         {:ok, operation_refs} <- merge_program_operation_refs(authored_operation_refs, programs),
+         {:ok, rules} <-
+           runtime_flows(Map.get(attrs, :flows, []), fragments, operation_refs, programs),
          :ok <- unique_route_selectors(rules),
          {:ok, components} <-
            runtime_components(%{
@@ -118,6 +129,7 @@ defmodule Spectre.Skill.Definition do
              applicability: applicability,
              fragments: fragments,
              budget: budget,
+             programs: programs,
              operation_refs: operation_refs,
              rules: rules
            }),
@@ -158,9 +170,12 @@ defmodule Spectre.Skill.Definition do
          {:ok, _applicability} <- canonical_applicability(canonical),
          {:ok, fragments} <- canonical_fragments(canonical),
          {:ok, _budget} <- canonical_budget(canonical, fragments),
+         {:ok, programs} <- canonical_programs(canonical),
+         :ok <- validate_program_prompt_refs(programs, fragments),
          {:ok, operation_refs} <- canonical_operation_refs(canonical),
+         :ok <- validate_program_operation_refs(programs, operation_refs),
          {:ok, rules} <- canonical_routes(canonical),
-         :ok <- validate_handlers(rules, fragments, operation_refs, canonical.origin),
+         :ok <- validate_handlers(rules, fragments, operation_refs, programs, canonical.origin),
          :ok <- unique_route_selectors(rules) do
       {:ok, %__MODULE__{canonical: canonical, ref: Canonical.ref(canonical)}}
     else
@@ -218,12 +233,28 @@ defmodule Spectre.Skill.Definition do
     refs
   end
 
+  @doc "Returns the immutable data-driven Work programs declared by the Skill."
+  @spec works(t()) :: [Program.t()]
+  def works(%__MODULE__{canonical: canonical}) do
+    {:ok, programs} = canonical_programs(canonical)
+    programs
+  end
+
+  @doc "Fetches one data-driven Work by stable id."
+  @spec work(t(), term()) :: {:ok, Program.t()} | {:error, term()}
+  def work(%__MODULE__{} = definition, id) do
+    case Enum.find(works(definition), &same_name?(&1.id, id)) do
+      %Program{} = program -> {:ok, program}
+      nil -> {:error, {:unknown_skill_work, id}}
+    end
+  end
+
   @doc "Returns origin-neutral semantic IR for equivalence and fixtures."
   @spec semantic_ir(t()) :: map()
   def semantic_ir(%__MODULE__{} = definition) do
     canonical = definition.canonical
 
-    %{
+    base = %{
       schema_version: 1,
       id: canonical.id,
       declared_version: canonical.declared_version,
@@ -233,6 +264,14 @@ defmodule Spectre.Skill.Definition do
       prompt_budget: definition |> prompt_budget() |> PromptBudget.to_data(),
       operation_refs: operation_refs(definition)
     }
+
+    case works(definition) do
+      [] ->
+        base
+
+      programs ->
+        Map.merge(base, %{schema_version: 2, works: Enum.map(programs, &Program.to_data/1)})
+    end
   end
 
   @doc "Returns true when compiled and runtime sources declare equal behavior."
@@ -321,19 +360,16 @@ defmodule Spectre.Skill.Definition do
         stack_bindings: [],
         extensions: []
       },
+      execution: %{
+        schema_version: 1,
+        programs: Enum.map(data.programs, &Program.to_data/1)
+      },
       projection: %{
-        generators: [
-          %{id: "spectre.projection.audit", version: 1, contract_ref: "spectre.projection/1"},
-          %{
-            id: "spectre.projection.routing",
-            version: 1,
-            contract_ref: "spectre.projection/1"
-          }
-        ]
+        generators: runtime_projection_generators(data.programs)
       }
     }
 
-    @component_specs
+    component_specs(data.programs)
     |> Enum.reduce_while({:ok, []}, fn {type, schema_ref, criticality}, {:ok, components} ->
       case Component.new(
              component_type: type,
@@ -346,6 +382,35 @@ defmodule Spectre.Skill.Definition do
       end
     end)
     |> reverse_result()
+  end
+
+  @spec component_specs([Program.t()]) :: [tuple()]
+  defp component_specs([]), do: @component_specs
+  defp component_specs(_programs), do: @component_specs ++ [@execution_component]
+
+  @spec runtime_projection_generators([Program.t()]) :: [map()]
+  defp runtime_projection_generators(programs) do
+    generators = [
+      %{id: "spectre.projection.audit", version: 1, contract_ref: "spectre.projection/1"},
+      %{
+        id: "spectre.projection.routing",
+        version: 1,
+        contract_ref: "spectre.projection/1"
+      }
+    ]
+
+    if programs == [] do
+      generators
+    else
+      generators ++
+        [
+          %{
+            id: "spectre.projection.execution",
+            version: 1,
+            contract_ref: "spectre.projection/1"
+          }
+        ]
+    end
   end
 
   @spec runtime_fragments(term(), String.t()) ::
@@ -440,15 +505,85 @@ defmodule Spectre.Skill.Definition do
   defp runtime_budget(_fragments, value),
     do: {:error, {:invalid_runtime_skill_prompt_budget, value}}
 
-  @spec runtime_flows(term(), [Fragment.t()], [term()]) ::
-          {:ok, [map()]} | {:error, term()}
-  defp runtime_flows(flows, fragments, operation_refs) when is_list(flows) do
+  @spec runtime_programs(term()) :: {:ok, [Program.t()]} | {:error, term()}
+  defp runtime_programs(programs) when is_list(programs) do
+    programs
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {program, index}, {:ok, normalized} ->
+      case Program.new(program) do
+        {:ok, program} -> {:cont, {:ok, [program | normalized]}}
+        {:error, reason} -> {:halt, {:error, {:invalid_runtime_work, index, reason}}}
+      end
+    end)
+    |> reverse_result()
+    |> unique_programs()
+  end
+
+  defp runtime_programs(value), do: {:error, {:invalid_runtime_works, shape(value)}}
+
+  @spec unique_programs({:ok, [Program.t()]} | {:error, term()}) ::
+          {:ok, [Program.t()]} | {:error, term()}
+  defp unique_programs({:error, _reason} = error), do: error
+
+  defp unique_programs({:ok, programs}) do
+    case duplicate_by(programs, & &1.id) do
+      nil -> {:ok, Enum.sort_by(programs, & &1.id)}
+      id -> {:error, {:duplicate_runtime_work, id}}
+    end
+  end
+
+  @spec merge_program_operation_refs([term()], [Program.t()]) ::
+          {:ok, [term()]} | {:error, term()}
+  defp merge_program_operation_refs(authored, programs) do
+    refs = Enum.flat_map(programs, &Program.operation_refs/1)
+
+    merged =
+      Enum.reduce(refs, authored, fn ref, acc ->
+        if Enum.any?(acc, &same_name?(&1, ref)), do: acc, else: [ref | acc]
+      end)
+
+    normalize_operation_refs(merged)
+  end
+
+  @spec validate_program_prompt_refs([Program.t()], [Fragment.t()]) ::
+          :ok | {:error, term()}
+  defp validate_program_prompt_refs(programs, fragments) do
     prompt_ids = Enum.map(fragments, & &1.id)
+
+    Enum.reduce_while(programs, :ok, fn program, :ok ->
+      case missing_program_ref(Program.prompt_refs(program), prompt_ids) do
+        nil -> {:cont, :ok}
+        ref -> {:halt, {:error, {:unknown_execution_prompt_ref, program.id, ref}}}
+      end
+    end)
+  end
+
+  @spec validate_program_operation_refs([Program.t()], [term()]) ::
+          :ok | {:error, term()}
+  defp validate_program_operation_refs(programs, operation_refs) do
+    Enum.reduce_while(programs, :ok, fn program, :ok ->
+      case missing_program_ref(Program.operation_refs(program), operation_refs) do
+        nil -> {:cont, :ok}
+        ref -> {:halt, {:error, {:undeclared_execution_operation_ref, program.id, ref}}}
+      end
+    end)
+  end
+
+  @spec missing_program_ref([term()], [term()]) :: term() | nil
+  defp missing_program_ref(refs, declared) do
+    Enum.find(refs, fn ref -> not Enum.any?(declared, &same_name?(&1, ref)) end)
+  end
+
+  @spec runtime_flows(term(), [Fragment.t()], [term()], [Program.t()]) ::
+          {:ok, [map()]} | {:error, term()}
+  defp runtime_flows(flows, fragments, operation_refs, programs) when is_list(flows) do
+    prompt_ids = Enum.map(fragments, & &1.id)
+    work_ids = Enum.map(programs, & &1.id)
 
     flows
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {flow, flow_index}, {:ok, rules} ->
-      case runtime_flow(flow, prompt_ids, operation_refs) do
+      case runtime_flow(flow, prompt_ids, operation_refs, work_ids) do
         {:ok, flow_rules} -> {:cont, {:ok, Enum.reverse(flow_rules, rules)}}
         {:error, reason} -> {:halt, {:error, {:invalid_runtime_flow, flow_index, reason}}}
       end
@@ -456,17 +591,18 @@ defmodule Spectre.Skill.Definition do
     |> reverse_result()
   end
 
-  defp runtime_flows(value, _fragments, _operation_refs),
+  defp runtime_flows(value, _fragments, _operation_refs, _programs),
     do: {:error, {:invalid_runtime_flows, shape(value)}}
 
-  @spec runtime_flow(term(), [term()], [term()]) :: {:ok, [map()]} | {:error, term()}
-  defp runtime_flow(flow, prompt_ids, operation_refs) when is_map(flow) do
+  @spec runtime_flow(term(), [term()], [term()], [String.t()]) ::
+          {:ok, [map()]} | {:error, term()}
+  defp runtime_flow(flow, prompt_ids, operation_refs, work_ids) when is_map(flow) do
     flow = atomize_known_keys(flow, [:id, :routes])
 
     with :ok <- exact_keys(flow, [:id, :routes], :unknown_runtime_flow_fields),
          {:ok, id} <- required(flow, :id),
          routes when is_list(routes) <- Map.get(flow, :routes),
-         {:ok, rules} <- runtime_rules(routes, id, prompt_ids, operation_refs) do
+         {:ok, rules} <- runtime_rules(routes, id, prompt_ids, operation_refs, work_ids) do
       {:ok, rules}
     else
       {:error, _reason} = error -> error
@@ -474,16 +610,16 @@ defmodule Spectre.Skill.Definition do
     end
   end
 
-  defp runtime_flow(value, _prompt_ids, _operation_refs),
+  defp runtime_flow(value, _prompt_ids, _operation_refs, _work_ids),
     do: {:error, {:invalid_runtime_flow, shape(value)}}
 
-  @spec runtime_rules([term()], term(), [term()], [term()]) ::
+  @spec runtime_rules([term()], term(), [term()], [term()], [String.t()]) ::
           {:ok, [map()]} | {:error, term()}
-  defp runtime_rules(routes, flow, prompt_ids, operation_refs) do
+  defp runtime_rules(routes, flow, prompt_ids, operation_refs, work_ids) do
     routes
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {route, index}, {:ok, rules} ->
-      case runtime_rule(route, flow, prompt_ids, operation_refs) do
+      case runtime_rule(route, flow, prompt_ids, operation_refs, work_ids) do
         {:ok, rule} -> {:cont, {:ok, [rule | rules]}}
         {:error, reason} -> {:halt, {:error, {:invalid_runtime_route, index, reason}}}
       end
@@ -491,8 +627,9 @@ defmodule Spectre.Skill.Definition do
     |> reverse_result()
   end
 
-  @spec runtime_rule(term(), term(), [term()], [term()]) :: {:ok, map()} | {:error, term()}
-  defp runtime_rule(route, flow, prompt_ids, operation_refs) when is_map(route) do
+  @spec runtime_rule(term(), term(), [term()], [term()], [String.t()]) ::
+          {:ok, map()} | {:error, term()}
+  defp runtime_rule(route, flow, prompt_ids, operation_refs, work_ids) when is_map(route) do
     fields = [:label, :match, :check, :handler, :input]
     route = atomize_known_keys(route, fields)
 
@@ -504,7 +641,8 @@ defmodule Spectre.Skill.Definition do
              Map.get(route, :handler),
              Map.get(route, :input),
              prompt_ids,
-             operation_refs
+             operation_refs,
+             work_ids
            ) do
       {:ok,
        %{
@@ -528,7 +666,7 @@ defmodule Spectre.Skill.Definition do
     end
   end
 
-  defp runtime_rule(value, _flow, _prompt_ids, _operation_refs),
+  defp runtime_rule(value, _flow, _prompt_ids, _operation_refs, _work_ids),
     do: {:error, {:invalid_runtime_route, shape(value)}}
 
   @spec exact_match(term()) :: {:ok, {:text, String.t()}} | {:error, term()}
@@ -546,20 +684,34 @@ defmodule Spectre.Skill.Definition do
 
   defp exact_match(value), do: {:error, {:invalid_runtime_exact_match, value}}
 
-  @spec runtime_handler(term(), term(), [term()], [term()]) ::
+  @spec runtime_handler(term(), term(), [term()], [term()], [String.t()]) ::
           {:ok, map()} | {:error, term()}
-  defp runtime_handler({:operation, operation}, input, _prompt_ids, operation_refs),
+  defp runtime_handler({:operation, operation}, input, _prompt_ids, operation_refs, _work_ids),
     do: operation_handler(operation, input || :input, operation_refs)
 
-  defp runtime_handler({:operation, operation, opts}, input, _prompt_ids, operation_refs)
+  defp runtime_handler(
+         {:operation, operation, opts},
+         input,
+         _prompt_ids,
+         operation_refs,
+         _work_ids
+       )
        when is_list(opts) do
     operation_handler(operation, input || Keyword.get(opts, :input, :input), operation_refs)
   end
 
-  defp runtime_handler({:reply, prompt}, _input, prompt_ids, _operation_refs),
+  defp runtime_handler({:reply, prompt}, _input, prompt_ids, _operation_refs, _work_ids),
     do: reply_handler(prompt, prompt_ids)
 
-  defp runtime_handler(handler, route_input, prompt_ids, operation_refs) when is_map(handler) do
+  defp runtime_handler({:work, work}, input, _prompt_ids, _operation_refs, work_ids),
+    do: work_handler(work, input || :input, work_ids)
+
+  defp runtime_handler({:work, work, opts}, input, _prompt_ids, _operation_refs, work_ids)
+       when is_list(opts),
+       do: work_handler(work, input || Keyword.get(opts, :input, :input), work_ids)
+
+  defp runtime_handler(handler, route_input, prompt_ids, operation_refs, work_ids)
+       when is_map(handler) do
     kind = get(handler, :kind)
 
     case kind do
@@ -571,12 +723,17 @@ defmodule Spectre.Skill.Definition do
       value when value in [:reply, "reply"] ->
         reply_handler(get(handler, :prompt), prompt_ids)
 
+      value when value in [:work, "work"] ->
+        work = get(handler, :work_ref, get(handler, :work))
+        input = route_input || get(handler, :input, :input)
+        work_handler(work, input, work_ids)
+
       _other ->
         {:error, {:unsupported_runtime_skill_handler, kind}}
     end
   end
 
-  defp runtime_handler(value, _input, _prompt_ids, _operation_refs),
+  defp runtime_handler(value, _input, _prompt_ids, _operation_refs, _work_ids),
     do: {:error, {:unsupported_runtime_skill_handler, value}}
 
   @spec operation_handler(term(), term(), [term()]) :: {:ok, map()} | {:error, term()}
@@ -596,6 +753,33 @@ defmodule Spectre.Skill.Definition do
       do: {:ok, %{kind: :reply, prompt: prompt, opts: []}},
       else: {:error, {:unknown_runtime_skill_prompt, prompt}}
   end
+
+  @spec work_handler(term(), term(), [String.t()]) :: {:ok, map()} | {:error, term()}
+  defp work_handler(work, input, work_ids) do
+    with {:ok, work_ref} <- stable_runtime_name(work, :work_ref),
+         true <- work_ref in work_ids,
+         {:ok, input} <- normalize_operation_input(input) do
+      {:ok, %{kind: :work, work_ref: work_ref, input: input, opts: []}}
+    else
+      false -> {:error, {:unknown_runtime_skill_work, work}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec stable_runtime_name(term(), atom()) :: {:ok, String.t()} | {:error, term()}
+  defp stable_runtime_name(value, field) when is_atom(value) and not is_nil(value) do
+    name = Atom.to_string(value)
+
+    if String.starts_with?(name, "Elixir."),
+      do: {:error, {:runtime_skill_code_reference_forbidden, field}},
+      else: {:ok, name}
+  end
+
+  defp stable_runtime_name(value, _field) when is_binary(value) and value != "",
+    do: {:ok, value}
+
+  defp stable_runtime_name(value, field),
+    do: {:error, {:invalid_runtime_skill_name, field, value}}
 
   @spec normalize_operation_input(term()) :: {:ok, term()} | {:error, term()}
   defp normalize_operation_input(value) when value in [:text, "text"], do: {:ok, :text}
@@ -814,6 +998,65 @@ defmodule Spectre.Skill.Definition do
     end
   end
 
+  @spec canonical_programs(Canonical.t()) :: {:ok, [Program.t()]} | {:error, term()}
+  defp canonical_programs(%Canonical{} = canonical) do
+    case Canonical.fetch_component(canonical, :execution) do
+      {:ok, %Component{} = component} -> canonical_program_component(component)
+      {:error, {:unknown_definition_component, :execution}} -> {:ok, []}
+    end
+  end
+
+  @spec canonical_program_component(Component.t()) ::
+          {:ok, [Program.t()]} | {:error, term()}
+  defp canonical_program_component(%Component{} = component) do
+    with :ok <- validate_canonical_execution_component(component),
+         {:ok, programs} <- decode_canonical_programs(get(component.payload, :programs)) do
+      unique_programs({:ok, programs})
+    end
+  end
+
+  @spec validate_canonical_execution_component(Component.t()) :: :ok | {:error, term()}
+  defp validate_canonical_execution_component(%Component{schema_ref: schema_ref})
+       when schema_ref != @execution_schema_ref,
+       do: {:error, {:invalid_skill_execution_schema_ref, schema_ref}}
+
+  defp validate_canonical_execution_component(%Component{criticality: criticality})
+       when criticality != @execution_criticality,
+       do: {:error, {:invalid_skill_execution_criticality, criticality}}
+
+  defp validate_canonical_execution_component(%Component{payload: payload})
+       when not is_map(payload),
+       do: {:error, {:invalid_skill_execution_payload, shape(payload)}}
+
+  defp validate_canonical_execution_component(%Component{payload: payload}) do
+    cond do
+      not exact_named_keys?(payload, [:schema_version, :programs]) ->
+        {:error, :unknown_skill_execution_payload_fields}
+
+      get(payload, :schema_version) != 1 ->
+        {:error, {:unsupported_skill_execution_schema, get(payload, :schema_version)}}
+
+      not is_list(get(payload, :programs)) ->
+        {:error, {:invalid_skill_execution_programs, shape(get(payload, :programs))}}
+
+      true ->
+        :ok
+    end
+  end
+
+  @spec decode_canonical_programs([term()]) :: {:ok, [Program.t()]} | {:error, term()}
+  defp decode_canonical_programs(programs) do
+    programs
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {data, index}, {:ok, decoded} ->
+      case Program.from_data(data) do
+        {:ok, program} -> {:cont, {:ok, [program | decoded]}}
+        {:error, reason} -> {:halt, {:error, {:invalid_canonical_skill_work, index, reason}}}
+      end
+    end)
+    |> reverse_result()
+  end
+
   @spec verify_canonical_budget(:compiled | :runtime, [Fragment.t()], term()) ::
           {:ok, PromptBudget.t()} | {:error, term()}
   defp verify_canonical_budget(origin, fragments, budget) do
@@ -881,46 +1124,127 @@ defmodule Spectre.Skill.Definition do
   defp canonical_entry_error(:requirement), do: :invalid_canonical_skill_requirement
   defp canonical_entry_error(:route), do: :invalid_canonical_skill_route
 
-  @spec validate_handlers([map()], [Fragment.t()], [term()], :compiled | :runtime) ::
+  @spec validate_handlers(
+          [map()],
+          [Fragment.t()],
+          [term()],
+          [Program.t()],
+          :compiled | :runtime
+        ) ::
           :ok | {:error, term()}
-  defp validate_handlers(rules, fragments, operation_refs, origin) do
+  defp validate_handlers(rules, fragments, operation_refs, programs, origin) do
     prompt_ids = Enum.map(fragments, & &1.id)
+    work_ids = Enum.map(programs, & &1.id)
 
     rules
     |> Enum.with_index()
     |> Enum.reduce_while(:ok, fn {rule, index}, :ok ->
       handler = get(rule, :handler)
 
-      case validate_handler(handler, prompt_ids, operation_refs, origin) do
+      case validate_handler(handler, prompt_ids, operation_refs, work_ids, origin) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, {:invalid_skill_handler, index, reason}}}
       end
     end)
   end
 
-  @spec validate_handler(term(), [term()], [term()], :compiled | :runtime) ::
+  @spec validate_handler(term(), [term()], [term()], [String.t()], :compiled | :runtime) ::
           :ok | {:error, term()}
-  defp validate_handler(handler, prompt_ids, operation_refs, origin) when is_map(handler) do
+  defp validate_handler(handler, prompt_ids, operation_refs, work_ids, origin)
+       when is_map(handler) do
     kind = get(handler, :kind)
 
+    with :ok <- validate_runtime_handler_shape(handler, kind, origin) do
+      validate_handler_reference(handler, kind, prompt_ids, operation_refs, work_ids, origin)
+    end
+  end
+
+  defp validate_handler(handler, _prompt_ids, _operation_refs, _work_ids, _origin),
+    do: {:error, {:invalid_canonical_skill_handler, handler}}
+
+  @spec validate_handler_reference(map(), term(), [term()], [term()], [String.t()], atom()) ::
+          :ok | {:error, term()}
+  defp validate_handler_reference(
+         handler,
+         kind,
+         _prompt_ids,
+         operation_refs,
+         _work_ids,
+         _origin
+       )
+       when kind in [:operation, "operation"] do
+    operation_ref = get(handler, :operation_ref)
+
+    if member?(operation_refs, operation_ref),
+      do: :ok,
+      else: {:error, {:undeclared_skill_operation, operation_ref}}
+  end
+
+  defp validate_handler_reference(handler, kind, prompt_ids, _operation_refs, _work_ids, _origin)
+       when kind in [:reply, "reply"] do
+    prompt_ref = get(handler, :prompt)
+
+    if member?(prompt_ids, prompt_ref),
+      do: :ok,
+      else: {:error, {:unknown_skill_prompt, prompt_ref}}
+  end
+
+  defp validate_handler_reference(handler, kind, _prompt_ids, _operation_refs, work_ids, _origin)
+       when kind in [:work, "work"] do
+    work_ref = get(handler, :work_ref)
+
+    if Enum.any?(work_ids, &same_name?(&1, work_ref)),
+      do: :ok,
+      else: {:error, {:unknown_skill_work, work_ref}}
+  end
+
+  defp validate_handler_reference(_handler, kind, _prompts, _operations, _works, :runtime),
+    do: {:error, {:unsupported_runtime_skill_handler, kind}}
+
+  defp validate_handler_reference(_handler, _kind, _prompts, _operations, _works, :compiled),
+    do: :ok
+
+  @spec validate_runtime_handler_shape(map(), term(), :compiled | :runtime) ::
+          :ok | {:error, term()}
+  defp validate_runtime_handler_shape(_handler, _kind, :compiled), do: :ok
+
+  defp validate_runtime_handler_shape(handler, kind, :runtime) do
+    allowed =
+      case kind do
+        value when value in [:operation, "operation"] ->
+          [:kind, :operation_ref, :input, :opts]
+
+        value when value in [:reply, "reply"] ->
+          [:kind, :prompt, :opts]
+
+        value when value in [:work, "work"] ->
+          [:kind, :work_ref, :input, :opts]
+
+        _other ->
+          [:kind]
+      end
+
     cond do
-      kind in [:operation, "operation"] and
-          not member?(operation_refs, get(handler, :operation_ref)) ->
-        {:error, {:undeclared_skill_operation, get(handler, :operation_ref)}}
+      not exact_named_keys?(handler, allowed) ->
+        {:error, :unknown_runtime_skill_handler_fields}
 
-      kind in [:reply, "reply"] and not member?(prompt_ids, get(handler, :prompt)) ->
-        {:error, {:unknown_skill_prompt, get(handler, :prompt)}}
-
-      origin == :runtime and kind not in [:operation, "operation", :reply, "reply"] ->
-        {:error, {:unsupported_runtime_skill_handler, kind}}
+      :opts in allowed and get(handler, :opts) != [] ->
+        {:error, :runtime_skill_handler_options_must_be_empty}
 
       true ->
         :ok
     end
   end
 
-  defp validate_handler(handler, _prompt_ids, _operation_refs, _origin),
-    do: {:error, {:invalid_canonical_skill_handler, handler}}
+  @spec exact_named_keys?(map(), [atom()]) :: boolean()
+  defp exact_named_keys?(value, expected) do
+    allowed = expected ++ Enum.map(expected, &Atom.to_string/1)
+
+    Enum.all?(Map.keys(value), &(&1 in allowed)) and
+      Enum.all?(expected, fn key ->
+        Map.has_key?(value, key) != Map.has_key?(value, Atom.to_string(key))
+      end)
+  end
 
   @spec unique_route_selectors([map()]) :: :ok | {:error, term()}
   defp unique_route_selectors(rules) do
@@ -1000,6 +1324,13 @@ defmodule Spectre.Skill.Definition do
 
       :reply ->
         %{kind: :reply, prompt: get(handler, :prompt)}
+
+      :work ->
+        %{
+          kind: :work,
+          work_ref: get(handler, :work_ref),
+          input: get(handler, :input, :input)
+        }
 
       kind ->
         %{kind: kind}
@@ -1145,6 +1476,16 @@ defmodule Spectre.Skill.Definition do
   rescue
     ArgumentError -> false
   end
+
+  @spec same_name?(term(), term()) :: boolean()
+  defp same_name?(left, right) when is_atom(left) and not is_nil(left),
+    do: same_name?(Atom.to_string(left), right)
+
+  defp same_name?(left, right) when is_atom(right) and not is_nil(right),
+    do: same_name?(left, Atom.to_string(right))
+
+  defp same_name?(left, right) when is_binary(left) and is_binary(right), do: left == right
+  defp same_name?(_left, _right), do: false
 
   @spec valid_ref?(term()) :: boolean()
   defp valid_ref?(value),

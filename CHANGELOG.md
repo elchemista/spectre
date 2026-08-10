@@ -4,6 +4,87 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.8 — 2026-08-10
+
+### Added
+
+- Added `Spectre.Execution.Program` and `Spectre.Execution.Work`: compiled
+  and JSON-shaped precise Work declarations now normalize into one portable,
+  content-addressed IR with step, infer, decide, bounded repeat, completion,
+  failure, explicit budgets, mutable paths, and registered migrations.
+- Added Work components and handlers to canonical runtime Skills. Work,
+  predicate, inference, and migration refs resolve only against the host
+  Agent's existing operation registry and effective authority.
+- Added `Spectre.Execution.Materializer`,
+  `Spectre.Execution.Materialization`, and
+  `Spectre.Projection.Execution` to seal exact Definition, Program, input,
+  route, continuation, plan, receipt, and budget lineage before execution.
+- Added effective `Spectre.Prompt.Receipt` evidence and safe scalar-only
+  `Spectre.Prompt.Materializer` rendering for inference nodes.
+- Added `Spectre.start_execution/3` and Instance integration on the existing
+  fenced operation runtime, including normal pause/amend/resume/stop, query,
+  checkpoint, retry, and recovery behavior.
+- Added typed Flow ↔ Work and Work → Work handoffs, pure registered state
+  migration preparation/commit receipts, and deterministic rehearsal/replay
+  that cannot dispatch real Effects.
+- Added the permanent 0.2.8 data-driven Program and no-Effect rehearsal
+  compatibility fixture.
+
+### Migration and safety
+
+- Authored execution data cannot contain modules, Erlang/Elixir MFAs,
+  callbacks, AST, functions, PIDs, references, executors, authority grants, or
+  security policy. Ambiguous atom/string fields and non-portable values fail
+  closed.
+- Programs require reachable terminating graphs, positive step/attempt
+  limits, and bounded repeats. Pure predicates and migrations are verified
+  against registered operation contracts; inference requires a registered
+  cognitive operation.
+- Work cost and duration are capped by the current Authority Envelope.
+  Amendments can change only declared state paths and retain exact Program,
+  input, history, Definition, materialization, prompt receipts, and projection
+  pins across resume and recovery.
+- Canonical object expressions reload idempotently; negative list indices are
+  rejected. Materialization, projection, prompt, handoff, migration, and
+  rehearsal digests are recomputed at their load/admission boundaries.
+- Program inference enums, authored literals, metadata, and migration
+  operation refs now have one JSON-stable canonical form, so
+  `to_data -> JSON -> from_data` preserves exact Program/receipt identity.
+  Authored expression depth is capped before digesting and constructors return
+  errors instead of raising on hostile nesting.
+- Materialization verification now rebinds projection mount, route,
+  continuation, input, and mandatory input evidence exactly as construction
+  does. Prompt placeholders are rendered in one pass, so resolved values are
+  never reinterpreted as template syntax.
+- Prompt materialization now revalidates the canonical fragment digest,
+  rejects dynamic fragments with a typed error, and reserves the `input`
+  namespace so context data cannot spoof input evidence. Malformed prompt
+  plans fail closed instead of reaching hashing code with invalid bytes.
+- Rehearsal uses the canonical evidence-digest domain whenever its values are
+  canonical, matching Execution projections and materializations. Structured
+  portable operation receipts use a deterministic tagged fallback in both
+  rehearsal and migration instead of raising during receipt construction.
+- Execution Closure and migration-receipt load paths now require exact durable
+  fields and valid version identities. Malformed keyword input is rejected
+  without raising, while inert ids such as `timer` and `queue` remain stable
+  even when an Erlang module with the same name is loaded.
+- Raw canonical Skill mounts require `origin: :runtime`; compiled Skills must
+  enter through their trusted module/Definition path and cannot use origin
+  data to skip runtime load policy.
+- Fixed retry-budget accounting so `retries: 0` permits the initial attempt
+  and an authorized retry is not denied after its counter is consumed.
+- State remains writer v5, Run remains writer v2, and canonical Instance
+  checkpoints remain schema 4. All prior conformance and runtime Skill gates
+  remain in the release suite.
+
+### Scope
+
+- Data Work reuses `Spectre.Operation.Runtime`; no parallel executor or
+  checkpoint model was added. Publication, Activation, Skill lifecycle, and
+  Effect execution remain explicit host actions.
+- Generated callbacks, goal hierarchies, autonomous Forge behavior,
+  reflection, and governance remain outside this gate.
+
 ## 0.2.7 — 2026-08-10
 
 ### Added

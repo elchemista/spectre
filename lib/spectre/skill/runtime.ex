@@ -19,6 +19,8 @@ defmodule Spectre.Skill.Runtime do
   alias Spectre.Projection
   alias Spectre.Projection.Routing
   alias Spectre.Prompt.Fragment
+  alias Spectre.Prompt.Materializer, as: PromptMaterializer
+  alias Spectre.Prompt.Plan
   alias Spectre.Router.IndexProfile
   alias Spectre.Skill.Applicability
   alias Spectre.Skill.Definition, as: SkillDefinition
@@ -304,8 +306,11 @@ defmodule Spectre.Skill.Runtime do
   defp normalize_definition(%SkillDefinition{} = definition),
     do: {:error, {:invalid_skill_mount_source, shape(definition)}}
 
-  defp normalize_definition(%Canonical{} = canonical),
+  defp normalize_definition(%Canonical{origin: :runtime} = canonical),
     do: SkillDefinition.from_canonical(canonical)
+
+  defp normalize_definition(%Canonical{origin: origin}),
+    do: {:error, {:skill_mount_requires_runtime_origin, origin}}
 
   defp normalize_definition(module) when is_atom(module),
     do: SkillDefinition.from_compiled(module)
@@ -360,6 +365,7 @@ defmodule Spectre.Skill.Runtime do
          :ok <- validate_declarative_routes(definition),
          :ok <- validate_operation_authority(runtime, definition),
          :ok <- validate_prompt_authority(runtime, definition, replacing),
+         :ok <- validate_execution_budget_authority(runtime, definition),
          :ok <- validate_conflicts(runtime, mount_id, definition, replacing),
          {:ok, _report} <- SkillDefinition.anti_hijack(definition) do
       :ok
@@ -397,6 +403,9 @@ defmodule Spectre.Skill.Runtime do
 
       get(handler, :kind) == :reply ->
         :ok
+
+      get(handler, :kind) == :work ->
+        validate_operation_input_policy(get(handler, :input, :input))
 
       true ->
         {:error, {:unsupported_runtime_skill_handler, get(handler, :kind)}}
@@ -496,6 +505,49 @@ defmodule Spectre.Skill.Runtime do
       else: {:error, {:skill_prompt_window_exceeded, reserved, available}}
   end
 
+  @spec validate_execution_budget_authority(t(), SkillDefinition.t()) ::
+          :ok | {:error, term()}
+  defp validate_execution_budget_authority(runtime, definition) do
+    definition
+    |> SkillDefinition.works()
+    |> Enum.reduce_while(:ok, fn program, :ok ->
+      with :ok <- execution_budget_limit(program, runtime.authority, :cost, :max_cost),
+           :ok <-
+             execution_budget_limit(
+               program,
+               runtime.authority,
+               :duration_ms,
+               :max_duration_ms
+             ) do
+        {:cont, :ok}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  @spec execution_budget_limit(
+          Spectre.Execution.Program.t(),
+          Envelope.t(),
+          atom(),
+          atom()
+        ) :: :ok | {:error, term()}
+  defp execution_budget_limit(program, authority, budget_field, authority_field) do
+    case Map.fetch(authority.limits, authority_field) do
+      :error ->
+        :ok
+
+      {:ok, ceiling} ->
+        requested = Map.get(program.budget, budget_field)
+
+        if is_number(requested) and requested <= ceiling,
+          do: :ok,
+          else:
+            {:error,
+             {:execution_budget_not_authorized, program.id, budget_field, requested, ceiling}}
+    end
+  end
+
   defp replace_without_live_continuation?(_runtime, _entry, nil), do: false
 
   defp replace_without_live_continuation?(runtime, entry, replacing) do
@@ -573,6 +625,7 @@ defmodule Spectre.Skill.Runtime do
     case get(handler, :kind) do
       :operation -> operation_response(runtime, match, handler, input)
       :reply -> reply_response(runtime, match, handler, input, context)
+      :work -> work_response(runtime, match, handler, input)
       kind -> {:error, {:unsupported_runtime_skill_response, kind}}
     end
   end
@@ -629,15 +682,20 @@ defmodule Spectre.Skill.Runtime do
 
     case Enum.find(SkillDefinition.prompt_fragments(match.definition), &same?(&1.id, prompt)) do
       %Fragment{} = fragment ->
-        with {:ok, output} <- render_fragment(fragment, input, context) do
+        definition_ref = Ref.to_string(match.definition_ref)
+
+        with {:ok, %Plan{} = plan, receipt} <-
+               PromptMaterializer.materialize(fragment, input, context, definition_ref) do
           {:ok,
            %Response{
              kind: :reply,
              mount_id: match.mount_id,
              definition_ref: match.definition_ref,
              route_label: get(match.rule, :label),
-             output: output,
-             metadata: %{prompt_digest: fragment.digest}
+             output: Plan.legacy(plan),
+             prompt_plan: plan,
+             prompt_receipt: receipt,
+             metadata: %{prompt_digest: fragment.digest, prompt_receipt_digest: receipt.digest}
            }, runtime}
         end
 
@@ -646,57 +704,32 @@ defmodule Spectre.Skill.Runtime do
     end
   end
 
-  @spec render_fragment(Fragment.t(), Input.t(), map()) :: {:ok, String.t()} | {:error, term()}
-  defp render_fragment(%Fragment{content: content, placeholders: placeholders}, input, context) do
-    values = Map.put(context, :input, %{text: input.text, meta: input.meta})
+  @spec work_response(t(), map(), map(), Input.t()) ::
+          {:ok, Response.t(), t()} | {:error, term()}
+  defp work_response(runtime, match, handler, input) do
+    work_ref = get(handler, :work_ref)
 
-    Enum.reduce_while(placeholders, {:ok, content}, fn {name, spec}, {:ok, rendered} ->
-      case fetch_path(values, get(spec, :path, [])) do
-        {:ok, value} ->
-          render_scalar_placeholder(rendered, name, value)
+    with {:ok, program} <- SkillDefinition.work(match.definition, work_ref),
+         {:ok, work_input} <- operation_input(get(handler, :input, :input), input) do
+      continuation_id = Spectre.Identity.uuid7()
+      entry = Map.fetch!(runtime.mounts, match.mount_id)
+      runtime = put_continuation(runtime, entry, continuation_id)
 
-        :error ->
-          {:halt, {:error, {:missing_runtime_prompt_value, name}}}
-      end
-    end)
-  end
+      response = %Response{
+        kind: :work,
+        mount_id: match.mount_id,
+        definition_ref: match.definition_ref,
+        route_label: get(match.rule, :label),
+        work_ref: program.id,
+        work_input: work_input,
+        program_digest: program.digest,
+        continuation_id: continuation_id,
+        metadata: %{execution: :materialization_boundary}
+      }
 
-  @spec render_scalar_placeholder(String.t(), String.t(), term()) ::
-          {:cont, {:ok, String.t()}} | {:halt, {:error, term()}}
-  defp render_scalar_placeholder(rendered, name, value) do
-    case scalar_prompt_value(name, value) do
-      {:ok, value} ->
-        {:cont, {:ok, String.replace(rendered, "{{#{name}}}", value)}}
-
-      {:error, _reason} = error ->
-        {:halt, error}
+      {:ok, response, runtime}
     end
   end
-
-  @spec scalar_prompt_value(String.t(), term()) :: {:ok, String.t()} | {:error, term()}
-  defp scalar_prompt_value(_name, value) when is_binary(value), do: {:ok, value}
-
-  defp scalar_prompt_value(_name, value)
-       when is_integer(value) or is_float(value) or is_atom(value),
-       do: {:ok, to_string(value)}
-
-  defp scalar_prompt_value(name, value),
-    do: {:error, {:non_scalar_runtime_prompt_value, name, shape(value)}}
-
-  @spec fetch_path(term(), [String.t()]) :: {:ok, term()} | :error
-  defp fetch_path(value, []), do: {:ok, value}
-
-  defp fetch_path(value, [segment | rest]) when is_map(value) do
-    atom = existing_atom(segment)
-
-    cond do
-      Map.has_key?(value, segment) -> fetch_path(Map.fetch!(value, segment), rest)
-      not is_nil(atom) and Map.has_key?(value, atom) -> fetch_path(Map.fetch!(value, atom), rest)
-      true -> :error
-    end
-  end
-
-  defp fetch_path(_value, _path), do: :error
 
   @spec operation_input(term(), Input.t()) :: {:ok, term()} | {:error, term()}
   defp operation_input(:text, input), do: {:ok, input.text}
@@ -914,13 +947,6 @@ defmodule Spectre.Skill.Runtime do
     Value.encode!(left) == Value.encode!(right)
   rescue
     ArgumentError -> false
-  end
-
-  @spec existing_atom(String.t()) :: atom() | nil
-  defp existing_atom(value) do
-    String.to_existing_atom(value)
-  rescue
-    ArgumentError -> nil
   end
 
   @spec normalize_input(term()) :: {:ok, Input.t()} | {:error, term()}

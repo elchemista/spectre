@@ -43,6 +43,16 @@ equal-specificity ambiguity, and Definition-pinned replace/disable drains. The
 permanent 0.2.7 fixture pins Definition, semantic, projection, and cache
 digests.
 
+`test/data_driven_execution_test.exs`,
+`test/execution_expression_test.exs`, and
+`test/execution_handoff_test.exs` add the 0.2.8 gate. They prove
+compiled/runtime Program identity, canonical reload, finite graph and budget
+validation, registered binding/purity, exact materialization and prompt
+receipts, shared lifecycle and recovery, governed amendments, typed handoffs,
+registered migration receipts, real retry transitions, and rehearsal with
+zero Effect dispatches. The permanent 0.2.8 fixture pins Program, input,
+final-state, and rehearsal digests.
+
 ## What a contract test must prove
 
 A passing output assertion is not enough for code that crosses process,
