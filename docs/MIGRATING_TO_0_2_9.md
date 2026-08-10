@@ -21,6 +21,9 @@ Candidates continue to activate through the same API.
    and Skill state explicitly.
 7. Execute GC plans only inside a backend transaction or lease that rechecks a
    complete reference inventory.
+8. Publish a non-empty protected evaluation corpus whose closure digest is the
+   canonical digest of its sorted case ids. Persist semantic-live profile,
+   variability, and expiry evidence when policy requires that gate.
 
 ## Compatibility details
 
@@ -45,13 +48,19 @@ The new portable schema versions are all 1:
 - A stale ChangeSet fails instead of rebasing implicitly.
 - Candidate-owned evaluation cases can only add obligations; they cannot
   improve the protected score.
+- Required gate options are additive. The constitutional floor cannot be
+  reduced, evaluation deltas allow no protected regressions, and any attached
+  failed receipt rejects the Candidate.
+- Prompt and applicability ceilings are sealed into governed Candidate state
+  and rechecked at activation/recovery; `scopes: []` is a wildcard and cannot
+  pass a finite scope ceiling.
 - Medium- and high-risk Candidates require human approval under the default
   policy.
-- Approval emits a new Candidate Ref but does not activate it.
+- Approval emits a new Candidate Ref but does not activate it; explicit host
+  rejection emits a terminal rejected Candidate Ref.
 - Rollback targets an ancestor Candidate and increments activation generation;
   it never promises to undo external Effects.
 - A GC inventory marked complete must actually be closed over Candidate and
   Definition lineage.
 
 See [Governed Definition Changes](GOVERNANCE.md) for the full host workflow.
-

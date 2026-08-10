@@ -52,9 +52,12 @@ authority, applicability, prompt-budget, mutable-config, and migration limits.
 
 Review re-reads Store artifacts, verifies version-pinned gate receipts, keeps
 Candidate-authored cases from improving protected scores, and emits a
-mechanical Human Report. Approval creates a distinct Candidate Ref and never
-activates it. Activation and rollback use the existing owner fence and
-generation CAS; rollback explicitly does not reverse external Effects. See
+mechanical Human Report. Constitutional gate and evaluation floors cannot be
+weakened by proposal options; prompt/applicability ceilings are sealed and
+rechecked during activation and recovery. Approval or explicit rejection
+creates a distinct Candidate Ref and never activates it. Activation and
+rollback use the existing owner fence and generation CAS; rollback explicitly
+does not reverse external Effects. See
 [Governed Definition Changes](docs/GOVERNANCE.md) and
 [Migrating to 0.2.9](docs/MIGRATING_TO_0_2_9.md).
 

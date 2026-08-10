@@ -43,6 +43,19 @@ minor release may contain documented breaking API changes.
   must pass as additional obligations. Gate and approval receipts are re-read
   and rebound to exact Definition, closure, corpus, checker, validity-window,
   and proposal identities immediately before activation.
+- Required gate options can only add to the constitutional gate floor. The
+  protected corpus is non-empty and digest-bound, evaluation thresholds cannot
+  permit score loss or regressions, and any attached failed receipt rejects the
+  Candidate. Semantic-live evidence requires profile, variability, and expiry.
+- Prompt and applicability ceilings are sealed into Candidate identity and
+  reverified during activation and recovery. Aggregate prompt reservations are
+  capped, and wildcard applicability cannot pass a finite scope ceiling.
+- Added explicit host rejection for evaluated Candidates, exact transported GC
+  lineage reasons and Candidate live-reference classes, plus linear Candidate
+  parent verification for deep immutable lineages.
+- Evaluated Candidate state now persists the verified Human Report and complete
+  evaluation delta, and activation binds the stored delta to its gate receipt,
+  making the review evidence auditable from the Store alone.
 - Candidate portable loads reject unknown fields, ambiguous keyword input,
   malformed governance state, and promotion chains that skip a review state.
 - State remains writer v5, Run remains writer v2, and canonical Instance

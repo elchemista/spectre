@@ -85,11 +85,23 @@ prompt budgets, applicability, mutable paths, state migrations, Manifest
 parents, and the resulting Execution Closure are all revalidated before any
 Candidate is published.
 
+The Composer always adds the constitutional gate floor: structural,
+authority, closure, prompt-budget, applicability, replay, full regression, and
+evaluation-delta. `:required_gates` may add stricter application gates but
+cannot remove this floor; critical-risk Candidates also require
+`semantic_live`. Prompt-token and applicability ceilings are normalized into
+the immutable Candidate and checked again from Store bytes during activation
+and restart recovery. A finite applicability scope ceiling rejects `scopes:
+[]`, because an empty declaration means wildcard rather than “no scopes.”
+
 ## Review and anti-Goodhart evaluation
 
 `Spectre.Governance.EvaluationDelta` compares the parent and Candidate on the
 same protected corpus. Candidate-authored cases are obligations: they must
 pass, but have zero weight in the protected score and cannot hide a regression.
+The protected corpus must be non-empty, and its closure identity is the
+canonical digest of the sorted protected case ids. The Candidate and review
+receipt bind that digest, so evaluating an arbitrary subset fails closed.
 
 ```elixir
 delta =
@@ -118,10 +130,22 @@ closure, prompt-budget, applicability, and evaluation-delta checkers have
 fixed Spectre identities. Expired, failed, duplicated, unbound, or unknown
 receipts fail closed.
 
+The constitutional evaluation floor is `min_score_delta >= 0.0` and
+`max_regressions == 0`; callers may demand a higher minimum score delta but
+cannot weaken either threshold. Every attached failed receipt rejects the
+Candidate even when its class was only an additional, non-mandatory check.
+Each semantic-live receipt requires a profile, an expiry, and portable
+variability provenance of the form
+`%{"variability" => %{"sample_count" => n, "measure_digest" => sha256}}`
+with at least two samples.
+
 The returned `Spectre.Projection.HumanReport` is a deterministic structural and
 textual projection. It binds parent/Candidate identities, gate receipt refs,
 lineage, and the evaluation delta. It never asks a model to decide whether the
-change is “better.”
+change is “better.” The verified report, including its complete evaluation
+delta, is stored in evaluated/rejected/approved Candidate state; a Store-only
+audit can therefore reconstruct the evidence instead of relying on the return
+value of `Review.evaluate/5`.
 
 ## Approval and activation remain separate
 
@@ -145,6 +169,17 @@ change is “better.”
 The default policy allows automatic approval only for low-risk changes;
 medium- and high-risk changes require a named human actor. Applications can
 provide a stricter `Spectre.Governance.Approval.Policy`.
+
+An evaluated Candidate can also be closed explicitly without leaving it
+permanently approvable:
+
+```elixir
+{:ok, rejected_ref} =
+  Spectre.Governance.Approval.reject(definition_store, reviewed_ref,
+    actor_ref: "operator:alice",
+    reason: "Protected behavior needs another revision"
+  )
+```
 
 Activation replays the approval and gate policy against Store bytes immediately
 before the normal owner-fenced generation CAS. Persist the same
@@ -181,6 +216,13 @@ reference. It returns a content-addressed `Spectre.Governance.GC.Plan`.
 Anything not explicitly requested as eligible is retained, and an inventory
 that is not closed over Candidate/Manifest ancestry is rejected.
 
+Candidate live references have the same explicit classes as Definition refs:
+`run_candidate_refs`, `checkpoint_candidate_refs`,
+`state_binding_candidate_refs`, and `lineage_candidate_refs`. The transported
+plan seals Candidate and Definition lineage sets and verifies the exact reason
+list for every decision; deleting a lineage reason from otherwise valid plan
+bytes invalidates the plan.
+
 The plan is evidence, not a delete command. A durable Store backend may delete
 eligible artifacts only inside its own transaction or lease after revalidating
 the same inventory and live references. Spectre core intentionally provides no
@@ -192,4 +234,3 @@ Governance proves identity, constrained composition, recorded checks, and
 explicit host decisions. It does not prove semantic truth, make model output
 trusted, reverse external Effects, grant distributed ownership, or authorize
 artifact deletion from a stale scan.
-

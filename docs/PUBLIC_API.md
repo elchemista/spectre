@@ -148,11 +148,11 @@ type, and struct contract.
 - `Spectre.Gate.Receipt.Ref`
   - functions: `new/1`, `parse/1`, `to_string/1`, `valid?/1`, `verify/2`
 - `Spectre.Governance.Approval`
-  - functions: `approve/2`, `approve/3`
+  - functions: `approve/2`, `approve/3`, `reject/2`, `reject/3`
 - `Spectre.Governance.Approval.Policy`
   - functions: `allows?/3`, `default/0`, `new/1`, `required_mode/2`
 - `Spectre.Governance.CandidateState`
-  - functions: `gate_classes/0`, `new/1`, `new!/1`, `proposal_digest/1`, `schema_version/0`, `to_data/1`, `transition/2`, `transition/3`
+  - functions: `constitutional_gates/1`, `gate_classes/0`, `new/1`, `new!/1`, `proposal_digest/1`, `schema_version/0`, `to_data/1`, `transition/2`, `transition/3`
 - `Spectre.Governance.ChangeSet`
   - functions: `decode/1`, `digest/1`, `encode/1`, `evidence_digest/1`, `from_data/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`, `verify_base/2`
 - `Spectre.Governance.ChangeSet.Handler`
