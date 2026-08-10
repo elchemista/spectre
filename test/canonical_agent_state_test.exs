@@ -13,7 +13,7 @@ defmodule SpectreCanonicalAgentStateTest do
     state = Canonical.new()
 
     assert state.revision == 0
-    assert state.schema_version == 2
+    assert state.schema_version == 3
     assert state.journal == []
     assert state.applied_changes == %{}
 
@@ -308,7 +308,7 @@ defmodule SpectreCanonicalAgentStateTest do
     assert transition.causation_id == "cause-checkpoint"
 
     assert {:ok, encoded} = Codec.encode(committed)
-    assert encoded["checkpoint_version"] == 2
+    assert encoded["checkpoint_version"] == 3
     assert encoded["revision"] == 1
 
     assert {:ok, json} = Codec.encode_json(committed)
@@ -453,7 +453,7 @@ defmodule SpectreCanonicalAgentStateTest do
     state = Canonical.new()
 
     invalid = [
-      {%{state | schema_version: 3}, {:unsupported_canonical_version, 3}},
+      {%{state | schema_version: 4}, {:unsupported_canonical_version, 4}},
       {%{state | revision: -1}, {:invalid_revision, :canonical_revision, -1}},
       {%{state | sections: :bad}, {:invalid_canonical_sections, :atom}},
       {%{state | journal: :bad}, {:invalid_canonical_journal, :atom}},

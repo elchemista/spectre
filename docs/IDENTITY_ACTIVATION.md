@@ -95,14 +95,15 @@ Run A starts under Definition A
         └── resumed Run A still uses Definition A
 ```
 
-Canonical checkpoint schema 2 stores the Activation and all retained Run
-checkpoints. On restart, Spectre re-resolves every non-legacy pinned Definition
-and verifies its closure digest before accepting work. A missing or changed
-artifact fails closed.
+Canonical checkpoint schema 2 introduced storage for the Activation and all
+retained Run checkpoints. On restart, Spectre re-resolves every non-legacy
+pinned Definition and verifies its closure digest before accepting work. A
+missing or changed artifact fails closed.
 
-Run checkpoint schema 1 and canonical checkpoint schema 1 remain readable at
-the import boundary. They are migrated immediately in memory; current writers
-emit schema 2 only. See [Migrating to 0.2.3](MIGRATING_TO_0_2_3.md).
+Run checkpoint schema 1 and canonical checkpoint schemas 1 and 2 remain
+readable at the import boundary. They are migrated immediately in memory;
+current canonical writers emit schema 3. See
+[Migrating to 0.2.4](MIGRATING_TO_0_2_4.md).
 
 ## Canonical owner and fencing
 

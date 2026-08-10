@@ -35,12 +35,27 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.3` separates stable Agent identity from active Definition,
-> adds generation-fenced activation and Definition-pinned Run recovery, and
-> writes canonical checkpoint schema 2. The full suite exceeds 90%
+> Spectre `0.2.4` adds ownership-based Event Envelopes, same-sequencer
+> admission, independent Definition lifecycle axes, and canonical checkpoint
+> schema 3. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.2.4 Event Ownership and Lifecycle Fences
+
+Version `0.2.4` makes external events explicit portable values. Continuation
+events belong to the Definition pinned by their Run or operation, even after a
+new Definition becomes active; origin metadata is evidence and never silently
+selects execution behavior. New input belongs to the active Definition.
+Missing or ambiguous continuations are committed to quarantine.
+
+Each Definition now has independent admission, authority, retention, and
+activation axes. Drain rejects new work while existing continuations may
+finish; revoke advances the current authority epoch and blocks continuation or
+side-effect dispatch. Canonical checkpoints emit schema 3. See
+[Event Ownership and Definition Lifecycle](docs/EVENT_LIFECYCLE.md) and
+[Migrating to 0.2.4](docs/MIGRATING_TO_0_2_4.md).
 
 ## 0.2.3 Stable Identity and Activation Foundation
 
@@ -216,7 +231,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.3"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.4"}
   ]
 end
 ```
@@ -710,6 +725,8 @@ adapters on startup, and can stop after an idle timeout.
 - [Stable Identity, Activation, and Definition-Pinned Runs](docs/IDENTITY_ACTIVATION.md) -
   stable Agent/Instance keys, bootstrap Candidates, activation CAS, Run pins,
   owner fencing, and checkpoint schema 2.
+- [Event Ownership and Definition Lifecycle](docs/EVENT_LIFECYCLE.md) - event
+  classes, continuation ownership, quarantine, and drain/revoke semantics.
 - [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action
   requirements, prompts, policies, and complete examples.
 - [Stack](docs/STACK.md) - installable packages, immutable definitions,
@@ -724,6 +741,8 @@ adapters on startup, and can stop after an idle timeout.
   adapters, and incremental adoption from 0.1.x.
 - [Migrating to 0.2.3](docs/MIGRATING_TO_0_2_3.md) - legacy Instance-key
   migration, Definition durability, owner leases, and schema-2 rollout.
+- [Migrating to 0.2.4](docs/MIGRATING_TO_0_2_4.md) - schema-3 rollout,
+  ownership-based admission, and Definition lifecycle fences.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM
@@ -743,7 +762,7 @@ adapters on startup, and can stop after an idle timeout.
 - [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
   matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
-- [0.2.3 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [0.2.4 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

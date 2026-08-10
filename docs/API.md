@@ -4,8 +4,8 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.3` extends the vNext core with stable Agent identity,
-generation-fenced Definition activation, Definition-pinned Runs, and schema-2
+Spectre `0.2.4` extends the vNext core with ownership-based Event Envelopes,
+same-sequencer admission, independent Definition lifecycle axes, and schema-3
 checkpoints. The exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
@@ -62,6 +62,39 @@ The Instance re-reads Candidate, Definition, Manifest, and publication receipt
 inside its sequencer. New Runs pin the committed Definition and execution
 closure; open Runs preserve their prior pins. See
 [Stable Identity, Activation, and Definition-Pinned Runs](IDENTITY_ACTIVATION.md).
+
+## Admit an ownership-fenced event
+
+`Spectre.admit_event/3` admits external events through the same Instance
+mailbox that owns Runs, operations, activation, and canonical commits. A Run or
+operation continuation selects its pinned Definition owner; an event origin is
+retained only as evidence. New input and compatible global events use the
+currently active Definition.
+
+```elixir
+{:ok, envelope} =
+  Spectre.admit_event(instance,
+    id: external_event_id,
+    event_class: :policy_answer,
+    continuation_ref: run_ref,
+    correlation_id: correlation_id,
+    payload_schema_ref: "my_app/policy-answer/1",
+    payload: %{"answer" => "yes"}
+  )
+```
+
+Missing, expired, mismatched, or ambiguous continuations are committed to the
+quarantine window instead of being rebound. Use `admitted_events/2` and
+`quarantined_events/2` for bounded inspection. See
+[Event Ownership and Definition Lifecycle](EVENT_LIFECYCLE.md).
+
+## Drain or revoke one Definition
+
+`Spectre.drain_definition/3` rejects new Turns and operations while allowing
+already-owned continuations to finish. `Spectre.revoke_definition/3` advances
+the current authority epoch and blocks admission, continuation, commit, retry,
+and Effect or operation dispatch. A Run's stored authority epoch records
+lineage; it never overrides the current lifecycle record.
 
 ## Stack installation
 

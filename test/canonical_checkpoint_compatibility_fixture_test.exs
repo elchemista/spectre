@@ -75,7 +75,7 @@ defmodule SpectreCanonicalCheckpointCompatibilityFixtureTest do
     checkpoint = read_fixture!()
 
     assert {:ok, canonical} = Codec.decode(checkpoint)
-    assert canonical.schema_version == 2
+    assert canonical.schema_version == 3
     assert {:ok, nil} = Canonical.fetch(canonical, :activation)
     assert canonical.revision > 0
 

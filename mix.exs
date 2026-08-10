@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.3"
+  @version "0.2.4"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -14,12 +14,14 @@ defmodule Spectre.MixProject do
     "docs/CANONICAL_DEFINITIONS.md",
     "docs/DEFINITION_STORE.md",
     "docs/IDENTITY_ACTIVATION.md",
+    "docs/EVENT_LIFECYCLE.md",
     "docs/STACK.md",
     "docs/RUNS.md",
     "docs/INSTANCES.md",
     "docs/OPERATIONS.md",
     "docs/MIGRATING_TO_0_2.md",
     "docs/MIGRATING_TO_0_2_3.md",
+    "docs/MIGRATING_TO_0_2_4.md",
     "docs/SKILLS.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
@@ -134,12 +136,14 @@ defmodule Spectre.MixProject do
           "docs/CANONICAL_DEFINITIONS.md",
           "docs/DEFINITION_STORE.md",
           "docs/IDENTITY_ACTIVATION.md",
+          "docs/EVENT_LIFECYCLE.md",
           "docs/STACK.md",
           "docs/RUNS.md",
           "docs/INSTANCES.md",
           "docs/OPERATIONS.md",
           "docs/MIGRATING_TO_0_2.md",
           "docs/MIGRATING_TO_0_2_3.md",
+          "docs/MIGRATING_TO_0_2_4.md",
           "docs/SKILLS.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
@@ -209,6 +213,7 @@ defmodule Spectre.MixProject do
           Spectre.Subject.Registry,
           Spectre.Instance,
           Spectre.Instance.Activation,
+          Spectre.Event.Envelope,
           Spectre.Instance.Owner,
           Spectre.Instance.Owner.Lease,
           Spectre.Instance.Owner.Local,
@@ -218,6 +223,7 @@ defmodule Spectre.MixProject do
           Spectre.Supervisor
         ],
         "Lifecycle and state": [
+          Spectre.Instance.Lifecycle,
           Spectre.Lifecycle,
           Spectre.Transition,
           Spectre.State,

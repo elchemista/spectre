@@ -4,6 +4,44 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.4 — 2026-08-10
+
+### Added
+
+- Added portable `Spectre.Event.Envelope` values for input, reply, policy,
+  Flow, Work, Vigil, and global events. Admission records the continuation,
+  origin evidence, selected Definition owner, activation generation, current
+  authority epoch, owner fence, canonical revision, and deterministic receipt.
+- Added same-sequencer event admission. Run and operation continuations retain
+  their pinned Definition owner across activation; unowned input uses the
+  active Definition. Missing, mismatched, expired, ambiguous, or incompatible
+  events are durably quarantined instead of rebound.
+- Added `Spectre.Instance.Lifecycle` with independent admission, authority,
+  retention, and activation axes plus revision CAS and monotonic transitions.
+  Public helpers expose drain, revoke, explicit transitions, and inspection.
+- Added bounded admitted and quarantine windows to canonical Instance state,
+  and pinned Definition metadata to operation loops.
+
+### Migration and safety
+
+- Canonical checkpoint writers now emit schema 3. Readers accept schemas 1,
+  2, and 3; a schema-2 Activation is migrated to an equivalent active
+  lifecycle record in memory.
+- Draining blocks new Turns and operations but preserves already-owned
+  continuations. Closing blocks continuations. Revocation advances the current
+  authority epoch and blocks admission, continuation, commit, retry, Effect
+  dispatch, and operation dispatch.
+- A Run's stored authority epoch is lineage only. Runtime authorization always
+  consults the current lifecycle and current Instance owner fence.
+- Added a permanent 0.2.4 compatibility fixture covering schema-3 event
+  admission, quarantine, and Definition lifecycle recovery.
+
+### Scope
+
+- First-class Skill state generations, branches, rollback, and retention are
+  intentionally deferred to 0.2.5. Event delivery and transport authenticity
+  remain host-owned; this release records their portable evidence.
+
 ## 0.2.3 — 2026-08-10
 
 ### Added

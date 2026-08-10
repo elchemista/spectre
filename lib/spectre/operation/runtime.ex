@@ -63,6 +63,8 @@ defmodule Spectre.Operation.Runtime do
       with {:ok, budget} <- effective_budget(definition.budget, Keyword.get(opts, :budget), now),
            {:ok, cognitive} <- map_option(Keyword.get(opts, :cognitive, %{}), :cognitive),
            {:ok, metadata} <- map_option(Keyword.get(opts, :metadata, %{}), :metadata) do
+        metadata = pin_definition_metadata(metadata, env)
+
         loop = %Loop{
           id: id,
           kind: kind,
@@ -97,6 +99,21 @@ defmodule Spectre.Operation.Runtime do
         {:error, _reason} = error -> error
       end
     end
+  end
+
+  defp pin_definition_metadata(metadata, env) do
+    [
+      definition_ref: :spectre_definition_ref,
+      activation_generation: :spectre_activation_generation,
+      authority_epoch: :spectre_authority_epoch,
+      closure_digest: :spectre_closure_digest
+    ]
+    |> Enum.reduce(metadata, fn {env_key, metadata_key}, pinned ->
+      case Map.fetch(env, env_key) do
+        {:ok, value} -> Map.put(pinned, metadata_key, value)
+        :error -> pinned
+      end
+    end)
   end
 
   @doc "Prepares the next registered operation from committed loop state."

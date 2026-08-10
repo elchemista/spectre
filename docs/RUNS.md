@@ -125,7 +125,8 @@ Secrets and clients belong in runtime configuration or Stack resources, not in
 the checkpoint.
 
 Inside an Instance, retained Run checkpoints are stored atomically with the
-observed Flow state in canonical checkpoint schema 2. Activating Definition B
+observed Flow state. Canonical schema 2 introduced retained Runs; current
+writers emit schema 3. Activating Definition B
 changes the pin only for Runs admitted afterward: a Run already open under A
 continues under A, including after process restart. Restart re-resolves every
 non-legacy Definition and verifies the stored closure digest before resuming.

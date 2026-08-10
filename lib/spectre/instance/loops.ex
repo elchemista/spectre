@@ -1,6 +1,7 @@
 defmodule Spectre.Instance.Loops do
   @moduledoc false
 
+  alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Operation.Control
@@ -9,6 +10,7 @@ defmodule Spectre.Instance.Loops do
   alias Spectre.Operation.Loop, as: OperationLoop
   alias Spectre.Operation.Ref, as: OperationRef
   alias Spectre.Operation.View, as: OperationView
+  alias Spectre.Run
   alias Spectre.Run.Value
 
   @selector_keys %{
@@ -224,9 +226,22 @@ defmodule Spectre.Instance.Loops do
       directive: committed_views(data, :directive)
     }
 
+    activation = data.activation
+
+    definition_ref =
+      if activation, do: activation.definition_ref, else: Run.definition_ref(data.agent)
+
     %{
       agent: data.agent,
       subject_id: data.subject.id,
+      definition_ref: definition_ref,
+      activation_generation: Activation.generation(activation),
+      authority_epoch: Activation.authority_epoch(activation),
+      closure_digest:
+        if(activation,
+          do: activation.closure_digest,
+          else: Run.default_closure_digest(data.agent, definition_ref)
+        ),
       epoch: data.generation,
       snapshot_id: Keyword.get(opts, :snapshot_id, Spectre.Identity.uuid7()),
       canonical_revision: Keyword.get(opts, :canonical_revision, data.canonical.revision),

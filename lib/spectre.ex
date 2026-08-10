@@ -34,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.2.3"
+  @version "0.2.4"
 
   @doc """
   Returns the running Spectre library version.
@@ -184,6 +184,30 @@ defmodule Spectre do
 
   @doc "Activates a re-read bootstrap Candidate through generation CAS."
   defdelegate activate(instance, candidate_ref, opts \\ []), to: Spectre.Instance
+
+  @doc "Admits an ownership-based event through the Instance sequencer."
+  defdelegate admit_event(instance, event, opts \\ []), to: Spectre.Instance
+
+  @doc "Returns committed admitted Event Envelopes."
+  defdelegate admitted_events(instance, opts \\ []), to: Spectre.Instance
+
+  @doc "Returns quarantined Event Envelopes."
+  defdelegate quarantined_events(instance, opts \\ []), to: Spectre.Instance
+
+  @doc "Returns the lifecycle axes for one Definition or the active Definition."
+  defdelegate definition_lifecycle(instance, definition_ref \\ :active), to: Spectre.Instance
+
+  @doc "Transitions one Definition lifecycle axis."
+  defdelegate transition_definition_lifecycle(instance, definition_ref, axis, value, opts \\ []),
+    to: Spectre.Instance
+
+  @doc "Drains new admission while retaining owned continuations."
+  defdelegate drain_definition(instance, definition_ref \\ :active, opts \\ []),
+    to: Spectre.Instance
+
+  @doc "Revokes current Definition authority."
+  defdelegate revoke_definition(instance, definition_ref \\ :active, opts \\ []),
+    to: Spectre.Instance
 
   @doc "Starts a precise Work on an Agent Instance."
   defdelegate start_work(instance, controller, input, opts \\ []), to: Spectre.Instance

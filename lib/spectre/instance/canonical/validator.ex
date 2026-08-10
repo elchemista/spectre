@@ -1,8 +1,10 @@
 defmodule Spectre.Instance.Canonical.Validator do
   @moduledoc false
 
+  alias Spectre.Event.Envelope, as: EventEnvelope
   alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
+  alias Spectre.Instance.Lifecycle
   alias Spectre.Operation.Control
   alias Spectre.Operation.Delivery.Consent, as: DeliveryConsent
   alias Spectre.Operation.Delivery.Receipt, as: DeliveryReceipt
@@ -29,6 +31,25 @@ defmodule Spectre.Instance.Canonical.Validator do
          :ok <- validate_activation(activation),
          {:ok, runs} <- Canonical.fetch(canonical, :runs),
          :ok <- validate_runs(runs),
+         {:ok, lifecycles} <- Canonical.fetch(canonical, :lifecycles),
+         :ok <- validate_lifecycles(lifecycles, activation),
+         {:ok, event_admissions} <- Canonical.fetch(canonical, :event_admissions),
+         :ok <-
+           validate_event_envelopes(
+             event_admissions,
+             :admitted,
+             event_limit,
+             canonical.revision
+           ),
+         {:ok, event_quarantine} <- Canonical.fetch(canonical, :event_quarantine),
+         :ok <-
+           validate_event_envelopes(
+             event_quarantine,
+             :quarantined,
+             event_limit,
+             canonical.revision
+           ),
+         :ok <- validate_event_envelope_disjointness(event_admissions, event_quarantine),
          {:ok, loops} <- validate_loops(canonical),
          :ok <- validate_controls(canonical, loops, instance_ref),
          :ok <- validate_events(canonical, loops, event_limit),
@@ -80,6 +101,108 @@ defmodule Spectre.Instance.Canonical.Validator do
   end
 
   defp validate_runs(value), do: {:error, {:invalid_canonical_runs, value}}
+
+  defp validate_lifecycles(lifecycles, activation)
+       when is_map(lifecycles) and not is_struct(lifecycles) do
+    with :ok <- validate_lifecycle_entries(lifecycles) do
+      validate_active_lifecycle(lifecycles, activation)
+    end
+  end
+
+  defp validate_lifecycles(value, _activation),
+    do: {:error, {:invalid_canonical_lifecycles, value}}
+
+  defp validate_lifecycle_entries(lifecycles) do
+    Enum.reduce_while(lifecycles, :ok, fn
+      {key, %Lifecycle{} = lifecycle}, :ok when is_binary(key) and key != "" ->
+        case Lifecycle.new(lifecycle) do
+          {:ok, ^lifecycle} ->
+            if key == Lifecycle.key(lifecycle),
+              do: {:cont, :ok},
+              else: {:halt, {:error, {:canonical_lifecycle_key_mismatch, key}}}
+
+          {:ok, _lifecycle} ->
+            {:halt, {:error, {:canonical_lifecycle_key_mismatch, key}}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:invalid_canonical_lifecycle, key, reason}}}
+        end
+
+      {key, _lifecycle}, :ok ->
+        {:halt, {:error, {:invalid_canonical_lifecycle_entry, key}}}
+    end)
+  end
+
+  defp validate_active_lifecycle(_lifecycles, nil), do: :ok
+
+  defp validate_active_lifecycle(lifecycles, %Activation{} = activation) do
+    case Map.get(lifecycles, Lifecycle.key(activation.definition_ref)) do
+      %Lifecycle{activation: :active, authority_epoch: epoch}
+      when epoch >= activation.authority_epoch ->
+        :ok
+
+      _other ->
+        {:error, :canonical_activation_lifecycle_mismatch}
+    end
+  end
+
+  defp validate_event_envelopes(window, status, limit, canonical_revision)
+       when is_map(window) and not is_struct(window) do
+    with true <- MapSet.new(Map.keys(window)) == MapSet.new([:records, :ids]),
+         records when is_list(records) <- Map.get(window, :records),
+         ids when is_map(ids) and not is_struct(ids) <- Map.get(window, :ids),
+         true <- length(records) <= limit,
+         :ok <- validate_event_envelope_records(records, status, canonical_revision),
+         true <- ids == Map.new(records, &{&1.id, &1.admission_receipt}) do
+      :ok
+    else
+      _invalid -> {:error, {:invalid_canonical_event_envelopes, status}}
+    end
+  end
+
+  defp validate_event_envelopes(_window, status, _limit, _canonical_revision),
+    do: {:error, {:invalid_canonical_event_envelopes, status}}
+
+  defp validate_event_envelope_records(records, status, canonical_revision) do
+    ids = Enum.map(records, &event_envelope_id/1)
+
+    if Enum.uniq(ids) != ids do
+      {:error, {:duplicate_canonical_event_envelope, status}}
+    else
+      Enum.reduce_while(records, :ok, fn
+        %EventEnvelope{status: ^status, admission_revision: revision} = envelope, :ok
+        when revision <= canonical_revision ->
+          case EventEnvelope.new(envelope) do
+            {:ok, ^envelope} ->
+              {:cont, :ok}
+
+            {:ok, _rebuilt} ->
+              {:halt, {:error, {:event_envelope_integrity_mismatch, envelope.id}}}
+
+            {:error, reason} ->
+              {:halt, {:error, {:invalid_canonical_event_envelope, envelope.id, reason}}}
+          end
+
+        %EventEnvelope{id: id}, :ok ->
+          {:halt, {:error, {:invalid_canonical_event_envelope_status, id, status}}}
+
+        _invalid, :ok ->
+          {:halt, {:error, {:invalid_canonical_event_envelope, status}}}
+      end)
+    end
+  end
+
+  defp validate_event_envelope_disjointness(admissions, quarantine) do
+    admitted_ids = admissions |> Map.get(:ids, %{}) |> Map.keys() |> MapSet.new()
+    quarantined_ids = quarantine |> Map.get(:ids, %{}) |> Map.keys() |> MapSet.new()
+
+    if MapSet.disjoint?(admitted_ids, quarantined_ids),
+      do: :ok,
+      else: {:error, :event_envelope_admission_quarantine_conflict}
+  end
+
+  defp event_envelope_id(%EventEnvelope{id: id}), do: id
+  defp event_envelope_id(_invalid), do: nil
 
   defp validate_loops(canonical) do
     Enum.reduce_while([:work, :vigil, :directive], {:ok, %{}}, fn kind, {:ok, loops} ->
