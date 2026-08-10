@@ -233,6 +233,8 @@ defmodule SpectreRuntimeSkillContractsTest do
     end
 
     test "rejects invalid shapes and exposes raising construction" do
+      assert %PromptBudget{token_cap: 512, fragment_count: 0} = PromptBudget.new!([])
+
       assert {:error, {:invalid_skill_prompt_budget_input, :map, :list}} =
                PromptBudget.new(%{})
 
@@ -243,6 +245,15 @@ defmodule SpectreRuntimeSkillContractsTest do
       assert {:error, {:invalid_skill_prompt_budget, :list}} = PromptBudget.from_data([])
       assert {:error, {:invalid_skill_prompt_budget, :binary}} = PromptBudget.from_data("bad")
       assert {:error, {:invalid_skill_prompt_budget, :other}} = PromptBudget.from_data(42)
+
+      assert {:error, {:invalid_skill_prompt_reserved_tokens, 9, 8}} =
+               PromptBudget.from_data(%{
+                 schema_version: 1,
+                 token_cap: 8,
+                 reserved_tokens: 9,
+                 estimated_tokens: 0,
+                 fragment_count: 0
+               })
 
       assert_raise ArgumentError, ~r/invalid Skill prompt budget/, fn ->
         PromptBudget.new!([], token_cap: 0)

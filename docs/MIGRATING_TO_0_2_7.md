@@ -48,6 +48,14 @@ are rederived from restored fragments, effective fragment governance fields
 must match Spectre's assignments, and JSON operation references must resolve
 to an existing host registry ID. Forbidden tags never contribute routing
 specificity, and non-scalar prompt placeholders return a structured error.
+In-memory Canonical and prebuilt Skill Definition structs are revalidated too;
+malformed route, requirement, prompt, or Routing-projection collections cannot
+bypass the load boundary or raise protocol exceptions.
+
+Negative anti-hijack examples fail whether they select one route or are
+ambiguous across several routes. Inputs that cannot be normalized by
+`Spectre.Input` return `{:invalid_skill_input, shape}` from Skill routing and
+response boundaries.
 
 Disabling no longer implies that owned in-flight work is rebound to a newer
 Skill. A live generation drains until its exact continuations are released.

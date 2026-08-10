@@ -235,6 +235,69 @@ defmodule SpectreFoundationConformanceTest do
     assert incompatible_message =~ "requires Spectre"
   end
 
+  test "foundation and Stack public boundaries return stable errors for malformed shapes" do
+    _fixture_atoms = @fixture_atoms
+
+    state = fixture("0.1.6/state-v5.json") |> File.read!() |> Jason.decode!()
+    assert {:ok, %{format: :state, source_version: 5}} = Conformance.verify_state(state)
+
+    for {value, shape} <- [
+          {%{}, :map},
+          {[], :list},
+          {:invalid, :atom},
+          {{:invalid}, :tuple},
+          {42, :other}
+        ] do
+      assert {:error, {:invalid_foundation_run_checkpoint, ^shape}} =
+               Conformance.verify_run(value)
+    end
+
+    canonical = Definition.canonical!(Agent)
+    manifest = Definition.manifest!(Agent)
+
+    for {value, shape} <- [
+          {URI.parse("/"), :map},
+          {[], :list},
+          {:invalid, :atom},
+          {{:invalid}, :tuple},
+          {42, :other}
+        ] do
+      assert {:error, {:invalid_foundation_definition, ^shape}} =
+               Conformance.verify_definition(value, manifest)
+    end
+
+    assert {:error, {:invalid_foundation_manifest, :tuple}} =
+             Conformance.verify_definition(canonical, {:invalid})
+
+    assert StackConformance.contract_version() == 1
+
+    for {entries, opts, entries_shape, opts_shape} <- [
+          {%{}, [], :map, :list},
+          {[], %{}, :list, :map},
+          {:invalid, :invalid, :atom, :atom},
+          {{:invalid}, 42, :tuple, :other}
+        ] do
+      assert {:error, {:invalid_stack_conformance_matrix, ^entries_shape, ^opts_shape}} =
+               StackConformance.run(entries, opts)
+    end
+
+    assert {:error, {:unknown_stack_conformance_options, [:unknown]}} =
+             StackConformance.run([ProviderPackage], unknown: true)
+
+    assert {:error, {:invalid_stack_conformance_configs, :map}} =
+             StackConformance.run([ProviderPackage], configs: URI.parse("/"))
+
+    for {entry, shape} <- [
+          {%{}, :map},
+          {nil, :atom},
+          {{:invalid}, :tuple},
+          {42, :other}
+        ] do
+      assert {:error, {:invalid_stack_conformance_entry, ^shape}} =
+               StackConformance.run([ProviderPackage, entry])
+    end
+  end
+
   defp package(id, version, overrides) do
     %{
       id: id,

@@ -14,15 +14,35 @@ defmodule SpectreRuntimeSkillLifecycleTest.Agent do
   )
 end
 
+defmodule SpectreRuntimeSkillLifecycleTest.CompiledSkill do
+  @moduledoc false
+
+  use Spectre.Skill,
+    id: :compiled_lookup,
+    version: 1,
+    applicability: %{scopes: [:support], positive: ["lookup"], negative: ["admin"]}
+
+  requires_operation(:lookup)
+
+  flow :support do
+    on :LOOKUP, check: {:text, "lookup"} do
+      call_operation(:lookup, input: :text)
+    end
+  end
+end
+
 defmodule SpectreRuntimeSkillLifecycleTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Authority.Envelope
+  alias Spectre.Definition.Canonical
+  alias Spectre.Definition.Component
   alias Spectre.Operation.Request
   alias Spectre.Skill.Definition, as: SkillDefinition
   alias Spectre.Skill.Runtime
   alias Spectre.Skill.Runtime.Response
   alias SpectreRuntimeSkillLifecycleTest.Agent
+  alias SpectreRuntimeSkillLifecycleTest.CompiledSkill
 
   test "mount and operation response require host authority and CAS" do
     runtime = runtime()
@@ -400,6 +420,298 @@ defmodule SpectreRuntimeSkillLifecycleTest do
              Runtime.mount(constrained, :reply, reply_skill(16), expected_revision: 0)
   end
 
+  test "mount revalidates a prebuilt Skill Definition instead of trusting its struct" do
+    definition = operation_skill()
+
+    components =
+      Enum.map(definition.canonical.components, fn
+        %Component{component_type: :routing} = component ->
+          Component.new!(
+            component_type: component.component_type,
+            schema_ref: component.schema_ref,
+            criticality: component.criticality,
+            payload: Map.put(component.payload, :rules, [42])
+          )
+
+        component ->
+          component
+      end)
+
+    forged_canonical =
+      definition.canonical
+      |> Map.from_struct()
+      |> Map.put(:components, components)
+      |> Canonical.new!()
+
+    forged = %{definition | canonical: forged_canonical}
+
+    assert {:error, {:invalid_canonical_skill_route, 0, :other}} =
+             Runtime.mount(runtime(), :lookup, forged, expected_revision: 0)
+  end
+
+  test "routing and response reject inputs that cannot be normalized" do
+    assert {:ok, runtime} =
+             Runtime.mount(runtime(), :lookup, operation_skill(), expected_revision: 0)
+
+    assert {:error, {:invalid_skill_input, :tuple}} =
+             Runtime.route(runtime, {:not, :stringable}, %{scope: :support})
+
+    assert {:error, {:invalid_skill_input, :tuple}} =
+             Runtime.respond(
+               runtime,
+               {:not, :stringable},
+               %{scope: :support},
+               expected_revision: 1
+             )
+  end
+
+  test "default arities and malformed sources fail closed without changing revision" do
+    runtime = runtime()
+
+    assert {:error, {:expected_skill_runtime_revision_required, 0}} =
+             Runtime.replace(runtime, :lookup, operation_skill())
+
+    assert {:error, {:expected_skill_runtime_revision_required, 0}} =
+             Runtime.disable(runtime, :lookup)
+
+    assert {:error, :runtime_skill_route_not_found} = Runtime.route(runtime, "lookup")
+
+    assert {:error, {:expected_skill_runtime_revision_required, 0}} =
+             Runtime.respond(runtime, "lookup")
+
+    assert {:error, {:expected_skill_runtime_revision_required, 0}} =
+             Runtime.claim_continuation(runtime, :lookup, "continuation")
+
+    assert {:error, {:expected_skill_runtime_revision_required, 0}} =
+             Runtime.release_continuation(runtime, "continuation")
+
+    assert {:error, {:expected_skill_runtime_revision_required, 0}} =
+             Runtime.mount(runtime, :lookup, operation_skill(), %{})
+
+    for {source, shape} <- [
+          {[], :list},
+          {"bad", :binary},
+          {{:bad}, :tuple},
+          {42, :other}
+        ] do
+      assert {:error, {:invalid_skill_mount_source, ^shape}} =
+               Runtime.mount(runtime, :lookup, source, expected_revision: 0)
+    end
+
+    invalid_definition = %SkillDefinition{canonical: nil, ref: operation_skill().ref}
+
+    assert {:error, {:invalid_skill_mount_source, :map}} =
+             Runtime.mount(runtime, :lookup, invalid_definition, expected_revision: 0)
+  end
+
+  test "runtime reports ambiguity originating inside one mounted Skill" do
+    base = operation_skill()
+
+    [flow] =
+      base.canonical |> SkillDefinition.from_canonical() |> elem(1) |> SkillDefinition.routes()
+
+    rules =
+      Enum.map([:one, :two], fn id ->
+        %{flow | label: id, flow: id, flow_path: [id], checks: [text: "ambiguous"]}
+      end)
+
+    ambiguous =
+      base.canonical
+      |> rewrite_component(:applicability, fn payload ->
+        put_in(payload, [:declared], %{
+          schema_version: 1,
+          scopes: [:support],
+          required_tags: [],
+          forbidden_tags: [],
+          positive: [],
+          negative: [],
+          conflicts: []
+        })
+      end)
+      |> rewrite_component(:routing, &Map.put(&1, :rules, rules))
+      |> SkillDefinition.from_canonical()
+      |> then(fn {:ok, definition} -> definition end)
+
+    assert {:ok, runtime} =
+             Runtime.mount(runtime(), :ambiguous, ambiguous, expected_revision: 0)
+
+    assert {:error, {:skill_route_failed, :ambiguous, {:ambiguous_skill_route, [:one, :two]}}} =
+             Runtime.route(runtime, "ambiguous", %{scope: :support})
+  end
+
+  test "compiled mount and operation inputs materialize only host-bound requests" do
+    assert {:error, {:skill_runtime_host_not_agent, :skill}} =
+             Runtime.new(CompiledSkill, authority())
+
+    assert {:ok, compiled_runtime} =
+             Runtime.mount(runtime(), :compiled, CompiledSkill, expected_revision: 0)
+
+    assert {:ok, %Response{operation_request: %Request{input: "lookup"}}, _runtime} =
+             Runtime.respond(
+               compiled_runtime,
+               "lookup",
+               %{scope: :support},
+               expected_revision: 1
+             )
+
+    for {mount_id, input, expected_input} <- [
+          {"input-mount", :input, %{text: "lookup", meta: %{tenant: 7}}},
+          {42, {:fixed, %{mode: :safe}}, %{mode: :safe}}
+        ] do
+      assert {:ok, mounted} =
+               Runtime.mount(runtime(), mount_id, operation_skill(input: input),
+                 expected_revision: 0
+               )
+
+      assert {:ok, response, _runtime} =
+               Runtime.respond(
+                 mounted,
+                 %{text: "lookup", meta: %{tenant: 7}},
+                 %{scope: :support},
+                 expected_revision: 1
+               )
+
+      assert response.operation_request.input == expected_input
+      assert is_binary(response.operation_request.branch)
+    end
+  end
+
+  test "prompt rendering supports scalar and nested values and rejects missing paths" do
+    assert {:ok, scalar_runtime} =
+             Runtime.mount(
+               runtime(),
+               :scalars,
+               reply_skill(32, "{{count}}/{{ratio}}/{{enabled}}"),
+               expected_revision: 0
+             )
+
+    assert {:ok, %{output: "7/1.5/false"}, _runtime} =
+             Runtime.respond(
+               scalar_runtime,
+               "hello",
+               %{scope: :chat, count: 7, ratio: 1.5, enabled: false},
+               expected_revision: 1
+             )
+
+    assert {:ok, nested_runtime} =
+             Runtime.mount(
+               runtime(),
+               :nested,
+               reply_skill(32, "Tenant {{tenant.name}} / {{input.meta.locale}}"),
+               expected_revision: 0
+             )
+
+    assert {:ok, %{output: "Tenant acme / it"}, _runtime} =
+             Runtime.respond(
+               nested_runtime,
+               %{text: "hello", meta: %{"locale" => "it"}},
+               %{"scope" => :chat, "tenant" => %{"name" => "acme"}},
+               expected_revision: 1
+             )
+
+    assert {:error, {:missing_runtime_prompt_value, "tenant.name"}} =
+             Runtime.respond(
+               nested_runtime,
+               %{text: "hello", meta: %{locale: "it"}},
+               %{scope: :chat, tenant: "not-a-map"},
+               expected_revision: 1
+             )
+
+    unknown = "runtime_value_#{System.unique_integer([:positive])}"
+
+    assert {:ok, missing_runtime} =
+             Runtime.mount(runtime(), :missing, reply_skill(32, "{{#{unknown}}}"),
+               expected_revision: 0
+             )
+
+    assert {:error, {:missing_runtime_prompt_value, ^unknown}} =
+             Runtime.respond(
+               missing_runtime,
+               "hello",
+               %{scope: :chat},
+               expected_revision: 1
+             )
+  end
+
+  test "multiple continuations keep drains live and orphaned pins fail closed" do
+    assert {:ok, runtime} =
+             Runtime.mount(runtime(), :lookup, operation_skill(), expected_revision: 0)
+
+    assert {:ok, runtime} =
+             Runtime.claim_continuation(runtime, :lookup, "one", expected_revision: 1)
+
+    assert {:ok, runtime} =
+             Runtime.claim_continuation(runtime, :lookup, "two", expected_revision: 2)
+
+    assert {:ok, runtime} = Runtime.disable(runtime, :lookup, expected_revision: 3)
+    assert {:ok, runtime} = Runtime.release_continuation(runtime, "one", expected_revision: 4)
+
+    assert {:ok, %{state: :draining, continuation_count: 1}} =
+             Runtime.status(runtime, :lookup)
+
+    orphaned =
+      put_in(runtime.continuations["two"], %{
+        mount_id: :lookup,
+        definition_ref: "sha256:orphaned"
+      })
+
+    assert {:error, {:orphaned_skill_continuation, :lookup, "sha256:orphaned"}} =
+             Runtime.continuation(orphaned, "two")
+  end
+
+  test "mount rejects non-declarative selectors even in an otherwise valid canonical Skill" do
+    definition = operation_skill()
+
+    tampered =
+      definition.canonical
+      |> rewrite_component(:routing, fn payload ->
+        update_in(payload, [:rules, Access.at(0)], fn rule ->
+          %{rule | regex: ["lookup"]}
+        end)
+      end)
+
+    assert {:ok, tampered} = SkillDefinition.from_canonical(tampered)
+
+    assert {:error, {:invalid_runtime_skill_route, 0, :runtime_skill_requires_exact_text_route}} =
+             Runtime.mount(runtime(), :lookup, tampered, expected_revision: 0)
+
+    list_check =
+      definition.canonical
+      |> rewrite_component(:routing, fn payload ->
+        update_in(payload, [:rules, Access.at(0)], &Map.put(&1, :checks, [["text", "lookup"]]))
+      end)
+
+    assert {:ok, list_check} = SkillDefinition.from_canonical(list_check)
+
+    assert {:ok, mounted} =
+             Runtime.mount(runtime(), :list_check, list_check, expected_revision: 0)
+
+    assert {:error, :runtime_skill_route_not_found} =
+             Runtime.route(mounted, "missing", %{scope: :support})
+
+    invalid_input =
+      definition.canonical
+      |> rewrite_component(:routing, fn payload ->
+        update_in(payload, [:rules, Access.at(0), :handler], &Map.put(&1, :input, :invalid))
+      end)
+
+    assert {:ok, invalid_input} = SkillDefinition.from_canonical(invalid_input)
+
+    assert {:error, {:invalid_runtime_skill_route, 0, {:invalid_skill_operation_input, :invalid}}} =
+             Runtime.mount(runtime(), :invalid_input, invalid_input, expected_revision: 0)
+
+    missing_check =
+      definition.canonical
+      |> rewrite_component(:routing, fn payload ->
+        update_in(payload, [:rules, Access.at(0)], &Map.put(&1, :checks, []))
+      end)
+
+    assert {:ok, missing_check} = SkillDefinition.from_canonical(missing_check)
+
+    assert {:error, {:invalid_runtime_skill_route, 0, :runtime_skill_requires_exact_text_route}} =
+             Runtime.mount(runtime(), :missing_check, missing_check, expected_revision: 0)
+  end
+
   defp runtime do
     Runtime.new!(Agent, authority(),
       max_prompt_tokens: 1_024,
@@ -432,6 +744,7 @@ defmodule SpectreRuntimeSkillLifecycleTest do
     conflicts = Keyword.get(opts, :conflicts, [])
     positive = Keyword.get(opts, :positive, ["lookup"])
     forbidden_tags = Keyword.get(opts, :forbidden_tags, [])
+    input = Keyword.get(opts, :input, :text)
 
     SkillDefinition.new!(%{
       id: id,
@@ -453,7 +766,7 @@ defmodule SpectreRuntimeSkillLifecycleTest do
               label: :LOOKUP,
               match: {:exact, "lookup"},
               handler: {:operation, operation},
-              input: :text
+              input: input
             }
           ]
         }
@@ -479,5 +792,26 @@ defmodule SpectreRuntimeSkillLifecycleTest do
         }
       ]
     })
+  end
+
+  defp rewrite_component(%Canonical{} = canonical, type, update) do
+    components =
+      Enum.map(canonical.components, fn component ->
+        if component.component_type == type do
+          Component.new!(
+            component_type: component.component_type,
+            schema_ref: component.schema_ref,
+            criticality: component.criticality,
+            payload: update.(component.payload)
+          )
+        else
+          component
+        end
+      end)
+
+    canonical
+    |> Map.from_struct()
+    |> Map.put(:components, components)
+    |> Canonical.new!()
   end
 end

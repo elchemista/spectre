@@ -45,6 +45,13 @@ minor release may contain documented breaking API changes.
 - JSON string operation references resolve only to matching IDs already in the
   host Agent registry, without creating atoms. Forbidden applicability tags
   remain exclusion filters and cannot increase routing specificity.
+- Canonical Skill structs and prebuilt `Spectre.Skill.Definition` values are
+  revalidated at load and mount. Malformed route, requirement, prompt, or
+  Routing-projection collections return indexed errors instead of protocol or
+  function-clause exceptions.
+- Negative anti-hijack examples now fail when one or several routes match.
+  Inputs that cannot be normalized return `{:invalid_skill_input, shape}` from
+  Skill routing and response boundaries instead of crashing `String.Chars`.
 - State remains writer v5, Run remains writer v2, and canonical Instance
   checkpoints remain schema 4. All 0.2.6 foundation and Stack gates remain in
   the release suite.

@@ -44,14 +44,17 @@ Envelope, kernel prompt reserve, and per-Skill ceiling, then performs lifecycle
 changes with revision CAS.
 
 Canonical runtime loads rederive prompt budgets and validate host-owned
-fragment governance. JSON string operation refs are resolved only against the
-closed Agent registry through `Spectre.Operation.Registry.resolve_id/2`; no
-atom or executable entry is created from runtime data.
+fragment governance. This validation also applies to in-memory Canonical and
+prebuilt Skill Definition structs; mount never treats their fields as already
+trusted. JSON string operation refs are resolved only against the closed Agent
+registry through `Spectre.Operation.Registry.resolve_id/2`; no atom or
+executable entry is created from runtime data.
 
 `respond/4` returns either a closed reply or a registered
 `Spectre.Operation.Request`; it never executes the operation. Disable and
 replacement keep old Definition generations only while exact pinned
-continuations remain. See
+continuations remain. Malformed routing input and non-map Canonical route or
+requirement entries return structured errors rather than raising. See
 [Runtime Skills and Routing Projections](RUNTIME_SKILLS.md).
 
 ## Publish and resolve canonical behavior

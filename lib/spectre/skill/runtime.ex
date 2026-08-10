@@ -206,41 +206,11 @@ defmodule Spectre.Skill.Runtime do
   def route(runtime, input, context \\ %{})
 
   def route(%__MODULE__{} = runtime, input, context) when is_map(context) do
-    input = Input.new(input)
-
-    candidates =
-      runtime.mounts
-      |> Map.values()
-      |> Enum.filter(fn entry ->
-        entry.state == :active and
-          Applicability.matches?(SkillDefinition.applicability(entry.definition), context)
-      end)
-      |> Enum.reduce([], fn entry, matches ->
-        case SkillDefinition.route(entry.definition, input) do
-          {:ok, rule} ->
-            [
-              %{
-                mount_id: entry.mount_id,
-                definition_ref: SkillDefinition.ref(entry.definition),
-                definition: entry.definition,
-                rule: rule,
-                specificity:
-                  entry.definition
-                  |> SkillDefinition.applicability()
-                  |> Applicability.specificity()
-              }
-              | matches
-            ]
-
-          {:error, :skill_route_not_found} ->
-            matches
-
-          {:error, reason} ->
-            [%{error: reason, mount_id: entry.mount_id} | matches]
-        end
-      end)
-
-    select_candidate(candidates)
+    with {:ok, input} <- normalize_input(input) do
+      runtime
+      |> routing_candidates(input, context)
+      |> select_candidate()
+    end
   end
 
   def route(%__MODULE__{}, _input, context),
@@ -251,7 +221,7 @@ defmodule Spectre.Skill.Runtime do
           {:ok, Response.t(), t()} | {:error, term()}
   def respond(%__MODULE__{} = runtime, input, context \\ %{}, opts \\ []) do
     with :ok <- cas(runtime, opts),
-         input = Input.new(input),
+         {:ok, input} <- normalize_input(input),
          {:ok, match} <- route(runtime, input, context) do
       materialize_response(runtime, match, input, context)
     end
@@ -328,7 +298,11 @@ defmodule Spectre.Skill.Runtime do
   end
 
   @spec normalize_definition(term()) :: {:ok, SkillDefinition.t()} | {:error, term()}
-  defp normalize_definition(%SkillDefinition{} = definition), do: {:ok, definition}
+  defp normalize_definition(%SkillDefinition{canonical: %Canonical{} = canonical}),
+    do: SkillDefinition.from_canonical(canonical)
+
+  defp normalize_definition(%SkillDefinition{} = definition),
+    do: {:error, {:invalid_skill_mount_source, shape(definition)}}
 
   defp normalize_definition(%Canonical{} = canonical),
     do: SkillDefinition.from_canonical(canonical)
@@ -337,6 +311,46 @@ defmodule Spectre.Skill.Runtime do
     do: SkillDefinition.from_compiled(module)
 
   defp normalize_definition(value), do: {:error, {:invalid_skill_mount_source, shape(value)}}
+
+  @spec routing_candidates(t(), Input.t(), map()) :: [map()]
+  defp routing_candidates(runtime, input, context) do
+    runtime.mounts
+    |> Map.values()
+    |> Enum.filter(&eligible_entry?(&1, context))
+    |> Enum.reduce([], &route_entry(&1, input, &2))
+  end
+
+  @spec eligible_entry?(entry(), map()) :: boolean()
+  defp eligible_entry?(entry, context) do
+    entry.state == :active and
+      Applicability.matches?(SkillDefinition.applicability(entry.definition), context)
+  end
+
+  @spec route_entry(entry(), Input.t(), [map()]) :: [map()]
+  defp route_entry(entry, input, matches) do
+    case SkillDefinition.route(entry.definition, input) do
+      {:ok, rule} ->
+        [
+          %{
+            mount_id: entry.mount_id,
+            definition_ref: SkillDefinition.ref(entry.definition),
+            definition: entry.definition,
+            rule: rule,
+            specificity:
+              entry.definition
+              |> SkillDefinition.applicability()
+              |> Applicability.specificity()
+          }
+          | matches
+        ]
+
+      {:error, :skill_route_not_found} ->
+        matches
+
+      {:error, reason} ->
+        [%{error: reason, mount_id: entry.mount_id} | matches]
+    end
+  end
 
   @spec validate_mount(t(), term(), SkillDefinition.t(), keyword()) :: :ok | {:error, term()}
   defp validate_mount(runtime, mount_id, definition, opts \\ []) do
@@ -909,6 +923,14 @@ defmodule Spectre.Skill.Runtime do
     ArgumentError -> nil
   end
 
+  @spec normalize_input(term()) :: {:ok, Input.t()} | {:error, term()}
+  defp normalize_input(input) do
+    {:ok, Input.new(input)}
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError] ->
+      {:error, {:invalid_skill_input, shape(input)}}
+  end
+
   @spec get(map(), atom(), term()) :: term()
   defp get(map, key, default \\ nil) when is_map(map),
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
@@ -917,5 +939,6 @@ defmodule Spectre.Skill.Runtime do
   defp shape(value) when is_map(value), do: :map
   defp shape(value) when is_list(value), do: :list
   defp shape(value) when is_binary(value), do: :binary
+  defp shape(value) when is_tuple(value), do: :tuple
   defp shape(_value), do: :other
 end

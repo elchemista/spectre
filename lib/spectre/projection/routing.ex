@@ -31,7 +31,9 @@ defmodule Spectre.Projection.Routing do
     with {:ok, profile} <- index_profile(Keyword.get(opts, :index_profile, %{})),
          {:ok, applicability} <- component_payload(canonical, :applicability),
          {:ok, routing} <- component_payload(canonical, :routing),
-         {:ok, prompts} <- component_payload(canonical, :prompt_fragments) do
+         {:ok, prompts} <- component_payload(canonical, :prompt_fragments),
+         {:ok, routes} <- map_entries(routing, :rules, :route),
+         {:ok, fragments} <- map_entries(prompts, :fragments, :prompt_fragment) do
       definition_ref = canonical |> Canonical.ref() |> Ref.to_string()
       profile_data = IndexProfile.to_data(profile)
 
@@ -45,8 +47,8 @@ defmodule Spectre.Projection.Routing do
            origin: canonical.origin
          },
          applicability: applicability,
-         routes: routing |> Map.get(:rules, []) |> Enum.map(&route_summary/1),
-         prompt: prompt_summary(prompts),
+         routes: Enum.map(routes, &route_summary/1),
+         prompt: prompt_summary(prompts, fragments),
          index_profile: profile_data,
          cache_key:
            Value.digest!(%{
@@ -74,6 +76,34 @@ defmodule Spectre.Projection.Routing do
   @spec index_profile(term()) :: {:ok, IndexProfile.t()} | {:error, term()}
   defp index_profile(%IndexProfile{} = profile), do: IndexProfile.new(profile)
   defp index_profile(profile), do: IndexProfile.new(profile)
+
+  @spec map_entries(map(), atom(), :prompt_fragment | :route) ::
+          {:ok, [map()]} | {:error, term()}
+  defp map_entries(payload, key, type) do
+    case get(payload, key, []) do
+      entries when is_list(entries) -> validate_map_entries(entries, type)
+      value -> {:error, {invalid_collection_error(type), shape(value)}}
+    end
+  end
+
+  @spec validate_map_entries([term()], :prompt_fragment | :route) ::
+          {:ok, [map()]} | {:error, term()}
+  defp validate_map_entries(entries, type) do
+    case Enum.find_index(entries, &(not is_map(&1))) do
+      nil -> {:ok, entries}
+      index -> {:error, {invalid_entry_error(type), index, shape(Enum.at(entries, index))}}
+    end
+  end
+
+  defp invalid_collection_error(:route), do: :invalid_routing_projection_routes
+
+  defp invalid_collection_error(:prompt_fragment),
+    do: :invalid_routing_projection_prompt_fragments
+
+  defp invalid_entry_error(:route), do: :invalid_routing_projection_route
+
+  defp invalid_entry_error(:prompt_fragment),
+    do: :invalid_routing_projection_prompt_fragment
 
   @spec route_summary(map()) :: map()
   defp route_summary(rule) do
@@ -120,10 +150,8 @@ defmodule Spectre.Projection.Routing do
 
   defp handler_summary(_handler), do: %{kind: :unknown}
 
-  @spec prompt_summary(map()) :: map()
-  defp prompt_summary(prompts) do
-    fragments = get(prompts, :fragments, [])
-
+  @spec prompt_summary(map(), [map()]) :: map()
+  defp prompt_summary(prompts, fragments) do
     %{
       budget: get(prompts, :budget),
       fragments:
@@ -145,4 +173,12 @@ defmodule Spectre.Projection.Routing do
   defp get(map, key, default \\ nil) do
     Map.get(map, key, Map.get(map, Atom.to_string(key), default))
   end
+
+  @spec shape(term()) :: atom()
+  defp shape(value) when is_map(value), do: :map
+  defp shape(value) when is_list(value), do: :list
+  defp shape(value) when is_binary(value), do: :binary
+  defp shape(value) when is_tuple(value), do: :tuple
+  defp shape(value) when is_atom(value), do: :atom
+  defp shape(_value), do: :other
 end

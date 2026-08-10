@@ -150,8 +150,10 @@ defmodule Spectre.Skill.Definition do
 
   @doc "Validates and wraps an existing canonical Skill Definition."
   @spec from_canonical(Canonical.t()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(%Canonical{kind: :skill} = canonical) do
-    with :ok <- required_components(canonical),
+  def from_canonical(%Canonical{} = canonical) do
+    with {:ok, canonical} <- normalize_canonical(canonical),
+         :ok <- require_skill_canonical(canonical),
+         :ok <- required_components(canonical),
          :ok <- reject_runtime_code(canonical),
          {:ok, _applicability} <- canonical_applicability(canonical),
          {:ok, fragments} <- canonical_fragments(canonical),
@@ -165,9 +167,6 @@ defmodule Spectre.Skill.Definition do
       {:error, _reason} = error -> error
     end
   end
-
-  def from_canonical(%Canonical{kind: kind}),
-    do: {:error, {:canonical_definition_is_not_skill, kind}}
 
   def from_canonical(value), do: {:error, {:invalid_canonical_skill, shape(value)}}
 
@@ -245,13 +244,14 @@ defmodule Spectre.Skill.Definition do
   @spec route(t(), Input.t() | String.t() | map() | term()) ::
           {:ok, map()} | {:error, term()}
   def route(%__MODULE__{} = definition, input) do
-    input = Input.new(input)
-    matches = Enum.filter(routes(definition), &route_matches?(&1, input))
+    with {:ok, input} <- normalize_input(input) do
+      matches = Enum.filter(routes(definition), &route_matches?(&1, input))
 
-    case matches do
-      [rule] -> {:ok, rule}
-      [] -> {:error, :skill_route_not_found}
-      rules -> {:error, {:ambiguous_skill_route, Enum.map(rules, &get(&1, :label))}}
+      case matches do
+        [rule] -> {:ok, rule}
+        [] -> {:error, :skill_route_not_found}
+        rules -> {:error, {:ambiguous_skill_route, Enum.map(rules, &get(&1, :label))}}
+      end
     end
   end
 
@@ -264,7 +264,7 @@ defmodule Spectre.Skill.Definition do
       Enum.reject(applicability.positive, &match?({:ok, _rule}, route(definition, &1)))
 
     negative_failures =
-      Enum.filter(applicability.negative, &match?({:ok, _rule}, route(definition, &1)))
+      Enum.filter(applicability.negative, &negative_example_matches?(definition, &1))
 
     if positive_failures == [] and negative_failures == [] do
       {:ok,
@@ -646,6 +646,19 @@ defmodule Spectre.Skill.Definition do
     end
   end
 
+  @spec normalize_canonical(Canonical.t()) :: {:ok, Canonical.t()} | {:error, term()}
+  defp normalize_canonical(%Canonical{} = canonical) do
+    with {:ok, canonical} <- canonical |> Map.from_struct() |> Canonical.new() do
+      canonical |> Canonical.to_data() |> Canonical.from_data()
+    end
+  end
+
+  @spec require_skill_canonical(Canonical.t()) :: :ok | {:error, term()}
+  defp require_skill_canonical(%Canonical{kind: :skill}), do: :ok
+
+  defp require_skill_canonical(%Canonical{kind: kind}),
+    do: {:error, {:canonical_definition_is_not_skill, kind}}
+
   @spec required_components(Canonical.t()) :: :ok | {:error, term()}
   defp required_components(canonical) do
     case Enum.find(@component_specs, fn {type, _schema, _criticality} ->
@@ -693,6 +706,7 @@ defmodule Spectre.Skill.Definition do
          declared when is_map(declared) <- get(payload, :declared, %{}) do
       Applicability.new(declared)
     else
+      {:error, _reason} = error -> error
       value -> {:error, {:invalid_canonical_skill_applicability, value}}
     end
   end
@@ -827,12 +841,14 @@ defmodule Spectre.Skill.Definition do
   @spec canonical_operation_refs(Canonical.t()) :: {:ok, [term()]} | {:error, term()}
   defp canonical_operation_refs(canonical) do
     with {:ok, payload} <- component_payload(canonical, :requirements),
-         requested when is_list(requested) <- get(payload, :requested, []) do
+         requested when is_list(requested) <- get(payload, :requested, []),
+         :ok <- validate_canonical_entries(requested, :requirement) do
       requested
       |> Enum.filter(&(get(&1, :kind) in [:operation, "operation"]))
       |> Enum.map(&get(&1, :name))
       |> normalize_operation_refs()
     else
+      {:error, _reason} = error -> error
       value -> {:error, {:invalid_canonical_skill_requirements, value}}
     end
   end
@@ -840,12 +856,30 @@ defmodule Spectre.Skill.Definition do
   @spec canonical_routes(Canonical.t()) :: {:ok, [map()]} | {:error, term()}
   defp canonical_routes(canonical) do
     with {:ok, payload} <- component_payload(canonical, :routing),
-         routes when is_list(routes) <- get(payload, :rules, []) do
+         routes when is_list(routes) <- get(payload, :rules, []),
+         :ok <- validate_canonical_entries(routes, :route) do
       {:ok, routes}
     else
+      {:error, _reason} = error -> error
       value -> {:error, {:invalid_canonical_skill_routing, value}}
     end
   end
+
+  @spec validate_canonical_entries([term()], :requirement | :route) :: :ok | {:error, term()}
+  defp validate_canonical_entries(entries, type) do
+    entries
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn
+      {entry, _index}, :ok when is_map(entry) ->
+        {:cont, :ok}
+
+      {entry, index}, :ok ->
+        {:halt, {:error, {canonical_entry_error(type), index, shape(entry)}}}
+    end)
+  end
+
+  defp canonical_entry_error(:requirement), do: :invalid_canonical_skill_requirement
+  defp canonical_entry_error(:route), do: :invalid_canonical_skill_route
 
   @spec validate_handlers([map()], [Fragment.t()], [term()], :compiled | :runtime) ::
           :ok | {:error, term()}
@@ -993,6 +1027,23 @@ defmodule Spectre.Skill.Definition do
     do: input.text == expected
 
   defp check_matches?(_check, _input), do: false
+
+  @spec negative_example_matches?(t(), String.t()) :: boolean()
+  defp negative_example_matches?(definition, example) do
+    case route(definition, example) do
+      {:ok, _rule} -> true
+      {:error, {:ambiguous_skill_route, _labels}} -> true
+      {:error, _reason} -> false
+    end
+  end
+
+  @spec normalize_input(term()) :: {:ok, Input.t()} | {:error, term()}
+  defp normalize_input(input) do
+    {:ok, Input.new(input)}
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError] ->
+      {:error, {:invalid_skill_input, shape(input)}}
+  end
 
   @spec fragment_data(Fragment.t()) :: map()
   defp fragment_data(fragment) do

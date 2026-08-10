@@ -22,6 +22,11 @@ response time Spectre may resolve such a string only to an identically named
 ID already present in the host Agent registry; resolution never creates an
 atom or registers an executor.
 
+`from_canonical/1` revalidates both encoded data and in-memory Canonical
+structs, including component envelopes and route/requirement entry shapes.
+Mount repeats that boundary for prebuilt `Spectre.Skill.Definition` values, so
+constructing or altering a struct never marks it as trusted.
+
 ## Equivalent compiled and runtime definitions
 
 A compiled Skill can refer to a closed Agent operation:
@@ -140,7 +145,8 @@ Routing evaluates only active mounts. If equally specific Skills both match,
 `route/3` returns `{:ambiguous_skill_applicability, ...}` rather than choosing
 one by map order. Specificity counts positive eligibility constraints (scope
 and required tags). Forbidden tags only exclude matching contexts and cannot
-be added to manufacture routing priority.
+be added to manufacture routing priority. A negative anti-hijack example fails
+when either one route or several ambiguous routes match it.
 
 ## Operation boundary and draining
 
@@ -158,6 +164,10 @@ pins a continuation to the exact Skill Definition Ref:
 
 %Spectre.Operation.Request{} = response.operation_request
 ```
+
+Inputs that cannot be normalized return
+`{:error, {:invalid_skill_input, shape}}`; they never escape through the
+`String.Chars` protocol.
 
 The host executes or schedules that request through its normal trusted
 boundary. Disabling a Skill with live continuations moves it to `:draining`:
@@ -188,7 +198,9 @@ values return an error and never crash the host through `String.Chars`.
 canonical Definition and a `Spectre.Router.IndexProfile`. Projection identity
 binds the Definition Ref, generator version, profile, and cache key. Prompt
 content and compiled callback descriptors are not copied into the routing
-view. Derived indexes are disposable and may be rebuilt from these inputs.
+view. Route and prompt-fragment collections are shape-checked before
+projection, with indexed errors for malformed entries. Derived indexes are
+disposable and may be rebuilt from these inputs.
 
 The compatibility fixture at
 `test/fixtures/compatibility/0.2.7/runtime-skill-routing-v1.json` pins the
