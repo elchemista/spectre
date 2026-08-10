@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.1"
+  @version "0.2.2"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -12,6 +12,7 @@ defmodule Spectre.MixProject do
     "docs/INTEGRATIONS.md",
     "docs/DSL.md",
     "docs/CANONICAL_DEFINITIONS.md",
+    "docs/DEFINITION_STORE.md",
     "docs/STACK.md",
     "docs/RUNS.md",
     "docs/INSTANCES.md",
@@ -129,6 +130,7 @@ defmodule Spectre.MixProject do
           "docs/INTEGRATIONS.md",
           "docs/DSL.md",
           "docs/CANONICAL_DEFINITIONS.md",
+          "docs/DEFINITION_STORE.md",
           "docs/STACK.md",
           "docs/RUNS.md",
           "docs/INSTANCES.md",
@@ -161,10 +163,18 @@ defmodule Spectre.MixProject do
       ],
       groups_for_modules: [
         "Canonical definitions and projections": [
+          Spectre.Authority.Envelope,
           Spectre.Canonical.Value,
           Spectre.Definition.Canonical,
           Spectre.Definition.Component,
+          Spectre.Definition.ContractRegistry,
+          Spectre.Definition.Manifest,
           Spectre.Definition.Ref,
+          Spectre.Definition.Resolver,
+          Spectre.Definition.Store,
+          Spectre.Definition.Store.Conformance,
+          Spectre.Definition.Store.Memory,
+          Spectre.Execution.Closure,
           Spectre.Projection,
           Spectre.Projection.Audit
         ],
@@ -287,6 +297,7 @@ defmodule Spectre.MixProject do
         Extensions: [
           Spectre.Extension,
           Spectre.Stack.Contract.V1,
+          Spectre.Stack.Contract.V2,
           Spectre.Stack.Definition,
           Spectre.Stack.Installable,
           Spectre.Stack.Installation,

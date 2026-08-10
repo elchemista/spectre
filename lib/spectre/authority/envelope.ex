@@ -138,19 +138,21 @@ defmodule Spectre.Authority.Envelope do
     @grant_fields
     |> Map.new(fn field -> {Atom.to_string(field), Map.fetch!(envelope, field)} end)
     |> Map.put("schema_version", envelope.schema_version)
-    |> Map.put("limits", envelope.limits)
+    |> Map.put("limits", encode_limits(envelope.limits))
   end
 
   @doc "Restores an envelope from decoded canonical data."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
   def from_data(%{"schema_version" => schema_version, "limits" => limits} = data) do
-    attrs =
-      Enum.reduce(@grant_fields, %{schema_version: schema_version, limits: limits}, fn field,
-                                                                                       acc ->
-        Map.put(acc, field, Map.get(data, Atom.to_string(field), []))
-      end)
+    with {:ok, limits} <- decode_limits(limits) do
+      attrs =
+        Enum.reduce(@grant_fields, %{schema_version: schema_version, limits: limits}, fn field,
+                                                                                         acc ->
+          Map.put(acc, field, Map.get(data, Atom.to_string(field), []))
+        end)
 
-    new(attrs)
+      new(attrs)
+    end
   end
 
   def from_data(value), do: {:error, {:invalid_authority_envelope_data, shape(value)}}
@@ -261,6 +263,30 @@ defmodule Spectre.Authority.Envelope do
       {field, value}
     end)
   end
+
+  @spec encode_limits(map()) :: map()
+  defp encode_limits(limits),
+    do: Map.new(limits, fn {field, value} -> {Atom.to_string(field), value} end)
+
+  @spec decode_limits(term()) :: {:ok, map()} | {:error, term()}
+  defp decode_limits(limits) when is_map(limits) do
+    Enum.reduce_while(limits, {:ok, %{}}, fn {field, value}, {:ok, decoded} ->
+      case limit_field(field) do
+        {:ok, field} -> {:cont, {:ok, Map.put(decoded, field, value)}}
+        :error -> {:halt, {:error, {:unknown_authority_limits, [field]}}}
+      end
+    end)
+  end
+
+  defp decode_limits(value), do: {:error, {:invalid_authority_limits, shape(value)}}
+
+  @spec limit_field(term()) :: {:ok, atom()} | :error
+  defp limit_field("max_cost"), do: {:ok, :max_cost}
+  defp limit_field("max_duration_ms"), do: {:ok, :max_duration_ms}
+  defp limit_field("max_risk"), do: {:ok, :max_risk}
+  defp limit_field("max_tokens"), do: {:ok, :max_tokens}
+  defp limit_field(field) when field in @limit_fields, do: {:ok, field}
+  defp limit_field(_field), do: :error
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_list(value), do: :list

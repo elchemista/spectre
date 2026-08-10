@@ -4,6 +4,44 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.2 — 2026-08-10
+
+### Added
+
+- Added Manifest Contract V2, which seals one canonical Definition Ref with a
+  fail-closed `Spectre.Authority.Envelope`, a complete
+  `Spectre.Execution.Closure`, publisher/provenance Refs, lineage, and the exact
+  component-contract registry snapshot used during composition.
+- Added the trusted component contract registry. Unknown
+  `must_understand` schemas are rejected; opaque advisory and descriptive
+  components are preserved without acquiring semantics.
+- Added `Spectre.Definition.Store`, the volatile in-memory reference adapter,
+  and an adapter-neutral conformance contract. Publication is immutable,
+  idempotent, parent-aware, receipt-bearing, and verified by read-back.
+- Added `Spectre.Definition.Resolver`. Resolution revalidates Definition,
+  Manifest, receipt, component contracts, and caller-supplied build
+  observations; missing or changed code is blocked by default and never hidden.
+- Added Stack Contract V2 plus a read-only V1 adapter. V1 declarations remain
+  authority requests and receive grants only through an explicit host ceiling.
+- Added a Manifest V2 compatibility fixture exercised on both supported
+  OTP/Elixir CI combinations.
+
+### Safety
+
+- Durable checkpoint configuration is rejected when paired with a volatile
+  Definition Store.
+- Activation preparation must re-read a published Definition, Manifest, and
+  receipt from the Store. A crash after publish and before the future activation
+  CAS can therefore leave only an immutable orphan artifact.
+- Manifest schema maps use textual keys and closed enum decoding, preserving
+  atom-safe decode before implementation modules have been loaded.
+
+### Scope
+
+- This release does not yet change Agent identity, activate Definitions, write
+  checkpoint schema 2, promote Candidates, or execute runtime-authored Skills.
+  Those remain separate gated milestones.
+
 ## 0.2.1 — 2026-08-10
 
 ### Added

@@ -141,7 +141,8 @@ defmodule Spectre.Definition.Manifest do
       "definition_contract_version" => manifest.definition_ref.contract_version,
       "authority" => Envelope.to_data(manifest.authority),
       "execution_closure" => Closure.to_data(manifest.execution_closure),
-      "component_contracts" => manifest.component_contracts,
+      "component_contracts" =>
+        Enum.map(manifest.component_contracts, &contract_snapshot_to_data/1),
       "parent_refs" => Enum.map(manifest.parent_refs, &Ref.to_string/1),
       "publisher_ref" => manifest.publisher_ref,
       "provenance_refs" => manifest.provenance_refs,
@@ -172,6 +173,7 @@ defmodule Spectre.Definition.Manifest do
            ),
          {:ok, authority} <- Envelope.from_data(authority),
          {:ok, closure} <- Closure.from_data(closure),
+         {:ok, component_contracts} <- contracts_from_data(component_contracts),
          {:ok, parent_refs} <-
            parse_refs(parent_refs, canonicalization_version, definition_contract_version) do
       new(%{
@@ -328,6 +330,71 @@ defmodule Spectre.Definition.Manifest do
   defp valid_contract_version?(:understood, version), do: is_integer(version) and version > 0
   defp valid_contract_version?(:opaque, version), do: is_nil(version)
   defp valid_contract_version?(_status, _version), do: false
+
+  @spec contract_snapshot_to_data(map()) :: map()
+  defp contract_snapshot_to_data(contract) do
+    %{
+      "component_type" => contract.component_type,
+      "schema_ref" => contract.schema_ref,
+      "criticality" => Atom.to_string(contract.criticality),
+      "contract_version" => contract.contract_version,
+      "status" => Atom.to_string(contract.status)
+    }
+  end
+
+  @spec contracts_from_data(term()) :: {:ok, [map()]} | {:error, term()}
+  defp contracts_from_data(contracts) when is_list(contracts) do
+    Enum.reduce_while(contracts, {:ok, []}, fn contract, {:ok, decoded} ->
+      case contract_from_data(contract) do
+        {:ok, contract} -> {:cont, {:ok, [contract | decoded]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp contracts_from_data(value),
+    do: {:error, {:invalid_component_contract_snapshot, shape(value)}}
+
+  @spec contract_from_data(term()) :: {:ok, map()} | {:error, term()}
+  defp contract_from_data(%{
+         "component_type" => component_type,
+         "schema_ref" => schema_ref,
+         "criticality" => criticality,
+         "contract_version" => contract_version,
+         "status" => status
+       }) do
+    with {:ok, criticality} <- criticality_from_data(criticality),
+         {:ok, status} <- contract_status_from_data(status) do
+      {:ok,
+       %{
+         component_type: component_type,
+         schema_ref: schema_ref,
+         criticality: criticality,
+         contract_version: contract_version,
+         status: status
+       }}
+    end
+  end
+
+  defp contract_from_data(_value), do: {:error, :invalid_component_contract_snapshot}
+
+  @spec criticality_from_data(term()) ::
+          {:ok, :must_understand | :advisory | :descriptive} | {:error, term()}
+  defp criticality_from_data("must_understand"), do: {:ok, :must_understand}
+  defp criticality_from_data("advisory"), do: {:ok, :advisory}
+  defp criticality_from_data("descriptive"), do: {:ok, :descriptive}
+  defp criticality_from_data(value), do: {:error, {:invalid_component_criticality, value}}
+
+  @spec contract_status_from_data(term()) :: {:ok, :understood | :opaque} | {:error, term()}
+  defp contract_status_from_data("understood"), do: {:ok, :understood}
+  defp contract_status_from_data("opaque"), do: {:ok, :opaque}
+
+  defp contract_status_from_data(value),
+    do: {:error, {:invalid_component_contract_status, value}}
 
   @spec normalize_parent_refs(term()) :: {:ok, [Ref.t()]} | {:error, term()}
   defp normalize_parent_refs(refs) when is_list(refs) do

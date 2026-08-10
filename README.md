@@ -35,11 +35,23 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.1` adds content-addressed canonical Definitions and exact Audit
-> projections to the vNext core. The full suite exceeds 90%
+> Spectre `0.2.2` adds sealed Manifest V2 publication and verified Definition
+> resolution to the vNext core. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.2.2 Definition Publication Foundation
+
+Version `0.2.2` seals effective authority and execution dependencies together
+in `Spectre.Definition.Manifest`, publishes immutable canonical artifacts
+through `Spectre.Definition.Store`, and revalidates Ref, Manifest, receipt,
+component contracts, and code drift through `Spectre.Definition.Resolver`.
+
+Stack Contract V1 remains a read-only module-first input. Its declarations are
+requests and receive no grant without an explicit host ceiling. This release
+does not yet activate Definitions or change Agent/Instance identity. See
+[Definition Store, Resolver, and Manifest V2](docs/DEFINITION_STORE.md).
 
 ## 0.2.1 Canonical Definition Foundation
 
@@ -188,7 +200,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.1"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.2"}
   ]
 end
 ```
@@ -676,6 +688,9 @@ adapters on startup, and can stop after an idle timeout.
 - [Canonical Definitions and Audit Projections](docs/CANONICAL_DEFINITIONS.md) -
   portable Definition identity, governed prompt snapshots, and exact Audit
   projection contracts.
+- [Definition Store, Resolver, and Manifest V2](docs/DEFINITION_STORE.md) -
+  sealed authority/closure, immutable publication, conformance, and verified
+  resolution contracts.
 - [Skills](docs/SKILLS.md) - reusable scoped behavior, mounting, action
   requirements, prompts, policies, and complete examples.
 - [Stack](docs/STACK.md) - installable packages, immutable definitions,
@@ -707,7 +722,7 @@ adapters on startup, and can stop after an idle timeout.
 - [Testing](docs/TESTING.md) - verification commands, the ten-agent strategy
   matrix, local FastEmbed fixtures, and regression expectations.
 - [Public API](docs/API.md) - runtime entry points and lifecycle helpers.
-- [0.2.1 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [0.2.2 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

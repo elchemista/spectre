@@ -131,26 +131,34 @@ defmodule Spectre.Execution.Closure do
       "package_refs" => closure.package_refs,
       "contract_refs" => closure.contract_refs,
       "prompt_fragment_digests" => closure.prompt_fragment_digests,
-      "projection_generators" => closure.projection_generators,
+      "projection_generators" => Enum.map(closure.projection_generators, &generator_to_data/1),
       "state_schema_ref" => closure.state_schema_ref,
       "state_codec_ref" => closure.state_codec_ref,
       "model_profile_refs" => closure.model_profile_refs,
       "recording_refs" => closure.recording_refs,
-      "build_fingerprints" => closure.build_fingerprints,
+      "build_fingerprints" => Enum.map(closure.build_fingerprints, &fingerprint_to_data/1),
       "evaluation_corpus_digest" => closure.evaluation_corpus_digest,
-      "compatibility_mode" => closure.compatibility_mode
+      "compatibility_mode" => Atom.to_string(closure.compatibility_mode)
     }
   end
 
   @doc "Restores a closure from decoded canonical data."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
   def from_data(%{"schema_version" => schema_version} = data) do
-    attrs =
-      Enum.reduce(@required_fields, %{schema_version: schema_version}, fn field, acc ->
-        Map.put(acc, field, Map.get(data, Atom.to_string(field)))
-      end)
+    with {:ok, generators} <- generators_from_data(Map.get(data, "projection_generators")),
+         {:ok, fingerprints} <- fingerprints_from_data(Map.get(data, "build_fingerprints")),
+         {:ok, compatibility_mode} <-
+           compatibility_mode_from_data(Map.get(data, "compatibility_mode")) do
+      attrs =
+        Enum.reduce(@required_fields, %{schema_version: schema_version}, fn field, acc ->
+          Map.put(acc, field, Map.get(data, Atom.to_string(field)))
+        end)
+        |> Map.put(:projection_generators, generators)
+        |> Map.put(:build_fingerprints, fingerprints)
+        |> Map.put(:compatibility_mode, compatibility_mode)
 
-    new(attrs)
+      new(attrs)
+    end
   end
 
   def from_data(value), do: {:error, {:invalid_execution_closure_data, shape(value)}}
@@ -355,6 +363,77 @@ defmodule Spectre.Execution.Closure do
   defp build_drift(fingerprint, {:ok, digest}) when digest == fingerprint.digest, do: []
   defp build_drift(fingerprint, {:ok, digest}), do: [drift(fingerprint, digest, :changed)]
   defp build_drift(fingerprint, :error), do: [drift(fingerprint, nil, :missing)]
+
+  @spec generator_to_data(map()) :: map()
+  defp generator_to_data(generator),
+    do: %{"id" => generator.id, "version" => generator.version}
+
+  @spec generators_from_data(term()) :: {:ok, [map()]} | {:error, term()}
+  defp generators_from_data(generators) when is_list(generators) do
+    Enum.reduce_while(generators, {:ok, []}, fn
+      %{"id" => id, "version" => version}, {:ok, decoded} ->
+        {:cont, {:ok, [%{id: id, version: version} | decoded]}}
+
+      _value, _acc ->
+        {:halt, {:error, :invalid_projection_generators}}
+    end)
+    |> reverse_result()
+  end
+
+  defp generators_from_data(_value), do: {:error, :invalid_projection_generators}
+
+  @spec fingerprint_to_data(fingerprint()) :: map()
+  defp fingerprint_to_data(fingerprint) do
+    %{
+      "ref" => fingerprint.ref,
+      "digest" => fingerprint.digest,
+      "drift_policy" => Atom.to_string(fingerprint.drift_policy)
+    }
+  end
+
+  @spec fingerprints_from_data(term()) :: {:ok, [fingerprint()]} | {:error, term()}
+  defp fingerprints_from_data(fingerprints) when is_list(fingerprints) do
+    Enum.reduce_while(fingerprints, {:ok, []}, fn fingerprint, {:ok, decoded} ->
+      case fingerprint_from_data(fingerprint) do
+        {:ok, fingerprint} -> {:cont, {:ok, [fingerprint | decoded]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> reverse_result()
+  end
+
+  defp fingerprints_from_data(_value), do: {:error, :invalid_build_fingerprints}
+
+  @spec fingerprint_from_data(term()) :: {:ok, fingerprint()} | {:error, term()}
+  defp fingerprint_from_data(%{
+         "ref" => ref,
+         "digest" => digest,
+         "drift_policy" => policy
+       }) do
+    with {:ok, policy} <- drift_policy_from_data(policy) do
+      {:ok, %{ref: ref, digest: digest, drift_policy: policy}}
+    end
+  end
+
+  defp fingerprint_from_data(_value), do: {:error, :invalid_build_fingerprints}
+
+  @spec drift_policy_from_data(term()) :: {:ok, :block | :report} | {:error, term()}
+  defp drift_policy_from_data("block"), do: {:ok, :block}
+  defp drift_policy_from_data("report"), do: {:ok, :report}
+  defp drift_policy_from_data(value), do: {:error, {:invalid_build_drift_policy, value}}
+
+  @spec compatibility_mode_from_data(term()) ::
+          {:ok, :native_v2 | :adapted_v1} | {:error, term()}
+  defp compatibility_mode_from_data("native_v2"), do: {:ok, :native_v2}
+  defp compatibility_mode_from_data("adapted_v1"), do: {:ok, :adapted_v1}
+
+  defp compatibility_mode_from_data(value),
+    do: {:error, {:invalid_execution_compatibility_mode, value}}
+
+  @spec reverse_result({:ok, [term()]} | {:error, term()}) ::
+          {:ok, [term()]} | {:error, term()}
+  defp reverse_result({:ok, values}), do: {:ok, Enum.reverse(values)}
+  defp reverse_result({:error, _reason} = error), do: error
 
   @spec drift(fingerprint(), String.t() | nil, :changed | :missing) :: drift()
   defp drift(fingerprint, observed, reason) do

@@ -1,6 +1,6 @@
-# Spectre public API — 0.2.1
+# Spectre public API — 0.2.2
 
-This file is the normative public API manifest for Spectre `0.2.1`. It retains
+This file is the normative public API manifest for Spectre `0.2.2`. It retains
 the recoverable `0.1.6` conversational surface and adds the vNext operational
 surface. Compatibility guarantees apply only to the modules and callables
 listed below. Any module, function, macro, or callback not listed here is an
@@ -48,6 +48,8 @@ type, and struct contract.
   - functions: `key/1`, `new/1`, `new/2`
 - `Spectre.Awaitable`
   - functions: `accept/2`, `cancel/1`, `expire/1`, `increment/1`, `open_policy/2`, `open_policy/3`, `reject/2`
+- `Spectre.Authority.Envelope`
+  - functions: `allows?/3`, `compose/2`, `compose!/2`, `digest/1`, `empty/0`, `from_data/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`
 - `Spectre.Canonical.Value`
   - functions: `decode/1`, `decode/2`, `digest/1`, `digest/2`, `digest!/1`, `digest!/2`, `digest_algorithm/0`, `encode/1`, `encode/2`, `encode!/1`, `encode!/2`, `validate/1`, `validate/2`, `version/0`
 - `Spectre.Classifier`
@@ -64,13 +66,26 @@ type, and struct contract.
 - `Spectre.Context`
   - functions: `halt/1`, `lifecycle_run_id/1`, `put_error/2`, `put_trace/2`
 - `Spectre.Definition`
-  - functions: `after_actions/1`, `canonical/1`, `canonical/2`, `canonical!/1`, `canonical!/2`, `fetch/1`, `fetch!/1`, `for_scope/2`, `for_scope!/2`, `injections/2`, `mount/2`, `new/1`, `policy/2`, `policy_name/1`, `policy_ref/2`, `policy_scope/1`, `prompt_root/2`, `protections/1`, `rules/1`
+  - functions: `after_actions/1`, `canonical/1`, `canonical/2`, `canonical!/1`, `canonical!/2`, `fetch/1`, `fetch!/1`, `for_scope/2`, `for_scope!/2`, `injections/2`, `manifest/1`, `manifest/2`, `manifest!/1`, `manifest!/2`, `mount/2`, `new/1`, `policy/2`, `policy_name/1`, `policy_ref/2`, `policy_scope/1`, `prompt_root/2`, `protections/1`, `rules/1`
 - `Spectre.Definition.Canonical`
   - functions: `canonicalization_version/0`, `contract_version/0`, `decode/1`, `digest/1`, `encode/1`, `encode!/1`, `fetch_component/2`, `from_data/1`, `lower/1`, `lower/2`, `lower!/1`, `lower!/2`, `new/1`, `new!/1`, `ref/1`, `to_data/1`
 - `Spectre.Definition.Component`
   - functions: `from_data/1`, `new/1`, `new!/1`, `to_data/1`
+- `Spectre.Definition.ContractRegistry`
+  - functions: `default/0`, `fetch/2`, `new/1`, `new!/1`, `register/2`, `snapshot/2`, `validate/2`, `verify_snapshot/3`
+- `Spectre.Definition.Manifest`
+  - functions: `contract_version/0`, `decode/1`, `digest/1`, `encode/1`, `encode!/1`, `from_data/1`, `new/1`, `new/3`, `new/4`, `new!/3`, `new!/4`, `schema_version/0`, `to_data/1`, `verify/2`, `verify/3`
 - `Spectre.Definition.Ref`
   - functions: `new/1`, `parse/1`, `parse/2`, `to_string/1`, `valid?/1`, `verify/2`
+- `Spectre.Definition.Resolver`
+  - functions: `resolve/2`, `resolve/3`, `resolve!/2`, `resolve!/3`, `resolve_for_activation/2`, `resolve_for_activation/3`
+- `Spectre.Definition.Store`
+  - functions: `artifact_schema_version/0`, `durability/1`, `fetch/2`, `fetch/3`, `identity/1`, `normalize/1`, `publish/3`, `publish/4`, `receipt_schema_version/0`, `validate_durability_pair/2`
+  - callbacks: `durability/1`, `get/2`, `identity/1`, `put/3`
+- `Spectre.Definition.Store.Conformance`
+  - functions: `read_after_restart/3`, `read_after_restart/4`, `run/3`, `run/4`
+- `Spectre.Definition.Store.Memory`
+  - functions: `count/1`, `start_link/0`, `start_link/1`
 - `Spectre.Definition.Validator`
   - functions: `validate!/1`
 - `Spectre.Effect`
@@ -91,6 +106,8 @@ type, and struct contract.
   - functions: `new/2`, `to_map/1`
 - `Spectre.Execution`
   - functions: `execute_pending/2`, `execute_pending/3`
+- `Spectre.Execution.Closure`
+  - functions: `compare_builds/2`, `digest/1`, `fingerprint/1`, `fingerprint_entry/2`, `fingerprint_entry/3`, `from_data/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`
 - `Spectre.Extension`
   - functions: `action_planner/1`, `action_providers/1`, `effect_executors/1`, `expand_handler/3`, `fetch/2`, `merge_agent_config/2`, `register!/2`, `register!/3`
   - callbacks: `action_planner/1`, `action_providers/1`, `agent_config/1`, `api_version/0`, `compile/2`, `effect_executors/1`, `expand_handler/3`, `flow_constraints/2`, `id/0`, `inference_selector/1`, `setup/2`
@@ -300,7 +317,9 @@ type, and struct contract.
 - `Spectre.Stack.Binding`
   - functions: `config/2`, `installation/2`, `refs/1`
 - `Spectre.Stack.Contract.V1`
-  - functions: `assert_installable!/1`, `verify_installable/1`, `verify_manifest/2`, `version/0`
+  - functions: `assert_installable!/1`, `to_v2/1`, `to_v2/2`, `verify_installable/1`, `verify_manifest/2`, `version/0`
+- `Spectre.Stack.Contract.V2`
+  - functions: `from_compiled/2`, `from_compiled/3`, `from_v1/1`, `from_v1/2`, `from_v1!/1`, `from_v1!/2`, `new/2`, `new!/2`, `to_data/1`, `version/0`
 - `Spectre.Stack.DSL`
   - functions: `compile!/3`
 - `Spectre.Stack.Definition`
