@@ -21,9 +21,14 @@ Candidates continue to activate through the same API.
    and Skill state explicitly.
 7. Execute GC plans only inside a backend transaction or lease that rechecks a
    complete reference inventory.
-8. Publish a non-empty protected evaluation corpus whose closure digest is the
-   canonical digest of its sorted case ids. Persist semantic-live profile,
-   variability, and expiry evidence when policy requires that gate.
+8. Publish a non-empty protected evaluation corpus whose closure digest comes
+   from `EvaluationDelta.protected_corpus_digest!/1`; it binds complete
+   normalized case content, sorted by id. Pass the same cases through
+   `protected_cases:` when building each delta.
+9. Persist semantic-live profile, variability, and expiry evidence when policy
+   requires that gate. Decide explicitly whether emergency restart/rollback
+   may use the narrowly scoped expired-receipt host flags documented in
+   `GOVERNANCE.md`.
 
 ## Compatibility details
 
@@ -43,6 +48,12 @@ The new portable schema versions are all 1:
 - evaluation delta and Human Report generator;
 - conservative GC plan.
 
+The `0.2.9` tag did not exist while these contracts were hardened (the latest
+published tag was `0.2.8`). Development snapshots of the 0.2.9 Candidate state,
+evaluation delta, Human Report, receipt, or compatibility fixture are not a
+supported durable format: regenerate them from the final 0.2.9 APIs. Schema 1
+denotes the finalized release contract, not those untagged pre-release bytes.
+
 ## Behavioral changes
 
 - A stale ChangeSet fails instead of rebasing implicitly.
@@ -51,6 +62,9 @@ The new portable schema versions are all 1:
 - Required gate options are additive. The constitutional floor cannot be
   reduced, evaluation deltas allow no protected regressions, and any attached
   failed receipt rejects the Candidate.
+- `EvaluationDelta.new/3` now requires `protected_cases:` and binds full case
+  content. `max_regressions` must be exactly zero and `min_score_delta` cannot
+  be negative; hosts that previously tolerated regressions must tighten policy.
 - Prompt and applicability ceilings are sealed into governed Candidate state
   and rechecked at activation/recovery; `scopes: []` is a wildcard and cannot
   pass a finite scope ceiling.
@@ -62,5 +76,7 @@ The new portable schema versions are all 1:
   it never promises to undo external Effects.
 - A GC inventory marked complete must actually be closed over Candidate and
   Definition lineage.
+- An incomplete GC inventory remains valid only as conservative retain-only
+  evidence. Definition Refs now require lowercase hexadecimal canonical text.
 
 See [Governed Definition Changes](GOVERNANCE.md) for the full host workflow.

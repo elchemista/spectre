@@ -93,19 +93,40 @@ cannot remove this floor; critical-risk Candidates also require
 the immutable Candidate and checked again from Store bytes during activation
 and restart recovery. A finite applicability scope ceiling rejects `scopes:
 []`, because an empty declaration means wildcard rather than “no scopes.”
+Applicability ceilings also cover positive and negative anti-hijack examples.
+Replacing a mounted Skill or updating its applicability may add examples but
+cannot remove any example already sealed into the mounted Definition.
 
 ## Review and anti-Goodhart evaluation
 
 `Spectre.Governance.EvaluationDelta` compares the parent and Candidate on the
 same protected corpus. Candidate-authored cases are obligations: they must
 pass, but have zero weight in the protected score and cannot hide a regression.
-The protected corpus must be non-empty, and its closure identity is the
-canonical digest of the sorted protected case ids. The Candidate and review
-receipt bind that digest, so evaluating an arbitrary subset fails closed.
+The protected corpus must be non-empty. Its closure identity is the canonical
+digest of the complete, normalized `Spectre.Eval.Case.to_data/1` objects sorted
+by case id—not a digest of ids alone. Inputs, expected routes/outcomes,
+strategies, allowed routes, LLM policy, state, tags, and duration limits are
+therefore all bound. The Candidate, delta, report, and review receipt bind that
+digest, so evaluating an arbitrary subset or swapping an oracle under the same
+id fails closed.
 
 ```elixir
+protected_cases = [
+  %{
+    id: "support-lookup",
+    input: "look up the customer",
+    expected_route: "LOOKUP",
+    expected_outcome: :route
+  }
+]
+
+protected_corpus_digest =
+  Spectre.Governance.EvaluationDelta.protected_corpus_digest!(protected_cases)
+
+# Seal protected_corpus_digest as closure.evaluation_corpus_digest.
 delta =
   Spectre.Governance.EvaluationDelta.new!(parent_results, candidate_results,
+    protected_cases: protected_cases,
     candidate_case_ids: candidate_case_ids,
     min_score_delta: 0.0,
     max_regressions: 0
@@ -138,6 +159,18 @@ Each semantic-live receipt requires a profile, an expiry, and portable
 variability provenance of the form
 `%{"variability" => %{"sample_count" => n, "measure_digest" => sha256}}`
 with at least two samples.
+
+Expiry remains mandatory and is enforced for new activation. By default it is
+also enforced during restart recovery and rollback. If an already active
+critical deployment would otherwise be unrecoverable, trusted host
+configuration may set `allow_expired_semantic_live_recovery?: true` in the
+Instance's nested `opts`; an explicit rollback call may separately set
+`allow_expired_semantic_live_rollback?: true`. These emergency flags waive only
+the current-time expiry check for an already stored semantic-live receipt. The
+receipt's status, binding, checker id/version, profile, variability evidence,
+and original validity window are still verified. They never permit a new
+activation, and the host should re-attest and activate fresh evidence as soon
+as recovery is complete.
 
 The returned `Spectre.Projection.HumanReport` is a deterministic structural and
 textual projection. It binds parent/Candidate identities, gate receipt refs,
@@ -210,11 +243,15 @@ remain explicit host work; they are not inferred from Definition ancestry.
 
 ## Conservative artifact GC
 
-`Spectre.Governance.GC.plan/3` accepts a complete Candidate and Definition
-inventory plus every live activation, Run, checkpoint, Skill-state, and lineage
-reference. It returns a content-addressed `Spectre.Governance.GC.Plan`.
-Anything not explicitly requested as eligible is retained, and an inventory
-that is not closed over Candidate/Manifest ancestry is rejected.
+`Spectre.Governance.GC.plan/3` accepts a Candidate and Definition inventory plus
+every known live activation, Run, checkpoint, Skill-state, and lineage
+reference. Its default `inventory_complete?: false` mode is deliberately
+retain-only: missing ancestors are not claimed as inspected evidence and every
+decision carries `inventory_not_complete`. Set `inventory_complete?: true`
+only after supplying the full inventory; that mode rejects an inventory not
+closed over Candidate/Manifest ancestry. The result is a content-addressed
+`Spectre.Governance.GC.Plan`, and anything not explicitly requested as eligible
+is retained.
 
 Candidate live references have the same explicit classes as Definition refs:
 `run_candidate_refs`, `checkpoint_candidate_refs`,

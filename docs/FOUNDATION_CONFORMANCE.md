@@ -113,9 +113,10 @@ Spectre 0.2.9 appends the governance matrix: ChangeSet, governed Candidate
 state, gate receipt, evaluation delta, Human Report generator, and conservative
 GC plan are all version 1. The separate
 `0.2.9/governance-v1.json` fixture crosses the production canonical and JSON
-boundaries and pins their identities. The gate also checks the public compose,
-review, approval, rollback, and GC entry points. Durable State, Run, and
-Instance reader/writer contracts remain unchanged.
+boundaries and pins their identities, including complete protected evaluation
+case content. The gate also checks the public corpus-digest, compose, review,
+approval, rollback, and GC entry points. Durable State, Run, and Instance
+reader/writer contracts remain unchanged.
 
 ## What the gate does not authorize
 

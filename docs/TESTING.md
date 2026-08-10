@@ -58,8 +58,11 @@ rejection, closed handler registration, authority and applicability ceilings,
 Candidate-case anti-Goodhart weighting, checker-version and receipt binding,
 separate human approval and activation, Store re-reads, owner/generation CAS,
 ancestor-only rollback, JSON-stable reports and plans, and conservative GC
-inventory closure. The permanent 0.2.9 fixture pins portable ChangeSet,
-Candidate-state, receipt, evaluation, report, and GC schema identities.
+inventory closure. Regression cases also prove full-content protected-corpus
+binding, retain-only partial GC, monotonic anti-hijack examples, inline mount
+verification, and separate host-only semantic recovery/rollback escapes. The
+permanent 0.2.9 fixture pins portable ChangeSet, Candidate-state, receipt,
+evaluation, report, and GC schema identities.
 
 ## What a contract test must prove
 

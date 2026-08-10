@@ -105,7 +105,7 @@ type, and struct contract.
 - `Spectre.Eval`
   - functions: `load/1`, `run/2`, `run/3`
 - `Spectre.Eval.Case`
-  - functions: `expected_routes/1`, `new/1`
+  - functions: `expected_routes/1`, `new/1`, `to_data/1`
 - `Spectre.Eval.Report`
   - functions: `acceptable?/1`, `acceptable?/2`, `format/1`, `new/1`, `to_map/1`
 - `Spectre.Eval.Result`
@@ -164,7 +164,7 @@ type, and struct contract.
 - `Spectre.Governance.Composer`
   - functions: `compose/2`, `compose/3`
 - `Spectre.Governance.EvaluationDelta`
-  - functions: `digest/1`, `from_data/1`, `new/2`, `new/3`, `new!/2`, `new!/3`, `to_data/1`
+  - functions: `digest/1`, `from_data/1`, `new/2`, `new/3`, `new!/2`, `new!/3`, `protected_corpus_digest/1`, `protected_corpus_digest!/1`, `to_data/1`
 - `Spectre.Governance.GC`
   - functions: `plan/2`, `plan/3`
 - `Spectre.Governance.GC.Plan`

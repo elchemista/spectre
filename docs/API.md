@@ -35,6 +35,11 @@ receipts and a protected-corpus `EvaluationDelta`, while
 `Spectre.Governance.Approval` makes the risk decision as a separate Store
 commit.
 
+Build the closure's protected corpus identity with
+`Spectre.Governance.EvaluationDelta.protected_corpus_digest!/1` and pass those
+same complete cases as `protected_cases:` to `EvaluationDelta.new/3`. The
+digest binds canonical case content, not only case ids.
+
 Only then may trusted host code call `Spectre.activate/3`. Governed activation
 and recovery re-read Candidate, Definition, Manifest, publication receipt, and
 gate receipts before the existing generation CAS. Use `Spectre.rollback/3`
