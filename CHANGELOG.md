@@ -4,6 +4,51 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.2.9 — 2026-08-10
+
+### Added
+
+- Added portable, content-addressed `Spectre.Governance.ChangeSet` proposals
+  bound to an exact active Candidate, Definition, authority epoch, activation
+  receipt, and evidence digest. The built-in vocabulary covers runtime Skill
+  mount/replace/disable, bounded mutable config and applicability, Candidate
+  evaluation cases, and registered state migrations.
+- Added the trusted `Spectre.Governance.Composer` and compiled handler Registry.
+  Composition re-reads the parent, forbids authority expansion, derives the
+  closure, publishes Definition/Manifest and gate receipts, and returns only a
+  governed Candidate Ref.
+- Added the governed Candidate state machine, content-addressed gate receipts,
+  fixed checker-version policy, protected-corpus evaluation delta, deterministic
+  Human Report projection, separate review and approval commits, and risk-based
+  human approval.
+- Added governed activation/recovery verification and ancestor-only
+  `Spectre.rollback/3` through the existing owner fence and activation-generation
+  CAS.
+- Added conservative administered GC plans that retain by default, verify a
+  complete ancestry-closed inventory, and leave deletion to a revalidated
+  backend transaction or lease.
+- Added the permanent 0.2.9 governance compatibility fixture and conformance
+  matrix.
+
+### Safety and scope
+
+- ChangeSets and operation payloads are bounded JSON-shaped data and cannot
+  carry code references, callbacks, structs, processes, authority grants, or
+  arbitrary dispatch targets. Host-registered handlers are constrained to
+  their declared component classes.
+- Publication, review, approval, activation, rollback, and GC remain explicit
+  host actions. Approval never activates a Candidate; rollback never claims to
+  reverse external Effects; a GC plan never deletes artifacts.
+- Candidate-authored evaluation cases have zero protected-score weight and
+  must pass as additional obligations. Gate and approval receipts are re-read
+  and rebound to exact Definition, closure, corpus, checker, validity-window,
+  and proposal identities immediately before activation.
+- Candidate portable loads reject unknown fields, ambiguous keyword input,
+  malformed governance state, and promotion chains that skip a review state.
+- State remains writer v5, Run remains writer v2, and canonical Instance
+  checkpoints remain schema 4. Existing bootstrap Candidates remain valid and
+  all earlier compatibility fixtures are unchanged.
+
 ## 0.2.8 — 2026-08-10
 
 ### Added

@@ -5,6 +5,19 @@ application business logic. Version 0.2.0 completes the vNext core foundation;
 future work extends adapters and distributed integration without adding a
 second owner for Agent or operational state.
 
+## 0.2.9 governed Definition changes — complete
+
+Closed ChangeSets now derive immutable Candidate Definitions through a trusted
+host Composer and registered operation vocabulary. Exact gate receipts,
+protected-corpus evaluation deltas, deterministic human reports, risk-based
+approval, activation re-verification, ancestor rollback, and conservative GC
+all compose over existing Store, Manifest, closure, owner-fence, and CAS
+contracts. Runtime data still cannot introduce code, authority, or activation.
+
+State remains writer v5, Run remains writer v2, and canonical Instance
+checkpoints remain schema 4. The next gate is reflective inspection over these
+governed identities; it must not bypass the approval or activation boundary.
+
 ## 0.2.8 data-driven execution — complete
 
 Compiled and runtime-authored precise Work now share one portable Program IR
@@ -14,8 +27,8 @@ Flow/Work handoffs, registered pure state migrations, and deterministic
 no-Effect rehearsal. Runtime data cannot introduce code or authority.
 
 State remains writer v5, Run remains writer v2, and canonical Instance
-checkpoints remain schema 4. The next gate is governance; it must compose over
-these identities and host boundaries rather than add another executor.
+checkpoints remain schema 4. Governance composes over these identities and host
+boundaries rather than adding another executor.
 
 ## 0.2.0 vNext core — complete
 

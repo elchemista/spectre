@@ -53,6 +53,14 @@ registered migration receipts, real retry transitions, and rehearsal with
 zero Effect dispatches. The permanent 0.2.8 fixture pins Program, input,
 final-state, and rehearsal digests.
 
+`test/governance_gate_test.exs` adds the 0.2.9 gate. It proves stale-base
+rejection, closed handler registration, authority and applicability ceilings,
+Candidate-case anti-Goodhart weighting, checker-version and receipt binding,
+separate human approval and activation, Store re-reads, owner/generation CAS,
+ancestor-only rollback, JSON-stable reports and plans, and conservative GC
+inventory closure. The permanent 0.2.9 fixture pins portable ChangeSet,
+Candidate-state, receipt, evaluation, report, and GC schema identities.
+
 ## What a contract test must prove
 
 A passing output assertion is not enough for code that crosses process,
