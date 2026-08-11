@@ -7,6 +7,9 @@ defmodule Spectre.Stack.Value do
   deterministic digests and entry identifiers from portable values.
   """
 
+  alias Spectre.Canonical.Value, as: CanonicalValue
+  alias Spectre.Run.Value, as: RunValue
+
   @doc """
   Returns `true` when `value` contains no PID, port, reference, function or
   improper list at any depth.
@@ -62,10 +65,10 @@ defmodule Spectre.Stack.Value do
   """
   @spec digest(term()) :: String.t()
   def digest(value) do
-    value
-    |> :erlang.term_to_binary([:deterministic])
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
+    case RunValue.encode(value) do
+      {:ok, encoded} -> CanonicalValue.digest!(encoded)
+      {:error, reason} -> raise ArgumentError, "nonportable stack value: #{inspect(reason)}"
+    end
   end
 
   @doc """

@@ -19,6 +19,7 @@ defmodule Spectre.Governance.Composer do
   alias Spectre.Definition.Resolver
   alias Spectre.Definition.Store
   alias Spectre.Execution.Closure
+  alias Spectre.Execution.Program
   alias Spectre.Gate.Receipt
   alias Spectre.Gate.Receipt.Ref, as: ReceiptRef
   alias Spectre.Governance.Authority
@@ -28,6 +29,7 @@ defmodule Spectre.Governance.Composer do
   alias Spectre.Governance.Composition
   alias Spectre.Governance.Constraints
   alias Spectre.Instance.Activation
+  alias Spectre.Morph.Surface
   alias Spectre.Skill.Definition, as: SkillDefinition
 
   @builtin_gates [:structural, :authority, :closure, :prompt_budget, :applicability]
@@ -41,7 +43,8 @@ defmodule Spectre.Governance.Composer do
   def compose(store, change_set, opts) when is_list(opts) do
     with {:ok, change_set} <- ChangeSet.new(change_set),
          %Activation{} = activation <- Keyword.get(opts, :activation),
-         :ok <- ChangeSet.verify_base(change_set, activation),
+         :ok <-
+           ChangeSet.verify_base(change_set, activation, Keyword.get(opts, :evidence, %{})),
          {:ok, registry} <- registry(Keyword.get(opts, :handler_registry)),
          {:ok, parent} <-
            Resolver.resolve_for_activation(
@@ -50,6 +53,7 @@ defmodule Spectre.Governance.Composer do
              resolver_opts(opts)
            ),
          :ok <- verify_parent_activation(parent, activation),
+         {:ok, opts} <- Surface.constrain(parent.definition, change_set.operations, opts),
          {:ok, authority} <- effective_authority(parent.manifest.authority, opts),
          {:ok, constraints} <- Constraints.new(authority, opts),
          {:ok, composition} <-
@@ -60,6 +64,12 @@ defmodule Spectre.Governance.Composer do
              composition_context(authority, constraints, opts)
            ),
          {:ok, definition} <- finalize_definition(composition.definition, change_set),
+         :ok <-
+           Surface.verify_evaluation_obligations(
+             parent.definition,
+             definition,
+             composition.eval_cases
+           ),
          {:ok, closure} <- derive_closure(parent.manifest.execution_closure, definition),
          :ok <- require_protected_corpus(closure),
          :ok <- verify_composed_skills(definition),
@@ -161,6 +171,11 @@ defmodule Spectre.Governance.Composer do
         |> Enum.flat_map(&SkillDefinition.operation_refs/1)
         |> Enum.map(&("spectre.operation:" <> stable_ref(&1)))
 
+      model_profile_refs =
+        skills
+        |> Enum.flat_map(&SkillDefinition.works/1)
+        |> Enum.flat_map(&Program.profile_refs/1)
+
       generators =
         skills
         |> Enum.flat_map(fn skill -> projection_generators(SkillDefinition.canonical(skill)) end)
@@ -169,6 +184,7 @@ defmodule Spectre.Governance.Composer do
       |> Map.from_struct()
       |> Map.update!(:prompt_fragment_digests, &(&1 ++ prompt_digests))
       |> Map.update!(:contract_refs, &(&1 ++ contract_refs))
+      |> Map.update!(:model_profile_refs, &(&1 ++ model_profile_refs))
       |> Map.update!(:projection_generators, &merge_generators(&1, generators))
       |> Closure.new()
     end
@@ -428,6 +444,8 @@ defmodule Spectre.Governance.Composer do
   defp valid_mount_id?(value) when is_binary(value) and value != "",
     do: not String.starts_with?(value, "Elixir.")
 
+  defp valid_mount_id?(value) when is_atom(value), do: not is_nil(value)
+  defp valid_mount_id?(value) when is_integer(value), do: true
   defp valid_mount_id?(_value), do: false
 
   defp get(map, key, default \\ nil)

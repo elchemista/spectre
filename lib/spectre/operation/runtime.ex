@@ -72,6 +72,7 @@ defmodule Spectre.Operation.Runtime do
         env
         |> Map.put(:spectre_execution_program, ExecutionProgram.to_data(program))
         |> Map.put(:spectre_execution_plans, plans)
+        |> Map.put(:spectre_execution_definition_ref, Keyword.get(opts, :definition_ref))
         |> Map.put(
           :spectre_execution_materialization_digest,
           Keyword.get(opts, :materialization_digest)

@@ -6,6 +6,13 @@ Candidates. It composes over the existing Definition Store, Manifest,
 Authority Envelope, Execution Closure, activation CAS, and owner fence; it does
 not add a second runtime or allow authored data to execute code.
 
+Spectre `0.3.0` adds Reflection/Experience evidence and Forge in front of
+this unchanged commit chain. A Forge Proposal is inert: hosts pass its
+contained ChangeSet to Composer and must pass the exact
+`Spectre.Forge.evidence/2` map to composition and activation. Evidence drift is
+stale-base failure, never an implicit rebase. See
+[Reflective Runtime](REFLECTIVE_RUNTIME.md).
+
 ## The commit chain
 
 Every stage produces or consumes content-addressed evidence:

@@ -82,7 +82,13 @@ defmodule Spectre.Router.SemanticCache.Learned do
          :ok <- cacheable_label(label, opts),
          {:ok, text} <- valid_text(text),
          existing <- Online.find_by_normalized(agent, normalize_text(text)),
-         {:ok, embedding} <- Index.stored_embedding(text, result, existing, opts) do
+         {:ok, embedding} <- Index.stored_embedding(text, result, existing, opts),
+         {:ok, metadata} <-
+           Index.bind_embedding_profile(
+             online_metadata(result, agent, label, DateTime.utc_now()),
+             embedding,
+             opts
+           ) do
       now = DateTime.utc_now()
       normalized = normalize_text(text)
       id = (existing && existing.id) || result_id(result) || online_id()
@@ -102,7 +108,7 @@ defmodule Spectre.Router.SemanticCache.Learned do
           verified?: Map.get(result, :verified?, false),
           editable?: true,
           embedding: embedding,
-          metadata: online_metadata(result, agent, label, now),
+          metadata: Map.put(metadata, :learned_at, now),
           inserted_at: (existing && existing.inserted_at) || now,
           updated_at: now
         })
@@ -266,9 +272,15 @@ defmodule Spectre.Router.SemanticCache.Learned do
   @spec apply_example_text(row(), map(), keyword()) :: {:ok, row()} | {:error, term()}
   defp apply_example_text(row, %{text: text}, opts) when is_binary(text) do
     with {:ok, text} <- valid_text(text),
-         {:ok, embedding} <- Index.stored_embedding(text, %{}, nil, opts) do
+         {:ok, embedding} <- Index.stored_embedding(text, %{}, nil, opts),
+         {:ok, metadata} <- Index.bind_embedding_profile(row.metadata, embedding, opts) do
       {:ok,
-       Map.merge(row, %{text: text, normalized_text: normalize_text(text), embedding: embedding})}
+       Map.merge(row, %{
+         text: text,
+         normalized_text: normalize_text(text),
+         embedding: embedding,
+         metadata: metadata
+       })}
     end
   end
 

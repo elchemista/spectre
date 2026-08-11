@@ -164,10 +164,20 @@ defmodule Spectre.Inference.Profile do
   defp finalize(%__MODULE__{} = profile) do
     validate!(profile)
 
+    expected = hash(%{profile | profile_hash: nil})
+
     case profile.profile_hash do
-      nil -> %{profile | profile_hash: hash(profile)}
-      hash when is_binary(hash) and hash != "" -> profile
-      _invalid -> raise ArgumentError, "profile hash must be a non-empty string"
+      nil ->
+        %{profile | profile_hash: expected}
+
+      ^expected ->
+        profile
+
+      hash when is_binary(hash) and hash != "" ->
+        raise ArgumentError, "profile hash does not match profile content"
+
+      _invalid ->
+        raise ArgumentError, "profile hash must be a non-empty string"
     end
   end
 

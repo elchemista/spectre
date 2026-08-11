@@ -16,7 +16,12 @@ defmodule Spectre.Foundation.Conformance do
   alias Spectre.Definition.Canonical, as: CanonicalDefinition
   alias Spectre.Definition.Manifest
   alias Spectre.Definition.Ref, as: DefinitionRef
+  alias Spectre.Experience.Store, as: ExperienceStore
+  alias Spectre.Forge.Proposal
+  alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical.Codec, as: InstanceCodec
+  alias Spectre.Projection
+  alias Spectre.Projection.Reflection
   alias Spectre.Run
   alias Spectre.State.Codec, as: StateCodec
 
@@ -49,7 +54,7 @@ defmodule Spectre.Foundation.Conformance do
       durable_formats: %{
         state: %{writer: 5, readers: [2, 3, 4, 5]},
         run: %{writer: 2, readers: [1, 2]},
-        instance: %{writer: 4, readers: [1, 2, 3, 4]}
+        instance: %{writer: 2, readers: [2]}
       },
       definition: %{
         canonicalization: 1,
@@ -79,7 +84,18 @@ defmodule Spectre.Foundation.Conformance do
         gate_receipt_schema: 1,
         human_report_generator: 1,
         evaluation_delta_schema: 1,
-        gc_plan_schema: 1
+        gc_plan_schema: 2
+      },
+      reflection: %{
+        experience_evidence_schema: Spectre.Experience.Evidence.schema_version(),
+        experience_artifact_schema: ExperienceStore.artifact_schema_version(),
+        reflection_projection: Reflection.version()
+      },
+      forge: %{
+        critique_schema: Spectre.Forge.Critique.schema_version(),
+        oracle_approval_schema: Spectre.Forge.OracleApproval.schema_version(),
+        proposal_schema: Proposal.schema_version(),
+        critic_contract: Spectre.Forge.Critic.contract_version()
       },
       stack: %{module_input_contract: 1, sealed_runtime_contract: 2},
       golden_path: [
@@ -106,7 +122,12 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre.Governance.Approval, :approve, 3},
         {Spectre.Governance.Approval, :reject, 3},
         {Spectre.Governance.GC, :plan, 3},
-        {Spectre.Projection.HumanReport, :project, 3}
+        {Spectre.Projection.HumanReport, :project, 3},
+        {Spectre.Experience, :record, 3},
+        {Spectre.Reflection, :reflect, 4},
+        {Spectre.Projection.Reflection, :generate, 5},
+        {Spectre.Forge, :propose, 5},
+        {Spectre.Forge, :rebase, 5}
       ]
     }
   end
@@ -219,6 +240,64 @@ defmodule Spectre.Foundation.Conformance do
     end
   end
 
+  @doc """
+  Verifies a transported Reflection projection against all of its exact inputs.
+
+  This gate regenerates the projection; checking its stored digest alone is
+  insufficient because effective Activation and Experience may have changed.
+  """
+  @spec verify_reflection(
+          Projection.t() | map() | binary(),
+          CanonicalDefinition.t() | binary(),
+          Manifest.t() | binary(),
+          Activation.t() | map(),
+          ExperienceStore.snapshot() | map()
+        ) :: {:ok, report()} | {:error, term()}
+  def verify_reflection(projection, definition, manifest, activation, snapshot) do
+    with {:ok, canonical} <- normalize_definition(definition),
+         {:ok, manifest} <- normalize_manifest(manifest),
+         {:ok, activation} <- normalize_activation(activation),
+         {:ok, snapshot} <- normalize_snapshot(snapshot),
+         {:ok, projection} <-
+           normalize_reflection(
+             projection,
+             canonical,
+             manifest,
+             activation,
+             snapshot
+           ) do
+      {:ok,
+       %{
+         contract_version: @contract_version,
+         format: :reflection,
+         definition_ref: DefinitionRef.to_string(projection.definition_ref),
+         generator_id: projection.generator_id,
+         generator_version: projection.generator_version,
+         input_evidence_digest: projection.input_evidence_digest,
+         digest: projection.digest
+       }}
+    end
+  end
+
+  @doc "Verifies a transported Forge Proposal and its complete evidence lineage."
+  @spec verify_forge_proposal(Proposal.t() | map() | binary()) ::
+          {:ok, report()} | {:error, term()}
+  def verify_forge_proposal(proposal) do
+    with {:ok, proposal} <- normalize_proposal(proposal),
+         :ok <- Proposal.verify(proposal) do
+      {:ok,
+       %{
+         contract_version: @contract_version,
+         format: :forge_proposal,
+         proposal_ref: Proposal.ref(proposal),
+         change_set_digest: Spectre.Governance.ChangeSet.digest(proposal.change_set),
+         reflection_digest: proposal.reflection_digest,
+         experience_snapshot_digest: proposal.experience_snapshot_digest,
+         digest: proposal.digest
+       }}
+    end
+  end
+
   @spec normalize_definition(CanonicalDefinition.t() | binary()) ::
           {:ok, CanonicalDefinition.t()} | {:error, term()}
   defp normalize_definition(%CanonicalDefinition{} = canonical),
@@ -237,6 +316,59 @@ defmodule Spectre.Foundation.Conformance do
 
   defp normalize_manifest(value),
     do: {:error, {:invalid_foundation_manifest, shape(value)}}
+
+  defp normalize_activation(%Activation{} = activation) do
+    activation |> Activation.to_data() |> Activation.from_data()
+  end
+
+  defp normalize_activation(value) when is_map(value) and not is_struct(value),
+    do: Activation.from_data(value)
+
+  defp normalize_activation(value),
+    do: {:error, {:invalid_foundation_activation, shape(value)}}
+
+  defp normalize_snapshot(%{definition_ref: %DefinitionRef{}} = snapshot) do
+    with :ok <- ExperienceStore.verify_snapshot(snapshot), do: {:ok, snapshot}
+  end
+
+  defp normalize_snapshot(value) when is_map(value) and not is_struct(value),
+    do: ExperienceStore.snapshot_from_data(value)
+
+  defp normalize_snapshot(value),
+    do: {:error, {:invalid_foundation_experience_snapshot, shape(value)}}
+
+  defp normalize_reflection(
+         %Projection{} = projection,
+         canonical,
+         manifest,
+         activation,
+         snapshot
+       ) do
+    with :ok <- Reflection.verify(projection, canonical, manifest, activation, snapshot),
+         do: {:ok, projection}
+  end
+
+  defp normalize_reflection(data, canonical, manifest, activation, snapshot)
+       when is_map(data) and not is_struct(data),
+       do: Reflection.from_data(data, canonical, manifest, activation, snapshot)
+
+  defp normalize_reflection(encoded, canonical, manifest, activation, snapshot)
+       when is_binary(encoded) do
+    with {:ok, data} <- Value.decode(encoded) do
+      normalize_reflection(data, canonical, manifest, activation, snapshot)
+    end
+  end
+
+  defp normalize_reflection(value, _canonical, _manifest, _activation, _snapshot),
+    do: {:error, {:invalid_foundation_reflection, shape(value)}}
+
+  defp normalize_proposal(%Proposal{} = proposal), do: Proposal.new(proposal)
+
+  defp normalize_proposal(value) when is_map(value) and not is_struct(value),
+    do: Proposal.from_data(value)
+
+  defp normalize_proposal(value) when is_binary(value), do: Proposal.decode(value)
+  defp normalize_proposal(value), do: {:error, {:invalid_foundation_forge_proposal, shape(value)}}
 
   @spec json_data(binary() | map()) :: {:ok, map()} | {:error, term()}
   defp json_data(payload) when is_binary(payload) do

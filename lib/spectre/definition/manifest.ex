@@ -17,6 +17,11 @@ defmodule Spectre.Definition.Manifest do
 
   @schema_version 1
   @contract_version 2
+  @data_fields ~w(
+    schema_version contract_version definition_ref definition_canonicalization_version
+    definition_contract_version authority execution_closure component_contracts parent_refs
+    publisher_ref provenance_refs receipt_refs
+  )
 
   @enforce_keys [
     :schema_version,
@@ -88,7 +93,12 @@ defmodule Spectre.Definition.Manifest do
   @doc "Builds and validates a Manifest from already normalized fields."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def new(%__MODULE__{} = manifest), do: manifest |> Map.from_struct() |> new()
-  def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs),
+      do: attrs |> Map.new() |> new(),
+      else: {:error, {:invalid_definition_manifest, :list}}
+  end
 
   def new(attrs) when is_map(attrs) do
     with :ok <- validate_keys(attrs),
@@ -152,20 +162,32 @@ defmodule Spectre.Definition.Manifest do
 
   @doc "Restores a Manifest from decoded canonical data."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(%{
-        "schema_version" => schema_version,
-        "contract_version" => contract_version,
-        "definition_ref" => definition_ref,
-        "definition_canonicalization_version" => canonicalization_version,
-        "definition_contract_version" => definition_contract_version,
-        "authority" => authority,
-        "execution_closure" => closure,
-        "component_contracts" => component_contracts,
-        "parent_refs" => parent_refs,
-        "publisher_ref" => publisher_ref,
-        "provenance_refs" => provenance_refs,
-        "receipt_refs" => receipt_refs
-      }) do
+  def from_data(data) when is_map(data) and not is_struct(data) do
+    with [] <- Map.keys(data) -- @data_fields,
+         [] <- @data_fields -- Map.keys(data) do
+      restore_data(data)
+    else
+      fields when is_list(fields) ->
+        {:error, {:invalid_definition_manifest_data_fields, Enum.sort(fields)}}
+    end
+  end
+
+  def from_data(value), do: {:error, {:invalid_definition_manifest_data, shape(value)}}
+
+  defp restore_data(%{
+         "schema_version" => schema_version,
+         "contract_version" => contract_version,
+         "definition_ref" => definition_ref,
+         "definition_canonicalization_version" => canonicalization_version,
+         "definition_contract_version" => definition_contract_version,
+         "authority" => authority,
+         "execution_closure" => closure,
+         "component_contracts" => component_contracts,
+         "parent_refs" => parent_refs,
+         "publisher_ref" => publisher_ref,
+         "provenance_refs" => provenance_refs,
+         "receipt_refs" => receipt_refs
+       }) do
     with {:ok, definition_ref} <-
            Ref.parse(definition_ref,
              canonicalization_version: canonicalization_version,
@@ -190,8 +212,6 @@ defmodule Spectre.Definition.Manifest do
       })
     end
   end
-
-  def from_data(value), do: {:error, {:invalid_definition_manifest_data, shape(value)}}
 
   @doc "Encodes a Manifest into portable canonical bytes."
   @spec encode(t()) :: {:ok, binary()} | {:error, term()}

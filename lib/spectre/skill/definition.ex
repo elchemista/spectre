@@ -112,6 +112,7 @@ defmodule Spectre.Skill.Definition do
            runtime_fragments(Map.get(attrs, :prompt_fragments, []), publisher_ref),
          {:ok, budget} <- runtime_budget(fragments, Map.get(attrs, :prompt_budget, 512)),
          {:ok, programs} <- runtime_programs(Map.get(attrs, :works, [])),
+         :ok <- validate_runtime_profile_pinning(:runtime, programs),
          :ok <- validate_program_prompt_refs(programs, fragments),
          {:ok, authored_operation_refs} <-
            normalize_operation_refs(Map.get(attrs, :operation_refs, [])),
@@ -171,6 +172,7 @@ defmodule Spectre.Skill.Definition do
          {:ok, fragments} <- canonical_fragments(canonical),
          {:ok, _budget} <- canonical_budget(canonical, fragments),
          {:ok, programs} <- canonical_programs(canonical),
+         :ok <- validate_runtime_profile_pinning(canonical.origin, programs),
          :ok <- validate_program_prompt_refs(programs, fragments),
          {:ok, operation_refs} <- canonical_operation_refs(canonical),
          :ok <- validate_program_operation_refs(programs, operation_refs),
@@ -530,6 +532,19 @@ defmodule Spectre.Skill.Definition do
       nil -> {:ok, Enum.sort_by(programs, & &1.id)}
       id -> {:error, {:duplicate_runtime_work, id}}
     end
+  end
+
+  @spec validate_runtime_profile_pinning(:compiled | :runtime, [Program.t()]) ::
+          :ok | {:error, term()}
+  defp validate_runtime_profile_pinning(:compiled, _programs), do: :ok
+
+  defp validate_runtime_profile_pinning(:runtime, programs) do
+    Enum.reduce_while(programs, :ok, fn program, :ok ->
+      case Program.validate_profile_pinning(program) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   @spec merge_program_operation_refs([term()], [Program.t()]) ::

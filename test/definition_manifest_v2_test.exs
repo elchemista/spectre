@@ -5,7 +5,7 @@ defmodule SpectreDefinitionManifestV2Test.Package do
     id: :manifest_runtime,
     version: "0.2.2",
     contract: 1,
-    spectre: ">= 0.2.0 and < 0.3.0",
+    spectre: ">= 0.3.0 and < 0.4.0",
     operations: [:lookup],
     actions: [:notify],
     resources: [:knowledge_base]
@@ -345,6 +345,80 @@ defmodule SpectreDefinitionManifestV2Test do
 
     native = %{closure() | compatibility_mode: :native_v2}
     assert {:ok, %{source_contract: :native_v2}} = V2.new(Envelope.empty(), native)
+  end
+
+  test "Stack V2 constructors, adapters and inspection stay conservative at every boundary" do
+    native = %{closure() | compatibility_mode: :native_v2}
+    native_contract = V2.new!(Envelope.empty(), native)
+
+    assert V2.version() == 2
+    assert native_contract.source_contract == :native_v2
+
+    assert V2.to_data(native_contract) == %{
+             "contract_version" => 2,
+             "source_contract" => :native_v2,
+             "authority" => Envelope.to_data(Envelope.empty()),
+             "execution_closure" => Closure.to_data(native)
+           }
+
+    assert_raise ArgumentError, ~r/invalid Stack Contract V2/, fn ->
+      V2.new!(Envelope.empty(), closure())
+    end
+
+    assert {:ok, no_stack} =
+             V2.from_v1(nil,
+               authority_requests: %{operations: [:lookup], limits: %{max_cost: 5}},
+               authority_ceiling: %{operations: [:lookup], limits: %{max_cost: 2}}
+             )
+
+    assert no_stack.authority.operations == [:lookup]
+    assert no_stack.authority.limits.max_cost == 2
+    assert no_stack.execution_closure.stack_ref == "spectre.stack:none"
+    assert no_stack.execution_closure.package_refs == []
+
+    assert %V2{source_contract: :adapted_v1} =
+             V2.from_v1!(Stack, authority_ceiling: %{operations: [:lookup]})
+
+    assert_raise ArgumentError, ~r/cannot adapt Stack Contract V1/, fn ->
+      V2.from_v1!("not-a-stack")
+    end
+
+    stack = Spectre.Stack.definition(Stack)
+
+    assert {:error, {:unsupported_stack_adapter_source, 2}} =
+             V2.from_v1(%{stack | contract: 2})
+
+    assert {:error, {:invalid_stack_adapter_source, "not-a-stack"}} =
+             V2.from_v1("not-a-stack")
+
+    assert {:error, {:unknown_stack, :missing_stack_for_contract_test}} =
+             V2.from_v1(:missing_stack_for_contract_test)
+
+    compiled = Definition.fetch!(Agent)
+    canonical = Canonical.lower!(compiled)
+
+    assert {:ok, augmented} =
+             V2.from_compiled(compiled, canonical,
+               authority_ceiling: %{
+                 operations: [:lookup],
+                 actions: [:notify],
+                 external_data_refs: [:knowledge_base]
+               },
+               owner_modules: [__MODULE__],
+               prompt_fragment_digests: [@digest],
+               contract_refs: ["spectre.contract:extra"],
+               model_profile_refs: ["profile:test"],
+               projection_generators: [%{id: "spectre.projection.custom", version: 1}]
+             )
+
+    closure = augmented.execution_closure
+    assert @digest in closure.prompt_fragment_digests
+    assert "spectre.contract:extra" in closure.contract_refs
+    assert "profile:test" in closure.model_profile_refs
+    assert %{id: "spectre.projection.custom", version: 1} in closure.projection_generators
+
+    assert {:error, {:object_code_unavailable, :missing_contract_owner_module}} =
+             V2.from_v1(nil, owner_modules: [:missing_contract_owner_module])
   end
 
   defp closure do

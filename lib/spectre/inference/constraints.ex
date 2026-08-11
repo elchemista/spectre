@@ -40,7 +40,12 @@ defmodule Spectre.Inference.Constraints do
 
   @spec new(t() | map() | keyword() | nil) :: t()
   def new(nil), do: %__MODULE__{}
-  def new(%__MODULE__{} = constraints), do: constraints
+
+  def new(%__MODULE__{} = constraints) do
+    validate!(constraints)
+    constraints
+  end
+
   def new(attrs) when is_list(attrs), do: attrs |> normalize_aliases() |> Map.new() |> new()
 
   def new(attrs) when is_map(attrs) do

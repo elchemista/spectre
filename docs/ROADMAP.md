@@ -1,9 +1,25 @@
 # Roadmap
 
 Spectre remains a focused OTP-native runtime rather than a framework that owns
-application business logic. Version 0.2.0 completes the vNext core foundation;
-future work extends adapters and distributed integration without adding a
-second owner for Agent or operational state.
+application business logic. Version `0.3.0` completes the core governed
+reflective-runtime concept on one canonical Definition and one operational
+runtime; future work extends adapters and distributed integration without
+adding a second owner for Agent or operational state.
+
+## 0.3.0 reflective runtime — complete in core
+
+Opt-in Experience, mechanical Declared/Effective/Observed Reflection,
+policy-gated introspection, compiled Prism-compatible critics, independent
+oracle approval, inert Forge Proposals, explicit rebase and stale external
+evidence checks now compose over the complete 0.2 foundation. Forge cannot
+publish, approve or activate and has no vocabulary for code, authority,
+kernel policy, evaluators or projection generators.
+
+The permanent reflective fixture and executable conformance helpers pin the
+new identities. State remains writer v5, Run writer v2 and canonical Instance
+checkpoints schema 4; all historical guaranteed fixtures remain readable.
+Concrete sibling-package adoption remains in those repositories and is not a
+second core runtime gate.
 
 ## 0.2.9 governed Definition changes — complete
 
@@ -15,8 +31,8 @@ all compose over existing Store, Manifest, closure, owner-fence, and CAS
 contracts. Runtime data still cannot introduce code, authority, or activation.
 
 State remains writer v5, Run remains writer v2, and canonical Instance
-checkpoints remain schema 4. The next gate is reflective inspection over these
-governed identities; it must not bypass the approval or activation boundary.
+checkpoints remain schema 4. The 0.3 Reflection and Forge planes compose over
+these governed identities without bypassing approval or activation.
 
 ## 0.2.8 data-driven execution — complete
 
@@ -132,7 +148,7 @@ Phases 1 through 6 are functionally complete for the library scope:
   suite exceeds 1,000 tests.
 
 Current verification is 1,177 passing tests and 90.08% line coverage, together
-with warnings-as-errors compilation, strict Credo, Dialyzer, ExDoc generation,
+with warnings-as-errors compilation, strict Credo, Dialyzer,
 formatting, and diff checks. The default 90% coverage threshold remains
 enforced.
 
@@ -712,7 +728,6 @@ Exit criteria:
 - one canonical host integration path is documented in Getting Started;
 - serialized state upgrades are tested through schema-v5 fixtures;
 - release notes and a changelog policy are present;
-- ExDoc builds without missing-reference warnings.
 
 ## Recommended Implementation Order
 

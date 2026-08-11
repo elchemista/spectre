@@ -398,12 +398,13 @@ defmodule Spectre.Execution.Expression do
 
   @spec map_key(map(), String.t()) :: {:ok, term()} | :error
   defp map_key(map, segment) do
-    atom = existing_atom(segment)
-
-    cond do
-      Map.has_key?(map, segment) -> {:ok, segment}
-      not is_nil(atom) and Map.has_key?(map, atom) -> {:ok, atom}
-      true -> :error
+    if Map.has_key?(map, segment) do
+      {:ok, segment}
+    else
+      case Enum.find(Map.keys(map), &(is_atom(&1) and Atom.to_string(&1) == segment)) do
+        nil -> :error
+        key -> {:ok, key}
+      end
     end
   end
 
@@ -414,11 +415,9 @@ defmodule Spectre.Execution.Expression do
   defp reject_executable_value(_value, _path, depth) when depth > @maximum_depth,
     do: {:error, {:execution_expression_depth_exceeded, @maximum_depth}}
 
-  defp reject_executable_value({module, function}, path, depth)
+  defp reject_executable_value({module, function}, path, _depth)
        when is_atom(module) and is_atom(function) do
-    if module_atom?(module),
-      do: {:error, {:executable_execution_literal, Enum.reverse(path)}},
-      else: reject_children([module, function], path, depth + 1)
+    {:error, {:executable_execution_literal, Enum.reverse(path)}}
   end
 
   defp reject_executable_value(value, path, _depth) when is_atom(value) do
@@ -602,16 +601,7 @@ defmodule Spectre.Execution.Expression do
   end
 
   @spec module_atom?(atom()) :: boolean()
-  defp module_atom?(value) do
-    String.starts_with?(Atom.to_string(value), "Elixir.") or Code.ensure_loaded?(value)
-  end
-
-  @spec existing_atom(String.t()) :: atom() | nil
-  defp existing_atom(value) do
-    String.to_existing_atom(value)
-  rescue
-    ArgumentError -> nil
-  end
+  defp module_atom?(value), do: String.starts_with?(Atom.to_string(value), "Elixir.")
 
   @spec reverse_result({:ok, [term()]} | {:error, term()}) ::
           {:ok, [term()]} | {:error, term()}

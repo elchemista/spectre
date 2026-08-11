@@ -19,6 +19,16 @@ defmodule Spectre.Definition.Canonical do
   @digest_algorithm :sha256
   @kinds [:agent, :skill]
   @origins [:compiled, :runtime]
+  @fields [
+    :canonicalization_version,
+    :contract_version,
+    :digest_algorithm,
+    :kind,
+    :id,
+    :declared_version,
+    :origin,
+    :components
+  ]
 
   # `t()` describes a valid envelope, while `new/1` also validates malformed
   # maps supplied at the public boundary. Dialyzer therefore considers the
@@ -65,7 +75,13 @@ defmodule Spectre.Definition.Canonical do
 
   @doc "Builds and validates a canonical Definition envelope."
   @spec new(map() | keyword()) :: {:ok, t()} | {:error, term()}
-  def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
+  def new(%__MODULE__{} = canonical), do: canonical |> Map.from_struct() |> new()
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs),
+      do: attrs |> Map.new() |> new(),
+      else: {:error, {:invalid_canonical_definition, :list}}
+  end
 
   def new(attrs) when is_map(attrs) do
     attrs =
@@ -74,9 +90,10 @@ defmodule Spectre.Definition.Canonical do
       |> Map.put_new(:contract_version, @contract_version)
       |> Map.put_new(:digest_algorithm, @digest_algorithm)
 
-    canonical = struct(__MODULE__, Map.take(attrs, fields()))
+    canonical = struct(__MODULE__, Map.take(attrs, @fields))
 
-    with :ok <- validate_header(canonical),
+    with :ok <- validate_keys(attrs),
+         :ok <- validate_header(canonical),
          {:ok, components} <- normalize_components(canonical.components),
          canonical = %{canonical | components: components},
          :ok <- validate_portable(canonical) do
@@ -130,28 +147,32 @@ defmodule Spectre.Definition.Canonical do
 
   @doc "Restores and validates an envelope from portable decoded data."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(%{
-        "canonicalization_version" => canonicalization_version,
-        "contract_version" => contract_version,
-        "digest_algorithm" => digest_algorithm,
-        "kind" => kind,
-        "id" => id,
-        "declared_version" => declared_version,
-        "origin" => origin,
-        "components" => component_data
-      })
-      when is_list(component_data) do
-    with {:ok, components} <- decode_components(component_data) do
+  def from_data(data) when is_map(data) and not is_struct(data) do
+    expected = Enum.map(@fields, &Atom.to_string/1)
+
+    with [] <- Map.keys(data) -- expected,
+         [] <- expected -- Map.keys(data),
+         component_data when is_list(component_data) <- Map.get(data, "components"),
+         {:ok, components} <- decode_components(component_data) do
       new(
-        canonicalization_version: canonicalization_version,
-        contract_version: contract_version,
-        digest_algorithm: digest_algorithm,
-        kind: kind,
-        id: id,
-        declared_version: declared_version,
-        origin: origin,
+        canonicalization_version: Map.get(data, "canonicalization_version"),
+        contract_version: Map.get(data, "contract_version"),
+        digest_algorithm: Map.get(data, "digest_algorithm"),
+        kind: Map.get(data, "kind"),
+        id: Map.get(data, "id"),
+        declared_version: Map.get(data, "declared_version"),
+        origin: Map.get(data, "origin"),
         components: components
       )
+    else
+      fields when is_list(fields) ->
+        {:error, {:invalid_canonical_definition_fields, Enum.sort(fields)}}
+
+      {:error, _reason} = error ->
+        error
+
+      value ->
+        {:error, {:invalid_canonical_definition_components, shape(value)}}
     end
   end
 
@@ -300,11 +321,12 @@ defmodule Spectre.Definition.Canonical do
     end
   end
 
-  @spec fields() :: [atom()]
-  defp fields do
-    __MODULE__.__struct__()
-    |> Map.keys()
-    |> List.delete(:__struct__)
+  @spec validate_keys(map()) :: :ok | {:error, term()}
+  defp validate_keys(attrs) do
+    case Map.keys(attrs) -- @fields do
+      [] -> :ok
+      unknown -> {:error, {:unknown_canonical_definition_fields, Enum.sort(unknown)}}
+    end
   end
 
   @spec shape(term()) :: atom()

@@ -3,13 +3,14 @@ defmodule Spectre.Execution.Migration do
   Prepare/commit protocol for registered, pure Work state migrations.
 
   Authored data selects only an operation ID already present in the Agent's
-  reviewed registry. `prepare/4` resolves and snapshots its portable contract;
+  reviewed registry. `prepare/5` resolves and snapshots its portable contract;
   the host executes the returned request through its normal operation boundary;
   `commit/3` re-resolves the contract and validates the migrated state before
   issuing an integrity receipt.
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Definition.Ref
   alias Spectre.Execution.Migration.Receipt
   alias Spectre.Execution.PortableDigest
   alias Spectre.Execution.Program
@@ -23,6 +24,8 @@ defmodule Spectre.Execution.Migration do
 
   @enforce_keys [
     :program,
+    :definition_ref,
+    :materialization_digest,
     :source_version,
     :target_version,
     :source_state,
@@ -34,6 +37,8 @@ defmodule Spectre.Execution.Migration do
   ]
   defstruct schema_version: @schema_version,
             program: nil,
+            definition_ref: nil,
+            materialization_digest: nil,
             source_version: nil,
             target_version: nil,
             source_state: nil,
@@ -46,13 +51,18 @@ defmodule Spectre.Execution.Migration do
   @type t :: %__MODULE__{}
 
   @doc "Prepares one declared migration without executing its operation."
-  @spec prepare(Program.t(), term(), term(), module()) :: {:ok, t()} | {:error, term()}
-  def prepare(%Program{} = program, source_version, source_state, agent)
-      when is_atom(agent) and not is_nil(agent) do
-    with {:ok, program} <- Program.new(program),
+  @spec prepare(Program.t(), term(), term(), module(), keyword()) ::
+          {:ok, t()} | {:error, term()}
+  def prepare(program, source_version, source_state, agent, opts \\ [])
+
+  def prepare(%Program{} = program, source_version, source_state, agent, opts)
+      when is_atom(agent) and not is_nil(agent) and is_list(opts) do
+    with true <- Keyword.keyword?(opts),
+         {:ok, definition_ref, materialization_digest} <- owner_binding(opts),
+         {:ok, program} <- Program.new(program),
          {:ok, migration} <- declared_migration(program, source_version),
          :ok <- Value.validate(source_state),
-         {:ok, registered_id} <- Registry.resolve_id(agent, migration.operation_ref),
+         {:ok, _registered_id} <- Registry.resolve_id(agent, migration.operation_ref),
          {:ok, spec} <-
            Registry.resolve(agent, Program.operation_definition(program), migration.operation_ref),
          :ok <- pure_migration(spec, migration),
@@ -68,7 +78,7 @@ defmodule Spectre.Execution.Migration do
       contract_digest = spec_digest(spec)
 
       request =
-        Request.new(registered_id, input,
+        Request.new(migration.operation_ref, input,
           id:
             migration_request_id(
               program.digest,
@@ -77,9 +87,11 @@ defmodule Spectre.Execution.Migration do
               contract_digest
             ),
           phase: :state_migration,
-          branch: program.id,
+          branch: Program.migration_branch(),
           metadata: %{
             execution_program_digest: program.digest,
+            execution_definition_ref: definition_ref,
+            execution_materialization_digest: materialization_digest,
             execution_migration_from: migration.from,
             execution_migration_to: migration.to,
             operation_contract_digest: contract_digest
@@ -89,11 +101,13 @@ defmodule Spectre.Execution.Migration do
       base = %{
         schema_version: @schema_version,
         program: program,
+        definition_ref: definition_ref,
+        materialization_digest: materialization_digest,
         source_version: migration.from,
         target_version: migration.to,
         source_state: source_state,
         source_state_digest: source_digest,
-        operation_ref: registered_id,
+        operation_ref: migration.operation_ref,
         operation_contract_digest: contract_digest,
         request: request
       }
@@ -101,6 +115,9 @@ defmodule Spectre.Execution.Migration do
       digest = base |> identity_data() |> Value.digest!()
       {:ok, struct!(__MODULE__, Map.put(base, :digest, digest))}
     else
+      false ->
+        {:error, :invalid_execution_migration_options}
+
       {:error, {:unsupported_canonical_value, _path, _kind} = reason} ->
         {:error, {:nonportable_execution_migration_state, reason}}
 
@@ -109,8 +126,12 @@ defmodule Spectre.Execution.Migration do
     end
   end
 
-  def prepare(%Program{}, _source_version, _source_state, agent),
-    do: {:error, {:invalid_execution_migration_agent, agent}}
+  def prepare(%Program{}, _source_version, _source_state, agent, _opts)
+      when not is_atom(agent) or is_nil(agent),
+      do: {:error, {:invalid_execution_migration_agent, agent}}
+
+  def prepare(%Program{}, _source_version, _source_state, _agent, _opts),
+    do: {:error, :invalid_execution_migration_options}
 
   @doc "Commits an already executed migration after revalidating its exact contract."
   @spec commit(t(), Execution.t(), module()) ::
@@ -150,6 +171,8 @@ defmodule Spectre.Execution.Migration do
     with true <- migration.schema_version == @schema_version,
          {:ok, program} <- Program.new(migration.program),
          true <- program.digest == migration.program.digest,
+         true <- definition_ref?(migration.definition_ref),
+         true <- digest?(migration.materialization_digest),
          true <- digest?(migration.source_state_digest),
          true <- digest?(migration.operation_contract_digest),
          true <- digest?(migration.digest),
@@ -213,6 +236,8 @@ defmodule Spectre.Execution.Migration do
 
     expected_metadata = %{
       execution_program_digest: migration.program.digest,
+      execution_definition_ref: migration.definition_ref,
+      execution_materialization_digest: migration.materialization_digest,
       execution_migration_from: migration.source_version,
       execution_migration_to: migration.target_version,
       operation_contract_digest: migration.operation_contract_digest
@@ -242,7 +267,7 @@ defmodule Spectre.Execution.Migration do
          :ok <-
            exact_request_value(
              request.branch,
-             migration.program.id,
+             Program.migration_branch(),
              :execution_migration_request_routing_mismatch
            ) do
       exact_request_value(
@@ -273,6 +298,8 @@ defmodule Spectre.Execution.Migration do
       Receipt.new(%{
         migration_digest: migration.digest,
         program_digest: migration.program.digest,
+        definition_ref: migration.definition_ref,
+        materialization_digest: migration.materialization_digest,
         operation_ref: migration.operation_ref,
         operation_contract_digest: migration.operation_contract_digest,
         source_version: migration.source_version,
@@ -295,6 +322,8 @@ defmodule Spectre.Execution.Migration do
     %{
       schema_version: Map.fetch!(migration, :schema_version),
       program_digest: Map.fetch!(migration, :program).digest,
+      definition_ref: Map.fetch!(migration, :definition_ref),
+      materialization_digest: Map.fetch!(migration, :materialization_digest),
       source_version: Map.fetch!(migration, :source_version),
       target_version: Map.fetch!(migration, :target_version),
       source_state_digest: Map.fetch!(migration, :source_state_digest),
@@ -321,6 +350,52 @@ defmodule Spectre.Execution.Migration do
     })
   end
 
+  @spec owner_binding(keyword()) :: {:ok, String.t(), String.t()} | {:error, term()}
+  defp owner_binding(opts) do
+    allowed = [:definition_ref, :materialization_digest]
+
+    with [] <- Keyword.keys(opts) -- allowed,
+         {:ok, definition_ref} <- normalize_definition_ref(Keyword.get(opts, :definition_ref)),
+         materialization_digest when is_binary(materialization_digest) <-
+           Keyword.get(opts, :materialization_digest),
+         true <- digest?(materialization_digest) do
+      {:ok, definition_ref, materialization_digest}
+    else
+      [_unknown | _rest] = unknown ->
+        {:error, {:unknown_execution_migration_options, Enum.sort(unknown)}}
+
+      false ->
+        {:error, :invalid_execution_migration_materialization_digest}
+
+      nil ->
+        {:error, :execution_migration_owner_binding_required}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @spec normalize_definition_ref(term()) :: {:ok, String.t()} | {:error, term()}
+  defp normalize_definition_ref(%Ref{} = ref) do
+    if Ref.valid?(ref),
+      do: {:ok, Ref.to_string(ref)},
+      else: {:error, :invalid_execution_migration_definition_ref}
+  end
+
+  defp normalize_definition_ref(value) when is_binary(value) do
+    case Ref.parse(value) do
+      {:ok, ref} -> {:ok, Ref.to_string(ref)}
+      _invalid -> {:error, :invalid_execution_migration_definition_ref}
+    end
+  end
+
+  defp normalize_definition_ref(_value),
+    do: {:error, :execution_migration_owner_binding_required}
+
+  @spec definition_ref?(term()) :: boolean()
+  defp definition_ref?(value) when is_binary(value), do: match?({:ok, _ref}, Ref.parse(value))
+  defp definition_ref?(_value), do: false
+
   @spec migration_request_id(String.t(), term(), String.t(), String.t()) :: String.t()
   defp migration_request_id(program_digest, source_version, source_digest, contract_digest) do
     digest =
@@ -336,7 +411,7 @@ defmodule Spectre.Execution.Migration do
 
   @spec digest?(term()) :: boolean()
   defp digest?(value) when is_binary(value) and byte_size(value) == 64,
-    do: match?({:ok, _bytes}, Base.decode16(value, case: :mixed))
+    do: match?({:ok, _bytes}, Base.decode16(value, case: :lower))
 
   defp digest?(_value), do: false
 end

@@ -245,6 +245,61 @@ defmodule Spectre.Execution.Closure do
     end
   end
 
+  @doc "Observes every BEAM fingerprint through trusted loaded-code metadata."
+  @spec observe_builds(t(), keyword()) ::
+          {:ok, %{optional(String.t()) => String.t()}} | {:error, term()}
+  def observe_builds(%__MODULE__{} = closure, opts \\ []) when is_list(opts) do
+    modules = Keyword.get(opts, :build_modules, %{})
+
+    if is_map(modules) do
+      observed = Enum.reduce(closure.build_fingerprints, %{}, &observe_build(&1, modules, &2))
+
+      {:ok, observed}
+    else
+      {:error, {:invalid_build_module_registry, shape(modules)}}
+    end
+  end
+
+  defp observe_build(fingerprint, modules, observed) do
+    with {:ok, module} <- observed_module(fingerprint.ref, modules),
+         {:ok, digest} <- fingerprint(module) do
+      Map.put(observed, fingerprint.ref, digest)
+    else
+      {:error, _reason} -> observed
+    end
+  end
+
+  defp observed_module(ref, modules) do
+    case Map.fetch(modules, ref) do
+      {:ok, module} when is_atom(module) and not is_nil(module) -> {:ok, module}
+      {:ok, value} -> {:error, {:invalid_build_module, ref, value}}
+      :error -> beam_module(ref)
+    end
+  end
+
+  defp beam_module("beam:" <> module_name) do
+    [module_name, "Elixir." <> module_name]
+    |> Enum.uniq()
+    |> Enum.find_value({:error, {:build_module_not_observable, module_name}}, fn candidate ->
+      case existing_module(candidate) do
+        {:ok, module} -> {:ok, module}
+        :error -> false
+      end
+    end)
+  end
+
+  defp beam_module(ref), do: {:error, {:build_module_not_observable, ref}}
+
+  defp existing_module(name) do
+    module = String.to_existing_atom(name)
+
+    if Atom.to_string(module) == name and Code.ensure_loaded?(module),
+      do: {:ok, module},
+      else: :error
+  rescue
+    ArgumentError -> :error
+  end
+
   @spec validate_keys(map()) :: :ok | {:error, term()}
   defp validate_keys(attrs) do
     allowed = [:schema_version | @required_fields]
@@ -476,7 +531,7 @@ defmodule Spectre.Execution.Closure do
 
   @spec digest?(term()) :: boolean()
   defp digest?(digest) when is_binary(digest) and byte_size(digest) == 64 do
-    match?({:ok, <<_::256>>}, Base.decode16(digest, case: :mixed))
+    match?({:ok, <<_::256>>}, Base.decode16(digest, case: :lower))
   end
 
   defp digest?(_value), do: false

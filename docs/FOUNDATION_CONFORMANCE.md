@@ -118,6 +118,15 @@ case content. The gate also checks the public corpus-digest, compose, review,
 approval, rollback, and GC entry points. Durable State, Run, and Instance
 reader/writer contracts remain unchanged.
 
+Spectre `0.3.0` appends Experience evidence/artifact, Reflection projection,
+critic contract, Critique, OracleApproval and Forge Proposal identities. The
+separate `0.3.0/reflective-runtime-v1.json` fixture pins the full path from
+Definition and Activation through redacted Experience, Reflection, critique,
+oracle approval, ChangeSet and Proposal. `verify_reflection/5` regenerates a
+transported projection against all exact inputs; `verify_forge_proposal/1`
+revalidates the complete Proposal lineage. Historical State, Run, Instance and
+0.2.x fixture bytes are unchanged.
+
 ## What the gate does not authorize
 
 Conformance proves structural compatibility. It does not grant authority,

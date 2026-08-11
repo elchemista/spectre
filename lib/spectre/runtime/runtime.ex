@@ -32,6 +32,7 @@ defmodule Spectre.Runtime do
   alias Spectre.Run.Request
   alias Spectre.Run.Value
   alias Spectre.Runtime.Persistence
+  alias Spectre.Runtime.SkillDispatch
   alias Spectre.State
   alias Spectre.Turn.Handlers
 
@@ -466,10 +467,19 @@ defmodule Spectre.Runtime do
       run_policy_turn(ctx)
     else
       case Handlers.dispatch(ctx) do
-        :cont -> run_routed_turn(ctx)
+        :cont -> run_skill_or_routed_turn(ctx)
         {:reply, %Result{} = result} -> {:ok, result}
         {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  @spec run_skill_or_routed_turn(Context.t()) :: {:ok, Result.t()} | {:error, term()}
+  defp run_skill_or_routed_turn(%Context{} = ctx) do
+    case SkillDispatch.dispatch(ctx) do
+      :cont -> run_routed_turn(ctx)
+      {:reply, %Result{} = result} -> {:ok, result}
+      {:error, reason} -> {:error, reason}
     end
   end
 

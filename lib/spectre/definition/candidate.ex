@@ -312,7 +312,7 @@ defmodule Spectre.Definition.Candidate do
     do: {:error, {:candidate_governance_requires_governed_source, source}}
 
   defp validate_digest(digest) when is_binary(digest) and byte_size(digest) == 64 do
-    case Base.decode16(digest, case: :mixed) do
+    case Base.decode16(digest, case: :lower) do
       {:ok, <<_::256>>} -> :ok
       :error -> {:error, {:invalid_candidate_manifest_digest, digest}}
     end

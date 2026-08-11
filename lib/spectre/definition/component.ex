@@ -8,13 +8,10 @@ defmodule Spectre.Definition.Component do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.SensitiveData
 
   @criticalities [:must_understand, :advisory, :descriptive]
-  @sensitive_keys MapSet.new(~w(
-    access_token api_key credential credentials password private_key
-    refresh_token secret secrets token
-  ))
-
+  @fields [:component_type, :schema_ref, :criticality, :payload]
   @enforce_keys [:component_type, :schema_ref, :criticality, :payload]
   defstruct [:component_type, :schema_ref, :criticality, :payload]
 
@@ -29,12 +26,19 @@ defmodule Spectre.Definition.Component do
 
   @doc "Builds and validates a canonical Definition component."
   @spec new(map() | keyword()) :: {:ok, t()} | {:error, term()}
-  def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
+  def new(%__MODULE__{} = component), do: component |> Map.from_struct() |> new()
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs),
+      do: attrs |> Map.new() |> new(),
+      else: {:error, {:invalid_definition_component, :list}}
+  end
 
   def new(attrs) when is_map(attrs) do
-    component = struct(__MODULE__, Map.take(attrs, fields()))
+    component = struct(__MODULE__, Map.take(attrs, @fields))
 
-    with :ok <- validate_type(component.component_type),
+    with :ok <- validate_keys(attrs),
+         :ok <- validate_type(component.component_type),
          :ok <- validate_schema_ref(component.schema_ref),
          :ok <- validate_criticality(component.criticality),
          :ok <- validate_payload(component.payload) do
@@ -66,18 +70,21 @@ defmodule Spectre.Definition.Component do
 
   @doc "Restores a component from its portable envelope representation."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(%{
-        "component_type" => component_type,
-        "schema_ref" => schema_ref,
-        "criticality" => criticality,
-        "payload" => payload
-      }) do
-    new(
-      component_type: component_type,
-      schema_ref: schema_ref,
-      criticality: criticality,
-      payload: payload
-    )
+  def from_data(data) when is_map(data) and not is_struct(data) do
+    expected = Enum.map(@fields, &Atom.to_string/1)
+
+    with [] <- Map.keys(data) -- expected,
+         [] <- expected -- Map.keys(data) do
+      new(
+        component_type: Map.get(data, "component_type"),
+        schema_ref: Map.get(data, "schema_ref"),
+        criticality: Map.get(data, "criticality"),
+        payload: Map.get(data, "payload")
+      )
+    else
+      fields when is_list(fields) ->
+        {:error, {:invalid_definition_component_fields, Enum.sort(fields)}}
+    end
   end
 
   def from_data(value), do: {:error, {:invalid_definition_component_data, shape(value)}}
@@ -99,42 +106,26 @@ defmodule Spectre.Definition.Component do
 
   @spec validate_payload(term()) :: :ok | {:error, term()}
   defp validate_payload(payload) do
-    cond do
-      path = sensitive_path(payload) ->
-        {:error, {:secret_component_payload, path}}
+    with :ok <- portable_payload(payload) do
+      cond do
+        path = SensitiveData.sensitive_path(payload) ->
+          {:error, {:secret_component_payload, path}}
 
-      path = ast_path(payload) ->
-        {:error, {:executable_component_ast, path}}
+        path = ast_path(payload) ->
+          {:error, {:executable_component_ast, path}}
 
-      true ->
-        case Value.validate(payload) do
-          :ok -> :ok
-          {:error, reason} -> {:error, {:nonportable_component_payload, reason}}
-        end
+        true ->
+          :ok
+      end
     end
   end
 
-  @spec sensitive_path(term(), [term()]) :: [term()] | nil
-  defp sensitive_path(value, path \\ [])
-
-  defp sensitive_path(value, path) when is_map(value) do
-    Enum.find_value(value, fn {key, item} ->
-      if sensitive_key?(key) do
-        Enum.reverse([key | path])
-      else
-        sensitive_path(key, [{:key, key_label(key)} | path]) ||
-          sensitive_path(item, [key_label(key) | path])
-      end
-    end)
+  defp portable_payload(payload) do
+    case Value.validate(payload) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:nonportable_component_payload, reason}}
+    end
   end
-
-  defp sensitive_path(value, path) when is_list(value),
-    do: find_list_path(value, path, &sensitive_path/2)
-
-  defp sensitive_path(value, path) when is_tuple(value),
-    do: value |> Tuple.to_list() |> find_list_path(path, &sensitive_path/2)
-
-  defp sensitive_path(_value, _path), do: nil
 
   @spec ast_path(term(), [term()]) :: [term()] | nil
   defp ast_path(value, path \\ [])
@@ -186,23 +177,16 @@ defmodule Spectre.Definition.Component do
 
   defp ast_form?(_form), do: false
 
-  @spec sensitive_key?(term()) :: boolean()
-  defp sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_key?()
-
-  defp sensitive_key?(key) when is_binary(key),
-    do: MapSet.member?(@sensitive_keys, String.downcase(key))
-
-  defp sensitive_key?(_key), do: false
-
   @spec key_label(term()) :: term()
   defp key_label(key) when is_atom(key) or is_binary(key) or is_integer(key), do: key
   defp key_label(_key), do: :key
 
-  @spec fields() :: [atom()]
-  defp fields do
-    __MODULE__.__struct__()
-    |> Map.keys()
-    |> List.delete(:__struct__)
+  @spec validate_keys(map()) :: :ok | {:error, term()}
+  defp validate_keys(attrs) do
+    case Map.keys(attrs) -- @fields do
+      [] -> :ok
+      unknown -> {:error, {:unknown_definition_component_fields, Enum.sort(unknown)}}
+    end
   end
 
   @spec shape(term()) :: atom()

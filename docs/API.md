@@ -4,16 +4,38 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.9` adds closed Definition ChangeSets, versioned gate receipts,
-protected-corpus evaluation, deterministic human reports, separate approval
-and activation commits, ancestor rollback, and conservative artifact GC while
-retaining every earlier conformance gate and the schema-4 Skill-state runtime. The
+Spectre `0.3.0` completes the core governed reflective runtime with opt-in
+redacted Experience, mechanical Declared/Effective/Observed Reflection,
+compiled critic adapters, oracle-bound evaluation cases, inert Forge
+proposals, and explicit evidence-aware rebase. It retains every earlier
+conformance gate and the schema-4 Skill-state runtime. The
 exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
 0.1.6 conversational baseline remains included. This guide explains that
 surface but does not enlarge it. Anything absent from the manifest is an
 implementation detail even when it is exported or visible.
+
+## Inspect and propose without self-activation
+
+Use `Spectre.Experience.record/3` only from trusted host code that explicitly
+opts in. Evidence is redacted, content-addressed, Definition- and
+generation-bound, retention-limited, and separate from canonical Instance
+state.
+
+Use `Spectre.Reflection.reflect/4` with a closed
+`Spectre.Reflection.Policy`, exact actor, purpose and observation time. The
+result is a deterministic `Spectre.Projection.Reflection` whose Declared,
+Effective and Observed sections remain separate. Missing Experience is
+represented as `no_evidence`; no model or inspected instruction runs.
+
+Use `Spectre.Forge.propose/5` to produce an inert Proposal from that projection
+and its exact redacted snapshot. Compiled `Spectre.Forge.Critic` adapters can
+return opinion and falsifiable cases, but a case enters the ChangeSet only
+through a trusted oracle Ref or independent `OracleApproval`. Pass
+`proposal.change_set` to Composer and pass `Spectre.Forge.evidence/2` unchanged
+to both composition and activation. Changed evidence requires
+`Spectre.Forge.rebase/5`. See [Reflective Runtime](REFLECTIVE_RUNTIME.md).
 
 ## Verify the foundation before an upgrade
 

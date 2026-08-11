@@ -170,31 +170,72 @@ defmodule Spectre.Governance.ChangeSet do
   def evidence_digest(%Activation{} = activation),
     do: activation |> Activation.to_data() |> Value.digest!()
 
-  @doc "Checks that this proposal still describes the supplied Activation."
-  @spec verify_base(t(), Activation.t() | nil) :: :ok | {:error, term()}
-  def verify_base(%__MODULE__{}, nil), do: {:error, :governance_change_set_requires_activation}
+  @doc "Binds an Activation to exact Reflection/Experience evidence."
+  @spec evidence_digest(Activation.t(), map()) :: String.t()
+  def evidence_digest(%Activation{} = activation, evidence)
+      when is_map(evidence) and not is_struct(evidence) do
+    case Data.normalize_map(evidence) do
+      {:ok, normalized} when map_size(normalized) == 0 ->
+        evidence_digest(activation)
 
-  def verify_base(%__MODULE__{} = change_set, %Activation{} = activation) do
-    cond do
-      change_set.base_activation_receipt != activation.activation_receipt ->
-        {:error, :stale_governance_activation_receipt}
+      {:ok, normalized} ->
+        Value.digest!(%{
+          "activation" => Activation.to_data(activation),
+          "external_evidence" => normalized
+        })
 
-      change_set.base_candidate_ref != activation.candidate_ref ->
-        {:error, :stale_governance_candidate_ref}
-
-      change_set.observed_definition_ref != activation.definition_ref ->
-        {:error, :stale_governance_definition_ref}
-
-      change_set.observed_authority_epoch != activation.authority_epoch ->
-        {:error, :stale_governance_authority_epoch}
-
-      change_set.observed_evidence_digest != evidence_digest(activation) ->
-        {:error, :stale_governance_evidence_digest}
-
-      true ->
-        :ok
+      {:error, reason} ->
+        raise ArgumentError, "invalid governance evidence: #{inspect(reason)}"
     end
   end
+
+  @doc "Checks that this proposal still describes the supplied Activation."
+  @spec verify_base(t(), Activation.t() | nil) :: :ok | {:error, term()}
+  def verify_base(change_set, activation), do: verify_base(change_set, activation, %{})
+
+  @doc "Checks the Activation plus exact external evidence observed by a proposal."
+  @spec verify_base(t(), Activation.t() | nil, map()) :: :ok | {:error, term()}
+  def verify_base(%__MODULE__{}, nil, _evidence),
+    do: {:error, :governance_change_set_requires_activation}
+
+  def verify_base(%__MODULE__{} = change_set, %Activation{} = activation, evidence) do
+    with {:ok, expected_evidence} <- external_evidence_digest(activation, evidence) do
+      cond do
+        change_set.base_activation_receipt != activation.activation_receipt ->
+          {:error, :stale_governance_activation_receipt}
+
+        change_set.base_candidate_ref != activation.candidate_ref ->
+          {:error, :stale_governance_candidate_ref}
+
+        change_set.observed_definition_ref != activation.definition_ref ->
+          {:error, :stale_governance_definition_ref}
+
+        change_set.observed_authority_epoch != activation.authority_epoch ->
+          {:error, :stale_governance_authority_epoch}
+
+        change_set.observed_evidence_digest != expected_evidence ->
+          {:error, :stale_governance_evidence_digest}
+
+        true ->
+          :ok
+      end
+    end
+  end
+
+  def verify_base(%__MODULE__{}, activation, _evidence),
+    do: {:error, {:invalid_governance_activation, shape(activation)}}
+
+  defp external_evidence_digest(activation, evidence)
+       when is_map(evidence) and not is_struct(evidence) do
+    try do
+      {:ok, evidence_digest(activation, evidence)}
+    rescue
+      ArgumentError -> {:error, :invalid_governance_external_evidence}
+    end
+  end
+
+  defp external_evidence_digest(_activation, _evidence),
+    do: {:error, :invalid_governance_external_evidence}
 
   @spec exact_fields(map()) :: :ok | {:error, term()}
   defp exact_fields(attrs) do

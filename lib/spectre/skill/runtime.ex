@@ -13,6 +13,7 @@ defmodule Spectre.Skill.Runtime do
   alias Spectre.Definition
   alias Spectre.Definition.Canonical
   alias Spectre.Definition.Ref
+  alias Spectre.Execution.Program
   alias Spectre.Input
   alias Spectre.Operation.Registry
   alias Spectre.Operation.Request
@@ -21,6 +22,7 @@ defmodule Spectre.Skill.Runtime do
   alias Spectre.Prompt.Fragment
   alias Spectre.Prompt.Materializer, as: PromptMaterializer
   alias Spectre.Prompt.Plan
+  alias Spectre.Prompt.Predicate
   alias Spectre.Router.IndexProfile
   alias Spectre.Skill.Applicability
   alias Spectre.Skill.Definition, as: SkillDefinition
@@ -365,6 +367,7 @@ defmodule Spectre.Skill.Runtime do
          :ok <- validate_declarative_routes(definition),
          :ok <- validate_operation_authority(runtime, definition),
          :ok <- validate_prompt_authority(runtime, definition, replacing),
+         :ok <- validate_model_authority(runtime, definition),
          :ok <- validate_execution_budget_authority(runtime, definition),
          :ok <- validate_conflicts(runtime, mount_id, definition, replacing),
          {:ok, _report} <- SkillDefinition.anti_hijack(definition) do
@@ -462,9 +465,25 @@ defmodule Spectre.Skill.Runtime do
     budget = SkillDefinition.prompt_budget(definition)
 
     with :ok <- per_skill_budget(budget.token_cap, runtime.per_skill_prompt_cap),
-         :ok <- fragment_budget_classes(runtime, definition) do
+         :ok <- fragment_budget_classes(runtime, definition),
+         :ok <- fragment_conditions(runtime, definition) do
       total_prompt_budget(runtime, definition, replacing)
     end
+  end
+
+  defp fragment_conditions(runtime, definition) do
+    definition
+    |> SkillDefinition.prompt_fragments()
+    |> Enum.reduce_while(:ok, fn
+      %Fragment{condition_ref: nil}, :ok ->
+        {:cont, :ok}
+
+      %Fragment{condition_ref: condition_ref}, :ok ->
+        case Predicate.validate_ref(runtime.agent, condition_ref) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+    end)
   end
 
   @spec per_skill_budget(pos_integer(), pos_integer()) :: :ok | {:error, term()}
@@ -505,6 +524,46 @@ defmodule Spectre.Skill.Runtime do
       else: {:error, {:skill_prompt_window_exceeded, reserved, available}}
   end
 
+  @spec validate_model_authority(t(), SkillDefinition.t()) :: :ok | {:error, term()}
+  defp validate_model_authority(runtime, definition) do
+    definition
+    |> SkillDefinition.works()
+    |> Enum.reduce_while(:ok, fn program, :ok ->
+      with :ok <- Program.validate_profile_pinning(program),
+           :ok <- authorize_model_purpose(runtime.authority, program),
+           :ok <- authorize_model_profiles(runtime.authority, program) do
+        {:cont, :ok}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp authorize_model_purpose(authority, program) do
+    if not Program.uses_inference?(program) or
+         named_grant?(authority.model_purposes, :data_driven_work) do
+      :ok
+    else
+      {:error, {:execution_model_purpose_not_authorized, program.id, :data_driven_work}}
+    end
+  end
+
+  defp authorize_model_profiles(authority, program) do
+    case Enum.find(Program.profile_refs(program), fn profile ->
+           not named_grant?(authority.model_profiles, profile)
+         end) do
+      nil -> :ok
+      profile -> {:error, {:execution_model_profile_not_authorized, program.id, profile}}
+    end
+  end
+
+  defp named_grant?(grants, value) do
+    Enum.any?(grants, &(stable_ref(&1) == stable_ref(value)))
+  end
+
+  defp stable_ref(value) when is_atom(value), do: Atom.to_string(value)
+  defp stable_ref(value) when is_binary(value), do: value
+
   @spec validate_execution_budget_authority(t(), SkillDefinition.t()) ::
           :ok | {:error, term()}
   defp validate_execution_budget_authority(runtime, definition) do
@@ -512,6 +571,7 @@ defmodule Spectre.Skill.Runtime do
     |> SkillDefinition.works()
     |> Enum.reduce_while(:ok, fn program, :ok ->
       with :ok <- execution_budget_limit(program, runtime.authority, :cost, :max_cost),
+           :ok <- execution_budget_limit(program, runtime.authority, :pages, :max_pages),
            :ok <-
              execution_budget_limit(
                program,
@@ -685,7 +745,13 @@ defmodule Spectre.Skill.Runtime do
         definition_ref = Ref.to_string(match.definition_ref)
 
         with {:ok, %Plan{} = plan, receipt} <-
-               PromptMaterializer.materialize(fragment, input, context, definition_ref) do
+               PromptMaterializer.materialize(
+                 fragment,
+                 input,
+                 context,
+                 definition_ref,
+                 agent: runtime.agent
+               ) do
           {:ok,
            %Response{
              kind: :reply,

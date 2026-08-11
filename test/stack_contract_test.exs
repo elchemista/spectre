@@ -58,7 +58,7 @@ defmodule SpectreStackContractTest.InferencePackage do
     id: :inference,
     version: "0.1.2",
     contract: 1,
-    spectre: ">= 0.1.2 and < 0.3.0",
+    spectre: ">= 0.3.0 and < 0.4.0",
     provides: [{:service, :inference}],
     operations: [{:inference, :complete}],
     resources: [:client],
@@ -90,7 +90,7 @@ defmodule SpectreStackContractTest.ActionPackage do
     id: :job_actions,
     version: "0.1.2",
     contract: 1,
-    spectre: ">= 0.1.2 and < 0.3.0",
+    spectre: ">= 0.3.0 and < 0.4.0",
     requires: [{:service, :inference, "~> 0.1.2"}],
     provides: [:move_selection],
     actions: [{:jobs, :submit}]
@@ -103,7 +103,7 @@ defmodule SpectreStackContractTest.FirstSearchPackage do
     id: :first_search,
     version: "0.1.2",
     contract: 1,
-    spectre: ">= 0.1.2 and < 0.3.0",
+    spectre: ">= 0.3.0 and < 0.4.0",
     actions: [{:first, :search}]
 end
 
@@ -114,7 +114,7 @@ defmodule SpectreStackContractTest.SecondSearchPackage do
     id: :second_search,
     version: "0.1.2",
     contract: 1,
-    spectre: ">= 0.1.2 and < 0.3.0",
+    spectre: ">= 0.3.0 and < 0.4.0",
     actions: [{:second, :search}]
 end
 
@@ -264,7 +264,7 @@ defmodule SpectreStackContractTest do
     assert package.module == InferencePackage
     assert package.version == "0.1.2"
     assert package.contract == 1
-    assert package.spectre == ">= 0.1.2 and < 0.3.0"
+    assert package.spectre == ">= 0.3.0 and < 0.4.0"
     assert package.agent_extensions == [SpectreStackContractTest.StackExtension]
     assert is_binary(package.digest)
     assert V1.assert_installable!(InferencePackage) == package
@@ -460,7 +460,7 @@ defmodule SpectreStackContractTest do
       use Spectre.Stack.Installable,
         id: :missing_dependency,
         version: "0.1.2",
-        spectre: ">= 0.1.2 and < 0.3.0",
+        spectre: ">= 0.3.0 and < 0.4.0",
         requires: [{:package, :not_installed}]
     end
     """)
@@ -504,7 +504,7 @@ defmodule SpectreStackContractTest do
       use Spectre.Stack.Installable,
         id: :cycle_first,
         version: "0.1.2",
-        spectre: ">= 0.1.2 and < 0.3.0",
+        spectre: ">= 0.3.0 and < 0.4.0",
         provides: [{:service, :cycle_first}],
         requires: [{:service, :cycle_second}]
     end
@@ -513,7 +513,7 @@ defmodule SpectreStackContractTest do
       use Spectre.Stack.Installable,
         id: :cycle_second,
         version: "0.1.2",
-        spectre: ">= 0.1.2 and < 0.3.0",
+        spectre: ">= 0.3.0 and < 0.4.0",
         provides: [{:service, :cycle_second}],
         requires: [{:service, :cycle_first}]
     end
@@ -545,7 +545,7 @@ defmodule SpectreStackContractTest do
         use Spectre.Stack.Installable,
           id: #{inspect(first)},
           version: "0.1.2",
-          spectre: ">= 0.1.2 and < 0.3.0",
+          spectre: ">= 0.3.0 and < 0.4.0",
           #{field}: #{entry}
       end
 
@@ -553,7 +553,7 @@ defmodule SpectreStackContractTest do
         use Spectre.Stack.Installable,
           id: #{inspect(second)},
           version: "0.1.2",
-          spectre: ">= 0.1.2 and < 0.3.0",
+          spectre: ">= 0.3.0 and < 0.4.0",
           #{field}: #{entry}
       end
       """)
@@ -609,7 +609,7 @@ defmodule SpectreStackContractTest do
         use Spectre.Stack.Installable,
           id: #{inspect(package)},
           version: "0.1.2",
-          spectre: ">= 0.1.2 and < 0.3.0"
+          spectre: ">= 0.3.0 and < 0.4.0"
 
         def compile(_opts, _block, _caller), do: #{body}
       end
@@ -641,7 +641,7 @@ defmodule SpectreStackContractTest do
         use Spectre.Stack.Installable,
           id: #{inspect(package)},
           version: "0.1.2",
-          spectre: ">= 0.1.2 and < 0.3.0"
+          spectre: ">= 0.3.0 and < 0.4.0"
 
         def compile(_opts, _block, _caller), do: {:ok, %{unsafe: #{value}}}
       end
@@ -712,7 +712,7 @@ defmodule SpectreStackContractTest do
       use Spectre.Stack.Installable,
         id: :undeclared_runtime,
         version: "0.1.2",
-        spectre: ">= 0.1.2 and < 0.3.0"
+        spectre: ">= 0.3.0 and < 0.4.0"
 
       def child_specs(_installation, _opts) do
         [{:not_declared, {Agent, fn -> :ok end}}]

@@ -3,9 +3,11 @@ defmodule Spectre.Definition.Canonical.PromptLowerer do
 
   alias Spectre.Definition
   alias Spectre.Definition.Canonical.Data
+  alias Spectre.Operation.Registry
   alias Spectre.Prompt
   alias Spectre.Prompt.Fragment
   alias Spectre.Prompt.Operation
+  alias Spectre.Prompt.Predicate
 
   @doc false
   @spec lower(Definition.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
@@ -259,12 +261,26 @@ defmodule Spectre.Definition.Canonical.PromptLowerer do
   @spec lower_condition(term(), module()) :: {:ok, map() | nil} | {:error, term()}
   defp lower_condition(nil, _owner), do: {:ok, nil}
 
-  defp lower_condition({module, function}, _owner)
-       when is_atom(module) and is_atom(function),
-       do: {:ok, Data.callback_ref(module, function, [1, 2])}
+  defp lower_condition({:predicate, ref}, owner) do
+    with {:ok, registered} <- Registry.resolve_id(owner, ref),
+         {:ok, spec} <- Registry.resolve_spec(owner, registered),
+         true <- Registry.predicate_spec?(spec) do
+      Predicate.ref_data(registered)
+    else
+      false -> {:error, {:prompt_condition_not_pure_boolean, ref}}
+      {:error, _reason} = error -> error
+    end
+  end
 
-  defp lower_condition(condition, owner) when is_function(condition),
-    do: Data.lower(condition, owner: owner, path: [:prompt_condition])
+  defp lower_condition({module, function}, owner)
+       when is_atom(module) and is_atom(function) do
+    with {:ok, ref} <- Registry.predicate_id_for_executor(owner, {module, function}) do
+      Predicate.ref_data(ref)
+    end
+  end
+
+  defp lower_condition(condition, _owner) when is_function(condition),
+    do: {:error, :anonymous_prompt_condition_not_registered}
 
   defp lower_condition(condition, _owner),
     do: {:error, {:invalid_compiled_prompt_condition, condition}}

@@ -249,6 +249,90 @@ defmodule SpectreAgentDSLContractTest do
     assert rule.handler == {:reply, :wrapped, []}
   end
 
+  test "runtime compilation preserves every closed handler and infrastructure mount" do
+    module = unique_module("RuntimeCompiledSurface")
+
+    assert [{^module, _binary}] =
+             compile_module("""
+             defmodule #{inspect(module)} do
+               use Spectre.Agent, id: :runtime_compiled_surface
+
+               action_provider :local, Spectre.Action.Provider.Local, mode: :strict
+               checkpoint_store Spectre.Instance.CheckpointStore, namespace: "contract"
+               action_planner Spectre.ActionPlanner, strict?: true
+               route_operation_events [:completed, :failed]
+
+               def handlers do
+                 [
+                   ask(:question),
+                   reason(:analysis),
+                   act(:plan),
+                   run(:local),
+                   reply(:done),
+                   work(Spectre.Execution.Work),
+                   action(:deliver),
+                   call_operation(:lookup)
+                 ]
+               end
+             end
+             """)
+
+    config = module.__spectre_config__()
+
+    assert [%Spectre.Action.Provider.Mount{id: :local, module: Spectre.Action.Provider.Local}] =
+             config[:action_providers]
+
+    assert config[:checkpoint_store] ==
+             {Spectre.Instance.CheckpointStore, namespace: "contract"}
+
+    assert config[:action_planner] == {Spectre.ActionPlanner, strict?: true}
+    assert config[:route_operation_events] == [:completed, :failed]
+
+    assert module.handlers() == [
+             {:__spectre_handler__, :ask, :question, []},
+             {:__spectre_handler__, :reason, :analysis, []},
+             {:__spectre_handler__, :act, :plan, []},
+             {:__spectre_handler__, :run, :local, []},
+             {:__spectre_handler__, :reply, :done, []},
+             {:__spectre_handler__, :work, Spectre.Execution.Work, []},
+             {:__spectre_handler__, :action, :deliver, []},
+             {:__spectre_handler__, :operation, :lookup, []}
+           ]
+
+    invalid_events = unique_module("InvalidOperationEvents")
+
+    assert_raise ArgumentError, ~r/route_operation_events expects/, fn ->
+      compile_module("""
+      defmodule #{inspect(invalid_events)} do
+        use Spectre.Agent
+        route_operation_events [:completed, nil]
+      end
+      """)
+    end
+
+    invalid_planner = unique_module("InvalidActionPlanner")
+
+    assert_raise ArgumentError, ~r/action planner must be a module/, fn ->
+      compile_module("""
+      defmodule #{inspect(invalid_planner)} do
+        use Spectre.Agent
+        action_planner nil
+      end
+      """)
+    end
+
+    invalid_planner_opts = unique_module("InvalidActionPlannerOptions")
+
+    assert_raise ArgumentError, ~r/action planner options must be a keyword list/, fn ->
+      compile_module("""
+      defmodule #{inspect(invalid_planner_opts)} do
+        use Spectre.Agent
+        action_planner Spectre.ActionPlanner, %{bad: true}
+      end
+      """)
+    end
+  end
+
   defp compile_module(source), do: Code.compile_string(source)
 
   defp unique_module(suffix) do

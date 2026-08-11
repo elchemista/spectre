@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.2.9"
+  @version "0.3.0"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
@@ -34,6 +34,7 @@ defmodule Spectre.MixProject do
     "docs/RUNTIME_SKILLS.md",
     "docs/DATA_DRIVEN_EXECUTION.md",
     "docs/GOVERNANCE.md",
+    "docs/REFLECTIVE_RUNTIME.md",
     "docs/ROUTING.md",
     "docs/EVALUATION.md",
     "docs/PROVIDERS.md",
@@ -61,6 +62,7 @@ defmodule Spectre.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      test_coverage: [summary: [threshold: 93]],
       description: description(),
       package: package(),
       dialyzer: [
@@ -167,6 +169,7 @@ defmodule Spectre.MixProject do
           "docs/RUNTIME_SKILLS.md",
           "docs/DATA_DRIVEN_EXECUTION.md",
           "docs/GOVERNANCE.md",
+          "docs/REFLECTIVE_RUNTIME.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
         ],
@@ -209,7 +212,8 @@ defmodule Spectre.MixProject do
           Spectre.Foundation.Conformance,
           Spectre.Execution.Closure,
           Spectre.Projection,
-          Spectre.Projection.Audit
+          Spectre.Projection.Audit,
+          Spectre.Projection.Reflection
         ],
         "Core API": [
           Spectre,
@@ -277,6 +281,22 @@ defmodule Spectre.MixProject do
           Spectre.Projection.HumanReport,
           Spectre.Governance.GC,
           Spectre.Governance.GC.Plan
+        ],
+        "Reflection and Forge": [
+          Spectre.Experience,
+          Spectre.Experience.Evidence,
+          Spectre.Experience.Evidence.Ref,
+          Spectre.Experience.Redactor,
+          Spectre.Experience.Store,
+          Spectre.Experience.Store.Memory,
+          Spectre.Reflection,
+          Spectre.Reflection.Policy,
+          Spectre.Reflection.Operation,
+          Spectre.Forge,
+          Spectre.Forge.Critic,
+          Spectre.Forge.Critique,
+          Spectre.Forge.OracleApproval,
+          Spectre.Forge.Proposal
         ],
         Routing: [
           Spectre.Router,

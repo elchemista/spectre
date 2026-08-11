@@ -88,6 +88,9 @@ defmodule Spectre.Operation.Result do
     cost =
       if is_map(result.usage), do: Map.get(result.usage, :cost, Map.get(result.usage, "cost"))
 
+    pages =
+      if is_map(result.usage), do: Map.get(result.usage, :pages, Map.get(result.usage, "pages"))
+
     cond do
       Enum.any?(
         [result.id, result.attempt_id, result.loop_id, result.epoch, result.fencing_token],
@@ -124,6 +127,9 @@ defmodule Spectre.Operation.Result do
 
       not is_nil(cost) and not (is_number(cost) and cost >= 0) ->
         {:error, :invalid_operation_result_cost}
+
+      not is_nil(pages) and not (is_integer(pages) and pages >= 0) ->
+        {:error, :invalid_operation_result_pages}
 
       not is_list(result.artifacts) ->
         {:error, :invalid_operation_result_artifacts}

@@ -134,6 +134,75 @@ defmodule SpectreInferenceContractTest.InvalidExtension do
   def inference_selector(_config), do: SpectreInferenceContractTest.MissingSelector
 end
 
+defmodule SpectreInferenceContractTest.MalformedProfilesExtension do
+  @moduledoc false
+
+  @behaviour Spectre.Extension
+
+  @impl true
+  def id, do: :malformed_inference_profiles
+
+  @impl true
+  def inference_selector(_config) do
+    profile = %{
+      id: :malformed,
+      rank: 1,
+      model: SpectreInferenceContractTest.StringModel,
+      supports: 42,
+      cost_tier: :low,
+      latency_tier: :low
+    }
+
+    {SpectreInferenceContractTest.Selector, profiles: [profile]}
+  end
+end
+
+defmodule SpectreInferenceContractTest.ForgedSelector do
+  @moduledoc false
+  @behaviour Spectre.Inference.Selector
+
+  @impl true
+  def select(request, [profile | _profiles], _ctx, _opts) do
+    {:ok,
+     %{
+       request_id: request.id,
+       level: profile.id,
+       model: SpectreInferenceContractTest.MapModel,
+       reason: :forged,
+       selector: __MODULE__,
+       profile_hash: profile.profile_hash,
+       attempt: request.attempt
+     }}
+  end
+end
+
+defmodule SpectreInferenceContractTest.ForgedExtension do
+  @moduledoc false
+  @behaviour Spectre.Extension
+
+  alias Spectre.Inference.Profile
+
+  @impl true
+  def id, do: :forged_inference_selection
+
+  @impl true
+  def inference_selector(_config) do
+    profile =
+      Profile.new(
+        id: :sealed,
+        rank: 10,
+        model: SpectreInferenceContractTest.StringModel,
+        supports: [:text],
+        context_window: 16_000,
+        privacy: :local,
+        cost_tier: :low,
+        latency_tier: :low
+      )
+
+    {SpectreInferenceContractTest.ForgedSelector, profiles: [profile]}
+  end
+end
+
 defmodule SpectreInferenceContractTest.BareAgent do
   @moduledoc false
 
@@ -152,6 +221,24 @@ defmodule SpectreInferenceContractTest.InvalidSelectorAgent do
 
   use Spectre.Agent
   Spectre.Extension.register!(__MODULE__, SpectreInferenceContractTest.InvalidExtension)
+end
+
+defmodule SpectreInferenceContractTest.MalformedProfilesAgent do
+  @moduledoc false
+
+  use Spectre.Agent
+
+  Spectre.Extension.register!(
+    __MODULE__,
+    SpectreInferenceContractTest.MalformedProfilesExtension
+  )
+end
+
+defmodule SpectreInferenceContractTest.ForgedSelectorAgent do
+  @moduledoc false
+
+  use Spectre.Agent
+  Spectre.Extension.register!(__MODULE__, SpectreInferenceContractTest.ForgedExtension)
 end
 
 defmodule SpectreInferenceContractTest do
@@ -216,6 +303,43 @@ defmodule SpectreInferenceContractTest do
     assert_receive {:inference_model, :string}
   end
 
+  test "a required profile cannot fall back to the compatibility selector" do
+    request = compatibility_request(SpectreInferenceContractTest.StringModel)
+
+    request = %{
+      request
+      | metadata: Map.put(request.metadata, "required_profile_ref", "balanced")
+    }
+
+    assert {:error, {:inference_required_profile_unavailable, "balanced"}} =
+             Inference.complete(
+               SpectreInferenceContractTest.BareAgent,
+               request,
+               context(SpectreInferenceContractTest.BareAgent)
+             )
+
+    refute_received {:inference_model, _}
+  end
+
+  test "an explicit model override cannot replace a required profile" do
+    request =
+      compatibility_request(SpectreInferenceContractTest.StringModel,
+        explicit_model_override?: true
+      )
+
+    request = %{request | metadata: Map.put(request.metadata, :required_profile_ref, :balanced)}
+
+    assert {:error, {:inference_required_profile_forbids_model_override, "balanced"}} =
+             Inference.complete(
+               SpectreInferenceContractTest.SelectedAgent,
+               request,
+               context(SpectreInferenceContractTest.SelectedAgent)
+             )
+
+    refute_received {:inference_selection, _, _, _}
+    refute_received {:inference_model, _}
+  end
+
   test "selected inference retries once with a new frozen selection" do
     request = selected_request()
 
@@ -267,6 +391,62 @@ defmodule SpectreInferenceContractTest do
                SpectreInferenceContractTest.InvalidSelectorAgent,
                selected_request(),
                context(SpectreInferenceContractTest.InvalidSelectorAgent)
+             )
+
+    refute_received {:inference_model, _}
+  end
+
+  test "malformed profile and request data fail closed before model execution" do
+    assert {:error, {:invalid_inference_profiles, _message}} =
+             Inference.complete(
+               SpectreInferenceContractTest.MalformedProfilesAgent,
+               selected_request(),
+               context(SpectreInferenceContractTest.MalformedProfilesAgent)
+             )
+
+    malformed_request = %{selected_request() | metadata: []}
+
+    assert {:error, :invalid_inference_request_metadata} =
+             Inference.complete(
+               SpectreInferenceContractTest.SelectedAgent,
+               malformed_request,
+               context(SpectreInferenceContractTest.SelectedAgent)
+             )
+
+    invalid_opts = compatibility_request(SpectreInferenceContractTest.StringModel)
+    invalid_opts = %{invalid_opts | metadata: Map.put(invalid_opts.metadata, :llm_opts, :invalid)}
+
+    assert {:error, :invalid_inference_llm_options} =
+             Inference.complete(
+               SpectreInferenceContractTest.BareAgent,
+               invalid_opts,
+               context(SpectreInferenceContractTest.BareAgent)
+             )
+
+    refute_received {:inference_selection, _, _, _}
+    refute_received {:inference_model, _}
+  end
+
+  test "the kernel rejects a selector that swaps the registered profile model" do
+    assert {:error, :inference_selection_model_mismatch} =
+             Inference.complete(
+               SpectreInferenceContractTest.ForgedSelectorAgent,
+               selected_request(),
+               context(SpectreInferenceContractTest.ForgedSelectorAgent)
+             )
+
+    refute_received {:inference_model, _}
+  end
+
+  test "an exact required profile cannot be widened into selector fallback" do
+    request = selected_request()
+    request = %{request | metadata: Map.put(request.metadata, :required_profile_ref, :balanced)}
+
+    assert {:error, {:inference_required_profile_mismatch, "balanced", "fast"}} =
+             Inference.complete(
+               SpectreInferenceContractTest.SelectedAgent,
+               request,
+               context(SpectreInferenceContractTest.SelectedAgent)
              )
 
     refute_received {:inference_model, _}
@@ -382,6 +562,17 @@ defmodule SpectreInferenceContractTest do
     Enum.each(invalid_profiles, fn attrs ->
       assert_raise ArgumentError, fn -> Profile.new(attrs) end
     end)
+
+    assert_raise ArgumentError, ~r/profile hash does not match/, fn ->
+      Profile.new(
+        id: :forged,
+        rank: 1,
+        model: :model,
+        cost_tier: :low,
+        latency_tier: :low,
+        profile_hash: "sha256:forged"
+      )
+    end
   end
 
   test "request builders preserve typed modalities and monotonic constraints" do
@@ -464,7 +655,9 @@ defmodule SpectreInferenceContractTest do
       [id: "request", purpose: nil, plan: plan],
       [id: "request", purpose: :test, plan: nil],
       [id: "request", purpose: :test, plan: plan, attempt: 0],
-      [id: "request", purpose: :test, plan: plan, modalities: ["text"]]
+      [id: "request", purpose: :test, plan: plan, modalities: ["text"]],
+      [id: "request", purpose: :test, plan: plan, previous_errors: :invalid],
+      [id: "request", purpose: :test, plan: plan, metadata: []]
     ]
 
     Enum.each(invalid_requests, fn attrs ->

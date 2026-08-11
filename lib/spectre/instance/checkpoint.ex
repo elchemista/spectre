@@ -8,7 +8,6 @@ defmodule Spectre.Instance.Checkpoint do
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Instance.Telemetry, as: InstanceTelemetry
-  alias Spectre.Run.Value
   alias Spectre.State
 
   @doc """
@@ -24,8 +23,6 @@ defmodule Spectre.Instance.Checkpoint do
     case Keyword.fetch(opts, :canonical_checkpoint) do
       {:ok, checkpoint} ->
         with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-             {:ok, canonical, _migrated?} <-
-               normalize_instance_key(canonical, Keyword.fetch!(opts, :instance_ref)),
              :ok <- validate_canonical_instance(canonical, Keyword.fetch!(opts, :instance_ref)),
              {:ok, %State{} = flow_state} <- Canonical.fetch(canonical, :flow) do
           expected = Keyword.get(opts, :checkpoint_expected_revision, 0)
@@ -134,7 +131,9 @@ defmodule Spectre.Instance.Checkpoint do
     token = Spectre.Identity.uuid7()
     store = data.checkpoint_store
     ref = data.ref
-    opts = data.base_opts
+
+    opts =
+      Keyword.put(data.base_opts, :owner_fencing_token, data.owner_lease.fencing_token)
 
     callback = fn ->
       result = CheckpointStore.load(store, ref, opts)
@@ -238,229 +237,79 @@ defmodule Spectre.Instance.Checkpoint do
 
   defp restore_stored_or_new_canonical(opts, state, checkpoint_store, base_opts) do
     instance_ref = Keyword.fetch!(opts, :instance_ref)
-    stable = CheckpointStore.load(checkpoint_store, instance_ref, base_opts)
 
-    case InstanceRef.legacy(instance_ref) do
-      {:ok, legacy_ref} ->
-        legacy = CheckpointStore.load(checkpoint_store, legacy_ref, base_opts)
-
-        restore_checkpoint_pair(
-          stable,
-          legacy,
+    case CheckpointStore.load(checkpoint_store, instance_ref, base_opts) do
+      {:ok, checkpoint} ->
+        restore_stable_with_legacy_conflict_check(
           checkpoint_store,
+          checkpoint,
           instance_ref,
-          legacy_ref,
-          state,
           base_opts
         )
 
-      {:error, :legacy_agent_ref_source_unavailable} ->
-        restore_without_legacy_address(stable, instance_ref, state)
+      :not_found ->
+        reject_legacy_checkpoint_or_initialize(checkpoint_store, instance_ref, state, base_opts)
+
+      {:error, reason} ->
+        {:error, {:canonical_checkpoint_load_failed, :stable, reason}}
     end
   end
 
-  defp restore_without_legacy_address({:ok, checkpoint}, instance_ref, _state),
-    do: restore_stable_checkpoint(checkpoint, instance_ref)
+  defp restore_stable_with_legacy_conflict_check(store, checkpoint, instance_ref, opts) do
+    case InstanceRef.legacy(instance_ref) do
+      {:ok, legacy_ref} ->
+        restore_stable_with_legacy_ref(store, checkpoint, instance_ref, legacy_ref, opts)
 
-  defp restore_without_legacy_address(:not_found, instance_ref, state),
-    do: new_canonical_state(instance_ref, state)
-
-  defp restore_without_legacy_address({:error, reason}, _instance_ref, _state),
-    do: {:error, {:canonical_checkpoint_load_failed, :stable, reason}}
-
-  defp restore_checkpoint_pair(
-         {:ok, checkpoint},
-         :not_found,
-         _store,
-         instance_ref,
-         _legacy_ref,
-         _state,
-         _opts
-       ) do
-    restore_stable_checkpoint(checkpoint, instance_ref)
+      {:error, :legacy_agent_ref_source_unavailable} ->
+        restore_stable_checkpoint(checkpoint, instance_ref)
+    end
   end
 
-  defp restore_checkpoint_pair(
-         :not_found,
-         {:ok, checkpoint},
-         store,
-         instance_ref,
-         legacy_ref,
-         _state,
-         opts
-       ) do
-    migrate_legacy_checkpoint(store, checkpoint, instance_ref, legacy_ref, opts)
+  defp restore_stable_with_legacy_ref(store, checkpoint, instance_ref, legacy_ref, opts) do
+    case CheckpointStore.load(store, legacy_ref, opts) do
+      :not_found ->
+        restore_stable_checkpoint(checkpoint, instance_ref)
+
+      {:ok, ^checkpoint} ->
+        restore_stable_checkpoint(checkpoint, instance_ref)
+
+      {:ok, _different} ->
+        {:error, {:divergent_instance_key_histories, legacy_ref.key, instance_ref.key}}
+
+      {:error, reason} ->
+        {:error, {:canonical_checkpoint_load_failed, :legacy_detection, reason}}
+    end
   end
 
-  defp restore_checkpoint_pair(
-         {:ok, checkpoint},
-         {:ok, checkpoint},
-         store,
-         instance_ref,
-         legacy_ref,
-         _state,
-         opts
-       ) do
-    restore_shared_checkpoint(store, checkpoint, instance_ref, legacy_ref, opts)
-  end
+  defp reject_legacy_checkpoint_or_initialize(store, instance_ref, state, opts) do
+    case InstanceRef.legacy(instance_ref) do
+      {:ok, legacy_ref} ->
+        case CheckpointStore.load(store, legacy_ref, opts) do
+          {:ok, _checkpoint} ->
+            {:error,
+             {:legacy_instance_checkpoint_requires_offline_migration, legacy_ref.key,
+              instance_ref.key}}
 
-  defp restore_checkpoint_pair(
-         {:ok, _stable},
-         {:ok, _legacy},
-         _store,
-         instance_ref,
-         legacy_ref,
-         _state,
-         _opts
-       ) do
-    {:error, {:divergent_instance_key_histories, legacy_ref.key, instance_ref.key}}
-  end
+          :not_found ->
+            new_canonical_state(instance_ref, state)
 
-  defp restore_checkpoint_pair(
-         :not_found,
-         :not_found,
-         _store,
-         instance_ref,
-         _legacy,
-         state,
-         _opts
-       ),
-       do: new_canonical_state(instance_ref, state)
+          {:error, reason} ->
+            {:error, {:canonical_checkpoint_load_failed, :legacy_detection, reason}}
+        end
 
-  defp restore_checkpoint_pair({:error, reason}, _legacy, _store, _ref, _old, _state, _opts),
-    do: {:error, {:canonical_checkpoint_load_failed, :stable, reason}}
-
-  defp restore_checkpoint_pair(_stable, {:error, reason}, _store, _ref, _old, _state, _opts),
-    do: {:error, {:canonical_checkpoint_load_failed, :legacy, reason}}
-
-  defp restore_shared_checkpoint(store, checkpoint, instance_ref, legacy_ref, opts) do
-    with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-         {:ok, correlations} <- Canonical.fetch(canonical, :correlations) do
-      case Map.get(correlations, :instance_key) do
-        key when key == instance_ref.key ->
-          restore_stable_checkpoint(checkpoint, instance_ref)
-
-        key when key == legacy_ref.key ->
-          migrate_legacy_checkpoint(store, checkpoint, instance_ref, legacy_ref, opts)
-
-        _other ->
-          {:error, :canonical_checkpoint_instance_mismatch}
-      end
+      {:error, :legacy_agent_ref_source_unavailable} ->
+        new_canonical_state(instance_ref, state)
     end
   end
 
   defp restore_stable_checkpoint(checkpoint, instance_ref) do
     with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-         {:ok, canonical, false} <- normalize_instance_key(canonical, instance_ref),
          :ok <- validate_canonical_instance(canonical, instance_ref),
          {:ok, %State{} = flow_state} <- Canonical.fetch(canonical, :flow) do
       {:ok, flow_state, canonical, canonical.revision}
     else
-      {:ok, _canonical, true} -> {:error, :checkpoint_instance_key_migration_incomplete}
       {:ok, value} -> {:error, {:invalid_canonical_flow_state, value}}
       {:error, _reason} = error -> error
-    end
-  end
-
-  defp migrate_legacy_checkpoint(store, checkpoint, instance_ref, legacy_ref, opts) do
-    with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-         :ok <- validate_canonical_instance(canonical, legacy_ref),
-         {:ok, migrated, true} <- normalize_instance_key(canonical, instance_ref),
-         :ok <- validate_canonical_instance(migrated, instance_ref),
-         {:ok, encoded} <- CanonicalCodec.encode_json(migrated),
-         :ok <-
-           CheckpointStore.migrate_instance_key(
-             store,
-             legacy_ref,
-             instance_ref,
-             checkpoint,
-             encoded,
-             opts
-           ),
-         {:ok, %State{} = flow_state} <- Canonical.fetch(migrated, :flow) do
-      record_instance_key_migration(instance_ref, legacy_ref, migrated.revision, opts)
-      {:ok, flow_state, migrated, migrated.revision}
-    else
-      {:ok, _canonical, false} -> {:error, :legacy_checkpoint_has_stable_instance_key}
-      {:ok, value} -> {:error, {:invalid_canonical_flow_state, value}}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp normalize_instance_key(canonical, instance_ref) do
-    with {:ok, correlations} <- Canonical.fetch(canonical, :correlations),
-         true <- is_map(correlations) and not is_struct(correlations),
-         {:ok, legacy_ref} <- InstanceRef.legacy(instance_ref) do
-      case Map.get(correlations, :instance_key) do
-        key when key == instance_ref.key ->
-          {:ok, canonical, false}
-
-        key when key == legacy_ref.key ->
-          migrate_canonical_instance_key(canonical, correlations, instance_ref, legacy_ref)
-
-        _key ->
-          {:error, :canonical_checkpoint_instance_mismatch}
-      end
-    else
-      false -> {:error, :invalid_canonical_correlations}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp migrate_canonical_instance_key(canonical, correlations, instance_ref, legacy_ref) do
-    migration_id = Value.token("instance-key-migration", {legacy_ref.key, instance_ref.key})
-
-    receipt = %{
-      schema_version: 1,
-      migration_id: migration_id,
-      legacy_instance_key: legacy_ref.key,
-      stable_instance_key: instance_ref.key,
-      migrated_at: System.system_time(:millisecond)
-    }
-
-    writes = %{
-      correlations:
-        correlations
-        |> Map.put(:instance_key, instance_ref.key)
-        |> Map.put(:instance_key_migration, receipt)
-    }
-
-    with {:ok, snapshot} <-
-           Canonical.snapshot(canonical,
-             read: [:correlations],
-             write: [:correlations],
-             correlation_id: migration_id
-           ),
-         {:ok, change} <-
-           Canonical.change(snapshot, writes,
-             id: migration_id,
-             provenance: %{source: :instance_key_migration},
-             metadata: %{transition: :instance_key_migrated}
-           ),
-         {:ok, migrated, _transition} <- Canonical.commit(canonical, change) do
-      {:ok, migrated, true}
-    end
-  end
-
-  defp record_instance_key_migration(instance_ref, legacy_ref, revision, opts) do
-    case instance_ref.agent_ref.definition do
-      agent when is_atom(agent) and not is_nil(agent) ->
-        _ =
-          Spectre.Journal.record(
-            agent,
-            :instance_key_migrated,
-            %{
-              legacy_instance_key: legacy_ref.key,
-              stable_instance_key: instance_ref.key,
-              canonical_revision: revision
-            },
-            opts
-          )
-
-        :ok
-
-      nil ->
-        :ok
     end
   end
 
@@ -512,7 +361,9 @@ defmodule Spectre.Instance.Checkpoint do
     expected = data.checkpoint_revision
     store = data.checkpoint_store
     ref = data.ref
-    opts = data.base_opts
+
+    opts =
+      Keyword.put(data.base_opts, :owner_fencing_token, data.owner_lease.fencing_token)
 
     callback = fn ->
       result =

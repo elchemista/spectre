@@ -25,7 +25,7 @@ defmodule Spectre.Governance.ChangeSet.Registry do
   @type entry :: %{handler: module(), component_classes: [atom()]}
   @type t :: %__MODULE__{entries: %{optional(String.t()) => entry()}}
 
-  @doc "Returns the reviewed built-in 0.2.9 vocabulary."
+  @doc "Returns the reviewed built-in governance vocabulary."
   @spec default() :: t()
   def default, do: new!(@builtin_handlers)
 

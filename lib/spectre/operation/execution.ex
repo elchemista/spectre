@@ -42,12 +42,19 @@ defmodule Spectre.Operation.Execution do
       if is_map(execution.usage),
         do: Map.get(execution.usage, :cost, Map.get(execution.usage, "cost"))
 
+    pages =
+      if is_map(execution.usage),
+        do: Map.get(execution.usage, :pages, Map.get(execution.usage, "pages"))
+
     cond do
       not is_map(execution.usage) ->
         {:error, :invalid_operation_execution_usage}
 
       not is_nil(cost) and not (is_number(cost) and cost >= 0) ->
         {:error, :invalid_operation_execution_cost}
+
+      not is_nil(pages) and not (is_integer(pages) and pages >= 0) ->
+        {:error, :invalid_operation_execution_pages}
 
       not is_list(execution.artifacts) ->
         {:error, :invalid_operation_execution_artifacts}

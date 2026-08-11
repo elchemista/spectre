@@ -68,6 +68,13 @@ defmodule Spectre.Definition.ContractRegistry do
       version: 1
     },
     %{
+      component_type: :change_surface,
+      schema_ref: "spectre.definition.change-surface/1",
+      criticalities: [:must_understand],
+      version: 1,
+      validator: {Spectre.Morph.Surface, :validate_component}
+    },
+    %{
       component_type: :execution,
       schema_ref: "spectre.definition.execution/1",
       criticalities: [:must_understand],

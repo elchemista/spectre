@@ -5,7 +5,7 @@ defmodule SpectreFoundationConformanceTest.ProviderPackage do
     id: :foundation_provider,
     version: "1.0.0",
     contract: 1,
-    spectre: ">= 0.2.0 and < 0.3.0",
+    spectre: ">= 0.3.0 and < 0.4.0",
     provides: [{:contract, :foundation_search}],
     operations: [:foundation_search]
 end
@@ -17,7 +17,7 @@ defmodule SpectreFoundationConformanceTest.ConsumerPackage do
     id: :foundation_consumer,
     version: "1.1.0",
     contract: 1,
-    spectre: ">= 0.2.0 and < 0.3.0",
+    spectre: ">= 0.3.0 and < 0.4.0",
     requires: [{:contract, :foundation_search}]
 end
 
@@ -125,12 +125,21 @@ defmodule SpectreFoundationConformanceTest do
     end)
 
     matrix = Conformance.matrix()
-    assert fixture["durable_formats"] == stringify(matrix.durable_formats)
+
+    assert Map.drop(fixture["durable_formats"], ["instance"]) ==
+             matrix.durable_formats |> stringify() |> Map.drop(["instance"])
+
+    assert fixture["durable_formats"]["instance"] == %{
+             "writer" => 4,
+             "readers" => [1, 2, 3, 4]
+           }
+
+    assert stringify(matrix.durable_formats.instance) == %{"writer" => 2, "readers" => [2]}
     assert fixture["definition"] == stringify(matrix.definition)
     assert fixture["stack"] == stringify(matrix.stack)
   end
 
-  test "one executable gate migrates State, Run, and every Instance checkpoint generation" do
+  test "one executable gate migrates supported State and Run but rejects retired Instance schemas" do
     _fixture_atoms = @fixture_atoms
     load_checkpoint_types!()
 
@@ -146,15 +155,12 @@ defmodule SpectreFoundationConformanceTest do
           {"0.2.4/event-lifecycle-canonical-v3.json.base64", 3},
           {"0.2.5/skill-state-canonical-v4.json.base64", 4}
         ] do
-      assert {:ok,
-              %{
-                source_version: ^source_version,
-                writer_version: 4,
-                state_schema_version: 4,
-                digest: digest
-              }} = Conformance.verify_checkpoint(read_base64(path))
+      expected =
+        if source_version == 2,
+          do: {:invalid_canonical_checkpoint_format, nil},
+          else: {:unsupported_canonical_checkpoint, source_version}
 
-      assert byte_size(digest) == 64
+      assert {:error, ^expected} = Conformance.verify_checkpoint(read_base64(path))
     end
   end
 
@@ -303,7 +309,7 @@ defmodule SpectreFoundationConformanceTest do
       id: id,
       version: version,
       contract: 1,
-      spectre: ">= 0.2.0 and < 0.3.0"
+      spectre: ">= 0.3.0 and < 0.4.0"
     }
     |> Map.merge(Map.new(overrides))
   end

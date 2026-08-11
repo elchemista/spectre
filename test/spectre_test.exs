@@ -1602,6 +1602,7 @@ defmodule SpectreTest do
                spectre_rules: rules,
                semantic_cache_source: learned_cache_source(SpectreTest.LearnedSemanticCacheAgent),
                embedding: embedding,
+               embedding_model_profile_ref: "test:learned-query",
                semantic_search?: true,
                semantic_cache_threshold: 0.0
              )
@@ -1663,7 +1664,8 @@ defmodule SpectreTest do
         classification_log?: false,
         semantic_cache_source: semantic_redesign_source(),
         semantic_cache_threshold: 2.0,
-        embedding: embedding
+        embedding: embedding,
+        embedding_model_profile_ref: "test:semantic-learning-reuse"
       )
 
     assert :ok = SemanticCache.clear(agent, opts)
@@ -1885,7 +1887,8 @@ defmodule SpectreTest do
 
     opts = [
       semantic_cache_source: semantic_redesign_source(),
-      embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]}
+      embedding: {SpectreTest.EmbeddingAdapter, [model: "toy"]},
+      embedding_model_profile_ref: "test:semantic-cache-review"
     ]
 
     assert {:ok, row} =

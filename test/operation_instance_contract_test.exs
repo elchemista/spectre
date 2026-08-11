@@ -2339,6 +2339,56 @@ defmodule SpectreOperationInstanceContractTest do
     Process.flag(:trap_exit, previous_trap_exit)
   end
 
+  test "restored Work without a pinned Definition quarantines its continuation" do
+    subject = unique_subject("unpinned-work")
+    instance = start_instance(subject: subject)
+
+    assert {:ok, ref, _view} =
+             Spectre.start_work(instance, @waiting_work, %{value: :checkpoint},
+               id: "unpinned-work-loop"
+             )
+
+    assert {:ok, _view} = eventually_loop(instance, ref, &(&1.status == :waiting))
+    assert {:ok, checkpoint} = Spectre.checkpoint(instance)
+    assert {:ok, canonical} = Codec.decode(checkpoint)
+    assert {:ok, work} = Canonical.fetch(canonical, :work)
+
+    loop = Map.fetch!(work, ref.id)
+    unpinned_loop = %{loop | metadata: Map.delete(loop.metadata, :spectre_definition_ref)}
+    unpinned = put_canonical_section(canonical, :work, %{ref.id => unpinned_loop})
+
+    assert :ok = stop_supervised({Instance, Instance.ref(instance).key})
+    assert {:ok, encoded} = Codec.encode_json(unpinned)
+
+    assert {:ok, restored} =
+             Instance.start_link(
+               agent: @agent,
+               subject: subject,
+               canonical_checkpoint: encoded,
+               idle: false,
+               opts: [test_pid: self()]
+             )
+
+    assert {:ok, quarantined} =
+             Spectre.admit_event(restored,
+               id: "unpinned-work-completion",
+               event_class: :work_completion,
+               correlation_id: "unpinned-work-completion",
+               continuation_ref: ref,
+               payload_schema_ref: "spectre.test/work-completion/1",
+               payload: %{result: :done},
+               emitted_at: 42
+             )
+
+    assert quarantined.status == :quarantined
+    assert quarantined.quarantine_reason == :operation_definition_ref_missing
+    assert quarantined.owner_definition_ref == nil
+    assert Enum.map(Spectre.quarantined_events(restored), & &1.id) == [quarantined.id]
+    assert Spectre.admitted_events(restored) == []
+
+    GenServer.stop(restored)
+  end
+
   defp start_instance(extra \\ []) do
     {subject, extra} = Keyword.pop(extra, :subject, unique_subject("instance"))
 

@@ -26,4 +26,16 @@ defmodule Spectre.Input.Plug do
               {:cont, Spectre.Input.t()}
               | {:halt, Spectre.Input.t()}
               | {:error, term()}
+
+  @doc """
+  Declares that replay may run the plug without host-only turn options.
+
+  A rehearsable plug must be deterministic for the same input and initialized
+  state, must not perform external effects, and must not branch on callback
+  context or runtime-only options. Governance checkers reject undeclared plugs
+  instead of issuing evidence for a path they cannot reproduce.
+  """
+  @callback rehearsable?() :: boolean()
+
+  @optional_callbacks rehearsable?: 0
 end

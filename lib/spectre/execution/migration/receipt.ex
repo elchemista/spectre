@@ -7,12 +7,23 @@ defmodule Spectre.Execution.Migration.Receipt do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Definition.Ref
 
   @schema_version 1
+  @digest_fields [
+    :migration_digest,
+    :program_digest,
+    :materialization_digest,
+    :operation_contract_digest,
+    :source_state_digest,
+    :target_state_digest
+  ]
 
   @enforce_keys [
     :migration_digest,
     :program_digest,
+    :definition_ref,
+    :materialization_digest,
     :operation_ref,
     :operation_contract_digest,
     :source_version,
@@ -25,6 +36,8 @@ defmodule Spectre.Execution.Migration.Receipt do
   defstruct schema_version: @schema_version,
             migration_digest: nil,
             program_digest: nil,
+            definition_ref: nil,
+            materialization_digest: nil,
             operation_ref: nil,
             operation_contract_digest: nil,
             source_version: nil,
@@ -40,11 +53,13 @@ defmodule Spectre.Execution.Migration.Receipt do
   @spec new(map()) :: {:ok, t()} | {:error, term()}
   def new(attrs) when is_map(attrs) do
     with :ok <- known_new_fields(attrs),
+         {:ok, definition_ref} <- normalize_definition_ref(Map.get(attrs, :definition_ref)),
          {:ok, operation_ref} <- normalize_operation_ref(Map.get(attrs, :operation_ref)) do
       data =
         attrs
         |> Map.take(fields())
         |> Map.put(:schema_version, @schema_version)
+        |> Map.put(:definition_ref, definition_ref)
         |> Map.put(:operation_ref, operation_ref)
         |> Map.delete(:digest)
 
@@ -69,8 +84,12 @@ defmodule Spectre.Execution.Migration.Receipt do
 
   def from_data(value) when is_map(value) do
     with {:ok, value} <- exact_fields(value),
+         {:ok, definition_ref} <- normalize_definition_ref(Map.get(value, :definition_ref)),
          {:ok, operation_ref} <- normalize_operation_ref(Map.get(value, :operation_ref)),
-         value <- Map.put(value, :operation_ref, operation_ref),
+         value <-
+           value
+           |> Map.put(:definition_ref, definition_ref)
+           |> Map.put(:operation_ref, operation_ref),
          receipt <- struct!(__MODULE__, value),
          data <- receipt |> Map.from_struct() |> Map.delete(:digest),
          :ok <- validate_data(data),
@@ -91,44 +110,65 @@ defmodule Spectre.Execution.Migration.Receipt do
 
   @spec validate_data(map()) :: :ok | {:error, term()}
   defp validate_data(data) do
-    digests = [
-      :migration_digest,
-      :program_digest,
-      :operation_contract_digest,
-      :source_state_digest,
-      :target_state_digest
-    ]
-
-    cond do
-      data.schema_version != @schema_version ->
-        {:error, {:unsupported_execution_migration_receipt_schema, data.schema_version}}
-
-      Enum.any?(digests, &(not digest?(Map.get(data, &1)))) ->
-        {:error, :invalid_execution_migration_receipt_digest}
-
-      not stable_ref?(data.operation_ref) ->
-        {:error, :invalid_execution_migration_receipt_operation}
-
-      not stable_version?(data.source_version) or not stable_version?(data.target_version) ->
-        {:error, :invalid_execution_migration_receipt_version}
-
-      not is_nil(data.operation_receipt_digest) and
-          not digest?(data.operation_receipt_digest) ->
-        {:error, :invalid_execution_migration_operation_receipt_digest}
-
-      true ->
-        Value.validate(data)
+    with :ok <- validate_schema(data.schema_version),
+         :ok <- validate_digests(data),
+         :ok <- validate_definition_ref(data.definition_ref),
+         :ok <- validate_operation_ref(data.operation_ref),
+         :ok <- validate_versions(data.source_version, data.target_version),
+         :ok <- validate_operation_receipt(data.operation_receipt_digest) do
+      Value.validate(data)
     end
+  end
+
+  defp validate_schema(@schema_version), do: :ok
+
+  defp validate_schema(version),
+    do: {:error, {:unsupported_execution_migration_receipt_schema, version}}
+
+  defp validate_digests(data) do
+    if Enum.all?(@digest_fields, &digest?(Map.get(data, &1))),
+      do: :ok,
+      else: {:error, :invalid_execution_migration_receipt_digest}
+  end
+
+  defp validate_definition_ref(value) do
+    if definition_ref?(value),
+      do: :ok,
+      else: {:error, :invalid_execution_migration_receipt_definition_ref}
+  end
+
+  defp validate_operation_ref(value) do
+    if stable_ref?(value),
+      do: :ok,
+      else: {:error, :invalid_execution_migration_receipt_operation}
+  end
+
+  defp validate_versions(source, target) do
+    if stable_version?(source) and stable_version?(target),
+      do: :ok,
+      else: {:error, :invalid_execution_migration_receipt_version}
+  end
+
+  defp validate_operation_receipt(nil), do: :ok
+
+  defp validate_operation_receipt(value) do
+    if digest?(value),
+      do: :ok,
+      else: {:error, :invalid_execution_migration_operation_receipt_digest}
   end
 
   @spec digest?(term()) :: boolean()
   defp digest?(value) when is_binary(value) and byte_size(value) == 64,
-    do: match?({:ok, _bytes}, Base.decode16(value, case: :mixed))
+    do: match?({:ok, _bytes}, Base.decode16(value, case: :lower))
 
   defp digest?(_value), do: false
 
   @spec stable_ref?(term()) :: boolean()
   defp stable_ref?(value), do: is_binary(value) and value != ""
+
+  @spec definition_ref?(term()) :: boolean()
+  defp definition_ref?(value) when is_binary(value), do: match?({:ok, _ref}, Ref.parse(value))
+  defp definition_ref?(_value), do: false
 
   @spec stable_version?(term()) :: boolean()
   defp stable_version?(value) when is_integer(value), do: value > 0
@@ -143,6 +183,23 @@ defmodule Spectre.Execution.Migration.Receipt do
 
   defp normalize_operation_ref(_value),
     do: {:error, :invalid_execution_migration_receipt_operation}
+
+  @spec normalize_definition_ref(term()) :: {:ok, String.t()} | {:error, term()}
+  defp normalize_definition_ref(%Ref{} = ref) do
+    if Ref.valid?(ref),
+      do: {:ok, Ref.to_string(ref)},
+      else: {:error, :invalid_execution_migration_receipt_definition_ref}
+  end
+
+  defp normalize_definition_ref(value) when is_binary(value) do
+    case Ref.parse(value) do
+      {:ok, ref} -> {:ok, Ref.to_string(ref)}
+      _invalid -> {:error, :invalid_execution_migration_receipt_definition_ref}
+    end
+  end
+
+  defp normalize_definition_ref(_value),
+    do: {:error, :invalid_execution_migration_receipt_definition_ref}
 
   @spec known_new_fields(map()) :: :ok | {:error, term()}
   defp known_new_fields(value) do

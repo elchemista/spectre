@@ -16,6 +16,7 @@ defmodule Spectre.Governance.Verifier do
   alias Spectre.Governance.Constraints
   alias Spectre.Governance.EvaluationDelta
   alias Spectre.Instance.Activation
+  alias Spectre.Morph.Surface
   alias Spectre.Projection.HumanReport
 
   @builtin_checkers %{
@@ -47,7 +48,7 @@ defmodule Spectre.Governance.Verifier do
 
   def verify_activation(store, candidate_resolution, current, opts) when is_list(opts) do
     with %Activation{} = current <- current,
-         :ok <- verify_current_base(candidate_resolution.candidate.governance, current),
+         :ok <- verify_current_base(candidate_resolution.candidate.governance, current, opts),
          :ok <- verify_common(store, candidate_resolution, opts, :activation) do
       :ok
     else
@@ -129,26 +130,35 @@ defmodule Spectre.Governance.Verifier do
   defp verify_common_or_bootstrap(store, candidate_resolution, opts, mode),
     do: verify_common(store, candidate_resolution, opts, mode)
 
-  defp verify_current_base(governance, current) do
-    cond do
-      governance.base_activation_receipt != current.activation_receipt ->
-        {:error, :stale_governance_activation_receipt}
+  defp verify_current_base(governance, current, opts) do
+    with {:ok, current_evidence_digest} <- current_evidence_digest(current, opts) do
+      cond do
+        governance.base_activation_receipt != current.activation_receipt ->
+          {:error, :stale_governance_activation_receipt}
 
-      governance.base_candidate_ref != CandidateRef.to_string(current.candidate_ref) ->
-        {:error, :stale_governance_candidate_ref}
+        governance.base_candidate_ref != CandidateRef.to_string(current.candidate_ref) ->
+          {:error, :stale_governance_candidate_ref}
 
-      governance.parent_definition_ref != Ref.to_string(current.definition_ref) ->
-        {:error, :stale_governance_definition_ref}
+        governance.parent_definition_ref != Ref.to_string(current.definition_ref) ->
+          {:error, :stale_governance_definition_ref}
 
-      governance.observed_authority_epoch != current.authority_epoch ->
-        {:error, :stale_governance_authority_epoch}
+        governance.observed_authority_epoch != current.authority_epoch ->
+          {:error, :stale_governance_authority_epoch}
 
-      governance.observed_evidence_digest != ChangeSet.evidence_digest(current) ->
-        {:error, :stale_governance_evidence_digest}
+        governance.observed_evidence_digest != current_evidence_digest ->
+          {:error, :stale_governance_evidence_digest}
 
-      true ->
-        :ok
+        true ->
+          :ok
+      end
     end
+  end
+
+  defp current_evidence_digest(current, opts) do
+    {:ok, ChangeSet.evidence_digest(current, Keyword.get(opts, :evidence, %{}))}
+  rescue
+    ArgumentError -> {:error, :invalid_governance_external_evidence}
+    FunctionClauseError -> {:error, :invalid_governance_external_evidence}
   end
 
   defp verify_common(
@@ -164,6 +174,7 @@ defmodule Spectre.Governance.Verifier do
          :ok <- verify_resolution(candidate, governance, resolution),
          :ok <- verify_constitutional_constraints(governance, resolution),
          {:ok, parent} <- fetch_parent(store, governance.parent_definition_ref, opts),
+         :ok <- verify_change_surface(parent.definition, resolution.definition, governance),
          :ok <- verify_parent_manifest(parent.manifest, resolution.manifest, governance),
          :ok <- Authority.no_expansion(parent.manifest.authority, resolution.manifest.authority),
          :ok <-
@@ -174,7 +185,7 @@ defmodule Spectre.Governance.Verifier do
          {:ok, receipts} <- fetch_receipts(store, governance.gate_receipt_refs, opts),
          :ok <- verify_report_evidence(governance, receipts),
          :ok <- verify_gate_set(governance, receipts, opts, mode) do
-      verify_approval(governance, receipts, opts)
+      verify_approval(governance, receipts, opts, parent.definition)
     end
   end
 
@@ -355,6 +366,18 @@ defmodule Spectre.Governance.Verifier do
         resolution.manifest.authority,
         constraints
       )
+    end
+  end
+
+  defp verify_change_surface(parent, candidate, governance) do
+    with :ok <-
+           Surface.verify_candidate(
+             parent,
+             candidate,
+             governance.prompt_token_ceiling,
+             governance.applicability_ceilings
+           ) do
+      Surface.verify_evaluation_obligations(parent, candidate, governance.candidate_cases)
     end
   end
 
@@ -572,12 +595,13 @@ defmodule Spectre.Governance.Verifier do
 
   defp expired_semantic_live_allowed?(_mode, _opts), do: false
 
-  defp verify_approval(governance, receipts, opts) do
+  defp verify_approval(governance, receipts, opts, parent_definition) do
     with [approval] <- Enum.filter(receipts, &(&1.gate_class == :approval)),
          true <-
            approval |> Receipt.ref() |> GateReceiptRef.to_string() ==
              governance.approval_receipt_ref,
          {:ok, mode} <- approval_mode(approval),
+         :ok <- verify_surface_approval(parent_definition, mode),
          :ok <- verify_approval_receipt(approval, governance, mode, opts),
          {:ok, policy} <- approval_policy(Keyword.get(opts, :approval_policy)),
          true <- Policy.allows?(policy, governance.risk, mode) do
@@ -587,6 +611,22 @@ defmodule Spectre.Governance.Verifier do
       [_first, _second | _rest] -> {:error, :ambiguous_approval_receipts}
       false -> {:error, :approval_policy_not_satisfied}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp verify_surface_approval(parent_definition, mode) do
+    case Surface.from_canonical(parent_definition) do
+      {:ok, %Surface{approval_requirement: :human}} when mode != :human ->
+        {:error, :morph_surface_requires_human_approval}
+
+      {:ok, %Surface{}} ->
+        :ok
+
+      {:error, :morph_surface_not_declared} ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

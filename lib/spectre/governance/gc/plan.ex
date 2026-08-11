@@ -10,7 +10,7 @@ defmodule Spectre.Governance.GC.Plan do
   alias Spectre.Canonical.Value
   alias Spectre.Governance.Data
 
-  @schema_version 1
+  @schema_version 2
   @candidate_reason_order ~w(inventory_not_complete retention_not_gc_eligible live_reference candidate_lineage_reference)
   @definition_reason_order ~w(inventory_not_complete retention_not_gc_eligible live_reference retained_candidate_reference definition_lineage_reference)
   @fields [
@@ -27,6 +27,7 @@ defmodule Spectre.Governance.GC.Plan do
     :definition_lineage_refs,
     :requested_candidate_refs,
     :requested_definition_refs,
+    :inventory_snapshot_digest,
     :evidence_digest,
     :digest
   ]
@@ -44,6 +45,7 @@ defmodule Spectre.Governance.GC.Plan do
     :definition_lineage_refs,
     :requested_candidate_refs,
     :requested_definition_refs,
+    :inventory_snapshot_digest,
     :evidence_digest,
     :digest
   ]
@@ -60,6 +62,7 @@ defmodule Spectre.Governance.GC.Plan do
             definition_lineage_refs: [],
             requested_candidate_refs: [],
             requested_definition_refs: [],
+            inventory_snapshot_digest: nil,
             evidence_digest: nil,
             digest: nil
 
@@ -94,9 +97,9 @@ defmodule Spectre.Governance.GC.Plan do
   def from_data(data) when is_map(data) and not is_struct(data) do
     expected_fields = Enum.map(@fields, &Atom.to_string/1)
 
-    with [] <- Map.keys(data) -- expected_fields,
+    with @schema_version <- Map.get(data, "schema_version"),
+         [] <- Map.keys(data) -- expected_fields,
          [] <- expected_fields -- Map.keys(data),
-         @schema_version <- Map.get(data, "schema_version"),
          attrs =
            @fields
            |> List.delete(:digest)
@@ -160,6 +163,7 @@ defmodule Spectre.Governance.GC.Plan do
 
   defp validate_data(data) do
     with true <- is_boolean(data["inventory_complete"]),
+         :ok <- inventory_snapshot_digest(data),
          :ok <- valid_digest(data["evidence_digest"]),
          {:ok, candidate_inventory} <-
            ref_list(data["candidate_inventory"], "candidate:sha256:"),
@@ -214,6 +218,21 @@ defmodule Spectre.Governance.GC.Plan do
       {:error, _reason} = error -> error
     end
   end
+
+  defp inventory_snapshot_digest(%{
+         "inventory_complete" => true,
+         "inventory_snapshot_digest" => digest
+       }),
+       do: valid_digest(digest)
+
+  defp inventory_snapshot_digest(%{
+         "inventory_complete" => false,
+         "inventory_snapshot_digest" => nil
+       }),
+       do: :ok
+
+  defp inventory_snapshot_digest(_data),
+    do: {:error, :invalid_governance_gc_inventory_snapshot_digest}
 
   defp candidate_decisions(
          decisions,
@@ -522,6 +541,7 @@ defmodule Spectre.Governance.GC.Plan do
       "definition_lineage_refs" => Map.fetch!(attrs, :definition_lineage_refs),
       "requested_candidate_refs" => Map.fetch!(attrs, :requested_candidate_refs),
       "requested_definition_refs" => Map.fetch!(attrs, :requested_definition_refs),
+      "inventory_snapshot_digest" => Map.fetch!(attrs, :inventory_snapshot_digest),
       "evidence_digest" => Map.fetch!(attrs, :evidence_digest)
     }
   end

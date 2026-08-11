@@ -27,7 +27,8 @@ defmodule Spectre.Authority.Envelope do
     :open_capabilities,
     :consents
   ]
-  @limit_fields [:max_cost, :max_duration_ms, :max_risk, :max_tokens]
+  @limit_fields [:max_cost, :max_duration_ms, :max_pages, :max_risk, :max_tokens]
+  @risk_order [:none, :low, :medium, :high, :critical]
 
   @enforce_keys [:schema_version] ++ @grant_fields ++ [:limits]
   defstruct [schema_version: @schema_version] ++
@@ -59,7 +60,12 @@ defmodule Spectre.Authority.Envelope do
   @doc "Builds and validates an effective authority envelope."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def new(%__MODULE__{} = envelope), do: envelope |> Map.from_struct() |> new()
-  def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs),
+      do: attrs |> Map.new() |> new(),
+      else: {:error, {:invalid_authority_envelope, :list}}
+  end
 
   def new(attrs) when is_map(attrs) do
     with :ok <- validate_keys(attrs),
@@ -227,8 +233,13 @@ defmodule Spectre.Authority.Envelope do
           do: {:cont, :ok},
           else: {:halt, {:error, {:invalid_authority_limit, field, value}}}
 
+      {:max_pages, value}, :ok ->
+        if is_integer(value) and value >= 0,
+          do: {:cont, :ok},
+          else: {:halt, {:error, {:invalid_authority_limit, :max_pages, value}}}
+
       {:max_risk, value}, :ok ->
-        if is_atom(value) and not is_nil(value),
+        if value in @risk_order,
           do: {:cont, :ok},
           else: {:halt, {:error, {:invalid_authority_limit, :max_risk, value}}}
     end)
@@ -250,19 +261,23 @@ defmodule Spectre.Authority.Envelope do
 
   @spec intersect_limits(map(), map()) :: map()
   defp intersect_limits(requested, ceiling) do
-    requested
-    |> Map.take(Map.keys(ceiling))
-    |> Map.new(fn {field, requested_value} ->
-      ceiling_value = Map.fetch!(ceiling, field)
-
-      value =
-        if is_number(requested_value) and is_number(ceiling_value),
-          do: min(requested_value, ceiling_value),
-          else: ceiling_value
-
-      {field, value}
+    (Map.keys(requested) ++ Map.keys(ceiling))
+    |> Enum.uniq()
+    |> Map.new(fn field ->
+      {field, meet_limit(field, Map.fetch(requested, field), Map.fetch(ceiling, field))}
     end)
   end
+
+  defp meet_limit(_field, {:ok, value}, :error), do: value
+  defp meet_limit(_field, :error, {:ok, value}), do: value
+
+  defp meet_limit(:max_risk, {:ok, requested}, {:ok, ceiling}) do
+    if risk_index(requested) <= risk_index(ceiling), do: requested, else: ceiling
+  end
+
+  defp meet_limit(_field, {:ok, requested}, {:ok, ceiling}), do: min(requested, ceiling)
+
+  defp risk_index(risk), do: Enum.find_index(@risk_order, &(&1 == risk))
 
   @spec encode_limits(map()) :: map()
   defp encode_limits(limits),
@@ -283,6 +298,7 @@ defmodule Spectre.Authority.Envelope do
   @spec limit_field(term()) :: {:ok, atom()} | :error
   defp limit_field("max_cost"), do: {:ok, :max_cost}
   defp limit_field("max_duration_ms"), do: {:ok, :max_duration_ms}
+  defp limit_field("max_pages"), do: {:ok, :max_pages}
   defp limit_field("max_risk"), do: {:ok, :max_risk}
   defp limit_field("max_tokens"), do: {:ok, :max_tokens}
   defp limit_field(field) when field in @limit_fields, do: {:ok, field}

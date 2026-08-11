@@ -118,6 +118,7 @@ defmodule Spectre.Agent do
 
     quote do
       import Spectre.Agent
+      import Spectre.Morph.DSL, only: [morph: 1]
       @before_compile Spectre.Agent
     end
   end
@@ -142,6 +143,7 @@ defmodule Spectre.Agent do
     Module.register_attribute(module, :spectre_kind, persist: false)
     Module.register_attribute(module, :spectre_definition_id, persist: false)
     Module.register_attribute(module, :spectre_definition_version, persist: false)
+    Module.register_attribute(module, :spectre_change_surface, persist: false)
 
     Module.put_attribute(module, :spectre_config, config)
     Module.put_attribute(module, :spectre_router, router)
@@ -1110,6 +1112,9 @@ defmodule Spectre.Agent do
       def __spectre_stack_refs__, do: unquote(Macro.escape(metadata.stack_refs))
 
       @doc false
+      def __spectre_change_surface__, do: unquote(Macro.escape(metadata.change_surface))
+
+      @doc false
       def __spectre_prompt_root__ do
         Keyword.get(__spectre_config__(), :prompt_root, "priv/spectre/prompts")
       end
@@ -1150,7 +1155,8 @@ defmodule Spectre.Agent do
       stack_refs: Module.get_attribute(module, :spectre_stack_refs) || [],
       kind: Module.get_attribute(module, :spectre_kind) || :agent,
       id: Module.get_attribute(module, :spectre_definition_id) || module,
-      version: Module.get_attribute(module, :spectre_definition_version) || 1
+      version: Module.get_attribute(module, :spectre_definition_version) || 1,
+      change_surface: Module.get_attribute(module, :spectre_change_surface)
     }
   end
 
@@ -1174,7 +1180,8 @@ defmodule Spectre.Agent do
       skills: metadata.skills,
       extensions: metadata.extensions,
       stack_refs: metadata.stack_refs,
-      stack: Keyword.get(metadata.config, :stack)
+      stack: Keyword.get(metadata.config, :stack),
+      change_surface: metadata.change_surface
     }
     |> Definition.new()
     |> Validator.validate!()

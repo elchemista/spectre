@@ -41,6 +41,7 @@ defmodule Spectre.Instance.Commit do
   @spec canonical_sections(InstanceState.t(), map(), keyword()) ::
           {:ok, InstanceState.t()} | {:error, term()}
   def canonical_sections(%InstanceState{} = data, writes, opts) do
+    writes = put_owner_fencing_token(data, writes)
     names = Map.keys(writes)
 
     with :ok <-
@@ -65,6 +66,19 @@ defmodule Spectre.Instance.Commit do
         :error -> {:ok, Checkpoint.maybe_enqueue(next)}
       end
     end
+  end
+
+  defp put_owner_fencing_token(data, writes) do
+    correlations =
+      Map.get_lazy(writes, :correlations, fn ->
+        Loops.canonical_value!(data, :correlations)
+      end)
+
+    Map.put(
+      writes,
+      :correlations,
+      Map.put(correlations, :owner_fencing_token, data.owner_lease.fencing_token)
+    )
   end
 
   @doc "Commits the Flow state advanced by a Run without crashing the owning Instance."

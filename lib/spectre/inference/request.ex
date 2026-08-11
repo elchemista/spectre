@@ -148,6 +148,11 @@ defmodule Spectre.Inference.Request do
 
   @spec validate!(t()) :: :ok
   defp validate!(%__MODULE__{} = request) do
+    validate_identity!(request)
+    validate_shape!(request)
+  end
+
+  defp validate_identity!(request) do
     unless is_binary(request.id) and request.id != "",
       do: raise(ArgumentError, "inference request id is required")
 
@@ -157,8 +162,21 @@ defmodule Spectre.Inference.Request do
     unless is_integer(request.attempt) and request.attempt > 0,
       do: raise(ArgumentError, "inference attempt must be positive")
 
+    :ok
+  end
+
+  defp validate_shape!(request) do
     unless is_list(request.modalities) and Enum.all?(request.modalities, &is_atom/1),
       do: raise(ArgumentError, "inference modalities must be atoms")
+
+    unless match?(%Constraints{}, request.constraints),
+      do: raise(ArgumentError, "inference constraints must be typed")
+
+    unless is_list(request.previous_errors),
+      do: raise(ArgumentError, "inference previous errors must be a list")
+
+    unless is_map(request.metadata),
+      do: raise(ArgumentError, "inference metadata must be a map")
 
     :ok
   end

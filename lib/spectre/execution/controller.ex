@@ -3,11 +3,15 @@ defmodule Spectre.Execution.Controller do
 
   @behaviour Spectre.Operation.Controller
 
+  alias Spectre.Canonical.Value, as: CanonicalValue
   alias Spectre.Execution.Expression
+  alias Spectre.Execution.Migration
+  alias Spectre.Execution.Migration.Receipt, as: MigrationReceipt
   alias Spectre.Execution.Program
   alias Spectre.Inference.Constraints
   alias Spectre.Inference.Request, as: InferenceRequest
   alias Spectre.Operation.Definition
+  alias Spectre.Operation.Execution
   alias Spectre.Operation.Request
   alias Spectre.Operation.Result
   alias Spectre.Operation.Update
@@ -20,6 +24,23 @@ defmodule Spectre.Execution.Controller do
   @program_key :spectre_execution_program
   @plans_key :spectre_execution_plans
   @materialization_key :spectre_execution_materialization_digest
+  @migration_key :spectre_execution_migration
+  @migration_context_fields [
+    :definition_ref,
+    :materialization_digest,
+    :source_version,
+    :source_state,
+    :prepared_digest
+  ]
+  @migration_state_fields [
+    :status,
+    :prepared_digest,
+    :definition_ref,
+    :materialization_digest,
+    :source_version,
+    :source_state_digest,
+    :receipt
+  ]
 
   @doc false
   @spec program_key() :: atom()
@@ -32,6 +53,10 @@ defmodule Spectre.Execution.Controller do
   @doc false
   @spec materialization_key() :: atom()
   def materialization_key, do: @materialization_key
+
+  @doc false
+  @spec migration_key() :: atom()
+  def migration_key, do: @migration_key
 
   @impl true
   def __spectre_loop_definition__ do
@@ -48,31 +73,16 @@ defmodule Spectre.Execution.Controller do
 
   @impl true
   def init(input, context) do
-    with {:ok, program} <- program(context),
-         {:ok, data} <-
-           Expression.evaluate(program.initial, %{
-             input: input,
-             state: nil,
-             last_result: nil
-           }),
-         :ok <- Program.validate_state(program, data) do
-      {:ok,
-       %{
-         schema_version: @state_schema_version,
-         program_digest: program.digest,
-         pc: program.entry,
-         data: data,
-         repeat_counts: %{},
-         history: []
-       }}
+    with {:ok, program} <- program(context) do
+      initial_state(program, input, context)
     end
   end
 
   @impl true
   def next(state, context) do
     with {:ok, program} <- program(context),
-         :ok <- validate_state_envelope(state, program),
-         {:ok, decision} <- select(program, state, context) do
+         :ok <- validate_state_envelope(state, program, context),
+         {:ok, decision} <- next_decision(program, state, context) do
       decision
     end
   end
@@ -80,42 +90,39 @@ defmodule Spectre.Execution.Controller do
   @impl true
   def apply_result(state, %Request{} = request, %Result{} = result, context) do
     with {:ok, program} <- program(context),
-         :ok <- validate_state_envelope(state, program),
-         :ok <- validate_request_pin(request, program, state),
-         {:ok, node} <- Program.fetch_node(program, metadata(request, :execution_node_id)),
-         {:ok, data, pc} <- reduce_result(node, state, result, context),
-         :ok <- Program.validate_state(program, data),
-         {:ok, repeat_counts} <- repeat_counts(request),
-         {:ok, history} <- append_history(state.history, node, request, result) do
-      {:ok,
-       %{
-         state
-         | data: data,
-           pc: pc,
-           repeat_counts: repeat_counts,
-           history: history
-       }}
+         :ok <- validate_state_envelope(state, program, context) do
+      apply_program_result(program, state, request, result, context)
     end
   end
 
   @impl true
   def complete(state, context) do
     with {:ok, program} <- program(context),
-         :ok <- validate_state_envelope(state, program),
-         {:ok, node} <- Program.fetch_node(program, state.pc) do
-      terminal_decision(node, state, context)
+         :ok <- validate_state_envelope(state, program, context) do
+      complete_decision(program, state, context)
     end
   end
 
   @impl true
   def apply_update(state, input, %Update{payload: payload}, context) do
     with {:ok, program} <- program(context),
-         :ok <- validate_state_envelope(state, program),
+         :ok <- validate_state_envelope(state, program, context),
          {:ok, changes} <- normalize_update(payload),
          {:ok, data} <- apply_changes(state.data, changes, program.mutable_paths),
          :ok <- Program.validate_state(program, data),
          :ok <- Validator.validate(program.input, input, {:execution_program_input, program.id}) do
       {:ok, %{state | data: data}, input}
+    end
+  end
+
+  @spec complete_decision(Program.t(), map(), map()) :: term()
+  defp complete_decision(program, state, context) do
+    if migration_pending?(state) do
+      :continue
+    else
+      with {:ok, node} <- Program.fetch_node(program, state.pc) do
+        terminal_decision(node, state, context)
+      end
     end
   end
 
@@ -125,6 +132,208 @@ defmodule Spectre.Execution.Controller do
   @spec select(Program.t(), map(), map()) :: {:ok, term()} | {:error, term()}
   defp select(program, state, context) do
     select_node(program, state.pc, state, state.repeat_counts, context, MapSet.new())
+  end
+
+  @spec initial_state(Program.t(), term(), map()) :: {:ok, map()} | {:error, term()}
+  defp initial_state(program, input, context) do
+    case Map.get(context, :execution_migration) do
+      nil ->
+        with {:ok, data} <-
+               Expression.evaluate(program.initial, %{
+                 input: input,
+                 state: nil,
+                 last_result: nil
+               }),
+             :ok <- Program.validate_state(program, data) do
+          {:ok, state_envelope(program, data, nil)}
+        end
+
+      migration when is_map(migration) ->
+        with {:ok, prepared} <- prepare_migration(program, migration, context) do
+          {:ok,
+           state_envelope(program, nil, %{
+             status: :pending,
+             prepared_digest: prepared.digest,
+             definition_ref: prepared.definition_ref,
+             materialization_digest: prepared.materialization_digest,
+             source_version: prepared.source_version,
+             source_state_digest: prepared.source_state_digest,
+             receipt: nil
+           })}
+        end
+
+      value ->
+        {:error, {:invalid_execution_migration_context, shape(value)}}
+    end
+  end
+
+  @spec state_envelope(Program.t(), term(), map() | nil) :: map()
+  defp state_envelope(program, data, migration) do
+    state = %{
+      schema_version: @state_schema_version,
+      program_digest: program.digest,
+      pc: program.entry,
+      data: data,
+      repeat_counts: %{},
+      history: []
+    }
+
+    if is_nil(migration), do: state, else: Map.put(state, :migration, migration)
+  end
+
+  @spec next_decision(Program.t(), map(), map()) :: {:ok, term()} | {:error, term()}
+  defp next_decision(program, state, context) do
+    if migration_pending?(state) do
+      with {:ok, prepared} <-
+             prepare_migration(program, Map.get(context, :execution_migration), context),
+           true <- prepared.digest == state.migration.prepared_digest do
+        {:ok, {:run, prepared.request}}
+      else
+        false -> {:error, :execution_migration_preparation_drift}
+        {:error, _reason} = error -> error
+      end
+    else
+      select(program, state, context)
+    end
+  end
+
+  @spec apply_program_result(Program.t(), map(), Request.t(), Result.t(), map()) ::
+          {:ok, map()} | {:ok, map(), map()} | {:error, term()}
+  defp apply_program_result(program, state, request, result, context) do
+    if migration_request?(request) do
+      apply_migration_result(program, state, request, result, context)
+    else
+      with :ok <- validate_request_pin(request, program, state),
+           {:ok, node} <- Program.fetch_node(program, metadata(request, :execution_node_id)),
+           {:ok, data, pc} <- reduce_result(node, state, result, context),
+           :ok <- Program.validate_state(program, data),
+           {:ok, repeat_counts} <- repeat_counts(request),
+           {:ok, history} <- append_history(state.history, node, request, result) do
+        {:ok,
+         %{
+           state
+           | data: data,
+             pc: pc,
+             repeat_counts: repeat_counts,
+             history: history
+         }}
+      end
+    end
+  end
+
+  @spec apply_migration_result(Program.t(), map(), Request.t(), Result.t(), map()) ::
+          {:ok, map(), map()} | {:error, term()}
+  defp apply_migration_result(program, state, request, result, context) do
+    with true <- migration_pending?(state),
+         {:ok, prepared} <-
+           prepare_migration(program, Map.get(context, :execution_migration), context),
+         true <- prepared.digest == state.migration.prepared_digest,
+         true <- request == prepared.request,
+         execution <- %Execution{
+           value: result.value,
+           receipt: result.receipt,
+           usage: result.usage,
+           artifacts: result.artifacts,
+           metadata: result.metadata
+         },
+         {:ok, data, receipt} <- Migration.commit(prepared, execution, Map.get(context, :agent)),
+         {:ok, history} <- append_migration_history(state.history, request, result, receipt) do
+      next = %{
+        state
+        | data: data,
+          migration: %{
+            state.migration
+            | status: :complete,
+              receipt: MigrationReceipt.to_data(receipt)
+          },
+          history: history
+      }
+
+      {:ok, next, %{receipt: MigrationReceipt.to_data(receipt)}}
+    else
+      false -> {:error, :execution_migration_result_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec prepare_migration(Program.t(), term(), map()) ::
+          {:ok, Migration.t()} | {:error, term()}
+  defp prepare_migration(program, migration, context) when is_map(migration) do
+    with :ok <- exact_migration_context(migration),
+         definition_ref when is_binary(definition_ref) <- Map.get(migration, :definition_ref),
+         materialization_digest when is_binary(materialization_digest) <-
+           Map.get(migration, :materialization_digest),
+         :ok <- migration_owner_binding(definition_ref, materialization_digest, context),
+         source_version when not is_nil(source_version) <- Map.get(migration, :source_version),
+         {:ok, source_state} <- Map.fetch(migration, :source_state),
+         prepared_digest when is_binary(prepared_digest) <- Map.get(migration, :prepared_digest),
+         agent when is_atom(agent) and not is_nil(agent) <- Map.get(context, :agent),
+         {:ok, prepared} <-
+           Migration.prepare(program, source_version, source_state, agent,
+             definition_ref: definition_ref,
+             materialization_digest: materialization_digest
+           ),
+         true <- prepared.digest == prepared_digest do
+      {:ok, prepared}
+    else
+      false -> {:error, :execution_migration_preparation_drift}
+      :error -> {:error, :incomplete_execution_migration_context}
+      nil -> {:error, :incomplete_execution_migration_context}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :invalid_execution_migration_context}
+    end
+  end
+
+  defp prepare_migration(_program, value, _context),
+    do: {:error, {:invalid_execution_migration_context, shape(value)}}
+
+  defp exact_migration_context(migration) do
+    unknown = Map.keys(migration) -- @migration_context_fields
+    missing = @migration_context_fields -- Map.keys(migration)
+
+    cond do
+      unknown != [] ->
+        {:error, {:unknown_execution_migration_context_fields, Enum.sort(unknown)}}
+
+      missing != [] ->
+        {:error, :incomplete_execution_migration_context}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp migration_owner_binding(definition_ref, materialization_digest, context) do
+    if definition_ref == Map.get(context, :execution_definition_ref) and
+         materialization_digest == Map.get(context, :execution_materialization_digest) do
+      :ok
+    else
+      {:error, :execution_migration_owner_binding_mismatch}
+    end
+  end
+
+  defp migration_pending?(%{migration: %{status: :pending}}), do: true
+  defp migration_pending?(_state), do: false
+
+  defp migration_request?(request),
+    do: request.phase == :state_migration and request.branch == Program.migration_branch()
+
+  defp append_migration_history(history, request, result, receipt) do
+    entry = %{
+      node_id: Program.migration_branch(),
+      operation_ref: request.operation,
+      request_id: request.id,
+      result_digest: RunValue.token("execution-result", result.value),
+      receipt_digest: receipt.digest,
+      finished_at: result.finished_at
+    }
+
+    next = Enum.take([entry | history], @history_limit)
+
+    case RunValue.validate(next, [:data_driven_execution_history]) do
+      :ok -> {:ok, next}
+      {:error, reason} -> {:error, {:nonportable_execution_history, reason}}
+    end
   end
 
   @spec select_node(Program.t(), String.t(), map(), map(), map(), MapSet.t()) ::
@@ -166,6 +375,7 @@ defmodule Spectre.Execution.Controller do
             execution_program_digest: program.digest,
             execution_node_id: node.id,
             prompt_hash: plan.metadata.hash,
+            required_profile_ref: Map.get(node, :profile_ref),
             explicit_model_override?: false
           }
         })
@@ -320,8 +530,8 @@ defmodule Spectre.Execution.Controller do
       {:error, {:invalid_execution_inference_constraints, Exception.message(error)}}
   end
 
-  @spec validate_state_envelope(term(), Program.t()) :: :ok | {:error, term()}
-  defp validate_state_envelope(state, program) when is_map(state) do
+  @spec validate_state_envelope(term(), Program.t(), map()) :: :ok | {:error, term()}
+  defp validate_state_envelope(state, program, context) when is_map(state) do
     cond do
       Map.get(state, :schema_version) != @state_schema_version ->
         {:error, {:unsupported_execution_state_schema, Map.get(state, :schema_version)}}
@@ -340,7 +550,8 @@ defmodule Spectre.Execution.Controller do
 
       true ->
         with {:ok, _node} <- Program.fetch_node(program, state.pc),
-             :ok <- Program.validate_state(program, Map.get(state, :data)),
+             :ok <-
+               validate_migration_state(Map.get(state, :migration), program, state, context),
              :ok <- validate_repeat_counts(state.repeat_counts, program),
              :ok <- validate_history(state.history) do
           RunValue.validate(state, [:data_driven_execution_state, program.id])
@@ -348,8 +559,111 @@ defmodule Spectre.Execution.Controller do
     end
   end
 
-  defp validate_state_envelope(value, _program),
+  defp validate_state_envelope(value, _program, _context),
     do: {:error, {:invalid_execution_state, shape(value)}}
+
+  defp validate_migration_state(nil, program, state, _context),
+    do: Program.validate_state(program, Map.get(state, :data))
+
+  defp validate_migration_state(%{status: :pending} = migration, program, state, context) do
+    with :ok <- exact_migration_state(migration),
+         :ok <- validate_pending_migration_shape(migration, state),
+         {:ok, prepared} <-
+           prepare_migration(program, Map.get(context, :execution_migration), context),
+         true <- prepared.digest == migration.prepared_digest,
+         true <- prepared.definition_ref == migration.definition_ref,
+         true <- prepared.materialization_digest == migration.materialization_digest,
+         true <- prepared.source_version == migration.source_version,
+         true <- prepared.source_state_digest == migration.source_state_digest do
+      :ok
+    else
+      false -> {:error, :execution_migration_state_binding_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_migration_state(%{status: :complete} = migration, program, state, context) do
+    with :ok <- exact_migration_state(migration),
+         :ok <- Program.validate_state(program, Map.get(state, :data)),
+         {:ok, receipt} <- MigrationReceipt.from_data(Map.get(migration, :receipt)),
+         {:ok, target_state_digest} <- CanonicalValue.digest(Map.get(state, :data)),
+         {:ok, prepared} <-
+           prepare_migration(program, Map.get(context, :execution_migration), context),
+         true <- receipt.program_digest == program.digest,
+         true <- receipt.definition_ref == prepared.definition_ref,
+         true <- receipt.definition_ref == migration.definition_ref,
+         true <- receipt.materialization_digest == prepared.materialization_digest,
+         true <- receipt.materialization_digest == migration.materialization_digest,
+         true <- receipt.migration_digest == prepared.digest,
+         true <- receipt.migration_digest == migration.prepared_digest,
+         true <- receipt.operation_ref == stable_ref(prepared.operation_ref),
+         true <- receipt.operation_contract_digest == prepared.operation_contract_digest,
+         true <- receipt.source_state_digest == prepared.source_state_digest,
+         true <- receipt.source_state_digest == migration.source_state_digest,
+         true <- receipt.source_version == prepared.source_version,
+         true <- receipt.source_version == migration.source_version,
+         true <- receipt.target_version == prepared.target_version,
+         true <- receipt.target_version == program.version,
+         true <- receipt.target_state_digest == target_state_digest do
+      :ok
+    else
+      false -> {:error, :execution_migration_receipt_state_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_migration_state(value, _program, _state, _context),
+    do: {:error, {:invalid_execution_migration_state, shape(value)}}
+
+  defp validate_pending_migration_shape(migration, state) do
+    cond do
+      not is_nil(Map.get(state, :data)) ->
+        {:error, :pending_execution_migration_has_target_state}
+
+      not digest?(Map.get(migration, :prepared_digest)) ->
+        {:error, :invalid_execution_migration_state_digest}
+
+      not is_binary(Map.get(migration, :definition_ref)) ->
+        {:error, :invalid_execution_migration_state_definition_ref}
+
+      not digest?(Map.get(migration, :materialization_digest)) ->
+        {:error, :invalid_execution_migration_state_digest}
+
+      not digest?(Map.get(migration, :source_state_digest)) ->
+        {:error, :invalid_execution_migration_state_digest}
+
+      is_nil(Map.get(migration, :source_version)) ->
+        {:error, :invalid_execution_migration_state_version}
+
+      not is_nil(Map.get(migration, :receipt)) ->
+        {:error, :pending_execution_migration_has_receipt}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp exact_migration_state(migration) do
+    actual = Map.keys(migration)
+    unknown = actual -- @migration_state_fields
+    missing = @migration_state_fields -- actual
+
+    cond do
+      unknown != [] ->
+        {:error, {:unknown_execution_migration_state_fields, Enum.sort(unknown)}}
+
+      missing != [] ->
+        {:error, {:incomplete_execution_migration_state, List.first(missing)}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp digest?(value) when is_binary(value) and byte_size(value) == 64,
+    do: match?({:ok, _bytes}, Base.decode16(value, case: :lower))
+
+  defp digest?(_value), do: false
 
   @spec validate_repeat_counts(map(), Program.t()) :: :ok | {:error, term()}
   defp validate_repeat_counts(counts, program) do
@@ -544,6 +858,9 @@ defmodule Spectre.Execution.Controller do
   @spec metadata(Request.t(), atom()) :: term()
   defp metadata(%Request{metadata: metadata}, key),
     do: Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
+
+  defp stable_ref(value) when is_atom(value), do: Atom.to_string(value)
+  defp stable_ref(value) when is_binary(value), do: value
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_map(value), do: :map

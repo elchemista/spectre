@@ -75,10 +75,22 @@ defmodule Spectre.Instance.Activation do
   @spec new(Candidate.t(), map(), keyword()) :: {:ok, t()} | {:error, term()}
   def new(
         %Candidate{} = candidate,
-        %{definition_ref: definition_ref, manifest: manifest, publication_receipt: receipt},
+        %{
+          definition_ref: definition_ref,
+          manifest: manifest,
+          publication_receipt: receipt
+        } = resolution,
         opts
       )
       when is_list(opts) do
+    provenance =
+      opts
+      |> Keyword.get(:provenance, %{})
+      |> Map.put(
+        :build_evidence,
+        Map.get(resolution, :drift, %{status: :unobserved, drifts: [], observed_builds: %{}})
+      )
+
     attrs = %{
       schema_version: @schema_version,
       definition_ref: definition_ref,
@@ -91,7 +103,7 @@ defmodule Spectre.Instance.Activation do
       authority_epoch: Keyword.get(opts, :authority_epoch, 0),
       owner_fencing_token: Keyword.get(opts, :owner_fencing_token),
       activated_at: Keyword.get(opts, :activated_at, System.system_time(:millisecond)),
-      provenance: Keyword.get(opts, :provenance, %{})
+      provenance: provenance
     }
 
     with :ok <- verify_candidate(candidate, attrs), do: build(attrs)
@@ -343,7 +355,7 @@ defmodule Spectre.Instance.Activation do
   defp normalize_candidate_ref(_value), do: {:error, :invalid_activation_candidate_ref}
 
   defp validate_digest(value, _field) when is_binary(value) and byte_size(value) == 64 do
-    case Base.decode16(value, case: :mixed) do
+    case Base.decode16(value, case: :lower) do
       {:ok, <<_::256>>} -> :ok
       :error -> {:error, :invalid_activation_digest}
     end

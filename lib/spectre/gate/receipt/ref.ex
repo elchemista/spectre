@@ -15,7 +15,7 @@ defmodule Spectre.Gate.Receipt.Ref do
 
   @spec parse(String.t()) :: {:ok, t()} | {:error, term()}
   def parse("gate:sha256:" <> digest) do
-    ref = %__MODULE__{algorithm: @algorithm, digest: String.downcase(digest)}
+    ref = %__MODULE__{algorithm: @algorithm, digest: digest}
     if valid?(ref), do: {:ok, ref}, else: {:error, {:invalid_gate_receipt_ref, digest}}
   end
 
