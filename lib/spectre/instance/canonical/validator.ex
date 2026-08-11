@@ -156,7 +156,14 @@ defmodule Spectre.Instance.Canonical.Validator do
          ids when is_map(ids) and not is_struct(ids) <- Map.get(window, :ids),
          true <- length(records) <= limit,
          :ok <- validate_event_envelope_records(records, status, canonical_revision),
-         true <- ids == Map.new(records, &{&1.id, &1.admission_receipt}) do
+         :ok <- validate_event_envelope_ids(ids),
+         true <-
+           Enum.all?(records, fn envelope ->
+             Map.get(ids, envelope.id) == %{
+               intent_digest: EventEnvelope.intent_digest(envelope),
+               admission_receipt: envelope.admission_receipt
+             }
+           end) do
       :ok
     else
       _invalid -> {:error, {:invalid_canonical_event_envelopes, status}}
@@ -165,6 +172,18 @@ defmodule Spectre.Instance.Canonical.Validator do
 
   defp validate_event_envelopes(_window, status, _limit, _canonical_revision),
     do: {:error, {:invalid_canonical_event_envelopes, status}}
+
+  defp validate_event_envelope_ids(ids) do
+    Enum.reduce_while(ids, :ok, fn
+      {id, %{intent_digest: intent, admission_receipt: receipt}}, :ok
+      when is_binary(id) and id != "" and is_binary(intent) and byte_size(intent) == 64 and
+             is_binary(receipt) and byte_size(receipt) == 64 ->
+        {:cont, :ok}
+
+      _invalid, :ok ->
+        {:halt, {:error, :invalid_canonical_event_envelope_ids}}
+    end)
+  end
 
   defp validate_event_envelope_records(records, status, canonical_revision) do
     ids = Enum.map(records, &event_envelope_id/1)
@@ -333,6 +352,12 @@ defmodule Spectre.Instance.Canonical.Validator do
       Enum.reduce_while(correlations, :ok, fn
         {:instance_key, _key}, :ok ->
           {:cont, :ok}
+
+        {:owner_fencing_token, token}, :ok when is_integer(token) and token > 0 ->
+          {:cont, :ok}
+
+        {:owner_fencing_token, _invalid}, :ok ->
+          {:halt, {:error, :invalid_canonical_owner_fencing_token}}
 
         {key, %DeliveryConsent{} = consent}, :ok ->
           validate_consent_correlation(key, consent, instance_ref)

@@ -3,6 +3,7 @@ defmodule Spectre.Instance.Events do
 
   alias Spectre.Definition.Ref, as: DefinitionRef
   alias Spectre.Event.Envelope
+  alias Spectre.Event.SchemaRegistry
   alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Commit
@@ -31,9 +32,17 @@ defmodule Spectre.Instance.Events do
          {:ok, next} <- commit_event(data, envelope) do
       {:ok, envelope, next}
     else
-      {:existing, %Envelope{} = envelope} -> {:ok, envelope, data}
-      {:conflict, id} -> {:error, {:event_id_conflict, id}}
-      {:error, _reason} = error -> error
+      {:existing, %Envelope{} = envelope} ->
+        {:ok, envelope, data}
+
+      {:replayed, id, status, receipt} ->
+        {:error, {:event_replay_already_committed, id, status, receipt}}
+
+      {:conflict, id} ->
+        {:error, {:event_id_conflict, id}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -126,11 +135,12 @@ defmodule Spectre.Instance.Events do
 
   def active_definition_ref(%InstanceState{} = data), do: Run.definition_ref(data.agent)
 
-  @spec operation_definition_ref(InstanceState.t(), OperationLoop.t()) :: DefinitionRef.t()
-  def operation_definition_ref(%InstanceState{} = data, %OperationLoop{} = loop) do
+  @spec operation_definition_ref(InstanceState.t(), OperationLoop.t()) ::
+          {:ok, DefinitionRef.t()} | {:error, :operation_definition_ref_missing}
+  def operation_definition_ref(%InstanceState{}, %OperationLoop{} = loop) do
     case Map.get(loop.metadata, :spectre_definition_ref) do
-      %DefinitionRef{} = ref -> ref
-      _missing -> active_definition_ref(data)
+      %DefinitionRef{} = ref -> {:ok, ref}
+      _missing -> {:error, :operation_definition_ref_missing}
     end
   end
 
@@ -171,12 +181,15 @@ defmodule Spectre.Instance.Events do
 
   defp find_existing_event(canonical, section, pending) do
     case Canonical.fetch(canonical, section) do
-      {:ok, %{records: records}} -> compare_existing_event(records, pending)
-      _missing -> false
+      {:ok, %{records: records, ids: ids}} ->
+        compare_existing_event(records, ids, pending, section)
+
+      _missing ->
+        false
     end
   end
 
-  defp compare_existing_event(records, pending) do
+  defp compare_existing_event(records, ids, pending, section) do
     case Enum.find(records, &(&1.id == pending.id)) do
       %Envelope{} = existing ->
         if same_intent?(existing, pending),
@@ -184,7 +197,23 @@ defmodule Spectre.Instance.Events do
           else: {:conflict, pending.id}
 
       nil ->
+        compare_retained_event_id(ids, pending, section)
+    end
+  end
+
+  defp compare_retained_event_id(ids, pending, section) do
+    pending_digest = Envelope.intent_digest(pending)
+
+    case Map.get(ids, pending.id) do
+      %{intent_digest: digest, admission_receipt: receipt}
+      when digest == pending_digest ->
+        {:replayed, pending.id, section_status(section), receipt}
+
+      nil ->
         false
+
+      _different ->
+        {:conflict, pending.id}
     end
   end
 
@@ -207,14 +236,23 @@ defmodule Spectre.Instance.Events do
       (is_nil(pending.continuation_ref) or pending.continuation_ref == existing.continuation_ref)
   end
 
-  defp resolve_owner(data, %Envelope{event_class: event_class} = pending, opts)
+  defp resolve_owner(data, %Envelope{event_class: event_class} = pending, _opts)
        when event_class in [:input, :global] do
     cond do
       not is_nil(pending.continuation_ref) ->
         quarantine(pending, :unexpected_continuation, nil)
 
-      event_class == :global and not Keyword.get(opts, :schema_compatible?, true) ->
-        quarantine(pending, :payload_schema_incompatible, nil)
+      event_class == :global ->
+        owner = active_definition_ref(data)
+
+        case SchemaRegistry.verify(
+               Keyword.get(data.base_opts, :event_schema_registry),
+               owner,
+               pending
+             ) do
+          :ok -> admit_or_quarantine(data, pending, owner, :new_admission)
+          {:error, reason} -> quarantine(pending, {:payload_schema_incompatible, reason}, owner)
+        end
 
       true ->
         owner = active_definition_ref(data)
@@ -234,8 +272,10 @@ defmodule Spectre.Instance.Events do
        when event_class in @operation_classes do
     case resolve_operation_continuation(data, pending) do
       {:ok, pending, loop} ->
-        owner = operation_definition_ref(data, loop)
-        admit_or_quarantine(data, pending, owner, :continuation)
+        case operation_definition_ref(data, loop) do
+          {:ok, owner} -> admit_or_quarantine(data, pending, owner, :continuation)
+          {:error, reason} -> quarantine(pending, reason, nil)
+        end
 
       {:quarantine, reason, pending} ->
         quarantine(pending, reason, nil)
@@ -417,7 +457,12 @@ defmodule Spectre.Instance.Events do
     section = event_section(envelope.status)
     {:ok, current} = Canonical.fetch(data.canonical, section)
     records = Enum.take([envelope | current.records], @event_limit)
-    ids = Map.new(records, &{&1.id, &1.admission_receipt})
+
+    ids =
+      Map.put(current.ids, envelope.id, %{
+        intent_digest: Envelope.intent_digest(envelope),
+        admission_receipt: envelope.admission_receipt
+      })
 
     Commit.canonical_sections(data, %{section => %{records: records, ids: ids}},
       correlation_id: envelope.correlation_id,
@@ -451,7 +496,10 @@ defmodule Spectre.Instance.Events do
       same_ref?(active_definition_ref(data), definition_ref) or
         Enum.any?(data.runs, fn {_id, run} -> same_ref?(run.definition_ref, definition_ref) end) or
         Enum.any?(Loops.all_operation_loops(data), fn {loop, _control} ->
-          same_ref?(operation_definition_ref(data, loop), definition_ref)
+          case operation_definition_ref(data, loop) do
+            {:ok, owner} -> same_ref?(owner, definition_ref)
+            {:error, :operation_definition_ref_missing} -> true
+          end
         end) or SkillStates.definition_referenced?(data, definition_ref)
 
     if referenced?,
@@ -463,6 +511,9 @@ defmodule Spectre.Instance.Events do
 
   defp event_section(:admitted), do: :event_admissions
   defp event_section(:quarantined), do: :event_quarantine
+
+  defp section_status(:event_admissions), do: :admitted
+  defp section_status(:event_quarantine), do: :quarantined
 
   defp same_ref?(%DefinitionRef{} = left, %DefinitionRef{} = right),
     do: DefinitionRef.to_string(left) == DefinitionRef.to_string(right)

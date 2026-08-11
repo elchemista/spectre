@@ -18,8 +18,8 @@ defmodule Spectre.Foundation.Conformance do
   alias Spectre.Definition.Ref, as: DefinitionRef
   alias Spectre.Experience.Store, as: ExperienceStore
   alias Spectre.Forge.Proposal
-  alias Spectre.Instance.Canonical.Codec, as: InstanceCodec
   alias Spectre.Instance.Activation
+  alias Spectre.Instance.Canonical.Codec, as: InstanceCodec
   alias Spectre.Projection
   alias Spectre.Projection.Reflection
   alias Spectre.Run
@@ -54,7 +54,7 @@ defmodule Spectre.Foundation.Conformance do
       durable_formats: %{
         state: %{writer: 5, readers: [2, 3, 4, 5]},
         run: %{writer: 2, readers: [1, 2]},
-        instance: %{writer: 4, readers: [1, 2, 3, 4]}
+        instance: %{writer: 2, readers: [2]}
       },
       definition: %{
         canonicalization: 1,
@@ -84,7 +84,7 @@ defmodule Spectre.Foundation.Conformance do
         gate_receipt_schema: 1,
         human_report_generator: 1,
         evaluation_delta_schema: 1,
-        gc_plan_schema: 1
+        gc_plan_schema: 2
       },
       reflection: %{
         experience_evidence_schema: Spectre.Experience.Evidence.schema_version(),

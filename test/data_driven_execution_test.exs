@@ -7,6 +7,10 @@ defmodule SpectreDataDrivenExecutionTest.Operations do
     {:ok, Map.get(input, :continue, Map.get(input, "continue", false))}
   end
 
+  def allow_prompt(_input, _context), do: {:ok, true}
+  def deny_prompt(_input, _context), do: {:ok, false}
+  def invalid_prompt(_input, _context), do: {:ok, %{not: :boolean}}
+
   def migrate(%{state: state}, _context), do: {:ok, Map.put(state, "schema", 2)}
   def external(_input, _context), do: raise("rehearsal dispatched a real Effect")
 end
@@ -47,6 +51,30 @@ defmodule SpectreDataDrivenExecutionTest.Agent do
     input: :map,
     output: :map,
     side_effect: :non_idempotent
+  )
+
+  operation(:prompt_allow, {Operations, :allow_prompt},
+    input: :map,
+    output: :boolean,
+    side_effect: :none
+  )
+
+  operation(:prompt_deny, {Operations, :deny_prompt},
+    input: :map,
+    output: :boolean,
+    side_effect: :none
+  )
+
+  operation(:prompt_invalid, {Operations, :invalid_prompt},
+    input: :map,
+    output: :boolean,
+    side_effect: :none
+  )
+
+  operation(:prompt_impure, {Operations, :allow_prompt},
+    input: :map,
+    output: :boolean,
+    side_effect: :idempotent
   )
 end
 
@@ -2059,6 +2087,108 @@ defmodule SpectreDataDrivenExecutionTest do
     assert receipt.rendered_digest == Value.digest!(plan.rendered)
   end
 
+  test "prompt predicates are registry-bound, pure, boolean and actually control placement" do
+    assert {:ok, %{"predicate_ref" => "prompt_allow"}} =
+             Spectre.Prompt.Predicate.ref_data(:prompt_allow)
+
+    assert {:ok, %{"predicate_ref" => "prompt_allow"}} =
+             Spectre.Prompt.Predicate.ref_data("prompt_allow")
+
+    assert {:error, {:invalid_prompt_predicate_ref, nil}} =
+             Spectre.Prompt.Predicate.ref_data(nil)
+
+    assert {:error, :prompt_predicate_registry_required} =
+             Spectre.Prompt.Predicate.evaluate(
+               %{predicate_ref: "prompt_allow"},
+               Spectre.Input.new("accepted"),
+               %{},
+               []
+             )
+
+    assert {:error, {:invalid_prompt_predicate_ref, %{}}} =
+             Spectre.Prompt.Predicate.validate_ref(Agent, %{})
+
+    {:ok, content, placeholders} = Fragment.close_template("Input <%= @input.text %>")
+
+    fragment =
+      Fragment.canonical!(%{
+        id: :conditional_prompt,
+        content: content,
+        scope: :execution,
+        target: :context,
+        position: :end,
+        source: %{kind: :runtime},
+        trust: :data,
+        placeholders: placeholders,
+        token_cap: 32,
+        condition_ref: %{"predicate_ref" => "prompt_allow"}
+      })
+
+    assert {:ok, "Input accepted", evidence} =
+             PromptMaterializer.render(fragment, "accepted", %{}, agent: Agent)
+
+    assert evidence["predicate_ref"] == "prompt_allow"
+    assert evidence["matched"]
+
+    denied =
+      fragment
+      |> Map.from_struct()
+      |> Map.put(:condition_ref, %{"predicate_ref" => "prompt_deny"})
+      |> Map.put(:digest, nil)
+      |> Fragment.canonical!()
+
+    assert {:ok, "", %{"matched" => false, "predicate_ref" => "prompt_deny"}} =
+             PromptMaterializer.render(denied, "must not appear", %{}, agent: Agent)
+
+    missing =
+      fragment
+      |> Map.from_struct()
+      |> Map.put(:condition_ref, %{"predicate_ref" => "not_registered"})
+      |> Map.put(:digest, nil)
+      |> Fragment.canonical!()
+
+    assert {:error, {:operation_not_registered, "not_registered"}} =
+             PromptMaterializer.render(missing, "blocked", %{}, agent: Agent)
+
+    invalid =
+      fragment
+      |> Map.from_struct()
+      |> Map.put(:condition_ref, %{"predicate_ref" => "prompt_invalid"})
+      |> Map.put(:digest, nil)
+      |> Fragment.canonical!()
+
+    assert {:error, {:prompt_predicate_returned_non_boolean, _condition_ref}} =
+             PromptMaterializer.render(invalid, "blocked", %{}, agent: Agent)
+
+    assert {:error, {:prompt_condition_not_pure_boolean, _condition_ref}} =
+             Spectre.Prompt.Predicate.validate_ref(Agent, %{
+               "predicate_ref" => "prompt_impure"
+             })
+  end
+
+  test "rendered prompt bytes cannot expand beyond the fragment token cap" do
+    {:ok, content, placeholders} = Fragment.close_template("<%= @input.text %>")
+
+    fragment =
+      Fragment.canonical!(%{
+        id: :bounded_render,
+        content: content,
+        scope: :execution,
+        target: :context,
+        position: :end,
+        source: %{kind: :runtime},
+        trust: :data,
+        placeholders: placeholders,
+        token_cap: 4
+      })
+
+    assert {:ok, "short", %{"input.text" => "short"}} =
+             PromptMaterializer.render(fragment, "short", %{})
+
+    assert {:error, {:rendered_prompt_fragment_over_budget, :bounded_render, 25, 4}} =
+             PromptMaterializer.render(fragment, String.duplicate("x", 100), %{})
+  end
+
   test "the closed inspect renderer handles portable values without opening code execution" do
     assert {:ok, content, placeholders} =
              Fragment.close_template("State: <%= inspect(@state.data) %>")
@@ -2436,7 +2566,7 @@ defmodule SpectreDataDrivenExecutionTest do
     assert report.consumed_recordings == expected["consumed_recordings"]
 
     matrix = Conformance.matrix()
-    assert matrix.release == "0.3.0-rs"
+    assert matrix.release == "0.3.0"
     assert matrix.data_execution.program_schema == 1
     assert matrix.data_execution.handoff_schema == 1
     assert matrix.data_execution.prompt_receipt_schema == 1
@@ -2742,7 +2872,10 @@ defmodule SpectreDataDrivenExecutionTest do
   defp published_activation(canonical, manifest) do
     store = memory_definition_store()
     assert {:ok, _receipt} = Store.publish(store, canonical, manifest)
-    assert {:ok, resolution} = Resolver.resolve(store, Canonical.ref(canonical))
+
+    assert {:ok, resolution} =
+             Resolver.resolve(store, Canonical.ref(canonical), observe_builds: true)
+
     assert {:ok, candidate} = Candidate.from_resolution(resolution, created_at: 1)
 
     assert {:ok, activation} =

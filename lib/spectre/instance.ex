@@ -21,6 +21,7 @@ defmodule Spectre.Instance do
   alias Spectre.Definition.Resolver, as: DefinitionResolver
   alias Spectre.Definition.Store, as: DefinitionStore
   alias Spectre.Event.Envelope, as: EventEnvelope
+  alias Spectre.Event.SchemaRegistry, as: EventSchemaRegistry
   alias Spectre.Execution.Admission, as: ExecutionAdmission
   alias Spectre.Execution.Closure
   alias Spectre.Execution.Materialization, as: ExecutionMaterialization
@@ -100,6 +101,7 @@ defmodule Spectre.Instance do
           | {:max_operation_runners, pos_integer()}
           | {:operation_terminal_loop_retention, non_neg_integer() | :unlimited}
           | {:operation_correlation_retention, non_neg_integer() | :unlimited}
+          | {:event_schema_registry, EventSchemaRegistry.config()}
 
   @doc false
   @spec child_spec(keyword()) :: Supervisor.child_spec()
@@ -604,6 +606,7 @@ defmodule Spectre.Instance do
       :flow_state_committed,
       :operational_transition,
       :instance_key,
+      :owner_fencing_token,
       :records,
       :ids,
       :delivery_decision,
@@ -682,8 +685,13 @@ defmodule Spectre.Instance do
          {:ok, restored_runs} <-
            restore_runs(canonical, definition_store, checkpoint_store, base_opts, max_runs),
          {:ok, registry_monitor} <- monitor_registry(registry, instance_ref),
+         fencing_floor <- persisted_owner_fencing_floor(activation, canonical),
          {:ok, owner, owner_lease} <-
-           Owner.claim(owner_config(agent, opts, base_opts), instance_ref, base_opts) do
+           Owner.claim(
+             owner_config(agent, opts, base_opts),
+             instance_ref,
+             Keyword.put(base_opts, :minimum_fencing_token, fencing_floor)
+           ) do
       data = %InstanceState{
         agent: agent,
         agent_ref: agent_ref,
@@ -901,6 +909,9 @@ defmodule Spectre.Instance do
       {:error, reason} when reason in [:conflict, :stale] ->
         {:stop, {:activation_checkpoint_conflict, reason}, {:error, reason}, data}
 
+      {:error, {kind, _expected, _current} = reason} when kind in [:conflict, :stale] ->
+        {:stop, {:activation_checkpoint_conflict, reason}, {:error, reason}, data}
+
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
     end
@@ -943,6 +954,9 @@ defmodule Spectre.Instance do
         {:stop, {:rollback_checkpoint_outcome_unknown, reason}, {:error, reason}, data}
 
       {:error, reason} when reason in [:conflict, :stale] ->
+        {:stop, {:rollback_checkpoint_conflict, reason}, {:error, reason}, data}
+
+      {:error, {kind, _expected, _current} = reason} when kind in [:conflict, :stale] ->
         {:stop, {:rollback_checkpoint_conflict, reason}, {:error, reason}, data}
 
       {:error, reason} ->
@@ -1068,7 +1082,12 @@ defmodule Spectre.Instance do
     else
       with :ok <- Events.authorize(data, active_definition_ref, :new_admission),
            :ok <-
-             ExecutionAdmission.verify(materialization, data.definition_store, data.activation),
+             ExecutionAdmission.verify(
+               materialization,
+               data.definition_store,
+               data.activation,
+               data.base_opts
+             ),
            env <- Loops.operation_env(data),
            {:ok, loop, control, event_specs} <-
              DataExecutionRuntime.start(materialization, opts, env) do
@@ -1197,12 +1216,8 @@ defmodule Spectre.Instance do
   def handle_call({:operation_trigger, loop_id, trigger, opts}, _from, data) do
     with {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
          :ok <- Loops.authorize_loop(loop, opts),
-         :ok <-
-           Events.authorize(
-             data,
-             Events.operation_definition_ref(data, loop),
-             :continuation
-           ),
+         {:ok, operation_definition_ref} <- Events.operation_definition_ref(data, loop),
+         :ok <- Events.authorize(data, operation_definition_ref, :continuation),
          {:ok, next_loop, next_control, event_specs} <-
            OperationRuntime.trigger(loop, control, trigger, opts, Loops.operation_env(data)),
          {:ok, next, committed_events} <-
@@ -2844,12 +2859,8 @@ defmodule Spectre.Instance do
 
   defp start_operation_runner(data, loop, control, attempt, spec, request, reconcile?) do
     with :ok <- owner_guard(data, :effect_dispatch),
-         :ok <-
-           Events.authorize(
-             data,
-             Events.operation_definition_ref(data, loop),
-             :dispatch
-           ) do
+         {:ok, operation_definition_ref} <- Events.operation_definition_ref(data, loop),
+         :ok <- Events.authorize(data, operation_definition_ref, :dispatch) do
       do_start_operation_runner(data, loop, control, attempt, spec, request, reconcile?)
     else
       {:error, reason} ->
@@ -3459,6 +3470,7 @@ defmodule Spectre.Instance do
         source: :trusted_host,
         instance_ref: data.ref.key
       })
+      |> Map.put(:build_evidence, resolution.drift)
 
     with {:ok, skill_states, skill_bindings} <-
            SkillStates.prepare_activation(
@@ -3487,15 +3499,20 @@ defmodule Spectre.Instance do
          {:ok, lifecycles} <- Events.activation_lifecycles(data, activation),
          {:ok, snapshot} <-
            Canonical.snapshot(data.canonical,
-             read: [:activation, :lifecycles, :skill_states],
-             write: [:activation, :lifecycles, :skill_states],
+             read: [:activation, :correlations, :lifecycles, :skill_states],
+             write: [:activation, :correlations, :lifecycles, :skill_states],
              correlation_id: activation.activation_receipt,
              causation_id: CandidateRef.to_string(activation.candidate_ref)
            ),
          {:ok, change} <-
            Canonical.change(
              snapshot,
-             %{activation: activation, lifecycles: lifecycles, skill_states: skill_states},
+             %{
+               activation: activation,
+               correlations: owner_fenced_correlations(data),
+               lifecycles: lifecycles,
+               skill_states: skill_states
+             },
              provenance: %{source: :activation, instance_ref: data.ref.key},
              metadata: %{
                transition: :definition_activated,
@@ -3557,7 +3574,7 @@ defmodule Spectre.Instance do
              encoded,
              data.checkpoint_revision,
              canonical.revision,
-             data.base_opts
+             checkpoint_store_opts(data)
            ) do
       {:ok,
        %{
@@ -3580,6 +3597,7 @@ defmodule Spectre.Instance do
       :skill_state_transitions
     ])
     |> Keyword.put(:checkpoint_store, data.checkpoint_store)
+    |> Keyword.put_new(:observe_builds, true)
   end
 
   defp definition_store_config(agent, opts, base_opts) do
@@ -3600,6 +3618,72 @@ defmodule Spectre.Instance do
 
   defp validate_definition_store_pair(checkpoint_store, definition_store),
     do: DefinitionStore.validate_durability_pair(checkpoint_store, definition_store)
+
+  defp checkpoint_store_opts(data) do
+    Keyword.put(data.base_opts, :owner_fencing_token, data.owner_lease.fencing_token)
+  end
+
+  defp persisted_owner_fencing_floor(activation, canonical) do
+    [
+      activation_fencing_token(activation),
+      correlation_fencing_token(canonical)
+      | persisted_section_fencing_tokens(canonical)
+    ]
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp activation_fencing_token(%Activation{owner_fencing_token: token}), do: token
+  defp activation_fencing_token(nil), do: 0
+
+  defp correlation_fencing_token(canonical) do
+    case Canonical.fetch(canonical, :correlations) do
+      {:ok, %{owner_fencing_token: token}} when is_integer(token) and token > 0 -> token
+      _missing -> 0
+    end
+  end
+
+  defp owner_fenced_correlations(data) do
+    {:ok, correlations} = Canonical.fetch(data.canonical, :correlations)
+    Map.put(correlations, :owner_fencing_token, data.owner_lease.fencing_token)
+  end
+
+  defp persisted_section_fencing_tokens(canonical) do
+    skill_state_fencing_tokens(canonical) ++ event_fencing_tokens(canonical)
+  end
+
+  defp skill_state_fencing_tokens(canonical) do
+    case Canonical.fetch(canonical, :skill_states) do
+      {:ok, states} when is_map(states) ->
+        Enum.flat_map(states, fn
+          {_skill_id, %{branches: branches}} when is_map(branches) ->
+            Enum.flat_map(branches, fn
+              {_branch_id, %StateBinding{fencing_token: token}} -> [token]
+              _invalid -> []
+            end)
+
+          _invalid ->
+            []
+        end)
+
+      _missing ->
+        []
+    end
+  end
+
+  defp event_fencing_tokens(canonical) do
+    Enum.flat_map([:event_admissions, :event_quarantine], fn section ->
+      case Canonical.fetch(canonical, section) do
+        {:ok, %{records: records}} when is_list(records) ->
+          Enum.flat_map(records, fn
+            %EventEnvelope{owner_fencing_token: token} when is_integer(token) -> [token]
+            _invalid -> []
+          end)
+
+        _missing ->
+          []
+      end
+    end)
+  end
 
   defp require_definition_store(nil), do: {:error, :definition_store_not_configured}
   defp require_definition_store(store), do: {:ok, store}
@@ -3666,7 +3750,10 @@ defmodule Spectre.Instance do
          checkpoint_store,
          base_opts
        ) do
-    opts = Keyword.put(base_opts, :checkpoint_store, checkpoint_store)
+    opts =
+      base_opts
+      |> Keyword.put(:checkpoint_store, checkpoint_store)
+      |> Keyword.put_new(:observe_builds, true)
 
     with {:ok, %{candidate: candidate, resolution: resolution} = candidate_resolution} <-
            DefinitionResolver.resolve_candidate_for_activation(
@@ -3743,7 +3830,10 @@ defmodule Spectre.Instance do
     do: {:error, :pinned_run_requires_definition_store}
 
   defp validate_restored_run_definition(run, definition_store, checkpoint_store, base_opts) do
-    opts = Keyword.put(base_opts, :checkpoint_store, checkpoint_store)
+    opts =
+      base_opts
+      |> Keyword.put(:checkpoint_store, checkpoint_store)
+      |> Keyword.put_new(:observe_builds, true)
 
     case DefinitionResolver.resolve_for_activation(definition_store, run.definition_ref, opts) do
       {:ok, resolution} ->
@@ -3790,6 +3880,7 @@ defmodule Spectre.Instance do
 
     opts
     |> Keyword.get(:opts, [])
+    |> maybe_put(:event_schema_registry, Keyword.get(opts, :event_schema_registry))
     |> Keyword.put(:conversation_id, state_conversation_id)
     |> Keyword.put(:subject, instance_ref.subject)
     |> Keyword.put(:subject_id, instance_ref.subject.id)

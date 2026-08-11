@@ -268,7 +268,7 @@ defmodule Spectre.Operation.Budget do
 
   defp valid_consumption?(_dimension, _value), do: false
 
-  # `:pages` became a first-class execution dimension in 0.3.0-rs. Durable
+  # `:pages` became a first-class execution dimension in 0.3.0. Durable
   # 0.2 checkpoints restore the Budget struct but, correctly, do not contain
   # that nested map key. Normalize only that known historical omission; every
   # other missing or unknown dimension remains an integrity error.

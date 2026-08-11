@@ -219,6 +219,21 @@ defmodule SpectreGovernanceGateTest.CheckpointStore do
   end
 end
 
+defmodule SpectreGovernanceGateTest.InventoryProvider do
+  @moduledoc false
+  @behaviour Spectre.Governance.GC.InventoryProvider
+
+  @impl true
+  def snapshot(_store, opts) do
+    case Keyword.get(opts, :mode) do
+      :invalid_reply -> :invalid_reply
+      :raise -> raise "inventory failure"
+      :throw -> throw(:inventory_failure)
+      _mode -> {:ok, Keyword.fetch!(opts, :snapshot)}
+    end
+  end
+end
+
 defmodule SpectreGovernanceGateTest do
   use ExUnit.Case, async: false
 
@@ -272,6 +287,7 @@ defmodule SpectreGovernanceGateTest do
   alias SpectreGovernanceGateTest.CheckpointStore
   alias SpectreGovernanceGateTest.CountingStore
   alias SpectreGovernanceGateTest.DurableDefinitionStore
+  alias SpectreGovernanceGateTest.InventoryProvider
 
   @digest String.duplicate("a", 64)
   @checker_versions %{
@@ -293,7 +309,9 @@ defmodule SpectreGovernanceGateTest do
     assert {:ok, receipt} = Receipt.new(fixture["gate_receipt"])
     assert {:ok, delta} = EvaluationDelta.from_data(fixture["evaluation_delta"])
     assert {:ok, report} = HumanReport.from_data(fixture["human_report"])
-    assert {:ok, gc_plan} = GCPlan.from_data(fixture["gc_plan"])
+
+    assert {:error, {:unsupported_governance_gc_plan_schema, 1}} =
+             GCPlan.from_data(fixture["gc_plan"])
 
     expected = fixture["expected"]
 
@@ -302,29 +320,28 @@ defmodule SpectreGovernanceGateTest do
     assert to_string(Receipt.ref(receipt)) == expected["gate_receipt_ref"]
     assert EvaluationDelta.digest(delta) == expected["evaluation_delta_digest"]
     assert report.digest == expected["human_report_digest"]
-    assert gc_plan.digest == expected["gc_plan_digest"]
     assert :ok = Receipt.verify_binding(receipt, governance)
     assert :ok = HumanReport.verify(report)
-    assert :ok = GCPlan.verify(gc_plan)
 
     assert {:ok, ^change_set} = change_set |> ChangeSet.encode() |> elem(1) |> ChangeSet.decode()
     assert {:ok, ^receipt} = receipt |> Receipt.encode() |> elem(1) |> Receipt.decode()
     assert {:ok, ^report} = report |> HumanReport.encode() |> elem(1) |> HumanReport.decode()
-    assert {:ok, ^gc_plan} = gc_plan |> GCPlan.encode() |> elem(1) |> GCPlan.decode()
 
     matrix = Conformance.matrix()
-    assert matrix.release == "0.3.0-rs"
+    assert matrix.release == "0.3.0"
     assert {Spectre, :rollback, 3} in matrix.golden_path
     assert {Approval, :reject, 3} in matrix.golden_path
 
-    assert fixture["schemas"] == %{
+    assert Map.delete(fixture["schemas"], "gc_plan") == %{
              "change_set" => matrix.governance.change_set_schema,
              "candidate_state" => matrix.governance.candidate_state_schema,
              "gate_receipt" => matrix.governance.gate_receipt_schema,
              "evaluation_delta" => matrix.governance.evaluation_delta_schema,
-             "human_report_generator" => matrix.governance.human_report_generator,
-             "gc_plan" => matrix.governance.gc_plan_schema
+             "human_report_generator" => matrix.governance.human_report_generator
            }
+
+    assert fixture["schemas"]["gc_plan"] == 1
+    assert matrix.governance.gc_plan_schema == 2
 
     Enum.each(matrix.golden_path, fn {module, function, arity} ->
       assert Code.ensure_loaded?(module)
@@ -1276,6 +1293,13 @@ defmodule SpectreGovernanceGateTest do
                definition_refs: [activation.definition_ref],
                gc_eligible_candidate_refs: [candidate],
                gc_eligible_definition_refs: [activation.definition_ref],
+               inventory_provider:
+                 inventory_provider(
+                   [candidate],
+                   [activation.definition_ref],
+                   [candidate],
+                   [activation.definition_ref]
+                 ),
                inventory_complete?: true
              )
 
@@ -1316,6 +1340,59 @@ defmodule SpectreGovernanceGateTest do
            end)
 
     assert :ok = GCPlan.verify(plan)
+  end
+
+  test "complete GC inventory rejects untrusted providers and malformed snapshots" do
+    %{store: store} = baseline()
+
+    assert {:error, :governance_gc_inventory_provider_required} =
+             Spectre.Governance.GC.InventoryProvider.load(nil, store, [])
+
+    assert {:error, :governance_gc_inventory_provider_not_loaded} =
+             Spectre.Governance.GC.InventoryProvider.load(String, store, [])
+
+    assert {:error, :invalid_governance_gc_inventory_provider} =
+             Spectre.Governance.GC.InventoryProvider.load({InventoryProvider, [1]}, store, [])
+
+    assert {:error, {:invalid_governance_gc_inventory_reply, InventoryProvider, :invalid_reply}} =
+             Spectre.Governance.GC.InventoryProvider.load(
+               {InventoryProvider, mode: :invalid_reply},
+               store,
+               []
+             )
+
+    assert {:error, {:governance_gc_inventory_exception, InventoryProvider, RuntimeError}} =
+             Spectre.Governance.GC.InventoryProvider.load(
+               {InventoryProvider, mode: :raise},
+               store,
+               []
+             )
+
+    assert {:error,
+            {:governance_gc_inventory_failure, InventoryProvider, :throw, :inventory_failure}} =
+             Spectre.Governance.GC.InventoryProvider.load(
+               {InventoryProvider, mode: :throw},
+               store,
+               []
+             )
+
+    assert {:error, :invalid_governance_gc_inventory_fields} =
+             Spectre.Governance.GC.InventoryProvider.load(
+               {InventoryProvider, snapshot: %{"snapshot_id" => "incomplete"}},
+               store,
+               []
+             )
+
+    invalid_refs =
+      inventory_snapshot([], [])
+      |> Map.put("candidate_refs", ["candidate:b", "candidate:a"])
+
+    assert {:error, :invalid_governance_gc_inventory_refs} =
+             Spectre.Governance.GC.InventoryProvider.load(
+               {InventoryProvider, snapshot: invalid_refs},
+               store,
+               []
+             )
   end
 
   test "the complete built-in vocabulary remains declarative and bounded" do
@@ -1885,6 +1962,7 @@ defmodule SpectreGovernanceGateTest do
                definition_refs: [activation.definition_ref],
                gc_eligible_candidate_refs: [candidate],
                gc_eligible_definition_refs: [activation.definition_ref],
+               inventory_provider: inventory_provider([candidate], [activation.definition_ref]),
                inventory_complete?: true
              )
 
@@ -3636,9 +3714,19 @@ defmodule SpectreGovernanceGateTest do
   test "complete GC inventory must close over Candidate and Definition lineage" do
     %{store: store, activation: activation} = baseline()
     approved = approved_candidate(store, activation)
+    assert {:ok, approved_candidate} = Store.fetch_candidate(store, approved)
+
+    definition_refs =
+      [activation.definition_ref, approved_candidate.definition_ref]
+      |> Enum.map(&to_string/1)
+      |> Enum.uniq()
 
     assert {:error, {:incomplete_gc_inventory, :candidate, missing}} =
-             GC.plan(store, [approved], inventory_complete?: true)
+             GC.plan(store, [approved],
+               definition_refs: definition_refs,
+               inventory_provider: inventory_provider([approved], definition_refs),
+               inventory_complete?: true
+             )
 
     assert missing != []
     assert to_string(activation.candidate_ref) in missing
@@ -3646,12 +3734,16 @@ defmodule SpectreGovernanceGateTest do
     assert {:error, {:invalid_gc_candidate_refs, :other}} =
              GC.plan(store, [approved],
                protected_candidate_refs: :invalid,
+               definition_refs: definition_refs,
+               inventory_provider: inventory_provider([approved], definition_refs),
                inventory_complete?: true
              )
 
     assert {:error, {:invalid_gc_definition_refs, :other}} =
              GC.plan(store, [approved],
                protected_definition_refs: :invalid,
+               definition_refs: definition_refs,
+               inventory_provider: inventory_provider([approved], definition_refs),
                inventory_complete?: true
              )
   end
@@ -3685,7 +3777,16 @@ defmodule SpectreGovernanceGateTest do
           :lineage_candidate_refs
         ] do
       assert {:ok, class_plan} =
-               GC.plan(store, candidate_refs, Keyword.put(common_opts, field, [base_ref]))
+               GC.plan(
+                 store,
+                 candidate_refs,
+                 common_opts
+                 |> Keyword.put(field, [base_ref])
+                 |> Keyword.put(
+                   :inventory_provider,
+                   inventory_provider(candidate_refs, definition_refs, [base_ref], [])
+                 )
+               )
 
       assert base_ref in class_plan.protected_candidate_refs
     end
@@ -3700,7 +3801,12 @@ defmodule SpectreGovernanceGateTest do
                GC.plan(
                  store,
                  candidate_refs,
-                 Keyword.put(common_opts, field, [base_definition_ref])
+                 common_opts
+                 |> Keyword.put(field, [base_definition_ref])
+                 |> Keyword.put(
+                   :inventory_provider,
+                   inventory_provider(candidate_refs, definition_refs, [], [base_definition_ref])
+                 )
                )
 
       assert base_definition_ref in class_plan.protected_definition_refs
@@ -3710,7 +3816,12 @@ defmodule SpectreGovernanceGateTest do
              GC.plan(
                store,
                candidate_refs,
-               Keyword.put(common_opts, :run_candidate_refs, [base_ref])
+               common_opts
+               |> Keyword.put(:run_candidate_refs, [base_ref])
+               |> Keyword.put(
+                 :inventory_provider,
+                 inventory_provider(candidate_refs, definition_refs, [base_ref], [])
+               )
              )
 
     assert base_ref in plan.protected_candidate_refs
@@ -4208,21 +4319,59 @@ defmodule SpectreGovernanceGateTest do
   end
 
   defp closure do
+    {:ok, build_digest} = Closure.fingerprint(Agent)
+
     Closure.new!(%{
       stack_ref: "spectre.stack:none",
       package_refs: [],
       contract_refs: [],
       prompt_fragment_digests: [],
       projection_generators: [%{id: "spectre.projection.audit", version: 1}],
-      state_schema_ref: "spectre.instance.canonical/4",
-      state_codec_ref: "spectre.instance.canonical.codec/4",
+      state_schema_ref: "spectre.instance.canonical/2",
+      state_codec_ref: "spectre.instance.canonical.codec/2",
       model_profile_refs: [],
       recording_refs: [],
-      build_fingerprints: %{"beam:Agent" => @digest},
+      build_fingerprints: %{("beam:" <> Atom.to_string(Agent)) => build_digest},
       evaluation_corpus_digest: EvaluationDelta.protected_corpus_digest!([protected_case()]),
       compatibility_mode: :native_v2
     })
   end
+
+  defp inventory_provider(
+         candidate_refs,
+         definition_refs,
+         protected_candidates \\ [],
+         protected_definitions \\ []
+       ) do
+    snapshot =
+      inventory_snapshot(
+        candidate_refs,
+        definition_refs,
+        protected_candidates,
+        protected_definitions
+      )
+
+    {InventoryProvider, snapshot: snapshot}
+  end
+
+  defp inventory_snapshot(
+         candidate_refs,
+         definition_refs,
+         protected_candidates \\ [],
+         protected_definitions \\ []
+       ) do
+    %{
+      "snapshot_id" => "gc-snapshot-#{System.unique_integer([:positive, :monotonic])}",
+      "revision" => 1,
+      "fencing_token" => 1,
+      "candidate_refs" => string_refs(candidate_refs),
+      "definition_refs" => string_refs(definition_refs),
+      "protected_candidate_refs" => string_refs(protected_candidates),
+      "protected_definition_refs" => string_refs(protected_definitions)
+    }
+  end
+
+  defp string_refs(refs), do: refs |> Enum.map(&to_string/1) |> Enum.uniq() |> Enum.sort()
 
   defp reflective_closure do
     base = closure()

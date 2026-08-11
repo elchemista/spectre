@@ -769,35 +769,38 @@ defmodule Spectre.Instance.SkillStates do
   defp retention_safe(_data, _binding, :abandoned), do: :ok
 
   defp retention_safe(data, binding, retention) when retention in [:gc_eligible, :purged] do
-    reason =
-      cond do
-        binding.status == :active ->
-          :active_branch
-
-        activation_references?(data.activation, binding) ->
-          :activation
-
-        Enum.any?(data.runs, fn {_id, run} ->
-          same_ref?(run.definition_ref, binding.owning_definition_ref)
-        end) ->
-          :run
-
-        Enum.any?(Loops.all_operation_loops(data), fn {loop, _control} ->
-          same_ref?(Events.operation_definition_ref(data, loop), binding.owning_definition_ref)
-        end) ->
-          :operation
-
-        child_references?(skill_states(data), binding) ->
-          :child_branch
-
-        true ->
-          nil
-      end
+    reason = retention_reference(data, binding)
 
     if reason,
       do:
         {:error, {:skill_state_retention_referenced, binding.skill_id, binding.branch_id, reason}},
       else: :ok
+  end
+
+  defp retention_reference(data, binding) do
+    cond do
+      binding.status == :active -> :active_branch
+      activation_references?(data.activation, binding) -> :activation
+      run_references?(data.runs, binding) -> :run
+      operation_references?(data, binding) -> :operation
+      child_references?(skill_states(data), binding) -> :child_branch
+      true -> nil
+    end
+  end
+
+  defp run_references?(runs, binding) do
+    Enum.any?(runs, fn {_id, run} ->
+      same_ref?(run.definition_ref, binding.owning_definition_ref)
+    end)
+  end
+
+  defp operation_references?(data, binding) do
+    Enum.any?(Loops.all_operation_loops(data), fn {loop, _control} ->
+      case Events.operation_definition_ref(data, loop) do
+        {:ok, owner} -> same_ref?(owner, binding.owning_definition_ref)
+        {:error, :operation_definition_ref_missing} -> true
+      end
+    end)
   end
 
   defp activation_references?(nil, _binding), do: false

@@ -43,6 +43,47 @@ defmodule Spectre.Operation.Registry do
 
   def resolve_id(_agent, id), do: {:error, {:operation_not_registered, id}}
 
+  @doc false
+  @spec resolve_spec(module(), term()) :: {:ok, Spec.t()} | {:error, term()}
+  def resolve_spec(agent, id) when is_atom(agent) do
+    with {:ok, operations} <- agent_operations(agent) do
+      case Map.fetch(operations, id) do
+        {:ok, %Spec{} = spec} -> {:ok, spec}
+        :error -> resolve_spec_alias(operations, id)
+      end
+    end
+  end
+
+  def resolve_spec(_agent, id), do: {:error, {:operation_not_registered, id}}
+
+  @doc false
+  @spec predicate_id_for_executor(module(), {module(), atom()}) ::
+          {:ok, term()} | {:error, term()}
+  def predicate_id_for_executor(agent, {module, function} = executor)
+      when is_atom(agent) and is_atom(module) and is_atom(function) do
+    with {:ok, operations} <- agent_operations(agent) do
+      matches =
+        Enum.filter(operations, fn {_id, spec} ->
+          spec.executor == executor and predicate_spec?(spec)
+        end)
+
+      case matches do
+        [{id, _spec}] -> {:ok, id}
+        [] -> {:error, {:prompt_predicate_not_registered, module, function}}
+        many -> {:error, {:ambiguous_prompt_predicate, Enum.map(many, &elem(&1, 0))}}
+      end
+    end
+  end
+
+  def predicate_id_for_executor(_agent, executor),
+    do: {:error, {:invalid_prompt_predicate_executor, executor}}
+
+  @doc false
+  @spec predicate_spec?(Spec.t()) :: boolean()
+  def predicate_spec?(%Spec{} = spec) do
+    spec.kind == :function and spec.side_effect == :none and spec.output == :boolean
+  end
+
   @spec all(module(), Definition.t()) :: {:ok, %{optional(term()) => Spec.t()}} | {:error, term()}
   def all(agent, %Definition{} = definition) when is_atom(agent) do
     with {:ok, agent_operations} <- agent_operations(agent),

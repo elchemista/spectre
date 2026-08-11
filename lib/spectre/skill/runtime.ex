@@ -22,6 +22,7 @@ defmodule Spectre.Skill.Runtime do
   alias Spectre.Prompt.Fragment
   alias Spectre.Prompt.Materializer, as: PromptMaterializer
   alias Spectre.Prompt.Plan
+  alias Spectre.Prompt.Predicate
   alias Spectre.Router.IndexProfile
   alias Spectre.Skill.Applicability
   alias Spectre.Skill.Definition, as: SkillDefinition
@@ -464,9 +465,25 @@ defmodule Spectre.Skill.Runtime do
     budget = SkillDefinition.prompt_budget(definition)
 
     with :ok <- per_skill_budget(budget.token_cap, runtime.per_skill_prompt_cap),
-         :ok <- fragment_budget_classes(runtime, definition) do
+         :ok <- fragment_budget_classes(runtime, definition),
+         :ok <- fragment_conditions(runtime, definition) do
       total_prompt_budget(runtime, definition, replacing)
     end
+  end
+
+  defp fragment_conditions(runtime, definition) do
+    definition
+    |> SkillDefinition.prompt_fragments()
+    |> Enum.reduce_while(:ok, fn
+      %Fragment{condition_ref: nil}, :ok ->
+        {:cont, :ok}
+
+      %Fragment{condition_ref: condition_ref}, :ok ->
+        case Predicate.validate_ref(runtime.agent, condition_ref) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+    end)
   end
 
   @spec per_skill_budget(pos_integer(), pos_integer()) :: :ok | {:error, term()}
@@ -728,7 +745,13 @@ defmodule Spectre.Skill.Runtime do
         definition_ref = Ref.to_string(match.definition_ref)
 
         with {:ok, %Plan{} = plan, receipt} <-
-               PromptMaterializer.materialize(fragment, input, context, definition_ref) do
+               PromptMaterializer.materialize(
+                 fragment,
+                 input,
+                 context,
+                 definition_ref,
+                 agent: runtime.agent
+               ) do
           {:ok,
            %Response{
              kind: :reply,

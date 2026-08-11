@@ -13,6 +13,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
   require Logger
 
   alias Spectre.Router.SemanticCache.Learned
+  alias Spectre.Router.SemanticCache.Learned.Index
   alias Spectre.Router.SemanticCache.Owner
   alias Spectre.Rule
 
@@ -167,7 +168,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
 
       matched_rules ->
         Enum.map(matched_rules, fn rule ->
-          offline_dataset_row(agent, rule, text, path, source)
+          offline_dataset_row(agent, rule, text, path, source, opts)
         end)
     end
   end
@@ -198,8 +199,18 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
   defp reverse_rows({:ok, rows}), do: {:ok, Enum.reverse(rows)}
   defp reverse_rows({:error, _reason} = error), do: error
 
-  defp offline_dataset_row(agent, %Rule{} = rule, text, path, source) do
+  defp offline_dataset_row(agent, %Rule{} = rule, text, path, source, opts) do
     normalized = normalize_text(text)
+    embedding = source_embedding(source)
+
+    metadata =
+      %{
+        dataset_path: path,
+        source: source_metadata(source),
+        rule_label: rule.label
+      }
+      |> Map.merge(embedding_profile_metadata(source))
+      |> bind_embedding_profile(embedding, opts)
 
     normalize_row(%{
       id: "dataset_#{stable_hash([agent, rule.label, normalized, path])}",
@@ -214,15 +225,18 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
       margin: nil,
       verified?: true,
       editable?: false,
-      embedding: source_embedding(source),
-      metadata: %{
-        dataset_path: path,
-        source: source_metadata(source),
-        rule_label: rule.label
-      },
+      embedding: embedding,
+      metadata: metadata,
       inserted_at: static_timestamp(),
       updated_at: static_timestamp()
     })
+  end
+
+  defp bind_embedding_profile(metadata, embedding, opts) do
+    case Index.bind_embedding_profile(metadata, embedding, opts) do
+      {:ok, bound} -> bound
+      {:error, _reason} -> metadata
+    end
   end
 
   defp static_route_row(agent, %Rule{} = rule, text) do
@@ -327,6 +341,27 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
     |> Map.new()
   end
 
+  defp embedding_profile_metadata(source) do
+    metadata = Map.get(source, "metadata", Map.get(source, :metadata, %{}))
+
+    if is_map(metadata) do
+      [
+        {"embedding_profile_ref", :embedding_profile_ref},
+        {"embedding_profile_digest", :embedding_profile_digest}
+      ]
+      |> Enum.reduce(%{}, &put_embedding_profile_metadata(metadata, &1, &2))
+    else
+      %{}
+    end
+  end
+
+  defp put_embedding_profile_metadata(metadata, {string_key, atom_key}, acc) do
+    case Map.get(metadata, string_key, Map.get(metadata, atom_key)) do
+      value when is_binary(value) and value != "" -> Map.put(acc, string_key, value)
+      _missing -> acc
+    end
+  end
+
   defp source_signature(entries, rules_by_label, opts) do
     rules =
       rules_by_label
@@ -338,8 +373,16 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
     {
       Keyword.get(opts, :spectre_agent, :anonymous),
       Enum.map(entries, &source_version/1),
+      embedding_profile_signature(opts),
       rules
     }
+  end
+
+  defp embedding_profile_signature(opts) do
+    case Index.embedding_profile_identity(opts) do
+      {:ok, profile} -> profile
+      {:error, reason} -> {:unbound, reason}
+    end
   end
 
   defp source_version(path) do

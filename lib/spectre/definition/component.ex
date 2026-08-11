@@ -8,13 +8,9 @@ defmodule Spectre.Definition.Component do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.SensitiveData
 
   @criticalities [:must_understand, :advisory, :descriptive]
-  @sensitive_keys MapSet.new(~w(
-    access_token api_key credential credentials password private_key
-    refresh_token secret secrets token
-  ))
-
   @enforce_keys [:component_type, :schema_ref, :criticality, :payload]
   defstruct [:component_type, :schema_ref, :criticality, :payload]
 
@@ -100,7 +96,7 @@ defmodule Spectre.Definition.Component do
   @spec validate_payload(term()) :: :ok | {:error, term()}
   defp validate_payload(payload) do
     cond do
-      path = sensitive_path(payload) ->
+      path = SensitiveData.sensitive_path(payload) ->
         {:error, {:secret_component_payload, path}}
 
       path = ast_path(payload) ->
@@ -113,28 +109,6 @@ defmodule Spectre.Definition.Component do
         end
     end
   end
-
-  @spec sensitive_path(term(), [term()]) :: [term()] | nil
-  defp sensitive_path(value, path \\ [])
-
-  defp sensitive_path(value, path) when is_map(value) do
-    Enum.find_value(value, fn {key, item} ->
-      if sensitive_key?(key) do
-        Enum.reverse([key | path])
-      else
-        sensitive_path(key, [{:key, key_label(key)} | path]) ||
-          sensitive_path(item, [key_label(key) | path])
-      end
-    end)
-  end
-
-  defp sensitive_path(value, path) when is_list(value),
-    do: find_list_path(value, path, &sensitive_path/2)
-
-  defp sensitive_path(value, path) when is_tuple(value),
-    do: value |> Tuple.to_list() |> find_list_path(path, &sensitive_path/2)
-
-  defp sensitive_path(_value, _path), do: nil
 
   @spec ast_path(term(), [term()]) :: [term()] | nil
   defp ast_path(value, path \\ [])
@@ -185,14 +159,6 @@ defmodule Spectre.Definition.Component do
        do: Keyword.keyword?(metadata)
 
   defp ast_form?(_form), do: false
-
-  @spec sensitive_key?(term()) :: boolean()
-  defp sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_key?()
-
-  defp sensitive_key?(key) when is_binary(key),
-    do: MapSet.member?(@sensitive_keys, String.downcase(key))
-
-  defp sensitive_key?(_key), do: false
 
   @spec key_label(term()) :: term()
   defp key_label(key) when is_atom(key) or is_binary(key) or is_integer(key), do: key

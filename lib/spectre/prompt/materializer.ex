@@ -12,40 +12,65 @@ defmodule Spectre.Prompt.Materializer do
   alias Spectre.Prompt.Fragment
   alias Spectre.Prompt.Operation
   alias Spectre.Prompt.Plan
+  alias Spectre.Prompt.Predicate
   alias Spectre.Prompt.Receipt
 
   @placeholder ~r/\{\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}\}/
 
   @doc "Renders one canonical fragment and produces its effective receipt."
-  @spec materialize(Fragment.t(), term(), map(), String.t()) ::
+  @spec materialize(Fragment.t(), term(), map(), String.t(), keyword()) ::
           {:ok, Plan.t(), Receipt.t()} | {:error, term()}
-  def materialize(%Fragment{} = fragment, input, context, definition_ref)
-      when is_map(context) do
+  def materialize(fragment, input, context, definition_ref, opts \\ [])
+
+  def materialize(%Fragment{} = fragment, input, context, definition_ref, opts)
+      when is_map(context) and is_list(opts) do
     with {:ok, fragment} <- canonical_fragment(fragment),
          {:ok, input} <- normalize_input(input),
-         {:ok, rendered, evidence} <- render_fragment(fragment, input, context),
-         {:ok, plan} <- plan(fragment, rendered),
+         {:ok, condition?, condition_evidence} <-
+           Predicate.evaluate(fragment.condition_ref, input, context, opts),
+         {:ok, rendered, placeholder_evidence, status} <-
+           render_condition(condition?, fragment, input, context),
+         evidence <- Map.merge(placeholder_evidence, condition_evidence),
+         :ok <- rendered_budget(fragment, rendered),
+         {:ok, plan} <- plan(fragment, rendered, status),
          {:ok, receipt} <-
            Receipt.new(fragment, Plan.legacy(plan), definition_ref, evidence) do
       {:ok, plan, receipt}
     end
   end
 
-  def materialize(%Fragment{}, _input, context, _definition_ref),
+  def materialize(%Fragment{}, _input, context, _definition_ref, _opts),
     do: {:error, {:invalid_prompt_materialization_context, shape(context)}}
 
   @doc "Renders one canonical fragment without exposing arbitrary string protocols."
-  @spec render(Fragment.t(), Input.t() | term(), map()) ::
+  @spec render(Fragment.t(), Input.t() | term(), map(), keyword()) ::
           {:ok, String.t(), map()} | {:error, term()}
-  def render(%Fragment{} = fragment, input, context) when is_map(context) do
+  def render(fragment, input, context, opts \\ [])
+
+  def render(%Fragment{} = fragment, input, context, opts)
+      when is_map(context) and is_list(opts) do
     with {:ok, fragment} <- canonical_fragment(fragment),
-         {:ok, input} <- normalize_input(input) do
-      render_fragment(fragment, input, context)
+         {:ok, input} <- normalize_input(input),
+         {:ok, condition?, condition_evidence} <-
+           Predicate.evaluate(fragment.condition_ref, input, context, opts),
+         {:ok, rendered, placeholder_evidence, _status} <-
+           render_condition(condition?, fragment, input, context),
+         :ok <- rendered_budget(fragment, rendered) do
+      {:ok, rendered, Map.merge(placeholder_evidence, condition_evidence)}
     end
   end
 
-  def render(%Fragment{}, _input, context),
+  def render(%Fragment{}, _input, context, _opts),
     do: {:error, {:invalid_prompt_materialization_context, shape(context)}}
+
+  defp render_condition(true, fragment, input, context) do
+    with {:ok, rendered, evidence} <- render_fragment(fragment, input, context) do
+      {:ok, rendered, evidence, :applied}
+    end
+  end
+
+  defp render_condition(false, _fragment, _input, _context),
+    do: {:ok, "", %{}, :skipped}
 
   @spec render_fragment(Fragment.t(), Input.t(), map()) ::
           {:ok, String.t(), map()} | {:error, term()}
@@ -131,8 +156,9 @@ defmodule Spectre.Prompt.Materializer do
 
   defp render_value(_value, _renderer_ref), do: {:error, :unsupported_renderer}
 
-  @spec plan(Fragment.t(), String.t()) :: {:ok, Plan.t()} | {:error, term()}
-  defp plan(fragment, rendered) do
+  @spec plan(Fragment.t(), String.t(), :applied | :skipped) ::
+          {:ok, Plan.t()} | {:error, term()}
+  defp plan(fragment, rendered, status) do
     operation = %Operation{
       id: fragment.id,
       source: {:prompt, fragment.id},
@@ -150,7 +176,8 @@ defmodule Spectre.Prompt.Materializer do
       [
         %{
           operation: operation,
-          status: :applied,
+          status: status,
+          reason: if(status == :skipped, do: :prompt_predicate_false, else: nil),
           content: rendered,
           metadata: %{bytes: byte_size(rendered)}
         }
@@ -158,6 +185,19 @@ defmodule Spectre.Prompt.Materializer do
       [fragment.scope]
     )
   end
+
+  defp rendered_budget(%Fragment{token_cap: nil}, _rendered), do: :ok
+
+  defp rendered_budget(%Fragment{id: id, token_cap: cap}, rendered) do
+    estimated = estimated_tokens(rendered)
+
+    if estimated <= cap,
+      do: :ok,
+      else: {:error, {:rendered_prompt_fragment_over_budget, id, estimated, cap}}
+  end
+
+  defp estimated_tokens(""), do: 0
+  defp estimated_tokens(content), do: div(byte_size(content) + 3, 4)
 
   @spec scalar(term()) :: {:ok, String.t()} | {:error, atom()}
   defp scalar(value) when is_binary(value), do: {:ok, value}

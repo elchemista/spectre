@@ -2,11 +2,7 @@ defmodule Spectre.Definition.Canonical.Data do
   @moduledoc false
 
   alias Spectre.Canonical.Value
-
-  @sensitive_keys MapSet.new(~w(
-    access_token api_key credential credentials password private_key
-    refresh_token secret secrets token
-  ))
+  alias Spectre.SensitiveData
 
   @doc false
   @spec lower(term(), keyword()) :: {:ok, term()} | {:error, term()}
@@ -243,11 +239,7 @@ defmodule Spectre.Definition.Canonical.Data do
   defp module_atom?(module), do: module |> Atom.to_string() |> String.starts_with?("Elixir.")
 
   @spec sensitive_key?(atom() | String.t()) :: boolean()
-  defp sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_key?()
-
-  defp sensitive_key?(key) when is_binary(key) do
-    MapSet.member?(@sensitive_keys, String.downcase(key))
-  end
+  defp sensitive_key?(key), do: SensitiveData.sensitive_key?(key)
 
   @spec unsupported_kind(term()) :: atom()
   defp unsupported_kind(value) when is_pid(value), do: :pid

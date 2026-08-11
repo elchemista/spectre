@@ -2,9 +2,9 @@ defmodule Spectre.Reflection.Operation do
   @moduledoc """
   Compiled, policy-gated operation executor for Reflection.
 
-  Runtime input can select only the definition Ref, actor, purpose and
-  snapshot time. Stores, Activation and policy come exclusively from trusted
-  host operation options under `:reflection`.
+  Runtime input can select only the definition Ref and snapshot time. Actor,
+  purpose, stores, Activation and policy come exclusively from trusted host
+  operation options under `:reflection`.
   """
 
   alias Spectre.Operation.Spec
@@ -34,8 +34,8 @@ defmodule Spectre.Reflection.Operation do
              get(input, :definition_ref),
              Map.fetch!(config, :activation),
              policy: Map.fetch!(config, :policy),
-             actor_ref: get(input, :actor_ref),
-             purpose: get(input, :purpose),
+             actor_ref: Map.fetch!(config, :actor_ref),
+             purpose: Map.fetch!(config, :purpose),
              as_of: get(input, :as_of),
              experience_store: Map.get(config, :experience_store),
              component_registry: Map.get(config, :component_registry)
@@ -56,11 +56,13 @@ defmodule Spectre.Reflection.Operation do
   defp trusted_config(_context), do: {:error, :reflection_operation_not_configured}
 
   defp required_config(config) do
-    required = [:definition_store, :activation, :policy]
+    required = [:definition_store, :activation, :policy, :actor_ref, :purpose]
 
-    if Enum.all?(required, &Map.has_key?(config, &1)),
-      do: {:ok, config},
-      else: {:error, :reflection_operation_not_configured}
+    if Enum.all?(required, &Map.has_key?(config, &1)) and
+         is_binary(Map.get(config, :actor_ref)) and Map.get(config, :actor_ref) != "" and
+         is_binary(Map.get(config, :purpose)) and Map.get(config, :purpose) != "",
+       do: {:ok, config},
+       else: {:error, :reflection_operation_not_configured}
   end
 
   defp get(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))

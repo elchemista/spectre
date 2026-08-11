@@ -43,6 +43,7 @@ defmodule Spectre.Instance.Owner do
          :ok <- ensure_callback(module, :claim, 2),
          {:ok, reply} <- invoke(module, :claim, [ref, Keyword.merge(adapter_opts, opts)]),
          {:ok, lease} <- normalize_claim(reply),
+         :ok <- fencing_floor(lease, Keyword.get(opts, :minimum_fencing_token, 0)),
          :ok <- validate(normalized, ref, lease, opts) do
       {:ok, normalized, lease}
     end
@@ -105,6 +106,13 @@ defmodule Spectre.Instance.Owner do
 
   defp normalize_validate(value, module),
     do: {:error, {:invalid_instance_owner_reply, module, value}}
+
+  defp fencing_floor(%Lease{fencing_token: token}, minimum)
+       when is_integer(minimum) and minimum >= 0 and token > minimum,
+       do: :ok
+
+  defp fencing_floor(%Lease{fencing_token: token}, minimum),
+    do: {:error, {:owner_fencing_token_not_monotonic, token, minimum}}
 
   defp ensure_callback(module, function, arity) do
     cond do

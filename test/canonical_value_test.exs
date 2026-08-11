@@ -78,8 +78,34 @@ defmodule SpectreCanonicalValueTest do
     assert {:error, {:invalid_canonical_integer, []}} =
              Value.decode("SPCV" <> <<1, 0x10, 1::unsigned-big-32, "x">>)
 
+    for integer <- ["007", "+7", "-0"] do
+      assert {:error, {:noncanonical_integer, []}} =
+               Value.decode(
+                 "SPCV" <> <<1, 0x10, byte_size(integer)::unsigned-big-32, integer::binary>>
+               )
+    end
+
     assert {:error, {:truncated_canonical_value, :binary}} =
              Value.decode("SPCV" <> <<1, 0x12, 5::unsigned-big-32, "no">>)
+  end
+
+  test "struct decoding requires the exact declared field set" do
+    module_name = Atom.to_string(Subject)
+
+    for fields <- [%{id: "subject-without-metadata"}, %{id: "subject", metadata: %{}, extra: 1}] do
+      <<"SPCV", 1, encoded_fields::binary>> = Value.encode!(fields)
+
+      encoded =
+        "SPCV" <>
+          <<1, 0x23, byte_size(module_name)::unsigned-big-32, module_name::binary,
+            encoded_fields::binary>>
+
+      assert {:error, {:invalid_canonical_struct_fields, [], Subject, actual, expected}} =
+               Value.decode(encoded, allowed_structs: [Subject])
+
+      refute MapSet.new(actual) == MapSet.new(expected)
+      assert MapSet.new(expected) == MapSet.new([:id, :metadata])
+    end
   end
 
   test "decoder requires strictly sorted, unique canonical map keys" do

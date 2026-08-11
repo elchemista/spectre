@@ -412,6 +412,59 @@ defmodule SpectreReflectiveRuntimeTest do
              Spectre.Experience.Redactor.redact(too_deep)
   end
 
+  test "one constitutional denylist redacts secrets, PII and chain-of-thought across boundaries" do
+    sensitive = %{
+      "apiKey" => "sk-live-secret",
+      "access_token" => "access-secret",
+      "client-secret" => "client-secret",
+      "JWT" => "header.payload.signature",
+      "bearer" => "Bearer secret",
+      "email_address" => "person@example.test",
+      "nested" => %{"chainOfThought" => "private reasoning"}
+    }
+
+    assert {:ok, redacted, paths} = Spectre.Experience.Redactor.redact(sensitive)
+
+    assert redacted == %{
+             "JWT" => "[REDACTED]",
+             "access_token" => "[REDACTED]",
+             "apiKey" => "[REDACTED]",
+             "bearer" => "[REDACTED]",
+             "client-secret" => "[REDACTED]",
+             "email_address" => "[REDACTED]",
+             "nested" => %{"chainOfThought" => "[REDACTED]"}
+           }
+
+    assert Enum.sort(paths) ==
+             Enum.sort([
+               ["JWT"],
+               ["access_token"],
+               ["apiKey"],
+               ["bearer"],
+               ["client-secret"],
+               ["email_address"],
+               ["nested", "chainOfThought"]
+             ])
+
+    for key <- Map.keys(sensitive) -- ["nested"] do
+      assert {:error, {:secret_component_payload, [^key]}} =
+               Spectre.Definition.Component.new(
+                 component_type: :audit,
+                 schema_ref: "spectre.test/audit/1",
+                 criticality: :descriptive,
+                 payload: %{key => "secret"}
+               )
+    end
+
+    assert {:error, {:secret_component_payload, ["nested", "chainOfThought"]}} =
+             Spectre.Definition.Component.new(
+               component_type: :audit,
+               schema_ref: "spectre.test/audit/1",
+               criticality: :descriptive,
+               payload: %{"nested" => %{"chainOfThought" => "private reasoning"}}
+             )
+  end
+
   test "Experience evidence validates every transport and retention boundary" do
     %{activation: activation} = fixture()
     attrs = validated_evidence_attrs(activation, 10, 100)
@@ -887,8 +940,8 @@ defmodule SpectreReflectiveRuntimeTest do
 
     input = %{
       "definition_ref" => to_string(fixture.canonical_ref),
-      "actor_ref" => "operator:test",
-      "purpose" => "inspect",
+      "actor_ref" => "intruder:runtime-data",
+      "purpose" => "exfiltrate",
       "as_of" => 50
     }
 
@@ -898,13 +951,28 @@ defmodule SpectreReflectiveRuntimeTest do
           definition_store: fixture.definition_store,
           experience_store: fixture.experience_store,
           activation: fixture.activation,
-          policy: policy()
+          policy: policy(),
+          actor_ref: "operator:test",
+          purpose: "inspect"
         }
       ]
     }
 
     assert {:ok, %{"generator_id" => "spectre.projection.reflection"}} =
              Spectre.Reflection.Operation.execute(input, context)
+
+    intruder_context =
+      %{
+        context
+        | opts:
+            Keyword.update!(context.opts, :reflection, &Map.put(&1, :actor_ref, "intruder:host"))
+      }
+
+    assert {:error, :reflection_actor_not_authorized} =
+             Spectre.Reflection.Operation.execute(
+               Map.take(input, ["definition_ref", "as_of"]),
+               intruder_context
+             )
 
     assert {:error, :reflection_operation_not_configured} =
              Spectre.Reflection.Operation.execute(input, %{opts: []})
@@ -943,7 +1011,7 @@ defmodule SpectreReflectiveRuntimeTest do
     assert proposal_digest == proposal.digest
 
     matrix = Conformance.matrix()
-    assert matrix.release == "0.3.0-rs"
+    assert matrix.release == "0.3.0"
     assert matrix.reflection.reflection_projection == 1
     assert matrix.forge.proposal_schema == 1
 
@@ -1315,9 +1383,9 @@ defmodule SpectreReflectiveRuntimeTest do
              proposal.change_set.observed_evidence_digest
   end
 
-  test "the permanent 0.3.0-rs fixture pins Reflection and Forge identities" do
+  test "the permanent 0.3.0 fixture pins Reflection and Forge identities" do
     fixture_path =
-      "test/fixtures/compatibility/0.3.0-rs/reflective-runtime-v1.json"
+      "test/fixtures/compatibility/0.3.0/reflective-runtime-v1.json"
 
     expected = permanent_fixture()
     assert File.exists?(fixture_path)
@@ -1451,11 +1519,11 @@ defmodule SpectreReflectiveRuntimeTest do
                author_ref: "forge:fixture",
                reason: "Pin reflective runtime compatibility",
                created_at: 60,
-               provenance: %{"fixture" => "0.3.0-rs"}
+               provenance: %{"fixture" => "0.3.0"}
              )
 
     %{
-      "release" => "0.3.0-rs",
+      "release" => "0.3.0",
       "schemas" => %{
         "experience_evidence" => Evidence.schema_version(),
         "experience_artifact" => ExperienceStore.artifact_schema_version(),

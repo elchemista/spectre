@@ -301,6 +301,12 @@ defmodule Spectre.Instance.Lifecycle do
      {:definition_authority_revoked, key(lifecycle), lifecycle.authority_epoch, operation}}
   end
 
+  defp authorize_authority(%__MODULE__{authority: :restricted} = lifecycle, operation)
+       when operation in [:new_admission, :dispatch] do
+    {:error,
+     {:definition_authority_restricted, key(lifecycle), lifecycle.authority_epoch, operation}}
+  end
+
   defp authorize_authority(%__MODULE__{}, _operation), do: :ok
 
   defp authorize_admission(%__MODULE__{activation: activation} = lifecycle, :new_admission)

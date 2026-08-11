@@ -577,7 +577,7 @@ defmodule SpectreCoverageCompletionTest do
       assert {:ok, ^path} = Learned.snapshot(@agent, path: path)
       assert :ok = Learned.clear(@agent)
 
-      assert {:ok, %{loaded: 1, skipped: 0}} = Learned.load_snapshot(@agent, path)
+      assert {:ok, %{loaded: 1, skipped: 0}} = Learned.load_snapshot(@agent, path, opts)
 
       assert {:ok, %{loaded: 0, skipped: 1}} =
                Learned.load_snapshot(@agent, [%{"text" => "", "label" => "ALPHA"}])
@@ -648,7 +648,7 @@ defmodule SpectreCoverageCompletionTest do
                      embedding: [1.0, 0.0]
                    }
                  ],
-                 semantic_cache_static?: false
+                 Keyword.put(base, :semantic_cache_static?, false)
                )
 
       failures = [
@@ -699,7 +699,10 @@ defmodule SpectreCoverageCompletionTest do
                      embedding: [0.0, 1.0]
                    }
                  ],
-                 semantic_cache_static?: false
+                 Keyword.merge(learned_opts(),
+                   semantic_cache_static?: false,
+                   embedding: embedding
+                 )
                )
 
       opts =
@@ -1158,7 +1161,8 @@ defmodule SpectreCoverageCompletionTest do
       spectre_rules: Enum.map(@agent.__spectre_rules__(), &Spectre.Rule.new/1),
       semantic_cache_static?: true,
       mirror_training_dataset?: false,
-      embedding: {SpectreCoverageCompletionTest.TaskEmbedding, []}
+      embedding: {SpectreCoverageCompletionTest.TaskEmbedding, []},
+      embedding_model_profile_ref: "test:coverage-semantic-cache"
     ]
   end
 

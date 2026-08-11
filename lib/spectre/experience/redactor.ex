@@ -8,14 +8,10 @@ defmodule Spectre.Experience.Redactor do
   """
 
   alias Spectre.Governance.Data
+  alias Spectre.SensitiveData
 
   @max_depth 64
   @redacted "[REDACTED]"
-  @sensitive_keys MapSet.new(~w(
-    access_key api_key authorization chain_of_thought cookie credential credentials
-    cot password private_key raw_prompt refresh_token secret secrets session_token token
-  ))
-
   @type path :: [String.t() | non_neg_integer()]
 
   @doc "Redacts sensitive fields and returns normalized facts plus exact paths."
@@ -25,7 +21,7 @@ defmodule Spectre.Experience.Redactor do
   def redact(value, opts) when is_map(value) and not is_struct(value) and is_list(opts) do
     with {:ok, extra} <- extra_keys(Keyword.get(opts, :keys, [])),
          {:ok, redacted, paths} <-
-           redact_value(value, [], 0, MapSet.union(@sensitive_keys, extra)),
+           redact_value(value, [], 0, extra),
          {:ok, normalized} <- Data.normalize_map(redacted) do
       {:ok, normalized, Enum.sort_by(paths, &path_key/1)}
     end
@@ -36,13 +32,7 @@ defmodule Spectre.Experience.Redactor do
 
   @doc false
   @spec sensitive_key?(term()) :: boolean()
-  def sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_key?()
-
-  def sensitive_key?(key) when is_binary(key) do
-    MapSet.member?(@sensitive_keys, String.downcase(key))
-  end
-
-  def sensitive_key?(_key), do: false
+  def sensitive_key?(key), do: SensitiveData.sensitive_key?(key)
 
   defp redact_value(_value, path, depth, _keys) when depth > @max_depth,
     do: {:error, {:experience_redaction_depth_exceeded, Enum.reverse(path), @max_depth}}
@@ -90,7 +80,7 @@ defmodule Spectre.Experience.Redactor do
       Map.has_key?(result, key) ->
         {:halt, {:error, {:ambiguous_experience_key, Enum.reverse([key | path])}}}
 
-      MapSet.member?(keys, String.downcase(key)) ->
+      SensitiveData.sensitive_key?(key) or MapSet.member?(keys, SensitiveData.normalize_key(key)) ->
         redacted_path = Enum.reverse([key | path])
         {:cont, {:ok, Map.put(result, key, @redacted), [redacted_path | paths]}}
 
@@ -113,10 +103,10 @@ defmodule Spectre.Experience.Redactor do
     values
     |> Enum.reduce_while({:ok, MapSet.new()}, fn
       value, {:ok, keys} when is_atom(value) and not is_nil(value) ->
-        {:cont, {:ok, MapSet.put(keys, value |> Atom.to_string() |> String.downcase())}}
+        {:cont, {:ok, MapSet.put(keys, SensitiveData.normalize_key(value))}}
 
       value, {:ok, keys} when is_binary(value) and value != "" ->
-        {:cont, {:ok, MapSet.put(keys, String.downcase(value))}}
+        {:cont, {:ok, MapSet.put(keys, SensitiveData.normalize_key(value))}}
 
       value, _acc ->
         {:halt, {:error, {:invalid_experience_redaction_key, value}}}

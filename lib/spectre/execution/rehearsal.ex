@@ -510,7 +510,7 @@ defmodule Spectre.Execution.Rehearsal do
 
   @spec digest?(term()) :: boolean()
   defp digest?(value) when is_binary(value) and byte_size(value) == 64,
-    do: match?({:ok, _bytes}, Base.decode16(value, case: :mixed))
+    do: match?({:ok, _bytes}, Base.decode16(value, case: :lower))
 
   defp digest?(_value), do: false
 

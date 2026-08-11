@@ -93,21 +93,37 @@ defmodule SpectreIdentityActivationCheckpointTest.CheckpointStore do
 
   @impl true
   def compare_and_swap(ref, checkpoint, expected, revision, opts) do
+    if pid = Keyword.get(opts, :test_pid) do
+      send(pid, {:checkpoint_owner_fence, Keyword.get(opts, :owner_fencing_token)})
+    end
+
     Agent.get_and_update(Keyword.fetch!(opts, :server), fn entries ->
-      case Map.get(entries, ref.key) do
-        nil when expected == 0 ->
-          {:ok, Map.put(entries, ref.key, {revision, checkpoint})}
+      entries = Map.put(entries, :__last_fence__, Keyword.get(opts, :owner_fencing_token))
 
-        {^expected, _current} ->
-          {:ok, Map.put(entries, ref.key, {revision, checkpoint})}
+      case Map.pop(entries, :__fault__) do
+        {{:once, reason}, remaining} ->
+          {{:error, reason}, remaining}
 
-        {current, _checkpoint} ->
-          {{:error, {:stale, expected, current}}, entries}
-
-        nil ->
-          {{:error, {:stale, expected, :not_found}}, entries}
+        {nil, entries} ->
+          compare_and_swap_entry(entries, ref.key, checkpoint, expected, revision)
       end
     end)
+  end
+
+  defp compare_and_swap_entry(entries, key, checkpoint, expected, revision) do
+    case Map.get(entries, key) do
+      nil when expected == 0 ->
+        {:ok, Map.put(entries, key, {revision, checkpoint})}
+
+      {^expected, _current} ->
+        {:ok, Map.put(entries, key, {revision, checkpoint})}
+
+      {current, _checkpoint} ->
+        {{:error, {:stale, expected, current}}, entries}
+
+      nil ->
+        {{:error, {:stale, expected, :not_found}}, entries}
+    end
   end
 
   @impl true
@@ -136,6 +152,12 @@ defmodule SpectreIdentityActivationCheckpointTest.CheckpointStore do
   def seed(server, ref, checkpoint, revision) do
     Agent.update(server, &Map.put(&1, ref.key, {revision, checkpoint}))
   end
+
+  def fail_next(server, reason) do
+    Agent.update(server, &Map.put(&1, :__fault__, {:once, reason}))
+  end
+
+  def observed_fence(server), do: Agent.get(server, &Map.get(&1, :__last_fence__))
 end
 
 defmodule SpectreIdentityActivationCheckpointTest.Owner do
@@ -192,6 +214,7 @@ defmodule SpectreIdentityActivationCheckpointTest do
   alias Spectre.Instance
   alias Spectre.Instance.Canonical, as: InstanceCanonical
   alias Spectre.Instance.Canonical.Codec, as: CheckpointCodec
+  alias Spectre.Instance.Canonical.Sections, as: CanonicalSections
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Run.Ref, as: RunRef
   alias Spectre.State
@@ -316,7 +339,7 @@ defmodule SpectreIdentityActivationCheckpointTest do
              Instance.run(restarted, execution_ref.run_id)
   end
 
-  test "owner fence loss blocks Effect dispatch, new admission, and activation commit" do
+  test "a superseding owner lease blocks Effect dispatch, admission, and activation commit" do
     definition_store = volatile_definition_store()
     {_definition_a, candidate_a, _definition_b, candidate_b} = publish_lineage(definition_store)
     owner_server = start_agent(%{token: 0, valid?: true})
@@ -334,21 +357,230 @@ defmodule SpectreIdentityActivationCheckpointTest do
     assert {:ok, %Turn{observable: {:awaiting, %RunRef{} = execution_ref}}} =
              Spectre.turn(instance, "yes")
 
-    Elixir.Agent.update(owner_server, &%{&1 | valid?: false})
+    Elixir.Agent.update(owner_server, &%{&1 | token: &1.token + 1})
 
-    assert {:error, {:owner_fence_lost, :effect_dispatch, :lease_lost}} =
+    assert {:error, {:owner_fence_lost, :effect_dispatch, :lease_superseded}} =
              Spectre.resume(instance, execution_ref, {:execute, execution_ref}, test_pid: self())
 
     refute_received :pinned_work_executed
 
-    assert {:error, {:owner_fence_lost, :admission, :lease_lost}} =
+    assert {:error, {:owner_fence_lost, :admission, :lease_superseded}} =
              Spectre.turn(instance, "hello")
 
-    assert {:error, {:owner_fence_lost, :activation_commit, :lease_lost}} =
+    assert {:error, {:owner_fence_lost, :activation_commit, :lease_superseded}} =
              Spectre.activate(instance, candidate_b, expected_generation: 1)
   end
 
-  test "legacy Instance key migration is Store-controlled and divergent histories fail closed" do
+  test "the local owner advances past a durable fence after a simulated VM counter reset" do
+    definition_store = durable_definition_store("local-owner-restart")
+    checkpoint_store = durable_checkpoint_store()
+    {_definition_a, candidate_a, _definition_b, candidate_b} = publish_lineage(definition_store)
+    subject = Subject.new("local-owner-restart-#{System.unique_integer([:positive])}")
+
+    instance =
+      start_instance(subject,
+        definition_store: definition_store,
+        checkpoint_store: checkpoint_store,
+        owner: {Spectre.Instance.Owner.Local, fencing_token: 41},
+        test_pid: self()
+      )
+
+    assert {:ok, %{owner_fencing_token: 41}} =
+             Spectre.activate(instance, candidate_a, expected_generation: 0)
+
+    assert {:ok, _revision} = Spectre.flush_checkpoint(instance)
+    assert CheckpointStore.observed_fence(checkpoint_server(checkpoint_store)) == 41
+    :ok = GenServer.stop(instance, :normal)
+
+    restarted =
+      start_instance(subject,
+        definition_store: definition_store,
+        checkpoint_store: checkpoint_store,
+        owner: {Spectre.Instance.Owner.Local, fencing_token: 1},
+        test_pid: self()
+      )
+
+    assert %Instance.Activation{owner_fencing_token: 41} = Spectre.activation(restarted)
+
+    assert {:ok, %{owner_fencing_token: 42, generation: 2}} =
+             Spectre.activate(restarted, candidate_b, expected_generation: 1)
+
+    assert CheckpointStore.observed_fence(checkpoint_server(checkpoint_store)) == 42
+  end
+
+  test "a host owner that reuses a persisted fencing token is rejected on restore" do
+    definition_store = durable_definition_store("stale-owner-restart")
+    checkpoint_store = durable_checkpoint_store()
+    {_definition_a, candidate_a, _definition_b, _candidate_b} = publish_lineage(definition_store)
+    owner_server = start_agent(%{token: 0, valid?: true})
+    subject = Subject.new("stale-owner-restart-#{System.unique_integer([:positive])}")
+
+    instance =
+      start_instance(subject,
+        definition_store: definition_store,
+        checkpoint_store: checkpoint_store,
+        owner: {Owner, server: owner_server}
+      )
+
+    assert {:ok, %{owner_fencing_token: 1}} =
+             Spectre.activate(instance, candidate_a, expected_generation: 0)
+
+    assert {:ok, _revision} = Spectre.flush_checkpoint(instance)
+    :ok = GenServer.stop(instance, :normal)
+    Elixir.Agent.update(owner_server, &%{&1 | token: 0})
+
+    previous_trap = Process.flag(:trap_exit, true)
+
+    assert {:error, {:owner_fencing_token_not_monotonic, 1, 1}} =
+             Instance.start_link(
+               agent: Agent,
+               subject: subject,
+               definition_store: definition_store,
+               checkpoint_store: checkpoint_store,
+               owner: {Owner, server: owner_server},
+               idle: false
+             )
+
+    Process.flag(:trap_exit, previous_trap)
+  end
+
+  test "a shaped stale activation checkpoint fences and terminates the Instance" do
+    definition_store = durable_definition_store("activation-shaped-stale")
+    checkpoint_store = durable_checkpoint_store()
+    {_definition_a, candidate_a, _definition_b, _candidate_b} = publish_lineage(definition_store)
+    subject = Subject.new("activation-shaped-stale-#{System.unique_integer([:positive])}")
+
+    instance =
+      start_instance(subject,
+        definition_store: definition_store,
+        checkpoint_store: checkpoint_store
+      )
+
+    monitor = Process.monitor(instance)
+    CheckpointStore.fail_next(checkpoint_server(checkpoint_store), {:stale, 0, 9})
+
+    assert {:error, {:stale, 0, 9}} =
+             Spectre.activate(instance, candidate_a, expected_generation: 0)
+
+    assert_receive {:DOWN, ^monitor, :process, ^instance,
+                    {:activation_checkpoint_conflict, {:stale, 0, 9}}}
+  end
+
+  test "concurrent Activation CAS calls commit exactly one generation" do
+    definition_store = durable_definition_store("activation-race")
+    {definition_a, candidate_a, definition_b, candidate_b} = publish_lineage(definition_store)
+    subject = Subject.new("activation-race-#{System.unique_integer([:positive])}")
+    instance = start_instance(subject, definition_store: definition_store)
+    parent = self()
+
+    tasks =
+      Enum.map([candidate_a, candidate_b], fn candidate ->
+        Task.async(fn ->
+          send(parent, {:activation_ready, self()})
+          receive do: (:activate -> Spectre.activate(instance, candidate, expected_generation: 0))
+        end)
+      end)
+
+    pids =
+      Enum.map(tasks, fn _task ->
+        assert_receive {:activation_ready, pid}
+        pid
+      end)
+
+    Enum.each(pids, &send(&1, :activate))
+    results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+    assert [{:ok, %{generation: 1, definition_ref: winner}}] =
+             Enum.filter(results, &match?({:ok, _activation}, &1))
+
+    assert [{:error, {:stale_activation_generation, 0, 1}}] =
+             Enum.filter(results, &match?({:error, _reason}, &1))
+
+    assert winner in [definition_a, definition_b]
+
+    assert %Instance.Activation{generation: 1, definition_ref: ^winner} =
+             Spectre.activation(instance)
+  end
+
+  test "restore re-verifies Activation evidence and every pinned Run against the Store" do
+    definition_store = durable_definition_store("restore-integrity")
+
+    {_definition_a, candidate_a, _definition_b, _candidate_b} =
+      publish_lineage(definition_store)
+
+    subject = Subject.new("restore-integrity-#{System.unique_integer([:positive])}")
+    instance = start_instance(subject, definition_store: definition_store)
+
+    assert {:ok, _activation} = Spectre.activate(instance, candidate_a, expected_generation: 0)
+    assert {:ok, %Turn{observable: {:needs, _request}}} = Spectre.turn(instance, "work")
+    assert {:ok, checkpoint} = Spectre.checkpoint(instance)
+    assert {:ok, canonical} = CheckpointCodec.decode(checkpoint)
+    assert {:ok, activation} = InstanceCanonical.fetch(canonical, :activation)
+    assert {:ok, runs} = InstanceCanonical.fetch(canonical, :runs)
+    [{run_id, run_checkpoint}] = Map.to_list(runs)
+    assert {:ok, run} = Spectre.Run.restore(run_checkpoint)
+    :ok = GenServer.stop(instance, :normal)
+
+    forged_provenance =
+      Map.put(activation.provenance, :build_evidence, %{
+        status: :matched,
+        drifts: [],
+        observed_builds: %{"beam:forged" => String.duplicate("f", 64)}
+      })
+
+    activation_attrs =
+      activation
+      |> Map.from_struct()
+      |> Map.put(:provenance, forged_provenance)
+      |> Map.delete(:activation_receipt)
+
+    assert {:ok, forged_activation} = Instance.Activation.build(activation_attrs)
+
+    assert_restore_error(
+      put_canonical_section(canonical, :activation, forged_activation),
+      subject,
+      definition_store,
+      :restored_activation_integrity_mismatch
+    )
+
+    mismatched_run = update_run_pin(run, closure_digest: String.duplicate("f", 64))
+    assert {:ok, mismatched_checkpoint} = Spectre.Run.checkpoint(mismatched_run)
+
+    assert_restore_error(
+      put_canonical_section(canonical, :runs, %{run_id => mismatched_checkpoint}),
+      subject,
+      definition_store,
+      {:restored_run_invalid, run_id,
+       {:run_closure_digest_mismatch, mismatched_run.closure_digest, activation.closure_digest}}
+    )
+
+    assert {:ok, missing_ref} =
+             Spectre.Definition.Ref.parse("sha256:" <> String.duplicate("9", 64))
+
+    missing_definition_run = update_run_pin(run, definition_ref: missing_ref)
+    assert {:ok, missing_definition_checkpoint} = Spectre.Run.checkpoint(missing_definition_run)
+
+    assert_restore_error(
+      put_canonical_section(canonical, :runs, %{run_id => missing_definition_checkpoint}),
+      subject,
+      definition_store,
+      {:restored_run_invalid, run_id, {:pinned_run_definition_not_found, to_string(missing_ref)}}
+    )
+
+    {DefinitionStore, store_opts} = definition_store
+    store_server = Keyword.fetch!(store_opts, :server)
+    candidate_key = "candidate/" <> to_string(activation.candidate_ref)
+    Elixir.Agent.update(store_server, &Map.delete(&1, candidate_key))
+
+    assert_restore_error(
+      canonical,
+      subject,
+      definition_store,
+      :restored_activation_candidate_not_found
+    )
+  end
+
+  test "legacy Instance keys require offline migration and divergent histories fail closed" do
     checkpoint_store = durable_checkpoint_store()
     subject = Subject.new("legacy-key-#{System.unique_integer([:positive])}")
     stable_ref = InstanceRef.new(Agent, subject)
@@ -356,20 +588,24 @@ defmodule SpectreIdentityActivationCheckpointTest do
     legacy_checkpoint = legacy_checkpoint(legacy_ref)
     CheckpointStore.seed(checkpoint_server(checkpoint_store), legacy_ref, legacy_checkpoint, 0)
 
-    instance = start_instance(subject, checkpoint_store: checkpoint_store)
-    assert Instance.ref(instance).key == stable_ref.key
-    assert :not_found = Spectre.Instance.CheckpointStore.load(checkpoint_store, legacy_ref, [])
+    previous_trap = Process.flag(:trap_exit, true)
 
-    assert {:ok, migrated} =
-             Spectre.Instance.CheckpointStore.load(checkpoint_store, stable_ref, [])
+    assert {:error,
+            {:legacy_instance_checkpoint_requires_offline_migration, legacy_key, stable_key}} =
+             Instance.start_link(
+               agent: Agent,
+               subject: subject,
+               checkpoint_store: checkpoint_store,
+               idle: false
+             )
 
-    assert {:ok, canonical} = CheckpointCodec.decode(migrated)
-    assert canonical.revision == 1
+    assert legacy_key == legacy_ref.key
+    assert stable_key == stable_ref.key
 
-    assert {:ok, correlations} = InstanceCanonical.fetch(canonical, :correlations)
-    assert correlations.instance_key == stable_ref.key
-    assert correlations.instance_key_migration.legacy_instance_key == legacy_ref.key
-    :ok = GenServer.stop(instance, :normal)
+    assert {:ok, ^legacy_checkpoint} =
+             Spectre.Instance.CheckpointStore.load(checkpoint_store, legacy_ref, [])
+
+    assert :not_found = Spectre.Instance.CheckpointStore.load(checkpoint_store, stable_ref, [])
 
     divergent_subject = Subject.new("divergent-key-#{System.unique_integer([:positive])}")
     divergent_stable = InstanceRef.new(Agent, divergent_subject)
@@ -379,8 +615,6 @@ defmodule SpectreIdentityActivationCheckpointTest do
     server = checkpoint_server(checkpoint_store)
     CheckpointStore.seed(server, divergent_legacy, first, 0)
     CheckpointStore.seed(server, divergent_stable, second, 0)
-
-    previous_trap = Process.flag(:trap_exit, true)
 
     assert {:error,
             {:divergent_instance_key_histories, divergent_legacy_key, divergent_stable_key}} =
@@ -430,6 +664,8 @@ defmodule SpectreIdentityActivationCheckpointTest do
   end
 
   defp closure do
+    {:ok, build_digest} = Closure.fingerprint(Agent)
+
     Closure.new!(%{
       stack_ref: "spectre.stack:none",
       package_refs: [],
@@ -440,7 +676,7 @@ defmodule SpectreIdentityActivationCheckpointTest do
       state_codec_ref: "spectre.instance.canonical.codec/2",
       model_profile_refs: [],
       recording_refs: [],
-      build_fingerprints: %{"beam:Agent" => @digest},
+      build_fingerprints: %{("beam:" <> Atom.to_string(Agent)) => build_digest},
       evaluation_corpus_digest: nil,
       compatibility_mode: :native_v2
     })
@@ -498,6 +734,34 @@ defmodule SpectreIdentityActivationCheckpointTest do
 
     {:ok, checkpoint} = CheckpointCodec.encode_json(canonical)
     checkpoint
+  end
+
+  defp put_canonical_section(canonical, name, value) do
+    {:ok, section} = CanonicalSections.fetch(canonical.sections, name)
+    sections = CanonicalSections.put(canonical.sections, name, %{section | value: value})
+    %{canonical | sections: sections}
+  end
+
+  defp assert_restore_error(canonical, subject, definition_store, expected) do
+    assert {:ok, encoded} = CheckpointCodec.encode_json(canonical)
+    previous_trap = Process.flag(:trap_exit, true)
+
+    assert {:error, ^expected} =
+             Instance.start_link(
+               agent: Agent,
+               subject: subject,
+               definition_store: definition_store,
+               canonical_checkpoint: encoded,
+               idle: false
+             )
+
+    Process.flag(:trap_exit, previous_trap)
+  end
+
+  defp update_run_pin(run, changes) do
+    identity = Map.merge(run.result.metadata.run, Map.new(changes))
+    result = %{run.result | metadata: Map.put(run.result.metadata, :run, identity)}
+    struct!(run, changes |> Map.new() |> Map.put(:result, result))
   end
 
   defp assert_eventually(fun, attempts \\ 100)

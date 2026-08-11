@@ -1,6 +1,7 @@
 defmodule Spectre.Instance.Canonical do
   @moduledoc false
 
+  alias Spectre.Canonical.Value, as: CanonicalValue
   alias Spectre.Instance.Canonical.Change
   alias Spectre.Instance.Canonical.Section
   alias Spectre.Instance.Canonical.Sections
@@ -8,7 +9,7 @@ defmodule Spectre.Instance.Canonical do
   alias Spectre.Instance.Canonical.Transition
   alias Spectre.Run.Value
 
-  @schema_version 4
+  @schema_version 2
   @journal_limit 512
   @applied_change_limit 1_024
 
@@ -359,7 +360,7 @@ defmodule Spectre.Instance.Canonical do
 
   @spec change_digest(Change.t()) :: binary()
   defp change_digest(change) do
-    {
+    value = {
       change.snapshot_id,
       change.base_revision,
       change.section_revisions,
@@ -369,9 +370,11 @@ defmodule Spectre.Instance.Canonical do
       change.provenance,
       change.metadata
     }
-    |> :erlang.term_to_binary([:deterministic])
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.url_encode64(padding: false)
+
+    case Value.encode(value) do
+      {:ok, encoded} -> CanonicalValue.digest!(encoded)
+      {:error, reason} -> raise ArgumentError, "nonportable canonical change: #{inspect(reason)}"
+    end
   end
 
   defp trim_applied_changes(changes) when map_size(changes) <= @applied_change_limit,

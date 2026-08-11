@@ -85,9 +85,12 @@ defmodule Spectre.Canonical.Value do
     with {:ok, context} <- context(opts),
          :ok <- encoded_size(encoded, context),
          {:ok, payload} <- header(encoded),
-         {:ok, value, ""} <- decode_term(payload, context, [], 0) do
+         {:ok, value, ""} <- decode_term(payload, context, [], 0),
+         {:ok, canonical} <- encode(value, opts),
+         true <- canonical == encoded do
       {:ok, value}
     else
+      false -> {:error, :noncanonical_value_encoding}
       {:ok, _value, trailing} -> {:error, {:trailing_canonical_bytes, byte_size(trailing)}}
       {:error, _reason} = error -> error
     end
@@ -337,10 +340,12 @@ defmodule Spectre.Canonical.Value do
 
   defp decode_term(<<@tag_integer, rest::binary>>, _context, path, _depth) do
     with {:ok, encoded, rest} <- take_sized(rest, :integer),
-         {value, ""} <- Integer.parse(encoded) do
+         {value, ""} <- Integer.parse(encoded),
+         true <- Integer.to_string(value) == encoded do
       {:ok, value, rest}
     else
       {:error, _reason} = error -> error
+      false -> {:error, {:noncanonical_integer, Enum.reverse(path)}}
       :error -> {:error, {:invalid_canonical_integer, Enum.reverse(path)}}
       {_value, _trailing} -> {:error, {:invalid_canonical_integer, Enum.reverse(path)}}
     end
@@ -495,7 +500,16 @@ defmodule Spectre.Canonical.Value do
   @spec build_struct(module(), map(), binary(), [term()]) ::
           {:ok, struct(), binary()} | {:error, reason()}
   defp build_struct(module, fields, rest, path) do
-    {:ok, struct(module, fields), rest}
+    expected = module.__struct__() |> Map.keys() |> List.delete(:__struct__) |> MapSet.new()
+    actual = fields |> Map.keys() |> MapSet.new()
+
+    if actual == expected do
+      {:ok, struct!(module, fields), rest}
+    else
+      {:error,
+       {:invalid_canonical_struct_fields, Enum.reverse(path), module, MapSet.to_list(actual),
+        MapSet.to_list(expected)}}
+    end
   rescue
     exception ->
       {:error, {:invalid_canonical_struct, Enum.reverse(path), module, exception.__struct__}}

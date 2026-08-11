@@ -11,12 +11,19 @@ defmodule Spectre.Execution.Admission do
   alias Spectre.Instance.Activation
   alias Spectre.Skill.Definition, as: SkillDefinition
 
-  @spec verify(Materialization.t(), Spectre.Definition.Store.config() | nil, Activation.t() | nil) ::
+  @spec verify(
+          Materialization.t(),
+          Spectre.Definition.Store.config() | nil,
+          Activation.t() | nil,
+          keyword()
+        ) ::
           :ok | {:error, term()}
-  def verify(%Materialization{} = materialization, store, %Activation{} = activation)
-      when not is_nil(store) do
+  def verify(materialization, store, activation, opts \\ [])
+
+  def verify(%Materialization{} = materialization, store, %Activation{} = activation, opts)
+      when not is_nil(store) and is_list(opts) do
     with :ok <- Materialization.verify(materialization),
-         {:ok, resolution} <- resolve(store, activation),
+         {:ok, resolution} <- resolve(store, activation, opts),
          :ok <- activation_binding(resolution, activation),
          {:ok, skill} <- mounted_skill(resolution.definition, materialization.mount_id),
          :ok <- definition_binding(skill, materialization),
@@ -26,16 +33,21 @@ defmodule Spectre.Execution.Admission do
     end
   end
 
-  def verify(%Materialization{}, nil, %Activation{}),
+  def verify(%Materialization{}, nil, %Activation{}, _opts),
     do: {:error, :execution_definition_store_not_configured}
 
-  def verify(%Materialization{}, _store, nil),
+  def verify(%Materialization{}, _store, nil, _opts),
     do: {:error, :execution_requires_active_definition}
 
-  @spec resolve(Spectre.Definition.Store.config(), Activation.t()) ::
+  def verify(%Materialization{}, _store, %Activation{}, _opts),
+    do: {:error, :invalid_execution_admission_options}
+
+  @spec resolve(Spectre.Definition.Store.config(), Activation.t(), keyword()) ::
           {:ok, Resolver.resolution()} | {:error, term()}
-  defp resolve(store, activation) do
-    case Resolver.resolve(store, activation.definition_ref) do
+  defp resolve(store, activation, opts) do
+    resolver_opts = Keyword.put_new(opts, :observe_builds, true)
+
+    case Resolver.resolve(store, activation.definition_ref, resolver_opts) do
       {:ok, resolution} -> {:ok, resolution}
       :not_found -> {:error, :active_execution_definition_not_found}
       {:error, _reason} = error -> error
@@ -53,9 +65,19 @@ defmodule Spectre.Execution.Admission do
       Closure.digest(resolution.manifest.execution_closure) != activation.closure_digest ->
         {:error, :execution_activation_closure_mismatch}
 
+      resolution.drift.status != :matched ->
+        {:error, {:execution_build_not_verified, resolution.drift.status}}
+
+      build_evidence(activation) != resolution.drift ->
+        {:error, :execution_activation_build_evidence_mismatch}
+
       true ->
         :ok
     end
+  end
+
+  defp build_evidence(%Activation{provenance: provenance}) do
+    Map.get(provenance, :build_evidence, Map.get(provenance, "build_evidence"))
   end
 
   defp mounted_skill(definition, mount_id) do

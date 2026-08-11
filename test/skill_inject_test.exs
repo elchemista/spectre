@@ -136,6 +136,12 @@ defmodule SpectreSkillInjectTest.Agent do
   model(SpectreSkillInjectTest.LLM)
   actions(SpectreSkillInjectTest.Actions)
 
+  operation(:prompt_disabled, {SpectreSkillInjectTest.ContextProvider, :disabled?},
+    input: :map,
+    output: :boolean,
+    side_effect: :none
+  )
+
   inject(:agent_start, into: :instructions, position: :start)
   inject(:agent_end, into: :instructions, position: :end)
 

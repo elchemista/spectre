@@ -251,7 +251,8 @@ defmodule Spectre.Prompt.Fragment do
              @budget_classes,
              :invalid_prompt_fragment_budget_class
            ),
-         :ok <- validate_token_cap(fragment.token_cap) do
+         :ok <- validate_token_cap(fragment.token_cap),
+         :ok <- validate_condition_ref(fragment.condition_ref) do
       validate_dynamic_fragment(fragment)
     end
   end
@@ -267,6 +268,15 @@ defmodule Spectre.Prompt.Fragment do
 
   defp validate_token_cap(value),
     do: {:error, {:invalid_prompt_fragment_token_cap, value}}
+
+  defp validate_condition_ref(nil), do: :ok
+
+  defp validate_condition_ref(%{"predicate_ref" => ref} = value)
+       when map_size(value) == 1 and is_binary(ref) and ref != "",
+       do: :ok
+
+  defp validate_condition_ref(value),
+    do: {:error, {:invalid_prompt_fragment_condition_ref, value}}
 
   @spec validate_dynamic_fragment(t()) :: :ok | {:error, term()}
   defp validate_dynamic_fragment(%__MODULE__{content: nil, target: target})

@@ -21,7 +21,6 @@ defmodule SpectreSkillStateSemanticsTest do
 
   alias SpectreSkillStateSemanticsTest.Agent
 
-  @digest String.duplicate("e", 64)
   @skill_id "planner"
   @schema_v1 "spectre.test/planner-state/1"
   @schema_v2 "spectre.test/planner-state/2"
@@ -370,7 +369,7 @@ defmodule SpectreSkillStateSemanticsTest do
     assert definition_a == branch_a.owning_definition_ref
   end
 
-  test "schema 4 checkpoint restores the selected branch and dormant history" do
+  test "schema 2 checkpoint restores the selected branch and dormant history" do
     store = definition_store()
     {_definition_a, candidate_a, _definition_b, candidate_b} = publish_lineage(store)
     subject = Subject.new("skill-restart-#{System.unique_integer([:positive])}")
@@ -398,7 +397,13 @@ defmodule SpectreSkillStateSemanticsTest do
 
     assert {:ok, branch_b} = Spectre.skill_state(instance, @skill_id)
     assert {:ok, checkpoint} = Spectre.checkpoint(instance)
-    assert %{"checkpoint_version" => 4, "state_schema_version" => 4} = Jason.decode!(checkpoint)
+
+    assert %{
+             "format" => "spectre/instance-checkpoint",
+             "checkpoint_version" => 2,
+             "state_schema_version" => 2
+           } = Jason.decode!(checkpoint)
+
     :ok = GenServer.stop(instance, :normal)
 
     {:ok, restarted} =
@@ -461,17 +466,19 @@ defmodule SpectreSkillStateSemanticsTest do
   end
 
   defp closure do
+    {:ok, build_digest} = Closure.fingerprint(Agent)
+
     Closure.new!(%{
       stack_ref: "spectre.stack:none",
       package_refs: [],
       contract_refs: [],
       prompt_fragment_digests: [],
       projection_generators: [%{id: "spectre.projection.audit", version: 1}],
-      state_schema_ref: "spectre.instance.canonical/4",
-      state_codec_ref: "spectre.instance.canonical.codec/4",
+      state_schema_ref: "spectre.instance.canonical/2",
+      state_codec_ref: "spectre.instance.canonical.codec/2",
       model_profile_refs: [],
       recording_refs: [],
-      build_fingerprints: %{"beam:Agent" => @digest},
+      build_fingerprints: %{("beam:" <> Atom.to_string(Agent)) => build_digest},
       evaluation_corpus_digest: nil,
       compatibility_mode: :native_v2
     })

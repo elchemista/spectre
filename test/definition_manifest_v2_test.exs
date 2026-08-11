@@ -5,7 +5,7 @@ defmodule SpectreDefinitionManifestV2Test.Package do
     id: :manifest_runtime,
     version: "0.2.2",
     contract: 1,
-    spectre: ">= 0.2.0 and < 0.3.0",
+    spectre: ">= 0.3.0 and < 0.4.0",
     operations: [:lookup],
     actions: [:notify],
     resources: [:knowledge_base]

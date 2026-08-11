@@ -152,8 +152,9 @@ defmodule Spectre.Router.SemanticCache.Learned.Snapshot do
     with {:ok, text} <- snapshot_text(entry),
          {:ok, label} <- routeable_label(snapshot_label(entry), opts),
          :ok <- cacheable_label(label, opts),
-         {:ok, embedding} <- snapshot_embedding(entry) do
-      {:ok, snapshot_row(agent, entry, text, label, embedding)}
+         {:ok, embedding} <- snapshot_embedding(entry),
+         {:ok, metadata} <- snapshot_metadata(entry, embedding, opts) do
+      {:ok, snapshot_row(agent, entry, text, label, embedding, metadata)}
     else
       {:skip, reason} -> {:skip, reason}
       {:error, reason} -> {:skip, reason}
@@ -174,7 +175,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Snapshot do
 
   defp snapshot_label(entry), do: Map.get(entry, "label") || Map.get(entry, :label)
 
-  defp snapshot_row(agent, entry, text, label, embedding) do
+  defp snapshot_row(agent, entry, text, label, embedding, metadata) do
     now = DateTime.utc_now()
     id = Map.get(entry, "id") || Map.get(entry, :id) || online_id()
 
@@ -194,7 +195,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Snapshot do
         Map.get(entry, "verified", Map.get(entry, :verified, Map.get(entry, :verified?, false))),
       editable?: true,
       embedding: embedding || existing_snapshot_embedding(agent, id, text),
-      metadata: snapshot_metadata(entry),
+      metadata: metadata,
       inserted_at:
         snapshot_time(Map.get(entry, "inserted_at") || Map.get(entry, :inserted_at), now),
       updated_at: snapshot_time(Map.get(entry, "updated_at") || Map.get(entry, :updated_at), now)
@@ -229,6 +230,24 @@ defmodule Spectre.Router.SemanticCache.Learned.Snapshot do
     case Map.get(entry, "metadata") || Map.get(entry, :metadata) do
       metadata when is_map(metadata) -> metadata
       _other -> %{}
+    end
+  end
+
+  defp snapshot_metadata(entry, embedding, opts) do
+    metadata = snapshot_metadata(entry)
+
+    case {Map.get(metadata, :embedding_profile_ref, Map.get(metadata, "embedding_profile_ref")),
+          Map.get(
+            metadata,
+            :embedding_profile_digest,
+            Map.get(metadata, "embedding_profile_digest")
+          )} do
+      {nil, nil} ->
+        Index.bind_embedding_profile(metadata, embedding, opts)
+
+      _present ->
+        with :ok <- Index.validate_embedding_profile(metadata, embedding, opts),
+             do: {:ok, metadata}
     end
   end
 

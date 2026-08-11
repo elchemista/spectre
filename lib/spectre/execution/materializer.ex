@@ -8,11 +8,14 @@ defmodule Spectre.Execution.Materializer do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Definition.Ref, as: DefinitionRef
   alias Spectre.Execution.Handoff
   alias Spectre.Execution.Materialization
+  alias Spectre.Execution.Program
   alias Spectre.Projection
   alias Spectre.Projection.Execution, as: ExecutionProjection
   alias Spectre.Prompt.Materializer, as: PromptMaterializer
+  alias Spectre.Prompt.Receipt
   alias Spectre.Skill.Definition, as: SkillDefinition
   alias Spectre.Skill.Runtime, as: SkillRuntime
   alias Spectre.Skill.Runtime.Response
@@ -30,7 +33,8 @@ defmodule Spectre.Execution.Materializer do
          {:ok, definition} <- SkillRuntime.continuation(next_runtime, response.continuation_id),
          {:ok, program} <- SkillDefinition.work(definition, response.work_ref),
          true <- program.digest == response.program_digest,
-         {:ok, plans, receipts} <- prompt_materializations(definition, program, input, context),
+         {:ok, plans, receipts} <-
+           prompt_materializations(definition, program, input, context, next_runtime.agent),
          plan_digests <- Map.new(plans, fn {ref, plan} -> {ref, plan.metadata.hash} end),
          evidence <- %{
            input_evidence_digest: Value.digest!(response.work_input),
@@ -94,15 +98,21 @@ defmodule Spectre.Execution.Materializer do
 
   def handoff(value), do: {:error, {:invalid_execution_materialization, shape(value)}}
 
-  @spec prompt_materializations(SkillDefinition.t(), Spectre.Execution.Program.t(), term(), map()) ::
-          {:ok, map(), [Spectre.Prompt.Receipt.t()]} | {:error, term()}
-  defp prompt_materializations(definition, program, input, context) do
+  @spec prompt_materializations(
+          SkillDefinition.t(),
+          Program.t(),
+          term(),
+          map(),
+          module()
+        ) ::
+          {:ok, map(), [Receipt.t()]} | {:error, term()}
+  defp prompt_materializations(definition, program, input, context, agent) do
     fragments = SkillDefinition.prompt_fragments(definition)
-    definition_ref = definition |> SkillDefinition.ref() |> Spectre.Definition.Ref.to_string()
+    definition_ref = definition |> SkillDefinition.ref() |> DefinitionRef.to_string()
 
     Enum.reduce_while(program.prompt_refs, {:ok, %{}, []}, fn prompt_ref,
                                                               {:ok, plans, receipts} ->
-      case prompt_materialization(prompt_ref, fragments, input, context, definition_ref) do
+      case prompt_materialization(prompt_ref, fragments, input, context, definition_ref, agent) do
         {:ok, plan, receipt} ->
           {:cont, {:ok, Map.put(plans, prompt_ref, plan), [receipt | receipts]}}
 
@@ -111,16 +121,33 @@ defmodule Spectre.Execution.Materializer do
       end
     end)
     |> case do
-      {:ok, plans, receipts} -> {:ok, plans, Enum.reverse(receipts)}
-      {:error, _reason} = error -> error
+      {:ok, plans, receipts} ->
+        receipts = Enum.reverse(receipts)
+
+        case aggregate_prompt_budget(definition, receipts) do
+          :ok -> {:ok, plans, receipts}
+          {:error, _reason} = error -> error
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
-  @spec prompt_materialization(String.t(), [term()], term(), map(), String.t()) ::
+  defp aggregate_prompt_budget(definition, receipts) do
+    cap = definition |> SkillDefinition.prompt_budget() |> Map.fetch!(:token_cap)
+    rendered = Enum.sum(Enum.map(receipts, & &1.estimated_tokens))
+
+    if rendered <= cap,
+      do: :ok,
+      else: {:error, {:rendered_skill_prompt_budget_exceeded, rendered, cap}}
+  end
+
+  @spec prompt_materialization(String.t(), [term()], term(), map(), String.t(), module()) ::
           {:ok, Spectre.Prompt.Plan.t(), Spectre.Prompt.Receipt.t()} | {:error, term()}
-  defp prompt_materialization(prompt_ref, fragments, input, context, definition_ref) do
+  defp prompt_materialization(prompt_ref, fragments, input, context, definition_ref, agent) do
     with {:ok, fragment} <- prompt_fragment(prompt_ref, fragments) do
-      PromptMaterializer.materialize(fragment, input, context, definition_ref)
+      PromptMaterializer.materialize(fragment, input, context, definition_ref, agent: agent)
     end
   end
 

@@ -215,6 +215,10 @@ defmodule Spectre.Prompt.Operation do
   @spec valid_condition?(term()) :: boolean()
   defp valid_condition?(nil), do: true
 
+  defp valid_condition?({:predicate, ref})
+       when (is_atom(ref) and not is_nil(ref)) or (is_binary(ref) and ref != ""),
+       do: true
+
   defp valid_condition?({module, function}) when is_atom(module) and is_atom(function), do: true
   defp valid_condition?(condition) when is_function(condition), do: true
   defp valid_condition?(_condition), do: false

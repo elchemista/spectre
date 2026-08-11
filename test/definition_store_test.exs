@@ -128,7 +128,7 @@ defmodule SpectreDefinitionStoreTest do
 
     assert {:ok, resolution} = Resolver.resolve(store, ref)
     assert resolution.definition_ref == ref
-    assert resolution.drift == %{status: :unobserved, drifts: []}
+    assert resolution.drift == %{status: :unobserved, drifts: [], observed_builds: %{}}
   end
 
   test "Store conformance covers duplicate publication and verified read-back" do
@@ -266,6 +266,65 @@ defmodule SpectreDefinitionStoreTest do
                observed_builds: %{"beam:Agent" => @digest},
                on_drift: :ignore
              )
+  end
+
+  test "Resolver observes loaded BEAM builds automatically and blocks drift before activation" do
+    ref_name = "beam:" <> Atom.to_string(Agent)
+    {:ok, actual_digest} = Closure.fingerprint(Agent)
+    canonical = Definition.canonical!(Agent)
+
+    matched_store = durable_store("automatic-build-match")
+
+    matched_manifest =
+      Manifest.new!(
+        canonical,
+        Envelope.empty(),
+        Closure.new!(%{
+          closure()
+          | build_fingerprints: [
+              %{ref: ref_name, digest: actual_digest, drift_policy: :block}
+            ]
+        })
+      )
+
+    assert {:ok, _receipt} = Store.publish(matched_store, canonical, matched_manifest)
+
+    assert {:ok,
+            %{
+              drift: %{
+                status: :matched,
+                observed_builds: %{^ref_name => ^actual_digest}
+              }
+            }} = Resolver.resolve(matched_store, Canonical.ref(canonical), observe_builds: true)
+
+    drifted_store = durable_store("automatic-build-drift")
+
+    drifted_manifest =
+      Manifest.new!(
+        canonical,
+        Envelope.empty(),
+        Closure.new!(%{
+          closure()
+          | build_fingerprints: [
+              %{ref: ref_name, digest: @other_digest, drift_policy: :block}
+            ]
+        })
+      )
+
+    assert {:ok, _receipt} = Store.publish(drifted_store, canonical, drifted_manifest)
+
+    assert {:error,
+            {:definition_code_drift,
+             [
+               %{
+                 ref: ^ref_name,
+                 expected: @other_digest,
+                 observed: ^actual_digest,
+                 reason: :changed,
+                 policy: :block
+               }
+             ]}} =
+             Resolver.resolve(drifted_store, Canonical.ref(canonical), observe_builds: true)
   end
 
   test "Store rejects malformed adapters, replies, identities and configurations" do

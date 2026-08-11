@@ -17,6 +17,7 @@ defmodule Spectre.Governance.GC do
   alias Spectre.Definition.Ref
   alias Spectre.Definition.Store
   alias Spectre.Governance.Data
+  alias Spectre.Governance.GC.InventoryProvider
   alias Spectre.Governance.GC.Plan
   alias Spectre.Instance.Activation
 
@@ -26,22 +27,37 @@ defmodule Spectre.Governance.GC do
   def plan(store, candidate_refs, opts \\ [])
 
   def plan(store, candidate_refs, opts) when is_list(candidate_refs) and is_list(opts) do
-    with {:ok, candidate_inventory} <- candidate_refs(candidate_refs),
+    complete? = Keyword.get(opts, :inventory_complete?, false) == true
+
+    with {:ok, inventory_snapshot} <- inventory_snapshot(store, complete?, opts),
+         {:ok, candidate_inventory} <- candidate_refs(candidate_refs),
+         :ok <-
+           snapshot_inventory(
+             candidate_inventory,
+             inventory_snapshot,
+             "candidate_refs",
+             :candidate
+           ),
          {:ok, candidates} <- fetch_candidates(store, candidate_inventory, opts),
          {:ok, definition_inventory} <- definition_inventory(candidates, opts),
+         :ok <-
+           snapshot_inventory(
+             definition_inventory,
+             inventory_snapshot,
+             "definition_refs",
+             :definition
+           ),
          {:ok, definitions} <- fetch_definitions(store, definition_inventory, opts),
          {:ok, store_identity} <- Store.identity(store),
          {:ok, store_identity} <- Data.quote(store_identity),
-         {:ok, protected_candidates} <- protected_candidates(opts),
-         {:ok, protected_definitions} <- protected_definitions(opts),
+         {:ok, protected_candidates} <- protected_candidates(opts, inventory_snapshot),
+         {:ok, protected_definitions} <- protected_definitions(opts, inventory_snapshot),
          {:ok, requested_candidates} <-
            candidate_refs(Keyword.get(opts, :gc_eligible_candidate_refs, [])),
          {:ok, requested_definitions} <-
            definition_refs(Keyword.get(opts, :gc_eligible_definition_refs, [])),
          :ok <- inventory_contains(candidate_inventory, requested_candidates, :candidate),
          :ok <- inventory_contains(definition_inventory, requested_definitions, :definition) do
-      complete? = Keyword.get(opts, :inventory_complete?, false) == true
-
       with :ok <-
              complete_inventory(
                complete?,
@@ -91,7 +107,8 @@ defmodule Spectre.Governance.GC do
           "candidate_digests" => Enum.map(candidates, & &1.digest),
           "definition_manifest_digests" => Enum.map(definitions, & &1.manifest_digest),
           "candidate_lineage_refs" => candidate_lineage_refs,
-          "definition_lineage_refs" => definition_lineage_refs
+          "definition_lineage_refs" => definition_lineage_refs,
+          "inventory_snapshot_digest" => snapshot_digest(inventory_snapshot)
         }
 
         Plan.build(%{
@@ -107,6 +124,7 @@ defmodule Spectre.Governance.GC do
           definition_lineage_refs: definition_lineage_refs,
           requested_candidate_refs: requested_candidates,
           requested_definition_refs: requested_definitions,
+          inventory_snapshot_digest: snapshot_digest(inventory_snapshot),
           evidence_digest: Value.digest!(evidence)
         })
       end
@@ -170,7 +188,7 @@ defmodule Spectre.Governance.GC do
     |> reverse()
   end
 
-  defp protected_candidates(opts) do
+  defp protected_candidates(opts, inventory_snapshot) do
     fields = [
       :protected_candidate_refs,
       :run_candidate_refs,
@@ -185,12 +203,14 @@ defmodule Spectre.Governance.GC do
     activation_ref =
       if match?(%Activation{}, activation), do: [to_string(activation.candidate_ref)], else: []
 
+    snapshot_refs = snapshot_refs(inventory_snapshot, "protected_candidate_refs")
+
     if Enum.all?(configured, &is_list/1),
-      do: candidate_refs(List.flatten(configured) ++ activation_ref),
+      do: candidate_refs(List.flatten(configured) ++ activation_ref ++ snapshot_refs),
       else: {:error, {:invalid_gc_candidate_refs, :other}}
   end
 
-  defp protected_definitions(opts) do
+  defp protected_definitions(opts, inventory_snapshot) do
     fields = [
       :protected_definition_refs,
       :run_definition_refs,
@@ -205,10 +225,32 @@ defmodule Spectre.Governance.GC do
     activation_ref =
       if match?(%Activation{}, activation), do: [to_string(activation.definition_ref)], else: []
 
+    snapshot_refs = snapshot_refs(inventory_snapshot, "protected_definition_refs")
+
     if Enum.all?(configured, &is_list/1),
-      do: definition_refs(List.flatten(configured) ++ activation_ref),
+      do: definition_refs(List.flatten(configured) ++ activation_ref ++ snapshot_refs),
       else: {:error, {:invalid_gc_definition_refs, :other}}
   end
+
+  defp inventory_snapshot(_store, false, _opts), do: {:ok, nil}
+
+  defp inventory_snapshot(store, true, opts) do
+    InventoryProvider.load(Keyword.get(opts, :inventory_provider), store, store_opts(opts))
+  end
+
+  defp snapshot_inventory(_inventory, nil, _field, _kind), do: :ok
+
+  defp snapshot_inventory(inventory, snapshot, field, kind) do
+    if inventory == Map.fetch!(snapshot, field),
+      do: :ok,
+      else: {:error, {:governance_gc_inventory_attestation_mismatch, kind}}
+  end
+
+  defp snapshot_refs(nil, _field), do: []
+  defp snapshot_refs(snapshot, field), do: Map.fetch!(snapshot, field)
+
+  defp snapshot_digest(nil), do: nil
+  defp snapshot_digest(snapshot), do: Map.fetch!(snapshot, "digest")
 
   defp complete_inventory(
          false,

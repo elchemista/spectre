@@ -148,7 +148,7 @@ defmodule Spectre.Projection do
 
   @spec valid_digest?(term()) :: boolean()
   defp valid_digest?(digest) when is_binary(digest) and byte_size(digest) == 64,
-    do: match?({:ok, _bytes}, Base.decode16(digest, case: :mixed))
+    do: match?({:ok, _bytes}, Base.decode16(digest, case: :lower))
 
   defp valid_digest?(_digest), do: false
 

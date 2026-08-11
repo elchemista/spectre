@@ -28,6 +28,7 @@ defmodule Spectre.Authority.Envelope do
     :consents
   ]
   @limit_fields [:max_cost, :max_duration_ms, :max_pages, :max_risk, :max_tokens]
+  @risk_order [:none, :low, :medium, :high, :critical]
 
   @enforce_keys [:schema_version] ++ @grant_fields ++ [:limits]
   defstruct [schema_version: @schema_version] ++
@@ -233,7 +234,7 @@ defmodule Spectre.Authority.Envelope do
           else: {:halt, {:error, {:invalid_authority_limit, :max_pages, value}}}
 
       {:max_risk, value}, :ok ->
-        if is_atom(value) and not is_nil(value),
+        if value in @risk_order,
           do: {:cont, :ok},
           else: {:halt, {:error, {:invalid_authority_limit, :max_risk, value}}}
     end)
@@ -255,19 +256,23 @@ defmodule Spectre.Authority.Envelope do
 
   @spec intersect_limits(map(), map()) :: map()
   defp intersect_limits(requested, ceiling) do
-    requested
-    |> Map.take(Map.keys(ceiling))
-    |> Map.new(fn {field, requested_value} ->
-      ceiling_value = Map.fetch!(ceiling, field)
-
-      value =
-        if is_number(requested_value) and is_number(ceiling_value),
-          do: min(requested_value, ceiling_value),
-          else: ceiling_value
-
-      {field, value}
+    (Map.keys(requested) ++ Map.keys(ceiling))
+    |> Enum.uniq()
+    |> Map.new(fn field ->
+      {field, meet_limit(field, Map.fetch(requested, field), Map.fetch(ceiling, field))}
     end)
   end
+
+  defp meet_limit(_field, {:ok, value}, :error), do: value
+  defp meet_limit(_field, :error, {:ok, value}), do: value
+
+  defp meet_limit(:max_risk, {:ok, requested}, {:ok, ceiling}) do
+    if risk_index(requested) <= risk_index(ceiling), do: requested, else: ceiling
+  end
+
+  defp meet_limit(_field, {:ok, requested}, {:ok, ceiling}), do: min(requested, ceiling)
+
+  defp risk_index(risk), do: Enum.find_index(@risk_order, &(&1 == risk))
 
   @spec encode_limits(map()) :: map()
   defp encode_limits(limits),

@@ -16,8 +16,9 @@ defmodule Spectre.Definition.Resolver do
   alias Spectre.Execution.Closure
 
   @type drift_status ::
-          %{status: :unobserved | :matched, drifts: []}
-          | %{status: :drifted, drifts: [Closure.drift()]}
+          %{status: :unobserved, drifts: [], observed_builds: %{}}
+          | %{status: :matched, drifts: [], observed_builds: map()}
+          | %{status: :drifted, drifts: [Closure.drift()], observed_builds: map()}
 
   @type resolution :: %{
           required(:definition_ref) => Ref.t(),
@@ -114,10 +115,24 @@ defmodule Spectre.Definition.Resolver do
   defp resolve_drift(closure, opts) do
     case Keyword.fetch(opts, :observed_builds) do
       :error ->
-        {:ok, %{status: :unobserved, drifts: []}}
+        resolve_unobserved_drift(closure, opts)
 
       {:ok, observed} ->
         compare_builds(closure, observed, Keyword.get(opts, :on_drift, :reject))
+    end
+  end
+
+  defp resolve_unobserved_drift(closure, opts) do
+    if Keyword.get(opts, :observe_builds, false) do
+      case Closure.observe_builds(closure, opts) do
+        {:ok, observed} ->
+          compare_builds(closure, observed, Keyword.get(opts, :on_drift, :reject))
+
+        {:error, _reason} = error ->
+          error
+      end
+    else
+      {:ok, %{status: :unobserved, drifts: [], observed_builds: %{}}}
     end
   end
 
@@ -126,10 +141,10 @@ defmodule Spectre.Definition.Resolver do
   defp compare_builds(closure, observed, policy) when policy in [:reject, :report] do
     case Closure.compare_builds(closure, observed) do
       {:ok, :matched} ->
-        {:ok, %{status: :matched, drifts: []}}
+        {:ok, %{status: :matched, drifts: [], observed_builds: observed}}
 
       {:drift, drifts} when policy == :report ->
-        {:ok, %{status: :drifted, drifts: drifts}}
+        {:ok, %{status: :drifted, drifts: drifts, observed_builds: observed}}
 
       {:drift, drifts} ->
         {:error, {:definition_code_drift, drifts}}

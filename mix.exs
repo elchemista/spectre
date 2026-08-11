@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.3.0-rs"
+  @version "0.3.0"
   @source_url "https://github.com/elchemista/spectre"
   @docs_extras [
     "README.md",
