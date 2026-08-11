@@ -482,6 +482,28 @@ defmodule SpectreMorphBoundaryCoverageTest do
              Morph.replace_skill(malformed_definition, "missing", match: "x", reply: "y")
   end
 
+  test "core rejects a tampered replacement of a compiled Skill mount" do
+    %{instance: instance} = baseline(CompiledAgent)
+
+    draft =
+      instance
+      |> Morph.change(by: "actor:author", reason: "attempt to replace compiled behaviour")
+      |> Morph.mount_skill("compiled", match: "x", reply: "runtime replacement")
+
+    [mount_operation, evaluation_operation] = draft.operations
+    forged_operation = Map.put(mount_operation, "type", "replace_skill")
+
+    rejected =
+      %{draft | operations: [forged_operation, evaluation_operation]}
+      |> Morph.evaluate(cases: @protected_cases, now: 13)
+
+    assert rejected.error == {:morph_compiled_skill_is_immutable, "compiled"}
+    assert Instance.activation(instance).generation == 1
+
+    assert {:ok, turn} = Spectre.turn(instance, "x")
+    assert {:no_response, _result} = turn.decision
+  end
+
   test "approval is a separate durable commit and rejection cannot change live behavior" do
     %{instance: instance, bootstrap: bootstrap, store: store} = baseline(Agent)
 

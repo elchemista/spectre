@@ -15,7 +15,15 @@ defmodule Spectre.Morph.DSL do
 
   alias Spectre.Morph.Surface
 
-  @doc "Declares one immutable Morph surface for the current Agent."
+  @doc """
+  Declares the immutable proposal ceiling of the current Agent.
+
+  `:may_propose` accepts only `:mount_skill`, `:replace_skill`, and
+  `:disable_skill`. The `:within` keyword requires non-empty `:scopes` and a
+  positive `:prompt_tokens` ceiling. `:approval` is either `:human` or
+  `:host_policy`; it never delegates approval authority to the Agent.
+  """
+  @spec morph(keyword()) :: Macro.t()
   defmacro morph(opts) do
     surface = build!(opts, __CALLER__)
     module = __CALLER__.module
@@ -71,6 +79,9 @@ defmodule Spectre.Morph.DSL do
     })
   end
 
-  defp unique_keyword?(values),
-    do: values |> Keyword.keys() |> Enum.uniq() |> length() == length(values)
+  @spec unique_keyword?(keyword()) :: boolean()
+  defp unique_keyword?(values) do
+    keys = Keyword.keys(values)
+    MapSet.size(MapSet.new(keys)) == length(keys)
+  end
 end
