@@ -370,15 +370,13 @@ defmodule Spectre.Governance.Verifier do
   end
 
   defp verify_change_surface(parent, candidate, governance) do
-    with :ok <-
-           Surface.verify_candidate(
-             parent,
-             candidate,
-             governance.prompt_token_ceiling,
-             governance.applicability_ceilings
-           ) do
-      Surface.verify_evaluation_obligations(parent, candidate, governance.candidate_cases)
-    end
+    Surface.verify_governance(
+      parent,
+      candidate,
+      governance.prompt_token_ceiling,
+      governance.applicability_ceilings,
+      governance.candidate_cases
+    )
   end
 
   defp fetch_parent(store, ref, opts) do

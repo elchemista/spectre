@@ -9,6 +9,7 @@ defmodule Spectre.Governance.Checker.Declarative.Rehearsability do
 
   alias Spectre.Definition
   alias Spectre.Eval.Case, as: EvalCase
+  alias Spectre.Governance.Checker.Declarative.Shape
   alias Spectre.Input.Pipeline.Spec
   alias Spectre.Router.Arbitrators.Default
   alias Spectre.Router.LLMClassifier
@@ -140,7 +141,7 @@ defmodule Spectre.Governance.Checker.Declarative.Rehearsability do
   @spec callback_reply_error(atom(), term()) :: {:error, term()}
   defp callback_reply_error(callback, value) do
     {:error,
-     {:declarative_checker_agent_callback_failed, callback, {:invalid_reply, shape(value)}}}
+     {:declarative_checker_agent_callback_failed, callback, {:invalid_reply, Shape.of(value)}}}
   end
 
   @spec turn_handlers_supported(term()) :: result()
@@ -198,7 +199,7 @@ defmodule Spectre.Governance.Checker.Declarative.Rehearsability do
   end
 
   defp input_pipeline_supported(value),
-    do: {:error, {:declarative_checker_input_pipeline_not_rehearsable, shape(value)}}
+    do: {:error, {:declarative_checker_input_pipeline_not_rehearsable, Shape.of(value)}}
 
   @spec check_input_plug(term(), :ok) :: {:cont, :ok} | {:halt, {:error, term()}}
   defp check_input_plug(spec, :ok) do
@@ -207,7 +208,7 @@ defmodule Spectre.Governance.Checker.Declarative.Rehearsability do
         check_rehearsable_input_plug(module)
 
       :error ->
-        {:halt, {:error, {:declarative_checker_input_pipeline_not_rehearsable, shape(spec)}}}
+        {:halt, {:error, {:declarative_checker_input_pipeline_not_rehearsable, Shape.of(spec)}}}
     end
   end
 
@@ -300,10 +301,4 @@ defmodule Spectre.Governance.Checker.Declarative.Rehearsability do
         {:cont, :ok}
     end
   end
-
-  @spec shape(term()) :: :list | :map | :tuple | :other
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
 end

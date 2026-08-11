@@ -17,6 +17,7 @@ defmodule Spectre.Morph.GovernancePipeline do
   alias Spectre.Instance
   alias Spectre.Instance.Activation
   alias Spectre.Morph.Change
+  alias Spectre.Morph.Options
   alias Spectre.Morph.Surface
 
   @evaluate_options [
@@ -36,8 +37,8 @@ defmodule Spectre.Morph.GovernancePipeline do
   def evaluate(%Change{error: error} = change, _opts) when not is_nil(error), do: change
 
   def evaluate(%Change{} = change, opts) when is_list(opts) do
-    with :ok <- keyword_options(opts, @evaluate_options),
-         :ok <- require_state(change, :draft),
+    with :ok <- Options.validate(opts, @evaluate_options),
+         :ok <- Change.require_state(change, :draft),
          false <- change.operations == [],
          :ok <- prompt_ceiling(Keyword.get(opts, :prompt_token_ceiling)),
          {:ok, surface} <- canonical_surface(change),
@@ -71,8 +72,8 @@ defmodule Spectre.Morph.GovernancePipeline do
   def approve(%Change{error: error} = change, _opts) when not is_nil(error), do: change
 
   def approve(%Change{} = change, opts) when is_list(opts) do
-    with :ok <- keyword_options(opts, @approve_options),
-         :ok <- require_state(change, :evaluated),
+    with :ok <- Options.validate(opts, @approve_options),
+         :ok <- Change.require_state(change, :evaluated),
          {:ok, surface} <- canonical_surface(change),
          {:ok, approval_opts} <- approval_opts(surface, opts),
          {:ok, approved_ref} <- Approval.approve(change.store, change.ref, approval_opts) do
@@ -90,10 +91,10 @@ defmodule Spectre.Morph.GovernancePipeline do
   def reject(%Change{error: error} = change, _opts) when not is_nil(error), do: change
 
   def reject(%Change{} = change, opts) when is_list(opts) do
-    with :ok <- keyword_options(opts, @reject_options),
-         :ok <- require_state(change, :evaluated),
-         :ok <- nonempty(Keyword.get(opts, :by), :by),
-         :ok <- nonempty(Keyword.get(opts, :reason), :reason),
+    with :ok <- Options.validate(opts, @reject_options),
+         :ok <- Change.require_state(change, :evaluated),
+         :ok <- Options.require_nonempty(Keyword.get(opts, :by), :by),
+         :ok <- Options.require_nonempty(Keyword.get(opts, :reason), :reason),
          {:ok, rejected_ref} <-
            Approval.reject(change.store, change.ref,
              actor_ref: Keyword.get(opts, :by),
@@ -114,8 +115,8 @@ defmodule Spectre.Morph.GovernancePipeline do
   def activate(%Change{error: error}, _opts) when not is_nil(error), do: {:error, error}
 
   def activate(%Change{} = change, opts) when is_list(opts) do
-    with :ok <- keyword_options(opts, @activate_options),
-         :ok <- require_state(change, :approved) do
+    with :ok <- Options.validate(opts, @activate_options),
+         :ok <- Change.require_state(change, :approved) do
       Spectre.activate(change.instance, change.ref,
         expected_generation: change.activation.generation,
         evidence: change.evidence,
@@ -219,8 +220,10 @@ defmodule Spectre.Morph.GovernancePipeline do
   defp effective_approval_mode(_surface, mode), do: mode
 
   @spec approval_actor(Surface.t(), term()) :: :ok | {:error, term()}
-  defp approval_actor(%Surface{approval_requirement: :human}, actor), do: nonempty(actor, :by)
-  defp approval_actor(_surface, actor), do: optional_nonempty(actor, :by)
+  defp approval_actor(%Surface{approval_requirement: :human}, actor),
+    do: Options.require_nonempty(actor, :by)
+
+  defp approval_actor(_surface, actor), do: Options.optional_nonempty(actor, :by)
 
   @spec approval_requirement(Surface.t(), term()) :: :ok | {:error, term()}
   defp approval_requirement(%Surface{approval_requirement: :human}, :human), do: :ok
@@ -240,48 +243,6 @@ defmodule Spectre.Morph.GovernancePipeline do
     with {:ok, resolution} <- Resolver.resolve(change.store, change.activation.definition_ref) do
       Surface.from_canonical(resolution.definition)
     end
-  end
-
-  @spec require_state(Change.t(), Change.state()) :: :ok | {:error, term()}
-  defp require_state(%Change{state: state}, state), do: :ok
-
-  defp require_state(%Change{state: actual}, expected),
-    do: {:error, {:morph_state, expected, actual}}
-
-  @spec nonempty(term(), atom()) :: :ok | {:error, term()}
-  defp nonempty(value, _field) when is_binary(value) and value != "", do: :ok
-  defp nonempty(value, field), do: {:error, {:morph_requires, field, value}}
-
-  @spec optional_nonempty(term(), atom()) :: :ok | {:error, term()}
-  defp optional_nonempty(nil, _field), do: :ok
-  defp optional_nonempty(value, field), do: nonempty(value, field)
-
-  @spec keyword_options(term(), [atom()]) :: :ok | {:error, term()}
-  defp keyword_options(opts, allowed) do
-    cond do
-      not Keyword.keyword?(opts) ->
-        {:error, {:invalid_morph_options, opts}}
-
-      duplicate_keyword?(opts) ->
-        {:error, :duplicate_morph_options}
-
-      true ->
-        reject_unknown_options(opts, allowed)
-    end
-  end
-
-  @spec reject_unknown_options(keyword(), [atom()]) :: :ok | {:error, term()}
-  defp reject_unknown_options(opts, allowed) do
-    case Keyword.keys(opts) -- allowed do
-      [] -> :ok
-      unknown -> {:error, {:unknown_morph_options, unknown}}
-    end
-  end
-
-  @spec duplicate_keyword?(keyword()) :: boolean()
-  defp duplicate_keyword?(opts) do
-    keys = Keyword.keys(opts)
-    MapSet.size(MapSet.new(keys)) != length(keys)
   end
 
   @spec min_ceiling(term(), number()) :: number()

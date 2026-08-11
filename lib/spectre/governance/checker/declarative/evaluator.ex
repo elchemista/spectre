@@ -9,6 +9,7 @@ defmodule Spectre.Governance.Checker.Declarative.Evaluator do
 
   alias Spectre.Eval.Case, as: EvalCase
   alias Spectre.Governance.Checker.Declarative.Rehearsability
+  alias Spectre.Governance.Checker.Declarative.Shape
   alias Spectre.Input
   alias Spectre.Input.Pipeline
   alias Spectre.Router
@@ -42,7 +43,7 @@ defmodule Spectre.Governance.Checker.Declarative.Evaluator do
   end
 
   def normalize_cases(value),
-    do: {:error, {:invalid_declarative_eval_cases, shape(value)}}
+    do: {:error, {:invalid_declarative_eval_cases, Shape.of(value)}}
 
   @doc false
   @spec verify_candidate_case_ids([EvalCase.t()], [String.t()]) :: :ok | {:error, term()}
@@ -248,9 +249,4 @@ defmodule Spectre.Governance.Checker.Declarative.Evaluator do
 
   defp evaluation_context(%EvalCase{}, %{scope_ceiling: scopes}),
     do: {:error, {:declarative_eval_context_required, scopes}}
-
-  @spec shape(term()) :: :map | :tuple | :other
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
 end

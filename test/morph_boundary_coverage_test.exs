@@ -473,12 +473,18 @@ defmodule SpectreMorphBoundaryCoverageTest do
 
     absent_definition = %{draft | activation: %{draft.activation | definition_ref: absent_ref}}
 
-    assert %Change{error: {:morph_runtime_skill_not_found, "missing"}} =
+    assert %Change{
+             error:
+               {:morph_change_definition_ref_mismatch, _pinned_definition_ref,
+                _absent_definition_ref}
+           } =
              Morph.replace_skill(absent_definition, "missing", match: "x", reply: "y")
 
     malformed_definition = %{draft | activation: %{draft.activation | definition_ref: "bad-ref"}}
 
-    assert %Change{error: {:invalid_definition_ref, "bad-ref"}} =
+    assert %Change{
+             error: {:morph_change_definition_ref_mismatch, _pinned_definition_ref, "bad-ref"}
+           } =
              Morph.replace_skill(malformed_definition, "missing", match: "x", reply: "y")
   end
 
@@ -524,11 +530,14 @@ defmodule SpectreMorphBoundaryCoverageTest do
     assert is_binary(report["digest"])
     assert report["structural_changes"] != []
 
-    assert %Change{error: {:morph_not_draft, :evaluated}} =
+    assert %Change{error: {:morph_state, :draft, :evaluated}} =
              Morph.mount_skill(evaluated, "too-late", match: "late", reply: "late")
 
-    assert %Change{error: {:morph_not_draft, :evaluated}} =
+    assert %Change{error: {:morph_state, :draft, :evaluated}} =
              Morph.disable_skill(evaluated, "refunds")
+
+    assert %Change{error: {:morph_state, :draft, :evaluated}} =
+             Morph.evaluate(evaluated, now: 101)
 
     assert %Change{error: {:morph_requires_human_approval, :automatic}} =
              Morph.approve(evaluated, mode: :automatic, now: 101)

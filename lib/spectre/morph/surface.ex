@@ -213,7 +213,10 @@ defmodule Spectre.Morph.Surface do
   def verify_candidate(%Canonical{} = parent, %Canonical{} = candidate, prompt_ceiling, ceilings) do
     case from_canonical(parent) do
       {:ok, surface} ->
-        Policy.verify(surface, parent, candidate, prompt_ceiling, ceilings)
+        with {:ok, _mutations} <-
+               Policy.verify(surface, parent, candidate, prompt_ceiling, ceilings) do
+          :ok
+        end
 
       {:error, :morph_surface_not_declared} ->
         verify_closed_candidate(candidate)
@@ -240,6 +243,46 @@ defmodule Spectre.Morph.Surface do
   end
 
   def verify_evaluation_obligations(%Canonical{}, %Canonical{}, cases),
+    do: {:error, {:invalid_morph_evaluation_obligations, shape(cases)}}
+
+  @doc false
+  @spec verify_governance(
+          Canonical.t(),
+          Canonical.t(),
+          number() | nil,
+          map() | nil,
+          [map()]
+        ) :: :ok | {:error, term()}
+  def verify_governance(
+        %Canonical{} = parent,
+        %Canonical{} = candidate,
+        prompt_ceiling,
+        ceilings,
+        cases
+      )
+      when is_list(cases) do
+    case from_canonical(parent) do
+      {:ok, surface} ->
+        with {:ok, mutations} <-
+               Policy.verify(
+                 surface,
+                 parent,
+                 candidate,
+                 prompt_ceiling,
+                 ceilings
+               ) do
+          EvaluationObligations.verify(surface, mutations, cases)
+        end
+
+      {:error, :morph_surface_not_declared} ->
+        verify_closed_candidate(candidate)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  def verify_governance(%Canonical{}, %Canonical{}, _prompt_ceiling, _ceilings, cases),
     do: {:error, {:invalid_morph_evaluation_obligations, shape(cases)}}
 
   @doc false

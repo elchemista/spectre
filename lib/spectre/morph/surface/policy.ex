@@ -3,8 +3,9 @@ defmodule Spectre.Morph.Surface.Policy do
   Applies the immutable Morph proposal ceiling to governance operations.
 
   The policy computes the meet between the compiled Surface and host-provided
-  ceilings during composition, then re-derives the parent-to-candidate diff at
-  activation. Transient Change fields are never authority-bearing inputs.
+  ceilings during composition, then verifies a parent-to-candidate diff
+  derived by the Surface boundary at activation. Transient Change fields are
+  never authority-bearing inputs.
   """
 
   alias Spectre.Definition.Canonical
@@ -46,7 +47,7 @@ defmodule Spectre.Morph.Surface.Policy do
           Canonical.t(),
           number() | nil,
           map() | nil
-        ) :: :ok | {:error, term()}
+        ) :: {:ok, [Mutation.t()]} | {:error, term()}
   def verify(surface, parent, candidate, prompt_ceiling, ceilings) do
     with {:ok, candidate_surface} <- Surface.from_canonical(candidate),
          true <- candidate_surface == surface,
@@ -55,7 +56,7 @@ defmodule Spectre.Morph.Surface.Policy do
          :ok <- permitted_mutations(surface, mutations),
          :ok <- persisted_prompt_ceiling(surface, prompt_ceiling),
          :ok <- persisted_applicability_ceilings(surface, mutations, ceilings) do
-      :ok
+      {:ok, mutations}
     else
       false -> {:error, :governance_change_surface_is_immutable}
       {:error, _reason} = error -> error

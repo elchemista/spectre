@@ -16,6 +16,7 @@ defmodule Spectre.Governance.Checker.Declarative do
   alias Spectre.Governance.Checker.Declarative.Evaluator
   alias Spectre.Governance.Checker.Declarative.ReceiptIssuer
   alias Spectre.Governance.Checker.Declarative.Rehearsability
+  alias Spectre.Governance.Checker.Declarative.Shape
   alias Spectre.Governance.EvaluationDelta
   alias Spectre.Skill.Runtime.Loader
 
@@ -42,11 +43,11 @@ defmodule Spectre.Governance.Checker.Declarative do
       when is_list(cases) and is_list(opts) do
     if Keyword.keyword?(opts),
       do: run_checked(store, governance, cases, opts),
-      else: {:error, {:invalid_declarative_check, shape(cases), shape(opts)}}
+      else: {:error, {:invalid_declarative_check, Shape.of(cases), Shape.of(opts)}}
   end
 
   def run(_store, _candidate, cases, opts),
-    do: {:error, {:invalid_declarative_check, shape(cases), shape(opts)}}
+    do: {:error, {:invalid_declarative_check, Shape.of(cases), Shape.of(opts)}}
 
   @spec run_checked(Store.config(), CandidateState.t(), [evaluation_case()], keyword()) ::
           result()
@@ -90,10 +91,4 @@ defmodule Spectre.Governance.Checker.Declarative do
       {:ok, delta, receipts}
     end
   end
-
-  @spec shape(term()) :: :list | :map | :tuple | :other
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
 end

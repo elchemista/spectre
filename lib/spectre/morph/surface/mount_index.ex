@@ -8,9 +8,10 @@ defmodule Spectre.Morph.Surface.MountIndex do
   """
 
   alias Spectre.Definition.Canonical
+  alias Spectre.Morph.StableName
   alias Spectre.Morph.Surface.Mutation
 
-  @type mount_id :: String.t() | integer()
+  @type mount_id :: StableName.t()
   @type index :: %{optional(mount_id()) => map()}
 
   @doc false
@@ -33,6 +34,15 @@ defmodule Spectre.Morph.Surface.MountIndex do
     with {:ok, parent_mounts} <- build(parent),
          {:ok, candidate_mounts} <- build(candidate) do
       {:ok, mutation_diff(parent_mounts, candidate_mounts)}
+    end
+  end
+
+  @doc false
+  @spec fetch(index(), term()) :: {:ok, map()} | :error
+  def fetch(index, mount_id) when is_map(index) do
+    case StableName.normalize(mount_id) do
+      {:ok, normalized} -> Map.fetch(index, normalized)
+      {:error, :invalid_stable_name} -> :error
     end
   end
 
@@ -114,13 +124,12 @@ defmodule Spectre.Morph.Surface.MountIndex do
   end
 
   @spec canonical_mount_id(term()) :: {:ok, mount_id()} | {:error, :invalid_mount_id}
-  defp canonical_mount_id(value) when is_binary(value) and value != "", do: {:ok, value}
-
-  defp canonical_mount_id(value) when is_atom(value) and not is_nil(value),
-    do: {:ok, Atom.to_string(value)}
-
-  defp canonical_mount_id(value) when is_integer(value), do: {:ok, value}
-  defp canonical_mount_id(_value), do: {:error, :invalid_mount_id}
+  defp canonical_mount_id(value) do
+    case StableName.normalize(value) do
+      {:ok, mount_id} -> {:ok, mount_id}
+      {:error, :invalid_stable_name} -> {:error, :invalid_mount_id}
+    end
+  end
 
   @spec value(map(), atom(), term()) :: term()
   defp value(map, key, default \\ nil),

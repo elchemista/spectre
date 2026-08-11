@@ -72,24 +72,29 @@ defmodule Spectre.Skill.Runtime.Loader do
           {:ok, Runtime.t()} | {:error, term()}
   defp runtime(agent, authority, surface) do
     authority_max = Map.get(authority.limits, :max_tokens)
-    maximum = prompt_window(authority_max, surface.prompt_token_ceiling)
 
-    available = min(maximum, surface.prompt_token_ceiling)
+    with {:ok, maximum} <- prompt_window(authority_max, surface.prompt_token_ceiling) do
+      available = min(maximum, surface.prompt_token_ceiling)
 
-    Runtime.new(agent, authority,
-      max_prompt_tokens: maximum,
-      kernel_prompt_tokens: maximum - available,
-      per_skill_prompt_cap: available
-    )
+      Runtime.new(agent, authority,
+        max_prompt_tokens: maximum,
+        kernel_prompt_tokens: maximum - available,
+        per_skill_prompt_cap: available
+      )
+    end
   end
 
-  # Envelope limits are numeric, while token windows are integral. Rounding a
-  # positive fractional grant down preserves least authority and keeps a valid
-  # Envelope loadable without ever allocating beyond its ceiling.
-  @spec prompt_window(number() | nil, pos_integer()) :: non_neg_integer()
-  defp prompt_window(value, _surface_ceiling) when is_integer(value) and value >= 0, do: value
-  defp prompt_window(value, _surface_ceiling) when is_float(value) and value > 0, do: trunc(value)
-  defp prompt_window(_value, surface_ceiling), do: surface_ceiling
+  # Token windows are discrete resources. Silently rounding a numeric grant
+  # would change the signed authority contract, so non-integral and empty
+  # grants fail before a runtime is constructed.
+  @spec prompt_window(term(), pos_integer()) :: {:ok, pos_integer()} | {:error, term()}
+  defp prompt_window(nil, surface_ceiling), do: {:ok, surface_ceiling}
+
+  defp prompt_window(value, _surface_ceiling) when is_integer(value) and value > 0,
+    do: {:ok, value}
+
+  defp prompt_window(value, _surface_ceiling),
+    do: {:error, {:invalid_skill_runtime_authority_prompt_limit, value}}
 
   @spec mounted_skills(Canonical.t()) :: {:ok, [mounted_skill()]} | {:error, term()}
   defp mounted_skills(definition) do

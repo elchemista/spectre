@@ -327,6 +327,22 @@ defmodule SpectreMorphTest do
              |> Morph.change(by: "actor:author", reason: "unsupported placeholder")
              |> Morph.mount_skill("refunds", match: "refund", reply: "{{input.secret}}")
 
+    oversized_input = String.duplicate("x", 64)
+
+    assert %Change{
+             operations: [],
+             error:
+               {:morph_evaluation_obligation_not_derivable, "refunds",
+                {:rendered_prompt_fragment_over_budget, "refunds:reply", _estimated, 4}}
+           } =
+             instance
+             |> Morph.change(by: "actor:author", reason: "rendered reply exceeds its budget")
+             |> Morph.mount_skill("refunds",
+               match: oversized_input,
+               reply: "{{input.text}}",
+               token_cap: 4
+             )
+
     invalid_surface = %Surface{
       schema_version: 1,
       operation_types: ["mount_skill"],
