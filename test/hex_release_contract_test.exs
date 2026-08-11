@@ -4,6 +4,7 @@ defmodule SpectreHexReleaseContractTest do
   @root Path.expand("..", __DIR__)
   @documentation_files [
                          "README.md",
+                         "LLMS.md",
                          "SYSTEM.md",
                          "CHANGELOG.md",
                          "CONTRIBUTING.md",
@@ -17,6 +18,7 @@ defmodule SpectreHexReleaseContractTest do
     assert config[:version] == "0.3.0"
     assert config[:homepage_url] == "https://spectre.elchemista.com"
     assert package[:licenses] == ["Apache-2.0"]
+    assert "LLMS.md" in package[:files]
 
     assert package[:links] == %{
              "Website" => "https://spectre.elchemista.com",
@@ -40,6 +42,8 @@ defmodule SpectreHexReleaseContractTest do
              MapSet.new(extras)
            )
 
+    assert "LLMS.md" in extras
+
     for relative_file <- @documentation_files,
         target <- markdown_targets(relative_file),
         local_target?(target) do
@@ -50,9 +54,11 @@ defmodule SpectreHexReleaseContractTest do
   test "current installation examples use Hex while snapshots require an exact ref" do
     readme = File.read!(Path.join(@root, "README.md"))
     installation = File.read!(Path.join(@root, "docs/INSTALLATION.md"))
+    llm_guide = File.read!(Path.join(@root, "LLMS.md"))
 
     assert readme =~ ~s({:spectre, "~> 0.3.0"})
     assert installation =~ ~s({:spectre, "~> 0.3.0"})
+    assert llm_guide =~ ~s({:spectre, "~> 0.3.0"})
     assert installation =~ ~s({:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"})
 
     refute readme =~ ~r/{:spectre,\s+github:.*tag:\s*"0\.3\.0"/

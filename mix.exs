@@ -6,6 +6,7 @@ defmodule Spectre.MixProject do
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
     "README.md",
+    "LLMS.md",
     "SYSTEM.md",
     "CHANGELOG.md",
     "docs/GETTING_STARTED.md",
@@ -93,7 +94,7 @@ defmodule Spectre.MixProject do
       name: "spectre",
       maintainers: ["elchemista"],
       files:
-        ~w(lib docs mix.exs .formatter.exs README.md SYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
+        ~w(lib docs mix.exs .formatter.exs README.md LLMS.md SYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
       licenses: ["Apache-2.0"],
       links: %{
         "Website" => @homepage_url,
@@ -146,6 +147,7 @@ defmodule Spectre.MixProject do
       groups_for_extras: [
         "Start here": [
           "README.md",
+          "LLMS.md",
           "SYSTEM.md",
           "docs/GETTING_STARTED.md",
           "docs/EXAMPLES.md",
@@ -275,6 +277,10 @@ defmodule Spectre.MixProject do
           Spectre.Policy.Resolution
         ],
         Governance: [
+          Spectre.Morph,
+          Spectre.Morph.Change,
+          Spectre.Morph.DSL,
+          Spectre.Morph.Surface,
           Spectre.Governance.ChangeSet,
           Spectre.Governance.ChangeSet.Operation,
           Spectre.Governance.ChangeSet.Handler,

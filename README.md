@@ -199,6 +199,8 @@ in [Getting Started](docs/GETTING_STARTED.md).
 
 **Start here**
 
+- [Guide for LLMs and coding agents](LLMS.md) — machine-oriented contracts,
+  safe usage patterns, and documentation routing for Spectre `0.3.0`.
 - [Getting Started](docs/GETTING_STARTED.md) — a complete agent and host lifecycle.
 - [Two Realistic Agents](docs/EXAMPLES.md) — database Q&A with Kinetic, browse-and-answer with Lens.
 - [Architecture](docs/ARCHITECTURE.md) — ownership, lifecycle, trust, and host boundaries.

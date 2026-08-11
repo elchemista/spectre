@@ -8,6 +8,10 @@ minor release may contain documented breaking API changes.
 
 ### Added
 
+- Added `LLMS.md`, a machine-oriented guide shipped in the Hex package and
+  included in ExDoc's generated `llms.txt`, covering the public entry points,
+  host boundaries, Morph lifecycle, runtime-data rules, and test expectations.
+
 - Added `Spectre.Morph`, a host-governed evolution API whose canonical Surface
   bounds runtime Skill mount, replacement, and disable proposals. Morph derives
   real replay obligations from immutable Definition diffs, requires independent
