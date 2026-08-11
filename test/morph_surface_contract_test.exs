@@ -33,6 +33,7 @@ defmodule SpectreMorphSurfaceContractTest do
   alias Spectre.Instance
   alias Spectre.Morph
   alias Spectre.Morph.Change
+  alias Spectre.Morph.SkillProposal
   alias Spectre.Morph.Surface
   alias Spectre.Reflection.Policy
   alias Spectre.Subject
@@ -70,6 +71,41 @@ defmodule SpectreMorphSurfaceContractTest do
     assert component.payload == Surface.to_data(surface)
     assert :ok = Surface.validate_component(component)
     assert :ok = ContractRegistry.validate(ContractRegistry.default(), canonical)
+  end
+
+  test "the Skill proposal builder is closed and bounded by the durable ChangeSet limit" do
+    scopes = Enum.map(1..256, &"scope-#{&1}")
+
+    surface =
+      Surface.new!(%{
+        operation_types: [:mount_skill, :disable_skill],
+        scope_ceiling: scopes,
+        prompt_token_ceiling: 64,
+        approval_requirement: :host_policy
+      })
+
+    draft = %Change{
+      instance: self(),
+      store: nil,
+      agent: Agent,
+      activation: nil,
+      surface: surface,
+      actor_ref: "actor:test",
+      reason: "exercise the bounded builder"
+    }
+
+    assert %Change{error: {:morph_not_permitted, "disable_skill"}} =
+             SkillProposal.put(draft, "disable_skill", "bounded", [])
+
+    assert %Change{
+             operations: [],
+             error: {:governance_operation_limit_exceeded, 257, 256}
+           } =
+             SkillProposal.put(draft, :mount_skill, "bounded",
+               match: "bounded",
+               reply: "bounded",
+               scopes: scopes
+             )
   end
 
   test "changing only the prompt ceiling changes Definition identity" do

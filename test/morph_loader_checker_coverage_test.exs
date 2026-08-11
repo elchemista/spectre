@@ -132,6 +132,16 @@ defmodule SpectreMorphLoaderCheckerCoverageTest do
              Loader.load(store, ref, Agent, closure_digest: 42)
   end
 
+  test "Loader conservatively maps a fractional authority grant to an integral prompt window" do
+    store = store()
+    canonical = agent_definition(Agent, [])
+    ref = publish!(store, canonical, Agent, authority(max_tokens: 12.5))
+
+    assert {:ok, loaded} = Loader.load(store, ref, Agent)
+    assert loaded.runtime.max_prompt_tokens == 12
+    assert loaded.runtime.per_skill_prompt_cap == 12
+  end
+
   test "Loader rejects malformed mount envelopes and embedded Definition Ref tampering" do
     store = store()
     skill = reply_skill("refunds", "refund", "ok")

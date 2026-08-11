@@ -445,6 +445,50 @@ defmodule SpectreMorphRuntimeTurnTest do
              Spectre.turn(instance, "refund", skill_context: %{"scope" => "billing"})
   end
 
+  test "disabling one scoped Skill preserves matching behavior in sibling scopes" do
+    %{instance: instance} = start_fixture(WorkAgent)
+
+    installed =
+      instance
+      |> Morph.change(by: "actor:author", reason: "Install scoped sibling Skills")
+      |> Morph.mount_skill("support-status",
+        match: "status",
+        reply: "support status",
+        scopes: [:support]
+      )
+      |> Morph.mount_skill("billing-status",
+        match: "status",
+        reply: "billing status",
+        scopes: [:billing]
+      )
+      |> Morph.evaluate(cases: @protected_cases, now: 240)
+      |> Morph.approve(by: "actor:reviewer", mode: :human, now: 241)
+
+    assert installed.error == nil
+    assert {:ok, _activation} = Morph.activate(installed, now: 242)
+
+    disabled =
+      instance
+      |> Morph.change(by: "actor:author", reason: "Disable support only")
+      |> Morph.disable_skill("support-status")
+      |> Morph.evaluate(cases: @protected_cases, now: 243)
+
+    assert disabled.error == nil
+    assert disabled.state == :evaluated
+    assert disabled.delta.passed
+
+    approved = Morph.approve(disabled, by: "actor:reviewer", mode: :human, now: 244)
+    assert {:ok, _activation} = Morph.activate(approved, now: 245)
+
+    assert {:ok, support_turn} =
+             Spectre.turn(instance, "status", skill_context: %{"scope" => "support"})
+
+    assert {:no_response, _result} = support_turn.decision
+
+    assert {:ok, %Turn{observable: {:reply, "billing status", _turn_ref}}} =
+             Spectre.turn(instance, "status", skill_context: %{"scope" => "billing"})
+  end
+
   test "a queued Turn executes the Definition selected at admission across a concurrent activation" do
     %{instance: instance} = start_fixture(WorkAgent)
 

@@ -63,6 +63,10 @@ defmodule Spectre.Governance.ChangeSet do
   @spec schema_version() :: pos_integer()
   def schema_version, do: @schema_version
 
+  @doc "Returns the maximum number of ordered operations in one ChangeSet."
+  @spec operation_limit() :: pos_integer()
+  def operation_limit, do: @max_operations
+
   @doc "Builds and verifies a ChangeSet from host or decoded JSON-shaped data."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def new(%__MODULE__{} = change_set) do
