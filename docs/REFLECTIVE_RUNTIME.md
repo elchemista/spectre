@@ -1,6 +1,6 @@
 # Reflective Runtime
 
-Spectre `0.3.0-rs` completes the core reflective-runtime path without giving
+Spectre `0.3.0` completes the core reflective-runtime path without giving
 models control over code, authority, evaluation policy, publication, approval,
 or activation. Reflection is mechanical inspection; Forge emits an inert,
 governed proposal.
@@ -203,7 +203,7 @@ trusted evidence.
 Reflection against all exact inputs.
 `Spectre.Foundation.Conformance.verify_forge_proposal/1` verifies complete
 Proposal lineage. The permanent
-`test/fixtures/compatibility/0.3.0-rs/reflective-runtime-v1.json` fixture pins
+`test/fixtures/compatibility/0.3.0/reflective-runtime-v1.json` fixture pins
 the schema, Definition, Activation, Experience, Reflection, critic, oracle,
 ChangeSet and Proposal identities for this release.
 

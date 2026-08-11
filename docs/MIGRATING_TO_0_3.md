@@ -1,6 +1,6 @@
-# Migrating to Spectre 0.3.0-rs
+# Migrating to Spectre 0.3.0
 
-Spectre `0.3.0-rs` is the core cutover to the governed reflective runtime. It
+Spectre `0.3.0` is the core cutover to the governed reflective runtime. It
 promotes the single canonical Definition, Activation, runtime Skill,
 data-driven Execution and governance model already hardened across the 0.2.x
 development gates, then adds policy-gated Reflection, opt-in Experience and
@@ -12,9 +12,9 @@ Review, Approval and the activation CAS.
 
 ## Upgrade sequence
 
-1. Pin the core package to tag `0.3.0-rs` and compile with warnings as errors.
+1. Pin the core package to tag `0.3.0` and compile with warnings as errors.
 2. Run every historical compatibility fixture plus
-   `test/fixtures/compatibility/0.3.0-rs/reflective-runtime-v1.json`.
+   `test/fixtures/compatibility/0.3.0/reflective-runtime-v1.json`.
 3. Run `Spectre.Foundation.Conformance.matrix/0` and the complete local
    `Spectre.Stack.Conformance` package matrix before starting Instances.
 4. Keep the Definition Store durable whenever Instance checkpoints are
@@ -108,7 +108,7 @@ activation API.
 
 ## Intentional 0.3 boundary changes
 
-- The package version is `0.3.0-rs`; constraints that intentionally stop at
+- The package version is `0.3.0`; constraints that intentionally stop at
   `< 0.3.0` must be reviewed by their owning packages.
 - The normative public API manifest now includes Experience, Reflection,
   Forge and their conformance helpers.
@@ -121,7 +121,7 @@ activation API.
 
 No sibling `spectre_*` package is changed by this core release. Their owners
 must update version constraints and run their own real adapter matrices when
-adopting `0.3.0-rs`.
+adopting `0.3.0`.
 
 ## Release checks
 

@@ -35,7 +35,7 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.3.0-rs` completes the core governed reflective runtime: opt-in
+> Spectre `0.3.0` completes the core governed reflective runtime: opt-in
 > redacted Experience, mechanical Declared/Effective/Observed Reflection,
 > oracle-bound multi-model critique, inert Forge proposals, and explicit
 > evidence-aware rebase over the existing governance and activation gates.
@@ -44,9 +44,9 @@ a map, not a magic trick.
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
 
-## 0.3.0-rs Governed Reflective Runtime
+## 0.3.0 Governed Reflective Runtime
 
-Version `0.3.0-rs` keeps Execution, Reflection and Forge as separate planes.
+Version `0.3.0` keeps Execution, Reflection and Forge as separate planes.
 Reflection mechanically projects the exact canonical Definition, effective
 Manifest/Activation and an optional redacted Experience snapshot without
 executing inspected instructions or calling a model. Experience recording is
@@ -58,7 +58,7 @@ cases enter a ChangeSet only when bound to a trusted or independently approved
 oracle. Forge can propose and explicitly rebase; only the existing Composer,
 Review, Approval, Store re-read, owner fence and generation CAS can activate a
 Candidate. See [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md) and
-[Migrating to 0.3.0-rs](docs/MIGRATING_TO_0_3.md).
+[Migrating to 0.3.0](docs/MIGRATING_TO_0_3.md).
 
 ## 0.2.9 Governed Definition Changes
 
@@ -212,7 +212,7 @@ checkpointable conversational continuation; neither was renamed to Work. See
 Version `0.1.6` is a consolidation-only release: it adds no runtime feature and
 makes no intentional breaking change. The initially guaranteed toolchain is
 Elixir 1.19 on Erlang/OTP 28. Uniform CI runs formatting, compilation with
-warnings as errors, tests, non-strict Credo, Dialyzer, ExDoc, and local package
+warnings as errors, tests, non-strict Credo, Dialyzer, and local package
 validation with no publication. The normative surface is the
 [public API manifest](docs/PUBLIC_API.md).
 
@@ -323,7 +323,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.3.0-rs"}
+    {:spectre, github: "elchemista/spectre", tag: "0.3.0"}
   ]
 end
 ```
@@ -849,7 +849,7 @@ adapters on startup, and can stop after an idle timeout.
   materialization, prompt receipts, handoffs, migrations, and rehearsal.
 - [Migrating to 0.2.9](docs/MIGRATING_TO_0_2_9.md) - governed ChangeSets,
   gate receipts, approval, activation, rollback, and conservative GC.
-- [Migrating to 0.3.0-rs](docs/MIGRATING_TO_0_3.md) - the core cutover,
+- [Migrating to 0.3.0](docs/MIGRATING_TO_0_3.md) - the core cutover,
   durable compatibility, Reflection policy, Experience opt-in, and Forge
   rollout.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
@@ -879,7 +879,7 @@ adapters on startup, and can stop after an idle timeout.
   anti-Goodhart evaluation, approvals, rollback, and artifact retention.
 - [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md) - Experience, mechanical
   Reflection, critics, oracle approvals, Forge proposals, and explicit rebase.
-- [0.3.0-rs Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [0.3.0 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

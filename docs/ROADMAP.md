@@ -1,12 +1,12 @@
 # Roadmap
 
 Spectre remains a focused OTP-native runtime rather than a framework that owns
-application business logic. Version `0.3.0-rs` completes the core governed
+application business logic. Version `0.3.0` completes the core governed
 reflective-runtime concept on one canonical Definition and one operational
 runtime; future work extends adapters and distributed integration without
 adding a second owner for Agent or operational state.
 
-## 0.3.0-rs reflective runtime — complete in core
+## 0.3.0 reflective runtime — complete in core
 
 Opt-in Experience, mechanical Declared/Effective/Observed Reflection,
 policy-gated introspection, compiled Prism-compatible critics, independent
@@ -148,7 +148,7 @@ Phases 1 through 6 are functionally complete for the library scope:
   suite exceeds 1,000 tests.
 
 Current verification is 1,177 passing tests and 90.08% line coverage, together
-with warnings-as-errors compilation, strict Credo, Dialyzer, ExDoc generation,
+with warnings-as-errors compilation, strict Credo, Dialyzer,
 formatting, and diff checks. The default 90% coverage threshold remains
 enforced.
 
@@ -728,7 +728,6 @@ Exit criteria:
 - one canonical host integration path is documented in Getting Started;
 - serialized state upgrades are tested through schema-v5 fixtures;
 - release notes and a changelog policy are present;
-- ExDoc builds without missing-reference warnings.
 
 ## Recommended Implementation Order
 

@@ -11,8 +11,20 @@ defmodule Spectre.SensitiveData do
     socialsecuritynumber ssn streetaddress taxid userid zipcode
   ))
 
+  @sensitive_suffix_components MapSet.new(~w(
+    auth authorization bearer cookie credential jwt oauth passphrase password secret
+    session token
+  ))
+
+  @sensitive_key_qualifiers MapSet.new(~w(
+    access api auth client credential encryption private secret session signing
+  ))
+
   @spec sensitive_key?(term()) :: boolean()
-  def sensitive_key?(key), do: MapSet.member?(@sensitive_keys, normalize_key(key))
+  def sensitive_key?(key) do
+    MapSet.member?(@sensitive_keys, normalize_key(key)) or
+      sensitive_components?(key_components(key))
+  end
 
   @spec normalize_key(term()) :: String.t()
   def normalize_key(key) when is_atom(key) and not is_nil(key),
@@ -25,6 +37,28 @@ defmodule Spectre.SensitiveData do
   end
 
   def normalize_key(_key), do: ""
+
+  @spec key_components(term()) :: [String.t()]
+  defp key_components(key) when is_atom(key) and not is_nil(key),
+    do: key |> Atom.to_string() |> key_components()
+
+  defp key_components(key) when is_binary(key) do
+    key
+    |> String.replace(~r/([A-Z]+)([A-Z][a-z])/u, "\\1_\\2")
+    |> String.replace(~r/([a-z0-9])([A-Z])/u, "\\1_\\2")
+    |> String.downcase()
+    |> String.split(~r/[^a-z0-9]+/u, trim: true)
+  end
+
+  defp key_components(_key), do: []
+
+  defp sensitive_components?(components) do
+    case Enum.reverse(components) do
+      ["key", qualifier | _rest] -> MapSet.member?(@sensitive_key_qualifiers, qualifier)
+      [suffix | _rest] -> MapSet.member?(@sensitive_suffix_components, suffix)
+      [] -> false
+    end
+  end
 
   @spec sensitive_path(term()) :: [term()] | nil
   def sensitive_path(value), do: sensitive_path(value, [])

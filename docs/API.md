@@ -4,7 +4,7 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.3.0-rs` completes the core governed reflective runtime with opt-in
+Spectre `0.3.0` completes the core governed reflective runtime with opt-in
 redacted Experience, mechanical Declared/Effective/Observed Reflection,
 compiled critic adapters, oracle-bound evaluation cases, inert Forge
 proposals, and explicit evidence-aware rebase. It retains every earlier

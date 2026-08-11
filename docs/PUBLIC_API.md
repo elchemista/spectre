@@ -1,6 +1,6 @@
-# Spectre public API — 0.3.0-rs
+# Spectre public API — 0.3.0
 
-This file is the normative public API manifest for Spectre `0.3.0-rs`. It retains
+This file is the normative public API manifest for Spectre `0.3.0`. It retains
 the recoverable `0.1.6` conversational surface and adds the vNext operational
 surface. Compatibility guarantees apply only to the modules and callables
 listed below. Any module, function, macro, or callback not listed here is an
@@ -10,6 +10,11 @@ Default arguments are expanded into every callable arity. For the listed
 modules, documented types, opaque types, and documented struct fields are also
 public. Modules with no callable row expose only their documented module,
 type, and struct contract.
+
+`test/public_api_manifest_test.exs` parses this manifest and verifies every
+listed module, function, macro, and callback against the compiled BEAM surface;
+it also requires this version header to match both `Spectre.version/0` and the
+Mix project version.
 
 ## Manifest
 

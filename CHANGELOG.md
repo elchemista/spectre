@@ -4,7 +4,7 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
-## 0.3.0-rs — 2026-08-11
+## 0.3.0 — 2026-08-11
 
 ### Added
 
@@ -30,7 +30,7 @@ minor release may contain documented breaking API changes.
   activation now reject changed Reflection or Experience digests; a rebase
   always creates a new Proposal identity.
 - Extended Foundation Conformance with exact Reflection and Forge verification
-  and added the permanent `0.3.0-rs/reflective-runtime-v1.json` identity
+  and added the permanent `0.3.0/reflective-runtime-v1.json` identity
   fixture.
 
 ### Safety and compatibility

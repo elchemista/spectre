@@ -415,11 +415,18 @@ defmodule SpectreReflectiveRuntimeTest do
   test "one constitutional denylist redacts secrets, PII and chain-of-thought across boundaries" do
     sensitive = %{
       "apiKey" => "sk-live-secret",
+      "api_secret" => "api-secret",
       "access_token" => "access-secret",
+      "auth_token" => "auth-secret",
       "client-secret" => "client-secret",
+      "dbPassword" => "database-password",
       "JWT" => "header.payload.signature",
       "bearer" => "Bearer secret",
       "email_address" => "person@example.test",
+      "session_key" => "session-secret",
+      "secret_key" => "secret-key",
+      "signingKey" => "signing-secret",
+      "x-api-key" => "api-key-secret",
       "nested" => %{"chainOfThought" => "private reasoning"}
     }
 
@@ -428,10 +435,17 @@ defmodule SpectreReflectiveRuntimeTest do
     assert redacted == %{
              "JWT" => "[REDACTED]",
              "access_token" => "[REDACTED]",
+             "api_secret" => "[REDACTED]",
              "apiKey" => "[REDACTED]",
+             "auth_token" => "[REDACTED]",
              "bearer" => "[REDACTED]",
              "client-secret" => "[REDACTED]",
+             "dbPassword" => "[REDACTED]",
              "email_address" => "[REDACTED]",
+             "session_key" => "[REDACTED]",
+             "secret_key" => "[REDACTED]",
+             "signingKey" => "[REDACTED]",
+             "x-api-key" => "[REDACTED]",
              "nested" => %{"chainOfThought" => "[REDACTED]"}
            }
 
@@ -439,12 +453,24 @@ defmodule SpectreReflectiveRuntimeTest do
              Enum.sort([
                ["JWT"],
                ["access_token"],
+               ["api_secret"],
                ["apiKey"],
+               ["auth_token"],
                ["bearer"],
                ["client-secret"],
+               ["dbPassword"],
                ["email_address"],
+               ["session_key"],
+               ["secret_key"],
+               ["signingKey"],
+               ["x-api-key"],
                ["nested", "chainOfThought"]
              ])
+
+    for safe_key <-
+          ~w(atom_key cache_key idempotency_key monkey tokenizer keyboard secretary passwordless) do
+      refute Spectre.Experience.Redactor.sensitive_key?(safe_key)
+    end
 
     for key <- Map.keys(sensitive) -- ["nested"] do
       assert {:error, {:secret_component_payload, [^key]}} =

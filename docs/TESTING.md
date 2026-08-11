@@ -64,7 +64,7 @@ verification, and separate host-only semantic recovery/rollback escapes. The
 permanent 0.2.9 fixture pins portable ChangeSet, Candidate-state, receipt,
 evaluation, report, and GC schema identities.
 
-`test/reflective_runtime_test.exs` adds the `0.3.0-rs` gate. It proves explicit
+`test/reflective_runtime_test.exs` adds the `0.3.0` gate. It proves explicit
 Experience opt-in, constitutional redaction, retention and purge confirmation,
 snapshot and JSON transport integrity, deterministic Reflection with honest
 no-evidence output, policy-gated operation configuration, fixed Forge
