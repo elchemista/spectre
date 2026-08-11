@@ -3,7 +3,9 @@ defmodule Spectre.Morph.Change do
   Transient pipeline value for one governed Agent change.
 
   Durable truth remains the published Candidate chain in the Definition Store;
-  this value only carries ergonomic host context between explicit commits.
+  this value only carries ergonomic host context between explicit commits. Its
+  source mount index is a read cache for draft ergonomics; Composer and
+  Verifier always re-derive authority and mutations from durable Definitions.
   """
 
   alias Spectre.Definition.Candidate.Ref, as: CandidateRef
@@ -12,14 +14,26 @@ defmodule Spectre.Morph.Change do
   alias Spectre.Governance.EvaluationDelta
   alias Spectre.Instance.Activation
   alias Spectre.Morph.Surface
+  alias Spectre.Morph.Surface.MountIndex
   alias Spectre.Projection.HumanReport
 
-  @enforce_keys [:instance, :store, :agent, :activation, :surface, :actor_ref, :reason]
+  @enforce_keys [
+    :instance,
+    :store,
+    :agent,
+    :activation,
+    :source_definition_ref,
+    :source_mount_index,
+    :surface,
+    :actor_ref,
+    :reason
+  ]
   defstruct [
     :instance,
     :store,
     :agent,
     :activation,
+    :source_definition_ref,
     :surface,
     :actor_ref,
     :reason,
@@ -27,6 +41,7 @@ defmodule Spectre.Morph.Change do
     :report,
     :delta,
     :error,
+    source_mount_index: %{},
     operations: [],
     mount_ids: [],
     evidence: %{},
@@ -42,6 +57,7 @@ defmodule Spectre.Morph.Change do
           store: Store.config() | nil,
           agent: module() | nil,
           activation: Activation.t() | nil,
+          source_definition_ref: Spectre.Definition.Ref.t() | nil,
           surface: Surface.t(),
           actor_ref: String.t() | nil,
           reason: String.t() | nil,
@@ -49,6 +65,7 @@ defmodule Spectre.Morph.Change do
           report: HumanReport.t() | nil,
           delta: EvaluationDelta.t() | nil,
           error: term() | nil,
+          source_mount_index: MountIndex.index(),
           operations: [map()],
           mount_ids: [String.t()],
           evidence: map(),
@@ -84,6 +101,13 @@ defmodule Spectre.Morph.Change do
   @doc false
   @spec fail(t(), term()) :: t()
   def fail(%__MODULE__{} = change, reason), do: %{change | error: reason}
+
+  @doc false
+  @spec require_state(t(), state()) :: :ok | {:error, term()}
+  def require_state(%__MODULE__{state: expected}, expected), do: :ok
+
+  def require_state(%__MODULE__{state: actual}, expected),
+    do: {:error, {:morph_state, expected, actual}}
 
   @spec operation_mount_ids([map()]) :: MapSet.t(String.t())
   defp operation_mount_ids(operations) do

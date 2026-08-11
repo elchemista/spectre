@@ -85,6 +85,11 @@ defmodule SpectreMorphLoaderCheckerCoverageTest do
   alias Spectre.Governance.CandidateState
   alias Spectre.Governance.Checker.Declarative
   alias Spectre.Input
+  alias Spectre.Morph.Change
+  alias Spectre.Morph.SkillProposal
+  alias Spectre.Morph.Surface
+  alias Spectre.Morph.Surface.EvaluationObligations
+  alias Spectre.Morph.Surface.MountIndex
   alias Spectre.Runtime.SkillDispatch
   alias Spectre.Skill.Definition, as: SkillDefinition
   alias Spectre.Skill.Runtime.Loader
@@ -132,14 +137,62 @@ defmodule SpectreMorphLoaderCheckerCoverageTest do
              Loader.load(store, ref, Agent, closure_digest: 42)
   end
 
-  test "Loader conservatively maps a fractional authority grant to an integral prompt window" do
-    store = store()
-    canonical = agent_definition(Agent, [])
-    ref = publish!(store, canonical, Agent, authority(max_tokens: 12.5))
+  test "Loader rejects every non-positive or fractional token authority grant" do
+    for invalid <- [12.5, 0, 0.0, 0.5] do
+      store = store()
+      canonical = agent_definition(Agent, [])
+      ref = publish!(store, canonical, Agent, authority(max_tokens: invalid))
 
-    assert {:ok, loaded} = Loader.load(store, ref, Agent)
-    assert loaded.runtime.max_prompt_tokens == 12
-    assert loaded.runtime.per_skill_prompt_cap == 12
+      assert {:error, {:invalid_skill_runtime_authority_prompt_limit, ^invalid}} =
+               Loader.load(store, ref, Agent)
+    end
+  end
+
+  test "a draft caches the canonical mount index and matches integer ids by stable name" do
+    runtime = reply_skill("legacy-id", "refund", "Refund {{input.text}}")
+    canonical = agent_definition(Agent, [mount(7, runtime)])
+    definition_ref = Canonical.ref(canonical)
+
+    assert {:ok, surface} = Surface.from_canonical(canonical)
+    assert {:ok, mount_index} = MountIndex.build(canonical)
+    assert {:ok, %{"id" => 7}} = MountIndex.fetch(mount_index, "7")
+
+    draft = %Change{
+      instance: self(),
+      store: nil,
+      agent: Agent,
+      activation: %{definition_ref: definition_ref},
+      source_definition_ref: definition_ref,
+      surface: surface,
+      source_mount_index: mount_index,
+      actor_ref: "actor:test",
+      reason: "replace an indexed runtime Skill"
+    }
+
+    changed =
+      SkillProposal.put(draft, :replace_skill, "7",
+        match: "refund",
+        reply: "Updated {{input.text}}",
+        scopes: [:support]
+      )
+
+    assert changed.error == nil
+
+    assert [%{"type" => "replace_skill", "payload" => %{"mount_id" => "7"}} | _cases] =
+             changed.operations
+  end
+
+  test "disable obligations reject malformed Surface scopes before building cases" do
+    skill = reply_skill("refunds", "refund", "Refund {{input.text}}")
+
+    surface =
+      Agent
+      |> Definition.canonical!()
+      |> Surface.from_canonical()
+      |> then(fn {:ok, surface} -> %{surface | scope_ceiling: ["support", nil]} end)
+
+    assert {:error, {:morph_evaluation_obligation_not_derivable, "refunds"}} =
+             EvaluationObligations.disable_cases(surface, "refunds", skill)
   end
 
   test "Loader rejects malformed mount envelopes and embedded Definition Ref tampering" do

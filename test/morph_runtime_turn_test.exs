@@ -445,7 +445,7 @@ defmodule SpectreMorphRuntimeTurnTest do
              Spectre.turn(instance, "refund", skill_context: %{"scope" => "billing"})
   end
 
-  test "disabling one scoped Skill preserves matching behavior in sibling scopes" do
+  test "disable is rejected when the removed input still routes in a sibling Surface scope" do
     %{instance: instance} = start_fixture(WorkAgent)
 
     installed =
@@ -474,16 +474,13 @@ defmodule SpectreMorphRuntimeTurnTest do
       |> Morph.evaluate(cases: @protected_cases, now: 243)
 
     assert disabled.error == nil
-    assert disabled.state == :evaluated
-    assert disabled.delta.passed
-
-    approved = Morph.approve(disabled, by: "actor:reviewer", mode: :human, now: 244)
-    assert {:ok, _activation} = Morph.activate(approved, now: 245)
+    assert disabled.state == :rejected
+    refute disabled.delta.passed
 
     assert {:ok, support_turn} =
              Spectre.turn(instance, "status", skill_context: %{"scope" => "support"})
 
-    assert {:no_response, _result} = support_turn.decision
+    assert %Turn{observable: {:reply, "support status", _turn_ref}} = support_turn
 
     assert {:ok, %Turn{observable: {:reply, "billing status", _turn_ref}}} =
              Spectre.turn(instance, "status", skill_context: %{"scope" => "billing"})

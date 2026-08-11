@@ -11,6 +11,7 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
   alias Spectre.Canonical.Value
   alias Spectre.Definition.Canonical
   alias Spectre.Eval.Case, as: EvalCase
+  alias Spectre.Morph.StableName
   alias Spectre.Morph.Surface
   alias Spectre.Morph.Surface.MountIndex
   alias Spectre.Morph.Surface.Mutation
@@ -38,8 +39,16 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
         cases
       )
       when is_list(cases) do
-    with {:ok, mutations} <- MountIndex.mutations(parent, candidate),
-         {:ok, required} <- required_cases(surface, mutations),
+    with {:ok, mutations} <- MountIndex.mutations(parent, candidate) do
+      verify(surface, mutations, cases)
+    end
+  end
+
+  @doc false
+  @spec verify(Surface.t(), [Mutation.t()], [map()]) :: :ok | {:error, term()}
+  def verify(%Surface{} = surface, mutations, cases)
+      when is_list(mutations) and is_list(cases) do
+    with {:ok, required} <- required_cases(surface, mutations),
          {:ok, supplied} <- canonical_cases(cases) do
       require_cases(required, supplied)
     end
@@ -96,7 +105,9 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
          operation: :mount_skill,
          candidate: candidate
        }) do
-    reply_cases_for(surface, mount_id, candidate)
+    with {:ok, skill} <- runtime_skill(candidate, mount_id) do
+      reply_cases(surface, mount_id, skill)
+    end
   end
 
   defp mutation_cases(surface, %Mutation{
@@ -107,8 +118,9 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
        }) do
     # Replacement is legal only for a runtime-origin parent. Checking both
     # sides here prevents a tampered ChangeSet from shadowing compiled code.
-    with {:ok, _parent_skill} <- runtime_skill(parent, mount_id) do
-      reply_cases_for(surface, mount_id, candidate)
+    with {:ok, _parent_skill} <- runtime_skill(parent, mount_id),
+         {:ok, skill} <- runtime_skill(candidate, mount_id) do
+      reply_cases(surface, mount_id, skill)
     end
   end
 
@@ -117,32 +129,27 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
          operation: :disable_skill,
          parent: parent
        }) do
-    with {:ok, skill} <- runtime_skill(parent, mount_id),
-         {:ok, scopes} <- obligation_scopes(skill, surface),
-         inputs when is_list(inputs) and inputs != [] <-
-           SkillDefinition.applicability(skill).positive,
-         true <- Enum.all?(inputs, &(is_binary(&1) and &1 != "")) do
-      disabled_cases(mount_id, scopes, inputs)
-    else
-      _value -> {:error, {:morph_evaluation_obligation_not_derivable, mount_id}}
+    with {:ok, skill} <- runtime_skill(parent, mount_id) do
+      disable_cases(surface, mount_id, skill)
     end
   end
 
-  @spec reply_cases_for(Surface.t(), term(), map() | nil) ::
+  @doc false
+  @spec reply_cases(Surface.t(), term(), SkillDefinition.t()) ::
           {:ok, [canonical_case()]} | {:error, term()}
-  defp reply_cases_for(surface, mount_id, mount) do
-    with {:ok, skill} <- runtime_skill(mount, mount_id),
-         :ok <- reply_only(skill, mount_id),
+  def reply_cases(%Surface{} = surface, mount_id, %SkillDefinition{} = skill) do
+    with :ok <- reply_only(skill, mount_id),
          {:ok, route} <- single_exact_reply(skill, mount_id),
          {:ok, fragment} <- route_fragment(skill, route.prompt_ref, mount_id),
          {:ok, scopes} <- obligation_scopes(skill, surface) do
-      reply_cases(mount_id, scopes, route, fragment)
+      materialized_reply_cases(mount_id, scopes, route, fragment)
     end
   end
 
+  @doc false
   @spec runtime_skill(map() | nil, term()) ::
           {:ok, SkillDefinition.t()} | {:error, term()}
-  defp runtime_skill(mount, mount_id) when is_map(mount) do
+  def runtime_skill(mount, mount_id) when is_map(mount) do
     with data when is_map(data) <- value(mount, :definition),
          {:ok, canonical} <- Canonical.from_data(data),
          :ok <- embedded_definition_ref(canonical, value(mount, :definition_ref), mount_id),
@@ -156,7 +163,34 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
     end
   end
 
-  defp runtime_skill(_mount, mount_id),
+  def runtime_skill(_mount, mount_id),
+    do: {:error, {:morph_evaluation_obligation_not_derivable, mount_id}}
+
+  @doc false
+  @spec disable_cases(Surface.t(), term(), SkillDefinition.t()) ::
+          {:ok, [canonical_case()]} | {:error, term()}
+  def disable_cases(%Surface{} = surface, mount_id, %SkillDefinition{} = skill) do
+    case SkillDefinition.applicability(skill).positive do
+      [] ->
+        {:error, {:morph_evaluation_obligation_not_derivable, mount_id}}
+
+      inputs ->
+        with {:ok, scopes} <- surface_scopes(surface, mount_id) do
+          disabled_cases(mount_id, scopes, inputs)
+        end
+    end
+  end
+
+  @spec surface_scopes(Surface.t(), term()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  defp surface_scopes(%Surface{scope_ceiling: scopes}, mount_id) when is_list(scopes) do
+    if scopes != [] and Enum.all?(scopes, &(is_binary(&1) and &1 != "")) and
+         MapSet.size(MapSet.new(scopes)) == length(scopes),
+       do: {:ok, scopes},
+       else: {:error, {:morph_evaluation_obligation_not_derivable, mount_id}}
+  end
+
+  defp surface_scopes(%Surface{}, mount_id),
     do: {:error, {:morph_evaluation_obligation_not_derivable, mount_id}}
 
   @spec reply_only(SkillDefinition.t(), term()) :: :ok | {:error, term()}
@@ -199,7 +233,7 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
   @spec route_fragment(SkillDefinition.t(), term(), term()) ::
           {:ok, Fragment.t()} | {:error, term()}
   defp route_fragment(skill, prompt_ref, mount_id) do
-    case Enum.find(SkillDefinition.prompt_fragments(skill), &same_name?(&1.id, prompt_ref)) do
+    case Enum.find(SkillDefinition.prompt_fragments(skill), &StableName.equal?(&1.id, prompt_ref)) do
       %Fragment{content: content, condition_ref: nil, placeholders: placeholders} = fragment
       when is_binary(content) and is_map(placeholders) ->
         if Enum.all?(Map.keys(placeholders), &(&1 == "input.text")),
@@ -242,9 +276,9 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
   defp canonical_scope(scope) when is_binary(scope) and scope != "", do: scope
   defp canonical_scope(_scope), do: nil
 
-  @spec reply_cases(term(), [String.t()], route_contract(), Fragment.t()) ::
+  @spec materialized_reply_cases(term(), [String.t()], route_contract(), Fragment.t()) ::
           {:ok, [canonical_case()]} | {:error, term()}
-  defp reply_cases(mount_id, scopes, route, fragment) do
+  defp materialized_reply_cases(mount_id, scopes, route, fragment) do
     scopes
     |> Enum.reduce_while({:ok, [], 0}, fn scope, {:ok, cases, count} ->
       context = %{"scope" => scope}
@@ -348,11 +382,6 @@ defmodule Spectre.Morph.Surface.EvaluationObligations do
       end
     end)
   end
-
-  @spec same_name?(term(), term()) :: boolean()
-  defp same_name?(left, right) when is_atom(left), do: same_name?(Atom.to_string(left), right)
-  defp same_name?(left, right) when is_atom(right), do: same_name?(left, Atom.to_string(right))
-  defp same_name?(left, right), do: left == right
 
   @spec value(map(), atom(), term()) :: term()
   defp value(map, key, default \\ nil),

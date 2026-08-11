@@ -31,8 +31,10 @@ defmodule Spectre.Morph do
   alias Spectre.Instance.Activation
   alias Spectre.Morph.Change
   alias Spectre.Morph.GovernancePipeline
+  alias Spectre.Morph.Options
   alias Spectre.Morph.SkillProposal
   alias Spectre.Morph.Surface
+  alias Spectre.Morph.Surface.MountIndex
 
   @change_options [:by, :reason, :evidence]
 
@@ -81,8 +83,9 @@ defmodule Spectre.Morph do
   @doc """
   Proposes disabling a runtime-origin Skill.
 
-  Morph derives negative replay cases only for the scopes and positive inputs
-  owned by that Skill; unrelated behavior in sibling scopes remains protected.
+  Morph derives negative replay cases for every scope allowed by the canonical
+  Surface. Disabling one Skill therefore cannot silently introduce routing for
+  the removed inputs in a sibling scope.
   """
   @spec disable_skill(Change.t(), String.t()) :: Change.t()
   def disable_skill(change, mount_id), do: SkillProposal.disable(change, mount_id)
@@ -142,7 +145,7 @@ defmodule Spectre.Morph do
   def rebase(change, opts \\ [])
 
   def rebase(%Change{} = change, opts) when is_list(opts) do
-    case keyword_options(opts, @change_options) do
+    case Options.validate(opts, @change_options) do
       :ok -> rebase_operations(change, opts)
       {:error, reason} -> Change.fail(change, reason)
     end
@@ -200,21 +203,29 @@ defmodule Spectre.Morph do
       store: store,
       agent: agent,
       activation: activation,
+      source_definition_ref: activation && activation.definition_ref,
+      source_mount_index: %{},
       surface: placeholder_surface(),
       actor_ref: actor_ref,
       reason: reason,
       evidence: evidence
     }
 
-    with :ok <- keyword_options(opts, @change_options),
-         :ok <- nonempty(actor_ref, :by),
-         :ok <- nonempty(reason, :reason),
+    with :ok <- Options.validate(opts, @change_options),
+         :ok <- Options.require_nonempty(actor_ref, :by),
+         :ok <- Options.require_nonempty(reason, :reason),
          :ok <- plain_map(evidence, :evidence),
          true <- not is_nil(store),
          %Activation{} <- activation,
          {:ok, resolution} <- Resolver.resolve(store, activation.definition_ref),
-         {:ok, surface} <- Surface.from_canonical(resolution.definition) do
-      %{base | surface: surface}
+         {:ok, surface} <- Surface.from_canonical(resolution.definition),
+         {:ok, mount_index} <- MountIndex.build(resolution.definition) do
+      %{
+        base
+        | source_definition_ref: resolution.definition_ref,
+          surface: surface,
+          source_mount_index: mount_index
+      }
     else
       false ->
         Change.fail(base, :morph_requires_definition_store)
@@ -240,6 +251,8 @@ defmodule Spectre.Morph do
       store: nil,
       agent: nil,
       activation: nil,
+      source_definition_ref: nil,
+      source_mount_index: %{},
       surface: placeholder_surface(),
       actor_ref: nil,
       reason: nil,
@@ -301,7 +314,7 @@ defmodule Spectre.Morph do
 
   @spec resumed_change(GenServer.server(), keyword()) :: Change.t()
   defp resumed_change(instance, opts) do
-    case keyword_options(opts, @change_options) do
+    case Options.validate(opts, @change_options) do
       :ok ->
         change(instance,
           by: Keyword.get(opts, :by, "actor:resumed"),
@@ -336,41 +349,9 @@ defmodule Spectre.Morph do
     end
   end
 
-  @spec nonempty(term(), atom()) :: :ok | {:error, term()}
-  defp nonempty(value, _field) when is_binary(value) and value != "", do: :ok
-  defp nonempty(value, field), do: {:error, {:morph_requires, field, value}}
-
   @spec plain_map(term(), atom()) :: :ok | {:error, term()}
   defp plain_map(value, _field) when is_map(value) and not is_struct(value), do: :ok
   defp plain_map(value, field), do: {:error, {:invalid_morph_field, field, value}}
-
-  @spec keyword_options(term(), [atom()]) :: :ok | {:error, term()}
-  defp keyword_options(opts, allowed) do
-    cond do
-      not Keyword.keyword?(opts) ->
-        {:error, {:invalid_morph_options, opts}}
-
-      duplicate_keyword?(opts) ->
-        {:error, :duplicate_morph_options}
-
-      true ->
-        reject_unknown_options(opts, allowed)
-    end
-  end
-
-  @spec reject_unknown_options(keyword(), [atom()]) :: :ok | {:error, term()}
-  defp reject_unknown_options(opts, allowed) do
-    case Keyword.keys(opts) -- allowed do
-      [] -> :ok
-      unknown -> {:error, {:unknown_morph_options, unknown}}
-    end
-  end
-
-  @spec duplicate_keyword?(keyword()) :: boolean()
-  defp duplicate_keyword?(opts) do
-    keys = Keyword.keys(opts)
-    MapSet.size(MapSet.new(keys)) != length(keys)
-  end
 
   @spec normalize_state(:composed | :evaluated | :approved | :rejected) :: Change.state()
   defp normalize_state(:composed), do: :draft

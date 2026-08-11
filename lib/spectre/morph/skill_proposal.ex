@@ -7,19 +7,18 @@ defmodule Spectre.Morph.SkillProposal do
   must already be runtime-origin Skills in the active immutable Definition.
   """
 
-  alias Spectre.Definition.Canonical
-  alias Spectre.Definition.Resolver
   alias Spectre.Morph.Change
+  alias Spectre.Morph.Options
   alias Spectre.Morph.Surface
+  alias Spectre.Morph.Surface.EvaluationObligations
+  alias Spectre.Morph.Surface.MountIndex
   alias Spectre.Skill.Definition, as: SkillDefinition
 
   @type operation_type :: :mount_skill | :replace_skill
   @typep operation_name :: String.t()
   @type skill_build :: %{
           definition: map(),
-          input: String.t(),
-          output: String.t(),
-          scopes: [String.t()]
+          cases: [map()]
         }
 
   @skill_options [:match, :reply, :never, :version, :token_cap, :scopes]
@@ -34,15 +33,15 @@ defmodule Spectre.Morph.SkillProposal do
       when type in [:mount_skill, :replace_skill] and is_list(opts) do
     operation = Atom.to_string(type)
 
-    with :ok <- keyword_options(opts, @skill_options),
-         :ok <- draft_state(change),
+    with :ok <- Options.validate(opts, @skill_options),
+         :ok <- Change.require_state(change, :draft),
          :ok <- permitted(change, operation),
          :ok <- stable_id(mount_id),
          :ok <- maybe_runtime_target(change, type, mount_id),
          {:ok, build} <- skill_definition(change, mount_id, opts),
-         :ok <- Change.ensure_operation_capacity(change, 1 + length(build.scopes)) do
+         :ok <- Change.ensure_operation_capacity(change, 1 + length(build.cases)) do
       mutation = mutation_operation(operation, mount_id, build.definition)
-      cases = reply_case_operations(mount_id, build)
+      cases = Enum.map(build.cases, &eval_case_operation/1)
 
       Change.append_operations(change, [mutation | cases])
     else
@@ -62,12 +61,14 @@ defmodule Spectre.Morph.SkillProposal do
   def disable(%Change{error: error} = change, _mount_id) when not is_nil(error), do: change
 
   def disable(%Change{} = change, mount_id) do
-    with :ok <- draft_state(change),
+    with :ok <- Change.require_state(change, :draft),
          :ok <- permitted(change, "disable_skill"),
          :ok <- stable_id(mount_id),
          {:ok, skill} <- runtime_target(change, mount_id),
-         :ok <- Change.ensure_operation_capacity(change, disable_operation_count(skill)) do
-      operations = [disable_operation(mount_id) | disable_case_operations(mount_id, skill)]
+         {:ok, cases} <-
+           EvaluationObligations.disable_cases(change.surface, mount_id, skill),
+         :ok <- Change.ensure_operation_capacity(change, 1 + length(cases)) do
+      operations = [disable_operation(mount_id) | Enum.map(cases, &eval_case_operation/1)]
       Change.append_operations(change, operations)
     else
       {:error, reason} -> Change.fail(change, reason)
@@ -89,21 +90,16 @@ defmodule Spectre.Morph.SkillProposal do
           {:ok, skill_build()} | {:error, term()}
   defp skill_definition(change, mount_id, opts) do
     with {:ok, trigger} <- exact_match(Keyword.get(opts, :match)),
-         :ok <- nonempty(Keyword.get(opts, :reply), :reply),
+         :ok <- Options.require_nonempty(Keyword.get(opts, :reply), :reply),
          :ok <- reply_template(Keyword.get(opts, :reply)),
          {:ok, negative} <- examples(Keyword.get(opts, :never, [])),
          {:ok, scopes} <- skill_scopes(change.surface, Keyword.get(opts, :scopes)),
          {:ok, token_cap} <- token_cap(change.surface, Keyword.get(opts, :token_cap)) do
       attrs = skill_attrs(mount_id, trigger, negative, scopes, token_cap, opts)
 
-      with {:ok, _skill} <- SkillDefinition.new(attrs) do
-        {:ok,
-         %{
-           definition: attrs,
-           input: trigger,
-           output: expected_reply(Keyword.fetch!(opts, :reply), trigger),
-           scopes: scopes
-         }}
+      with {:ok, skill} <- SkillDefinition.new(attrs),
+           {:ok, cases} <- EvaluationObligations.reply_cases(change.surface, mount_id, skill) do
+        {:ok, %{definition: attrs, cases: cases}}
       end
     end
   end
@@ -174,9 +170,6 @@ defmodule Spectre.Morph.SkillProposal do
   defp exact_match({:exact, value}), do: exact_match(value)
   defp exact_match(value) when is_binary(value) and value != "", do: {:ok, value}
   defp exact_match(value), do: {:error, {:morph_requires_exact_match, value}}
-
-  @spec expected_reply(String.t(), String.t()) :: String.t()
-  defp expected_reply(template, input), do: String.replace(template, "{{input.text}}", input)
 
   @spec examples(term()) :: {:ok, [String.t()]} | {:error, term()}
   defp examples(values) when is_list(values) do
@@ -273,74 +266,33 @@ defmodule Spectre.Morph.SkillProposal do
     with {:ok, _skill} <- runtime_target(change, mount_id), do: :ok
   end
 
-  @spec disable_operation_count(SkillDefinition.t()) :: pos_integer()
-  defp disable_operation_count(skill) do
-    applicability = SkillDefinition.applicability(skill)
-    1 + length(applicability.scopes) * length(applicability.positive)
-  end
-
   @spec runtime_target(Change.t(), String.t()) ::
           {:ok, SkillDefinition.t()} | {:error, term()}
   defp runtime_target(change, mount_id) do
-    with {:ok, resolution} <- Resolver.resolve(change.store, change.activation.definition_ref),
-         {:ok, component} <- Canonical.fetch_component(resolution.definition, :skills),
-         mounts when is_list(mounts) <- value(component.payload, :mounts, []),
-         mount when is_map(mount) <-
-           Enum.find(mounts, &same_name?(value(&1, :id), mount_id)),
-         definition when is_map(definition) <- value(mount, :definition),
-         {:ok, canonical} <- Canonical.from_data(definition),
-         {:ok, skill} <- SkillDefinition.from_canonical(canonical),
-         :runtime <- SkillDefinition.origin(skill) do
-      {:ok, skill}
-    else
-      nil -> {:error, {:morph_runtime_skill_not_found, mount_id}}
-      :compiled -> {:error, {:morph_compiled_skill_is_immutable, mount_id}}
-      {:error, _reason} = error -> error
-      _value -> {:error, {:morph_runtime_skill_not_found, mount_id}}
+    case change.activation do
+      %{definition_ref: definition_ref} when definition_ref == change.source_definition_ref ->
+        fetch_runtime_target(change.source_mount_index, mount_id)
+
+      %{definition_ref: actual} ->
+        {:error, {:morph_change_definition_ref_mismatch, change.source_definition_ref, actual}}
+
+      _invalid ->
+        {:error, :morph_requires_activation}
     end
   end
 
-  @spec reply_case_operations(String.t(), skill_build()) :: [map()]
-  defp reply_case_operations(mount_id, build) do
-    Enum.map(build.scopes, fn scope ->
-      eval_case_operation(%{
-        "id" => candidate_case_id(mount_id, scope, "reply"),
-        "input" => build.input,
-        "expected_outcome" => "route",
-        "expected_route" => route_label(mount_id),
-        "expected_output" => build.output,
-        "context" => %{"scope" => scope},
-        "llm" => "forbidden"
-      })
-    end)
-  end
-
-  @spec disable_case_operations(String.t(), SkillDefinition.t()) :: [map()]
-  defp disable_case_operations(mount_id, skill) do
-    applicability = SkillDefinition.applicability(skill)
-    scopes = Enum.map(applicability.scopes, &canonical_scope/1)
-
-    scopes
-    |> Stream.flat_map(fn scope -> Stream.map(applicability.positive, &{scope, &1}) end)
-    |> Enum.map(fn {scope, input} ->
-      eval_case_operation(%{
-        "id" => candidate_case_id(mount_id, scope, "disabled:" <> input),
-        "input" => input,
-        "expected_outcome" => "clarify",
-        "context" => %{"scope" => scope},
-        "llm" => "forbidden"
-      })
-    end)
+  @spec fetch_runtime_target(MountIndex.index(), String.t()) ::
+          {:ok, SkillDefinition.t()} | {:error, term()}
+  defp fetch_runtime_target(mount_index, mount_id) do
+    case MountIndex.fetch(mount_index, mount_id) do
+      {:ok, mount} -> EvaluationObligations.runtime_skill(mount, mount_id)
+      :error -> {:error, {:morph_runtime_skill_not_found, mount_id}}
+    end
   end
 
   @spec eval_case_operation(map()) :: map()
   defp eval_case_operation(evaluation_case) do
     %{"type" => "add_eval_case", "payload" => %{"case" => evaluation_case}}
-  end
-
-  @spec candidate_case_id(String.t(), String.t(), String.t()) :: String.t()
-  defp candidate_case_id(mount_id, scope, purpose) do
-    Surface.evaluation_case_id(mount_id, scope, purpose)
   end
 
   @spec route_label(String.t()) :: String.t()
@@ -358,10 +310,6 @@ defmodule Spectre.Morph.SkillProposal do
       else: {:error, {:morph_not_permitted, operation}}
   end
 
-  @spec draft_state(Change.t()) :: :ok | {:error, term()}
-  defp draft_state(%Change{state: :draft}), do: :ok
-  defp draft_state(%Change{state: state}), do: {:error, {:morph_not_draft, state}}
-
   @spec stable_id(term()) :: :ok | {:error, term()}
   defp stable_id(value) when is_binary(value) and value != "" do
     if String.starts_with?(value, "Elixir."),
@@ -370,45 +318,4 @@ defmodule Spectre.Morph.SkillProposal do
   end
 
   defp stable_id(value), do: {:error, {:invalid_morph_skill_id, value}}
-
-  @spec nonempty(term(), atom()) :: :ok | {:error, term()}
-  defp nonempty(value, _field) when is_binary(value) and value != "", do: :ok
-  defp nonempty(value, field), do: {:error, {:morph_requires, field, value}}
-
-  @spec keyword_options(term(), [atom()]) :: :ok | {:error, term()}
-  defp keyword_options(opts, allowed) do
-    cond do
-      not Keyword.keyword?(opts) ->
-        {:error, {:invalid_morph_options, opts}}
-
-      duplicate_keyword?(opts) ->
-        {:error, :duplicate_morph_options}
-
-      true ->
-        reject_unknown_options(opts, allowed)
-    end
-  end
-
-  @spec reject_unknown_options(keyword(), [atom()]) :: :ok | {:error, term()}
-  defp reject_unknown_options(opts, allowed) do
-    case Keyword.keys(opts) -- allowed do
-      [] -> :ok
-      unknown -> {:error, {:unknown_morph_options, unknown}}
-    end
-  end
-
-  @spec duplicate_keyword?(keyword()) :: boolean()
-  defp duplicate_keyword?(opts) do
-    keys = Keyword.keys(opts)
-    MapSet.size(MapSet.new(keys)) != length(keys)
-  end
-
-  @spec value(map(), atom(), term()) :: term()
-  defp value(map, key, default \\ nil),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
-
-  @spec same_name?(term(), term()) :: boolean()
-  defp same_name?(left, right) when is_atom(left), do: same_name?(Atom.to_string(left), right)
-  defp same_name?(left, right) when is_atom(right), do: same_name?(left, Atom.to_string(right))
-  defp same_name?(left, right), do: left == right
 end

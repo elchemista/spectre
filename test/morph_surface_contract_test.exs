@@ -89,6 +89,8 @@ defmodule SpectreMorphSurfaceContractTest do
       store: nil,
       agent: Agent,
       activation: nil,
+      source_definition_ref: nil,
+      source_mount_index: %{},
       surface: surface,
       actor_ref: "actor:test",
       reason: "exercise the bounded builder"

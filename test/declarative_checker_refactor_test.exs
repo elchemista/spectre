@@ -4,6 +4,7 @@ defmodule SpectreDeclarativeCheckerRefactorTest do
   alias Spectre.Eval.Case, as: EvalCase
   alias Spectre.Governance.CandidateState
   alias Spectre.Governance.Checker.Declarative
+  alias Spectre.Governance.Checker.Declarative.Evaluator
   alias Spectre.Governance.Checker.Declarative.Rehearsability
 
   @doc false
@@ -62,6 +63,14 @@ defmodule SpectreDeclarativeCheckerRefactorTest do
 
     assert {:error, {:declarative_checker_state_not_rehearsable, "state-first"}} =
              Rehearsability.verify_cases([state_case])
+  end
+
+  test "checker boundaries share one exact data-shape vocabulary" do
+    assert {:error, {:invalid_declarative_eval_cases, :binary}} =
+             Evaluator.normalize_cases("not-a-case-list")
+
+    assert {:error, {:invalid_declarative_check, :binary, :list}} =
+             Declarative.run(:unreachable_store, candidate(), "not-a-case-list", [])
   end
 
   @spec candidate() :: %{required(:governance) => CandidateState.t()}

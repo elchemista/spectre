@@ -980,8 +980,8 @@ defmodule Spectre.Skill.Runtime do
 
   @spec effective_prompt_max(term(), term()) :: {:ok, pos_integer()} | {:error, term()}
   defp effective_prompt_max(requested, authority)
-       when is_integer(requested) and requested > 0 and is_number(authority) and authority >= 1,
-       do: {:ok, min(requested, trunc(authority))}
+       when is_integer(requested) and requested > 0 and is_integer(authority) and authority > 0,
+       do: {:ok, min(requested, authority)}
 
   defp effective_prompt_max(requested, authority),
     do: {:error, {:invalid_skill_runtime_prompt_window, {requested, authority}}}
