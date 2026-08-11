@@ -47,7 +47,7 @@ defmodule Spectre.Governance.Verifier do
 
   def verify_activation(store, candidate_resolution, current, opts) when is_list(opts) do
     with %Activation{} = current <- current,
-         :ok <- verify_current_base(candidate_resolution.candidate.governance, current),
+         :ok <- verify_current_base(candidate_resolution.candidate.governance, current, opts),
          :ok <- verify_common(store, candidate_resolution, opts, :activation) do
       :ok
     else
@@ -129,26 +129,35 @@ defmodule Spectre.Governance.Verifier do
   defp verify_common_or_bootstrap(store, candidate_resolution, opts, mode),
     do: verify_common(store, candidate_resolution, opts, mode)
 
-  defp verify_current_base(governance, current) do
-    cond do
-      governance.base_activation_receipt != current.activation_receipt ->
-        {:error, :stale_governance_activation_receipt}
+  defp verify_current_base(governance, current, opts) do
+    with {:ok, current_evidence_digest} <- current_evidence_digest(current, opts) do
+      cond do
+        governance.base_activation_receipt != current.activation_receipt ->
+          {:error, :stale_governance_activation_receipt}
 
-      governance.base_candidate_ref != CandidateRef.to_string(current.candidate_ref) ->
-        {:error, :stale_governance_candidate_ref}
+        governance.base_candidate_ref != CandidateRef.to_string(current.candidate_ref) ->
+          {:error, :stale_governance_candidate_ref}
 
-      governance.parent_definition_ref != Ref.to_string(current.definition_ref) ->
-        {:error, :stale_governance_definition_ref}
+        governance.parent_definition_ref != Ref.to_string(current.definition_ref) ->
+          {:error, :stale_governance_definition_ref}
 
-      governance.observed_authority_epoch != current.authority_epoch ->
-        {:error, :stale_governance_authority_epoch}
+        governance.observed_authority_epoch != current.authority_epoch ->
+          {:error, :stale_governance_authority_epoch}
 
-      governance.observed_evidence_digest != ChangeSet.evidence_digest(current) ->
-        {:error, :stale_governance_evidence_digest}
+        governance.observed_evidence_digest != current_evidence_digest ->
+          {:error, :stale_governance_evidence_digest}
 
-      true ->
-        :ok
+        true ->
+          :ok
+      end
     end
+  end
+
+  defp current_evidence_digest(current, opts) do
+    {:ok, ChangeSet.evidence_digest(current, Keyword.get(opts, :evidence, %{}))}
+  rescue
+    ArgumentError -> {:error, :invalid_governance_external_evidence}
+    FunctionClauseError -> {:error, :invalid_governance_external_evidence}
   end
 
   defp verify_common(

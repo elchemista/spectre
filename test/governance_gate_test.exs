@@ -269,7 +269,7 @@ defmodule SpectreGovernanceGateTest do
     assert {:ok, ^gc_plan} = gc_plan |> GCPlan.encode() |> elem(1) |> GCPlan.decode()
 
     matrix = Conformance.matrix()
-    assert matrix.release == "0.2.9"
+    assert matrix.release == "0.3.0-rs"
     assert {Spectre, :rollback, 3} in matrix.golden_path
     assert {Approval, :reject, 3} in matrix.golden_path
 
@@ -396,6 +396,39 @@ defmodule SpectreGovernanceGateTest do
     assert rolled_back.generation == 3
     assert rolled_back.definition_ref == activation.definition_ref
     assert rolled_back.provenance.external_effects_rolled_back == false
+  end
+
+  test "activation rechecks exact external Reflection evidence passed to composition" do
+    %{store: store, instance: instance, activation: activation} = baseline()
+    evidence = %{"reflection_projection_digest" => String.duplicate("b", 64)}
+
+    approved_ref =
+      approved_candidate(store, activation, "lookup", evidence: evidence)
+
+    assert {:error, :stale_governance_evidence_digest} =
+             Spectre.activate(instance, approved_ref,
+               expected_generation: 1,
+               now: 7,
+               checker_versions: @checker_versions
+             )
+
+    assert {:error, :stale_governance_evidence_digest} =
+             Spectre.activate(instance, approved_ref,
+               expected_generation: 1,
+               now: 7,
+               checker_versions: @checker_versions,
+               evidence: %{"reflection_projection_digest" => String.duplicate("c", 64)}
+             )
+
+    assert {:ok, activated} =
+             Spectre.activate(instance, approved_ref,
+               expected_generation: 1,
+               now: 7,
+               checker_versions: @checker_versions,
+               evidence: evidence
+             )
+
+    assert activated.generation == 2
   end
 
   test "activation and recovery reverify persisted constitutional constraints" do
@@ -3472,11 +3505,12 @@ defmodule SpectreGovernanceGateTest do
 
   defp approved_candidate(store, activation, mount_id \\ "lookup", opts \\ []) do
     operation = put_in(mount_operation(), ["payload", "mount_id"], mount_id)
+    evidence = Keyword.get(opts, :evidence, %{})
 
     assert {:ok, composed_ref} =
              Composer.compose(
                store,
-               change_set(activation, [operation]),
+               change_set(activation, [operation], evidence),
                Keyword.merge([activation: activation, created_at: 2], opts)
              )
 
@@ -3691,13 +3725,13 @@ defmodule SpectreGovernanceGateTest do
     ref
   end
 
-  defp change_set(activation, operations) do
+  defp change_set(activation, operations, evidence \\ %{}) do
     ChangeSet.new!(%{
       base_activation_receipt: activation.activation_receipt,
       base_candidate_ref: activation.candidate_ref,
       observed_definition_ref: activation.definition_ref,
       observed_authority_epoch: activation.authority_epoch,
-      observed_evidence_digest: ChangeSet.evidence_digest(activation),
+      observed_evidence_digest: ChangeSet.evidence_digest(activation, evidence),
       operations: operations,
       author_ref: "host:test",
       provenance: %{test: "governance"},

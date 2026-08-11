@@ -41,7 +41,8 @@ defmodule Spectre.Governance.Composer do
   def compose(store, change_set, opts) when is_list(opts) do
     with {:ok, change_set} <- ChangeSet.new(change_set),
          %Activation{} = activation <- Keyword.get(opts, :activation),
-         :ok <- ChangeSet.verify_base(change_set, activation),
+         :ok <-
+           ChangeSet.verify_base(change_set, activation, Keyword.get(opts, :evidence, %{})),
          {:ok, registry} <- registry(Keyword.get(opts, :handler_registry)),
          {:ok, parent} <-
            Resolver.resolve_for_activation(

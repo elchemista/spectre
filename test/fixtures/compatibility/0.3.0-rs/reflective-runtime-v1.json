@@ -1,0 +1,21 @@
+{
+  "activation_receipt": "activation:sha256:3109b407d59fef53e626793f30530f349a962f86e33faf389a48ec5e800911e1",
+  "change_set_digest": "33660f545f07e5a41bbe70e0645aedb82c539657875e431bd2e42b89c8ddf4c5",
+  "critique_digest": "b692545fe0a22b333bd1864ee09f78463f1b1acae722020b6dbdde3d853d15f6",
+  "definition_ref": "sha256:ada485b1a1d8504d0cafcd3c198ed378521d8a8a146ccddae81dc00426aca5d9",
+  "experience_ref": "experience:sha256:c5a67d466abf8bea64c27d967b7382994d9066ebd38a3fe5f03da190ba35d1ba",
+  "experience_snapshot_digest": "9a4ae723f6e99ecf52ec29765f1ff6046eaea3ec4f1230ccc33aa12a5f823bf1",
+  "oracle_approval_ref": "oracle-approval:sha256:a739284d833c6ba0faed5f9a48a28b497cbb759f12303882194e05a4938d4e5f",
+  "proposal_digest": "da3c1328a00f0da32f0e9ffcaf39535ef700a39bafc710eca9515dd9fd8401ac",
+  "reflection_digest": "7d07d7b35662517498363a0d453485488e9dfec70dff7b50705fdf8e33fe4ae4",
+  "reflection_input_evidence_digest": "05628c5da741a7b39760a06567287f55b48901aa8b487a94f2608532f388b72a",
+  "release": "0.3.0-rs",
+  "schemas": {
+    "critic": 1,
+    "experience_artifact": 1,
+    "experience_evidence": 1,
+    "forge_proposal": 1,
+    "oracle_approval": 1,
+    "reflection_projection": 1
+  }
+}
