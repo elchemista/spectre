@@ -29,7 +29,13 @@ end
 defmodule SpectreInstanceCoverageFloorTest.RaisingDefinitionAgent do
   @moduledoc false
 
-  def __spectre_definition__, do: raise("definition failed")
+  def __spectre_definition__ do
+    if Process.get({__MODULE__, :raise_definition?}, false) do
+      raise "definition failed"
+    else
+      SpectreInstanceCoverageFloorTest.Agent.__spectre_definition__()
+    end
+  end
 end
 
 defmodule SpectreInstanceCoverageFloorTest.CheckpointStore do
@@ -402,8 +408,21 @@ defmodule SpectreInstanceCoverageFloorTest do
         %State{}
       )
 
+    Process.put(
+      {SpectreInstanceCoverageFloorTest.RaisingDefinitionAgent, :raise_definition?},
+      true
+    )
+
+    on_exit(fn ->
+      Process.delete(
+        {SpectreInstanceCoverageFloorTest.RaisingDefinitionAgent, :raise_definition?}
+      )
+    end)
+
     assert {:error, {:run_advance_failed, ArgumentError}, %Run{status: :failed}} =
              Spectre.Runtime.advance(raising)
+
+    Process.delete({SpectreInstanceCoverageFloorTest.RaisingDefinitionAgent, :raise_definition?})
 
     history = [%{user: "old", assistant: "reply"}]
     state = %State{data: %{chat_history: history}}

@@ -330,6 +330,15 @@ defmodule SpectreDefinitionCanonicalTest do
 
     assert byte_size(fragment.digest) == 64
 
+    assert {:ok, "State {{state.data}}", inspect_placeholders} =
+             Fragment.close_template("State <%= inspect(@state.data) %>")
+
+    assert inspect_placeholders["state.data"].renderer_ref ==
+             "spectre.renderer.inspect/1"
+
+    assert {:error, :ambiguous_prompt_placeholder_renderer} =
+             Fragment.close_template("<%= @state.data %> <%= inspect(@state.data) %>")
+
     assert {:error, :executable_prompt_template} =
              Fragment.close_template("<%= System.system_time() %>")
 
@@ -342,6 +351,23 @@ defmodule SpectreDefinitionCanonicalTest do
                position: :end,
                source: %{},
                trust: :instruction
+             })
+
+    assert {:error, :invalid_prompt_placeholder_schema} =
+             Fragment.canonical(%{
+               id: :unknown_renderer,
+               content: "{{input.text}}",
+               scope: :agent,
+               target: :task,
+               position: :end,
+               source: %{},
+               trust: :instruction,
+               placeholders: %{
+                 "input.text" => %{
+                   path: ["input", "text"],
+                   renderer_ref: "host.callback/1"
+                 }
+               }
              })
 
     assert {:ok, dynamic} =

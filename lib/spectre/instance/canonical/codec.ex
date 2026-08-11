@@ -7,6 +7,8 @@ defmodule Spectre.Instance.Canonical.Codec do
   alias Spectre.Instance.Canonical.Sections
   alias Spectre.Instance.Canonical.Transition
   alias Spectre.Instance.Lifecycle
+  alias Spectre.Operation.Budget
+  alias Spectre.Operation.Loop
   alias Spectre.Run.Value
 
   @checkpoint_version 4
@@ -180,17 +182,55 @@ defmodule Spectre.Instance.Canonical.Codec do
             }
           )
 
-        {:ok, migrated}
+        migrate_operational_budgets(migrated)
 
       nil ->
-        {:ok, sections}
+        migrate_operational_budgets(sections)
 
       value ->
         {:error, {:invalid_canonical_activation, value}}
     end
   end
 
-  defp migrate_sections(%Sections{} = sections, _checkpoint_version), do: {:ok, sections}
+  defp migrate_sections(%Sections{} = sections, _checkpoint_version),
+    do: migrate_operational_budgets(sections)
+
+  @spec migrate_operational_budgets(Sections.t()) :: {:ok, Sections.t()} | {:error, term()}
+  defp migrate_operational_budgets(%Sections{} = sections) do
+    Enum.reduce_while([:work, :vigil, :directive], {:ok, sections}, fn name, {:ok, migrated} ->
+      {:ok, section} = Sections.fetch(migrated, name)
+
+      case migrate_loop_section(section.value) do
+        {:ok, loops} ->
+          {:cont, {:ok, Sections.put(migrated, name, %{section | value: loops})}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  @spec migrate_loop_section(term()) :: {:ok, map()} | {:error, term()}
+  defp migrate_loop_section(loops) when is_map(loops) and not is_struct(loops) do
+    Enum.reduce_while(loops, {:ok, %{}}, fn
+      {id, %Loop{budget: %Budget{} = budget} = loop}, {:ok, migrated} ->
+        try do
+          loop = %{loop | budget: Budget.new(budget, budget.started_at)}
+          {:cont, {:ok, Map.put(migrated, id, loop)}}
+        rescue
+          error in ArgumentError ->
+            {:halt, {:error, {:invalid_canonical_loop_budget, id, Exception.message(error)}}}
+        end
+
+      {id, value}, {:ok, migrated} ->
+        # Older canonical sections also carried non-operational, portable Work
+        # and Vigil state. It is not this migration's job to reinterpret it;
+        # only an actual operational Loop has a Budget that needs upgrading.
+        {:cont, {:ok, Map.put(migrated, id, value)}}
+    end)
+  end
+
+  defp migrate_loop_section(value), do: {:ok, value}
 
   @spec decode_section(term(), Sections.name()) :: {:ok, Section.t()} | {:error, term()}
   defp decode_section(section, name) when is_map(section) and not is_struct(section) do

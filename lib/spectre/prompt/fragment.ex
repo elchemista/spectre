@@ -18,6 +18,8 @@ defmodule Spectre.Prompt.Fragment do
   @budget_classes [:small, :standard, :large]
   @placeholder ~r/\{\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}\}/
   @legacy_placeholder ~r/<%=\s*@([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*%>/
+  @legacy_inspect_placeholder ~r/<%=\s*inspect\(\s*@([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\)\s*%>/
+  @renderer_refs ["spectre.renderer.text/1", "spectre.renderer.inspect/1"]
 
   defstruct [
     :id,
@@ -136,25 +138,23 @@ defmodule Spectre.Prompt.Fragment do
   """
   @spec close_template(String.t()) :: {:ok, String.t(), map()} | {:error, term()}
   def close_template(content) when is_binary(content) do
-    closed = Regex.replace(@legacy_placeholder, content, "{{\\1}}")
+    inspected = legacy_paths(@legacy_inspect_placeholder, content)
+    scalar = legacy_paths(@legacy_placeholder, content)
 
-    if String.contains?(closed, "<%") do
-      {:error, :executable_prompt_template}
-    else
-      placeholders =
-        @placeholder
-        |> Regex.scan(closed, capture: :all_but_first)
-        |> List.flatten()
-        |> Enum.uniq()
-        |> Map.new(fn name ->
-          {name,
-           %{
-             path: String.split(name, "."),
-             renderer_ref: "spectre.renderer.text/1"
-           }}
-        end)
+    closed =
+      content
+      |> then(&Regex.replace(@legacy_inspect_placeholder, &1, "{{\\1}}"))
+      |> then(&Regex.replace(@legacy_placeholder, &1, "{{\\1}}"))
 
-      {:ok, closed, placeholders}
+    cond do
+      String.contains?(closed, "<%") ->
+        {:error, :executable_prompt_template}
+
+      not MapSet.disjoint?(inspected, scalar) ->
+        {:error, :ambiguous_prompt_placeholder_renderer}
+
+      true ->
+        {:ok, closed, closed_placeholders(closed, inspected)}
     end
   end
 
@@ -308,7 +308,7 @@ defmodule Spectre.Prompt.Fragment do
   @spec valid_placeholder?({term(), term()}) :: boolean()
   defp valid_placeholder?({name, %{path: path, renderer_ref: renderer_ref}}) do
     is_binary(name) and is_list(path) and path != [] and Enum.all?(path, &is_binary/1) and
-      is_binary(renderer_ref) and renderer_ref != ""
+      renderer_ref in @renderer_refs
   end
 
   defp valid_placeholder?(_entry), do: false
@@ -334,4 +334,28 @@ defmodule Spectre.Prompt.Fragment do
   defp shape(value) when is_map(value), do: :map
   defp shape(value) when is_tuple(value), do: :tuple
   defp shape(_value), do: :other
+
+  @spec legacy_paths(Regex.t(), String.t()) :: MapSet.t(String.t())
+  defp legacy_paths(pattern, content) do
+    pattern
+    |> Regex.scan(content, capture: :all_but_first)
+    |> List.flatten()
+    |> MapSet.new()
+  end
+
+  @spec closed_placeholders(String.t(), MapSet.t(String.t())) :: map()
+  defp closed_placeholders(content, inspected) do
+    @placeholder
+    |> Regex.scan(content, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.uniq()
+    |> Map.new(fn name ->
+      renderer_ref =
+        if MapSet.member?(inspected, name),
+          do: "spectre.renderer.inspect/1",
+          else: "spectre.renderer.text/1"
+
+      {name, %{path: String.split(name, "."), renderer_ref: renderer_ref}}
+    end)
+  end
 end

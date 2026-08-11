@@ -12,8 +12,10 @@ defmodule Spectre.Run do
   """
 
   alias Spectre.Canonical.Value, as: CanonicalValue
+  alias Spectre.Definition
   alias Spectre.Definition.Canonical, as: CanonicalDefinition
   alias Spectre.Definition.Ref, as: DefinitionRef
+  alias Spectre.Execution.Closure
   alias Spectre.Input
   alias Spectre.Result
   alias Spectre.Run.Codec
@@ -173,6 +175,20 @@ defmodule Spectre.Run do
   @doc false
   @spec default_closure_digest(module(), DefinitionRef.t()) :: String.t()
   def default_closure_digest(agent, %DefinitionRef{} = definition_ref) do
+    manifest = Definition.manifest!(agent)
+
+    unless manifest.definition_ref == definition_ref do
+      raise ArgumentError,
+            "Definition Ref does not match the sealed compiled Manifest: " <>
+              inspect(definition_ref)
+    end
+
+    Closure.digest(manifest.execution_closure)
+  end
+
+  @doc false
+  @spec legacy_closure_digest(module(), DefinitionRef.t()) :: String.t()
+  def legacy_closure_digest(agent, %DefinitionRef{} = definition_ref) do
     CanonicalValue.digest!(%{
       "mode" => "compiled_unsealed",
       "agent" => Atom.to_string(agent),
@@ -217,11 +233,12 @@ defmodule Spectre.Run do
 
   defp compiled_definition_ref(agent) do
     case CanonicalDefinition.lower(agent) do
-      {:ok, canonical} -> CanonicalDefinition.ref(canonical)
-      {:error, _reason} -> legacy_definition_ref(agent)
+      {:ok, canonical} ->
+        CanonicalDefinition.ref(canonical)
+
+      {:error, reason} ->
+        raise ArgumentError, "cannot seal compiled Definition: #{inspect(reason)}"
     end
-  rescue
-    _exception -> legacy_definition_ref(agent)
   end
 
   defp closure_digest(agent, definition_ref, opts) do

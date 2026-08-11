@@ -171,15 +171,18 @@ defmodule Spectre.Execution.ExpressionTest do
     assert {:error, {:invalid_execution_expression, :tuple}} = Expression.normalize({:call, :x})
   end
 
-  test "fixed literals reject Elixir modules, Erlang modules, MFAs and nonportable terms" do
+  test "fixed literals reject modules and MFA-shaped data without consulting loaded modules" do
     assert {:error, {:module_execution_literal, []}} = Expression.normalize({:fixed, System})
-    assert {:error, {:module_execution_literal, []}} = Expression.normalize({:fixed, :os})
+    assert {:ok, %{kind: :fixed, value: :os}} = Expression.normalize({:fixed, :os})
 
     assert {:error, {:executable_execution_literal, []}} =
              Expression.normalize({:fixed, {System, :cmd}})
 
     assert {:error, {:executable_execution_literal, []}} =
              Expression.normalize({:fixed, {:os, :cmd}})
+
+    assert {:error, {:executable_execution_literal, []}} =
+             Expression.normalize({:fixed, {:definitely_not_a_module, :value}})
 
     assert {:error, {:module_execution_literal, ["nested", 0]}} =
              Expression.normalize({:fixed, %{"nested" => [System]}})

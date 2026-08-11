@@ -11,6 +11,7 @@ defmodule Spectre.Execution.Program do
 
   alias Spectre.Canonical.Value
   alias Spectre.Execution.Expression
+  alias Spectre.Inference.Constraints, as: InferenceConstraints
   alias Spectre.Operation.Budget
   alias Spectre.Operation.Definition
   alias Spectre.Operation.Registry
@@ -19,6 +20,7 @@ defmodule Spectre.Execution.Program do
   alias Spectre.Prompt.Plan
 
   @schema_version 1
+  @migration_branch "spectre.execution.migration"
   @node_kinds [:step, :infer, :decide, :repeat, :complete, :fail]
   @validators [:any, :map, :list, :binary, :integer, :number, :atom, :boolean]
   @standard_levels [:fast, :balanced, :deep]
@@ -252,6 +254,45 @@ defmodule Spectre.Execution.Program do
   @spec prompt_refs(t()) :: [String.t()]
   def prompt_refs(%__MODULE__{prompt_refs: refs}), do: refs
 
+  @doc false
+  @spec migration_branch() :: String.t()
+  def migration_branch, do: @migration_branch
+
+  @doc "Returns exact model-profile IDs pinned by inference nodes."
+  @spec profile_refs(t()) :: [String.t()]
+  def profile_refs(%__MODULE__{} = program) do
+    program.nodes
+    |> Map.values()
+    |> Enum.flat_map(fn
+      %{kind: :infer, profile_ref: profile_ref} when not is_nil(profile_ref) ->
+        [stable_ref(profile_ref)]
+
+      _node ->
+        []
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @doc false
+  @spec validate_profile_pinning(t()) :: :ok | {:error, term()}
+  def validate_profile_pinning(%__MODULE__{} = program) do
+    case Enum.find(Map.values(program.nodes), fn
+           %{kind: :infer, profile_ref: profile_ref} -> is_nil(profile_ref)
+           %{kind: :infer} -> true
+           _node -> false
+         end) do
+      nil -> :ok
+      node -> {:error, {:execution_inference_profile_required, node.id}}
+    end
+  end
+
+  @doc false
+  @spec uses_inference?(t()) :: boolean()
+  def uses_inference?(%__MODULE__{} = program) do
+    Enum.any?(program.nodes, fn {_id, node} -> node.kind == :infer end)
+  end
+
   @doc "Builds the code-owned operational contract consumed by the shared runtime."
   @spec operation_definition(t()) :: Definition.t()
   def operation_definition(%__MODULE__{} = program) do
@@ -263,6 +304,15 @@ defmodule Spectre.Execution.Program do
           operation -> Map.put(acc, node.id, [operation])
         end
       end)
+
+    branches =
+      case program.migrations do
+        [] ->
+          branches
+
+        migrations ->
+          Map.put(branches, @migration_branch, Enum.map(migrations, & &1.operation_ref))
+      end
 
     Definition.new(%{
       id: program.id,
@@ -497,19 +547,24 @@ defmodule Spectre.Execution.Program do
          {:ok, prompt_ref} <- prompt_name(node),
          {:ok, save_as} <- optional_path(Map.get(node, :save_as)),
          {:ok, next} <- stable_name(Map.get(node, :next), :execution_node_next),
-         {:ok, constraints} <- constraints(node),
+         {:ok, constraints, profile_ref} <- constraints(node),
          {:ok, metadata} <- portable_map(Map.get(node, :metadata, %{}), :node_metadata) do
+      normalized = %{
+        id: id,
+        kind: :infer,
+        operation_ref: operation,
+        prompt_ref: prompt_ref,
+        save_as: save_as,
+        next: next,
+        constraints: constraints,
+        metadata: metadata
+      }
+
       {:ok,
-       %{
-         id: id,
-         kind: :infer,
-         operation_ref: operation,
-         prompt_ref: prompt_ref,
-         save_as: save_as,
-         next: next,
-         constraints: constraints,
-         metadata: metadata
-       }}
+       if(is_nil(profile_ref),
+         do: normalized,
+         else: Map.put(normalized, :profile_ref, profile_ref)
+       )}
     end
   end
 
@@ -744,7 +799,11 @@ defmodule Spectre.Execution.Program do
     with :ok <- reject_ambiguous_budget(value) do
       value = atomize_budget(value)
       budget = Budget.new(value, 0)
-      limits = budget.limits
+
+      limits =
+        if is_nil(budget.limits.pages),
+          do: Map.delete(budget.limits, :pages),
+          else: budget.limits
 
       cond do
         not (is_integer(limits.steps) and limits.steps > 0) ->
@@ -764,7 +823,7 @@ defmodule Spectre.Execution.Program do
 
   @spec atomize_budget(term()) :: term()
   defp atomize_budget(value) when is_map(value) do
-    fields = [:limits, :steps, :attempts, :retries, :duration_ms, :cost]
+    fields = [:limits, :steps, :attempts, :retries, :duration_ms, :pages, :cost]
     value = atomize_known_keys(value, fields)
 
     case Map.fetch(value, :limits) do
@@ -868,7 +927,7 @@ defmodule Spectre.Execution.Program do
   defp normalize_mutable_paths(value),
     do: {:error, {:invalid_execution_mutable_paths, shape(value)}}
 
-  @spec constraints(map()) :: {:ok, map()} | {:error, term()}
+  @spec constraints(map()) :: {:ok, map(), atom() | String.t() | nil} | {:error, term()}
   defp constraints(node) do
     value = Map.get(node, :constraints, %{})
 
@@ -879,8 +938,8 @@ defmodule Spectre.Execution.Program do
          {:ok, profile_ref} <- optional_name(Map.get(node, :profile_ref), :profile_ref),
          {:ok, value} <- normalize_constraint_values(value, profile_ref) do
       try do
-        constraints = Spectre.Inference.Constraints.new(value)
-        {:ok, Map.from_struct(constraints)}
+        constraints = InferenceConstraints.new(value)
+        {:ok, Map.from_struct(constraints), profile_ref}
       rescue
         error in ArgumentError ->
           {:error, {:invalid_execution_inference_constraints, Exception.message(error)}}
@@ -975,6 +1034,10 @@ defmodule Spectre.Execution.Program do
       preferred -> {:error, {:conflicting_execution_inference_profile, preferred, profile_ref}}
     end
   end
+
+  @spec stable_ref(term()) :: String.t()
+  defp stable_ref(value) when is_atom(value), do: Atom.to_string(value)
+  defp stable_ref(value) when is_binary(value), do: value
 
   @spec validate_node_binding(program_node(), module(), Definition.t()) ::
           :ok | {:error, term()}
@@ -1099,12 +1162,6 @@ defmodule Spectre.Execution.Program do
   defp stable_name(value, field), do: {:error, {:invalid_execution_name, field, value}}
 
   @spec registered_name(term(), atom()) :: {:ok, String.t()} | {:error, term()}
-  defp registered_name(value, field) when is_atom(value) and not is_nil(value) do
-    if Code.ensure_loaded?(value),
-      do: {:error, {:execution_code_reference_forbidden, field}},
-      else: stable_name(value, field)
-  end
-
   defp registered_name(value, field), do: stable_name(value, field)
 
   @spec optional_name(term(), atom()) :: {:ok, String.t() | nil} | {:error, term()}
@@ -1204,7 +1261,7 @@ defmodule Spectre.Execution.Program do
 
   @spec reject_ambiguous_budget(term()) :: :ok | {:error, term()}
   defp reject_ambiguous_budget(value) when is_map(value) and not is_struct(value) do
-    fields = [:limits, :steps, :attempts, :retries, :duration_ms, :cost]
+    fields = [:limits, :steps, :attempts, :retries, :duration_ms, :pages, :cost]
 
     with :ok <- reject_ambiguous_keys(value, fields, :budget) do
       case Map.get(value, :limits, Map.get(value, "limits")) do

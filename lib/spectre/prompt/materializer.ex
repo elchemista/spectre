@@ -7,6 +7,7 @@ defmodule Spectre.Prompt.Materializer do
   same Definition fragment and resolved evidence.
   """
 
+  alias Spectre.Canonical.Value
   alias Spectre.Input
   alias Spectre.Prompt.Fragment
   alias Spectre.Prompt.Operation
@@ -24,7 +25,8 @@ defmodule Spectre.Prompt.Materializer do
          {:ok, input} <- normalize_input(input),
          {:ok, rendered, evidence} <- render_fragment(fragment, input, context),
          {:ok, plan} <- plan(fragment, rendered),
-         {:ok, receipt} <- Receipt.new(fragment, rendered, definition_ref, evidence) do
+         {:ok, receipt} <-
+           Receipt.new(fragment, Plan.legacy(plan), definition_ref, evidence) do
       {:ok, plan, receipt}
     end
   end
@@ -109,13 +111,25 @@ defmodule Spectre.Prompt.Materializer do
           {:ok, String.t(), term()} | {:error, term()}
   defp resolve_placeholder(name, spec, values) do
     with {:ok, value} <- fetch_path(values, get(spec, :path, [])),
-         {:ok, scalar} <- scalar(value) do
+         {:ok, scalar} <- render_value(value, get(spec, :renderer_ref, nil)) do
       {:ok, scalar, value}
     else
       :error -> {:error, {:missing_runtime_prompt_value, name}}
       {:error, shape} -> {:error, {:non_scalar_runtime_prompt_value, name, shape}}
     end
   end
+
+  @spec render_value(term(), term()) :: {:ok, String.t()} | {:error, atom()}
+  defp render_value(value, "spectre.renderer.text/1"), do: scalar(value)
+
+  defp render_value(value, "spectre.renderer.inspect/1") do
+    case Value.validate(value) do
+      :ok -> {:ok, inspect(value, limit: :infinity, printable_limit: 4_096)}
+      {:error, _reason} -> {:error, shape(value)}
+    end
+  end
+
+  defp render_value(_value, _renderer_ref), do: {:error, :unsupported_renderer}
 
   @spec plan(Fragment.t(), String.t()) :: {:ok, Plan.t()} | {:error, term()}
   defp plan(fragment, rendered) do
@@ -158,12 +172,13 @@ defmodule Spectre.Prompt.Materializer do
   defp fetch_path(value, []), do: {:ok, value}
 
   defp fetch_path(value, [segment | rest]) when is_map(value) do
-    atom = existing_atom(segment)
-
-    cond do
-      Map.has_key?(value, segment) -> fetch_path(Map.fetch!(value, segment), rest)
-      not is_nil(atom) and Map.has_key?(value, atom) -> fetch_path(Map.fetch!(value, atom), rest)
-      true -> :error
+    if Map.has_key?(value, segment) do
+      fetch_path(Map.fetch!(value, segment), rest)
+    else
+      case Enum.find(Map.keys(value), &(is_atom(&1) and Atom.to_string(&1) == segment)) do
+        nil -> :error
+        key -> fetch_path(Map.fetch!(value, key), rest)
+      end
     end
   end
 
@@ -182,13 +197,6 @@ defmodule Spectre.Prompt.Materializer do
   @spec get(map(), atom(), term()) :: term()
   defp get(map, key, default),
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
-
-  @spec existing_atom(String.t()) :: atom() | nil
-  defp existing_atom(value) do
-    String.to_existing_atom(value)
-  rescue
-    ArgumentError -> nil
-  end
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_map(value), do: :map

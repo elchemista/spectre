@@ -291,6 +291,16 @@ defmodule Spectre.Operation.Runtime.Contract do
       else: {:error, {:invalid_operation_cost, cost}}
   end
 
+  @doc "Validates a non-negative integral page count."
+  @spec validate_pages(map(), term()) :: :ok | {:error, term()}
+  def validate_pages(usage, fallback) do
+    pages = Map.get(usage, :pages, Map.get(usage, "pages", fallback))
+
+    if is_nil(pages) or (is_integer(pages) and pages >= 0),
+      do: :ok,
+      else: {:error, {:invalid_operation_pages, pages}}
+  end
+
   @doc "Validates a request input against the operation spec, unless reconciling."
   @spec validate_request_input(Spec.t(), Request.t(), boolean()) :: :ok | {:error, term()}
   def validate_request_input(_spec, %Request{}, true), do: :ok

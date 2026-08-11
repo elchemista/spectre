@@ -4,6 +4,7 @@ defmodule Spectre.Governance.Constraints do
   alias Spectre.Authority.Envelope
   alias Spectre.Canonical.Value
   alias Spectre.Definition.Canonical
+  alias Spectre.Execution.Program
   alias Spectre.Governance.Data
   alias Spectre.Skill.Applicability
   alias Spectre.Skill.Definition, as: SkillDefinition
@@ -105,12 +106,76 @@ defmodule Spectre.Governance.Constraints do
   defp verify_skill_authority(mounts, authority) do
     Enum.reduce_while(mounts, :ok, fn {_mount_id, skill}, :ok ->
       with :ok <- verify_operations(skill, authority),
-           :ok <- verify_prompt_classes(skill, authority) do
+           :ok <- verify_prompt_classes(skill, authority),
+           :ok <- verify_model_authority(skill, authority),
+           :ok <- verify_execution_budgets(skill, authority) do
         {:cont, :ok}
       else
         {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  defp verify_model_authority(skill, authority) do
+    skill
+    |> SkillDefinition.works()
+    |> Enum.reduce_while(:ok, fn program, :ok ->
+      with :ok <- Program.validate_profile_pinning(program),
+           :ok <- verify_model_purpose(program, authority),
+           :ok <- verify_model_profiles(program, authority) do
+        {:cont, :ok}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp verify_model_purpose(program, authority) do
+    if not Program.uses_inference?(program) or
+         Enum.any?(authority.model_purposes, &same_name?(&1, :data_driven_work)) do
+      :ok
+    else
+      {:error, {:execution_model_purpose_not_authorized, program.id, :data_driven_work}}
+    end
+  end
+
+  defp verify_model_profiles(program, authority) do
+    case Enum.find(Program.profile_refs(program), fn profile ->
+           not Enum.any?(authority.model_profiles, &same_name?(&1, profile))
+         end) do
+      nil -> :ok
+      profile -> {:error, {:execution_model_profile_not_authorized, program.id, profile}}
+    end
+  end
+
+  defp verify_execution_budgets(skill, authority) do
+    skill
+    |> SkillDefinition.works()
+    |> Enum.reduce_while(:ok, fn program, :ok ->
+      case execution_budget_excess(program, authority) do
+        nil -> {:cont, :ok}
+        reason -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp execution_budget_excess(program, authority) do
+    [cost: :max_cost, duration_ms: :max_duration_ms, pages: :max_pages]
+    |> Enum.find_value(&execution_budget_excess(program, authority, &1))
+  end
+
+  defp execution_budget_excess(program, authority, {budget_field, authority_field}) do
+    case Map.fetch(authority.limits, authority_field) do
+      :error ->
+        nil
+
+      {:ok, ceiling} ->
+        requested = Map.get(program.budget, budget_field)
+
+        if is_number(requested) and requested <= ceiling,
+          do: nil,
+          else: {:execution_budget_not_authorized, program.id, budget_field, requested, ceiling}
+    end
   end
 
   defp verify_operations(skill, authority) do

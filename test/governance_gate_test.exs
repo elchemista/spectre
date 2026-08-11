@@ -80,6 +80,40 @@ defmodule SpectreGovernanceGateTest.HiddenComponentHandler do
   end
 end
 
+defmodule SpectreGovernanceGateTest.FullSliceCritic do
+  @moduledoc false
+  @behaviour Spectre.Forge.Critic
+
+  @impl true
+  def id, do: "test.full-slice-contract-critic"
+
+  @impl true
+  def version, do: 1
+
+  @impl true
+  def profile_ref, do: "prism:test:full-slice"
+
+  @impl true
+  def critique(reflection, snapshot, _opts) do
+    {:ok,
+     %{
+       "opinion" => "The proposed route needs an independently checked empty-input case.",
+       "eval_case" => %{
+         "id" => "forge-empty-input",
+         "input" => "",
+         "expected_outcome" => "unknown",
+         "llm" => "forbidden",
+         "tags" => ["forge", "routing"]
+       },
+       "oracle_ref" => "oracle:contract:routing-v1",
+       "provenance" => %{
+         "reflection_digest" => reflection["digest"],
+         "snapshot_digest" => snapshot["digest"]
+       }
+     }}
+  end
+end
+
 defmodule SpectreGovernanceGateTest.CountingStore do
   @moduledoc false
   @behaviour Spectre.Definition.Store
@@ -201,6 +235,14 @@ defmodule SpectreGovernanceGateTest do
   alias Spectre.Definition.Store
   alias Spectre.Definition.Store.Memory
   alias Spectre.Execution.Closure
+  alias Spectre.Execution.Program
+  alias Spectre.Experience
+  alias Spectre.Experience.Store.Memory, as: ExperienceMemory
+  alias Spectre.Forge
+  alias Spectre.Forge.Critic, as: ForgeCritic
+  alias Spectre.Forge.Critique
+  alias Spectre.Forge.OracleApproval
+  alias Spectre.Forge.Proposal
   alias Spectre.Foundation.Conformance
   alias Spectre.Gate.Receipt
   alias Spectre.Governance.Approval
@@ -221,8 +263,10 @@ defmodule SpectreGovernanceGateTest do
   alias Spectre.Governance.Verifier
   alias Spectre.Instance
   alias Spectre.Projection.HumanReport
+  alias Spectre.Reflection.Policy, as: ReflectionPolicy
   alias Spectre.Skill.Applicability
   alias Spectre.Subject
+  alias SpectreGovernanceGateTest.FullSliceCritic
 
   alias SpectreGovernanceGateTest.Agent
   alias SpectreGovernanceGateTest.CheckpointStore
@@ -396,6 +440,190 @@ defmodule SpectreGovernanceGateTest do
     assert rolled_back.generation == 3
     assert rolled_back.definition_ref == activation.definition_ref
     assert rolled_back.provenance.external_effects_rolled_back == false
+  end
+
+  test "Reflection, Forge, governance and activation form one evidence-bound vertical slice" do
+    %{store: store, instance: instance, activation: activation} =
+      baseline(closure: reflective_closure())
+
+    experience_server =
+      start_supervised!(
+        {ExperienceMemory, id: {:governance_full_slice, System.unique_integer([:positive])}}
+      )
+
+    experience_store = {ExperienceMemory, server: experience_server}
+
+    assert {:ok, _evidence_ref} =
+             Experience.record(
+               experience_store,
+               %{
+                 definition_ref: activation.definition_ref,
+                 activation_generation: activation.generation,
+                 kind: "routing.observation",
+                 source_ref: "journal:redacted:full-slice",
+                 observed_at: 10,
+                 expires_at: 100,
+                 retention: :bounded,
+                 facts: %{outcome: :route_miss, token: "raw-secret"},
+                 provenance: %{source: :full_slice}
+               },
+               enabled?: true
+             )
+
+    policy =
+      ReflectionPolicy.new!(
+        actor_refs: ["operator:full-slice"],
+        purposes: ["inspect"],
+        max_evidence: 10
+      )
+
+    assert {:ok, reflection} =
+             Spectre.Reflection.reflect(store, activation.definition_ref, activation,
+               policy: policy,
+               actor_ref: "operator:full-slice",
+               purpose: "inspect",
+               as_of: 20,
+               experience_store: experience_store
+             )
+
+    assert reflection.content["instruction_semantics"] == "quoted_data_only"
+    assert reflection.content["observed"]["status"] == "evidence_available"
+    refute inspect(reflection.content) =~ "raw-secret"
+
+    assert {:ok, snapshot} =
+             Experience.snapshot(experience_store, activation.definition_ref, as_of: 20)
+
+    assert {:ok, [critique]} =
+             ForgeCritic.run([FullSliceCritic], reflection, snapshot)
+
+    oracle_approval =
+      OracleApproval.new!(%{
+        case_digest: Critique.case_digest(critique),
+        oracle_ref: critique.oracle_ref,
+        approver_ref: "operator:oracle-review",
+        approved_at: 25,
+        provenance: %{source: :independent_contract_review}
+      })
+
+    assert {:ok, %Proposal{} = proposal} =
+             Forge.propose(activation, reflection, snapshot, [mount_operation()],
+               critics: [FullSliceCritic],
+               oracle_approvals: [oracle_approval],
+               author_ref: "forge:full-slice",
+               reason: "Mount lookup with an independently falsifiable route case",
+               created_at: 30
+             )
+
+    assert :ok = Proposal.verify(proposal)
+    assert Enum.map(proposal.change_set.operations, & &1.type) == ["mount_skill", "add_eval_case"]
+
+    evidence = Forge.evidence(reflection, snapshot)
+
+    assert {:ok, composed_ref} =
+             Composer.compose(store, proposal.change_set,
+               activation: activation,
+               evidence: evidence,
+               created_at: 30,
+               applicability_ceilings: %{
+                 "lookup" => %{
+                   scopes: ["support"],
+                   required_tags: [],
+                   forbidden_tags: [],
+                   conflicts: []
+                 }
+               }
+             )
+
+    assert {:ok, %Candidate{governance: governance}} =
+             Store.fetch_candidate(store, composed_ref)
+
+    assert governance.observed_evidence_digest ==
+             ChangeSet.evidence_digest(activation, evidence)
+
+    assert governance.candidate_case_ids == ["forge-empty-input"]
+    assert proposal.change_set.provenance["forge"]["reflection_digest"] == reflection.digest
+
+    receipts = [
+      receipt(governance, :replay, 40, profile_ref: "recording:full-slice"),
+      receipt(governance, :regression, 40)
+    ]
+
+    failing_candidate_case =
+      EvaluationDelta.new!(
+        [%{case_id: "protected", passed: true}],
+        [
+          %{case_id: "protected", passed: true},
+          %{case_id: "forge-empty-input", passed: false}
+        ],
+        protected_cases: [protected_case()],
+        candidate_case_ids: ["forge-empty-input"]
+      )
+
+    refute failing_candidate_case.passed
+
+    assert {:ok, rejected_ref, _report} =
+             Review.evaluate(store, composed_ref, failing_candidate_case, receipts,
+               reviewed_at: 45,
+               now: 50,
+               checker_versions: @checker_versions
+             )
+
+    assert {:ok, %Candidate{governance: %{state: :rejected}}} =
+             Store.fetch_candidate(store, rejected_ref)
+
+    passing_delta =
+      EvaluationDelta.new!(
+        [%{case_id: "protected", passed: true}],
+        [
+          %{case_id: "protected", passed: true},
+          %{case_id: "forge-empty-input", passed: true}
+        ],
+        protected_cases: [protected_case()],
+        candidate_case_ids: ["forge-empty-input"]
+      )
+
+    assert {:ok, evaluated_ref, report} =
+             Review.evaluate(store, composed_ref, passing_delta, receipts,
+               reviewed_at: 45,
+               now: 50,
+               checker_versions: @checker_versions
+             )
+
+    assert report.evaluation_delta == EvaluationDelta.to_data(passing_delta)
+
+    assert {:ok, approved_ref} =
+             Approval.approve(store, evaluated_ref,
+               mode: :human,
+               actor_ref: "operator:activation-review",
+               approved_at: 55
+             )
+
+    stale_evidence =
+      Map.put(evidence, "reflection_projection_digest", String.duplicate("f", 64))
+
+    assert {:error, :stale_governance_evidence_digest} =
+             Spectre.activate(instance, approved_ref,
+               expected_generation: 1,
+               evidence: stale_evidence,
+               now: 60,
+               checker_versions: @checker_versions
+             )
+
+    assert {:ok, activated} =
+             Spectre.activate(instance, approved_ref,
+               expected_generation: 1,
+               evidence: evidence,
+               now: 60,
+               checker_versions: @checker_versions
+             )
+
+    assert activated.generation == 2
+    assert activated.candidate_ref == approved_ref
+    assert to_string(activated.definition_ref) == governance.candidate_definition_ref
+
+    assert {:ok, %Candidate{} = approved} = Store.fetch_candidate(store, approved_ref)
+    assert approved.governance.report_digest == report.digest
+    assert approved.governance.approval_receipt_ref in approved.governance.gate_receipt_refs
   end
 
   test "activation rechecks exact external Reflection evidence passed to composition" do
@@ -2730,6 +2958,49 @@ defmodule SpectreGovernanceGateTest do
              )
   end
 
+  test "governance cannot compose inference outside model purpose or profile authority" do
+    operation = inference_mount_operation()
+
+    allowed =
+      Envelope.new!(
+        operations: ["infer"],
+        prompt_budget_classes: [:small],
+        model_purposes: [:data_driven_work],
+        model_profiles: [:deep],
+        limits: %{max_tokens: 64}
+      )
+
+    %{store: store, activation: activation} = baseline(authority: allowed)
+
+    assert {:ok, _candidate_ref} =
+             Composer.compose(store, change_set(activation, [operation]),
+               activation: activation,
+               created_at: 2
+             )
+
+    without_purpose = %{allowed | model_purposes: []}
+    %{store: store, activation: activation} = baseline(authority: without_purpose)
+
+    assert {:error,
+            {:governance_operation_failed, 0,
+             {:execution_model_purpose_not_authorized, "governed_inference", :data_driven_work}}} =
+             Composer.compose(store, change_set(activation, [operation]),
+               activation: activation,
+               created_at: 2
+             )
+
+    without_profile = %{allowed | model_profiles: []}
+    %{store: store, activation: activation} = baseline(authority: without_profile)
+
+    assert {:error,
+            {:governance_operation_failed, 0,
+             {:execution_model_profile_not_authorized, "governed_inference", "deep"}}} =
+             Composer.compose(store, change_set(activation, [operation]),
+               activation: activation,
+               created_at: 2
+             )
+  end
+
   test "governed composition accepts finite fractional token grants" do
     authority = Envelope.new!(operations: ["lookup"], limits: %{max_tokens: 12.5})
     %{store: store, activation: activation} = baseline(authority: authority)
@@ -3472,11 +3743,19 @@ defmodule SpectreGovernanceGateTest do
   end
 
   defp baseline(opts \\ []) do
-    server = start_supervised!({Memory, id: {:governance, System.unique_integer([:positive])}})
+    id = {:governance, System.unique_integer([:positive, :monotonic])}
+
+    server =
+      start_supervised!(%{
+        id: id,
+        start: {Memory, :start_link, [[id: id]]}
+      })
+
     store = {Memory, server: server}
     canonical = Definition.canonical!(Agent)
     authority = Keyword.get(opts, :authority, Envelope.new!(operations: ["lookup"]))
-    manifest = Manifest.new!(canonical, authority, closure())
+    execution_closure = Keyword.get(opts, :closure, closure())
+    manifest = Manifest.new!(canonical, authority, execution_closure)
 
     assert {:ok, _publication} = Store.publish(store, canonical, manifest)
 
@@ -3776,6 +4055,55 @@ defmodule SpectreGovernanceGateTest do
     }
   end
 
+  defp inference_mount_operation do
+    program =
+      Program.new!(%{
+        id: :governed_inference,
+        entry: :infer,
+        input: :map,
+        state: :map,
+        initial: :input,
+        budget: %{steps: 2, attempts: 2},
+        nodes: [
+          %{
+            id: :infer,
+            kind: :infer,
+            operation: :infer,
+            prompt: :guide,
+            profile_ref: :deep,
+            next: :done
+          },
+          %{id: :done, kind: :complete, output: :state}
+        ]
+      })
+
+    definition =
+      prompt_skill()
+      |> Map.put("id", "governed-inference")
+      |> Map.put("operation_refs", ["infer"])
+      |> Map.put("works", [Program.to_data(program)])
+      |> Map.put("flows", [
+        %{
+          "id" => "support",
+          "routes" => [
+            %{
+              "label" => "INFER",
+              "match" => %{"kind" => "exact", "value" => "lookup"},
+              "handler" => %{
+                "kind" => "work",
+                "work_ref" => "governed_inference",
+                "input" => "input"
+              }
+            }
+          ]
+        }
+      ])
+
+    mount_operation()
+    |> put_in(["payload", "mount_id"], "governed-inference")
+    |> put_in(["payload", "definition"], definition)
+  end
+
   defp prompt_skill do
     mount_operation()["payload"]["definition"]
     |> Map.put("prompt_budget", 64)
@@ -3893,6 +4221,17 @@ defmodule SpectreGovernanceGateTest do
       build_fingerprints: %{"beam:Agent" => @digest},
       evaluation_corpus_digest: EvaluationDelta.protected_corpus_digest!([protected_case()]),
       compatibility_mode: :native_v2
+    })
+  end
+
+  defp reflective_closure do
+    base = closure()
+
+    Closure.new!(%{
+      base
+      | projection_generators:
+          base.projection_generators ++
+            [%{id: "spectre.projection.reflection", version: 1}]
     })
   end
 end

@@ -21,6 +21,7 @@ defmodule Spectre.Instance do
   alias Spectre.Definition.Resolver, as: DefinitionResolver
   alias Spectre.Definition.Store, as: DefinitionStore
   alias Spectre.Event.Envelope, as: EventEnvelope
+  alias Spectre.Execution.Admission, as: ExecutionAdmission
   alias Spectre.Execution.Closure
   alias Spectre.Execution.Materialization, as: ExecutionMaterialization
   alias Spectre.Execution.Runtime, as: DataExecutionRuntime
@@ -1066,6 +1067,8 @@ defmodule Spectre.Instance do
       {:reply, {:error, :work_cannot_start_work}, arm_idle_timer(data)}
     else
       with :ok <- Events.authorize(data, active_definition_ref, :new_admission),
+           :ok <-
+             ExecutionAdmission.verify(materialization, data.definition_store, data.activation),
            env <- Loops.operation_env(data),
            {:ok, loop, control, event_specs} <-
              DataExecutionRuntime.start(materialization, opts, env) do

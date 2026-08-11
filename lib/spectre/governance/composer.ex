@@ -19,6 +19,7 @@ defmodule Spectre.Governance.Composer do
   alias Spectre.Definition.Resolver
   alias Spectre.Definition.Store
   alias Spectre.Execution.Closure
+  alias Spectre.Execution.Program
   alias Spectre.Gate.Receipt
   alias Spectre.Gate.Receipt.Ref, as: ReceiptRef
   alias Spectre.Governance.Authority
@@ -162,6 +163,11 @@ defmodule Spectre.Governance.Composer do
         |> Enum.flat_map(&SkillDefinition.operation_refs/1)
         |> Enum.map(&("spectre.operation:" <> stable_ref(&1)))
 
+      model_profile_refs =
+        skills
+        |> Enum.flat_map(&SkillDefinition.works/1)
+        |> Enum.flat_map(&Program.profile_refs/1)
+
       generators =
         skills
         |> Enum.flat_map(fn skill -> projection_generators(SkillDefinition.canonical(skill)) end)
@@ -170,6 +176,7 @@ defmodule Spectre.Governance.Composer do
       |> Map.from_struct()
       |> Map.update!(:prompt_fragment_digests, &(&1 ++ prompt_digests))
       |> Map.update!(:contract_refs, &(&1 ++ contract_refs))
+      |> Map.update!(:model_profile_refs, &(&1 ++ model_profile_refs))
       |> Map.update!(:projection_generators, &merge_generators(&1, generators))
       |> Closure.new()
     end

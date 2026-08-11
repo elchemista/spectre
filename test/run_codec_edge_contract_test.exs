@@ -1,7 +1,15 @@
+defmodule SpectreRunCodecEdgeContractTest.Agent do
+  @moduledoc false
+  use Spectre.Agent, id: :run_codec_contract_agent
+end
+
 defmodule SpectreRunCodecEdgeContractTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Awaitable
+  alias Spectre.Definition
+  alias Spectre.Definition.Canonical
+  alias Spectre.Execution.Closure
   alias Spectre.Input
   alias Spectre.Input.Source
   alias Spectre.Run
@@ -10,6 +18,21 @@ defmodule SpectreRunCodecEdgeContractTest do
   alias Spectre.Run.Request
   alias Spectre.Run.Value
   alias Spectre.State
+  alias SpectreRunCodecEdgeContractTest.Agent
+
+  test "new Runs are pinned to the sealed canonical Definition without a legacy fallback" do
+    run = Run.new(Agent, %Input{}, %State{})
+    canonical = Definition.canonical!(Agent)
+    manifest = Definition.manifest!(Agent)
+
+    assert run.definition_ref == Canonical.ref(canonical)
+    assert run.closure_digest == Closure.digest(manifest.execution_closure)
+    refute run.definition_ref == Run.legacy_definition_ref(Agent)
+
+    assert_raise ArgumentError, ~r/cannot seal compiled Definition/, fn ->
+      Run.new(__MODULE__, %Input{}, %State{})
+    end
+  end
 
   test "Run options and identifiers fail closed for non-portable values" do
     assert Run.version() == 2
@@ -27,10 +50,10 @@ defmodule SpectreRunCodecEdgeContractTest do
              Run.validate_options(run_metadata: %{client: self()})
 
     assert %Run{metadata: %{}} =
-             Run.new(__MODULE__, %Input{}, %State{}, run_metadata: :invalid)
+             Run.new(Agent, %Input{}, %State{}, run_metadata: :invalid)
 
     assert %Run{id: "run:" <> _, trace_id: "trace:" <> _} =
-             Run.new(__MODULE__, %Input{}, %State{},
+             Run.new(Agent, %Input{}, %State{},
                run_id: {:tenant, 42},
                trace_id: {:trace, 7}
              )
@@ -259,7 +282,7 @@ defmodule SpectreRunCodecEdgeContractTest do
   end
 
   defp initial_run do
-    Run.new(__MODULE__, %Input{text: "hello"}, %State{},
+    Run.new(Agent, %Input{text: "hello"}, %State{},
       run_id: "run-1",
       trace_id: "trace-1"
     )

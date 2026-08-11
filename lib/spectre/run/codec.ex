@@ -357,7 +357,7 @@ defmodule Spectre.Run.Codec do
          definition_ref: definition_ref,
          activation_generation: 0,
          authority_epoch: 0,
-         closure_digest: Run.default_closure_digest(run.agent, definition_ref),
+         closure_digest: Run.legacy_closure_digest(run.agent, definition_ref),
          deployment_requirement: nil
      }}
   end

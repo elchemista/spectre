@@ -8,6 +8,7 @@ defmodule Spectre.Operation.Runtime.Support do
   option/portability utilities. Intended to be `import`ed by those modules.
   """
 
+  alias Spectre.Execution.Controller
   alias Spectre.Operation.Loop
   alias Spectre.Run.Value
 
@@ -63,7 +64,9 @@ defmodule Spectre.Operation.Runtime.Support do
       committed: Map.get(env, :committed, %{}),
       execution_program: Map.get(env, :spectre_execution_program),
       execution_plans: Map.get(env, :spectre_execution_plans, %{}),
+      execution_definition_ref: Map.get(env, :spectre_execution_definition_ref),
       execution_materialization_digest: Map.get(env, :spectre_execution_materialization_digest),
+      execution_migration: Map.get(env, :spectre_execution_migration),
       now: now(env)
     }
   end
@@ -86,10 +89,11 @@ defmodule Spectre.Operation.Runtime.Support do
       last_result: loop.last_result,
       committed: Map.get(env, :committed, %{}),
       trigger: Map.get(env, :trigger),
-      execution_program: Map.get(loop.metadata, Spectre.Execution.Controller.program_key()),
-      execution_plans: Map.get(loop.metadata, Spectre.Execution.Controller.plans_key(), %{}),
-      execution_materialization_digest:
-        Map.get(loop.metadata, Spectre.Execution.Controller.materialization_key()),
+      execution_program: Map.get(loop.metadata, Controller.program_key()),
+      execution_plans: Map.get(loop.metadata, Controller.plans_key(), %{}),
+      execution_definition_ref: Map.get(loop.metadata, :spectre_execution_definition_ref),
+      execution_materialization_digest: Map.get(loop.metadata, Controller.materialization_key()),
+      execution_migration: Map.get(loop.metadata, Controller.migration_key()),
       now: now(env)
     }
   end

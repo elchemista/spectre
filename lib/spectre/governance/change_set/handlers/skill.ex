@@ -8,6 +8,7 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
   alias Spectre.Definition.Canonical
   alias Spectre.Definition.Component
   alias Spectre.Definition.Ref
+  alias Spectre.Execution.Program
   alias Spectre.Governance.ChangeSet.Operation
   alias Spectre.Governance.Composition
   alias Spectre.Governance.Constraints
@@ -186,11 +187,76 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
   defp authorize_definition(definition, context) do
     with %Envelope{} = authority <- Map.get(context, :authority),
          :ok <- authorize_operations(SkillDefinition.operation_refs(definition), authority),
-         :ok <- authorize_prompt(definition, authority, context) do
+         :ok <- authorize_prompt(definition, authority, context),
+         :ok <- authorize_models(definition, authority),
+         :ok <- authorize_execution_budgets(definition, authority) do
       :ok
     else
       nil -> {:error, :governance_authority_required}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp authorize_models(definition, authority) do
+    definition
+    |> SkillDefinition.works()
+    |> Enum.reduce_while(:ok, fn program, :ok ->
+      with :ok <- Program.validate_profile_pinning(program),
+           :ok <- authorize_model_purpose(program, authority),
+           :ok <- authorize_model_profiles(program, authority) do
+        {:cont, :ok}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp authorize_model_purpose(program, authority) do
+    if not Program.uses_inference?(program) or
+         Enum.any?(authority.model_purposes, &same_name?(&1, :data_driven_work)) do
+      :ok
+    else
+      {:error, {:execution_model_purpose_not_authorized, program.id, :data_driven_work}}
+    end
+  end
+
+  defp authorize_model_profiles(program, authority) do
+    case Enum.find(Program.profile_refs(program), fn profile ->
+           not Enum.any?(authority.model_profiles, &same_name?(&1, profile))
+         end) do
+      nil -> :ok
+      profile -> {:error, {:execution_model_profile_not_authorized, program.id, profile}}
+    end
+  end
+
+  defp authorize_execution_budgets(definition, authority) do
+    definition
+    |> SkillDefinition.works()
+    |> Enum.reduce_while(:ok, fn program, :ok ->
+      checks = [
+        {:cost, :max_cost},
+        {:duration_ms, :max_duration_ms},
+        {:pages, :max_pages}
+      ]
+
+      case Enum.find_value(checks, &budget_excess(program, authority, &1)) do
+        nil -> {:cont, :ok}
+        reason -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp budget_excess(program, authority, {budget_field, authority_field}) do
+    case Map.fetch(authority.limits, authority_field) do
+      :error ->
+        nil
+
+      {:ok, ceiling} ->
+        requested = Map.get(program.budget, budget_field)
+
+        if is_number(requested) and requested <= ceiling,
+          do: nil,
+          else: {:execution_budget_not_authorized, program.id, budget_field, requested, ceiling}
     end
   end
 

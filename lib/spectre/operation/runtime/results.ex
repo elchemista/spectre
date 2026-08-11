@@ -158,6 +158,7 @@ defmodule Spectre.Operation.Runtime.Results do
          :ok <- portable(state, [:loop, loop.id, :state]),
          :ok <- Contract.validate_significance(loop.kind, option(opts, :significance)),
          :ok <- Contract.validate_cost(result.usage, option(opts, :cost)),
+         :ok <- Contract.validate_pages(result.usage, option(opts, :pages)),
          artifacts <- result.artifacts ++ List.wrap(option(opts, :artifacts, [])),
          :ok <- Contract.validate_artifacts(definition, loop, artifacts),
          {:ok, start_loops} <-
@@ -165,6 +166,7 @@ defmodule Spectre.Operation.Runtime.Results do
          :ok <- portable(opts, [:loop, loop.id, :transition]) do
       usage = normalize_map(result.usage)
       cost = Map.get(usage, :cost, Map.get(usage, "cost", option(opts, :cost, 0)))
+      pages = Map.get(usage, :pages, Map.get(usage, "pages", option(opts, :pages, 0)))
 
       significance = normalize_significance(loop.kind, option(opts, :significance))
 
@@ -182,7 +184,10 @@ defmodule Spectre.Operation.Runtime.Results do
         |> clear_reconciliation_marker()
         |> Map.update!(:cycles, &(&1 + 1))
         |> maybe_increment_observations()
-        |> Map.update!(:budget, &Budget.consume(&1, steps: 1, cost: cost || 0))
+        |> Map.update!(
+          :budget,
+          &Budget.consume(&1, steps: 1, pages: pages || 0, cost: cost || 0)
+        )
         |> append_results(option(opts, :results, [result.value]))
         |> append_artifacts(artifacts, Contract.artifact_limit(definition))
         |> append_invalidations(List.wrap(option(opts, :invalidations, [])))

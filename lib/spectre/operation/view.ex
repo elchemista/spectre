@@ -7,6 +7,8 @@ defmodule Spectre.Operation.View do
   independently controlled by the Definition's publication policy.
   """
 
+  alias Spectre.Operation.Budget
+
   # The projection is intentionally flat so consumers cannot traverse canonical state.
   # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct [
@@ -95,9 +97,25 @@ defmodule Spectre.Operation.View do
         consumed: loop.budget.consumed,
         remaining: remaining_budget(loop.budget)
       },
-      metadata: Map.take(loop.metadata, [:label, :progress_unit, :last_significant_change])
+      metadata:
+        loop.metadata
+        |> Map.take([:label, :progress_unit, :last_significant_change])
+        |> put_migration_receipt(loop.state)
     }
   end
+
+  defp put_migration_receipt(metadata, %{migration: %{status: :complete, receipt: receipt}})
+       when is_map(receipt) do
+    case Map.get(receipt, :digest, Map.get(receipt, "digest")) do
+      digest when is_binary(digest) ->
+        Map.put(metadata, :execution_migration_receipt_digest, digest)
+
+      _missing ->
+        metadata
+    end
+  end
+
+  defp put_migration_receipt(metadata, _state), do: metadata
 
   @spec wait_ref(Spectre.Operation.Loop.t()) :: map() | nil
   defp wait_ref(%{wait: nil}), do: nil
@@ -191,8 +209,8 @@ defmodule Spectre.Operation.View do
           optional(atom()) => number() | :infinity
         }
   defp remaining_budget(budget) do
-    Map.new([:steps, :attempts, :retries, :duration_ms, :cost], fn dimension ->
-      {dimension, Spectre.Operation.Budget.remaining(budget, dimension)}
+    Map.new([:steps, :attempts, :retries, :duration_ms, :pages, :cost], fn dimension ->
+      {dimension, Budget.remaining(budget, dimension)}
     end)
   end
 end

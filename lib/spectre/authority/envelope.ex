@@ -27,7 +27,7 @@ defmodule Spectre.Authority.Envelope do
     :open_capabilities,
     :consents
   ]
-  @limit_fields [:max_cost, :max_duration_ms, :max_risk, :max_tokens]
+  @limit_fields [:max_cost, :max_duration_ms, :max_pages, :max_risk, :max_tokens]
 
   @enforce_keys [:schema_version] ++ @grant_fields ++ [:limits]
   defstruct [schema_version: @schema_version] ++
@@ -227,6 +227,11 @@ defmodule Spectre.Authority.Envelope do
           do: {:cont, :ok},
           else: {:halt, {:error, {:invalid_authority_limit, field, value}}}
 
+      {:max_pages, value}, :ok ->
+        if is_integer(value) and value >= 0,
+          do: {:cont, :ok},
+          else: {:halt, {:error, {:invalid_authority_limit, :max_pages, value}}}
+
       {:max_risk, value}, :ok ->
         if is_atom(value) and not is_nil(value),
           do: {:cont, :ok},
@@ -283,6 +288,7 @@ defmodule Spectre.Authority.Envelope do
   @spec limit_field(term()) :: {:ok, atom()} | :error
   defp limit_field("max_cost"), do: {:ok, :max_cost}
   defp limit_field("max_duration_ms"), do: {:ok, :max_duration_ms}
+  defp limit_field("max_pages"), do: {:ok, :max_pages}
   defp limit_field("max_risk"), do: {:ok, :max_risk}
   defp limit_field("max_tokens"), do: {:ok, :max_tokens}
   defp limit_field(field) when field in @limit_fields, do: {:ok, field}

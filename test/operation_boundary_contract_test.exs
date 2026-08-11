@@ -1109,24 +1109,45 @@ defmodule SpectreOperationBoundaryContractTest do
     assert_raise ArgumentError, fn -> Retry.new(base_delay_ms: 10, max_delay_ms: 1) end
     assert_raise ArgumentError, fn -> Retry.new(retry_on: ["error"]) end
 
-    budget = Budget.new([steps: 2, attempts: 3, retries: 1, duration_ms: 100, cost: 5], 1_000)
+    budget =
+      Budget.new(
+        [steps: 2, attempts: 3, retries: 1, duration_ms: 100, pages: 2, cost: 5],
+        1_000
+      )
+
     assert :ok = Budget.validate(budget)
     assert Budget.remaining(budget, :steps) == 2
     assert Budget.remaining(Budget.new(nil, 1_000), :steps) == :infinity
 
-    consumed = Budget.consume(budget, steps: 2, attempts: 1, cost: 2.5)
+    consumed = Budget.consume(budget, steps: 2, attempts: 1, pages: 1, cost: 2.5)
     assert Budget.exhausted(consumed, 1_050) == {:steps, 2, 2}
+    assert Budget.remaining(consumed, :pages) == 1
     assert Budget.remaining(consumed, :cost) == 2.5
+
+    legacy = %{
+      budget
+      | limits: Map.delete(budget.limits, :pages),
+        consumed: Map.delete(budget.consumed, :pages)
+    }
+
+    upgraded = Budget.new(legacy, 1_000)
+    assert upgraded.limits.pages == nil
+    assert upgraded.consumed.pages == 0
+    assert Budget.remaining(upgraded, :pages) == :infinity
 
     duration_only = Budget.new([duration_ms: 10], 1_000)
     assert Budget.exhausted(duration_only, 1_010) == {:duration_ms, 10, 10}
     assert_raise ArgumentError, fn -> Budget.consume(budget, unknown: 1) end
+    assert_raise ArgumentError, fn -> Budget.consume(budget, pages: 0.5) end
+    assert_raise ArgumentError, fn -> Budget.new([pages: 0.5], 1_000) end
 
     invalid_budget = [
       {%{budget | limits: []}, :invalid_operational_budget_limits},
       {%{budget | limits: %{steps: 1}}, :invalid_operational_budget_dimensions},
       {%{budget | limits: Map.put(budget.limits, :steps, -1)},
        {:invalid_operational_budget_limit, {:steps, -1}}},
+      {%{budget | limits: Map.put(budget.limits, :pages, 0.5)},
+       {:invalid_operational_budget_limit, {:pages, 0.5}}},
       {%{budget | consumed: []}, :invalid_operational_budget_consumption},
       {%{budget | started_at: -1}, :invalid_operational_budget_start},
       {%{budget | deadline_at: 999}, :invalid_operational_budget_deadline},

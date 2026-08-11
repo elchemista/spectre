@@ -8,8 +8,10 @@ defmodule Spectre.Execution.Runtime do
   semantics.
   """
 
+  alias Spectre.Execution.Controller
   alias Spectre.Execution.Handoff
   alias Spectre.Execution.Materialization
+  alias Spectre.Execution.Migration
   alias Spectre.Operation.Runtime, as: OperationRuntime
 
   @doc "Starts a materialized Work in the pure operational transition engine."
@@ -23,15 +25,27 @@ defmodule Spectre.Execution.Runtime do
     with true <- Keyword.keyword?(opts),
          :ok <- Materialization.verify(materialization),
          {:ok, handoff} <- handoff(Keyword.get(opts, :handoff), materialization),
+         {:ok, migration} <- migration(Keyword.get(opts, :migration), materialization, env),
          {:ok, metadata} <- metadata(Keyword.get(opts, :metadata, %{}), materialization) do
       metadata =
         if handoff,
           do: Map.put(metadata, :execution_handoff_digest, handoff.digest),
           else: metadata
 
+      metadata =
+        if migration,
+          do: Map.put(metadata, Controller.migration_key(), migration),
+          else: metadata
+
+      env =
+        if migration,
+          do: Map.put(env, :spectre_execution_migration, migration),
+          else: env
+
       opts =
         opts
         |> Keyword.delete(:handoff)
+        |> Keyword.delete(:migration)
         |> Keyword.put(:plans, materialization.plans)
         |> Keyword.put(:materialization_digest, materialization.digest)
         |> Keyword.put(:definition_ref, materialization.definition_ref)
@@ -83,6 +97,56 @@ defmodule Spectre.Execution.Runtime do
 
   defp handoff(value, _materialization),
     do: {:error, {:invalid_execution_runtime_handoff, shape(value)}}
+
+  @spec migration(term(), Materialization.t(), map()) :: {:ok, map() | nil} | {:error, term()}
+  defp migration(nil, _materialization, _env), do: {:ok, nil}
+
+  defp migration(value, materialization, env) when is_list(value) do
+    if Keyword.keyword?(value),
+      do: migration(Map.new(value), materialization, env),
+      else: {:error, :invalid_execution_migration_options}
+  end
+
+  defp migration(value, materialization, env) when is_map(value) and not is_struct(value) do
+    allowed = [:source_version, :state]
+
+    with [] <- Map.keys(value) -- allowed,
+         true <- Map.has_key?(value, :source_version) and Map.has_key?(value, :state),
+         agent when is_atom(agent) and not is_nil(agent) <- Map.get(env, :agent),
+         {:ok, prepared} <-
+           Migration.prepare(
+             materialization.program,
+             Map.fetch!(value, :source_version),
+             Map.fetch!(value, :state),
+             agent,
+             definition_ref: materialization.definition_ref,
+             materialization_digest: materialization.digest
+           ) do
+      {:ok,
+       %{
+         definition_ref: prepared.definition_ref,
+         materialization_digest: prepared.materialization_digest,
+         source_version: prepared.source_version,
+         source_state: prepared.source_state,
+         prepared_digest: prepared.digest
+       }}
+    else
+      [_unknown | _rest] = unknown ->
+        {:error, {:unknown_execution_migration_options, Enum.sort(unknown)}}
+
+      false ->
+        {:error, :incomplete_execution_migration_options}
+
+      nil ->
+        {:error, :execution_migration_agent_missing}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp migration(value, _materialization, _env),
+    do: {:error, {:invalid_execution_migration_options, shape(value)}}
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_map(value), do: :map

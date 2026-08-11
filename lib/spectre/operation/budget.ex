@@ -6,21 +6,24 @@ defmodule Spectre.Operation.Budget do
   before a Runner is created and again after its committed result.
   """
 
-  @dimensions [:steps, :attempts, :retries, :duration_ms, :cost]
+  alias Spectre.Run.Value, as: RunValue
+
+  @dimensions [:steps, :attempts, :retries, :duration_ms, :pages, :cost]
 
   defstruct limits: %{
               steps: nil,
               attempts: nil,
               retries: nil,
               duration_ms: nil,
+              pages: nil,
               cost: nil
             },
-            consumed: %{steps: 0, attempts: 0, retries: 0, cost: 0},
+            consumed: %{steps: 0, attempts: 0, retries: 0, pages: 0, cost: 0},
             started_at: nil,
             deadline_at: nil,
             resources: %{}
 
-  @type dimension :: :steps | :attempts | :retries | :duration_ms | :cost
+  @type dimension :: :steps | :attempts | :retries | :duration_ms | :pages | :cost
 
   @type t :: %__MODULE__{
           limits: %{optional(dimension()) => non_neg_integer() | number() | nil},
@@ -40,7 +43,12 @@ defmodule Spectre.Operation.Budget do
   @spec new(t() | map() | keyword() | nil, non_neg_integer()) :: t()
   def new(value \\ nil, now \\ System.system_time(:millisecond))
 
-  def new(%__MODULE__{} = budget, _now), do: validate!(budget)
+  def new(%__MODULE__{} = budget, _now) do
+    budget
+    |> upgrade_legacy_pages()
+    |> validate!()
+  end
+
   def new(nil, now), do: new(%{}, now)
   def new(value, now) when is_list(value), do: value |> Map.new() |> new(now)
 
@@ -64,6 +72,7 @@ defmodule Spectre.Operation.Budget do
           steps: attr(consumed, :steps, 0),
           attempts: attr(consumed, :attempts, 0),
           retries: attr(consumed, :retries, 0),
+          pages: attr(consumed, :pages, 0),
           cost: attr(consumed, :cost, 0)
         }
       end)
@@ -109,8 +118,7 @@ defmodule Spectre.Operation.Budget do
   def consume(%__MODULE__{} = budget, usage) when is_map(usage) do
     consumed =
       Enum.reduce(usage, budget.consumed, fn {dimension, amount}, acc ->
-        unless dimension in [:steps, :attempts, :retries, :cost] and is_number(amount) and
-                 amount >= 0 do
+        unless valid_consumption?(dimension, amount) do
           raise ArgumentError,
                 "invalid operational budget consumption: #{inspect({dimension, amount})}"
         end
@@ -153,17 +161,19 @@ defmodule Spectre.Operation.Budget do
 
       invalid =
           Enum.find(budget.limits, fn {_dimension, value} ->
-            not (is_nil(value) or (is_number(value) and value >= 0))
+            not valid_limit?(value)
           end) ->
         {:error, {:invalid_operational_budget_limit, invalid}}
+
+      not valid_pages_limit?(Map.get(budget.limits, :pages)) ->
+        {:error, {:invalid_operational_budget_limit, {:pages, Map.get(budget.limits, :pages)}}}
 
       not is_map(budget.consumed) ->
         {:error, :invalid_operational_budget_consumption}
 
       invalid =
           Enum.find(budget.consumed, fn {dimension, value} ->
-            dimension not in [:steps, :attempts, :retries, :cost] or
-                not (is_number(value) and value >= 0)
+            not valid_consumption?(dimension, value)
           end) ->
         {:error, {:invalid_operational_budget_consumption, invalid}}
 
@@ -178,7 +188,7 @@ defmodule Spectre.Operation.Budget do
         {:error, :invalid_operational_budget_resources}
 
       true ->
-        case Spectre.Run.Value.validate(budget, [:operation_budget]) do
+        case RunValue.validate(budget, [:operation_budget]) do
           :ok -> :ok
           {:error, reason} -> {:error, {:nonportable_operational_budget, reason}}
         end
@@ -229,7 +239,7 @@ defmodule Spectre.Operation.Budget do
   end
 
   defp validate_consumed_keys!(consumed) when is_map(consumed) do
-    allowed = [:steps, :attempts, :retries, :cost]
+    allowed = [:steps, :attempts, :retries, :pages, :cost]
 
     case Enum.find(Map.keys(consumed), &(&1 not in allowed)) do
       nil -> :ok
@@ -239,5 +249,39 @@ defmodule Spectre.Operation.Budget do
 
   defp validate_consumed_keys!(consumed) do
     raise ArgumentError, "invalid operational budget consumption: #{inspect(consumed)}"
+  end
+
+  @spec valid_limit?(term()) :: boolean()
+  defp valid_limit?(nil), do: true
+  defp valid_limit?(value), do: is_number(value) and value >= 0
+
+  @spec valid_pages_limit?(term()) :: boolean()
+  defp valid_pages_limit?(nil), do: true
+  defp valid_pages_limit?(value), do: is_integer(value) and value >= 0
+
+  @spec valid_consumption?(term(), term()) :: boolean()
+  defp valid_consumption?(:pages, value), do: is_integer(value) and value >= 0
+
+  defp valid_consumption?(dimension, value)
+       when dimension in [:steps, :attempts, :retries, :cost],
+       do: is_number(value) and value >= 0
+
+  defp valid_consumption?(_dimension, _value), do: false
+
+  # `:pages` became a first-class execution dimension in 0.3.0-rs. Durable
+  # 0.2 checkpoints restore the Budget struct but, correctly, do not contain
+  # that nested map key. Normalize only that known historical omission; every
+  # other missing or unknown dimension remains an integrity error.
+  @spec upgrade_legacy_pages(t()) :: t()
+  defp upgrade_legacy_pages(%__MODULE__{} = budget) do
+    limits =
+      if is_map(budget.limits), do: Map.put_new(budget.limits, :pages, nil), else: budget.limits
+
+    consumed =
+      if is_map(budget.consumed),
+        do: Map.put_new(budget.consumed, :pages, 0),
+        else: budget.consumed
+
+    %{budget | limits: limits, consumed: consumed}
   end
 end

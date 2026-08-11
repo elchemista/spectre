@@ -113,12 +113,147 @@ defmodule SpectreDataDrivenExecutionTest.CompiledSkill do
   end
 end
 
+defmodule SpectreDataDrivenExecutionTest.ActivatedAgent do
+  @moduledoc false
+
+  use Spectre.Agent, id: :activated_data_driven_execution_host
+
+  alias SpectreDataDrivenExecutionTest.Operations
+
+  operation(:echo, {Operations, :echo}, input: :map, output: :map, side_effect: :none)
+
+  operation(:continue, {Operations, :continue?},
+    input: :map,
+    output: :boolean,
+    side_effect: :none
+  )
+
+  operation(:infer, :inference, kind: :cognitive, input: :any, output: :any, side_effect: :none)
+  operation(:migrate, {Operations, :migrate}, input: :map, output: :map, side_effect: :none)
+
+  skill(SpectreDataDrivenExecutionTest.CompiledSkill, as: :execution)
+end
+
+defmodule SpectreDataDrivenExecutionTest.MigrationWork do
+  @moduledoc false
+
+  use Spectre.Execution.Work,
+    id: :instance_migration_work,
+    version: 2,
+    entry: :done,
+    input: :map,
+    state: :map,
+    initial: :input,
+    budget: %{steps: 2, attempts: 2, pages: 1}
+
+  finish(:done, output: :state)
+  migration(1, operation: :migrate)
+end
+
+defmodule SpectreDataDrivenExecutionTest.MigrationSkill do
+  @moduledoc false
+
+  use Spectre.Skill,
+    id: :instance_migration_skill,
+    version: 1,
+    prompt_budget: 32,
+    applicability: %{scopes: [:execution], positive: ["migrate"], negative: ["skip"]}
+
+  flow :execution do
+    on :migrate, check: {:text, "migrate"} do
+      work(SpectreDataDrivenExecutionTest.MigrationWork, input: :input)
+    end
+  end
+end
+
+defmodule SpectreDataDrivenExecutionTest.MigrationAgent do
+  @moduledoc false
+
+  use Spectre.Agent, id: :instance_migration_agent
+
+  alias SpectreDataDrivenExecutionTest.Operations
+
+  operation(:migrate, {Operations, :migrate}, input: :map, output: :map, side_effect: :none)
+  skill(SpectreDataDrivenExecutionTest.MigrationSkill, as: :migration)
+end
+
+defmodule SpectreDataDrivenExecutionTest.SealedInferenceWork do
+  @moduledoc false
+
+  use Spectre.Execution.Work,
+    id: :sealed_inference_work,
+    version: 1,
+    entry: :infer,
+    input: :map,
+    state: :map,
+    initial: :input,
+    budget: %{steps: 2, attempts: 2, pages: 1}
+
+  infer(:infer,
+    operation: :infer,
+    prompt: :context,
+    profile_ref: :deep,
+    constraints: %{maximum_cost_tier: :medium},
+    save_as: ["answer"],
+    next: :done
+  )
+
+  finish(:done, output: :state)
+end
+
+defmodule SpectreDataDrivenExecutionTest.SealedInferenceSkill do
+  @moduledoc false
+
+  use Spectre.Skill,
+    id: :sealed_inference_skill,
+    version: 1,
+    prompt_root: "test/fixtures/canonical_prompts",
+    prompt_budget: 64,
+    applicability: %{
+      scopes: [:execution],
+      positive: ["sealed inference"],
+      negative: ["skip inference"]
+    }
+
+  inject(:context,
+    into: :context,
+    visibility: :agent,
+    priority: :low,
+    budget_class: :small,
+    token_cap: 64
+  )
+
+  flow :execution do
+    on :infer, check: {:text, "sealed inference"} do
+      work(SpectreDataDrivenExecutionTest.SealedInferenceWork, input: :input)
+    end
+  end
+end
+
+defmodule SpectreDataDrivenExecutionTest.SealedInferenceAgent do
+  @moduledoc false
+
+  use Spectre.Agent, id: :sealed_inference_agent
+
+  operation(:infer, :inference, kind: :cognitive, input: :any, output: :any, side_effect: :none)
+  skill(SpectreDataDrivenExecutionTest.SealedInferenceSkill, as: :inference)
+end
+
 defmodule SpectreDataDrivenExecutionTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Authority.Envelope
   alias Spectre.Canonical.Value
+  alias Spectre.Definition
+  alias Spectre.Definition.Candidate
   alias Spectre.Definition.Canonical
+  alias Spectre.Definition.Manifest
+  alias Spectre.Definition.Resolver
+  alias Spectre.Definition.Store
+  alias Spectre.Definition.Store.Memory, as: DefinitionMemory
+  alias Spectre.Execution.Admission
+  alias Spectre.Execution.Closure
+  alias Spectre.Execution.Controller
   alias Spectre.Execution.Expression
   alias Spectre.Execution.Handoff
   alias Spectre.Execution.Materialization
@@ -130,8 +265,11 @@ defmodule SpectreDataDrivenExecutionTest do
   alias Spectre.Execution.Rehearsal
   alias Spectre.Execution.Rehearsal.Report
   alias Spectre.Execution.Runtime, as: ExecutionRuntime
+  alias Spectre.Foundation.Conformance
   alias Spectre.Inference.Request, as: InferenceRequest
   alias Spectre.Instance
+  alias Spectre.Instance.Activation
+  alias Spectre.Instance.Canonical.Sections
   alias Spectre.Operation.Control.Command
   alias Spectre.Operation.Execution
   alias Spectre.Operation.Result
@@ -146,10 +284,16 @@ defmodule SpectreDataDrivenExecutionTest do
   alias Spectre.Skill.Runtime, as: SkillRuntime
   alias Spectre.Skill.Runtime.Response
   alias Spectre.Subject
+  alias SpectreDataDrivenExecutionTest.ActivatedAgent
   alias SpectreDataDrivenExecutionTest.Agent
   alias SpectreDataDrivenExecutionTest.CompiledFullWork
   alias SpectreDataDrivenExecutionTest.CompiledSkill
   alias SpectreDataDrivenExecutionTest.CompiledWork
+  alias SpectreDataDrivenExecutionTest.MigrationAgent
+  alias SpectreDataDrivenExecutionTest.MigrationSkill
+  alias SpectreDataDrivenExecutionTest.Operations
+  alias SpectreDataDrivenExecutionTest.SealedInferenceAgent
+  alias SpectreDataDrivenExecutionTest.SealedInferenceSkill
 
   test "compiled and runtime Work declarations produce the exact same IR" do
     assert {:ok, compiled} = Program.from_compiled(CompiledWork)
@@ -419,6 +563,63 @@ defmodule SpectreDataDrivenExecutionTest do
              SkillRuntime.mount(runtime, :execution, duration_only, expected_revision: 0)
   end
 
+  test "runtime inference requires an exact host-authorized profile and purpose" do
+    unpinned =
+      inference_program()
+      |> Program.to_data()
+      |> Map.delete(:digest)
+      |> Map.update!(:nodes, fn nodes ->
+        Enum.map(nodes, fn
+          %{kind: :infer} = node -> Map.delete(node, :profile_ref)
+          node -> node
+        end)
+      end)
+      |> Program.new!()
+
+    assert {:error, {:execution_inference_profile_required, "infer"}} =
+             unpinned
+             |> runtime_skill_attrs(prompt?: true, route: "infer")
+             |> SkillDefinition.new()
+
+    skill = runtime_skill(inference_program(), prompt?: true, route: "infer")
+
+    without_purpose =
+      Envelope.new!(
+        operations: [:infer],
+        open_capabilities: [SkillRuntime.capability(:mount)],
+        prompt_budget_classes: [:small],
+        model_profiles: [:deep],
+        limits: %{max_tokens: 1_024}
+      )
+
+    runtime =
+      SkillRuntime.new!(Agent, without_purpose,
+        max_prompt_tokens: 1_024,
+        kernel_prompt_tokens: 256,
+        per_skill_prompt_cap: 512
+      )
+
+    assert {:error,
+            {:execution_model_purpose_not_authorized, "inference_work", :data_driven_work}} =
+             SkillRuntime.mount(runtime, :inference, skill, expected_revision: 0)
+
+    without_profile = %{
+      without_purpose
+      | model_purposes: [:data_driven_work],
+        model_profiles: []
+    }
+
+    runtime =
+      SkillRuntime.new!(Agent, without_profile,
+        max_prompt_tokens: 1_024,
+        kernel_prompt_tokens: 256,
+        per_skill_prompt_cap: 512
+      )
+
+    assert {:error, {:execution_model_profile_not_authorized, "inference_work", "deep"}} =
+             SkillRuntime.mount(runtime, :inference, skill, expected_revision: 0)
+  end
+
   test "repeat and pure predicate execute on the existing fenced runtime" do
     program = loop_program()
     env = operation_env()
@@ -426,7 +627,7 @@ defmodule SpectreDataDrivenExecutionTest do
     assert {:ok, loop, control, _events} =
              OperationRuntime.start_program(program, %{ignored: true}, [], env)
 
-    assert loop.controller == Spectre.Execution.Controller
+    assert loop.controller == Controller
     assert loop.controller_id == program.id
 
     {loop, control} = commit_value(loop, control, %{"round" => 1}, env)
@@ -573,6 +774,7 @@ defmodule SpectreDataDrivenExecutionTest do
 
   test "materialization pins prompt receipt, projection, model constraints and continuation" do
     program = inference_program()
+    assert Program.profile_refs(program) == ["deep"]
     skill = runtime_skill(program, prompt?: true, route: "infer")
     runtime = mounted_runtime(skill)
 
@@ -610,18 +812,21 @@ defmodule SpectreDataDrivenExecutionTest do
     assert %InferenceRequest{} = request.input
     assert %Plan{} = request.input.plan
     assert request.input.constraints.preferred_level == :deep
+    assert request.input.metadata.required_profile_ref == "deep"
     assert request.input.metadata.explicit_model_override? == false
   end
 
   test "an Instance starts materialized data Work and exposes normal lifecycle/query APIs" do
-    program = loop_program()
-    skill = runtime_skill(program)
-    runtime = mounted_runtime(skill)
+    {:ok, skill} = SkillDefinition.from_compiled(CompiledSkill)
+    [program] = SkillDefinition.works(skill)
+    runtime = mounted_runtime(skill, ActivatedAgent)
 
     assert {:ok, materialization, _runtime} =
-             Materializer.materialize(runtime, "run", %{scope: :execution}, expected_revision: 1)
+             Materializer.materialize(runtime, "compiled", %{scope: :execution},
+               expected_revision: 1
+             )
 
-    instance = start_instance()
+    instance = start_activated_instance(ActivatedAgent)
 
     assert {:ok, ref, %View{status: :queued}} =
              Spectre.start_execution(instance, materialization, id: "data-work")
@@ -629,10 +834,499 @@ defmodule SpectreDataDrivenExecutionTest do
     assert {:ok, %View{} = view} = eventually_loop(instance, ref.id)
     assert view.status == :terminal
     assert view.terminal_category == :completed
-    assert view.attempts == 3
+    assert view.attempts == 1
     assert view.definition == program.id
 
     assert {:error, :loop_terminal} = Spectre.pause_loop(instance, ref)
+  end
+
+  test "an Instance rejects Work outside its active Definition and admits the exact sealed mount" do
+    {:ok, skill} = SkillDefinition.from_compiled(CompiledSkill)
+    runtime = mounted_runtime(skill, ActivatedAgent)
+
+    assert {:ok, materialization, _runtime} =
+             Materializer.materialize(runtime, "compiled", %{scope: :execution},
+               expected_revision: 1
+             )
+
+    subject = Subject.new("unsealed-execution-#{System.unique_integer([:positive, :monotonic])}")
+    instance = start_supervised!({Instance, agent: ActivatedAgent, subject: subject, idle: false})
+
+    assert {:error, :execution_requires_active_definition} =
+             Spectre.start_execution(instance, materialization)
+
+    {active, store} = start_activated_instance_with_store(ActivatedAgent)
+    activation = Spectre.activation(active)
+
+    assert :ok = Admission.verify(materialization, store, activation)
+
+    assert {:error, :execution_definition_store_not_configured} =
+             Admission.verify(materialization, nil, activation)
+
+    assert {:error, :execution_activation_manifest_mismatch} =
+             Admission.verify(
+               materialization,
+               store,
+               %{activation | manifest_digest: String.duplicate("0", 64)}
+             )
+
+    assert {:error, :execution_activation_closure_mismatch} =
+             Admission.verify(
+               materialization,
+               store,
+               %{activation | closure_digest: String.duplicate("0", 64)}
+             )
+
+    assert {:ok, _ref, %View{status: :queued}} = Spectre.start_execution(active, materialization)
+
+    shadow_runtime = mounted_runtime(skill, ActivatedAgent, :shadow)
+
+    assert {:ok, shadow_materialization, _runtime} =
+             Materializer.materialize(shadow_runtime, "compiled", %{scope: :execution},
+               expected_revision: 1
+             )
+
+    assert {:error, {:execution_skill_mount_not_active, "shadow"}} =
+             Admission.verify(shadow_materialization, store, activation)
+
+    [program] = SkillDefinition.works(skill)
+    foreign_skill = runtime_skill(program, route: "compiled")
+    foreign_runtime = mounted_runtime(foreign_skill, ActivatedAgent)
+
+    assert {:ok, foreign_materialization, _runtime} =
+             Materializer.materialize(foreign_runtime, "compiled", %{scope: :execution},
+               expected_revision: 1
+             )
+
+    assert {:error, :execution_materialization_not_in_active_definition} =
+             Admission.verify(foreign_materialization, store, activation)
+  end
+
+  test "registered migration executes through the fenced Instance runtime and emits a receipt" do
+    {:ok, skill} = SkillDefinition.from_compiled(MigrationSkill)
+    runtime = mounted_runtime(skill, MigrationAgent, :migration)
+
+    assert {:ok, materialization, _runtime} =
+             Materializer.materialize(runtime, "migrate", %{scope: :execution},
+               expected_revision: 1
+             )
+
+    instance = start_activated_instance(MigrationAgent)
+
+    assert {:error, {:execution_migration_not_declared, 0, 2}} =
+             Spectre.start_execution(instance, materialization,
+               migration: [source_version: 0, state: %{"value" => 1}]
+             )
+
+    assert {:ok, ref, %View{status: :queued}} =
+             Spectre.start_execution(instance, materialization,
+               id: "migrated-instance-work",
+               migration: [source_version: 1, state: %{"value" => 1}]
+             )
+
+    assert {:ok, %View{} = view} = eventually_loop(instance, ref.id)
+    assert view.status == :terminal
+    assert view.terminal_category == :completed
+    assert view.attempts == 1
+    assert [%{"schema" => 2, "value" => 1}] = view.partial_results
+    assert digest?(view.metadata.execution_migration_receipt_digest)
+
+    instance_state = :sys.get_state(instance)
+    assert {:ok, work_section} = Sections.fetch(instance_state.canonical.sections, :work)
+    loop = Map.fetch!(work_section.value, ref.id)
+    assert {:ok, receipt} = MigrationReceipt.from_data(loop.state.migration.receipt)
+    assert receipt.definition_ref == materialization.definition_ref
+    assert receipt.materialization_digest == materialization.digest
+  end
+
+  test "migration admission rejects malformed, incomplete and unbound host options" do
+    {:ok, skill} = SkillDefinition.from_compiled(MigrationSkill)
+    runtime = mounted_runtime(skill, MigrationAgent, :migration)
+
+    assert {:ok, materialization, _runtime} =
+             Materializer.materialize(runtime, "migrate", %{scope: :execution},
+               expected_revision: 1
+             )
+
+    env = %{operation_env() | agent: MigrationAgent}
+
+    assert {:error, :incomplete_execution_migration_options} =
+             ExecutionRuntime.start(materialization, [migration: %{source_version: 1}], env)
+
+    assert {:error, {:unknown_execution_migration_options, [:unreviewed]}} =
+             ExecutionRuntime.start(
+               materialization,
+               [migration: %{source_version: 1, state: %{}, unreviewed: true}],
+               env
+             )
+
+    assert {:error, {:unknown_execution_migration_options, ["source_version", "state"]}} =
+             ExecutionRuntime.start(
+               materialization,
+               [migration: %{"source_version" => 1, "state" => %{}}],
+               env
+             )
+
+    assert {:error, :execution_migration_agent_missing} =
+             ExecutionRuntime.start(
+               materialization,
+               [migration: %{source_version: 1, state: %{}}],
+               Map.delete(env, :agent)
+             )
+
+    assert {:error, {:invalid_execution_migration_options, :binary}} =
+             ExecutionRuntime.start(materialization, [migration: "untrusted"], env)
+  end
+
+  test "migration controller recovery rejects drifted preparation and checkpoint state" do
+    program = migration_program()
+    source_state = %{"value" => 1}
+
+    assert {:error, :execution_migration_owner_binding_required} =
+             Migration.prepare(program, 1, source_state, Agent)
+
+    assert {:ok, prepared} =
+             Migration.prepare(program, 1, source_state, Agent, migration_owner(program))
+
+    migration = %{
+      definition_ref: prepared.definition_ref,
+      materialization_digest: prepared.materialization_digest,
+      source_version: prepared.source_version,
+      source_state: prepared.source_state,
+      prepared_digest: prepared.digest
+    }
+
+    context = %{
+      agent: Agent,
+      execution_definition_ref: prepared.definition_ref,
+      execution_materialization_digest: prepared.materialization_digest,
+      execution_program: program,
+      execution_plans: %{},
+      execution_migration: migration,
+      input: %{},
+      loop_id: "migration-recovery",
+      loop_revision: 0
+    }
+
+    assert {:ok, state} = Controller.init(%{}, context)
+    assert :continue = Controller.complete(state, context)
+    assert {:run, request} = Controller.next(state, context)
+
+    assert {:error, :pending_execution_migration_has_target_state} =
+             Controller.next(%{state | data: %{}}, context)
+
+    for field <- [:prepared_digest, :source_state_digest] do
+      tampered = put_in(state, [:migration, field], "invalid")
+
+      assert {:error, :invalid_execution_migration_state_digest} =
+               Controller.next(tampered, context)
+    end
+
+    assert {:error, :invalid_execution_migration_state_version} =
+             state
+             |> put_in([:migration, :source_version], nil)
+             |> Controller.next(context)
+
+    assert {:error, :pending_execution_migration_has_receipt} =
+             state
+             |> put_in([:migration, :receipt], %{})
+             |> Controller.next(context)
+
+    assert {:error, {:invalid_execution_migration_state, :map}} =
+             state
+             |> Map.put(:migration, %{status: :unknown})
+             |> Controller.next(context)
+
+    assert {:error, {:unknown_execution_migration_state_fields, [:unreviewed]}} =
+             state
+             |> put_in([:migration, :unreviewed], true)
+             |> Controller.next(context)
+
+    assert {:error, :execution_migration_state_binding_mismatch} =
+             state
+             |> put_in([:migration, :source_state_digest], String.duplicate("0", 64))
+             |> Controller.next(context)
+
+    assert {:error, :incomplete_execution_migration_context} =
+             Controller.next(
+               state,
+               put_in(context, [:execution_migration], Map.delete(migration, :source_state))
+             )
+
+    assert {:error, {:unknown_execution_migration_context_fields, [:unreviewed]}} =
+             Controller.next(
+               state,
+               put_in(context, [:execution_migration, :unreviewed], true)
+             )
+
+    assert {:error, :incomplete_execution_migration_context} =
+             Controller.next(
+               state,
+               put_in(context, [:execution_migration, :source_version], nil)
+             )
+
+    assert {:error, :execution_migration_preparation_drift} =
+             Controller.next(
+               state,
+               put_in(
+                 context,
+                 [:execution_migration, :prepared_digest],
+                 String.duplicate("0", 64)
+               )
+             )
+
+    assert {:error, :execution_migration_owner_binding_mismatch} =
+             Controller.next(
+               state,
+               %{
+                 context
+                 | execution_definition_ref:
+                     to_string(Definition.manifest!(CompiledSkill).definition_ref)
+               }
+             )
+
+    assert {:error, :execution_migration_owner_binding_mismatch} =
+             Controller.next(
+               state,
+               %{context | execution_materialization_digest: String.duplicate("0", 64)}
+             )
+
+    assert {:error, {:invalid_execution_migration_context, :list}} =
+             Controller.next(state, %{context | execution_migration: []})
+
+    assert {:ok, other_prepared} =
+             Migration.prepare(
+               program,
+               1,
+               %{"value" => 2},
+               Agent,
+               migration_owner(program)
+             )
+
+    drifted_context = %{
+      context
+      | execution_migration: %{
+          definition_ref: other_prepared.definition_ref,
+          materialization_digest: other_prepared.materialization_digest,
+          source_version: other_prepared.source_version,
+          source_state: other_prepared.source_state,
+          prepared_digest: other_prepared.digest
+        }
+    }
+
+    assert {:error, :execution_migration_state_binding_mismatch} =
+             Controller.next(state, drifted_context)
+
+    result = migration_result(request, %{"schema" => 2, "value" => 1})
+    assert :ok = Result.validate(result)
+
+    assert {:error, :execution_migration_result_mismatch} =
+             Controller.apply_result(
+               state,
+               %{request | id: request.id <> ":tampered"},
+               result,
+               context
+             )
+
+    assert {:ok, migrated, %{receipt: receipt_data}} =
+             Controller.apply_result(state, request, result, context)
+
+    assert migrated.migration.status == :complete
+
+    assert {:complete, %{"schema" => 2, "value" => 1}} =
+             Controller.next(migrated, context)
+
+    assert {:error, :execution_migration_receipt_state_mismatch} =
+             migrated
+             |> Map.put(:data, %{"schema" => 2, "value" => 999})
+             |> Controller.next(context)
+
+    assert {:ok, receipt} = MigrationReceipt.from_data(receipt_data)
+
+    forged_receipt =
+      receipt
+      |> Map.from_struct()
+      |> Map.delete(:digest)
+      |> Map.put(:program_digest, String.duplicate("0", 64))
+      |> MigrationReceipt.new()
+      |> then(fn {:ok, forged} -> MigrationReceipt.to_data(forged) end)
+
+    assert {:error, :execution_migration_receipt_state_mismatch} =
+             migrated
+             |> put_in([:migration, :receipt], forged_receipt)
+             |> Controller.next(context)
+
+    forged_owner_receipt =
+      receipt
+      |> Map.from_struct()
+      |> Map.delete(:digest)
+      |> Map.put(:definition_ref, Definition.manifest!(CompiledSkill).definition_ref)
+      |> MigrationReceipt.new()
+      |> then(fn {:ok, forged} -> MigrationReceipt.to_data(forged) end)
+
+    assert {:error, :execution_migration_receipt_state_mismatch} =
+             migrated
+             |> put_in([:migration, :receipt], forged_owner_receipt)
+             |> Controller.next(context)
+
+    assert {:error, {:invalid_execution_migration_receipt, :other}} =
+             migrated
+             |> put_in([:migration, :receipt], nil)
+             |> Controller.next(context)
+  end
+
+  test "compiled Skill closure seals the Work contracts and projection generator" do
+    manifest = Definition.manifest!(CompiledSkill)
+    closure = manifest.execution_closure
+
+    assert "spectre.operation:echo" in closure.contract_refs
+
+    assert %{id: "spectre.projection.execution", version: 1} in closure.projection_generators
+
+    assert closure.model_profile_refs == []
+
+    agent_closure = Definition.manifest!(ActivatedAgent).execution_closure
+    executor_ref = "beam:" <> Atom.to_string(Operations)
+
+    assert Enum.any?(agent_closure.build_fingerprints, &(&1.ref == executor_ref))
+  end
+
+  test "active admission requires every sealed inference dependency and authority grant" do
+    {:ok, skill} = SkillDefinition.from_compiled(SealedInferenceSkill)
+    runtime = mounted_runtime(skill, SealedInferenceAgent, :inference)
+
+    assert {:ok, materialization, _runtime} =
+             Materializer.materialize(runtime, "sealed inference", %{scope: :execution},
+               expected_revision: 1
+             )
+
+    canonical = Definition.canonical!(SealedInferenceAgent)
+
+    manifest =
+      Definition.manifest!(SealedInferenceAgent,
+        authority_requests: execution_authority(),
+        authority_ceiling: execution_authority()
+      )
+
+    closure = manifest.execution_closure
+    [prompt_receipt] = materialization.prompt_receipts
+    prompt_plan = Map.fetch!(materialization.plans, "context")
+
+    assert "spectre.operation:infer" in closure.contract_refs
+    assert prompt_receipt.fragment_digest in closure.prompt_fragment_digests
+    assert prompt_receipt.rendered_digest == Value.digest!(Plan.legacy(prompt_plan))
+    assert Plan.legacy(prompt_plan) =~ ~s(<spectre-context trust="data">)
+    assert closure.model_profile_refs == ["deep"]
+
+    assert %{id: "spectre.projection.execution", version: 1} in closure.projection_generators
+
+    {store, activation} = published_activation(canonical, manifest)
+    assert :ok = Admission.verify(materialization, store, activation)
+
+    {store, activation} =
+      republished_activation(canonical, manifest, contract_refs: [])
+
+    assert {:error, {:execution_closure_missing_contracts, ["spectre.operation:infer"]}} =
+             Admission.verify(materialization, store, activation)
+
+    {store, activation} =
+      republished_activation(canonical, manifest, prompt_fragment_digests: [])
+
+    assert {:error, {:execution_closure_missing_prompts, [missing_prompt]}} =
+             Admission.verify(materialization, store, activation)
+
+    assert missing_prompt == prompt_receipt.fragment_digest
+
+    {store, activation} =
+      republished_activation(canonical, manifest, model_profile_refs: [])
+
+    assert {:error, {:execution_closure_missing_profiles, ["deep"]}} =
+             Admission.verify(materialization, store, activation)
+
+    generators =
+      Enum.reject(closure.projection_generators, &(&1.id == "spectre.projection.execution"))
+
+    {store, activation} =
+      republished_activation(canonical, manifest, projection_generators: generators)
+
+    assert {:error, {:execution_closure_missing_projection, {"spectre.projection.execution", 1}}} =
+             Admission.verify(materialization, store, activation)
+
+    restricted = Manifest.new!(canonical, Envelope.empty(), closure)
+    {store, activation} = published_activation(canonical, restricted)
+
+    assert {:error, {:execution_operation_not_authorized, "infer"}} =
+             Admission.verify(materialization, store, activation)
+
+    no_purpose = %{execution_authority() | model_purposes: []}
+    restricted = Manifest.new!(canonical, no_purpose, closure)
+    {store, activation} = published_activation(canonical, restricted)
+
+    assert {:error,
+            {:execution_model_purpose_not_authorized, "sealed_inference_work", :data_driven_work}} =
+             Admission.verify(materialization, store, activation)
+
+    no_profile = %{execution_authority() | model_profiles: []}
+    restricted = Manifest.new!(canonical, no_profile, closure)
+    {store, activation} = published_activation(canonical, restricted)
+
+    assert {:error, {:execution_model_profile_not_authorized, "sealed_inference_work", "deep"}} =
+             Admission.verify(materialization, store, activation)
+
+    limited =
+      execution_authority()
+      |> Map.from_struct()
+      |> update_in([:limits], &Map.put(&1, :max_pages, 0))
+      |> Envelope.new!()
+
+    restricted = Manifest.new!(canonical, limited, closure)
+    {store, activation} = published_activation(canonical, restricted)
+
+    assert {:error, {:execution_budget_not_authorized, "sealed_inference_work", :pages, 1, 0}} =
+             Admission.verify(materialization, store, activation)
+  end
+
+  test "page usage is enforced by the shared operational runtime before the next step" do
+    program =
+      Program.new!(%{
+        id: :page_bounded_work,
+        entry: :first,
+        input: :map,
+        state: :map,
+        initial: :input,
+        budget: %{steps: 3, attempts: 3, pages: 1},
+        nodes: [
+          %{id: :first, kind: :step, operation: :echo, input: :state, next: :second},
+          %{id: :second, kind: :step, operation: :echo, input: :state, next: :done},
+          %{id: :done, kind: :complete, output: :state}
+        ]
+      })
+
+    env = operation_env()
+
+    assert {:ok, loop, control, _events} =
+             OperationRuntime.start_program(program, %{"page" => 1}, [], env)
+
+    assert {:run, active, attempt, _spec, _request, false, _events} =
+             OperationRuntime.prepare(loop, control, env)
+
+    result =
+      Result.new(attempt, :ok, %{"page" => 1},
+        usage: %{pages: 1},
+        finished_at: env.now + 1
+      )
+
+    assert {:ok, evaluating, control, _events} =
+             OperationRuntime.apply_result(active, control, result, env)
+
+    assert {:ok, terminal, terminal_control, events} =
+             OperationRuntime.evaluate(evaluating, control, env)
+
+    assert terminal.status == :terminal
+    assert terminal.outcome.category == :budget_exhausted
+    assert terminal.outcome.reason == {:budget_exhausted, :pages}
+    assert terminal_control.state == :terminal
+    assert Enum.any?(events, &(&1.type == :budget_exhausted))
   end
 
   test "authored data cannot inject modules, MFA, unbounded cycles or impure predicates" do
@@ -705,6 +1399,12 @@ defmodule SpectreDataDrivenExecutionTest do
              |> update_in([:budget], &Map.put(&1, "steps", 99))
              |> Program.new()
 
+    assert {:error, {:ambiguous_execution_program_field, :budget, :pages}} =
+             base
+             |> Map.delete(:digest)
+             |> update_in([:budget], &(&1 |> Map.put(:pages, 1) |> Map.put("pages", 2)))
+             |> Program.new()
+
     assert {:error,
             {:invalid_execution_node, _index,
              {:duplicate_execution_name, :operation_ref, :operation}}} =
@@ -717,17 +1417,30 @@ defmodule SpectreDataDrivenExecutionTest do
              end)
              |> Program.new()
 
-    assert {:error,
-            {:invalid_execution_node, _index,
-             {:execution_code_reference_forbidden, :operation_ref}}} =
-             base
-             |> Map.update!(:nodes, fn nodes ->
-               Enum.map(nodes, fn
-                 %{id: "echo"} = node -> Map.put(node, :operation_ref, :os)
-                 node -> node
-               end)
-             end)
-             |> Program.new()
+    atom_operation =
+      base
+      |> Map.delete(:digest)
+      |> Map.update!(:nodes, fn nodes ->
+        Enum.map(nodes, fn
+          %{id: "echo"} = node -> Map.put(node, :operation_ref, :os)
+          node -> node
+        end)
+      end)
+      |> Program.new!()
+
+    string_operation =
+      base
+      |> Map.delete(:digest)
+      |> Map.update!(:nodes, fn nodes ->
+        Enum.map(nodes, fn
+          %{id: "echo"} = node -> Map.put(node, :operation_ref, "os")
+          node -> node
+        end)
+      end)
+      |> Program.new!()
+
+    assert atom_operation == string_operation
+    assert Program.operation_refs(atom_operation) == ["continue", "os"]
 
     conflicting_profile =
       inference_program()
@@ -1136,13 +1849,17 @@ defmodule SpectreDataDrivenExecutionTest do
     program = migration_program()
     source = %{"schema" => 1, "value" => 42}
 
-    assert {:ok, migration} = Migration.prepare(program, 1, source, Agent)
-    assert migration.request.operation == :migrate
+    assert {:ok, migration} =
+             Migration.prepare(program, 1, source, Agent, migration_owner(program))
+
+    assert migration.request.operation == "migrate"
     assert migration.request.input.state == source
     assert migration.target_version == 2
     assert :ok = Migration.verify(migration)
 
-    assert {:ok, same} = Migration.prepare(program, 1, source, Agent)
+    assert {:ok, same} =
+             Migration.prepare(program, 1, source, Agent, migration_owner(program))
+
     assert same.digest == migration.digest
     assert same.request.id == migration.request.id
 
@@ -1156,6 +1873,8 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert migrated == %{"schema" => 2, "value" => 42}
     assert receipt.program_digest == program.digest
+    assert receipt.definition_ref == migration.definition_ref
+    assert receipt.materialization_digest == migration.materialization_digest
     assert receipt.source_state_digest == migration.source_state_digest
     assert {:ok, ^receipt} = receipt |> MigrationReceipt.to_data() |> MigrationReceipt.from_data()
 
@@ -1213,6 +1932,8 @@ defmodule SpectreDataDrivenExecutionTest do
     attrs = %{
       migration_digest: digest,
       program_digest: digest,
+      definition_ref: Definition.manifest!(MigrationSkill).definition_ref,
+      materialization_digest: digest,
       operation_ref: :migrate,
       operation_contract_digest: digest,
       source_version: 1,
@@ -1234,6 +1955,9 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert {:error, :invalid_execution_migration_receipt_operation} =
              attrs |> Map.put(:operation_ref, nil) |> MigrationReceipt.new()
+
+    assert {:error, :invalid_execution_migration_receipt_definition_ref} =
+             attrs |> Map.put(:definition_ref, "not-a-definition-ref") |> MigrationReceipt.new()
 
     assert {:error, :invalid_execution_migration_receipt_version} =
              attrs |> Map.put(:source_version, 0) |> MigrationReceipt.new()
@@ -1333,6 +2057,29 @@ defmodule SpectreDataDrivenExecutionTest do
 
     [receipt] = materialization.prompt_receipts
     assert receipt.rendered_digest == Value.digest!(plan.rendered)
+  end
+
+  test "the closed inspect renderer handles portable values without opening code execution" do
+    assert {:ok, content, placeholders} =
+             Fragment.close_template("State: <%= inspect(@state.data) %>")
+
+    fragment =
+      Fragment.canonical!(%{
+        id: :portable_state,
+        content: content,
+        scope: :execution,
+        target: :context,
+        position: :end,
+        source: %{kind: :compiled_asset},
+        trust: :data,
+        placeholders: placeholders
+      })
+
+    assert {:ok, "State: %{count: 2}", %{"state.data" => %{count: 2}}} =
+             PromptMaterializer.render(fragment, "ignored", %{state: %{data: %{count: 2}}})
+
+    assert {:error, {:non_scalar_runtime_prompt_value, "state.data", :other}} =
+             PromptMaterializer.render(fragment, "ignored", %{state: %{data: self()}})
   end
 
   test "execution materialization refuses a selected non-Work route" do
@@ -1688,7 +2435,7 @@ defmodule SpectreDataDrivenExecutionTest do
     assert report.effect_dispatches == expected["effect_dispatches"]
     assert report.consumed_recordings == expected["consumed_recordings"]
 
-    matrix = Spectre.Foundation.Conformance.matrix()
+    matrix = Conformance.matrix()
     assert matrix.release == "0.3.0-rs"
     assert matrix.data_execution.program_schema == 1
     assert matrix.data_execution.handoff_schema == 1
@@ -1753,6 +2500,7 @@ defmodule SpectreDataDrivenExecutionTest do
           kind: :infer,
           operation: :infer,
           prompt: :prompt,
+          profile_ref: :deep,
           constraints: %{preferred_level: :deep, maximum_cost_tier: :medium},
           save_as: ["answer"],
           next: :done
@@ -1823,6 +2571,12 @@ defmodule SpectreDataDrivenExecutionTest do
   end
 
   defp runtime_skill(program, opts \\ []) do
+    program
+    |> runtime_skill_attrs(opts)
+    |> SkillDefinition.new!()
+  end
+
+  defp runtime_skill_attrs(program, opts) do
     route = Keyword.get(opts, :route, "run")
 
     fragments =
@@ -1839,7 +2593,7 @@ defmodule SpectreDataDrivenExecutionTest do
         []
       end
 
-    SkillDefinition.new!(%{
+    %{
       id: "execution-skill-#{program.id}",
       declared_version: 1,
       publisher_ref: "host:data-execution-test",
@@ -1863,30 +2617,20 @@ defmodule SpectreDataDrivenExecutionTest do
           ]
         }
       ]
-    })
+    }
   end
 
-  defp mounted_runtime(skill) do
-    authority =
-      Envelope.new!(
-        operations: [:echo, :retry_echo, :continue, :infer, :migrate, :external],
-        open_capabilities: [
-          SkillRuntime.capability(:mount),
-          SkillRuntime.capability(:replace),
-          SkillRuntime.capability(:disable)
-        ],
-        prompt_budget_classes: [:small, :standard, :large],
-        limits: %{max_tokens: 1_024}
-      )
+  defp mounted_runtime(skill, agent \\ Agent, mount_id \\ :execution) do
+    authority = execution_authority()
 
     runtime =
-      SkillRuntime.new!(Agent, authority,
+      SkillRuntime.new!(agent, authority,
         max_prompt_tokens: 1_024,
         kernel_prompt_tokens: 256,
         per_skill_prompt_cap: 512
       )
 
-    {:ok, runtime} = SkillRuntime.mount(runtime, :execution, skill, expected_revision: 0)
+    {:ok, runtime} = SkillRuntime.mount(runtime, mount_id, skill, expected_revision: 0)
     runtime
   end
 
@@ -1902,6 +2646,14 @@ defmodule SpectreDataDrivenExecutionTest do
     }
   end
 
+  defp migration_owner(program) do
+    [
+      definition_ref: Definition.manifest!(MigrationSkill).definition_ref,
+      materialization_digest:
+        Value.digest!(%{kind: :test_materialization, program_digest: program.digest})
+    ]
+  end
+
   defp commit_value(loop, control, value, env) do
     assert {:run, active, attempt, _spec, _request, false, _events} =
              OperationRuntime.prepare(loop, control, env)
@@ -1915,9 +2667,119 @@ defmodule SpectreDataDrivenExecutionTest do
     {next, control}
   end
 
-  defp start_instance do
-    subject = Subject.new("data-execution-#{System.unique_integer([:positive, :monotonic])}")
-    start_supervised!({Instance, agent: Agent, subject: subject, idle: false})
+  defp migration_result(request, value) do
+    %Result{
+      id: "migration-result",
+      attempt_id: "migration-attempt",
+      loop_id: "migration-recovery",
+      operation: request.operation,
+      epoch: "migration-epoch",
+      fencing_token: "migration-fence",
+      context_revision: 0,
+      control_generation: 0,
+      trigger_generation: 0,
+      status: :ok,
+      value: value,
+      error: nil,
+      receipt: nil,
+      usage: %{},
+      finished_at: 1,
+      artifacts: [],
+      metadata: %{}
+    }
+  end
+
+  defp start_activated_instance(agent) do
+    {instance, _store} = start_activated_instance_with_store(agent)
+    instance
+  end
+
+  defp start_activated_instance_with_store(agent) do
+    authority = execution_authority()
+    canonical = Definition.canonical!(agent)
+
+    manifest =
+      Definition.manifest!(agent,
+        authority_requests: authority,
+        authority_ceiling: authority
+      )
+
+    store = memory_definition_store()
+    assert {:ok, _receipt} = Store.publish(store, canonical, manifest)
+
+    assert {:ok, candidate_ref} =
+             Resolver.bootstrap_candidate(store, Canonical.ref(canonical),
+               source: :compiled,
+               created_at: 1
+             )
+
+    subject = Subject.new("activated-execution-#{System.unique_integer([:positive, :monotonic])}")
+
+    instance =
+      start_supervised!(
+        {Instance, agent: agent, subject: subject, definition_store: store, idle: false}
+      )
+
+    assert {:ok, %{generation: 1}} =
+             Spectre.activate(instance, candidate_ref, expected_generation: 0)
+
+    {instance, store}
+  end
+
+  defp republished_activation(canonical, manifest, closure_updates) do
+    closure =
+      manifest.execution_closure
+      |> Map.from_struct()
+      |> Map.merge(Map.new(closure_updates))
+      |> Closure.new!()
+
+    published_activation(
+      canonical,
+      Manifest.new!(canonical, manifest.authority, closure)
+    )
+  end
+
+  defp published_activation(canonical, manifest) do
+    store = memory_definition_store()
+    assert {:ok, _receipt} = Store.publish(store, canonical, manifest)
+    assert {:ok, resolution} = Resolver.resolve(store, Canonical.ref(canonical))
+    assert {:ok, candidate} = Candidate.from_resolution(resolution, created_at: 1)
+
+    assert {:ok, activation} =
+             Activation.new(candidate, resolution,
+               generation: 1,
+               owner_fencing_token: 1,
+               activated_at: 1
+             )
+
+    {store, activation}
+  end
+
+  defp memory_definition_store do
+    id = {:execution_admission, System.unique_integer([:positive, :monotonic])}
+
+    server =
+      start_supervised!(%{
+        id: id,
+        start: {DefinitionMemory, :start_link, [[id: id]]}
+      })
+
+    {DefinitionMemory, server: server}
+  end
+
+  defp execution_authority do
+    Envelope.new!(
+      operations: [:echo, :retry_echo, :continue, :infer, :migrate, :external],
+      open_capabilities: [
+        SkillRuntime.capability(:mount),
+        SkillRuntime.capability(:replace),
+        SkillRuntime.capability(:disable)
+      ],
+      prompt_budget_classes: [:small, :standard, :large],
+      model_purposes: [:data_driven_work],
+      model_profiles: [:fast, :balanced, :deep],
+      limits: %{max_tokens: 1_024}
+    )
   end
 
   defp eventually_loop(instance, loop_id, attempts \\ 100)
@@ -1941,6 +2803,11 @@ defmodule SpectreDataDrivenExecutionTest do
     {:ok, component} = Canonical.fetch_component(canonical, type)
     component
   end
+
+  defp digest?(value) when is_binary(value) and byte_size(value) == 64,
+    do: match?({:ok, _bytes}, Base.decode16(value, case: :lower))
+
+  defp digest?(_value), do: false
 
   defp rewrite_component(canonical, type, fun) do
     components =

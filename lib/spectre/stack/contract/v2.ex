@@ -13,6 +13,9 @@ defmodule Spectre.Stack.Contract.V2 do
   alias Spectre.Definition, as: CompiledDefinition
   alias Spectre.Definition.Canonical
   alias Spectre.Execution.Closure
+  alias Spectre.Execution.Program
+  alias Spectre.Operation.Registry, as: OperationRegistry
+  alias Spectre.Skill.Definition, as: SkillDefinition
   alias Spectre.Stack.Definition, as: StackDefinition
   alias Spectre.Stack.Installation
 
@@ -104,17 +107,32 @@ defmodule Spectre.Stack.Contract.V2 do
           {:ok, t()} | {:error, term()}
   def from_compiled(%CompiledDefinition{} = definition, %Canonical{} = canonical, opts \\ [])
       when is_list(opts) do
-    opts =
-      opts
-      |> Keyword.update(:owner_modules, compiled_modules(definition), fn modules ->
-        Enum.uniq(compiled_modules(definition) ++ List.wrap(modules))
-      end)
-      |> Keyword.put_new(:prompt_fragment_digests, prompt_digests(canonical))
-      |> Keyword.update(:contract_refs, code_contract_refs(canonical), fn refs ->
-        Enum.uniq(code_contract_refs(canonical) ++ List.wrap(refs))
-      end)
+    with {:ok, compiled_modules} <- compiled_modules(definition) do
+      opts =
+        opts
+        |> Keyword.update(:owner_modules, compiled_modules, fn modules ->
+          Enum.uniq(compiled_modules ++ List.wrap(modules))
+        end)
+        |> Keyword.put_new(:prompt_fragment_digests, prompt_digests(canonical))
+        |> Keyword.update(:contract_refs, canonical_contract_refs(canonical), fn refs ->
+          Enum.uniq(canonical_contract_refs(canonical) ++ List.wrap(refs))
+        end)
+        |> Keyword.update(:model_profile_refs, model_profile_refs(canonical), fn refs ->
+          Enum.uniq(model_profile_refs(canonical) ++ List.wrap(refs))
+        end)
+        |> Keyword.update(
+          :projection_generators,
+          projection_generators(canonical),
+          fn generators ->
+            Enum.uniq_by(
+              projection_generators(canonical) ++ List.wrap(generators),
+              &{&1.id, &1.version}
+            )
+          end
+        )
 
-    from_v1(definition.stack, opts)
+      from_v1(definition.stack, opts)
+    end
   end
 
   @doc "Returns portable inspection data for the adapted contract."
@@ -264,25 +282,143 @@ defmodule Spectre.Stack.Contract.V2 do
     |> Enum.sort()
   end
 
-  @spec compiled_modules(CompiledDefinition.t()) :: [module()]
-  defp compiled_modules(definition) do
+  @spec compiled_modules(CompiledDefinition.t()) :: {:ok, [module()]} | {:error, term()}
+  defp compiled_modules(%CompiledDefinition{kind: :agent} = definition) do
+    with {:ok, operation_modules} <- registered_operation_modules(definition.owner) do
+      {:ok, base_compiled_modules(definition, operation_modules)}
+    end
+  end
+
+  defp compiled_modules(%CompiledDefinition{} = definition),
+    do: {:ok, base_compiled_modules(definition, [])}
+
+  defp base_compiled_modules(definition, operation_modules) do
     [definition.owner | Enum.map(definition.skills, & &1.module)]
+    |> Kernel.++(operation_modules)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
 
+  defp registered_operation_modules(owner) do
+    if function_exported?(owner, :__spectre_config__, 0),
+      do: OperationRegistry.code_modules(owner),
+      else: {:ok, []}
+  end
+
   @spec prompt_digests(Canonical.t()) :: [String.t()]
   defp prompt_digests(canonical) do
-    case Canonical.fetch_component(canonical, :prompt_fragments) do
-      {:ok, %{payload: %{fragments: fragments}}} ->
-        fragments
-        |> Enum.map(&Map.get(&1, :digest, Map.get(&1, "digest")))
-        |> Enum.filter(&is_binary/1)
+    nested =
+      canonical
+      |> skill_definitions()
+      |> Enum.flat_map(&SkillDefinition.prompt_fragments/1)
+      |> Enum.map(& &1.digest)
 
-      _other ->
+    direct =
+      case Canonical.fetch_component(canonical, :prompt_fragments) do
+        {:ok, component} ->
+          component.payload
+          |> value(:fragments, [])
+          |> Enum.map(&value(&1, :digest))
+
+        _missing ->
+          []
+      end
+
+    (direct ++ nested)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @spec projection_generators(Canonical.t()) :: [map()]
+  defp projection_generators(canonical) do
+    canonicals = [
+      canonical | Enum.map(skill_definitions(canonical), &SkillDefinition.canonical/1)
+    ]
+
+    canonicals
+    |> Enum.flat_map(&canonical_projection_generators/1)
+    |> Enum.uniq_by(&{&1.id, &1.version})
+    |> Enum.sort_by(&{&1.id, &1.version})
+  end
+
+  defp canonical_projection_generators(definition) do
+    case Canonical.fetch_component(definition, :projection) do
+      {:ok, component} ->
+        component.payload
+        |> value(:generators, [])
+        |> Enum.flat_map(&projection_generator/1)
+
+      _missing ->
         []
     end
   end
+
+  defp projection_generator(generator) do
+    case {value(generator, :id), value(generator, :version)} do
+      {id, version} when is_binary(id) and is_integer(version) ->
+        [%{id: id, version: version}]
+
+      _invalid ->
+        []
+    end
+  end
+
+  @spec canonical_contract_refs(Canonical.t()) :: [String.t()]
+  defp canonical_contract_refs(canonical) do
+    operation_refs =
+      canonical
+      |> skill_definitions()
+      |> Enum.flat_map(&SkillDefinition.operation_refs/1)
+      |> Enum.map(&("spectre.operation:" <> stable_ref(&1)))
+
+    Enum.sort(Enum.uniq(code_contract_refs(canonical) ++ operation_refs))
+  end
+
+  @spec model_profile_refs(Canonical.t()) :: [String.t()]
+  defp model_profile_refs(canonical) do
+    canonical
+    |> skill_definitions()
+    |> Enum.flat_map(&SkillDefinition.works/1)
+    |> Enum.flat_map(&Program.profile_refs/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @spec skill_definitions(Canonical.t()) :: [SkillDefinition.t()]
+  defp skill_definitions(%Canonical{kind: :skill} = canonical) do
+    case SkillDefinition.from_canonical(canonical) do
+      {:ok, skill} -> [skill]
+      {:error, _reason} -> []
+    end
+  end
+
+  defp skill_definitions(%Canonical{} = canonical) do
+    with {:ok, component} <- Canonical.fetch_component(canonical, :skills),
+         mounts when is_list(mounts) <- value(component.payload, :mounts, []) do
+      Enum.flat_map(mounts, &mounted_skill_definition/1)
+    else
+      _missing -> []
+    end
+  end
+
+  defp mounted_skill_definition(mount) do
+    with data when is_map(data) <- value(mount, :definition),
+         {:ok, skill_canonical} <- Canonical.from_data(data),
+         {:ok, skill} <- SkillDefinition.from_canonical(skill_canonical) do
+      [skill]
+    else
+      _invalid -> []
+    end
+  end
+
+  @spec stable_ref(term()) :: String.t()
+  defp stable_ref(value) when is_atom(value), do: Atom.to_string(value)
+  defp stable_ref(value) when is_binary(value), do: value
+
+  @spec value(map(), atom(), term()) :: term()
+  defp value(map, key, default \\ nil),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
   @spec code_contract_refs(Canonical.t()) :: [String.t()]
   defp code_contract_refs(canonical) do
