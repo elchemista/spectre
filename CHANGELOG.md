@@ -4,9 +4,19 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
-## 0.3.0 — 2026-08-11
+## 0.3.0 — 2026-08-12
 
 ### Added
+
+- Added `LLMS.md`, a machine-oriented guide shipped in the Hex package and
+  included in ExDoc's generated `llms.txt`, covering the public entry points,
+  host boundaries, Morph lifecycle, runtime-data rules, and test expectations.
+
+- Added `Spectre.Morph`, a host-governed evolution API whose canonical Surface
+  bounds runtime Skill mount, replacement, and disable proposals. Morph derives
+  real replay obligations from immutable Definition diffs, requires independent
+  evaluation and approval, and revalidates the exact Candidate at activation
+  and recovery. Runtime data never becomes executable code or authority.
 
 - Added the opt-in `Spectre.Experience` plane with deterministic redaction,
   explicit retention and expiry, immutable content-addressed evidence, a
@@ -401,9 +411,10 @@ minor release may contain documented breaking API changes.
 - Run checkpoint and canonical checkpoint writers now emit schema 2. Readers
   accept schemas 1 and 2 and immediately migrate legacy values to the current
   in-memory representation.
-- `Spectre.Instance.CheckpointStore.migrate_instance_key/5` lets an adapter
-  atomically move an exact legacy checkpoint to its stable key. Core verifies
-  the migrated target byte-for-byte and rejects divergent old/new histories.
+- `Spectre.Instance.CheckpointStore.migrate_instance_key/6` lets core invoke an
+  adapter's `migrate_instance_key/5` callback to atomically move an exact
+  legacy checkpoint to its stable key. Core verifies the migrated target
+  byte-for-byte and rejects divergent old/new histories.
 - Activation is committed synchronously when durable checkpointing is enabled.
   Stale generations, authority/fencing rollback, ambiguous writes, missing
   artifacts, or closure drift fail closed.

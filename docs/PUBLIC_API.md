@@ -190,6 +190,8 @@ Mix project version.
   - functions: `new/1`, `to_data/1`
 - `Spectre.Governance.ChangeSet.Registry`
   - functions: `apply/4`, `default/0`, `new/1`, `new!/1`, `register/2`
+- `Spectre.Governance.Composition`
+  - functions: `mark/4`, `new/1`, `update/2`
 - `Spectre.Governance.Composer`
   - functions: `compose/2`, `compose/3`
 - `Spectre.Governance.EvaluationDelta`
@@ -323,6 +325,13 @@ Mix project version.
 - `Spectre.LinkIntent`
 - `Spectre.Monitor`
   - functions: `dispatch/3`, `fallback_text/3`, `fallback_text/4`
+- `Spectre.Morph`
+  - functions: `activate/1`, `activate/2`, `approve/1`, `approve/2`, `change/1`, `change/2`, `disable_skill/2`, `evaluate/1`, `evaluate/2`, `explain/1`, `mount_skill/2`, `mount_skill/3`, `rebase/1`, `rebase/2`, `reject/1`, `reject/2`, `replace_skill/2`, `replace_skill/3`, `resume/2`, `resume/3`, `status/1`
+- `Spectre.Morph.Change`
+- `Spectre.Morph.DSL`
+  - macros: `morph/1`
+- `Spectre.Morph.Surface`
+  - functions: `allows?/2`, `applicability_ceilings/2`, `digest/1`, `from_canonical/1`, `from_data/1`, `new/1`, `new!/1`, `operation_types/0`, `schema_ref/0`, `to_data/1`
 - `Spectre.Pipeline`
   - functions: `init_specs/1`, `init_specs!/1`, `run/2`
   - macros: `__using__/1`, `pipeline/1`, `plug/1`, `plug/2`

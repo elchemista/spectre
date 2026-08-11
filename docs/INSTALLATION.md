@@ -2,15 +2,14 @@
 
 Spectre requires Elixir `~> 1.19` and includes Vettore as a required dependency.
 
-## GitHub
+## Hex
 
-Spectre is not published on Hex. Install it from GitHub, pinned to the
-release tag:
+Install the stable package from Hex:
 
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.3.0"}
+    {:spectre, "~> 0.3.0"}
   ]
 end
 ```
@@ -35,6 +34,12 @@ DSL style without parentheses:
 
 Start with [Getting Started](GETTING_STARTED.md), then use the
 [Production Operations](PRODUCTION.md) checklist before deploying.
+
+The generated module reference is available on
+[HexDocs](https://hexdocs.pm/spectre/0.3.0). Verify the selected release with
+`mix hex.info spectre` when preparing a production lockfile.
+
+## GitHub snapshots
 
 For unreleased development snapshots, pin an exact commit with `ref:` instead
 of a release tag. The repository's default branch is not a compatibility
@@ -75,7 +80,7 @@ library when model replies use Action Language or tool planning:
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.3.0"},
+    {:spectre, "~> 0.3.0"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic"}
   ]
 end
@@ -105,7 +110,7 @@ application that needs local embeddings:
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.3.0"},
+    {:spectre, "~> 0.3.0"},
     {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"}
   ]
 end

@@ -12,7 +12,8 @@ Review, Approval and the activation CAS.
 
 ## Upgrade sequence
 
-1. Pin the core package to tag `0.3.0` and compile with warnings as errors.
+1. Update the core dependency to `{:spectre, "~> 0.3.0"}`, refresh the lockfile,
+   and compile with warnings as errors.
 2. Run every historical compatibility fixture plus
    `test/fixtures/compatibility/0.3.0/reflective-runtime-v1.json`.
 3. Run `Spectre.Foundation.Conformance.matrix/0` and the complete local

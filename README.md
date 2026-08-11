@@ -1,6 +1,8 @@
 # Spectre
 
 [![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
+[![Hex](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
+[![HexDocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/spectre/0.3.0)
 
 **An OTP-native Elixir runtime for building agents whose routing, state,
 policies, and side effects stay explicit.**
@@ -80,15 +82,16 @@ the [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md).
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.3.0"}
+    {:spectre, "~> 0.3.0"}
   ]
 end
 ```
 
-See [Installation](docs/INSTALLATION.md) for snapshot pinning and the optional
-SpectreKinetic and ExFastembed integrations. Spectre is `0.x`: documented APIs
-may still evolve in minor releases; the normative compatibility surface is the
-[public API manifest](docs/PUBLIC_API.md).
+See [Installation](docs/INSTALLATION.md) for release verification, snapshot
+pinning, and the optional SpectreKinetic and ExFastembed integrations. The
+complete API reference is published on [HexDocs](https://hexdocs.pm/spectre/0.3.0).
+Spectre is `0.x`: documented APIs may still evolve in minor releases; the
+normative compatibility surface is the [public API manifest](docs/PUBLIC_API.md).
 
 ## A Small Agent
 
@@ -196,6 +199,8 @@ in [Getting Started](docs/GETTING_STARTED.md).
 
 **Start here**
 
+- [Guide for LLMs and coding agents](LLMS.md) — machine-oriented contracts,
+  safe usage patterns, and documentation routing for Spectre `0.3.0`.
 - [Getting Started](docs/GETTING_STARTED.md) — a complete agent and host lifecycle.
 - [Two Realistic Agents](docs/EXAMPLES.md) — database Q&A with Kinetic, browse-and-answer with Lens.
 - [Architecture](docs/ARCHITECTURE.md) — ownership, lifecycle, trust, and host boundaries.
@@ -227,7 +232,7 @@ in [Getting Started](docs/GETTING_STARTED.md).
 
 - [Changelog](CHANGELOG.md) — release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) — architectural hardening and package direction.
-- Migration guides for every release live in [docs/](docs/), latest:
+- Migration guides are versioned with the package; start with
   [Migrating to 0.3.0](docs/MIGRATING_TO_0_3.md).
 
 ## License
