@@ -4,6 +4,58 @@ All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
 minor release may contain documented breaking API changes.
 
+## 0.3.0-rs — 2026-08-11
+
+### Added
+
+- Added the opt-in `Spectre.Experience` plane with deterministic redaction,
+  explicit retention and expiry, immutable content-addressed evidence, a
+  verified snapshot transport, a Store behaviour, and a volatile reference
+  adapter. Experience remains observational and never becomes canonical
+  Instance state or authorization evidence by itself.
+- Added policy-gated `Spectre.Reflection` and the mechanical
+  `Spectre.Projection.Reflection`. Declared, Effective and Observed facts are
+  kept separate; Skill instructions are quoted data; missing evidence is
+  reported as a limitation; transported projections are regenerated against
+  exact Definition, Manifest, Activation and Experience inputs.
+- Added `Spectre.Reflection.Operation`, a compiled no-side-effect operation
+  whose stores, Activation and policy can only come from trusted host
+  configuration.
+- Added the propositional `Spectre.Forge` plane, compiled multi-model critic
+  contract, content-bound critiques, independent oracle approvals, portable
+  Proposal lineage, a fixed ChangeSet operation subset, and explicit rebase.
+  Critic prose and model agreement never become evaluation evidence by
+  themselves.
+- Added full external-evidence binding to governed ChangeSets. Composer and
+  activation now reject changed Reflection or Experience digests; a rebase
+  always creates a new Proposal identity.
+- Extended Foundation Conformance with exact Reflection and Forge verification
+  and added the permanent `0.3.0-rs/reflective-runtime-v1.json` identity
+  fixture.
+
+### Safety and compatibility
+
+- Forge has no publication, approval or activation API. It cannot address
+  authority, kernel policy, evaluator registration, projection generators, or
+  executable code. Only the existing Store-backed governance chain can turn a
+  Proposal's ChangeSet into an activated Candidate.
+- Experience recording is denied unless the host passes `enabled?: true`.
+  Built-in sensitive keys cannot be removed, non-retained evidence is purged
+  only after explicit confirmation, and every load path revalidates full
+  content identity.
+- Reflection requires an explicit host policy, actor, purpose and observation
+  time. Its generator never calls a model or assembles inspected prompt
+  fragments as active instructions.
+- Load and transport boundaries reject ambiguous atom/string fields, duplicate
+  snapshot evidence, duplicate keyword options, mutated Proposal structs,
+  oversized Forge collections, nonportable data and digest drift.
+- State remains writer v5, Run writer v2 and canonical Instance checkpoints
+  schema 4. All guaranteed 0.1.6–0.2.9 fixtures remain readable and unchanged;
+  the module-first Agent/Skill path continues to lower into the single
+  canonical runtime model.
+- This branch changes only the `spectre` core. Satellite `spectre_*` packages
+  retain ownership of their version constraints and adapter conformance.
+
 ## 0.2.9 — 2026-08-11
 
 ### Added

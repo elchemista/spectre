@@ -1,6 +1,6 @@
-# Spectre public API — 0.2.9
+# Spectre public API — 0.3.0-rs
 
-This file is the normative public API manifest for Spectre `0.2.9`. It retains
+This file is the normative public API manifest for Spectre `0.3.0-rs`. It retains
 the recoverable `0.1.6` conversational surface and adds the vNext operational
 surface. Compatibility guarantees apply only to the modules and callables
 listed below. Any module, function, macro, or callback not listed here is an
@@ -110,6 +110,19 @@ type, and struct contract.
   - functions: `acceptable?/1`, `acceptable?/2`, `format/1`, `new/1`, `to_map/1`
 - `Spectre.Eval.Result`
   - functions: `new/2`, `to_map/1`
+- `Spectre.Experience`
+  - functions: `fetch/2`, `list/2`, `list/3`, `purge_expired/2`, `purge_expired/3`, `record/2`, `record/3`, `snapshot/2`, `snapshot/3`
+- `Spectre.Experience.Evidence`
+  - functions: `decode/1`, `digest/1`, `encode/1`, `expired?/2`, `from_data/1`, `new/1`, `new!/1`, `ref/1`, `schema_version/0`, `to_data/1`, `verify/1`
+- `Spectre.Experience.Evidence.Ref`
+  - functions: `new/1`, `parse/1`, `to_string/1`, `valid?/1`, `verify/2`
+- `Spectre.Experience.Redactor`
+  - functions: `redact/1`, `redact/2`
+- `Spectre.Experience.Store`
+  - functions: `artifact_schema_version/0`, `decode_snapshot/1`, `durability/1`, `empty_snapshot/2`, `encode_snapshot/1`, `fetch/2`, `identity/1`, `list_evidence/2`, `list_evidence/3`, `normalize/1`, `publish/2`, `purge_expired/2`, `purge_expired/3`, `snapshot/2`, `snapshot/3`, `snapshot_from_data/1`, `snapshot_to_data/1`, `verify_snapshot/1`
+  - callbacks: `delete/2`, `durability/1`, `get/2`, `identity/1`, `list/1`, `put/3`
+- `Spectre.Experience.Store.Memory`
+  - functions: `count/1`, `start_link/0`, `start_link/1`
 - `Spectre.Execution`
   - functions: `execute_pending/2`, `execute_pending/3`
 - `Spectre.Execution.Closure`
@@ -141,8 +154,19 @@ type, and struct contract.
 - `Spectre.Extension.Mount`
 - `Spectre.ExternalIdentity`
   - functions: `from_source/1`, `from_source/2`, `key/1`, `new/1`
+- `Spectre.Forge`
+  - functions: `evidence/2`, `operation_types/0`, `propose/4`, `propose/5`, `rebase/4`, `rebase/5`
+- `Spectre.Forge.Critic`
+  - functions: `contract_version/0`, `run/3`, `run/4`
+  - callbacks: `critique/3`, `id/0`, `profile_ref/0`, `version/0`
+- `Spectre.Forge.Critique`
+  - functions: `case_digest/1`, `from_data/1`, `new/1`, `schema_version/0`, `to_data/1`, `verify/1`
+- `Spectre.Forge.OracleApproval`
+  - functions: `approves?/3`, `from_data/1`, `new/1`, `new!/1`, `ref/1`, `schema_version/0`, `to_data/1`, `verify/1`
+- `Spectre.Forge.Proposal`
+  - functions: `decode/1`, `encode/1`, `from_data/1`, `new/1`, `ref/1`, `schema_version/0`, `to_data/1`, `verify/1`
 - `Spectre.Foundation.Conformance`
-  - functions: `contract_version/0`, `matrix/0`, `verify_checkpoint/1`, `verify_definition/2`, `verify_instance_checkpoint/1`, `verify_run/1`, `verify_state/1`
+  - functions: `contract_version/0`, `matrix/0`, `verify_checkpoint/1`, `verify_definition/2`, `verify_forge_proposal/1`, `verify_instance_checkpoint/1`, `verify_reflection/5`, `verify_run/1`, `verify_state/1`
 - `Spectre.Gate.Receipt`
   - functions: `decode/1`, `digest/1`, `encode/1`, `new/1`, `new!/1`, `ref/1`, `to_data/1`, `verify/2`, `verify/3`, `verify_binding/2`
 - `Spectre.Gate.Receipt.Ref`
@@ -154,7 +178,7 @@ type, and struct contract.
 - `Spectre.Governance.CandidateState`
   - functions: `constitutional_gates/1`, `gate_classes/0`, `new/1`, `new!/1`, `proposal_digest/1`, `schema_version/0`, `to_data/1`, `transition/2`, `transition/3`
 - `Spectre.Governance.ChangeSet`
-  - functions: `decode/1`, `digest/1`, `encode/1`, `evidence_digest/1`, `from_data/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`, `verify_base/2`
+  - functions: `decode/1`, `digest/1`, `encode/1`, `evidence_digest/1`, `evidence_digest/2`, `from_data/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`, `verify_base/2`, `verify_base/3`
 - `Spectre.Governance.ChangeSet.Handler`
   - callbacks: `apply/3`, `component_classes/0`, `operation_types/0`
 - `Spectre.Governance.ChangeSet.Operation`
@@ -313,6 +337,8 @@ type, and struct contract.
   - functions: `id/0`, `project/2`, `version/0`
 - `Spectre.Projection.HumanReport`
   - functions: `decode/1`, `encode/1`, `from_data/1`, `id/0`, `project/2`, `project/3`, `to_data/1`, `verify/1`, `version/0`
+- `Spectre.Projection.Reflection`
+  - functions: `from_data/5`, `from_data/6`, `generate/4`, `generate/5`, `id/0`, `project/2`, `to_data/1`, `verify/5`, `verify/6`, `version/0`
 - `Spectre.Projection.Routing`
   - functions: `id/0`, `project/2`, `version/0`
 - `Spectre.Prompt`
@@ -334,6 +360,12 @@ type, and struct contract.
   - functions: `action_outcome/1`, `completions/1`, `latest_completion/1`, `lifecycle/1`, `open_awaitable/1`, `pending_effect/1`, `visible_reply?/1`
 - `Spectre.Reply.Sanitizer`
   - functions: `sanitize/1`, `sanitize/2`
+- `Spectre.Reflection`
+  - functions: `reflect/3`, `reflect/4`
+- `Spectre.Reflection.Operation`
+  - functions: `execute/2`, `spec/0`
+- `Spectre.Reflection.Policy`
+  - functions: `authorize/3`, `new/1`, `new!/1`
 - `Spectre.Route`
   - functions: `from_rule/3`, `new/1`
 - `Spectre.Router`

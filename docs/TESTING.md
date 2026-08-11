@@ -64,6 +64,16 @@ verification, and separate host-only semantic recovery/rollback escapes. The
 permanent 0.2.9 fixture pins portable ChangeSet, Candidate-state, receipt,
 evaluation, report, and GC schema identities.
 
+`test/reflective_runtime_test.exs` adds the `0.3.0-rs` gate. It proves explicit
+Experience opt-in, constitutional redaction, retention and purge confirmation,
+snapshot and JSON transport integrity, deterministic Reflection with honest
+no-evidence output, policy-gated operation configuration, fixed Forge
+vocabulary, independent oracle binding, model-agreement non-authority, stale
+evidence rejection, explicit rebase, load-boundary hardening, collection caps,
+and the absence of any Forge activation API. The permanent reflective fixture
+pins Definition, Activation, Experience, Reflection, critic, oracle, ChangeSet
+and Proposal identities.
+
 ## What a contract test must prove
 
 A passing output assertion is not enough for code that crosses process,

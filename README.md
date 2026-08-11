@@ -35,13 +35,30 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.9` adds closed Definition ChangeSets, exact gate receipts,
-> protected-corpus evaluation, deterministic human reports, separate approval
-> and activation, ancestor rollback, and conservative artifact GC. Durable
-> writer schemas are unchanged. The full suite exceeds 90%
+> Spectre `0.3.0-rs` completes the core governed reflective runtime: opt-in
+> redacted Experience, mechanical Declared/Effective/Observed Reflection,
+> oracle-bound multi-model critique, inert Forge proposals, and explicit
+> evidence-aware rebase over the existing governance and activation gates.
+> Durable writer schemas are unchanged. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.3.0-rs Governed Reflective Runtime
+
+Version `0.3.0-rs` keeps Execution, Reflection and Forge as separate planes.
+Reflection mechanically projects the exact canonical Definition, effective
+Manifest/Activation and an optional redacted Experience snapshot without
+executing inspected instructions or calling a model. Experience recording is
+explicitly opt-in, bounded by retention, and never becomes canonical state.
+
+Forge consumes that verified projection and may run compiled Prism-compatible
+critics, but prose and model agreement remain opinion. Candidate evaluation
+cases enter a ChangeSet only when bound to a trusted or independently approved
+oracle. Forge can propose and explicitly rebase; only the existing Composer,
+Review, Approval, Store re-read, owner fence and generation CAS can activate a
+Candidate. See [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md) and
+[Migrating to 0.3.0-rs](docs/MIGRATING_TO_0_3.md).
 
 ## 0.2.9 Governed Definition Changes
 
@@ -306,7 +323,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.9"}
+    {:spectre, github: "elchemista/spectre", tag: "0.3.0-rs"}
   ]
 end
 ```
@@ -832,8 +849,9 @@ adapters on startup, and can stop after an idle timeout.
   materialization, prompt receipts, handoffs, migrations, and rehearsal.
 - [Migrating to 0.2.9](docs/MIGRATING_TO_0_2_9.md) - governed ChangeSets,
   gate receipts, approval, activation, rollback, and conservative GC.
-- [Preparing for 0.3](docs/MIGRATING_TO_0_3.md) - the compatibility ledger and
-  required lowering path for reflective runtime work.
+- [Migrating to 0.3.0-rs](docs/MIGRATING_TO_0_3.md) - the core cutover,
+  durable compatibility, Reflection policy, Experience opt-in, and Forge
+  rollout.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
   embeddings, and semantic cache.
 - [Routing Evaluation](docs/EVALUATION.md) - corpus-based route accuracy, LLM
@@ -859,7 +877,9 @@ adapters on startup, and can stop after an idle timeout.
   shared execution lifecycle, receipts, handoffs, migrations, and rehearsal.
 - [Governed Definition Changes](docs/GOVERNANCE.md) - closed ChangeSets,
   anti-Goodhart evaluation, approvals, rollback, and artifact retention.
-- [0.2.9 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md) - Experience, mechanical
+  Reflection, critics, oracle approvals, Forge proposals, and explicit rebase.
+- [0.3.0-rs Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

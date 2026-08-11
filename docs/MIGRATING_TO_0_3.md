@@ -1,72 +1,142 @@
-# Preparing for Spectre 0.3
+# Migrating to Spectre 0.3.0-rs
 
-This document is the migration ledger from the stable 0.2 foundations toward
-the reflective 0.3 runtime. It is not a promise that unreleased 0.3 behavior
-already exists, and it does not make 0.2 hosts accept self-publication or
-self-activation.
+Spectre `0.3.0-rs` is the core cutover to the governed reflective runtime. It
+promotes the single canonical Definition, Activation, runtime Skill,
+data-driven Execution and governance model already hardened across the 0.2.x
+development gates, then adds policy-gated Reflection, opt-in Experience and
+propositional Forge.
 
-## Baseline to preserve
+It does not grant self-publication or self-activation. Models may criticize
+and propose data; trusted host code still owns policy, oracles, persistence,
+Review, Approval and the activation CAS.
 
-Before adopting any reflective feature, preserve these single models:
+## Upgrade sequence
 
-- canonical Definition identity and typed components;
-- sealed Manifest authority and execution closure;
-- immutable Definition publication and verified resolution;
-- stable Agent/Subject Instance identity and generation-fenced Activation;
-- ownership-based event admission and Definition lifecycle;
-- branch-aware private Skill state;
-- State, Run, and canonical Instance recovery formats.
+1. Pin the core package to tag `0.3.0-rs` and compile with warnings as errors.
+2. Run every historical compatibility fixture plus
+   `test/fixtures/compatibility/0.3.0-rs/reflective-runtime-v1.json`.
+3. Run `Spectre.Foundation.Conformance.matrix/0` and the complete local
+   `Spectre.Stack.Conformance` package matrix before starting Instances.
+4. Keep the Definition Store durable whenever Instance checkpoints are
+   durable. The reference Definition and Experience memory stores remain
+   volatile test adapters.
+5. Configure Experience only if recording is intentional; recording calls
+   must pass `enabled?: true` and bounded evidence must expire.
+6. Create a closed `Spectre.Reflection.Policy` for every actor and purpose
+   allowed to inspect active behavior.
+7. If Forge is enabled, register compiled critics and oracle implementations
+   in host code. Never treat prose or model agreement as a gate receipt.
+8. Pass `Spectre.Forge.evidence/2` unchanged to both Composer and activation;
+   changed Reflection or Experience requires an explicit Forge rebase.
 
-`Spectre.Foundation.Conformance`, `Spectre.Stack.Conformance`, and the runtime
-Skill/Routing, data execution, and governed-change fixtures are the executable
-0.2.9 baseline.
-A later lowering is
-compatible only when the same
-fixtures, module-first golden path, and complete Stack matrix continue to
-pass without an escape hatch or a second internal representation.
+## Durable compatibility
 
-## Required migration shape
+The core keeps one runtime representation and one current writer per durable
+format. This release does not rewrite the already-current State, Run or
+canonical Instance writer schemas:
 
-Reflective inputs must cross the boundary in this order:
+| Artifact | Current writer | Guaranteed readers |
+| --- | ---: | --- |
+| conversational State | 5 | 2, 3, 4, 5 |
+| Run checkpoint | 2 | 1, 2 |
+| canonical Instance checkpoint | 4 | 1, 2, 3, 4 |
 
-```text
-declarative input
-  -> validated versioned value
-  -> existing canonical Definition IR
-  -> Manifest authority + execution closure
-  -> immutable publication
-  -> explicit host Candidate/Activation action
-  -> existing Instance sequencer and lifecycle fences
+All 0.1.6–0.2.9 guaranteed fixtures remain inputs to the production decoders;
+writers do not emit a parallel legacy format. Definition, Manifest,
+publication receipt, Candidate and gate artifacts must remain resolvable after
+restart before a durable Activation is accepted.
+
+## Existing module-first applications
+
+`use Spectre.Agent`, `use Spectre.Skill`, `Spectre.ask/2,3`,
+`Spectre.turn/3` and `Spectre.ensure_instance/3,4` remain the source-compatible
+golden path. Compiled definitions lower through the same canonical IR used by
+runtime-authored Skills. Runtime origin is provenance, never weaker
+validation or extra authority.
+
+Stack Contract V1 is accepted only as trusted adapter input. Sealed runtime
+Definitions use Contract V2 authority and closure semantics; unknown
+`must_understand` components fail closed.
+
+## Add Reflection without Experience
+
+Experience is not required. With no Experience Store, Reflection emits an
+explicit `no_evidence` Observed section:
+
+```elixir
+policy =
+  Spectre.Reflection.Policy.new!(
+    actor_refs: ["operator:release"],
+    purposes: ["inspect"]
+  )
+
+{:ok, projection} =
+  Spectre.Reflection.reflect(
+    definition_store,
+    activation.definition_ref,
+    activation,
+    policy: policy,
+    actor_ref: "operator:release",
+    purpose: "inspect",
+    as_of: System.system_time(:millisecond)
+  )
 ```
 
-Compiled and runtime-authored Skills that express equivalent declarations
-must produce equivalent semantic IR over the shared canonical components.
-Runtime origin is provenance, not weaker validation and not additional
-authority. Spectre 0.2.9 implements the Skill, precise Work lowering, and
-governed Definition-change steps
-on the existing operational runtime. Governance, reflection, and Forge remain
-later gates.
+Adding an Experience Store later changes the evidence digest and therefore
+requires fresh Reflection and a new or rebased proposal.
 
-## Host actions that remain explicit
+## Govern Forge output
 
-Until governance contracts are delivered, a model cannot publish or activate
-its own Definition, widen authority, acquire an Instance owner fence, enable a
-Skill, or bypass a conflict. Hosts may expose narrowly authorized operations
-that request those actions, but the host remains the decision-maker and the
-result still crosses the normal sequencer and persistence boundaries.
+Forge outputs `Spectre.Forge.Proposal`, not a Candidate and not authority. The
+host passes `proposal.change_set` through the existing governance chain:
 
-## Rollout discipline
+```text
+Reflection + redacted Experience
+  -> Forge Proposal
+  -> Composer
+  -> composed Candidate
+  -> Review + protected evaluation
+  -> Approval
+  -> Store re-read
+  -> owner-fenced generation CAS
+```
 
-For each future foundation or runtime tag:
+Candidate-authored cases may add obligations but cannot improve the protected
+score that makes a Candidate pass. Forge cannot target the constitutional
+kernel, evaluator registry, projection generator, authority envelope or
+activation API.
 
-1. append a permanent compatibility fixture;
-2. update the conformance matrix only when a writer or reader truly changes;
-3. keep every older guaranteed fixture readable;
-4. test compiled and runtime lowerings against one canonical result;
-5. inject crash, restart, race, stale-owner, and corrupt-payload failures;
-6. run the complete satellite Stack matrix;
-7. document new authority and rollback consequences before activation.
+## Intentional 0.3 boundary changes
 
-Generated callbacks, goal-driven Work, autonomous Forge behavior, empirical
-reflection, and governance are separate later gates. They must not be smuggled
-into an earlier Skill or routing release.
+- The package version is `0.3.0-rs`; constraints that intentionally stop at
+  `< 0.3.0` must be reviewed by their owning packages.
+- The normative public API manifest now includes Experience, Reflection,
+  Forge and their conformance helpers.
+- Reflection is denied without a host policy, actor, purpose and explicit
+  `as_of` timestamp.
+- Experience recording is denied unless each call explicitly opts in.
+- A governed ChangeSet bound to external Reflection evidence is stale unless
+  the exact evidence is supplied again at composition and activation.
+- Rebase is always a new Proposal identity; it is never an implicit mutation.
+
+No sibling `spectre_*` package is changed by this core release. Their owners
+must update version constraints and run their own real adapter matrices when
+adopting `0.3.0-rs`.
+
+## Release checks
+
+Before deployment, run:
+
+```bash
+mix format --check-formatted
+mix compile --warnings-as-errors
+mix test
+mix test --cover
+mix credo
+mix dialyzer
+git diff --check
+```
+
+See [Reflective Runtime](REFLECTIVE_RUNTIME.md),
+[Governed Definition Changes](GOVERNANCE.md), and
+[Foundation Conformance](FOUNDATION_CONFORMANCE.md) for the exact contracts.
