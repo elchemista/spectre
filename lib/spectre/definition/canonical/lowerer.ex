@@ -9,6 +9,7 @@ defmodule Spectre.Definition.Canonical.Lowerer do
   alias Spectre.Definition.Ref
   alias Spectre.Execution.Expression
   alias Spectre.Execution.Program
+  alias Spectre.Morph.Surface
   alias Spectre.Skill.Applicability
   alias Spectre.Skill.Mount
   alias Spectre.Skill.PromptBudget
@@ -26,6 +27,8 @@ defmodule Spectre.Definition.Canonical.Lowerer do
     {:projection, "spectre.definition.projection/1", :advisory}
   ]
   @execution_component {:execution, "spectre.definition.execution/1", :must_understand}
+  @change_surface_component {:change_surface, "spectre.definition.change-surface/1",
+                             :must_understand}
 
   @doc false
   @spec lower(module() | Definition.t(), keyword()) :: {:ok, Canonical.t()} | {:error, term()}
@@ -80,6 +83,7 @@ defmodule Spectre.Definition.Canonical.Lowerer do
          {:ok, requirements} <- requirements_payload(definition, execution.programs),
          {:ok, skills} <- skills_payload(definition, opts),
          {:ok, compiled_runtime} <- compiled_runtime_payload(definition),
+         {:ok, change_surface} <- change_surface_payload(definition),
          {:ok, projection} <- projection_payload(execution.programs) do
       payloads = %{
         identity: identity,
@@ -103,6 +107,11 @@ defmodule Spectre.Definition.Canonical.Lowerer do
             programs: Enum.map(execution.programs, &Program.to_data/1)
           })
         end
+
+      payloads =
+        if is_nil(change_surface),
+          do: payloads,
+          else: Map.put(payloads, :change_surface, change_surface)
 
       {:ok, payloads}
     end
@@ -507,6 +516,16 @@ defmodule Spectre.Definition.Canonical.Lowerer do
     )
   end
 
+  @spec change_surface_payload(Definition.t()) :: {:ok, map() | nil} | {:error, term()}
+  defp change_surface_payload(%Definition{change_surface: nil}), do: {:ok, nil}
+
+  defp change_surface_payload(%Definition{kind: :agent, change_surface: surface}) do
+    with {:ok, surface} <- Surface.new(surface), do: {:ok, Surface.to_data(surface)}
+  end
+
+  defp change_surface_payload(%Definition{kind: kind}),
+    do: {:error, {:change_surface_requires_agent, kind}}
+
   @spec projection_payload([Program.t()]) :: {:ok, map()}
   defp projection_payload(programs) do
     generators = [
@@ -545,6 +564,11 @@ defmodule Spectre.Definition.Canonical.Lowerer do
       if Map.has_key?(payloads, :execution),
         do: @component_specs ++ [@execution_component],
         else: @component_specs
+
+    specs =
+      if Map.has_key?(payloads, :change_surface),
+        do: specs ++ [@change_surface_component],
+        else: specs
 
     Enum.reduce_while(specs, {:ok, []}, fn {type, schema_ref, criticality}, {:ok, components} ->
       attrs = [

@@ -4,6 +4,7 @@ defmodule Spectre.Definition.Validator do
   """
 
   alias Spectre.Definition
+  alias Spectre.Morph.Surface
   alias Spectre.Prompt.Operation
   alias Spectre.Skill.Mount
   alias Spectre.Stack.Definition, as: StackDefinition
@@ -64,6 +65,7 @@ defmodule Spectre.Definition.Validator do
     with :ok <- validate_kind(definition),
          :ok <- validate_identity(definition),
          :ok <- validate_version(definition),
+         :ok <- validate_change_surface(definition),
          :ok <- validate_skill_config(definition),
          :ok <- validate_history(definition),
          :ok <- validate_stack(definition),
@@ -112,6 +114,16 @@ defmodule Spectre.Definition.Validator do
        do: {:error, {:unsupported_skill_version, version, @supported_skill_versions}}
 
   defp validate_version(%Definition{}), do: :ok
+
+  @spec validate_change_surface(Definition.t()) :: :ok | {:error, term()}
+  defp validate_change_surface(%Definition{change_surface: nil}), do: :ok
+
+  defp validate_change_surface(%Definition{kind: :skill}),
+    do: {:error, :skill_cannot_declare_morph_surface}
+
+  defp validate_change_surface(%Definition{kind: :agent, change_surface: surface}) do
+    with {:ok, _surface} <- Surface.new(surface), do: :ok
+  end
 
   @spec validate_skill_config(map()) :: :ok | {:error, term()}
   defp validate_skill_config(%Definition{kind: :skill, config: config}) do

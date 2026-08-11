@@ -29,6 +29,7 @@ defmodule Spectre.Governance.Composer do
   alias Spectre.Governance.Composition
   alias Spectre.Governance.Constraints
   alias Spectre.Instance.Activation
+  alias Spectre.Morph.Surface
   alias Spectre.Skill.Definition, as: SkillDefinition
 
   @builtin_gates [:structural, :authority, :closure, :prompt_budget, :applicability]
@@ -52,6 +53,7 @@ defmodule Spectre.Governance.Composer do
              resolver_opts(opts)
            ),
          :ok <- verify_parent_activation(parent, activation),
+         {:ok, opts} <- Surface.constrain(parent.definition, change_set.operations, opts),
          {:ok, authority} <- effective_authority(parent.manifest.authority, opts),
          {:ok, constraints} <- Constraints.new(authority, opts),
          {:ok, composition} <-
@@ -62,6 +64,12 @@ defmodule Spectre.Governance.Composer do
              composition_context(authority, constraints, opts)
            ),
          {:ok, definition} <- finalize_definition(composition.definition, change_set),
+         :ok <-
+           Surface.verify_evaluation_obligations(
+             parent.definition,
+             definition,
+             composition.eval_cases
+           ),
          {:ok, closure} <- derive_closure(parent.manifest.execution_closure, definition),
          :ok <- require_protected_corpus(closure),
          :ok <- verify_composed_skills(definition),
@@ -436,6 +444,8 @@ defmodule Spectre.Governance.Composer do
   defp valid_mount_id?(value) when is_binary(value) and value != "",
     do: not String.starts_with?(value, "Elixir.")
 
+  defp valid_mount_id?(value) when is_atom(value), do: not is_nil(value)
+  defp valid_mount_id?(value) when is_integer(value), do: true
   defp valid_mount_id?(_value), do: false
 
   defp get(map, key, default \\ nil)

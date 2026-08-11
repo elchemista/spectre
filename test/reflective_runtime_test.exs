@@ -1057,6 +1057,89 @@ defmodule SpectreReflectiveRuntimeTest do
              )
   end
 
+  test "foundation reflection and Forge gates reverify structs, bytes and malformed transports" do
+    fixture = forge_fixture()
+
+    assert {:ok, %{format: :reflection, digest: reflection_digest}} =
+             Conformance.verify_reflection(
+               fixture.reflection,
+               fixture.canonical,
+               fixture.manifest,
+               fixture.activation,
+               fixture.snapshot
+             )
+
+    assert reflection_digest == fixture.reflection.digest
+
+    reflection_bytes =
+      fixture.reflection
+      |> ReflectionProjection.to_data()
+      |> Spectre.Canonical.Value.encode!()
+
+    assert {:ok, %{digest: ^reflection_digest}} =
+             Conformance.verify_reflection(
+               reflection_bytes,
+               fixture.canonical,
+               fixture.manifest,
+               fixture.activation,
+               fixture.snapshot
+             )
+
+    assert {:error, {:invalid_foundation_activation, :list}} =
+             Conformance.verify_reflection(
+               fixture.reflection,
+               fixture.canonical,
+               fixture.manifest,
+               [],
+               fixture.snapshot
+             )
+
+    assert {:error, {:invalid_foundation_experience_snapshot, :tuple}} =
+             Conformance.verify_reflection(
+               fixture.reflection,
+               fixture.canonical,
+               fixture.manifest,
+               fixture.activation,
+               {:snapshot}
+             )
+
+    assert {:error, {:invalid_foundation_reflection, :atom}} =
+             Conformance.verify_reflection(
+               :reflection,
+               fixture.canonical,
+               fixture.manifest,
+               fixture.activation,
+               fixture.snapshot
+             )
+
+    assert {:ok, proposal} =
+             Forge.propose(
+               fixture.activation,
+               fixture.reflection,
+               fixture.snapshot,
+               [%{"type" => "disable_skill", "payload" => %{"mount_id" => "lookup"}}],
+               author_ref: "forge:foundation",
+               reason: "exercise every conformance transport",
+               created_at: 60
+             )
+
+    assert {:ok, %{format: :forge_proposal, digest: proposal_digest}} =
+             Conformance.verify_forge_proposal(proposal)
+
+    assert proposal_digest == proposal.digest
+    assert {:ok, encoded_proposal} = Proposal.encode(proposal)
+
+    assert {:ok, %{digest: ^proposal_digest}} =
+             Conformance.verify_forge_proposal(encoded_proposal)
+
+    assert {:error, {:invalid_foundation_forge_proposal, :tuple}} =
+             Conformance.verify_forge_proposal({:proposal})
+
+    assert {:error, {:invalid_state_payload, :list}} = Conformance.verify_state("[]")
+
+    assert {:error, %Jason.DecodeError{}} = Conformance.verify_state("{bad-json}")
+  end
+
   test "model agreement is not evidence and malformed textual critique fails closed" do
     fixture = forge_fixture()
 

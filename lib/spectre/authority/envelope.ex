@@ -60,7 +60,12 @@ defmodule Spectre.Authority.Envelope do
   @doc "Builds and validates an effective authority envelope."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def new(%__MODULE__{} = envelope), do: envelope |> Map.from_struct() |> new()
-  def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs),
+      do: attrs |> Map.new() |> new(),
+      else: {:error, {:invalid_authority_envelope, :list}}
+  end
 
   def new(attrs) when is_map(attrs) do
     with :ok <- validate_keys(attrs),

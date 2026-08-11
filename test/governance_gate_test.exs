@@ -3853,6 +3853,135 @@ defmodule SpectreGovernanceGateTest do
              data |> Map.put("operations", operations) |> ChangeSet.from_data()
   end
 
+  test "governance verifier and composer fail closed on direct boundary mutations" do
+    %{store: store, activation: activation, candidate: bootstrap_ref} = baseline()
+
+    assert {:ok, bootstrap_resolution} =
+             Resolver.resolve_candidate_for_activation(store, bootstrap_ref)
+
+    assert :ok = Verifier.verify_activation(store, bootstrap_resolution, nil, [])
+    assert :ok = Verifier.verify_recovery(store, bootstrap_resolution, [])
+
+    ungoverned = %{bootstrap_resolution.candidate | source: :governed_host}
+    ungoverned_resolution = %{bootstrap_resolution | candidate: ungoverned}
+
+    assert {:error, :governed_candidate_requires_governance_state} =
+             Verifier.verify_activation(store, ungoverned_resolution, activation, [])
+
+    assert {:error, :governed_candidate_requires_governance_state} =
+             Verifier.verify_recovery(store, ungoverned_resolution, [])
+
+    change_set = change_set(activation, [mount_operation()])
+
+    assert {:error, :governance_composer_requires_activation} =
+             Composer.compose(store, change_set, [])
+
+    assert {:error, {:invalid_governance_composer_input, :atom}} =
+             Composer.compose(store, change_set, activation: :not_an_activation)
+
+    assert {:error, {:invalid_governance_handler_registry, :open_registry}} =
+             Composer.compose(store, change_set,
+               activation: activation,
+               handler_registry: :open_registry
+             )
+
+    assert {:error, {:invalid_governance_composer_options, :map}} =
+             Composer.compose(store, change_set, %{})
+
+    assert {:error, {:invalid_governance_required_gates, :all}} =
+             Composer.compose(store, change_set,
+               activation: activation,
+               created_at: 2,
+               required_gates: :all
+             )
+
+    approved_ref = approved_candidate(store, activation)
+
+    assert {:ok, approved_resolution} =
+             Resolver.resolve_candidate_for_activation(store, approved_ref)
+
+    assert {:error, :governed_activation_requires_current_activation} =
+             Verifier.verify_activation(store, approved_resolution, nil,
+               now: 7,
+               checker_versions: @checker_versions
+             )
+
+    assert {:error, :invalid_governance_external_evidence} =
+             Verifier.verify_activation(store, approved_resolution, activation,
+               evidence: %{pid: self()},
+               now: 7,
+               checker_versions: @checker_versions
+             )
+
+    candidate = approved_resolution.candidate
+    governance = candidate.governance
+    [first_receipt | _] = governance.gate_receipt_refs
+
+    duplicate_receipt_candidate = %{
+      candidate
+      | governance: %{
+          governance
+          | gate_receipt_refs: governance.gate_receipt_refs ++ [first_receipt]
+        }
+    }
+
+    assert {:error, {:ambiguous_gate_receipts, _gate}} =
+             Verifier.verify_activation(
+               store,
+               %{approved_resolution | candidate: duplicate_receipt_candidate},
+               activation,
+               now: 7,
+               checker_versions: @checker_versions
+             )
+
+    migration_candidate = %{
+      candidate
+      | governance: %{
+          governance
+          | state_migrations: [%{"skill_id" => "lookup", "migration_ref" => "state-v2"}]
+        }
+    }
+
+    assert {:error, {:invalid_registered_state_migrations, :all}} =
+             Verifier.verify_activation(
+               store,
+               %{approved_resolution | candidate: migration_candidate},
+               activation,
+               now: 7,
+               checker_versions: @checker_versions,
+               registered_migrations: :all
+             )
+
+    assert {:error,
+            {:candidate_state_migration_not_registered,
+             %{"skill_id" => "lookup", "migration_ref" => "state-v2"}}} =
+             Verifier.verify_activation(
+               store,
+               %{approved_resolution | candidate: migration_candidate},
+               activation,
+               now: 7,
+               checker_versions: @checker_versions,
+               registered_migrations: [:other]
+             )
+
+    assert {:error, {:governance_candidate_proposal_digest_mismatch, _, _}} =
+             Verifier.verify_activation(
+               store,
+               %{approved_resolution | candidate: migration_candidate},
+               activation,
+               now: 7,
+               checker_versions: @checker_versions,
+               registered_migrations: [:"state-v2"]
+             )
+
+    assert {:error, {:invalid_governance_approval_policy, :invalid}} =
+             Verifier.verify_activation(store, approved_resolution, activation,
+               now: 7,
+               checker_versions: @checker_versions,
+               approval_policy: :invalid
+             )
+  end
+
   defp baseline(opts \\ []) do
     id = {:governance, System.unique_integer([:positive, :monotonic])}
 

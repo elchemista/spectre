@@ -11,6 +11,7 @@ defmodule Spectre.Definition.Component do
   alias Spectre.SensitiveData
 
   @criticalities [:must_understand, :advisory, :descriptive]
+  @fields [:component_type, :schema_ref, :criticality, :payload]
   @enforce_keys [:component_type, :schema_ref, :criticality, :payload]
   defstruct [:component_type, :schema_ref, :criticality, :payload]
 
@@ -25,12 +26,19 @@ defmodule Spectre.Definition.Component do
 
   @doc "Builds and validates a canonical Definition component."
   @spec new(map() | keyword()) :: {:ok, t()} | {:error, term()}
-  def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
+  def new(%__MODULE__{} = component), do: component |> Map.from_struct() |> new()
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs),
+      do: attrs |> Map.new() |> new(),
+      else: {:error, {:invalid_definition_component, :list}}
+  end
 
   def new(attrs) when is_map(attrs) do
-    component = struct(__MODULE__, Map.take(attrs, fields()))
+    component = struct(__MODULE__, Map.take(attrs, @fields))
 
-    with :ok <- validate_type(component.component_type),
+    with :ok <- validate_keys(attrs),
+         :ok <- validate_type(component.component_type),
          :ok <- validate_schema_ref(component.schema_ref),
          :ok <- validate_criticality(component.criticality),
          :ok <- validate_payload(component.payload) do
@@ -62,18 +70,21 @@ defmodule Spectre.Definition.Component do
 
   @doc "Restores a component from its portable envelope representation."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(%{
-        "component_type" => component_type,
-        "schema_ref" => schema_ref,
-        "criticality" => criticality,
-        "payload" => payload
-      }) do
-    new(
-      component_type: component_type,
-      schema_ref: schema_ref,
-      criticality: criticality,
-      payload: payload
-    )
+  def from_data(data) when is_map(data) and not is_struct(data) do
+    expected = Enum.map(@fields, &Atom.to_string/1)
+
+    with [] <- Map.keys(data) -- expected,
+         [] <- expected -- Map.keys(data) do
+      new(
+        component_type: Map.get(data, "component_type"),
+        schema_ref: Map.get(data, "schema_ref"),
+        criticality: Map.get(data, "criticality"),
+        payload: Map.get(data, "payload")
+      )
+    else
+      fields when is_list(fields) ->
+        {:error, {:invalid_definition_component_fields, Enum.sort(fields)}}
+    end
   end
 
   def from_data(value), do: {:error, {:invalid_definition_component_data, shape(value)}}
@@ -95,18 +106,24 @@ defmodule Spectre.Definition.Component do
 
   @spec validate_payload(term()) :: :ok | {:error, term()}
   defp validate_payload(payload) do
-    cond do
-      path = SensitiveData.sensitive_path(payload) ->
-        {:error, {:secret_component_payload, path}}
+    with :ok <- portable_payload(payload) do
+      cond do
+        path = SensitiveData.sensitive_path(payload) ->
+          {:error, {:secret_component_payload, path}}
 
-      path = ast_path(payload) ->
-        {:error, {:executable_component_ast, path}}
+        path = ast_path(payload) ->
+          {:error, {:executable_component_ast, path}}
 
-      true ->
-        case Value.validate(payload) do
-          :ok -> :ok
-          {:error, reason} -> {:error, {:nonportable_component_payload, reason}}
-        end
+        true ->
+          :ok
+      end
+    end
+  end
+
+  defp portable_payload(payload) do
+    case Value.validate(payload) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:nonportable_component_payload, reason}}
     end
   end
 
@@ -164,11 +181,12 @@ defmodule Spectre.Definition.Component do
   defp key_label(key) when is_atom(key) or is_binary(key) or is_integer(key), do: key
   defp key_label(_key), do: :key
 
-  @spec fields() :: [atom()]
-  defp fields do
-    __MODULE__.__struct__()
-    |> Map.keys()
-    |> List.delete(:__struct__)
+  @spec validate_keys(map()) :: :ok | {:error, term()}
+  defp validate_keys(attrs) do
+    case Map.keys(attrs) -- @fields do
+      [] -> :ok
+      unknown -> {:error, {:unknown_definition_component_fields, Enum.sort(unknown)}}
+    end
   end
 
   @spec shape(term()) :: atom()

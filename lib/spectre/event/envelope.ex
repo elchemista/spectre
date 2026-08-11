@@ -227,7 +227,10 @@ defmodule Spectre.Event.Envelope do
   @doc "Applies the sequencer-owned admission fields to a pending envelope."
   @spec admit(t(), map() | keyword()) :: {:ok, t()} | {:error, term()}
   def admit(%__MODULE__{status: :pending} = envelope, admission) do
-    admission = if is_list(admission), do: Map.new(admission), else: admission
+    admission =
+      if is_list(admission) and Keyword.keyword?(admission),
+        do: Map.new(admission),
+        else: admission
 
     if is_map(admission) and not is_struct(admission) do
       envelope

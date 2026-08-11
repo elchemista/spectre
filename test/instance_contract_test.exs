@@ -392,7 +392,7 @@ defmodule SpectreInstanceContractTest do
         Spectre.turn(instance, "slow reply", test_pid: test_pid)
       end)
 
-    assert_receive {:instance_render_started, "slow reply", slow_worker}
+    assert_receive {:instance_render_started, "slow reply", slow_worker}, 1_000
 
     fast =
       Task.async(fn ->
@@ -417,7 +417,7 @@ defmodule SpectreInstanceContractTest do
     assert {:ok, %Turn{observable: {:reply, "slow_reply:slow reply", _ref}}} =
              Task.await(slow, 5_000)
 
-    assert_receive {:instance_render_started, "hello", _fast_worker}
+    assert_receive {:instance_render_started, "hello", _fast_worker}, 1_000
     assert_receive {:instance_input_state_seen, "hello", 1}
 
     assert {:ok, %Turn{observable: {:reply, "hello:hello", _ref}}} =

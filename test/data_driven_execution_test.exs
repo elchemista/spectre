@@ -205,6 +205,33 @@ defmodule SpectreDataDrivenExecutionTest.MigrationAgent do
   skill(SpectreDataDrivenExecutionTest.MigrationSkill, as: :migration)
 end
 
+defmodule SpectreDataDrivenExecutionTest.ImpureMigrationAgent do
+  @moduledoc false
+
+  use Spectre.Agent, id: :impure_migration_agent
+
+  alias SpectreDataDrivenExecutionTest.Operations
+
+  operation(:migrate, {Operations, :migrate},
+    input: :map,
+    output: :map,
+    side_effect: :idempotent
+  )
+
+  skill(SpectreDataDrivenExecutionTest.MigrationSkill, as: :migration)
+end
+
+defmodule SpectreDataDrivenExecutionTest.DriftedMigrationAgent do
+  @moduledoc false
+
+  use Spectre.Agent, id: :drifted_migration_agent
+
+  alias SpectreDataDrivenExecutionTest.Operations
+
+  operation(:migrate, {Operations, :migrate}, input: :map, output: :any, side_effect: :none)
+  skill(SpectreDataDrivenExecutionTest.MigrationSkill, as: :migration)
+end
+
 defmodule SpectreDataDrivenExecutionTest.SealedInferenceWork do
   @moduledoc false
 
@@ -317,6 +344,8 @@ defmodule SpectreDataDrivenExecutionTest do
   alias SpectreDataDrivenExecutionTest.CompiledFullWork
   alias SpectreDataDrivenExecutionTest.CompiledSkill
   alias SpectreDataDrivenExecutionTest.CompiledWork
+  alias SpectreDataDrivenExecutionTest.DriftedMigrationAgent
+  alias SpectreDataDrivenExecutionTest.ImpureMigrationAgent
   alias SpectreDataDrivenExecutionTest.MigrationAgent
   alias SpectreDataDrivenExecutionTest.MigrationSkill
   alias SpectreDataDrivenExecutionTest.Operations
@@ -1644,6 +1673,113 @@ defmodule SpectreDataDrivenExecutionTest do
              Spectre.Prompt.Receipt.from_data({:invalid, :receipt})
   end
 
+  test "materialization reconstructs transported evidence and rejects malformed sealed fields" do
+    program = inference_program()
+    skill = runtime_skill(program, prompt?: true, route: "infer")
+    runtime = mounted_runtime(skill)
+
+    assert {:ok, materialization, _runtime} =
+             Materializer.materialize(
+               runtime,
+               "infer",
+               %{audience: "operator", scope: :execution},
+               expected_revision: 1
+             )
+
+    non_work = %Response{
+      kind: :reply,
+      mount_id: materialization.mount_id,
+      definition_ref: SkillDefinition.ref(skill),
+      route_label: materialization.route_label,
+      work_ref: program.id,
+      work_input: materialization.input,
+      program_digest: program.digest,
+      continuation_id: materialization.continuation_id
+    }
+
+    assert {:error, {:execution_materialization_requires_work_response, :reply}} =
+             Materialization.new(
+               skill,
+               non_work,
+               program,
+               materialization.input,
+               materialization.plans,
+               materialization.prompt_receipts,
+               materialization.projection
+             )
+
+    assert {:error, {:unsupported_execution_materialization_schema, 2}} =
+             Materialization.verify(%{materialization | schema_version: 2})
+
+    transported_receipts =
+      Enum.map(materialization.prompt_receipts, &Spectre.Prompt.Receipt.to_data/1)
+
+    assert :ok =
+             Materialization.verify(%{materialization | prompt_receipts: transported_receipts})
+
+    assert {:error,
+            {:invalid_execution_materialization_receipt, 0, {:invalid_prompt_receipt, :atom}}} =
+             Materialization.verify(%{materialization | prompt_receipts: [:invalid]})
+
+    assert {:error, {:invalid_execution_materialization_receipts, :map}} =
+             Materialization.verify(%{materialization | prompt_receipts: %{}})
+
+    [prompt_ref] = program.prompt_refs
+    plan = Map.fetch!(materialization.plans, prompt_ref)
+
+    assert {:error, :duplicate_execution_materialization_prompt_plan_ref} =
+             Materialization.verify(%{
+               materialization
+               | plans: %{prompt_ref => plan, String.to_atom(prompt_ref) => plan}
+             })
+
+    assert {:error, {:invalid_execution_materialization_plans, :list}} =
+             Materialization.verify(%{materialization | plans: []})
+
+    assert {:error, :invalid_execution_materialization_prompt_plan} =
+             Materialization.verify(%{materialization | plans: %{prompt_ref => %{}}})
+
+    malformed_plan = %{plan | rendered: :not_text}
+
+    assert {:error, :invalid_execution_materialization_prompt_plan} =
+             Materialization.verify(%{
+               materialization
+               | plans: %{prompt_ref => malformed_plan}
+             })
+
+    continuation_projection =
+      materialization.projection
+      |> Map.update!(:content, &Map.put(&1, :continuation_id, nil))
+      |> redigest_projection()
+
+    assert {:error, {:invalid_execution_continuation_id, nil}} =
+             Materialization.verify(%{
+               materialization
+               | continuation_id: nil,
+                 projection: continuation_projection
+             })
+
+    assert {:error, :execution_materialization_projection_mismatch} =
+             Materialization.verify(%{materialization | mount_id: self()})
+
+    assert {:error,
+            {:invalid_operation_value, {:execution_materialization_input, _}, :map, :other}} =
+             Materialization.verify(%{materialization | input: self()})
+
+    invalid_content = redigest_projection(materialization.projection, [])
+
+    assert {:error, :invalid_execution_materialization_projection} =
+             Materialization.verify(%{materialization | projection: invalid_content})
+
+    invalid_receipts =
+      materialization.projection
+      |> Map.update!(:content, &Map.put(&1, :prompt_receipts, :invalid))
+      |> redigest_projection()
+
+    assert {:error, :invalid_execution_materialization_projection_receipts} =
+             Materialization.verify(%{materialization | projection: invalid_receipts})
+  end
+
   test "execution projection, materializer and runtime boundaries fail closed" do
     program = inference_program()
     skill = runtime_skill(program, prompt?: true, route: "infer")
@@ -1952,6 +2088,88 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert {:error, :execution_migration_request_metadata_mismatch} =
              Migration.verify(%{migration | request: tampered_request})
+  end
+
+  test "state migration is owner-bound, pure, contract-pinned and fail-closed" do
+    program = migration_program()
+    source = %{"schema" => 1, "value" => 42}
+    owner = migration_owner(program)
+
+    assert {:error, :invalid_execution_migration_options} =
+             Migration.prepare(program, 1, source, Agent, [:not_keyword])
+
+    assert {:error, {:invalid_execution_migration_agent, nil}} =
+             Migration.prepare(program, 1, source, nil, owner)
+
+    assert {:error, :invalid_execution_migration_options} =
+             Migration.prepare(program, 1, source, Agent, %{})
+
+    assert {:error, {:nonportable_execution_migration_state, _reason}} =
+             Migration.prepare(program, 1, %{process: self()}, Agent, owner)
+
+    assert {:error, {:unknown_execution_migration_options, [:unreviewed]}} =
+             Migration.prepare(program, 1, source, Agent, owner ++ [unreviewed: true])
+
+    assert {:error, :invalid_execution_migration_materialization_digest} =
+             Migration.prepare(
+               program,
+               1,
+               source,
+               Agent,
+               Keyword.put(owner, :materialization_digest, "invalid")
+             )
+
+    assert {:error, :execution_migration_owner_binding_required} =
+             Migration.prepare(
+               program,
+               1,
+               source,
+               Agent,
+               Keyword.delete(owner, :definition_ref)
+             )
+
+    assert {:error, :invalid_execution_migration_definition_ref} =
+             Migration.prepare(
+               program,
+               1,
+               source,
+               Agent,
+               Keyword.put(owner, :definition_ref, "invalid")
+             )
+
+    assert {:error, {:execution_migration_must_be_pure, "migrate", :idempotent}} =
+             Migration.prepare(program, 1, source, ImpureMigrationAgent, owner)
+
+    assert {:ok, migration} = Migration.prepare(program, 1, source, Agent, owner)
+    assert Migration.to_data(migration).digest == migration.digest
+
+    assert {:error, :execution_migration_operation_contract_drift} =
+             Migration.commit(
+               migration,
+               Execution.new(%{"schema" => 2, "value" => 42}),
+               DriftedMigrationAgent
+             )
+
+    assert {:error, {:invalid_execution_migration_commit, Agent}} =
+             Migration.commit(migration, :not_an_execution, Agent)
+
+    assert {:error, {:invalid_execution_migration_commit, nil}} =
+             Migration.commit(migration, Execution.new(%{}), nil)
+
+    assert {:error, :invalid_execution_migration_request} =
+             Migration.verify(%{migration | request: :invalid})
+
+    assert {:error, :execution_migration_integrity_mismatch} =
+             Migration.verify(%{migration | schema_version: 2})
+
+    assert {:error, :execution_migration_integrity_mismatch} =
+             Migration.verify(%{migration | definition_ref: nil})
+
+    assert {:error, :execution_migration_integrity_mismatch} =
+             Migration.verify(%{migration | materialization_digest: nil})
+
+    assert {:error, :execution_migration_request_operation_mismatch} =
+             Migration.verify(%{migration | operation_ref: :migrate})
   end
 
   test "migration receipts reject incomplete, ambiguous and nonsensical durable data" do
@@ -2638,6 +2856,21 @@ defmodule SpectreDataDrivenExecutionTest do
         %{id: :done, kind: :complete, output: :state}
       ]
     })
+  end
+
+  defp redigest_projection(projection, content \\ :preserve) do
+    content = if content == :preserve, do: projection.content, else: content
+
+    digest =
+      Value.digest!(%{
+        definition_ref: to_string(projection.definition_ref),
+        generator_id: projection.generator_id,
+        generator_version: projection.generator_version,
+        input_evidence_digest: projection.input_evidence_digest,
+        content: content
+      })
+
+    %{projection | content: content, digest: digest}
   end
 
   defp migration_program do

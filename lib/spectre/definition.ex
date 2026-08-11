@@ -34,7 +34,8 @@ defmodule Spectre.Definition do
             injections: [],
             requirements: [],
             skills: [],
-            extensions: []
+            extensions: [],
+            change_surface: nil
 
   @type kind :: :agent | :skill
   @type scope :: :agent | {:skill, term()}
@@ -57,7 +58,8 @@ defmodule Spectre.Definition do
           injections: [term()],
           requirements: [map()],
           skills: [Mount.t()],
-          extensions: [ExtensionMount.t()]
+          extensions: [ExtensionMount.t()],
+          change_surface: Spectre.Morph.Surface.t() | nil
         }
 
   @doc """

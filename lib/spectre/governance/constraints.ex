@@ -215,11 +215,11 @@ defmodule Spectre.Governance.Constraints do
   end
 
   defp verify_applicability_ceiling({mount_id, skill}, :ok, ceilings) do
-    case Map.fetch(ceilings, mount_id) do
-      :error ->
+    case Enum.find(ceilings, fn {key, _value} -> same_name?(key, mount_id) end) do
+      nil ->
         {:cont, :ok}
 
-      {:ok, ceiling_data} ->
+      {_key, ceiling_data} ->
         verify_applicability_ceiling(skill, ceiling_data)
     end
   end
@@ -310,6 +310,12 @@ defmodule Spectre.Governance.Constraints do
   defp valid_mount_id?(value) when is_binary(value) and value != "",
     do: not String.starts_with?(value, "Elixir.")
 
+  # Compiled Definitions may carry atom or integer mount ids. They are inert
+  # identity values here; accepting an already-existing atom never creates a
+  # runtime code reference. String-authored runtime ids retain the stricter
+  # code-reference guard above.
+  defp valid_mount_id?(value) when is_atom(value), do: not is_nil(value)
+  defp valid_mount_id?(value) when is_integer(value), do: true
   defp valid_mount_id?(_value), do: false
 
   defp same_name?(left, right) when is_atom(left), do: same_name?(Atom.to_string(left), right)

@@ -344,7 +344,9 @@ defmodule SpectreSmallModuleBranchTest do
       Map.put(valid, :allowed_routes, :alpha),
       Map.put(valid, :allowed_routes, [1]),
       Map.put(valid, :expected_strategy, []),
+      Map.put(valid, :input, %{pid: self()}),
       Map.put(valid, :state, :bad),
+      Map.put(valid, :state, pid: self()),
       Map.put(valid, :tags, :bad),
       Map.put(valid, :tags, [:bad]),
       Map.put(valid, :max_duration_us, 0),
@@ -352,6 +354,15 @@ defmodule SpectreSmallModuleBranchTest do
     ]
 
     Enum.each(invalid, fn item -> assert {:error, _reason} = EvalCase.new(item) end)
+
+    assert {:error, {:unknown_case_fields, ["expect"]}} =
+             EvalCase.new(%{"id" => "case", "input" => "hello", "expect" => "reply"})
+
+    assert {:error, {:duplicate_case_field, :id}} =
+             EvalCase.new(%{:id => "case", "id" => "other", input: "hello"})
+
+    assert {:error, {:invalid_field, :expected_output, :mutated}} =
+             EvalCase.new(%{evaluation_case | expected_output: :mutated})
   end
 
   test "LLM boundary negotiates adapter sources, plans, functions and fallback failures" do

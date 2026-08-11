@@ -29,7 +29,7 @@ defmodule Spectre.Definition.Candidate.Ref do
   @doc "Parses the stable `candidate:sha256:<hex>` representation."
   @spec parse(String.t()) :: {:ok, t()} | {:error, term()}
   def parse("candidate:sha256:" <> digest) do
-    ref = %__MODULE__{algorithm: @algorithm, digest: String.downcase(digest)}
+    ref = %__MODULE__{algorithm: @algorithm, digest: digest}
 
     if valid?(ref), do: {:ok, ref}, else: {:error, {:invalid_candidate_ref, digest}}
   end

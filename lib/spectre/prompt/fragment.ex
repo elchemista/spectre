@@ -105,12 +105,19 @@ defmodule Spectre.Prompt.Fragment do
   must remain `context:data` fragments.
   """
   @spec canonical(map() | keyword()) :: {:ok, t()} | {:error, term()}
-  def canonical(attrs) when is_list(attrs), do: attrs |> Map.new() |> canonical()
+  def canonical(%__MODULE__{} = fragment), do: fragment |> Map.from_struct() |> canonical()
+
+  def canonical(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs),
+      do: attrs |> Map.new() |> canonical(),
+      else: {:error, {:invalid_canonical_prompt_fragment, :list}}
+  end
 
   def canonical(attrs) when is_map(attrs) do
     fragment = struct(__MODULE__, Map.take(attrs, fields()))
 
-    with :ok <- validate_canonical(fragment),
+    with :ok <- validate_keys(attrs),
+         :ok <- validate_canonical(fragment),
          {:ok, digest} <- fragment |> canonical_data() |> Value.digest() do
       {:ok, %{fragment | digest: digest, metadata: %{}}}
     end
@@ -328,6 +335,14 @@ defmodule Spectre.Prompt.Fragment do
     case fragment |> canonical_data() |> Value.validate() do
       :ok -> :ok
       {:error, reason} -> {:error, {:nonportable_prompt_fragment, reason}}
+    end
+  end
+
+  @spec validate_keys(map()) :: :ok | {:error, term()}
+  defp validate_keys(attrs) do
+    case Map.keys(attrs) -- fields() do
+      [] -> :ok
+      unknown -> {:error, {:unknown_prompt_fragment_fields, Enum.sort(unknown)}}
     end
   end
 

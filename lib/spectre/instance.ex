@@ -79,6 +79,34 @@ defmodule Spectre.Instance do
   @default_terminal_loop_retention 256
   @default_correlation_retention 1_024
   @operation_event_limit 512
+  @morph_frozen_execution_options [
+    :adapter,
+    :arbitrator,
+    :bag_accept,
+    :classifier,
+    :classifier_accept,
+    :classifier_margin,
+    :conflict,
+    :embedding,
+    :embedding_accept,
+    :embedding_margin,
+    :input_max_bytes,
+    :input_pipeline,
+    :jaro_accept,
+    :labels,
+    :llm_classifier?,
+    :model,
+    :no_decision,
+    :pipeline,
+    :policy_global_interrupts?,
+    :policy_interrupt_only?,
+    :policy_interrupt_via,
+    :semantic_cache?,
+    :spectre_agent,
+    :spectre_rules,
+    :turn_handlers,
+    :via
+  ]
 
   @type option ::
           {:agent, module()}
@@ -191,6 +219,14 @@ defmodule Spectre.Instance do
   @doc "Returns the currently committed Definition Activation, if any."
   @spec activation(GenServer.server()) :: Activation.t() | nil
   def activation(server), do: GenServer.call(server, :instance_activation)
+
+  @doc "Returns the configured Definition Store, if any."
+  @spec definition_store(GenServer.server()) :: Spectre.Definition.Store.config() | nil
+  def definition_store(server), do: GenServer.call(server, :instance_definition_store)
+
+  @doc "Returns the compiled Agent module this Instance runs."
+  @spec agent(GenServer.server()) :: module()
+  def agent(server), do: GenServer.call(server, :instance_agent)
 
   @doc """
   Activates a published bootstrap or approved governed Candidate through generation CAS.
@@ -754,43 +790,16 @@ defmodule Spectre.Instance do
         from,
         data
       ) do
-    case Runs.owned_run(data, supplied_ref) do
-      {:ok, run} ->
-        case Events.authorize(data, run.definition_ref, :continuation) do
-          :ok ->
-            cond do
-              run_active?(data, run.id) ->
-                {:reply, {:error, {:run_already_active, run.id}}, data}
-
-              execute_command?(command) ->
-                dispatch_invocation(run, command, opts, :turn, from, data)
-
-              true ->
-                entry = %{
-                  run_id: run.id,
-                  operation: {:resume, command},
-                  projection: :turn,
-                  input: run.input,
-                  opts: runtime_opts(data, opts, run.input),
-                  state_revision: data.state.revision,
-                  internal?: false
-                }
-
-                {:noreply, data |> enqueue(entry, true) |> put_caller(run.id, from)}
-            end
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, arm_idle_timer(data)}
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, arm_idle_timer(data)}
+    case morph_turn_options(data, opts) do
+      :ok -> handle_instance_resume(supplied_ref, command, opts, from, data)
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
 
   # Compatibility with Spectre.Session and Spectre.Turn.resolve_policy/3.
   def handle_call({:resolve_policy, %Result{} = supplied, resolution, opts}, from, data) do
-    with {:ok, run} <- Runs.owned_result_run(data, supplied),
+    with :ok <- morph_turn_options(data, opts),
+         {:ok, run} <- Runs.owned_result_run(data, supplied),
          :ok <- Events.authorize(data, run.definition_ref, :continuation),
          false <- run_active?(data, run.id),
          %Boundary{kind: :needs, ref: boundary_ref} <- run.waiting do
@@ -815,26 +824,9 @@ defmodule Spectre.Instance do
 
   # Compatibility with Spectre.execute/3 for a live Instance.
   def handle_call({:execute, %Result{} = supplied, opts}, from, data) do
-    case Runs.owned_result_run(data, supplied, true) do
-      {:ok, %Run{waiting: %Invocation{} = invocation} = run} ->
-        dispatch_invocation(
-          run,
-          {:execute, invocation},
-          opts,
-          :result,
-          from,
-          data
-        )
-
-      {:ok, %Run{result: %Result{} = result} = run} ->
-        if Runs.terminal_result?(result) do
-          {:reply, {:ok, result}, arm_idle_timer(data)}
-        else
-          {:reply, {:error, {:run_not_waiting_for_invocation, run.id}}, arm_idle_timer(data)}
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, arm_idle_timer(data)}
+    case morph_turn_options(data, opts) do
+      :ok -> handle_instance_execute(supplied, opts, from, data)
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
 
@@ -844,6 +836,12 @@ defmodule Spectre.Instance do
 
   def handle_call(:instance_activation, _from, data),
     do: {:reply, data.activation, arm_idle_timer(data)}
+
+  def handle_call(:instance_definition_store, _from, data),
+    do: {:reply, data.definition_store, arm_idle_timer(data)}
+
+  def handle_call(:instance_agent, _from, data),
+    do: {:reply, data.agent, arm_idle_timer(data)}
 
   def handle_call({:skill_state_fetch, skill_id, opts}, _from, data) do
     {:reply, SkillStates.fetch(data, skill_id, opts), arm_idle_timer(data)}
@@ -1415,6 +1413,65 @@ defmodule Spectre.Instance do
     end
   end
 
+  defp handle_instance_resume(supplied_ref, command, opts, from, data) do
+    case Runs.owned_run(data, supplied_ref) do
+      {:ok, run} ->
+        case Events.authorize(data, run.definition_ref, :continuation) do
+          :ok ->
+            cond do
+              run_active?(data, run.id) ->
+                {:reply, {:error, {:run_already_active, run.id}}, data}
+
+              execute_command?(command) ->
+                dispatch_invocation(run, command, opts, :turn, from, data)
+
+              true ->
+                entry = %{
+                  run_id: run.id,
+                  operation: {:resume, command},
+                  projection: :turn,
+                  input: run.input,
+                  opts: runtime_opts(data, opts, run.input),
+                  state_revision: data.state.revision,
+                  internal?: false
+                }
+
+                {:noreply, data |> enqueue(entry, true) |> put_caller(run.id, from)}
+            end
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, arm_idle_timer(data)}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  defp handle_instance_execute(supplied, opts, from, data) do
+    case Runs.owned_result_run(data, supplied, true) do
+      {:ok, %Run{waiting: %Invocation{} = invocation} = run} ->
+        dispatch_invocation(
+          run,
+          {:execute, invocation},
+          opts,
+          :result,
+          from,
+          data
+        )
+
+      {:ok, %Run{result: %Result{} = result} = run} ->
+        if Runs.terminal_result?(result) do
+          {:reply, {:ok, result}, arm_idle_timer(data)}
+        else
+          {:reply, {:error, {:run_not_waiting_for_invocation, run.id}}, arm_idle_timer(data)}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
   @impl GenServer
   def handle_info({:spectre, :advance, run_id}, data) do
     data = %{data | scheduled: false}
@@ -1814,9 +1871,10 @@ defmodule Spectre.Instance do
   end
 
   defp submit(input, opts, projection, from, data) do
-    case owner_guard(data, :admission) do
-      :ok -> submit_owned(input, opts, projection, from, data)
-      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    case {owner_guard(data, :admission), morph_turn_options(data, opts)} do
+      {:ok, :ok} -> submit_owned(input, opts, projection, from, data)
+      {{:error, reason}, _guard} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+      {:ok, {:error, reason}} -> {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
 
@@ -2030,11 +2088,20 @@ defmodule Spectre.Instance do
   defp start_advance_worker(data, entry) do
     run = Map.fetch!(data.runs, entry.run_id)
 
-    operation =
-      if match?({:start, _input}, entry.operation), do: :new_admission, else: :continuation
-
-    case Events.authorize(data, run.definition_ref, operation) do
-      :ok -> do_start_advance_worker(data, entry, run)
+    # `submit_owned/5` already admitted a new Run against the then-active
+    # Definition before persisting it. From this point the queued Run is a
+    # pinned continuation: activation may move, while authority/revocation is
+    # still re-checked at dispatch time.
+    with :ok <-
+           validate_pinned_run_definition(
+             run,
+             data.definition_store,
+             data.checkpoint_store,
+             data.base_opts
+           ),
+         :ok <- Events.authorize(data, run.definition_ref, :continuation) do
+      do_start_advance_worker(data, entry, run)
+    else
       {:error, reason} -> fail_run_commit(data, run, reason)
     end
   end
@@ -2075,12 +2142,17 @@ defmodule Spectre.Instance do
       |> runtime_opts(entry.opts, input)
       |> Keyword.put(:run_id, run.id)
       |> Keyword.put(:trace_id, run.trace_id)
+      |> put_run_pin(run)
 
     %{entry | opts: opts, state_revision: data.state.revision}
   end
 
-  defp prepare_entry(%{operation: :advance} = entry, _run, data) do
-    opts = Keyword.put(entry.opts, :state, data.state)
+  defp prepare_entry(%{operation: :advance} = entry, run, data) do
+    opts =
+      entry.opts
+      |> Keyword.put(:state, data.state)
+      |> put_run_pin(run)
+
     %{entry | opts: opts, state_revision: data.state.revision}
   end
 
@@ -2090,6 +2162,7 @@ defmodule Spectre.Instance do
       |> Keyword.put(:state, data.state)
       |> Keyword.put(:run_id, run.id)
       |> Keyword.put(:trace_id, run.trace_id)
+      |> put_run_pin(run)
 
     %{entry | opts: opts, state_revision: data.state.revision}
   end
@@ -3412,6 +3485,7 @@ defmodule Spectre.Instance do
       |> Keyword.put(:conversation_id, Keyword.fetch!(data.base_opts, :conversation_id))
       |> Keyword.put(:instance_run_lifecycle?, true)
       |> Keyword.put(:instance_pid, self())
+      |> Keyword.put(:instance_definition_store, data.definition_store)
       |> put_activation_pin(data.activation)
       |> maybe_put(:origin_conversation_id, origin_conversation_id)
 
@@ -3425,7 +3499,8 @@ defmodule Spectre.Instance do
         agent_ref: data.agent_ref,
         subject: data.subject,
         conversation_ref: Conversation.conversation_key(input, origin_conversation_id),
-        origin_conversation_ref: Conversation.origin_conversation_key(origin_conversation_id)
+        origin_conversation_ref: Conversation.origin_conversation_key(origin_conversation_id),
+        runtime_skill_dispatch?: Keyword.get(opts, :runtime_skill_dispatch?, false)
       })
 
     Keyword.put(opts, :run_metadata, metadata)
@@ -3439,6 +3514,40 @@ defmodule Spectre.Instance do
     |> Keyword.put(:activation_generation, activation.generation)
     |> Keyword.put(:authority_epoch, activation.authority_epoch)
     |> Keyword.put(:closure_digest, activation.closure_digest)
+    |> Keyword.put(
+      :runtime_skill_dispatch?,
+      Map.get(activation.provenance, :change_surface?, false)
+    )
+  end
+
+  # Admission, not worker start, selects a Run's executable Definition. Queueing,
+  # activation changes and restart must never rewrite that immutable pin.
+  defp put_run_pin(opts, %Run{} = run) do
+    runtime_skill_dispatch? =
+      Map.get(
+        run.metadata,
+        :runtime_skill_dispatch?,
+        Map.get(run.metadata, "runtime_skill_dispatch?", false)
+      )
+
+    metadata =
+      case Keyword.get(opts, :run_metadata, %{}) do
+        value when is_map(value) ->
+          value
+          |> Map.delete("runtime_skill_dispatch?")
+          |> Map.put(:runtime_skill_dispatch?, runtime_skill_dispatch? == true)
+
+        _invalid ->
+          %{runtime_skill_dispatch?: runtime_skill_dispatch? == true}
+      end
+
+    opts
+    |> Keyword.put(:definition_ref, run.definition_ref)
+    |> Keyword.put(:activation_generation, run.activation_generation)
+    |> Keyword.put(:authority_epoch, run.authority_epoch)
+    |> Keyword.put(:closure_digest, run.closure_digest)
+    |> Keyword.put(:runtime_skill_dispatch?, runtime_skill_dispatch? == true)
+    |> Keyword.put(:run_metadata, metadata)
   end
 
   defp activation_expected_generation(opts) when is_list(opts) do
@@ -3471,8 +3580,10 @@ defmodule Spectre.Instance do
         instance_ref: data.ref.key
       })
       |> Map.put(:build_evidence, resolution.drift)
+      |> Map.put(:change_surface?, change_surface?(resolution.definition))
 
-    with {:ok, skill_states, skill_bindings} <-
+    with :ok <- verify_morph_execution_profile(data.base_opts, resolution.definition),
+         {:ok, skill_states, skill_bindings} <-
            SkillStates.prepare_activation(
              data,
              resolution.definition_ref,
@@ -3491,6 +3602,84 @@ defmodule Spectre.Instance do
            ) do
       {:ok, activation, skill_states}
     end
+  end
+
+  defp change_surface?(definition) do
+    match?(
+      {:ok, _component},
+      Spectre.Definition.Canonical.fetch_component(definition, :change_surface)
+    )
+  end
+
+  defp verify_activation_change_surface_marker(%Activation{} = activation, definition) do
+    expected = change_surface?(definition)
+
+    case Map.fetch(activation.provenance, :change_surface?) do
+      {:ok, ^expected} ->
+        :ok
+
+      :error when expected == false ->
+        # Checkpoints written before Morph had no marker. They remain valid
+        # only when the resolved Definition has no change surface either.
+        :ok
+
+      supplied ->
+        {:error,
+         {:restored_activation_change_surface_marker_mismatch, marker_value(supplied), expected}}
+    end
+  end
+
+  defp verify_run_change_surface_marker(%Run{} = run, definition) do
+    expected = change_surface?(definition)
+    supplied = run_runtime_skill_dispatch?(run)
+
+    if supplied == expected,
+      do: :ok,
+      else: {:error, {:run_change_surface_marker_mismatch, supplied, expected}}
+  end
+
+  defp run_runtime_skill_dispatch?(%Run{} = run) do
+    Map.get(
+      run.metadata,
+      :runtime_skill_dispatch?,
+      Map.get(run.metadata, "runtime_skill_dispatch?", false)
+    ) == true
+  end
+
+  defp marker_value({:ok, value}), do: value
+  defp marker_value(:error), do: :missing
+
+  defp verify_morph_execution_profile(base_opts, definition) when is_list(base_opts) do
+    if change_surface?(definition) do
+      case frozen_execution_options(base_opts) do
+        [] -> :ok
+        keys -> {:error, {:morph_instance_execution_profile_overridden, keys}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp morph_turn_options(%{activation: %Activation{provenance: provenance}}, opts)
+       when is_list(opts) do
+    if Map.get(provenance, :change_surface?, false) do
+      case frozen_execution_options(opts) do
+        [] -> :ok
+        keys -> {:error, {:morph_turn_execution_profile_overridden, keys}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp morph_turn_options(_data, _opts), do: :ok
+
+  defp frozen_execution_options(opts) do
+    opts
+    |> Keyword.keys()
+    |> Enum.filter(&(&1 in @morph_frozen_execution_options))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp commit_activation(data, %Activation{} = activation, skill_states) do
@@ -3597,7 +3786,8 @@ defmodule Spectre.Instance do
       :skill_state_transitions
     ])
     |> Keyword.put(:checkpoint_store, data.checkpoint_store)
-    |> Keyword.put_new(:observe_builds, true)
+    |> Keyword.put(:observe_builds, true)
+    |> Keyword.put(:on_drift, :reject)
   end
 
   defp definition_store_config(agent, opts, base_opts) do
@@ -3753,7 +3943,8 @@ defmodule Spectre.Instance do
     opts =
       base_opts
       |> Keyword.put(:checkpoint_store, checkpoint_store)
-      |> Keyword.put_new(:observe_builds, true)
+      |> Keyword.put(:observe_builds, true)
+      |> Keyword.put(:on_drift, :reject)
 
     with {:ok, %{candidate: candidate, resolution: resolution} = candidate_resolution} <-
            DefinitionResolver.resolve_candidate_for_activation(
@@ -3761,6 +3952,8 @@ defmodule Spectre.Instance do
              activation.candidate_ref,
              opts
            ),
+         :ok <- verify_morph_execution_profile(base_opts, resolution.definition),
+         :ok <- verify_activation_change_surface_marker(activation, resolution.definition),
          :ok <- GovernanceVerifier.verify_recovery(definition_store, candidate_resolution, opts),
          {:ok, rebuilt} <-
            Activation.new(candidate, resolution,
@@ -3791,7 +3984,7 @@ defmodule Spectre.Instance do
         with true <- is_binary(run_id) and is_binary(checkpoint),
              {:ok, %Run{id: ^run_id} = run} <- Run.restore(checkpoint),
              :ok <-
-               validate_restored_run_definition(
+               validate_pinned_run_definition(
                  run,
                  definition_store,
                  checkpoint_store,
@@ -3818,7 +4011,7 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp validate_restored_run_definition(
+  defp validate_pinned_run_definition(
          %Run{activation_generation: 0},
          _definition_store,
          _checkpoint_store,
@@ -3826,22 +4019,27 @@ defmodule Spectre.Instance do
        ),
        do: :ok
 
-  defp validate_restored_run_definition(%Run{}, nil, _checkpoint_store, _base_opts),
+  defp validate_pinned_run_definition(%Run{}, nil, _checkpoint_store, _base_opts),
     do: {:error, :pinned_run_requires_definition_store}
 
-  defp validate_restored_run_definition(run, definition_store, checkpoint_store, base_opts) do
+  defp validate_pinned_run_definition(run, definition_store, checkpoint_store, base_opts) do
     opts =
       base_opts
       |> Keyword.put(:checkpoint_store, checkpoint_store)
-      |> Keyword.put_new(:observe_builds, true)
+      |> Keyword.put(:observe_builds, true)
+      |> Keyword.put(:on_drift, :reject)
 
     case DefinitionResolver.resolve_for_activation(definition_store, run.definition_ref, opts) do
       {:ok, resolution} ->
         expected = Closure.digest(resolution.manifest.execution_closure)
 
-        if expected == run.closure_digest,
-          do: :ok,
-          else: {:error, {:run_closure_digest_mismatch, run.closure_digest, expected}}
+        with :ok <- verify_run_change_surface_marker(run, resolution.definition),
+             true <- expected == run.closure_digest do
+          :ok
+        else
+          false -> {:error, {:run_closure_digest_mismatch, run.closure_digest, expected}}
+          {:error, _reason} = error -> error
+        end
 
       :not_found ->
         {:error, {:pinned_run_definition_not_found, to_string(run.definition_ref)}}

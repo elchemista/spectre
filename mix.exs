@@ -62,6 +62,7 @@ defmodule Spectre.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      test_coverage: [summary: [threshold: 93]],
       description: description(),
       package: package(),
       dialyzer: [
