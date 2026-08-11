@@ -73,12 +73,21 @@ defmodule Spectre.Foundation.Conformance do
         migration_receipt_schema: 1,
         rehearsal_report_schema: 1
       },
+      governance: %{
+        change_set_schema: 1,
+        candidate_state_schema: 1,
+        gate_receipt_schema: 1,
+        human_report_generator: 1,
+        evaluation_delta_schema: 1,
+        gc_plan_schema: 1
+      },
       stack: %{module_input_contract: 1, sealed_runtime_contract: 2},
       golden_path: [
         {Spectre, :ask, 2},
         {Spectre, :turn, 2},
         {Spectre, :instance, 3},
         {Spectre, :activate, 2},
+        {Spectre, :rollback, 3},
         {Spectre.Definition, :canonical, 1},
         {Spectre.Definition, :manifest, 1},
         {Spectre.Skill.Definition, :new, 1},
@@ -89,7 +98,15 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre.Execution.Materializer, :materialize, 4},
         {Spectre.Execution.Handoff, :new, 1},
         {Spectre.Projection.Execution, :project, 2},
-        {Spectre.Execution.Rehearsal, :run, 4}
+        {Spectre.Execution.Rehearsal, :run, 4},
+        {Spectre.Governance.ChangeSet, :new, 1},
+        {Spectre.Governance.Composer, :compose, 3},
+        {Spectre.Governance.EvaluationDelta, :protected_corpus_digest, 1},
+        {Spectre.Governance.Review, :evaluate, 5},
+        {Spectre.Governance.Approval, :approve, 3},
+        {Spectre.Governance.Approval, :reject, 3},
+        {Spectre.Governance.GC, :plan, 3},
+        {Spectre.Projection.HumanReport, :project, 3}
       ]
     }
   end

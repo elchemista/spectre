@@ -16,8 +16,9 @@ activating new behavior never rewrites an open continuation.
 
 An activation accepts only a `Spectre.Definition.Candidate.Ref`. The Candidate
 is a small immutable binding to an already-published Definition, Manifest, and
-publication receipt. It is not the later governed Candidate state machine and
-cannot carry a runtime-authored ChangeSet.
+publication receipt. From 0.2.9, trusted hosts may alternatively derive a
+governed Candidate through the ChangeSet workflow; legacy bootstrap Candidates
+remain unchanged.
 
 ```elixir
 canonical = Spectre.Definition.canonical!(MyApp.SupportAgent)
@@ -73,7 +74,8 @@ requires a Definition Store whose adapter reports `:durable`.
 
 `expected_generation` is mandatory and is `0` before the first activation.
 The Instance re-reads Candidate, Definition, Manifest, and publication receipt
-from the configured Store, verifies its current owner fence, constructs the
+from the configured Store. For a governed Candidate it also re-reads and binds
+every required gate and approval receipt. It then verifies its current owner fence, constructs the
 Activation receipt, and commits the canonical activation section with CAS.
 A stale generation or authority/fencing rollback is rejected.
 
@@ -118,10 +120,14 @@ and VM-local. `Spectre.Instance.Registry` routes to a local PID; it is not a
 distributed lease. Multi-node deployments must route all work to one owner or
 provide an adapter backed by a linearizable lease/fencing authority.
 
-## Deliberate scope
+## Governed activation and rollback
 
-This release does not add event ownership across Definition versions,
-first-class Skill state generations, runtime-authored ChangeSets, Candidate
-promotion gates, self-activation, or distributed consensus. Those remain
-separate milestones; a bootstrap Candidate is trusted input from the host, not
-evidence that a model may change its own authority.
+The 0.2.9 governed flow is documented in
+[Governed Definition Changes](GOVERNANCE.md). Approval and activation are
+separate host commits. `Spectre.rollback/3` accepts only an ancestor Candidate,
+uses the same owner fence and generation CAS, and records that external Effects
+were not reversed. Neither a model nor a ChangeSet can activate itself.
+
+Distributed consensus remains outside core. A bootstrap Candidate is trusted
+host input, while a governed Candidate is evidence of completed checks; neither
+one grants authority beyond its sealed Manifest.

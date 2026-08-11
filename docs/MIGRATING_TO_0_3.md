@@ -18,7 +18,8 @@ Before adopting any reflective feature, preserve these single models:
 - State, Run, and canonical Instance recovery formats.
 
 `Spectre.Foundation.Conformance`, `Spectre.Stack.Conformance`, and the runtime
-Skill/Routing plus data-execution fixtures are the executable 0.2.8 baseline.
+Skill/Routing, data execution, and governed-change fixtures are the executable
+0.2.9 baseline.
 A later lowering is
 compatible only when the same
 fixtures, module-first golden path, and complete Stack matrix continue to
@@ -41,7 +42,8 @@ declarative input
 Compiled and runtime-authored Skills that express equivalent declarations
 must produce equivalent semantic IR over the shared canonical components.
 Runtime origin is provenance, not weaker validation and not additional
-authority. Spectre 0.2.8 implements the Skill and precise Work lowering steps
+authority. Spectre 0.2.9 implements the Skill, precise Work lowering, and
+governed Definition-change steps
 on the existing operational runtime. Governance, reflection, and Forge remain
 later gates.
 

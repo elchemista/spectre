@@ -80,6 +80,23 @@ defmodule Spectre.Eval.Case do
 
   def new(other), do: {:error, {:case_must_be_an_object, other}}
 
+  @doc "Returns the complete portable shape used to identify an evaluation case."
+  @spec to_data(t()) :: map()
+  def to_data(%__MODULE__{} = evaluation_case) do
+    %{
+      "id" => evaluation_case.id,
+      "input" => evaluation_case.input,
+      "expected_route" => evaluation_case.expected_route,
+      "expected_strategy" => evaluation_case.expected_strategy,
+      "expected_outcome" => Atom.to_string(evaluation_case.expected_outcome),
+      "allowed_routes" => evaluation_case.allowed_routes,
+      "llm" => Atom.to_string(evaluation_case.llm),
+      "state" => evaluation_case.state,
+      "tags" => evaluation_case.tags,
+      "max_duration_us" => evaluation_case.max_duration_us
+    }
+  end
+
   @doc """
   Returns all accepted route labels for this case in canonical form.
   """

@@ -35,13 +35,31 @@ The design takes inspiration from Phoenix routers, Ecto schemas, Oban workers,
 Broadway pipelines, and OTP supervision trees. A Spectre agent should read like
 a map, not a magic trick.
 
-> Spectre `0.2.8` adds portable data-driven Work programs, exact Execution
-> materialization/projections, effective prompt receipts, typed handoffs,
-> registered state migrations, and no-Effect rehearsal on the existing fenced
-> operational runtime. Durable writer schemas are unchanged. The full suite exceeds 90%
+> Spectre `0.2.9` adds closed Definition ChangeSets, exact gate receipts,
+> protected-corpus evaluation, deterministic human reports, separate approval
+> and activation, ancestor rollback, and conservative artifact GC. Durable
+> writer schemas are unchanged. The full suite exceeds 90%
 > line coverage, but documented APIs may still evolve in a minor `0.x`
 > release. Internal modules marked with `@moduledoc false` are not part of the
 > compatibility contract.
+
+## 0.2.9 Governed Definition Changes
+
+Version `0.2.9` lets trusted hosts derive immutable Candidate Definitions from
+portable, non-executable ChangeSets. Every proposal is bound to an exact
+Activation and may only use compiled host-registered handlers inside effective
+authority, applicability, prompt-budget, mutable-config, and migration limits.
+
+Review re-reads Store artifacts, verifies version-pinned gate receipts, keeps
+Candidate-authored cases from improving protected scores, and emits a
+mechanical Human Report. Constitutional gate and evaluation floors cannot be
+weakened by proposal options; prompt/applicability ceilings are sealed and
+rechecked during activation and recovery. Approval or explicit rejection
+creates a distinct Candidate Ref and never activates it. Activation and
+rollback use the existing owner fence and generation CAS; rollback explicitly
+does not reverse external Effects. See
+[Governed Definition Changes](docs/GOVERNANCE.md) and
+[Migrating to 0.2.9](docs/MIGRATING_TO_0_2_9.md).
 
 ## 0.2.8 Data-driven Execution
 
@@ -288,7 +306,7 @@ mailbox. Waiting Work and Vigil loops retain no live Runner.
 ```elixir
 def deps do
   [
-    {:spectre, github: "elchemista/spectre", tag: "0.2.8"}
+    {:spectre, github: "elchemista/spectre", tag: "0.2.9"}
   ]
 end
 ```
@@ -812,6 +830,8 @@ adapters on startup, and can stop after an idle timeout.
   prompt budgeting, Routing projections, and continuation drains.
 - [Migrating to 0.2.8](docs/MIGRATING_TO_0_2_8.md) - data Work programs,
   materialization, prompt receipts, handoffs, migrations, and rehearsal.
+- [Migrating to 0.2.9](docs/MIGRATING_TO_0_2_9.md) - governed ChangeSets,
+  gate receipts, approval, activation, rollback, and conservative GC.
 - [Preparing for 0.3](docs/MIGRATING_TO_0_3.md) - the compatibility ledger and
   required lowering path for reflective runtime work.
 - [Routing](docs/ROUTING.md) - evidence providers, precedence, arbitrators,
@@ -837,7 +857,9 @@ adapters on startup, and can stop after an idle timeout.
   host lifecycle, operation requests, prompt budgets, and Routing projections.
 - [Data-driven Execution](docs/DATA_DRIVEN_EXECUTION.md) - portable Work IR,
   shared execution lifecycle, receipts, handoffs, migrations, and rehearsal.
-- [0.2.8 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
+- [Governed Definition Changes](docs/GOVERNANCE.md) - closed ChangeSets,
+  anti-Goodhart evaluation, approvals, rollback, and artifact retention.
+- [0.2.9 Public API Manifest](docs/PUBLIC_API.md) - the exact normative
   compatibility surface, including the retained 0.1.6 baseline.
 - [Changelog](CHANGELOG.md) - release notes and compatibility changes.
 - [Roadmap](docs/ROADMAP.md) - architectural hardening and package direction.

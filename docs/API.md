@@ -4,10 +4,10 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.2.8` adds portable data-driven Work programs, exact Execution
-materialization, prompt receipts, typed handoffs, registered state migrations,
-and no-Effect rehearsal while retaining every earlier conformance gate and
-the schema-4 Skill-state runtime. The
+Spectre `0.2.9` adds closed Definition ChangeSets, versioned gate receipts,
+protected-corpus evaluation, deterministic human reports, separate approval
+and activation commits, ancestor rollback, and conservative artifact GC while
+retaining every earlier conformance gate and the schema-4 Skill-state runtime. The
 exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
@@ -24,6 +24,29 @@ Definition+Manifest pairs. Satellite suites should pass their entire package
 set to `Spectre.Stack.Conformance.run/2` so cross-package requirements,
 conflicts, compatibility, and ownership collisions are checked together. See
 [Foundation Conformance](FOUNDATION_CONFORMANCE.md).
+
+## Govern a Definition change
+
+Use `Spectre.Governance.ChangeSet` to bind a portable proposal to the exact
+current Activation, then pass it to `Spectre.Governance.Composer`. The trusted
+host Registry resolves the closed operation vocabulary; data cannot select
+code or expand effective authority. `Spectre.Governance.Review` verifies exact
+receipts and a protected-corpus `EvaluationDelta`, while
+`Spectre.Governance.Approval` makes the risk decision as a separate Store
+commit.
+
+Build the closure's protected corpus identity with
+`Spectre.Governance.EvaluationDelta.protected_corpus_digest!/1` and pass those
+same complete cases as `protected_cases:` to `EvaluationDelta.new/3`. The
+digest binds canonical case content, not only case ids.
+
+Only then may trusted host code call `Spectre.activate/3`. Governed activation
+and recovery re-read Candidate, Definition, Manifest, publication receipt, and
+gate receipts before the existing generation CAS. Use `Spectre.rollback/3`
+only for an explicit ancestor Candidate; it creates a new activation generation
+and does not reverse external Effects. `Spectre.Governance.GC.plan/3` produces
+verified retention evidence but never deletes. See
+[Governed Definition Changes](GOVERNANCE.md).
 
 ## Canonical behavior identity
 

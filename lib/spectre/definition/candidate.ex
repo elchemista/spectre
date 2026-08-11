@@ -1,21 +1,34 @@
 defmodule Spectre.Definition.Candidate do
   @moduledoc """
-  Minimal immutable Candidate admitted by the 0.2.3 activation boundary.
+  Immutable Candidate admitted by the activation boundary.
 
-  This is deliberately not the later governed Candidate state machine. A
-  bootstrap Candidate can be authored only by trusted host code or compiled
-  Definition lowering, and binds one already-published Definition, Manifest,
-  and publication receipt. Activation always re-reads this value from the
-  configured Definition Store by `Candidate.Ref`.
+  Bootstrap Candidates are authored by trusted host code or compiled Definition
+  lowering. Governed Candidates additionally bind verified governance state
+  produced by the host Composer/review pipeline. Both forms point at an
+  already-published Definition, Manifest, and publication receipt; activation
+  always re-reads the value from the Store by `Candidate.Ref`.
   """
 
   alias Spectre.Canonical.Value
   alias Spectre.Definition.Candidate.Ref
   alias Spectre.Definition.Manifest
   alias Spectre.Definition.Ref, as: DefinitionRef
+  alias Spectre.Governance.CandidateState
 
   @schema_version 1
-  @sources [:compiled, :trusted_host]
+  @sources [:compiled, :trusted_host, :governed_host]
+  @data_fields [
+    "schema_version",
+    "definition_ref",
+    "definition_canonicalization_version",
+    "definition_contract_version",
+    "manifest_digest",
+    "publication_id",
+    "source",
+    "parent_ref",
+    "provenance_refs",
+    "created_at"
+  ]
 
   @enforce_keys [
     :schema_version,
@@ -25,6 +38,7 @@ defmodule Spectre.Definition.Candidate do
     :source,
     :parent_ref,
     :provenance_refs,
+    :governance,
     :created_at
   ]
   defstruct schema_version: @schema_version,
@@ -34,9 +48,10 @@ defmodule Spectre.Definition.Candidate do
             source: nil,
             parent_ref: nil,
             provenance_refs: [],
+            governance: nil,
             created_at: nil
 
-  @type source :: :compiled | :trusted_host
+  @type source :: :compiled | :trusted_host | :governed_host
   @type t :: %__MODULE__{
           schema_version: pos_integer(),
           definition_ref: DefinitionRef.t(),
@@ -45,17 +60,23 @@ defmodule Spectre.Definition.Candidate do
           source: source(),
           parent_ref: Ref.t() | nil,
           provenance_refs: [String.t()],
+          governance: CandidateState.t() | nil,
           created_at: non_neg_integer()
         }
 
-  @doc "Returns the bootstrap Candidate schema version."
+  @doc "Returns the Candidate schema version."
   @spec schema_version() :: pos_integer()
   def schema_version, do: @schema_version
 
-  @doc "Builds and validates a minimal Candidate from normalized attributes."
+  @doc "Builds and validates a Candidate from normalized attributes."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def new(%__MODULE__{} = candidate), do: candidate |> Map.from_struct() |> new()
-  def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
+
+  def new(attrs) when is_list(attrs) do
+    if Keyword.keyword?(attrs) and unique_keyword?(attrs),
+      do: attrs |> Map.new() |> new(),
+      else: {:error, {:invalid_definition_candidate, :list}}
+  end
 
   def new(attrs) when is_map(attrs) do
     attrs =
@@ -64,6 +85,7 @@ defmodule Spectre.Definition.Candidate do
       |> Map.put_new(:source, :trusted_host)
       |> Map.put_new(:parent_ref, nil)
       |> Map.put_new(:provenance_refs, [])
+      |> Map.put_new(:governance, nil)
       |> Map.put_new(:created_at, System.system_time(:millisecond))
 
     with :ok <- validate_keys(attrs),
@@ -74,6 +96,8 @@ defmodule Spectre.Definition.Candidate do
          :ok <- validate_source(Map.get(attrs, :source)),
          {:ok, parent_ref} <- normalize_parent_ref(Map.get(attrs, :parent_ref)),
          {:ok, provenance_refs} <- normalize_refs(Map.get(attrs, :provenance_refs)),
+         {:ok, governance} <- normalize_governance(Map.get(attrs, :governance)),
+         :ok <- validate_governance_source(Map.get(attrs, :source), governance),
          :ok <- validate_timestamp(Map.get(attrs, :created_at)) do
       {:ok,
        %__MODULE__{
@@ -84,6 +108,7 @@ defmodule Spectre.Definition.Candidate do
          source: Map.fetch!(attrs, :source),
          parent_ref: parent_ref,
          provenance_refs: provenance_refs,
+         governance: governance,
          created_at: Map.fetch!(attrs, :created_at)
        }}
     end
@@ -120,6 +145,7 @@ defmodule Spectre.Definition.Candidate do
       source: Keyword.get(opts, :source, :trusted_host),
       parent_ref: Keyword.get(opts, :parent_ref),
       provenance_refs: Keyword.get(opts, :provenance_refs, []),
+      governance: Keyword.get(opts, :governance),
       created_at: Keyword.get(opts, :created_at, System.system_time(:millisecond))
     )
   end
@@ -134,7 +160,7 @@ defmodule Spectre.Definition.Candidate do
   @doc "Returns portable canonical data."
   @spec to_data(t()) :: map()
   def to_data(%__MODULE__{} = candidate) do
-    %{
+    data = %{
       "schema_version" => candidate.schema_version,
       "definition_ref" => DefinitionRef.to_string(candidate.definition_ref),
       "definition_canonicalization_version" => candidate.definition_ref.canonicalization_version,
@@ -146,29 +172,37 @@ defmodule Spectre.Definition.Candidate do
       "provenance_refs" => candidate.provenance_refs,
       "created_at" => candidate.created_at
     }
+
+    if candidate.governance,
+      do: Map.put(data, "governance", CandidateState.to_data(candidate.governance)),
+      else: data
   end
 
   @doc "Restores a Candidate from decoded canonical data."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(%{
-        "schema_version" => schema_version,
-        "definition_ref" => definition_ref,
-        "definition_canonicalization_version" => canonicalization_version,
-        "definition_contract_version" => contract_version,
-        "manifest_digest" => manifest_digest,
-        "publication_id" => publication_id,
-        "source" => source,
-        "parent_ref" => parent_ref,
-        "provenance_refs" => provenance_refs,
-        "created_at" => created_at
-      }) do
-    with {:ok, definition_ref} <-
+  def from_data(
+        %{
+          "schema_version" => schema_version,
+          "definition_ref" => definition_ref,
+          "definition_canonicalization_version" => canonicalization_version,
+          "definition_contract_version" => contract_version,
+          "manifest_digest" => manifest_digest,
+          "publication_id" => publication_id,
+          "source" => source,
+          "parent_ref" => parent_ref,
+          "provenance_refs" => provenance_refs,
+          "created_at" => created_at
+        } = data
+      ) do
+    with :ok <- validate_data_keys(data),
+         {:ok, definition_ref} <-
            DefinitionRef.parse(definition_ref,
              canonicalization_version: canonicalization_version,
              contract_version: contract_version
            ),
          {:ok, source} <- source_from_data(source),
-         {:ok, parent_ref} <- parent_from_data(parent_ref) do
+         {:ok, parent_ref} <- parent_from_data(parent_ref),
+         {:ok, governance} <- governance_from_data(Map.get(data, "governance")) do
       new(%{
         schema_version: schema_version,
         definition_ref: definition_ref,
@@ -177,6 +211,7 @@ defmodule Spectre.Definition.Candidate do
         source: source,
         parent_ref: parent_ref,
         provenance_refs: provenance_refs,
+        governance: governance,
         created_at: created_at
       })
     end
@@ -210,12 +245,22 @@ defmodule Spectre.Definition.Candidate do
       :source,
       :parent_ref,
       :provenance_refs,
+      :governance,
       :created_at
     ]
 
     case Map.keys(attrs) -- allowed do
       [] -> :ok
       unknown -> {:error, {:unknown_definition_candidate_fields, Enum.sort(unknown)}}
+    end
+  end
+
+  defp validate_data_keys(data) do
+    allowed = @data_fields ++ ["governance"]
+
+    case Map.keys(data) -- allowed do
+      [] -> :ok
+      unknown -> {:error, {:unknown_definition_candidate_data_fields, Enum.sort(unknown)}}
     end
   end
 
@@ -250,6 +295,22 @@ defmodule Spectre.Definition.Candidate do
 
   defp normalize_refs(value), do: {:error, {:invalid_candidate_provenance_refs, shape(value)}}
 
+  defp normalize_governance(nil), do: {:ok, nil}
+  defp normalize_governance(%CandidateState{} = state), do: CandidateState.new(state)
+  defp normalize_governance(value) when is_map(value), do: CandidateState.new(value)
+
+  defp normalize_governance(value),
+    do: {:error, {:invalid_candidate_governance, shape(value)}}
+
+  defp validate_governance_source(:governed_host, %CandidateState{}), do: :ok
+  defp validate_governance_source(source, nil) when source in [:compiled, :trusted_host], do: :ok
+
+  defp validate_governance_source(:governed_host, nil),
+    do: {:error, :governed_candidate_requires_governance_state}
+
+  defp validate_governance_source(source, %CandidateState{}),
+    do: {:error, {:candidate_governance_requires_governed_source, source}}
+
   defp validate_digest(digest) when is_binary(digest) and byte_size(digest) == 64 do
     case Base.decode16(digest, case: :mixed) do
       {:ok, <<_::256>>} -> :ok
@@ -270,11 +331,18 @@ defmodule Spectre.Definition.Candidate do
 
   defp source_from_data("compiled"), do: {:ok, :compiled}
   defp source_from_data("trusted_host"), do: {:ok, :trusted_host}
+  defp source_from_data("governed_host"), do: {:ok, :governed_host}
   defp source_from_data(value), do: {:error, {:invalid_candidate_source, value}}
 
   defp parent_from_data(nil), do: {:ok, nil}
   defp parent_from_data(value) when is_binary(value), do: Ref.parse(value)
   defp parent_from_data(value), do: {:error, {:invalid_candidate_parent_ref, value}}
+
+  defp governance_from_data(nil), do: {:ok, nil}
+  defp governance_from_data(value), do: CandidateState.new(value)
+
+  defp unique_keyword?(attrs),
+    do: length(Keyword.keys(attrs)) == length(Enum.uniq(Keyword.keys(attrs)))
 
   defp shape(value) when is_binary(value), do: :binary
   defp shape(value) when is_map(value), do: :map

@@ -120,9 +120,11 @@ match its Definition artifact and that any parent Candidate resolves. The
 Candidate Ref is content-addressed. Activation always re-fetches it by Ref;
 receiving a `%Spectre.Definition.Candidate{}` value directly grants no trust.
 
-This is deliberately a bootstrap record, not a promotion state machine. It
-does not run gates, apply runtime-authored ChangeSets, or authorize its own
-activation.
+This remains the direct bootstrap path. Spectre 0.2.9 additionally stores
+governed Candidate state and immutable gate receipts produced through
+`Spectre.Governance.Composer`, `Review`, and `Approval`. Both paths use the same
+content-addressed Candidate artifact and activation re-read boundary; neither
+authorizes its own activation. See [Governed Definition Changes](GOVERNANCE.md).
 
 ## Resolve and detect drift
 
