@@ -146,22 +146,23 @@ observation loop between triggers); **Work** is exactly what it says (a
 bounded, terminating operational procedure); a **Subject** is who the work is
 about; an **Instance** is the process that owns both for that Subject.
 
-## Compatibility With Spectre 0.2.x
+## Core 0.3.0 and satellite compatibility
 
-The `0.2.x` release train aligns every package and every Stack manifest on the
-same minor contract. Packages are distributed from GitHub as release tags:
+The stable Spectre core is distributed through Hex:
 
 ```elixir
-{:spectre, github: "elchemista/spectre", tag: "0.2.6"}
+{:spectre, "~> 0.3.0"}
 ```
 
-Release tags follow Semantic Versioning: `0.2.x` tags remain compatible within
-the minor, while `0.3.0` may contain documented contract changes. This is
-intentional while the ecosystem is pre-1.0.
+The satellite releases listed below belong to the historical `0.2.x` release
+train. They remain owned and versioned by their repositories and must not be
+assumed compatible with core `0.3.0` until their manifests and adapter suites
+say so. This separation is intentional: installing the new core never silently
+upgrades another `spectre_*` package.
 
 | Package | Release | Spectre requirement |
 | --- | ---: | ---: |
-| `spectre` | `0.2.6` | — |
+| `spectre` | `0.3.0` | — |
 | `spectre_beam` | `0.2.0` | `~> 0.2.0` |
 | `spectre_directive` | `0.2.0` | `~> 0.2.0` |
 | `spectre_kinetic` | `0.2.0` | `~> 0.2.0` |
@@ -170,12 +171,13 @@ intentional while the ecosystem is pre-1.0.
 | `spectre_prism` | `0.2.0` | `~> 0.2.0` |
 | `spectre_pulse` | `0.2.0` | `~> 0.2.0` |
 
-The upgrade changes dependency and Stack compatibility declarations; it does
-not discard the recoverable `0.1.6` contracts. Permanent State, Run, Directive,
-Beam, and Pulse fixtures continue to prove that existing persisted and wire
-values remain readable where their public contracts promise it.
+The core upgrade does not discard the recoverable historical contracts.
+Permanent State and Run fixtures continue to prove that existing persisted
+values remain readable where the public core contract promises it. Each
+satellite owns the equivalent proof for its durable and wire formats.
 
-For released packages, install only the capabilities the application needs:
+Applications that intentionally remain on the complete historical `0.2.x`
+stack must pin that stack consistently:
 
 ```elixir
 defp deps do

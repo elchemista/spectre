@@ -3,11 +3,13 @@ defmodule Spectre.MixProject do
 
   @version "0.3.0"
   @source_url "https://github.com/elchemista/spectre"
+  @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
     "README.md",
     "SYSTEM.md",
     "CHANGELOG.md",
     "docs/GETTING_STARTED.md",
+    "docs/EXAMPLES.md",
     "docs/ARCHITECTURE.md",
     "docs/INTEGRATIONS.md",
     "docs/DSL.md",
@@ -71,7 +73,7 @@ defmodule Spectre.MixProject do
       ],
       docs: docs(),
       source_url: @source_url,
-      homepage_url: @source_url
+      homepage_url: @homepage_url
     ]
   end
 
@@ -93,7 +95,12 @@ defmodule Spectre.MixProject do
       files:
         ~w(lib docs mix.exs .formatter.exs README.md SYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => @source_url}
+      links: %{
+        "Website" => @homepage_url,
+        "Documentation" => "https://hexdocs.pm/spectre/#{@version}",
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/#{@version}/CHANGELOG.md"
+      }
     ]
   end
 
@@ -101,6 +108,7 @@ defmodule Spectre.MixProject do
     [
       {:jason, "~> 1.4"},
       {:vettore, "~> 0.3.2"},
+      {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.4", only: :test, runtime: false}
@@ -133,13 +141,14 @@ defmodule Spectre.MixProject do
   defp docs do
     [
       main: "readme",
-      source_ref: "v#{@version}",
+      source_ref: @version,
       extras: @docs_extras,
       groups_for_extras: [
         "Start here": [
           "README.md",
           "SYSTEM.md",
           "docs/GETTING_STARTED.md",
+          "docs/EXAMPLES.md",
           "docs/INSTALLATION.md"
         ],
         "Core concepts": [
@@ -270,6 +279,7 @@ defmodule Spectre.MixProject do
           Spectre.Governance.ChangeSet.Operation,
           Spectre.Governance.ChangeSet.Handler,
           Spectre.Governance.ChangeSet.Registry,
+          Spectre.Governance.Composition,
           Spectre.Governance.Composer,
           Spectre.Governance.CandidateState,
           Spectre.Gate.Receipt,

@@ -190,6 +190,8 @@ Mix project version.
   - functions: `new/1`, `to_data/1`
 - `Spectre.Governance.ChangeSet.Registry`
   - functions: `apply/4`, `default/0`, `new/1`, `new!/1`, `register/2`
+- `Spectre.Governance.Composition`
+  - functions: `mark/4`, `new/1`, `update/2`
 - `Spectre.Governance.Composer`
   - functions: `compose/2`, `compose/3`
 - `Spectre.Governance.EvaluationDelta`
