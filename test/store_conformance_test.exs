@@ -252,6 +252,7 @@ defmodule SpectreStoreConformanceTest do
     assert_received {:checkpoint_store_attempt, 1, 2}
     assert_received {:checkpoint_store_attempt, 2, 3}
     assert_received {:checkpoint_store_attempt, 2, 3}
+    refute_received {:checkpoint_store_attempt, _expected, _revision}
 
     assert :ok =
              Conformance.read_after_restart(
@@ -261,7 +262,7 @@ defmodule SpectreStoreConformanceTest do
              )
   end
 
-  test "rejects stale acceptance, invalid fixtures, and reused references with stable errors" do
+  test "rejects stale acceptance and reused references with stable errors" do
     server = start_supervised!({Agent, fn -> %{} end})
 
     assert {:error, {:checkpoint_store_conformance_failed, :stale_write, :accepted}} =
