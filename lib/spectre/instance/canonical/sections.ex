@@ -16,8 +16,7 @@ defmodule Spectre.Instance.Canonical.Sections do
     :lifecycles,
     :event_admissions,
     :event_quarantine,
-    :skill_states,
-    :record_outbox
+    :skill_states
   ]
 
   defstruct flow: %Section{},
@@ -32,10 +31,7 @@ defmodule Spectre.Instance.Canonical.Sections do
             lifecycles: %Section{},
             event_admissions: %Section{value: %{records: [], ids: %{}}},
             event_quarantine: %Section{value: %{records: [], ids: %{}}},
-            skill_states: %Section{},
-            record_outbox: %Section{
-              value: %{schema_version: 1, next_sequence: 1, head_digest: nil, pending: []}
-            }
+            skill_states: %Section{}
 
   @type name ::
           :flow
@@ -51,7 +47,6 @@ defmodule Spectre.Instance.Canonical.Sections do
           | :event_admissions
           | :event_quarantine
           | :skill_states
-          | :record_outbox
 
   @type t :: %__MODULE__{
           flow: Section.t(),
@@ -66,8 +61,7 @@ defmodule Spectre.Instance.Canonical.Sections do
           lifecycles: Section.t(),
           event_admissions: Section.t(),
           event_quarantine: Section.t(),
-          skill_states: Section.t(),
-          record_outbox: Section.t()
+          skill_states: Section.t()
         }
 
   @spec names() :: [name()]

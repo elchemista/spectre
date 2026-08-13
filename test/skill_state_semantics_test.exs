@@ -400,8 +400,8 @@ defmodule SpectreSkillStateSemanticsTest do
 
     assert %{
              "format" => "spectre/instance-checkpoint",
-             "checkpoint_version" => 3,
-             "state_schema_version" => 3
+             "checkpoint_version" => 2,
+             "state_schema_version" => 2
            } = Jason.decode!(checkpoint)
 
     :ok = GenServer.stop(instance, :normal)

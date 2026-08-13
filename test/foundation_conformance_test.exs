@@ -134,11 +134,7 @@ defmodule SpectreFoundationConformanceTest do
              "readers" => [1, 2, 3, 4]
            }
 
-    assert stringify(matrix.durable_formats.instance) == %{
-             "writer" => 3,
-             "readers" => [2, 3]
-           }
-
+    assert stringify(matrix.durable_formats.instance) == %{"writer" => 2, "readers" => [2]}
     assert fixture["definition"] == stringify(matrix.definition)
     assert fixture["stack"] == stringify(matrix.stack)
   end
@@ -160,7 +156,7 @@ defmodule SpectreFoundationConformanceTest do
           {"0.2.5/skill-state-canonical-v4.json.base64", 4}
         ] do
       expected =
-        if source_version in [2, 3],
+        if source_version == 2,
           do: {:invalid_canonical_checkpoint_format, nil},
           else: {:unsupported_canonical_checkpoint, source_version}
 
