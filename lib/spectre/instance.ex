@@ -3692,31 +3692,26 @@ defmodule Spectre.Instance do
     with :ok <- owner_guard(data, :activation_commit),
          :ok <- activation_checkpoint_ready(data),
          {:ok, lifecycles} <- Events.activation_lifecycles(data, activation),
-         {:ok, snapshot} <-
-           Canonical.snapshot(data.canonical,
-             read: [:activation, :correlations, :lifecycles, :skill_states],
-             write: [:activation, :correlations, :lifecycles, :skill_states],
-             correlation_id: activation.activation_receipt,
-             causation_id: CandidateRef.to_string(activation.candidate_ref)
-           ),
-         {:ok, change} <-
-           Canonical.change(
-             snapshot,
+         {:ok, committed} <-
+           Commit.canonical_sections(
+             data,
              %{
                activation: activation,
                correlations: owner_fenced_correlations(data),
                lifecycles: lifecycles,
                skill_states: skill_states
              },
+             correlation_id: activation.activation_receipt,
+             causation_id: CandidateRef.to_string(activation.candidate_ref),
              provenance: %{source: :activation, instance_ref: data.ref.key},
              metadata: %{
                transition: :definition_activated,
                activation_generation: activation.generation,
                authority_epoch: activation.authority_epoch
-             }
+             },
+             checkpoint: :defer
            ),
-         {:ok, canonical, _transition} <- Canonical.commit(data.canonical, change),
-         {:ok, persisted} <- persist_activation_checkpoint(data, canonical) do
+         {:ok, persisted} <- persist_activation_checkpoint(committed, committed.canonical) do
       _ =
         Spectre.Journal.record(
           data.agent,
@@ -3731,7 +3726,7 @@ defmodule Spectre.Instance do
           data.base_opts
         )
 
-      {:ok, %{persisted | canonical: canonical, activation: activation}}
+      {:ok, %{persisted | activation: activation}}
     end
   end
 
