@@ -2,6 +2,10 @@ defmodule SpectreStoreConformanceTest.Store do
   @moduledoc false
   @behaviour Spectre.Instance.CheckpointStore
 
+  alias Spectre.Instance.Canonical
+  alias Spectre.Instance.Canonical.Codec
+  alias Spectre.Instance.Canonical.Validator
+
   @impl true
   def load(ref, opts) do
     case Agent.get(Keyword.fetch!(opts, :server), &Map.get(&1, ref.key)) do
@@ -12,25 +16,46 @@ defmodule SpectreStoreConformanceTest.Store do
 
   @impl true
   def compare_and_swap(ref, checkpoint, expected, revision, opts) do
-    Agent.get_and_update(Keyword.fetch!(opts, :server), fn entries ->
-      current = Map.get(entries, ref.key)
-      actual = if current, do: elem(current, 0), else: 0
+    with {:ok, %Canonical{} = canonical} <- Codec.decode(checkpoint),
+         :ok <- Validator.validate(canonical, ref),
+         true <- canonical.revision == revision do
+      notify_attempt(opts, expected, revision)
 
-      cond do
-        current == {revision, checkpoint} and Keyword.get(opts, :accept_retry, true) ->
-          {:ok, entries}
+      accept_retry? = Keyword.get(opts, :accept_retry, true)
 
-        actual == expected ->
-          {:ok, Map.put(entries, ref.key, {revision, checkpoint})}
-
-        true ->
-          {{:error, {:stale_checkpoint, actual}}, entries}
-      end
-    end)
+      Agent.get_and_update(
+        Keyword.fetch!(opts, :server),
+        &persist(&1, ref.key, checkpoint, expected, revision, accept_retry?)
+      )
+    else
+      _invalid -> {:error, :invalid_canonical_checkpoint}
+    end
   end
 
   defp maybe_decode(checkpoint, opts) do
     if Keyword.get(opts, :load_as_map, false), do: Jason.decode!(checkpoint), else: checkpoint
+  end
+
+  defp notify_attempt(opts, expected, revision) do
+    if test_pid = Keyword.get(opts, :test_pid) do
+      send(test_pid, {:checkpoint_store_attempt, expected, revision})
+    end
+  end
+
+  defp persist(entries, key, checkpoint, expected, revision, accept_retry?) do
+    current = Map.get(entries, key)
+    actual = if current, do: elem(current, 0), else: 0
+
+    cond do
+      current == {revision, checkpoint} and accept_retry? ->
+        {:ok, entries}
+
+      actual == expected ->
+        {:ok, Map.put(entries, key, {revision, checkpoint})}
+
+      true ->
+        {{:error, {:stale_checkpoint, actual}}, entries}
+    end
   end
 end
 
@@ -48,6 +73,75 @@ defmodule SpectreStoreConformanceTest.AcceptingStore do
   end
 end
 
+defmodule SpectreStoreConformanceTest.AmbiguousLoserStore do
+  @moduledoc false
+  @behaviour Spectre.Instance.CheckpointStore
+
+  @impl true
+  def load(ref, opts), do: SpectreStoreConformanceTest.Store.load(ref, opts)
+
+  @impl true
+  def compare_and_swap(ref, checkpoint, expected, revision, opts) do
+    case SpectreStoreConformanceTest.Store.compare_and_swap(
+           ref,
+           checkpoint,
+           expected,
+           revision,
+           opts
+         ) do
+      {:error, {:stale_checkpoint, _actual}} when revision == 3 ->
+        {:error, {:ambiguous, :connection_lost}}
+
+      reply ->
+        reply
+    end
+  end
+end
+
+defmodule SpectreStoreConformanceTest.Barrier do
+  @moduledoc false
+  use GenServer
+
+  def start_link(_opts), do: GenServer.start_link(__MODULE__, [])
+  def wait(server), do: GenServer.call(server, :wait, 5_000)
+
+  @impl true
+  def init([]), do: {:ok, nil}
+
+  @impl true
+  def handle_call(:wait, from, nil), do: {:noreply, from}
+
+  def handle_call(:wait, _from, first) do
+    GenServer.reply(first, :ok)
+    {:reply, :ok, nil}
+  end
+end
+
+defmodule SpectreStoreConformanceTest.OrderedRace do
+  @moduledoc false
+  use GenServer
+
+  def start_link(_opts), do: GenServer.start_link(__MODULE__, :empty)
+  def contend(server), do: GenServer.call(server, :contend, 5_000)
+  def winner_written(server), do: GenServer.call(server, :winner_written, 5_000)
+
+  @impl true
+  def init(:empty), do: {:ok, :empty}
+
+  @impl true
+  def handle_call(:contend, from, :empty), do: {:noreply, {:waiting, from}}
+
+  def handle_call(:contend, from, {:waiting, first}) do
+    GenServer.reply(first, :winner)
+    {:noreply, {:winner_running, from}}
+  end
+
+  def handle_call(:winner_written, _from, {:winner_running, second}) do
+    GenServer.reply(second, :loser)
+    {:reply, :ok, :empty}
+  end
+end
+
 defmodule SpectreStoreConformanceTest.RacyStore do
   @moduledoc false
   @behaviour Spectre.Instance.CheckpointStore
@@ -62,8 +156,7 @@ defmodule SpectreStoreConformanceTest.RacyStore do
 
     case Agent.get(server, &Map.get(&1, ref.key)) do
       {^expected, _current} ->
-        Agent.update(barrier, &(&1 + 1))
-        await_contenders(barrier, 100)
+        :ok = SpectreStoreConformanceTest.Barrier.wait(barrier)
         Agent.update(server, &Map.put(&1, ref.key, {revision, checkpoint}))
         :ok
 
@@ -84,16 +177,39 @@ defmodule SpectreStoreConformanceTest.RacyStore do
       opts
     )
   end
+end
 
-  defp await_contenders(_barrier, 0), do: :ok
+defmodule SpectreStoreConformanceTest.OverwritingLoserStore do
+  @moduledoc false
+  @behaviour Spectre.Instance.CheckpointStore
 
-  defp await_contenders(barrier, remaining) do
-    if Agent.get(barrier, & &1) >= 2 do
-      :ok
-    else
-      Process.sleep(1)
-      await_contenders(barrier, remaining - 1)
+  @impl true
+  def load(ref, opts), do: SpectreStoreConformanceTest.Store.load(ref, opts)
+
+  @impl true
+  def compare_and_swap(ref, checkpoint, 2, 3 = revision, opts) do
+    server = Keyword.fetch!(opts, :server)
+    race = Keyword.fetch!(opts, :ordered_race)
+
+    case SpectreStoreConformanceTest.OrderedRace.contend(race) do
+      :winner ->
+        Agent.update(server, &Map.put(&1, ref.key, {revision, checkpoint}))
+        :ok = SpectreStoreConformanceTest.OrderedRace.winner_written(race)
+
+      :loser ->
+        Agent.update(server, &Map.put(&1, ref.key, {revision, checkpoint}))
+        {:error, {:stale_checkpoint, revision}}
     end
+  end
+
+  def compare_and_swap(ref, checkpoint, expected, revision, opts) do
+    SpectreStoreConformanceTest.Store.compare_and_swap(
+      ref,
+      checkpoint,
+      expected,
+      revision,
+      opts
+    )
   end
 end
 
@@ -112,7 +228,7 @@ defmodule SpectreStoreConformanceTest do
     assert {:ok, report} =
              Conformance.run(
                {SpectreStoreConformanceTest.Store,
-                server: server, accept_retry: false, load_as_map: true},
+                server: server, accept_retry: false, load_as_map: true, test_pid: self()},
                ref
              )
 
@@ -129,6 +245,13 @@ defmodule SpectreStoreConformanceTest do
 
     assert byte_size(report.checkpoint_digest) == 64
     refute inspect(report) =~ ref.key
+
+    assert_received {:checkpoint_store_attempt, 0, 1}
+    assert_received {:checkpoint_store_attempt, 0, 1}
+    assert_received {:checkpoint_store_attempt, 1, 2}
+    assert_received {:checkpoint_store_attempt, 1, 2}
+    assert_received {:checkpoint_store_attempt, 2, 3}
+    assert_received {:checkpoint_store_attempt, 2, 3}
 
     assert :ok =
              Conformance.read_after_restart(
@@ -164,15 +287,33 @@ defmodule SpectreStoreConformanceTest do
 
   test "rejects a non-atomic check-then-write implementation" do
     server = start_supervised!({Agent, fn -> %{} end})
-
-    barrier =
-      start_supervised!(
-        Supervisor.child_spec({Agent, fn -> 0 end}, id: :conformance_race_barrier)
-      )
+    barrier = start_supervised!(SpectreStoreConformanceTest.Barrier)
 
     assert {:error, {:checkpoint_store_conformance_failed, :concurrent_cas, :multiple_winners}} =
              Conformance.run(
                {SpectreStoreConformanceTest.RacyStore, server: server, barrier: barrier},
+               isolated_ref()
+             )
+  end
+
+  test "rejects an ambiguous outcome from the losing concurrent writer" do
+    server = start_supervised!({Agent, fn -> %{} end})
+
+    assert {:error, {:checkpoint_store_conformance_failed, :concurrent_cas, :ambiguous_loser}} =
+             Conformance.run(
+               {SpectreStoreConformanceTest.AmbiguousLoserStore, server: server},
+               isolated_ref()
+             )
+  end
+
+  test "verifies that the declared winner is the durable concurrent head" do
+    server = start_supervised!({Agent, fn -> %{} end})
+    race = start_supervised!(SpectreStoreConformanceTest.OrderedRace)
+
+    assert {:error, {:checkpoint_store_conformance_failed, :concurrent_cas, :readback_mismatch}} =
+             Conformance.run(
+               {SpectreStoreConformanceTest.OverwritingLoserStore,
+                server: server, ordered_race: race},
                isolated_ref()
              )
   end

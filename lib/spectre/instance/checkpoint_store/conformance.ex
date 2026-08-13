@@ -6,7 +6,13 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
   `Spectre.Instance.CheckpointStore`, verifies semantic readback, reconciles an
   exact retry, proves that a stale writer cannot replace revision two, and
   races two revision-three writers to require a single CAS winner. It uses the
-  real current checkpoint codec and has no ExUnit dependency.
+  real current checkpoint codec and Instance validator and has no ExUnit
+  dependency.
+
+  The Checkpoint Store behaviour deliberately leaves the adapter's conflict
+  vocabulary open. The race therefore accepts any declared error from the
+  losing writer, but rejects `{:ambiguous, reason}` because that outcome cannot
+  prove there was only one commit.
 
   A run leaves revision three in storage. Callers must pass a fresh, isolated
   `Spectre.Instance.Ref`; adapter options belong in the ordinary store config.
@@ -15,8 +21,10 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
   alias Spectre.Foundation.Conformance, as: Foundation
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec
+  alias Spectre.Instance.Canonical.Validator
   alias Spectre.Instance.CheckpointStore
   alias Spectre.Instance.Ref
+  alias Spectre.State
 
   @type report :: %{
           required(:create) => :committed,
@@ -33,14 +41,14 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
   @spec run(CheckpointStore.config(), Ref.t()) :: {:ok, report()} | {:error, term()}
   def run(store, %Ref{} = ref) do
     with {:ok, store} <- normalize_store(store),
-         {:ok, create, update, contenders} <- checkpoints(),
+         {:ok, create, update, stale, contenders} <- checkpoints(ref),
          :not_found <- load(store, ref, :initial_load),
          :ok <- write(store, ref, create.json, 0, 1, :create),
          :ok <- readback(store, ref, create.digest, :create),
          {:ok, retry} <- exact_retry(store, ref, create),
          :ok <- write(store, ref, update.json, 1, 2, :update),
          :ok <- readback(store, ref, update.digest, :update),
-         :ok <- reject_stale(store, ref, create.json, update.digest),
+         :ok <- reject_stale(store, ref, stale.json, update.digest),
          {:ok, winner_digest} <- concurrent_cas(store, ref, contenders) do
       {:ok,
        %{
@@ -71,7 +79,7 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
     with {:ok, before} <- normalize_store(before),
          {:ok, after_restart} <- normalize_store(after_restart),
          {:ok, checkpoint} <- load(before, ref, :restart_before),
-         {:ok, report} <- verify(checkpoint, :restart_before) do
+         {:ok, report} <- verify(checkpoint, ref, :restart_before) do
       readback(after_restart, ref, report.digest, :restart_after)
     else
       :not_found -> failure(:restart_before, :checkpoint_not_found)
@@ -82,25 +90,42 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
   def read_after_restart(_before, _after_restart, _ref),
     do: failure(:options, :invalid_ref)
 
-  @spec checkpoints() :: {:ok, map(), map(), [map()]} | {:error, term()}
-  defp checkpoints do
-    with {:ok, first} <- commit_fixture(Canonical.new(), 1, :create),
-         {:ok, second} <- commit_fixture(first, 2, :update),
-         {:ok, contender_a} <- commit_fixture(second, 3, :contender_a),
-         {:ok, contender_b} <- commit_fixture(second, 3, :contender_b),
-         {:ok, first} <- encode_fixture(first),
-         {:ok, second} <- encode_fixture(second),
-         {:ok, contender_a} <- encode_fixture(contender_a),
-         {:ok, contender_b} <- encode_fixture(contender_b) do
-      {:ok, first, second, [contender_a, contender_b]}
+  @spec checkpoints(Ref.t()) :: {:ok, map(), map(), map(), [map()]} | {:error, term()}
+  defp checkpoints(%Ref{} = ref) do
+    with {:ok, initial} <- initial_fixture(ref),
+         {:ok, first} <- commit_fixture(initial, :create),
+         {:ok, second} <- commit_fixture(first, :update),
+         {:ok, stale} <- commit_fixture(first, :stale),
+         {:ok, contender_a} <- commit_fixture(second, :contender_a),
+         {:ok, contender_b} <- commit_fixture(second, :contender_b),
+         {:ok, first} <- encode_fixture(first, ref),
+         {:ok, second} <- encode_fixture(second, ref),
+         {:ok, stale} <- encode_fixture(stale, ref),
+         {:ok, contender_a} <- encode_fixture(contender_a, ref),
+         {:ok, contender_b} <- encode_fixture(contender_b, ref) do
+      {:ok, first, second, stale, [contender_a, contender_b]}
     else
       {:error, _reason} -> failure(:fixtures, :invalid_checkpoint)
     end
   end
 
-  @spec commit_fixture(Canonical.t(), 1 | 2 | 3, atom()) ::
-          {:ok, Canonical.t()} | {:error, term()}
-  defp commit_fixture(canonical, revision, label) do
+  @spec initial_fixture(Ref.t()) :: {:ok, Canonical.t()} | {:error, term()}
+  defp initial_fixture(%Ref{} = ref) do
+    Canonical.new(%{
+      flow: %State{conversation_id: ref.key},
+      work: %{},
+      vigil: %{},
+      directive: %{},
+      control: %{},
+      correlations: %{instance_key: ref.key},
+      events: %{records: [], ids: %{}}
+    })
+  end
+
+  @spec commit_fixture(Canonical.t(), atom()) :: {:ok, Canonical.t()} | {:error, term()}
+  defp commit_fixture(canonical, label) do
+    revision = canonical.revision + 1
+
     with {:ok, correlations} <- Canonical.fetch(canonical, :correlations),
          {:ok, snapshot} <-
            Canonical.snapshot(canonical,
@@ -122,10 +147,11 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
     end
   end
 
-  @spec encode_fixture(Canonical.t()) ::
+  @spec encode_fixture(Canonical.t(), Ref.t()) ::
           {:ok, %{json: String.t(), digest: String.t()}} | {:error, term()}
-  defp encode_fixture(canonical) do
-    with {:ok, json} <- Codec.encode_json(canonical),
+  defp encode_fixture(canonical, ref) do
+    with :ok <- Validator.validate(canonical, ref),
+         {:ok, json} <- Codec.encode_json(canonical),
          {:ok, report} <- Foundation.verify_instance_checkpoint(json) do
       {:ok, %{json: json, digest: report.digest}}
     end
@@ -162,7 +188,7 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
   @spec reject_stale({module(), keyword()}, Ref.t(), String.t(), String.t()) ::
           :ok | {:error, term()}
   defp reject_stale(store, ref, stale, current_digest) do
-    case CheckpointStore.persist(store, ref, stale, 1, 1, []) do
+    case CheckpointStore.persist(store, ref, stale, 1, 2, []) do
       :ok -> failure(:stale_write, :accepted)
       {:error, _reason} -> readback(store, ref, current_digest, :stale_write)
     end
@@ -178,32 +204,47 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
           {contender.digest, CheckpointStore.persist(store, ref, contender.json, 2, 3, [])}
         end,
         ordered: false,
+        max_concurrency: 2,
         timeout: 30_000,
         on_timeout: :kill_task
       )
       |> Enum.to_list()
 
-    winners = for {:ok, {digest, :ok}} <- outcomes, do: digest
-
-    cond do
-      Enum.any?(outcomes, &match?({:exit, _reason}, &1)) ->
-        failure(:concurrent_cas, :callback_failed)
-
-      winners == [] ->
-        failure(:concurrent_cas, :no_winner)
-
-      length(winners) > 1 ->
-        failure(:concurrent_cas, :multiple_winners)
-
-      true ->
-        [winner] = winners
-
-        case readback(store, ref, winner, :concurrent_cas) do
-          :ok -> {:ok, winner}
-          {:error, _reason} = error -> error
-        end
+    with {:ok, winner} <- race_winner(outcomes),
+         :ok <- readback(store, ref, winner, :concurrent_cas) do
+      {:ok, winner}
     end
   end
+
+  @spec race_winner([term()]) :: {:ok, String.t()} | {:error, term()}
+  defp race_winner([{:ok, {_left, :ok}}, {:ok, {_right, :ok}}]),
+    do: failure(:concurrent_cas, :multiple_winners)
+
+  defp race_winner([
+         {:ok, {_winner, :ok}},
+         {:ok, {_loser, {:error, {:ambiguous, _reason}}}}
+       ]),
+       do: failure(:concurrent_cas, :ambiguous_loser)
+
+  defp race_winner([
+         {:ok, {_loser, {:error, {:ambiguous, _reason}}}},
+         {:ok, {_winner, :ok}}
+       ]),
+       do: failure(:concurrent_cas, :ambiguous_loser)
+
+  defp race_winner([{:ok, {winner, :ok}}, {:ok, {_loser, {:error, _reason}}}]),
+    do: {:ok, winner}
+
+  defp race_winner([{:ok, {_loser, {:error, _reason}}}, {:ok, {winner, :ok}}]),
+    do: {:ok, winner}
+
+  defp race_winner([
+         {:ok, {_left, {:error, _left_reason}}},
+         {:ok, {_right, {:error, _right_reason}}}
+       ]),
+       do: failure(:concurrent_cas, :no_winner)
+
+  defp race_winner(_outcomes), do: failure(:concurrent_cas, :callback_failed)
 
   @spec write(
           {module(), keyword()},
@@ -224,7 +265,7 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
           :ok | {:error, term()}
   defp readback(store, ref, expected_digest, phase) do
     with {:ok, checkpoint} <- load(store, ref, phase),
-         {:ok, report} <- verify(checkpoint, phase),
+         {:ok, report} <- verify(checkpoint, ref, phase),
          true <- report.digest == expected_digest do
       :ok
     else
@@ -244,10 +285,13 @@ defmodule Spectre.Instance.CheckpointStore.Conformance do
     end
   end
 
-  @spec verify(String.t() | map(), atom()) :: {:ok, map()} | {:error, term()}
-  defp verify(checkpoint, phase) do
-    case Foundation.verify_instance_checkpoint(checkpoint) do
-      {:ok, report} -> {:ok, report}
+  @spec verify(String.t() | map(), Ref.t(), atom()) :: {:ok, map()} | {:error, term()}
+  defp verify(checkpoint, ref, phase) do
+    with {:ok, canonical} <- Codec.decode(checkpoint),
+         :ok <- Validator.validate(canonical, ref),
+         {:ok, report} <- Foundation.verify_instance_checkpoint(checkpoint) do
+      {:ok, report}
+    else
       {:error, _reason} -> failure(phase, :invalid_checkpoint)
     end
   end
