@@ -99,6 +99,45 @@ defmodule Spectre.Instance.CheckpointStore do
   def persist({module, store_opts}, %Ref{} = ref, checkpoint, expected, revision, opts)
       when is_binary(checkpoint) and is_integer(expected) and expected >= 0 and
              is_integer(revision) and revision >= 0 do
+    case persist_with_receipt(
+           {module, store_opts},
+           ref,
+           checkpoint,
+           expected,
+           revision,
+           opts
+         ) do
+      {:ok, _receipt} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Persists a checkpoint while preserving an adapter receipt.
+
+  This is the receipt-aware companion to `persist/6`. Existing callers keep
+  the original `:ok | {:error, reason}` contract; Ledger integrations can use
+  this function to correlate the durable checkpoint write with a History
+  delivery without asking adapters to perform the write twice.
+  """
+  @spec persist_with_receipt(
+          {module(), keyword()},
+          Ref.t(),
+          String.t(),
+          non_neg_integer(),
+          non_neg_integer(),
+          keyword()
+        ) :: {:ok, term()} | {:error, term()}
+  def persist_with_receipt(
+        {module, store_opts},
+        %Ref{} = ref,
+        checkpoint,
+        expected,
+        revision,
+        opts
+      )
+      when is_binary(checkpoint) and is_integer(expected) and expected >= 0 and
+             is_integer(revision) and revision >= 0 do
     cond do
       not Code.ensure_loaded?(module) ->
         {:error, {:checkpoint_store_not_loaded, module}}
@@ -114,7 +153,7 @@ defmodule Spectre.Instance.CheckpointStore do
           revision,
           Keyword.merge(store_opts, opts)
         )
-        |> normalize_persist(module)
+        |> normalize_persist_receipt(module)
     end
   rescue
     exception ->
@@ -186,12 +225,12 @@ defmodule Spectre.Instance.CheckpointStore do
   defp normalize_load(value, module),
     do: {:error, {:invalid_checkpoint_load_reply, module, value}}
 
-  @spec normalize_persist(term(), module()) :: :ok | {:error, term()}
-  defp normalize_persist(:ok, _module), do: :ok
-  defp normalize_persist({:ok, _receipt}, _module), do: :ok
-  defp normalize_persist({:error, _reason} = error, _module), do: error
+  @spec normalize_persist_receipt(term(), module()) :: {:ok, term()} | {:error, term()}
+  defp normalize_persist_receipt(:ok, _module), do: {:ok, nil}
+  defp normalize_persist_receipt({:ok, receipt}, _module), do: {:ok, receipt}
+  defp normalize_persist_receipt({:error, _reason} = error, _module), do: error
 
-  defp normalize_persist(value, module),
+  defp normalize_persist_receipt(value, module),
     do: {:error, {:ambiguous, {:invalid_checkpoint_persist_reply, module, value}}}
 
   defp ensure_migration_callback(module) do

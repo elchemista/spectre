@@ -83,11 +83,12 @@ defmodule Spectre.Instance.Checkpoint do
   end
 
   @doc "Applies a durably committed checkpoint result and starts any pending write."
-  @spec persisted(InstanceState.t(), map(), non_neg_integer()) :: InstanceState.t()
-  def persisted(%InstanceState{} = data, inflight, revision) do
+  @spec persisted(InstanceState.t(), map(), non_neg_integer(), term()) :: InstanceState.t()
+  def persisted(%InstanceState{} = data, inflight, revision, receipt \\ nil) do
     data
     |> Map.put(:checkpoint_revision, revision)
     |> Map.put(:checkpoint_persisted, inflight.canonical)
+    |> Map.put(:checkpoint_receipt, receipt)
     |> Map.put(:checkpoint_reconciliation, nil)
     |> Map.put(:checkpoint_error, nil)
     |> reply_checkpoint_waiters()
@@ -368,7 +369,11 @@ defmodule Spectre.Instance.Checkpoint do
     callback = fn ->
       result =
         with {:ok, encoded} <- CanonicalCodec.encode_json(canonical) do
-          CheckpointStore.persist(store, ref, encoded, expected, revision, opts)
+          CheckpointStore.persist_with_receipt(store, ref, encoded, expected, revision, opts)
+        end
+        |> case do
+          {:ok, nil} -> :ok
+          other -> other
         end
 
       send(owner, {:spectre, :checkpoint_result, token, revision, result})
@@ -488,6 +493,7 @@ defmodule Spectre.Instance.Checkpoint do
       data
       |> Map.put(:checkpoint_revision, revision)
       |> Map.put(:checkpoint_persisted, stored)
+      |> Map.put(:checkpoint_receipt, nil)
       |> Map.put(:checkpoint_reconciliation, nil)
       |> Map.put(:checkpoint_error, nil)
       |> reply_checkpoint_waiters()
