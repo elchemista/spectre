@@ -1,0 +1,367 @@
+defmodule Spectre.Doctor do
+  @moduledoc "Read-only public-contract diagnostics that never start resources or invoke stores."
+
+  alias Spectre.Definition
+  alias Spectre.Doctor.Report
+  alias Spectre.Foundation.Conformance, as: Foundation
+  alias Spectre.Instance.CheckpointStore
+  alias Spectre.Stack.Conformance, as: StackConformance
+  alias Spectre.Stack.Definition, as: StackDefinition
+
+  @contract_version 1
+  @options [:agent, :checkpoint_store, :packages, :stack]
+
+  @doc "Runs runtime, Foundation, Agent, Stack, package, and store diagnostics."
+  @spec run(keyword()) :: {:ok, Report.t()} | {:error, term()}
+  def run(opts) when is_list(opts) do
+    with :ok <- options(opts) do
+      {agent_checks, definition} = agent_checks(opts[:agent])
+
+      checks =
+        [
+          safe("runtime.elixir", &elixir_check/0),
+          safe("runtime.otp", &otp_check/0),
+          safe("runtime.spectre", &spectre_check/0),
+          safe("foundation.contract", &foundation_check/0)
+        ] ++
+          agent_checks ++
+          [
+            safe("stack.compatibility", fn ->
+              stack_check(option(opts, :stack, definition))
+            end),
+            safe("packages.compatibility", fn -> packages_check(opts[:packages]) end),
+            safe("checkpoint_store.config", fn ->
+              checkpoint_check(option(opts, :checkpoint_store, definition))
+            end)
+          ]
+
+      {:ok, report(checks)}
+    end
+  end
+
+  def run(_value), do: {:error, :invalid_doctor_options}
+
+  @doc "Returns the stable Doctor report contract version."
+  @spec contract_version() :: 1
+  def contract_version, do: @contract_version
+
+  defp options(opts) do
+    if Keyword.keyword?(opts) do
+      keys = Keyword.keys(opts)
+
+      cond do
+        length(keys) != length(Enum.uniq(keys)) ->
+          {:error, :duplicate_doctor_options}
+
+        Enum.any?(keys, &(&1 not in @options)) ->
+          {:error, :unknown_doctor_options}
+
+        true ->
+          option_values(opts)
+      end
+    else
+      {:error, :invalid_doctor_options}
+    end
+  end
+
+  defp option_values(opts) do
+    cond do
+      not module_option?(opts[:agent]) ->
+        {:error, {:invalid_doctor_option, :agent}}
+
+      not (module_option?(opts[:stack]) or is_list(opts[:stack])) ->
+        {:error, {:invalid_doctor_option, :stack}}
+
+      not (is_nil(opts[:packages]) or is_list(opts[:packages])) ->
+        {:error, {:invalid_doctor_option, :packages}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp module_option?(nil), do: true
+  defp module_option?(module) when is_atom(module), do: module not in [false, true]
+  defp module_option?(_value), do: false
+
+  defp elixir_check do
+    case Version.parse(System.version()) do
+      {:ok, version} ->
+        check(:ok, "runtime.elixir", :elixir_version_observed, %{
+          version: Version.to_string(version)
+        })
+
+      :error ->
+        check(:error, "runtime.elixir", :elixir_version_invalid)
+    end
+  end
+
+  defp otp_check do
+    release = :erlang.system_info(:otp_release) |> List.to_string()
+
+    case Integer.parse(release) do
+      {version, ""} when version > 0 ->
+        check(:ok, "runtime.otp", :otp_release_observed, %{release: release})
+
+      _invalid ->
+        check(:error, "runtime.otp", :otp_release_invalid)
+    end
+  end
+
+  defp spectre_check do
+    version = Spectre.version()
+    app_version = app_version()
+
+    cond do
+      Version.parse(version) == :error ->
+        check(:error, "runtime.spectre", :spectre_version_invalid)
+
+      is_binary(app_version) and app_version != version ->
+        check(:error, "runtime.spectre", :spectre_application_version_mismatch, %{
+          version: version
+        })
+
+      true ->
+        check(:ok, "runtime.spectre", :spectre_version_observed, %{version: version})
+    end
+  end
+
+  defp app_version do
+    case Application.spec(:spectre, :vsn) do
+      version when is_binary(version) -> version
+      version when is_list(version) -> List.to_string(version)
+      _unavailable -> nil
+    end
+  end
+
+  defp foundation_check do
+    matrix = Foundation.matrix()
+
+    with true <- is_map(matrix),
+         true <- matrix[:contract_version] == Foundation.contract_version(),
+         true <- matrix[:release] == Spectre.version(),
+         {:ok, formats} <- formats(matrix[:durable_formats]),
+         path when is_list(path) and path != [] <- matrix[:golden_path],
+         true <- Enum.all?(path, &exported?/1) do
+      check(:ok, "foundation.contract", :foundation_contract_valid, %{
+        contract_version: Foundation.contract_version(),
+        durable_formats: formats,
+        golden_path_count: length(path)
+      })
+    else
+      _invalid -> check(:error, "foundation.contract", :foundation_contract_invalid)
+    end
+  end
+
+  defp formats(formats) when is_map(formats) and map_size(formats) > 0 do
+    Enum.reduce_while(formats, {:ok, %{}}, fn
+      {name, %{writer: writer, readers: readers}}, {:ok, result}
+      when is_atom(name) and is_integer(writer) and writer > 0 and is_list(readers) ->
+        if writer in readers and Enum.all?(readers, &(is_integer(&1) and &1 > 0)) do
+          value = %{writer: writer, readers: readers}
+          {:cont, {:ok, Map.put(result, Atom.to_string(name), value)}}
+        else
+          {:halt, :error}
+        end
+
+      _entry, _result ->
+        {:halt, :error}
+    end)
+  end
+
+  defp formats(_formats), do: :error
+
+  defp exported?({module, function, arity})
+       when is_atom(module) and is_atom(function) and is_integer(arity) and arity >= 0,
+       do: Code.ensure_loaded?(module) and function_exported?(module, function, arity)
+
+  defp exported?(_entry), do: false
+
+  defp agent_checks(nil) do
+    {[
+       check(:skipped, "agent.definition", :agent_not_requested),
+       check(:skipped, "agent.manifest", :agent_not_requested)
+     ], nil}
+  end
+
+  defp agent_checks(agent) do
+    case Code.ensure_loaded?(agent) && Definition.fetch(agent) do
+      {:ok, %Definition{kind: :agent} = definition} ->
+        definition_check =
+          check(:ok, "agent.definition", :agent_definition_valid, %{
+            module: inspect(agent),
+            declared_version: definition.version
+          })
+
+        {[definition_check, safe("agent.manifest", fn -> manifest_check(agent) end)], definition}
+
+      false ->
+        agent_failure(agent, :agent_not_loaded)
+
+      _invalid ->
+        agent_failure(agent, :agent_definition_invalid)
+    end
+  rescue
+    _exception -> agent_failure(agent, :agent_definition_exception)
+  catch
+    _kind, _reason -> agent_failure(agent, :agent_definition_failure)
+  end
+
+  defp agent_failure(agent, code) do
+    {[
+       check(:error, "agent.definition", code, %{module: inspect(agent)}),
+       check(:skipped, "agent.manifest", :agent_definition_unavailable)
+     ], nil}
+  end
+
+  defp manifest_check(agent) do
+    with {:ok, canonical} <- Definition.canonical(agent),
+         {:ok, manifest} <- Definition.manifest(agent),
+         {:ok, result} <- Foundation.verify_definition(canonical, manifest) do
+      check(:ok, "agent.manifest", :agent_manifest_verified, %{
+        definition_ref: result.definition_ref,
+        definition_digest: result.definition_digest,
+        manifest_digest: result.manifest_digest,
+        manifest_contract: result.manifest_contract
+      })
+    else
+      _error ->
+        check(:error, "agent.manifest", :agent_manifest_invalid, %{module: inspect(agent)})
+    end
+  end
+
+  defp option(opts, name, %Definition{} = definition) do
+    if Keyword.has_key?(opts, name), do: opts[name], else: definition_option(definition, name)
+  end
+
+  defp option(opts, name, nil), do: opts[name]
+  defp definition_option(definition, :stack), do: definition.stack
+  defp definition_option(definition, :checkpoint_store), do: definition.config[:checkpoint_store]
+
+  defp stack_check(nil), do: check(:skipped, "stack.compatibility", :stack_not_configured)
+
+  defp stack_check(stack) when is_atom(stack) do
+    case StackDefinition.fetch(stack) do
+      {:ok, definition} ->
+        check(:ok, "stack.compatibility", :stack_definition_valid, %{
+          module: inspect(stack),
+          package_count: length(definition.installations),
+          digest: definition.digest
+        })
+
+      _error ->
+        check(:error, "stack.compatibility", :stack_definition_invalid, %{
+          module: inspect(stack)
+        })
+    end
+  end
+
+  defp stack_check(entries),
+    do: matrix_check(entries, "stack.compatibility", :stack_matrix_valid, :stack_matrix_invalid)
+
+  defp packages_check(nil),
+    do: check(:skipped, "packages.compatibility", :packages_not_requested)
+
+  defp packages_check([]), do: check(:error, "packages.compatibility", :packages_empty)
+
+  defp packages_check(entries),
+    do:
+      matrix_check(
+        entries,
+        "packages.compatibility",
+        :packages_matrix_valid,
+        :packages_matrix_invalid
+      )
+
+  defp matrix_check(entries, id, success, failure) do
+    case StackConformance.run(entries) do
+      {:ok, result} ->
+        check(:ok, id, success, %{
+          contract_version: result.contract_version,
+          package_count: result.package_count,
+          digest: result.stack_digest
+        })
+
+      _error ->
+        check(:error, id, failure)
+    end
+  end
+
+  defp checkpoint_check(value) when value in [nil, false],
+    do: check(:skipped, "checkpoint_store.config", :checkpoint_store_not_configured)
+
+  defp checkpoint_check(store) do
+    case CheckpointStore.normalize(store) do
+      {:ok, {module, opts}} -> checkpoint_callbacks(module, opts)
+      _error -> checkpoint_error(:checkpoint_store_config_invalid)
+    end
+  end
+
+  defp checkpoint_callbacks(module, opts) do
+    code =
+      cond do
+        not Keyword.keyword?(opts) -> :checkpoint_store_options_invalid
+        not Code.ensure_loaded?(module) -> :checkpoint_store_not_loaded
+        not function_exported?(module, :load, 2) -> :checkpoint_store_load_missing
+        not function_exported?(module, :compare_and_swap, 5) -> :checkpoint_store_cas_missing
+        true -> nil
+      end
+
+    if code do
+      checkpoint_error(code, module)
+    else
+      check(:ok, "checkpoint_store.config", :checkpoint_store_callbacks_valid, %{
+        module: inspect(module)
+      })
+    end
+  end
+
+  defp checkpoint_error(code, module \\ nil) do
+    details = if module, do: %{module: inspect(module)}, else: %{}
+    check(:error, "checkpoint_store.config", code, details)
+  end
+
+  defp check(status, id, code, details \\ %{}) do
+    summary = code |> Atom.to_string() |> String.replace("_", " ")
+    %{id: id, status: status, code: code, summary: summary, details: details}
+  end
+
+  defp safe(id, callback) do
+    case callback.() do
+      %{id: ^id, status: status, code: code, summary: summary, details: details} = result
+      when status in [:ok, :warning, :error, :skipped] and is_atom(code) and
+             is_binary(summary) and is_map(details) ->
+        result
+
+      _invalid ->
+        check(:error, id, :doctor_check_invalid)
+    end
+  rescue
+    _exception -> check(:error, id, :doctor_check_exception)
+  catch
+    _kind, _reason -> check(:error, id, :doctor_check_failure)
+  end
+
+  defp report(checks) do
+    counts = Enum.frequencies_by(checks, & &1.status)
+
+    summary = %{
+      total: length(checks),
+      passed: counts[:ok] || 0,
+      warnings: counts[:warning] || 0,
+      errors: counts[:error] || 0,
+      skipped: counts[:skipped] || 0
+    }
+
+    status =
+      if summary.errors > 0, do: :error, else: if(summary.warnings > 0, do: :warning, else: :ok)
+
+    %Report{
+      contract_version: @contract_version,
+      spectre_version: Spectre.version(),
+      status: status,
+      checks: checks,
+      summary: summary
+    }
+  end
+end
