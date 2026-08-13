@@ -8,7 +8,8 @@ defmodule Spectre.Instance.Canonical.Codec do
   alias Spectre.Run.Value
 
   @format "spectre/instance-checkpoint"
-  @checkpoint_version 2
+  @checkpoint_version 3
+  @supported_checkpoint_versions [2, 3]
   @max_json_bytes 8_000_000
 
   @checkpoint_keys ~w(
@@ -21,7 +22,7 @@ defmodule Spectre.Instance.Canonical.Codec do
     changed_sections correlation_id causation_id provenance metadata committed_at
   )
 
-  @section_names %{
+  @section_names_v2 %{
     "flow" => :flow,
     "work" => :work,
     "vigil" => :vigil,
@@ -36,6 +37,8 @@ defmodule Spectre.Instance.Canonical.Codec do
     "event_quarantine" => :event_quarantine,
     "skill_states" => :skill_states
   }
+
+  @section_names_v3 Map.put(@section_names_v2, "record_outbox", :record_outbox)
 
   @spec encode(Canonical.t()) :: {:ok, map()} | {:error, term()}
   def encode(%Canonical{} = state) do
@@ -86,7 +89,7 @@ defmodule Spectre.Instance.Canonical.Codec do
          {:ok, applied_changes} <-
            decode_applied_changes(Map.fetch!(checkpoint, "applied_changes")) do
       state = %Canonical{
-        schema_version: 2,
+        schema_version: 3,
         revision: revision,
         sections: sections,
         journal: journal,
@@ -297,7 +300,7 @@ defmodule Spectre.Instance.Canonical.Codec do
   @spec decode_section_names(term()) :: {:ok, [Sections.name()]} | {:error, term()}
   defp decode_section_names(names) when is_list(names) do
     Enum.reduce_while(names, {:ok, []}, fn name, {:ok, decoded} ->
-      case Map.fetch(@section_names, name) do
+      case Map.fetch(@section_names_v3, name) do
         {:ok, section_name} ->
           if section_name in decoded do
             {:halt, {:error, {:duplicate_canonical_transition_section, section_name}}}
@@ -337,12 +340,14 @@ defmodule Spectre.Instance.Canonical.Codec do
   end
 
   @spec checkpoint_version(term()) :: :ok | {:error, term()}
-  defp checkpoint_version(@checkpoint_version), do: :ok
+  defp checkpoint_version(version) when version in @supported_checkpoint_versions, do: :ok
   defp checkpoint_version(version), do: {:error, {:unsupported_canonical_checkpoint, version}}
 
-  defp section_names(@checkpoint_version), do: @section_names
+  defp section_names(2), do: @section_names_v2
+  defp section_names(3), do: @section_names_v3
 
-  defp state_schema_version(@checkpoint_version, 2), do: :ok
+  defp state_schema_version(2, 2), do: :ok
+  defp state_schema_version(3, 3), do: :ok
 
   defp state_schema_version(_checkpoint_version, version),
     do: {:error, {:unsupported_canonical_version, version}}
@@ -408,6 +413,7 @@ defmodule Spectre.Instance.Canonical.Codec do
   defp section_name(:event_admissions), do: "event_admissions"
   defp section_name(:event_quarantine), do: "event_quarantine"
   defp section_name(:skill_states), do: "skill_states"
+  defp section_name(:record_outbox), do: "record_outbox"
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_list(value), do: :list

@@ -13,11 +13,11 @@ defmodule SpectreCanonicalAgentStateTest do
     state = Canonical.new()
 
     assert state.revision == 0
-    assert state.schema_version == 2
+    assert state.schema_version == 3
     assert state.journal == []
     assert state.applied_changes == %{}
 
-    for name <- Sections.names(), name != :activation do
+    for name <- Sections.names(), name not in [:activation, :record_outbox] do
       assert {:ok, %{}} = Canonical.fetch(state, name)
       assert {:ok, 0} = Canonical.section_revision(state, name)
       assert {:ok, %Section{revision: 0, value: %{}}} = Sections.fetch(state.sections, name)
@@ -25,6 +25,9 @@ defmodule SpectreCanonicalAgentStateTest do
     end
 
     assert {:ok, nil} = Canonical.fetch(state, :activation)
+
+    assert {:ok, %{schema_version: 1, next_sequence: 1, head_digest: nil, pending: []}} =
+             Canonical.fetch(state, :record_outbox)
 
     assert {:ok, %Section{revision: 0, value: nil}} =
              Sections.fetch(state.sections, :activation)
@@ -309,7 +312,7 @@ defmodule SpectreCanonicalAgentStateTest do
 
     assert {:ok, encoded} = Codec.encode(committed)
     assert encoded["format"] == "spectre/instance-checkpoint"
-    assert encoded["checkpoint_version"] == 2
+    assert encoded["checkpoint_version"] == 3
     assert encoded["revision"] == 1
 
     assert {:ok, json} = Codec.encode_json(committed)
