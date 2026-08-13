@@ -105,6 +105,9 @@ The versioned checkpoint:
 - uses an atom-free tagged payload before typed decoding; modules are loaded
   from deployed code and only existing atoms are rehydrated, while unknown
   dynamic atoms fail closed;
+- orders tagged map entries by deterministic bytes of their encoded keys, so
+  equivalent portable values produce the same checkpoint across BEAM module
+  and atom load orders;
 - removes `Input.raw`;
 - retains only portable input/source metadata;
 - reduces a compiled Route to a logical `%Spectre.Route{}` without executable

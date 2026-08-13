@@ -57,7 +57,9 @@ the runtime's `:state_conversation_id` option.
 Every report contains a digest of the current-writer representation. A report
 is evidence that decoding, migration, current validation, and re-encoding all
 succeeded; it does not replace the application's durable-store or restart
-tests.
+tests. Spectre 0.3.1 also corrects the tagged-map writer to use a stable entry
+order. A 0.3.0 source checkpoint remains readable unchanged, while its report
+digest is derived from the corrected 0.3.1 current-writer representation.
 
 The append-only `0.2.6/foundation-conformance-v1.json` fixture still records
 the historical 0.2.6 matrix `Instance 4 / readers 1–4`. That evidence is not

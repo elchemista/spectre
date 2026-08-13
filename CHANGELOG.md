@@ -27,6 +27,13 @@ minor release may contain documented breaking API changes.
 
 ### Changed
 
+- Canonicalized tagged map entries produced by `Spectre.Run.Value` and
+  `Spectre.State.Codec` before they enter State, Run, or Instance checkpoints.
+  The 0.3.0 writers preserved BEAM map enumeration order, which can depend on
+  module and atom load order and could therefore give the same portable
+  checkpoint different Foundation digests in separate VMs. Existing readers
+  remain unchanged and accept the previously emitted entry order; 0.3.1
+  writers now emit one stable order.
 - Routed Definition activation through the existing Instance canonical commit
   seam before the established durable checkpoint barrier. Activation keeps the
   same owner, generation, authority, and persistence fences; no parallel state
@@ -62,6 +69,10 @@ minor release may contain documented breaking API changes.
   with readers 1 and 2. The append-only 0.2.x fixtures and the original 0.3.0
   release notes remain historical evidence; this erratum does not rewrite
   them, add an implicit legacy decoder, or add a second durable record format.
+- Foundation digests are identities of the current-writer representation, not
+  hashes of the source bytes. Re-verifying a 0.3.0 checkpoint under 0.3.1 can
+  therefore produce the corrected canonical-map digest while preserving the
+  decoded checkpoint and its revision.
 
 ## 0.3.0 — 2026-08-12
 
