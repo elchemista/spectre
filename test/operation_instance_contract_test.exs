@@ -1086,8 +1086,15 @@ defmodule SpectreOperationInstanceContractTest do
              GenServer.call(instance, {:operation_control, ref.id, :trigger, :external, []})
 
     assert_receive {:operation_telemetry, [:spectre, :instance, :uncorrelated_operation_trigger],
-                    %{count: 1}, _metadata},
+                    %{count: 1}, metadata},
                    1_000
+
+    assert %{agent: @agent, instance_id: instance_id, generation: generation} = metadata
+    assert is_binary(instance_id)
+    assert byte_size(instance_id) == 64
+    assert is_binary(generation)
+    refute Map.has_key?(metadata, :subject)
+    refute Map.has_key?(metadata, :agent_ref)
 
     assert Enum.any?(
              Spectre.operation_events(instance, types: [:triggered]),
@@ -1441,8 +1448,15 @@ defmodule SpectreOperationInstanceContractTest do
     assert {:ok, _view} = Spectre.trigger_loop(instance, legacy_ref, :external)
 
     assert_receive {:operation_telemetry, [:spectre, :instance, :uncorrelated_operation_trigger],
-                    %{count: 1}, _metadata},
+                    %{count: 1}, metadata},
                    1_000
+
+    assert %{agent: @agent, instance_id: instance_id, generation: generation} = metadata
+    assert is_binary(instance_id)
+    assert byte_size(instance_id) == 64
+    assert is_binary(generation)
+    refute Map.has_key?(metadata, :subject)
+    refute Map.has_key?(metadata, :agent_ref)
 
     assert Enum.any?(
              Spectre.operation_events(instance, types: [:triggered]),

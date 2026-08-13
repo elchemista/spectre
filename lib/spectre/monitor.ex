@@ -5,11 +5,13 @@ defmodule Spectre.Monitor do
   `Spectre.Monitor` wraps host delivery code and creates a fallback through
   injected callbacks when that code fails. This keeps databases, queues, and
   transport APIs outside the runtime while still giving applications one place
-  to produce a user-safe failure response.
+  to produce a user-safe failure response. Operational logs contain only
+  digested identifiers and bounded value or failure classes.
   """
 
   require Logger
 
+  alias Spectre.Canonical.Value
   alias Spectre.Input
   alias Spectre.Prompt
   alias Spectre.Provider.Call
@@ -240,11 +242,11 @@ defmodule Spectre.Monitor do
   @spec context_log(context()) :: String.t()
   defp context_log(context) do
     [
-      conversation_id: Map.get(context, :conversation_id),
-      message_id: Map.get(context, :message_id),
-      user_id: Map.get(context, :user_id),
-      channel: Map.get(context, :channel),
-      chat_id: Map.get(context, :external_chat_id)
+      conversation_id: id_digest(Map.get(context, :conversation_id)),
+      message_id: id_digest(Map.get(context, :message_id)),
+      user_id: id_digest(Map.get(context, :user_id)),
+      channel: value_class(Map.get(context, :channel)),
+      chat_id: id_digest(Map.get(context, :external_chat_id))
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{value}" end)
@@ -252,8 +254,33 @@ defmodule Spectre.Monitor do
 
   @spec compact_result(map()) :: map()
   defp compact_result(result) when is_map(result) do
-    Map.take(result, [:status, :delivery, :outbound_id, :conversation_id, :message_id])
+    result
+    |> Map.take([:status, :delivery])
+    |> Map.new(fn {key, value} -> {key, value_class(value)} end)
   end
+
+  @spec id_digest(term()) :: String.t() | nil
+  defp id_digest(nil), do: nil
+
+  defp id_digest(value) do
+    case Value.digest(value) do
+      {:ok, digest} -> digest
+      {:error, _reason} -> "unavailable"
+    end
+  end
+
+  @spec value_class(term()) :: atom() | nil
+  defp value_class(nil), do: nil
+  defp value_class(value) when is_atom(value), do: value
+
+  defp value_class(value) when is_tuple(value) and tuple_size(value) > 0 do
+    case elem(value, 0) do
+      kind when is_atom(kind) -> kind
+      _other -> :present
+    end
+  end
+
+  defp value_class(_value), do: :present
 
   @spec log_recovery_failure(context(), term()) :: :ok
   defp log_recovery_failure(context, reason) do
