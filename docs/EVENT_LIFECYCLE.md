@@ -94,10 +94,13 @@ lifecycle record and current Instance owner fence.
 
 ## Checkpoint compatibility
 
-Spectre 0.2.4 introduced checkpoint and state schema 3 with `lifecycles`,
-`event_admissions`, and `event_quarantine` sections. Readers still accept
-schemas 1, 2, and 3. When schema 2 contains an Activation, the reader derives
-the matching active lifecycle in memory. Current 0.2.5 writers emit schema 4;
-see [Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
+Historically, Spectre 0.2.4 introduced untagged checkpoint/state schema 3 with
+`lifecycles`, `event_admissions`, and `event_quarantine`; 0.2.5 then emitted
+untagged schema 4. That migration path is documented in
+[Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
+
+Spectre 0.3.0 and 0.3.1 use a distinct, format-tagged Instance checkpoint
+schema 2 that already contains those sections. The reader accepts only tagged
+version 2 and does not silently reinterpret the retired 0.2.x formats.
 
 See [Migrating to 0.2.4](MIGRATING_TO_0_2_4.md) for deployment sequencing.

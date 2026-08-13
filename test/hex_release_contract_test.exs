@@ -11,20 +11,20 @@ defmodule SpectreHexReleaseContractTest do
                          "SECURITY.md"
                        ] ++ Path.wildcard("docs/*.md", match_dot: true)
 
-  test "Hex package metadata describes the stable 0.3.0 release" do
+  test "Hex package metadata describes the stable 0.3.1 release" do
     config = Mix.Project.config()
     package = Keyword.fetch!(config, :package)
 
-    assert config[:version] == "0.3.0"
+    assert config[:version] == "0.3.1"
     assert config[:homepage_url] == "https://spectre.elchemista.com"
     assert package[:licenses] == ["Apache-2.0"]
     assert "LLMS.md" in package[:files]
 
     assert package[:links] == %{
              "Website" => "https://spectre.elchemista.com",
-             "Documentation" => "https://hexdocs.pm/spectre/0.3.0",
+             "Documentation" => "https://hexdocs.pm/spectre/0.3.1",
              "GitHub" => "https://github.com/elchemista/spectre",
-             "Changelog" => "https://github.com/elchemista/spectre/blob/0.3.0/CHANGELOG.md"
+             "Changelog" => "https://github.com/elchemista/spectre/blob/0.3.1/CHANGELOG.md"
            }
 
     assert {:ex_doc, "~> 0.40.3", ex_doc_opts} =
@@ -56,13 +56,13 @@ defmodule SpectreHexReleaseContractTest do
     installation = File.read!(Path.join(@root, "docs/INSTALLATION.md"))
     llm_guide = File.read!(Path.join(@root, "LLMS.md"))
 
-    assert readme =~ ~s({:spectre, "~> 0.3.0"})
-    assert installation =~ ~s({:spectre, "~> 0.3.0"})
-    assert llm_guide =~ ~s({:spectre, "~> 0.3.0"})
+    assert readme =~ ~s({:spectre, "~> 0.3.1"})
+    assert installation =~ ~s({:spectre, "~> 0.3.1"})
+    assert llm_guide =~ ~s({:spectre, "~> 0.3.1"})
     assert installation =~ ~s({:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"})
 
-    refute readme =~ ~r/{:spectre,\s+github:.*tag:\s*"0\.3\.0"/
-    refute installation =~ ~r/{:spectre,\s+github:.*tag:\s*"0\.3\.0"/
+    refute readme =~ ~r/{:spectre,\s+github:.*tag:/
+    refute installation =~ ~r/{:spectre,\s+github:.*tag:/
     refute Enum.any?(@documentation_files, &(File.read!(Path.join(@root, &1)) =~ "0.3.0-rs"))
   end
 

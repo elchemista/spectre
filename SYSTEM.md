@@ -1,6 +1,6 @@
 # The Spectre System
 
-Spectre `0.2.6` is an OTP-native kernel for building conversational and
+Spectre `0.3.1` is an OTP-native kernel for building conversational and
 operational agents in Elixir. It is deliberately not a package that owns every
 model, tool, memory store, browser, transport, and workflow. Those capabilities
 live in focused libraries that integrate through explicit, versioned contracts.
@@ -69,7 +69,13 @@ what lets optional libraries compose without competing for ownership.
 | `Spectre.Skill.StateBinding` | Generation- and branch-fenced private Skill state | Spectre Instance sequencer |
 | `Spectre.Foundation.Conformance` | Executable durable-format and Definition compatibility gate | Spectre core |
 | `Spectre.Stack.Conformance` | Whole-ecosystem package compatibility and collision gate | Spectre core + package tests |
+| `Spectre.Instance.CheckpointStore.Conformance` | Adapter-neutral canonical checkpoint CAS and restart gate | Spectre core + adapter tests |
+| `Spectre.Doctor` | Read-only runtime, Foundation, Agent, Stack, package, and adapter-shape diagnostics | Spectre core |
 | `Spectre.Projection.Audit` | Exact deterministic view of a canonical Definition | Spectre core |
+| `Spectre.Experience` | Opt-in redacted observational evidence, separate from canonical Instance state | trusted host + Spectre core |
+| `Spectre.Reflection` | Policy-gated deterministic projection of declared, effective, and observed facts | trusted host + Spectre core |
+| `Spectre.Forge` | Inert, evidence-bound proposals that cannot publish, approve, or activate | trusted host + compiled critics |
+| `Spectre.Morph` | Host-facing facade over the existing governed Definition-change path | trusted host + Spectre core |
 | `Spectre.Subject` | Canonical application identity, independent of a channel identity | host application |
 | `Spectre.Instance` | Local canonical owner for one `AgentRef + Subject` | Spectre core |
 | `Spectre.Turn` | Public projection of the next observable conversational boundary | Spectre core |
@@ -146,23 +152,23 @@ observation loop between triggers); **Work** is exactly what it says (a
 bounded, terminating operational procedure); a **Subject** is who the work is
 about; an **Instance** is the process that owns both for that Subject.
 
-## Core 0.3.0 and satellite compatibility
+## Core 0.3.1 and satellite compatibility
 
 The stable Spectre core is distributed through Hex:
 
 ```elixir
-{:spectre, "~> 0.3.0"}
+{:spectre, "~> 0.3.1"}
 ```
 
 The satellite releases listed below belong to the historical `0.2.x` release
 train. They remain owned and versioned by their repositories and must not be
-assumed compatible with core `0.3.0` until their manifests and adapter suites
+assumed compatible with core `0.3.1` until their manifests and adapter suites
 say so. This separation is intentional: installing the new core never silently
 upgrades another `spectre_*` package.
 
 | Package | Release | Spectre requirement |
 | --- | ---: | ---: |
-| `spectre` | `0.3.0` | — |
+| `spectre` | `0.3.1` | — |
 | `spectre_beam` | `0.2.0` | `~> 0.2.0` |
 | `spectre_directive` | `0.2.0` | `~> 0.2.0` |
 | `spectre_kinetic` | `0.2.0` | `~> 0.2.0` |

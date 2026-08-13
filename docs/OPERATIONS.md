@@ -248,13 +248,13 @@ return the existing stale-wait or stale-generation error before the controller
 runs. Correlation fences replay and does not replace Subject/origin
 authorization.
 
-During the 0.2.x migration window the default is `:legacy`. An accepted
+The 0.3.1 default remains `:legacy` for patch-release compatibility. An accepted
 partially or wholly uncorrelated trigger records `correlation: :legacy` in its
 committed `:triggered` event and emits
 `[:spectre, :instance, :uncorrelated_operation_trigger]` telemetry. Supplying
-both fields records `correlation: :exact`. The planned 0.3.0 default is
-`:required`; applications that intentionally retain legacy behavior will
-need an explicit opt-out.
+both fields records `correlation: :exact`. New deployments should opt in to
+`:required` explicitly; a future default change requires its own migration and
+is not hidden in this patch release.
 
 ## Pause, update, resume, renew, and stop
 
@@ -367,6 +367,15 @@ end
 {:ok, persisted_revision} = Spectre.flush_checkpoint(instance)
 status = Spectre.checkpoint_status(instance)
 ```
+
+`checkpoint_status/1` is a passive monitoring projection. It reports whether a
+store is configured, the checkpoint mode, canonical/persisted/inflight/pending
+revisions, a redacted `error` class, and any reconciliation requirement. It
+does not expose the adapter reason or checkpoint payload and does not reset the
+Instance idle timer. A positive
+`canonical_revision - persisted_revision` is persistence lag; an error or
+reconciliation requirement needs operator attention before assuming the last
+write committed.
 
 The store must return `{:error, {:ambiguous, reason}}` when it cannot know
 whether a CAS write committed. Spectre erects a persistence fence and does not

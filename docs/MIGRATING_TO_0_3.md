@@ -32,18 +32,35 @@ Review, Approval and the activation CAS.
 
 ## Durable compatibility
 
+### 0.3.1 erratum
+
+The table originally published for 0.3.0 repeated the historical untagged
+0.2.x Instance matrix. The released 0.3.0 code actually introduced a distinct
+`"spectre/instance-checkpoint"` format-tagged writer v2 and accepts only that
+v2 family. Spectre 0.3.1 preserves the released behavior and freezes a real
+0.3.0 fixture instead of claiming a migration that the reader does not
+implement.
+
+An application updating from 0.3.0 should select `{:spectre, "~> 0.3.1"}`, run
+its normal State and Run compatibility fixtures, and verify a representative
+tagged Instance checkpoint. Adapter suites can run
+`Spectre.Instance.CheckpointStore.Conformance` against a fresh isolated Ref;
+the runner writes through the adapter. `mix spectre.doctor --strict` verifies
+the running release and Foundation matrix without touching a store. No durable
+data migration is required between the released 0.3.0 and 0.3.1 codecs.
+
 The core keeps one runtime representation and one current writer per durable
-format. This release does not rewrite the already-current State, Run or
+format. Spectre 0.3.1 does not rewrite the already-current State, Run, or
 canonical Instance writer schemas:
 
 | Artifact | Current writer | Guaranteed readers |
 | --- | ---: | --- |
 | conversational State | 5 | 2, 3, 4, 5 |
 | Run checkpoint | 2 | 1, 2 |
-| canonical Instance checkpoint | 4 | 1, 2, 3, 4 |
+| format-tagged canonical Instance checkpoint | 2 | 2 |
 
-All 0.1.6–0.2.9 guaranteed fixtures remain inputs to the production decoders;
-writers do not emit a parallel legacy format. Definition, Manifest,
+Guaranteed State and Run legacy fixtures remain inputs to their production
+decoders. Retired untagged Instance checkpoints do not. Definition, Manifest,
 publication receipt, Candidate and gate artifacts must remain resolvable after
 restart before a durable Activation is accepted.
 

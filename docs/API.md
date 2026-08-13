@@ -4,11 +4,13 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.3.0` completes the core governed reflective runtime with opt-in
-redacted Experience, mechanical Declared/Effective/Observed Reflection,
+Spectre `0.3.1` hardens the core governed reflective runtime introduced in
+`0.3.0`, with opt-in redacted Experience, mechanical
+Declared/Effective/Observed Reflection,
 compiled critic adapters, oracle-bound evaluation cases, inert Forge
-proposals, and explicit evidence-aware rebase. It retains every earlier
-conformance gate and the schema-4 Skill-state runtime. The
+proposals, and explicit evidence-aware rebase. The current format-tagged
+Instance checkpoint writer and reader are both version 2; retired untagged
+0.2.x Instance schemas are not silently imported. The
 exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
@@ -685,10 +687,45 @@ Arbitration records have stable identifiers derived from turn identity and do
 not include conversation content unless `include_input: true` is explicit.
 See [Journal](JOURNAL.md) for delivery and privacy semantics.
 
-`Spectre.Telemetry.emit/4` emits events only when `:telemetry` is available;
-telemetry handlers cannot crash the runtime. Event metadata is intended for
-identifiers, strategies, statuses, durations, and counts—not prompts or user
-content. `Spectre.Monitor` provides the built-in aggregate observer.
+`Spectre.Telemetry.emit/4` always supports the configured callback and also
+emits through `:telemetry` when that library is available. The two delivery
+paths are failure-isolated, so one broken observer does not suppress the other
+or crash the runtime. Measurements are numeric aggregation values. Instance
+metadata carries the Agent module, an opaque stable `instance_id`, a
+per-process `generation`, identifier digests, revisions, and `reason_class`
+atoms—never prompts, subjects, raw identifiers, adapter reasons, or user
+content.
+
+Every Instance event has the full name `[:spectre, :instance, event]`. The
+current inventory is:
+
+| Area | Event suffixes | Event-specific metadata |
+| --- | --- | --- |
+| Process | `:started`, `:idle_shutdown` | none |
+| Run and invocation | `:stale_move_result`, `:invalid_move_result`, `:stale_invocation_result`, `:invocation_dispatched`, `:run_failed`, `:run_move_degraded`, `:run_resume_rejected` | digested `run_id` or `invocation_id`; failure events add `reason_class` |
+| Operation | `:stale_operation_result`, `:rejected_operation_result`, `:operation_event_route_dropped`, `:operation_event_route_rejected`, `:operation_control_failed`, `:operation_evaluation_failed`, `:operation_prepare_failed`, `:operation_dispatch_blocked` | digested `loop_id` or `event_id`; failure and rejection events add `reason_class` |
+| Checkpoint | `:checkpoint_persisted`, `:checkpoint_failed`, `:checkpoint_reconciled`, `:checkpoint_reconciliation_failed` | `revision` where available and `reason_class` on failure |
+| Correlation migration | `:uncorrelated_operation_trigger` | none |
+
+All of these events currently use the numeric measurement `%{count: 1}` and
+receive the common `{agent, instance_id, generation}` metadata. Identifier
+fields in the table contain canonical digests, not the original IDs. Digests
+and the restart-stable `instance_id` are pseudonymous, potentially
+high-cardinality values: do not use them as authorization evidence, secrets,
+or unbounded metric labels.
+
+`Spectre.Monitor` is a host-delivery failure boundary, not a telemetry
+aggregator or durable ledger. Its logs classify failures and digest context
+identifiers while its injected callbacks continue to own fallback lookup and
+creation.
+
+Run `mix spectre.doctor` for a read-only runtime and Foundation check, or add
+`--agent MyApp.Agent` to inspect that Agent and its configured Stack and
+Checkpoint Store callback shape. `--format json` returns the stable report
+contract and `--strict` treats warnings as a failure. Programmatic callers can
+pass an explicit Stack or package matrix to `Spectre.Doctor.run/1`. Doctor
+loads and inspects compiled public metadata only; it does not start package
+resources or read/write a store.
 
 ## Adapter contracts
 

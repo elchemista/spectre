@@ -1,8 +1,8 @@
-# Spectre public API — 0.3.0
+# Spectre public API — 0.3.1
 
-This file is the normative public API manifest for Spectre `0.3.0`. It retains
-the recoverable `0.1.6` conversational surface and adds the vNext operational
-surface. Compatibility guarantees apply only to the modules and callables
+This file is the normative public API manifest for Spectre `0.3.1`. It retains
+the recoverable conversational and operational surfaces while hardening their
+existing public boundaries. Compatibility guarantees apply only to the modules and callables
 listed below. Any module, function, macro, or callback not listed here is an
 implementation detail even when it is exported or visible in generated docs.
 
@@ -21,7 +21,11 @@ Mix project version.
 - `Mix.Tasks.Spectre.Classifier.Dataset`
 - `Mix.Tasks.Spectre.Classifier.DownloadModel`
 - `Mix.Tasks.Spectre.Classifier.Train`
+- `Mix.Tasks.Spectre.Doctor`
 - `Mix.Tasks.Spectre.Eval`
+- `Mix.Tasks.Spectre.Gen.Agent`
+- `Mix.Tasks.Spectre.Gen.CheckpointStore`
+- `Mix.Tasks.Spectre.Gen.Installable`
 - `Spectre`
   - functions: `activate/2`, `activate/3`, `activation/1`, `admit_event/2`, `admit_event/3`, `admitted_events/1`, `admitted_events/2`, `after_action/4`, `after_action/5`, `ask/2`, `ask/3`, `authorize_delivery/4`, `authorize_delivery/5`, `cancel/2`, `checkpoint/1`, `checkpoint_status/1`, `definition_lifecycle/1`, `definition_lifecycle/2`, `delivery_receipts/1`, `delivery_receipts/2`, `dismiss/2`, `drain_definition/1`, `drain_definition/2`, `drain_definition/3`, `ensure_instance/3`, `ensure_instance/4`, `execute/2`, `execute/3`, `flush_checkpoint/1`, `flush_checkpoint/2`, `instance/3`, `instance/4`, `lookup_instance/2`, `lookup_instance/3`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `quarantined_events/1`, `quarantined_events/2`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `reset/1`, `reset/2`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resolve_policy/3`, `resolve_policy/4`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `revoke_definition/1`, `revoke_definition/2`, `revoke_definition/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `start_controller/3`, `start_controller/4`, `start_execution/2`, `start_execution/3`, `start_work/3`, `start_work/4`, `state/1`, `skill_state/2`, `skill_state/3`, `skill_state_branches/2`, `skill_state_branches/3`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `subscribe_operation_events/1`, `subscribe_operation_events/2`, `summon/1`, `summon/3`, `transition_definition_lifecycle/4`, `transition_definition_lifecycle/5`, `transition_skill_state_retention/4`, `transition_skill_state_retention/5`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `unsubscribe_operation_events/1`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`, `update_skill_state/3`, `update_skill_state/4`, `version/0`
   - functions: `rollback/2`, `rollback/3`
@@ -99,6 +103,10 @@ Mix project version.
   - functions: `count/1`, `start_link/0`, `start_link/1`
 - `Spectre.Definition.Validator`
   - functions: `validate!/1`
+- `Spectre.Doctor`
+  - functions: `contract_version/0`, `run/1`
+- `Spectre.Doctor.Report`
+  - functions: `acceptable?/1`, `acceptable?/2`, `format/1`, `format/2`, `to_map/1`
 - `Spectre.Effect`
   - functions: `al/1`, `approve/1`, `bind_run/2`, `cancel/1`, `cancel/2`, `complete/2`, `effect_key/1`, `executable?/1`, `fail/2`, `hooks/1`, `idempotency_key/1`, `outcome/1`, `owner/1`, `planned_by/1`, `restore/1`, `schema_hash/1`, `scope/1`, `selected_tool/1`, `source/1`, `stage/1`, `stage_action/3`, `terminal?/1`, `via/1`, `waiting_policy/2`
 - `Spectre.Effect.Executor`
@@ -237,6 +245,8 @@ Mix project version.
 - `Spectre.Instance.CheckpointStore`
   - functions: `load/3`, `migrate_instance_key/6`, `normalize/1`, `persist/6`
   - callbacks: `compare_and_swap/5`, `load/2`, `migrate_instance_key/5`
+- `Spectre.Instance.CheckpointStore.Conformance`
+  - functions: `read_after_restart/3`, `run/2`
 - `Spectre.Instance.Lifecycle`
   - functions: `activate/3`, `activate/4`, `authorize/2`, `fetch/2`, `fetch/3`, `from_activation/1`, `from_data/1`, `key/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`, `transition/3`, `transition/4`
 - `Spectre.Instance.Owner`
