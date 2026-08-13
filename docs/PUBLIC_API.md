@@ -179,7 +179,7 @@ Mix project version.
 - `Spectre.Forge.Proposal`
   - functions: `decode/1`, `encode/1`, `from_data/1`, `new/1`, `ref/1`, `schema_version/0`, `to_data/1`, `verify/1`
 - `Spectre.Foundation.Conformance`
-  - functions: `contract_version/0`, `matrix/0`, `verify_checkpoint/1`, `verify_definition/2`, `verify_forge_proposal/1`, `verify_instance_checkpoint/1`, `verify_reflection/5`, `verify_run/1`, `verify_state/1`
+  - functions: `contract_version/0`, `matrix/0`, `verify_checkpoint/1`, `verify_definition/2`, `verify_forge_proposal/1`, `verify_instance_checkpoint/1`, `verify_instance_checkpoint/2`, `verify_reflection/5`, `verify_run/1`, `verify_state/1`
 - `Spectre.Gate.Receipt`
   - functions: `decode/1`, `digest/1`, `encode/1`, `new/1`, `new!/1`, `ref/1`, `to_data/1`, `verify/2`, `verify/3`, `verify_binding/2`
 - `Spectre.Gate.Receipt.Ref`

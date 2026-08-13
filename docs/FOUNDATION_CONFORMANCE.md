@@ -35,6 +35,25 @@ true = run_report.writer_version == 2
 true = instance_report.writer_version == 2
 ```
 
+Durable adapters and offline tooling should bind the checkpoint to the stream
+they loaded, instead of accepting a structurally valid checkpoint from another
+Instance:
+
+```elixir
+{:ok, report} =
+  Conformance.verify_instance_checkpoint(stored_instance_json, instance_ref)
+
+{:ok, ^report} =
+  Conformance.verify_instance_checkpoint(stored_instance_json, instance_ref.key)
+```
+
+Passing a `Spectre.Instance.Ref` runs the complete Instance canonical validator,
+including subject-bound operation data. Passing a non-empty opaque key is the
+transport-oriented form: it verifies exactly the checkpoint's
+`correlations[:instance_key]` binding. It intentionally does not compare
+`flow.conversation_id`, because hosts may set that portable state scope through
+the runtime's `:state_conversation_id` option.
+
 Every report contains a digest of the current-writer representation. A report
 is evidence that decoding, migration, current validation, and re-encoding all
 succeeded; it does not replace the application's durable-store or restart
