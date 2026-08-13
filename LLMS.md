@@ -272,6 +272,8 @@ mix test
 mix credo --all
 mix dialyzer
 mix docs --warnings-as-errors
+mix test test/public_api_manifest_test.exs test/hex_release_contract_test.exs
+mix hex.build --unpack --output /tmp/spectre-package-check
 ```
 
 For a compiled application, run `mix spectre.doctor --strict`; add

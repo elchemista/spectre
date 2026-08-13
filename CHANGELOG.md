@@ -35,11 +35,16 @@ minor release may contain documented breaking API changes.
   Instance and event identifiers are represented by stable digests, and raw
   adapter failures are reduced to reason classes. The configured telemetry
   callback and optional `:telemetry` sink are failure-isolated from one another
-  and from the runtime.
+  and from the runtime. This is a privacy and telemetry-contract correction:
+  consumers that matched the unsafe 0.3.0 payload shape must read identifiers
+  and reason classes from metadata instead of relying on raw terms or
+  non-numeric measurements.
 - Made `Spectre.Instance.info/1` and `Spectre.checkpoint_status/1` passive
   monitoring reads. Checkpoint status now exposes a redacted error class and
   reconciliation projection instead of raw adapter reasons; Monitor logs also
-  classify failures and digest caller identifiers.
+  classify failures and digest caller identifiers. Code that matched a raw
+  `checkpoint_status().error` term must migrate to the stable error class; raw
+  adapter reasons are deliberately no longer a public diagnostic value.
 - Updated the normative public API manifest, operational guidance, testing
   guide, and release metadata for `0.3.1`. The patch retains the opt-in
   `:required` operation-trigger correlation policy; the default remains

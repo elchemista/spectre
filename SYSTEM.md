@@ -708,11 +708,14 @@ An ecosystem package should preserve these boundaries:
 These rules are what make a collection of libraries an ecosystem rather than
 a bundle of unrelated integrations.
 
-## Validate The Sibling Repositories
+## Validate The Historical 0.2.x Sibling Repositories
 
-Each package accepts `SPECTRE_PATH` for local compatibility testing. Pulse also
-accepts paths for all satellite packages and runs the complete seven-package
-Stack conformance test:
+The following command documents the historical `0.2.x` satellite train. It
+requires a Spectre core checkout from that same train; do not point these
+packages at the `0.3.1` core and treat a compile as proof of compatibility.
+Each historical package accepts `SPECTRE_PATH` for local compatibility testing.
+Pulse also accepts paths for all satellite packages and runs the complete
+seven-package Stack conformance test:
 
 ```bash
 SPECTRE_PATH=../spectre \
@@ -725,10 +728,11 @@ SPECTRE_PRISM_PATH=../spectre_prism \
 mix test
 ```
 
-Run that command from `spectre_pulse`. Run `SPECTRE_PATH=../spectre mix test`
-from every other sibling repository. The path dependency must report version
-`0.2.0`; a stale `~> 0.1.x` requirement is an incompatibility, even if the
-source code would otherwise compile.
+Run that command from `spectre_pulse` with a core checkout reporting `0.2.0`.
+Run `SPECTRE_PATH=../spectre mix test` from every other historical sibling
+repository under the same constraint. New satellites targeting core `0.3.1`
+must instead declare that requirement in their Installable manifest and test
+against the local `0.3.1` checkout plus the published package independently.
 
 ## Further Reading
 

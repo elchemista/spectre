@@ -12,6 +12,9 @@ mix format --check-formatted
 mix compile --warnings-as-errors
 mix credo
 mix dialyzer
+mix docs --warnings-as-errors
+mix test test/public_api_manifest_test.exs test/hex_release_contract_test.exs
+mix hex.build --unpack --output /tmp/spectre-package-check
 ```
 
 CI uses the default Credo priority threshold. `mix credo --strict` is useful

@@ -65,5 +65,6 @@ defmodule Mix.Tasks.Spectre.Doctor do
     end
   end
 
+  @spec fail(String.t(), String.t()) :: no_return()
   defp fail(code, message), do: Mix.raise("[spectre_doctor_#{code}] #{message}")
 end

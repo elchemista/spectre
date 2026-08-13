@@ -10,7 +10,10 @@ It does not grant self-publication or self-activation. Models may criticize
 and propose data; trusted host code still owns policy, oracles, persistence,
 Review, Approval and the activation CAS.
 
-## Upgrade sequence
+## Historical 0.3.0 upgrade sequence
+
+This sequence records the original 0.3.0 cutover. For a current installation,
+use the 0.3.1 dependency and compatibility procedure in the erratum below.
 
 1. Update the core dependency to `{:spectre, "~> 0.3.0"}`, refresh the lockfile,
    and compile with warnings as errors.
@@ -152,6 +155,9 @@ mix test
 mix test --cover
 mix credo
 mix dialyzer
+mix docs --warnings-as-errors
+mix test test/public_api_manifest_test.exs test/hex_release_contract_test.exs
+mix hex.build --unpack --output /tmp/spectre-package-check
 git diff --check
 ```
 
