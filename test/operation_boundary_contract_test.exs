@@ -955,16 +955,6 @@ defmodule SpectreOperationBoundaryContractTest do
                reply: :receipt
              )
 
-    assert {:ok, %{etag: "next"}} =
-             CheckpointStore.persist_with_receipt(
-               {@checkpoint_store, []},
-               ref,
-               "checkpoint",
-               1,
-               2,
-               reply: :receipt
-             )
-
     assert {:error, :conflict} =
              CheckpointStore.persist(
                {@checkpoint_store, []},

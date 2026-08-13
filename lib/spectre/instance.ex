@@ -1735,12 +1735,6 @@ defmodule Spectre.Instance do
         emit(:checkpoint_persisted, next, %{count: 1, revision: revision})
         {:noreply, arm_idle_timer(next)}
 
-      {:ok, receipt} ->
-        next = Checkpoint.persisted(data, inflight, revision, receipt)
-
-        emit(:checkpoint_persisted, next, %{count: 1, revision: revision})
-        {:noreply, arm_idle_timer(next)}
-
       {:error, reason} ->
         next = Checkpoint.persist_failed(data, inflight, reason)
 

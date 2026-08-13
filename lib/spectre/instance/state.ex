@@ -36,11 +36,8 @@ defmodule Spectre.Instance.State do
     :checkpoint_store,
     :checkpoint_mode,
     :checkpoint_persisted,
-    :checkpoint_receipt,
     :checkpoint_reconciliation,
     :checkpoint_reconcile_inflight,
-    :history_policy,
-    :history_sink,
     :registry,
     :registry_monitor,
     scheduled: false,
@@ -69,9 +66,6 @@ defmodule Spectre.Instance.State do
     checkpoint_pending: nil,
     checkpoint_error: nil,
     checkpoint_waiters: [],
-    history_ack_sequence: 0,
-    history_ack_digest: nil,
-    history_last_error: nil,
     idle_generation: 0
   ]
 
@@ -100,11 +94,8 @@ defmodule Spectre.Instance.State do
           checkpoint_store: nil | {module(), keyword()},
           checkpoint_mode: :async | :manual,
           checkpoint_persisted: Canonical.t() | nil,
-          checkpoint_receipt: term(),
           checkpoint_reconciliation: map() | nil,
           checkpoint_reconcile_inflight: map() | nil,
-          history_policy: term(),
-          history_sink: term(),
           registry: atom(),
           registry_monitor: reference() | nil,
           scheduled: boolean(),
@@ -133,9 +124,6 @@ defmodule Spectre.Instance.State do
           checkpoint_pending: Canonical.t() | nil,
           checkpoint_error: term(),
           checkpoint_waiters: [{GenServer.from(), non_neg_integer()}],
-          history_ack_sequence: non_neg_integer(),
-          history_ack_digest: String.t() | nil,
-          history_last_error: term(),
           idle_generation: non_neg_integer()
         }
 end
