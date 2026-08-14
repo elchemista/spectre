@@ -544,8 +544,8 @@ defmodule SpectreSemanticCacheEdgeContractTest do
   } do
     for {mode, expected} <- [
           {:error, :index_write_failed},
-          {:raise, :semantic_cache_index_exception},
-          {:throw, :semantic_cache_index_failure}
+          {:raise, {:semantic_cache_index_exception, RuntimeError, "index write exploded"}},
+          {:throw, {:semantic_cache_index_failure, :throw, :index_write_thrown}}
         ] do
       assert :ok = SemanticCache.clear(@agent, opts)
 
@@ -567,13 +567,7 @@ defmodule SpectreSemanticCacheEdgeContractTest do
                  Keyword.put(failing_opts, :semantic_search?, true)
                )
 
-      case expected do
-        atom when atom in [:semantic_cache_index_exception, :semantic_cache_index_failure] ->
-          assert elem(reason, 0) == atom
-
-        atom ->
-          assert reason == atom
-      end
+      assert reason == expected
 
       refute_receive {:edge_embedding_call, "new query"}
     end

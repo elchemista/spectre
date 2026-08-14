@@ -284,7 +284,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Index do
 
       {:error, reason} ->
         discard_collection(collection)
-        {:error, reason}
+        {:error, normalize_index_error(reason)}
     end
   rescue
     exception ->
@@ -297,6 +297,20 @@ defmodule Spectre.Router.SemanticCache.Learned.Index do
       discard_collection(collection)
       {:error, {:semantic_cache_index_failure, kind, reason}}
   end
+
+  defp normalize_index_error(
+         {:index_exception, %{__struct__: module, __exception__: true} = exception}
+       )
+       when is_atom(module) do
+    {:semantic_cache_index_exception, module, Exception.message(exception)}
+  end
+
+  defp normalize_index_error({:index_exception, {kind, reason}})
+       when kind in [:error, :exit, :throw] do
+    {:semantic_cache_index_failure, kind, reason}
+  end
+
+  defp normalize_index_error(reason), do: reason
 
   defp discard_collection(collection) do
     Owner.drop_collection(collection)
