@@ -1,0 +1,9 @@
+defmodule <%= @module %>Test do
+  use ExUnit.Case, async: true
+
+  test "conforms to the public Stack package contract" do
+    assert {:ok, report} = Spectre.Stack.Conformance.run([<%= @module %>])
+    assert report.contract_version == Spectre.Stack.Conformance.contract_version()
+    assert report.package_count == 1
+  end
+end

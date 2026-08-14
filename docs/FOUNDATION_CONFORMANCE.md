@@ -1,23 +1,25 @@
 # Foundation Conformance
 
-Spectre 0.2.6 turns the compatibility boundary of the 0.2 foundations into an
-executable public contract. Applications and satellite packages can verify
+Spectre 0.3.1 exposes the compatibility boundary as an executable public
+contract. Applications and satellite packages can verify
 durable recovery and Stack composition without importing ExUnit or copying
 Spectre's internal schemas.
 
 ## Durable formats
 
 `Spectre.Foundation.Conformance.matrix/0` is the normative reader/writer
-matrix for the running release. In 0.2.6 it records:
+matrix for the running release:
 
 | Format | Writer | Readers |
 | --- | ---: | --- |
 | conversational State | 5 | 2, 3, 4, 5 |
 | Run checkpoint | 2 | 1, 2 |
-| canonical Instance checkpoint | 4 | 1, 2, 3, 4 |
+| format-tagged canonical Instance checkpoint | 2 | 2 |
 
-Readers migrate directly into the current core structs. Older formats do not
-create a parallel runtime model and writers never emit a legacy version.
+Run and State legacy readers migrate directly into current core structs. The
+Instance v2 family introduced in 0.3.0 is format-tagged and deliberately
+rejects retired untagged 0.2.x Instance schemas. Writers never emit a legacy
+version.
 
 Use the executable helpers in upgrade tests:
 
@@ -30,13 +32,57 @@ alias Spectre.Foundation.Conformance
 
 true = state_report.writer_version == 5
 true = run_report.writer_version == 2
-true = instance_report.writer_version == 4
+true = instance_report.writer_version == 2
 ```
+
+Durable adapters and offline tooling should bind the checkpoint to the stream
+they loaded, instead of accepting a structurally valid checkpoint from another
+Instance:
+
+```elixir
+{:ok, report} =
+  Conformance.verify_instance_checkpoint(stored_instance_json, instance_ref)
+
+{:ok, ^report} =
+  Conformance.verify_instance_checkpoint(stored_instance_json, instance_ref.key)
+```
+
+Passing a `Spectre.Instance.Ref` runs the complete Instance canonical validator,
+including subject-bound operation data. Passing a non-empty opaque key is the
+transport-oriented form: it verifies exactly the checkpoint's
+`correlations[:instance_key]` binding. It intentionally does not compare
+`flow.conversation_id`, because hosts may set that portable state scope through
+the runtime's `:state_conversation_id` option.
 
 Every report contains a digest of the current-writer representation. A report
 is evidence that decoding, migration, current validation, and re-encoding all
 succeeded; it does not replace the application's durable-store or restart
+tests. Spectre 0.3.1 also corrects the tagged-map writer to use a stable entry
+order. A 0.3.0 source checkpoint remains readable unchanged, while its report
+digest is derived from the corrected 0.3.1 current-writer representation.
+
+The append-only `0.2.6/foundation-conformance-v1.json` fixture still records
+the historical 0.2.6 matrix `Instance 4 / readers 1–4`. That evidence is not
+rewritten; it is distinct from the running 0.3.1 matrix above.
+
+## Checkpoint Store adapter contract
+
+`Spectre.Instance.CheckpointStore.Conformance.run/2` tests the public storage
+boundary with real, restorable, format-tagged Instance checkpoints. Given an
+empty isolated Ref, it verifies create and update writes, an exact retry with
+semantic readback, rejection of a divergent stale write, and one winner from
+two concurrent revision-three compare-and-swap attempts. A successful run
+leaves the winning revision three in the adapter.
+
+`read_after_restart/3` loads the same Ref through pre- and post-restart adapter
+configurations and compares the validated checkpoint digest. Both functions
+return data and have no ExUnit dependency, so adapter repositories can wrap
+them in their own framework. They intentionally do not certify process or
+database durability, distributed linearizability, legacy-key migration,
+credentials, migrations, or deployment topology; those remain package-owned
 tests.
+
+See [Testing](TESTING.md) for an executable adapter-suite example.
 
 ## Definition golden path
 
@@ -55,7 +101,7 @@ report.authority_digest
 report.closure_digest
 ```
 
-The compiled module-first path remains the golden authoring path in 0.2.x.
+The compiled module-first path remains the golden authoring path in 0.3.1.
 Runtime and generated definitions must lower into the same canonical envelope;
 they do not receive a second publication or activation model.
 

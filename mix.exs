@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.3.1"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
@@ -94,7 +94,7 @@ defmodule Spectre.MixProject do
       name: "spectre",
       maintainers: ["elchemista"],
       files:
-        ~w(lib docs mix.exs .formatter.exs README.md LLMS.md SYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
+        ~w(lib priv docs mix.exs .formatter.exs README.md LLMS.md SYSTEM.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE),
       licenses: ["Apache-2.0"],
       links: %{
         "Website" => @homepage_url,

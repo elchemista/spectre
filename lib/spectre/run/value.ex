@@ -112,8 +112,11 @@ defmodule Spectre.Run.Value do
       end
     end)
     |> case do
-      {:ok, entries} -> {:ok, %{@tag => "map", "entries" => Enum.reverse(entries)}}
-      {:error, _reason} = error -> error
+      {:ok, entries} ->
+        {:ok, %{@tag => "map", "entries" => canonical_map_entries(entries)}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -326,6 +329,19 @@ defmodule Spectre.Run.Value do
         {:ok, entry} -> {:cont, {:ok, Map.put(decoded, key, entry)}}
         {:error, _reason} = error -> {:halt, error}
       end
+    end)
+  end
+
+  # Map enumeration follows the VM's internal term order. In particular, atom
+  # indices depend on which modules were loaded first, so preserving that order
+  # would make otherwise identical portable values encode differently across
+  # BEAM instances. Encoded keys contain data only; deterministic external-term
+  # bytes provide a total ordering independent from VM atom/module load order
+  # without creating atoms.
+  @spec canonical_map_entries([[term()]]) :: [[term()]]
+  defp canonical_map_entries(entries) do
+    Enum.sort_by(entries, fn [encoded_key, _encoded_value] ->
+      :erlang.term_to_binary(encoded_key, [:deterministic])
     end)
   end
 

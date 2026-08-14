@@ -96,7 +96,7 @@ defmodule SpectreDefinitionCanonicalTest do
   alias SpectreDefinitionCanonicalTest.UnsafePromptAgent
 
   test "release identifies the complete reflective runtime" do
-    assert Spectre.version() == "0.3.0"
+    assert Spectre.version() == "0.3.1"
   end
 
   test "compiled Agent and mounted Skill lower into one portable canonical envelope" do

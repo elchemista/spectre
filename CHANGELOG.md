@@ -2,7 +2,92 @@
 
 All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
-minor release may contain documented breaking API changes.
+minor release may contain documented breaking API changes. Patch releases
+preserve the documented safe contract; they may tighten behavior that violated
+an already-published security or privacy invariant, with the correction and
+migration called out explicitly below.
+
+## 0.3.1 — 2026-08-13
+
+### Added
+
+- Added `Spectre.Instance.CheckpointStore.Conformance`, an
+  ExUnit-independent adapter contract that exercises canonical create and
+  update writes, exact retry/readback, stale-write rejection, a concurrent
+  compare-and-swap single-winner race, semantic validation, and restart
+  readback through the public Checkpoint Store boundary.
+- Added the read-only `Spectre.Doctor` contract, stable privacy-safe
+  `Spectre.Doctor.Report`, and `mix spectre.doctor`. Doctor verifies the
+  running versions and Foundation matrix and can inspect an Agent, Stack or
+  package matrix, and Checkpoint Store callback shape without starting package
+  resources or invoking store I/O. Text and JSON output share contract version
+  1; strict mode turns warnings into a failing command result.
+- Added guarded generators for a minimal Agent, Stack Installable, and
+  process-local development Checkpoint Store, each with an executable public
+  contract test. The generators support dry runs and explicit regular-file
+  replacement while rejecting invalid module aliases and unsafe filesystem
+  targets.
+
+### Changed
+
+- Canonicalized tagged map entries produced by `Spectre.Run.Value` and
+  `Spectre.State.Codec` before they enter State, Run, or Instance checkpoints.
+  The 0.3.0 writers preserved BEAM map enumeration order, which can depend on
+  module and atom load order and could therefore give the same portable
+  checkpoint different Foundation digests in separate VMs. Existing readers
+  remain unchanged and accept the previously emitted entry order; 0.3.1
+  writers now emit one stable order.
+- Routed Definition activation through the existing Instance canonical commit
+  seam before the established durable checkpoint barrier. Activation keeps the
+  same owner, generation, authority, and persistence fences; no parallel state
+  or history model was introduced.
+- Hardened Instance observability so telemetry measurements remain numeric,
+  Instance and event identifiers are represented by stable digests, and raw
+  adapter failures are reduced to reason classes. The configured telemetry
+  callback and optional `:telemetry` sink are failure-isolated from one another
+  and from the runtime. This is a privacy and telemetry-contract correction:
+  consumers that matched the unsafe 0.3.0 payload shape must read identifiers
+  and reason classes from metadata instead of relying on raw terms or
+  non-numeric measurements.
+- Made `Spectre.Instance.info/1` and `Spectre.checkpoint_status/1` passive
+  monitoring reads. Checkpoint status now exposes a redacted error class and
+  reconciliation projection instead of raw adapter reasons; Monitor logs also
+  classify failures and digest caller identifiers. Code that matched a raw
+  `checkpoint_status().error` term must migrate to the stable error class; raw
+  adapter reasons are deliberately no longer a public diagnostic value. Direct
+  host-facing state and domain reads remain activity and re-arm the idle timer.
+- Added `outcome: :failed | :ambiguous` to `:checkpoint_failed` telemetry so an
+  abnormal checkpoint task exit or another reconciliation-fenced result is not
+  mistaken for a proven terminal write failure. The event suffix remains
+  unchanged for consumer compatibility. Healthy checkpoint status now also
+  preserves `error: nil` instead of fabricating an `:error` class.
+- Updated the normative public API manifest, operational guidance, testing
+  guide, and release metadata for `0.3.1`. The patch retains the opt-in
+  `:required` operation-trigger correlation policy; the default remains
+  `:legacy` for patch-release compatibility.
+
+### Compatibility correction
+
+- The observability hardening above removes no public callable and enforces the
+  privacy-safe telemetry promise already documented by 0.3.0. Raw identifiers,
+  adapter errors, and non-numeric measurements were an implementation defect,
+  not a supported observability contract. The patch intentionally stops
+  exposing those values and documents the safe replacement fields.
+
+- Corrected the Instance compatibility statement published with 0.3.0. The
+  released 0.3.0 codec emits and accepts only the distinct
+  `"spectre/instance-checkpoint"` format-tagged Instance checkpoint version 2;
+  it does not read the retired untagged 0.2.x Instance schemas 1 through 4.
+  Spectre 0.3.1 preserves that shipped behavior and freezes an actual 0.3.0
+  version-2 fixture instead of claiming an unimplemented migration.
+- State remains writer 5 with readers 2 through 5, and Run remains writer 2
+  with readers 1 and 2. The append-only 0.2.x fixtures and the original 0.3.0
+  release notes remain historical evidence; this erratum does not rewrite
+  them, add an implicit legacy decoder, or add a second durable record format.
+- Foundation digests are identities of the current-writer representation, not
+  hashes of the source bytes. Re-verifying a 0.3.0 checkpoint under 0.3.1 can
+  therefore produce the corrected canonical-map digest while preserving the
+  decoded checkpoint and its revision.
 
 ## 0.3.0 — 2026-08-12
 

@@ -206,6 +206,11 @@ defmodule Spectre.Instance do
 
   @doc """
   Returns a privacy-safe operational view of the Instance scheduler.
+
+  This is a passive monitoring read and does not extend the Instance idle
+  lifetime. `trace_id/1` is derived from this projection and is passive too.
+  Direct host reads such as state, `ref/1`, `agent/1`, lifecycle, and retained
+  records remain activity and re-arm the idle timer.
   """
   @spec info(GenServer.server()) :: map()
   def info(server), do: GenServer.call(server, :instance_info)
@@ -542,7 +547,12 @@ defmodule Spectre.Instance do
     GenServer.call(server, :flush_canonical_checkpoint, timeout(opts))
   end
 
-  @doc "Returns the redacted status of canonical checkpoint persistence."
+  @doc """
+  Returns the redacted status of canonical checkpoint persistence.
+
+  This is a passive monitoring read and does not extend the Instance idle
+  lifetime.
+  """
   @spec checkpoint_status(GenServer.server()) :: map()
   def checkpoint_status(server), do: GenServer.call(server, :canonical_checkpoint_status)
 
@@ -1001,7 +1011,7 @@ defmodule Spectre.Instance do
   end
 
   def handle_call(:instance_info, _from, data) do
-    {:reply, info_projection(data), arm_idle_timer(data)}
+    {:reply, info_projection(data), data}
   end
 
   def handle_call({:instance_run, run_id}, _from, data) do
@@ -1250,11 +1260,11 @@ defmodule Spectre.Instance do
       persisted_revision: data.checkpoint_revision,
       inflight_revision: data.checkpoint_inflight && data.checkpoint_inflight.revision,
       pending_revision: data.checkpoint_pending && data.checkpoint_pending.revision,
-      error: data.checkpoint_error,
+      error: checkpoint_error_class(data.checkpoint_error),
       reconciliation_required: Checkpoint.reconciliation_status(data.checkpoint_reconciliation)
     }
 
-    {:reply, status, arm_idle_timer(data)}
+    {:reply, status, data}
   end
 
   def handle_call(:flush_canonical_checkpoint, from, data) do
@@ -1498,7 +1508,7 @@ defmodule Spectre.Instance do
         {:noreply, receive_advance_result(data, active, outcome)}
 
       _stale ->
-        emit(:stale_move_result, data, %{count: 1, run_id: run_id})
+        emit(:stale_move_result, data, %{count: 1}, %{run_id: id_digest(run_id)})
         {:noreply, data}
     end
   end
@@ -1518,7 +1528,13 @@ defmodule Spectre.Instance do
         {:noreply, apply_step(receipt.outcome, ownership.entry, data)}
 
       {:error, _reason} ->
-        emit(:stale_invocation_result, data, %{count: 1, invocation_id: invocation_id})
+        emit(
+          :stale_invocation_result,
+          data,
+          %{count: 1},
+          %{invocation_id: id_digest(invocation_id)}
+        )
+
         {:noreply, data}
     end
   end
@@ -1538,7 +1554,13 @@ defmodule Spectre.Instance do
   def handle_info({:spectre, :operation_result, %OperationResult{} = result}, data) do
     case Map.get(data.operation_runners, result.attempt_id) do
       nil ->
-        emit(:stale_operation_result, data, %{count: 1, loop_id: result.loop_id})
+        emit(
+          :stale_operation_result,
+          data,
+          %{count: 1},
+          %{loop_id: id_digest(result.loop_id)}
+        )
+
         {:noreply, data}
 
       ownership ->
@@ -1580,11 +1602,15 @@ defmodule Spectre.Instance do
             {:noreply, next}
 
           {:error, reason} ->
-            emit(:rejected_operation_result, data, %{
-              count: 1,
-              loop_id: result.loop_id,
-              reason: reason_class(reason)
-            })
+            emit(
+              :rejected_operation_result,
+              data,
+              %{count: 1},
+              %{
+                loop_id: id_digest(result.loop_id),
+                reason_class: reason_class(reason)
+              }
+            )
 
             {:noreply, reject_operation_result(data, ownership, result, reason)}
         end
@@ -1732,13 +1758,23 @@ defmodule Spectre.Instance do
       :ok ->
         next = Checkpoint.persisted(data, inflight, revision)
 
-        emit(:checkpoint_persisted, next, %{count: 1, revision: revision})
+        emit(:checkpoint_persisted, next, %{count: 1}, %{revision: revision})
         {:noreply, arm_idle_timer(next)}
 
       {:error, reason} ->
         next = Checkpoint.persist_failed(data, inflight, reason)
 
-        emit(:checkpoint_failed, next, %{count: 1, revision: revision})
+        emit(
+          :checkpoint_failed,
+          next,
+          %{count: 1},
+          %{
+            revision: revision,
+            reason_class: reason_class(reason),
+            outcome: checkpoint_failure_outcome(next)
+          }
+        )
+
         {:noreply, arm_idle_timer(next)}
     end
   end
@@ -1752,12 +1788,19 @@ defmodule Spectre.Instance do
     case Checkpoint.apply_reconciliation(data, result) do
       {:ok, next, revision} ->
         GenServer.reply(from, {:ok, revision})
-        emit(:checkpoint_reconciled, next, %{count: 1, revision: revision})
+        emit(:checkpoint_reconciled, next, %{count: 1}, %{revision: revision})
         {:noreply, arm_idle_timer(next)}
 
       {:error, next, reason} ->
         GenServer.reply(from, {:error, reason})
-        emit(:checkpoint_reconciliation_failed, next, %{count: 1})
+
+        emit(
+          :checkpoint_reconciliation_failed,
+          next,
+          %{count: 1},
+          %{reason_class: reason_class(reason)}
+        )
+
         {:noreply, arm_idle_timer(next)}
     end
   end
@@ -1830,7 +1873,7 @@ defmodule Spectre.Instance do
         data
 
       {:error, _reason} ->
-        emit(:invalid_move_result, data, %{count: 1, run_id: active.run_id})
+        emit(:invalid_move_result, data, %{count: 1}, %{run_id: id_digest(active.run_id)})
         data
     end
   end
@@ -2024,11 +2067,15 @@ defmodule Spectre.Instance do
         |> Map.put(:workers, Map.put(data.workers, pid, worker))
         |> disarm_idle_timer()
 
-      emit(:invocation_dispatched, next, %{
-        count: 1,
-        run_id: run.id,
-        invocation_id: invocation.id
-      })
+      emit(
+        :invocation_dispatched,
+        next,
+        %{count: 1},
+        %{
+          run_id: id_digest(run.id),
+          invocation_id: id_digest(invocation.id)
+        }
+      )
 
       {:noreply, next}
     else
@@ -2205,7 +2252,12 @@ defmodule Spectre.Instance do
               Runs.terminal_run?(run) ->
                 data
                 |> reply_caller(run.id, {:error, reason})
-                |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
+                |> tap(
+                  &emit(:run_failed, &1, %{count: 1}, %{
+                    run_id: id_digest(run.id),
+                    reason_class: reason_class(reason)
+                  })
+                )
                 |> Runs.record_terminal(run)
                 |> maybe_schedule()
                 |> arm_idle_timer()
@@ -2216,7 +2268,12 @@ defmodule Spectre.Instance do
                 data
                 |> Runs.put_run(failed)
                 |> reply_caller(run.id, {:error, reason})
-                |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id}))
+                |> tap(
+                  &emit(:run_failed, &1, %{count: 1}, %{
+                    run_id: id_digest(run.id),
+                    reason_class: reason_class(reason)
+                  })
+                )
                 |> Runs.record_terminal(failed)
                 |> maybe_schedule()
                 |> arm_idle_timer()
@@ -2227,7 +2284,12 @@ defmodule Spectre.Instance do
                 data
                 |> Runs.put_run(degraded)
                 |> reply_caller(run.id, {:error, reason})
-                |> tap(&emit(:run_move_degraded, &1, %{count: 1, run_id: run.id}))
+                |> tap(
+                  &emit(:run_move_degraded, &1, %{count: 1}, %{
+                    run_id: id_digest(run.id),
+                    reason_class: reason_class(reason)
+                  })
+                )
                 |> maybe_finalize_degraded_run(degraded)
                 |> maybe_schedule()
                 |> arm_idle_timer()
@@ -2235,7 +2297,12 @@ defmodule Spectre.Instance do
               true ->
                 data
                 |> reply_caller(run.id, {:error, reason})
-                |> tap(&emit(:run_resume_rejected, &1, %{count: 1, run_id: run.id}))
+                |> tap(
+                  &emit(:run_resume_rejected, &1, %{count: 1}, %{
+                    run_id: id_digest(run.id),
+                    reason_class: reason_class(reason)
+                  })
+                )
                 |> maybe_schedule()
                 |> arm_idle_timer()
             end
@@ -2359,7 +2426,12 @@ defmodule Spectre.Instance do
     data
     |> Runs.put_run(failed)
     |> reply_caller(run.id, {:error, reason})
-    |> tap(&emit(:run_failed, &1, %{count: 1, run_id: run.id, reason: reason}))
+    |> tap(
+      &emit(:run_failed, &1, %{count: 1}, %{
+        run_id: id_digest(run.id),
+        reason_class: reason_class(reason)
+      })
+    )
     |> Runs.record_terminal(failed)
     |> maybe_schedule()
     |> arm_idle_timer()
@@ -2656,7 +2728,13 @@ defmodule Spectre.Instance do
     data = Runs.prune_for_new_run(data)
 
     if map_size(data.runs) >= data.max_runs do
-      emit(:operation_event_route_dropped, data, %{count: 1, event_id: event.id})
+      emit(
+        :operation_event_route_dropped,
+        data,
+        %{count: 1},
+        %{event_id: id_digest(event.id)}
+      )
+
       data
     else
       input = OperationEvent.to_input(event)
@@ -2703,11 +2781,15 @@ defmodule Spectre.Instance do
           end
 
         {:error, reason} ->
-          emit(:operation_event_route_rejected, data, %{
-            count: 1,
-            event_id: event.id,
-            reason: reason_class(reason)
-          })
+          emit(
+            :operation_event_route_rejected,
+            data,
+            %{count: 1},
+            %{
+              event_id: id_digest(event.id),
+              reason_class: reason_class(reason)
+            }
+          )
 
           data
       end
@@ -2836,11 +2918,15 @@ defmodule Spectre.Instance do
       |> Timers.maybe_schedule_wait_timer(next_loop)
     else
       {:error, reason} ->
-        emit(:operation_control_failed, data, %{
-          count: 1,
-          loop_id: loop.id,
-          reason: reason_class(reason)
-        })
+        emit(
+          :operation_control_failed,
+          data,
+          %{count: 1},
+          %{
+            loop_id: id_digest(loop.id),
+            reason_class: reason_class(reason)
+          }
+        )
 
         data
     end
@@ -2861,11 +2947,15 @@ defmodule Spectre.Instance do
       |> Timers.maybe_schedule_wait_timer(next_loop)
     else
       {:error, reason} ->
-        emit(:operation_evaluation_failed, data, %{
-          count: 1,
-          loop_id: loop.id,
-          reason: reason_class(reason)
-        })
+        emit(
+          :operation_evaluation_failed,
+          data,
+          %{count: 1},
+          %{
+            loop_id: id_digest(loop.id),
+            reason_class: reason_class(reason)
+          }
+        )
 
         data
     end
@@ -2895,11 +2985,15 @@ defmodule Spectre.Instance do
             )
 
           {:error, reason} ->
-            emit(:operation_prepare_failed, data, %{
-              count: 1,
-              loop_id: loop.id,
-              reason: reason_class(reason)
-            })
+            emit(
+              :operation_prepare_failed,
+              data,
+              %{count: 1},
+              %{
+                loop_id: id_digest(loop.id),
+                reason_class: reason_class(reason)
+              }
+            )
 
             data
         end
@@ -2920,11 +3014,15 @@ defmodule Spectre.Instance do
         end
 
       {:error, reason} ->
-        emit(:operation_prepare_failed, data, %{
-          count: 1,
-          loop_id: loop.id,
-          reason: reason_class(reason)
-        })
+        emit(
+          :operation_prepare_failed,
+          data,
+          %{count: 1},
+          %{
+            loop_id: id_digest(loop.id),
+            reason_class: reason_class(reason)
+          }
+        )
 
         data
     end
@@ -2937,11 +3035,15 @@ defmodule Spectre.Instance do
       do_start_operation_runner(data, loop, control, attempt, spec, request, reconcile?)
     else
       {:error, reason} ->
-        emit(:operation_dispatch_blocked, data, %{
-          count: 1,
-          loop_id: loop.id,
-          reason: reason_class(reason)
-        })
+        emit(
+          :operation_dispatch_blocked,
+          data,
+          %{count: 1},
+          %{
+            loop_id: id_digest(loop.id),
+            reason_class: reason_class(reason)
+          }
+        )
 
         data
     end
@@ -3445,15 +3547,46 @@ defmodule Spectre.Instance do
   # message is reduced; an abnormal DOWN has no trustworthy commit outcome.
   defp checkpoint_task_down(data, :normal), do: data
 
-  defp checkpoint_task_down(data, reason),
-    do: data |> Checkpoint.task_down(reason) |> arm_idle_timer()
+  defp checkpoint_task_down(data, reason) do
+    revision = data.checkpoint_inflight && data.checkpoint_inflight.revision
+    next = Checkpoint.task_down(data, reason)
+
+    emit(
+      :checkpoint_failed,
+      next,
+      %{count: 1},
+      %{
+        revision: revision,
+        reason_class: reason_class(reason),
+        outcome: checkpoint_failure_outcome(next)
+      }
+    )
+
+    arm_idle_timer(next)
+  end
 
   defp checkpoint_reconciliation_task_down(data, :normal), do: data
 
-  defp checkpoint_reconciliation_task_down(data, reason),
-    do: data |> Checkpoint.reconciliation_task_down(reason) |> arm_idle_timer()
+  defp checkpoint_reconciliation_task_down(data, reason) do
+    next = Checkpoint.reconciliation_task_down(data, reason)
+
+    emit(
+      :checkpoint_reconciliation_failed,
+      next,
+      %{count: 1},
+      %{reason_class: reason_class(reason)}
+    )
+
+    arm_idle_timer(next)
+  end
 
   defp reason_class(reason), do: InstanceTelemetry.reason_class(reason)
+
+  defp checkpoint_error_class(nil), do: nil
+  defp checkpoint_error_class(reason), do: reason_class(reason)
+
+  defp checkpoint_failure_outcome(%InstanceState{checkpoint_reconciliation: nil}), do: :failed
+  defp checkpoint_failure_outcome(%InstanceState{}), do: :ambiguous
 
   defp normalize_event_limit(value) when is_integer(value) and value >= 0,
     do: min(value, @operation_event_limit)
@@ -3686,31 +3819,26 @@ defmodule Spectre.Instance do
     with :ok <- owner_guard(data, :activation_commit),
          :ok <- activation_checkpoint_ready(data),
          {:ok, lifecycles} <- Events.activation_lifecycles(data, activation),
-         {:ok, snapshot} <-
-           Canonical.snapshot(data.canonical,
-             read: [:activation, :correlations, :lifecycles, :skill_states],
-             write: [:activation, :correlations, :lifecycles, :skill_states],
-             correlation_id: activation.activation_receipt,
-             causation_id: CandidateRef.to_string(activation.candidate_ref)
-           ),
-         {:ok, change} <-
-           Canonical.change(
-             snapshot,
+         {:ok, committed} <-
+           Commit.canonical_sections(
+             data,
              %{
                activation: activation,
                correlations: owner_fenced_correlations(data),
                lifecycles: lifecycles,
                skill_states: skill_states
              },
+             correlation_id: activation.activation_receipt,
+             causation_id: CandidateRef.to_string(activation.candidate_ref),
              provenance: %{source: :activation, instance_ref: data.ref.key},
              metadata: %{
                transition: :definition_activated,
                activation_generation: activation.generation,
                authority_epoch: activation.authority_epoch
-             }
+             },
+             checkpoint: :defer
            ),
-         {:ok, canonical, _transition} <- Canonical.commit(data.canonical, change),
-         {:ok, persisted} <- persist_activation_checkpoint(data, canonical) do
+         {:ok, persisted} <- persist_activation_checkpoint(committed, committed.canonical) do
       _ =
         Spectre.Journal.record(
           data.agent,
@@ -3725,7 +3853,7 @@ defmodule Spectre.Instance do
           data.base_opts
         )
 
-      {:ok, %{persisted | canonical: canonical, activation: activation}}
+      {:ok, %{persisted | activation: activation}}
     end
   end
 
@@ -4241,8 +4369,10 @@ defmodule Spectre.Instance do
     end)
   end
 
-  defp emit(event, data, measurements),
-    do: InstanceTelemetry.emit(event, data, measurements)
+  defp emit(event, data, measurements, metadata \\ %{}),
+    do: InstanceTelemetry.emit(event, data, measurements, metadata)
+
+  defp id_digest(value), do: InstanceTelemetry.id_digest(value)
 
   defp maybe_emit_uncorrelated_operation_trigger(data, events) do
     if Enum.any?(events, fn event ->

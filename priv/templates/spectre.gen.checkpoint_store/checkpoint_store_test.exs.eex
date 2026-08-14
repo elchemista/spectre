@@ -1,0 +1,23 @@
+defmodule <%= @module %>Test do
+  use ExUnit.Case, async: true
+
+  alias Spectre.AgentRef
+  alias Spectre.Instance.CheckpointStore.Conformance
+  alias Spectre.Instance.Ref
+  alias Spectre.Subject
+
+  test "conforms to the public Instance CheckpointStore contract" do
+    server = start_supervised!({Agent, fn -> %{} end})
+
+    ref =
+      Ref.new(
+        AgentRef.from_id("<%= @module %>"),
+        Subject.new({"checkpoint-store-conformance", Spectre.Identity.uuid7()})
+      )
+
+    assert {:ok, report} = Conformance.run({<%= @module %>, server: server}, ref)
+    assert report.revision == 3
+    assert report.stale_write == :rejected
+    assert report.concurrent_cas == :single_winner
+  end
+end

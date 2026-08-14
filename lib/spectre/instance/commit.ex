@@ -41,7 +41,15 @@ defmodule Spectre.Instance.Commit do
   @spec canonical_sections(InstanceState.t(), map(), keyword()) ::
           {:ok, InstanceState.t()} | {:error, term()}
   def canonical_sections(%InstanceState{} = data, writes, opts) do
-    writes = put_owner_fencing_token(data, writes)
+    with {:ok, checkpoint_mode} <- canonical_checkpoint_mode(opts) do
+      writes = put_owner_fencing_token(data, writes)
+      do_canonical_sections(data, writes, opts, checkpoint_mode)
+    end
+  end
+
+  @spec do_canonical_sections(InstanceState.t(), map(), keyword(), :enqueue | :defer) ::
+          {:ok, InstanceState.t()} | {:error, term()}
+  defp do_canonical_sections(data, writes, opts, checkpoint_mode) do
     names = Map.keys(writes)
 
     with :ok <-
@@ -61,10 +69,23 @@ defmodule Spectre.Instance.Commit do
          {:ok, canonical, _transition} <- Canonical.commit(data.canonical, change) do
       next = %{data | canonical: canonical}
 
-      case Map.fetch(writes, :flow) do
-        {:ok, %State{} = state} -> {:ok, Checkpoint.maybe_enqueue(%{next | state: state})}
-        :error -> {:ok, Checkpoint.maybe_enqueue(next)}
+      next =
+        case Map.fetch(writes, :flow) do
+          {:ok, %State{} = state} -> %{next | state: state}
+          :error -> next
+        end
+
+      case checkpoint_mode do
+        :enqueue -> {:ok, Checkpoint.maybe_enqueue(next)}
+        :defer -> {:ok, next}
       end
+    end
+  end
+
+  defp canonical_checkpoint_mode(opts) do
+    case Keyword.get(opts, :checkpoint, :enqueue) do
+      mode when mode in [:enqueue, :defer] -> {:ok, mode}
+      mode -> {:error, {:invalid_canonical_commit_checkpoint_mode, mode}}
     end
   end
 

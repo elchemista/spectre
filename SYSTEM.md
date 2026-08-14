@@ -1,6 +1,6 @@
 # The Spectre System
 
-Spectre `0.2.6` is an OTP-native kernel for building conversational and
+Spectre `0.3.1` is an OTP-native kernel for building conversational and
 operational agents in Elixir. It is deliberately not a package that owns every
 model, tool, memory store, browser, transport, and workflow. Those capabilities
 live in focused libraries that integrate through explicit, versioned contracts.
@@ -69,7 +69,13 @@ what lets optional libraries compose without competing for ownership.
 | `Spectre.Skill.StateBinding` | Generation- and branch-fenced private Skill state | Spectre Instance sequencer |
 | `Spectre.Foundation.Conformance` | Executable durable-format and Definition compatibility gate | Spectre core |
 | `Spectre.Stack.Conformance` | Whole-ecosystem package compatibility and collision gate | Spectre core + package tests |
+| `Spectre.Instance.CheckpointStore.Conformance` | Adapter-neutral canonical checkpoint CAS and restart gate | Spectre core + adapter tests |
+| `Spectre.Doctor` | Read-only runtime, Foundation, Agent, Stack, package, and adapter-shape diagnostics | Spectre core |
 | `Spectre.Projection.Audit` | Exact deterministic view of a canonical Definition | Spectre core |
+| `Spectre.Experience` | Opt-in redacted observational evidence, separate from canonical Instance state | trusted host + Spectre core |
+| `Spectre.Reflection` | Policy-gated deterministic projection of declared, effective, and observed facts | trusted host + Spectre core |
+| `Spectre.Forge` | Inert, evidence-bound proposals that cannot publish, approve, or activate | trusted host + compiled critics |
+| `Spectre.Morph` | Host-facing facade over the existing governed Definition-change path | trusted host + Spectre core |
 | `Spectre.Subject` | Canonical application identity, independent of a channel identity | host application |
 | `Spectre.Instance` | Local canonical owner for one `AgentRef + Subject` | Spectre core |
 | `Spectre.Turn` | Public projection of the next observable conversational boundary | Spectre core |
@@ -146,23 +152,23 @@ observation loop between triggers); **Work** is exactly what it says (a
 bounded, terminating operational procedure); a **Subject** is who the work is
 about; an **Instance** is the process that owns both for that Subject.
 
-## Core 0.3.0 and satellite compatibility
+## Core 0.3.1 and satellite compatibility
 
 The stable Spectre core is distributed through Hex:
 
 ```elixir
-{:spectre, "~> 0.3.0"}
+{:spectre, "~> 0.3.1"}
 ```
 
 The satellite releases listed below belong to the historical `0.2.x` release
 train. They remain owned and versioned by their repositories and must not be
-assumed compatible with core `0.3.0` until their manifests and adapter suites
+assumed compatible with core `0.3.1` until their manifests and adapter suites
 say so. This separation is intentional: installing the new core never silently
 upgrades another `spectre_*` package.
 
 | Package | Release | Spectre requirement |
 | --- | ---: | ---: |
-| `spectre` | `0.3.0` | — |
+| `spectre` | `0.3.1` | — |
 | `spectre_beam` | `0.2.0` | `~> 0.2.0` |
 | `spectre_directive` | `0.2.0` | `~> 0.2.0` |
 | `spectre_kinetic` | `0.2.0` | `~> 0.2.0` |
@@ -702,11 +708,14 @@ An ecosystem package should preserve these boundaries:
 These rules are what make a collection of libraries an ecosystem rather than
 a bundle of unrelated integrations.
 
-## Validate The Sibling Repositories
+## Validate The Historical 0.2.x Sibling Repositories
 
-Each package accepts `SPECTRE_PATH` for local compatibility testing. Pulse also
-accepts paths for all satellite packages and runs the complete seven-package
-Stack conformance test:
+The following command documents the historical `0.2.x` satellite train. It
+requires a Spectre core checkout from that same train; do not point these
+packages at the `0.3.1` core and treat a compile as proof of compatibility.
+Each historical package accepts `SPECTRE_PATH` for local compatibility testing.
+Pulse also accepts paths for all satellite packages and runs the complete
+seven-package Stack conformance test:
 
 ```bash
 SPECTRE_PATH=../spectre \
@@ -719,10 +728,11 @@ SPECTRE_PRISM_PATH=../spectre_prism \
 mix test
 ```
 
-Run that command from `spectre_pulse`. Run `SPECTRE_PATH=../spectre mix test`
-from every other sibling repository. The path dependency must report version
-`0.2.0`; a stale `~> 0.1.x` requirement is an incompatibility, even if the
-source code would otherwise compile.
+Run that command from `spectre_pulse` with a core checkout reporting `0.2.0`.
+Run `SPECTRE_PATH=../spectre mix test` from every other historical sibling
+repository under the same constraint. New satellites targeting core `0.3.1`
+must instead declare that requirement in their Installable manifest and test
+against the local `0.3.1` checkout plus the published package independently.
 
 ## Further Reading
 

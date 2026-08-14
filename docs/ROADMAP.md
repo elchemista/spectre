@@ -1,10 +1,23 @@
 # Roadmap
 
 Spectre remains a focused OTP-native runtime rather than a framework that owns
-application business logic. Version `0.3.0` completes the core governed
+application business logic. Version `0.3.1` hardens the core governed
 reflective-runtime concept on one canonical Definition and one operational
 runtime; future work extends adapters and distributed integration without
 adding a second owner for Agent or operational state.
+
+## 0.3.1 foundation, diagnostics, and satellite boundaries
+
+The patch release keeps State writer/readers `5 / [2, 3, 4, 5]`, Run
+`2 / [1, 2]`, and the format-tagged Instance checkpoint `2 / [2]`. It freezes
+a real 0.3.0 Instance fixture, centralizes activation through the existing
+Instance commit seam, adds adapter-neutral CheckpointStore conformance,
+read-only Doctor diagnostics, privacy-safe telemetry hardening, and generators
+only for stable core boundaries.
+
+`spectre_ledger` is intended to integrate as a Checkpoint Store/Stack package,
+and `spectre_lab` is intended to consume verified core artifacts. Neither adds
+a second owner or a speculative History model to the core.
 
 ## 0.3.0 reflective runtime — complete in core
 
@@ -16,8 +29,10 @@ publish, approve or activate and has no vocabulary for code, authority,
 kernel policy, evaluators or projection generators.
 
 The permanent reflective fixture and executable conformance helpers pin the
-new identities. State remains writer v5, Run writer v2 and canonical Instance
-checkpoints schema 4; all historical guaranteed fixtures remain readable.
+new identities. The released 0.3.0 code emits and reads only its format-tagged
+Instance schema 2. Retired untagged Instance fixtures remain historical
+evidence but are not inputs to that reader.
+
 Concrete sibling-package adoption remains in those repositories and is not a
 second core runtime gate.
 

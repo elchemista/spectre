@@ -1037,7 +1037,7 @@ defmodule SpectreReflectiveRuntimeTest do
     assert proposal_digest == proposal.digest
 
     matrix = Conformance.matrix()
-    assert matrix.release == "0.3.0"
+    assert matrix.release == "0.3.1"
     assert matrix.reflection.reflection_projection == 1
     assert matrix.forge.proposal_schema == 1
 

@@ -5,7 +5,8 @@ defmodule Spectre.State.Codec do
   The codec accepts JSON text or database-style maps with string keys. It
   validates state, effect, and awaitable lifecycle enums and rejects unknown
   fields instead of silently dropping them. Arbitrary nested terms are encoded
-  through explicit tagged JSON values; decoding never creates atoms.
+  through explicit tagged JSON values with deterministic map-entry order;
+  decoding never creates atoms.
   """
 
   alias Spectre.Awaitable
@@ -619,8 +620,11 @@ defmodule Spectre.State.Codec do
       end
     end)
     |> case do
-      {:ok, entries} -> {:ok, %{"$spectre" => "map", "entries" => Enum.reverse(entries)}}
-      {:error, _reason} = error -> error
+      {:ok, entries} ->
+        {:ok, %{"$spectre" => "map", "entries" => canonical_map_entries(entries)}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -704,6 +708,13 @@ defmodule Spectre.State.Codec do
   end
 
   defp decode_value(value), do: {:error, {:invalid_encoded_state_value, value_shape(value)}}
+
+  @spec canonical_map_entries([[term()]]) :: [[term()]]
+  defp canonical_map_entries(entries) do
+    Enum.sort_by(entries, fn [encoded_key, _encoded_value] ->
+      :erlang.term_to_binary(encoded_key, [:deterministic])
+    end)
+  end
 
   @spec encode_list(list(), (term() -> {:ok, term()} | {:error, term()})) ::
           {:ok, list()} | {:error, term()}

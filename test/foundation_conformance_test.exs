@@ -56,7 +56,12 @@ defmodule SpectreFoundationConformanceTest do
 
   alias Spectre.Definition
   alias Spectre.Foundation.Conformance
+  alias Spectre.Instance.Canonical
+  alias Spectre.Instance.Canonical.Codec, as: InstanceCodec
+  alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Stack.Conformance, as: StackConformance
+  alias Spectre.State
+  alias Spectre.Subject
 
   alias SpectreFoundationConformanceTest.Agent
   alias SpectreFoundationConformanceTest.ConsumerPackage
@@ -182,6 +187,31 @@ defmodule SpectreFoundationConformanceTest do
     assert fixture_report.manifest_contract == 2
     assert compiled_report.manifest_contract == 2
     assert compiled_report.definition_ref =~ "sha256:"
+  end
+
+  test "the Instance checkpoint gate binds either a full Ref or its opaque key" do
+    ref = InstanceRef.new(Agent, Subject.new("foundation-checkpoint-subject"))
+    checkpoint = instance_checkpoint!(ref, "host-defined-state-scope")
+
+    assert {:ok, ref_report} =
+             Conformance.verify_instance_checkpoint(checkpoint, ref)
+
+    assert {:ok, key_report} =
+             Conformance.verify_instance_checkpoint(checkpoint, ref.key)
+
+    assert ref_report == key_report
+    assert ref_report.format == :instance
+
+    wrong_ref = InstanceRef.new(Agent, Subject.new("another-foundation-subject"))
+
+    assert {:error, :canonical_checkpoint_instance_mismatch} =
+             Conformance.verify_instance_checkpoint(checkpoint, wrong_ref)
+
+    assert {:error, :canonical_checkpoint_instance_mismatch} =
+             Conformance.verify_instance_checkpoint(checkpoint, "another-instance-key")
+
+    assert {:error, {:invalid_foundation_instance_identity, :binary}} =
+             Conformance.verify_instance_checkpoint(checkpoint, "")
   end
 
   test "the Stack matrix validates compatibility, ordering, and cross-package ownership" do
@@ -328,6 +358,22 @@ defmodule SpectreFoundationConformanceTest do
         ] do
       Code.ensure_loaded!(module)
     end
+  end
+
+  defp instance_checkpoint!(ref, state_conversation_id) do
+    {:ok, canonical} =
+      Canonical.new(%{
+        flow: %State{conversation_id: state_conversation_id},
+        work: %{},
+        vigil: %{},
+        directive: %{},
+        control: %{},
+        correlations: %{instance_key: ref.key},
+        events: %{records: [], ids: %{}}
+      })
+
+    {:ok, checkpoint} = InstanceCodec.encode_json(canonical)
+    checkpoint
   end
 
   defp fixture(path), do: Path.join(@fixtures, path)

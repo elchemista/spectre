@@ -10,6 +10,10 @@ application-level authorization, persistence, queues, or observability.
 suite exceeds 90% line coverage, but public APIs may still change in a minor
 `0.x` release. Pin a compatible minor version and read `CHANGELOG.md` before
 upgrading. The exact compatibility boundary is listed in `PUBLIC_API.md`.
+Patch releases preserve that documented safe boundary. A patch may remove an
+accidental raw-data exposure that contradicted an existing privacy or security
+guarantee; such corrections and their replacement fields are identified in the
+changelog rather than silently treated as ordinary feature work.
 
 Before deploying an upgrade, run `Spectre.Foundation.Conformance` against
 representative durable backups and verify every compiled Definition/Manifest
@@ -72,7 +76,7 @@ further automatic writes until `Spectre.reconcile_checkpoint/2` loads and
 validates durable state. Monitor `checkpoint_status/1`, and use
 `flush_checkpoint/2` as a deployment or graceful-shutdown barrier.
 
-Checkpoint schema 4 includes the current Definition Activation, retained Run
+The format-tagged Instance checkpoint schema 2 includes the current Definition Activation, retained Run
 continuations, Definition lifecycle and event records, and private Skill-state
 branches. Configure the same durable `Spectre.Definition.Store` on restart so
 Spectre can re-read every pinned Definition and verify its closure. The bundled
@@ -84,8 +88,12 @@ not a distributed ownership guarantee; multi-node deployments must also
 configure a linearizable `Spectre.Instance.Owner` lease adapter. See
 [Migrating to 0.2.3](MIGRATING_TO_0_2_3.md).
 
-Before upgrading live checkpoint namespaces to 0.2.5, quiesce schema-3
-writers. Once schema 4 has been written, 0.2.4 cannot restore that checkpoint.
+Historical 0.2.x upgrade note: before upgrading live checkpoint namespaces to
+0.2.5, operators had to quiesce schema-3 writers because 0.2.4 could not read
+schema 4. Spectre 0.3.0 and 0.3.1 instead use a format-tagged schema 2 and
+reject those untagged legacy checkpoint families. Do not point a 0.3.1
+deployment at a legacy namespace without an explicit, externally verified
+conversion.
 Inventory host-side references before marking any Skill-state branch
 GC-eligible: core sees its Activation, Runs, operations, and child branches,
 but not application tables or backups. See
@@ -192,8 +200,35 @@ monitor fallback callbacks must not perform unbounded blocking work.
 
 `Spectre.Telemetry` emits privacy-safe events under the `[:spectre, ...]`
 prefix. A `telemetry_handler:` callback works without adding `:telemetry` as a
-runtime dependency; if the standard library is installed, events are sent to it
-as well.
+runtime dependency; if the standard library is installed, events are sent to
+it as well. The two paths are failure-isolated. Treat measurements as numeric
+aggregation fields. Instance metadata uses `{agent, instance_id, generation}`
+plus event-specific revisions, reason classes, and digested IDs. The
+opaque `instance_id` is linkable across restarts, so it is a pseudonym rather
+than an authorization token or secret and should not be used as an unbounded
+metric label.
+
+For checkpoint monitoring, poll `Spectre.checkpoint_status/1` and compare
+`canonical_revision` with `persisted_revision`. Alert when `error` is non-nil
+or `reconciliation_required` is present; `error` is a redacted class, not the
+adapter's raw failure. Status and Instance info reads are passive and do not
+extend the Instance idle lifetime; `trace_id/1` inherits that behavior because
+it derives from info. Direct host-facing state and domain reads intentionally
+count as Instance activity and re-arm the idle timer; use the monitoring
+projections for polling.
+
+The `:checkpoint_failed` telemetry event includes `outcome: :failed` for a
+known failed persist and `outcome: :ambiguous` when the commit result is
+unknown and reconciliation is required. Alert on the latter as a persistence
+fence, not as proof that the write did not commit.
+
+Before deployment, `mix spectre.doctor --strict` performs read-only runtime and
+Foundation checks. Pass `--agent MyApp.Agent` to inspect its compiled
+Definition, Manifest, configured Stack, and Checkpoint Store callback shape;
+use `--format json` for automation. `Spectre.Doctor.run/1` also accepts an
+explicit package matrix for release tooling. Database connectivity, migrations,
+and package-specific health checks remain in the adapter package that owns
+them.
 
 ## Semantic cache
 

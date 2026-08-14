@@ -107,7 +107,7 @@ legacy key migration.
 
 ### Private Skill state
 
-Canonical schema 4 also retains private Skill state as Definition-owned,
+The format-tagged schema-2 checkpoint also retains private Skill state as Definition-owned,
 generational branches. The active branch is selected by the current
 Activation; older branches remain dormant until an explicit resume, fork,
 migration, abandonment, or reference-safe retention transition. Activating
@@ -147,9 +147,16 @@ end
 ```
 
 The public Turn contains only the boundary projection. The Instance keeps the
-Run and verifies the supplied revision-fenced ref before resuming it. Use
-`Spectre.Instance.info/1` and `run/2` for privacy-safe operational projections;
-they do not return provider payloads or the internal continuation.
+Run and verifies the supplied revision-fenced ref before resuming it.
+`Spectre.Instance.info/1` and `run/2` do not return provider payloads or the
+internal continuation, but they are trusted local diagnostics rather than a
+safe object to log wholesale: caller-chosen IDs and explicitly published
+`Operation.View` values can still be present. Apply host redaction before
+exporting them. Both info and checkpoint-status reads are passive and do not
+reset the Instance idle timer; `trace_id/1`, which derives from info, inherits
+that behavior. This is a narrow monitoring exception: direct state, `ref/1`,
+`agent/1`, configuration, lifecycle, retained-record, and checkpoint-payload
+reads count as active use and re-arm the timer.
 
 Effect work runs outside the Instance mailbox. Its internal receipt is fenced
 by Instance generation, Run id and revision, Invocation id, and dispatch id.
@@ -210,12 +217,13 @@ startup and use `flush_checkpoint/2`, `checkpoint_status/1`, and
 `reconcile_checkpoint/2` at the host boundary. An ambiguous compare-and-swap
 write erects a persistence fence and is never retried automatically.
 
-Current schema-4 checkpoints retain the Activation, every retained Run,
+Current format-tagged schema-2 checkpoints retain the Activation, every retained Run,
 Definition lifecycle and event records, and the complete private Skill-state
-branch graph. Readers still accept schemas 1 through 3 and supply missing
-sections during restore. When a legacy Instance key is found, the adapter's
-`migrate_instance_key/5` callback must atomically expose the migrated bytes
-under the stable Ref. Divergent histories under old and new keys are rejected.
+branch graph. The 0.3.1 reader accepts only this tagged version; retired
+untagged 0.2.x schemas are rejected instead of being guessed or silently
+migrated. `migrate_instance_key/5` migrates a validated checkpoint between the
+old and stable Instance keys; it is not a legacy schema decoder. Divergent
+histories under old and new keys are rejected.
 
 See [Work, Vigil, and the operational runtime](OPERATIONS.md) for controller,
 operation, recovery, event, and delivery contracts.

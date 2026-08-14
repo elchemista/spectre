@@ -12,15 +12,77 @@ mix format --check-formatted
 mix compile --warnings-as-errors
 mix credo
 mix dialyzer
+mix docs --warnings-as-errors
+mix test test/public_api_manifest_test.exs test/hex_release_contract_test.exs
+mix hex.build --unpack --output /tmp/spectre-package-check
 ```
 
 CI uses the default Credo priority threshold. `mix credo --strict` is useful
 as an advisory cleanup pass, but lower-priority refactoring suggestions do not
 form the release gate.
 
-The repository coverage threshold is 90%. Do not lower or exclude modules to
+The repository coverage threshold is 93%. Do not lower or exclude modules to
 make a change pass; add a meaningful test or explain why a private branch is
 unreachable and simplify the implementation.
+
+## Public conformance foundation
+
+Core conformance runners return data and do not depend on ExUnit. Applications
+and adapters can call them from any test framework. For example, an Instance
+Checkpoint Store suite can exercise the same canonical codec, semantic
+readback, exact-retry verification, stale-write rejection, and concurrent CAS
+race used by Spectre:
+
+```elixir
+defmodule MyApp.CheckpointStoreTest do
+  use ExUnit.Case, async: true
+
+  test "implements the checkpoint contract" do
+    server = start_supervised!({Agent, fn -> %{} end})
+    ref = my_fresh_instance_ref()
+
+    assert {:ok, report} =
+             Spectre.Instance.CheckpointStore.Conformance.run(
+               {MyApp.CheckpointStore, server: server},
+               ref
+             )
+
+    assert report.concurrent_cas == :single_winner
+  end
+end
+```
+
+The runner writes through the adapter and leaves revision three under the
+supplied Ref, so every run needs an isolated identity. The separate
+`read_after_restart/3` helper compares the same checkpoint semantically through
+two adapter configurations. Foundation, Definition Store, Stack, and
+Checkpoint Store conformance live in core; replay fixtures, live-I/O fuses,
+virtual sources, and a future `Spectre.Lab.TestCase` belong to `spectre_lab`
+rather than the Spectre 0.3.1 core.
+
+## Safe generators
+
+Spectre includes small generators for the public integration boundaries:
+
+```bash
+mix spectre.gen.agent MyApp.SupportAgent
+mix spectre.gen.installable MyApp.SupportPackage
+mix spectre.gen.checkpoint_store MyApp.SpectreCheckpointStore
+```
+
+Each command creates a module and a focused contract test. Existing files are
+rejected before any output is written. Use `--dry-run` to validate and inspect
+the complete plan, or `--force` to replace existing regular files explicitly.
+Generation refuses invalid aliases, path escapes, symlinked parent directories,
+and non-regular overwrite targets.
+
+The Agent keeps the DSL's module-based default identity. The Installable uses
+the public Stack contract, and the generated Checkpoint Store is explicitly
+process-local for tests and development. Every template includes an executable
+contract test; the generator suite compiles and runs the generated files in a
+separate test process. Evidence/replay generators are reserved for
+`spectre_lab`, and database migration generators stay in the package that owns
+the adapter.
 
 ## Foundation release gate
 

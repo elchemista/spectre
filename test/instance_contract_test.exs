@@ -184,7 +184,7 @@ defmodule SpectreInstanceContractTest do
     assert turn.ref == ref
     assert turn.agent == instance
     refute Map.has_key?(Map.from_struct(turn), :run)
-    assert_receive {:instance_render_started, "hello", _worker}
+    assert_receive {:instance_render_started, "hello", _worker}, 1_000
 
     assert_eventually(fn ->
       match?({:ok, %{status: :complete}}, Instance.run(instance, ref.run_id))
@@ -301,7 +301,7 @@ defmodule SpectreInstanceContractTest do
         )
       end)
 
-    assert_receive {:instance_input_blocked, "hello", input_worker}
+    assert_receive {:instance_input_blocked, "hello", input_worker}, 1_000
 
     assert %{active_run: "reserved-start", state_revision: 0} = Instance.info(instance)
 
@@ -440,7 +440,7 @@ defmodule SpectreInstanceContractTest do
         Spectre.turn(instance, "slow reply", test_pid: test_pid)
       end)
 
-    assert_receive {:instance_render_started, "slow reply", renderer_worker}
+    assert_receive {:instance_render_started, "slow reply", renderer_worker}, 1_000
 
     silent = Task.async(fn -> Spectre.turn(instance, "silent") end)
 
@@ -476,7 +476,7 @@ defmodule SpectreInstanceContractTest do
         )
       end)
 
-    assert_receive {:instance_render_started, "work", renderer_worker}
+    assert_receive {:instance_render_started, "work", renderer_worker}, 1_000
 
     blocked = Task.async(fn -> Spectre.turn(instance, "hello") end)
 
@@ -504,7 +504,7 @@ defmodule SpectreInstanceContractTest do
         Spectre.turn(instance, "slow reply", test_pid: test_pid)
       end)
 
-    assert_receive {:instance_render_started, "slow reply", renderer_worker}
+    assert_receive {:instance_render_started, "slow reply", renderer_worker}, 1_000
     %{active_run: run_id} = Instance.info(instance)
     move_worker = :sys.get_state(instance).active.pid
     Process.exit(move_worker, :kill)

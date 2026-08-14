@@ -5,7 +5,8 @@ defmodule Spectre.Telemetry do
   Spectre emits through the standard `:telemetry` module when the host has it
   installed. Tests and lightweight hosts may instead provide a
   `:telemetry_handler` callback in runtime options. Telemetry is observational:
-  callback failures never alter a turn.
+  callback failures never alter a turn, and each sink is invoked independently
+  so one broken sink cannot suppress the other.
   """
 
   @doc """
@@ -23,8 +24,9 @@ defmodule Spectre.Telemetry do
       )
 
   Telemetry is observational. Invalid handlers, exceptions, exits, and throws
-  are contained and the function always returns `:ok`. Callers must keep
-  metadata free of prompts, conversation text, credentials, and raw adapter
+  are contained and the function always returns `:ok`. Measurements must be
+  numeric aggregation values. Callers must keep metadata free of prompts,
+  conversation text, raw caller identifiers, credentials, and raw adapter
   errors.
   """
   @spec emit([atom()], map(), map(), keyword()) :: :ok
@@ -33,17 +35,17 @@ defmodule Spectre.Telemetry do
   def emit(event, measurements, metadata, opts)
       when is_list(event) and is_map(measurements) and is_map(metadata) and is_list(opts) do
     full_event = [:spectre | event]
-    notify_handler(Keyword.get(opts, :telemetry_handler), full_event, measurements, metadata)
 
-    if Code.ensure_loaded?(:telemetry) and function_exported?(:telemetry, :execute, 3) do
-      :erlang.apply(:telemetry, :execute, [full_event, measurements, metadata])
-    end
+    safely_notify_handler(
+      Keyword.get(opts, :telemetry_handler),
+      full_event,
+      measurements,
+      metadata
+    )
+
+    safely_execute_telemetry(full_event, measurements, metadata)
 
     :ok
-  rescue
-    _exception -> :ok
-  catch
-    _kind, _reason -> :ok
   end
 
   def emit(_event, _measurements, _metadata, _opts), do: :ok
@@ -62,4 +64,24 @@ defmodule Spectre.Telemetry do
   end
 
   defp notify_handler(_handler, _event, _measurements, _metadata), do: :ok
+
+  defp safely_notify_handler(handler, event, measurements, metadata) do
+    notify_handler(handler, event, measurements, metadata)
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp safely_execute_telemetry(event, measurements, metadata) do
+    if Code.ensure_loaded?(:telemetry) and function_exported?(:telemetry, :execute, 3) do
+      :erlang.apply(:telemetry, :execute, [event, measurements, metadata])
+    end
+
+    :ok
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
 end

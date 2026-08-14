@@ -1,0 +1,19 @@
+defmodule <%= @module %>Test do
+  use ExUnit.Case, async: true
+
+  test "publishes a Foundation-compatible Agent definition" do
+    definition = Spectre.Definition.fetch!(<%= @module %>)
+
+    assert definition.kind == :agent
+    assert definition.id == <%= @module %>
+    assert definition.version == 1
+
+    assert {:ok, report} =
+             Spectre.Foundation.Conformance.verify_definition(
+               Spectre.Definition.canonical!(<%= @module %>),
+               Spectre.Definition.manifest!(<%= @module %>)
+             )
+
+    assert is_binary(report.definition_ref)
+  end
+end

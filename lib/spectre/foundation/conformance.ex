@@ -19,7 +19,10 @@ defmodule Spectre.Foundation.Conformance do
   alias Spectre.Experience.Store, as: ExperienceStore
   alias Spectre.Forge.Proposal
   alias Spectre.Instance.Activation
+  alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec, as: InstanceCodec
+  alias Spectre.Instance.Canonical.Validator, as: InstanceValidator
+  alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Projection
   alias Spectre.Projection.Reflection
   alias Spectre.Run
@@ -186,8 +189,48 @@ defmodule Spectre.Foundation.Conformance do
   @spec verify_instance_checkpoint(binary() | map()) ::
           {:ok, report()} | {:error, term()}
   def verify_instance_checkpoint(checkpoint) do
+    with {:ok, canonical} <- InstanceCodec.decode(checkpoint) do
+      instance_checkpoint_report(checkpoint, canonical)
+    end
+  end
+
+  @doc """
+  Verifies an Instance checkpoint and binds its canonical identity to an
+  Instance Ref or opaque Instance key.
+
+  A `Spectre.Instance.Ref` enables the complete Instance canonical validator,
+  including subject-bound operation data. A non-empty key verifies the exact
+  `correlations[:instance_key]` invariant used by that validator. It does not
+  compare the flow's `conversation_id`, which hosts may configure independently
+  through `:state_conversation_id`.
+  """
+  @spec verify_instance_checkpoint(binary() | map(), InstanceRef.t() | String.t()) ::
+          {:ok, report()} | {:error, term()}
+  def verify_instance_checkpoint(checkpoint, %InstanceRef{} = ref) do
     with {:ok, canonical} <- InstanceCodec.decode(checkpoint),
-         {:ok, source} <- json_data(checkpoint),
+         :ok <- InstanceValidator.validate(canonical, ref) do
+      instance_checkpoint_report(checkpoint, canonical)
+    end
+  end
+
+  def verify_instance_checkpoint(checkpoint, instance_key)
+      when is_binary(instance_key) and instance_key != "" do
+    with {:ok, canonical} <- InstanceCodec.decode(checkpoint),
+         :ok <- validate_instance_key(canonical, instance_key) do
+      instance_checkpoint_report(checkpoint, canonical)
+    end
+  end
+
+  def verify_instance_checkpoint(_checkpoint, identity),
+    do: {:error, {:invalid_foundation_instance_identity, shape(identity)}}
+
+  @spec verify_checkpoint(binary() | map()) :: {:ok, report()} | {:error, term()}
+  def verify_checkpoint(checkpoint), do: verify_instance_checkpoint(checkpoint)
+
+  @spec instance_checkpoint_report(binary() | map(), Canonical.t()) ::
+          {:ok, report()} | {:error, term()}
+  defp instance_checkpoint_report(checkpoint, canonical) do
+    with {:ok, source} <- json_data(checkpoint),
          {:ok, current} <- InstanceCodec.encode(canonical),
          {:ok, source_version} <- version(source, "checkpoint_version") do
       {:ok,
@@ -203,8 +246,18 @@ defmodule Spectre.Foundation.Conformance do
     end
   end
 
-  @spec verify_checkpoint(binary() | map()) :: {:ok, report()} | {:error, term()}
-  def verify_checkpoint(checkpoint), do: verify_instance_checkpoint(checkpoint)
+  @spec validate_instance_key(Canonical.t(), String.t()) :: :ok | {:error, term()}
+  defp validate_instance_key(canonical, instance_key) do
+    with {:ok, correlations} <- Canonical.fetch(canonical, :correlations),
+         true <- is_map(correlations) and not is_struct(correlations),
+         ^instance_key <- Map.get(correlations, :instance_key) do
+      :ok
+    else
+      false -> {:error, :invalid_canonical_correlations}
+      {:error, _reason} = error -> error
+      _other -> {:error, :canonical_checkpoint_instance_mismatch}
+    end
+  end
 
   @doc """
   Verifies one canonical Definition and its sealed Manifest.
