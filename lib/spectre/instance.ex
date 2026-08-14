@@ -206,6 +206,11 @@ defmodule Spectre.Instance do
 
   @doc """
   Returns a privacy-safe operational view of the Instance scheduler.
+
+  This is a passive monitoring read and does not extend the Instance idle
+  lifetime. `trace_id/1` is derived from this projection and is passive too.
+  Direct host reads such as state, `ref/1`, `agent/1`, lifecycle, and retained
+  records remain activity and re-arm the idle timer.
   """
   @spec info(GenServer.server()) :: map()
   def info(server), do: GenServer.call(server, :instance_info)
@@ -542,7 +547,12 @@ defmodule Spectre.Instance do
     GenServer.call(server, :flush_canonical_checkpoint, timeout(opts))
   end
 
-  @doc "Returns the redacted status of canonical checkpoint persistence."
+  @doc """
+  Returns the redacted status of canonical checkpoint persistence.
+
+  This is a passive monitoring read and does not extend the Instance idle
+  lifetime.
+  """
   @spec checkpoint_status(GenServer.server()) :: map()
   def checkpoint_status(server), do: GenServer.call(server, :canonical_checkpoint_status)
 
@@ -1250,7 +1260,7 @@ defmodule Spectre.Instance do
       persisted_revision: data.checkpoint_revision,
       inflight_revision: data.checkpoint_inflight && data.checkpoint_inflight.revision,
       pending_revision: data.checkpoint_pending && data.checkpoint_pending.revision,
-      error: reason_class(data.checkpoint_error),
+      error: checkpoint_error_class(data.checkpoint_error),
       reconciliation_required: Checkpoint.reconciliation_status(data.checkpoint_reconciliation)
     }
 
@@ -1758,7 +1768,11 @@ defmodule Spectre.Instance do
           :checkpoint_failed,
           next,
           %{count: 1},
-          %{revision: revision, reason_class: reason_class(reason)}
+          %{
+            revision: revision,
+            reason_class: reason_class(reason),
+            outcome: checkpoint_failure_outcome(next)
+          }
         )
 
         {:noreply, arm_idle_timer(next)}
@@ -3541,7 +3555,11 @@ defmodule Spectre.Instance do
       :checkpoint_failed,
       next,
       %{count: 1},
-      %{revision: revision, reason_class: reason_class(reason)}
+      %{
+        revision: revision,
+        reason_class: reason_class(reason),
+        outcome: checkpoint_failure_outcome(next)
+      }
     )
 
     arm_idle_timer(next)
@@ -3563,6 +3581,12 @@ defmodule Spectre.Instance do
   end
 
   defp reason_class(reason), do: InstanceTelemetry.reason_class(reason)
+
+  defp checkpoint_error_class(nil), do: nil
+  defp checkpoint_error_class(reason), do: reason_class(reason)
+
+  defp checkpoint_failure_outcome(%InstanceState{checkpoint_reconciliation: nil}), do: :failed
+  defp checkpoint_failure_outcome(%InstanceState{}), do: :ambiguous
 
   defp normalize_event_limit(value) when is_integer(value) and value >= 0,
     do: min(value, @operation_event_limit)

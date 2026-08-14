@@ -10,6 +10,10 @@ application-level authorization, persistence, queues, or observability.
 suite exceeds 90% line coverage, but public APIs may still change in a minor
 `0.x` release. Pin a compatible minor version and read `CHANGELOG.md` before
 upgrading. The exact compatibility boundary is listed in `PUBLIC_API.md`.
+Patch releases preserve that documented safe boundary. A patch may remove an
+accidental raw-data exposure that contradicted an existing privacy or security
+guarantee; such corrections and their replacement fields are identified in the
+changelog rather than silently treated as ordinary feature work.
 
 Before deploying an upgrade, run `Spectre.Foundation.Conformance` against
 representative durable backups and verify every compiled Definition/Manifest
@@ -208,7 +212,15 @@ For checkpoint monitoring, poll `Spectre.checkpoint_status/1` and compare
 `canonical_revision` with `persisted_revision`. Alert when `error` is non-nil
 or `reconciliation_required` is present; `error` is a redacted class, not the
 adapter's raw failure. Status and Instance info reads are passive and do not
-extend the Instance idle lifetime.
+extend the Instance idle lifetime; `trace_id/1` inherits that behavior because
+it derives from info. Direct host-facing state and domain reads intentionally
+count as Instance activity and re-arm the idle timer; use the monitoring
+projections for polling.
+
+The `:checkpoint_failed` telemetry event includes `outcome: :failed` for a
+known failed persist and `outcome: :ambiguous` when the commit result is
+unknown and reconciliation is required. Alert on the latter as a persistence
+fence, not as proof that the write did not commit.
 
 Before deployment, `mix spectre.doctor --strict` performs read-only runtime and
 Foundation checks. Pass `--agent MyApp.Agent` to inspect its compiled

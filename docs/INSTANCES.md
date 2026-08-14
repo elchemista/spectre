@@ -153,7 +153,10 @@ internal continuation, but they are trusted local diagnostics rather than a
 safe object to log wholesale: caller-chosen IDs and explicitly published
 `Operation.View` values can still be present. Apply host redaction before
 exporting them. Both info and checkpoint-status reads are passive and do not
-reset the Instance idle timer.
+reset the Instance idle timer; `trace_id/1`, which derives from info, inherits
+that behavior. This is a narrow monitoring exception: direct state, `ref/1`,
+`agent/1`, configuration, lifecycle, retained-record, and checkpoint-payload
+reads count as active use and re-arm the timer.
 
 Effect work runs outside the Instance mailbox. Its internal receipt is fenced
 by Instance generation, Run id and revision, Invocation id, and dispatch id.

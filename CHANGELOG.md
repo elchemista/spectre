@@ -2,7 +2,10 @@
 
 All notable changes to Spectre are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/); while the version is below `1.0`, a
-minor release may contain documented breaking API changes.
+minor release may contain documented breaking API changes. Patch releases
+preserve the documented safe contract; they may tighten behavior that violated
+an already-published security or privacy invariant, with the correction and
+migration called out explicitly below.
 
 ## 0.3.1 — 2026-08-13
 
@@ -51,13 +54,25 @@ minor release may contain documented breaking API changes.
   reconciliation projection instead of raw adapter reasons; Monitor logs also
   classify failures and digest caller identifiers. Code that matched a raw
   `checkpoint_status().error` term must migrate to the stable error class; raw
-  adapter reasons are deliberately no longer a public diagnostic value.
+  adapter reasons are deliberately no longer a public diagnostic value. Direct
+  host-facing state and domain reads remain activity and re-arm the idle timer.
+- Added `outcome: :failed | :ambiguous` to `:checkpoint_failed` telemetry so an
+  abnormal checkpoint task exit or another reconciliation-fenced result is not
+  mistaken for a proven terminal write failure. The event suffix remains
+  unchanged for consumer compatibility. Healthy checkpoint status now also
+  preserves `error: nil` instead of fabricating an `:error` class.
 - Updated the normative public API manifest, operational guidance, testing
   guide, and release metadata for `0.3.1`. The patch retains the opt-in
   `:required` operation-trigger correlation policy; the default remains
   `:legacy` for patch-release compatibility.
 
 ### Compatibility correction
+
+- The observability hardening above removes no public callable and enforces the
+  privacy-safe telemetry promise already documented by 0.3.0. Raw identifiers,
+  adapter errors, and non-numeric measurements were an implementation defect,
+  not a supported observability contract. The patch intentionally stops
+  exposing those values and documents the safe replacement fields.
 
 - Corrected the Instance compatibility statement published with 0.3.0. The
   released 0.3.0 codec emits and accepts only the distinct

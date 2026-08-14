@@ -372,7 +372,11 @@ status = Spectre.checkpoint_status(instance)
 store is configured, the checkpoint mode, canonical/persisted/inflight/pending
 revisions, a redacted `error` class, and any reconciliation requirement. It
 does not expose the adapter reason or checkpoint payload and does not reset the
-Instance idle timer. A positive
+Instance idle timer. `Spectre.Instance.info/1` has the same passive monitoring
+semantics, and `trace_id/1` inherits them because it is derived from `info/1`.
+Direct state, `ref/1`, `agent/1`, configuration, lifecycle, retained
+Run/Event/Loop, Skill-state, and checkpoint-payload reads are host interactions
+with the live Instance and continue to re-arm the idle timer. A positive
 `canonical_revision - persisted_revision` is persistence lag; an error or
 reconciliation requirement needs operator attention before assuming the last
 write committed.

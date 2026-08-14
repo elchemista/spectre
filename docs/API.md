@@ -704,7 +704,7 @@ current inventory is:
 | Process | `:started`, `:idle_shutdown` | none |
 | Run and invocation | `:stale_move_result`, `:invalid_move_result`, `:stale_invocation_result`, `:invocation_dispatched`, `:run_failed`, `:run_move_degraded`, `:run_resume_rejected` | digested `run_id` or `invocation_id`; failure events add `reason_class` |
 | Operation | `:stale_operation_result`, `:rejected_operation_result`, `:operation_event_route_dropped`, `:operation_event_route_rejected`, `:operation_control_failed`, `:operation_evaluation_failed`, `:operation_prepare_failed`, `:operation_dispatch_blocked` | digested `loop_id` or `event_id`; failure and rejection events add `reason_class` |
-| Checkpoint | `:checkpoint_persisted`, `:checkpoint_failed`, `:checkpoint_reconciled`, `:checkpoint_reconciliation_failed` | `revision` where available and `reason_class` on failure |
+| Checkpoint | `:checkpoint_persisted`, `:checkpoint_failed`, `:checkpoint_reconciled`, `:checkpoint_reconciliation_failed` | `revision` where available and `reason_class` on failure; `:checkpoint_failed` adds `outcome: :failed \| :ambiguous` |
 | Correlation migration | `:uncorrelated_operation_trigger` | none |
 
 All of these events currently use the numeric measurement `%{count: 1}` and
@@ -713,6 +713,13 @@ fields in the table contain canonical digests, not the original IDs. Digests
 and the restart-stable `instance_id` are pseudonymous, potentially
 high-cardinality values: do not use them as authorization evidence, secrets,
 or unbounded metric labels.
+
+`checkpoint_failed` retains one stable event suffix for compatibility. Its
+`outcome` metadata distinguishes a known failed persist from an ambiguous
+write result that erected a reconciliation fence. Do not count an
+`:ambiguous` outcome as a proven failed write; follow
+`checkpoint_status().reconciliation_required` and the later reconciliation
+event instead.
 
 `Spectre.Monitor` is a host-delivery failure boundary, not a telemetry
 aggregator or durable ledger. Its logs classify failures and digest context

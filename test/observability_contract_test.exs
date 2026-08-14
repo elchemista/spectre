@@ -74,8 +74,58 @@ defmodule SpectreObservabilityContractTest do
 
     assert failed_metadata.reason_class == :adapter_failed
     assert failed_metadata.revision == data.canonical.revision
+    assert failed_metadata.outcome == :ambiguous
     refute inspect(metadata) =~ "private-adapter-response"
     refute inspect(failed_metadata) =~ "private-adapter-response"
+  end
+
+  test "checkpoint telemetry distinguishes terminal failures from ambiguous outcomes" do
+    test_pid = self()
+
+    handler = fn event, measurements, metadata ->
+      send(test_pid, {:checkpoint_telemetry, event, measurements, metadata})
+    end
+
+    data = instance_state(base_opts: [telemetry_handler: handler])
+    revision = data.canonical.revision
+    terminal_reason = {:checkpoint_store_failed, "private-terminal-reason"}
+
+    terminal = checkpoint_inflight(data, "terminal-checkpoint")
+
+    assert {:noreply, terminal_failed} =
+             Instance.handle_info(
+               {:spectre, :checkpoint_result, "terminal-checkpoint", revision,
+                {:error, terminal_reason}},
+               terminal
+             )
+
+    assert terminal_failed.checkpoint_reconciliation == nil
+
+    assert_receive {:checkpoint_telemetry, [:spectre, :instance, :checkpoint_failed], %{count: 1},
+                    terminal_metadata}
+
+    assert terminal_metadata.outcome == :failed
+    assert terminal_metadata.reason_class == :checkpoint_store_failed
+    refute inspect(terminal_metadata) =~ "private-terminal-reason"
+
+    ambiguous = checkpoint_inflight(data, "ambiguous-checkpoint")
+    ambiguous_reason = {:ambiguous, {:transport_closed, "private-ambiguous-reason"}}
+
+    assert {:noreply, ambiguous_failed} =
+             Instance.handle_info(
+               {:spectre, :checkpoint_result, "ambiguous-checkpoint", revision,
+                {:error, ambiguous_reason}},
+               ambiguous
+             )
+
+    assert not is_nil(ambiguous_failed.checkpoint_reconciliation)
+
+    assert_receive {:checkpoint_telemetry, [:spectre, :instance, :checkpoint_failed], %{count: 1},
+                    ambiguous_metadata}
+
+    assert ambiguous_metadata.outcome == :ambiguous
+    assert ambiguous_metadata.reason_class == :ambiguous
+    refute inspect(ambiguous_metadata) =~ "private-ambiguous-reason"
   end
 
   test "info and checkpoint status are passive reads and checkpoint errors expose only a class" do
@@ -102,6 +152,37 @@ defmodule SpectreObservabilityContractTest do
 
     assert status.error == :checkpoint_store_failed
     refute inspect(status) =~ "private-store-response"
+  end
+
+  test "healthy checkpoint status preserves nil instead of fabricating an error class" do
+    data = instance_state(checkpoint_error: nil)
+
+    assert {:reply, status, ^data} =
+             Instance.handle_call(:canonical_checkpoint_status, {self(), make_ref()}, data)
+
+    assert status.error == nil
+  end
+
+  test "host state reads remain activity and re-arm the idle timer" do
+    original_timer = Process.send_after(self(), :original_idle_timeout, 60_000)
+
+    data =
+      instance_state(
+        idle_timeout: 60_000,
+        idle_timer: original_timer,
+        idle_generation: 7
+      )
+
+    assert {:reply, state, next} =
+             Instance.handle_call(:state, {self(), make_ref()}, data)
+
+    assert state == data.state
+    assert next.idle_generation == 8
+    assert is_reference(next.idle_timer)
+    assert next.idle_timer != original_timer
+    assert Process.read_timer(original_timer) == false
+
+    Process.cancel_timer(next.idle_timer)
   end
 
   test "custom and standard telemetry handlers fail independently" do
@@ -235,6 +316,22 @@ defmodule SpectreObservabilityContractTest do
     }
 
     struct!(InstanceState, Map.merge(defaults, Map.new(overrides)))
+  end
+
+  defp checkpoint_inflight(data, token) do
+    monitor = make_ref()
+
+    %{
+      data
+      | checkpoint_inflight: %{
+          token: token,
+          revision: data.canonical.revision,
+          expected_revision: data.checkpoint_revision,
+          canonical: data.canonical,
+          pid: self(),
+          monitor: monitor
+        }
+    }
   end
 
   defp setup_standard_telemetry_stub do
