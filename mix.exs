@@ -5,25 +5,42 @@ defmodule Spectre.MixProject do
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
+    "docs/START_HERE.md",
     "README.md",
-    "LLMS.md",
-    "SYSTEM.md",
-    "CHANGELOG.md",
+    "docs/INSTALLATION.md",
     "docs/GETTING_STARTED.md",
-    "docs/EXAMPLES.md",
     "docs/ARCHITECTURE.md",
-    "docs/INTEGRATIONS.md",
-    "docs/DSL.md",
+    "docs/EXAMPLES.md",
+    "SYSTEM.md",
     "docs/CANONICAL_DEFINITIONS.md",
+    "docs/ROUTING.md",
+    "docs/ACTIONS.md",
+    "docs/SKILLS.md",
+    "docs/MEMORY.md",
+    "docs/RUNS.md",
+    "docs/INSTANCES.md",
+    "docs/OPERATIONS.md",
     "docs/DEFINITION_STORE.md",
     "docs/IDENTITY_ACTIVATION.md",
     "docs/EVENT_LIFECYCLE.md",
     "docs/SKILL_STATE.md",
+    "docs/JOURNAL.md",
+    "docs/PRODUCTION.md",
+    "docs/TESTING.md",
+    "docs/PROVIDERS.md",
+    "docs/EVALUATION.md",
+    "docs/TRAINING.md",
     "docs/FOUNDATION_CONFORMANCE.md",
+    "SECURITY.md",
+    "docs/INTEGRATIONS.md",
     "docs/STACK.md",
-    "docs/RUNS.md",
-    "docs/INSTANCES.md",
-    "docs/OPERATIONS.md",
+    "docs/RUNTIME_SKILLS.md",
+    "docs/DATA_DRIVEN_EXECUTION.md",
+    "docs/GOVERNANCE.md",
+    "docs/REFLECTIVE_RUNTIME.md",
+    "docs/DSL.md",
+    "docs/API.md",
+    "docs/PUBLIC_API.md",
     "docs/MIGRATING_TO_0_2.md",
     "docs/MIGRATING_TO_0_2_3.md",
     "docs/MIGRATING_TO_0_2_4.md",
@@ -33,26 +50,10 @@ defmodule Spectre.MixProject do
     "docs/MIGRATING_TO_0_2_8.md",
     "docs/MIGRATING_TO_0_2_9.md",
     "docs/MIGRATING_TO_0_3.md",
-    "docs/SKILLS.md",
-    "docs/RUNTIME_SKILLS.md",
-    "docs/DATA_DRIVEN_EXECUTION.md",
-    "docs/GOVERNANCE.md",
-    "docs/REFLECTIVE_RUNTIME.md",
-    "docs/ROUTING.md",
-    "docs/EVALUATION.md",
-    "docs/PROVIDERS.md",
-    "docs/TRAINING.md",
-    "docs/ACTIONS.md",
-    "docs/MEMORY.md",
-    "docs/JOURNAL.md",
-    "docs/PRODUCTION.md",
-    "docs/TESTING.md",
-    "docs/API.md",
-    "docs/PUBLIC_API.md",
-    "docs/INSTALLATION.md",
+    "CHANGELOG.md",
     "docs/ROADMAP.md",
+    "LLMS.md",
     "CONTRIBUTING.md",
-    "SECURITY.md",
     "LICENSE"
   ]
 
@@ -65,7 +66,7 @@ defmodule Spectre.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      test_coverage: [summary: [threshold: 93]],
+      test_coverage: [summary: [threshold: 95]],
       description: description(),
       package: package(),
       dialyzer: [
@@ -141,32 +142,61 @@ defmodule Spectre.MixProject do
 
   defp docs do
     [
-      main: "readme",
+      main: "start_here",
       source_ref: @version,
       extras: @docs_extras,
       groups_for_extras: [
         "Start here": [
+          "docs/START_HERE.md",
           "README.md",
-          "LLMS.md",
-          "SYSTEM.md",
+          "docs/INSTALLATION.md",
           "docs/GETTING_STARTED.md",
-          "docs/EXAMPLES.md",
-          "docs/INSTALLATION.md"
+          "docs/ARCHITECTURE.md"
+        ],
+        Tutorials: [
+          "docs/EXAMPLES.md"
         ],
         "Core concepts": [
-          "docs/ARCHITECTURE.md",
-          "docs/INTEGRATIONS.md",
-          "docs/DSL.md",
+          "SYSTEM.md",
           "docs/CANONICAL_DEFINITIONS.md",
+          "docs/ROUTING.md",
+          "docs/ACTIONS.md",
+          "docs/SKILLS.md",
+          "docs/MEMORY.md"
+        ],
+        "Runtime and durability": [
+          "docs/INSTANCES.md",
+          "docs/RUNS.md",
+          "docs/OPERATIONS.md",
           "docs/DEFINITION_STORE.md",
           "docs/IDENTITY_ACTIVATION.md",
           "docs/EVENT_LIFECYCLE.md",
           "docs/SKILL_STATE.md",
+          "docs/JOURNAL.md"
+        ],
+        Operations: [
+          "docs/PRODUCTION.md",
+          "docs/TESTING.md",
+          "docs/PROVIDERS.md",
+          "docs/EVALUATION.md",
+          "docs/TRAINING.md",
           "docs/FOUNDATION_CONFORMANCE.md",
+          "SECURITY.md"
+        ],
+        "Extensions and integration": [
+          "docs/INTEGRATIONS.md",
           "docs/STACK.md",
-          "docs/RUNS.md",
-          "docs/INSTANCES.md",
-          "docs/OPERATIONS.md",
+          "docs/RUNTIME_SKILLS.md",
+          "docs/DATA_DRIVEN_EXECUTION.md",
+          "docs/GOVERNANCE.md",
+          "docs/REFLECTIVE_RUNTIME.md"
+        ],
+        Reference: [
+          "docs/DSL.md",
+          "docs/API.md",
+          "docs/PUBLIC_API.md"
+        ],
+        "Migration and history": [
           "docs/MIGRATING_TO_0_2.md",
           "docs/MIGRATING_TO_0_2_3.md",
           "docs/MIGRATING_TO_0_2_4.md",
@@ -176,32 +206,14 @@ defmodule Spectre.MixProject do
           "docs/MIGRATING_TO_0_2_8.md",
           "docs/MIGRATING_TO_0_2_9.md",
           "docs/MIGRATING_TO_0_3.md",
-          "docs/SKILLS.md",
-          "docs/RUNTIME_SKILLS.md",
-          "docs/DATA_DRIVEN_EXECUTION.md",
-          "docs/GOVERNANCE.md",
-          "docs/REFLECTIVE_RUNTIME.md",
-          "docs/API.md",
-          "docs/PUBLIC_API.md"
+          "CHANGELOG.md",
+          "docs/ROADMAP.md"
         ],
-        "Runtime guides": [
-          "docs/ROUTING.md",
-          "docs/ACTIONS.md",
-          "docs/MEMORY.md",
-          "docs/JOURNAL.md",
-          "docs/PROVIDERS.md",
-          "docs/TRAINING.md",
-          "docs/EVALUATION.md"
-        ],
-        Operations: [
-          "docs/PRODUCTION.md",
-          "docs/TESTING.md",
-          "SECURITY.md"
+        "LLM and coding agents": [
+          "LLMS.md"
         ],
         Project: [
-          "CHANGELOG.md",
           "CONTRIBUTING.md",
-          "docs/ROADMAP.md",
           "LICENSE"
         ]
       ],

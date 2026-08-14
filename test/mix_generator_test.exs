@@ -141,6 +141,7 @@ defmodule SpectreMixGeneratorTest do
     ExUnit.start(autorun: false)
     Enum.each([#{files}], &Code.require_file/1)
     result = ExUnit.run()
+    IO.puts("SPECTRE_GENERATED_TEST_RESULT total=\#{result.total} failures=\#{result.failures}")
     System.halt(if(result.failures == 0, do: 0, else: 1))
     """
 
@@ -152,6 +153,6 @@ defmodule SpectreMixGeneratorTest do
       )
 
     assert status == 0, output
-    assert output =~ "Result: 3 passed"
+    assert output =~ "SPECTRE_GENERATED_TEST_RESULT total=3 failures=0"
   end
 end

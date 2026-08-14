@@ -32,6 +32,7 @@ defmodule Spectre.SensitiveData do
 
   def normalize_key(key) when is_binary(key) do
     key
+    |> valid_or_ascii_key()
     |> String.downcase()
     |> String.replace(~r/[^a-z0-9]/u, "")
   end
@@ -44,6 +45,7 @@ defmodule Spectre.SensitiveData do
 
   defp key_components(key) when is_binary(key) do
     key
+    |> valid_or_ascii_key()
     |> String.replace(~r/([A-Z]+)([A-Z][a-z])/u, "\\1_\\2")
     |> String.replace(~r/([a-z0-9])([A-Z])/u, "\\1_\\2")
     |> String.downcase()
@@ -51,6 +53,17 @@ defmodule Spectre.SensitiveData do
   end
 
   defp key_components(_key), do: []
+
+  defp valid_or_ascii_key(key) do
+    if String.valid?(key), do: key, else: ascii_key(key)
+  end
+
+  defp ascii_key(key), do: for(<<byte <- key>>, into: <<>>, do: ascii_byte(byte))
+
+  defp ascii_byte(byte) when byte in ?0..?9 or byte in ?A..?Z or byte in ?a..?z,
+    do: <<byte>>
+
+  defp ascii_byte(_byte), do: <<?_>>
 
   defp sensitive_components?(components) do
     case Enum.reverse(components) do

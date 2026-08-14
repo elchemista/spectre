@@ -142,6 +142,15 @@ The fixture is append-only evidence. A later release may add a new writer and
 reader without rewriting the historical bytes or changing what an older
 release produced.
 
+Spectre 0.3.1 also freezes two checkpoints emitted by the released 0.3.0
+format-tagged Instance writer. `instance-v2.json` covers an empty revision-zero
+Instance; `instance-v2-advanced.json` covers a real revision-two Work waiting
+on a declared trigger. The release suite pins their original bytes and SHA-256
+digests, decodes them with the 0.3.1 reader, validates the restored state, and
+re-encodes them semantically with the current writer. Re-encoded bytes need not
+match the source bytes because 0.3.1 corrects canonical map-entry ordering;
+their decoded meaning must match.
+
 Spectre 0.2.7 extends the live matrix with runtime Skill Definition,
 applicability, prompt-budget, Routing projection, and index-profile schema
 versions. It does not rewrite the 0.2.6 digest manifest or change any durable

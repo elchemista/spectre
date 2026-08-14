@@ -15,6 +15,11 @@ model - Spectre applies it to conversations, model calls, and tool execution.
 
 A Spectre agent should read like a map, not a magic trick.
 
+New to the project? This overview is step one. Continue with
+[Installation](docs/INSTALLATION.md), or open [Start Here](docs/START_HERE.md)
+for the complete four-step path before choosing an extension or durable
+subsystem.
+
 ## Philosophy
 
 Three ideas define Spectre. Everything else in the library is a consequence of
@@ -195,45 +200,44 @@ in [Getting Started](docs/GETTING_STARTED.md).
 | **Governance** | How Definitions change: closed ChangeSets, review, approval, activation, rollback. | [Governance](docs/GOVERNANCE.md) |
 | **Reflection / Forge** | The agent examining itself and proposing changes — under the same governance. | [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md) |
 
+## Spectre Ecosystem
+
+Spectre core stays focused on Agent definitions, routing, policy, state,
+durability, and execution lifecycle. Optional repositories add one bounded
+capability each; they depend on Spectre's public contracts, while Spectre does
+not depend on or discover them. Each package is versioned independently, so
+verify its manifest and compatibility tests before combining releases.
+
+| Repository | Responsibility |
+| --- | --- |
+| [`spectre_mnemonic`](https://github.com/elchemista/spectre_mnemonic) | Active and durable memory, recall, search, consolidation, and provenance; it is not canonical Agent state or the application database. |
+| [`spectre_pulse`](https://github.com/elchemista/spectre_pulse) | Transport-independent Agent-to-Agent envelopes, discovery, routing, and delivery receipts; coordination policy and shared workflow state stay outside it. |
+| [`spectre_beam`](https://github.com/elchemista/spectre_beam) | External-channel normalization and idempotent delivery; identity, consent, policy, and Effect execution remain host/core concerns. |
+| [`spectre_directive`](https://github.com/elchemista/spectre_directive) | A resumable mission and evolving-plan loop; it does not replace core Work scheduling or Instance ownership. |
+| [`spectre_ledger`](https://github.com/elchemista/spectre_ledger) | An append-only ledger for checkpoints persisted through the existing Checkpoint Store boundary; it does not claim every runtime revision or deterministic side-effect replay. |
+| [`spectre_lab`](https://github.com/elchemista/spectre_lab) | Verified offline playback and isolated testing tools for Ledger checkpoint bundles; it adds no runtime owner, scheduler, or storage backend to core. |
+| [`spectre_kinetic`](https://github.com/elchemista/spectre_kinetic) | Tool retrieval and validated Action planning from Action Language; authorization and execution remain explicit core/host boundaries. |
+| [`spectre_prism`](https://github.com/elchemista/spectre_prism) | Constraint-aware model and profile selection by capability, privacy, cost, and latency; provider credentials and runtime ownership stay with the host/core. |
+| [`spectre_lens`](https://github.com/elchemista/spectre_lens) | Backend-neutral browser perception and browser Actions; browser authorization, Effect lifecycle, and canonical persistence remain outside it. |
+
+[`spectre_ecosystem`](https://github.com/elchemista/spectre_ecosystem) is
+separate compatibility tooling, not a library or runtime dependency. It
+dispatches repository-owned GitHub test workflows and aggregates their results;
+it does not publish packages or add ecosystem knowledge to Spectre core.
+
 ## Documentation
 
-**Start here**
+For a first visit, read the [Overview](README.md),
+[Installation](docs/INSTALLATION.md), [Getting Started](docs/GETTING_STARTED.md),
+and [Architecture](docs/ARCHITECTURE.md) in that order. The
+[Start Here](docs/START_HERE.md) landing page keeps that path and routes each
+next goal without requiring you to understand the whole system first.
 
-- [Guide for LLMs and coding agents](LLMS.md) — machine-oriented contracts,
-  safe usage patterns, and documentation routing for Spectre `0.3.1`.
-- [Getting Started](docs/GETTING_STARTED.md) — a complete agent and host lifecycle.
-- [Two Realistic Agents](docs/EXAMPLES.md) — database Q&A with Kinetic, browse-and-answer with Lens.
-- [Architecture](docs/ARCHITECTURE.md) — ownership, lifecycle, trust, and host boundaries.
-- [System Overview](SYSTEM.md) — small core, explicit satellite packages, design rationale.
-- [DSL](docs/DSL.md) — agent macros, flows, handlers, policies, actions, prompts.
-
-**Build**
-
-- [Routing](docs/ROUTING.md) · [Routing Evaluation](docs/EVALUATION.md) · [Training](docs/TRAINING.md)
-- [Actions](docs/ACTIONS.md) · [Skills](docs/SKILLS.md) · [Memory](docs/MEMORY.md)
-- [Agent Instances and Subjects](docs/INSTANCES.md) · [Resumable Runs](docs/RUNS.md)
-- [Stack](docs/STACK.md) · [Integration Boundaries](docs/INTEGRATIONS.md)
-
-**Operate**
-
-- [Production Operations](docs/PRODUCTION.md) — persistence, idempotency, supervision, deployment checklist.
-- [Journal](docs/JOURNAL.md) · [Provider Resilience](docs/PROVIDERS.md) · [Testing](docs/TESTING.md)
-
-**The reflective runtime**
-
-- [Work, Vigil, and the Operational Runtime](docs/OPERATIONS.md)
-- [Runtime Skills](docs/RUNTIME_SKILLS.md) · [Data-driven Execution](docs/DATA_DRIVEN_EXECUTION.md)
-- [Governed Definition Changes](docs/GOVERNANCE.md) · [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md)
-- [Skill State](docs/SKILL_STATE.md) · [Event Lifecycle](docs/EVENT_LIFECYCLE.md) · [Identity and Activation](docs/IDENTITY_ACTIVATION.md)
-- [Definition Store](docs/DEFINITION_STORE.md) · [Foundation Conformance](docs/FOUNDATION_CONFORMANCE.md)
-- [Public API Manifest](docs/PUBLIC_API.md) — the exact normative compatibility surface.
-
-**Releases**
-
-- [Changelog](CHANGELOG.md) — release notes and compatibility changes.
-- [Roadmap](docs/ROADMAP.md) — architectural hardening and package direction.
-- Migration guides are versioned with the package; start with
-  [Migrating to 0.3.0](docs/MIGRATING_TO_0_3.md).
+The generated documentation then separates tutorials, core concepts, runtime
+and durability, production operations, extensions, reference material, and
+migration history. The [Public API Manifest](docs/PUBLIC_API.md) is the
+normative compatibility surface. The [guide for LLMs and coding
+agents](LLMS.md) is intentionally separate from the human learning path.
 
 ## License
 
