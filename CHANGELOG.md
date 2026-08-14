@@ -7,7 +7,7 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
-## 0.3.1 — 2026-08-13
+## 0.3.1 — 2026-08-14
 
 ### Added
 
@@ -61,6 +61,14 @@ migration called out explicitly below.
   mistaken for a proven terminal write failure. The event suffix remains
   unchanged for consumer compatibility. Healthy checkpoint status now also
   preserves `error: nil` instead of fabricating an `:error` class.
+- Hardened sensitive-data inspection for canonical payloads whose map keys are
+  arbitrary binary values. Non-UTF-8 keys use byte-safe ASCII normalization
+  while their nested values remain recursively inspected, so sensitive ASCII
+  markers are still recognized instead of raising inside Unicode regular
+  expressions.
+- Raised the repository coverage floor from 93% to 95% with contract tests for
+  durable Instance failures, Definition trust boundaries, governance,
+  conformance runners, Morph/Reflection, and portable artifact corruption.
 - Updated the normative public API manifest, operational guidance, testing
   guide, and release metadata for `0.3.1`. The patch retains the opt-in
   `:required` operation-trigger correlation policy; the default remains

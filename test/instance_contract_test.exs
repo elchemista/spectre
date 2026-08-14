@@ -856,8 +856,11 @@ defmodule SpectreInstanceContractTest do
              )
 
     monitor = Process.monitor(instance)
-    Process.exit(registry, :kill)
-    assert_receive {:DOWN, ^monitor, :process, ^instance, :normal}, 2_000
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      Process.exit(registry, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^instance, :normal}, 2_000
+    end)
   end
 
   defp start_instance do

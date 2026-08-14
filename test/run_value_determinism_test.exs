@@ -167,10 +167,16 @@ defmodule SpectreRunValueDeterminismTest do
   end
 
   defp test_ebin_paths do
+    build_lib =
+      Mix.Project.build_path()
+      |> Path.expand()
+      |> Path.join("lib")
+
     :code.get_path()
     |> Enum.map(&List.to_string/1)
+    |> Enum.map(&Path.expand/1)
     |> Enum.filter(fn path ->
-      String.contains?(path, "/_build/test/lib/") and String.ends_with?(path, "/ebin")
+      String.starts_with?(path, build_lib <> "/") and String.ends_with?(path, "/ebin")
     end)
   end
 end

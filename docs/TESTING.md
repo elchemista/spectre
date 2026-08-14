@@ -21,9 +21,60 @@ CI uses the default Credo priority threshold. `mix credo --strict` is useful
 as an advisory cleanup pass, but lower-priority refactoring suggestions do not
 form the release gate.
 
-The repository coverage threshold is 93%. Do not lower or exclude modules to
+The repository coverage threshold is 95%. Do not lower or exclude modules to
 make a change pass; add a meaningful test or explain why a private branch is
 unreachable and simplify the implementation.
+
+## Supported local matrix
+
+The release matrix covers Elixir `1.19.x` on Erlang/OTP `28.x` and Elixir
+`1.20.x` on Erlang/OTP `29.x`. Any version manager or separately provisioned
+shells are valid; `asdf` is only one convenient way to reproduce both cells.
+
+The following example uses the patch pairs current for the `0.3.1` release.
+Install them once, without changing the repository's `.tool-versions`:
+
+```bash
+asdf install erlang 28.5
+asdf install elixir 1.19.5-otp-28
+asdf install erlang 29.0.5
+asdf install elixir 1.20.3-otp-29
+```
+
+Run each cell in a subshell with a distinct `MIX_BUILD_PATH`. This is
+important: BEAM files compiled by one OTP/Elixir pair must not be reused by the
+other pair.
+
+```bash
+(
+  export PATH="$(asdf where erlang 28.5)/bin:$(asdf where elixir 1.19.5-otp-28)/bin:$PATH"
+  export MIX_ENV=test
+  export MIX_BUILD_PATH="$PWD/_build/matrix/elixir-1.19-otp-28"
+  elixir --version
+  mix deps.get
+  mix format --check-formatted
+  mix compile --warnings-as-errors
+  mix test
+  mix credo
+)
+
+(
+  export PATH="$(asdf where erlang 29.0.5)/bin:$(asdf where elixir 1.20.3-otp-29)/bin:$PATH"
+  export MIX_ENV=test
+  export MIX_BUILD_PATH="$PWD/_build/matrix/elixir-1.20-otp-29"
+  elixir --version
+  mix deps.get
+  mix format --check-formatted
+  mix compile --warnings-as-errors
+  mix test --cover
+  mix credo
+)
+```
+
+If those exact patch versions are no longer available in a local tool manager,
+use another `1.19.x`/OTP 28 and `1.20.x`/OTP 29 pair and keep the two build
+paths separate. The test suite, including generated-project tests, must report
+success based on ExUnit results rather than formatter-specific console text.
 
 ## Public conformance foundation
 

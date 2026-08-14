@@ -94,6 +94,7 @@ defmodule SpectreCanonicalCheckpointCompatibilityFixtureTest do
       :instance_key,
       :legacy,
       :loop_boundary,
+      :loop_ids,
       :loop_started,
       :operation_scheduler,
       :owner_fencing_token,

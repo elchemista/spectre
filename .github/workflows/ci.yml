@@ -35,6 +35,7 @@ jobs:
             test_args: "--cover"
     env:
       MIX_ENV: test
+      MIX_BUILD_PATH: _build/quality
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -53,7 +54,7 @@ jobs:
         with:
           path: |
             deps
-            _build/test
+            _build/quality
           key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-quality-${{ hashFiles('mix.lock') }}
 
       - name: Install dependencies
@@ -137,8 +138,20 @@ jobs:
       - name: Audit Hex dependencies
         run: mix hex.audit
 
+      - name: Build HexDocs without warnings
+        run: mix docs --warnings-as-errors
+
       - name: Validate package locally (no publish)
         run: mix hex.build --unpack --output "$RUNNER_TEMP/hex-package"
+
+      - name: Verify packaged generator contracts
+        run: |
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent.ex.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent_test.exs.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable.ex.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable_test.exs.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store.ex.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store_test.exs.eex"
 
   real-ex-fastembed:
     name: Real ExFastembed system test
