@@ -66,6 +66,9 @@ migration called out explicitly below.
   while their nested values remain recursively inspected, so sensitive ASCII
   markers are still recognized instead of raising inside Unicode regular
   expressions.
+- Updated the Vettore runtime dependency to `~> 0.3.3`, including its latest
+  correctness, concurrency, and native-index fixes. All other direct
+  dependencies were already at their latest compatible releases.
 - Raised the repository coverage floor from 93% to 95% with contract tests for
   durable Instance failures, Definition trust boundaries, governance,
   conformance runners, Morph/Reflection, and portable artifact corruption.

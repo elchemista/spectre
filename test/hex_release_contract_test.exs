@@ -83,6 +83,9 @@ defmodule SpectreHexReleaseContractTest do
 
     assert ex_doc_opts[:only] == :dev
     assert ex_doc_opts[:runtime] == false
+
+    assert {:vettore, "~> 0.3.3"} =
+             Enum.find(config[:deps], &match?({:vettore, _requirement}, &1))
   end
 
   test "the source package owns every executable generator contract" do
