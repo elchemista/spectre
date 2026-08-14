@@ -7,6 +7,15 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
+## Unreleased
+
+### Fixed
+
+- Preserved Spectre's semantic-cache error contract with Vettore 0.3.3 by
+  translating its contained index exceptions back to Spectre's existing
+  exception and failure tags. Custom index write faults still fail before the
+  query embedding provider is invoked.
+
 ## 0.3.1 — 2026-08-14
 
 ### Added
