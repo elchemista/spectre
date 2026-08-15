@@ -30,7 +30,8 @@ defmodule SpectrePublicApiManifestTest do
   end
 
   test "the documented inference modules agree with the normative manifest" do
-    manifest_modules = @manifest_path |> File.read!() |> parse_manifest() |> elem(0) |> MapSet.new()
+    manifest_modules =
+      @manifest_path |> File.read!() |> parse_manifest() |> elem(0) |> MapSet.new()
 
     documented_modules =
       Mix.Project.config()
