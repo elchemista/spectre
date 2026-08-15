@@ -94,6 +94,80 @@ defmodule SpectreReceiptContractTest.AmbiguousCommittedSink do
   end
 end
 
+defmodule SpectreReceiptContractTest.BlockingSink do
+  @moduledoc false
+
+  @behaviour Spectre.Receipt.Sink
+
+  alias Spectre.Receipt.Sink
+
+  @impl Spectre.Receipt.Sink
+  def append(envelope, opts) do
+    server = Keyword.fetch!(opts, :server)
+
+    block? =
+      Agent.get_and_update(server, fn state ->
+        if state.blocks_left > 0 do
+          {true, %{state | blocks_left: state.blocks_left - 1}}
+        else
+          {false, state}
+        end
+      end)
+
+    if block? do
+      send(Keyword.fetch!(opts, :test_pid), {:blocking_sink_append, envelope.id, self()})
+
+      receive do
+        {:release_blocking_sink, id} when id == envelope.id -> :ok
+      end
+    end
+
+    Agent.get_and_update(server, fn state ->
+      case Map.fetch(state.receipts, envelope.id) do
+        :error ->
+          {{:ok, :appended}, put_in(state, [:receipts, envelope.id], envelope)}
+
+        {:ok, ^envelope} ->
+          {{:ok, :idempotent}, state}
+
+        {:ok, _different} ->
+          {{:error, :receipt_conflict}, state}
+      end
+    end)
+  end
+
+  @impl Spectre.Receipt.Sink
+  def lookup(id, opts) do
+    Agent.get(Keyword.fetch!(opts, :server), fn state ->
+      case Map.fetch(state.receipts, id) do
+        {:ok, envelope} -> {:ok, envelope}
+        :error -> :not_found
+      end
+    end)
+  end
+
+  @impl Spectre.Receipt.Sink
+  def put_payload(envelope, opts) do
+    ref = Sink.payload_ref(envelope)
+
+    Agent.update(Keyword.fetch!(opts, :server), fn state ->
+      put_in(state, [:payloads, ref], envelope)
+    end)
+
+    {:ok, ref}
+  end
+
+  @impl Spectre.Receipt.Sink
+  def get_payload(ref, opts) do
+    Agent.get(Keyword.fetch!(opts, :server), fn state ->
+      case Map.fetch(state.payloads, ref) do
+        {:ok, envelope} -> {:ok, envelope}
+        :error -> :not_found
+      end
+    end)
+  end
+end
+
 defmodule SpectreReceiptContractTest.Agent do
   @moduledoc false
 
@@ -411,6 +485,57 @@ defmodule SpectreReceiptContractTest do
       info = Instance.info(instance)
       info.active_run == nil and info.invocations == %{}
     end)
+  end
+
+  test "required mode admits below outbox capacity while a receipt append is pending" do
+    sink_server = start_agent(%{blocks_left: 1, payloads: %{}, receipts: %{}})
+    definition_server = start_agent(%{})
+    checkpoint_server = start_agent(%{})
+
+    definition_store =
+      {SpectreReceiptContractTest.DefinitionStore,
+       server: definition_server,
+       id: "receipt-pending-store-#{System.unique_integer([:positive])}"}
+
+    checkpoint_store =
+      {SpectreReceiptContractTest.CheckpointStore, server: checkpoint_server}
+
+    sink =
+      {SpectreReceiptContractTest.BlockingSink, server: sink_server, test_pid: self()}
+
+    instance =
+      start_instance(
+        receipt_mode: :required,
+        receipt_outbox_limit: 8,
+        receipt_sink: sink,
+        definition_store: definition_store,
+        checkpoint_store: checkpoint_store
+      )
+
+    first =
+      Task.async(fn ->
+        Instance.ask(instance, "receipt first", model: SpectreReceiptContractTest.Model)
+      end)
+
+    assert_receive {:blocking_sink_append, receipt_id, delivery}
+
+    on_exit(fn ->
+      if Process.alive?(delivery), do: send(delivery, {:release_blocking_sink, receipt_id})
+    end)
+
+    second =
+      Task.async(fn ->
+        Instance.ask(instance, "receipt second", model: SpectreReceiptContractTest.Model)
+      end)
+
+    # Admission is accepted and remains queued behind the durable boundary;
+    # it is not rejected merely because one outbox entry is in flight.
+    assert Task.yield(second, 100) == nil
+
+    send(delivery, {:release_blocking_sink, receipt_id})
+
+    assert {:ok, %Spectre.Result{reply_text: "receipted response"}} = Task.await(first, 5_000)
+    assert {:ok, %Spectre.Result{reply_text: "receipted response"}} = Task.await(second, 5_000)
   end
 
   test "required mode reconciles an append that committed before its acknowledgement was lost" do

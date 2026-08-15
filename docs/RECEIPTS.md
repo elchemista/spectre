@@ -38,6 +38,12 @@ checkpoint durability barrier, idempotent sink append, then a canonical outbox
 acknowledgement. Recovery drains pending required entries before conflicting
 admission. A lost append acknowledgement is reconciled with `lookup/2`.
 
+For a live Instance, pending delivery does not by itself reject another
+admission. New work may queue while the durable boundary is in flight; only an
+outbox at `receipt_outbox_limit` fails closed with `:receipt_outbox_full`.
+This keeps admission independent of ordinary sink latency while preserving the
+canonical boundary barrier.
+
 The payload store is intentionally outside the canonical checkpoint. The
 outbox contains only receipt id, envelope digest and a content-addressed
 reference. Hosts must retain payload objects at least as long as an outbox
