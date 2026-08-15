@@ -26,6 +26,9 @@ Portable receipt kinds cover input admission, selection, attempt start and
 terminal, supersession, missing consumer, policy/authority decisions,
 Effect/Action terminal outcomes and nondeterminism samples. Existing typed
 domain receipts are payloads; the envelope does not replace their validation.
+There is no generic `:canonical_commit` kind in schema v1: state roots belong
+to the boundary receipt that caused the commit. The name remains reserved
+until a later schema defines both a real emitter and verification semantics.
 
 The canonical state-digest operation hashes every authoritative section and a
 semantic root. It excludes transition journal, applied-change cache and
