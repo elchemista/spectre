@@ -33,8 +33,16 @@ until a later schema defines both a real emitter and verification semantics.
 The canonical state-digest operation hashes every authoritative section and a
 semantic root. It excludes transition journal, applied-change cache and
 `:receipt_outbox`. Delivery retries and acknowledgements therefore do not
-change the state root they prove. In Instance-produced envelopes, `recorded_at`
-is the logical canonical boundary coordinate, not a wall-clock audit timestamp.
+change the state root they prove. `recorded_at` is uniformly Unix time in
+milliseconds and is excluded from deterministic receipt identity; the
+separate `canonical_revision` field is the logical boundary coordinate.
+
+Before an Instance computes the payload digest, it applies the same
+constitutional key denylist used by Experience evidence to typed payloads and
+metadata. The traversal preserves structs, tuples and keys, replaces only
+sensitive values, and records redacted paths. The privacy class still matters:
+ordinary input and output remain confidential evidence and require sink-side
+encryption, access control and tenancy.
 
 Receipt policy is configured per Instance:
 
