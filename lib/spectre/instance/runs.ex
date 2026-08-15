@@ -4,6 +4,10 @@ defmodule Spectre.Instance.Runs do
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Invocation
   alias Spectre.Invocation.Receipt
+  alias Spectre.Invocation.WorkerReceipt
+  alias Spectre.Inference.Prepared, as: PreparedInference
+  alias Spectre.Inference.Response, as: InferenceResponse
+  alias Spectre.Inference.Usage, as: InferenceUsage
   alias Spectre.Result
   alias Spectre.Run
   alias Spectre.Run.Boundary
@@ -17,9 +21,22 @@ defmodule Spectre.Instance.Runs do
   dispatch id and capability) must match before the returned outcome shape
   is validated against the retained Run.
   """
-  @spec validate_invocation_receipt(InstanceState.t(), String.t(), Receipt.t()) ::
+  @spec validate_invocation_receipt(
+          InstanceState.t(),
+          String.t(),
+          WorkerReceipt.t() | Receipt.t()
+        ) ::
           {:ok, map()} | {:error, term()}
   def validate_invocation_receipt(%InstanceState{} = data, invocation_id, %Receipt{} = receipt) do
+    worker = struct(WorkerReceipt, Map.from_struct(receipt))
+    validate_invocation_receipt(data, invocation_id, worker)
+  end
+
+  def validate_invocation_receipt(
+        %InstanceState{} = data,
+        invocation_id,
+        %WorkerReceipt{} = receipt
+      ) do
     ownership = Map.get(data.invocations, invocation_id)
 
     cond do
@@ -43,13 +60,85 @@ defmodule Spectre.Instance.Runs do
       true ->
         with %Run{} = current <- Map.get(data.runs, ownership.run_id),
              true <- current.revision == ownership.run_revision,
-             %Invocation{id: ^invocation_id} <- current.waiting,
-             :ok <- validate_receipt_outcome(receipt.outcome, current) do
+             %Invocation{id: ^invocation_id} = invocation <- current.waiting,
+             :ok <- validate_worker_fences(receipt, invocation),
+             :ok <- validate_worker_outcome(receipt, current) do
           {:ok, ownership}
         else
           _invalid -> {:error, :invalid_receipt_outcome}
         end
     end
+  end
+
+  defp validate_worker_fences(%WorkerReceipt{kind: :effect}, %Invocation{kind: :effect}), do: :ok
+
+  defp validate_worker_fences(
+         %WorkerReceipt{kind: :inference} = receipt,
+         %Invocation{kind: :inference} = invocation
+       ) do
+    if receipt.attempt_id == invocation.attempt_id and
+         receipt.control_revision == invocation.control_revision and
+         receipt.stream_epoch == invocation.stream_epoch do
+      :ok
+    else
+      {:error, :inference_worker_fence_mismatch}
+    end
+  end
+
+  defp validate_worker_fences(_receipt, _invocation),
+    do: {:error, :invocation_worker_kind_mismatch}
+
+  defp validate_worker_outcome(%WorkerReceipt{kind: :effect, outcome: outcome}, current),
+    do: validate_receipt_outcome(outcome, current)
+
+  defp validate_worker_outcome(
+         %WorkerReceipt{kind: :inference, outcome: {:ok, %InferenceResponse{} = response}} =
+           receipt,
+         %Run{cursor: :inference}
+       ) do
+    with :ok <- validate_inference_receipt_shape(receipt) do
+      InferenceResponse.validate(response)
+    end
+  end
+
+  defp validate_worker_outcome(
+         %WorkerReceipt{kind: :inference, outcome: {:error, _reason}} = receipt,
+         %Run{cursor: :inference}
+       ),
+       do: validate_inference_receipt_shape(receipt)
+
+  defp validate_worker_outcome(_receipt, _current), do: {:error, :invalid_receipt_outcome}
+
+  # A worker receipt is untrusted process input. Check its complete terminal
+  # payload and fencing tuple before allowing any canonical transition.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp validate_inference_receipt_shape(receipt) do
+    cond do
+      not is_boolean(receipt.provider_started) ->
+        {:error, :invalid_inference_receipt_provider_status}
+
+      not is_map(receipt.usage) or is_struct(receipt.usage) ->
+        {:error, :invalid_inference_receipt_usage}
+
+      not is_map(receipt.metadata) or is_struct(receipt.metadata) ->
+        {:error, :invalid_inference_receipt_metadata}
+
+      receipt.usage_quality not in [:provider, :estimated, :unavailable] ->
+        {:error, :invalid_inference_receipt_usage_quality}
+
+      not is_nil(receipt.sequence) and
+          (not is_integer(receipt.sequence) or receipt.sequence < 0) ->
+        {:error, :invalid_inference_receipt_sequence}
+
+      true ->
+        validate_inference_receipt_usage(receipt.usage)
+    end
+  end
+
+  defp validate_inference_receipt_usage(usage) do
+    usage |> InferenceUsage.new() |> InferenceUsage.validate()
+  rescue
+    ArgumentError -> {:error, :invalid_inference_receipt_usage}
   end
 
   @doc "Validates a scheduler move outcome for the given ready-queue entry."
@@ -60,6 +149,25 @@ defmodule Spectre.Instance.Runs do
         %{operation: {:start, _input}}
       ) do
     validate_started_run(returned, current)
+  end
+
+  def validate_move_outcome(
+        {:dispatch, %Invocation{} = invocation, %Run{} = returned,
+         %PreparedInference{} = prepared},
+        current,
+        _entry
+      ) do
+    continuation = returned.inference_continuation
+
+    with true <- returned.waiting == invocation,
+         true <- continuation.invocation == invocation,
+         true <- continuation.descriptor == prepared.descriptor,
+         true <- continuation.frozen_selection == prepared.frozen_selection,
+         :ok <- validate_returned_run(returned, current, :advanced) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_inference_dispatch}
+    end
   end
 
   def validate_move_outcome(
@@ -130,6 +238,8 @@ defmodule Spectre.Instance.Runs do
       run
       | status: :failed,
         cursor: :complete,
+        start_continuation: nil,
+        inference_continuation: nil,
         revision: run.revision + 1,
         waiting: nil,
         last_error: failure
@@ -238,12 +348,14 @@ defmodule Spectre.Instance.Runs do
   @doc "Extracts the Run carried by a successful non-continue step."
   @spec step_run(term()) :: Run.t()
   def step_run({:await, %Invocation{}, %Run{} = run}), do: run
+  def step_run({:dispatch, %Invocation{}, %Run{} = run, %PreparedInference{}}), do: run
   def step_run({:boundary, %Boundary{}, %Run{} = run}), do: run
   def step_run({:complete, %Result{}, %Run{} = run}), do: run
 
   @doc "Extracts the Result carried by a successful non-continue step."
   @spec step_result(term()) :: Result.t() | nil
   def step_result({:await, %Invocation{}, %Run{result: result}}), do: result
+  def step_result({:dispatch, %Invocation{}, %Run{}, %PreparedInference{}}), do: nil
   def step_result({:boundary, %Boundary{}, %Run{result: result}}), do: result
   def step_result({:complete, %Result{} = result, %Run{}}), do: result
 
@@ -451,6 +563,10 @@ defmodule Spectre.Instance.Runs do
       cursor: run.cursor,
       step_id: run.step_id,
       trace_id: run.trace_id,
+      definition_ref: run.definition_ref,
+      activation_generation: run.activation_generation,
+      authority_epoch: run.authority_epoch,
+      closure_digest: run.closure_digest,
       ref: ref
     }
 

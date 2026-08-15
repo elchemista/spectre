@@ -56,8 +56,8 @@ defmodule Spectre.Foundation.Conformance do
       release: Spectre.version(),
       durable_formats: %{
         state: %{writer: 5, readers: [2, 3, 4, 5]},
-        run: %{writer: 2, readers: [1, 2]},
-        instance: %{writer: 2, readers: [2]}
+        run: %{writer: 3, readers: [1, 2, 3]},
+        instance: %{writer: 3, readers: [2, 3]}
       },
       definition: %{
         canonicalization: 1,

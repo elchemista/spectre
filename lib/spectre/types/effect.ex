@@ -9,6 +9,8 @@ defmodule Spectre.Effect do
   that trusted runtime origin.
   """
 
+  alias Spectre.Prompt.Value, as: PromptValue
+
   defstruct [
     :id,
     :idempotency_key,
@@ -159,7 +161,66 @@ defmodule Spectre.Effect do
   """
   @spec complete(t(), term()) :: t()
   def complete(%__MODULE__{} = effect, result) do
-    %{effect | status: :completed, result: result, error: nil}
+    metadata = Map.put(effect.metadata, :result_evidence, result_evidence_for(effect))
+    %{effect | status: :completed, result: result, error: nil, metadata: metadata}
+  end
+
+  @doc "Returns the non-authoritative trust and provenance attached to a result."
+  @spec result_evidence(t()) :: map()
+  def result_evidence(%__MODULE__{} = effect) do
+    evidence =
+      if is_map(effect.metadata),
+        do: Map.get(effect.metadata, :result_evidence),
+        else: nil
+
+    case evidence do
+      %{trust: :untrusted, provenance: provenance, authenticity: authenticity}
+      when is_map(provenance) and is_map(authenticity) ->
+        case PromptValue.new(nil, evidence) do
+          %PromptValue{} -> evidence
+        end
+
+      _missing_or_incomplete ->
+        legacy_result_evidence()
+    end
+  rescue
+    ArgumentError -> legacy_result_evidence()
+  end
+
+  @doc """
+  Wraps an Effect result for evidence-preserving prompt assigns or memory.
+
+  The materializer renders the original result while retaining its untrusted
+  producer evidence on the typed data fragment. Extracting `effect.result`
+  directly discards that lineage; use this helper when the value will cross a
+  turn boundary.
+  """
+  @spec prompt_result(t()) :: PromptValue.t()
+  def prompt_result(%__MODULE__{} = effect) do
+    PromptValue.new(effect.result, result_evidence(effect))
+  end
+
+  defp result_evidence_for(%__MODULE__{} = effect) do
+    %{
+      trust: :untrusted,
+      provenance: %{
+        source: if(effect.kind == :action, do: :action_provider, else: :effect_provider),
+        effect_id: effect.id,
+        kind: effect.kind,
+        name: effect.name,
+        via: via(effect),
+        schema_hash: schema_hash(effect)
+      },
+      authenticity: %{status: :unverified}
+    }
+  end
+
+  defp legacy_result_evidence do
+    %{
+      trust: :untrusted,
+      provenance: %{source: :legacy_effect_result},
+      authenticity: %{}
+    }
   end
 
   @doc """

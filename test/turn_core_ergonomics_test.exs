@@ -323,7 +323,9 @@ defmodule SpectreTurnCoreErgonomicsTest do
                )
 
       assert_received {:classifier_prompt, prompt}
-      assert prompt =~ "Conversation summary (older turns):\nuser wants a website"
+
+      assert prompt =~
+               "Conversation summary (older turns):\n<spectre-data trust=\"data\">user wants a website</spectre-data>"
     end
   end
 

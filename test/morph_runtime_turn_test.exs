@@ -238,13 +238,11 @@ defmodule SpectreMorphRuntimeTurnTest do
     fixture = start_fixture(WorkAgent, checkpoint?: true)
     %{instance: instance, definition_ref: definition_a} = fixture
 
-    assert {:ok, %Turn{observable: {:needs, _request}}} = Spectre.turn(instance, "work")
-
-    assert {:ok, %Turn{observable: {:awaiting, %RunRef{} = work_ref}}} =
-             Spectre.turn(instance, "yes")
+    assert {:ok, %Turn{observable: {:needs, _request}} = needs} =
+             Spectre.turn(instance, "work")
 
     assert {:ok, %{definition_ref: ^definition_a, activation_generation: 1}} =
-             Instance.run(instance, work_ref.run_id)
+             Instance.run(instance, needs.ref.run_id)
 
     approved = approved_refund_change(instance, 100)
     assert {:ok, activation_b} = Morph.activate(approved, now: 103)
@@ -252,7 +250,10 @@ defmodule SpectreMorphRuntimeTurnTest do
     refute activation_b.definition_ref == definition_a
 
     assert {:ok, learned} =
-             Spectre.turn(instance, "refund", skill_context: %{"scope" => "billing"})
+             Spectre.turn(instance, "refund",
+               conversation_id: "definition-b",
+               skill_context: %{"scope" => "billing"}
+             )
 
     assert {:reply, "Refund learned for refund", _turn_ref} = learned.observable
 
@@ -264,7 +265,7 @@ defmodule SpectreMorphRuntimeTurnTest do
     assert_eventually_quiescent(instance)
 
     assert {:ok, %{definition_ref: ^definition_a, activation_generation: 1}} =
-             Instance.run(instance, work_ref.run_id)
+             Instance.run(instance, needs.ref.run_id)
 
     assert {:ok, _revision} = Spectre.flush_checkpoint(instance)
     :ok = GenServer.stop(instance, :normal)
@@ -279,14 +280,24 @@ defmodule SpectreMorphRuntimeTurnTest do
     assert restarted_definition_b == activation_b.definition_ref
 
     assert {:ok, %{definition_ref: ^definition_a, activation_generation: 1}} =
-             Instance.run(restarted, work_ref.run_id)
+             Instance.run(restarted, needs.ref.run_id)
 
     assert {:ok, after_restart} =
-             Spectre.turn(restarted, "refund", skill_context: %{"scope" => "support"})
+             Spectre.turn(restarted, "refund",
+               conversation_id: "definition-b",
+               skill_context: %{"scope" => "support"}
+             )
 
     assert {:reply, "Refund learned for refund", _turn_ref} = after_restart.observable
 
     assert_eventually_quiescent(restarted)
+
+    assert {:ok, %Turn{observable: {:awaiting, %RunRef{} = work_ref}}} =
+             Spectre.resume(
+               restarted,
+               needs.ref,
+               {:policy, needs.ref, {:accept, :approved}}
+             )
 
     assert {:ok, %Turn{observable: {:reply, "worked under Definition A", _turn_ref}}} =
              Spectre.resume(restarted, work_ref, {:execute, work_ref}, test_pid: self())

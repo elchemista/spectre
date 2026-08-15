@@ -13,14 +13,24 @@ defmodule SpectreCanonicalAgentStateTest do
     state = Canonical.new()
 
     assert state.revision == 0
-    assert state.schema_version == 2
+    assert state.schema_version == 3
     assert state.journal == []
     assert state.applied_changes == %{}
 
+    defaults = %{
+      event_admissions: %{records: [], ids: %{}},
+      event_quarantine: %{records: [], ids: %{}},
+      receipt_outbox: %{entries: [], ids: %{}}
+    }
+
     for name <- Sections.names(), name != :activation do
-      assert {:ok, %{}} = Canonical.fetch(state, name)
+      expected = Map.get(defaults, name, %{})
+      assert {:ok, ^expected} = Canonical.fetch(state, name)
       assert {:ok, 0} = Canonical.section_revision(state, name)
-      assert {:ok, %Section{revision: 0, value: %{}}} = Sections.fetch(state.sections, name)
+
+      assert {:ok, %Section{revision: 0, value: ^expected}} =
+               Sections.fetch(state.sections, name)
+
       assert Sections.valid_name?(name)
     end
 
@@ -46,6 +56,14 @@ defmodule SpectreCanonicalAgentStateTest do
 
     assert {:error, {:invalid_canonical_initial_sections, :list}} = Canonical.new([:work])
     assert {:error, {:invalid_canonical_initial_sections, :integer}} = Canonical.new(12)
+
+    for {value, shape} <- [
+          {{:work}, :tuple},
+          {"work", :binary},
+          {1.5, :other}
+        ] do
+      assert {:error, {:invalid_canonical_initial_sections, ^shape}} = Canonical.new(value)
+    end
 
     assert {:error, {:nonportable_canonical_value, {:nonportable_run_value, _, :pid}}} =
              Canonical.new(work: %{owner: self()})
@@ -108,6 +126,15 @@ defmodule SpectreCanonicalAgentStateTest do
              Canonical.snapshot(state, read: [], causation_id: :turn)
 
     assert {:error, {:invalid_snapshot_options, :map}} = Snapshot.new(state, %{})
+
+    for {value, shape} <- [
+          {[], :list},
+          {{:snapshot}, :tuple},
+          {1.5, :other}
+        ] do
+      assert {:error, {:invalid_snapshot_identifier, :snapshot, ^shape}} =
+               Canonical.snapshot(state, read: [], id: value)
+    end
   end
 
   test "two stale-base changes on independent sections commit in completion order" do
@@ -242,6 +269,17 @@ defmodule SpectreCanonicalAgentStateTest do
 
     assert {:error, {:invalid_change_options, :map}} =
              Change.new(snapshot, %{work: %{}}, %{})
+
+    assert {:ok, %Change{writes: %{work: %{phase: :keyword}}}} =
+             Change.new(snapshot, work: %{phase: :keyword})
+
+    for {opts, shape} <- [
+          {{:invalid}, :tuple},
+          {1.5, :other}
+        ] do
+      assert {:error, {:invalid_change_options, ^shape}} =
+               Change.new(snapshot, %{work: %{}}, opts)
+    end
   end
 
   test "change identifiers are idempotent and reject conflicting reuse" do
@@ -309,7 +347,8 @@ defmodule SpectreCanonicalAgentStateTest do
 
     assert {:ok, encoded} = Codec.encode(committed)
     assert encoded["format"] == "spectre/instance-checkpoint"
-    assert encoded["checkpoint_version"] == 2
+    assert encoded["checkpoint_version"] == 3
+    assert encoded["state_schema_version"] == 3
     assert encoded["revision"] == 1
 
     assert {:ok, json} = Codec.encode_json(committed)
@@ -346,12 +385,30 @@ defmodule SpectreCanonicalAgentStateTest do
     assert {:error, {:invalid_canonical_state, :atom}} = Codec.encode(:state)
     assert {:error, {:invalid_canonical_checkpoint, :integer}} = Codec.decode(7)
 
+    for {value, shape} <- [
+          {[], :list},
+          {%URI{}, :map},
+          {{:checkpoint}, :tuple},
+          {1.5, :other}
+        ] do
+      assert {:error, {:invalid_canonical_checkpoint, ^shape}} = Codec.decode(value)
+    end
+
     assert_raise ArgumentError, ~r/invalid canonical Agent checkpoint/, fn ->
       Codec.decode!(%{})
     end
 
     assert {:error, {:unsupported_canonical_checkpoint, 99}} =
              encoded |> Map.put("checkpoint_version", 99) |> Codec.decode()
+
+    assert {:error, {:missing_canonical_checkpoint_field, "checkpoint_version"}} =
+             encoded |> Map.delete("checkpoint_version") |> Codec.decode()
+
+    assert {:error, {:unsupported_canonical_checkpoint_format, "other"}} =
+             encoded |> Map.put("format", "other") |> Codec.decode()
+
+    assert {:error, {:invalid_canonical_checkpoint_format, :other}} =
+             encoded |> Map.put("format", :other) |> Codec.decode()
 
     assert {:error, {:unsupported_canonical_version, 99}} =
              encoded |> Map.put("state_schema_version", 99) |> Codec.decode()
@@ -411,6 +468,7 @@ defmodule SpectreCanonicalAgentStateTest do
     [transition] = encoded["journal"]
 
     transition_cases = [
+      {Map.put(transition, "schema_version", 3), {:unsupported_canonical_transition_version, 3}},
       {Map.put(transition, "status", "duplicate"),
        {:invalid_canonical_transition_status, "duplicate"}},
       {Map.put(transition, "id", ""), {:invalid_canonical_checkpoint_binary, "id", :binary}},
@@ -482,6 +540,37 @@ defmodule SpectreCanonicalAgentStateTest do
              Canonical.validate(%{state | sections: broken_sections})
   end
 
+  test "state digesting and previews fail closed for forged canonical values" do
+    state = Canonical.new()
+
+    assert {:error, :unknown_canonical_preview_section} =
+             Canonical.preview_state_digest(state, %{mission: %{phase: :unknown}})
+
+    {:ok, work} = Sections.fetch(state.sections, :work)
+    sections = Sections.put(state.sections, :work, %{work | value: %{owner: self()}})
+    forged = %{state | sections: sections}
+
+    assert {:error,
+            {:canonical_section_digest_failed, :work,
+             {:nonportable_run_value, [:value, :owner], :pid}}} = Canonical.state_digest(forged)
+
+    assert_raise ArgumentError, ~r/cannot digest canonical state/, fn ->
+      Canonical.state_digest!(forged)
+    end
+
+    snapshot = writable_snapshot(state, :work, "forged-section")
+    valid_change = change(snapshot, :work, %{phase: :active}, "forged-section-change")
+
+    forged_change = %{
+      valid_change
+      | writes: %{mission: %{}},
+        section_revisions: %{mission: 0}
+    }
+
+    assert {:error, {:unknown_canonical_section, :mission}} =
+             Canonical.commit(state, forged_change)
+  end
+
   test "transition validation rejects persisted duplicate and malformed transition state" do
     state = Canonical.new()
     snapshot = writable_snapshot(state, :work, "transition")
@@ -489,11 +578,14 @@ defmodule SpectreCanonicalAgentStateTest do
     assert {:ok, committed, transition} = Canonical.commit(state, change)
 
     malformed = [
-      {%{transition | schema_version: 2}, {:unsupported_canonical_transition_version, 2}},
+      {%{transition | schema_version: 3}, {:unsupported_canonical_transition_version, 3}},
       {%{transition | status: :duplicate}, {:invalid_persisted_transition_status, :duplicate}},
       {%{transition | from_revision: -1}, {:invalid_transition_revision, :from, -1}},
       {%{transition | to_revision: 3}, {:invalid_transition_revision, :to, 3}},
+      {%{transition | base_revision: 2}, {:invalid_transition_revision, :base, 2}},
       {%{transition | changed_sections: [:mission]}, :invalid_transition_sections},
+      {%{transition | pre_state_digest: :invalid}, :invalid_canonical_transition_state_digest},
+      {%{transition | schema_version: 1}, :invalid_canonical_transition_state_digest},
       {%{transition | provenance: :bad}, {:invalid_canonical_field, :provenance, :atom}},
       {%{transition | metadata: []}, {:invalid_canonical_field, :metadata, :list}}
     ]
@@ -506,6 +598,22 @@ defmodule SpectreCanonicalAgentStateTest do
 
     assert {:error, {:future_transition_revision, 2, 1}} =
              Canonical.validate(%{committed | journal: [future]})
+  end
+
+  test "journal validation rejects duplicate transition identities" do
+    state = Canonical.new()
+    first_snapshot = writable_snapshot(state, :work, "journal-first")
+    first_change = change(first_snapshot, :work, %{phase: :active}, "journal-first-change")
+    assert {:ok, first_state, first_transition} = Canonical.commit(state, first_change)
+
+    second_snapshot = writable_snapshot(first_state, :vigil, "journal-second")
+    second_change = change(second_snapshot, :vigil, %{phase: :watching}, "journal-second-change")
+    assert {:ok, second_state, second_transition} = Canonical.commit(first_state, second_change)
+
+    duplicate_id = %{first_transition | id: second_transition.id}
+
+    assert {:error, :duplicate_canonical_transition_id} =
+             Canonical.validate(%{second_state | journal: [second_transition, duplicate_id]})
   end
 
   defp writable_snapshot(state, section, suffix) do

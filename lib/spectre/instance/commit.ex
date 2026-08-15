@@ -116,9 +116,8 @@ defmodule Spectre.Instance.Commit do
   @spec run_state(InstanceState.t(), State.t(), Run.t()) ::
           {:ok, InstanceState.t()} | {:error, term()}
   def run_state(%InstanceState{} = data, %State{} = state, %Run{} = run) do
-    with {:ok, checkpoint} <- Run.checkpoint(run),
-         {:ok, runs} <- Canonical.fetch(data.canonical, :runs) do
-      canonical_sections(data, %{flow: state, runs: Map.put(runs, run.id, checkpoint)},
+    with {:ok, writes} <- run_writes(data, state, run) do
+      canonical_sections(data, writes,
         correlation_id: run.id,
         causation_id: run.trace_id,
         provenance: %{source: :run, run_id: run.id},
@@ -135,6 +134,19 @@ defmodule Spectre.Instance.Commit do
       {:error, reason} -> {:error, {:canonical_run_commit_failed, reason}}
     end
   end
+
+  @doc false
+  @spec run_writes(InstanceState.t(), State.t(), Run.t()) :: {:ok, map()} | {:error, term()}
+  def run_writes(%InstanceState{} = data, %State{} = state, %Run{} = run) do
+    with {:ok, checkpoint} <- Run.checkpoint(run),
+         {:ok, runs} <- Canonical.fetch(data.canonical, :runs) do
+      {:ok, %{flow: state, runs: Map.put(runs, run.id, checkpoint)}}
+    end
+  end
+
+  @doc false
+  @spec prepare_writes(InstanceState.t(), map()) :: map()
+  def prepare_writes(%InstanceState{} = data, writes), do: put_owner_fencing_token(data, writes)
 
   @doc "Prepends new events to the bounded canonical event window."
   @spec append_events(InstanceState.t(), [OperationEvent.t()]) :: map()

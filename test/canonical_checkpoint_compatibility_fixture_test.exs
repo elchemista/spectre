@@ -67,19 +67,19 @@ defmodule SpectreCanonicalCheckpointCompatibilityFixtureTest do
              Codec.decode(read_base64_fixture!(@retired_fixture))
   end
 
-  test "the 0.3.0 checkpoint remains readable by the schema-2 writer" do
+  test "the 0.3.0 checkpoint migrates through the current schema-3 writer" do
     checkpoint = File.read!(@v030_fixture)
 
     assert {:ok, canonical} = Codec.decode(checkpoint)
-    assert canonical.schema_version == 2
+    assert canonical.schema_version == 3
     assert canonical.revision == 0
 
     assert {:ok, encoded} = Codec.encode(canonical)
-    assert encoded["checkpoint_version"] == 2
-    assert encoded["state_schema_version"] == 2
+    assert encoded["checkpoint_version"] == 3
+    assert encoded["state_schema_version"] == 3
 
     assert Map.keys(encoded["sections"]) |> Enum.sort() ==
-             ~w(activation control correlations directive event_admissions event_quarantine events flow lifecycles runs skill_states vigil work)
+             ~w(activation control correlations directive event_admissions event_quarantine events flow inference_control inference_progress lifecycles receipt_outbox runs skill_states vigil work)
   end
 
   test "the advanced 0.3.0 checkpoint preserves a real waiting Work semantically" do
@@ -117,7 +117,7 @@ defmodule SpectreCanonicalCheckpointCompatibilityFixtureTest do
              @v030_advanced_sha256
 
     assert {:ok, canonical} = Codec.decode(checkpoint)
-    assert canonical.schema_version == 2
+    assert canonical.schema_version == 3
     assert canonical.revision == 2
     assert Enum.map(canonical.journal, & &1.to_revision) == [2, 1]
 

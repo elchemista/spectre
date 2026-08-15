@@ -89,10 +89,21 @@ defmodule SpectreInstanceCoverageFloorTest do
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Runs
   alias Spectre.Instance.State, as: InstanceState
+  alias Spectre.Inference.Constraints
+  alias Spectre.Inference.Descriptor
+  alias Spectre.Inference.FrozenSelection
+  alias Spectre.Inference.Progress
+  alias Spectre.Inference.Request, as: InferenceRequest
+  alias Spectre.Inference.Selection
+  alias Spectre.Inference.StreamCheckpoint
+  alias Spectre.Inference.Usage
   alias Spectre.Invocation
   alias Spectre.Invocation.Receipt
+  alias Spectre.Prompt.Plan
   alias Spectre.Result
   alias Spectre.Run
+  alias Spectre.Run.Boundary
+  alias Spectre.Run.InferenceContinuation
   alias Spectre.State
   alias Spectre.Subject
 
@@ -840,6 +851,37 @@ defmodule SpectreInstanceCoverageFloorTest do
     assert {:ok, initialized} = Instance.init(init_opts)
     Process.demonitor(initialized.registry_monitor, [:flush])
 
+    invalid_options = [
+      {[max_runs: 0], {:invalid_instance_max_runs, 0}},
+      {[max_tombstones: -1], {:invalid_instance_max_tombstones, -1}},
+      {[max_operation_runners: 0], {:invalid_instance_max_runs, 0}},
+      {[max_stream_sessions: 0], {:invalid_instance_option, :max_stream_sessions, 0}},
+      {[
+         operation_terminal_loop_retention: :invalid
+       ], {:invalid_instance_retention, :operation_terminal_loop_retention, :invalid}},
+      {[
+         operation_correlation_retention: -1
+       ], {:invalid_instance_retention, :operation_correlation_retention, -1}},
+      {[inference_observer_lane: :enabled], {:invalid_inference_observer_lane, :enabled}},
+      {[
+         inference_progress_commit_interval: 0
+       ], {:invalid_inference_progress_commit_interval, 0}},
+      {[inference_progress_limit: 0], {:invalid_inference_progress_limit, 0}},
+      {[
+         inference_stream_checkpoint_interval: 0
+       ], {:invalid_inference_stream_checkpoint_interval, 0}},
+      {[receipt_mode: :unknown], {:invalid_receipt_mode, :unknown}},
+      {[receipt_mode: :observational], :receipt_sink_required},
+      {[receipt_mode: :required], :receipt_sink_required},
+      {[
+         receipt_outbox_limit: 0
+       ], {:invalid_instance_option, :receipt_outbox_limit, 0}}
+    ]
+
+    Enum.each(invalid_options, fn {overrides, reason} ->
+      assert {:stop, ^reason} = Instance.init(Keyword.merge(init_opts, overrides))
+    end)
+
     assert {:stop, :instance_registry_unavailable} =
              Instance.init(
                Keyword.put(
@@ -867,6 +909,376 @@ defmodule SpectreInstanceCoverageFloorTest do
     assert :ok = Instance.terminate(:shutdown, data)
     assert_receive {:DOWN, ^checkpoint_monitor, :process, ^checkpoint_task, :shutdown}
     assert_receive {:DOWN, ^reconciliation_monitor, :process, ^reconciliation_task, :shutdown}
+  end
+
+  test "Instance contains receipt task DOWNs and ignores late delivery races" do
+    data = instance_state(receipt_mode: :required)
+    staging_monitor = make_ref()
+    staging_tag = make_ref()
+
+    staging = %{
+      token: "staging-token",
+      pid: self(),
+      monitor: staging_monitor,
+      run: nil,
+      resume: {:authority_decision, {self(), staging_tag}, :ignored},
+      prepared: nil,
+      attempt: 0
+    }
+
+    staging_data = %{
+      data
+      | receipt_staging: %{staging.token => staging},
+        state_lock: %{receipt_id: "staging"}
+    }
+
+    assert {:noreply, ^staging_data} =
+             Instance.handle_info(
+               {:DOWN, staging_monitor, :process, self(), :normal},
+               staging_data
+             )
+
+    assert {:noreply, staging_failed} =
+             Instance.handle_info(
+               {:DOWN, staging_monitor, :process, self(), :payload_task_crashed},
+               staging_data
+             )
+
+    assert staging_failed.receipt_staging == %{}
+    assert staging_failed.state_lock == nil
+
+    assert_receive {^staging_tag,
+                    {:error, {:required_receipt_payload_task_down, :payload_task_crashed}}}
+
+    delivery_monitor = make_ref()
+
+    observational = %{
+      id: "observational-receipt",
+      pid: self(),
+      monitor: delivery_monitor,
+      mode: :observational
+    }
+
+    observational_data = %{
+      data
+      | receipt_deliveries: %{observational.id => observational}
+    }
+
+    assert {:noreply, ^observational_data} =
+             Instance.handle_info(
+               {:DOWN, delivery_monitor, :process, self(), :normal},
+               observational_data
+             )
+
+    assert {:noreply, observational_failed} =
+             Instance.handle_info(
+               {:DOWN, delivery_monitor, :process, self(), :sink_crashed},
+               observational_data
+             )
+
+    assert observational_failed.receipt_deliveries == %{}
+    assert observational_failed.receipt_retry_timers == %{}
+
+    required = %{observational | id: "required-receipt", mode: :required}
+    required_data = %{data | receipt_deliveries: %{required.id => required}}
+
+    assert {:noreply, required_failed} =
+             Instance.handle_info(
+               {:DOWN, delivery_monitor, :process, self(), :sink_crashed},
+               required_data
+             )
+
+    assert required_failed.receipt_deliveries == %{}
+    assert Map.has_key?(required_failed.receipt_retry_timers, required.id)
+
+    Enum.each(required_failed.receipt_retry_timers, fn {_id, timer} ->
+      Process.cancel_timer(timer)
+    end)
+  end
+
+  test "Instance heartbeats validate every stream fence and commit bounded recovery state" do
+    {data, run, ownership, progress, checkpoint} = inference_heartbeat_fixture()
+    invocation_id = ownership.invocation.id
+
+    assert {:noreply, live} =
+             Instance.handle_info(
+               {:spectre, :inference_heartbeat, invocation_id, progress},
+               data
+             )
+
+    assert live.inference_liveness_clock[invocation_id].sequence == progress.sequence
+
+    stale_cases = [
+      {%{data | stream_sessions: %{}}, progress, checkpoint},
+      {%{data | invocations: %{invocation_id => %{ownership | dispatch_id: "other"}}}, progress,
+       checkpoint},
+      {data, %{progress | inference_id: "other"}, checkpoint},
+      {data, %{progress | generation: "other"}, checkpoint},
+      {data, %{progress | control_revision: progress.control_revision + 1}, checkpoint},
+      {%{data | inference_liveness_clock: %{invocation_id => %{sequence: 2}}},
+       %{progress | sequence: 1}, checkpoint},
+      {data, %{progress | state: :invalid}, checkpoint},
+      {data, progress, %{checkpoint | output_bytes: checkpoint.output_bytes + 1}},
+      {data, progress, :invalid_checkpoint}
+    ]
+
+    Enum.each(stale_cases, fn {candidate, stale_progress, stale_checkpoint} ->
+      assert {:noreply, rejected} =
+               Instance.handle_info(
+                 {:spectre, :inference_heartbeat, invocation_id, stale_progress,
+                  stale_checkpoint},
+                 candidate
+               )
+
+      assert rejected.inference_liveness_clock == candidate.inference_liveness_clock
+    end)
+
+    committing = %{
+      data
+      | base_opts:
+          Keyword.merge(data.base_opts,
+            inference_observer_lane: true,
+            inference_progress_commit_interval: 1,
+            inference_stream_checkpoint_interval: 1
+          )
+    }
+
+    assert {:noreply, committed} =
+             Instance.handle_info(
+               {:spectre, :inference_heartbeat, invocation_id, progress, checkpoint},
+               committing
+             )
+
+    assert committed.canonical.revision == committing.canonical.revision + 1
+    assert committed.runs[run.id].inference_continuation.provider_status == :streaming
+
+    assert {:ok, committed_progress_entries} =
+             Canonical.fetch(committed.canonical, :inference_progress)
+
+    committed_progress = Map.fetch!(committed_progress_entries, progress.inference_id)
+
+    assert committed_progress.canonical_revision == committed.canonical.revision
+
+    # A second identical cursor is not a meaningful checkpoint change, while
+    # the liveness clock remains current.
+    assert {:noreply, duplicate} =
+             Instance.handle_info(
+               {:spectre, :inference_heartbeat, invocation_id, progress, checkpoint},
+               committed
+             )
+
+    assert duplicate.runs[run.id] == committed.runs[run.id]
+  end
+
+  test "Instance turns abnormal inference and effect worker exits into durable terminal receipts" do
+    {base, inference_run, inference_ownership, _progress, _checkpoint} =
+      inference_heartbeat_fixture()
+
+    inference_pid = self()
+    inference_monitor = make_ref()
+
+    inference_ownership = %{
+      inference_ownership
+      | mode: :one_shot,
+        pid: inference_pid,
+        monitor: inference_monitor
+    }
+
+    inference_worker = Map.put(inference_ownership, :kind, :invocation)
+
+    inference_data = %{
+      base
+      | invocations: %{inference_ownership.invocation.id => inference_ownership},
+        stream_sessions: %{},
+        workers: %{inference_pid => inference_worker},
+        state_lock: %{
+          run_id: inference_run.id,
+          invocation_id: inference_ownership.invocation.id
+        }
+    }
+
+    assert {:noreply, inference_failed} =
+             Instance.handle_info(
+               {:DOWN, inference_monitor, :process, inference_pid, :provider_crashed},
+               inference_data
+             )
+
+    assert inference_failed.workers == %{}
+    assert inference_failed.invocations == %{}
+    assert inference_failed.runs[inference_run.id].status == :failed
+
+    data = instance_state()
+    opts = [run_id: "effect-worker-down"]
+
+    assert {:ok, admitted} =
+             Spectre.Runtime.admit(
+               @agent,
+               Spectre.Input.new("work"),
+               data.state,
+               opts,
+               opts
+             )
+
+    assert {:await, %Invocation{kind: :effect} = invocation, awaiting} =
+             Spectre.Runtime.advance(admitted, opts)
+
+    effect_pid = self()
+    effect_monitor = make_ref()
+
+    entry = %{
+      run_id: awaiting.id,
+      operation: :advance,
+      projection: :result,
+      input: awaiting.input,
+      opts: opts,
+      state_revision: data.state.revision,
+      internal?: true,
+      commit_state?: false
+    }
+
+    effect_ownership = %{
+      kind: :invocation,
+      invocation_id: invocation.id,
+      invocation: invocation,
+      run_id: awaiting.id,
+      run_revision: awaiting.revision,
+      generation: data.generation,
+      dispatch_id: "effect-worker-dispatch",
+      capability: make_ref(),
+      pid: effect_pid,
+      monitor: effect_monitor,
+      entry: entry
+    }
+
+    effect_data = %{
+      data
+      | runs: %{awaiting.id => awaiting},
+        invocations: %{invocation.id => effect_ownership},
+        workers: %{effect_pid => effect_ownership},
+        state_lock: %{run_id: awaiting.id, invocation_id: invocation.id}
+    }
+
+    assert {:noreply, effect_failed} =
+             Instance.handle_info(
+               {:DOWN, effect_monitor, :process, effect_pid, :executor_crashed},
+               effect_data
+             )
+
+    assert effect_failed.workers == %{}
+    assert effect_failed.invocations == %{}
+    assert effect_failed.runs[awaiting.id].status == :failed
+    assert {:effect_worker_down, :executor_crashed} = effect_failed.runs[awaiting.id].last_error
+  end
+
+  test "Instance receipts a policy worker crash and contains unexpected worker code" do
+    data = instance_state()
+    opts = [run_id: "policy-worker-down"]
+
+    assert {:ok, admitted} =
+             Spectre.Runtime.admit(
+               @agent,
+               Spectre.Input.new("ping"),
+               data.state,
+               opts,
+               opts
+             )
+
+    boundary_ref = Run.ref(admitted, :policy, "policy-worker-boundary")
+
+    boundary = %Boundary{
+      id: "policy-worker-boundary",
+      kind: :needs,
+      ref: boundary_ref
+    }
+
+    policy_run = %{admitted | status: :boundary, cursor: :policy, waiting: boundary}
+    policy_pid = self()
+    policy_monitor = make_ref()
+
+    entry = %{
+      run_id: policy_run.id,
+      operation: {:resume, {:policy, boundary_ref, {:accept, :approved}}},
+      projection: :result,
+      input: policy_run.input,
+      opts: opts,
+      state_revision: data.state.revision,
+      internal?: false
+    }
+
+    worker = %{
+      kind: :advance,
+      run_id: policy_run.id,
+      pid: policy_pid,
+      monitor: policy_monitor,
+      entry: entry
+    }
+
+    policy_data = %{
+      data
+      | runs: %{policy_run.id => policy_run},
+        workers: %{policy_pid => worker},
+        active: worker
+    }
+
+    assert {:noreply, policy_failed} =
+             Instance.handle_info(
+               {:DOWN, policy_monitor, :process, policy_pid, :classifier_crashed},
+               policy_data
+             )
+
+    assert policy_failed.active == nil
+    assert policy_failed.workers == %{}
+    assert policy_failed.runs[policy_run.id].status == :failed
+
+    unexpected_opts = [run_id: "unexpected-worker-code"]
+
+    assert {:ok, unexpected_run} =
+             Spectre.Runtime.admit(
+               @agent,
+               Spectre.Input.new("ping"),
+               data.state,
+               unexpected_opts,
+               unexpected_opts
+             )
+
+    unexpected_entry = %{
+      run_id: unexpected_run.id,
+      operation: :unsupported_test_operation,
+      projection: :result,
+      input: unexpected_run.input,
+      opts: unexpected_opts,
+      state_revision: data.state.revision,
+      internal?: true,
+      commit_state?: false
+    }
+
+    queued = %{
+      data
+      | runs: %{unexpected_run.id => unexpected_run},
+        ready: :queue.in(unexpected_run.id, :queue.new()),
+        queued: MapSet.new([unexpected_run.id]),
+        entries: %{unexpected_run.id => unexpected_entry},
+        scheduled: true
+    }
+
+    assert {:noreply, running} =
+             Instance.handle_info({:spectre, :advance, unexpected_run.id}, queued)
+
+    assert_receive {:spectre, :advance_result, run_id, dispatch_id, capability,
+                    {:error, {:instance_worker_exception, FunctionClauseError}, failed}, samples},
+                   1_000
+
+    assert run_id == unexpected_run.id
+    assert failed.status == :failed
+
+    assert {:noreply, contained} =
+             Instance.handle_info(
+               {:spectre, :advance_result, run_id, dispatch_id, capability,
+                {:error, failed.last_error, failed}, samples},
+               running
+             )
+
+    assert contained.runs[unexpected_run.id].status == :failed
   end
 
   defp instance_state(overrides \\ []) do
@@ -900,9 +1312,15 @@ defmodule SpectreInstanceCoverageFloorTest do
       max_runs: 16,
       max_tombstones: 16,
       max_operation_runners: 1,
+      max_stream_sessions: 4,
+      stream_registry: Spectre.Inference.StreamRegistry,
+      stream_capacity: Spectre.Inference.StreamCapacity,
       generation: "instance-coverage-generation",
       checkpoint_mode: :manual,
-      checkpoint_revision: 0
+      checkpoint_revision: 0,
+      receipt_mode: :disabled,
+      receipt_sink: nil,
+      max_receipt_outbox: 16
     }
 
     struct!(InstanceState, Map.merge(defaults, Map.new(overrides)))
@@ -941,6 +1359,105 @@ defmodule SpectreInstanceCoverageFloorTest do
 
   defp initial_run(id) do
     Run.new(@agent, Spectre.Input.new("ping"), %State{}, run_id: id)
+  end
+
+  defp inference_heartbeat_fixture do
+    data = instance_state()
+    inference_id = "heartbeat-inference"
+
+    request =
+      InferenceRequest.new(
+        id: inference_id,
+        purpose: :response_generation,
+        plan: %Plan{rendered: "heartbeat"},
+        constraints: Constraints.new([]),
+        metadata: %{}
+      )
+
+    descriptor = Descriptor.from_request(request, streaming?: true)
+
+    selection =
+      Selection.new(
+        request_id: inference_id,
+        level: :default,
+        model: @agent,
+        reason: :test,
+        selector: Spectre.Inference.Selector.Default
+      )
+
+    frozen = FrozenSelection.from_selection(selection)
+    continuation = InferenceContinuation.new(descriptor, frozen_selection: frozen)
+    run = Run.new(@agent, Spectre.Input.new("heartbeat"), data.state, run_id: "heartbeat-run")
+    run = %{run | revision: 1}
+    invocation = Invocation.from_inference(run, continuation, streaming?: true)
+
+    continuation = %{
+      continuation
+      | invocation: invocation,
+        stream_epoch: invocation.stream_epoch,
+        provider_status: :dispatching
+    }
+
+    run = %{
+      run
+      | status: :awaiting,
+        cursor: :inference,
+        waiting: invocation,
+        inference_continuation: continuation
+    }
+
+    ownership = %{
+      mode: :stream,
+      invocation_id: invocation.id,
+      invocation_kind: :inference,
+      invocation: invocation,
+      run_id: run.id,
+      run_revision: run.revision,
+      generation: data.generation,
+      dispatch_id: "heartbeat-dispatch",
+      capability: make_ref(),
+      pid: self(),
+      monitor: make_ref()
+    }
+
+    usage = %Usage{input_tokens: 2, output_tokens: 1, total_tokens: 3, output_bytes: 4}
+
+    {:ok, checkpoint} =
+      StreamCheckpoint.new("provider-request", %{offset: 4},
+        provider_sequence: 2,
+        usage: usage,
+        usage_quality: :provider,
+        output_bytes: 4
+      )
+
+    progress =
+      Progress.new(
+        inference_id: inference_id,
+        invocation_id: invocation.id,
+        attempt_id: invocation.attempt_id,
+        run_revision: run.revision,
+        generation: data.generation,
+        dispatch_id: ownership.dispatch_id,
+        control_revision: invocation.control_revision,
+        stream_epoch: invocation.stream_epoch,
+        sequence: 1,
+        provider_request_digest: checkpoint.provider_request_digest,
+        provider_cursor_digest: checkpoint.resume_cursor_digest,
+        state: :streaming,
+        at: 1,
+        output_bytes: 4,
+        usage: usage,
+        usage_quality: :provider
+      )
+
+    data = %{
+      data
+      | runs: %{run.id => run},
+        invocations: %{invocation.id => ownership},
+        stream_sessions: %{invocation.id => ownership}
+    }
+
+    {data, run, ownership, progress, checkpoint}
   end
 
   defp run_ref(run_id, revision) do

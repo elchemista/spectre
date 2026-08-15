@@ -22,6 +22,7 @@ defmodule Spectre.Instance do
   alias Spectre.Definition.Store, as: DefinitionStore
   alias Spectre.Event.Envelope, as: EventEnvelope
   alias Spectre.Event.SchemaRegistry, as: EventSchemaRegistry
+  alias Spectre.Effect
   alias Spectre.Execution.Admission, as: ExecutionAdmission
   alias Spectre.Execution.Closure
   alias Spectre.Execution.Materialization, as: ExecutionMaterialization
@@ -37,19 +38,40 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Conversation
   alias Spectre.Instance.Deliveries
   alias Spectre.Instance.Events
+  alias Spectre.Instance.InferenceCapacity
+  alias Spectre.Instance.InferenceControl
   alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.Loops
   alias Spectre.Instance.Owner
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Registry, as: InstanceRegistry
   alias Spectre.Instance.Runs
+  alias Spectre.Instance.Receipts
+  alias Spectre.Instance.ReceiptRecovery
   alias Spectre.Instance.SkillStates
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Instance.Telemetry, as: InstanceTelemetry
   alias Spectre.Instance.Timers
   alias Spectre.Invocation
-  alias Spectre.Invocation.Receipt
+  alias Spectre.Invocation.WorkerReceipt, as: Receipt
+  alias Spectre.Inference
+  alias Spectre.Inference.Budget
+  alias Spectre.Inference.BudgetSnapshot
+  alias Spectre.Inference.Event, as: InferenceEvent
+  alias Spectre.Inference.Failure, as: InferenceFailure
+  alias Spectre.Inference.FrozenSelection
+  alias Spectre.Inference.Request, as: InferenceRequest
+  alias Spectre.Inference.Selection, as: InferenceSelection
+  alias Spectre.Inference.Stream, as: InferenceStream
+  alias Spectre.Inference.StreamCapacity
+  alias Spectre.Inference.StreamCheckpoint
+  alias Spectre.Inference.Progress, as: InferenceProgress
+  alias Spectre.Inference.Usage, as: InferenceUsage
+  alias Spectre.Inference.UsageAccounting
+  alias Spectre.Inference.Prepared, as: PreparedInference
+  alias Spectre.Inference.Response, as: InferenceResponse
   alias Spectre.Operation.Delivery
+  alias Spectre.Operation.Control.Command, as: ControlCommand
   alias Spectre.Operation.Delivery.Consent, as: DeliveryConsent
   alias Spectre.Operation.Delivery.Policy, as: DeliveryPolicy
   alias Spectre.Operation.Delivery.Receipt, as: DeliveryReceipt
@@ -63,9 +85,13 @@ defmodule Spectre.Instance do
   alias Spectre.Operation.Runtime, as: OperationRuntime
   alias Spectre.Operation.View, as: OperationView
   alias Spectre.Result
+  alias Spectre.Receipt.Envelope, as: ReceiptEnvelope
+  alias Spectre.Receipt.Sink, as: ReceiptSink
+  alias Spectre.Prompt.Plan, as: PromptPlan
   alias Spectre.Run
   alias Spectre.Run.Boundary
   alias Spectre.Run.Ref
+  alias Spectre.Run.StartContinuation
   alias Spectre.Run.Value
   alias Spectre.Runtime
   alias Spectre.Skill.StateBinding
@@ -76,6 +102,9 @@ defmodule Spectre.Instance do
   @default_max_runs 256
   @default_max_tombstones 256
   @default_max_operation_runners 8
+  @default_max_stream_sessions 4
+  @default_max_receipt_outbox 256
+  @max_timer_delay 4_294_967_295
   @default_terminal_loop_retention 256
   @default_correlation_retention 1_024
   @operation_event_limit 512
@@ -127,6 +156,12 @@ defmodule Spectre.Instance do
           | {:owner, Owner.config()}
           | {:runner_supervisor, GenServer.server()}
           | {:max_operation_runners, pos_integer()}
+          | {:max_stream_sessions, pos_integer()}
+          | {:stream_registry, atom()}
+          | {:stream_capacity, GenServer.server()}
+          | {:receipt_mode, :disabled | :observational | :required}
+          | {:receipt_sink, ReceiptSink.config()}
+          | {:receipt_outbox_limit, pos_integer()}
           | {:operation_terminal_loop_retention, non_neg_integer() | :unlimited}
           | {:operation_correlation_retention, non_neg_integer() | :unlimited}
           | {:event_schema_registry, EventSchemaRegistry.config()}
@@ -189,6 +224,58 @@ defmodule Spectre.Instance do
   @spec turn(GenServer.server(), term(), keyword()) :: {:ok, Turn.t()} | {:error, term()}
   def turn(server, input, opts \\ []) do
     GenServer.call(server, {:turn, input, opts}, timeout(opts))
+  end
+
+  @doc """
+  Starts a pull-driven inference Run and returns its one-shot Enumerable.
+
+  The call returns after selection and dispatch intent have been committed;
+  the provider is not opened until the Enumerable produces its first demand.
+  """
+  @spec stream(GenServer.server(), term(), keyword()) ::
+          {:ok, InferenceStream.t()} | {:error, term()}
+  def stream(server, input, opts \\ []) do
+    if is_list(opts) and Keyword.keyword?(opts),
+      do: GenServer.call(server, {:stream, input, opts}, timeout(opts)),
+      else: {:error, :invalid_stream_options}
+  end
+
+  @doc false
+  @spec infer(GenServer.server(), InferenceRequest.t(), keyword()) ::
+          {:ok, InferenceResponse.t()} | {:error, term()}
+  def infer(server, %InferenceRequest{} = request, opts \\ []) when is_list(opts) do
+    GenServer.call(
+      server,
+      {:cognitive_inference, request, opts},
+      Keyword.get(opts, :timeout, :infinity)
+    )
+  end
+
+  @doc false
+  @spec resume_stream(GenServer.server(), InferenceStream.t(), keyword()) ::
+          {:ok, InferenceStream.t()} | {:error, term()}
+  def resume_stream(server, %InferenceStream{} = stream, opts \\ []) do
+    if is_list(opts) and Keyword.keyword?(opts),
+      do: GenServer.call(server, {:stream_resume, stream, opts}, timeout(opts)),
+      else: {:error, :invalid_stream_options}
+  end
+
+  @doc false
+  @spec steer_stream(GenServer.server(), InferenceStream.t(), term(), keyword()) ::
+          {:ok, InferenceStream.t()} | {:error, term()}
+  def steer_stream(server, %InferenceStream{} = stream, input, opts \\ []) do
+    if is_list(opts) and Keyword.keyword?(opts),
+      do: GenServer.call(server, {:stream_steer, stream, input, opts}, timeout(opts)),
+      else: {:error, :invalid_stream_options}
+  end
+
+  @doc false
+  @spec cancel_stream(GenServer.server(), InferenceStream.t(), term(), keyword()) ::
+          :ok | {:error, term()}
+  def cancel_stream(server, %InferenceStream{} = stream, reason, opts \\ []) do
+    if is_list(opts) and Keyword.keyword?(opts),
+      do: GenServer.call(server, {:stream_cancel, stream, reason, opts}, timeout(opts)),
+      else: {:error, :invalid_stream_options}
   end
 
   @doc """
@@ -675,7 +762,25 @@ defmodule Spectre.Instance do
       :reason,
       :state_persistence,
       :conversation_ref,
-      :origin_conversation_ref
+      :origin_conversation_ref,
+      :receipt_kind,
+      :receipt_id,
+      :receipted_run_state_committed,
+      :receipt_delivery_acknowledged,
+      :receipt,
+      :receipt_delivery,
+      :inference_control,
+      :inference_progress,
+      :receipt_outbox,
+      :inference_steer_committed,
+      :inference_steer_applied,
+      :inference_steer_rejected,
+      :inference_cancel_applied,
+      :inference_progress_committed,
+      :stream_control,
+      :steering,
+      :steering_restart,
+      :target_kind
     ]
   end
 
@@ -689,12 +794,19 @@ defmodule Spectre.Instance do
     instance_ref = Keyword.fetch!(opts, :instance_ref)
     registry = Keyword.get(opts, :registry, InstanceRegistry)
 
-    with {:ok, max_runs} <- positive_integer(Keyword.get(opts, :max_runs, @default_max_runs)),
+    with {:ok, max_runs} <-
+           positive_integer(Keyword.get(opts, :max_runs, @default_max_runs), :max_runs),
          {:ok, max_tombstones} <-
            non_negative_integer(Keyword.get(opts, :max_tombstones, @default_max_tombstones)),
          {:ok, max_operation_runners} <-
            positive_integer(
-             Keyword.get(opts, :max_operation_runners, @default_max_operation_runners)
+             Keyword.get(opts, :max_operation_runners, @default_max_operation_runners),
+             :max_operation_runners
+           ),
+         {:ok, max_stream_sessions} <-
+           positive_integer(
+             Keyword.get(opts, :max_stream_sessions, @default_max_stream_sessions),
+             :max_stream_sessions
            ),
          base_opts <- base_opts(opts, instance_ref),
          {:ok, terminal_loop_retention} <-
@@ -719,8 +831,21 @@ defmodule Spectre.Instance do
            base_opts
            |> Keyword.put(:operation_terminal_loop_retention, terminal_loop_retention)
            |> Keyword.put(:operation_correlation_retention, correlation_retention),
+         {:ok, base_opts} <- normalize_inference_observer_config(opts, base_opts),
          {:ok, checkpoint_store} <- Checkpoint.store_config(agent, opts, base_opts),
          {:ok, checkpoint_mode} <- Checkpoint.mode(opts, checkpoint_store),
+         {:ok, receipt_mode} <- receipt_mode(opts, base_opts),
+         {:ok, receipt_sink} <- receipt_sink(opts, base_opts),
+         {:ok, max_receipt_outbox} <-
+           positive_integer(
+             first_configured([
+               {opts, :receipt_outbox_limit},
+               {base_opts, :receipt_outbox_limit}
+             ]) || @default_max_receipt_outbox,
+             :receipt_outbox_limit
+           ),
+         base_opts <- Keyword.put(base_opts, :receipt_outbox_limit, max_receipt_outbox),
+         :ok <- validate_receipt_configuration(receipt_mode, receipt_sink, checkpoint_store),
          {:ok, definition_store} <- definition_store_config(agent, opts, base_opts),
          :ok <- validate_definition_store_pair(checkpoint_store, definition_store),
          {:ok, state} <- restore_initial_state(agent, opts, base_opts),
@@ -757,10 +882,17 @@ defmodule Spectre.Instance do
         max_runs: max_runs,
         max_tombstones: max_tombstones,
         max_operation_runners: max_operation_runners,
+        max_stream_sessions: max_stream_sessions,
+        stream_registry: Keyword.get(opts, :stream_registry, Spectre.Inference.StreamRegistry),
+        stream_capacity: Keyword.get(opts, :stream_capacity, StreamCapacity),
         generation: Spectre.Identity.uuid7(),
         runner_supervisor: Keyword.get(opts, :runner_supervisor, RunnerSupervisor),
         checkpoint_store: checkpoint_store,
         checkpoint_mode: checkpoint_mode,
+        receipt_mode: receipt_mode,
+        receipt_sink: receipt_sink,
+        max_receipt_outbox: max_receipt_outbox,
+        receipt_recovery_deferred: required_receipt_recovery_pending?(receipt_mode, canonical),
         checkpoint_revision: checkpoint_revision,
         checkpoint_persisted:
           if(checkpoint_revision == canonical.revision, do: canonical, else: nil),
@@ -768,14 +900,16 @@ defmodule Spectre.Instance do
         registry_monitor: registry_monitor
       }
 
-      case recover_operational_state(data) do
+      case recover_runtime_state(data) do
         {:ok, data} ->
           emit(:started, data, %{count: 1})
 
           {:ok,
            data
            |> Timers.schedule_restored()
+           |> maybe_schedule()
            |> maybe_schedule_operations()
+           |> maybe_start_receipt_deliveries()
            |> arm_idle_timer()}
 
         {:error, reason} ->
@@ -793,6 +927,41 @@ defmodule Spectre.Instance do
 
   def handle_call({:turn, input, opts}, from, data) do
     submit(input, opts, :turn, from, data)
+  end
+
+  def handle_call({:stream, input, opts}, from, data) do
+    submit(input, Keyword.put(opts, :streaming?, true), :stream, from, data)
+  end
+
+  def handle_call({:cognitive_inference, request, opts}, from, data) do
+    submit_cognitive_inference(request, opts, from, data)
+  end
+
+  def handle_call({:stream_resume, stream, _opts}, from, data) do
+    case resume_inference_stream(data, stream, from) do
+      {:reply, reply, next} -> {:reply, reply, arm_idle_timer(next)}
+      {:noreply, next} -> {:noreply, disarm_idle_timer(next)}
+    end
+  end
+
+  def handle_call({:stream_steer, stream, input, opts}, from, data) do
+    case steer_inference_stream(data, stream, input, opts, from) do
+      {:ok, next} -> {:noreply, next}
+      {:error, reason, next} -> {:reply, {:error, reason}, arm_idle_timer(next)}
+    end
+  end
+
+  def handle_call({:stream_cancel, stream, reason, opts}, _from, data) do
+    case cancel_inference_stream(data, stream, reason, opts) do
+      {:ok, next} ->
+        {:reply, :ok, arm_idle_timer(next)}
+
+      {:error, :invocation_terminal, next} ->
+        {:reply, :ok, arm_idle_timer(next)}
+
+      {:error, cancel_reason, next} ->
+        {:reply, {:error, cancel_reason}, arm_idle_timer(next)}
+    end
   end
 
   def handle_call(
@@ -997,14 +1166,31 @@ defmodule Spectre.Instance do
 
   def handle_call(
         {:definition_lifecycle_transition, value, axis, status, opts},
-        _from,
+        from,
         data
       ) do
     with :ok <- owner_guard(data, :commit),
          {:ok, definition_ref} <- resolve_definition_ref(data, value),
-         {:ok, lifecycle, next} <-
-           Events.transition_lifecycle(data, definition_ref, axis, status, opts) do
-      {:reply, {:ok, lifecycle}, arm_idle_timer(next)}
+         {:ok, lifecycle, writes, commit_opts} <-
+           Events.prepare_lifecycle_transition(data, definition_ref, axis, status, opts),
+         {:ok, prepared} <-
+           prepare_authority_decision_receipt(
+             data,
+             definition_ref,
+             axis,
+             status,
+             lifecycle,
+             writes,
+             commit_opts
+           ) do
+      next =
+        commit_or_stage_sections_receipt(
+          data,
+          {:authority_decision, from, lifecycle},
+          prepared
+        )
+
+      {:noreply, next}
     else
       {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
     end
@@ -1499,12 +1685,23 @@ defmodule Spectre.Instance do
         {:spectre, :advance_result, run_id, dispatch_id, capability, outcome},
         data
       ) do
+    handle_info(
+      {:spectre, :advance_result, run_id, dispatch_id, capability, outcome, []},
+      data
+    )
+  end
+
+  def handle_info(
+        {:spectre, :advance_result, run_id, dispatch_id, capability, outcome, samples},
+        data
+      ) do
     case data.active do
       %{
         run_id: ^run_id,
         dispatch_id: ^dispatch_id,
         capability: ^capability
       } = active ->
+        active = put_in(active, [:entry, :nondeterminism_samples], samples)
         {:noreply, receive_advance_result(data, active, outcome)}
 
       _stale ->
@@ -1519,13 +1716,36 @@ defmodule Spectre.Instance do
       ) do
     case Runs.validate_invocation_receipt(data, invocation_id, receipt) do
       {:ok, ownership} ->
-        data =
-          data
-          |> finish_worker(ownership.pid)
-          |> Map.put(:invocations, Map.delete(data.invocations, invocation_id))
-          |> Map.put(:state_lock, nil)
+        case receipt.kind do
+          :inference ->
+            case inference_receipt_disposition(data, ownership, receipt) do
+              :accept ->
+                {:noreply, accept_inference_receipt(data, ownership, receipt)}
 
-        {:noreply, apply_step(receipt.outcome, ownership.entry, data)}
+              {:cancel, reason} ->
+                cancelled = cancelled_race_receipt(receipt, reason)
+                {:noreply, accept_inference_receipt(data, ownership, cancelled)}
+
+              :stale ->
+                emit(
+                  :stale_invocation_result,
+                  data,
+                  %{count: 1},
+                  %{invocation_id: id_digest(invocation_id), reason_class: :control_revision}
+                )
+
+                {:noreply, data}
+            end
+
+          :effect ->
+            data =
+              data
+              |> finish_worker(ownership.pid)
+              |> Map.put(:invocations, Map.delete(data.invocations, invocation_id))
+              |> Map.put(:state_lock, nil)
+
+            {:noreply, commit_effect_terminal(data, ownership, receipt)}
+        end
 
       {:error, _reason} ->
         emit(
@@ -1537,6 +1757,163 @@ defmodule Spectre.Instance do
 
         {:noreply, data}
     end
+  end
+
+  def handle_info(
+        {:spectre, :inference_attempt_deadline, invocation_id, generation, dispatch_id},
+        data
+      ) do
+    case {Map.get(data.inference_attempt_timers, invocation_id),
+          Map.get(data.invocations, invocation_id)} do
+      {%{generation: ^generation, dispatch_id: ^dispatch_id, deadline_at: deadline},
+       %{mode: :one_shot, generation: ^generation, dispatch_id: ^dispatch_id} = ownership} ->
+        if Spectre.Determinism.system_time(:millisecond) < deadline do
+          {:noreply, rearm_inference_attempt_timer(data, ownership, deadline)}
+        else
+          if Process.alive?(ownership.pid), do: Process.exit(ownership.pid, :kill)
+
+          receipt = %Receipt{
+            invocation_id: ownership.invocation.id,
+            run_id: ownership.run_id,
+            run_revision: ownership.run_revision,
+            generation: ownership.generation,
+            dispatch_id: ownership.dispatch_id,
+            capability: ownership.capability,
+            kind: :inference,
+            attempt_id: ownership.invocation.attempt_id,
+            control_revision: ownership.invocation.control_revision,
+            stream_epoch: ownership.invocation.stream_epoch,
+            provider_started: true,
+            usage: %{},
+            outcome: {:error, :inference_deadline_exceeded},
+            metadata: %{remote_status: :ambiguous}
+          }
+
+          next =
+            data
+            |> clear_inference_attempt_timer(invocation_id)
+            |> accept_inference_receipt(ownership, receipt)
+
+          {:noreply, next}
+        end
+
+      _stale ->
+        {:noreply, data}
+    end
+  end
+
+  def handle_info({:spectre, :receipt_payload_staged, token, result}, data) do
+    case Map.pop(data.receipt_staging, token) do
+      {nil, _staging} ->
+        {:noreply, data}
+
+      {staging, remaining} ->
+        Process.demonitor(staging.monitor, [:flush])
+        data = %{data | receipt_staging: remaining}
+
+        case result do
+          {:ok, payload_ref} ->
+            case Receipts.refresh(data, staging.prepared) do
+              {:ok, %{envelope: envelope} = prepared}
+              when envelope == staging.prepared.envelope ->
+                retained = maybe_retain_staged_run(data, staging.run)
+
+                case Receipts.commit(retained, prepared, :required, payload_ref) do
+                  {:ok, committed, envelope} ->
+                    committed = %{
+                      committed
+                      | receipt_resumes:
+                          Map.put(committed.receipt_resumes, envelope.id, staging.resume)
+                    }
+
+                    next = committed |> Checkpoint.force() |> maybe_start_receipt_deliveries()
+                    {:noreply, next}
+
+                  {:error, reason} ->
+                    {:noreply, fail_receipt_staging(data, staging, reason)}
+                end
+
+              {:ok, refreshed} ->
+                {:noreply, restage_required_receipt(data, staging, refreshed)}
+
+              {:error, reason} ->
+                {:noreply, fail_receipt_staging(data, staging, reason)}
+            end
+
+          {:error, reason} ->
+            failure = {:required_receipt_payload_failed, reason}
+            {:noreply, fail_receipt_staging(data, staging, failure)}
+        end
+    end
+  end
+
+  def handle_info({:spectre, :receipt_delivery_result, receipt_id, result}, data) do
+    case Map.pop(data.receipt_deliveries, receipt_id) do
+      {nil, _deliveries} ->
+        {:noreply, data}
+
+      {delivery, remaining} ->
+        Process.demonitor(delivery.monitor, [:flush])
+        data = %{data | receipt_deliveries: remaining}
+        {:noreply, apply_receipt_delivery_result(data, delivery, result)}
+    end
+  end
+
+  def handle_info({:spectre, :receipt_delivery_retry, receipt_id}, data) do
+    {_timer, timers} = Map.pop(data.receipt_retry_timers, receipt_id)
+    data = %{data | receipt_retry_timers: timers}
+
+    if Map.has_key?(data.receipt_deliveries, receipt_id) do
+      {:noreply, data}
+    else
+      {:noreply, maybe_start_receipt_delivery(data, receipt_id)}
+    end
+  end
+
+  def handle_info(
+        {:spectre, :inference_heartbeat, invocation_id, %InferenceProgress{} = progress,
+         checkpoint},
+        data
+      ) do
+    case validate_inference_heartbeat(data, invocation_id, progress, checkpoint) do
+      :ok ->
+        now = System.monotonic_time(:millisecond)
+
+        liveness = %{
+          at: now,
+          sequence: progress.sequence,
+          state: progress.state,
+          usage: progress.usage,
+          output_bytes: progress.output_bytes
+        }
+
+        data = %{
+          data
+          | inference_liveness_clock:
+              Map.put(data.inference_liveness_clock, invocation_id, liveness)
+        }
+
+        {:noreply, maybe_commit_inference_checkpoint(data, progress, checkpoint, now)}
+
+      {:error, _reason} ->
+        emit(
+          :stale_inference_heartbeat,
+          data,
+          %{count: 1},
+          %{invocation_id: id_digest(invocation_id)}
+        )
+
+        {:noreply, data}
+    end
+  end
+
+  # Compatibility with sessions from the same release during a rolling code
+  # upgrade. They carry no raw recovery checkpoint and remain non-resumable.
+  def handle_info(
+        {:spectre, :inference_heartbeat, invocation_id, %InferenceProgress{} = progress},
+        data
+      ) do
+    handle_info({:spectre, :inference_heartbeat, invocation_id, progress, nil}, data)
   end
 
   def handle_info({:spectre, :operation_schedule}, data) do
@@ -1635,6 +2012,9 @@ defmodule Spectre.Instance do
           {:ok, committed, _events} -> {:noreply, committed}
           {:error, _reason} -> {:noreply, next}
         end
+
+      {:throttled, next} ->
+        {:noreply, next}
 
       :drop ->
         {:noreply, data}
@@ -1756,7 +2136,10 @@ defmodule Spectre.Instance do
 
     case result do
       :ok ->
-        next = Checkpoint.persisted(data, inflight, revision)
+        next =
+          data |> Checkpoint.persisted(inflight, revision) |> resume_durable_boundaries(revision)
+
+        next = maybe_start_receipt_deliveries(next)
 
         emit(:checkpoint_persisted, next, %{count: 1}, %{revision: revision})
         {:noreply, arm_idle_timer(next)}
@@ -1788,6 +2171,7 @@ defmodule Spectre.Instance do
     case Checkpoint.apply_reconciliation(data, result) do
       {:ok, next, revision} ->
         GenServer.reply(from, {:ok, revision})
+        next = maybe_start_receipt_deliveries(next)
         emit(:checkpoint_reconciled, next, %{count: 1}, %{revision: revision})
         {:noreply, arm_idle_timer(next)}
 
@@ -1833,6 +2217,15 @@ defmodule Spectre.Instance do
         match?(%{pid: ^pid, monitor: ^monitor}, data.checkpoint_reconcile_inflight) ->
           {:noreply, checkpoint_reconciliation_task_down(data, reason)}
 
+        receipt_staging = receipt_staging_by_pid(data, pid, monitor) ->
+          {:noreply, receipt_staging_down(data, receipt_staging, reason)}
+
+        receipt_delivery = receipt_delivery_by_pid(data, pid, monitor) ->
+          {:noreply, receipt_delivery_down(data, receipt_delivery, reason)}
+
+        invocation_id = Map.get(data.stream_monitors, pid) ->
+          {:noreply, stream_session_down(data, invocation_id, pid, monitor, reason)}
+
         true ->
           case Map.get(data.operation_monitors, pid) do
             attempt_id when is_binary(attempt_id) ->
@@ -1867,7 +2260,13 @@ defmodule Spectre.Instance do
     with %Run{} = current <- Map.get(data.runs, active.run_id),
          :ok <- Runs.validate_move_outcome(outcome, current, active.entry) do
       data = finish_worker(data, active.pid)
-      apply_step(outcome, active.entry, %{data | active: nil})
+      data = %{data | active: nil}
+
+      if policy_resolution_entry?(active.entry) do
+        commit_policy_decision(data, outcome, active.entry)
+      else
+        apply_step(outcome, active.entry, data)
+      end
     else
       nil ->
         data
@@ -1890,11 +2289,23 @@ defmodule Spectre.Instance do
       end
     end)
 
+    Enum.each(data.stream_sessions, fn {_invocation_id, ownership} ->
+      if Process.alive?(ownership.pid) do
+        _ = RunnerSupervisor.stop_runner(data.runner_supervisor, ownership.pid)
+      end
+    end)
+
+    :ok = InferenceCapacity.release_all(data)
+
     Enum.each(data.operation_timers, fn {_loop_id, timer} ->
       if is_reference(timer.ref), do: Process.cancel_timer(timer.ref)
     end)
 
     Enum.each(data.operation_attempt_timers, fn {_attempt_id, timer} ->
+      if is_reference(timer.ref), do: Process.cancel_timer(timer.ref)
+    end)
+
+    Enum.each(data.inference_attempt_timers, fn {_invocation_id, timer} ->
       if is_reference(timer.ref), do: Process.cancel_timer(timer.ref)
     end)
 
@@ -1907,6 +2318,18 @@ defmodule Spectre.Instance do
       %{pid: pid} when is_pid(pid) -> Process.exit(pid, :shutdown)
       _none -> :ok
     end
+
+    Enum.each(data.receipt_staging, fn {_token, staging} ->
+      if Process.alive?(staging.pid), do: Process.exit(staging.pid, :shutdown)
+    end)
+
+    Enum.each(data.receipt_deliveries, fn {_receipt_id, delivery} ->
+      if Process.alive?(delivery.pid), do: Process.exit(delivery.pid, :shutdown)
+    end)
+
+    Enum.each(data.receipt_retry_timers, fn {_receipt_id, timer} ->
+      if is_reference(timer), do: Process.cancel_timer(timer)
+    end)
 
     _ = Owner.release(data.owner, data.ref, data.owner_lease, data.base_opts)
 
@@ -1921,11 +2344,223 @@ defmodule Spectre.Instance do
     end
   end
 
+  # Cognitive operations use the same Run/Invocation lifecycle as every other
+  # inference, but their Run is internal and state-neutral. A deterministic
+  # Run id lets a restarted Operation Runner attach to work already recovered
+  # by the Instance instead of dispatching the model twice.
+  defp submit_cognitive_inference(
+         %InferenceRequest{} = request,
+         opts,
+         from,
+         data
+       )
+       when is_list(opts) do
+    input = Keyword.get(opts, :inference_input, %Input{})
+    run_id = cognitive_inference_run_id(data, request, opts)
+
+    with :ok <- owner_guard(data, :admission),
+         :ok <- Receipts.admission_available?(data),
+         :ok <- valid_cognitive_inference_run_id(run_id) do
+      case Map.get(data.runs, run_id) do
+        %Run{} = run ->
+          attach_cognitive_inference(run, request, from, data)
+
+        nil ->
+          admit_cognitive_inference(run_id, request, input, opts, from, data)
+      end
+    else
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  defp submit_cognitive_inference(request, _opts, _from, data),
+    do:
+      {:reply, {:error, {:invalid_cognitive_request, execution_shape(request)}},
+       arm_idle_timer(data)}
+
+  defp admit_cognitive_inference(run_id, request, input, opts, from, data) do
+    data = Runs.prune_for_new_run(data)
+
+    with true <- map_size(data.runs) < data.max_runs,
+         :ok <- Events.authorize(data, Events.active_definition_ref(data), :new_admission),
+         admission_opts <- cognitive_inference_admission_opts(run_id, request, opts),
+         runtime_opts <- runtime_opts(data, admission_opts, input),
+         {:ok, %Run{} = run} <-
+           Runtime.admit_inference(
+             data.agent,
+             request,
+             input,
+             data.state,
+             runtime_opts,
+             admission_opts
+           ) do
+      entry = %{
+        run_id: run.id,
+        operation: {:inference, request},
+        projection: :inference_response,
+        input: run.input,
+        opts: runtime_opts,
+        state_revision: data.state.revision,
+        internal?: true,
+        commit_state?: false,
+        admitted?: false
+      }
+
+      payload = %{
+        input: run.input,
+        entrypoint: :inference,
+        inference_request_id: request.id,
+        recoverable?: run.start_continuation.recoverable?,
+        recovery_reason: run.start_continuation.reason
+      }
+
+      receipt_opts = [
+        causation_id: Keyword.get(admission_opts, :causation_id, request.id),
+        payload_schema_ref: "spectre.run.input-admitted/1",
+        privacy: :confidential
+      ]
+
+      retained =
+        data
+        |> Runs.put_run(run)
+        |> put_or_replace_cognitive_caller(run.id, from)
+
+      case Receipts.prepare_run(
+             retained,
+             data.state,
+             run,
+             :run_input_admitted,
+             payload,
+             receipt_opts
+           ) do
+        {:ok, prepared_receipt} ->
+          next =
+            commit_or_stage_run_receipt(
+              retained,
+              run,
+              {:run_input_admitted, entry},
+              prepared_receipt
+            )
+
+          {:noreply, next}
+
+        {:error, reason} ->
+          {:noreply, fail_run_commit(retained, run, reason)}
+      end
+    else
+      false -> {:reply, {:error, :instance_run_capacity_reached}, arm_idle_timer(data)}
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  defp attach_cognitive_inference(run, request, from, data) do
+    with :ok <- cognitive_inference_run_matches(run, request),
+         :ok <- Events.authorize(data, run.definition_ref, :continuation) do
+      case run.status do
+        :complete ->
+          {:reply, cognitive_inference_response(run.result), arm_idle_timer(data)}
+
+        :failed ->
+          {:reply, {:error, run.last_error || :cognitive_inference_failed}, arm_idle_timer(data)}
+
+        _active ->
+          case attach_cognitive_caller(data, run.id, from) do
+            {:ok, next} -> {:noreply, disarm_idle_timer(next)}
+            {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+          end
+      end
+    else
+      {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
+    end
+  end
+
+  defp cognitive_inference_admission_opts(run_id, request, opts) do
+    attempt_id = Keyword.get(opts, :operation_attempt_id)
+    loop_id = Keyword.get(opts, :operation_loop_id)
+
+    metadata =
+      opts
+      |> Keyword.get(:run_metadata, %{})
+      |> Map.merge(%{
+        internal_cognitive_inference: true,
+        inference_request_id: request.id,
+        inference_purpose: request.purpose,
+        operation_attempt_id: attempt_id,
+        operation_loop_id: loop_id
+      })
+
+    opts
+    |> Keyword.delete(:timeout)
+    |> Keyword.delete(:inference_input)
+    |> Keyword.put(:run_id, run_id)
+    |> Keyword.put_new(:trace_id, run_id)
+    |> Keyword.put_new(:causation_id, attempt_id || request.id)
+    |> Keyword.put_new(:correlation_id, loop_id || attempt_id || request.id)
+    |> Keyword.put(:run_metadata, metadata)
+  end
+
+  defp cognitive_inference_run_id(data, request, opts) do
+    Keyword.get(opts, :run_id) ||
+      Value.token(
+        "cognitive-inference-run",
+        {data.ref.key, Keyword.get(opts, :operation_attempt_id), request.id}
+      )
+  end
+
+  defp valid_cognitive_inference_run_id(value) when is_binary(value) and value != "", do: :ok
+  defp valid_cognitive_inference_run_id(_value), do: {:error, :invalid_cognitive_inference_run_id}
+
+  defp cognitive_inference_run_matches(
+         %Run{
+           metadata: %{
+             internal_cognitive_inference: true,
+             inference_request_id: request_id,
+             inference_purpose: purpose
+           }
+         },
+         %InferenceRequest{id: request_id, purpose: purpose}
+       ),
+       do: :ok
+
+  defp cognitive_inference_run_matches(_run, _request),
+    do: {:error, :cognitive_inference_run_conflict}
+
+  defp attach_cognitive_caller(data, run_id, from) do
+    new_pid = elem(from, 0)
+
+    case Map.get(data.callers, run_id) do
+      nil ->
+        {:ok, put_or_replace_cognitive_caller(data, run_id, from)}
+
+      {^new_pid, _old_tag} ->
+        # A caller may retry after its previous GenServer.call timed out. The
+        # new tag must replace the one that can no longer receive a reply.
+        {:ok, put_or_replace_cognitive_caller(data, run_id, from)}
+
+      {old_pid, _old_tag} when is_pid(old_pid) ->
+        if process_alive?(old_pid),
+          do: {:error, :cognitive_inference_already_attached},
+          else: {:ok, put_or_replace_cognitive_caller(data, run_id, from)}
+    end
+  end
+
+  defp put_or_replace_cognitive_caller(data, run_id, from),
+    do: %{data | callers: Map.put(data.callers, run_id, from)}
+
+  defp process_alive?(pid) do
+    Process.alive?(pid)
+  rescue
+    _exception -> false
+  end
+
   defp submit_owned(input, opts, projection, from, data) do
     data = Runs.prune_for_new_run(data)
 
-    case Conversation.policy_owner(data, input, opts) do
-      :none ->
+    case {Receipts.admission_available?(data), Conversation.policy_owner(data, input, opts)} do
+      {{:error, reason}, _policy_owner} ->
+        {:reply, {:error, reason}, arm_idle_timer(data)}
+
+      {:ok, :none} ->
         case Events.authorize(data, Events.active_definition_ref(data), :new_admission) do
           :ok ->
             if map_size(data.runs) >= data.max_runs do
@@ -1938,13 +2573,16 @@ defmodule Spectre.Instance do
             {:reply, {:error, reason}, arm_idle_timer(data)}
         end
 
-      {:ok, %Run{} = owner} ->
+      {:ok, {:ok, %Run{}}} when projection == :stream ->
+        {:reply, {:error, {:streaming_unsupported, :policy_continuation}}, arm_idle_timer(data)}
+
+      {:ok, {:ok, %Run{} = owner}} ->
         case Events.authorize(data, owner.definition_ref, :continuation) do
           :ok -> submit_lifecycle_input(input, opts, projection, from, owner, data)
           {:error, reason} -> {:reply, {:error, reason}, arm_idle_timer(data)}
         end
 
-      {:error, reason} ->
+      {:ok, {:error, reason}} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
@@ -1976,28 +2614,69 @@ defmodule Spectre.Instance do
   defp reserve_submitted_run(input, opts, projection, from, data) do
     runtime_opts = runtime_opts(data, opts, input)
 
-    case Run.validate_options(runtime_opts) do
-      :ok ->
-        run = Run.new(data.agent, %Input{}, data.state, runtime_opts)
-
+    case Runtime.admit(data.agent, input, data.state, runtime_opts, opts) do
+      {:ok, %Run{} = run} ->
         if Map.has_key?(data.runs, run.id) or Map.has_key?(data.tombstones, run.id) do
           {:reply, {:error, {:duplicate_instance_run, run.id}}, arm_idle_timer(data)}
         else
-          entry = %{
-            run_id: run.id,
-            operation: {:start, input},
-            projection: projection,
-            input: input,
-            opts: opts,
-            state_revision: data.state.revision,
-            internal?: false
-          }
+          case InferenceCapacity.reserve(data, run.id, projection) do
+            {:ok, reserved, reservation} ->
+              entry = %{
+                run_id: run.id,
+                operation: {:start, input},
+                projection: projection,
+                input: input,
+                opts: opts,
+                state_revision: reserved.state.revision,
+                internal?: false,
+                admitted?: true,
+                stream_capacity_reservation: reservation
+              }
 
-          retained = %{data | runs: Map.put(data.runs, run.id, run)}
+              payload = %{
+                input: run.input,
+                recoverable?: run.start_continuation.recoverable?,
+                recovery_reason: run.start_continuation.reason
+              }
 
-          case Commit.run_state(retained, data.state, run) do
-            {:ok, committed} ->
-              {:noreply, committed |> enqueue(entry) |> put_caller(run.id, from)}
+              receipt_opts = [
+                causation_id: run.trace_id,
+                payload_schema_ref: "spectre.run.input-admitted/1",
+                privacy: :confidential
+              ]
+
+              retained =
+                reserved
+                |> Runs.put_run(run)
+                |> put_caller(run.id, from)
+
+              case Receipts.prepare_run(
+                     retained,
+                     reserved.state,
+                     run,
+                     :run_input_admitted,
+                     payload,
+                     receipt_opts
+                   ) do
+                {:ok, prepared_receipt} ->
+                  next =
+                    commit_or_stage_run_receipt(
+                      retained,
+                      run,
+                      {:run_input_admitted, entry},
+                      prepared_receipt
+                    )
+
+                  {:noreply, next}
+
+                {:error, reason} ->
+                  next =
+                    retained
+                    |> InferenceCapacity.release(run.id)
+                    |> fail_run_commit(run, reason)
+
+                  {:noreply, next}
+              end
 
             {:error, reason} ->
               {:reply, {:error, reason}, arm_idle_timer(data)}
@@ -2008,6 +2687,568 @@ defmodule Spectre.Instance do
         {:reply, {:error, reason}, arm_idle_timer(data)}
     end
   end
+
+  defp resume_inference_stream(data, %InferenceStream{} = old_stream, from) do
+    with :ok <- owner_guard(data, :inference_resume),
+         %Run{
+           status: :awaiting,
+           cursor: :inference,
+           inference_continuation: %{stream_recovery: recovery}
+         } = run <- Map.get(data.runs, old_stream.run_id),
+         :ok <- validate_stream_resume_handle(run, recovery, old_stream) do
+      case stream_session_for_run(data, run.id) do
+        {_invocation_id, %{stream: %InferenceStream{} = stream}} ->
+          {:reply, {:ok, stream}, data}
+
+        nil when is_map_key(data.callers, run.id) ->
+          {:reply, {:error, :stream_resume_already_waiting}, data}
+
+        nil ->
+          {:noreply, put_caller(data, run.id, from)}
+      end
+    else
+      nil -> {:reply, {:error, :stream_resume_unavailable}, data}
+      {:error, reason} -> {:reply, {:error, reason}, data}
+      _mismatch -> {:reply, {:error, :stream_resume_unavailable}, data}
+    end
+  end
+
+  defp validate_stream_resume_handle(run, recovery, old_stream) when is_map(recovery) do
+    expected_digest = Map.get(recovery, :previous_consumer_token_digest)
+
+    cond do
+      run.id != old_stream.run_id or
+          run.inference_continuation.inference_id != old_stream.inference_id ->
+        {:error, :stale_stream_handle}
+
+      Map.get(recovery, :previous_invocation_id) != old_stream.invocation_id or
+          Map.get(recovery, :previous_stream_epoch) != old_stream.stream_epoch ->
+        {:error, :stale_stream_handle}
+
+      not is_binary(expected_digest) or
+          expected_digest != stream_token_digest(old_stream.consumer_token) ->
+        {:error, :invalid_stream_consumer_token}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_stream_resume_handle(_run, _recovery, _old_stream),
+    do: {:error, :stream_resume_unavailable}
+
+  defp cancel_inference_stream(data, %InferenceStream{} = stream, reason, opts) do
+    with :ok <- owner_guard(data, :inference_cancel),
+         {:ok, ownership, run} <- current_stream_ownership(data, stream),
+         {:ok, command} <- build_cancel_command(run, stream, reason, opts),
+         {:ok, committed} <- commit_stream_cancel(data, run, command) do
+      send(
+        ownership.pid,
+        {:spectre, :stream_cancel_committed, ownership.invocation.id, portable_failure(reason),
+         command.id}
+      )
+
+      {:ok, committed}
+    else
+      {:error, reason} -> {:error, reason, data}
+    end
+  end
+
+  defp build_cancel_command(run, stream, reason, opts) do
+    portable_reason = portable_failure(reason)
+
+    command_id =
+      Keyword.get_lazy(opts, :command_id, fn ->
+        Value.token(
+          "inference-cancel",
+          {stream.invocation_id, stream.control_revision, portable_reason}
+        )
+      end)
+
+    command =
+      ControlCommand.new(stream.inference_id, :cancel,
+        id: command_id,
+        payload: %{reason: portable_reason},
+        correlation_id: run.id,
+        causation_id: stream.invocation_id,
+        base_revision: stream.control_revision,
+        provenance: %{source: :stream_control},
+        metadata: %{
+          target_kind: :inference,
+          invocation_id: stream.invocation_id,
+          stream_epoch: stream.stream_epoch
+        }
+      )
+
+    case ControlCommand.validate(command) do
+      :ok -> {:ok, command}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    exception -> {:error, {:invalid_stream_cancel, exception.__struct__}}
+  end
+
+  defp commit_stream_cancel(data, run, command) do
+    with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
+         control <-
+           Map.get(
+             controls,
+             command.loop_id,
+             InferenceControl.new(run.inference_continuation.control_revision)
+           ) do
+      case InferenceControl.apply_cancel(control, command) do
+        :duplicate ->
+          {:ok, data}
+
+        {:ok, next_control} ->
+          Commit.canonical_sections(
+            data,
+            %{inference_control: Map.put(controls, command.loop_id, next_control)},
+            correlation_id: run.id,
+            causation_id: command.id,
+            provenance: %{source: :inference_control, command_id: command.id},
+            metadata: %{transition: :inference_cancel_applied}
+          )
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  defp steer_inference_stream(data, %InferenceStream{} = stream, input, opts, from) do
+    with :ok <- owner_guard(data, :inference_steer),
+         {:ok, ownership, run} <- current_stream_ownership(data, stream),
+         {:ok, steer_input} <- normalize_steer_input(input, opts, data),
+         {:ok, command} <- build_steer_command(run, stream, steer_input, opts),
+         {:ok, committed, control} <- commit_pending_steer(data, run, command),
+         {:ok, next} <-
+           apply_committed_steer(
+             committed,
+             ownership,
+             run,
+             steer_input,
+             command,
+             control,
+             opts,
+             from
+           ) do
+      {:ok, next}
+    else
+      {:error, reason, next} -> {:error, reason, next}
+      {:error, reason} -> {:error, reason, data}
+    end
+  end
+
+  defp current_stream_ownership(data, stream) do
+    ownership = Map.get(data.stream_sessions, stream.invocation_id)
+    invocation_ownership = Map.get(data.invocations, stream.invocation_id)
+
+    cond do
+      is_nil(ownership) or is_nil(invocation_ownership) ->
+        {:error, :invocation_terminal}
+
+      not secure_stream_token?(ownership.stream.consumer_token, stream.consumer_token) ->
+        {:error, :invalid_stream_consumer_token}
+
+      ownership.stream != stream ->
+        {:error, :stale_stream_handle}
+
+      true ->
+        case Map.get(data.runs, ownership.run_id) do
+          %Run{
+            status: :awaiting,
+            cursor: :inference,
+            waiting: %Invocation{id: invocation_id},
+            inference_continuation: continuation
+          } = run
+          when invocation_id == stream.invocation_id and
+                 continuation.control_revision == stream.control_revision ->
+            {:ok, ownership, run}
+
+          %Run{} ->
+            {:error, :invocation_terminal}
+
+          nil ->
+            {:error, :unknown_stream_run}
+        end
+    end
+  end
+
+  defp normalize_steer_input(input, opts, data) do
+    logical = input |> Input.new() |> Spectre.Run.Codec.logical_input()
+
+    max_bytes =
+      Keyword.get(
+        opts,
+        :stream_steer_max_bytes,
+        Keyword.get(data.base_opts, :stream_steer_max_bytes, 32_000)
+      )
+
+    cond do
+      not is_binary(logical.text) or logical.text == "" ->
+        {:error, :empty_stream_steer_input}
+
+      byte_size(logical.text) > max_bytes ->
+        {:error, {:stream_steer_input_too_large, byte_size(logical.text), max_bytes}}
+
+      true ->
+        {:ok, logical}
+    end
+  rescue
+    exception -> {:error, {:invalid_stream_steer_input, exception.__struct__}}
+  end
+
+  defp build_steer_command(run, stream, steer_input, opts) do
+    command_id =
+      Keyword.get_lazy(opts, :command_id, fn ->
+        Value.token(
+          "inference-steer",
+          {stream.invocation_id, stream.control_revision, steer_input}
+        )
+      end)
+
+    command =
+      ControlCommand.new(stream.inference_id, :steer,
+        id: command_id,
+        payload: %{input: steer_input},
+        correlation_id: run.id,
+        causation_id: stream.invocation_id,
+        base_revision: stream.control_revision,
+        provenance: %{source: :stream_control},
+        metadata: %{target_kind: :inference, stream_epoch: stream.stream_epoch}
+      )
+
+    case ControlCommand.validate(command) do
+      :ok -> {:ok, command}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp commit_pending_steer(data, run, command) do
+    with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
+         control <-
+           Map.get(
+             controls,
+             run.inference_continuation.inference_id,
+             InferenceControl.new(run.inference_continuation.control_revision)
+           ),
+         {:ok, next_control} <- InferenceControl.begin_steer(control, command),
+         {:ok, committed} <-
+           Commit.canonical_sections(
+             data,
+             %{inference_control: Map.put(controls, command.loop_id, next_control)},
+             correlation_id: run.id,
+             causation_id: command.id,
+             provenance: %{source: :inference_control, command_id: command.id},
+             metadata: %{transition: :inference_steer_committed}
+           ) do
+      {:ok, committed, next_control}
+    end
+  end
+
+  defp apply_committed_steer(
+         data,
+         ownership,
+         run,
+         steer_input,
+         command,
+         control,
+         opts,
+         from
+       ) do
+    with {:ok, successor, invocation, prepared, entry} <-
+           build_steer_successor(data, ownership, run, steer_input, control, opts),
+         {:ok, writes} <- Commit.run_writes(data, data.state, successor),
+         applied_command <- ControlCommand.applied(control.pending),
+         applied_control <- InferenceControl.finish(control, applied_command),
+         {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
+         writes <-
+           Map.put(
+             writes,
+             :inference_control,
+             Map.put(controls, invocation.inference_id, applied_control)
+           ),
+         successor_reservation <- {data.ref.key, run.id, invocation.attempt_id},
+         :ok <-
+           InferenceCapacity.replace(
+             data,
+             ownership.capacity_reservation,
+             successor_reservation,
+             self()
+           ) do
+      case Commit.canonical_sections(data, writes,
+             correlation_id: run.id,
+             causation_id: command.id,
+             provenance: %{source: :inference_control, command_id: command.id},
+             metadata: %{transition: :inference_steer_applied}
+           ) do
+        {:ok, committed} ->
+          send(
+            ownership.pid,
+            {:spectre, :stream_superseded, ownership.invocation.id,
+             %{
+               successor_invocation_digest: id_digest(invocation.id),
+               provider_cancel: :best_effort
+             }}
+          )
+
+          Process.demonitor(ownership.monitor, [:flush])
+
+          next = %{
+            committed
+            | runs: Map.put(committed.runs, successor.id, successor),
+              invocations: Map.delete(committed.invocations, ownership.invocation.id),
+              stream_sessions: Map.delete(committed.stream_sessions, ownership.invocation.id),
+              stream_monitors: Map.delete(committed.stream_monitors, ownership.pid),
+              stream_reservations:
+                Map.put(committed.stream_reservations, run.id, successor_reservation),
+              inference_liveness_clock:
+                Map.delete(committed.inference_liveness_clock, ownership.invocation.id),
+              state_lock: %{run_id: run.id, invocation_id: invocation.id}
+          }
+
+          next = put_caller(next, run.id, from)
+
+          {:ok,
+           commit_inference_supersession_receipt(
+             next,
+             successor,
+             ownership.invocation,
+             invocation,
+             prepared,
+             entry,
+             command
+           )}
+
+        {:error, reason} ->
+          # Capacity changes before the canonical commit so a session crash
+          # cannot leave a committed successor without an admission slot.
+          _ =
+            InferenceCapacity.replace(
+              data,
+              successor_reservation,
+              ownership.capacity_reservation,
+              ownership.pid
+            )
+
+          rejected = reject_pending_steer(data, run, control, reason)
+          {:error, reason, rejected}
+      end
+    else
+      {:error, reason} ->
+        rejected = reject_pending_steer(data, run, control, reason)
+        {:error, reason, rejected}
+    end
+  end
+
+  defp build_steer_successor(data, ownership, run, steer_input, control, opts) do
+    current = run.inference_continuation
+    attempt = current.attempt + 1
+
+    plan =
+      PromptPlan.append_context_data(current.descriptor.plan, steer_input.text,
+        id: Value.token("steer-context", {current.inference_id, control.generation}),
+        provenance: %{source: :steering, command_id: control.pending.id}
+      )
+
+    descriptor = %{current.descriptor | plan: plan}
+
+    %InferenceSelection{} = current_selection = ownership.prepared.selection
+
+    selection = %InferenceSelection{
+      current_selection
+      | attempt: attempt,
+        reason: :steering_restart,
+        metadata:
+          Map.put(
+            current_selection.metadata,
+            :steering_command_id,
+            control.pending.id
+          )
+    }
+
+    frozen = FrozenSelection.from_selection(selection)
+
+    case settle_superseded_attempt(data, current, ownership.invocation) do
+      {:ok, budget, previous} ->
+        continuation = %{
+          current
+          | descriptor: descriptor,
+            frozen_selection: frozen,
+            invocation: nil,
+            stream_epoch: nil,
+            attempt: attempt,
+            previous_attempts: Enum.take([previous | current.previous_attempts], 32),
+            control_revision: control.generation,
+            provider_status: :selected,
+            provider_request_id: nil,
+            provider_request_digest: nil,
+            resume_cursor: nil,
+            consumer_token_digest: nil,
+            stream_recovery: nil,
+            stream_provider_sequence: nil,
+            stream_usage: %InferenceUsage{},
+            stream_usage_quality: :unavailable,
+            stream_output_bytes: 0,
+            budget: budget,
+            recovery: %{status: :steer_successor_selected, command_id: control.pending.id},
+            last_response: nil
+        }
+
+        successor = %{
+          run
+          | revision: run.revision + 1,
+            step_id: Value.token("inference-steer-step", {run.id, control.generation}),
+            waiting: nil,
+            inference_continuation: continuation,
+            last_error: nil
+        }
+
+        invocation = Invocation.from_inference(successor, continuation, streaming?: true)
+
+        continuation = %{
+          continuation
+          | invocation: invocation,
+            stream_epoch: invocation.stream_epoch
+        }
+
+        successor = %{successor | waiting: invocation, inference_continuation: continuation}
+
+        prepared = %{
+          ownership.prepared
+          | descriptor: descriptor,
+            selection: selection,
+            frozen_selection: frozen
+        }
+
+        entry = %{
+          ownership.entry
+          | opts: ownership.entry.opts |> Keyword.merge(opts) |> Keyword.put(:streaming?, true),
+            state_revision: data.state.revision,
+            stream_capacity_reservation: nil,
+            admitted?: false
+        }
+
+        {:ok, successor, invocation, prepared, entry}
+
+      {:error, reason} ->
+        {:error, {:inference_budget_settlement_failed, portable_failure(reason)}}
+    end
+  end
+
+  defp commit_inference_supersession_receipt(
+         data,
+         successor,
+         previous_invocation,
+         successor_invocation,
+         prepared,
+         entry,
+         command
+       ) do
+    previous = hd(successor.inference_continuation.previous_attempts)
+
+    continuation = %{
+      successor.inference_continuation
+      | recovery: %{
+          status: :supersession_receipted,
+          command_id: command.id,
+          previous_invocation_id: previous_invocation.id
+        }
+    }
+
+    receipted = %{successor | inference_continuation: continuation}
+
+    payload = %{
+      outcome: :superseded,
+      previous_attempt: previous,
+      successor_invocation_id: successor_invocation.id,
+      provider_cancel: if(previous.settlement == :confirmed, do: :not_started, else: :ambiguous)
+    }
+
+    receipt_opts =
+      inference_receipt_opts(
+        previous_invocation,
+        "spectre.inference.attempt-superseded/1"
+      )
+
+    case Receipts.prepare_run(
+           data,
+           data.state,
+           receipted,
+           :inference_attempt_superseded,
+           payload,
+           receipt_opts
+         ) do
+      {:ok, prepared_receipt} ->
+        commit_or_stage_run_receipt(
+          data,
+          receipted,
+          {:inference_superseded, successor_invocation, prepared, entry},
+          prepared_receipt
+        )
+
+      {:error, reason} ->
+        fail_run_commit(%{data | state_lock: nil}, receipted, reason)
+    end
+  end
+
+  defp settle_superseded_attempt(data, continuation, invocation) do
+    liveness = Map.get(data.inference_liveness_clock, invocation.id, %{})
+    usage = Map.get(liveness, :usage, %InferenceUsage{})
+    status = if Map.get(liveness, :state) == :awaiting_consumer, do: :confirmed, else: :ambiguous
+
+    previous = %{
+      attempt: continuation.attempt,
+      attempt_id: invocation.attempt_id,
+      invocation_id: invocation.id,
+      stream_epoch: invocation.stream_epoch,
+      control_revision: invocation.control_revision,
+      outcome: :superseded,
+      usage: usage,
+      settlement: status
+    }
+
+    case continuation.budget do
+      %Budget{} = budget ->
+        case Budget.settle(budget, invocation.attempt_id, usage, status) do
+          {:ok, settled} -> {:ok, settled, previous}
+          {:error, reason} -> {:error, reason}
+        end
+
+      nil ->
+        {:ok, nil, previous}
+    end
+  end
+
+  defp reject_pending_steer(data, run, control, reason) do
+    rejected = ControlCommand.rejected(control.pending, portable_failure(reason))
+    next_control = InferenceControl.finish(control, rejected)
+
+    with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
+         {:ok, committed} <-
+           Commit.canonical_sections(
+             data,
+             %{inference_control: Map.put(controls, control.pending.loop_id, next_control)},
+             correlation_id: run.id,
+             causation_id: control.pending.id,
+             provenance: %{source: :inference_control, command_id: control.pending.id},
+             metadata: %{transition: :inference_steer_rejected}
+           ) do
+      committed
+    else
+      _error -> data
+    end
+  end
+
+  defp secure_stream_token?(left, right) when is_binary(left) and is_binary(right) do
+    byte_size(left) == byte_size(right) and :crypto.hash_equals(left, right)
+  end
+
+  defp secure_stream_token?(_left, _right), do: false
+
+  defp stream_token_digest(token) when is_binary(token) and token != "",
+    do: Value.token("stream-consumer-token", token)
 
   defp dispatch_invocation(run, command, opts, projection, from, data) do
     with :ok <- owner_guard(data, :effect_dispatch),
@@ -2047,6 +3288,7 @@ defmodule Spectre.Instance do
 
       ownership = %{
         invocation_id: invocation.id,
+        invocation: invocation,
         run_id: run.id,
         run_revision: run.revision,
         generation: data.generation,
@@ -2116,7 +3358,10 @@ defmodule Spectre.Instance do
          capability
        ) do
     spawn_worker(fn ->
-      outcome = safe_step(run, fn -> Runtime.resume(run, command, runtime_opts) end)
+      {outcome, samples} =
+        Spectre.Determinism.capture(runtime_opts, fn ->
+          safe_step(run, fn -> Runtime.resume(run, command, runtime_opts) end)
+        end)
 
       receipt = %Receipt{
         invocation_id: invocation.id,
@@ -2125,7 +3370,10 @@ defmodule Spectre.Instance do
         generation: generation,
         dispatch_id: dispatch_id,
         capability: capability,
-        outcome: outcome
+        kind: :effect,
+        provider_started: true,
+        outcome: outcome,
+        metadata: %{remote_status: :confirmed, nondeterminism_samples: samples}
       }
 
       send(owner, {:spectre, :invocation_result, invocation.id, receipt})
@@ -2154,7 +3402,14 @@ defmodule Spectre.Instance do
   end
 
   defp do_start_advance_worker(data, entry, run) do
-    state = State.claim_run_lifecycle(data.state, run.id)
+    # Internal inference Runs are state-neutral and must not claim an unowned
+    # Effect from the parent conversational lifecycle. Ordinary turns retain
+    # the existing claim-before-execute behavior.
+    state =
+      if entry_commits_state?(entry),
+        do: State.claim_run_lifecycle(data.state, run.id),
+        else: data.state
+
     run = Runs.rebase_run(run, state)
     data = %{data | state: state}
 
@@ -2216,17 +3471,26 @@ defmodule Spectre.Instance do
 
   defp spawn_advance_worker(owner, run, entry, dispatch_id, capability) do
     spawn_worker(fn ->
-      outcome = safe_step(run, fn -> run_operation(run, entry) end)
+      {outcome, samples} =
+        Spectre.Determinism.capture(entry.opts, fn ->
+          safe_step(run, fn -> run_operation(run, entry) end)
+        end)
 
       send(
         owner,
-        {:spectre, :advance_result, run.id, dispatch_id, capability, outcome}
+        {:spectre, :advance_result, run.id, dispatch_id, capability, outcome, samples}
       )
     end)
   end
 
   defp run_operation(run, %{operation: :advance, opts: opts}),
     do: Runtime.advance(run, opts)
+
+  defp run_operation(
+         run,
+         %{operation: {:inference, %InferenceRequest{} = request}, opts: opts}
+       ),
+       do: Runtime.prepare_inference(run, request, opts)
 
   defp run_operation(run, %{operation: {:start, input}, opts: opts}) do
     case Runtime.start(run.agent, input, opts) do
@@ -2248,64 +3512,7 @@ defmodule Spectre.Instance do
 
         case apply_returned_run(data, run, entry) do
           {:ok, data} ->
-            cond do
-              Runs.terminal_run?(run) ->
-                data
-                |> reply_caller(run.id, {:error, reason})
-                |> tap(
-                  &emit(:run_failed, &1, %{count: 1}, %{
-                    run_id: id_digest(run.id),
-                    reason_class: reason_class(reason)
-                  })
-                )
-                |> Runs.record_terminal(run)
-                |> maybe_schedule()
-                |> arm_idle_timer()
-
-              start_operation?(entry) ->
-                failed = Runs.terminalize_failed_run(run, reason)
-
-                data
-                |> Runs.put_run(failed)
-                |> reply_caller(run.id, {:error, reason})
-                |> tap(
-                  &emit(:run_failed, &1, %{count: 1}, %{
-                    run_id: id_digest(run.id),
-                    reason_class: reason_class(reason)
-                  })
-                )
-                |> Runs.record_terminal(failed)
-                |> maybe_schedule()
-                |> arm_idle_timer()
-
-              advanced_run?(current, run) ->
-                degraded = %{run | last_error: reason}
-
-                data
-                |> Runs.put_run(degraded)
-                |> reply_caller(run.id, {:error, reason})
-                |> tap(
-                  &emit(:run_move_degraded, &1, %{count: 1}, %{
-                    run_id: id_digest(run.id),
-                    reason_class: reason_class(reason)
-                  })
-                )
-                |> maybe_finalize_degraded_run(degraded)
-                |> maybe_schedule()
-                |> arm_idle_timer()
-
-              true ->
-                data
-                |> reply_caller(run.id, {:error, reason})
-                |> tap(
-                  &emit(:run_resume_rejected, &1, %{count: 1}, %{
-                    run_id: id_digest(run.id),
-                    reason_class: reason_class(reason)
-                  })
-                )
-                |> maybe_schedule()
-                |> arm_idle_timer()
-            end
+            finish_committed_error_step(data, run, reason, entry, current)
 
           {:error, commit_reason} ->
             fail_run_commit(data, run, commit_reason)
@@ -2337,21 +3544,41 @@ defmodule Spectre.Instance do
     if entry.state_revision == data.state.revision or state_neutral_step?(entry, run) do
       case apply_returned_run(data, run, entry) do
         {:ok, data} ->
-          data = maybe_record_started_conversation(data, entry, run)
-
-          continuation = %{
-            entry
-            | operation: :advance,
-              input: run.input,
-              state_revision: data.state.revision
-          }
-
-          data
-          |> enqueue_continuation(continuation, start_operation?(entry))
-          |> arm_idle_timer()
+          finish_committed_continue_step(data, run, entry)
 
         {:error, reason} ->
           fail_run_commit(data, run, reason)
+      end
+    else
+      reject_stale_step(data, entry, run)
+    end
+  end
+
+  defp apply_successful_step(
+         {:dispatch, %Invocation{kind: :inference} = invocation, %Run{} = run,
+          %PreparedInference{} = prepared},
+         entry,
+         data
+       ) do
+    if entry.state_revision == data.state.revision or state_neutral_step?(entry, run) do
+      with :ok <- owner_guard(data, :commit),
+           selected <- mark_inference_selection_receipted(run),
+           projected <- project_returned_run(data, selected, entry),
+           {:ok, prepared_receipt} <-
+             prepare_inference_selection_receipt(
+               projected,
+               selected,
+               invocation,
+               entry
+             ) do
+        commit_or_stage_run_receipt(
+          projected,
+          selected,
+          {:inference_selected, invocation, prepared, entry},
+          prepared_receipt
+        )
+      else
+        {:error, reason} -> fail_run_commit(data, run, reason)
       end
     else
       reject_stale_step(data, entry, run)
@@ -2364,13 +3591,7 @@ defmodule Spectre.Instance do
     if entry.state_revision == data.state.revision or state_neutral_step?(entry, run) do
       case apply_returned_run(data, run, entry) do
         {:ok, data} ->
-          data = reply_projection(data, entry, step)
-          data = maybe_finalize_reply(data, step)
-          data = if Runs.terminal_run?(run), do: Runs.record_terminal(data, run), else: data
-
-          data
-          |> maybe_schedule()
-          |> arm_idle_timer()
+          finish_committed_successful_step(data, step, entry)
 
         {:error, reason} ->
           fail_run_commit(data, run, reason)
@@ -2379,6 +3600,2726 @@ defmodule Spectre.Instance do
       reject_stale_step(data, entry, run)
     end
   end
+
+  # Receipt-gated boundaries commit their returned Run before delivery. These
+  # helpers perform only the post-commit work, so acknowledging a receipt can
+  # never apply the same state transition twice.
+  defp finish_committed_step(
+         data,
+         {:error, reason, %Run{} = run},
+         entry,
+         previous
+       ) do
+    finish_committed_error_step(data, run, reason, entry, previous)
+  end
+
+  defp finish_committed_step(data, {:continue, %Run{} = run}, entry, _previous),
+    do: finish_committed_continue_step(data, run, entry)
+
+  defp finish_committed_step(
+         data,
+         {:dispatch, %Invocation{kind: :inference}, %Run{}, %PreparedInference{}} = step,
+         entry,
+         _previous
+       ) do
+    # The effect or policy boundary is already durable, while inference
+    # selection is a distinct nondeterministic boundary with its own receipt.
+    apply_successful_step(step, %{entry | state_revision: data.state.revision}, data)
+  end
+
+  defp finish_committed_step(data, step, entry, _previous),
+    do: finish_committed_successful_step(data, step, entry)
+
+  defp finish_committed_error_step(data, run, reason, entry, current) do
+    cond do
+      Runs.terminal_run?(run) ->
+        data
+        |> reply_caller(run.id, {:error, reason})
+        |> tap(
+          &emit(:run_failed, &1, %{count: 1}, %{
+            run_id: id_digest(run.id),
+            reason_class: reason_class(reason)
+          })
+        )
+        |> Runs.record_terminal(run)
+        |> maybe_schedule()
+        |> arm_idle_timer()
+
+      start_operation?(entry) ->
+        failed = Runs.terminalize_failed_run(run, reason)
+
+        data
+        |> Runs.put_run(failed)
+        |> reply_caller(run.id, {:error, reason})
+        |> tap(
+          &emit(:run_failed, &1, %{count: 1}, %{
+            run_id: id_digest(run.id),
+            reason_class: reason_class(reason)
+          })
+        )
+        |> Runs.record_terminal(failed)
+        |> maybe_schedule()
+        |> arm_idle_timer()
+
+      advanced_run?(current, run) ->
+        degraded = %{run | last_error: reason}
+
+        data
+        |> Runs.put_run(degraded)
+        |> reply_caller(run.id, {:error, reason})
+        |> tap(
+          &emit(:run_move_degraded, &1, %{count: 1}, %{
+            run_id: id_digest(run.id),
+            reason_class: reason_class(reason)
+          })
+        )
+        |> maybe_finalize_degraded_run(degraded)
+        |> maybe_schedule()
+        |> arm_idle_timer()
+
+      true ->
+        data
+        |> reply_caller(run.id, {:error, reason})
+        |> tap(
+          &emit(:run_resume_rejected, &1, %{count: 1}, %{
+            run_id: id_digest(run.id),
+            reason_class: reason_class(reason)
+          })
+        )
+        |> maybe_schedule()
+        |> arm_idle_timer()
+    end
+  end
+
+  defp finish_committed_continue_step(data, run, entry) do
+    data = maybe_record_started_conversation(data, entry, run)
+
+    continuation = %{
+      entry
+      | operation: :advance,
+        input: run.input,
+        state_revision: data.state.revision
+    }
+
+    data
+    |> enqueue_continuation(continuation, start_operation?(entry))
+    |> arm_idle_timer()
+  end
+
+  defp finish_committed_successful_step(data, step, entry) do
+    run = Runs.step_run(step)
+    data = reply_projection(data, entry, step)
+    data = maybe_finalize_reply(data, step)
+    data = if Runs.terminal_run?(run), do: Runs.record_terminal(data, run), else: data
+
+    data
+    |> maybe_schedule()
+    |> arm_idle_timer()
+  end
+
+  defp policy_resolution_entry?(%{operation: {:resume, {:policy, _ref, _resolution}}}),
+    do: true
+
+  defp policy_resolution_entry?(_entry), do: false
+
+  defp commit_policy_decision(data, outcome, entry) do
+    {:resume, {:policy, boundary_ref, resolution}} = entry.operation
+
+    outcome =
+      map_returned_step_run(outcome, fn run ->
+        marker = %{
+          boundary_id: boundary_ref.boundary_id,
+          decision: portable_value(resolution)
+        }
+
+        %{run | metadata: Map.put(run.metadata, :policy_decision, marker)}
+      end)
+
+    payload = %{
+      boundary_id: boundary_ref.boundary_id,
+      decision: portable_value(resolution),
+      outcome: step_outcome(outcome),
+      nondeterminism_samples: Map.get(entry, :nondeterminism_samples, [])
+    }
+
+    commit_receipted_step(
+      data,
+      outcome,
+      entry,
+      :policy_decision,
+      payload,
+      causation_id: boundary_ref.boundary_id,
+      payload_schema_ref: "spectre.policy.decision/1",
+      privacy: :confidential
+    )
+  end
+
+  defp commit_effect_terminal(data, ownership, %Receipt{} = receipt) do
+    invocation = Map.fetch!(ownership, :invocation)
+
+    kind =
+      if elem(invocation.operation, 0) == :action, do: :action_terminal, else: :effect_terminal
+
+    outcome =
+      map_returned_step_run(receipt.outcome, fn run ->
+        marker = %{
+          invocation_id: invocation.id,
+          effect_id: invocation.subject_id,
+          kind: kind,
+          idempotency_key: invocation.idempotency_key
+        }
+
+        %{run | metadata: Map.put(run.metadata, :effect_terminal, marker)}
+      end)
+
+    receipt = %{receipt | outcome: outcome}
+    effect = terminal_effect(outcome, invocation.subject_id)
+
+    payload = %{
+      effect: effect_receipt_projection(effect, invocation),
+      idempotency_key: invocation.idempotency_key,
+      operation: invocation.operation,
+      outcome: step_outcome(receipt.outcome),
+      provider_started: receipt.provider_started,
+      remote_status: Map.get(receipt.metadata, :remote_status, :confirmed),
+      nondeterminism_samples: Map.get(receipt.metadata, :nondeterminism_samples, [])
+    }
+
+    commit_receipted_step(
+      data,
+      receipt.outcome,
+      ownership.entry,
+      kind,
+      payload,
+      invocation_id: invocation.id,
+      causation_id: invocation.id,
+      payload_schema_ref:
+        if(kind == :action_terminal,
+          do: "spectre.action.terminal/1",
+          else: "spectre.effect.terminal/1"
+        ),
+      privacy: :confidential
+    )
+  end
+
+  defp commit_receipted_step(data, outcome, entry, kind, payload, receipt_opts) do
+    run = returned_step_run(outcome)
+
+    if entry.state_revision == data.state.revision or state_neutral_step?(entry, run) do
+      previous = Map.get(data.runs, run.id)
+
+      with :ok <- owner_guard(data, :commit),
+           projected <- project_returned_run(data, run, entry),
+           {:ok, prepared} <-
+             Receipts.prepare_run(
+               data,
+               projected.state,
+               run,
+               kind,
+               payload,
+               receipt_opts
+             ) do
+        commit_or_stage_run_receipt(
+          projected,
+          run,
+          {:committed_step, outcome, entry, previous},
+          prepared
+        )
+      else
+        {:error, reason} -> fail_run_commit(data, run, reason)
+      end
+    else
+      reject_stale_step(data, entry, run)
+    end
+  end
+
+  defp returned_step_run({:continue, %Run{} = run}), do: run
+  defp returned_step_run({:error, _reason, %Run{} = run}), do: run
+  defp returned_step_run(step), do: Runs.step_run(step)
+
+  defp map_returned_step_run({:continue, %Run{} = run}, mapper),
+    do: {:continue, mapper.(run)}
+
+  defp map_returned_step_run({:await, invocation, %Run{} = run}, mapper),
+    do: {:await, invocation, mapper.(run)}
+
+  defp map_returned_step_run({:dispatch, invocation, %Run{} = run, prepared}, mapper),
+    do: {:dispatch, invocation, mapper.(run), prepared}
+
+  defp map_returned_step_run({:boundary, boundary, %Run{} = run}, mapper),
+    do: {:boundary, boundary, mapper.(run)}
+
+  defp map_returned_step_run({:complete, result, %Run{} = run}, mapper),
+    do: {:complete, result, mapper.(run)}
+
+  defp map_returned_step_run({:error, reason, %Run{} = run}, mapper),
+    do: {:error, reason, mapper.(run)}
+
+  defp step_outcome({:continue, %Run{}}), do: :continue
+  defp step_outcome({:await, %Invocation{}, %Run{}}), do: :await
+  defp step_outcome({:dispatch, %Invocation{}, %Run{}, %PreparedInference{}}), do: :dispatch
+  defp step_outcome({:boundary, %Boundary{}, %Run{}}), do: :boundary
+  defp step_outcome({:complete, %Result{}, %Run{}}), do: :complete
+
+  defp step_outcome({:error, reason, %Run{}}),
+    do: %{status: :error, reason: portable_failure(reason)}
+
+  defp terminal_effect(outcome, effect_id) do
+    run = returned_step_run(outcome)
+
+    case run.result do
+      %Result{effects: effects} ->
+        Enum.find(Enum.reverse(effects), &(&1.id == effect_id and Effect.terminal?(&1))) ||
+          State.resolved_effect(run.state, effect_id)
+
+      _missing_result ->
+        State.resolved_effect(run.state, effect_id)
+    end
+  end
+
+  defp effect_receipt_projection(%Effect{} = effect, _invocation) do
+    %{
+      id: effect.id,
+      kind: effect.kind,
+      name: effect.name,
+      status: effect.status,
+      via: Effect.via(effect),
+      schema_hash: Effect.schema_hash(effect),
+      result: portable_value(effect.result),
+      error: portable_value(effect.error),
+      evidence: Effect.result_evidence(effect)
+    }
+  end
+
+  defp effect_receipt_projection(nil, invocation) do
+    %{
+      id: invocation.subject_id,
+      kind: elem(invocation.operation, 0),
+      name: elem(invocation.operation, 1),
+      status: :unresolved
+    }
+  end
+
+  defp portable_value(value) do
+    case Value.validate(value) do
+      :ok -> value
+      {:error, _reason} -> %{class: reason_class(value)}
+    end
+  end
+
+  # The dispatch intent is a separate durable state from selection. Recovery
+  # may safely dispatch `:selected`, while `:dispatching` is treated as an
+  # uncertain external call unless the adapter can reconcile it.
+  defp commit_inference_dispatch_intent(data, run, invocation, prepared, entry) do
+    with {:ok, run, budget_snapshot} <-
+           reserve_inference_budget(run, invocation, prepared, entry),
+         {run, entry} <- prepare_stream_consumer_token(run, invocation, entry) do
+      continuation = %{
+        run.inference_continuation
+        | provider_status: :dispatching,
+          recovery: %{status: :dispatch_intent_committed}
+      }
+
+      dispatching = %{run | inference_continuation: continuation}
+
+      payload = %{
+        idempotency_key: invocation.idempotency_key,
+        selection: dispatching.inference_continuation.frozen_selection,
+        streaming?: invocation.metadata.streaming?,
+        consumer_token_digest: continuation.consumer_token_digest,
+        resume?: Map.has_key?(entry, :stream_resume_from),
+        resume_cursor_digest: provider_cursor_digest(continuation.resume_cursor),
+        budget: budget_snapshot
+      }
+
+      receipt_opts = inference_receipt_opts(invocation, "spectre.inference.attempt-started/1")
+
+      case Receipts.prepare_run(
+             data,
+             data.state,
+             dispatching,
+             :inference_attempt_started,
+             payload,
+             receipt_opts
+           ) do
+        {:ok, prepared_receipt} ->
+          commit_or_stage_run_receipt(
+            data,
+            dispatching,
+            {:inference_attempt_started, invocation, prepared, entry, budget_snapshot},
+            prepared_receipt
+          )
+
+        {:error, reason} ->
+          fail_run_commit(%{data | state_lock: nil}, dispatching, reason)
+      end
+    else
+      {:error, reason} -> fail_run_commit(%{data | state_lock: nil}, run, reason)
+    end
+  end
+
+  # Only a digest crosses the canonical boundary. The bearer token itself is
+  # held by the caller/session and authorizes attach and control operations.
+  defp prepare_stream_consumer_token(run, %{metadata: %{streaming?: true}}, entry) do
+    token = Map.get(entry, :stream_consumer_token, Spectre.Identity.uuid7())
+
+    continuation = %{
+      run.inference_continuation
+      | consumer_token_digest: stream_token_digest(token)
+    }
+
+    {%{run | inference_continuation: continuation}, Map.put(entry, :stream_consumer_token, token)}
+  end
+
+  defp prepare_stream_consumer_token(run, _invocation, entry), do: {run, entry}
+
+  defp prepare_inference_selection_receipt(data, run, invocation, entry) do
+    payload = %{
+      purpose: run.inference_continuation.purpose,
+      attempt: run.inference_continuation.attempt,
+      selection: run.inference_continuation.frozen_selection,
+      recoverable?: run.inference_continuation.recoverable?,
+      nondeterminism_samples: Map.get(entry, :nondeterminism_samples, [])
+    }
+
+    Receipts.prepare_run(
+      data,
+      data.state,
+      run,
+      :inference_selected,
+      payload,
+      inference_receipt_opts(invocation, "spectre.inference.selected/1")
+    )
+  end
+
+  defp mark_inference_selection_receipted(run) do
+    continuation = %{
+      run.inference_continuation
+      | recovery: %{status: :selection_receipted}
+    }
+
+    %{run | inference_continuation: continuation}
+  end
+
+  defp inference_receipt_opts(invocation, schema_ref) do
+    [
+      inference_id: invocation.inference_id,
+      invocation_id: invocation.id,
+      attempt_id: invocation.attempt_id,
+      control_revision: invocation.control_revision,
+      stream_epoch: invocation.stream_epoch,
+      causation_id: invocation.id,
+      payload_schema_ref: schema_ref,
+      privacy: :confidential
+    ]
+  end
+
+  defp start_inference_worker(data, run, invocation, prepared, entry, budget_snapshot) do
+    if invocation.metadata.streaming? do
+      start_inference_stream(data, run, invocation, prepared, entry, budget_snapshot)
+    else
+      start_one_shot_inference(data, run, invocation, prepared, entry, budget_snapshot)
+    end
+  end
+
+  defp start_one_shot_inference(data, run, invocation, prepared, entry, budget_snapshot) do
+    dispatch_id = Spectre.Identity.uuid7()
+    capability = make_ref()
+    owner = self()
+
+    {pid, monitor} =
+      spawn_worker(fn ->
+        {outcome, samples} =
+          Spectre.Determinism.capture(entry.opts, fn ->
+            Inference.execute(prepared, entry.opts)
+          end)
+
+        outcome = InferenceFailure.sanitize_outcome(outcome)
+
+        {usage, usage_quality} =
+          UsageAccounting.complete_response_outcome(outcome, budget_snapshot)
+
+        receipt = %Receipt{
+          invocation_id: invocation.id,
+          run_id: run.id,
+          run_revision: run.revision,
+          generation: data.generation,
+          dispatch_id: dispatch_id,
+          capability: capability,
+          kind: :inference,
+          attempt_id: invocation.attempt_id,
+          control_revision: invocation.control_revision,
+          stream_epoch: invocation.stream_epoch,
+          provider_started: true,
+          outcome: outcome,
+          usage: usage,
+          usage_quality: usage_quality,
+          metadata: %{remote_status: :confirmed, nondeterminism_samples: samples}
+        }
+
+        send(owner, {:spectre, :invocation_result, invocation.id, receipt})
+      end)
+
+    ownership = %{
+      mode: :one_shot,
+      invocation_id: invocation.id,
+      invocation_kind: :inference,
+      invocation: invocation,
+      run_id: run.id,
+      run_revision: run.revision,
+      generation: data.generation,
+      dispatch_id: dispatch_id,
+      capability: capability,
+      pid: pid,
+      monitor: monitor,
+      entry: entry,
+      prepared: prepared,
+      budget_snapshot: budget_snapshot
+    }
+
+    worker = Map.put(ownership, :kind, :invocation)
+
+    data
+    |> Map.put(:state_lock, %{run_id: run.id, invocation_id: invocation.id})
+    |> Map.put(:invocations, Map.put(data.invocations, invocation.id, ownership))
+    |> Map.put(:workers, Map.put(data.workers, pid, worker))
+    |> arm_inference_attempt_timer(ownership, budget_snapshot)
+    |> disarm_idle_timer()
+    |> tap(fn next ->
+      emit(
+        :invocation_dispatched,
+        next,
+        %{count: 1},
+        %{run_id: id_digest(run.id), invocation_id: id_digest(invocation.id), kind: :inference}
+      )
+    end)
+  end
+
+  defp start_inference_stream(data, run, invocation, prepared, entry, budget_snapshot) do
+    dispatch_id = Spectre.Identity.uuid7()
+    capability = make_ref()
+    consumer_token = Map.get(entry, :stream_consumer_token, Spectre.Identity.uuid7())
+    reservation = Map.get(data.stream_reservations, run.id)
+
+    stream =
+      InferenceStream.new(
+        inference_id: invocation.inference_id,
+        invocation_id: invocation.id,
+        attempt_id: invocation.attempt_id,
+        run_id: run.id,
+        run_revision: run.revision,
+        generation: data.generation,
+        dispatch_id: dispatch_id,
+        control_revision: invocation.control_revision,
+        stream_epoch: invocation.stream_epoch,
+        consumer_token: consumer_token,
+        instance_ref: data.ref,
+        registry: data.stream_registry,
+        instance_registry: data.registry,
+        demand: Keyword.get(entry.opts, :stream_demand, 8),
+        next_timeout: Keyword.get(entry.opts, :stream_next_timeout, 30_000)
+      )
+
+    session_opts = [
+      instance: self(),
+      invocation: invocation,
+      prepared: prepared,
+      generation: data.generation,
+      dispatch_id: dispatch_id,
+      capability: capability,
+      consumer_token: consumer_token,
+      registry: data.stream_registry,
+      capacity_reservation: reservation,
+      capacity_server: data.stream_capacity,
+      budget_snapshot: budget_snapshot,
+      resume_from: Map.get(entry, :stream_resume_from),
+      determinism_opts: entry.opts
+    ]
+
+    case RunnerSupervisor.start_stream_session(data.runner_supervisor, session_opts) do
+      {:ok, pid} ->
+        monitor = Process.monitor(pid)
+
+        ownership = %{
+          mode: :stream,
+          invocation_id: invocation.id,
+          invocation_kind: :inference,
+          invocation: invocation,
+          run_id: run.id,
+          run_revision: run.revision,
+          generation: data.generation,
+          dispatch_id: dispatch_id,
+          capability: capability,
+          pid: pid,
+          monitor: monitor,
+          entry: entry,
+          stream: stream,
+          prepared: prepared,
+          budget_snapshot: budget_snapshot,
+          capacity_reservation: reservation
+        }
+
+        data
+        |> Map.put(:state_lock, %{run_id: run.id, invocation_id: invocation.id})
+        |> Map.put(:invocations, Map.put(data.invocations, invocation.id, ownership))
+        |> Map.put(:stream_sessions, Map.put(data.stream_sessions, invocation.id, ownership))
+        |> Map.put(:stream_monitors, Map.put(data.stream_monitors, pid, invocation.id))
+        |> Map.put(:stream_reservations, Map.delete(data.stream_reservations, run.id))
+        |> reply_stream_caller(run.id, stream)
+        |> disarm_idle_timer()
+        |> tap(fn next ->
+          emit(
+            :inference_stream_reserved,
+            next,
+            %{count: 1},
+            %{
+              run_id: id_digest(run.id),
+              invocation_id: id_digest(invocation.id),
+              stream_epoch: id_digest(invocation.stream_epoch)
+            }
+          )
+        end)
+
+      {:error, reason} ->
+        data
+        |> InferenceCapacity.release(run.id)
+        |> Map.put(:state_lock, nil)
+        |> fail_run_commit(run, {:stream_session_start_failed, reason})
+    end
+  end
+
+  defp reserve_inference_budget(run, invocation, prepared, entry) do
+    continuation = run.inference_continuation
+
+    with {:ok, budget} <- inference_budget(continuation, prepared, entry),
+         requested <- inference_budget_reservation(prepared, budget),
+         {:ok, budget, snapshot} <- Budget.reserve(budget, invocation.attempt_id, requested) do
+      continuation = %{continuation | budget: budget}
+      {:ok, %{run | inference_continuation: continuation}, snapshot}
+    end
+  end
+
+  defp inference_budget(%{budget: %Budget{} = budget}, prepared, entry) do
+    with :ok <- validate_cost_budget(budget.limits, budget.pricing_ref, prepared, entry),
+         :ok <- validate_rebound_pricing_ref(budget, entry) do
+      {:ok, budget}
+    end
+  end
+
+  defp inference_budget(continuation, prepared, entry),
+    do: new_inference_budget(continuation, prepared, entry)
+
+  defp new_inference_budget(continuation, prepared, entry) do
+    with {:ok, configured} <- normalize_inference_budget(entry.opts),
+         {:ok, attempts} <- inference_attempt_limit(prepared, entry),
+         {:ok, pricing_ref} <- inference_pricing_ref(entry.opts),
+         :ok <- validate_cost_budget(configured, pricing_ref, prepared, entry) do
+      constraints = prepared.descriptor.constraints
+      aggregate_input = multiply_limit(constraints.context_tokens, attempts)
+      aggregate_output = multiply_limit(constraints.maximum_output_tokens, attempts)
+
+      limits =
+        configured
+        |> maybe_put_budget_limit(:input_tokens, aggregate_input)
+        |> maybe_put_budget_limit(:output_tokens, aggregate_output)
+        |> maybe_put_budget_limit(:total_tokens, sum_limits(aggregate_input, aggregate_output))
+        |> maybe_put_budget_limit(:attempts, attempts)
+        |> maybe_put_budget_limit(
+          :duration_ms,
+          Keyword.get(entry.opts, :stream_max_duration_ms, constraints.maximum_latency_ms)
+        )
+
+      deadline_at =
+        case Map.get(limits, :duration_ms) do
+          duration when is_integer(duration) and duration > 0 ->
+            Spectre.Determinism.system_time(:millisecond) + duration
+
+          _none ->
+            nil
+        end
+
+      {:ok,
+       Budget.new(continuation.inference_id,
+         limits: limits,
+         deadline_at: deadline_at,
+         pricing_ref: pricing_ref,
+         estimation_policy:
+           if(MapSet.member?(prepared.stream_capabilities, :incremental_usage),
+             do: :provider,
+             else: :conservative
+           )
+       )}
+    end
+  end
+
+  defp normalize_inference_budget(opts) do
+    value = Keyword.get(opts, :inference_budget, %{})
+
+    with {:ok, entries} <- budget_entries(value) do
+      Enum.reduce_while(entries, {:ok, %{}}, fn {key, limit}, {:ok, limits} ->
+        with {:ok, field} <- budget_field(key),
+             :ok <- validate_budget_limit(field, limit) do
+          {:cont, {:ok, Map.put(limits, field, limit)}}
+        else
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  defp budget_entries(value) when is_list(value) do
+    if Keyword.keyword?(value), do: {:ok, value}, else: {:error, :invalid_inference_budget}
+  end
+
+  defp budget_entries(value) when is_map(value) and not is_struct(value),
+    do: {:ok, Map.to_list(value)}
+
+  defp budget_entries(_value), do: {:error, :invalid_inference_budget}
+
+  defp budget_field(field)
+       when field in [
+              :input_tokens,
+              :output_tokens,
+              :total_tokens,
+              :cost,
+              :attempts,
+              :duration_ms
+            ],
+       do: {:ok, field}
+
+  defp budget_field(field) when is_binary(field) do
+    case field do
+      "input_tokens" -> {:ok, :input_tokens}
+      "output_tokens" -> {:ok, :output_tokens}
+      "total_tokens" -> {:ok, :total_tokens}
+      "cost" -> {:ok, :cost}
+      "attempts" -> {:ok, :attempts}
+      "duration_ms" -> {:ok, :duration_ms}
+      _unknown -> {:error, {:unknown_inference_budget_limit, field}}
+    end
+  end
+
+  defp budget_field(field), do: {:error, {:unknown_inference_budget_limit, field}}
+
+  defp validate_budget_limit(:attempts, value) when is_integer(value) and value > 0, do: :ok
+
+  defp validate_budget_limit(:attempts, value),
+    do: {:error, {:invalid_inference_budget_limit, :attempts, value}}
+
+  defp validate_budget_limit(_field, value) when is_number(value) and value >= 0,
+    do: :ok
+
+  defp validate_budget_limit(field, value),
+    do: {:error, {:invalid_inference_budget_limit, field, value}}
+
+  defp inference_attempt_limit(prepared, entry) do
+    fallback_attempts = length(prepared.selection.fallback_chain) + 1
+
+    one_shot_default =
+      if prepared.selection.selector == Spectre.Inference.Selector.Default,
+        do: max(fallback_attempts, 1),
+        else: max(fallback_attempts, 2)
+
+    value =
+      prepared.descriptor.constraints.max_attempts ||
+        if(prepared.stream_adapter,
+          do: Keyword.get(entry.opts, :stream_max_attempts, 3),
+          else: Keyword.get(entry.opts, :inference_max_attempts, one_shot_default)
+        )
+
+    if is_integer(value) and value > 0,
+      do: {:ok, value},
+      else: {:error, {:invalid_inference_attempt_limit, value}}
+  end
+
+  defp inference_pricing_ref(opts) do
+    case Keyword.get(opts, :inference_pricing_ref) do
+      nil -> {:ok, nil}
+      value when is_binary(value) and value != "" -> {:ok, value}
+      value -> {:error, {:invalid_inference_pricing_ref, value}}
+    end
+  end
+
+  defp validate_cost_budget(configured, pricing_ref, prepared, entry) do
+    if Map.has_key?(configured, :cost) do
+      cond do
+        is_nil(pricing_ref) ->
+          {:error, :inference_cost_budget_requires_pricing_ref}
+
+        prepared.stream_adapter &&
+            not MapSet.member?(prepared.stream_capabilities, :cost_usage) ->
+          {:error, :inference_cost_budget_usage_unavailable}
+
+        is_nil(prepared.stream_adapter) &&
+            Keyword.get(entry.opts, :inference_cost_usage?, false) != true ->
+          {:error, :inference_cost_budget_usage_unavailable}
+
+        true ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp validate_rebound_pricing_ref(%Budget{limits: limits}, _entry)
+       when not is_map_key(limits, :cost),
+       do: :ok
+
+  defp validate_rebound_pricing_ref(%Budget{pricing_ref: expected}, entry) do
+    case inference_pricing_ref(entry.opts) do
+      {:ok, ^expected} -> :ok
+      {:ok, _different} -> {:error, :inference_pricing_ref_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp inference_budget_reservation(prepared, budget) do
+    input_tokens = prepared.descriptor.constraints.context_tokens || 0
+    output_tokens = prepared.descriptor.constraints.maximum_output_tokens || 0
+    # Cost cannot be predicted safely from the core. Reserve the complete
+    # remaining cost allowance so an ambiguous attempt blocks successors
+    # until reconciliation establishes an authoritative settlement.
+    cost = Map.get(Budget.remaining(budget), :cost, 0)
+
+    %InferenceUsage{
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      total_tokens: input_tokens + output_tokens,
+      cost: cost
+    }
+  end
+
+  defp maybe_put_budget_limit(limits, _field, nil), do: limits
+  defp maybe_put_budget_limit(limits, field, value), do: Map.put_new(limits, field, value)
+
+  defp multiply_limit(nil, _multiplier), do: nil
+  defp multiply_limit(value, multiplier), do: value * multiplier
+
+  defp sum_limits(left, right) when is_number(left) and is_number(right),
+    do: left + right
+
+  # A missing component means that dimension is unbounded. Treating it as
+  # zero would accidentally turn an input estimate into a hard total-token
+  # ceiling for ordinary one-shot inference.
+  defp sum_limits(_left, _right), do: nil
+
+  defp accept_inference_receipt(data, ownership, receipt) do
+    data =
+      data
+      |> clear_inference_attempt_timer(receipt.invocation_id)
+      |> maybe_finish_inference_worker(ownership)
+      |> Map.put(:invocations, Map.delete(data.invocations, receipt.invocation_id))
+
+    case receipt.outcome do
+      {:ok, %InferenceResponse{} = response} ->
+        case enforce_inference_attempt_budget(ownership, receipt.usage) do
+          :ok ->
+            commit_inference_terminal(data, ownership, receipt, response)
+
+          {:error, field} ->
+            reason = {:inference_budget_exceeded, field}
+            failed_receipt = %{receipt | outcome: {:error, reason}}
+            fail_inference_attempt(data, ownership, failed_receipt, reason)
+        end
+
+      {:error, reason} ->
+        fail_inference_attempt(data, ownership, receipt, reason)
+    end
+  end
+
+  defp inference_receipt_disposition(data, ownership, receipt) do
+    invocation = ownership.invocation
+
+    case Canonical.fetch(data.canonical, :inference_control) do
+      {:ok, controls} ->
+        controls
+        |> Map.get(invocation.inference_id)
+        |> InferenceControl.receipt_disposition(invocation, receipt.outcome)
+
+      {:error, _reason} ->
+        :stale
+    end
+  end
+
+  defp cancelled_race_receipt(receipt, reason) do
+    metadata =
+      receipt.metadata
+      |> Map.put(:semantic, :cancelled)
+      |> Map.put(:remote_status, :ambiguous)
+
+    %{receipt | outcome: {:error, {:cancelled, reason}}, metadata: metadata}
+  end
+
+  defp maybe_finish_inference_worker(data, %{mode: :stream}), do: data
+  defp maybe_finish_inference_worker(data, ownership), do: finish_worker(data, ownership.pid)
+
+  defp commit_inference_terminal(data, ownership, receipt, response) do
+    run = Map.fetch!(data.runs, ownership.run_id)
+
+    case settle_inference_budget(
+           run.inference_continuation,
+           ownership.invocation.attempt_id,
+           receipt.usage,
+           :confirmed
+         ) do
+      {:ok, continuation} ->
+        commit_settled_inference_terminal(
+          data,
+          run,
+          continuation,
+          ownership,
+          receipt,
+          response
+        )
+
+      {:error, continuation, reason} ->
+        commit_budget_settlement_failure(
+          data,
+          run,
+          continuation,
+          ownership,
+          receipt,
+          reason
+        )
+    end
+  end
+
+  defp commit_settled_inference_terminal(
+         data,
+         run,
+         continuation,
+         ownership,
+         receipt,
+         response
+       ) do
+    portable_response = %{
+      response
+      | selection: continuation.frozen_selection,
+        usage: if(map_size(receipt.usage) > 0, do: receipt.usage, else: response.usage),
+        provider_request_id: provider_request_digest(response.provider_request_id),
+        metadata: portable_response_metadata(response.metadata)
+    }
+
+    accepted_continuation = %{
+      continuation
+      | provider_status: :terminal,
+        stream_usage_quality: receipt.usage_quality,
+        last_response: portable_response,
+        recovery: %{status: :terminal_receipt_committed}
+    }
+
+    accepted = %{run | inference_continuation: accepted_continuation}
+
+    payload = %{
+      outcome: :completed,
+      provider_started: true,
+      response: portable_response,
+      usage: portable_response.usage,
+      usage_quality: receipt.usage_quality,
+      nondeterminism_samples: Map.get(receipt.metadata, :nondeterminism_samples, [])
+    }
+
+    receipt_opts = [
+      inference_id: accepted_continuation.inference_id,
+      invocation_id: ownership.invocation.id,
+      attempt_id: ownership.invocation.attempt_id,
+      control_revision: ownership.invocation.control_revision,
+      stream_epoch: ownership.invocation.stream_epoch,
+      causation_id: ownership.invocation.id,
+      payload_schema_ref: "spectre.inference.attempt-terminal/1",
+      privacy: :confidential
+    ]
+
+    case Receipts.prepare_run(
+           data,
+           data.state,
+           accepted,
+           :inference_attempt_terminal,
+           payload,
+           receipt_opts
+         ) do
+      {:ok, prepared} ->
+        commit_or_stage_inference_receipt(
+          data,
+          accepted,
+          ownership,
+          {:success, portable_response},
+          prepared
+        )
+
+      {:error, reason} ->
+        fail_run_commit(%{data | state_lock: nil}, accepted, reason)
+    end
+  end
+
+  defp commit_or_stage_inference_receipt(
+         data,
+         accepted,
+         ownership,
+         resume,
+         prepared
+       ) do
+    commit_or_stage_run_receipt(
+      data,
+      accepted,
+      {:inference_terminal, ownership, resume},
+      prepared
+    )
+  end
+
+  defp prepare_authority_decision_receipt(
+         data,
+         definition_ref,
+         axis,
+         value,
+         lifecycle,
+         writes,
+         commit_opts
+       ) do
+    previous = Events.lifecycle(data, definition_ref)
+    {manifest_digest, closure_digest} = receipt_definition_digests(data, definition_ref)
+
+    payload = %{
+      definition_ref: to_string(definition_ref),
+      axis: axis,
+      from: Map.fetch!(previous, axis),
+      to: value,
+      lifecycle_revision: lifecycle.revision,
+      authority_epoch: lifecycle.authority_epoch,
+      changed_at: lifecycle.changed_at
+    }
+
+    Receipts.prepare_sections(
+      data,
+      writes,
+      :authority_decision,
+      payload,
+      correlation_id: Keyword.fetch!(commit_opts, :correlation_id),
+      causation_id: Keyword.get(commit_opts, :causation_id),
+      definition_ref: to_string(definition_ref),
+      manifest_digest: manifest_digest,
+      closure_digest: closure_digest,
+      payload_schema_ref: "spectre.authority.decision/1",
+      privacy: :internal
+    )
+  end
+
+  defp receipt_definition_digests(
+         %{activation: %Activation{definition_ref: definition_ref} = activation},
+         definition_ref
+       ),
+       do: {activation.manifest_digest, activation.closure_digest}
+
+  defp receipt_definition_digests(_data, _definition_ref), do: {nil, nil}
+
+  defp commit_or_stage_run_receipt(data, run, resume, prepared) do
+    case data.receipt_mode do
+      :required ->
+        start_required_receipt_staging(data, run, resume, prepared)
+
+      mode when mode in [:disabled, :observational] ->
+        retained = Runs.put_run(data, run)
+
+        case Receipts.commit(retained, prepared, mode) do
+          {:ok, committed, envelope} ->
+            committed =
+              if mode == :observational,
+                do: start_observational_receipt_delivery(committed, envelope),
+                else: committed
+
+            resume_live_receipted_boundary(committed, run, resume, envelope)
+
+          {:error, reason} ->
+            fail_run_commit(%{data | state_lock: nil}, run, reason)
+        end
+    end
+  end
+
+  defp commit_or_stage_sections_receipt(data, resume, prepared) do
+    case data.receipt_mode do
+      :required ->
+        start_required_sections_receipt_staging(data, resume, prepared)
+
+      mode when mode in [:disabled, :observational] ->
+        case Receipts.commit(data, prepared, mode) do
+          {:ok, committed, envelope} ->
+            committed =
+              if mode == :observational,
+                do: start_observational_receipt_delivery(committed, envelope),
+                else: committed
+
+            resume_live_receipted_boundary(committed, nil, resume, envelope)
+
+          {:error, reason} ->
+            fail_receipted_boundary(data, resume, reason)
+        end
+    end
+  end
+
+  defp start_required_receipt_staging(data, run, resume, prepared) do
+    do_start_required_receipt_staging(data, run, resume, prepared)
+  end
+
+  defp start_required_sections_receipt_staging(data, resume, prepared) do
+    do_start_required_receipt_staging(data, nil, resume, prepared)
+  end
+
+  defp do_start_required_receipt_staging(data, run, resume, prepared, attempt \\ 0) do
+    owner = self()
+    token = Spectre.Identity.uuid7()
+    sink = data.receipt_sink
+    opts = receipt_sink_opts(data)
+
+    callback = fn ->
+      result = ReceiptSink.put_payload(sink, prepared.envelope, opts)
+      send(owner, {:spectre, :receipt_payload_staged, token, result})
+    end
+
+    case Task.Supervisor.start_child(Spectre.Receipt.TaskSupervisor, callback) do
+      {:ok, pid} ->
+        monitor = Process.monitor(pid)
+
+        staging = %{
+          token: token,
+          pid: pid,
+          monitor: monitor,
+          run: run,
+          resume: resume,
+          prepared: prepared,
+          attempt: attempt
+        }
+
+        data
+        |> Map.put(
+          :state_lock,
+          data.state_lock ||
+            %{
+              run_id: run && run.id,
+              receipt_id: prepared.envelope.id,
+              receipt_kind: prepared.envelope.kind
+            }
+        )
+        |> Map.put(:receipt_staging, Map.put(data.receipt_staging, token, staging))
+        |> disarm_idle_timer()
+
+      {:error, reason} ->
+        fail_receipted_boundary(
+          %{data | state_lock: nil},
+          resume,
+          {:receipt_payload_task_start_failed, reason},
+          run
+        )
+    end
+  end
+
+  defp maybe_retain_staged_run(data, %Run{} = run), do: Runs.put_run(data, run)
+  defp maybe_retain_staged_run(data, nil), do: data
+
+  defp fail_receipt_staging(data, staging, reason) do
+    fail_receipted_boundary(
+      %{data | state_lock: nil},
+      staging.resume,
+      reason,
+      staging.run
+    )
+  end
+
+  defp restage_required_receipt(data, staging, prepared) do
+    limit = Keyword.get(data.base_opts, :receipt_staging_rebase_limit, 16)
+
+    if is_integer(limit) and limit > 0 and staging.attempt < limit do
+      do_start_required_receipt_staging(
+        data,
+        staging.run,
+        staging.resume,
+        prepared,
+        staging.attempt + 1
+      )
+    else
+      fail_receipt_staging(data, staging, :required_receipt_staging_starved)
+    end
+  end
+
+  defp fail_receipted_boundary(data, _resume, reason, %Run{} = run),
+    do: fail_run_commit(data, run, reason)
+
+  defp fail_receipted_boundary(data, resume, reason, nil),
+    do: fail_receipted_boundary(data, resume, reason)
+
+  defp fail_receipted_boundary(data, {:authority_decision, from, _lifecycle}, reason) do
+    GenServer.reply(from, {:error, reason})
+    data |> Map.put(:state_lock, nil) |> arm_idle_timer()
+  end
+
+  defp start_observational_receipt_delivery(data, envelope) do
+    start_receipt_delivery_task(data, envelope.id, %{envelope: envelope, mode: :observational})
+  end
+
+  defp maybe_start_receipt_deliveries(%{receipt_mode: :required} = data) do
+    case Canonical.fetch(data.canonical, :receipt_outbox) do
+      {:ok, %{entries: entries}} ->
+        Enum.reduce(entries, data, fn entry, acc ->
+          if entry.inserted_revision <= acc.checkpoint_revision and
+               not Map.has_key?(acc.receipt_deliveries, entry.id) do
+            start_receipt_delivery_task(acc, entry.id, %{entry: entry, mode: :required})
+          else
+            acc
+          end
+        end)
+
+      {:error, _reason} ->
+        data
+    end
+  end
+
+  defp maybe_start_receipt_deliveries(data), do: data
+
+  defp maybe_start_receipt_delivery(%{receipt_mode: :required} = data, receipt_id) do
+    with {:ok, %{entries: entries}} <- Canonical.fetch(data.canonical, :receipt_outbox),
+         entry when not is_nil(entry) <- Enum.find(entries, &(&1.id == receipt_id)),
+         true <- entry.inserted_revision <= data.checkpoint_revision do
+      start_receipt_delivery_task(data, receipt_id, %{entry: entry, mode: :required})
+    else
+      _missing_or_not_durable -> data
+    end
+  end
+
+  defp maybe_start_receipt_delivery(data, _receipt_id), do: data
+
+  defp start_receipt_delivery_task(data, receipt_id, delivery) do
+    owner = self()
+    sink = data.receipt_sink
+    opts = receipt_sink_opts(data)
+
+    callback = fn ->
+      result = deliver_receipt(sink, delivery, opts)
+      send(owner, {:spectre, :receipt_delivery_result, receipt_id, result})
+    end
+
+    case Task.Supervisor.start_child(Spectre.Receipt.TaskSupervisor, callback) do
+      {:ok, pid} ->
+        monitor = Process.monitor(pid)
+        ownership = Map.merge(delivery, %{id: receipt_id, pid: pid, monitor: monitor})
+
+        data
+        |> clear_receipt_retry(receipt_id)
+        |> Map.put(
+          :receipt_deliveries,
+          Map.put(data.receipt_deliveries, receipt_id, ownership)
+        )
+        |> disarm_idle_timer()
+
+      {:error, reason} ->
+        emit(
+          :receipt_delivery_failed,
+          data,
+          %{count: 1},
+          %{receipt_id: id_digest(receipt_id), reason_class: reason_class(reason)}
+        )
+
+        if delivery.mode == :required do
+          data
+          |> mark_required_receipt_delivery_failure(receipt_id, reason)
+          |> schedule_receipt_retry(receipt_id)
+        else
+          data
+        end
+    end
+  end
+
+  defp deliver_receipt(sink, %{mode: :observational, envelope: envelope}, opts) do
+    case ReceiptSink.append(sink, envelope, opts) do
+      {:ok, status} -> {:ok, status, envelope}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp deliver_receipt(sink, %{mode: :required, entry: entry}, opts) do
+    with {:ok, %ReceiptEnvelope{id: id} = envelope} <-
+           ReceiptSink.get_payload(sink, entry.payload_ref, opts),
+         true <- id == entry.id,
+         true <- ReceiptEnvelope.digest(envelope) == entry.digest do
+      case ReceiptSink.append(sink, envelope, opts) do
+        {:ok, status} -> {:ok, status, envelope}
+        {:error, reason} -> reconcile_receipt_append(sink, envelope, reason, opts)
+      end
+    else
+      :not_found -> {:error, :required_receipt_payload_missing}
+      false -> {:error, :required_receipt_payload_digest_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp reconcile_receipt_append(sink, envelope, append_reason, opts) do
+    case ReceiptSink.lookup(sink, envelope.id, opts) do
+      {:ok, ^envelope} -> {:ok, :idempotent, envelope}
+      {:ok, _different} -> {:error, :receipt_append_reconciliation_conflict}
+      :not_found -> {:error, append_reason}
+      {:error, reason} -> {:error, {:receipt_append_reconciliation_failed, reason}}
+    end
+  end
+
+  defp apply_receipt_delivery_result(
+         data,
+         %{mode: :observational, id: receipt_id},
+         result
+       ) do
+    outcome = if match?({:ok, _, _}, result), do: :ok, else: :error
+
+    emit(
+      :receipt_observed,
+      data,
+      %{count: 1},
+      %{receipt_id: id_digest(receipt_id), outcome: outcome}
+    )
+
+    data
+  end
+
+  defp apply_receipt_delivery_result(
+         data,
+         %{mode: :required, id: receipt_id, entry: entry},
+         {:ok, _status, %ReceiptEnvelope{} = envelope}
+       ) do
+    {resume, remaining_resumes} = Map.pop(data.receipt_resumes, receipt_id)
+
+    with :ok <- ReceiptRecovery.validate(data, entry, envelope),
+         {:ok, writes, resume} <- prepare_required_receipt_ack(data, envelope, resume),
+         {:ok, committed} <- Receipts.acknowledge(data, receipt_id, writes) do
+      committed =
+        committed
+        |> clear_receipt_retry(receipt_id)
+        |> Map.put(:receipt_resumes, remaining_resumes)
+
+      committed
+      |> continue_required_receipted_boundary(envelope, resume)
+      |> maybe_complete_receipt_recovery()
+      |> maybe_start_receipt_deliveries()
+    else
+      {:error, reason} ->
+        emit(
+          :receipt_delivery_failed,
+          data,
+          %{count: 1},
+          %{receipt_id: id_digest(receipt_id), reason_class: reason_class(reason)}
+        )
+
+        data
+        |> mark_required_receipt_delivery_failure(receipt_id, reason)
+        |> schedule_receipt_retry(receipt_id)
+    end
+  end
+
+  defp apply_receipt_delivery_result(
+         data,
+         %{mode: :required, id: receipt_id},
+         {:error, reason}
+       ) do
+    emit(
+      :receipt_delivery_failed,
+      data,
+      %{count: 1},
+      %{receipt_id: id_digest(receipt_id), reason_class: reason_class(reason)}
+    )
+
+    data
+    |> mark_required_receipt_delivery_failure(receipt_id, reason)
+    |> schedule_receipt_retry(receipt_id)
+  end
+
+  defp prepare_required_receipt_ack(
+         data,
+         %ReceiptEnvelope{kind: :inference_attempt_started, run_id: run_id},
+         resume
+       ) do
+    with %Run{inference_continuation: continuation} = run <- Map.get(data.runs, run_id),
+         {:ok, token, resume} <- required_stream_token(continuation, resume),
+         next_continuation <- %{
+           continuation
+           | consumer_token_digest:
+               if(is_binary(token), do: stream_token_digest(token), else: nil),
+             recovery: %{status: :provider_dispatch_released}
+         },
+         next_run <- %{run | inference_continuation: next_continuation},
+         {:ok, writes} <- Commit.run_writes(data, data.state, next_run) do
+      {:ok, writes, resume}
+    else
+      nil -> {:error, :required_receipt_run_missing}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp prepare_required_receipt_ack(_data, _envelope, resume),
+    do: {:ok, %{}, resume}
+
+  defp required_stream_token(
+         %{invocation: %{metadata: %{streaming?: true}}},
+         {:inference_attempt_started, invocation, prepared, entry, budget_snapshot}
+       ) do
+    token = Map.get(entry, :stream_consumer_token, Spectre.Identity.uuid7())
+    entry = Map.put(entry, :stream_consumer_token, token)
+
+    {:ok, token, {:inference_attempt_started, invocation, prepared, entry, budget_snapshot}}
+  end
+
+  defp required_stream_token(%{invocation: %{metadata: %{streaming?: true}}}, nil) do
+    token = Spectre.Identity.uuid7()
+    {:ok, token, {:recover_inference_attempt_started, token}}
+  end
+
+  defp required_stream_token(_continuation, nil),
+    do: {:ok, nil, {:recover_inference_attempt_started, nil}}
+
+  defp required_stream_token(_continuation, resume), do: {:ok, nil, resume}
+
+  defp continue_required_receipted_boundary(
+         data,
+         %ReceiptEnvelope{kind: :inference_attempt_started} = envelope,
+         resume
+       ) do
+    revision = data.canonical.revision
+    action = {envelope, resume}
+    actions = Map.update(data.durability_resumes, revision, [action], &[action | &1])
+
+    data
+    |> Map.put(:durability_resumes, actions)
+    |> Checkpoint.force()
+  end
+
+  defp continue_required_receipted_boundary(data, envelope, resume),
+    do: resume_required_receipted_boundary(data, envelope, resume)
+
+  # Receipt delivery is the durable gate for a non-deterministic boundary. The
+  # continuation is intentionally kept outside canonical state while the
+  # process is alive; after recovery it is reconstructed from the envelope and
+  # the committed Run by `resume_receipted_boundary/2` instead.
+  defp resume_live_receipted_boundary(
+         data,
+         run,
+         {:inference_terminal, ownership, resume},
+         _envelope
+       ) do
+    resume_inference_boundary(data, run, ownership, resume)
+  end
+
+  defp resume_live_receipted_boundary(
+         data,
+         _run,
+         {:committed_step, outcome, entry, previous},
+         _envelope
+       ) do
+    data
+    |> Map.put(:state_lock, nil)
+    |> finish_committed_step(outcome, entry, previous)
+  end
+
+  defp resume_live_receipted_boundary(
+         data,
+         run,
+         {:run_input_admitted, entry},
+         _envelope
+       ) do
+    # Admission has already reserved the Run and its caller before the receipt
+    # commit.  The general enqueue guard treats that caller as active, so this
+    # continuation must enter the ready queue directly after the durable gate.
+    # An unrelated Run may still own the global state lock; only release the
+    # receipt lock created for this admission.
+    data
+    |> release_admission_receipt_lock(run.id)
+    |> enqueue_continuation(entry, false)
+  end
+
+  defp resume_live_receipted_boundary(
+         data,
+         _run,
+         {:authority_decision, from, lifecycle},
+         _envelope
+       ) do
+    GenServer.reply(from, {:ok, lifecycle})
+    data |> Map.put(:state_lock, nil) |> arm_idle_timer()
+  end
+
+  defp resume_live_receipted_boundary(
+         data,
+         run,
+         {:inference_superseded, invocation, prepared, entry},
+         _envelope
+       ) do
+    data =
+      publish_inference_lifecycle_event(
+        data,
+        :attempt_superseded,
+        run.inference_continuation.inference_id,
+        Map.get(run.inference_continuation.recovery, :previous_invocation_id),
+        hd(run.inference_continuation.previous_attempts),
+        %{successor_invocation_digest: id_digest(invocation.id)}
+      )
+
+    selected = mark_inference_selection_receipted(run)
+    projected = Runs.put_run(data, selected)
+
+    case prepare_inference_selection_receipt(projected, selected, invocation, entry) do
+      {:ok, prepared_receipt} ->
+        commit_or_stage_run_receipt(
+          projected,
+          selected,
+          {:inference_selected, invocation, prepared, entry},
+          prepared_receipt
+        )
+
+      {:error, reason} ->
+        fail_run_commit(%{data | state_lock: nil}, selected, reason)
+    end
+  end
+
+  defp resume_live_receipted_boundary(
+         data,
+         run,
+         {:inference_selected, invocation, prepared, entry},
+         _envelope
+       ) do
+    data
+    |> maybe_record_started_conversation(entry, run)
+    |> commit_inference_dispatch_intent(run, invocation, prepared, entry)
+  end
+
+  defp resume_live_receipted_boundary(
+         data,
+         run,
+         {:inference_stream_restarted, invocation, prepared, entry},
+         _envelope
+       ) do
+    data
+    |> publish_inference_lifecycle_event(
+      :stream_interrupted,
+      invocation.inference_id,
+      Map.get(run.inference_continuation.stream_recovery, :previous_invocation_id),
+      hd(run.inference_continuation.previous_attempts),
+      %{outcome: :resuming, successor_invocation_digest: id_digest(invocation.id)}
+    )
+    |> commit_inference_dispatch_intent(run, invocation, prepared, entry)
+  end
+
+  defp resume_live_receipted_boundary(
+         data,
+         run,
+         {:inference_attempt_started, invocation, prepared, entry, budget_snapshot},
+         _envelope
+       ) do
+    start_inference_worker(data, run, invocation, prepared, entry, budget_snapshot)
+  end
+
+  defp release_admission_receipt_lock(
+         %{state_lock: %{run_id: run_id, receipt_kind: :run_input_admitted}} = data,
+         run_id
+       ),
+       do: %{data | state_lock: nil}
+
+  defp release_admission_receipt_lock(data, _run_id), do: data
+
+  defp resume_required_receipted_boundary(
+         %{receipt_recovery_deferred: true} = data,
+         _envelope,
+         _resume
+       ),
+       do: data
+
+  defp resume_required_receipted_boundary(data, envelope, nil),
+    do: resume_receipted_boundary(data, envelope)
+
+  defp resume_required_receipted_boundary(data, envelope, resume) do
+    run = if envelope.run_id, do: Map.get(data.runs, envelope.run_id)
+    resume_live_receipted_boundary(data, run, resume, envelope)
+  end
+
+  # Provider work is released only after the receipt acknowledgement marker
+  # itself is durable. A crash before this callback restores the outbox; a
+  # crash after it restores `:provider_dispatch_released` and is reconciled as
+  # an uncertain external dispatch instead of being repeated blindly.
+  defp resume_durable_boundaries(data, persisted_revision) do
+    {ready, pending} =
+      Enum.split_with(data.durability_resumes, fn {revision, _actions} ->
+        revision <= persisted_revision
+      end)
+
+    data = %{data | durability_resumes: Map.new(pending)}
+
+    ready
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.reduce(data, fn {_revision, actions}, acc ->
+      actions
+      |> Enum.reverse()
+      |> Enum.reduce(acc, fn {envelope, resume}, next ->
+        resume_durable_boundary(next, envelope, resume)
+      end)
+    end)
+  end
+
+  defp resume_durable_boundary(data, envelope, {:recover_inference_attempt_started, token}) do
+    data
+    |> recover_receipted_inference_attempt(envelope, token)
+    |> maybe_complete_receipt_recovery()
+  end
+
+  defp resume_durable_boundary(data, envelope, resume) do
+    run = if envelope.run_id, do: Map.get(data.runs, envelope.run_id)
+    next = resume_live_receipted_boundary(data, run, resume, envelope)
+
+    maybe_complete_receipt_recovery(next)
+  end
+
+  defp recover_receipted_inference_attempt(data, envelope, consumer_token) do
+    with %Run{
+           status: :awaiting,
+           cursor: :inference,
+           waiting: %Invocation{id: invocation_id} = invocation,
+           inference_continuation: continuation
+         } = run <- Map.get(data.runs, envelope.run_id),
+         true <- invocation_id == envelope.invocation_id,
+         opts <-
+           data
+           |> runtime_opts(Inference.Descriptor.options(continuation.descriptor), run.input)
+           |> put_run_pin(run),
+         {:ok, prepared} <-
+           Inference.rebind(
+             data.agent,
+             continuation.descriptor,
+             continuation.frozen_selection,
+             run.input,
+             data.state,
+             opts
+           ),
+         entry <- recovered_inference_entry(data, run, opts),
+         {:ok, run, budget_snapshot} <-
+           reserve_inference_budget(run, invocation, prepared, entry),
+         {:ok, data, reservation} <-
+           reserve_recovered_stream_capacity(data, run, invocation),
+         entry <-
+           entry
+           |> Map.put(:stream_capacity_reservation, reservation)
+           |> maybe_put_recovered_stream_token(consumer_token) do
+      data
+      |> Runs.put_run(run)
+      |> start_inference_worker(run, invocation, prepared, entry, budget_snapshot)
+    else
+      false ->
+        terminalize_recovered_inference(data, envelope.run_id, :stale_attempt_start_receipt)
+
+      nil ->
+        terminalize_recovered_inference(data, envelope.run_id, :missing_attempt_start_run)
+
+      {:error, reason} ->
+        terminalize_recovered_inference(data, envelope.run_id, reason)
+    end
+  end
+
+  defp reserve_recovered_stream_capacity(data, run, %{metadata: %{streaming?: true}}) do
+    InferenceCapacity.reserve(data, run.id, :stream)
+  end
+
+  defp reserve_recovered_stream_capacity(data, _run, _invocation),
+    do: {:ok, data, nil}
+
+  defp maybe_put_recovered_stream_token(entry, token) when is_binary(token),
+    do: Map.put(entry, :stream_consumer_token, token)
+
+  defp maybe_put_recovered_stream_token(entry, _token), do: entry
+
+  defp maybe_complete_receipt_recovery(%{receipt_recovery_deferred: true} = data) do
+    case Canonical.fetch(data.canonical, :receipt_outbox) do
+      {:ok, %{entries: []}} when map_size(data.durability_resumes) > 0 ->
+        data
+
+      {:ok, %{entries: []}} ->
+        candidate = %{data | receipt_recovery_deferred: false, state_lock: nil}
+
+        case recover_runtime_state(candidate) do
+          {:ok, recovered} ->
+            recovered
+            |> maybe_schedule()
+            |> maybe_schedule_operations()
+
+          {:error, reason} ->
+            emit(
+              :receipt_recovery_failed,
+              candidate,
+              %{count: 1},
+              %{reason_class: reason_class(reason)}
+            )
+
+            %{
+              candidate
+              | checkpoint_error: {:required_receipt_recovery_failed, reason},
+                state_lock: %{receipt_recovery_failed: true}
+            }
+        end
+
+      _pending_or_invalid ->
+        data
+    end
+  end
+
+  defp maybe_complete_receipt_recovery(data), do: data
+
+  defp resume_receipted_boundary(
+         data,
+         %ReceiptEnvelope{
+           kind: :inference_attempt_terminal,
+           run_id: run_id,
+           invocation_id: receipt_invocation_id
+         }
+       ) do
+    case Map.get(data.runs, run_id) do
+      %Run{
+        status: :awaiting,
+        cursor: :inference,
+        waiting: %Invocation{kind: :inference} = invocation,
+        inference_continuation: %{last_response: %InferenceResponse{} = response}
+      } = run ->
+        opts =
+          data
+          |> runtime_opts(
+            Spectre.Inference.Descriptor.options(run.inference_continuation.descriptor),
+            run.input
+          )
+          |> put_run_pin(run)
+
+        entry = %{
+          run_id: run.id,
+          operation: :advance,
+          projection: :result,
+          input: run.input,
+          opts: opts,
+          state_revision: data.state.revision,
+          internal?: not Map.has_key?(data.callers, run.id),
+          admitted?: false
+        }
+
+        start_inference_resume_worker(
+          data,
+          run,
+          %{invocation: invocation, entry: entry},
+          response
+        )
+
+      %Run{status: :failed, last_error: failure} = run ->
+        data
+        |> Map.put(:state_lock, nil)
+        |> notify_stream_attempt_failed(receipt_invocation_id, failure)
+        |> reply_caller(run.id, {:error, failure})
+        |> Runs.record_terminal(run)
+        |> maybe_schedule()
+        |> arm_idle_timer()
+
+      _already_applied_or_missing ->
+        data
+    end
+  end
+
+  defp resume_receipted_boundary(
+         data,
+         %ReceiptEnvelope{
+           kind: kind,
+           run_id: run_id,
+           invocation_id: invocation_id
+         }
+       )
+       when kind == :inference_consumer_never_attached do
+    case Map.get(data.runs, run_id) do
+      %Run{status: :failed, last_error: failure} = run ->
+        data
+        |> Map.put(:state_lock, nil)
+        |> notify_stream_attempt_failed(invocation_id, failure)
+        |> reply_caller(run.id, {:error, failure})
+        |> Runs.record_terminal(run)
+        |> maybe_schedule()
+        |> arm_idle_timer()
+
+      _already_applied_or_missing ->
+        data
+    end
+  end
+
+  defp resume_receipted_boundary(data, _envelope), do: data
+
+  defp schedule_receipt_retry(data, receipt_id) do
+    if Map.has_key?(data.receipt_retry_timers, receipt_id) do
+      data
+    else
+      delay = positive_timeout(data.base_opts, :receipt_retry_interval, 1_000)
+      timer = Process.send_after(self(), {:spectre, :receipt_delivery_retry, receipt_id}, delay)
+
+      %{data | receipt_retry_timers: Map.put(data.receipt_retry_timers, receipt_id, timer)}
+    end
+  end
+
+  defp clear_receipt_retry(data, receipt_id) do
+    case Map.pop(data.receipt_retry_timers, receipt_id) do
+      {nil, timers} ->
+        %{data | receipt_retry_timers: timers}
+
+      {timer, timers} ->
+        _cancelled = Process.cancel_timer(timer)
+        %{data | receipt_retry_timers: timers}
+    end
+  end
+
+  defp positive_timeout(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value > 0 -> min(value, @max_timer_delay)
+      _invalid -> default
+    end
+  end
+
+  defp receipt_staging_by_pid(data, pid, monitor) do
+    Enum.find_value(data.receipt_staging, fn {_token, staging} ->
+      if staging.pid == pid and staging.monitor == monitor, do: staging
+    end)
+  end
+
+  defp receipt_delivery_by_pid(data, pid, monitor) do
+    Enum.find_value(data.receipt_deliveries, fn {_id, delivery} ->
+      if delivery.pid == pid and delivery.monitor == monitor, do: delivery
+    end)
+  end
+
+  defp receipt_staging_down(data, _staging, :normal), do: data
+
+  defp receipt_staging_down(data, staging, reason) do
+    remaining = Map.delete(data.receipt_staging, staging.token)
+    failure = {:required_receipt_payload_task_down, reason}
+
+    fail_receipt_staging(
+      %{data | receipt_staging: remaining, state_lock: nil},
+      staging,
+      failure
+    )
+  end
+
+  defp receipt_delivery_down(data, _delivery, :normal), do: data
+
+  defp receipt_delivery_down(data, delivery, reason) do
+    remaining = Map.delete(data.receipt_deliveries, delivery.id)
+    data = %{data | receipt_deliveries: remaining}
+
+    if delivery.mode == :required do
+      emit(
+        :receipt_delivery_failed,
+        data,
+        %{count: 1},
+        %{receipt_id: id_digest(delivery.id), reason_class: reason_class(reason)}
+      )
+
+      data
+      |> mark_required_receipt_delivery_failure(delivery.id, reason)
+      |> schedule_receipt_retry(delivery.id)
+    else
+      data
+    end
+  end
+
+  defp receipt_sink_opts(data) do
+    [
+      instance_ref: data.ref,
+      owner_fencing_token: data.owner_lease.fencing_token
+    ]
+  end
+
+  defp mark_required_receipt_delivery_failure(data, receipt_id, reason) do
+    case Receipts.mark_delivery_failure(data, receipt_id, reason_class(reason)) do
+      {:ok, committed} -> committed
+      {:error, _reason} -> data
+    end
+  end
+
+  defp stream_session_down(data, invocation_id, pid, monitor, reason) do
+    case Map.get(data.stream_sessions, invocation_id) do
+      %{pid: ^pid, monitor: ^monitor, run_id: run_id} = ownership ->
+        data = %{
+          data
+          | stream_sessions: Map.delete(data.stream_sessions, invocation_id),
+            stream_monitors: Map.delete(data.stream_monitors, pid)
+        }
+
+        case {Map.has_key?(data.invocations, invocation_id), Map.get(data.runs, run_id)} do
+          {true, %Run{status: status}} when status not in [:complete, :failed] ->
+            liveness = Map.get(data.inference_liveness_clock, invocation_id, %{})
+
+            receipt = %Receipt{
+              invocation_id: invocation_id,
+              run_id: run_id,
+              run_revision: ownership.run_revision,
+              generation: ownership.generation,
+              dispatch_id: ownership.dispatch_id,
+              capability: ownership.capability,
+              kind: :inference,
+              attempt_id: ownership.invocation.attempt_id,
+              control_revision: ownership.invocation.control_revision,
+              stream_epoch: ownership.invocation.stream_epoch,
+              provider_started: Map.get(liveness, :state) != :awaiting_consumer,
+              usage: Map.get(liveness, :usage, %{}),
+              outcome: {:error, {:stream_interrupted, reason_class(reason)}},
+              metadata: %{semantic: :interrupted, remote_status: :ambiguous}
+            }
+
+            accept_inference_receipt(data, ownership, receipt)
+
+          _consumed_terminal_or_missing ->
+            # A terminal receipt consumes the invocation before the enclosing
+            # Run necessarily replies. A later session DOWN belongs to that
+            # already-settled attempt and must only release transient ownership.
+            data |> maybe_schedule() |> arm_idle_timer()
+        end
+
+      _stale ->
+        data
+    end
+  end
+
+  defp validate_inference_heartbeat(data, invocation_id, progress, checkpoint) do
+    ownership = Map.get(data.stream_sessions, invocation_id)
+    invocation = Map.get(data.invocations, invocation_id)
+    previous = Map.get(data.inference_liveness_clock, invocation_id)
+
+    cond do
+      is_nil(ownership) or is_nil(invocation) ->
+        {:error, :unknown_inference_stream}
+
+      invocation != ownership ->
+        {:error, :inference_heartbeat_ownership_mismatch}
+
+      progress.invocation_id != invocation_id or
+        progress.inference_id != ownership.invocation.inference_id or
+          progress.attempt_id != ownership.invocation.attempt_id ->
+        {:error, :inference_heartbeat_identity_mismatch}
+
+      progress.run_revision != ownership.run_revision or
+        progress.generation != ownership.generation or
+          progress.dispatch_id != ownership.dispatch_id ->
+        {:error, :inference_heartbeat_dispatch_fence_mismatch}
+
+      progress.control_revision != ownership.invocation.control_revision or
+          progress.stream_epoch != ownership.invocation.stream_epoch ->
+        {:error, :inference_heartbeat_control_fence_mismatch}
+
+      is_map(previous) and progress.sequence < previous.sequence ->
+        {:error, :inference_heartbeat_sequence_regressed}
+
+      true ->
+        with :ok <- InferenceProgress.validate(progress) do
+          validate_stream_checkpoint(progress, checkpoint)
+        end
+    end
+  end
+
+  defp validate_stream_checkpoint(_progress, nil), do: :ok
+
+  defp validate_stream_checkpoint(progress, %StreamCheckpoint{} = checkpoint) do
+    with :ok <- StreamCheckpoint.validate(checkpoint),
+         true <- checkpoint.provider_request_digest == progress.provider_request_digest,
+         true <- checkpoint.resume_cursor_digest == progress.provider_cursor_digest,
+         true <- checkpoint.usage == progress.usage,
+         true <- checkpoint.usage_quality == progress.usage_quality,
+         true <- checkpoint.output_bytes == progress.output_bytes do
+      :ok
+    else
+      false -> {:error, :inference_stream_checkpoint_digest_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_stream_checkpoint(_progress, _checkpoint),
+    do: {:error, :invalid_inference_stream_checkpoint}
+
+  defp maybe_commit_inference_checkpoint(data, progress, checkpoint, now) do
+    checkpoint? = checkpoint_commit_due?(data, progress, checkpoint, now)
+    progress? = progress_commit_due?(data, progress, now)
+
+    if checkpoint? or progress? do
+      commit_inference_checkpoint(data, progress, checkpoint, now, checkpoint?, progress?)
+    else
+      data
+    end
+  end
+
+  defp checkpoint_commit_due?(data, progress, %StreamCheckpoint{} = checkpoint, now) do
+    interval = Keyword.get(data.base_opts, :inference_stream_checkpoint_interval, 5_000)
+    last = Map.get(data.inference_checkpoint_clock, progress.invocation_id)
+
+    StreamCheckpoint.meaningful?(checkpoint) and interval_due?(last, now, interval) and
+      stream_checkpoint_changed?(data, progress.invocation_id, checkpoint)
+  end
+
+  defp checkpoint_commit_due?(_data, _progress, _checkpoint, _now), do: false
+
+  defp progress_commit_due?(data, progress, now) do
+    enabled? = Keyword.get(data.base_opts, :inference_observer_lane, false)
+    interval = Keyword.get(data.base_opts, :inference_progress_commit_interval, 5_000)
+    last = Map.get(data.inference_progress_commit_clock, progress.invocation_id)
+
+    enabled? and interval_due?(last, now, interval)
+  end
+
+  # Monotonic clocks may have any origin, including a negative one. `nil` is
+  # the only safe sentinel for the first periodic commit.
+  defp interval_due?(nil, _now, _interval), do: true
+  defp interval_due?(last, now, interval), do: now - last >= interval
+
+  defp stream_checkpoint_changed?(data, invocation_id, checkpoint) do
+    with %{run_id: run_id} <- Map.get(data.stream_sessions, invocation_id),
+         %Run{inference_continuation: continuation} <- Map.get(data.runs, run_id) do
+      continuation.provider_request_digest != checkpoint.provider_request_digest or
+        provider_cursor_digest(continuation.resume_cursor) != checkpoint.resume_cursor_digest or
+        continuation.stream_provider_sequence != checkpoint.provider_sequence or
+        continuation.stream_usage != checkpoint.usage or
+        continuation.stream_usage_quality != checkpoint.usage_quality or
+        continuation.stream_output_bytes != checkpoint.output_bytes
+    else
+      _missing -> false
+    end
+  end
+
+  defp commit_inference_checkpoint(data, progress, checkpoint, now, checkpoint?, progress?) do
+    revision = data.canonical.revision + 1
+
+    with {:ok, writes, run} <-
+           inference_checkpoint_writes(
+             data,
+             progress,
+             checkpoint,
+             checkpoint?,
+             progress?,
+             revision
+           ),
+         {:ok, committed} <-
+           Commit.canonical_sections(data, writes,
+             correlation_id: progress.inference_id,
+             causation_id: progress.invocation_id,
+             provenance: %{source: :inference_checkpoint, invocation_id: progress.invocation_id},
+             metadata: %{
+               transition: :inference_checkpoint_committed,
+               progress: progress?,
+               recovery_cursor: checkpoint?
+             }
+           ) do
+      committed = if run, do: Runs.put_run(committed, run), else: committed
+
+      committed =
+        update_inference_checkpoint_clocks(committed, progress, now, checkpoint?, progress?)
+
+      if progress? do
+        publish_committed_inference_progress(committed, %{progress | canonical_revision: revision})
+      else
+        committed
+      end
+    else
+      {:error, reason} ->
+        emit(
+          :inference_progress_commit_failed,
+          data,
+          %{count: 1},
+          %{reason_class: reason_class(reason)}
+        )
+
+        data
+    end
+  end
+
+  defp inference_checkpoint_writes(
+         data,
+         progress,
+         checkpoint,
+         checkpoint?,
+         progress?,
+         revision
+       ) do
+    with {:ok, writes, run} <-
+           maybe_put_stream_checkpoint(data, progress, checkpoint, checkpoint?),
+         {:ok, writes} <- maybe_put_progress_snapshot(data, writes, progress, progress?, revision) do
+      {:ok, writes, run}
+    end
+  end
+
+  defp maybe_put_stream_checkpoint(data, progress, checkpoint, true) do
+    with %{run_id: run_id} <- Map.get(data.stream_sessions, progress.invocation_id),
+         %Run{
+           inference_continuation: %{invocation: %Invocation{id: invocation_id}} = continuation
+         } = run <- Map.get(data.runs, run_id),
+         true <- invocation_id == progress.invocation_id,
+         next_continuation <- %{
+           continuation
+           | provider_status: :streaming,
+             provider_request_id: checkpoint.provider_request_id,
+             provider_request_digest: checkpoint.provider_request_digest,
+             resume_cursor: checkpoint.resume_cursor,
+             stream_provider_sequence: checkpoint.provider_sequence,
+             stream_usage: checkpoint.usage,
+             stream_usage_quality: checkpoint.usage_quality,
+             stream_output_bytes: checkpoint.output_bytes,
+             recovery: %{status: :stream_checkpointed}
+         },
+         next_run <- %{run | inference_continuation: next_continuation},
+         {:ok, writes} <- Commit.run_writes(data, data.state, next_run) do
+      {:ok, writes, next_run}
+    else
+      false -> {:error, :stale_inference_stream_checkpoint}
+      nil -> {:error, :missing_inference_stream_checkpoint_owner}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp maybe_put_stream_checkpoint(_data, _progress, _checkpoint, false),
+    do: {:ok, %{}, nil}
+
+  defp maybe_put_progress_snapshot(data, writes, progress, true, revision) do
+    with {:ok, snapshots} <- Canonical.fetch(data.canonical, :inference_progress) do
+      committed_progress = %{progress | canonical_revision: revision}
+      limit = Keyword.get(data.base_opts, :inference_progress_limit, 256)
+
+      snapshots =
+        snapshots
+        |> Map.put(progress.inference_id, committed_progress)
+        |> Enum.sort_by(fn {_id, snapshot} -> snapshot.at end, :desc)
+        |> Enum.take(limit)
+        |> Map.new()
+
+      {:ok, Map.put(writes, :inference_progress, snapshots)}
+    end
+  end
+
+  defp maybe_put_progress_snapshot(_data, writes, _progress, false, _revision),
+    do: {:ok, writes}
+
+  defp update_inference_checkpoint_clocks(data, progress, now, checkpoint?, progress?) do
+    data =
+      if checkpoint? do
+        %{
+          data
+          | inference_checkpoint_clock:
+              Map.put(data.inference_checkpoint_clock, progress.invocation_id, now)
+        }
+      else
+        data
+      end
+
+    if progress? do
+      %{
+        data
+        | inference_progress_commit_clock:
+            Map.put(data.inference_progress_commit_clock, progress.invocation_id, now)
+      }
+    else
+      data
+    end
+  end
+
+  defp publish_committed_inference_progress(data, committed_progress) do
+    event =
+      InferenceEvent.new(:progress_committed, committed_progress,
+        instance_key: data.ref.key,
+        canonical_revision: committed_progress.canonical_revision
+      )
+
+    _ = Spectre.Inference.Events.publish(data.ref, event)
+    data
+  end
+
+  defp start_inference_resume_worker(data, run, ownership, response) do
+    invocation = ownership.invocation
+    data = notify_stream_attempt_committed(data, invocation.id, response)
+
+    entry =
+      Map.merge(ownership.entry, %{
+        operation: {:resume, {:inference, invocation, response}},
+        state_revision: data.state.revision,
+        admitted?: false
+      })
+
+    dispatch_id = Spectre.Identity.uuid7()
+    capability = make_ref()
+    owner = self()
+    {pid, monitor} = spawn_advance_worker(owner, run, entry, dispatch_id, capability)
+
+    active = %{
+      kind: :advance,
+      run_id: run.id,
+      dispatch_id: dispatch_id,
+      capability: capability,
+      pid: pid,
+      monitor: monitor,
+      entry: entry
+    }
+
+    data
+    |> Map.put(:active, active)
+    |> Map.put(:state_lock, nil)
+    |> Map.put(:workers, Map.put(data.workers, pid, active))
+    |> disarm_idle_timer()
+  end
+
+  defp resume_inference_boundary(data, run, ownership, {:success, response}) do
+    data =
+      publish_inference_lifecycle_event(
+        data,
+        :terminal_committed,
+        ownership.invocation.inference_id,
+        ownership.invocation.id,
+        ownership.invocation,
+        %{outcome: :completed}
+      )
+
+    start_inference_resume_worker(data, run, ownership, response)
+  end
+
+  defp resume_inference_boundary(data, run, ownership, {:retry, reason}) do
+    data =
+      publish_inference_lifecycle_event(
+        data,
+        inference_failure_event_type(reason),
+        ownership.invocation.inference_id,
+        ownership.invocation.id,
+        ownership.invocation,
+        %{outcome: :failed, retrying?: true, reason_class: reason_class(reason)}
+      )
+
+    start_inference_retry(data, run, ownership, reason)
+  end
+
+  defp resume_inference_boundary(data, run, ownership, {:failure, failure}) do
+    data
+    |> publish_inference_lifecycle_event(
+      inference_failure_event_type(failure),
+      ownership.invocation.inference_id,
+      ownership.invocation.id,
+      ownership.invocation,
+      %{outcome: :failed, reason_class: reason_class(failure)}
+    )
+    |> Map.put(:state_lock, nil)
+    |> notify_stream_attempt_failed(ownership.invocation.id, failure)
+    |> reply_caller(run.id, {:error, failure})
+    |> Runs.record_terminal(run)
+    |> maybe_schedule()
+    |> arm_idle_timer()
+  end
+
+  defp start_inference_retry(data, run, ownership, previous_reason) do
+    continuation = run.inference_continuation
+    attempt = continuation.attempt + 1
+
+    entry =
+      case Map.get(ownership, :entry) do
+        %{opts: _opts} = entry ->
+          Map.merge(entry, %{
+            state_revision: data.state.revision,
+            admitted?: false,
+            recovered?: Map.get(entry, :recovered?, false)
+          })
+
+        _missing ->
+          opts =
+            data
+            |> runtime_opts(
+              Spectre.Inference.Descriptor.options(continuation.descriptor),
+              run.input
+            )
+            |> put_run_pin(run)
+
+          recovered_inference_entry(data, run, opts)
+      end
+
+    retry_opts = Keyword.put(entry.opts, :inference_previous_errors, [previous_reason])
+    entry = %{entry | opts: retry_opts}
+
+    case Inference.prepare_attempt(
+           data.agent,
+           continuation.descriptor,
+           attempt,
+           run.input,
+           data.state,
+           retry_opts
+         ) do
+      {:ok, %PreparedInference{} = prepared} ->
+        successor = build_retry_successor(run, continuation, prepared, attempt, previous_reason)
+        invocation = successor.waiting
+        selected = mark_inference_selection_receipted(successor)
+        retained = Runs.put_run(data, selected)
+
+        case prepare_inference_selection_receipt(retained, selected, invocation, entry) do
+          {:ok, prepared_receipt} ->
+            commit_or_stage_run_receipt(
+              retained,
+              selected,
+              {:inference_selected, invocation, prepared, entry},
+              prepared_receipt
+            )
+
+          {:error, reason} ->
+            finalize_inference_retry_failure(data, run, attempt, reason)
+        end
+
+      {:error, reason} ->
+        finalize_inference_retry_failure(data, run, attempt, reason)
+    end
+  end
+
+  defp build_retry_successor(run, continuation, prepared, attempt, previous_reason) do
+    recoverable? =
+      continuation.recoverable? and not is_function(prepared.selection.model) and
+        match?(:ok, Value.validate(prepared.selection.model))
+
+    next_continuation = %{
+      continuation
+      | descriptor: prepared.descriptor,
+        frozen_selection: prepared.frozen_selection,
+        invocation: nil,
+        stream_epoch: nil,
+        attempt: attempt,
+        provider_status: :selected,
+        provider_request_id: nil,
+        provider_request_digest: nil,
+        resume_cursor: nil,
+        consumer_token_digest: nil,
+        stream_recovery: nil,
+        stream_provider_sequence: nil,
+        stream_usage: %InferenceUsage{},
+        stream_usage_quality: :unavailable,
+        stream_output_bytes: 0,
+        recovery: %{
+          status: :retry_selected,
+          previous_reason: portable_failure(previous_reason)
+        },
+        last_response: nil,
+        recoverable?: recoverable?
+    }
+
+    successor = %{
+      run
+      | revision: run.revision + 1,
+        step_id: Value.token("inference-retry-step", {run.id, attempt}),
+        waiting: nil,
+        inference_continuation: next_continuation,
+        last_error: nil
+    }
+
+    invocation = Invocation.from_inference(successor, next_continuation, streaming?: false)
+
+    next_continuation = %{
+      next_continuation
+      | invocation: invocation,
+        stream_epoch: invocation.stream_epoch
+    }
+
+    %{successor | waiting: invocation, inference_continuation: next_continuation}
+  end
+
+  defp finalize_inference_retry_failure(data, run, attempt, reason) do
+    failure = {:inference_retry_selection_failed, attempt, portable_failure(reason)}
+    failed = Runs.terminalize_failed_run(run, failure)
+    retained = Runs.put_run(data, failed)
+
+    case Commit.run_state(retained, data.state, failed) do
+      {:ok, committed} ->
+        committed
+        |> Map.put(:state_lock, nil)
+        |> reply_caller(run.id, {:error, failure})
+        |> Runs.record_terminal(failed)
+        |> maybe_schedule()
+        |> arm_idle_timer()
+
+      {:error, commit_reason} ->
+        fail_run_commit(%{data | state_lock: nil}, failed, commit_reason)
+    end
+  end
+
+  defp fail_inference_attempt(data, ownership, receipt, reason) do
+    # Provider errors may contain response bodies, credentials or request
+    # identifiers. Only a bounded semantic class is allowed past this point.
+    reason = portable_failure(reason)
+    run = Map.fetch!(data.runs, ownership.run_id)
+
+    settlement =
+      if receipt.metadata[:remote_status] == :ambiguous, do: :ambiguous, else: :confirmed
+
+    case settle_inference_budget(
+           run.inference_continuation,
+           ownership.invocation.attempt_id,
+           receipt.usage,
+           settlement
+         ) do
+      {:ok, continuation} ->
+        if inference_retry_allowed?(run, continuation, ownership, reason, settlement) do
+          commit_retryable_inference_failure(
+            data,
+            run,
+            continuation,
+            ownership,
+            receipt,
+            reason,
+            settlement
+          )
+        else
+          commit_terminal_inference_failure(
+            data,
+            run,
+            continuation,
+            ownership,
+            receipt,
+            reason
+          )
+        end
+
+      {:error, continuation, settlement_reason} ->
+        commit_budget_settlement_failure(
+          data,
+          run,
+          continuation,
+          ownership,
+          receipt,
+          settlement_reason
+        )
+    end
+  end
+
+  defp inference_retry_allowed?(run, continuation, ownership, reason, settlement) do
+    retryable_reason? =
+      reason != :consumer_never_attached and
+        reason != :inference_deadline_exceeded and
+        not match?({:cancelled, _reason}, reason) and
+        not match?({:inference_budget_exceeded, _field}, reason)
+
+    with true <- ownership.mode == :one_shot,
+         true <- settlement == :confirmed,
+         true <- retryable_reason?,
+         false <- run.inference_continuation.descriptor.constraints.strict?,
+         %{status: status} when status != :budget_settlement_failed <- continuation.recovery,
+         {:ok, limit} <- inference_attempt_limit(ownership.prepared, ownership.entry) do
+      continuation.attempt < limit
+    else
+      _not_retryable -> false
+    end
+  end
+
+  defp commit_retryable_inference_failure(
+         data,
+         run,
+         continuation,
+         ownership,
+         receipt,
+         reason,
+         settlement
+       ) do
+    attempt_record = %{
+      attempt: continuation.attempt,
+      attempt_id: ownership.invocation.attempt_id,
+      invocation_id: ownership.invocation.id,
+      control_revision: ownership.invocation.control_revision,
+      stream_epoch: ownership.invocation.stream_epoch,
+      outcome: :failed,
+      reason: portable_failure(reason),
+      provider_started: receipt.provider_started,
+      remote_status: Map.get(receipt.metadata, :remote_status, :unknown),
+      usage: receipt.usage,
+      usage_quality: receipt.usage_quality,
+      settlement: settlement
+    }
+
+    retrying_continuation = %{
+      continuation
+      | provider_status: :terminal,
+        previous_attempts: Enum.take([attempt_record | continuation.previous_attempts], 32),
+        recovery: %{
+          status: :retry_pending,
+          reason: portable_failure(reason),
+          next_attempt: continuation.attempt + 1
+        },
+        last_response: nil
+    }
+
+    retrying = %{run | inference_continuation: retrying_continuation}
+    payload = inference_failure_payload(receipt, reason)
+
+    case Receipts.prepare_run(
+           data,
+           data.state,
+           retrying,
+           :inference_attempt_terminal,
+           payload,
+           inference_receipt_opts(
+             ownership.invocation,
+             "spectre.inference.attempt-terminal/1"
+           )
+         ) do
+      {:ok, prepared_receipt} ->
+        commit_or_stage_inference_receipt(
+          data,
+          retrying,
+          ownership,
+          {:retry, portable_failure(reason)},
+          prepared_receipt
+        )
+
+      {:error, commit_reason} ->
+        fail_run_commit(%{data | state_lock: nil}, retrying, commit_reason)
+    end
+  end
+
+  defp commit_terminal_inference_failure(
+         data,
+         run,
+         continuation,
+         ownership,
+         receipt,
+         reason
+       ) do
+    failure = {:inference_attempt_failed, run.inference_continuation.attempt, reason}
+
+    failed =
+      run
+      |> Map.put(:inference_continuation, continuation)
+      |> Runs.terminalize_failed_run(failure)
+      |> put_inference_terminal_metadata(continuation, ownership.invocation, receipt)
+
+    payload = inference_failure_payload(receipt, reason)
+
+    kind =
+      if reason == :consumer_never_attached,
+        do: :inference_consumer_never_attached,
+        else: :inference_attempt_terminal
+
+    receipt_opts =
+      inference_receipt_opts(
+        ownership.invocation,
+        "spectre.inference.attempt-terminal/1"
+      )
+
+    case Receipts.prepare_run(data, data.state, failed, kind, payload, receipt_opts) do
+      {:ok, prepared} ->
+        commit_or_stage_inference_receipt(
+          data,
+          failed,
+          ownership,
+          {:failure, failure},
+          prepared
+        )
+
+      {:error, commit_reason} ->
+        fail_run_commit(%{data | state_lock: nil}, failed, commit_reason)
+    end
+  end
+
+  defp inference_failure_payload(receipt, reason) do
+    %{
+      outcome: failure_outcome(reason),
+      reason: portable_failure(reason),
+      provider_started: receipt.provider_started,
+      remote_status: Map.get(receipt.metadata, :remote_status, :unknown),
+      control_command_digest: Map.get(receipt.metadata, :control_command_digest),
+      usage: receipt.usage,
+      usage_quality: receipt.usage_quality,
+      nondeterminism_samples: Map.get(receipt.metadata, :nondeterminism_samples, [])
+    }
+  end
+
+  defp commit_budget_settlement_failure(
+         data,
+         run,
+         continuation,
+         ownership,
+         receipt,
+         settlement_reason
+       ) do
+    reason = {:inference_budget_settlement_failed, portable_failure(settlement_reason)}
+    receipt = %{receipt | outcome: {:error, reason}}
+
+    commit_terminal_inference_failure(
+      data,
+      run,
+      continuation,
+      ownership,
+      receipt,
+      reason
+    )
+  end
+
+  defp settle_inference_budget(
+         %{budget: %Budget{} = budget} = continuation,
+         attempt_id,
+         usage,
+         status
+       ) do
+    case Budget.settle(budget, attempt_id, usage, status) do
+      {:ok, settled} ->
+        {:ok, %{continuation | budget: settled}}
+
+      {:error, reason} ->
+        failed = %{
+          continuation
+          | recovery: %{
+              status: :budget_settlement_failed,
+              reason: portable_failure(reason)
+            }
+        }
+
+        {:error, failed, reason}
+    end
+  end
+
+  defp settle_inference_budget(continuation, _attempt_id, _usage, _status),
+    do: {:ok, continuation}
+
+  defp put_inference_terminal_metadata(run, continuation, invocation, receipt) do
+    terminal = %{
+      inference_id: continuation.inference_id,
+      invocation_id: invocation.id,
+      attempt_id: invocation.attempt_id,
+      control_revision: invocation.control_revision,
+      stream_epoch: invocation.stream_epoch,
+      usage: receipt.usage,
+      usage_quality: receipt.usage_quality,
+      budget: continuation.budget
+    }
+
+    %{run | metadata: Map.put(run.metadata, :inference_terminal, terminal)}
+  end
+
+  defp failure_outcome(:consumer_never_attached), do: :cancelled_before_provider_start
+  defp failure_outcome({:cancelled, _reason}), do: :cancelled
+  defp failure_outcome(_reason), do: :failed
+
+  defp portable_failure(reason) do
+    InferenceFailure.sanitize(reason)
+  end
+
+  defp arm_inference_attempt_timer(data, _ownership, nil), do: data
+
+  defp arm_inference_attempt_timer(
+         data,
+         _ownership,
+         %BudgetSnapshot{deadline_at: nil}
+       ),
+       do: data
+
+  defp arm_inference_attempt_timer(
+         data,
+         ownership,
+         %BudgetSnapshot{deadline_at: deadline}
+       ) do
+    rearm_inference_attempt_timer(data, ownership, deadline)
+  end
+
+  defp rearm_inference_attempt_timer(data, ownership, deadline) do
+    data = clear_inference_attempt_timer(data, ownership.invocation.id)
+    remaining = max(deadline - Spectre.Determinism.system_time(:millisecond), 0)
+    delay = min(remaining, @max_timer_delay)
+
+    ref =
+      Process.send_after(
+        self(),
+        {:spectre, :inference_attempt_deadline, ownership.invocation.id, ownership.generation,
+         ownership.dispatch_id},
+        delay
+      )
+
+    timer = %{
+      ref: ref,
+      deadline_at: deadline,
+      generation: ownership.generation,
+      dispatch_id: ownership.dispatch_id
+    }
+
+    %{
+      data
+      | inference_attempt_timers:
+          Map.put(data.inference_attempt_timers, ownership.invocation.id, timer)
+    }
+  end
+
+  defp clear_inference_attempt_timer(data, invocation_id) do
+    case Map.pop(data.inference_attempt_timers, invocation_id) do
+      {nil, timers} ->
+        %{data | inference_attempt_timers: timers}
+
+      {%{ref: ref}, timers} ->
+        _cancelled = Process.cancel_timer(ref)
+        %{data | inference_attempt_timers: timers}
+    end
+  end
+
+  defp notify_stream_attempt_committed(data, invocation_id, response) do
+    case Map.get(data.stream_sessions, invocation_id) do
+      %{pid: pid} ->
+        send(pid, {:spectre, :stream_attempt_committed, invocation_id, response})
+        data
+
+      nil ->
+        data
+    end
+  end
+
+  defp notify_stream_attempt_failed(data, invocation_id, reason) do
+    case Map.get(data.stream_sessions, invocation_id) do
+      %{pid: pid} ->
+        send(pid, {:spectre, :stream_attempt_failed, invocation_id, reason})
+        data
+
+      nil ->
+        data
+    end
+  end
+
+  defp publish_inference_lifecycle_event(
+         data,
+         type,
+         inference_id,
+         invocation_id,
+         attempt,
+         metadata
+       ) do
+    if Keyword.get(data.base_opts, :inference_observer_lane, false) and
+         is_binary(inference_id) and is_binary(invocation_id) do
+      event =
+        InferenceEvent.new(type,
+          instance_key: data.ref.key,
+          inference_id: inference_id,
+          invocation_id: invocation_id,
+          attempt_id: Map.get(attempt, :attempt_id),
+          stream_epoch: Map.get(attempt, :stream_epoch),
+          canonical_revision: data.canonical.revision,
+          metadata: metadata
+        )
+
+      _ = Spectre.Inference.Events.publish(data.ref, event)
+    end
+
+    data
+  rescue
+    _invalid_observer_projection -> data
+  end
+
+  defp inference_failure_event_type({:stream_interrupted, _reason}), do: :stream_interrupted
+
+  defp inference_failure_event_type({:inference_attempt_failed, _attempt, reason}),
+    do: inference_failure_event_type(reason)
+
+  defp inference_failure_event_type(_reason), do: :terminal_committed
+
+  defp provider_request_digest(nil), do: nil
+  defp provider_request_digest(value), do: Value.token("provider-request", value)
+
+  defp provider_cursor_digest(nil), do: nil
+  defp provider_cursor_digest(value), do: Value.token("provider", value)
+
+  # Adapter response metadata has no core-owned schema and may duplicate raw
+  # headers, provider request ids or credentials. Normalized fields live on
+  # Response itself; untyped provider metadata therefore remains live-only.
+  defp portable_response_metadata(_metadata), do: %{}
+
+  defp enforce_inference_attempt_budget(%{budget_snapshot: %BudgetSnapshot{} = snapshot}, usage) do
+    BudgetSnapshot.exceeded(snapshot, usage)
+  end
+
+  defp enforce_inference_attempt_budget(_ownership, _usage), do: :ok
 
   defp reject_stale_step(data, entry, run) do
     reason =
@@ -2396,28 +6337,41 @@ defmodule Spectre.Instance do
        ),
        do: Conversation.record_conversation(data, run, opts)
 
+  defp maybe_record_started_conversation(
+         data,
+         %{admitted?: true, opts: opts},
+         run
+       ),
+       do: Conversation.record_conversation(data, run, opts)
+
   defp maybe_record_started_conversation(data, _entry, _run), do: data
 
   defp apply_returned_run(data, %Run{} = run, entry) do
     with :ok <- owner_guard(data, :commit) do
-      next_state =
-        if entry_commits_state?(entry) and entry.state_revision == data.state.revision do
-          run.state
-        else
-          data.state
-        end
-
-      last_result = if match?(%Result{}, run.result), do: run.result, else: data.last_result
-
-      next = %{
-        data
-        | runs: Map.put(data.runs, run.id, run),
-          state: next_state,
-          last_result: last_result
-      }
-
-      Commit.flow_state(next, next_state, run)
+      next = project_returned_run(data, run, entry)
+      Commit.flow_state(next, next.state, run)
     end
+  end
+
+  # Builds the in-memory projection used by both ordinary Run commits and
+  # receipted inference boundaries. Keeping this calculation in one place
+  # prevents the receipt path from observing a different Flow state.
+  defp project_returned_run(data, %Run{} = run, entry) do
+    next_state =
+      if entry_commits_state?(entry) and entry.state_revision == data.state.revision do
+        run.state
+      else
+        data.state
+      end
+
+    last_result = if match?(%Result{}, run.result), do: run.result, else: data.last_result
+
+    %{
+      data
+      | runs: Map.put(data.runs, run.id, run),
+        state: next_state,
+        last_result: last_result
+    }
   end
 
   defp fail_run_commit(data, %Run{} = run, reason) do
@@ -2437,16 +6391,55 @@ defmodule Spectre.Instance do
     |> arm_idle_timer()
   end
 
-  defp reply_projection(data, %{internal?: true}, _step), do: data
+  defp reply_projection(data, %{projection: :inference_response} = entry, step) do
+    reply =
+      step
+      |> Runs.step_result()
+      |> cognitive_inference_response()
+
+    reply_caller(data, entry.run_id, reply)
+  end
+
+  defp reply_projection(data, %{internal?: true, run_id: run_id}, step) do
+    # Recovery has no live GenServer caller, but a resumed stream session is
+    # still waiting for the canonical Run result. Treat that session as the
+    # terminal projection consumer so a successful recovered Run cannot leave
+    # its replacement Enumerable parked in `:awaiting_result`.
+    if stream_session_for_run(data, run_id) do
+      reply_caller(data, run_id, {:ok, Runs.step_result(step)})
+    else
+      data
+    end
+  end
 
   defp reply_projection(data, entry, step) do
     reply =
       case entry.projection do
         :turn -> {:ok, Turn.from_step(self(), entry.input, entry.opts, step)}
         :result -> {:ok, Runs.step_result(step)}
+        :stream -> stream_projection(data, entry.run_id, step)
       end
 
     reply_caller(data, entry.run_id, reply)
+  end
+
+  defp cognitive_inference_response(%Result{
+         metadata: %{cognitive_inference: %{response: %InferenceResponse{} = response}}
+       }),
+       do: {:ok, response}
+
+  defp cognitive_inference_response(%Result{}),
+    do: {:error, :cognitive_inference_response_missing}
+
+  defp cognitive_inference_response(nil),
+    do: {:error, :cognitive_inference_result_missing}
+
+  defp stream_projection(data, run_id, step) do
+    if stream_session_for_run(data, run_id) do
+      {:ok, Runs.step_result(step)}
+    else
+      {:error, {:streaming_unsupported, :handler_did_not_start_inference}}
+    end
   end
 
   defp maybe_finalize_reply(data, {:boundary, %Boundary{kind: :reply}, %Run{} = run}) do
@@ -2543,7 +6536,20 @@ defmodule Spectre.Instance do
     %{data | callers: Map.put_new(data.callers, run_id, from)}
   end
 
+  defp reply_stream_caller(data, run_id, stream) do
+    case Map.pop(data.callers, run_id) do
+      {nil, callers} ->
+        %{data | callers: callers}
+
+      {from, callers} ->
+        GenServer.reply(from, {:ok, stream})
+        %{data | callers: callers}
+    end
+  end
+
   defp reply_caller(data, run_id, reply) do
+    data = data |> notify_stream_result(run_id, reply) |> InferenceCapacity.release(run_id)
+
     case Map.pop(data.callers, run_id) do
       {nil, callers} ->
         %{data | callers: callers}
@@ -2552,6 +6558,29 @@ defmodule Spectre.Instance do
         GenServer.reply(from, reply)
         %{data | callers: callers}
     end
+  end
+
+  defp notify_stream_result(data, run_id, reply) do
+    case stream_session_for_run(data, run_id) do
+      nil ->
+        data
+
+      {invocation_id, ownership} ->
+        send(ownership.pid, {:spectre, :stream_result, invocation_id, reply})
+        Process.demonitor(ownership.monitor, [:flush])
+
+        %{
+          data
+          | stream_sessions: Map.delete(data.stream_sessions, invocation_id),
+            stream_monitors: Map.delete(data.stream_monitors, ownership.pid)
+        }
+    end
+  end
+
+  defp stream_session_for_run(data, run_id) do
+    Enum.find(data.stream_sessions, fn {_invocation_id, ownership} ->
+      ownership.run_id == run_id
+    end)
   end
 
   defp run_active?(data, run_id) do
@@ -2564,7 +6593,88 @@ defmodule Spectre.Instance do
   defp execute_command?({:execute, _value}), do: true
   defp execute_command?(_command), do: false
 
+  defp worker_down(
+         data,
+         pid,
+         %{invocation_kind: :inference} = ownership,
+         reason
+       ) do
+    data = finish_worker(data, pid)
+
+    receipt = %Receipt{
+      invocation_id: ownership.invocation.id,
+      run_id: ownership.run_id,
+      run_revision: ownership.run_revision,
+      generation: ownership.generation,
+      dispatch_id: ownership.dispatch_id,
+      capability: ownership.capability,
+      kind: :inference,
+      attempt_id: ownership.invocation.attempt_id,
+      control_revision: ownership.invocation.control_revision,
+      stream_epoch: ownership.invocation.stream_epoch,
+      provider_started: true,
+      usage: %{},
+      outcome: {:error, {:inference_worker_down, reason_class(reason)}},
+      metadata: %{remote_status: :ambiguous}
+    }
+
+    accept_inference_receipt(data, ownership, receipt)
+  end
+
+  defp worker_down(
+         data,
+         pid,
+         %{kind: :invocation, invocation: %Invocation{kind: :effect} = invocation} = ownership,
+         reason
+       ) do
+    failure = {:effect_worker_down, reason_class(reason)}
+    run = Map.fetch!(data.runs, ownership.run_id)
+    failed = Runs.terminalize_failed_run(run, failure)
+
+    receipt = %Receipt{
+      invocation_id: invocation.id,
+      run_id: ownership.run_id,
+      run_revision: ownership.run_revision,
+      generation: ownership.generation,
+      dispatch_id: ownership.dispatch_id,
+      capability: ownership.capability,
+      kind: :effect,
+      provider_started: true,
+      outcome: {:error, failure, failed},
+      metadata: %{remote_status: :ambiguous}
+    }
+
+    data =
+      data
+      |> finish_worker(pid)
+      |> Map.put(:invocations, Map.delete(data.invocations, invocation.id))
+      |> Map.put(:state_lock, nil)
+
+    commit_effect_terminal(data, ownership, receipt)
+  end
+
+  defp worker_down(data, pid, %{kind: :advance, entry: entry} = worker, reason) do
+    if policy_resolution_entry?(entry) do
+      failure = {:policy_worker_down, reason_class(reason)}
+      run = Map.fetch!(data.runs, worker.run_id)
+      failed = Runs.terminalize_failed_run(run, failure)
+
+      data =
+        data
+        |> finish_worker(pid)
+        |> Map.put(:active, nil)
+
+      commit_policy_decision(data, {:error, failure, failed}, entry)
+    else
+      finish_failed_worker(data, pid, worker, reason)
+    end
+  end
+
   defp worker_down(data, pid, worker, reason) do
+    finish_failed_worker(data, pid, worker, reason)
+  end
+
+  defp finish_failed_worker(data, pid, worker, reason) do
     data = finish_worker(data, pid)
     failure = {:instance_worker_down, worker.kind, reason}
     run = Map.get(data.runs, worker.run_id)
@@ -2629,7 +6739,10 @@ defmodule Spectre.Instance do
     not is_nil(data.active) or not is_nil(data.state_lock) or
       not :queue.is_empty(data.ready) or map_size(data.invocations) > 0 or
       map_size(data.operation_runners) > 0 or not :queue.is_empty(data.operation_ready) or
-      not is_nil(data.checkpoint_inflight) or not is_nil(data.checkpoint_reconcile_inflight)
+      not is_nil(data.checkpoint_inflight) or not is_nil(data.checkpoint_reconcile_inflight) or
+      map_size(data.receipt_staging) > 0 or map_size(data.receipt_deliveries) > 0 or
+      map_size(data.receipt_resumes) > 0 or data.receipt_recovery_deferred or
+      map_size(data.stream_sessions) > 0 or map_size(data.stream_reservations) > 0
   end
 
   defp live_runs?(data) do
@@ -2754,10 +6867,8 @@ defmodule Spectre.Instance do
 
       runtime_opts = runtime_opts(data, opts, input)
 
-      case Run.validate_options(runtime_opts) do
-        :ok ->
-          run = Run.new(data.agent, %Input{}, data.state, runtime_opts)
-
+      case Runtime.admit(data.agent, input, data.state, runtime_opts, opts) do
+        {:ok, %Run{} = run} ->
           if Map.has_key?(data.runs, run.id) or Map.has_key?(data.tombstones, run.id) do
             data
           else
@@ -2769,7 +6880,8 @@ defmodule Spectre.Instance do
               opts: opts,
               state_revision: data.state.revision,
               internal?: true,
-              commit_state?: true
+              commit_state?: true,
+              admitted?: true
             }
 
             retained = %{data | runs: Map.put(data.runs, run.id, run)}
@@ -3132,6 +7244,7 @@ defmodule Spectre.Instance do
 
   defp operation_runner_opts(data, loop, attempt) do
     data.base_opts
+    |> Keyword.put(:instance_pid, self())
     |> Keyword.put(:operation_loop_id, loop.id)
     |> Keyword.put(:operation_loop_kind, loop.kind)
     |> Keyword.put(:operation_attempt_id, attempt.id)
@@ -3215,7 +7328,8 @@ defmodule Spectre.Instance do
       data
       | operation_runners: Map.delete(data.operation_runners, ownership.attempt_id),
         operation_monitors: Map.delete(data.operation_monitors, ownership.pid),
-        operation_progress_clock: Map.delete(data.operation_progress_clock, ownership.attempt_id)
+        operation_progress_clock: Map.delete(data.operation_progress_clock, ownership.attempt_id),
+        operation_liveness_clock: Map.delete(data.operation_liveness_clock, ownership.attempt_id)
     }
   end
 
@@ -3412,7 +7526,8 @@ defmodule Spectre.Instance do
     ownership = Map.get(data.operation_runners, progress.attempt_id)
     now = System.monotonic_time(:millisecond)
     minimum = Keyword.get(data.base_opts, :operation_progress_commit_interval, 500)
-    previous = Map.get(data.operation_progress_clock, progress.attempt_id)
+    previous_commit = Map.get(data.operation_progress_clock, progress.attempt_id)
+    previous_liveness = Map.get(data.operation_liveness_clock, progress.attempt_id)
 
     with :ok <- OperationProgress.validate(progress),
          %{
@@ -3432,14 +7547,25 @@ defmodule Spectre.Instance do
          true <- progress.control_generation == control.generation,
          true <- progress.trigger_generation == loop.trigger_generation,
          true <- progress.sequence > loop.progress_sequence,
-         true <- is_nil(previous) or now - previous >= minimum do
+         true <-
+           is_nil(previous_liveness) or progress.sequence > previous_liveness.sequence do
       next = %{
         data
-        | operation_progress_clock:
-            Map.put(data.operation_progress_clock, progress.attempt_id, now)
+        | operation_liveness_clock:
+            Map.put(data.operation_liveness_clock, progress.attempt_id, %{
+              at: now,
+              sequence: progress.sequence
+            })
       }
 
-      {:ok, loop, control, next}
+      if is_nil(previous_commit) or now - previous_commit >= minimum do
+        committed_clock =
+          Map.put(next.operation_progress_clock, progress.attempt_id, now)
+
+        {:ok, loop, control, %{next | operation_progress_clock: committed_clock}}
+      else
+        {:throttled, next}
+      end
     else
       _invalid_or_throttled -> :drop
     end
@@ -3542,6 +7668,1041 @@ defmodule Spectre.Instance do
       end
     end)
   end
+
+  # Required receipts form a recovery barrier. No Run or operation is resumed
+  # until every durable outbox pointer has been reconciled with the sink; this
+  # prevents restored work from crossing a boundary whose evidence is still
+  # uncertain.
+  defp recover_runtime_state(%{receipt_recovery_deferred: true} = data),
+    do: {:ok, data}
+
+  defp recover_runtime_state(data) do
+    case recover_conversational_state(data) do
+      {:ok, data} -> recover_operational_state(data)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp required_receipt_recovery_pending?(:required, canonical) do
+    match?({:ok, %{entries: [_ | _]}}, Canonical.fetch(canonical, :receipt_outbox))
+  end
+
+  defp required_receipt_recovery_pending?(_mode, _canonical), do: false
+
+  # Ready queue entries are process-local, so they must be reconstructed from
+  # the durable admission continuation before operational recovery is allowed
+  # to schedule competing work.
+  defp recover_conversational_state(data) do
+    data.runs
+    |> Map.values()
+    |> Enum.sort_by(& &1.id)
+    |> Enum.reduce_while({:ok, data}, fn run, {:ok, acc} ->
+      case recover_conversational_run(acc, run) do
+        {:ok, next} -> {:cont, {:ok, next}}
+        {:error, reason} -> {:halt, {:error, {:run_recovery_failed, run.id, reason}}}
+      end
+    end)
+  end
+
+  defp recover_conversational_run(
+         %{invocations: invocations} = data,
+         %Run{waiting: %Invocation{id: invocation_id}}
+       )
+       when is_map_key(invocations, invocation_id),
+       do: {:ok, data}
+
+  defp recover_conversational_run(
+         data,
+         %Run{
+           status: :ready,
+           cursor: :turn,
+           start_continuation: %StartContinuation{recoverable?: true} = continuation
+         } = run
+       ) do
+    restored_opts =
+      data
+      |> runtime_opts(StartContinuation.runtime_options(continuation), run.input)
+      |> put_run_pin(run)
+
+    case recovered_start_entry(run, continuation, restored_opts, data.state.revision) do
+      {:ok, entry} -> {:ok, enqueue(data, entry)}
+      {:error, reason} -> terminalize_unrecoverable_run(data, run, reason)
+    end
+  end
+
+  defp recover_conversational_run(
+         data,
+         %Run{
+           status: :awaiting,
+           cursor: :inference,
+           waiting: %Invocation{kind: :inference} = invocation,
+           inference_continuation:
+             %{provider_status: :selected, recoverable?: true} =
+               continuation
+         } = run
+       ) do
+    restored_opts =
+      data
+      |> runtime_opts(
+        Spectre.Inference.Descriptor.options(continuation.descriptor),
+        run.input
+      )
+      |> put_run_pin(run)
+
+    case Inference.rebind(
+           data.agent,
+           continuation.descriptor,
+           continuation.frozen_selection,
+           run.input,
+           data.state,
+           restored_opts
+         ) do
+      {:ok, prepared} ->
+        entry = recovered_inference_entry(data, run, restored_opts)
+
+        next =
+          case get_in(continuation.recovery || %{}, [:status]) do
+            :stream_restart_receipted ->
+              entry =
+                Map.put(entry, :stream_resume_from, %{
+                  provider_request_id: continuation.provider_request_id,
+                  resume_cursor: continuation.resume_cursor,
+                  provider_sequence: continuation.stream_provider_sequence,
+                  usage: continuation.stream_usage,
+                  usage_quality: continuation.stream_usage_quality,
+                  output_bytes: continuation.stream_output_bytes
+                })
+
+              resume_recovered_stream_dispatch(data, run, invocation, prepared, entry)
+
+            recovery_status ->
+              resume_recovered_selected_dispatch(
+                data,
+                run,
+                invocation,
+                prepared,
+                entry,
+                recovery_status
+              )
+          end
+
+        {:ok, next}
+
+      {:error, reason} ->
+        {:ok, terminalize_recovered_inference(data, run.id, {:inference_rebind_failed, reason})}
+    end
+  end
+
+  defp recover_conversational_run(
+         data,
+         %Run{
+           status: :awaiting,
+           cursor: :inference,
+           waiting: %Invocation{kind: :inference} = invocation,
+           inference_continuation: %{
+             provider_status: :terminal,
+             recovery: %{status: :retry_pending, reason: reason}
+           }
+         } = run
+       ) do
+    opts =
+      data
+      |> runtime_opts(
+        Spectre.Inference.Descriptor.options(run.inference_continuation.descriptor),
+        run.input
+      )
+      |> put_run_pin(run)
+
+    entry = recovered_inference_entry(data, run, opts)
+    ownership = %{mode: :one_shot, invocation: invocation, entry: entry}
+    {:ok, start_inference_retry(data, run, ownership, reason)}
+  end
+
+  defp recover_conversational_run(
+         data,
+         %Run{
+           status: :awaiting,
+           cursor: :inference,
+           waiting: %Invocation{kind: :inference} = invocation,
+           inference_continuation: %{
+             provider_status: :terminal,
+             last_response: %InferenceResponse{} = response
+           }
+         } = run
+       ) do
+    opts =
+      data
+      |> runtime_opts(
+        Spectre.Inference.Descriptor.options(run.inference_continuation.descriptor),
+        run.input
+      )
+      |> put_run_pin(run)
+
+    entry = recovered_inference_entry(data, run, opts)
+    ownership = %{invocation: invocation, entry: entry}
+    {:ok, start_inference_resume_worker(data, run, ownership, response)}
+  end
+
+  defp recover_conversational_run(
+         data,
+         %Run{
+           status: :awaiting,
+           cursor: :inference,
+           waiting: %Invocation{kind: :inference, metadata: %{streaming?: true}},
+           inference_continuation: %{provider_status: status} = continuation
+         } = run
+       )
+       when status in [:streaming, :interrupted] do
+    recover_streaming_attempt(data, run, continuation)
+  end
+
+  defp recover_conversational_run(
+         data,
+         %Run{
+           status: :awaiting,
+           cursor: :inference,
+           waiting: %Invocation{kind: :inference, metadata: %{streaming?: true}},
+           inference_continuation: %{provider_status: status}
+         } = run
+       )
+       when status in [:dispatching, :ambiguous] do
+    recover_uncertain_inference(data, run, status)
+  end
+
+  defp recover_conversational_run(
+         data,
+         %Run{
+           status: :awaiting,
+           cursor: :inference,
+           inference_continuation: %{provider_status: status}
+         } = run
+       )
+       when status in [:dispatching, :streaming, :interrupted, :ambiguous] do
+    {:ok, terminalize_recovered_inference(data, run.id, status)}
+  end
+
+  defp recover_conversational_run(
+         data,
+         %Run{status: :awaiting, cursor: :inference} = run
+       ) do
+    {:ok, terminalize_recovered_inference(data, run.id, :inference_recovery_unavailable)}
+  end
+
+  # An Effect worker may have crossed its external boundary before the owner
+  # crashed. Re-dispatch would risk duplicating it, while leaving the Run
+  # awaiting a dead worker leaks a retained slot forever. Record the explicit
+  # ambiguous terminal through the normal effect/action receipt path.
+  defp recover_conversational_run(
+         data,
+         %Run{
+           status: :awaiting,
+           cursor: :effect,
+           waiting: %Invocation{kind: :effect} = invocation
+         } = run
+       ) do
+    {:ok, terminalize_recovered_effect(data, run, invocation)}
+  end
+
+  # A reply boundary contains no external work. It is safe to advance the
+  # already-committed Result to its terminal Run projection after restart.
+  defp recover_conversational_run(
+         data,
+         %Run{status: :boundary, cursor: :complete, waiting: %Boundary{kind: :reply}} = run
+       ) do
+    opts =
+      data
+      |> runtime_opts([], run.input)
+      |> put_run_pin(run)
+
+    entry = %{
+      run_id: run.id,
+      operation: :advance,
+      projection: :result,
+      input: run.input,
+      opts: opts,
+      state_revision: data.state.revision,
+      internal?: true,
+      commit_state?: false,
+      admitted?: false,
+      recovered?: true
+    }
+
+    {:ok, enqueue(data, entry)}
+  end
+
+  # Policy boundaries are intentionally durable waits for a future host
+  # command. They have no dead process ownership to reconstruct.
+  defp recover_conversational_run(
+         data,
+         %Run{status: :boundary, cursor: :policy, waiting: %Boundary{kind: :needs}}
+       ),
+       do: {:ok, data}
+
+  defp recover_conversational_run(
+         data,
+         %Run{status: :ready, cursor: :turn, start_continuation: continuation} = run
+       ) do
+    reason =
+      case continuation do
+        %StartContinuation{reason: reason} when not is_nil(reason) -> reason
+        _missing -> :missing_start_continuation
+      end
+
+    terminalize_unrecoverable_run(data, run, reason)
+  end
+
+  defp recover_conversational_run(data, %Run{}), do: {:ok, data}
+
+  defp recovered_start_entry(
+         run,
+         %StartContinuation{entrypoint: :turn},
+         opts,
+         state_revision
+       ) do
+    {:ok,
+     %{
+       run_id: run.id,
+       operation: :advance,
+       projection: :result,
+       input: run.input,
+       opts: opts,
+       state_revision: state_revision,
+       internal?: true,
+       commit_state?: true,
+       admitted?: true,
+       recovered?: true
+     }}
+  end
+
+  defp recovered_start_entry(
+         run,
+         %StartContinuation{
+           entrypoint: :inference,
+           inference_request: %InferenceRequest{} = request
+         },
+         opts,
+         state_revision
+       ) do
+    {:ok,
+     %{
+       run_id: run.id,
+       operation: {:inference, request},
+       projection: :inference_response,
+       input: run.input,
+       opts: opts,
+       state_revision: state_revision,
+       internal?: true,
+       commit_state?: false,
+       admitted?: false,
+       recovered?: true
+     }}
+  end
+
+  defp recovered_start_entry(_run, _continuation, _opts, _state_revision),
+    do: {:error, :invalid_start_continuation_entrypoint}
+
+  defp recovered_inference_entry(data, run, opts) do
+    projection = recovered_inference_projection(run.inference_continuation)
+
+    %{
+      run_id: run.id,
+      operation: :advance,
+      projection: projection,
+      input: run.input,
+      opts: opts,
+      state_revision: data.state.revision,
+      internal?: true,
+      commit_state?: projection != :inference_response,
+      admitted?: false,
+      recovered?: true
+    }
+  end
+
+  defp recovered_inference_projection(%{postprocessor: :cognitive_operation}),
+    do: :inference_response
+
+  defp recovered_inference_projection(_continuation), do: :result
+
+  # Capacity reservations are process-local leases. A checkpoint can retain a
+  # selected streaming Invocation, but it cannot retain the reservation owned
+  # by the crashed Instance. Reacquire that lease before releasing any recovered
+  # selection receipt; otherwise the session would start with no capacity fence.
+  defp resume_recovered_selected_dispatch(
+         data,
+         run,
+         invocation,
+         prepared,
+         entry,
+         recovery_status
+       ) do
+    case reserve_recovered_stream_capacity(data, run, invocation) do
+      {:ok, reserved, reservation} ->
+        entry = Map.put(entry, :stream_capacity_reservation, reservation)
+
+        continue_recovered_selected_dispatch(
+          reserved,
+          run,
+          invocation,
+          prepared,
+          entry,
+          recovery_status
+        )
+
+      {:error, reason} ->
+        terminalize_recovered_inference(data, run.id, reason)
+    end
+  end
+
+  defp continue_recovered_selected_dispatch(
+         data,
+         run,
+         invocation,
+         prepared,
+         entry,
+         :selection_receipted
+       ) do
+    commit_inference_dispatch_intent(data, run, invocation, prepared, entry)
+  end
+
+  defp continue_recovered_selected_dispatch(
+         data,
+         run,
+         invocation,
+         prepared,
+         entry,
+         :supersession_receipted
+       ) do
+    commit_recovered_selection_receipt(data, run, invocation, prepared, entry)
+  end
+
+  defp continue_recovered_selected_dispatch(
+         data,
+         run,
+         invocation,
+         prepared,
+         entry,
+         :steer_successor_selected
+       ) do
+    commit_recovered_supersession_receipt(data, run, invocation, prepared, entry)
+  end
+
+  defp continue_recovered_selected_dispatch(
+         data,
+         run,
+         invocation,
+         prepared,
+         entry,
+         _unreceipted_selection
+       ) do
+    commit_recovered_selection_receipt(data, run, invocation, prepared, entry)
+  end
+
+  defp resume_recovered_stream_dispatch(data, run, invocation, prepared, entry) do
+    case InferenceCapacity.reserve(data, run.id, :stream) do
+      {:ok, reserved, reservation} ->
+        entry = Map.put(entry, :stream_capacity_reservation, reservation)
+        commit_inference_dispatch_intent(reserved, run, invocation, prepared, entry)
+
+      {:error, reason} ->
+        terminalize_recovered_inference(data, run.id, reason)
+    end
+  end
+
+  defp recover_streaming_attempt(data, run, continuation) do
+    opts =
+      data
+      |> runtime_opts(Inference.Descriptor.options(continuation.descriptor), run.input)
+      |> put_run_pin(run)
+
+    with :continue <- recovered_inference_control(data, run),
+         true <- continuation.recoverable?,
+         true <- not is_nil(continuation.resume_cursor),
+         {:ok, prepared} <-
+           Inference.rebind(
+             data.agent,
+             continuation.descriptor,
+             continuation.frozen_selection,
+             run.input,
+             data.state,
+             opts
+           ),
+         true <- MapSet.member?(prepared.stream_capabilities, :resume),
+         {:ok, reserved, reservation} <- InferenceCapacity.reserve(data, run.id, :stream),
+         {:ok, successor, invocation, entry} <-
+           build_recovered_stream_successor(
+             reserved,
+             run,
+             opts,
+             reservation
+           ),
+         {:ok, committed} <- Commit.run_state(reserved, data.state, successor) do
+      retained =
+        committed
+        |> Runs.put_run(successor)
+        |> Map.put(:state_lock, %{run_id: run.id, invocation_id: invocation.id})
+
+      {:ok,
+       commit_recovered_stream_restart_receipt(
+         retained,
+         successor,
+         run.waiting,
+         invocation,
+         prepared,
+         entry
+       )}
+    else
+      {:cancelled, reason} ->
+        {:ok, terminalize_recovered_inference(data, run.id, {:cancelled, reason})}
+
+      {:error, :pending_inference_control_on_recovery} ->
+        reject_interrupted_inference_control(data, run)
+
+      false ->
+        recover_uncertain_inference(data, run, :stream_resume_capability_unavailable)
+
+      {:error, reason} ->
+        :ok = InferenceCapacity.release_reservation(data, {data.ref.key, run.id})
+        recover_uncertain_inference(data, run, {:stream_resume_unavailable, reason})
+    end
+  end
+
+  defp recover_uncertain_inference(data, run, recovery_reason) do
+    continuation = run.inference_continuation
+
+    opts =
+      data
+      |> runtime_opts(Inference.Descriptor.options(continuation.descriptor), run.input)
+      |> put_run_pin(run)
+
+    with :continue <- recovered_inference_control(data, run),
+         true <- not is_nil(continuation.provider_request_id),
+         {:ok, prepared} <-
+           Inference.rebind(
+             data.agent,
+             continuation.descriptor,
+             continuation.frozen_selection,
+             run.input,
+             data.state,
+             opts
+           ),
+         true <- MapSet.member?(prepared.stream_capabilities, :reconcile) do
+      entry = recovered_inference_entry(data, run, opts)
+      {:ok, start_inference_reconciliation(data, run, prepared, entry)}
+    else
+      {:cancelled, reason} ->
+        {:ok, terminalize_recovered_inference(data, run.id, {:cancelled, reason})}
+
+      {:error, :pending_inference_control_on_recovery} ->
+        reject_interrupted_inference_control(data, run)
+
+      _unavailable ->
+        {:ok, terminalize_recovered_inference(data, run.id, recovery_reason)}
+    end
+  end
+
+  # A restart can land after the durable `:committed` steering command but
+  # before the successor Run and `:applied` control are committed together.
+  # The old provider is already fenced by the new Instance generation, but the
+  # canonical command must not remain pending forever. Reject it explicitly,
+  # then close the uncertain attempt through its normal terminal receipt path.
+  defp reject_interrupted_inference_control(data, run) do
+    with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
+         %{pending: %ControlCommand{} = pending} = control <-
+           Map.get(controls, run.inference_continuation.inference_id),
+         rejected <-
+           ControlCommand.rejected(pending, :instance_restarted_before_control_apply),
+         next_control <- InferenceControl.finish(control, rejected),
+         {:ok, committed} <-
+           Commit.canonical_sections(
+             data,
+             %{
+               inference_control:
+                 Map.put(controls, run.inference_continuation.inference_id, next_control)
+             },
+             correlation_id: run.id,
+             causation_id: pending.id,
+             provenance: %{source: :agent_restart, command_id: pending.id},
+             metadata: %{transition: :inference_control_rejected_on_recovery}
+           ) do
+      {:ok,
+       terminalize_recovered_inference(
+         committed,
+         run.id,
+         :pending_inference_control_interrupted
+       )}
+    else
+      nil -> {:error, :missing_pending_inference_control}
+      {:error, reason} -> {:error, {:inference_control_rejection_failed, reason}}
+    end
+  end
+
+  # Control is canonical independently from the Run checkpoint. Recovery must
+  # inspect it before touching the provider, otherwise a crash between a
+  # committed cancel and its terminal receipt could resurrect the stream.
+  defp recovered_inference_control(data, %Run{waiting: %Invocation{} = invocation}) do
+    case Canonical.fetch(data.canonical, :inference_control) do
+      {:ok, controls} ->
+        controls
+        |> Map.get(invocation.inference_id)
+        |> InferenceControl.recover(invocation)
+
+      {:error, reason} ->
+        {:error, {:inference_control_recovery_failed, reason_class(reason)}}
+    end
+  end
+
+  defp start_inference_reconciliation(data, run, prepared, entry) do
+    invocation = run.waiting
+    dispatch_id = Spectre.Identity.uuid7()
+    capability = make_ref()
+    owner = self()
+    budget_snapshot = recovered_inference_budget_snapshot(run, invocation.attempt_id)
+
+    {pid, monitor} =
+      spawn_worker(fn ->
+        result =
+          Inference.reconcile(
+            prepared,
+            run.inference_continuation.provider_request_id,
+            entry.opts
+          )
+
+        {outcome, provider_started?, remote_status} = reconciliation_outcome(result)
+
+        {usage, usage_quality} =
+          UsageAccounting.complete_response_outcome(outcome, budget_snapshot)
+
+        receipt = %Receipt{
+          invocation_id: invocation.id,
+          run_id: run.id,
+          run_revision: run.revision,
+          generation: data.generation,
+          dispatch_id: dispatch_id,
+          capability: capability,
+          kind: :inference,
+          attempt_id: invocation.attempt_id,
+          control_revision: invocation.control_revision,
+          stream_epoch: invocation.stream_epoch,
+          provider_started: provider_started?,
+          outcome: outcome,
+          usage: usage,
+          usage_quality: usage_quality,
+          metadata: %{remote_status: remote_status, reconciliation: true}
+        }
+
+        send(owner, {:spectre, :invocation_result, invocation.id, receipt})
+      end)
+
+    ownership = %{
+      mode: :reconcile,
+      invocation_id: invocation.id,
+      invocation_kind: :inference,
+      invocation: invocation,
+      run_id: run.id,
+      run_revision: run.revision,
+      generation: data.generation,
+      dispatch_id: dispatch_id,
+      capability: capability,
+      pid: pid,
+      monitor: monitor,
+      entry: entry,
+      prepared: prepared,
+      budget_snapshot: budget_snapshot
+    }
+
+    worker = Map.put(ownership, :kind, :invocation)
+
+    data
+    |> Map.put(:state_lock, %{run_id: run.id, invocation_id: invocation.id})
+    |> Map.put(:invocations, Map.put(data.invocations, invocation.id, ownership))
+    |> Map.put(:workers, Map.put(data.workers, pid, worker))
+    |> disarm_idle_timer()
+  end
+
+  defp recovered_inference_budget_snapshot(
+         %Run{inference_continuation: %{budget: %Budget{} = budget}},
+         attempt_id
+       ) do
+    case Budget.reserve(budget, attempt_id, %InferenceUsage{}) do
+      {:ok, _unchanged, %BudgetSnapshot{} = snapshot} -> snapshot
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp recovered_inference_budget_snapshot(_run, _attempt_id), do: nil
+
+  defp reconciliation_outcome({:ok, %InferenceResponse{} = response}),
+    do: {{:ok, response}, true, :confirmed}
+
+  defp reconciliation_outcome(:not_found),
+    do: {{:error, :inference_reconciliation_not_found}, false, :confirmed}
+
+  defp reconciliation_outcome(:pending),
+    do: {{:error, :inference_reconciliation_pending}, true, :ambiguous}
+
+  defp reconciliation_outcome({:error, reason}),
+    do: {{:error, {:inference_reconciliation_failed, portable_failure(reason)}}, true, :ambiguous}
+
+  defp build_recovered_stream_successor(data, run, opts, reservation) do
+    current = run.inference_continuation
+    previous_invocation = current.invocation
+    # Restart changes the data-plane epoch, not the user control revision.
+    # The new Run revision is enough to derive a distinct Invocation id.
+    control_revision = current.control_revision
+
+    previous = %{
+      attempt: current.attempt,
+      attempt_id: previous_invocation.attempt_id,
+      invocation_id: previous_invocation.id,
+      stream_epoch: previous_invocation.stream_epoch,
+      control_revision: previous_invocation.control_revision,
+      outcome: :superseded,
+      reason: :instance_restart,
+      usage: current.stream_usage,
+      settlement: :ambiguous
+    }
+
+    stream_recovery = %{
+      mode: :provider_resume,
+      previous_invocation_id: previous_invocation.id,
+      previous_stream_epoch: previous_invocation.stream_epoch,
+      previous_consumer_token_digest: current.consumer_token_digest,
+      provider_request_digest: current.provider_request_digest,
+      resume_cursor_digest: provider_cursor_digest(current.resume_cursor),
+      provider_sequence: current.stream_provider_sequence
+    }
+
+    continuation = %{
+      current
+      | invocation: nil,
+        stream_epoch: nil,
+        control_revision: control_revision,
+        provider_status: :selected,
+        consumer_token_digest: nil,
+        stream_recovery: stream_recovery,
+        previous_attempts: Enum.take([previous | current.previous_attempts], 32),
+        recovery: %{status: :stream_restart_selected},
+        last_response: nil
+    }
+
+    successor = %{
+      run
+      | revision: run.revision + 1,
+        step_id:
+          Value.token("inference-stream-restart", {
+            run.id,
+            previous_invocation.id,
+            control_revision
+          }),
+        waiting: nil,
+        inference_continuation: continuation,
+        last_error: nil
+    }
+
+    invocation =
+      Invocation.from_inference(successor, continuation,
+        attempt_id: previous_invocation.attempt_id,
+        streaming?: true
+      )
+
+    continuation = %{
+      continuation
+      | invocation: invocation,
+        stream_epoch: invocation.stream_epoch
+    }
+
+    successor = %{successor | waiting: invocation, inference_continuation: continuation}
+
+    entry =
+      data
+      |> recovered_inference_entry(successor, Keyword.put(opts, :streaming?, true))
+      |> Map.put(:stream_capacity_reservation, reservation)
+      |> Map.put(:stream_resume_from, %{
+        provider_request_id: current.provider_request_id,
+        resume_cursor: current.resume_cursor,
+        provider_sequence: current.stream_provider_sequence,
+        usage: current.stream_usage,
+        usage_quality: current.stream_usage_quality,
+        output_bytes: current.stream_output_bytes
+      })
+
+    {:ok, successor, invocation, entry}
+  end
+
+  defp commit_recovered_stream_restart_receipt(
+         data,
+         successor,
+         previous_invocation,
+         successor_invocation,
+         prepared,
+         entry
+       ) do
+    previous = hd(successor.inference_continuation.previous_attempts)
+
+    continuation = %{
+      successor.inference_continuation
+      | recovery: %{
+          status: :stream_restart_receipted,
+          previous_invocation_id: previous_invocation.id
+        }
+    }
+
+    receipted = %{successor | inference_continuation: continuation}
+
+    payload = %{
+      outcome: :superseded,
+      reason: :instance_restart,
+      previous_attempt: previous,
+      successor_invocation_id: successor_invocation.id,
+      provider_cancel: :ambiguous,
+      resume_cursor_digest: provider_cursor_digest(continuation.resume_cursor)
+    }
+
+    case Receipts.prepare_run(
+           data,
+           data.state,
+           receipted,
+           :inference_attempt_superseded,
+           payload,
+           inference_receipt_opts(
+             previous_invocation,
+             "spectre.inference.attempt-superseded/1"
+           )
+         ) do
+      {:ok, prepared_receipt} ->
+        commit_or_stage_run_receipt(
+          data,
+          receipted,
+          {:inference_stream_restarted, successor_invocation, prepared, entry},
+          prepared_receipt
+        )
+
+      {:error, reason} ->
+        data
+        |> InferenceCapacity.release(successor.id)
+        |> Map.put(:state_lock, nil)
+        |> fail_run_commit(receipted, reason)
+    end
+  end
+
+  defp commit_recovered_selection_receipt(data, run, invocation, prepared, entry) do
+    selected = mark_inference_selection_receipted(run)
+    retained = Runs.put_run(data, selected)
+
+    case prepare_inference_selection_receipt(retained, selected, invocation, entry) do
+      {:ok, prepared_receipt} ->
+        commit_or_stage_run_receipt(
+          retained,
+          selected,
+          {:inference_selected, invocation, prepared, entry},
+          prepared_receipt
+        )
+
+      {:error, reason} ->
+        fail_run_commit(%{data | state_lock: nil}, selected, reason)
+    end
+  end
+
+  defp commit_recovered_supersession_receipt(data, run, invocation, prepared, entry) do
+    case run.inference_continuation.previous_attempts do
+      [previous | _rest] ->
+        continuation = %{
+          run.inference_continuation
+          | recovery: %{
+              status: :supersession_receipted,
+              recovered: true,
+              previous_invocation_id: Map.get(previous, :invocation_id)
+            }
+        }
+
+        receipted = %{run | inference_continuation: continuation}
+
+        payload = %{
+          outcome: :superseded,
+          previous_attempt: previous,
+          successor_invocation_id: invocation.id,
+          provider_cancel:
+            if(Map.get(previous, :settlement) == :confirmed,
+              do: :not_started,
+              else: :ambiguous
+            )
+        }
+
+        receipt_opts = [
+          inference_id: continuation.inference_id,
+          invocation_id: Map.get(previous, :invocation_id),
+          attempt_id: Map.get(previous, :attempt_id),
+          control_revision: Map.get(previous, :control_revision),
+          stream_epoch: Map.get(previous, :stream_epoch),
+          causation_id: Map.get(previous, :invocation_id),
+          payload_schema_ref: "spectre.inference.attempt-superseded/1",
+          privacy: :confidential
+        ]
+
+        case Receipts.prepare_run(
+               data,
+               data.state,
+               receipted,
+               :inference_attempt_superseded,
+               payload,
+               receipt_opts
+             ) do
+          {:ok, prepared_receipt} ->
+            commit_or_stage_run_receipt(
+              data,
+              receipted,
+              {:inference_superseded, invocation, prepared, entry},
+              prepared_receipt
+            )
+
+          {:error, reason} ->
+            fail_run_commit(%{data | state_lock: nil}, receipted, reason)
+        end
+
+      [] ->
+        fail_run_commit(
+          %{data | state_lock: nil},
+          run,
+          :missing_recovered_superseded_attempt
+        )
+    end
+  end
+
+  defp terminalize_unrecoverable_run(data, run, reason) do
+    failure = {:run_recovery_unavailable, reason}
+    failed = Runs.terminalize_failed_run(%{run | state: data.state}, failure)
+    retained = Runs.put_run(data, failed)
+
+    case Commit.run_state(retained, data.state, failed) do
+      {:ok, committed} -> {:ok, Runs.record_terminal(committed, failed)}
+      {:error, commit_reason} -> {:error, commit_reason}
+    end
+  end
+
+  defp terminalize_recovered_effect(data, run, invocation) do
+    failure = {:effect_outcome_ambiguous, :instance_restarted}
+    failed = Runs.terminalize_failed_run(%{run | state: data.state}, failure)
+
+    entry = %{
+      run_id: run.id,
+      operation: :advance,
+      projection: :result,
+      input: run.input,
+      opts: [],
+      state_revision: data.state.revision,
+      internal?: true,
+      commit_state?: false,
+      admitted?: false,
+      recovered?: true
+    }
+
+    receipt = %Receipt{
+      invocation_id: invocation.id,
+      run_id: run.id,
+      run_revision: run.revision,
+      generation: data.generation,
+      dispatch_id: Value.token("recovered-effect-dispatch", invocation.id),
+      capability: make_ref(),
+      kind: :effect,
+      provider_started: true,
+      outcome: {:error, failure, failed},
+      metadata: %{remote_status: :ambiguous, recovered: true}
+    }
+
+    commit_effect_terminal(data, %{invocation: invocation, entry: entry}, receipt)
+  end
+
+  defp terminalize_recovered_inference(data, run_id, reason) do
+    case Map.get(data.runs, run_id) do
+      %Run{
+        status: :awaiting,
+        cursor: :inference,
+        waiting: %Invocation{kind: :inference} = invocation,
+        inference_continuation: continuation
+      } = run ->
+        usage = %InferenceUsage{}
+
+        {continuation, failure_reason, semantic} =
+          case settle_inference_budget(
+                 continuation,
+                 invocation.attempt_id,
+                 usage,
+                 :ambiguous
+               ) do
+            {:ok, settled} ->
+              {failure_reason, semantic} = recovered_inference_failure(reason)
+              {settled, failure_reason, semantic}
+
+            {:error, failed, settlement_reason} ->
+              failure_reason =
+                {:inference_budget_settlement_failed, portable_failure(settlement_reason)}
+
+              {failed, failure_reason, :failed}
+          end
+
+        failure = {:inference_attempt_failed, continuation.attempt, failure_reason}
+
+        receipt = %Receipt{
+          invocation_id: invocation.id,
+          run_id: run.id,
+          run_revision: run.revision,
+          generation: data.generation,
+          dispatch_id: Value.token("recovered-dispatch", invocation.id),
+          capability: make_ref(),
+          kind: :inference,
+          attempt_id: invocation.attempt_id,
+          control_revision: invocation.control_revision,
+          stream_epoch: invocation.stream_epoch,
+          provider_started: continuation.provider_status not in [:not_started, :selected],
+          usage: InferenceUsage.to_map(usage),
+          outcome: {:error, failure_reason},
+          metadata: %{semantic: semantic, remote_status: :ambiguous, recovered: true}
+        }
+
+        failed =
+          run
+          |> Map.put(:inference_continuation, continuation)
+          |> Runs.terminalize_failed_run(failure)
+          |> put_inference_terminal_metadata(continuation, invocation, receipt)
+
+        payload = inference_failure_payload(receipt, failure_reason)
+        ownership = %{mode: :recovery, invocation: invocation, run_id: run.id}
+
+        case Receipts.prepare_run(
+               data,
+               data.state,
+               failed,
+               :inference_attempt_terminal,
+               payload,
+               inference_receipt_opts(invocation, "spectre.inference.attempt-terminal/1")
+             ) do
+          {:ok, prepared} ->
+            data
+            |> Map.put(:state_lock, %{run_id: run.id, invocation_id: invocation.id})
+            |> commit_or_stage_inference_receipt(
+              failed,
+              ownership,
+              {:failure, failure},
+              prepared
+            )
+
+          {:error, commit_reason} ->
+            %{data | checkpoint_error: {:inference_recovery_commit_failed, commit_reason}}
+        end
+
+      nil ->
+        data
+
+      _terminal ->
+        data
+    end
+  end
+
+  defp recovered_inference_failure({:cancelled, reason}),
+    do: {{:cancelled, portable_failure(reason)}, :cancelled}
+
+  defp recovered_inference_failure(reason),
+    do: {{:inference_recovery_ambiguous, portable_failure(reason)}, :ambiguous}
 
   # A normal task sends its result before terminating. Keep the fence until that
   # message is reduced; an abnormal DOWN has no trustworthy commit outcome.
@@ -4313,13 +9474,106 @@ defmodule Spectre.Instance do
     %{data | idle_timer: nil}
   end
 
-  defp positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
-  defp positive_integer(value), do: {:error, {:invalid_instance_max_runs, value}}
+  defp positive_integer(value, _key) when is_integer(value) and value > 0, do: {:ok, value}
+  defp positive_integer(value, :max_runs), do: {:error, {:invalid_instance_max_runs, value}}
+
+  # Preserve the pre-streaming public error for the existing runner limit.
+  defp positive_integer(value, :max_operation_runners),
+    do: {:error, {:invalid_instance_max_runs, value}}
+
+  defp positive_integer(value, key), do: {:error, {:invalid_instance_option, key, value}}
 
   defp non_negative_integer(value) when is_integer(value) and value >= 0, do: {:ok, value}
 
   defp non_negative_integer(value),
     do: {:error, {:invalid_instance_max_tombstones, value}}
+
+  defp receipt_mode(opts, base_opts) do
+    mode =
+      first_configured([
+        {opts, :receipt_mode},
+        {base_opts, :receipt_mode}
+      ]) || :disabled
+
+    if mode in [:disabled, :observational, :required],
+      do: {:ok, mode},
+      else: {:error, {:invalid_receipt_mode, mode}}
+  end
+
+  defp normalize_inference_observer_config(opts, base_opts) do
+    enabled =
+      first_configured([
+        {opts, :inference_observer_lane},
+        {base_opts, :inference_observer_lane}
+      ]) || false
+
+    interval =
+      first_configured([
+        {opts, :inference_progress_commit_interval},
+        {base_opts, :inference_progress_commit_interval}
+      ]) || 5_000
+
+    limit =
+      first_configured([
+        {opts, :inference_progress_limit},
+        {base_opts, :inference_progress_limit}
+      ]) || 256
+
+    checkpoint_interval =
+      first_configured([
+        {opts, :inference_stream_checkpoint_interval},
+        {base_opts, :inference_stream_checkpoint_interval}
+      ]) || 5_000
+
+    cond do
+      not is_boolean(enabled) ->
+        {:error, {:invalid_inference_observer_lane, enabled}}
+
+      not is_integer(interval) or interval <= 0 ->
+        {:error, {:invalid_inference_progress_commit_interval, interval}}
+
+      not is_integer(limit) or limit <= 0 ->
+        {:error, {:invalid_inference_progress_limit, limit}}
+
+      not is_integer(checkpoint_interval) or checkpoint_interval <= 0 ->
+        {:error, {:invalid_inference_stream_checkpoint_interval, checkpoint_interval}}
+
+      true ->
+        {:ok,
+         base_opts
+         |> Keyword.put(:inference_observer_lane, enabled)
+         |> Keyword.put(:inference_progress_commit_interval, interval)
+         |> Keyword.put(:inference_progress_limit, limit)
+         |> Keyword.put(:inference_stream_checkpoint_interval, checkpoint_interval)}
+    end
+  end
+
+  defp receipt_sink(opts, base_opts) do
+    first_configured([
+      {opts, :receipt_sink},
+      {base_opts, :receipt_sink}
+    ])
+    |> ReceiptSink.normalize()
+  end
+
+  defp validate_receipt_configuration(:disabled, _sink, _checkpoint_store), do: :ok
+
+  defp validate_receipt_configuration(:observational, nil, _checkpoint_store),
+    do: {:error, :receipt_sink_required}
+
+  defp validate_receipt_configuration(:observational, _sink, _checkpoint_store), do: :ok
+
+  defp validate_receipt_configuration(:required, nil, _checkpoint_store),
+    do: {:error, :receipt_sink_required}
+
+  defp validate_receipt_configuration(:required, _sink, nil),
+    do: {:error, :required_receipts_need_checkpoint_store}
+
+  defp validate_receipt_configuration(:required, sink, _checkpoint_store) do
+    if ReceiptSink.payload_capable?(sink),
+      do: :ok,
+      else: {:error, :required_receipt_sink_lacks_payload_store}
+  end
 
   defp instance_retention(nil, _key, default), do: {:ok, default}
   defp instance_retention(:unlimited, _key, _default), do: {:ok, :unlimited}

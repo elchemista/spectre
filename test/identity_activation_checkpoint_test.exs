@@ -280,9 +280,6 @@ defmodule SpectreIdentityActivationCheckpointTest do
     assert {:ok, %Turn{observable: {:needs, _request}} = needs} =
              Spectre.turn(instance, "work")
 
-    assert {:ok, %Turn{observable: {:awaiting, %RunRef{} = execution_ref}}} =
-             Spectre.turn(instance, "yes")
-
     assert {:ok, _revision} = Spectre.flush_checkpoint(instance)
 
     assert {:error, {:stale_activation_generation, 0, 1}} =
@@ -293,20 +290,18 @@ defmodule SpectreIdentityActivationCheckpointTest do
     assert activation_b.generation == 2
 
     assert {:ok, %Turn{observable: {:reply, "hello:hello", hello_ref}}} =
-             Spectre.turn(instance, "hello")
+             Spectre.turn(instance, "hello", conversation_id: "definition-b")
 
     assert_eventually(fn ->
       match?({:ok, %{status: :complete}}, Instance.run(instance, hello_ref.run_id))
     end)
 
-    assert {:ok, a_before_restart} = Instance.run(instance, execution_ref.run_id)
+    assert {:ok, a_before_restart} = Instance.run(instance, needs.ref.run_id)
     assert {:ok, b_before_restart} = Instance.run(instance, hello_ref.run_id)
     assert a_before_restart.definition_ref == definition_a
     assert a_before_restart.activation_generation == 1
     assert b_before_restart.definition_ref == definition_b
     assert b_before_restart.activation_generation == 2
-    assert needs.ref.run_id == execution_ref.run_id
-
     assert {:ok, _revision} = Spectre.flush_checkpoint(instance)
     :ok = GenServer.stop(instance, :normal)
 
@@ -320,10 +315,19 @@ defmodule SpectreIdentityActivationCheckpointTest do
              Spectre.activation(restarted)
 
     assert {:ok, %{definition_ref: ^definition_a, activation_generation: 1}} =
-             Instance.run(restarted, execution_ref.run_id)
+             Instance.run(restarted, needs.ref.run_id)
 
     assert {:ok, %{definition_ref: ^definition_b, activation_generation: 2}} =
              Instance.run(restarted, hello_ref.run_id)
+
+    assert {:ok, %Turn{observable: {:awaiting, %RunRef{} = execution_ref}}} =
+             Spectre.resume(
+               restarted,
+               needs.ref,
+               {:policy, needs.ref, {:accept, :approved}}
+             )
+
+    assert needs.ref.run_id == execution_ref.run_id
 
     assert {:ok, %Turn{observable: {:reply, "worked", _reply_ref}}} =
              Spectre.resume(
@@ -337,6 +341,52 @@ defmodule SpectreIdentityActivationCheckpointTest do
 
     assert {:ok, %{definition_ref: ^definition_a, activation_generation: 1}} =
              Instance.run(restarted, execution_ref.run_id)
+  end
+
+  test "recovery terminalizes an uncertain Effect instead of redispatching it" do
+    definition_store = durable_definition_store("effect-recovery")
+    checkpoint_store = durable_checkpoint_store()
+    {_definition_a, candidate_a, _definition_b, _candidate_b} = publish_lineage(definition_store)
+    subject = Subject.new("effect-recovery-#{System.unique_integer([:positive])}")
+
+    instance =
+      start_instance(subject,
+        definition_store: definition_store,
+        checkpoint_store: checkpoint_store
+      )
+
+    assert {:ok, _activation} = Spectre.activate(instance, candidate_a, expected_generation: 0)
+    assert {:ok, %Turn{observable: {:needs, _request}}} = Spectre.turn(instance, "work")
+
+    assert {:ok, %Turn{observable: {:awaiting, %RunRef{} = execution_ref}}} =
+             Spectre.turn(instance, "yes")
+
+    assert {:ok, _revision} = Spectre.flush_checkpoint(instance)
+    :ok = GenServer.stop(instance, :normal)
+
+    restarted =
+      start_instance(subject,
+        definition_store: definition_store,
+        checkpoint_store: checkpoint_store
+      )
+
+    assert {:ok, %{status: :failed, cursor: :complete}} =
+             Instance.run(restarted, execution_ref.run_id)
+
+    assert %Spectre.Run{last_error: recovery_error} =
+             :sys.get_state(restarted).runs[execution_ref.run_id]
+
+    assert {:effect_outcome_ambiguous, _reason} = recovery_error
+
+    assert {:error, {:instance_run_terminal, _, :failed}} =
+             Spectre.resume(
+               restarted,
+               execution_ref,
+               {:execute, execution_ref},
+               test_pid: self()
+             )
+
+    refute_receive :pinned_work_executed
   end
 
   test "a superseding owner lease blocks Effect dispatch, admission, and activation commit" do

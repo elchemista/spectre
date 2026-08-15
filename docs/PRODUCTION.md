@@ -76,11 +76,13 @@ further automatic writes until `Spectre.reconcile_checkpoint/2` loads and
 validates durable state. Monitor `checkpoint_status/1`, and use
 `flush_checkpoint/2` as a deployment or graceful-shutdown barrier.
 
-The format-tagged Instance checkpoint schema 2 includes the current Definition Activation, retained Run
-continuations, Definition lifecycle and event records, and private Skill-state
-branches. Configure the same durable `Spectre.Definition.Store` on restart so
-Spectre can re-read every pinned Definition and verify its closure. The bundled
-in-memory Definition Store is not valid beside a durable Checkpoint Store.
+The format-tagged Instance checkpoint schema 3 includes the current Definition
+Activation, retained Run continuations, Definition lifecycle and event records,
+private Skill-state branches, inference control/progress, and the required
+receipt outbox. Configure the same durable `Spectre.Definition.Store` on
+restart so Spectre can re-read every pinned Definition and verify its closure.
+The bundled in-memory Definition Store is not valid beside a durable
+Checkpoint Store.
 
 Before upgrading an existing checkpoint namespace to 0.2.3, implement
 `migrate_instance_key/5` atomically and drain old owners. A local Registry is
@@ -90,10 +92,11 @@ configure a linearizable `Spectre.Instance.Owner` lease adapter. See
 
 Historical 0.2.x upgrade note: before upgrading live checkpoint namespaces to
 0.2.5, operators had to quiesce schema-3 writers because 0.2.4 could not read
-schema 4. Spectre 0.3.0 and 0.3.1 instead use a format-tagged schema 2 and
-reject those untagged legacy checkpoint families. Do not point a 0.3.1
-deployment at a legacy namespace without an explicit, externally verified
-conversion.
+schema 4. Spectre 0.3.0 and 0.3.1 instead introduced a format-tagged schema 2;
+the current v3 reader accepts that tagged family and rejects the untagged
+legacy families. Do not point a current deployment at a legacy namespace
+without an explicit, externally verified conversion. Quiesce v2 writers before
+the first v3 write because an old reader cannot roll a v3 checkpoint back.
 Inventory host-side references before marking any Skill-state branch
 GC-eligible: core sees its Activation, Runs, operations, and child branches,
 but not application tables or backups. See
@@ -177,6 +180,39 @@ config :spectre, :provider,
 The local worker is terminated after a timeout. Cancellation of work already
 sent to a remote service depends on the host adapter and its client library.
 
+### Streaming inference
+
+Use streaming only through an Agent Instance and a bounded
+`Spectre.Inference.StreamAdapter`. Prefer pull-capable transports. A push
+adapter must enforce its bound before the session mailbox and declare
+`:bounded_push_transport`; otherwise admission fails.
+
+Keep finite attach, open, provider-stall, consumer-idle, result and absolute
+duration limits. Size `max_stream_sessions` per Instance and the node-wide
+stream-capacity limit for the provider and deployment.
+Monitor explicit `:consumer_never_attached`, `:interrupted` and `:ambiguous`
+terminals. Never treat a provisional delta as a committed reply.
+
+Recovery requires provider-specific truth. Configure a stable adapter binding
+and use `:resume` only with a durable cursor or `:reconcile` only with a stable
+provider request id. Without those capabilities Spectre fails explicitly; it
+does not silently redispatch uncertain billed work. See
+[Streaming inference](STREAMING_INFERENCE.md).
+
+### Boundary receipt delivery
+
+Receipt mode is disabled by default. `:observational` delivery is suitable for
+best-effort audit/telemetry. `:required` delivery is a correctness boundary and
+must use a durable Checkpoint Store plus a payload-capable, idempotent
+`Spectre.Receipt.Sink`. Run the sink conformance suite, retain payload objects
+while outbox entries can reference them, and alert on pending delivery or
+checkpoint reconciliation.
+
+Receipt envelopes can contain confidential portable payloads. Encrypt and
+tenant-isolate the sink; do not send envelope payloads to logs or metrics.
+Receipts prove evidence linkage and state roots, not exactly-once external work
+or deterministic replay. See [Boundary receipts](RECEIPTS.md).
+
 ## Journal and telemetry
 
 Journaling is disabled unless configured. A safe production default is
@@ -230,6 +266,17 @@ explicit package matrix for release tooling. Database connectivity, migrations,
 and package-specific health checks remain in the adapter package that owns
 them.
 
+Agent diagnostics also warn about planner-visible actions without `protect`,
+planner schemas that are unconstrained or omit `additionalProperties: false`
+at the root or in a declared nested object schema, external action/effect
+executors without a configured egress allowlist, and `sanitize_reply: false`.
+The schema check recursively follows `properties`, `items` and supported
+combinators. It is a conservative structural object-closure audit, not proof
+that every possible JSON Schema argument space is finite. Runtime consent
+records are not part of a compiled Definition; programmatic callers can pass
+`consents: [...]` to audit that each sample has an expiry. Without that sample
+the named consent check is reported as skipped.
+
 ## Semantic cache
 
 The built-in cache is owned by a supervised process and survives individual
@@ -256,6 +303,10 @@ unverified online examples in sensitive flows.
   recovery, and reconcile every ambiguous compare-and-swap result.
 - Quiesce old checkpoint writers during schema upgrades, and retain private
   Skill-state branches until both core and host-side references are retired.
+- Configure finite streaming limits and test consumer halt, provider stall,
+  Instance restart, cancellation and steering races before enabling streaming.
+- Use a durable, payload-capable sink before selecting required receipt mode;
+  monitor and reconcile its checkpointed outbox.
 - Make business actions idempotent by effect key.
 - Give every operational side effect an accurate `:idempotent`,
   `:reconcilable`, or `:non_idempotent` declaration.

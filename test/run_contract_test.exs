@@ -323,7 +323,7 @@ defmodule SpectreRunContractTest do
     assert {:continue, run} = Runtime.start(@agent, "hello")
     assert {:ok, checkpoint} = Run.checkpoint(run)
 
-    assert %{"format" => "spectre/run", "version" => 2, "run" => encoded_run} =
+    assert %{"format" => "spectre/run", "version" => 3, "run" => encoded_run} =
              :erlang.binary_to_term(checkpoint, [:safe])
 
     refute contains_unsafe_atom?(encoded_run)

@@ -76,6 +76,12 @@ defmodule Spectre.SensitiveData do
   @spec sensitive_path(term()) :: [term()] | nil
   def sensitive_path(value), do: sensitive_path(value, [])
 
+  defp sensitive_path(%{__struct__: _module} = value, path) do
+    value
+    |> Map.from_struct()
+    |> sensitive_path(path)
+  end
+
   defp sensitive_path(value, path) when is_map(value) do
     Enum.find_value(value, fn {key, item} ->
       if sensitive_key?(key) do

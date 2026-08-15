@@ -9,7 +9,7 @@ defmodule Spectre.Instance.Canonical do
   alias Spectre.Instance.Canonical.Transition
   alias Spectre.Run.Value
 
-  @schema_version 2
+  @schema_version 3
   @journal_limit 512
   @applied_change_limit 1_024
 
@@ -68,6 +68,57 @@ defmodule Spectre.Instance.Canonical do
     end
   end
 
+  @doc """
+  Returns per-section digests and a semantic root for the canonical state.
+
+  Delivery metadata (`receipt_outbox`), the transition journal, and the
+  applied-change cache are excluded. The root therefore links receipts to the
+  authoritative state transition without changing when delivery is retried.
+  """
+  @spec state_digest(t()) :: {:ok, %{root: String.t(), sections: map()}} | {:error, term()}
+  def state_digest(%__MODULE__{} = state) do
+    names = Enum.reject(Sections.names(), &(&1 == :receipt_outbox))
+
+    with {:ok, section_digests} <- digest_sections(state, names),
+         {:ok, root} <-
+           canonical_digest(%{
+             schema_version: state.schema_version,
+             revision: semantic_revision(state, names),
+             sections: section_digests
+           }) do
+      {:ok, %{root: root, sections: section_digests}}
+    end
+  end
+
+  @doc "Returns the semantic state root or raises for invalid canonical data."
+  @spec state_digest!(t()) :: String.t()
+  def state_digest!(%__MODULE__{} = state) do
+    case state_digest(state) do
+      {:ok, %{root: root}} -> root
+      {:error, reason} -> raise ArgumentError, "cannot digest canonical state: #{inspect(reason)}"
+    end
+  end
+
+  @doc false
+  @spec preview_state_digest(t(), map()) ::
+          {:ok, %{root: String.t(), sections: map()}} | {:error, term()}
+  def preview_state_digest(%__MODULE__{} = state, writes)
+      when is_map(writes) and not is_struct(writes) do
+    next_revision = state.revision + 1
+
+    if Enum.all?(Map.keys(writes), &Sections.valid_name?/1) do
+      sections =
+        Enum.reduce(writes, state.sections, fn {name, value}, sections ->
+          {:ok, section} = Sections.fetch(sections, name)
+          Sections.put(sections, name, Section.replace(section, value, next_revision))
+        end)
+
+      state_digest(%{state | revision: next_revision, sections: sections})
+    else
+      {:error, :unknown_canonical_preview_section}
+    end
+  end
+
   @spec section_revision(t(), Sections.name()) ::
           {:ok, non_neg_integer()} | {:error, term()}
   def section_revision(%__MODULE__{sections: sections}, name) do
@@ -91,7 +142,9 @@ defmodule Spectre.Instance.Canonical do
          :ok <- validate_change(change),
          {:new, digest} <- change_status(state, change),
          :ok <- validate_base_revision(state, change),
-         :ok <- validate_section_revisions(state, change) do
+         :ok <- validate_section_revisions(state, change),
+         {:ok, %{root: pre_state_digest, sections: pre_section_digests}} <-
+           state_digest(state) do
       next_revision = state.revision + 1
 
       sections =
@@ -100,28 +153,42 @@ defmodule Spectre.Instance.Canonical do
           Sections.put(sections, name, Section.replace(section, value, next_revision))
         end)
 
-      transition = Transition.committed(change, state.revision, next_revision)
+      next_without_transition = %{state | revision: next_revision, sections: sections}
 
-      applied_changes =
-        state.applied_changes
-        |> Map.put(change.id, %{
-          revision: next_revision,
-          digest: digest
-        })
-        |> trim_applied_changes()
+      with {:ok, %{root: post_state_digest}} <-
+             state_digest_after_writes(
+               next_without_transition,
+               pre_section_digests,
+               Map.keys(change.writes)
+             ) do
+        transition =
+          Transition.committed(
+            change,
+            state.revision,
+            next_revision,
+            pre_state_digest,
+            post_state_digest
+          )
 
-      next = %{
-        state
-        | revision: next_revision,
-          sections: sections,
-          journal: Enum.take([transition | state.journal], @journal_limit),
-          applied_changes: applied_changes
-      }
+        applied_changes =
+          state.applied_changes
+          |> Map.put(change.id, %{
+            revision: next_revision,
+            digest: digest
+          })
+          |> trim_applied_changes()
 
-      {:ok, next, transition}
+        next = %{
+          next_without_transition
+          | journal: Enum.take([transition | state.journal], @journal_limit),
+            applied_changes: applied_changes
+        }
+
+        {:ok, next, transition}
+      end
     else
       {:duplicate, _revision} ->
-        {:ok, state, Transition.duplicate(change, state.revision)}
+        {:ok, state, Transition.duplicate(change, state.revision, state_digest!(state))}
 
       {:conflict, id} ->
         {:error, {:canonical_change_id_conflict, id}}
@@ -259,7 +326,7 @@ defmodule Spectre.Instance.Canonical do
   @spec validate_transition(Transition.t(), non_neg_integer()) :: :ok | {:error, term()}
   defp validate_transition(%Transition{} = transition, canonical_revision) do
     cond do
-      transition.schema_version != 1 ->
+      transition.schema_version not in [1, 2] ->
         {:error, {:unsupported_canonical_transition_version, transition.schema_version}}
 
       transition.status != :committed ->
@@ -295,12 +362,36 @@ defmodule Spectre.Instance.Canonical do
       not is_integer(transition.committed_at) or transition.committed_at < 0 ->
         {:error, :invalid_canonical_transition_timestamp}
 
+      not valid_transition_digests?(transition) ->
+        {:error, :invalid_canonical_transition_state_digest}
+
       true ->
         with :ok <- validate_plain_portable_map(transition.provenance, :provenance) do
           validate_plain_portable_map(transition.metadata, :metadata)
         end
     end
   end
+
+  defp valid_transition_digests?(%Transition{
+         schema_version: 1,
+         pre_state_digest: nil,
+         post_state_digest: nil
+       }),
+       do: true
+
+  defp valid_transition_digests?(%Transition{
+         schema_version: 2,
+         pre_state_digest: pre_digest,
+         post_state_digest: post_digest
+       }),
+       do: digest?(pre_digest) and digest?(post_digest)
+
+  defp valid_transition_digests?(_transition), do: false
+
+  defp digest?(<<digest::binary-size(64)>>),
+    do: String.match?(digest, ~r/\A[0-9a-f]{64}\z/)
+
+  defp digest?(_value), do: false
 
   @spec validate_applied_changes(term(), non_neg_integer()) :: :ok | {:error, term()}
   defp validate_applied_changes(changes, canonical_revision)
@@ -311,8 +402,12 @@ defmodule Spectre.Instance.Canonical do
       Enum.reduce_while(changes, :ok, fn
         {id, %{revision: revision, digest: digest}}, :ok
         when is_binary(id) and id != "" and is_integer(revision) and revision > 0 and
-               revision <= canonical_revision and is_binary(digest) and digest != "" ->
-          {:cont, :ok}
+               revision <= canonical_revision ->
+          if digest?(digest) do
+            {:cont, :ok}
+          else
+            {:halt, {:error, {:invalid_applied_canonical_change, id, :invalid_digest}}}
+          end
 
         {id, value}, :ok ->
           {:halt, {:error, {:invalid_applied_canonical_change, id, shape(value)}}}
@@ -371,8 +466,8 @@ defmodule Spectre.Instance.Canonical do
       change.metadata
     }
 
-    case Value.encode(value) do
-      {:ok, encoded} -> CanonicalValue.digest!(encoded)
+    case canonical_digest(value) do
+      {:ok, digest} -> digest
       {:error, reason} -> raise ArgumentError, "nonportable canonical change: #{inspect(reason)}"
     end
   end
@@ -415,6 +510,84 @@ defmodule Spectre.Instance.Canonical do
   end
 
   defp valid_binary?(value), do: is_binary(value) and value != ""
+
+  defp digest_sections(state, names) do
+    Enum.reduce_while(names, {:ok, %{}}, fn name, {:ok, digests} ->
+      {:ok, section} = Sections.fetch(state.sections, name)
+
+      case canonical_digest(%{revision: section.revision, value: section.value}) do
+        {:ok, digest} -> {:cont, {:ok, Map.put(digests, name, digest)}}
+        {:error, reason} -> {:halt, {:error, {:canonical_section_digest_failed, name, reason}}}
+      end
+    end)
+  end
+
+  # A commit changes only the sections named by the Change. Reusing the
+  # already-verified pre-commit digests avoids encoding every retained journal
+  # or admission record twice, while preserving the exact semantic root.
+  defp state_digest_after_writes(state, previous_digests, changed_names) do
+    names = Enum.reject(Sections.names(), &(&1 == :receipt_outbox))
+    changed_names = Enum.filter(changed_names, &(&1 in names))
+
+    with {:ok, changed_digests} <- digest_sections(state, changed_names),
+         section_digests = Map.merge(previous_digests, changed_digests),
+         {:ok, root} <-
+           canonical_digest(%{
+             schema_version: state.schema_version,
+             revision: semantic_revision(state, names),
+             sections: section_digests
+           }) do
+      {:ok, %{root: root, sections: section_digests}}
+    end
+  end
+
+  # Delivery acknowledgements advance the canonical journal but do not change
+  # the authoritative state. The highest revision among included sections is
+  # therefore the revision linked by boundary receipts.
+  defp semantic_revision(state, names) do
+    Enum.reduce(names, 0, fn name, revision ->
+      {:ok, section} = Sections.fetch(state.sections, name)
+      max(revision, section.revision)
+    end)
+  end
+
+  # Canonical state permits typed portable structs. Passing the exact modules
+  # already present in the value lets the binary canonical codec encode them
+  # directly; routing through the generic tagged Run codec would be equivalent
+  # but substantially more expensive for retained event and Run windows.
+  defp canonical_digest(value, path \\ []) do
+    with :ok <- Value.validate(value, path) do
+      CanonicalValue.digest(value, allowed_structs: struct_modules(value))
+    end
+  end
+
+  defp struct_modules(value),
+    do: value |> collect_struct_modules(MapSet.new()) |> MapSet.to_list()
+
+  defp collect_struct_modules(%{__struct__: module} = value, modules) do
+    value
+    |> Map.from_struct()
+    |> collect_struct_modules(MapSet.put(modules, module))
+  end
+
+  defp collect_struct_modules(value, modules) when is_map(value) do
+    Enum.reduce(value, modules, fn {key, item}, acc ->
+      acc = collect_struct_modules(key, acc)
+      collect_struct_modules(item, acc)
+    end)
+  end
+
+  defp collect_struct_modules(value, modules) when is_list(value) do
+    Enum.reduce(value, modules, &collect_struct_modules/2)
+  end
+
+  defp collect_struct_modules(value, modules) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> collect_struct_modules(modules)
+  end
+
+  defp collect_struct_modules(_value, modules), do: modules
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_list(value), do: :list

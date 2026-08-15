@@ -92,34 +92,68 @@ defmodule Spectre.Instance.Events do
         opts
       )
       when axis in [:admission, :authority, :retention] and is_list(opts) do
-    current = lifecycle(data, definition_ref)
-
-    with :ok <- retention_transition_safe(data, current, axis, value),
-         {:ok, lifecycle} <- Lifecycle.transition(current, axis, value, opts),
-         lifecycles <- Map.put(lifecycle_map(data), Lifecycle.key(lifecycle), lifecycle),
+    with {:ok, lifecycle, writes, commit_opts} <-
+           prepare_lifecycle_transition(data, definition_ref, axis, value, opts),
          {:ok, next} <-
-           Commit.canonical_sections(data, %{lifecycles: lifecycles},
-             correlation_id: Keyword.get(opts, :correlation_id, Spectre.Identity.uuid7()),
-             causation_id: Keyword.get(opts, :causation_id),
-             provenance:
-               Keyword.get(opts, :provenance, %{
-                 source: :definition_lifecycle,
-                 definition_ref: Lifecycle.key(lifecycle)
-               }),
-             metadata: %{
-               transition: :definition_lifecycle_changed,
-               axis: axis,
-               value: value,
-               lifecycle_revision: lifecycle.revision,
-               authority_epoch: lifecycle.authority_epoch
-             }
-           ) do
+           Commit.canonical_sections(data, writes, commit_opts) do
       {:ok, lifecycle, next}
     end
   end
 
   def transition_lifecycle(%InstanceState{}, _definition_ref, axis, value, _opts),
     do: {:error, {:invalid_definition_lifecycle_transition, axis, value}}
+
+  @doc false
+  @spec prepare_lifecycle_transition(
+          InstanceState.t(),
+          DefinitionRef.t(),
+          Lifecycle.axis(),
+          atom(),
+          keyword()
+        ) :: {:ok, Lifecycle.t(), map(), keyword()} | {:error, term()}
+  def prepare_lifecycle_transition(
+        %InstanceState{} = data,
+        %DefinitionRef{} = definition_ref,
+        axis,
+        value,
+        opts
+      )
+      when axis in [:admission, :authority, :retention] and is_list(opts) do
+    current = lifecycle(data, definition_ref)
+
+    with :ok <- retention_transition_safe(data, current, axis, value),
+         {:ok, lifecycle} <- Lifecycle.transition(current, axis, value, opts) do
+      writes = %{lifecycles: Map.put(lifecycle_map(data), Lifecycle.key(lifecycle), lifecycle)}
+
+      commit_opts = [
+        correlation_id: Keyword.get(opts, :correlation_id, Spectre.Identity.uuid7()),
+        causation_id: Keyword.get(opts, :causation_id),
+        provenance:
+          Keyword.get(opts, :provenance, %{
+            source: :definition_lifecycle,
+            definition_ref: Lifecycle.key(lifecycle)
+          }),
+        metadata: %{
+          transition: :definition_lifecycle_changed,
+          axis: axis,
+          value: value,
+          lifecycle_revision: lifecycle.revision,
+          authority_epoch: lifecycle.authority_epoch
+        }
+      ]
+
+      {:ok, lifecycle, writes, commit_opts}
+    end
+  end
+
+  def prepare_lifecycle_transition(
+        %InstanceState{},
+        _definition_ref,
+        axis,
+        value,
+        _opts
+      ),
+      do: {:error, {:invalid_definition_lifecycle_transition, axis, value}}
 
   @spec activation_lifecycles(InstanceState.t(), Activation.t()) ::
           {:ok, map()} | {:error, term()}

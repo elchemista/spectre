@@ -10,8 +10,9 @@ owner of storage, credentials, authorization, model clients, and side effects.
 The `0.2.0` architecture keeps one Agent Instance as the local canonical state
 owner while allowing slow operations to run elsewhere. Its internal canonical
 state is split into typed Flow, Work, Vigil, Directive, control, correlation,
-and event sections. Every accepted change advances one global revision and the
-revision of only the sections it replaces.
+event, inference control/progress, and receipt-outbox sections. Every accepted
+change advances one global revision and the revision of only the sections it
+replaces.
 
 An immutable snapshot declares separate read and write scopes. A change based
 on an older global revision may still commit when every section it writes is
@@ -104,13 +105,35 @@ Runtime restore ──► Spectre.State + recalled memory
                                           Prompt.Plan      staged Effect
                                                 │              │
                                                 ▼              ▼
-                                               LLM       policy/lifecycle
+                                      inference Invocation policy/lifecycle
                    └──────────────┴────────────┬──────────────┘
                                               ▼
                                         Spectre.Result
                                               │
                                     persist state, then memory
 ```
+
+Inside an Instance, reaching an inference Invocation releases the
+conversational Move. Selection and dispatch intent are committed before a
+one-shot worker or streaming session starts. The provider result returns as a
+typed, correlated receipt; only then does the Runtime resume deterministic
+post-processing against current State.
+
+Streaming adds a bounded data plane, not a second state owner:
+
+```text
+consumer pull ──► StreamSession (:gen_statem) ──► provider transport credit
+       ▲                    │
+       │                    ├── provisional fenced deltas (direct)
+       │                    └── text-free heartbeat ──► Instance commit/events
+       │
+       └── terminal Result after Instance receipt + Run commit
+```
+
+The live stream handle and raw deltas are ephemeral. Run v3 retains only the
+portable inference continuation and bounded recovery coordinates. Steering
+ends the old epoch and creates a successor; restart never silently joins two
+streams.
 
 `Spectre.Runtime.start/3` creates the logical continuation, while `advance/2`
 re-resolves memory and runtime dependencies and stops at the first Invocation,
@@ -168,6 +191,10 @@ same turn decisions.
 | Policy text/label matching | `Spectre.Policy.Matcher` |
 | Prompt trust and composition | `Spectre.Prompt.Plan` |
 | Provider isolation and deadlines | `Spectre.Provider.Call` |
+| Inference selection, attempt lifecycle and terminal commit | `Spectre.Instance` + `Spectre.Run` |
+| Streaming transport normalization | `Spectre.Inference.StreamAdapter` |
+| Streaming demand and provisional delivery | internal supervised `:gen_statem` session |
+| Boundary evidence delivery | `Spectre.Receipt.Sink` (host adapter), sequenced by the Instance |
 | Optional ownership of a complete normal turn | `Spectre.Turn.Handler` |
 | Action capability invocation | `Spectre.ActionDispatcher` |
 | Extension-owned effect invocation | `Spectre.Effect.Executor` |
@@ -213,6 +240,7 @@ should be retried.
 - user text and metadata supplied by an external host;
 - classifier, embedding, semantic-cache, and LLM replies;
 - prompt context returned by a dynamic provider;
+- provisional inference deltas and normalized provider events;
 - persisted payloads before codec validation.
 
 ### Deterministic runtime authority
@@ -221,7 +249,8 @@ should be retried.
 - policy resolution labels declared in those definitions;
 - lifecycle commands and state revisions;
 - registered action names and Skill bindings;
-- prompt operation target/trust rules.
+- prompt operation target/trust rules;
+- inference budgets, cancellation/steering revisions, and receipt fences.
 
 ### Host authority
 
@@ -252,6 +281,8 @@ infrastructure:
 - `Spectre.Journal.Store` for append-only records;
 - `Spectre.Classifier.Embedding` and classifier callbacks;
 - model functions or modules through `Spectre.LLM`;
+- bounded model streaming through `Spectre.Inference.StreamAdapter`;
+- provider-neutral boundary evidence through `Spectre.Receipt.Sink`;
 - semantic-cache adapters through `Spectre.Router.SemanticCache`;
 - external conversation owners through ordered `Spectre.Turn.Handler`
   adapters;

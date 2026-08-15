@@ -520,7 +520,7 @@ defmodule SpectreActionBoundaryContractTest do
                agent: SpectreActionBoundaryContractTest.NoActionsAgent
              })
 
-    assert {:error, {:undefined_action, @actions, :missing}} =
+    assert {:error, {:action_argument_schema_unavailable, :local, :missing}} =
              ActionDispatcher.dispatch(effect(:missing, %{}), %{agent: @agent})
   end
 
@@ -610,7 +610,7 @@ defmodule SpectreActionBoundaryContractTest do
 
     schema = "expected-schema"
 
-    assert {:ok, {:schema_ok, :boundary}} =
+    assert {:error, {:action_argument_schema_unavailable, :boundary, :schema_ok}} =
              Provider.execute(
                mount,
                Action.new(:schema_ok, via: :boundary, schema_hash: schema),

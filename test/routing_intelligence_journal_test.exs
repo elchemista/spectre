@@ -180,7 +180,10 @@ defmodule SpectreRoutingIntelligenceTest do
 
       assert_receive {:routing_intelligence_local, "needs semantic routing"}
       assert_receive {:routing_intelligence_llm, prompt, opts}
-      assert prompt =~ "Latest message:\nneeds semantic routing"
+
+      assert prompt =~
+               "Latest message:\n<spectre-data trust=\"data\">needs semantic routing</spectre-data>"
+
       assert prompt =~ "You are the intent router for the agent"
       assert prompt =~ "Available labels, grouped by conversation flow"
       assert prompt =~ "conversation/\n  LOCAL\n  LLM_ROUTE"
