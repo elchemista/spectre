@@ -1,7 +1,8 @@
 # Streaming inference
 
 Spectre exposes streaming as an Instance-owned Run capability. The provider
-transport may live in another package, but selection, budgets, cancellation,
+transport may live in another package provided it delivers provider data into
+the owning stream session's mailbox. Selection, budgets, cancellation,
 steering, terminal processing and recovery remain in the core runtime.
 
 Streaming is intentionally opt-in. The first supported slice is text-only
@@ -76,11 +77,13 @@ guards operate on the complete response. Delta `content_class` is
 the host explicitly disables it.
 
 The provisional lane is not promised to be a byte-for-byte prefix of the
-terminal Result. In particular, an unterminated control marker causes the
-incremental sanitizer to suppress the remaining provisional tail, while the
-full-response sanitizer may preserve text for which it never observes a
-complete control block. The committed Result is authoritative; consumers must
-not reconstruct it by concatenating deltas.
+terminal Result. Its safety relation is deliberately one-way: the incremental
+sanitizer may suppress more text than the full-response sanitizer, but it must
+never emit text that the full-response sanitizer would later remove. This is
+checked across arbitrary UTF-8 chunk boundaries with a property test. For
+example, an unterminated control marker suppresses the remaining provisional
+tail even when the terminal sanitizer preserves it. The committed Result is
+authoritative; consumers must not reconstruct it by concatenating deltas.
 
 If only the canonical terminal matters, do not enumerate:
 
@@ -120,6 +123,47 @@ mailbox. Spectre rejects push adapters that omit the capability. Once inside
 the session, event count, bytes per delta, buffered bytes, buffered event count
 and events per transport item all have explicit limits. Overflow terminates the
 attempt; text is never discarded silently.
+
+## Delivery model
+
+Provider delivery always uses the stream session's mailbox. `open/2` and
+`resume/3` run in the session process, so an asynchronous transport can capture
+`self()` as its destination. The `:pull_transport` and `:push_transport`
+capabilities describe demand and upstream buffering; they do not select a
+different delivery channel.
+
+A callback-style HTTP client can be bridged through a monitored helper:
+
+```elixir
+def open(descriptor, opts) do
+  session = self()
+  ref = make_ref()
+
+  with {:ok, helper} <- start_helper(session, ref, descriptor, opts) do
+    state = %{
+      session: session,
+      ref: ref,
+      helper: helper,
+      helper_monitor: Process.monitor(helper)
+    }
+
+    {:ok, state, %{}}
+  end
+end
+```
+
+The helper sends messages such as `{:my_adapter, ref, chunk}` to `session`.
+For a pull transport, `request_transport_item/1` grants one credit to the
+helper; the helper must wait for that credit before asking the client for the
+next chunk. Prefer monitoring the helper rather than linking it. Stream
+sessions trap exits for orderly cancellation, so a linked helper's death is
+delivered as `{:EXIT, pid, reason}` to `handle_transport/2` instead of killing
+the session.
+
+A client that cannot pause callback delivery cannot truthfully declare
+`:pull_transport`. It must use `:push_transport` with
+`:bounded_push_transport` and enforce a real upstream bound before data enters
+the session mailbox.
 
 ## Adapter contract
 
@@ -181,9 +225,14 @@ sent to a provider endpoint.
 Run `Spectre.Inference.StreamAdapter.Conformance.run/4` with a portable
 descriptor and deterministic transport messages in every adapter repository.
 It verifies capability negotiation, pull-credit calls, event batches, global
-ordering, terminal cardinality and optional cancel/reconcile reply shapes. A
-real local TCP/SSE integration test is still required to prove socket flow
-control, parser bounds and remote cancellation.
+ordering, terminal cardinality, optional cancel/reconcile reply shapes, and
+both adapter-owned byte bounds. To prove the raw bounds, implement the
+test-only `conformance_fixture/4` callback: the runner supplies a binary one
+byte over the configured limit, the callback wraps it in the adapter's real
+transport-message shape, and the runner requires `handle_transport/2` to
+return `{:error, :provider_stream_overflow, state}`. A real local TCP/SSE
+integration test is still required to prove socket flow control, the actual
+client/parser wiring and remote cancellation.
 
 ## Cancellation and steering
 
@@ -233,23 +282,38 @@ It cannot attach a stale or foreign handle.
 
 ## Limits and budgets
 
-Important options include:
+The session enforces every value it can observe directly:
 
-| Option | Default | Purpose |
+| Core/session option | Default | Enforced at |
 | --- | ---: | --- |
-| `stream_attach_timeout` | 30 s | maximum wait for the authoritative consumer |
-| `stream_open_timeout` | 15 s | maximum wait for the first provider signal |
+| `stream_attach_timeout` | 30 s | wait for the authoritative consumer |
+| `stream_open_timeout` | 15 s | wait for the first provider signal |
 | `stream_provider_stall_timeout` | 30 s | outstanding-demand liveness deadline |
-| `stream_consumer_idle_timeout` | 30 s | maximum pause after a delivered batch |
+| `stream_consumer_idle_timeout` | 30 s | pause after a delivered batch |
 | `stream_max_duration_ms` | 5 min | absolute data-plane lifetime |
-| `stream_result_timeout` | 60 s | wait for post-processing/Run commit after provider terminal |
-| `stream_terminal_retention` | 60 s | bounded terminal lookup window |
-| `stream_max_transport_chunk_bytes` | 256 KB | adapter-owned raw transport item limit |
-| `stream_max_parser_residual_bytes` | 256 KB | adapter-owned incomplete parser state limit |
-| `stream_max_delta_bytes` | 64 KB | per-delta limit |
-| `stream_max_buffer_events` | 64 | normalized event queue limit |
-| `stream_max_buffer_bytes` | 256 KB | text queue limit |
-| `max_stream_sessions` | 8 | live sessions admitted per Instance |
+| `stream_result_timeout` | 60 s | wait for post-processing and Run commit |
+| `stream_terminal_retention` | 60 s | terminal lookup window |
+| `stream_max_delta_bytes` | 64 KB | each normalized text delta |
+| `model_reply_max_bytes` | 1 MB | accumulated provider response |
+| `stream_max_buffer_events` | 64 | normalized event queue |
+| `stream_max_buffer_bytes` | 256 KB | queued text |
+| `stream_max_events_per_transport_item` | 64 | one adapter transport reply |
+| `max_sanitizer_lookahead_bytes` | 128 B | incomplete sanitizer syntax |
+
+Two raw values are invisible to the core after parsing, so the adapter owns
+their enforcement:
+
+| Adapter option | Default | Enforced at |
+| --- | ---: | --- |
+| `stream_max_transport_chunk_bytes` | 256 KB | before retaining a raw transport item |
+| `stream_max_parser_residual_bytes` | 256 KB | while retaining incomplete parser state |
+
+Capacity is enforced separately from byte and time limits:
+
+| Capacity option | Default | Enforced at |
+| --- | ---: | --- |
+| `max_stream_sessions` | 4 | live sessions admitted per Instance |
+| `config :spectre, :stream_node_capacity` | 256 | live reservations across the node |
 
 Node-wide capacity is owned by an internal supervised capacity process. A slot
 is reserved before dispatch, transferred to the stream session, and released
@@ -268,12 +332,20 @@ counter from the reserved-input or output-byte floor, the attempt is labelled
 `:estimated`; that weaker label remains sticky because a later cumulative
 update cannot prove the retained maximum was token-exact.
 
-The session passes the two adapter-owned limits as
-`max_transport_chunk_bytes` and `max_parser_residual_bytes` to `open/2` and
-`resume/3`. Adapters must fail with `:provider_stream_overflow` instead of
-retaining or truncating excess bytes. Normalized delta binaries may split a
-UTF-8 codepoint; Spectre buffers the bounded trailing bytes and yields only
-complete, valid UTF-8 events.
+The session passes the two adapter-owned limits to `open/2` and `resume/3`
+under an explicit namespace:
+
+```elixir
+spectre_bounds: [
+  max_transport_chunk_bytes: 256_000,
+  max_parser_residual_bytes: 256_000
+]
+```
+
+Adapters must fail with `:provider_stream_overflow` instead of retaining or
+truncating excess bytes. The conformance runner mechanically exercises both
+limits. Normalized delta binaries may split a UTF-8 codepoint; Spectre buffers
+the bounded trailing bytes and yields only complete, valid UTF-8 events.
 
 ## Observer lane
 
