@@ -1,6 +1,12 @@
 defmodule Spectre.Inference.StreamCapacity do
   @moduledoc false
 
+  # The node-wide cap is an ownership process, not merely a counter. It
+  # monitors every owner so an abnormal Instance or session death releases its
+  # slot, and it supports the reservation transfer required because admission
+  # happens before the stream session exists. Synchronous release/replace also
+  # prevents a successor from racing stale ownership bookkeeping.
+
   use GenServer
 
   @default_limit 256
