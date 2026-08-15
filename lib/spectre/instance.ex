@@ -29,6 +29,7 @@ defmodule Spectre.Instance do
   alias Spectre.Governance.Verifier, as: GovernanceVerifier
   alias Spectre.Input
   alias Spectre.Instance.Activation
+  alias Spectre.Instance.Activations
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec, as: CanonicalCodec
   alias Spectre.Instance.Checkpoint
@@ -1005,27 +1006,27 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:instance_activate, candidate_ref, opts}, _from, data) do
-    with {:ok, expected_generation} <- activation_expected_generation(opts),
+    with {:ok, expected_generation} <- Activations.expected_generation(opts),
          :ok <- owner_guard(data, :activation_commit),
-         {:ok, definition_store} <- require_definition_store(data.definition_store),
+         {:ok, definition_store} <- Activations.require_store(data.definition_store),
          {:ok, candidate_resolution} <-
            DefinitionResolver.resolve_candidate_for_activation(
              definition_store,
              candidate_ref,
-             activation_resolver_opts(data, opts)
+             Activations.resolver_opts(data, opts)
            ),
          :ok <-
            GovernanceVerifier.verify_activation(
              definition_store,
              candidate_resolution,
              data.activation,
-             activation_resolver_opts(data, opts)
+             Activations.resolver_opts(data, opts)
            ),
          {:ok, prospective, skill_states} <-
-           build_activation(data, candidate_resolution, expected_generation, opts),
+           Activations.build(data, candidate_resolution, expected_generation, opts),
          {:ok, activation} <-
            Activation.compare_and_swap(data.activation, expected_generation, prospective),
-         {:ok, next} <- commit_activation(data, activation, skill_states) do
+         {:ok, next} <- Activations.commit(data, activation, skill_states) do
       {:reply, {:ok, activation}, arm_idle_timer(next)}
     else
       :not_found ->
@@ -1046,21 +1047,21 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:instance_rollback, candidate_ref, opts}, _from, data) do
-    with {:ok, expected_generation} <- activation_expected_generation(opts),
+    with {:ok, expected_generation} <- Activations.expected_generation(opts),
          :ok <- owner_guard(data, :activation_commit),
-         {:ok, definition_store} <- require_definition_store(data.definition_store),
+         {:ok, definition_store} <- Activations.require_store(data.definition_store),
          {:ok, candidate_resolution} <-
            DefinitionResolver.resolve_candidate_for_activation(
              definition_store,
              candidate_ref,
-             activation_resolver_opts(data, opts)
+             Activations.resolver_opts(data, opts)
            ),
          :ok <-
            GovernanceVerifier.verify_rollback(
              definition_store,
              candidate_resolution,
              data.activation,
-             activation_resolver_opts(data, opts)
+             Activations.resolver_opts(data, opts)
            ),
          rollback_opts =
            Keyword.put(
@@ -1069,10 +1070,10 @@ defmodule Spectre.Instance do
              %{source: :rollback, instance_ref: data.ref.key, external_effects_rolled_back: false}
            ),
          {:ok, prospective, skill_states} <-
-           build_activation(data, candidate_resolution, expected_generation, rollback_opts),
+           Activations.build(data, candidate_resolution, expected_generation, rollback_opts),
          {:ok, activation} <-
            Activation.compare_and_swap(data.activation, expected_generation, prospective),
-         {:ok, next} <- commit_activation(data, activation, skill_states) do
+         {:ok, next} <- Activations.commit(data, activation, skill_states) do
       {:reply, {:ok, activation}, arm_idle_timer(next)}
     else
       :not_found ->
@@ -1108,7 +1109,7 @@ defmodule Spectre.Instance do
 
   def handle_call({:definition_lifecycle, value}, _from, data) do
     reply =
-      with {:ok, definition_ref} <- resolve_definition_ref(data, value) do
+      with {:ok, definition_ref} <- Activations.resolve_definition_ref(data, value) do
         {:ok, Events.lifecycle(data, definition_ref)}
       end
 
@@ -1121,7 +1122,7 @@ defmodule Spectre.Instance do
         data
       ) do
     with :ok <- owner_guard(data, :commit),
-         {:ok, definition_ref} <- resolve_definition_ref(data, value),
+         {:ok, definition_ref} <- Activations.resolve_definition_ref(data, value),
          {:ok, lifecycle, writes, commit_opts} <-
            Events.prepare_lifecycle_transition(data, definition_ref, axis, status, opts),
          {:ok, prepared} <-
@@ -7800,210 +7801,9 @@ defmodule Spectre.Instance do
 
   defp normalize_event_limit(_value), do: @operation_event_limit
 
-  defp activation_expected_generation(opts) when is_list(opts) do
-    case Keyword.fetch(opts, :expected_generation) do
-      {:ok, generation} when is_integer(generation) and generation >= 0 -> {:ok, generation}
-      {:ok, value} -> {:error, {:invalid_expected_activation_generation, value}}
-      :error -> {:error, :expected_activation_generation_required}
-    end
-  end
-
-  defp activation_expected_generation(value),
-    do: {:error, {:invalid_activation_options, value}}
-
-  defp build_activation(data, %{candidate: candidate, resolution: resolution}, _expected, opts) do
-    current_generation = Activation.generation(data.activation)
-    current_epoch = Events.current_authority_epoch(data)
-    activated_at = Keyword.get(opts, :activated_at, System.system_time(:millisecond))
-
-    base_bindings =
-      Keyword.get_lazy(opts, :state_bindings, fn ->
-        case data.activation do
-          %Activation{state_bindings: bindings} -> bindings
-          nil -> %{}
-        end
-      end)
-
-    provenance =
-      Keyword.get(opts, :provenance, %{
-        source: :trusted_host,
-        instance_ref: data.ref.key
-      })
-      |> Map.put(:build_evidence, resolution.drift)
-      |> Map.put(:change_surface?, DefinitionCompatibility.change_surface?(resolution.definition))
-
-    with :ok <- DefinitionCompatibility.verify_profile(data.base_opts, resolution.definition),
-         {:ok, skill_states, skill_bindings} <-
-           SkillStates.prepare_activation(
-             data,
-             resolution.definition_ref,
-             Keyword.put(opts, :activated_at, activated_at)
-           ),
-         {:ok, state_bindings} <-
-           SkillStates.merge_activation_bindings(base_bindings, skill_bindings),
-         {:ok, activation} <-
-           Activation.new(candidate, resolution,
-             generation: current_generation + 1,
-             authority_epoch: Keyword.get(opts, :authority_epoch, current_epoch),
-             owner_fencing_token: data.owner_lease.fencing_token,
-             state_bindings: state_bindings,
-             activated_at: activated_at,
-             provenance: provenance
-           ) do
-      {:ok, activation, skill_states}
-    end
-  end
-
-  defp commit_activation(data, %Activation{} = activation, skill_states) do
-    with :ok <- owner_guard(data, :activation_commit),
-         :ok <- activation_checkpoint_ready(data),
-         {:ok, lifecycles} <- Events.activation_lifecycles(data, activation),
-         {:ok, committed} <-
-           Commit.canonical_sections(
-             data,
-             %{
-               activation: activation,
-               correlations: owner_fenced_correlations(data),
-               lifecycles: lifecycles,
-               skill_states: skill_states
-             },
-             correlation_id: activation.activation_receipt,
-             causation_id: CandidateRef.to_string(activation.candidate_ref),
-             provenance: %{source: :activation, instance_ref: data.ref.key},
-             metadata: %{
-               transition: :definition_activated,
-               activation_generation: activation.generation,
-               authority_epoch: activation.authority_epoch
-             },
-             checkpoint: :defer
-           ),
-         {:ok, persisted} <- persist_activation_checkpoint(committed, committed.canonical) do
-      _ =
-        Spectre.Journal.record(
-          data.agent,
-          :definition_activated,
-          %{
-            definition_ref: to_string(activation.definition_ref),
-            candidate_ref: CandidateRef.to_string(activation.candidate_ref),
-            activation_generation: activation.generation,
-            authority_epoch: activation.authority_epoch,
-            activation_receipt: activation.activation_receipt
-          },
-          data.base_opts
-        )
-
-      {:ok, %{persisted | activation: activation}}
-    end
-  end
-
-  defp activation_checkpoint_ready(%{checkpoint_store: nil}), do: :ok
-
-  defp activation_checkpoint_ready(data) do
-    cond do
-      not is_nil(data.checkpoint_reconciliation) ->
-        {:error, Checkpoint.reconciliation_error(data)}
-
-      not is_nil(data.checkpoint_inflight) or not is_nil(data.checkpoint_reconcile_inflight) ->
-        {:error, :activation_checkpoint_operation_in_progress}
-
-      not is_nil(data.checkpoint_pending) ->
-        {:error, :activation_checkpoint_pending}
-
-      data.checkpoint_revision != data.canonical.revision ->
-        {:error,
-         {:activation_checkpoint_not_current, data.checkpoint_revision, data.canonical.revision}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp persist_activation_checkpoint(%{checkpoint_store: nil} = data, _canonical),
-    do: {:ok, data}
-
-  defp persist_activation_checkpoint(data, canonical) do
-    with {:ok, encoded} <- CanonicalCodec.encode_json(canonical),
-         :ok <-
-           CheckpointStore.persist(
-             data.checkpoint_store,
-             data.ref,
-             encoded,
-             data.checkpoint_revision,
-             canonical.revision,
-             checkpoint_store_opts(data)
-           ) do
-      {:ok,
-       %{
-         data
-         | checkpoint_revision: canonical.revision,
-           checkpoint_persisted: canonical,
-           checkpoint_error: nil
-       }}
-    end
-  end
-
-  defp activation_resolver_opts(data, opts) do
-    data.base_opts
-    |> Keyword.merge(opts)
-    |> Keyword.drop([
-      :timeout,
-      :expected_generation,
-      :authority_epoch,
-      :state_bindings,
-      :skill_state_transitions
-    ])
-    |> Keyword.put(:checkpoint_store, data.checkpoint_store)
-    |> Keyword.put(:observe_builds, true)
-    |> Keyword.put(:on_drift, :reject)
-  end
-
-  defp checkpoint_store_opts(data) do
-    Keyword.put(data.base_opts, :owner_fencing_token, data.owner_lease.fencing_token)
-  end
-
-  defp owner_fenced_correlations(data) do
-    {:ok, correlations} = Canonical.fetch(data.canonical, :correlations)
-    Map.put(correlations, :owner_fencing_token, data.owner_lease.fencing_token)
-  end
-
-  defp require_definition_store(nil), do: {:error, :definition_store_not_configured}
-  defp require_definition_store(store), do: {:ok, store}
-
   defp owner_guard(data, operation) do
     Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
   end
-
-  defp resolve_definition_ref(data, :active), do: {:ok, Events.active_definition_ref(data)}
-
-  defp resolve_definition_ref(_data, %DefinitionRef{} = definition_ref) do
-    if DefinitionRef.valid?(definition_ref),
-      do: {:ok, definition_ref},
-      else: {:error, {:invalid_definition_lifecycle_ref, definition_ref}}
-  end
-
-  defp resolve_definition_ref(data, value) when is_binary(value) do
-    known =
-      [data.activation && data.activation.definition_ref]
-      |> Kernel.++(Enum.map(data.runs, fn {_id, run} -> run.definition_ref end))
-      |> Kernel.++(
-        case Canonical.fetch(data.canonical, :lifecycles) do
-          {:ok, lifecycles} ->
-            Enum.map(lifecycles, fn {_key, lifecycle} -> lifecycle.definition_ref end)
-
-          _invalid ->
-            []
-        end
-      )
-      |> Enum.reject(&is_nil/1)
-
-    case Enum.find(known, &(DefinitionRef.to_string(&1) == value)) do
-      %DefinitionRef{} = definition_ref -> {:ok, definition_ref}
-      nil -> DefinitionRef.parse(value)
-    end
-  end
-
-  defp resolve_definition_ref(_data, value),
-    do: {:error, {:invalid_definition_lifecycle_ref, value}}
 
   defp restore_initial_state(agent, opts, base_opts) do
     if Keyword.has_key?(opts, :state) do
