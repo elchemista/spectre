@@ -91,6 +91,16 @@ defmodule SpectreInferenceHardeningContractTest do
     # to constrain an action payload.
     refute Schema.constrained?(%{arity: 2, version: 1})
     assert :ok = Schema.validate(%{arity: 2, version: 1}, %{anything: :goes})
+
+    assert Schema.rejects_additional_properties?(false)
+    assert Schema.rejects_additional_properties?(%{additionalProperties: false})
+    refute Schema.rejects_additional_properties?(true)
+    refute Schema.rejects_additional_properties?(%{type: "object", properties: %{}})
+
+    refute Schema.rejects_additional_properties?(%{
+             "additionalProperties" => false,
+             additionalProperties: false
+           })
   end
 
   test "incremental sanitization is invariant to provider chunk boundaries" do

@@ -267,6 +267,7 @@ and package-specific health checks remain in the adapter package that owns
 them.
 
 Agent diagnostics also warn about planner-visible actions without `protect`,
+planner schemas that are unconstrained or omit `additionalProperties: false`,
 external action/effect executors without a configured egress allowlist, and
 `sanitize_reply: false`. Runtime consent records are not part of a compiled
 Definition; programmatic callers can pass `consents: [...]` to audit that each

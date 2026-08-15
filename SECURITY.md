@@ -57,7 +57,10 @@ Unsupported constraints fail closed instead of being ignored. The supported
 subset is deliberately bounded by depth, schema size, property/branch count
 and regular-expression limits. Application adapters must still authorize
 business objects and enforce tenant ownership; schema validity is not
-authorization.
+authorization. JSON Schema intentionally permits undeclared keys when
+`additionalProperties` is omitted; `mix spectre.doctor --strict` warns when a
+planner-visible action is unconstrained or does not explicitly close that
+surface with `additionalProperties: false`.
 
 ### Streaming capabilities
 

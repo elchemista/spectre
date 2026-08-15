@@ -66,6 +66,21 @@ defmodule Spectre.Action.Schema do
 
   def constrained?(_schema), do: false
 
+  @doc false
+  @spec rejects_additional_properties?(term()) :: boolean()
+  def rejects_additional_properties?(false), do: true
+
+  def rejects_additional_properties?(schema) when is_map(schema) and not is_struct(schema) do
+    values =
+      schema
+      |> Enum.filter(fn {key, _value} -> normalized_key(key) == "additionalProperties" end)
+      |> Enum.map(&elem(&1, 1))
+
+    values == [false]
+  end
+
+  def rejects_additional_properties?(_schema), do: false
+
   @doc "Validates action arguments without evaluating code or resolving remote refs."
   @spec validate(term(), term()) :: :ok | {:error, term()}
   def validate(schema, value) do

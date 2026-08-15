@@ -3,6 +3,7 @@ defmodule Spectre.Doctor do
 
   alias Spectre.Action
   alias Spectre.Action.Provider, as: ActionProvider
+  alias Spectre.Action.Schema, as: ActionSchema
   alias Spectre.Action.Spec, as: ActionSpec
   alias Spectre.ActionConfig
   alias Spectre.Definition
@@ -203,6 +204,7 @@ defmodule Spectre.Doctor do
        check(:skipped, "agent.manifest", :agent_not_requested),
        check(:skipped, "agent.prompt_trust", :agent_not_requested),
        check(:skipped, "agent.planner_action_protection", :agent_not_requested),
+       check(:skipped, "agent.planner_action_schema", :agent_not_requested),
        check(:skipped, "agent.executor_egress", :agent_not_requested),
        check(:skipped, "agent.reply_sanitization", :agent_not_requested)
      ], nil}
@@ -224,6 +226,7 @@ defmodule Spectre.Doctor do
           safe("agent.planner_action_protection", fn ->
             planner_action_protection_check(definition)
           end),
+          safe("agent.planner_action_schema", fn -> planner_action_schema_check(definition) end),
           safe("agent.executor_egress", fn -> executor_egress_check(definition) end),
           safe("agent.reply_sanitization", fn -> reply_sanitization_check(definition) end)
         ]
@@ -248,6 +251,7 @@ defmodule Spectre.Doctor do
        check(:skipped, "agent.manifest", :agent_definition_unavailable),
        check(:skipped, "agent.prompt_trust", :agent_definition_unavailable),
        check(:skipped, "agent.planner_action_protection", :agent_definition_unavailable),
+       check(:skipped, "agent.planner_action_schema", :agent_definition_unavailable),
        check(:skipped, "agent.executor_egress", :agent_definition_unavailable),
        check(:skipped, "agent.reply_sanitization", :agent_definition_unavailable)
      ], nil}
@@ -328,6 +332,52 @@ defmodule Spectre.Doctor do
     |> case do
       {specs, 0} -> {:ok, Enum.reverse(specs)}
       {_specs, failures} -> {:error, failures}
+    end
+  end
+
+  defp planner_action_schema_check(%Definition{owner: agent}) do
+    case planner_action_specs(agent) do
+      {:ok, specs} ->
+        planner_action_schema_result(specs)
+
+      {:error, count} ->
+        check(
+          :error,
+          "agent.planner_action_schema",
+          :planner_action_schema_catalog_unavailable,
+          %{provider_failure_count: count}
+        )
+    end
+  end
+
+  defp planner_action_schema_result(specs) do
+    findings = Enum.flat_map(specs, &planner_action_schema_findings/1)
+
+    if findings == [] do
+      check(:ok, "agent.planner_action_schema", :planner_action_schemas_bounded, %{
+        planner_action_count: length(specs)
+      })
+    else
+      check(:warning, "agent.planner_action_schema", :planner_action_schemas_permissive, %{
+        planner_action_count: length(specs),
+        finding_count: length(findings),
+        unconstrained_count: Enum.count(findings, &(&1.reason == :unconstrained)),
+        open_object_count: Enum.count(findings, &(&1.reason == :additional_properties_permitted)),
+        actions: findings
+      })
+    end
+  end
+
+  defp planner_action_schema_findings(spec) do
+    cond do
+      not ActionSchema.constrained?(spec.schema) ->
+        [Map.put(action_ref(spec), :reason, :unconstrained)]
+
+      not ActionSchema.rejects_additional_properties?(spec.schema) ->
+        [Map.put(action_ref(spec), :reason, :additional_properties_permitted)]
+
+      true ->
+        []
     end
   end
 
