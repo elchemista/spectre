@@ -101,6 +101,18 @@ defmodule SpectreDoctorTest.PermissiveSchemaProvider do
         via: :remote,
         visibility: :planner,
         schema: %{type: "object", properties: %{name: %{type: "string"}}}
+      ),
+      Spec.new(
+        name: :nested_open_object,
+        via: :remote,
+        visibility: :planner,
+        schema: %{
+          type: "object",
+          additionalProperties: false,
+          properties: %{
+            settings: %{type: "object", properties: %{enabled: %{type: "boolean"}}}
+          }
+        }
       )
     ]
   end
@@ -120,6 +132,7 @@ defmodule SpectreDoctorTest.PermissiveSchemaAgent do
 
   protect({:remote, :metadata_only}, with: :confirmation)
   protect({:remote, :open_object}, with: :confirmation)
+  protect({:remote, :nested_open_object}, with: :confirmation)
 
   policy :confirmation do
     accept(:approved, regex: ~r/^yes$/i)
@@ -326,9 +339,10 @@ defmodule SpectreDoctorTest do
              status: :warning,
              code: :planner_action_schemas_permissive,
              details: %{
-               finding_count: 2,
+               finding_count: 3,
                unconstrained_count: 1,
-               open_object_count: 1
+               open_object_count: 2,
+               closure_scope: :declared_object_schemas
              }
            } = find(permissive_schema, "agent.planner_action_schema")
 

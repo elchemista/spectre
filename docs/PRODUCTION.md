@@ -267,12 +267,15 @@ and package-specific health checks remain in the adapter package that owns
 them.
 
 Agent diagnostics also warn about planner-visible actions without `protect`,
-planner schemas that are unconstrained or omit `additionalProperties: false`,
-external action/effect executors without a configured egress allowlist, and
-`sanitize_reply: false`. Runtime consent records are not part of a compiled
-Definition; programmatic callers can pass `consents: [...]` to audit that each
-sample has an expiry. Without that sample the named consent check is reported
-as skipped.
+planner schemas that are unconstrained or omit `additionalProperties: false`
+at the root or in a declared nested object schema, external action/effect
+executors without a configured egress allowlist, and `sanitize_reply: false`.
+The schema check recursively follows `properties`, `items` and supported
+combinators. It is a conservative structural object-closure audit, not proof
+that every possible JSON Schema argument space is finite. Runtime consent
+records are not part of a compiled Definition; programmatic callers can pass
+`consents: [...]` to audit that each sample has an expiry. Without that sample
+the named consent check is reported as skipped.
 
 ## Semantic cache
 

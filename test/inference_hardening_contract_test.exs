@@ -94,6 +94,40 @@ defmodule SpectreInferenceHardeningContractTest do
 
     assert Schema.rejects_additional_properties?(false)
     assert Schema.rejects_additional_properties?(%{additionalProperties: false})
+
+    assert Schema.rejects_additional_properties?(%{
+             type: "object",
+             additionalProperties: false,
+             properties: %{
+               name: %{type: "string"},
+               settings: %{
+                 type: "object",
+                 additionalProperties: false,
+                 properties: %{enabled: %{type: "boolean"}}
+               },
+               entries: %{
+                 type: "array",
+                 items: %{type: "object", additionalProperties: false}
+               }
+             }
+           })
+
+    refute Schema.rejects_additional_properties?(%{
+             type: "object",
+             additionalProperties: false,
+             properties: %{
+               settings: %{type: "object", properties: %{enabled: %{type: "boolean"}}}
+             }
+           })
+
+    refute Schema.rejects_additional_properties?(%{
+             type: "object",
+             additionalProperties: false,
+             properties: %{
+               entries: %{type: "array", items: %{type: "object", properties: %{}}}
+             }
+           })
+
     refute Schema.rejects_additional_properties?(true)
     refute Schema.rejects_additional_properties?(%{type: "object", properties: %{}})
 

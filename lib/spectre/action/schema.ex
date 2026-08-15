@@ -68,18 +68,119 @@ defmodule Spectre.Action.Schema do
 
   @doc false
   @spec rejects_additional_properties?(term()) :: boolean()
-  def rejects_additional_properties?(false), do: true
-
-  def rejects_additional_properties?(schema) when is_map(schema) and not is_struct(schema) do
-    values =
-      schema
-      |> Enum.filter(fn {key, _value} -> normalized_key(key) == "additionalProperties" end)
-      |> Enum.map(&elem(&1, 1))
-
-    values == [false]
+  def rejects_additional_properties?(schema) do
+    with :ok <- validate_schema_size(schema),
+         :ok <- validate_definition(schema, [], 0),
+         true <- root_rejects_additional_properties?(schema) do
+      declared_object_schemas_closed?(schema, false, 0)
+    else
+      _invalid_or_open -> false
+    end
   end
 
-  def rejects_additional_properties?(_schema), do: false
+  defp root_rejects_additional_properties?(false), do: true
+
+  defp root_rejects_additional_properties?(schema)
+       when is_map(schema) and not is_struct(schema),
+       do: explicitly_rejects_additional_properties?(schema)
+
+  defp root_rejects_additional_properties?(_schema), do: false
+
+  defp declared_object_schemas_closed?(_schema, _inherited_closed?, depth)
+       when depth > @max_depth,
+       do: false
+
+  defp declared_object_schemas_closed?(false, _inherited_closed?, _depth), do: true
+
+  defp declared_object_schemas_closed?(true, inherited_closed?, _depth),
+    do: inherited_closed?
+
+  defp declared_object_schemas_closed?(schema, inherited_closed?, depth)
+       when is_map(schema) and not is_struct(schema) do
+    current_closed? =
+      inherited_closed? or explicitly_rejects_additional_properties?(schema)
+
+    object_closed? = not schema_may_accept_object?(schema) or current_closed?
+
+    object_closed? and
+      declared_property_schemas_closed?(schema, depth) and
+      declared_item_schema_closed?(schema, depth) and
+      combinator_schemas_closed?(schema, current_closed?, depth)
+  end
+
+  defp declared_object_schemas_closed?(_schema, _inherited_closed?, _depth), do: false
+
+  defp declared_property_schemas_closed?(schema, depth) do
+    if schema_may_accept_object?(schema) do
+      case fetch(schema, "properties") do
+        {:ok, properties} ->
+          Enum.all?(properties, fn {_name, child} ->
+            declared_object_schemas_closed?(child, false, depth + 1)
+          end)
+
+        :error ->
+          true
+      end
+    else
+      true
+    end
+  end
+
+  defp declared_item_schema_closed?(schema, depth) do
+    case fetch(schema, "items") do
+      {:ok, child} -> declared_object_schemas_closed?(child, false, depth + 1)
+      :error -> true
+    end
+  end
+
+  defp combinator_schemas_closed?(schema, current_closed?, depth) do
+    Enum.all?(["allOf", "anyOf", "oneOf"], fn keyword ->
+      case fetch(schema, keyword) do
+        {:ok, children} ->
+          Enum.all?(children, fn child ->
+            # Combinator branches describe the same instance, so an explicit
+            # closure on their parent remains in force. Their property/item
+            # children still start a fresh closure scope.
+            declared_object_schemas_closed?(child, current_closed?, depth + 1)
+          end)
+
+        :error ->
+          true
+      end
+    end)
+  end
+
+  defp explicitly_rejects_additional_properties?(schema),
+    do: fetch(schema, "additionalProperties") == {:ok, false}
+
+  defp schema_may_accept_object?(schema) do
+    cond do
+      finite_value_schema?(schema) ->
+        false
+
+      true ->
+        case fetch(schema, "type") do
+          {:ok, declared} -> declared_type?(declared, "object")
+          :error -> true
+        end
+    end
+  end
+
+  defp finite_value_schema?(schema) do
+    case {fetch(schema, "const"), fetch(schema, "enum")} do
+      {{:ok, _value}, _enum} -> true
+      {_const, {:ok, values}} -> is_list(values) and values != []
+      _other -> false
+    end
+  end
+
+  defp declared_type?(types, expected) when is_list(types),
+    do: Enum.any?(types, &declared_type?(&1, expected))
+
+  defp declared_type?(type, expected) when is_atom(type),
+    do: Atom.to_string(type) == expected
+
+  defp declared_type?(type, expected), do: type == expected
 
   @doc "Validates action arguments without evaluating code or resolving remote refs."
   @spec validate(term(), term()) :: :ok | {:error, term()}

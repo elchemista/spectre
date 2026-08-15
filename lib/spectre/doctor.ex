@@ -355,7 +355,8 @@ defmodule Spectre.Doctor do
 
     if findings == [] do
       check(:ok, "agent.planner_action_schema", :planner_action_schemas_bounded, %{
-        planner_action_count: length(specs)
+        planner_action_count: length(specs),
+        closure_scope: :declared_object_schemas
       })
     else
       check(:warning, "agent.planner_action_schema", :planner_action_schemas_permissive, %{
@@ -363,6 +364,7 @@ defmodule Spectre.Doctor do
         finding_count: length(findings),
         unconstrained_count: Enum.count(findings, &(&1.reason == :unconstrained)),
         open_object_count: Enum.count(findings, &(&1.reason == :additional_properties_permitted)),
+        closure_scope: :declared_object_schemas,
         actions: findings
       })
     end
