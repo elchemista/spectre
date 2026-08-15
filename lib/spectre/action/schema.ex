@@ -154,15 +154,13 @@ defmodule Spectre.Action.Schema do
     do: fetch(schema, "additionalProperties") == {:ok, false}
 
   defp schema_may_accept_object?(schema) do
-    cond do
-      finite_value_schema?(schema) ->
-        false
-
-      true ->
-        case fetch(schema, "type") do
-          {:ok, declared} -> declared_type?(declared, "object")
-          :error -> true
-        end
+    if finite_value_schema?(schema) do
+      false
+    else
+      case fetch(schema, "type") do
+        {:ok, declared} -> declared_type?(declared, "object")
+        :error -> true
+      end
     end
   end
 
