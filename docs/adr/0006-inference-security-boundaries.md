@@ -29,7 +29,11 @@ raw failures and adapter metadata do not enter public events or receipts.
 `Spectre.Input.Source` carries a closed trust class plus provenance and
 authenticity evidence. Missing legacy evidence defaults to `:untrusted` and
 authentication metadata never promotes content automatically. Effect results
-carry equivalent evidence for later prompt materialization.
+carry equivalent evidence for later prompt materialization. A completed
+`Spectre.Effect` is recognized directly by the materializer; when a host stores
+only its result in assigns or memory, `Spectre.Effect.prompt_result/1` preserves
+the same evidence in a `Spectre.Prompt.Value`. Rendering unwraps the value but
+copies trust, provenance and authenticity into the typed data fragment.
 
 Canonical prompt fragments remain closed templates. The
 `spectre.renderer.data/1` renderer and `Spectre.Prompt.data/1` escape dynamic

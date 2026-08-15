@@ -8,12 +8,14 @@ defmodule Spectre.Prompt.Materializer do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Prompt.Fragment
   alias Spectre.Prompt.Operation
   alias Spectre.Prompt.Plan
   alias Spectre.Prompt.Predicate
   alias Spectre.Prompt.Receipt
+  alias Spectre.Prompt.Value, as: PromptValue
 
   @placeholder ~r/\{\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}\}/
 
@@ -32,7 +34,7 @@ defmodule Spectre.Prompt.Materializer do
            render_condition(condition?, fragment, input, context),
          evidence <- Map.merge(placeholder_evidence, condition_evidence),
          :ok <- rendered_budget(fragment, rendered),
-         {:ok, plan} <- plan(fragment, rendered, status),
+         {:ok, plan} <- plan(fragment, rendered, status, placeholder_evidence),
          {:ok, receipt} <-
            Receipt.new(fragment, Plan.legacy(plan), definition_ref, evidence) do
       {:ok, plan, receipt}
@@ -116,8 +118,9 @@ defmodule Spectre.Prompt.Materializer do
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.reduce_while({:ok, %{}, %{}}, fn {name, spec}, {:ok, replacements, evidence} ->
       case resolve_placeholder(name, spec, values) do
-        {:ok, scalar, value} ->
-          {:cont, {:ok, Map.put(replacements, name, scalar), Map.put(evidence, name, value)}}
+        {:ok, scalar, value_evidence} ->
+          {:cont,
+           {:ok, Map.put(replacements, name, scalar), Map.put(evidence, name, value_evidence)}}
 
         {:error, _reason} = error ->
           {:halt, error}
@@ -140,12 +143,18 @@ defmodule Spectre.Prompt.Materializer do
   @spec resolve_placeholder(String.t(), map(), map()) ::
           {:ok, String.t(), term()} | {:error, term()}
   defp resolve_placeholder(name, spec, values) do
-    with {:ok, value} <- fetch_path(values, get(spec, :path, [])),
+    with {:ok, value, source_evidence} <- fetch_path(values, get(spec, :path, [])),
          {:ok, scalar} <- render_value(value, get(spec, :renderer_ref, nil)) do
-      {:ok, scalar, value}
+      {:ok, scalar, resolved_evidence(value, source_evidence)}
     else
-      :error -> {:error, {:missing_runtime_prompt_value, name}}
-      {:error, shape} -> {:error, {:non_scalar_runtime_prompt_value, name, shape}}
+      :error ->
+        {:error, {:missing_runtime_prompt_value, name}}
+
+      {:error, {:invalid_prompt_value_evidence, reason}} ->
+        {:error, {:invalid_runtime_prompt_evidence, name, reason}}
+
+      {:error, shape} ->
+        {:error, {:non_scalar_runtime_prompt_value, name, shape}}
     end
   end
 
@@ -163,9 +172,9 @@ defmodule Spectre.Prompt.Materializer do
 
   defp render_value(_value, _renderer_ref), do: {:error, :unsupported_renderer}
 
-  @spec plan(Fragment.t(), String.t(), :applied | :skipped) ::
+  @spec plan(Fragment.t(), String.t(), :applied | :skipped, map()) ::
           {:ok, Plan.t()} | {:error, term()}
-  defp plan(fragment, rendered, status) do
+  defp plan(fragment, rendered, status, evidence) do
     operation = %Operation{
       id: fragment.id,
       source: {:prompt, fragment.id},
@@ -178,6 +187,8 @@ defmodule Spectre.Prompt.Materializer do
       opts: []
     }
 
+    metadata = fragment_metadata(rendered, evidence)
+
     Plan.compose(
       "",
       [
@@ -186,7 +197,7 @@ defmodule Spectre.Prompt.Materializer do
           status: status,
           reason: if(status == :skipped, do: :prompt_predicate_false, else: nil),
           content: rendered,
-          metadata: %{bytes: byte_size(rendered)}
+          metadata: metadata
         }
       ],
       [fragment.scope]
@@ -215,8 +226,28 @@ defmodule Spectre.Prompt.Materializer do
   defp scalar(value) when is_atom(value) and not is_nil(value), do: {:ok, Atom.to_string(value)}
   defp scalar(value), do: {:error, shape(value)}
 
-  @spec fetch_path(term(), [String.t()]) :: {:ok, term()} | :error
-  defp fetch_path(value, []), do: {:ok, value}
+  @spec fetch_path(term(), [String.t()]) ::
+          {:ok, term(), map() | nil} | :error | {:error, term()}
+  defp fetch_path(%PromptValue{} = wrapped, path) do
+    with :ok <- PromptValue.validate(wrapped),
+         {:ok, value, nested_evidence} <- fetch_path(wrapped.value, path) do
+      {:ok, value, nested_evidence || PromptValue.evidence(wrapped)}
+    else
+      {:error, reason} -> {:error, {:invalid_prompt_value_evidence, reason}}
+      :error -> :error
+    end
+  end
+
+  # Keeping a completed Effect in assigns or memory is sufficient to retain
+  # its evidence. `Effect.prompt_result/1` provides the same behavior after a
+  # host extracts only the result value.
+  defp fetch_path(%Effect{status: :completed} = effect, ["result" | rest]) do
+    effect
+    |> Effect.prompt_result()
+    |> fetch_path(rest)
+  end
+
+  defp fetch_path(value, []), do: {:ok, value, nil}
 
   defp fetch_path(value, [segment | rest]) when is_map(value) do
     if Map.has_key?(value, segment) do
@@ -230,6 +261,33 @@ defmodule Spectre.Prompt.Materializer do
   end
 
   defp fetch_path(_value, _path), do: :error
+
+  defp resolved_evidence(value, nil), do: value
+
+  defp resolved_evidence(value, source_evidence) do
+    Map.put(source_evidence, :value, value)
+  end
+
+  defp fragment_evidence(evidence) do
+    Enum.reduce(evidence, %{}, fn
+      {name, %{trust: trust, provenance: provenance, authenticity: authenticity}}, acc ->
+        Map.put(acc, name, %{
+          trust: trust,
+          provenance: provenance,
+          authenticity: authenticity
+        })
+
+      {_name, _unclassified}, acc ->
+        acc
+    end)
+  end
+
+  defp fragment_metadata(rendered, evidence) do
+    case fragment_evidence(evidence) do
+      evidence when map_size(evidence) == 0 -> %{bytes: byte_size(rendered)}
+      evidence -> %{bytes: byte_size(rendered), resolved_evidence: evidence}
+    end
+  end
 
   @spec normalize_input(term()) :: {:ok, Input.t()} | {:error, term()}
   defp normalize_input(%Input{} = input), do: {:ok, input}

@@ -115,7 +115,7 @@ Mix project version.
 - `Spectre.Doctor.Report`
   - functions: `acceptable?/1`, `acceptable?/2`, `format/1`, `format/2`, `to_map/1`
 - `Spectre.Effect`
-  - functions: `al/1`, `approve/1`, `bind_run/2`, `cancel/1`, `cancel/2`, `complete/2`, `effect_key/1`, `executable?/1`, `fail/2`, `hooks/1`, `idempotency_key/1`, `outcome/1`, `owner/1`, `planned_by/1`, `restore/1`, `schema_hash/1`, `scope/1`, `selected_tool/1`, `source/1`, `stage/1`, `stage_action/3`, `terminal?/1`, `via/1`, `waiting_policy/2`
+  - functions: `al/1`, `approve/1`, `bind_run/2`, `cancel/1`, `cancel/2`, `complete/2`, `effect_key/1`, `executable?/1`, `fail/2`, `hooks/1`, `idempotency_key/1`, `outcome/1`, `owner/1`, `planned_by/1`, `prompt_result/1`, `restore/1`, `result_evidence/1`, `schema_hash/1`, `scope/1`, `selected_tool/1`, `source/1`, `stage/1`, `stage_action/3`, `terminal?/1`, `via/1`, `waiting_policy/2`
 - `Spectre.Effect.Executor`
   - functions: `dispatch/2`, `dispatch/3`
   - callbacks: `execute/3`
@@ -409,6 +409,7 @@ Mix project version.
   - functions: `compose/3`, `legacy/1`, `metadata/1`, `sections/1`
 - `Spectre.Prompt.Receipt`
   - functions: `from_data/1`, `to_data/1`
+- `Spectre.Prompt.Value`
 - `Spectre.Provider.Call`
   - functions: `run/2`, `run/3`
 - `Spectre.Provider.Failure`

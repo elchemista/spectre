@@ -9,6 +9,8 @@ defmodule Spectre.Effect do
   that trusted runtime origin.
   """
 
+  alias Spectre.Prompt.Value, as: PromptValue
+
   defstruct [
     :id,
     :idempotency_key,
@@ -166,11 +168,36 @@ defmodule Spectre.Effect do
   @doc "Returns the non-authoritative trust and provenance attached to a result."
   @spec result_evidence(t()) :: map()
   def result_evidence(%__MODULE__{} = effect) do
-    Map.get(effect.metadata, :result_evidence, %{
-      trust: :untrusted,
-      provenance: %{source: :legacy_effect_result},
-      authenticity: %{}
-    })
+    evidence =
+      if is_map(effect.metadata),
+        do: Map.get(effect.metadata, :result_evidence),
+        else: nil
+
+    case evidence do
+      %{trust: :untrusted, provenance: provenance, authenticity: authenticity}
+      when is_map(provenance) and is_map(authenticity) ->
+        case PromptValue.new(nil, evidence) do
+          %PromptValue{} -> evidence
+        end
+
+      _missing_or_incomplete ->
+        legacy_result_evidence()
+    end
+  rescue
+    ArgumentError -> legacy_result_evidence()
+  end
+
+  @doc """
+  Wraps an Effect result for evidence-preserving prompt assigns or memory.
+
+  The materializer renders the original result while retaining its untrusted
+  producer evidence on the typed data fragment. Extracting `effect.result`
+  directly discards that lineage; use this helper when the value will cross a
+  turn boundary.
+  """
+  @spec prompt_result(t()) :: PromptValue.t()
+  def prompt_result(%__MODULE__{} = effect) do
+    PromptValue.new(effect.result, result_evidence(effect))
   end
 
   defp result_evidence_for(%__MODULE__{} = effect) do
@@ -185,6 +212,14 @@ defmodule Spectre.Effect do
         schema_hash: schema_hash(effect)
       },
       authenticity: %{status: :unverified}
+    }
+  end
+
+  defp legacy_result_evidence do
+    %{
+      trust: :untrusted,
+      provenance: %{source: :legacy_effect_result},
+      authenticity: %{}
     }
   end
 

@@ -42,6 +42,13 @@ and `@memory` only through `Spectre.Prompt.data/1`, and treat an unsafe finding
 from `mix spectre.doctor --strict` as a release blocker. The audit is a bounded
 static check, not proof that arbitrary EEx is safe.
 
+Completed Action and Effect outputs are untrusted prompt data even when their
+transport was authenticated. Preserve their origin across assigns or memory
+with `Spectre.Effect.prompt_result/1`; canonical materialization unwraps the
+value for rendering and retains its trust, provenance and authenticity on the
+typed fragment. Passing only `effect.result` intentionally loses that lineage
+and never upgrades the value to instruction trust.
+
 ### Model-selected Action arguments
 
 When an Action schema declares a JSON-Schema validation keyword, Spectre
