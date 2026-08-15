@@ -1,5 +1,5 @@
 defmodule Spectre.Receipt.OutboxEntry do
-  @moduledoc "Bounded canonical pointer to a receipt pending required delivery."
+  @moduledoc false
 
   alias Spectre.Receipt.Envelope
   alias Spectre.Run.Value

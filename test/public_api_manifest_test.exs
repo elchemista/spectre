@@ -46,6 +46,14 @@ defmodule SpectrePublicApiManifestTest do
     refute MapSet.member?(documented_modules, inspect(Spectre.Inference.Failure))
   end
 
+  test "internal receipt transport modules stay out of the public surface" do
+    assert {:docs_v1, _, _, _, :hidden, _, _} =
+             Code.fetch_docs(Spectre.Invocation.WorkerReceipt)
+
+    assert {:docs_v1, _, _, _, :hidden, _, _} =
+             Code.fetch_docs(Spectre.Receipt.OutboxEntry)
+  end
+
   defp parse_manifest(manifest) do
     manifest
     |> String.split("\n")

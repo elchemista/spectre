@@ -35,7 +35,13 @@ semantic root. It excludes transition journal, applied-change cache and
 `:receipt_outbox`. Delivery retries and acknowledgements therefore do not
 change the state root they prove. `recorded_at` is uniformly Unix time in
 milliseconds and is excluded from deterministic receipt identity; the
-separate `canonical_revision` field is the logical boundary coordinate.
+separate `canonical_revision` field is the logical boundary coordinate. The
+full-envelope digest is a different contract: it covers every serialized
+field, including `recorded_at`, and is the content address used by the payload
+store. Consequently, a failure after staging but before the durable outbox
+commit can leave an unreferenced object if a retry observes a new wall-clock
+time. Sinks must garbage-collect those staging orphans. Once the outbox is
+committed, recovery reuses its exact envelope digest and payload reference.
 
 Before an Instance computes the payload digest, it applies the same
 constitutional key denylist used by Experience evidence to typed payloads and
@@ -88,6 +94,8 @@ Definition/Stack identities and reproduce every post-state digest.
 ## Consequences
 
 - The in-memory sink proves idempotency and envelope conformance only.
+- Payload stores need retention for referenced objects and garbage collection
+  for objects staged before an outbox commit that never became durable.
 - An ambiguous append is reconciled with lookup; it is never assumed absent.
 - Provider and sink failures are reduced to bounded classes before entering
   canonical state or telemetry.

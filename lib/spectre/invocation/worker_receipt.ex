@@ -1,11 +1,5 @@
 defmodule Spectre.Invocation.WorkerReceipt do
-  @moduledoc """
-  Capability-fenced evidence returned by a live invocation worker.
-
-  This value is intentionally BEAM-local: its unforgeable reference must never
-  be checkpointed. Durable/recovered evidence uses `Spectre.Receipt.Envelope`
-  and a separate digest-based validation path.
-  """
+  @moduledoc false
 
   @enforce_keys [
     :invocation_id,
