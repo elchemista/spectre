@@ -53,6 +53,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Restore
   alias Spectre.Instance.RunQueue
   alias Spectre.Instance.Runs
+  alias Spectre.Instance.RuntimeOptions
   alias Spectre.Instance.Receipts
   alias Spectre.Instance.ReceiptRecovery
   alias Spectre.Instance.SkillStates
@@ -937,7 +938,7 @@ defmodule Spectre.Instance do
         operation: {:resume, {:policy, boundary_ref, resolution}},
         projection: :result,
         input: run.input,
-        opts: runtime_opts(data, opts, run.input),
+        opts: RuntimeOptions.build(data, opts, run.input),
         state_revision: data.state.revision,
         internal?: false
       }
@@ -1577,7 +1578,7 @@ defmodule Spectre.Instance do
                   operation: {:resume, command},
                   projection: :turn,
                   input: run.input,
-                  opts: runtime_opts(data, opts, run.input),
+                  opts: RuntimeOptions.build(data, opts, run.input),
                   state_revision: data.state.revision,
                   internal?: false
                 }
@@ -2319,7 +2320,7 @@ defmodule Spectre.Instance do
     with true <- map_size(data.runs) < data.max_runs,
          :ok <- Events.authorize(data, Events.active_definition_ref(data), :new_admission),
          admission_opts <- cognitive_inference_admission_opts(run_id, request, opts),
-         runtime_opts <- runtime_opts(data, admission_opts, input),
+         runtime_opts <- RuntimeOptions.build(data, admission_opts, input),
          {:ok, %Run{} = run} <-
            Runtime.admit_inference(
              data.agent,
@@ -2533,7 +2534,7 @@ defmodule Spectre.Instance do
             operation: {:resume, {:input, input}},
             projection: projection,
             input: input,
-            opts: runtime_opts(data, opts, input),
+            opts: RuntimeOptions.build(data, opts, input),
             state_revision: data.state.revision,
             internal?: false
           }
@@ -2547,7 +2548,7 @@ defmodule Spectre.Instance do
   end
 
   defp reserve_submitted_run(input, opts, projection, from, data) do
-    runtime_opts = runtime_opts(data, opts, input)
+    runtime_opts = RuntimeOptions.build(data, opts, input)
 
     case Runtime.admit(data.agent, input, data.state, runtime_opts, opts) do
       {:ok, %Run{} = run} ->
@@ -3042,7 +3043,7 @@ defmodule Spectre.Instance do
          nil <- data.state_lock do
       run = Runs.rebase_run(run, data.state)
       data = Runs.put_run(data, run)
-      runtime_opts = runtime_opts(data, opts, run.input)
+      runtime_opts = RuntimeOptions.build(data, opts, run.input)
       dispatch_id = Spectre.Identity.uuid7()
       capability = make_ref()
       owner = self()
@@ -3224,10 +3225,10 @@ defmodule Spectre.Instance do
   defp prepare_entry(%{operation: {:start, input}} = entry, run, data) do
     opts =
       data
-      |> runtime_opts(entry.opts, input)
+      |> RuntimeOptions.build(entry.opts, input)
       |> Keyword.put(:run_id, run.id)
       |> Keyword.put(:trace_id, run.trace_id)
-      |> put_run_pin(run)
+      |> RuntimeOptions.pin_run(run)
 
     %{entry | opts: opts, state_revision: data.state.revision}
   end
@@ -3236,7 +3237,7 @@ defmodule Spectre.Instance do
     opts =
       entry.opts
       |> Keyword.put(:state, data.state)
-      |> put_run_pin(run)
+      |> RuntimeOptions.pin_run(run)
 
     %{entry | opts: opts, state_revision: data.state.revision}
   end
@@ -3247,7 +3248,7 @@ defmodule Spectre.Instance do
       |> Keyword.put(:state, data.state)
       |> Keyword.put(:run_id, run.id)
       |> Keyword.put(:trace_id, run.trace_id)
-      |> put_run_pin(run)
+      |> RuntimeOptions.pin_run(run)
 
     %{entry | opts: opts, state_revision: data.state.revision}
   end
@@ -4746,8 +4747,11 @@ defmodule Spectre.Instance do
          true <- invocation_id == envelope.invocation_id,
          opts <-
            data
-           |> runtime_opts(Inference.Descriptor.options(continuation.descriptor), run.input)
-           |> put_run_pin(run),
+           |> RuntimeOptions.build(
+             Inference.Descriptor.options(continuation.descriptor),
+             run.input
+           )
+           |> RuntimeOptions.pin_run(run),
          {:ok, prepared} <-
            Inference.rebind(
              data.agent,
@@ -4846,11 +4850,11 @@ defmodule Spectre.Instance do
       } = run ->
         opts =
           data
-          |> runtime_opts(
+          |> RuntimeOptions.build(
             Spectre.Inference.Descriptor.options(run.inference_continuation.descriptor),
             run.input
           )
-          |> put_run_pin(run)
+          |> RuntimeOptions.pin_run(run)
 
         entry = %{
           run_id: run.id,
@@ -5138,11 +5142,11 @@ defmodule Spectre.Instance do
         _missing ->
           opts =
             data
-            |> runtime_opts(
+            |> RuntimeOptions.build(
               Spectre.Inference.Descriptor.options(continuation.descriptor),
               run.input
             )
-            |> put_run_pin(run)
+            |> RuntimeOptions.pin_run(run)
 
           recovered_inference_entry(data, run, opts)
       end
@@ -5622,7 +5626,7 @@ defmodule Spectre.Instance do
       operation: :advance,
       projection: :result,
       input: run.input,
-      opts: runtime_opts(data, [], run.input),
+      opts: RuntimeOptions.build(data, [], run.input),
       state_revision: data.state.revision,
       internal?: true
     }
@@ -5907,7 +5911,7 @@ defmodule Spectre.Instance do
         }
       ]
 
-      runtime_opts = runtime_opts(data, opts, input)
+      runtime_opts = RuntimeOptions.build(data, opts, input)
 
       case Runtime.admit(data.agent, input, data.state, runtime_opts, opts) do
         {:ok, %Run{} = run} ->
@@ -6763,8 +6767,8 @@ defmodule Spectre.Instance do
        ) do
     restored_opts =
       data
-      |> runtime_opts(StartContinuation.runtime_options(continuation), run.input)
-      |> put_run_pin(run)
+      |> RuntimeOptions.build(StartContinuation.runtime_options(continuation), run.input)
+      |> RuntimeOptions.pin_run(run)
 
     case recovered_start_entry(run, continuation, restored_opts, data.state.revision) do
       {:ok, entry} -> {:ok, RunQueue.enqueue(data, entry)}
@@ -6785,11 +6789,11 @@ defmodule Spectre.Instance do
        ) do
     restored_opts =
       data
-      |> runtime_opts(
+      |> RuntimeOptions.build(
         Spectre.Inference.Descriptor.options(continuation.descriptor),
         run.input
       )
-      |> put_run_pin(run)
+      |> RuntimeOptions.pin_run(run)
 
     case Inference.rebind(
            data.agent,
@@ -6849,11 +6853,11 @@ defmodule Spectre.Instance do
        ) do
     opts =
       data
-      |> runtime_opts(
+      |> RuntimeOptions.build(
         Spectre.Inference.Descriptor.options(run.inference_continuation.descriptor),
         run.input
       )
-      |> put_run_pin(run)
+      |> RuntimeOptions.pin_run(run)
 
     entry = recovered_inference_entry(data, run, opts)
     ownership = %{mode: :one_shot, invocation: invocation, entry: entry}
@@ -6874,11 +6878,11 @@ defmodule Spectre.Instance do
        ) do
     opts =
       data
-      |> runtime_opts(
+      |> RuntimeOptions.build(
         Spectre.Inference.Descriptor.options(run.inference_continuation.descriptor),
         run.input
       )
-      |> put_run_pin(run)
+      |> RuntimeOptions.pin_run(run)
 
     entry = recovered_inference_entry(data, run, opts)
     ownership = %{invocation: invocation, entry: entry}
@@ -6953,8 +6957,8 @@ defmodule Spectre.Instance do
        ) do
     opts =
       data
-      |> runtime_opts([], run.input)
-      |> put_run_pin(run)
+      |> RuntimeOptions.build([], run.input)
+      |> RuntimeOptions.pin_run(run)
 
     entry = %{
       run_id: run.id,
@@ -7153,8 +7157,8 @@ defmodule Spectre.Instance do
   defp recover_streaming_attempt(data, run, continuation) do
     opts =
       data
-      |> runtime_opts(Inference.Descriptor.options(continuation.descriptor), run.input)
-      |> put_run_pin(run)
+      |> RuntimeOptions.build(Inference.Descriptor.options(continuation.descriptor), run.input)
+      |> RuntimeOptions.pin_run(run)
 
     with :continue <- recovered_inference_control(data, run),
          true <- continuation.recoverable?,
@@ -7213,8 +7217,8 @@ defmodule Spectre.Instance do
 
     opts =
       data
-      |> runtime_opts(Inference.Descriptor.options(continuation.descriptor), run.input)
-      |> put_run_pin(run)
+      |> RuntimeOptions.build(Inference.Descriptor.options(continuation.descriptor), run.input)
+      |> RuntimeOptions.pin_run(run)
 
     with :continue <- recovered_inference_control(data, run),
          true <- not is_nil(continuation.provider_request_id),
@@ -7795,99 +7799,6 @@ defmodule Spectre.Instance do
     do: min(value, @operation_event_limit)
 
   defp normalize_event_limit(_value), do: @operation_event_limit
-
-  defp runtime_opts(data, opts, input) do
-    origin_conversation_id =
-      Conversation.first_present([
-        Keyword.get(opts, :origin_conversation_id),
-        Keyword.get(opts, :conversation_id),
-        Conversation.input_conversation_id(input)
-      ])
-
-    opts =
-      data.base_opts
-      |> Keyword.merge(
-        Keyword.drop(opts, [
-          :timeout,
-          :state,
-          :conversation_id,
-          :origin_conversation_id,
-          :subject
-        ])
-      )
-      |> Keyword.put(:state, data.state)
-      |> Keyword.put(:subject, data.subject)
-      |> Keyword.put(:subject_id, data.subject.id)
-      |> Keyword.put(:conversation_id, Keyword.fetch!(data.base_opts, :conversation_id))
-      |> Keyword.put(:instance_run_lifecycle?, true)
-      |> Keyword.put(:instance_pid, self())
-      |> Keyword.put(:instance_definition_store, data.definition_store)
-      |> put_activation_pin(data.activation)
-      |> maybe_put(:origin_conversation_id, origin_conversation_id)
-
-    metadata =
-      case Keyword.get(opts, :run_metadata, %{}) do
-        value when is_map(value) -> value
-        _invalid -> %{}
-      end
-      |> Map.merge(%{
-        instance_ref: data.ref,
-        agent_ref: data.agent_ref,
-        subject: data.subject,
-        conversation_ref: Conversation.conversation_key(input, origin_conversation_id),
-        origin_conversation_ref: Conversation.origin_conversation_key(origin_conversation_id),
-        runtime_skill_dispatch?: Keyword.get(opts, :runtime_skill_dispatch?, false)
-      })
-
-    Keyword.put(opts, :run_metadata, metadata)
-  end
-
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp put_activation_pin(opts, nil), do: opts
-
-  defp put_activation_pin(opts, %Activation{} = activation) do
-    opts
-    |> Keyword.put(:definition_ref, activation.definition_ref)
-    |> Keyword.put(:activation_generation, activation.generation)
-    |> Keyword.put(:authority_epoch, activation.authority_epoch)
-    |> Keyword.put(:closure_digest, activation.closure_digest)
-    |> Keyword.put(
-      :runtime_skill_dispatch?,
-      Map.get(activation.provenance, :change_surface?, false)
-    )
-  end
-
-  # Admission, not worker start, selects a Run's executable Definition. Queueing,
-  # activation changes and restart must never rewrite that immutable pin.
-  defp put_run_pin(opts, %Run{} = run) do
-    runtime_skill_dispatch? =
-      Map.get(
-        run.metadata,
-        :runtime_skill_dispatch?,
-        Map.get(run.metadata, "runtime_skill_dispatch?", false)
-      )
-
-    metadata =
-      case Keyword.get(opts, :run_metadata, %{}) do
-        value when is_map(value) ->
-          value
-          |> Map.delete("runtime_skill_dispatch?")
-          |> Map.put(:runtime_skill_dispatch?, runtime_skill_dispatch? == true)
-
-        _invalid ->
-          %{runtime_skill_dispatch?: runtime_skill_dispatch? == true}
-      end
-
-    opts
-    |> Keyword.put(:definition_ref, run.definition_ref)
-    |> Keyword.put(:activation_generation, run.activation_generation)
-    |> Keyword.put(:authority_epoch, run.authority_epoch)
-    |> Keyword.put(:closure_digest, run.closure_digest)
-    |> Keyword.put(:runtime_skill_dispatch?, runtime_skill_dispatch? == true)
-    |> Keyword.put(:run_metadata, metadata)
-  end
 
   defp activation_expected_generation(opts) when is_list(opts) do
     case Keyword.fetch(opts, :expected_generation) do
