@@ -26,6 +26,11 @@ defmodule Spectre.Inference.StreamAdapter do
   Orderly shutdown gives `cancel/2` a one-second best-effort window before the
   session is killed.
 
+  Provider data is always delivered through the session mailbox. `open/2` and
+  `resume/3` run in that session process, so `self()` is the destination an
+  asynchronous transport helper must retain. Pull and push capabilities
+  describe demand, not an alternative delivery channel.
+
   The session traps exits so its termination callback can cancel an open
   provider request. Consequently, a provider helper linked to the session
   delivers `{:EXIT, pid, reason}` through `handle_transport/2` instead of
@@ -39,13 +44,20 @@ defmodule Spectre.Inference.StreamAdapter do
   item that yields no logical events returns `{:ok, [], state}` so Spectre can
   request the next item without allowing two requests in flight.
 
-  Spectre passes positive `:max_transport_chunk_bytes` and
-  `:max_parser_residual_bytes` options to `open/2` and `resume/3`. Because raw
-  transport messages and parser state are adapter-owned, every adapter must
-  enforce both limits before retaining bytes and fail with
+  Spectre passes positive adapter-owned limits under the `:spectre_bounds`
+  keyword option to `open/2` and `resume/3`:
+
+      spectre_bounds: [
+        max_transport_chunk_bytes: 256_000,
+        max_parser_residual_bytes: 256_000
+      ]
+
+  Every adapter must enforce both limits before retaining bytes and fail with
   `:provider_stream_overflow`; it must never truncate or drop provider text.
-  `Spectre.Inference.StreamAdapter.Conformance` forwards the same limits so a
-  provider package can exercise oversized deterministic fixtures.
+  The conformance runner requires `conformance_fixture/4`. It supplies a
+  deterministic binary larger than the selected bound; the adapter wraps that
+  binary in its real transport-message shape and returns isolated parser state.
+  The runner then invokes `handle_transport/2` and requires the overflow reply.
 
   Delta payloads are binary transport fragments. They need not end on a UTF-8
   codepoint boundary; Spectre incrementally reassembles and validates UTF-8
@@ -64,6 +76,7 @@ defmodule Spectre.Inference.StreamAdapter do
   @type adapter_state :: term()
   @type descriptor :: Spectre.Inference.Descriptor.t()
   @type provider_metadata :: map()
+  @type conformance_bound :: :transport_chunk | :parser_residual
 
   @callback capabilities(term(), keyword()) :: MapSet.t(atom())
 
@@ -86,10 +99,28 @@ defmodule Spectre.Inference.StreamAdapter do
   @callback reconcile(descriptor(), term(), keyword()) ::
               {:ok, term()} | :pending | :not_found | {:error, term()}
 
+  @doc """
+  Builds an isolated, oversized fixture for the conformance runner.
+
+  The second argument is a runner-owned binary whose byte size is one greater
+  than the configured bound. The fixture must incorporate it as the raw
+  transport chunk or incomplete parser fragment named by the first argument.
+  The returned message and adapter state are passed directly to
+  `handle_transport/2`. Provider packages claiming stream conformance must
+  implement both bound kinds and make that call return
+  `{:error, :provider_stream_overflow, state}`. This callback is test-only and
+  is not required by runtime capability negotiation.
+  """
+  @callback conformance_fixture(conformance_bound(), binary(), descriptor(), keyword()) ::
+              {:ok, term(), adapter_state()} | {:error, term()}
+
   # Push transports receive provider-owned messages and therefore have no
   # demand callback. Validation still requires this callback for every adapter
   # that declares `:pull_transport`.
-  @optional_callbacks request_transport_item: 1, resume: 3, reconcile: 3
+  @optional_callbacks request_transport_item: 1,
+                      resume: 3,
+                      reconcile: 3,
+                      conformance_fixture: 4
 
   @transport_capabilities [:pull_transport, :push_transport]
 

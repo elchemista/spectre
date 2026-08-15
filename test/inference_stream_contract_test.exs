@@ -52,6 +52,24 @@ defmodule SpectreInferenceStreamContractTest.PullAdapter do
   end
 
   @impl Spectre.Inference.StreamAdapter
+  def conformance_fixture(kind, oversized, _descriptor, opts)
+      when kind in [:transport_chunk, :parser_residual] do
+    bounds = Keyword.fetch!(opts, :spectre_bounds)
+    {:ok, {:conformance_bound, kind, oversized}, %{spectre_bounds: bounds}}
+  end
+
+  @impl Spectre.Inference.StreamAdapter
+  def handle_transport(
+        {:conformance_bound, kind, payload},
+        %{spectre_bounds: bounds} = state
+      ) do
+    limit = Keyword.fetch!(bounds, bound_key(kind))
+
+    if byte_size(payload) > limit,
+      do: {:error, :provider_stream_overflow, state},
+      else: {:ok, [], state}
+  end
+
   def handle_transport({:conformance, events}, state), do: {:ok, events, state}
 
   def handle_transport({:stream_fixture, ref, events}, %{ref: ref} = state),
@@ -64,6 +82,9 @@ defmodule SpectreInferenceStreamContractTest.PullAdapter do
     send(state.test_pid, {:stream_adapter, :cancelled, reason})
     state.cancel_reply
   end
+
+  defp bound_key(:transport_chunk), do: :max_transport_chunk_bytes
+  defp bound_key(:parser_residual), do: :max_parser_residual_bytes
 
   defp select_batches(descriptor, opts) do
     case Keyword.get(opts, :steering_batches) do

@@ -725,8 +725,14 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
     assert opts[:resume_provider_request_id] == "provider-request"
     assert opts[:resume_usage].output_tokens == 3
     assert opts[:resume_provider_sequence] == 7
-    assert opts[:max_transport_chunk_bytes] == 256_000
-    assert opts[:max_parser_residual_bytes] == 256_000
+
+    assert opts[:spectre_bounds] == [
+             max_transport_chunk_bytes: 256_000,
+             max_parser_residual_bytes: 256_000
+           ]
+
+    refute Keyword.has_key?(opts, :max_transport_chunk_bytes)
+    refute Keyword.has_key?(opts, :max_parser_residual_bytes)
   end
 
   test "conservative stream accounting labels provider counters when a floor changes them" do
