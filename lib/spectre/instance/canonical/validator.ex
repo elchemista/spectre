@@ -2,11 +2,11 @@ defmodule Spectre.Instance.Canonical.Validator do
   @moduledoc false
 
   alias Spectre.Event.Envelope, as: EventEnvelope
+  alias Spectre.Inference.Progress, as: InferenceProgress
   alias Spectre.Instance.Activation
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.SkillStates
-  alias Spectre.Inference.Progress, as: InferenceProgress
   alias Spectre.Operation.Control
   alias Spectre.Operation.Control.Command
   alias Spectre.Operation.Delivery.Consent, as: DeliveryConsent
@@ -14,12 +14,13 @@ defmodule Spectre.Instance.Canonical.Validator do
   alias Spectre.Operation.Event, as: OperationEvent
   alias Spectre.Operation.Loop, as: OperationLoop
   alias Spectre.Operation.Runtime, as: OperationRuntime
-  alias Spectre.Run
   alias Spectre.Receipt.OutboxEntry
+  alias Spectre.Run
   alias Spectre.State
   alias Spectre.State.Codec, as: StateCodec
 
   @default_event_limit 512
+  @default_inference_progress_limit 256
   @required_loop_correlation_keys MapSet.new([:loop_id, :loop_kind, :revision])
   @loop_correlation_keys MapSet.new([:loop_id, :loop_kind, :revision, :causation_id])
 
@@ -42,7 +43,7 @@ defmodule Spectre.Instance.Canonical.Validator do
          {:ok, inference_control} <- Canonical.fetch(canonical, :inference_control),
          :ok <- validate_inference_control(inference_control),
          {:ok, inference_progress} <- Canonical.fetch(canonical, :inference_progress),
-         :ok <- validate_inference_progress(inference_progress, canonical.revision),
+         :ok <- validate_inference_progress(inference_progress, canonical.revision, opts),
          {:ok, receipt_outbox} <- Canonical.fetch(canonical, :receipt_outbox),
          :ok <- validate_receipt_outbox(receipt_outbox, canonical.revision, opts),
          {:ok, event_admissions} <- Canonical.fetch(canonical, :event_admissions),
@@ -178,8 +179,26 @@ defmodule Spectre.Instance.Canonical.Validator do
   defp validate_inference_command(_command, _inference_id, _statuses),
     do: {:error, :invalid_inference_control_command}
 
-  defp validate_inference_progress(progress, canonical_revision)
+  defp validate_inference_progress(progress, canonical_revision, opts)
        when is_map(progress) and not is_struct(progress) do
+    limit = Keyword.get(opts, :inference_progress_limit, @default_inference_progress_limit)
+
+    cond do
+      not is_integer(limit) or limit < 0 ->
+        {:error, {:invalid_canonical_inference_progress_limit, limit}}
+
+      map_size(progress) > limit ->
+        {:error, {:canonical_inference_progress_limit_exceeded, map_size(progress), limit}}
+
+      true ->
+        validate_inference_progress_entries(progress, canonical_revision)
+    end
+  end
+
+  defp validate_inference_progress(value, _canonical_revision, _opts),
+    do: {:error, {:invalid_canonical_inference_progress, value}}
+
+  defp validate_inference_progress_entries(progress, canonical_revision) do
     Enum.reduce_while(progress, :ok, fn
       {inference_id, %InferenceProgress{inference_id: inference_id} = entry}, :ok
       when is_binary(inference_id) and inference_id != "" ->
@@ -199,9 +218,6 @@ defmodule Spectre.Instance.Canonical.Validator do
         {:halt, {:error, {:invalid_inference_progress_entry, inference_id}}}
     end)
   end
-
-  defp validate_inference_progress(value, _canonical_revision),
-    do: {:error, {:invalid_canonical_inference_progress, value}}
 
   defp validate_receipt_outbox(outbox, canonical_revision, opts)
        when is_map(outbox) and not is_struct(outbox) do

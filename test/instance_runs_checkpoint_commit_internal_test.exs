@@ -71,6 +71,7 @@ defmodule SpectreInstanceRunsCheckpointCommitInternalTest do
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Runs
   alias Spectre.Instance.State, as: InstanceState
+  alias Spectre.Inference.Progress
   alias Spectre.Inference.Prepared, as: PreparedInference
   alias Spectre.Invocation
   alias Spectre.Invocation.Receipt
@@ -506,6 +507,46 @@ defmodule SpectreInstanceRunsCheckpointCommitInternalTest do
 
     assert restored_state == data.state
     assert restored == canonical
+
+    progress =
+      Progress.new(
+        inference_id: "checkpoint-inference",
+        invocation_id: "checkpoint-invocation",
+        attempt_id: "checkpoint-attempt",
+        run_revision: 0,
+        generation: "checkpoint-generation",
+        dispatch_id: "checkpoint-dispatch",
+        control_revision: 0,
+        stream_epoch: "checkpoint-epoch",
+        sequence: 1,
+        state: :streaming,
+        at: 1,
+        canonical_revision: 3
+      )
+
+    bounded_progress = %{
+      progress.inference_id => progress,
+      "checkpoint-inference-two" => %{progress | inference_id: "checkpoint-inference-two"}
+    }
+
+    bounded_canonical = put_section(canonical, :inference_progress, bounded_progress)
+    assert {:ok, bounded_encoded} = CanonicalCodec.encode_json(bounded_canonical)
+
+    assert {:error, {:canonical_inference_progress_limit_exceeded, 2, 1}} =
+             Checkpoint.restore_canonical(
+               [instance_ref: data.ref, canonical_checkpoint: bounded_encoded],
+               data.state,
+               nil,
+               inference_progress_limit: 1
+             )
+
+    assert {:ok, _state, ^bounded_canonical, 0} =
+             Checkpoint.restore_canonical(
+               [instance_ref: data.ref, canonical_checkpoint: bounded_encoded],
+               data.state,
+               nil,
+               inference_progress_limit: 2
+             )
 
     foreign_ref = InstanceRef.new(data.agent_ref, Subject.new("foreign-subject"))
 

@@ -217,6 +217,24 @@ defmodule SpectreInferenceCanonicalReceiptEdgeContractTest do
       assert :ok =
                data |> put_section(:inference_progress, %{"inference" => progress}) |> validate()
 
+      second = %{progress | inference_id: "inference-two"}
+      bounded = %{"inference" => progress, "inference-two" => second}
+
+      assert :ok =
+               data
+               |> put_section(:inference_progress, bounded)
+               |> validate(inference_progress_limit: 2)
+
+      assert {:error, {:canonical_inference_progress_limit_exceeded, 2, 1}} =
+               data
+               |> put_section(:inference_progress, bounded)
+               |> validate(inference_progress_limit: 1)
+
+      assert {:error, {:invalid_canonical_inference_progress_limit, -1}} =
+               data
+               |> put_section(:inference_progress, %{})
+               |> validate(inference_progress_limit: -1)
+
       invalid = [
         {[], {:invalid_canonical_inference_progress, []}},
         {%{"other" => progress}, {:invalid_inference_progress_entry, "other"}},
@@ -240,6 +258,24 @@ defmodule SpectreInferenceCanonicalReceiptEdgeContractTest do
 
       assert :ok =
                data |> put_section(:receipt_outbox, outbox) |> validate(receipt_outbox_limit: 1)
+
+      second_envelope = envelope(canonical_revision: 1, correlation_id: "canonical-receipt-two")
+      second_entry = OutboxEntry.new(second_envelope, Sink.payload_ref(second_envelope), 1)
+
+      bounded_outbox = %{
+        entries: [entry, second_entry],
+        ids: %{entry.id => entry.digest, second_entry.id => second_entry.digest}
+      }
+
+      assert :ok =
+               data
+               |> put_section(:receipt_outbox, bounded_outbox)
+               |> validate(receipt_outbox_limit: 2)
+
+      assert {:error, :invalid_canonical_receipt_outbox} =
+               data
+               |> put_section(:receipt_outbox, bounded_outbox)
+               |> validate(receipt_outbox_limit: 1)
 
       invalid = [
         {[], {:invalid_canonical_receipt_outbox, []}, []},
@@ -789,7 +825,7 @@ defmodule SpectreInferenceCanonicalReceiptEdgeContractTest do
   defp envelope(opts) do
     Envelope.new!(
       kind: :nondeterminism_sample,
-      correlation_id: "canonical-receipt",
+      correlation_id: Keyword.get(opts, :correlation_id, "canonical-receipt"),
       canonical_revision: Keyword.fetch!(opts, :canonical_revision),
       pre_state_digest: hex_digest("1"),
       post_state_digest: hex_digest("2"),
