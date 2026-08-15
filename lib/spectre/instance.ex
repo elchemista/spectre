@@ -38,6 +38,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Conversation
   alias Spectre.Instance.Deliveries
   alias Spectre.Instance.Events
+  alias Spectre.Instance.InferenceAttempt
   alias Spectre.Instance.InferenceBudget
   alias Spectre.Instance.InferenceCapacity
   alias Spectre.Instance.InferenceControl
@@ -60,7 +61,6 @@ defmodule Spectre.Instance do
   alias Spectre.Inference
   alias Spectre.Inference.Budget
   alias Spectre.Inference.BudgetSnapshot
-  alias Spectre.Inference.Event, as: InferenceEvent
   alias Spectre.Inference.Failure, as: InferenceFailure
   alias Spectre.Inference.FrozenSelection
   alias Spectre.Inference.Request, as: InferenceRequest
@@ -1771,7 +1771,7 @@ defmodule Spectre.Instance do
       {%{generation: ^generation, dispatch_id: ^dispatch_id, deadline_at: deadline},
        %{mode: :one_shot, generation: ^generation, dispatch_id: ^dispatch_id} = ownership} ->
         if Spectre.Determinism.system_time(:millisecond) < deadline do
-          {:noreply, rearm_inference_attempt_timer(data, ownership, deadline)}
+          {:noreply, InferenceAttempt.rearm_timer(data, ownership, deadline)}
         else
           if Process.alive?(ownership.pid), do: Process.exit(ownership.pid, :kill)
 
@@ -1794,7 +1794,7 @@ defmodule Spectre.Instance do
 
           next =
             data
-            |> clear_inference_attempt_timer(invocation_id)
+            |> InferenceAttempt.clear_timer(invocation_id)
             |> accept_inference_receipt(ownership, receipt)
 
           {:noreply, next}
@@ -4070,7 +4070,7 @@ defmodule Spectre.Instance do
     |> Map.put(:state_lock, %{run_id: run.id, invocation_id: invocation.id})
     |> Map.put(:invocations, Map.put(data.invocations, invocation.id, ownership))
     |> Map.put(:workers, Map.put(data.workers, pid, worker))
-    |> arm_inference_attempt_timer(ownership, budget_snapshot)
+    |> InferenceAttempt.arm_timer(ownership, budget_snapshot)
     |> disarm_idle_timer()
     |> tap(fn next ->
       emit(
@@ -4178,7 +4178,7 @@ defmodule Spectre.Instance do
   defp accept_inference_receipt(data, ownership, receipt) do
     data =
       data
-      |> clear_inference_attempt_timer(receipt.invocation_id)
+      |> InferenceAttempt.clear_timer(receipt.invocation_id)
       |> maybe_finish_inference_worker(ownership)
       |> Map.put(:invocations, Map.delete(data.invocations, receipt.invocation_id))
 
@@ -4818,7 +4818,7 @@ defmodule Spectre.Instance do
          _envelope
        ) do
     data =
-      publish_inference_lifecycle_event(
+      InferenceAttempt.publish(
         data,
         :attempt_superseded,
         run.inference_continuation.inference_id,
@@ -4862,7 +4862,7 @@ defmodule Spectre.Instance do
          _envelope
        ) do
     data
-    |> publish_inference_lifecycle_event(
+    |> InferenceAttempt.publish(
       :stream_interrupted,
       invocation.inference_id,
       Map.get(run.inference_continuation.stream_recovery, :previous_invocation_id),
@@ -5077,7 +5077,7 @@ defmodule Spectre.Instance do
       %Run{status: :failed, last_error: failure} = run ->
         data
         |> Map.put(:state_lock, nil)
-        |> notify_stream_attempt_failed(receipt_invocation_id, failure)
+        |> InferenceAttempt.notify_failed(receipt_invocation_id, failure)
         |> RunQueue.reply_caller(run.id, {:error, failure})
         |> Runs.record_terminal(run)
         |> RunQueue.schedule()
@@ -5101,7 +5101,7 @@ defmodule Spectre.Instance do
       %Run{status: :failed, last_error: failure} = run ->
         data
         |> Map.put(:state_lock, nil)
-        |> notify_stream_attempt_failed(invocation_id, failure)
+        |> InferenceAttempt.notify_failed(invocation_id, failure)
         |> RunQueue.reply_caller(run.id, {:error, failure})
         |> Runs.record_terminal(run)
         |> RunQueue.schedule()
@@ -5250,7 +5250,7 @@ defmodule Spectre.Instance do
 
   defp start_inference_resume_worker(data, run, ownership, response) do
     invocation = ownership.invocation
-    data = notify_stream_attempt_committed(data, invocation.id, response)
+    data = InferenceAttempt.notify_committed(data, invocation.id, response)
 
     entry =
       Map.merge(ownership.entry, %{
@@ -5283,7 +5283,7 @@ defmodule Spectre.Instance do
 
   defp resume_inference_boundary(data, run, ownership, {:success, response}) do
     data =
-      publish_inference_lifecycle_event(
+      InferenceAttempt.publish(
         data,
         :terminal_committed,
         ownership.invocation.inference_id,
@@ -5297,9 +5297,9 @@ defmodule Spectre.Instance do
 
   defp resume_inference_boundary(data, run, ownership, {:retry, reason}) do
     data =
-      publish_inference_lifecycle_event(
+      InferenceAttempt.publish(
         data,
-        inference_failure_event_type(reason),
+        InferenceAttempt.failure_event_type(reason),
         ownership.invocation.inference_id,
         ownership.invocation.id,
         ownership.invocation,
@@ -5311,15 +5311,15 @@ defmodule Spectre.Instance do
 
   defp resume_inference_boundary(data, run, ownership, {:failure, failure}) do
     data
-    |> publish_inference_lifecycle_event(
-      inference_failure_event_type(failure),
+    |> InferenceAttempt.publish(
+      InferenceAttempt.failure_event_type(failure),
       ownership.invocation.inference_id,
       ownership.invocation.id,
       ownership.invocation,
       %{outcome: :failed, reason_class: reason_class(failure)}
     )
     |> Map.put(:state_lock, nil)
-    |> notify_stream_attempt_failed(ownership.invocation.id, failure)
+    |> InferenceAttempt.notify_failed(ownership.invocation.id, failure)
     |> RunQueue.reply_caller(run.id, {:error, failure})
     |> Runs.record_terminal(run)
     |> RunQueue.schedule()
@@ -5687,119 +5687,6 @@ defmodule Spectre.Instance do
   defp portable_failure(reason) do
     InferenceFailure.sanitize(reason)
   end
-
-  defp arm_inference_attempt_timer(data, _ownership, nil), do: data
-
-  defp arm_inference_attempt_timer(
-         data,
-         _ownership,
-         %BudgetSnapshot{deadline_at: nil}
-       ),
-       do: data
-
-  defp arm_inference_attempt_timer(
-         data,
-         ownership,
-         %BudgetSnapshot{deadline_at: deadline}
-       ) do
-    rearm_inference_attempt_timer(data, ownership, deadline)
-  end
-
-  defp rearm_inference_attempt_timer(data, ownership, deadline) do
-    data = clear_inference_attempt_timer(data, ownership.invocation.id)
-    remaining = max(deadline - Spectre.Determinism.system_time(:millisecond), 0)
-    delay = min(remaining, @max_timer_delay)
-
-    ref =
-      Process.send_after(
-        self(),
-        {:spectre, :inference_attempt_deadline, ownership.invocation.id, ownership.generation,
-         ownership.dispatch_id},
-        delay
-      )
-
-    timer = %{
-      ref: ref,
-      deadline_at: deadline,
-      generation: ownership.generation,
-      dispatch_id: ownership.dispatch_id
-    }
-
-    %{
-      data
-      | inference_attempt_timers:
-          Map.put(data.inference_attempt_timers, ownership.invocation.id, timer)
-    }
-  end
-
-  defp clear_inference_attempt_timer(data, invocation_id) do
-    case Map.pop(data.inference_attempt_timers, invocation_id) do
-      {nil, timers} ->
-        %{data | inference_attempt_timers: timers}
-
-      {%{ref: ref}, timers} ->
-        _cancelled = Process.cancel_timer(ref)
-        %{data | inference_attempt_timers: timers}
-    end
-  end
-
-  defp notify_stream_attempt_committed(data, invocation_id, response) do
-    case Map.get(data.stream_sessions, invocation_id) do
-      %{pid: pid} ->
-        send(pid, {:spectre, :stream_attempt_committed, invocation_id, response})
-        data
-
-      nil ->
-        data
-    end
-  end
-
-  defp notify_stream_attempt_failed(data, invocation_id, reason) do
-    case Map.get(data.stream_sessions, invocation_id) do
-      %{pid: pid} ->
-        send(pid, {:spectre, :stream_attempt_failed, invocation_id, reason})
-        data
-
-      nil ->
-        data
-    end
-  end
-
-  defp publish_inference_lifecycle_event(
-         data,
-         type,
-         inference_id,
-         invocation_id,
-         attempt,
-         metadata
-       ) do
-    if Keyword.get(data.base_opts, :inference_observer_lane, false) and
-         is_binary(inference_id) and is_binary(invocation_id) do
-      event =
-        InferenceEvent.new(type,
-          instance_key: data.ref.key,
-          inference_id: inference_id,
-          invocation_id: invocation_id,
-          attempt_id: Map.get(attempt, :attempt_id),
-          stream_epoch: Map.get(attempt, :stream_epoch),
-          canonical_revision: data.canonical.revision,
-          metadata: metadata
-        )
-
-      _ = Spectre.Inference.Events.publish(data.ref, event)
-    end
-
-    data
-  rescue
-    _invalid_observer_projection -> data
-  end
-
-  defp inference_failure_event_type({:stream_interrupted, _reason}), do: :stream_interrupted
-
-  defp inference_failure_event_type({:inference_attempt_failed, _attempt, reason}),
-    do: inference_failure_event_type(reason)
-
-  defp inference_failure_event_type(_reason), do: :terminal_committed
 
   defp provider_request_digest(nil), do: nil
   defp provider_request_digest(value), do: Value.token("provider-request", value)
