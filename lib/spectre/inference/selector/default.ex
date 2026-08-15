@@ -5,6 +5,7 @@ defmodule Spectre.Inference.Selector.Default do
 
   @behaviour Spectre.Inference.Selector
 
+  alias Spectre.Inference.ModelIdentity
   alias Spectre.Inference.Selection
 
   @impl true
@@ -42,17 +43,11 @@ defmodule Spectre.Inference.Selector.Default do
 
   @spec model_hash(term()) :: String.t()
   defp model_hash(model) do
-    safe_model =
-      case model do
-        {module, function, opts} when is_list(opts) ->
-          {module, function, Keyword.drop(opts, [:api_key, :token, :secret, :credentials])}
-
-        other ->
-          other
-      end
-
     digest =
-      :crypto.hash(:sha256, :erlang.term_to_binary(safe_model, [:deterministic]))
+      :crypto.hash(
+        :sha256,
+        model |> ModelIdentity.sanitize() |> :erlang.term_to_binary([:deterministic])
+      )
       |> Base.encode16(case: :lower)
 
     "sha256:" <> digest

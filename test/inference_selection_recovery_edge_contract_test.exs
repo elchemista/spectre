@@ -218,6 +218,7 @@ defmodule SpectreInferenceSelectionRecoveryEdgeContractTest do
   alias Spectre.Context
   alias Spectre.Inference
   alias Spectre.Inference.Descriptor
+  alias Spectre.Inference.FrozenSelection
   alias Spectre.Inference.Request
   alias Spectre.Inference.Response
   alias Spectre.Input
@@ -326,6 +327,41 @@ defmodule SpectreInferenceSelectionRecoveryEdgeContractTest do
 
     assert {:error, :missing_llm_adapter} =
              Inference.prepare_attempt(@bare, prepared.descriptor, 2, input, state, [])
+  end
+
+  test "credential rotation does not change frozen model identity" do
+    first =
+      {@good, :complete,
+       [api_key: "first-secret", headers: [{"authorization", "Bearer first"}], temperature: 0.2]}
+
+    rotated =
+      {@good, :complete,
+       [api_key: "second-secret", headers: [{"authorization", "Bearer second"}], temperature: 0.2]}
+
+    changed =
+      {@good, :complete,
+       [api_key: "second-secret", headers: [{"authorization", "Bearer second"}], temperature: 0.7]}
+
+    assert FrozenSelection.model_ref(first) == FrozenSelection.model_ref(rotated)
+    refute FrozenSelection.model_ref(rotated) == FrozenSelection.model_ref(changed)
+
+    input = Input.new("recover after credential rotation")
+    state = %State{}
+
+    assert {:ok, prepared} =
+             Inference.prepare(@bare, request("credential-rotation", first), context(@bare))
+
+    assert {:ok, rebound} =
+             Inference.rebind(
+               @bare,
+               prepared.descriptor,
+               prepared.frozen_selection,
+               input,
+               state,
+               model: rotated
+             )
+
+    assert rebound.frozen_selection.model_ref == prepared.frozen_selection.model_ref
   end
 
   test "custom selection rejects duplicate, malformed, absent, invalid, and incompatible profiles" do
