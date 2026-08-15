@@ -76,6 +76,24 @@ defmodule SpectreInstanceInferenceDomainsTest do
              InferenceControl.recover(%{applied | last_command: missing_reason}, invocation)
   end
 
+  test "inference control rejects foreign and mismatched lane actions before mutation" do
+    control = InferenceControl.new(0)
+
+    assert {:error, {:unsupported_inference_control_action, :pause}} =
+             InferenceControl.apply_cancel(control, command(:pause, "foreign-cancel"))
+
+    assert {:error, {:unsupported_inference_control_action, :resume}} =
+             InferenceControl.begin_steer(control, command(:resume, "foreign-steer"))
+
+    assert {:error, {:unexpected_inference_control_action, :cancel, :steer}} =
+             InferenceControl.apply_cancel(control, command(:steer, "mismatched-cancel"))
+
+    assert {:error, {:unexpected_inference_control_action, :steer, :cancel}} =
+             InferenceControl.begin_steer(control, command(:cancel, "mismatched-steer"))
+
+    assert control == InferenceControl.new(0)
+  end
+
   test "inference capacity owns local and node reservations" do
     server = start_supervised!({StreamCapacity, name: nil, limit: 1})
 

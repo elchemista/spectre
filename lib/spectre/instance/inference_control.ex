@@ -20,26 +20,29 @@ defmodule Spectre.Instance.InferenceControl do
   @doc false
   @spec apply_cancel(map(), Command.t()) :: :duplicate | {:ok, map()} | {:error, term()}
   def apply_cancel(control, %Command{} = command) do
-    cond do
-      seen?(control, command.id) ->
-        :duplicate
+    with :ok <- validate_inference_action(command, :cancel) do
+      cond do
+        seen?(control, command.id) ->
+          :duplicate
 
-      control.generation != command.base_revision ->
-        {:error, {:stale_inference_control_revision, command.base_revision, control.generation}}
+        control.generation != command.base_revision ->
+          {:error, {:stale_inference_control_revision, command.base_revision, control.generation}}
 
-      not is_nil(control.pending) ->
-        {:error, {:inference_control_pending, control.pending.id}}
+        not is_nil(control.pending) ->
+          {:error, {:inference_control_pending, control.pending.id}}
 
-      true ->
-        applied = command |> Command.committed() |> Command.applied()
-        {:ok, control |> Map.put(:generation, control.generation + 1) |> finish(applied)}
+        true ->
+          applied = command |> Command.committed() |> Command.applied()
+          {:ok, control |> Map.put(:generation, control.generation + 1) |> finish(applied)}
+      end
     end
   end
 
   @doc false
   @spec begin_steer(map(), Command.t()) :: {:ok, map()} | {:error, term()}
   def begin_steer(control, %Command{} = command) do
-    with :ok <- validate_steer(control, command) do
+    with :ok <- validate_inference_action(command, :steer),
+         :ok <- validate_steer(control, command) do
       {:ok,
        %{
          control
@@ -121,6 +124,19 @@ defmodule Spectre.Instance.InferenceControl do
       do: true
 
   def cancel_for_invocation?(_command, _invocation_id), do: false
+
+  defp validate_inference_action(%Command{action: action}, expected) do
+    cond do
+      not Command.inference_action?(action) ->
+        {:error, {:unsupported_inference_control_action, action}}
+
+      action != expected ->
+        {:error, {:unexpected_inference_control_action, expected, action}}
+
+      true ->
+        :ok
+    end
+  end
 
   defp validate_steer(control, command) do
     cond do
