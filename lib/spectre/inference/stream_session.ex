@@ -75,6 +75,11 @@ defmodule Spectre.Inference.StreamSession do
 
   @impl :gen_statem
   def init(opts) do
+    # This process owns a live provider transport. Trapping the supervisor's
+    # orderly shutdown lets `terminate/3` release that external resource; an
+    # untrapped `:shutdown` would terminate the process before the callback.
+    Process.flag(:trap_exit, true)
+
     # Streaming attempts outlive the caller that dispatched them. Install the
     # deterministic port in this process so provider-facing IDs and wall-clock
     # observations are retained in the same terminal receipt as the result.

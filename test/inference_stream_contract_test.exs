@@ -498,6 +498,57 @@ defmodule SpectreInferenceStreamContractTest do
     assert_receive {:stream_adapter, :cancelled, :instance_down}
   end
 
+  test "orderly Instance shutdown cancels an open provider transport" do
+    {:ok, instance} =
+      Instance.start_link(
+        agent: @agent,
+        subject: Subject.new("stream-stop-#{System.unique_integer([:positive, :monotonic])}"),
+        idle: false
+      )
+
+    Process.unlink(instance)
+
+    batches = [
+      [ProviderEvent.new(:started, provider_sequence: 0)],
+      :stall
+    ]
+
+    {:ok, stream} = start_stream(instance, batches, stream_demand: 1)
+    consumer = Task.async(fn -> Enum.to_list(stream) end)
+
+    assert_receive {:stream_adapter, :credit, session}
+    assert_receive {:stream_adapter, :credit, ^session}
+    assert :ok = GenServer.stop(instance, :shutdown)
+    assert_receive {:stream_adapter, :cancelled, :session_terminated}
+
+    _ = Task.shutdown(consumer, :brutal_kill)
+  end
+
+  test "late session DOWN cannot settle an invocation that was already consumed" do
+    instance = start_instance()
+    {:ok, stream} = start_stream(instance, [:stall])
+    consumer = Task.async(fn -> Enum.to_list(stream) end)
+
+    assert_receive {:stream_adapter, :credit, session}
+
+    captured_run = :sys.get_state(instance).runs[stream.run_id]
+
+    :sys.replace_state(instance, fn data ->
+      %{data | invocations: Map.delete(data.invocations, stream.invocation_id)}
+    end)
+
+    Process.exit(session, :kill)
+
+    assert_eventually(fn ->
+      data = :sys.get_state(instance)
+
+      not Map.has_key?(data.stream_sessions, stream.invocation_id) and
+        data.runs[stream.run_id] == captured_run
+    end)
+
+    _ = Task.shutdown(consumer, :brutal_kill)
+  end
+
   test "adapter conformance exercises pull credit, global order, and terminal cardinality" do
     batches = successful_batches("conformance")
 
