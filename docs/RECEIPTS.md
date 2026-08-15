@@ -49,7 +49,9 @@ configured limit rather than a separate fixed default.
 The payload store is intentionally outside the canonical checkpoint. The
 outbox contains only receipt id, envelope digest and a content-addressed
 reference. Hosts must retain payload objects at least as long as an outbox
-entry or receipt chain can reference them.
+entry or receipt chain can reference them, and garbage-collect unreferenced
+staging objects. A process failure after payload staging but before the outbox
+commit can leave such an object behind.
 
 ## Implement a sink
 
@@ -96,7 +98,12 @@ content.
 The deterministic envelope id excludes delivery time and payload location; it
 binds boundary identity, payload digest, state roots and lineage. `recorded_at`
 is always Unix time in milliseconds. Canonical ordering uses the separate
-`canonical_revision` field.
+`canonical_revision` field. This identity is distinct from
+`Spectre.Receipt.Envelope.digest/1`: the latter covers the complete serialized
+envelope, including `recorded_at`, and therefore also determines
+`Spectre.Receipt.Sink.payload_ref/1`. A retry before a durable outbox commit may
+stage a second object under a different full-envelope digest; after the outbox
+commit, recovery reuses the exact persisted digest and reference.
 
 Receipt capture plus state roots proves boundary evidence linkage. It does not
 prove deterministic replay, exactly-once provider work or exactly-once external
