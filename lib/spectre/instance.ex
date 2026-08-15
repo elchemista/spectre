@@ -41,6 +41,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.InferenceBudget
   alias Spectre.Instance.InferenceCapacity
   alias Spectre.Instance.InferenceControl
+  alias Spectre.Instance.InferenceHeartbeat
   alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.Loops
   alias Spectre.Instance.Owner
@@ -65,7 +66,6 @@ defmodule Spectre.Instance do
   alias Spectre.Inference.Selection, as: InferenceSelection
   alias Spectre.Inference.Stream, as: InferenceStream
   alias Spectre.Inference.StreamCapacity
-  alias Spectre.Inference.StreamCheckpoint
   alias Spectre.Inference.Progress, as: InferenceProgress
   alias Spectre.Inference.Usage, as: InferenceUsage
   alias Spectre.Inference.UsageAccounting
@@ -1876,25 +1876,9 @@ defmodule Spectre.Instance do
          checkpoint},
         data
       ) do
-    case validate_inference_heartbeat(data, invocation_id, progress, checkpoint) do
-      :ok ->
-        now = System.monotonic_time(:millisecond)
-
-        liveness = %{
-          at: now,
-          sequence: progress.sequence,
-          state: progress.state,
-          usage: progress.usage,
-          output_bytes: progress.output_bytes
-        }
-
-        data = %{
-          data
-          | inference_liveness_clock:
-              Map.put(data.inference_liveness_clock, invocation_id, liveness)
-        }
-
-        {:noreply, maybe_commit_inference_checkpoint(data, progress, checkpoint, now)}
+    case InferenceHeartbeat.accept(data, invocation_id, progress, checkpoint) do
+      {:ok, data} ->
+        {:noreply, data}
 
       {:error, _reason} ->
         emit(
@@ -5260,254 +5244,6 @@ defmodule Spectre.Instance do
       _stale ->
         data
     end
-  end
-
-  defp validate_inference_heartbeat(data, invocation_id, progress, checkpoint) do
-    ownership = Map.get(data.stream_sessions, invocation_id)
-    invocation = Map.get(data.invocations, invocation_id)
-    previous = Map.get(data.inference_liveness_clock, invocation_id)
-
-    cond do
-      is_nil(ownership) or is_nil(invocation) ->
-        {:error, :unknown_inference_stream}
-
-      invocation != ownership ->
-        {:error, :inference_heartbeat_ownership_mismatch}
-
-      progress.invocation_id != invocation_id or
-        progress.inference_id != ownership.invocation.inference_id or
-          progress.attempt_id != ownership.invocation.attempt_id ->
-        {:error, :inference_heartbeat_identity_mismatch}
-
-      progress.run_revision != ownership.run_revision or
-        progress.generation != ownership.generation or
-          progress.dispatch_id != ownership.dispatch_id ->
-        {:error, :inference_heartbeat_dispatch_fence_mismatch}
-
-      progress.control_revision != ownership.invocation.control_revision or
-          progress.stream_epoch != ownership.invocation.stream_epoch ->
-        {:error, :inference_heartbeat_control_fence_mismatch}
-
-      is_map(previous) and progress.sequence < previous.sequence ->
-        {:error, :inference_heartbeat_sequence_regressed}
-
-      true ->
-        with :ok <- InferenceProgress.validate(progress) do
-          validate_stream_checkpoint(progress, checkpoint)
-        end
-    end
-  end
-
-  defp validate_stream_checkpoint(_progress, nil), do: :ok
-
-  defp validate_stream_checkpoint(progress, %StreamCheckpoint{} = checkpoint) do
-    with :ok <- StreamCheckpoint.validate(checkpoint),
-         true <- checkpoint.provider_request_digest == progress.provider_request_digest,
-         true <- checkpoint.resume_cursor_digest == progress.provider_cursor_digest,
-         true <- checkpoint.usage == progress.usage,
-         true <- checkpoint.usage_quality == progress.usage_quality,
-         true <- checkpoint.output_bytes == progress.output_bytes do
-      :ok
-    else
-      false -> {:error, :inference_stream_checkpoint_digest_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_stream_checkpoint(_progress, _checkpoint),
-    do: {:error, :invalid_inference_stream_checkpoint}
-
-  defp maybe_commit_inference_checkpoint(data, progress, checkpoint, now) do
-    checkpoint? = checkpoint_commit_due?(data, progress, checkpoint, now)
-    progress? = progress_commit_due?(data, progress, now)
-
-    if checkpoint? or progress? do
-      commit_inference_checkpoint(data, progress, checkpoint, now, checkpoint?, progress?)
-    else
-      data
-    end
-  end
-
-  defp checkpoint_commit_due?(data, progress, %StreamCheckpoint{} = checkpoint, now) do
-    interval = Keyword.get(data.base_opts, :inference_stream_checkpoint_interval, 5_000)
-    last = Map.get(data.inference_checkpoint_clock, progress.invocation_id)
-
-    StreamCheckpoint.meaningful?(checkpoint) and interval_due?(last, now, interval) and
-      stream_checkpoint_changed?(data, progress.invocation_id, checkpoint)
-  end
-
-  defp checkpoint_commit_due?(_data, _progress, _checkpoint, _now), do: false
-
-  defp progress_commit_due?(data, progress, now) do
-    enabled? = Keyword.get(data.base_opts, :inference_observer_lane, false)
-    interval = Keyword.get(data.base_opts, :inference_progress_commit_interval, 5_000)
-    last = Map.get(data.inference_progress_commit_clock, progress.invocation_id)
-
-    enabled? and interval_due?(last, now, interval)
-  end
-
-  # Monotonic clocks may have any origin, including a negative one. `nil` is
-  # the only safe sentinel for the first periodic commit.
-  defp interval_due?(nil, _now, _interval), do: true
-  defp interval_due?(last, now, interval), do: now - last >= interval
-
-  defp stream_checkpoint_changed?(data, invocation_id, checkpoint) do
-    with %{run_id: run_id} <- Map.get(data.stream_sessions, invocation_id),
-         %Run{inference_continuation: continuation} <- Map.get(data.runs, run_id) do
-      continuation.provider_request_digest != checkpoint.provider_request_digest or
-        provider_cursor_digest(continuation.resume_cursor) != checkpoint.resume_cursor_digest or
-        continuation.stream_provider_sequence != checkpoint.provider_sequence or
-        continuation.stream_usage != checkpoint.usage or
-        continuation.stream_usage_quality != checkpoint.usage_quality or
-        continuation.stream_output_bytes != checkpoint.output_bytes
-    else
-      _missing -> false
-    end
-  end
-
-  defp commit_inference_checkpoint(data, progress, checkpoint, now, checkpoint?, progress?) do
-    revision = data.canonical.revision + 1
-
-    with {:ok, writes, run} <-
-           inference_checkpoint_writes(
-             data,
-             progress,
-             checkpoint,
-             checkpoint?,
-             progress?,
-             revision
-           ),
-         {:ok, committed} <-
-           Commit.canonical_sections(data, writes,
-             correlation_id: progress.inference_id,
-             causation_id: progress.invocation_id,
-             provenance: %{source: :inference_checkpoint, invocation_id: progress.invocation_id},
-             metadata: %{
-               transition: :inference_checkpoint_committed,
-               progress: progress?,
-               recovery_cursor: checkpoint?
-             }
-           ) do
-      committed = if run, do: Runs.put_run(committed, run), else: committed
-
-      committed =
-        update_inference_checkpoint_clocks(committed, progress, now, checkpoint?, progress?)
-
-      if progress? do
-        publish_committed_inference_progress(committed, %{progress | canonical_revision: revision})
-      else
-        committed
-      end
-    else
-      {:error, reason} ->
-        emit(
-          :inference_progress_commit_failed,
-          data,
-          %{count: 1},
-          %{reason_class: reason_class(reason)}
-        )
-
-        data
-    end
-  end
-
-  defp inference_checkpoint_writes(
-         data,
-         progress,
-         checkpoint,
-         checkpoint?,
-         progress?,
-         revision
-       ) do
-    with {:ok, writes, run} <-
-           maybe_put_stream_checkpoint(data, progress, checkpoint, checkpoint?),
-         {:ok, writes} <- maybe_put_progress_snapshot(data, writes, progress, progress?, revision) do
-      {:ok, writes, run}
-    end
-  end
-
-  defp maybe_put_stream_checkpoint(data, progress, checkpoint, true) do
-    with %{run_id: run_id} <- Map.get(data.stream_sessions, progress.invocation_id),
-         %Run{
-           inference_continuation: %{invocation: %Invocation{id: invocation_id}} = continuation
-         } = run <- Map.get(data.runs, run_id),
-         true <- invocation_id == progress.invocation_id,
-         next_continuation <- %{
-           continuation
-           | provider_status: :streaming,
-             provider_request_id: checkpoint.provider_request_id,
-             provider_request_digest: checkpoint.provider_request_digest,
-             resume_cursor: checkpoint.resume_cursor,
-             stream_provider_sequence: checkpoint.provider_sequence,
-             stream_usage: checkpoint.usage,
-             stream_usage_quality: checkpoint.usage_quality,
-             stream_output_bytes: checkpoint.output_bytes,
-             recovery: %{status: :stream_checkpointed}
-         },
-         next_run <- %{run | inference_continuation: next_continuation},
-         {:ok, writes} <- Commit.run_writes(data, data.state, next_run) do
-      {:ok, writes, next_run}
-    else
-      false -> {:error, :stale_inference_stream_checkpoint}
-      nil -> {:error, :missing_inference_stream_checkpoint_owner}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp maybe_put_stream_checkpoint(_data, _progress, _checkpoint, false),
-    do: {:ok, %{}, nil}
-
-  defp maybe_put_progress_snapshot(data, writes, progress, true, revision) do
-    with {:ok, snapshots} <- Canonical.fetch(data.canonical, :inference_progress) do
-      committed_progress = %{progress | canonical_revision: revision}
-      limit = Keyword.get(data.base_opts, :inference_progress_limit, 256)
-
-      snapshots =
-        snapshots
-        |> Map.put(progress.inference_id, committed_progress)
-        |> Enum.sort_by(fn {_id, snapshot} -> snapshot.at end, :desc)
-        |> Enum.take(limit)
-        |> Map.new()
-
-      {:ok, Map.put(writes, :inference_progress, snapshots)}
-    end
-  end
-
-  defp maybe_put_progress_snapshot(_data, writes, _progress, false, _revision),
-    do: {:ok, writes}
-
-  defp update_inference_checkpoint_clocks(data, progress, now, checkpoint?, progress?) do
-    data =
-      if checkpoint? do
-        %{
-          data
-          | inference_checkpoint_clock:
-              Map.put(data.inference_checkpoint_clock, progress.invocation_id, now)
-        }
-      else
-        data
-      end
-
-    if progress? do
-      %{
-        data
-        | inference_progress_commit_clock:
-            Map.put(data.inference_progress_commit_clock, progress.invocation_id, now)
-      }
-    else
-      data
-    end
-  end
-
-  defp publish_committed_inference_progress(data, committed_progress) do
-    event =
-      InferenceEvent.new(:progress_committed, committed_progress,
-        instance_key: data.ref.key,
-        canonical_revision: committed_progress.canonical_revision
-      )
-
-    _ = Spectre.Inference.Events.publish(data.ref, event)
-    data
   end
 
   defp start_inference_resume_worker(data, run, ownership, response) do
