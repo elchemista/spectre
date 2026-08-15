@@ -158,6 +158,14 @@ the first owned transport item proves provider progress. For pull mode,
 credit. A consumed chunk that produces no complete logical event returns
 `{:ok, [], state}`.
 
+Stream sessions trap exits so orderly supervisor shutdown can run `cancel/2`.
+A linked provider helper therefore delivers `{:EXIT, pid, reason}` to
+`handle_transport/2`; adapters should prefer monitoring helpers whose death is
+a provider failure, or explicitly ignore expected exit messages. Cancellation
+must return promptly: each session has a one-second shutdown grace period,
+after which the supervisor kills it and remote cancellation remains
+best-effort.
+
 Provider sequencing is all-or-nothing for one attempt. An adapter may leave
 `provider_sequence` unset on every normalized event. Once it emits the first
 numbered event, every later delta, usage, started, completed or failed event
