@@ -38,6 +38,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Conversation
   alias Spectre.Instance.Deliveries
   alias Spectre.Instance.Events
+  alias Spectre.Instance.InferenceBudget
   alias Spectre.Instance.InferenceCapacity
   alias Spectre.Instance.InferenceControl
   alias Spectre.Instance.Lifecycle
@@ -3912,7 +3913,7 @@ defmodule Spectre.Instance do
   # uncertain external call unless the adapter can reconcile it.
   defp commit_inference_dispatch_intent(data, run, invocation, prepared, entry) do
     with {:ok, run, budget_snapshot} <-
-           reserve_inference_budget(run, invocation, prepared, entry),
+           InferenceBudget.reserve(run, invocation, prepared, entry),
          {run, entry} <- prepare_stream_consumer_token(run, invocation, entry) do
       continuation = %{
         run.inference_continuation
@@ -4188,222 +4189,6 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp reserve_inference_budget(run, invocation, prepared, entry) do
-    continuation = run.inference_continuation
-
-    with {:ok, budget} <- inference_budget(continuation, prepared, entry),
-         requested <- inference_budget_reservation(prepared, budget),
-         {:ok, budget, snapshot} <- Budget.reserve(budget, invocation.attempt_id, requested) do
-      continuation = %{continuation | budget: budget}
-      {:ok, %{run | inference_continuation: continuation}, snapshot}
-    end
-  end
-
-  defp inference_budget(%{budget: %Budget{} = budget}, prepared, entry) do
-    with :ok <- validate_cost_budget(budget.limits, budget.pricing_ref, prepared, entry),
-         :ok <- validate_rebound_pricing_ref(budget, entry) do
-      {:ok, budget}
-    end
-  end
-
-  defp inference_budget(continuation, prepared, entry),
-    do: new_inference_budget(continuation, prepared, entry)
-
-  defp new_inference_budget(continuation, prepared, entry) do
-    with {:ok, configured} <- normalize_inference_budget(entry.opts),
-         {:ok, attempts} <- inference_attempt_limit(prepared, entry),
-         {:ok, pricing_ref} <- inference_pricing_ref(entry.opts),
-         :ok <- validate_cost_budget(configured, pricing_ref, prepared, entry) do
-      constraints = prepared.descriptor.constraints
-      aggregate_input = multiply_limit(constraints.context_tokens, attempts)
-      aggregate_output = multiply_limit(constraints.maximum_output_tokens, attempts)
-
-      limits =
-        configured
-        |> maybe_put_budget_limit(:input_tokens, aggregate_input)
-        |> maybe_put_budget_limit(:output_tokens, aggregate_output)
-        |> maybe_put_budget_limit(:total_tokens, sum_limits(aggregate_input, aggregate_output))
-        |> maybe_put_budget_limit(:attempts, attempts)
-        |> maybe_put_budget_limit(
-          :duration_ms,
-          Keyword.get(entry.opts, :stream_max_duration_ms, constraints.maximum_latency_ms)
-        )
-
-      deadline_at =
-        case Map.get(limits, :duration_ms) do
-          duration when is_integer(duration) and duration > 0 ->
-            Spectre.Determinism.system_time(:millisecond) + duration
-
-          _none ->
-            nil
-        end
-
-      {:ok,
-       Budget.new(continuation.inference_id,
-         limits: limits,
-         deadline_at: deadline_at,
-         pricing_ref: pricing_ref,
-         estimation_policy:
-           if(MapSet.member?(prepared.stream_capabilities, :incremental_usage),
-             do: :provider,
-             else: :conservative
-           )
-       )}
-    end
-  end
-
-  defp normalize_inference_budget(opts) do
-    value = Keyword.get(opts, :inference_budget, %{})
-
-    with {:ok, entries} <- budget_entries(value) do
-      Enum.reduce_while(entries, {:ok, %{}}, fn {key, limit}, {:ok, limits} ->
-        with {:ok, field} <- budget_field(key),
-             :ok <- validate_budget_limit(field, limit) do
-          {:cont, {:ok, Map.put(limits, field, limit)}}
-        else
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-    end
-  end
-
-  defp budget_entries(value) when is_list(value) do
-    if Keyword.keyword?(value), do: {:ok, value}, else: {:error, :invalid_inference_budget}
-  end
-
-  defp budget_entries(value) when is_map(value) and not is_struct(value),
-    do: {:ok, Map.to_list(value)}
-
-  defp budget_entries(_value), do: {:error, :invalid_inference_budget}
-
-  defp budget_field(field)
-       when field in [
-              :input_tokens,
-              :output_tokens,
-              :total_tokens,
-              :cost,
-              :attempts,
-              :duration_ms
-            ],
-       do: {:ok, field}
-
-  defp budget_field(field) when is_binary(field) do
-    case field do
-      "input_tokens" -> {:ok, :input_tokens}
-      "output_tokens" -> {:ok, :output_tokens}
-      "total_tokens" -> {:ok, :total_tokens}
-      "cost" -> {:ok, :cost}
-      "attempts" -> {:ok, :attempts}
-      "duration_ms" -> {:ok, :duration_ms}
-      _unknown -> {:error, {:unknown_inference_budget_limit, field}}
-    end
-  end
-
-  defp budget_field(field), do: {:error, {:unknown_inference_budget_limit, field}}
-
-  defp validate_budget_limit(:attempts, value) when is_integer(value) and value > 0, do: :ok
-
-  defp validate_budget_limit(:attempts, value),
-    do: {:error, {:invalid_inference_budget_limit, :attempts, value}}
-
-  defp validate_budget_limit(_field, value) when is_number(value) and value >= 0,
-    do: :ok
-
-  defp validate_budget_limit(field, value),
-    do: {:error, {:invalid_inference_budget_limit, field, value}}
-
-  defp inference_attempt_limit(prepared, entry) do
-    fallback_attempts = length(prepared.selection.fallback_chain) + 1
-
-    one_shot_default =
-      if prepared.selection.selector == Spectre.Inference.Selector.Default,
-        do: max(fallback_attempts, 1),
-        else: max(fallback_attempts, 2)
-
-    value =
-      prepared.descriptor.constraints.max_attempts ||
-        if(prepared.stream_adapter,
-          do: Keyword.get(entry.opts, :stream_max_attempts, 3),
-          else: Keyword.get(entry.opts, :inference_max_attempts, one_shot_default)
-        )
-
-    if is_integer(value) and value > 0,
-      do: {:ok, value},
-      else: {:error, {:invalid_inference_attempt_limit, value}}
-  end
-
-  defp inference_pricing_ref(opts) do
-    case Keyword.get(opts, :inference_pricing_ref) do
-      nil -> {:ok, nil}
-      value when is_binary(value) and value != "" -> {:ok, value}
-      value -> {:error, {:invalid_inference_pricing_ref, value}}
-    end
-  end
-
-  defp validate_cost_budget(configured, pricing_ref, prepared, entry) do
-    if Map.has_key?(configured, :cost) do
-      cond do
-        is_nil(pricing_ref) ->
-          {:error, :inference_cost_budget_requires_pricing_ref}
-
-        prepared.stream_adapter &&
-            not MapSet.member?(prepared.stream_capabilities, :cost_usage) ->
-          {:error, :inference_cost_budget_usage_unavailable}
-
-        is_nil(prepared.stream_adapter) &&
-            Keyword.get(entry.opts, :inference_cost_usage?, false) != true ->
-          {:error, :inference_cost_budget_usage_unavailable}
-
-        true ->
-          :ok
-      end
-    else
-      :ok
-    end
-  end
-
-  defp validate_rebound_pricing_ref(%Budget{limits: limits}, _entry)
-       when not is_map_key(limits, :cost),
-       do: :ok
-
-  defp validate_rebound_pricing_ref(%Budget{pricing_ref: expected}, entry) do
-    case inference_pricing_ref(entry.opts) do
-      {:ok, ^expected} -> :ok
-      {:ok, _different} -> {:error, :inference_pricing_ref_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp inference_budget_reservation(prepared, budget) do
-    input_tokens = prepared.descriptor.constraints.context_tokens || 0
-    output_tokens = prepared.descriptor.constraints.maximum_output_tokens || 0
-    # Cost cannot be predicted safely from the core. Reserve the complete
-    # remaining cost allowance so an ambiguous attempt blocks successors
-    # until reconciliation establishes an authoritative settlement.
-    cost = Map.get(Budget.remaining(budget), :cost, 0)
-
-    %InferenceUsage{
-      input_tokens: input_tokens,
-      output_tokens: output_tokens,
-      total_tokens: input_tokens + output_tokens,
-      cost: cost
-    }
-  end
-
-  defp maybe_put_budget_limit(limits, _field, nil), do: limits
-  defp maybe_put_budget_limit(limits, field, value), do: Map.put_new(limits, field, value)
-
-  defp multiply_limit(nil, _multiplier), do: nil
-  defp multiply_limit(value, multiplier), do: value * multiplier
-
-  defp sum_limits(left, right) when is_number(left) and is_number(right),
-    do: left + right
-
-  # A missing component means that dimension is unbounded. Treating it as
-  # zero would accidentally turn an input estimate into a hard total-token
-  # ceiling for ordinary one-shot inference.
-  defp sum_limits(_left, _right), do: nil
-
   defp accept_inference_receipt(data, ownership, receipt) do
     data =
       data
@@ -4413,7 +4198,7 @@ defmodule Spectre.Instance do
 
     case receipt.outcome do
       {:ok, %InferenceResponse{} = response} ->
-        case enforce_inference_attempt_budget(ownership, receipt.usage) do
+        case InferenceBudget.enforce(ownership, receipt.usage) do
           :ok ->
             commit_inference_terminal(data, ownership, receipt, response)
 
@@ -4457,7 +4242,7 @@ defmodule Spectre.Instance do
   defp commit_inference_terminal(data, ownership, receipt, response) do
     run = Map.fetch!(data.runs, ownership.run_id)
 
-    case settle_inference_budget(
+    case InferenceBudget.settle(
            run.inference_continuation,
            ownership.invocation.attempt_id,
            receipt.usage,
@@ -5192,7 +4977,7 @@ defmodule Spectre.Instance do
            ),
          entry <- recovered_inference_entry(data, run, opts),
          {:ok, run, budget_snapshot} <-
-           reserve_inference_budget(run, invocation, prepared, entry),
+           InferenceBudget.reserve(run, invocation, prepared, entry),
          {:ok, data, reservation} <-
            reserve_recovered_stream_capacity(data, run, invocation),
          entry <-
@@ -5941,7 +5726,7 @@ defmodule Spectre.Instance do
     settlement =
       if receipt.metadata[:remote_status] == :ambiguous, do: :ambiguous, else: :confirmed
 
-    case settle_inference_budget(
+    case InferenceBudget.settle(
            run.inference_continuation,
            ownership.invocation.attempt_id,
            receipt.usage,
@@ -5993,7 +5778,7 @@ defmodule Spectre.Instance do
          true <- retryable_reason?,
          false <- run.inference_continuation.descriptor.constraints.strict?,
          %{status: status} when status != :budget_settlement_failed <- continuation.recovery,
-         {:ok, limit} <- inference_attempt_limit(ownership.prepared, ownership.entry) do
+         {:ok, limit} <- InferenceBudget.attempt_limit(ownership.prepared, ownership.entry) do
       continuation.attempt < limit
     else
       _not_retryable -> false
@@ -6142,32 +5927,6 @@ defmodule Spectre.Instance do
     )
   end
 
-  defp settle_inference_budget(
-         %{budget: %Budget{} = budget} = continuation,
-         attempt_id,
-         usage,
-         status
-       ) do
-    case Budget.settle(budget, attempt_id, usage, status) do
-      {:ok, settled} ->
-        {:ok, %{continuation | budget: settled}}
-
-      {:error, reason} ->
-        failed = %{
-          continuation
-          | recovery: %{
-              status: :budget_settlement_failed,
-              reason: portable_failure(reason)
-            }
-        }
-
-        {:error, failed, reason}
-    end
-  end
-
-  defp settle_inference_budget(continuation, _attempt_id, _usage, _status),
-    do: {:ok, continuation}
-
   defp put_inference_terminal_metadata(run, continuation, invocation, receipt) do
     terminal = %{
       inference_id: continuation.inference_id,
@@ -6314,12 +6073,6 @@ defmodule Spectre.Instance do
   # headers, provider request ids or credentials. Normalized fields live on
   # Response itself; untyped provider metadata therefore remains live-only.
   defp portable_response_metadata(_metadata), do: %{}
-
-  defp enforce_inference_attempt_budget(%{budget_snapshot: %BudgetSnapshot{} = snapshot}, usage) do
-    BudgetSnapshot.exceeded(snapshot, usage)
-  end
-
-  defp enforce_inference_attempt_budget(_ownership, _usage), do: :ok
 
   defp reject_stale_step(data, entry, run) do
     reason =
@@ -8623,7 +8376,7 @@ defmodule Spectre.Instance do
         usage = %InferenceUsage{}
 
         {continuation, failure_reason, semantic} =
-          case settle_inference_budget(
+          case InferenceBudget.settle(
                  continuation,
                  invocation.attempt_id,
                  usage,
