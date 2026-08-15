@@ -16,8 +16,7 @@ reference and Instance generation are intentionally ephemeral.
 
 The core defines three distinct concepts:
 
-- `Spectre.Invocation.WorkerReceipt`: live, capability-fenced, non-portable
-  worker evidence;
+- an internal worker receipt: live, capability-fenced, non-portable evidence;
 - `Spectre.Receipt.Envelope`: portable, deterministic boundary evidence;
 - a sink-specific append acknowledgement: external and not modeled as a Run
   terminal.
