@@ -7,6 +7,7 @@ defmodule Spectre.Instance.InferenceAttempt do
 
   alias Spectre.Inference.BudgetSnapshot
   alias Spectre.Inference.Event
+  alias Spectre.Inference.Events
   alias Spectre.Instance.State, as: InstanceState
 
   @max_timer_delay 4_294_967_295
@@ -111,7 +112,7 @@ defmodule Spectre.Instance.InferenceAttempt do
           metadata: metadata
         )
 
-      _ = Spectre.Inference.Events.publish(data.ref, event)
+      _ = Events.publish(data.ref, event)
     end
 
     data

@@ -116,14 +116,21 @@ defmodule Spectre.Instance.InferenceBudget do
     value = Keyword.get(opts, :inference_budget, %{})
 
     with {:ok, entries} <- entries(value) do
-      Enum.reduce_while(entries, {:ok, %{}}, fn {key, limit}, {:ok, limits} ->
-        with {:ok, field} <- field(key),
-             :ok <- validate_limit(field, limit) do
-          {:cont, {:ok, Map.put(limits, field, limit)}}
-        else
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
+      Enum.reduce_while(entries, {:ok, %{}}, &put_normalized_limit/2)
+    end
+  end
+
+  defp put_normalized_limit({key, limit}, {:ok, limits}) do
+    case normalize_limit(key, limit) do
+      {:ok, field} -> {:cont, {:ok, Map.put(limits, field, limit)}}
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
+
+  defp normalize_limit(key, limit) do
+    with {:ok, field} <- field(key),
+         :ok <- validate_limit(field, limit) do
+      {:ok, field}
     end
   end
 

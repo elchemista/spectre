@@ -12,6 +12,7 @@ defmodule Spectre.Instance.InferenceStreamControl do
   alias Spectre.Invocation
   alias Spectre.Operation.Control.Command
   alias Spectre.Run
+  alias Spectre.Run.Codec
   alias Spectre.Run.Value
 
   @doc false
@@ -66,7 +67,7 @@ defmodule Spectre.Instance.InferenceStreamControl do
   @spec normalize_steer_input(term(), keyword(), InstanceState.t()) ::
           {:ok, Input.t()} | {:error, term()}
   def normalize_steer_input(input, opts, %InstanceState{} = data) do
-    logical = input |> Input.new() |> Spectre.Run.Codec.logical_input()
+    logical = input |> Input.new() |> Codec.logical_input()
 
     max_bytes =
       Keyword.get(

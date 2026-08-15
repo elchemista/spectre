@@ -31,34 +31,45 @@ defmodule Spectre.Instance.Restore do
     with {:ok, checkpoints} <- Canonical.fetch(canonical, :runs),
          true <- is_map(checkpoints) and not is_struct(checkpoints),
          true <- map_size(checkpoints) <= max_runs do
-      Enum.reduce_while(checkpoints, {:ok, %{}}, fn {run_id, checkpoint}, {:ok, runs} ->
-        with true <- is_binary(run_id) and is_binary(checkpoint),
-             {:ok, %Run{id: ^run_id} = run} <- Run.restore(checkpoint),
-             :ok <-
-               DefinitionCompatibility.verify_pinned_run(
-                 run,
-                 definition_store,
-                 checkpoint_store,
-                 base_opts
-               ) do
-          {:cont, {:ok, Map.put(runs, run_id, run)}}
-        else
-          false ->
-            {:halt, {:error, {:invalid_restored_run_checkpoint, run_id}}}
-
-          {:ok, %Run{id: other_id}} ->
-            {:halt, {:error, {:restored_run_id_mismatch, run_id, other_id}}}
-
-          {:error, reason} ->
-            {:halt, {:error, {:restored_run_invalid, run_id, reason}}}
-        end
-      end)
+      restore_checkpoints(checkpoints, definition_store, checkpoint_store, base_opts)
     else
       false ->
         {:error, {:restored_run_capacity_exceeded, map_size(canonical_runs(canonical)), max_runs}}
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp restore_checkpoints(checkpoints, definition_store, checkpoint_store, base_opts) do
+    Enum.reduce_while(checkpoints, {:ok, %{}}, fn entry, {:ok, runs} ->
+      case restore_run(entry, definition_store, checkpoint_store, base_opts) do
+        {:ok, run_id, run} -> {:cont, {:ok, Map.put(runs, run_id, run)}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp restore_run({run_id, checkpoint}, definition_store, checkpoint_store, base_opts) do
+    with true <- is_binary(run_id) and is_binary(checkpoint),
+         {:ok, %Run{id: ^run_id} = run} <- Run.restore(checkpoint),
+         :ok <-
+           DefinitionCompatibility.verify_pinned_run(
+             run,
+             definition_store,
+             checkpoint_store,
+             base_opts
+           ) do
+      {:ok, run_id, run}
+    else
+      false ->
+        {:error, {:invalid_restored_run_checkpoint, run_id}}
+
+      {:ok, %Run{id: other_id}} ->
+        {:error, {:restored_run_id_mismatch, run_id, other_id}}
+
+      {:error, reason} ->
+        {:error, {:restored_run_invalid, run_id, reason}}
     end
   end
 
