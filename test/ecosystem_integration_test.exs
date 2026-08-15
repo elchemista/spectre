@@ -263,6 +263,7 @@ defmodule SpectreEcosystemIntegrationTest do
         router_timeout: 100,
         effect_result_max_bytes: 1_000,
         spectre_rules: [],
+        spectre_bounds: [max_transport_chunk_bytes: 256_000],
         max_transport_chunk_bytes: 256_000,
         max_parser_residual_bytes: 256_000,
         recent_chat: [],
@@ -271,6 +272,7 @@ defmodule SpectreEcosystemIntegrationTest do
 
       assert Spectre.LLM.provider_opts(opts, [:test_pid]) == [temperature: 0.2, max_tokens: 64]
       assert :state in Spectre.LLM.runtime_opt_keys()
+      assert :spectre_bounds in Spectre.LLM.runtime_opt_keys()
       assert :max_transport_chunk_bytes in Spectre.LLM.runtime_opt_keys()
       assert :max_parser_residual_bytes in Spectre.LLM.runtime_opt_keys()
     end

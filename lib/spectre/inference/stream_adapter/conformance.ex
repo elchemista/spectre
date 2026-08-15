@@ -6,10 +6,9 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
   transport messages from an isolated fixture. The runner verifies capability
   negotiation, open/resume shape, pull-credit discipline, normalized event
   batches, global provider ordering, UTF-8 reassembly, terminal cardinality,
-  and optional cancel or reconcile replies. It forwards mandatory transport
-  chunk and parser-residual bounds to the adapter. Real network flow control,
-  cancellation, credentials, and oversized parser fixtures remain
-  adapter-owned integration tests.
+  optional cancel or reconcile replies, and mandatory enforcement of the raw
+  transport-chunk and parser-residual bounds. Real network flow control,
+  cancellation, and credentials remain adapter-owned integration tests.
   """
 
   alias Spectre.Inference.Descriptor
@@ -35,6 +34,10 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
             max_transport_chunk_bytes: pos_integer(),
             max_parser_residual_bytes: pos_integer()
           },
+          required(:bound_checks) => %{
+            transport_chunk: :enforced,
+            parser_residual: :enforced
+          },
           required(:terminal) => atom() | nil,
           required(:cancel) => :not_exercised | :accepted | {:error, atom()},
           required(:reconcile) => :not_exercised | atom()
@@ -48,6 +51,9 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
   `:reconcile_provider_request_id`, `:max_events_per_transport_item`, and
   `:max_delta_bytes`. `:max_transport_chunk_bytes` and
   `:max_parser_residual_bytes` are mandatory adapter bounds with safe defaults.
+  The adapter must implement `StreamAdapter.conformance_fixture/4`; the runner
+  supplies an oversized binary and uses the returned fixture to prove both
+  bounds through real `handle_transport/2` calls.
   """
   @spec run(module(), Descriptor.t(), [term()], keyword()) ::
           {:ok, report()} | {:error, term()}
@@ -71,9 +77,11 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
 
     with :ok <- valid_adapter_opts(adapter_opts),
          {:ok, bounds} <- stream_bounds(opts),
-         adapter_opts <- Keyword.merge(adapter_opts, Map.to_list(bounds)),
+         adapter_opts <- put_spectre_bounds(adapter_opts, bounds),
          :ok <- Descriptor.validate(descriptor),
          {:ok, capabilities} <- validated_capabilities(adapter, profile, adapter_opts),
+         {:ok, bound_checks} <-
+           verify_adapter_bounds(adapter, descriptor, adapter_opts, bounds),
          {:ok, adapter_state, metadata} <-
            open_adapter(adapter, descriptor, capabilities, adapter_opts, opts),
          :ok <- valid_metadata(metadata),
@@ -92,6 +100,7 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
          ignored_messages: protocol.ignored_messages,
          events: protocol.events,
          bounds: bounds,
+         bound_checks: bound_checks,
          terminal: protocol.terminal,
          cancel: cancel,
          reconcile: reconcile
@@ -108,6 +117,78 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
       {:error, reason} -> failure(:capabilities, reason)
     end
   end
+
+  defp verify_adapter_bounds(adapter, descriptor, adapter_opts, bounds) do
+    with :ok <- require_bound_fixture_callback(adapter),
+         :ok <-
+           verify_adapter_bound(
+             adapter,
+             :transport_chunk,
+             :transport_chunk_bound,
+             descriptor,
+             adapter_opts,
+             bounds.max_transport_chunk_bytes
+           ),
+         :ok <-
+           verify_adapter_bound(
+             adapter,
+             :parser_residual,
+             :parser_residual_bound,
+             descriptor,
+             adapter_opts,
+             bounds.max_parser_residual_bytes
+           ) do
+      {:ok, %{transport_chunk: :enforced, parser_residual: :enforced}}
+    end
+  end
+
+  defp require_bound_fixture_callback(adapter) do
+    if function_exported?(adapter, :conformance_fixture, 4),
+      do: :ok,
+      else:
+        failure(
+          :bounds,
+          {:stream_adapter_callback_missing, adapter, :conformance_fixture, 4}
+        )
+  end
+
+  defp verify_adapter_bound(adapter, kind, phase, descriptor, adapter_opts, limit) do
+    oversized = :binary.copy("x", limit + 1)
+
+    adapter
+    |> safe_call(:conformance_fixture, [kind, oversized, descriptor, adapter_opts])
+    |> verify_bound_fixture(adapter, phase, limit)
+  end
+
+  defp verify_bound_fixture({:ok, {:ok, message, adapter_state}}, adapter, phase, limit) do
+    adapter
+    |> safe_call(:handle_transport, [message, adapter_state])
+    |> verify_bound_reply(phase, limit)
+  end
+
+  defp verify_bound_fixture({:ok, {:error, reason}}, _adapter, phase, _limit),
+    do: failure(phase, {:fixture_error, reason_class(reason)})
+
+  defp verify_bound_fixture({:ok, reply}, _adapter, phase, _limit),
+    do: failure(phase, {:invalid_fixture_reply, value_class(reply)})
+
+  defp verify_bound_fixture({:error, reason}, _adapter, phase, _limit),
+    do: failure(phase, reason)
+
+  defp verify_bound_reply(
+         {:ok, {:error, :provider_stream_overflow, _adapter_state}},
+         _phase,
+         _limit
+       ),
+       do: :ok
+
+  defp verify_bound_reply({:ok, {:error, reason, _adapter_state}}, phase, limit),
+    do: failure(phase, {:unexpected_overflow_reason, reason_class(reason), limit})
+
+  defp verify_bound_reply({:ok, reply}, phase, limit),
+    do: failure(phase, {:bound_not_enforced, value_class(reply), limit})
+
+  defp verify_bound_reply({:error, reason}, phase, _limit), do: failure(phase, reason)
 
   defp open_adapter(adapter, descriptor, capabilities, adapter_opts, opts) do
     case Keyword.get(opts, :open_mode, :open) do
@@ -393,6 +474,13 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
          max_parser_residual_bytes: residual
        }}
     end
+  end
+
+  defp put_spectre_bounds(adapter_opts, bounds) do
+    Keyword.put(adapter_opts, :spectre_bounds,
+      max_transport_chunk_bytes: bounds.max_transport_chunk_bytes,
+      max_parser_residual_bytes: bounds.max_parser_residual_bytes
+    )
   end
 
   defp transport(capabilities) do
