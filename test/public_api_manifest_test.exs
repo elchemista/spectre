@@ -29,6 +29,22 @@ defmodule SpectrePublicApiManifestTest do
     end)
   end
 
+  test "the documented inference modules agree with the normative manifest" do
+    manifest_modules = @manifest_path |> File.read!() |> parse_manifest() |> elem(0) |> MapSet.new()
+
+    documented_modules =
+      Mix.Project.config()
+      |> get_in([:docs, :groups_for_modules])
+      |> Keyword.fetch!(:"Inference and boundary evidence")
+      |> Enum.map(&inspect/1)
+      |> MapSet.new()
+
+    assert MapSet.subset?(documented_modules, manifest_modules)
+
+    refute MapSet.member?(documented_modules, inspect(Spectre.Inference.IncrementalSanitizer))
+    refute MapSet.member?(documented_modules, inspect(Spectre.Inference.Failure))
+  end
+
   defp parse_manifest(manifest) do
     manifest
     |> String.split("\n")

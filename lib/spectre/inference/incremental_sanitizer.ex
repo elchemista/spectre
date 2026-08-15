@@ -1,19 +1,5 @@
 defmodule Spectre.Inference.IncrementalSanitizer do
-  @moduledoc """
-  Bounded finite-state sanitizer for provisional streamed text.
-
-  A marker may be split across arbitrary provider chunks, so sanitizing each
-  delta independently is unsafe. This module retains only a possible marker
-  prefix or tag header. Bodies of control blocks and rejected control lines
-  are discarded incrementally and never accumulate in memory.
-
-  The complete response still passes through Spectre's ordinary reply
-  sanitizer and guards before it becomes a committed `Spectre.Result`.
-
-  UTF-8 codepoints may also cross normalized provider-delta boundaries. The
-  sanitizer retains their bounded trailing bytes before its text state
-  machine sees the chunk.
-  """
+  @moduledoc false
 
   alias Spectre.Inference.Utf8Buffer
 

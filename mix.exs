@@ -379,6 +379,7 @@ defmodule Spectre.MixProject do
           Spectre.Inference.Events,
           Spectre.Inference.FrozenSelection,
           Spectre.Inference.Profile,
+          Spectre.Inference.Prepared,
           Spectre.Inference.Progress,
           Spectre.Inference.ProviderEvent,
           Spectre.Inference.Request,
