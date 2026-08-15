@@ -231,6 +231,11 @@ defmodule SpectreInstanceRunsCheckpointCommitInternalTest do
     assert {:error, :invalid_receipt_outcome} =
              Runs.validate_invocation_receipt(data, invocation.id, receipt)
 
+    invalid_quality = %{receipt | usage: %{}, usage_quality: :guessed}
+
+    assert {:error, :invalid_receipt_outcome} =
+             Runs.validate_invocation_receipt(data, invocation.id, invalid_quality)
+
     wrong_cursor = %{inference_run | cursor: :effect}
     wrong_cursor_data = %{data | runs: %{wrong_cursor.id => wrong_cursor}}
     valid_usage = %{receipt | usage: %{input_tokens: 1}}
