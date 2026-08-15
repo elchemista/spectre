@@ -184,19 +184,12 @@ defmodule Spectre.Instance.Receipts do
 
   @doc false
   @spec admission_available?(InstanceState.t()) ::
-          :ok | {:error, :receipt_outbox_full | :receipt_outbox_pending}
+          :ok | {:error, :receipt_outbox_full}
   def admission_available?(%InstanceState{receipt_mode: :required} = data) do
     with {:ok, %{entries: entries}} <- Canonical.fetch(data.canonical, :receipt_outbox) do
-      case entries do
-        [] ->
-          :ok
-
-        entries when length(entries) >= data.max_receipt_outbox ->
-          {:error, :receipt_outbox_full}
-
-        _pending ->
-          {:error, :receipt_outbox_pending}
-      end
+      if length(entries) >= data.max_receipt_outbox,
+        do: {:error, :receipt_outbox_full},
+        else: :ok
     end
   end
 

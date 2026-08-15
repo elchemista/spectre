@@ -261,13 +261,13 @@ defmodule SpectreInferenceCanonicalReceiptEdgeContractTest do
   end
 
   describe "required receipt rebasing and delivery state" do
-    test "records delivery failures and distinguishes pending from full admission" do
+    test "records delivery failures and blocks admission only at capacity" do
       data = instance_state(receipt_mode: :required, max_receipt_outbox: 2)
       prepared = prepared(data, %{flow: %{data.state | revision: 1}})
       payload_ref = Sink.payload_ref(prepared.envelope)
 
       assert {:ok, committed, _envelope} = Receipts.commit(data, prepared, :required, payload_ref)
-      assert {:error, :receipt_outbox_pending} = Receipts.admission_available?(committed)
+      assert :ok = Receipts.admission_available?(committed)
 
       assert {:ok, failed} =
                Receipts.mark_delivery_failure(committed, prepared.envelope.id, :temporarily_down)

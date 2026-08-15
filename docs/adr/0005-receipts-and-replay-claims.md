@@ -39,12 +39,18 @@ Receipt policy is configured per Instance:
 | --- | --- | --- |
 | `:disabled` | boundary commits without an external append | no receipt claim |
 | `:observational` | boundary commits, append runs asynchronously | append failure cannot block the Run |
-| `:required` | payload stage, boundary+outbox commit, checkpoint barrier, idempotent append, acknowledged outbox removal | admission remains fenced until append is reconciled |
+| `:required` | payload stage, boundary+outbox commit, checkpoint barrier, idempotent append, acknowledged outbox removal | boundary progression stays fenced; admission fails only when outbox capacity is exhausted |
 
 Required mode needs both a durable Checkpoint Store and a sink implementing
 content-addressed `put_payload/2` and `get_payload/2`. The canonical outbox is
-bounded and contains only id, digest and payload reference. A full or pending
-outbox blocks new admission rather than dropping evidence.
+bounded and contains only id, digest and payload reference. A pending entry
+keeps its boundary behind the acknowledgement barrier but does not reject a
+new admission below the configured capacity. A full outbox blocks new
+admission rather than dropping evidence.
+
+Inference terminal payloads carry both cumulative usage and `usage_quality`.
+Any conservative token floor that changes a provider counter is recorded as
+`:estimated`, so a receipt never presents an adjusted value as token-exact.
 
 The hot receipt path requires Invocation id, Run id/revision, Instance
 generation, dispatch id and an unforgeable capability. The recovered path
