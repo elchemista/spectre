@@ -15,7 +15,7 @@ defmodule SpectreEventLifecycleCompatibilityFixtureTest do
              "state_schema_version" => 3
            } = Jason.decode!(checkpoint)
 
-    assert {:error, {:unsupported_canonical_checkpoint, 3}} = Codec.decode(checkpoint)
+    assert {:error, {:invalid_canonical_checkpoint_format, nil}} = Codec.decode(checkpoint)
   end
 
   defp read_fixture! do

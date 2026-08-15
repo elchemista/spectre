@@ -91,12 +91,15 @@ defmodule Spectre.Router.Plugs.Arbitrate do
     do: Context.put_trace(context, reason)
 
   @spec classify_with_llm(Context.t(), Arbitration.t(), [Spectre.Rule.t()], [atom()]) ::
-          {:cont, Context.t()} | {:error, term()}
+          {:cont, Context.t()} | {:inference, Spectre.Inference.Prepared.t()} | {:error, term()}
   defp classify_with_llm(context, arbitration, visible_rules, labels) do
     classifier_opts = classifier_opts(context, arbitration)
     context = Context.put_trace(context, {:llm_arbitration_started, labels})
 
     case LLMClassifier.classify(context.input.text, labels, classifier_opts) do
+      {:inference, %Spectre.Inference.Prepared{} = prepared} ->
+        {:inference, prepared}
+
       {:ok, result} ->
         route = Support.route_from_result(result, visible_rules, labels, :llm_classifier)
 

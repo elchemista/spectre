@@ -1,10 +1,10 @@
 defmodule Spectre.Invocation.Receipt do
   @moduledoc """
-  Correlated internal receipt returned to an Agent Instance mailbox.
+  Compatibility name for the original correlated internal receipt.
 
-  The receipt fences a worker result to one Instance generation, Run revision,
-  Invocation, and dispatch. It is technical evidence for the actor; it is not
-  a public Turn projection or a provider payload.
+  New runtime code uses `Spectre.Invocation.WorkerReceipt`, whose name makes
+  the BEAM-local capability boundary explicit. This struct remains readable so
+  existing integrations and persisted API manifests do not break.
   """
 
   @enforce_keys [

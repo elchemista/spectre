@@ -216,6 +216,19 @@ selects an implementation module directly: dispatch resolves `via` against the
 providers compiled into the Agent. When a planned action carries a schema hash,
 Spectre verifies the provider still exposes that schema before execution.
 
+When `schema` declares a JSON-Schema validation keyword, Spectre validates both
+the schema and the proposed arguments before staging and again at provider
+execution. The closed subset covers primitive/object/array types, properties,
+required/additional properties, enum/const, numeric and length bounds,
+patterns, and bounded `allOf`/`anyOf`/`oneOf`/`not`. Unsupported constraint
+keywords fail closed; discovery-only maps such as `%{arity: 2, version: 1}`
+remain metadata for compatibility. Validation errors contain paths and rule
+names, never rejected values.
+
+Schema validation establishes shape, not authority. Providers must still
+authenticate the caller, authorize the target resource, enforce tenancy and
+make the real side effect idempotent.
+
 Optional libraries should register providers or a planner through
 `Spectre.Extension`. The public composition stays:
 

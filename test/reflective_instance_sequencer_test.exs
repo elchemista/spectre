@@ -447,11 +447,16 @@ defmodule SpectreReflectiveInstanceSequencerTest do
              |> put_section(:runs, %{"run" => "invalid"})
              |> then(&CanonicalValidator.validate(&1.canonical, &1.ref))
 
-    run =
-      Run.new(Agent, Spectre.Input.new("canonical"), %State{},
-        run_id: "actual-run",
-        correlation_id: "canonical-correlation"
-      )
+    opts = [run_id: "actual-run", correlation_id: "canonical-correlation"]
+
+    assert {:ok, run} =
+             Spectre.Runtime.admit(
+               Agent,
+               Spectre.Input.new("canonical"),
+               %State{},
+               opts,
+               opts
+             )
 
     assert {:ok, checkpoint} = Run.checkpoint(run)
 
@@ -1052,10 +1057,15 @@ defmodule SpectreReflectiveInstanceSequencerTest do
   end
 
   defp waiting_run(id, correlation_id, kind) do
-    run =
-      Run.new(Agent, Spectre.Input.new("waiting"), %State{},
-        run_id: id,
-        correlation_id: correlation_id
+    opts = [run_id: id, correlation_id: correlation_id]
+
+    {:ok, run} =
+      Spectre.Runtime.admit(
+        Agent,
+        Spectre.Input.new("waiting"),
+        %State{},
+        opts,
+        opts
       )
 
     ref = Run.ref(run, kind, "boundary-#{id}")

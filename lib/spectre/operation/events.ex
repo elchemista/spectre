@@ -8,6 +8,7 @@ defmodule Spectre.Operation.Events do
   """
 
   alias Spectre.Instance.Ref
+  alias Spectre.Inference.Event, as: InferenceEvent
   alias Spectre.Operation.Event
 
   @registry Spectre.Operation.EventRegistry
@@ -33,11 +34,23 @@ defmodule Spectre.Operation.Events do
   end
 
   @doc false
-  @spec publish(Ref.t(), Event.t()) :: :ok
+  @spec publish(Ref.t(), Event.t() | InferenceEvent.t()) :: :ok
   def publish(%Ref{} = ref, %Event{} = event) do
     Registry.dispatch(@registry, ref.key, fn entries ->
       Enum.each(entries, fn {pid, filters} ->
         if matches?(event, filters), do: send(pid, {:spectre, :operation_event, event})
+      end)
+    end)
+
+    :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  def publish(%Ref{} = ref, %InferenceEvent{} = event) do
+    Registry.dispatch(@registry, ref.key, fn entries ->
+      Enum.each(entries, fn {pid, filters} ->
+        if matches?(event, filters), do: send(pid, {:spectre, :inference_event, event})
       end)
     end)
 
@@ -54,9 +67,14 @@ defmodule Spectre.Operation.Events do
     :exit, reason -> {:error, {:instance_reference_unavailable, reason}}
   end
 
-  defp matches?(event, filters) do
+  defp matches?(%Event{} = event, filters) do
     allowed?(filters.types, event.type) and allowed?(filters.kinds, event.loop_kind) and
       allowed?(filters.loop_ids, event.loop_id)
+  end
+
+  defp matches?(%InferenceEvent{} = event, filters) do
+    allowed?(filters.types, event.type) and allowed?(filters.kinds, :inference) and
+      allowed?(filters.loop_ids, event.inference_id)
   end
 
   defp allowed?(nil, _value), do: true

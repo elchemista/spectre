@@ -24,6 +24,27 @@ defmodule Spectre.Prompt do
   @default_max_prompt_bytes 256_000
 
   @doc """
+  Wraps untrusted interpolated content in an escaped data-trust boundary.
+
+  This helper is intended for legacy EEx prompt assets whose rendered base
+  fragment otherwise has instruction trust.
+  """
+  @spec data(term()) :: String.t()
+  def data(value) when is_binary(value) do
+    escaped =
+      value
+      |> String.replace("&", "&amp;")
+      |> String.replace("<", "&lt;")
+      |> String.replace(">", "&gt;")
+      |> String.replace("\"", "&quot;")
+      |> String.replace("'", "&#39;")
+
+    ~s(<spectre-data trust="data">#{escaped}</spectre-data>)
+  end
+
+  def data(value), do: value |> inspect(limit: 100, printable_limit: 4_096) |> data()
+
+  @doc """
   Resolves, composes, and renders a prompt for a model-backed turn.
 
       {:ok, text} = Spectre.Prompt.render(MyAgent, :welcome, ctx)

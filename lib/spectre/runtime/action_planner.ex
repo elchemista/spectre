@@ -9,6 +9,8 @@ defmodule Spectre.ActionPlanner do
   """
 
   alias Spectre.Action
+  alias Spectre.Action.Provider
+  alias Spectre.Action.Provider.Mount
   alias Spectre.Effect
   alias Spectre.Reply.Sanitizer
 
@@ -188,9 +190,60 @@ defmodule Spectre.ActionPlanner do
     do: {:error, {:unsupported_planned_effect_kind, effect.kind}}
 
   defp stage_action(action, opts) do
-    with {:ok, action} <- normalize_action(action) do
+    with {:ok, action} <- normalize_action(action),
+         {:ok, action} <- prepare_planned_action(action, opts) do
       attrs = Action.to_effect_attrs(action)
       stage_with_origin(attrs, opts)
+    end
+  end
+
+  defp prepare_planned_action(%Action{} = action, opts) do
+    action = %{action | planned_by: action.planned_by || planner_module(opts)}
+
+    case Keyword.fetch(opts, :action_providers) do
+      :error -> {:ok, action}
+      {:ok, mounts} when is_list(mounts) -> bind_provider_schema(action, mounts)
+      {:ok, _invalid} -> {:error, :invalid_action_provider_catalog}
+    end
+  end
+
+  defp bind_provider_schema(%Action{} = action, mounts) do
+    case Enum.find(mounts, &match?(%Mount{id: id} when id == action.via, &1)) do
+      nil ->
+        {:error, {:unknown_action_provider, action.via}}
+
+      %Mount{} = mount ->
+        with {:ok, specs} <- Provider.actions(mount, :planner) do
+          bind_action_spec(action, mount, specs)
+        end
+    end
+  end
+
+  defp bind_action_spec(action, mount, specs) do
+    candidates = Enum.filter(specs, &Action.matches_ref?({mount.id, &1.name}, action))
+
+    candidates =
+      case action.schema_hash do
+        nil -> candidates
+        hash -> Enum.filter(candidates, &(&1.schema_hash == hash))
+      end
+
+    case candidates do
+      [%Spectre.Action.Spec{} = spec] ->
+        {:ok, %{action | schema_hash: spec.schema_hash}}
+
+      [] ->
+        if Provider.legacy_schema_free_local?(mount) do
+          # The original local Action DSL had no discovery registry. Its
+          # compiled mount is still authoritative, but cannot supply a JSON
+          # schema until the Action module adopts `__spectre_actions__/0`.
+          {:ok, action}
+        else
+          {:error, {:planned_action_not_in_provider_catalog, mount.id, action.name}}
+        end
+
+      _multiple ->
+        {:error, {:ambiguous_planned_action_schema, mount.id, action.name}}
     end
   end
 

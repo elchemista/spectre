@@ -369,6 +369,39 @@ The normal `mix test` command excludes this tagged test so the unit suite stays
 deterministic. CI has a dedicated real-ExFastembed job; a fixture-only pass is
 not a substitute for that job.
 
+## Inference stream and receipt contracts
+
+A fake stream adapter should expose exact transport credits and allow the test
+to inject split chunks, usage updates, completion, provider failure, stall and
+cancel acknowledgement. Assert the full fence envelope and callback
+cardinality, not only concatenated text. At minimum cover:
+
+- pull demand never exceeds the configured credit and push adapters without a
+  pre-mailbox bound are rejected;
+- a second consumer cannot claim a handle; early halt and consumer death
+  cancel; result-only waiting drains without enumerating;
+- deltas split across sanitizer boundaries never leak a forbidden partial
+  marker, exceed byte/event limits, or survive an epoch change;
+- attach, open, stall, idle, absolute-duration and post-processing deadlines
+  have distinct terminal outcomes;
+- cancel/provider-terminal and steer/provider-terminal races have one
+  canonical winner, and steering returns a different epoch;
+- restart exercises not-started dispatch, resumable cursor, reconcilable
+  provider id and explicit interrupted/ambiguous fallbacks;
+- token/cost/attempt budgets reserve, enforce and settle exactly once; and
+- raw deltas, provider ids, cursors and failures never appear in committed
+  observer events.
+
+Run `Spectre.Receipt.Sink.Conformance.run/1` for every sink adapter. Required
+mode also needs fault injection around payload staging, checkpoint commit,
+append acknowledgement and outbox acknowledgement. Restart after each fault
+and assert idempotent append, exact payload digest, bounded outbox state and no
+provider dispatch before its required receipt barrier.
+
+Keep permanent v2 Run and tagged Instance fixtures. Every v3 writer change must
+prove legacy decode/migration/current re-encode, corruption rejection, and a
+restart path through the real Instance—not only struct construction.
+
 ## What requires a regression test
 
 - application startup, child ownership, abnormal restart, normal shutdown, and
@@ -383,7 +416,12 @@ not a substitute for that job.
   persistence outcomes;
 - provider success, declared error, invalid reply, timeout, exception, exit,
   throw, and cancellation;
+- inference selection/dispatch fencing, stream demand, consumer cleanup,
+  steering, budget, timeout, terminal and restart races;
+- observational and required receipt delivery, including every outbox crash
+  window and sink idempotency conflict;
 - prompt source, target, condition, trust, path, and size failures;
+- Action schema definition and value validation at planning and execution;
 - state codec migration and unsafe-value rejection;
 - action registration, ownership, Skill scope, pre-commit failure,
   commit-then-crash recovery, and idempotent replay;

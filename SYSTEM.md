@@ -83,6 +83,8 @@ what lets optional libraries compose without competing for ownership.
 | `Spectre.Action` | Closed proposal to call a declared capability | planner or deterministic Flow |
 | `Spectre.Effect` | Staged side effect with policy and lifecycle state | Spectre core |
 | `Spectre.Invocation` | Revision-fenced request to cross an external boundary | Spectre core |
+| `Spectre.Inference.Stream` | Ephemeral one-consumer handle for a fenced stream attempt | Spectre core |
+| `Spectre.Receipt.Envelope` | Portable evidence for a nondeterministic/canonical boundary | Spectre core + host sink |
 | `Spectre.Work` | Durable, bounded, multi-step operational procedure | Spectre core |
 | `Spectre.Vigil` | Durable recurring observation triggered by timers or events | Spectre core |
 | Journal/checkpoint | Observable decisions and portable canonical recovery data | Spectre core plus host adapters |
@@ -90,7 +92,7 @@ what lets optional libraries compose without competing for ownership.
 There are two execution planes:
 
 - The conversational plane uses Flow, Turn, and Run. It handles input, routing,
-  replies, policy boundaries, and staged Effects.
+  replies, policy boundaries, staged Effects, and inference Invocations.
 - The operational plane uses Work and Vigil. It handles long procedures,
   retries, progress, pause/update/resume, timers, events, and restart recovery.
 
@@ -101,7 +103,7 @@ Each abstraction has one job and one owner.
 
 | Package | Use it when you need | It deliberately does not own |
 | --- | --- | --- |
-| `spectre` | Agent definitions, routing, policy, state, Runs, Instances, Work, Vigil, execution lifecycle, checkpoints | provider SDKs, credentials, business authorization, application side effects |
+| `spectre` | Agent definitions, routing, policy, state, Runs, Instances, Work, Vigil, inference/Effect lifecycle, streaming fences, receipts, checkpoints | provider SDKs, credentials, business authorization, application side effects |
 | `spectre_prism` | Constraint-aware model/profile selection by purpose, modality, privacy, cost, latency, and capability, with optional bundled provider adapters | credentials, live provider sessions, provider scheduling, Run or Instance lifecycle |
 | `spectre_kinetic` | Tool retrieval and validated Action planning from Action Language | authorization or execution of the selected Action |
 | `spectre_mnemonic` | Active and durable memory, recall, search, consolidation, provenance, and subject-scoped context | canonical Agent state or the application database |
@@ -407,8 +409,9 @@ Use Prism when several inference capabilities differ in privacy, modality,
 context window, latency, cost, or depth. Prism ships optional adapters for
 OpenAI, OpenRouter, Ollama, and Gemini behind an injectable HTTP transport;
 credentials are resolved only at runtime, and live provider sessions remain
-caller-owned and outside the compiled Stack. Prism selects; Spectre performs
-the inference step and owns the Run boundary.
+outside the compiled Stack. Prism selects and may implement provider
+transports; Spectre owns the inference Invocation, Run, budget, control and
+terminal commit.
 
 ## Spectre Kinetic: Plan Closed Actions
 
@@ -677,6 +680,7 @@ converging on it rather than drifting toward framework-specific abstractions:
 | --- | --- |
 | Instance | a process that owns its state and serializes writes through its mailbox |
 | Runner | a supervised one-shot task: one attempt, isolated crash, no shared state |
+| Stream session | a supervised `:gen_statem`: explicit demand, state timeouts, cancellation and one terminal receipt |
 | Vigil | a timer- and event-driven loop that holds no live process while waiting |
 | Effect / Invocation | an explicit message across a boundary, never a hidden call |
 | Checkpoint | what a restart restores: intent and lifecycle, not dead connections |

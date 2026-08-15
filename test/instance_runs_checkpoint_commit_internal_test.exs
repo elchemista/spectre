@@ -71,8 +71,10 @@ defmodule SpectreInstanceRunsCheckpointCommitInternalTest do
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Runs
   alias Spectre.Instance.State, as: InstanceState
+  alias Spectre.Inference.Prepared, as: PreparedInference
   alias Spectre.Invocation
   alias Spectre.Invocation.Receipt
+  alias Spectre.Invocation.WorkerReceipt
   alias Spectre.Operation.Control
   alias Spectre.Operation.Event, as: OperationEvent
   alias Spectre.Operation.Runtime, as: OperationRuntime
@@ -161,6 +163,113 @@ defmodule SpectreInstanceRunsCheckpointCommitInternalTest do
 
     assert Runs.step_run(outcome) == returned
     assert Runs.step_result(outcome) == returned.result
+
+    prepared = %PreparedInference{
+      descriptor: nil,
+      selection: nil,
+      frozen_selection: nil,
+      provider_opts: []
+    }
+
+    dispatch = {:dispatch, invocation, awaiting, prepared}
+    assert Runs.step_run(dispatch) == awaiting
+    assert Runs.step_result(dispatch) == nil
+
+    mismatched_kind =
+      struct!(WorkerReceipt, Map.merge(Map.from_struct(receipt), %{kind: :inference}))
+
+    assert {:error, :invalid_receipt_outcome} =
+             Runs.validate_invocation_receipt(data, invocation.id, mismatched_kind)
+  end
+
+  test "inference worker receipts reject malformed usage and incompatible Run cursors" do
+    {effect_invocation, awaiting} = awaiting_run("inference-receipt-shape")
+    capability = make_ref()
+
+    invocation = %{
+      effect_invocation
+      | kind: :inference,
+        inference_id: "inference",
+        attempt_id: "attempt",
+        control_revision: 0,
+        stream_epoch: "epoch"
+    }
+
+    inference_run = %{awaiting | cursor: :inference, waiting: invocation}
+
+    ownership = %{
+      invocation_id: invocation.id,
+      run_id: inference_run.id,
+      run_revision: inference_run.revision,
+      generation: "generation",
+      dispatch_id: "dispatch",
+      capability: capability
+    }
+
+    data = %InstanceState{
+      runs: %{inference_run.id => inference_run},
+      invocations: %{invocation.id => ownership}
+    }
+
+    receipt = %WorkerReceipt{
+      invocation_id: invocation.id,
+      run_id: inference_run.id,
+      run_revision: inference_run.revision,
+      generation: ownership.generation,
+      dispatch_id: ownership.dispatch_id,
+      capability: capability,
+      kind: :inference,
+      attempt_id: invocation.attempt_id,
+      control_revision: invocation.control_revision,
+      stream_epoch: invocation.stream_epoch,
+      provider_started: true,
+      usage: %{input_tokens: self()},
+      metadata: %{},
+      outcome: {:error, :provider_failed}
+    }
+
+    assert {:error, :invalid_receipt_outcome} =
+             Runs.validate_invocation_receipt(data, invocation.id, receipt)
+
+    wrong_cursor = %{inference_run | cursor: :effect}
+    wrong_cursor_data = %{data | runs: %{wrong_cursor.id => wrong_cursor}}
+    valid_usage = %{receipt | usage: %{input_tokens: 1}}
+
+    assert {:error, :invalid_receipt_outcome} =
+             Runs.validate_invocation_receipt(wrong_cursor_data, invocation.id, valid_usage)
+  end
+
+  test "move and Result ownership validation fail closed for forged lineage" do
+    current = Run.new(@agent, Spectre.Input.new("work"), %State{}, run_id: "lineage-current")
+    advanced = %{current | revision: current.revision + 1}
+    entry = %{operation: :advance}
+
+    assert :ok = Runs.validate_move_outcome({:continue, advanced}, current, entry)
+
+    foreign = %{advanced | trace_id: "foreign-trace"}
+
+    assert {:error, :run_lineage_mismatch} =
+             Runs.validate_move_outcome({:continue, foreign}, current, entry)
+
+    invalid_result = %{advanced | result: :forged}
+
+    assert {:error, :result_lineage_mismatch} =
+             Runs.validate_move_outcome({:continue, invalid_result}, current, entry)
+
+    data = %InstanceState{runs: %{current.id => current}}
+    assert {:error, :result_has_no_run_reference} = Runs.owned_result_run(data, %Result{})
+
+    referenced = %Result{metadata: %{run: %{id: current.id}}}
+    assert {:error, :result_has_no_run_reference} = Runs.owned_result_run(data, referenced)
+
+    assert {:error, :result_has_no_run_reference} =
+             Runs.owned_result_run(data, referenced, true)
+
+    assert {:error, {:unknown_instance_run, "unknown"}} =
+             Runs.owned_result_run(
+               data,
+               %Result{metadata: %{run: %{id: "unknown"}}}
+             )
   end
 
   test "run ownership accepts current references and only replays equivalent terminal results" do
@@ -262,11 +371,16 @@ defmodule SpectreInstanceRunsCheckpointCommitInternalTest do
   test "run commits store a restorable continuation and redact encoding failures" do
     data = instance_state()
 
-    run =
-      Run.new(@agent, Spectre.Input.new("work"), data.state,
-        run_id: "committed-run",
-        correlation_id: "run-correlation"
-      )
+    opts = [run_id: "committed-run", correlation_id: "run-correlation"]
+
+    assert {:ok, run} =
+             Spectre.Runtime.admit(
+               @agent,
+               Spectre.Input.new("work"),
+               data.state,
+               opts,
+               opts
+             )
 
     assert {:ok, committed} = Commit.run_state(data, run.state, run)
     assert {:ok, runs} = Canonical.fetch(committed.canonical, :runs)

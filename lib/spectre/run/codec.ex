@@ -20,6 +20,7 @@ defmodule Spectre.Run.Codec do
   alias Spectre.Run.Boundary
   alias Spectre.Run.Ref
   alias Spectre.Run.Request
+  alias Spectre.Run.StartContinuation
   alias Spectre.Run.Value
   alias Spectre.State
 
@@ -28,8 +29,8 @@ defmodule Spectre.Run.Codec do
   @typep raw_run :: %Run{}
 
   @format "spectre/run"
-  @version 2
-  @supported_versions [1, 2]
+  @version 3
+  @supported_versions [1, 2, 3]
   @default_max_bytes 2_000_000
   @result_identity_fields [
     :id,
@@ -102,9 +103,15 @@ defmodule Spectre.Run.Codec do
   defp checkpoint_projection(%Run{} = run) do
     input = checkpoint_input(run.input)
     result = checkpoint_result(run.result, input)
+    start_continuation = checkpoint_start_continuation(run.start_continuation, input)
 
-    %{run | input: input, result: result}
+    %{run | input: input, result: result, start_continuation: start_continuation}
   end
+
+  defp checkpoint_start_continuation(nil, _input), do: nil
+
+  defp checkpoint_start_continuation(%StartContinuation{} = continuation, input),
+    do: %{continuation | input: input}
 
   @doc false
   @spec logical_input(Input.t()) :: Input.t()
@@ -133,6 +140,10 @@ defmodule Spectre.Run.Codec do
         metadata: portable_metadata(source.metadata)
     }
   end
+
+  # Preserve an invalid decoded shape long enough for `Input.validate/1` to
+  # return a precise boundary error instead of crashing during projection.
+  defp checkpoint_source(source), do: source
 
   @spec checkpoint_result(Result.t() | nil, Input.t()) :: Result.t() | nil
   defp checkpoint_result(nil, _input), do: nil
@@ -270,11 +281,14 @@ defmodule Spectre.Run.Codec do
   defp validate_run_shape(%Run{} = run) do
     case {untrusted_field(run, :input), untrusted_field(run, :state)} do
       {%Input{}, %State{}} ->
-        with :ok <- validate_run_identity(run),
+        with :ok <- Input.validate(run.input),
+             :ok <- validate_run_identity(run),
              :ok <- validate_run_position(run),
              :ok <- validate_run_revision(run),
              :ok <- validate_run_lineage(run),
-             :ok <- validate_run_pin(run) do
+             :ok <- validate_run_pin(run),
+             :ok <- validate_start_continuation(run),
+             :ok <- validate_inference_continuation(run) do
           validate_run_metadata(run)
         end
 
@@ -294,7 +308,7 @@ defmodule Spectre.Run.Codec do
   @spec validate_run_position(raw_run()) :: :ok | {:error, :invalid_run_position}
   defp validate_run_position(%Run{status: status, cursor: cursor})
        when status in [:ready, :boundary, :awaiting, :complete, :failed] and
-              cursor in [:turn, :policy, :effect, :complete],
+              cursor in [:turn, :policy, :effect, :inference, :complete],
        do: :ok
 
   defp validate_run_position(_run), do: {:error, :invalid_run_position}
@@ -327,6 +341,29 @@ defmodule Spectre.Run.Codec do
     end
   end
 
+  @spec validate_start_continuation(raw_run()) :: :ok | {:error, term()}
+  defp validate_start_continuation(%Run{} = run) do
+    case untrusted_field(run, :start_continuation) do
+      nil -> :ok
+      %StartContinuation{} = start -> StartContinuation.validate(start)
+      _invalid -> {:error, :invalid_run_start_continuation}
+    end
+  end
+
+  @spec validate_inference_continuation(raw_run()) :: :ok | {:error, term()}
+  defp validate_inference_continuation(%Run{} = run) do
+    case untrusted_field(run, :inference_continuation) do
+      nil ->
+        :ok
+
+      %Spectre.Run.InferenceContinuation{} = continuation ->
+        Spectre.Run.InferenceContinuation.validate(continuation)
+
+      _invalid ->
+        {:error, :invalid_run_inference_continuation}
+    end
+  end
+
   # Run.t() promises a map, but decoded external structs can violate that
   # promise before this validator establishes trust.
   @dialyzer {:nowarn_function, validate_run_metadata: 1}
@@ -344,7 +381,17 @@ defmodule Spectre.Run.Codec do
   defp untrusted_field(container, field), do: Map.fetch!(container, field)
 
   @spec migrate_run(pos_integer(), term()) :: {:ok, Run.t()} | {:error, term()}
-  defp migrate_run(2, %Run{run_version: 2} = run), do: {:ok, run}
+  defp migrate_run(3, %Run{run_version: 3} = run), do: {:ok, run}
+
+  defp migrate_run(2, %Run{run_version: 2} = run) do
+    {:ok,
+     %{
+       run
+       | run_version: 3,
+         start_continuation: legacy_start_continuation(run),
+         inference_continuation: nil
+     }}
+  end
 
   defp migrate_run(1, %Run{run_version: 1} = run)
        when is_atom(run.agent) and not is_nil(run.agent) do
@@ -353,12 +400,14 @@ defmodule Spectre.Run.Codec do
     {:ok,
      %{
        run
-       | run_version: 2,
+       | run_version: 3,
          definition_ref: definition_ref,
          activation_generation: 0,
          authority_epoch: 0,
          closure_digest: Run.legacy_closure_digest(run.agent, definition_ref),
-         deployment_requirement: nil
+         deployment_requirement: nil,
+         start_continuation: legacy_start_continuation(run),
+         inference_continuation: nil
      }}
   end
 
@@ -367,23 +416,47 @@ defmodule Spectre.Run.Codec do
 
   defp migrate_run(_checkpoint_version, _value), do: {:error, :invalid_run}
 
+  # Earlier writers persisted a ready Run but not the OTP queue entry carrying
+  # its original runtime options. Such a Run remains readable, but recovery is
+  # intentionally explicit about the missing continuation.
+  defp legacy_start_continuation(%Run{status: :ready, cursor: :turn} = run) do
+    %StartContinuation{
+      input: run.input,
+      recoverable?: false,
+      reason: :legacy_ready_run_without_start_continuation,
+      options: %{}
+    }
+  end
+
+  defp legacy_start_continuation(%Run{}), do: nil
+
   @spec validate_run_invariants(raw_run()) :: :ok | {:error, term()}
-  defp validate_run_invariants(%Run{
-         status: :ready,
-         cursor: :turn,
-         revision: 0,
-         step_id: nil,
-         waiting: nil,
-         result: nil,
-         last_error: nil
-       }),
-       do: :ok
+  defp validate_run_invariants(
+         %Run{
+           status: :ready,
+           cursor: :turn,
+           revision: 0,
+           step_id: nil,
+           waiting: nil,
+           result: nil,
+           last_error: nil,
+           inference_continuation: nil
+         } = run
+       ) do
+    case run.start_continuation do
+      %StartContinuation{input: input} when input == run.input -> :ok
+      %StartContinuation{} -> {:error, :run_start_continuation_input_mismatch}
+      nil -> {:error, :missing_run_start_continuation}
+    end
+  end
 
   defp validate_run_invariants(
          %Run{
            status: :boundary,
            cursor: :policy,
            last_error: nil,
+           start_continuation: nil,
+           inference_continuation: nil,
            waiting: %Boundary{
              id: boundary_id,
              kind: :needs,
@@ -421,6 +494,8 @@ defmodule Spectre.Run.Codec do
            status: :awaiting,
            cursor: :effect,
            last_error: nil,
+           start_continuation: nil,
+           inference_continuation: nil,
            waiting: %Invocation{ref: %Ref{kind: :invocation} = ref} = invocation,
            result: %Result{} = result
          } = run
@@ -446,9 +521,42 @@ defmodule Spectre.Run.Codec do
 
   defp validate_run_invariants(
          %Run{
+           status: :awaiting,
+           cursor: :inference,
+           last_error: nil,
+           start_continuation: nil,
+           waiting:
+             %Invocation{kind: :inference, ref: %Ref{kind: :invocation} = ref} =
+               invocation,
+           result: nil,
+           inference_continuation: %Spectre.Run.InferenceContinuation{} = continuation
+         } = run
+       ) do
+    with :ok <- validate_ref(run, ref),
+         :ok <- Invocation.validate(invocation),
+         :ok <- Spectre.Run.InferenceContinuation.validate(continuation),
+         true <- invocation == continuation.invocation,
+         true <- invocation.id == ref.boundary_id,
+         true <- invocation.run_id == run.id and invocation.run_revision == run.revision,
+         true <- invocation.inference_id == continuation.inference_id,
+         {:ok, subject_id} <- Value.opaque_id(continuation.inference_id, "subject"),
+         true <- invocation.subject_id == subject_id,
+         true <- ref.subject_id == subject_id,
+         true <- invocation.stream_epoch == continuation.stream_epoch do
+      :ok
+    else
+      {:error, _reason} = error -> error
+      _value -> {:error, :invalid_run_inference_boundary}
+    end
+  end
+
+  defp validate_run_invariants(
+         %Run{
            status: :boundary,
            cursor: :complete,
            last_error: nil,
+           start_continuation: nil,
+           inference_continuation: nil,
            waiting: %Boundary{id: boundary_id, kind: :reply, ref: %Ref{kind: :reply} = ref},
            result: %Result{} = result
          } = run
@@ -474,6 +582,8 @@ defmodule Spectre.Run.Codec do
            status: :complete,
            cursor: :complete,
            last_error: nil,
+           start_continuation: nil,
+           inference_continuation: nil,
            waiting: nil,
            result: %Result{} = result
          } = run
@@ -493,6 +603,8 @@ defmodule Spectre.Run.Codec do
          status: :failed,
          cursor: :complete,
          revision: revision,
+         start_continuation: nil,
+         inference_continuation: nil,
          waiting: nil,
          result: nil,
          last_error: last_error
@@ -505,6 +617,8 @@ defmodule Spectre.Run.Codec do
            status: :failed,
            cursor: :complete,
            revision: revision,
+           start_continuation: nil,
+           inference_continuation: nil,
            waiting: nil,
            result: %Result{} = result,
            last_error: last_error

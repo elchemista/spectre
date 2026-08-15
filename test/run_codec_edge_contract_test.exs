@@ -1,6 +1,24 @@
 defmodule SpectreRunCodecEdgeContractTest.Agent do
   @moduledoc false
   use Spectre.Agent, id: :run_codec_contract_agent
+
+  router(via: [:regex], semantic_cache?: false, classification_log?: false)
+
+  flow :codec_edges do
+    on :HELLO, regex: ~r/^hello$/ do
+      run(:hello)
+    end
+  end
+
+  def hello(_input, _context), do: "hello"
+end
+
+defmodule SpectreRunCodecEdgeContractTest.Model do
+  @moduledoc false
+  @behaviour Spectre.LLM
+
+  @impl Spectre.LLM
+  def complete(_plan, _opts), do: {:ok, "inference"}
 end
 
 defmodule SpectreRunCodecEdgeContractTest do
@@ -10,6 +28,8 @@ defmodule SpectreRunCodecEdgeContractTest do
   alias Spectre.Definition
   alias Spectre.Definition.Canonical
   alias Spectre.Execution.Closure
+  alias Spectre.Inference.Constraints
+  alias Spectre.Inference.Request, as: InferenceRequest
   alias Spectre.Input
   alias Spectre.Input.Source
   alias Spectre.Run
@@ -17,6 +37,9 @@ defmodule SpectreRunCodecEdgeContractTest do
   alias Spectre.Run.Ref
   alias Spectre.Run.Request
   alias Spectre.Run.Value
+  alias Spectre.Instance.Runs
+  alias Spectre.Prompt.Plan
+  alias Spectre.Runtime
   alias Spectre.State
   alias SpectreRunCodecEdgeContractTest.Agent
 
@@ -35,7 +58,7 @@ defmodule SpectreRunCodecEdgeContractTest do
   end
 
   test "Run options and identifiers fail closed for non-portable values" do
-    assert Run.version() == 2
+    assert Run.version() == 3
     assert :ok = Run.validate_options([])
     assert :ok = Run.validate_options(run_id: nil, trace_id: nil)
     assert {:error, {:invalid_run_option, :run_id, :empty}} = Run.validate_options(run_id: "")
@@ -164,18 +187,18 @@ defmodule SpectreRunCodecEdgeContractTest do
     unsupported =
       :erlang.term_to_binary(%{
         "format" => "spectre/run",
-        "version" => 3,
+        "version" => 4,
         "run" => nil
       })
 
-    assert {:error, {:unsupported_run_checkpoint_version, 3, [1, 2]}} =
+    assert {:error, {:unsupported_run_checkpoint_version, 4, [1, 2, 3]}} =
              Run.restore(unsupported)
 
     invalid = :erlang.term_to_binary(%{"format" => "other", "version" => 1, "run" => nil})
     assert {:error, :invalid_run_checkpoint} = Run.restore(invalid)
 
-    assert {:error, {:unsupported_run_version, 3, [2]}} =
-             Run.checkpoint(%{run | run_version: 3})
+    assert {:error, {:unsupported_run_version, 4, [3]}} =
+             Run.checkpoint(%{run | run_version: 4})
 
     assert {:ok, _checkpoint} = Run.checkpoint(run, [:ignored_non_keyword_entry])
   end
@@ -205,11 +228,177 @@ defmodule SpectreRunCodecEdgeContractTest do
     invalid_checkpoint =
       :erlang.term_to_binary(%{
         "format" => "spectre/run",
-        "version" => 2,
+        "version" => 3,
         "run" => encoded_run
       })
 
     assert {:error, :invalid_run} = Run.restore(invalid_checkpoint)
+
+    assert {:ok, encoded_value} = Value.encode(:not_a_run)
+
+    non_run_checkpoint =
+      :erlang.term_to_binary(%{
+        "format" => "spectre/run",
+        "version" => 3,
+        "run" => encoded_value
+      })
+
+    assert {:error, :invalid_run} = Run.restore(non_run_checkpoint)
+  end
+
+  test "reply, completion, failure, and inference checkpoints reject forged boundary lineage" do
+    assert {:continue, started} = Runtime.start(Agent, "hello")
+    assert {:boundary, %Spectre.Run.Boundary{} = boundary, replied} = Runtime.advance(started)
+    assert {:complete, _result, completed} = Runtime.advance(replied)
+
+    assert {:ok, _checkpoint} = Run.checkpoint(replied)
+    assert {:ok, _checkpoint} = Run.checkpoint(completed)
+
+    mapped_route = %{completed.result | route: %{label: :HELLO, strategy: :regex}}
+    assert {:ok, _checkpoint} = Run.checkpoint(%{completed | result: mapped_route})
+
+    wrong_output = %{replied | waiting: %{boundary | output: "different"}}
+    assert {:error, :invalid_run_reply_boundary} = Run.checkpoint(wrong_output)
+
+    stale_result_ref = %{get_in(replied.result.metadata, [:run, :ref]) | run_id: "foreign"}
+
+    stale_metadata = put_in(replied.result.metadata, [:run, :ref], stale_result_ref)
+    stale_result = %{replied.result | metadata: stale_metadata}
+
+    assert {:error, :invalid_run_reference} =
+             Run.checkpoint(%{replied | result: stale_result})
+
+    complete_ref = get_in(completed.result.metadata, [:run, :ref])
+    wrong_complete_ref = %{complete_ref | kind: :reply}
+
+    wrong_completion_metadata =
+      put_in(completed.result.metadata, [:run, :ref], wrong_complete_ref)
+
+    wrong_completion = %{completed.result | metadata: wrong_completion_metadata}
+
+    assert {:error, :invalid_run_completion} =
+             Run.checkpoint(%{completed | result: wrong_completion})
+
+    failed = Runs.terminalize_failed_run(replied, :provider_failed)
+    assert {:ok, _checkpoint} = Run.checkpoint(failed)
+
+    wrong_failure_input = %{failed.result | input: Input.new("different")}
+
+    assert {:ok, normalized_failure_checkpoint} =
+             Run.checkpoint(%{failed | result: wrong_failure_input})
+
+    assert {:ok, normalized_failure} = Run.restore(normalized_failure_checkpoint)
+    assert normalized_failure.result.input == normalized_failure.input
+
+    assert {:error, :invalid_run_failure} = Run.checkpoint(%{failed | last_error: nil})
+
+    inference_request = inference_request()
+
+    assert {:ok, inference_run} =
+             Runtime.admit_inference(Agent, inference_request, "inference", %State{})
+
+    assert {:dispatch, invocation, inference_awaiting, _prepared} =
+             Runtime.prepare_inference(inference_run, inference_request,
+               model: SpectreRunCodecEdgeContractTest.Model
+             )
+
+    assert {:ok, _checkpoint} = Run.checkpoint(inference_awaiting)
+
+    invalid_fence = %{invocation | control_revision: -1}
+
+    assert {:error, :invalid_invocation_control_revision} =
+             Run.checkpoint(%{inference_awaiting | waiting: invalid_fence})
+
+    valid_but_different = %{
+      invocation
+      | metadata: Map.put(invocation.metadata, :test_projection, true)
+    }
+
+    assert {:error, :invalid_run_inference_boundary} =
+             Run.checkpoint(%{inference_awaiting | waiting: valid_but_different})
+  end
+
+  test "checkpoint restore migrates v2 continuations and detects envelope schema drift" do
+    run = initial_run()
+    legacy_ready = %{run | run_version: 2, start_continuation: nil}
+
+    assert {:ok, restored_ready} =
+             legacy_ready
+             |> checkpoint_envelope(2)
+             |> Run.restore()
+
+    assert restored_ready.run_version == 3
+    refute restored_ready.start_continuation.recoverable?
+
+    assert restored_ready.start_continuation.reason ==
+             :legacy_ready_run_without_start_continuation
+
+    legacy_failed = %{
+      run
+      | run_version: 2,
+        status: :failed,
+        cursor: :complete,
+        revision: 1,
+        step_id: "legacy-failed",
+        start_continuation: nil,
+        last_error: :legacy_failure
+    }
+
+    assert {:ok, %{start_continuation: nil, status: :failed}} =
+             legacy_failed
+             |> checkpoint_envelope(2)
+             |> Run.restore()
+
+    mismatch = %{run | run_version: 1}
+
+    assert {:error, {:run_checkpoint_schema_mismatch, 2, 1}} =
+             mismatch
+             |> checkpoint_envelope(2)
+             |> Run.restore()
+  end
+
+  test "decoded Runs validate source, continuation, and result identity defensively" do
+    run = initial_run()
+
+    assert {:error, _reason} =
+             Run.checkpoint(%{run | input: %{run.input | source: :invalid}})
+
+    assert {:error, :invalid_run_start_continuation} =
+             run
+             |> Map.put(:start_continuation, :invalid)
+             |> checkpoint_envelope(3)
+             |> Run.restore()
+
+    assert {:error, :invalid_run_inference_continuation} =
+             run
+             |> Map.put(:inference_continuation, :invalid)
+             |> checkpoint_envelope(3)
+             |> Run.restore()
+
+    mismatched_start = %{
+      run.start_continuation
+      | input: %{run.input | text: "different logical input"}
+    }
+
+    assert {:error, :run_start_continuation_input_mismatch} =
+             run
+             |> Map.put(:start_continuation, mismatched_start)
+             |> checkpoint_envelope(3)
+             |> Run.restore()
+
+    assert {:error, :missing_run_start_continuation} =
+             run
+             |> Map.put(:start_continuation, nil)
+             |> checkpoint_envelope(3)
+             |> Run.restore()
+
+    assert {:continue, started} = Runtime.start(Agent, "no matching route")
+    assert {:complete, _result, complete} = Runtime.advance(started)
+
+    invalid_identity = %{complete.result | metadata: %{}}
+
+    assert {:error, :invalid_run_result_identity} =
+             Run.checkpoint(%{complete | result: invalid_identity})
   end
 
   test "Run value encoding round-trips tagged atoms, tuples, maps, lists, and structs" do
@@ -282,9 +471,33 @@ defmodule SpectreRunCodecEdgeContractTest do
   end
 
   defp initial_run do
-    Run.new(Agent, %Input{text: "hello"}, %State{},
-      run_id: "run-1",
-      trace_id: "trace-1"
+    opts = [run_id: "run-1", trace_id: "trace-1"]
+    {:ok, run} = Runtime.admit(Agent, %Input{text: "hello"}, %State{}, opts, opts)
+    run
+  end
+
+  defp inference_request do
+    {:ok, plan} = Plan.compose("infer", [], [:agent])
+
+    InferenceRequest.new(
+      id: "codec-inference",
+      purpose: :cognitive_operation,
+      plan: plan,
+      constraints: %Constraints{},
+      metadata: %{
+        model: SpectreRunCodecEdgeContractTest.Model,
+        llm_opts: [model: SpectreRunCodecEdgeContractTest.Model],
+        explicit_model_override?: true
+      }
+    )
+  end
+
+  defp checkpoint_envelope(run, version) do
+    {:ok, encoded_run} = Value.encode(run)
+
+    :erlang.term_to_binary(
+      %{"format" => "spectre/run", "version" => version, "run" => encoded_run},
+      [:deterministic]
     )
   end
 end

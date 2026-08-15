@@ -13,13 +13,14 @@ matrix for the running release:
 | Format | Writer | Readers |
 | --- | ---: | --- |
 | conversational State | 5 | 2, 3, 4, 5 |
-| Run checkpoint | 2 | 1, 2 |
-| format-tagged canonical Instance checkpoint | 2 | 2 |
+| Run checkpoint | 3 | 1, 2, 3 |
+| format-tagged canonical Instance checkpoint | 3 | 2, 3 |
 
 Run and State legacy readers migrate directly into current core structs. The
 Instance v2 family introduced in 0.3.0 is format-tagged and deliberately
-rejects retired untagged 0.2.x Instance schemas. Writers never emit a legacy
-version.
+rejects retired untagged 0.2.x Instance schemas. The v3 family extends that
+same tagged format with inference control/progress and the required-receipt
+outbox. Writers never emit a legacy version.
 
 Use the executable helpers in upgrade tests:
 
@@ -31,8 +32,8 @@ alias Spectre.Foundation.Conformance
 {:ok, instance_report} = Conformance.verify_checkpoint(stored_instance_json)
 
 true = state_report.writer_version == 5
-true = run_report.writer_version == 2
-true = instance_report.writer_version == 2
+true = run_report.writer_version == 3
+true = instance_report.writer_version == 3
 ```
 
 Durable adapters and offline tooling should bind the checkpoint to the stream
@@ -142,14 +143,21 @@ The fixture is append-only evidence. A later release may add a new writer and
 reader without rewriting the historical bytes or changing what an older
 release produced.
 
-Spectre 0.3.1 also freezes two checkpoints emitted by the released 0.3.0
+The compatibility suite also freezes two checkpoints emitted by the released 0.3.0
 format-tagged Instance writer. `instance-v2.json` covers an empty revision-zero
 Instance; `instance-v2-advanced.json` covers a real revision-two Work waiting
-on a declared trigger. The release suite pins their original bytes and SHA-256
-digests, decodes them with the 0.3.1 reader, validates the restored state, and
+on a declared trigger. The suite pins their original bytes and SHA-256 digests,
+decodes them with the current reader, initializes the three v3 sections, and
 re-encodes them semantically with the current writer. Re-encoded bytes need not
-match the source bytes because 0.3.1 corrects canonical map-entry ordering;
-their decoded meaning must match.
+match the source bytes because the writer version and canonical map-entry
+ordering changed; their decoded meaning must match.
+
+Run v1/v2 fixtures remain permanent migration inputs as well. A v2 Run that
+was already at a visible or terminal boundary migrates without inventing work.
+A v2 `:ready` Run cannot reconstruct its lost admission queue entry, so the v3
+reader creates an explicit nonrecoverable start continuation and recovery
+terminalizes it. See [Migrating Run checkpoints to v3](MIGRATING_TO_RUN_V3.md)
+and [Migrating Instance checkpoints to v3](MIGRATING_TO_INSTANCE_CHECKPOINT_V3.md).
 
 Spectre 0.2.7 extends the live matrix with runtime Skill Definition,
 applicability, prompt-budget, Routing projection, and index-profile schema

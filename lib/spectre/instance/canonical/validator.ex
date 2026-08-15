@@ -6,13 +6,16 @@ defmodule Spectre.Instance.Canonical.Validator do
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.SkillStates
+  alias Spectre.Inference.Progress, as: InferenceProgress
   alias Spectre.Operation.Control
+  alias Spectre.Operation.Control.Command
   alias Spectre.Operation.Delivery.Consent, as: DeliveryConsent
   alias Spectre.Operation.Delivery.Receipt, as: DeliveryReceipt
   alias Spectre.Operation.Event, as: OperationEvent
   alias Spectre.Operation.Loop, as: OperationLoop
   alias Spectre.Operation.Runtime, as: OperationRuntime
   alias Spectre.Run
+  alias Spectre.Receipt.OutboxEntry
   alias Spectre.State
   alias Spectre.State.Codec, as: StateCodec
 
@@ -36,6 +39,12 @@ defmodule Spectre.Instance.Canonical.Validator do
          :ok <- validate_lifecycles(lifecycles, activation),
          {:ok, skill_states} <- Canonical.fetch(canonical, :skill_states),
          :ok <- SkillStates.validate_activation(skill_states, activation),
+         {:ok, inference_control} <- Canonical.fetch(canonical, :inference_control),
+         :ok <- validate_inference_control(inference_control),
+         {:ok, inference_progress} <- Canonical.fetch(canonical, :inference_progress),
+         :ok <- validate_inference_progress(inference_progress, canonical.revision),
+         {:ok, receipt_outbox} <- Canonical.fetch(canonical, :receipt_outbox),
+         :ok <- validate_receipt_outbox(receipt_outbox, canonical.revision, opts),
          {:ok, event_admissions} <- Canonical.fetch(canonical, :event_admissions),
          :ok <-
            validate_event_envelopes(
@@ -104,6 +113,135 @@ defmodule Spectre.Instance.Canonical.Validator do
   end
 
   defp validate_runs(value), do: {:error, {:invalid_canonical_runs, value}}
+
+  defp validate_inference_control(controls)
+       when is_map(controls) and not is_struct(controls) do
+    Enum.reduce_while(controls, :ok, fn
+      {inference_id, control}, :ok when is_binary(inference_id) and inference_id != "" ->
+        case validate_inference_control_entry(inference_id, control) do
+          :ok ->
+            {:cont, :ok}
+
+          {:error, reason} ->
+            {:halt, {:error, {:invalid_inference_control, inference_id, reason}}}
+        end
+
+      _invalid, :ok ->
+        {:halt, {:error, :invalid_inference_control_entry}}
+    end)
+  end
+
+  defp validate_inference_control(value),
+    do: {:error, {:invalid_canonical_inference_control, value}}
+
+  defp validate_inference_control_entry(inference_id, control)
+       when is_map(control) and not is_struct(control) do
+    with true <-
+           MapSet.new(Map.keys(control)) ==
+             MapSet.new([:generation, :pending, :last_command, :history]),
+         generation when is_integer(generation) and generation >= 0 <-
+           Map.get(control, :generation),
+         history when is_list(history) and length(history) <= 128 <- Map.get(control, :history),
+         :ok <- validate_inference_command(Map.get(control, :pending), inference_id, [:committed]),
+         :ok <-
+           validate_inference_command(
+             Map.get(control, :last_command),
+             inference_id,
+             [:applied, :rejected]
+           ),
+         true <-
+           Enum.all?(history, fn command ->
+             validate_inference_command(command, inference_id, [:applied, :rejected]) == :ok
+           end) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_inference_control_shape}
+    end
+  end
+
+  defp validate_inference_control_entry(_inference_id, _control),
+    do: {:error, :invalid_inference_control_shape}
+
+  defp validate_inference_command(nil, _inference_id, _statuses), do: :ok
+
+  defp validate_inference_command(
+         %Command{loop_id: inference_id, action: action, status: status} = command,
+         inference_id,
+         statuses
+       )
+       when action in [:steer, :cancel] do
+    if status in statuses,
+      do: Command.validate(command),
+      else: {:error, :invalid_inference_control_command_status}
+  end
+
+  defp validate_inference_command(_command, _inference_id, _statuses),
+    do: {:error, :invalid_inference_control_command}
+
+  defp validate_inference_progress(progress, canonical_revision)
+       when is_map(progress) and not is_struct(progress) do
+    Enum.reduce_while(progress, :ok, fn
+      {inference_id, %InferenceProgress{inference_id: inference_id} = entry}, :ok
+      when is_binary(inference_id) and inference_id != "" ->
+        case InferenceProgress.validate(entry) do
+          :ok ->
+            progress_revision = entry.canonical_revision
+
+            if is_nil(progress_revision) or progress_revision <= canonical_revision,
+              do: {:cont, :ok},
+              else: {:halt, {:error, {:future_inference_progress, inference_id}}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:invalid_inference_progress, inference_id, reason}}}
+        end
+
+      {inference_id, _entry}, :ok ->
+        {:halt, {:error, {:invalid_inference_progress_entry, inference_id}}}
+    end)
+  end
+
+  defp validate_inference_progress(value, _canonical_revision),
+    do: {:error, {:invalid_canonical_inference_progress, value}}
+
+  defp validate_receipt_outbox(outbox, canonical_revision, opts)
+       when is_map(outbox) and not is_struct(outbox) do
+    limit = Keyword.get(opts, :receipt_outbox_limit, 256)
+
+    with true <- MapSet.new(Map.keys(outbox)) == MapSet.new([:entries, :ids]),
+         entries when is_list(entries) <- Map.get(outbox, :entries),
+         ids when is_map(ids) and not is_struct(ids) <- Map.get(outbox, :ids),
+         true <- is_integer(limit) and limit >= 0 and length(entries) <= limit,
+         :ok <- validate_outbox_entries(entries, canonical_revision),
+         true <- MapSet.new(Enum.map(entries, & &1.id)) == MapSet.new(Map.keys(ids)),
+         true <- Enum.all?(entries, &(Map.get(ids, &1.id) == &1.digest)) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_canonical_receipt_outbox}
+    end
+  end
+
+  defp validate_receipt_outbox(value, _canonical_revision, _opts),
+    do: {:error, {:invalid_canonical_receipt_outbox, value}}
+
+  defp validate_outbox_entries(entries, canonical_revision) do
+    ids = Enum.map(entries, &Map.get(&1, :id))
+
+    if Enum.uniq(ids) != ids do
+      {:error, :duplicate_receipt_outbox_entry}
+    else
+      Enum.reduce_while(entries, :ok, fn
+        %OutboxEntry{inserted_revision: revision} = entry, :ok
+        when revision <= canonical_revision ->
+          case OutboxEntry.validate(entry) do
+            :ok -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, {:invalid_receipt_outbox_entry, reason}}}
+          end
+
+        _entry, :ok ->
+          {:halt, {:error, :invalid_receipt_outbox_entry}}
+      end)
+    end
+  end
 
   defp validate_lifecycles(lifecycles, activation)
        when is_map(lifecycles) and not is_struct(lifecycles) do

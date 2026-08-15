@@ -85,7 +85,12 @@ defmodule Spectre.Prompt.Materializer do
     values =
       context
       |> Map.delete("input")
-      |> Map.put(:input, %{text: input.text, meta: input.meta})
+      |> Map.put(:input, %{
+        text: input.text,
+        meta: input.meta,
+        trust: Input.trust(input),
+        source: Input.source_evidence(input)
+      })
 
     render_placeholders(placeholders, content, values)
   end
@@ -153,6 +158,8 @@ defmodule Spectre.Prompt.Materializer do
       {:error, _reason} -> {:error, shape(value)}
     end
   end
+
+  defp render_value(value, "spectre.renderer.data/1"), do: {:ok, Spectre.Prompt.data(value)}
 
   defp render_value(_value, _renderer_ref), do: {:error, :unsupported_renderer}
 

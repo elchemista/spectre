@@ -56,6 +56,22 @@ defmodule Spectre.Input do
   def new(input), do: %__MODULE__{text: to_string(input), raw: input}
 
   @doc """
+  Validates the normalized input shape without inspecting its raw transport.
+
+  Raw payloads are deliberately allowed here because they remain local to the
+  inbound boundary and are removed by the Run checkpoint projection.
+  """
+  @spec validate(term()) :: :ok | {:error, term()}
+  def validate(%__MODULE__{} = input) do
+    with :ok <- validate_text(input.text),
+         :ok <- validate_metadata(input.meta) do
+      validate_source(input.source)
+    end
+  end
+
+  def validate(_input), do: {:error, :invalid_input}
+
+  @doc """
   Stores enriched metadata on the input.
 
       input = Spectre.Input.put_meta(input, :locale, "en")
@@ -96,6 +112,31 @@ defmodule Spectre.Input do
     end
   end
 
+  @doc "Returns the source trust class, defaulting missing legacy sources to untrusted."
+  @spec trust(t()) :: :untrusted | :trusted | :system
+  def trust(%__MODULE__{source: %Source{trust: trust} = source}) do
+    if match?(:ok, Source.validate(source)), do: trust, else: :untrusted
+  end
+
+  def trust(%__MODULE__{}), do: :untrusted
+
+  @doc "Returns portable source evidence suitable for prompt/materialization metadata."
+  @spec source_evidence(t()) :: map()
+  def source_evidence(%__MODULE__{source: %Source{} = source}) do
+    if match?(:ok, Source.validate(source)) do
+      %{
+        kind: source.kind,
+        trust: source.trust,
+        provenance: source.provenance,
+        authenticity: source.authenticity
+      }
+    else
+      legacy_source_evidence()
+    end
+  end
+
+  def source_evidence(%__MODULE__{}), do: legacy_source_evidence()
+
   @spec normalize_key(atom() | String.t() | term()) :: atom() | String.t()
   defp normalize_key(key) when is_atom(key), do: key
 
@@ -110,4 +151,22 @@ defmodule Spectre.Input do
   @spec normalize_source(Source.t() | map() | keyword() | nil) :: Source.t() | nil
   defp normalize_source(nil), do: nil
   defp normalize_source(source), do: Source.new(source)
+
+  defp validate_text(text) when is_binary(text) do
+    if String.valid?(text) and not String.contains?(text, <<0>>),
+      do: :ok,
+      else: {:error, :invalid_input_text}
+  end
+
+  defp validate_text(_text), do: {:error, :invalid_input_text}
+
+  defp validate_metadata(metadata) when is_map(metadata) and not is_struct(metadata), do: :ok
+  defp validate_metadata(_metadata), do: {:error, :invalid_input_metadata}
+
+  defp validate_source(nil), do: :ok
+  defp validate_source(%Source{} = source), do: Source.validate(source)
+  defp validate_source(_source), do: {:error, :invalid_input_source}
+
+  defp legacy_source_evidence,
+    do: %{kind: :legacy, trust: :untrusted, provenance: %{}, authenticity: %{}}
 end

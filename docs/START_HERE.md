@@ -29,11 +29,13 @@ only when the application needs them.
 | See complete applications | [Two Realistic Agents](EXAMPLES.md) |
 | Choose routes and stage side effects | [Routing](ROUTING.md) and [Actions](ACTIONS.md) |
 | Own durable subject state | [Agent Instances and Subjects](INSTANCES.md), then [Resumable Runs](RUNS.md) |
+| Stream an Instance-owned model response | [Streaming inference](STREAMING_INFERENCE.md) |
+| Persist nondeterministic boundary evidence | [Boundary receipts](RECEIPTS.md) |
 | Run long or recurring procedures | [Work, Vigil, and the Operational Runtime](OPERATIONS.md) |
 | Deploy and verify a release | [Production Operations](PRODUCTION.md) and [Testing](TESTING.md) |
 | Integrate another package or host runtime | [Integration Boundaries](INTEGRATIONS.md) and [Stack](STACK.md) |
 | Look up functions and compatibility | [Public API](API.md) and the [Public API Manifest](PUBLIC_API.md) |
-| Upgrade an existing application | Read the [current release notes](../CHANGELOG.md), then the relevant [migration guide](MIGRATING_TO_0_3.md) |
+| Upgrade an existing application | Read the [current release notes](../CHANGELOG.md), then the [Run v3](MIGRATING_TO_RUN_V3.md) and [Instance v3](MIGRATING_TO_INSTANCE_CHECKPOINT_V3.md) guides when applicable |
 
 The [guide for LLMs and coding agents](../LLMS.md) is a separate,
 machine-oriented contract. Human readers should follow the path above first.

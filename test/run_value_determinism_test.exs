@@ -9,7 +9,7 @@ defmodule SpectreRunValueDeterminismTest do
                     )
   @state_fixture Path.expand("fixtures/compatibility/0.1.6/state-v5.json", __DIR__)
 
-  @instance_digest "5ffdb3d806522b309ce003fe6c4fbb35359dc7aa72481a6e01698640e5d4b980"
+  @instance_digest "530073ac9229e8a393a34a8d86010a3d2e928da5e37960e1538c70090b188a9f"
   @state_digest "de63f859b1814a815a7e7a83baa20a1990cb73cbaab784b85d2b8afb85602b6c"
 
   @child_script ~S"""
