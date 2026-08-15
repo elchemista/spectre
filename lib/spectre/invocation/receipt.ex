@@ -2,9 +2,10 @@ defmodule Spectre.Invocation.Receipt do
   @moduledoc """
   Compatibility name for the original correlated internal receipt.
 
-  New runtime code uses `Spectre.Invocation.WorkerReceipt`, whose name makes
-  the BEAM-local capability boundary explicit. This struct remains readable so
-  existing integrations and persisted API manifests do not break.
+  New runtime code uses a separate internal worker-receipt struct that makes
+  the BEAM-local capability boundary explicit. This compatibility struct
+  remains readable so existing integrations and persisted API manifests do
+  not break.
   """
 
   @enforce_keys [
