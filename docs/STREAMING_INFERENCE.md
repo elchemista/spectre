@@ -75,6 +75,13 @@ guards operate on the complete response. Delta `content_class` is
 `:provisional` when incremental sanitization is active and `:unsanitized` when
 the host explicitly disables it.
 
+The provisional lane is not promised to be a byte-for-byte prefix of the
+terminal Result. In particular, an unterminated control marker causes the
+incremental sanitizer to suppress the remaining provisional tail, while the
+full-response sanitizer may preserve text for which it never observes a
+complete control block. The committed Result is authoritative; consumers must
+not reconstruct it by concatenating deltas.
+
 If only the canonical terminal matters, do not enumerate:
 
 ```elixir
@@ -134,6 +141,15 @@ capabilities. `:cost_usage` means cumulative cost is authoritative for the
 configured immutable pricing ref. Hard cost budgets are rejected when that
 capability is unavailable. `:incremental_usage` means cumulative usage can be
 enforced during generation.
+
+Profile capability negotiation is fail-closed for selectors backed by a
+profile catalog: the selected metadata must include `:stream` in
+`profile_supports`. `Spectre.Inference.Selector.Default` is the narrow
+exception because it has no catalog to query and therefore cannot produce
+profile capability evidence. In that case the profile gate is not applicable
+and `StreamAdapter.capabilities/2` is the authoritative gate; the adapter must
+still declare `:stream` and one valid transport mode or preparation fails.
+This is not a fallback from a known profile rejection.
 
 Callbacks run in the session process and must initiate asynchronous transport
 work and return promptly. In particular, `open/2` should start the request;

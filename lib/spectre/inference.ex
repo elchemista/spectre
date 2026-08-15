@@ -586,6 +586,9 @@ defmodule Spectre.Inference do
     end
   end
 
+  # The default selector has no profile catalog from which to derive
+  # `profile_supports`. Its adapter is therefore the sole capability source;
+  # StreamAdapter.validate/3 still requires the explicit `:stream` capability.
   defp stream_profile_supported(%Selection{selector: Default}), do: :ok
 
   defp stream_profile_supported(%Selection{metadata: metadata}) do

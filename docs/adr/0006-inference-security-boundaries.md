@@ -20,6 +20,10 @@ finite-state sanitizer handles control tags, comments and line markers split
 across arbitrary transport chunks. It never promotes a delta to a deliverable
 reply. The complete response still passes the normal full-response sanitizer,
 Action planner and policy path before `%Spectre.Result{}` commits.
+Provisional output is not a canonical prefix: an incomplete control opener may
+cause the incremental lane to suppress its remaining tail even when the
+terminal whole-response sanitizer preserves that text. Consumers must use the
+committed Result rather than rebuilding it from deltas.
 
 Observer events contain no text. Provider request ids, cursors, credentials,
 raw failures and adapter metadata do not enter public events or receipts.
