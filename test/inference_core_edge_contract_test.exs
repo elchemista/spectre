@@ -185,15 +185,21 @@ defmodule SpectreInferenceCoreEdgeContractTest do
   end
 
   describe "the incremental sanitizer state machine" do
-    test "rejects unsafe lookahead settings and bounds line-prefix ambiguity" do
+    test "rejects unsafe lookahead settings and compacts ambiguous indentation" do
       assert_raise ArgumentError, ~r/lookahead must be at least 16 bytes/, fn ->
         IncrementalSanitizer.new(max_sanitizer_lookahead_bytes: 15)
       end
 
-      state = IncrementalSanitizer.new(max_sanitizer_lookahead_bytes: 16)
+      for whitespace <- [" ", "\u00A0", "\u2003"] do
+        state = IncrementalSanitizer.new(max_sanitizer_lookahead_bytes: 16)
+        indentation = String.duplicate(whitespace, 17)
 
-      assert {:error, :sanitizer_lookahead_exceeded} =
-               IncrementalSanitizer.push(state, String.duplicate(" ", 17))
+        assert {:ok, "", compacted} = IncrementalSanitizer.push(state, indentation <> "IN")
+        assert compacted.line_buffer == "IN"
+
+        assert {:ok, "visible", _state} =
+                 IncrementalSanitizer.push(compacted, "TENT: hidden\nvisible")
+      end
     end
 
     test "finishes transparent buffers and safely discards incomplete control blocks" do

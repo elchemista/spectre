@@ -82,8 +82,10 @@ sanitizer may suppress more text than the full-response sanitizer, but it must
 never emit text that the full-response sanitizer would later remove. This is
 checked across arbitrary UTF-8 chunk boundaries with a property test. For
 example, an unterminated control marker suppresses the remaining provisional
-tail even when the terminal sanitizer preserves it. The committed Result is
-authoritative; consumers must not reconstruct it by concatenating deltas.
+tail even when the terminal sanitizer preserves it. Excess leading indentation
+is likewise suppressed once it fills the bounded lookahead; it does not fail
+the provider attempt. The committed Result is authoritative; consumers must
+not reconstruct it by concatenating deltas.
 
 If only the canonical terminal matters, do not enumerate:
 
@@ -298,7 +300,7 @@ The session enforces every value it can observe directly:
 | `stream_max_buffer_events` | 64 | normalized event queue |
 | `stream_max_buffer_bytes` | 256 KB | queued text |
 | `stream_max_events_per_transport_item` | 64 | one adapter transport reply |
-| `max_sanitizer_lookahead_bytes` | 128 B | incomplete sanitizer syntax |
+| `max_sanitizer_lookahead_bytes` | 128 B | incomplete sanitizer syntax; excess indentation is suppressed |
 
 Two raw values are invisible to the core after parsing, so the adapter owns
 their enforcement:

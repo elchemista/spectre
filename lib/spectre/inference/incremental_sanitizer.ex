@@ -475,20 +475,34 @@ defmodule Spectre.Inference.IncrementalSanitizer do
   end
 
   defp classify_visible_prefix(combined, state, output, finish?) do
-    normalized = normalize_line_start(combined)
+    significant = String.trim_leading(combined)
+    normalized = String.upcase(significant)
 
     cond do
       control_prefix?(normalized) ->
         {:ok, %{state | line_buffer: "", mode: :drop_line}, output}
 
       not finish? and possible_control_prefix?(normalized) ->
-        if byte_size(combined) <= state.max_lookahead_bytes,
-          do: {:ok, %{state | line_buffer: combined}, output},
-          else: {:error, :sanitizer_lookahead_exceeded}
+        retain_line_prefix(combined, significant, state, output)
 
       true ->
         {:ok, %{state | line_buffer: "", line_start?: false}, push_output(combined, output)}
     end
+  end
+
+  # Leading indentation does not add evidence that a line is safe to expose.
+  # Once it fills the lookahead, discard only that indentation and retain the
+  # short significant prefix. This keeps memory bounded without turning a
+  # harmless whitespace-only line into a failed provider attempt.
+  defp retain_line_prefix(combined, significant, state, output) do
+    retained =
+      cond do
+        byte_size(combined) <= state.max_lookahead_bytes -> combined
+        byte_size(significant) <= state.max_lookahead_bytes -> significant
+        true -> ""
+      end
+
+    {:ok, %{state | line_buffer: retained}, output}
   end
 
   defp control_line?(line) do
@@ -497,8 +511,6 @@ defmodule Spectre.Inference.IncrementalSanitizer do
     |> String.upcase()
     |> control_prefix?()
   end
-
-  defp normalize_line_start(line), do: line |> String.trim_leading() |> String.upcase()
 
   defp control_prefix?(normalized),
     do: Enum.any?(@control_prefixes, &String.starts_with?(normalized, &1))
