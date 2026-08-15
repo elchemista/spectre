@@ -43,6 +43,8 @@ admission. New work may queue while the durable boundary is in flight; only an
 outbox at `receipt_outbox_limit` fails closed with `:receipt_outbox_full`.
 This keeps admission independent of ordinary sink latency while preserving the
 canonical boundary barrier.
+Checkpoint restore and reconciliation validate the outbox against that same
+configured limit rather than a separate fixed default.
 
 The payload store is intentionally outside the canonical checkpoint. The
 outbox contains only receipt id, envelope digest and a content-addressed

@@ -274,7 +274,8 @@ Enable text-free committed progress separately:
 ```elixir
 opts = [
   inference_observer_lane: true,
-  inference_progress_commit_interval: 5_000
+  inference_progress_commit_interval: 5_000,
+  inference_progress_limit: 256
 ]
 
 {:ok, _subscription} = Spectre.Inference.Events.subscribe(instance)
@@ -283,6 +284,8 @@ opts = [
 Sessions send heartbeat snapshots to their Instance. The Instance updates its
 ephemeral liveness clock immediately, commits a throttled latest-value progress
 snapshot, and only then publishes an event. Raw deltas never use pub/sub.
+The same configured LRU limit is enforced when canonical checkpoints are
+restored or reconciled, so a forged progress map cannot bypass the live bound.
 
 ## Receipt modes
 

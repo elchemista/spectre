@@ -844,6 +844,7 @@ defmodule Spectre.Instance do
              ]) || @default_max_receipt_outbox,
              :receipt_outbox_limit
            ),
+         base_opts <- Keyword.put(base_opts, :receipt_outbox_limit, max_receipt_outbox),
          :ok <- validate_receipt_configuration(receipt_mode, receipt_sink, checkpoint_store),
          {:ok, definition_store} <- definition_store_config(agent, opts, base_opts),
          :ok <- validate_definition_store_pair(checkpoint_store, definition_store),
