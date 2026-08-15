@@ -25,8 +25,11 @@ monotonic: the incremental lane may suppress more content than the terminal
 sanitizer, but it must never expose content that the terminal sanitizer would
 remove. An incomplete control opener may therefore suppress the remaining
 provisional tail even when the whole-response sanitizer preserves it. A
-chunk-partition property test enforces the one-way relation. Consumers must
-use the committed Result rather than rebuilding it from deltas.
+chunk-partition property test enforces the one-way relation. Leading
+indentation that fills the lookahead is suppressed rather than emitted or
+promoted to a provider failure; the significant control-line prefix remains
+bounded and fenced. Consumers must use the committed Result rather than
+rebuilding it from deltas.
 
 Observer events contain no text. Provider request ids, cursors, credentials,
 raw failures and adapter metadata do not enter public events or receipts.

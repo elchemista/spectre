@@ -84,6 +84,23 @@ defmodule SpectreInferenceSanitizerPropertyTest do
     end
   end
 
+  property "long Unicode indentation stays bounded without exposing a control line" do
+    check all(
+            whitespace <- member_of([" ", "\u00A0", "\u2003"]),
+            count <- integer(129..192),
+            widths <- list_of(integer(1..11), min_length: 1, max_length: 16),
+            max_runs: 100
+          ) do
+      input = String.duplicate(whitespace, count) <> "INTENT: hidden\nvisible"
+
+      emitted =
+        sanitize_incrementally(input, widths, max_sanitizer_lookahead_bytes: 128)
+
+      assert emitted == "visible"
+      assert Sanitizer.sanitize(emitted) == String.trim(emitted)
+    end
+  end
+
   test "prefix tags, Unicode indentation, and stripped joins never leak control content" do
     fully_suppressed = [
       "<thinkX>ragiono</think>",
@@ -113,15 +130,21 @@ defmodule SpectreInferenceSanitizerPropertyTest do
     end
   end
 
-  defp sanitize_incrementally(input, widths) do
+  defp sanitize_incrementally(input, widths, opts \\ []) do
     input
     |> split_chunks(widths)
-    |> then(&sanitize_chunks(input, &1))
+    |> then(&sanitize_chunks(input, &1, opts))
   end
 
-  defp sanitize_chunks(input, chunks) do
-    lookahead = max(16, byte_size(input) + 1)
-    state = IncrementalSanitizer.new(max_sanitizer_lookahead_bytes: lookahead)
+  defp sanitize_chunks(input, chunks, opts \\ []) do
+    opts =
+      Keyword.put_new(
+        opts,
+        :max_sanitizer_lookahead_bytes,
+        max(16, byte_size(input) + 1)
+      )
+
+    state = IncrementalSanitizer.new(opts)
 
     {parts, state} =
       Enum.reduce(chunks, {[], state}, fn chunk, {parts, current} ->
