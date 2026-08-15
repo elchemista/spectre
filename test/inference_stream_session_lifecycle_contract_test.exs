@@ -149,6 +149,8 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
       Keyword.put(valid, :budget_snapshot, :invalid),
       Keyword.put(valid, :stream_open_timeout, 0),
       Keyword.put(valid, :stream_attach_timeout, 4_294_967_296),
+      Keyword.put(valid, :stream_max_transport_chunk_bytes, 0),
+      Keyword.put(valid, :stream_max_parser_residual_bytes, :unbounded),
       Keyword.put(valid, :max_sanitizer_lookahead_bytes, 1),
       Keyword.put(valid, :resume_from, %{usage_quality: :approximate}),
       Keyword.put(valid, :resume_from, %{usage: %{output_bytes: 1}, output_bytes: 2}),
@@ -332,6 +334,46 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
       )
 
     assert_failed_next(deadline, :inference_deadline_exceeded)
+  end
+
+  test "ephemeral heartbeats do not consume bounded determinism evidence" do
+    context =
+      start_session(
+        mode: :stall,
+        ack: :auto,
+        inference_heartbeat_interval: 1,
+        determinism_opts: [determinism_sample_limit: 1]
+      )
+
+    session = context.session
+    pending = next_task(context, self(), make_ref(), 1)
+    assert_receive {:adapter_opened, :open, ^session}
+
+    {:opening, data} = :sys.get_state(session)
+    ref = data.adapter_state.ref
+
+    events = [
+      ProviderEvent.new(:started, provider_sequence: 0),
+      ProviderEvent.new(:usage, provider_sequence: 1, usage: %{output_tokens: 1}),
+      ProviderEvent.new(:usage, provider_sequence: 2, usage: %{output_tokens: 2}),
+      ProviderEvent.new(:usage, provider_sequence: 3, usage: %{output_tokens: 3})
+    ]
+
+    Enum.each(events, fn event ->
+      Process.sleep(2)
+      send(session, {:session_fixture, ref, [event]})
+    end)
+
+    Process.sleep(2)
+
+    send(
+      session,
+      {:session_fixture, ref, [ProviderEvent.completed("bounded", provider_sequence: 4)]}
+    )
+
+    assert {:ok, [%StreamEvent{kind: :inference_completed}]} = Task.await(pending, 1_000)
+
+    assert_receive {:session_receipt, ^session, %{metadata: %{nondeterminism_samples: []}}}
   end
 
   test "provider framing rejects duplicate starts, oversized deltas, large responses, and post-terminal events" do
@@ -656,6 +698,77 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
     assert opts[:resume_provider_request_id] == "provider-request"
     assert opts[:resume_usage].output_tokens == 3
     assert opts[:resume_provider_sequence] == 7
+    assert opts[:max_transport_chunk_bytes] == 256_000
+    assert opts[:max_parser_residual_bytes] == 256_000
+  end
+
+  test "conservative stream accounting labels provider counters when a floor changes them" do
+    snapshot =
+      Spectre.Inference.BudgetSnapshot.new(
+        inference_id: "session",
+        attempt_id: "attempt",
+        reserved: %{input_tokens: 4},
+        estimation_policy: :conservative
+      )
+
+    response =
+      Response.new(%{
+        text: String.duplicate("x", 100),
+        usage: %{input_tokens: 1, output_tokens: 1, total_tokens: 2}
+      })
+
+    context =
+      start_session(
+        ack: :auto,
+        budget_snapshot: snapshot,
+        batches: [
+          [
+            ProviderEvent.new(:started, provider_sequence: 0),
+            ProviderEvent.completed(response,
+              provider_sequence: 1,
+              usage_quality: :provider
+            )
+          ]
+        ]
+      )
+
+    assert {:ok,
+            [
+              %StreamEvent{
+                kind: :inference_completed,
+                usage_quality: :estimated,
+                usage: %Usage{input_tokens: 4, output_tokens: 25, total_tokens: 29}
+              }
+            ]} = context |> next_task(self(), make_ref(), 1) |> Task.await(1_000)
+
+    assert_receive {:session_receipt, _, %{usage_quality: :estimated}}
+  end
+
+  test "session exposes only complete UTF-8 text when provider deltas split a codepoint" do
+    <<left::binary-size(2), right::binary>> = "🙂"
+
+    context =
+      start_session(
+        ack: :auto,
+        batches: [
+          [
+            ProviderEvent.new(:started, provider_sequence: 0),
+            ProviderEvent.delta(left, provider_sequence: 1)
+          ],
+          [
+            ProviderEvent.delta(right, provider_sequence: 2),
+            ProviderEvent.completed("🙂", provider_sequence: 3)
+          ]
+        ]
+      )
+
+    claim = make_ref()
+
+    assert {:ok, [%StreamEvent{kind: :delta, payload: "🙂"}]} =
+             context |> next_task(self(), claim, 1) |> Task.await(1_000)
+
+    assert {:ok, [%StreamEvent{kind: :inference_completed}]} =
+             context |> next_task(self(), claim, 1) |> Task.await(1_000)
   end
 
   test "result-only consumers receive both live and retained terminal results" do
@@ -871,7 +984,11 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
       Keyword.keys(defaults) ++
         [
           :budget_snapshot,
+          :determinism_opts,
+          :inference_heartbeat_interval,
           :resume_from,
+          :stream_max_transport_chunk_bytes,
+          :stream_max_parser_residual_bytes,
           :stream_max_delta_bytes,
           :model_reply_max_bytes,
           :max_sanitizer_lookahead_bytes

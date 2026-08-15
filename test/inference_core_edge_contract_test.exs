@@ -474,6 +474,23 @@ defmodule SpectreInferenceCoreEdgeContractTest do
 
       assert {:error, :invalid_stream_event} = StreamEvent.validate(:invalid)
 
+      valid_event =
+        StreamEvent.new(:delta,
+          inference_id: "inference",
+          invocation_id: "invocation",
+          attempt_id: "attempt",
+          run_revision: 1,
+          generation: "generation",
+          dispatch_id: "dispatch",
+          control_revision: 0,
+          stream_epoch: "epoch",
+          sequence: 1,
+          payload: "text"
+        )
+
+      assert {:error, :invalid_stream_event_usage_quality} =
+               StreamEvent.validate(%{valid_event | usage_quality: :guessed})
+
       assert_raise ArgumentError, ~r/invalid stream event/, fn ->
         StreamEvent.new(:delta,
           inference_id: "inference",

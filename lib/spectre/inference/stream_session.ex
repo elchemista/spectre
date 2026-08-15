@@ -16,6 +16,7 @@ defmodule Spectre.Inference.StreamSession do
   alias Spectre.Inference.StreamCheckpoint
   alias Spectre.Inference.StreamEvent
   alias Spectre.Inference.Usage
+  alias Spectre.Inference.UsageAccounting
   alias Spectre.Invocation
   alias Spectre.Invocation.WorkerReceipt
   alias Spectre.Run.Value
@@ -26,6 +27,8 @@ defmodule Spectre.Inference.StreamSession do
   @default_consumer_idle_timeout 30_000
   @default_max_duration :timer.minutes(5)
   @default_terminal_retention 60_000
+  @default_max_transport_chunk_bytes 256_000
+  @default_max_parser_residual_bytes 256_000
   @default_max_delta_bytes 64_000
   @default_max_response_bytes 1_000_000
   @default_max_buffer_events 64
@@ -248,6 +251,8 @@ defmodule Spectre.Inference.StreamSession do
     opts =
       data.prepared.provider_opts
       |> Keyword.merge(data.prepared.stream_adapter_opts)
+      |> Keyword.put(:max_transport_chunk_bytes, data.max_transport_chunk_bytes)
+      |> Keyword.put(:max_parser_residual_bytes, data.max_parser_residual_bytes)
       |> Keyword.put(:model, data.prepared.selection.model)
       |> Keyword.delete(:fallback)
 
@@ -626,10 +631,12 @@ defmodule Spectre.Inference.StreamSession do
          {:ok, config} <- stream_config(prepared, opts) do
       started_at = Determinism.monotonic_time(:millisecond)
 
-      recovery_usage =
-        opts
-        |> recovery_usage()
-        |> apply_conservative_input_floor(Keyword.get(opts, :budget_snapshot))
+      {recovery_usage, recovery_usage_quality} =
+        UsageAccounting.initialize(
+          recovery_usage(opts),
+          recovery_usage_quality(opts),
+          Keyword.get(opts, :budget_snapshot)
+        )
 
       data =
         Map.merge(config, %{
@@ -672,7 +679,7 @@ defmodule Spectre.Inference.StreamSession do
           duration_floor: recovery_usage.duration_ms,
           started_at: started_at,
           max_duration_deadline: started_at + config.max_duration_ms,
-          usage_quality: recovery_usage_quality(opts),
+          usage_quality: recovery_usage_quality,
           output_bytes: recovery_output_bytes(opts),
           sanitizer:
             IncrementalSanitizer.new(
@@ -710,6 +717,10 @@ defmodule Spectre.Inference.StreamSession do
       max_duration_ms: {:stream_max_duration_ms, @default_max_duration},
       terminal_retention: {:stream_terminal_retention, @default_terminal_retention},
       result_timeout: {:stream_result_timeout, @default_terminal_retention},
+      max_transport_chunk_bytes:
+        {:stream_max_transport_chunk_bytes, @default_max_transport_chunk_bytes},
+      max_parser_residual_bytes:
+        {:stream_max_parser_residual_bytes, @default_max_parser_residual_bytes},
       max_delta_bytes: {:stream_max_delta_bytes, @default_max_delta_bytes},
       max_response_bytes: {:model_reply_max_bytes, @default_max_response_bytes},
       max_buffer_events: {:stream_max_buffer_events, @default_max_buffer_events},
@@ -871,11 +882,15 @@ defmodule Spectre.Inference.StreamSession do
          {:ok, clean, sanitizer} <- IncrementalSanitizer.push(data.sanitizer, text) do
       output_bytes = data.output_bytes + byte_size(text)
 
-      usage =
-        data.usage
-        |> Usage.merge(event.usage)
-        |> then(&Map.put(&1, :output_bytes, max(&1.output_bytes, output_bytes)))
-        |> maybe_estimate_tokens(data.budget_snapshot)
+      {usage, usage_quality} =
+        UsageAccounting.merge_stream(
+          data.usage,
+          [event.usage],
+          data.budget_snapshot,
+          data.usage_quality,
+          event.usage_quality,
+          output_bytes: output_bytes
+        )
 
       output_bytes = usage.output_bytes
 
@@ -884,7 +899,7 @@ defmodule Spectre.Inference.StreamSession do
         | sanitizer: sanitizer,
           output_bytes: output_bytes,
           usage: usage,
-          usage_quality: usage_quality(event, data),
+          usage_quality: usage_quality,
           provider_event_seen?: true,
           resume_cursor: event.cursor || data.resume_cursor,
           resume_cursor_digest: provider_digest(event.cursor) || data.resume_cursor_digest
@@ -898,16 +913,20 @@ defmodule Spectre.Inference.StreamSession do
   end
 
   defp apply_provider_event(%ProviderEvent{kind: :usage} = event, :streaming, data) do
-    usage =
-      data.usage
-      |> Usage.merge(event.usage)
-      |> maybe_estimate_tokens(data.budget_snapshot)
+    {usage, usage_quality} =
+      UsageAccounting.merge_stream(
+        data.usage,
+        [event.usage],
+        data.budget_snapshot,
+        data.usage_quality,
+        event.usage_quality
+      )
 
     data = %{
       data
       | usage: usage,
         output_bytes: usage.output_bytes,
-        usage_quality: usage_quality(event, data),
+        usage_quality: usage_quality,
         provider_event_seen?: true
     }
 
@@ -924,12 +943,15 @@ defmodule Spectre.Inference.StreamSession do
        ) do
     with :ok <- validate_completed_response(response, data.max_response_bytes),
          {:ok, trailing, sanitizer} <- IncrementalSanitizer.finish(data.sanitizer) do
-      usage =
-        data.usage
-        |> Usage.merge(event.usage)
-        |> Usage.merge(response.usage)
-        |> Usage.merge(%{output_bytes: byte_size(response.text)})
-        |> maybe_estimate_tokens(data.budget_snapshot)
+      {usage, usage_quality} =
+        UsageAccounting.merge_stream(
+          data.usage,
+          [event.usage, response.usage],
+          data.budget_snapshot,
+          data.usage_quality,
+          event.usage_quality,
+          output_bytes: byte_size(response.text)
+        )
 
       data = %{
         data
@@ -937,7 +959,7 @@ defmodule Spectre.Inference.StreamSession do
           provider_event_seen?: true,
           usage: usage,
           output_bytes: usage.output_bytes,
-          usage_quality: usage_quality(event, data)
+          usage_quality: usage_quality
       }
 
       with :ok <- check_budget(data),
@@ -981,6 +1003,7 @@ defmodule Spectre.Inference.StreamSession do
         sequence: data.sequence,
         provider_started: data.provider_started?,
         usage: Usage.to_map(data.usage),
+        usage_quality: data.usage_quality,
         outcome: outcome,
         metadata: %{
           semantic: semantic,
@@ -1122,6 +1145,7 @@ defmodule Spectre.Inference.StreamSession do
       sequence: sequence,
       payload: payload,
       usage: Keyword.get(opts, :usage, data.usage),
+      usage_quality: Keyword.get(opts, :usage_quality, data.usage_quality),
       content_class: Keyword.get(opts, :content_class, :control),
       metadata: Keyword.get(opts, :metadata, %{})
     )
@@ -1152,7 +1176,9 @@ defmodule Spectre.Inference.StreamSession do
           usage_quality: data.usage_quality,
           provider_cursor_digest: data.resume_cursor_digest,
           state: state,
-          at: Determinism.system_time(:millisecond)
+          # Heartbeats are ephemeral liveness signals, not nondeterministic
+          # boundaries that must be captured for replay.
+          at: System.system_time(:millisecond)
         )
 
       checkpoint = stream_checkpoint(data)
@@ -1217,21 +1243,6 @@ defmodule Spectre.Inference.StreamSession do
 
   defp recovery_usage(opts), do: opts |> recovery_value(:usage) |> Usage.new()
 
-  defp apply_conservative_input_floor(
-         usage,
-         %BudgetSnapshot{estimation_policy: :conservative, reserved: reserved}
-       ) do
-    input_tokens = max(usage.input_tokens, reserved.input_tokens)
-
-    %{
-      usage
-      | input_tokens: input_tokens,
-        total_tokens: max(usage.total_tokens, input_tokens + usage.output_tokens)
-    }
-  end
-
-  defp apply_conservative_input_floor(usage, _snapshot), do: usage
-
   defp recovery_usage_quality(opts) do
     case recovery_value(opts, :usage_quality) do
       quality when quality in [:provider, :estimated, :unavailable] -> quality
@@ -1288,9 +1299,8 @@ defmodule Spectre.Inference.StreamSession do
   end
 
   defp validate_delta(text, limit)
-       when is_binary(text) and byte_size(text) <= limit do
-    if String.valid?(text), do: :ok, else: {:error, :invalid_provider_delta}
-  end
+       when is_binary(text) and byte_size(text) <= limit,
+       do: :ok
 
   defp validate_delta(text, _limit) when is_binary(text), do: {:error, :provider_delta_too_large}
   defp validate_delta(_text, _limit), do: {:error, :invalid_provider_delta}
@@ -1305,27 +1315,6 @@ defmodule Spectre.Inference.StreamSession do
       {:error, field} -> {:error, {:inference_budget_exceeded, field}}
     end
   end
-
-  defp maybe_estimate_tokens(usage, %BudgetSnapshot{estimation_policy: :conservative}) do
-    estimated = max(usage.output_tokens, div(usage.output_bytes + 3, 4))
-
-    %{
-      usage
-      | output_tokens: estimated,
-        total_tokens: max(usage.total_tokens, usage.input_tokens + estimated)
-    }
-  end
-
-  defp maybe_estimate_tokens(usage, _snapshot), do: usage
-
-  defp usage_quality(%ProviderEvent{usage_quality: quality}, _data)
-       when quality in [:provider, :estimated, :unavailable],
-       do: quality
-
-  defp usage_quality(_event, %{budget_snapshot: %BudgetSnapshot{estimation_policy: :conservative}}),
-       do: :estimated
-
-  defp usage_quality(_event, data), do: data.usage_quality
 
   # There is exactly one active streaming deadline. Satisfying demand starts
   # the consumer-idle clock; outstanding demand starts (or, on real provider

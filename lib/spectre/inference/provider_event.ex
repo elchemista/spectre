@@ -1,5 +1,11 @@
 defmodule Spectre.Inference.ProviderEvent do
-  @moduledoc "Normalized event emitted by a streaming provider adapter."
+  @moduledoc """
+  Normalized event emitted by a streaming provider adapter.
+
+  Delta payloads are binary fragments. They may end inside a UTF-8 codepoint;
+  the stream session reassembles and validates the bounded trailing bytes
+  before exposing text to a consumer.
+  """
 
   alias Spectre.Inference.Response
   alias Spectre.Inference.Usage
@@ -36,7 +42,7 @@ defmodule Spectre.Inference.ProviderEvent do
     validate!(event)
   end
 
-  @spec delta(String.t(), keyword()) :: t()
+  @spec delta(binary(), keyword()) :: t()
   def delta(text, opts \\ []) when is_binary(text),
     do: new(:delta, Keyword.put(opts, :payload, text))
 
@@ -90,9 +96,8 @@ defmodule Spectre.Inference.ProviderEvent do
   end
 
   defp validate_payload(%__MODULE__{kind: :delta, payload: payload})
-       when is_binary(payload) do
-    if String.valid?(payload), do: :ok, else: {:error, :invalid_provider_event_payload}
-  end
+       when is_binary(payload),
+       do: :ok
 
   defp validate_payload(%__MODULE__{kind: :completed, payload: %Response{} = response}),
     do: Response.validate(response)

@@ -51,6 +51,7 @@ defmodule Spectre.Inference.StreamEvent do
     :at,
     content_class: :control,
     usage: %Usage{},
+    usage_quality: :unavailable,
     metadata: %{}
   ]
 
@@ -77,6 +78,7 @@ defmodule Spectre.Inference.StreamEvent do
       at: Keyword.get(opts, :at, System.system_time(:millisecond)),
       content_class: Keyword.get(opts, :content_class, default_content_class(kind)),
       usage: Usage.new(Keyword.get(opts, :usage)),
+      usage_quality: Keyword.get(opts, :usage_quality, :unavailable),
       metadata: Keyword.get(opts, :metadata, %{})
     }
 
@@ -116,6 +118,9 @@ defmodule Spectre.Inference.StreamEvent do
 
       event.content_class not in @content_classes ->
         {:error, :invalid_stream_event_content_class}
+
+      event.usage_quality not in [:provider, :estimated, :unavailable] ->
+        {:error, :invalid_stream_event_usage_quality}
 
       not Enum.all?(
         [

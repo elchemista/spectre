@@ -212,6 +212,8 @@ Important options include:
 | `stream_max_duration_ms` | 5 min | absolute data-plane lifetime |
 | `stream_result_timeout` | 60 s | wait for post-processing/Run commit after provider terminal |
 | `stream_terminal_retention` | 60 s | bounded terminal lookup window |
+| `stream_max_transport_chunk_bytes` | 256 KB | adapter-owned raw transport item limit |
+| `stream_max_parser_residual_bytes` | 256 KB | adapter-owned incomplete parser state limit |
 | `stream_max_delta_bytes` | 64 KB | per-delta limit |
 | `stream_max_buffer_events` | 64 | normalized event queue limit |
 | `stream_max_buffer_bytes` | 256 KB | text queue limit |
@@ -226,6 +228,20 @@ on every terminal path, including never-attached consumers and process death.
 and settlement; each session receives an immutable `BudgetSnapshot`. A hard
 cost limit also requires `inference_pricing_ref` and authoritative cost usage.
 Heartbeat activity never extends the absolute deadline.
+
+Usage-bearing stream events expose `usage_quality` as `:provider`,
+`:estimated` or `:unavailable`. Provider counters keep `:provider` only while
+Spectre can retain them unchanged. If conservative accounting raises a token
+counter from the reserved-input or output-byte floor, the attempt is labelled
+`:estimated`; that weaker label remains sticky because a later cumulative
+update cannot prove the retained maximum was token-exact.
+
+The session passes the two adapter-owned limits as
+`max_transport_chunk_bytes` and `max_parser_residual_bytes` to `open/2` and
+`resume/3`. Adapters must fail with `:provider_stream_overflow` instead of
+retaining or truncating excess bytes. Normalized delta binaries may split a
+UTF-8 codepoint; Spectre buffers the bounded trailing bytes and yields only
+complete, valid UTF-8 events.
 
 ## Observer lane
 
