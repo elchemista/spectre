@@ -67,15 +67,64 @@ defmodule SpectreDoctorTest.SecurityProvider do
 
   @impl Spectre.Action.Provider
   def actions(_opts) do
+    schema = %{type: "object", properties: %{}, additionalProperties: false}
+
     [
-      Spec.new(name: :protected, via: :remote, visibility: :planner),
-      Spec.new(name: :unprotected, via: :remote, visibility: :planner),
-      Spec.new(name: :internal, via: :remote, visibility: :deterministic)
+      Spec.new(name: :protected, via: :remote, visibility: :planner, schema: schema),
+      Spec.new(name: :unprotected, via: :remote, visibility: :planner, schema: schema),
+      Spec.new(name: :internal, via: :remote, visibility: :deterministic, schema: schema)
     ]
   end
 
   @impl Spectre.Action.Provider
   def execute(_action, _context, _opts), do: {:ok, :executed}
+end
+
+defmodule SpectreDoctorTest.PermissiveSchemaProvider do
+  @moduledoc false
+
+  @behaviour Spectre.Action.Provider
+
+  alias Spectre.Action.Spec
+
+  @impl Spectre.Action.Provider
+  def actions(_opts) do
+    [
+      Spec.new(
+        name: :metadata_only,
+        via: :remote,
+        visibility: :planner,
+        schema: %{arity: 1}
+      ),
+      Spec.new(
+        name: :open_object,
+        via: :remote,
+        visibility: :planner,
+        schema: %{type: "object", properties: %{name: %{type: "string"}}}
+      )
+    ]
+  end
+
+  @impl Spectre.Action.Provider
+  def execute(_action, _context, _opts), do: {:ok, :executed}
+end
+
+defmodule SpectreDoctorTest.PermissiveSchemaAgent do
+  @moduledoc false
+
+  use Spectre.Agent, prompt_root: "test/fixtures/strategy_matrix/prompts"
+
+  action_provider(:remote, SpectreDoctorTest.PermissiveSchemaProvider,
+    allowed_hosts: ["api.example.test"]
+  )
+
+  protect({:remote, :metadata_only}, with: :confirmation)
+  protect({:remote, :open_object}, with: :confirmation)
+
+  policy :confirmation do
+    accept(:approved, regex: ~r/^yes$/i)
+    reject(:rejected, regex: ~r/^no$/i)
+  end
 end
 
 defmodule SpectreDoctorTest.SecurityModel do
@@ -224,6 +273,9 @@ defmodule SpectreDoctorTest do
              details: %{planner_action_count: 2, unprotected_count: 1}
            } = find(report, "agent.planner_action_protection")
 
+    assert %{status: :ok, code: :planner_action_schemas_bounded} =
+             find(report, "agent.planner_action_schema")
+
     assert %{
              status: :warning,
              code: :executor_egress_allowlist_missing,
@@ -250,6 +302,9 @@ defmodule SpectreDoctorTest do
     assert %{status: :ok, code: :planner_actions_protected} =
              find(bounded, "agent.planner_action_protection")
 
+    assert %{status: :ok, code: :planner_action_schemas_bounded} =
+             find(bounded, "agent.planner_action_schema")
+
     assert %{status: :ok, code: :executor_egress_bounded} =
              find(bounded, "agent.executor_egress")
 
@@ -260,6 +315,22 @@ defmodule SpectreDoctorTest do
 
     assert %{status: :error, code: :planner_action_catalog_unavailable} =
              find(failed_catalog, "agent.planner_action_protection")
+
+    assert %{status: :error, code: :planner_action_schema_catalog_unavailable} =
+             find(failed_catalog, "agent.planner_action_schema")
+
+    assert {:ok, permissive_schema} =
+             Doctor.run(agent: SpectreDoctorTest.PermissiveSchemaAgent)
+
+    assert %{
+             status: :warning,
+             code: :planner_action_schemas_permissive,
+             details: %{
+               finding_count: 2,
+               unconstrained_count: 1,
+               open_object_count: 1
+             }
+           } = find(permissive_schema, "agent.planner_action_schema")
 
     assert {:ok, invalid_consent} =
              Doctor.run(
