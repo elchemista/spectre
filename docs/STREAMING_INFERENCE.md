@@ -301,5 +301,4 @@ Streaming works with `:disabled`, `:observational` and `:required` receipt
 modes. Required mode needs a durable Instance Checkpoint Store and a
 payload-capable `Spectre.Receipt.Sink`. Selection and dispatch intent cross the
 checkpoint/outbox barrier before provider start. See
-[Boundary receipts](RECEIPTS.md) and
-[ADR 0005](adr/0005-receipts-and-replay-claims.md).
+[Boundary receipts](RECEIPTS.md).

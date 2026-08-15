@@ -43,12 +43,6 @@ defmodule Spectre.MixProject do
     "docs/DSL.md",
     "docs/API.md",
     "docs/PUBLIC_API.md",
-    "docs/adr/0001-inference-runtime-ownership.md",
-    "docs/adr/0002-stream-delivery-and-restart.md",
-    "docs/adr/0003-steering-replaces-a-stream-attempt.md",
-    "docs/adr/0004-observer-lane-is-post-commit.md",
-    "docs/adr/0005-receipts-and-replay-claims.md",
-    "docs/adr/0006-inference-security-boundaries.md",
     "docs/MIGRATING_TO_0_2.md",
     "docs/MIGRATING_TO_0_2_3.md",
     "docs/MIGRATING_TO_0_2_4.md",
@@ -207,14 +201,6 @@ defmodule Spectre.MixProject do
           "docs/DSL.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
-        ],
-        "Architecture decisions": [
-          "docs/adr/0001-inference-runtime-ownership.md",
-          "docs/adr/0002-stream-delivery-and-restart.md",
-          "docs/adr/0003-steering-replaces-a-stream-attempt.md",
-          "docs/adr/0004-observer-lane-is-post-commit.md",
-          "docs/adr/0005-receipts-and-replay-claims.md",
-          "docs/adr/0006-inference-security-boundaries.md"
         ],
         "Migration and history": [
           "docs/MIGRATING_TO_0_2.md",

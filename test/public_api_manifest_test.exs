@@ -54,6 +54,15 @@ defmodule SpectrePublicApiManifestTest do
              Code.fetch_docs(Spectre.Receipt.OutboxEntry)
   end
 
+  test "HexDocs excludes internal architecture decision records" do
+    docs = Mix.Project.config() |> Keyword.fetch!(:docs)
+    extras = Keyword.fetch!(docs, :extras)
+    groups = Keyword.fetch!(docs, :groups_for_extras)
+
+    refute Enum.any?(extras, &String.starts_with?(&1, "docs/adr/"))
+    refute Keyword.has_key?(groups, :"Architecture decisions")
+  end
+
   defp parse_manifest(manifest) do
     manifest
     |> String.split("\n")
