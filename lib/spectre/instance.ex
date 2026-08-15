@@ -44,6 +44,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.InferenceCapacity
   alias Spectre.Instance.InferenceControl
   alias Spectre.Instance.InferenceHeartbeat
+  alias Spectre.Instance.InferenceStreamControl
   alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.Loops
   alias Spectre.Instance.Owner
@@ -2629,7 +2630,7 @@ defmodule Spectre.Instance do
            cursor: :inference,
            inference_continuation: %{stream_recovery: recovery}
          } = run <- Map.get(data.runs, old_stream.run_id),
-         :ok <- validate_stream_resume_handle(run, recovery, old_stream) do
+         :ok <- InferenceStreamControl.validate_resume(run, recovery, old_stream) do
       case RunQueue.stream_session(data, run.id) do
         {_invocation_id, %{stream: %InferenceStream{} = stream}} ->
           {:reply, {:ok, stream}, data}
@@ -2647,34 +2648,10 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp validate_stream_resume_handle(run, recovery, old_stream) when is_map(recovery) do
-    expected_digest = Map.get(recovery, :previous_consumer_token_digest)
-
-    cond do
-      run.id != old_stream.run_id or
-          run.inference_continuation.inference_id != old_stream.inference_id ->
-        {:error, :stale_stream_handle}
-
-      Map.get(recovery, :previous_invocation_id) != old_stream.invocation_id or
-          Map.get(recovery, :previous_stream_epoch) != old_stream.stream_epoch ->
-        {:error, :stale_stream_handle}
-
-      not is_binary(expected_digest) or
-          expected_digest != stream_token_digest(old_stream.consumer_token) ->
-        {:error, :invalid_stream_consumer_token}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_stream_resume_handle(_run, _recovery, _old_stream),
-    do: {:error, :stream_resume_unavailable}
-
   defp cancel_inference_stream(data, %InferenceStream{} = stream, reason, opts) do
     with :ok <- owner_guard(data, :inference_cancel),
-         {:ok, ownership, run} <- current_stream_ownership(data, stream),
-         {:ok, command} <- build_cancel_command(run, stream, reason, opts),
+         {:ok, ownership, run} <- InferenceStreamControl.current_ownership(data, stream),
+         {:ok, command} <- InferenceStreamControl.cancel_command(run, stream, reason, opts),
          {:ok, committed} <- commit_stream_cancel(data, run, command) do
       send(
         ownership.pid,
@@ -2686,40 +2663,6 @@ defmodule Spectre.Instance do
     else
       {:error, reason} -> {:error, reason, data}
     end
-  end
-
-  defp build_cancel_command(run, stream, reason, opts) do
-    portable_reason = portable_failure(reason)
-
-    command_id =
-      Keyword.get_lazy(opts, :command_id, fn ->
-        Value.token(
-          "inference-cancel",
-          {stream.invocation_id, stream.control_revision, portable_reason}
-        )
-      end)
-
-    command =
-      ControlCommand.new(stream.inference_id, :cancel,
-        id: command_id,
-        payload: %{reason: portable_reason},
-        correlation_id: run.id,
-        causation_id: stream.invocation_id,
-        base_revision: stream.control_revision,
-        provenance: %{source: :stream_control},
-        metadata: %{
-          target_kind: :inference,
-          invocation_id: stream.invocation_id,
-          stream_epoch: stream.stream_epoch
-        }
-      )
-
-    case ControlCommand.validate(command) do
-      :ok -> {:ok, command}
-      {:error, reason} -> {:error, reason}
-    end
-  rescue
-    exception -> {:error, {:invalid_stream_cancel, exception.__struct__}}
   end
 
   defp commit_stream_cancel(data, run, command) do
@@ -2752,9 +2695,9 @@ defmodule Spectre.Instance do
 
   defp steer_inference_stream(data, %InferenceStream{} = stream, input, opts, from) do
     with :ok <- owner_guard(data, :inference_steer),
-         {:ok, ownership, run} <- current_stream_ownership(data, stream),
-         {:ok, steer_input} <- normalize_steer_input(input, opts, data),
-         {:ok, command} <- build_steer_command(run, stream, steer_input, opts),
+         {:ok, ownership, run} <- InferenceStreamControl.current_ownership(data, stream),
+         {:ok, steer_input} <- InferenceStreamControl.normalize_steer_input(input, opts, data),
+         {:ok, command} <- InferenceStreamControl.steer_command(run, stream, steer_input, opts),
          {:ok, committed, control} <- commit_pending_steer(data, run, command),
          {:ok, next} <-
            apply_committed_steer(
@@ -2771,91 +2714,6 @@ defmodule Spectre.Instance do
     else
       {:error, reason, next} -> {:error, reason, next}
       {:error, reason} -> {:error, reason, data}
-    end
-  end
-
-  defp current_stream_ownership(data, stream) do
-    ownership = Map.get(data.stream_sessions, stream.invocation_id)
-    invocation_ownership = Map.get(data.invocations, stream.invocation_id)
-
-    cond do
-      is_nil(ownership) or is_nil(invocation_ownership) ->
-        {:error, :invocation_terminal}
-
-      not secure_stream_token?(ownership.stream.consumer_token, stream.consumer_token) ->
-        {:error, :invalid_stream_consumer_token}
-
-      ownership.stream != stream ->
-        {:error, :stale_stream_handle}
-
-      true ->
-        case Map.get(data.runs, ownership.run_id) do
-          %Run{
-            status: :awaiting,
-            cursor: :inference,
-            waiting: %Invocation{id: invocation_id},
-            inference_continuation: continuation
-          } = run
-          when invocation_id == stream.invocation_id and
-                 continuation.control_revision == stream.control_revision ->
-            {:ok, ownership, run}
-
-          %Run{} ->
-            {:error, :invocation_terminal}
-
-          nil ->
-            {:error, :unknown_stream_run}
-        end
-    end
-  end
-
-  defp normalize_steer_input(input, opts, data) do
-    logical = input |> Input.new() |> Spectre.Run.Codec.logical_input()
-
-    max_bytes =
-      Keyword.get(
-        opts,
-        :stream_steer_max_bytes,
-        Keyword.get(data.base_opts, :stream_steer_max_bytes, 32_000)
-      )
-
-    cond do
-      not is_binary(logical.text) or logical.text == "" ->
-        {:error, :empty_stream_steer_input}
-
-      byte_size(logical.text) > max_bytes ->
-        {:error, {:stream_steer_input_too_large, byte_size(logical.text), max_bytes}}
-
-      true ->
-        {:ok, logical}
-    end
-  rescue
-    exception -> {:error, {:invalid_stream_steer_input, exception.__struct__}}
-  end
-
-  defp build_steer_command(run, stream, steer_input, opts) do
-    command_id =
-      Keyword.get_lazy(opts, :command_id, fn ->
-        Value.token(
-          "inference-steer",
-          {stream.invocation_id, stream.control_revision, steer_input}
-        )
-      end)
-
-    command =
-      ControlCommand.new(stream.inference_id, :steer,
-        id: command_id,
-        payload: %{input: steer_input},
-        correlation_id: run.id,
-        causation_id: stream.invocation_id,
-        base_revision: stream.control_revision,
-        provenance: %{source: :stream_control},
-        metadata: %{target_kind: :inference, stream_epoch: stream.stream_epoch}
-      )
-
-    case ControlCommand.validate(command) do
-      :ok -> {:ok, command}
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -3174,15 +3032,6 @@ defmodule Spectre.Instance do
       _error -> data
     end
   end
-
-  defp secure_stream_token?(left, right) when is_binary(left) and is_binary(right) do
-    byte_size(left) == byte_size(right) and :crypto.hash_equals(left, right)
-  end
-
-  defp secure_stream_token?(_left, _right), do: false
-
-  defp stream_token_digest(token) when is_binary(token) and token != "",
-    do: Value.token("stream-consumer-token", token)
 
   defp dispatch_invocation(run, command, opts, projection, from, data) do
     with :ok <- owner_guard(data, :effect_dispatch),
@@ -3899,7 +3748,7 @@ defmodule Spectre.Instance do
 
     continuation = %{
       run.inference_continuation
-      | consumer_token_digest: stream_token_digest(token)
+      | consumer_token_digest: InferenceStreamControl.token_digest(token)
     }
 
     {%{run | inference_continuation: continuation}, Map.put(entry, :stream_consumer_token, token)}
@@ -4656,7 +4505,7 @@ defmodule Spectre.Instance do
          next_continuation <- %{
            continuation
            | consumer_token_digest:
-               if(is_binary(token), do: stream_token_digest(token), else: nil),
+               if(is_binary(token), do: InferenceStreamControl.token_digest(token), else: nil),
              recovery: %{status: :provider_dispatch_released}
          },
          next_run <- %{run | inference_continuation: next_continuation},
