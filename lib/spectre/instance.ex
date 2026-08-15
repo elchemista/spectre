@@ -4430,12 +4430,14 @@ defmodule Spectre.Instance do
   defp inference_receipt_disposition(data, ownership, receipt) do
     invocation = ownership.invocation
 
-    with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control) do
-      controls
-      |> Map.get(invocation.inference_id)
-      |> InferenceControl.receipt_disposition(invocation, receipt.outcome)
-    else
-      {:error, _reason} -> :stale
+    case Canonical.fetch(data.canonical, :inference_control) do
+      {:ok, controls} ->
+        controls
+        |> Map.get(invocation.inference_id)
+        |> InferenceControl.receipt_disposition(invocation, receipt.outcome)
+
+      {:error, _reason} ->
+        :stale
     end
   end
 

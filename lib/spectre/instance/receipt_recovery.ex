@@ -70,15 +70,13 @@ defmodule Spectre.Instance.ReceiptRecovery do
         }
       }
       when is_list(previous_attempts) ->
-        if Enum.any?(previous_attempts, fn previous ->
-             Map.get(previous, :attempt_id) == attempt_id and
-               Map.get(previous, :invocation_id) == invocation_id and
-               Map.get(previous, :control_revision) == control_revision and
-               Map.get(previous, :stream_epoch) == stream_epoch and
-               Map.get(previous, :outcome) == :superseded
-           end),
-           do: :ok,
-           else: {:error, :recovered_supersession_receipt_fence_mismatch}
+        validate_superseded_attempts(
+          previous_attempts,
+          attempt_id,
+          invocation_id,
+          control_revision,
+          stream_epoch
+        )
 
       _mismatch ->
         {:error, :recovered_supersession_receipt_fence_mismatch}
@@ -249,4 +247,39 @@ defmodule Spectre.Instance.ReceiptRecovery do
 
   defp validate_run(_data, _envelope),
     do: {:error, :unsupported_recovered_receipt_boundary}
+
+  defp validate_superseded_attempts(
+         previous_attempts,
+         attempt_id,
+         invocation_id,
+         control_revision,
+         stream_epoch
+       ) do
+    if Enum.any?(
+         previous_attempts,
+         &superseded_attempt?(
+           &1,
+           attempt_id,
+           invocation_id,
+           control_revision,
+           stream_epoch
+         )
+       ),
+       do: :ok,
+       else: {:error, :recovered_supersession_receipt_fence_mismatch}
+  end
+
+  defp superseded_attempt?(
+         previous,
+         attempt_id,
+         invocation_id,
+         control_revision,
+         stream_epoch
+       ) do
+    Map.get(previous, :attempt_id) == attempt_id and
+      Map.get(previous, :invocation_id) == invocation_id and
+      Map.get(previous, :control_revision) == control_revision and
+      Map.get(previous, :stream_epoch) == stream_epoch and
+      Map.get(previous, :outcome) == :superseded
+  end
 end
