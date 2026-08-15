@@ -4,6 +4,9 @@ defmodule Spectre.Action.Provider do
 
   Providers own discovery and execution. Spectre owns provider registration,
   policy, persistence, idempotency, and the effect lifecycle.
+
+  Discovery through `actions/1` must be side-effect free. Runtime planning and
+  read-only diagnostics may call it without starting provider resources.
   """
 
   alias Spectre.Action

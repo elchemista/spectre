@@ -35,7 +35,9 @@ Canonical prompt fragments remain closed templates. The
 `spectre.renderer.data/1` renderer and `Spectre.Prompt.data/1` escape dynamic
 values inside an explicit data boundary. `Spectre.Doctor` audits legacy
 `.text.heex` assets and warns when `@input`, `@recent_chat` or `@memory` is
-interpolated without that boundary. This is a staged compatibility control:
+interpolated without that boundary. The EEx asset form must use the fully
+qualified `Spectre.Prompt.data/1` call because asset evaluation does not inject
+a `Prompt` alias. This remains a staged compatibility control:
 legacy EEx is not claimed to be intrinsically safe, and operators should make
 the Doctor warning release-blocking before enabling untrusted traffic.
 

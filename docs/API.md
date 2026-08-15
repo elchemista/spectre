@@ -778,8 +778,14 @@ Run `mix spectre.doctor` for a read-only runtime and Foundation check, or add
 Checkpoint Store callback shape. `--format json` returns the stable report
 contract and `--strict` treats warnings as a failure. Programmatic callers can
 pass an explicit Stack or package matrix to `Spectre.Doctor.run/1`. Doctor
-loads and inspects compiled public metadata only; it does not start package
-resources or read/write a store.
+inspects compiled public metadata and side-effect-free action discovery
+catalogs; it does not execute actions, start package resources or read/write a
+store.
+
+The Agent report includes named checks for planner action protection, executor
+egress allowlists and reply sanitization. Pass runtime delivery consent samples
+as `consents: [...]` to `Spectre.Doctor.run/1` to check their expiry; the check
+is explicitly skipped when no runtime sample is supplied.
 
 ## Adapter contracts
 

@@ -6,7 +6,7 @@ defmodule Spectre.Prompt.AssetAudit do
 
   @tainted_assign ~r/@(input|recent_chat|memory)(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*/
   @output_expression ~r/<%=\s*(.*?)\s*%>/s
-  @safe_data_expression ~r/^\s*(?:Spectre\.)?Prompt\.data\(\s*@(input|recent_chat|memory)(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*\s*\)\s*$/
+  @safe_data_expression ~r/^\s*Spectre\.Prompt\.data\(\s*@(input|recent_chat|memory)(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*\s*\)\s*$/
 
   @spec audit(Definition.t()) :: {:ok, [map()]} | {:error, term()}
   def audit(%Definition{} = definition) do
