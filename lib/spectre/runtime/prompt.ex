@@ -18,6 +18,7 @@ defmodule Spectre.Prompt do
   alias Spectre.Definition
   alias Spectre.Prompt.Operation
   alias Spectre.Prompt.Plan
+  alias Spectre.Prompt.Value, as: PromptValue
   alias Spectre.Provider.Call
 
   @default_max_fragment_bytes 64_000
@@ -30,6 +31,13 @@ defmodule Spectre.Prompt do
   fragment otherwise has instruction trust.
   """
   @spec data(term()) :: String.t()
+  def data(%PromptValue{} = wrapped) do
+    case PromptValue.validate(wrapped) do
+      :ok -> data(wrapped.value)
+      {:error, reason} -> raise ArgumentError, "invalid prompt value: #{inspect(reason)}"
+    end
+  end
+
   def data(value) when is_binary(value) do
     escaped =
       value

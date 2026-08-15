@@ -367,6 +367,7 @@ defmodule Spectre.MixProject do
           Spectre.Prompt.Fragment,
           Spectre.Prompt.Operation,
           Spectre.Prompt.Plan,
+          Spectre.Prompt.Value,
           Spectre.Provider.Call,
           Spectre.Provider.Failure
         ],
