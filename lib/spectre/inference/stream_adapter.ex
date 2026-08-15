@@ -45,7 +45,8 @@ defmodule Spectre.Inference.StreamAdapter do
   request the next item without allowing two requests in flight.
 
   Spectre passes positive adapter-owned limits under the `:spectre_bounds`
-  keyword option to `open/2` and `resume/3`:
+  keyword option to `open/2` and `resume/3`. The values below are defaults,
+  not constants an adapter should copy:
 
       spectre_bounds: [
         max_transport_chunk_bytes: 256_000,
@@ -54,6 +55,9 @@ defmodule Spectre.Inference.StreamAdapter do
 
   Every adapter must enforce both limits before retaining bytes and fail with
   `:provider_stream_overflow`; it must never truncate or drop provider text.
+  Applications can override the resolved values with
+  `:stream_max_transport_chunk_bytes` and
+  `:stream_max_parser_residual_bytes` on an inference.
   The conformance runner requires `conformance_fixture/4`. It supplies a
   deterministic binary larger than the selected bound; the adapter wraps that
   binary in its real transport-message shape and returns isolated parser state.

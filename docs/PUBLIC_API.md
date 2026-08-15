@@ -426,6 +426,7 @@ Mix project version.
   - functions: `action_outcome/1`, `completions/1`, `latest_completion/1`, `lifecycle/1`, `open_awaitable/1`, `pending_effect/1`, `visible_reply?/1`
 - `Spectre.Reply.Sanitizer`
   - functions: `sanitize/1`, `sanitize/2`
+  - callbacks: `finish_stream/1`, `init_stream/1`, `sanitize/2`, `sanitize_chunk/2`
 - `Spectre.Reflection`
   - functions: `reflect/3`, `reflect/4`
 - `Spectre.Reflection.Operation`
