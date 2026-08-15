@@ -261,6 +261,46 @@ defmodule SpectreInferenceCanonicalReceiptEdgeContractTest do
   end
 
   describe "required receipt rebasing and delivery state" do
+    test "core receipts redact sensitive keys and use millisecond timestamps" do
+      data = instance_state()
+      before = System.system_time(:millisecond)
+
+      assert {:ok, prepared} =
+               Receipts.prepare_sections(
+                 data,
+                 %{},
+                 :nondeterminism_sample,
+                 %{
+                   api_key: "payload-secret",
+                   arguments: [credentials: "nested-secret"],
+                   visible: "retained"
+                 },
+                 correlation_id: "receipt-redaction",
+                 payload_schema_ref: "spectre.test/receipt-redaction/1",
+                 privacy: :confidential,
+                 metadata: %{authorization: "metadata-secret"}
+               )
+
+      after_prepare = System.system_time(:millisecond)
+      envelope = prepared.envelope
+
+      assert envelope.payload.api_key == "[REDACTED]"
+      assert envelope.payload.arguments == [credentials: "[REDACTED]"]
+      assert envelope.payload.visible == "retained"
+      assert envelope.metadata.authorization == "[REDACTED]"
+
+      assert Enum.sort(envelope.metadata.sensitive_data_redactions) ==
+               Enum.sort([
+                 [:payload, :api_key],
+                 [:payload, :arguments, 0, :credentials],
+                 [:metadata, :authorization]
+               ])
+
+      assert envelope.recorded_at >= before
+      assert envelope.recorded_at <= after_prepare
+      assert envelope.recorded_at > envelope.canonical_revision
+    end
+
     test "records delivery failures and blocks admission only at capacity" do
       data = instance_state(receipt_mode: :required, max_receipt_outbox: 2)
       prepared = prepared(data, %{flow: %{data.state | revision: 1}})
@@ -323,6 +363,7 @@ defmodule SpectreInferenceCanonicalReceiptEdgeContractTest do
       advanced = put_section(data, :runs, %{"other" => "unrelated"})
       assert {:ok, refreshed} = Receipts.refresh(advanced, prepared)
       assert refreshed.writes.runs == %{"other" => "unrelated", "target" => "new-target"}
+      assert refreshed.envelope.recorded_at == prepared.envelope.recorded_at
 
       assert {:error, {:receipt_refresh_target_missing, :runs, "target"}} =
                Receipts.refresh(advanced, %{prepared | writes: %{runs: %{}}})

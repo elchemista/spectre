@@ -1,6 +1,7 @@
 defmodule Spectre.Instance.Receipts do
   @moduledoc false
 
+  alias Spectre.Experience.Redactor
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Commit
   alias Spectre.Instance.State, as: InstanceState
@@ -41,8 +42,12 @@ defmodule Spectre.Instance.Receipts do
   def prepare_sections(%InstanceState{} = data, writes, kind, payload, opts)
       when is_map(writes) and not is_struct(writes) and is_list(opts) do
     writes = Commit.prepare_writes(data, writes)
+    metadata = Keyword.get(opts, :metadata, %{})
 
-    with {:ok, base_sections} <- capture_base_sections(data, writes),
+    with {:ok, payload, payload_paths} <- Redactor.redact_portable(payload),
+         {:ok, metadata, metadata_paths} <- Redactor.redact_portable(metadata),
+         metadata <- receipt_redaction_metadata(metadata, payload_paths, metadata_paths),
+         {:ok, base_sections} <- capture_base_sections(data, writes),
          {:ok, %{root: pre_digest}} <- Canonical.state_digest(data.canonical),
          {:ok, %{root: post_digest}} <- Canonical.preview_state_digest(data.canonical, writes),
          {:ok, envelope} <-
@@ -67,8 +72,7 @@ defmodule Spectre.Instance.Receipts do
              payload_schema_ref: Keyword.fetch!(opts, :payload_schema_ref),
              payload: payload,
              privacy: Keyword.get(opts, :privacy, :confidential),
-             recorded_at: data.canonical.revision + 1,
-             metadata: Keyword.get(opts, :metadata, %{})
+             metadata: metadata
            ) do
       {:ok, %__MODULE__{envelope: envelope, writes: writes, base_sections: base_sections}}
     end
@@ -93,8 +97,7 @@ defmodule Spectre.Instance.Receipts do
              id: nil,
              canonical_revision: data.canonical.revision + 1,
              pre_state_digest: pre_digest,
-             post_state_digest: post_digest,
-             recorded_at: data.canonical.revision + 1
+             post_state_digest: post_digest
            })
            |> Envelope.new() do
       {:ok,
@@ -105,6 +108,16 @@ defmodule Spectre.Instance.Receipts do
            base_sections: base_sections
        }}
     end
+  end
+
+  defp receipt_redaction_metadata(metadata, [], []), do: metadata
+
+  defp receipt_redaction_metadata(metadata, payload_paths, metadata_paths) do
+    paths =
+      Enum.map(payload_paths, &[:payload | &1]) ++
+        Enum.map(metadata_paths, &[:metadata | &1])
+
+    Map.put(metadata, :sensitive_data_redactions, paths)
   end
 
   @spec commit(

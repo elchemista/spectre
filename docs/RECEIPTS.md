@@ -81,14 +81,20 @@ encryption, tenancy or deployment topology.
 
 ## Privacy and claims
 
-Receipt payloads are portable and validated. Public envelopes reject values
-recognized by Spectre's sensitive-data policy. Confidential payloads still
-require encryption and access control in the sink. Raw provider metadata,
-credentials, errors, request ids and cursors are not receipt content.
+Receipt payloads are portable and validated. Every Instance-produced receipt
+applies Spectre's constitutional key denylist before its payload digest is
+computed, including for confidential receipts; redacted paths are recorded in
+metadata without retaining the values. Public envelopes additionally reject
+any sensitive value that reaches the generic envelope API. Ordinary admitted
+input and model output remain confidential evidence, so confidential payloads
+still require encryption and access control in the sink. Raw provider
+metadata, credentials, errors, request ids and cursors are not receipt
+content.
 
 The deterministic envelope id excludes delivery time and payload location; it
-binds boundary identity, payload digest, state roots and lineage. Instance
-receipts use `recorded_at` as a logical canonical coordinate.
+binds boundary identity, payload digest, state roots and lineage. `recorded_at`
+is always Unix time in milliseconds. Canonical ordering uses the separate
+`canonical_revision` field.
 
 Receipt capture plus state roots proves boundary evidence linkage. It does not
 prove deterministic replay, exactly-once provider work or exactly-once external
