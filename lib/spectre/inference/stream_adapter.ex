@@ -29,6 +29,18 @@ defmodule Spectre.Inference.StreamAdapter do
   item that yields no logical events returns `{:ok, [], state}` so Spectre can
   request the next item without allowing two requests in flight.
 
+  Spectre passes positive `:max_transport_chunk_bytes` and
+  `:max_parser_residual_bytes` options to `open/2` and `resume/3`. Because raw
+  transport messages and parser state are adapter-owned, every adapter must
+  enforce both limits before retaining bytes and fail with
+  `:provider_stream_overflow`; it must never truncate or drop provider text.
+  `Spectre.Inference.StreamAdapter.Conformance` forwards the same limits so a
+  provider package can exercise oversized deterministic fixtures.
+
+  Delta payloads are binary transport fragments. They need not end on a UTF-8
+  codepoint boundary; Spectre incrementally reassembles and validates UTF-8
+  before yielding public `StreamEvent` values.
+
   Provider packages can run `Spectre.Inference.StreamAdapter.Conformance`
   against deterministic transport fixtures without depending on ExUnit.
   """

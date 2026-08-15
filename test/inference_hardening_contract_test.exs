@@ -112,6 +112,30 @@ defmodule SpectreInferenceHardeningContractTest do
     assert {:ok, "", _state} = IncrementalSanitizer.finish(state)
   end
 
+  test "incremental sanitization reassembles UTF-8 across arbitrary delta boundaries" do
+    text = "Aé🙂Z"
+
+    {parts, state} =
+      text
+      |> :binary.bin_to_list()
+      |> Enum.map(&<<&1>>)
+      |> Enum.reduce({[], IncrementalSanitizer.new()}, fn byte, {parts, state} ->
+        assert {:ok, emitted, next} = IncrementalSanitizer.push(state, byte)
+        {[emitted | parts], next}
+      end)
+
+    assert {:ok, trailing, _state} = IncrementalSanitizer.finish(state)
+    assert parts |> Enum.reverse() |> Enum.join() |> Kernel.<>(trailing) == text
+
+    assert {:error, :invalid_provider_utf8} =
+             IncrementalSanitizer.push(IncrementalSanitizer.new(), <<0xC3, 0x28>>)
+
+    assert {:ok, "", incomplete} =
+             IncrementalSanitizer.push(IncrementalSanitizer.new(), <<0xF0, 0x9F>>)
+
+    assert {:error, :incomplete_provider_utf8} = IncrementalSanitizer.finish(incomplete)
+  end
+
   test "the sanitizer bounds incomplete control headers and explicit opt-out is transparent" do
     state = IncrementalSanitizer.new(max_sanitizer_lookahead_bytes: 16)
 
@@ -209,16 +233,20 @@ defmodule SpectreInferenceHardeningContractTest do
 
     unsafe = Path.join(root, "unsafe.text.heex")
     safe = Path.join(root, "safe.text.heex")
+    unqualified = Path.join(root, "unqualified.text.heex")
     File.write!(unsafe, "Instruction: <%= @input.text %>\n")
     File.write!(safe, "Data: <%= Spectre.Prompt.data(@input.text) %>\n")
+    File.write!(unqualified, "Data: <%= Prompt.data(@memory) %>\n")
 
     {:ok, definition} =
       Spectre.Definition.fetch(SpectreInferenceHardeningContractTest.Agent)
 
-    assert {:ok, [finding]} = AssetAudit.audit(%{definition | prompt_root: root})
-    assert finding.path == unsafe
-    assert finding.line == 1
-    assert finding.assigns == ["input"]
+    assert {:ok, findings} = AssetAudit.audit(%{definition | prompt_root: root})
+    assert Enum.map(findings, & &1.path) == [unqualified, unsafe]
+    assert Enum.all?(findings, &(&1.line == 1))
+    assert Enum.find(findings, &(&1.path == unsafe)).assigns == ["input"]
+    assert Enum.find(findings, &(&1.path == unqualified)).assigns == ["memory"]
+    refute Enum.any?(findings, &(&1.path == safe))
   end
 
   test "prompt asset audit follows valid Skill roots and skips unavailable definitions" do

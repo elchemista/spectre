@@ -32,6 +32,8 @@ defmodule Spectre.Inference.Descriptor do
     :stream_max_duration_ms,
     :stream_terminal_retention,
     :stream_result_timeout,
+    :stream_max_transport_chunk_bytes,
+    :stream_max_parser_residual_bytes,
     :stream_max_delta_bytes,
     :stream_max_buffer_events,
     :stream_max_buffer_bytes,

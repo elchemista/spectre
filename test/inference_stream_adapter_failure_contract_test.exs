@@ -16,6 +16,8 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest.FixtureAdapter do
 
   @impl Spectre.Inference.StreamAdapter
   def open(_descriptor, opts) do
+    if test_pid = Keyword.get(opts, :test_pid), do: send(test_pid, {:adapter_open_opts, opts})
+
     case Keyword.get(opts, :open_reply) do
       :raise -> raise "open fixture failed"
       :throw -> throw(:open_fixture_failed)
@@ -26,6 +28,8 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest.FixtureAdapter do
 
   @impl Spectre.Inference.StreamAdapter
   def resume(_descriptor, cursor, opts) do
+    if test_pid = Keyword.get(opts, :test_pid), do: send(test_pid, {:adapter_resume_opts, opts})
+
     case Keyword.get(opts, :resume_reply) do
       :raise -> raise "resume fixture failed"
       :throw -> throw(:resume_fixture_failed)
@@ -231,6 +235,22 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest do
     assert pull.ignored_messages == 1
     assert pull.terminal == :completed
 
+    assert {:ok, bounded} =
+             Conformance.run(@adapter, descriptor(), [{:events, events}],
+               max_transport_chunk_bytes: 12_345,
+               max_parser_residual_bytes: 6_789,
+               adapter_opts: [test_pid: self()]
+             )
+
+    assert bounded.bounds == %{
+             max_transport_chunk_bytes: 12_345,
+             max_parser_residual_bytes: 6_789
+           }
+
+    assert_receive {:adapter_open_opts, bounded_opts}
+    assert bounded_opts[:max_transport_chunk_bytes] == 12_345
+    assert bounded_opts[:max_parser_residual_bytes] == 6_789
+
     push_capabilities = MapSet.new([:stream, :push_transport, :bounded_push_transport])
 
     assert {:ok, %{transport: :push, transport_requests: 0}} =
@@ -311,6 +331,14 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest do
         require_terminal?: false,
         max_events_per_transport_item: :unbounded
       )
+    end)
+
+    assert_failed(:options, {:invalid_positive_option, :max_transport_chunk_bytes}, fn ->
+      Conformance.run(@adapter, descriptor(), [], max_transport_chunk_bytes: 0)
+    end)
+
+    assert_failed(:options, {:invalid_positive_option, :max_parser_residual_bytes}, fn ->
+      Conformance.run(@adapter, descriptor(), [], max_parser_residual_bytes: :unbounded)
     end)
 
     assert_failed(:open, {:adapter_error, :provider_unavailable}, fn ->
@@ -466,6 +494,41 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest do
              )
   end
 
+  test "conformance accepts codepoints split between normalized provider deltas" do
+    <<left::binary-size(2), right::binary>> = "🙂"
+
+    split_events = [
+      ProviderEvent.new(:started, provider_sequence: 0),
+      ProviderEvent.delta(left, provider_sequence: 1),
+      ProviderEvent.delta(right, provider_sequence: 2),
+      ProviderEvent.completed("🙂", provider_sequence: 3)
+    ]
+
+    assert {:ok, %{terminal: :completed}} =
+             Conformance.run(@adapter, descriptor(), [{:events, split_events}])
+
+    invalid_events = [
+      ProviderEvent.new(:started, provider_sequence: 0),
+      ProviderEvent.delta(<<0xC3, 0x28>>, provider_sequence: 1)
+    ]
+
+    assert_failed(:events, :invalid_provider_utf8, fn ->
+      Conformance.run(@adapter, descriptor(), [{:events, invalid_events}],
+        require_terminal?: false
+      )
+    end)
+
+    incomplete_events = [
+      ProviderEvent.new(:started, provider_sequence: 0),
+      ProviderEvent.delta(<<0xF0, 0x9F>>, provider_sequence: 1),
+      ProviderEvent.new(:failed, payload: :provider_failed, provider_sequence: 2)
+    ]
+
+    assert_failed(:events, :incomplete_provider_utf8, fn ->
+      Conformance.run(@adapter, descriptor(), [{:events, incomplete_events}])
+    end)
+  end
+
   test "conformance rejects invalid cancel and reconcile callback replies" do
     events = successful_events()
 
@@ -506,6 +569,9 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest do
 
   test "provider events validate payload, sequence, usage quality, and metadata" do
     assert %ProviderEvent{kind: :delta, payload: "delta"} = ProviderEvent.delta("delta")
+
+    assert %ProviderEvent{kind: :delta, payload: <<0xF0, 0x9F>>} =
+             ProviderEvent.delta(<<0xF0, 0x9F>>)
 
     assert %ProviderEvent{kind: :completed, payload: %{text: "complete"}} =
              ProviderEvent.completed("complete")

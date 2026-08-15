@@ -9,7 +9,13 @@ defmodule Spectre.Inference.IncrementalSanitizer do
 
   The complete response still passes through Spectre's ordinary reply
   sanitizer and guards before it becomes a committed `Spectre.Result`.
+
+  UTF-8 codepoints may also cross normalized provider-delta boundaries. The
+  sanitizer retains their bounded trailing bytes before its text state
+  machine sees the chunk.
   """
+
+  alias Spectre.Inference.Utf8Buffer
 
   @control_tags ["think", "al", "intent"]
   @reply_tag "reply"
@@ -21,6 +27,7 @@ defmodule Spectre.Inference.IncrementalSanitizer do
   @minimum_lookahead_bytes 16
 
   defstruct buffer: "",
+            utf8: %Utf8Buffer{},
             mode: :visible,
             line_start?: true,
             sanitize?: true,
@@ -30,6 +37,7 @@ defmodule Spectre.Inference.IncrementalSanitizer do
   @type mode :: :visible | :drop_line | {:block, block()}
   @type t :: %__MODULE__{
           buffer: binary(),
+          utf8: Utf8Buffer.t(),
           mode: mode(),
           line_start?: boolean(),
           sanitize?: boolean(),
@@ -57,20 +65,33 @@ defmodule Spectre.Inference.IncrementalSanitizer do
   end
 
   @spec push(t(), binary()) :: {:ok, binary(), t()} | {:error, term()}
-  def push(%__MODULE__{sanitize?: false} = state, chunk) when is_binary(chunk),
-    do: {:ok, chunk, state}
+  def push(%__MODULE__{sanitize?: false} = state, chunk) when is_binary(chunk) do
+    with {:ok, valid, utf8} <- Utf8Buffer.push(state.utf8, chunk) do
+      {:ok, valid, %{state | utf8: utf8}}
+    end
+  end
 
   def push(%__MODULE__{} = state, chunk) when is_binary(chunk) do
-    state
-    |> Map.update!(:buffer, &(&1 <> chunk))
-    |> drain(false, [])
+    with {:ok, valid, utf8} <- Utf8Buffer.push(state.utf8, chunk) do
+      state
+      |> Map.put(:utf8, utf8)
+      |> Map.update!(:buffer, &(&1 <> valid))
+      |> drain(false, [])
+    end
   end
 
   @spec finish(t()) :: {:ok, binary(), t()} | {:error, term()}
-  def finish(%__MODULE__{sanitize?: false} = state),
-    do: {:ok, state.buffer, %{state | buffer: ""}}
+  def finish(%__MODULE__{sanitize?: false} = state) do
+    with :ok <- Utf8Buffer.finish(state.utf8) do
+      {:ok, state.buffer, %{state | buffer: ""}}
+    end
+  end
 
-  def finish(%__MODULE__{} = state), do: drain(state, true, [])
+  def finish(%__MODULE__{} = state) do
+    with :ok <- Utf8Buffer.finish(state.utf8) do
+      drain(state, true, [])
+    end
+  end
 
   defp drain(%{mode: {:block, :comment}} = state, finish?, output) do
     case :binary.match(state.buffer, @comment_close) do

@@ -5,10 +5,11 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
   Provider packages pass a portable inference descriptor and deterministic
   transport messages from an isolated fixture. The runner verifies capability
   negotiation, open/resume shape, pull-credit discipline, normalized event
-  batches, global provider ordering, terminal cardinality, and optional cancel
-  or reconcile replies. It does not certify a real network client's flow
-  control, cancellation, credentials, parser bounds, or deployment behavior;
-  those remain adapter-owned integration tests.
+  batches, global provider ordering, UTF-8 reassembly, terminal cardinality,
+  and optional cancel or reconcile replies. It forwards mandatory transport
+  chunk and parser-residual bounds to the adapter. Real network flow control,
+  cancellation, credentials, and oversized parser fixtures remain
+  adapter-owned integration tests.
   """
 
   alias Spectre.Inference.Descriptor
@@ -16,9 +17,12 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
   alias Spectre.Inference.ProviderProtocol
   alias Spectre.Inference.StreamAdapter
   alias Spectre.Inference.Usage
+  alias Spectre.Inference.Utf8Buffer
 
   @default_max_events 64
   @default_max_delta_bytes 64_000
+  @default_max_transport_chunk_bytes 256_000
+  @default_max_parser_residual_bytes 256_000
 
   @type report :: %{
           required(:capabilities) => MapSet.t(atom()),
@@ -27,6 +31,10 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
           required(:transport_items) => non_neg_integer(),
           required(:ignored_messages) => non_neg_integer(),
           required(:events) => non_neg_integer(),
+          required(:bounds) => %{
+            max_transport_chunk_bytes: pos_integer(),
+            max_parser_residual_bytes: pos_integer()
+          },
           required(:terminal) => atom() | nil,
           required(:cancel) => :not_exercised | :accepted | {:error, atom()},
           required(:reconcile) => :not_exercised | atom()
@@ -38,7 +46,8 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
   Important options are `:profile`, `:adapter_opts`, `:open_mode`
   (`:open` or `{:resume, cursor}`), `:require_terminal?`, `:cancel_after?`,
   `:reconcile_provider_request_id`, `:max_events_per_transport_item`, and
-  `:max_delta_bytes`.
+  `:max_delta_bytes`. `:max_transport_chunk_bytes` and
+  `:max_parser_residual_bytes` are mandatory adapter bounds with safe defaults.
   """
   @spec run(module(), Descriptor.t(), [term()], keyword()) ::
           {:ok, report()} | {:error, term()}
@@ -61,6 +70,8 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
     profile = Keyword.get(opts, :profile)
 
     with :ok <- valid_adapter_opts(adapter_opts),
+         {:ok, bounds} <- stream_bounds(opts),
+         adapter_opts <- Keyword.merge(adapter_opts, Map.to_list(bounds)),
          :ok <- Descriptor.validate(descriptor),
          {:ok, capabilities} <- validated_capabilities(adapter, profile, adapter_opts),
          {:ok, adapter_state, metadata} <-
@@ -80,6 +91,7 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
          transport_items: protocol.transport_items,
          ignored_messages: protocol.ignored_messages,
          events: protocol.events,
+         bounds: bounds,
          terminal: protocol.terminal,
          cancel: cancel,
          reconcile: reconcile
@@ -148,6 +160,7 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
         provider_event_seen?: false,
         provider_sequence: nil,
         usage: %Usage{},
+        utf8: Utf8Buffer.new(),
         max_events: max_events,
         max_delta_bytes: max_delta_bytes
       }
@@ -248,7 +261,8 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
     with :ok <- global_event_order(event, protocol),
          :ok <-
            ProviderProtocol.validate_sequence(protocol.provider_sequence, event.provider_sequence),
-         :ok <- validate_delta_size(event, protocol.max_delta_bytes) do
+         :ok <- validate_delta_size(event, protocol.max_delta_bytes),
+         {:ok, utf8} <- validate_utf8(event, protocol.utf8) do
       terminal = if event.kind in [:completed, :failed], do: event.kind, else: nil
 
       {:ok,
@@ -259,7 +273,8 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
            provider_event_seen?: true,
            provider_sequence:
              ProviderProtocol.next_sequence(protocol.provider_sequence, event.provider_sequence),
-           usage: Usage.merge(protocol.usage, event.usage)
+           usage: Usage.merge(protocol.usage, event.usage),
+           utf8: utf8
        }}
     end
   end
@@ -279,6 +294,22 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
   end
 
   defp validate_delta_size(%ProviderEvent{}, _limit), do: :ok
+
+  defp validate_utf8(%ProviderEvent{kind: :delta, payload: payload}, utf8) do
+    case Utf8Buffer.push(utf8, payload) do
+      {:ok, _valid, next} -> {:ok, next}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_utf8(%ProviderEvent{kind: kind}, utf8) when kind in [:completed, :failed] do
+    case Utf8Buffer.finish(utf8) do
+      :ok -> {:ok, utf8}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_utf8(%ProviderEvent{}, utf8), do: {:ok, utf8}
 
   defp require_terminal(%{terminal: nil}, opts) do
     if Keyword.get(opts, :require_terminal?, true),
@@ -340,6 +371,27 @@ defmodule Spectre.Inference.StreamAdapter.Conformance do
     case Keyword.get(opts, key, default) do
       value when is_integer(value) and value > 0 -> {:ok, value}
       _invalid -> failure(:options, {:invalid_positive_option, key})
+    end
+  end
+
+  defp stream_bounds(opts) do
+    with {:ok, transport} <-
+           positive_option(
+             opts,
+             :max_transport_chunk_bytes,
+             @default_max_transport_chunk_bytes
+           ),
+         {:ok, residual} <-
+           positive_option(
+             opts,
+             :max_parser_residual_bytes,
+             @default_max_parser_residual_bytes
+           ) do
+      {:ok,
+       %{
+         max_transport_chunk_bytes: transport,
+         max_parser_residual_bytes: residual
+       }}
     end
   end
 
