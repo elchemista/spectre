@@ -6,6 +6,7 @@ defmodule Spectre.Instance.InferenceHeartbeat do
   # caller cannot publish progress that was not first committed.
 
   alias Spectre.Inference.Event
+  alias Spectre.Inference.Events
   alias Spectre.Inference.Progress
   alias Spectre.Inference.StreamCheckpoint
   alias Spectre.Instance.Canonical
@@ -48,36 +49,54 @@ defmodule Spectre.Instance.InferenceHeartbeat do
     invocation = Map.get(data.invocations, invocation_id)
     previous = Map.get(data.inference_liveness_clock, invocation_id)
 
-    cond do
-      is_nil(ownership) or is_nil(invocation) ->
-        {:error, :unknown_inference_stream}
-
-      invocation != ownership ->
-        {:error, :inference_heartbeat_ownership_mismatch}
-
-      progress.invocation_id != invocation_id or
-        progress.inference_id != ownership.invocation.inference_id or
-          progress.attempt_id != ownership.invocation.attempt_id ->
-        {:error, :inference_heartbeat_identity_mismatch}
-
-      progress.run_revision != ownership.run_revision or
-        progress.generation != ownership.generation or
-          progress.dispatch_id != ownership.dispatch_id ->
-        {:error, :inference_heartbeat_dispatch_fence_mismatch}
-
-      progress.control_revision != ownership.invocation.control_revision or
-          progress.stream_epoch != ownership.invocation.stream_epoch ->
-        {:error, :inference_heartbeat_control_fence_mismatch}
-
-      is_map(previous) and progress.sequence < previous.sequence ->
-        {:error, :inference_heartbeat_sequence_regressed}
-
-      true ->
-        with :ok <- Progress.validate(progress) do
-          validate_checkpoint(progress, checkpoint)
-        end
+    with :ok <- validate_known(ownership, invocation),
+         :ok <- validate_ownership(ownership, invocation),
+         :ok <- validate_identity(ownership, invocation_id, progress),
+         :ok <- validate_dispatch_fence(ownership, progress),
+         :ok <- validate_control_fence(ownership, progress),
+         :ok <- validate_sequence(previous, progress),
+         :ok <- Progress.validate(progress) do
+      validate_checkpoint(progress, checkpoint)
     end
   end
+
+  defp validate_known(nil, _invocation), do: {:error, :unknown_inference_stream}
+  defp validate_known(_ownership, nil), do: {:error, :unknown_inference_stream}
+  defp validate_known(_ownership, _invocation), do: :ok
+
+  defp validate_ownership(ownership, ownership), do: :ok
+
+  defp validate_ownership(_ownership, _invocation),
+    do: {:error, :inference_heartbeat_ownership_mismatch}
+
+  defp validate_identity(ownership, invocation_id, progress) do
+    if progress.invocation_id == invocation_id and
+         progress.inference_id == ownership.invocation.inference_id and
+         progress.attempt_id == ownership.invocation.attempt_id,
+       do: :ok,
+       else: {:error, :inference_heartbeat_identity_mismatch}
+  end
+
+  defp validate_dispatch_fence(ownership, progress) do
+    if progress.run_revision == ownership.run_revision and
+         progress.generation == ownership.generation and
+         progress.dispatch_id == ownership.dispatch_id,
+       do: :ok,
+       else: {:error, :inference_heartbeat_dispatch_fence_mismatch}
+  end
+
+  defp validate_control_fence(ownership, progress) do
+    if progress.control_revision == ownership.invocation.control_revision and
+         progress.stream_epoch == ownership.invocation.stream_epoch,
+       do: :ok,
+       else: {:error, :inference_heartbeat_control_fence_mismatch}
+  end
+
+  defp validate_sequence(previous, progress)
+       when is_map(previous) and progress.sequence < previous.sequence,
+       do: {:error, :inference_heartbeat_sequence_regressed}
+
+  defp validate_sequence(_previous, _progress), do: :ok
 
   defp validate_checkpoint(_progress, nil), do: :ok
 
@@ -270,7 +289,7 @@ defmodule Spectre.Instance.InferenceHeartbeat do
         canonical_revision: committed_progress.canonical_revision
       )
 
-    _ = Spectre.Inference.Events.publish(data.ref, event)
+    _ = Events.publish(data.ref, event)
     data
   end
 

@@ -262,52 +262,39 @@ defmodule Spectre.Instance.Configuration do
     do: {:error, {:invalid_instance_retention, key, value}}
 
   defp normalize_inference_observer(opts, base_opts) do
-    enabled =
-      first_configured([
-        {opts, :inference_observer_lane},
-        {base_opts, :inference_observer_lane}
-      ]) || false
-
-    interval =
-      first_configured([
-        {opts, :inference_progress_commit_interval},
-        {base_opts, :inference_progress_commit_interval}
-      ]) || 5_000
-
-    limit =
-      first_configured([
-        {opts, :inference_progress_limit},
-        {base_opts, :inference_progress_limit}
-      ]) || 256
+    enabled = configured(opts, base_opts, :inference_observer_lane, false)
+    interval = configured(opts, base_opts, :inference_progress_commit_interval, 5_000)
+    limit = configured(opts, base_opts, :inference_progress_limit, 256)
 
     checkpoint_interval =
-      first_configured([
-        {opts, :inference_stream_checkpoint_interval},
-        {base_opts, :inference_stream_checkpoint_interval}
-      ]) || 5_000
+      configured(opts, base_opts, :inference_stream_checkpoint_interval, 5_000)
 
-    cond do
-      not is_boolean(enabled) ->
-        {:error, {:invalid_inference_observer_lane, enabled}}
-
-      not is_integer(interval) or interval <= 0 ->
-        {:error, {:invalid_inference_progress_commit_interval, interval}}
-
-      not is_integer(limit) or limit <= 0 ->
-        {:error, {:invalid_inference_progress_limit, limit}}
-
-      not is_integer(checkpoint_interval) or checkpoint_interval <= 0 ->
-        {:error, {:invalid_inference_stream_checkpoint_interval, checkpoint_interval}}
-
-      true ->
-        {:ok,
-         base_opts
-         |> Keyword.put(:inference_observer_lane, enabled)
-         |> Keyword.put(:inference_progress_commit_interval, interval)
-         |> Keyword.put(:inference_progress_limit, limit)
-         |> Keyword.put(:inference_stream_checkpoint_interval, checkpoint_interval)}
+    with :ok <- validate_boolean(enabled, :invalid_inference_observer_lane),
+         :ok <- validate_positive(interval, :invalid_inference_progress_commit_interval),
+         :ok <- validate_positive(limit, :invalid_inference_progress_limit),
+         :ok <-
+           validate_positive(
+             checkpoint_interval,
+             :invalid_inference_stream_checkpoint_interval
+           ) do
+      {:ok,
+       base_opts
+       |> Keyword.put(:inference_observer_lane, enabled)
+       |> Keyword.put(:inference_progress_commit_interval, interval)
+       |> Keyword.put(:inference_progress_limit, limit)
+       |> Keyword.put(:inference_stream_checkpoint_interval, checkpoint_interval)}
     end
   end
+
+  defp configured(opts, base_opts, key, default) do
+    first_configured([{opts, key}, {base_opts, key}]) || default
+  end
+
+  defp validate_boolean(value, _error) when is_boolean(value), do: :ok
+  defp validate_boolean(value, error), do: {:error, {error, value}}
+
+  defp validate_positive(value, _error) when is_integer(value) and value > 0, do: :ok
+  defp validate_positive(value, error), do: {:error, {error, value}}
 
   defp receipt_mode(opts, base_opts) do
     mode =

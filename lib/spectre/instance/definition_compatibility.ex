@@ -6,6 +6,7 @@ defmodule Spectre.Instance.DefinitionCompatibility do
   # activation while rejecting the same profile after restart would make a
   # valid canonical snapshot unrecoverable.
 
+  alias Spectre.Definition.Canonical
   alias Spectre.Definition.Resolver, as: DefinitionResolver
   alias Spectre.Execution.Closure
   alias Spectre.Instance.Activation
@@ -46,7 +47,7 @@ defmodule Spectre.Instance.DefinitionCompatibility do
   def change_surface?(definition) do
     match?(
       {:ok, _component},
-      Spectre.Definition.Canonical.fetch_component(definition, :change_surface)
+      Canonical.fetch_component(definition, :change_surface)
     )
   end
 

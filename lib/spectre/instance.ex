@@ -20,13 +20,26 @@ defmodule Spectre.Instance do
   alias Spectre.Definition.Ref, as: DefinitionRef
   alias Spectre.Definition.Resolver, as: DefinitionResolver
   alias Spectre.Definition.Store, as: DefinitionStore
+  alias Spectre.Effect
   alias Spectre.Event.Envelope, as: EventEnvelope
   alias Spectre.Event.SchemaRegistry, as: EventSchemaRegistry
-  alias Spectre.Effect
   alias Spectre.Execution.Admission, as: ExecutionAdmission
   alias Spectre.Execution.Materialization, as: ExecutionMaterialization
   alias Spectre.Execution.Runtime, as: DataExecutionRuntime
   alias Spectre.Governance.Verifier, as: GovernanceVerifier
+  alias Spectre.Inference
+  alias Spectre.Inference.Budget
+  alias Spectre.Inference.BudgetSnapshot
+  alias Spectre.Inference.Failure, as: InferenceFailure
+  alias Spectre.Inference.FrozenSelection
+  alias Spectre.Inference.Prepared, as: PreparedInference
+  alias Spectre.Inference.Progress, as: InferenceProgress
+  alias Spectre.Inference.Request, as: InferenceRequest
+  alias Spectre.Inference.Response, as: InferenceResponse
+  alias Spectre.Inference.Selection, as: InferenceSelection
+  alias Spectre.Inference.Stream, as: InferenceStream
+  alias Spectre.Inference.Usage, as: InferenceUsage
+  alias Spectre.Inference.UsageAccounting
   alias Spectre.Input
   alias Spectre.Instance.Activation
   alias Spectre.Instance.Activations
@@ -37,8 +50,8 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Commit
   alias Spectre.Instance.Configuration
   alias Spectre.Instance.Conversation
-  alias Spectre.Instance.Deliveries
   alias Spectre.Instance.DefinitionCompatibility
+  alias Spectre.Instance.Deliveries
   alias Spectre.Instance.Events
   alias Spectre.Instance.InferenceAttempt
   alias Spectre.Instance.InferenceBudget
@@ -49,40 +62,28 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.Loops
   alias Spectre.Instance.Owner
+  alias Spectre.Instance.ReceiptRecovery
+  alias Spectre.Instance.Receipts
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Registry, as: InstanceRegistry
   alias Spectre.Instance.Restore
   alias Spectre.Instance.RunQueue
   alias Spectre.Instance.Runs
   alias Spectre.Instance.RuntimeOptions
-  alias Spectre.Instance.Receipts
-  alias Spectre.Instance.ReceiptRecovery
   alias Spectre.Instance.SkillStates
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Instance.Telemetry, as: InstanceTelemetry
   alias Spectre.Instance.Timers
   alias Spectre.Invocation
   alias Spectre.Invocation.WorkerReceipt, as: Receipt
-  alias Spectre.Inference
-  alias Spectre.Inference.Budget
-  alias Spectre.Inference.BudgetSnapshot
-  alias Spectre.Inference.Failure, as: InferenceFailure
-  alias Spectre.Inference.FrozenSelection
-  alias Spectre.Inference.Request, as: InferenceRequest
-  alias Spectre.Inference.Selection, as: InferenceSelection
-  alias Spectre.Inference.Stream, as: InferenceStream
-  alias Spectre.Inference.Progress, as: InferenceProgress
-  alias Spectre.Inference.Usage, as: InferenceUsage
-  alias Spectre.Inference.UsageAccounting
-  alias Spectre.Inference.Prepared, as: PreparedInference
-  alias Spectre.Inference.Response, as: InferenceResponse
-  alias Spectre.Operation.Delivery
   alias Spectre.Operation.Control.Command, as: ControlCommand
+  alias Spectre.Operation.Delivery
   alias Spectre.Operation.Delivery.Consent, as: DeliveryConsent
   alias Spectre.Operation.Delivery.Policy, as: DeliveryPolicy
   alias Spectre.Operation.Delivery.Receipt, as: DeliveryReceipt
   alias Spectre.Operation.Event, as: OperationEvent
   alias Spectre.Operation.Loop, as: OperationLoop
+  alias Spectre.Operation.Memory
   alias Spectre.Operation.Progress, as: OperationProgress
   alias Spectre.Operation.Ref, as: OperationRef
   alias Spectre.Operation.Result, as: OperationResult
@@ -90,10 +91,10 @@ defmodule Spectre.Instance do
   alias Spectre.Operation.RunnerSupervisor
   alias Spectre.Operation.Runtime, as: OperationRuntime
   alias Spectre.Operation.View, as: OperationView
-  alias Spectre.Result
+  alias Spectre.Prompt.Plan, as: PromptPlan
   alias Spectre.Receipt.Envelope, as: ReceiptEnvelope
   alias Spectre.Receipt.Sink, as: ReceiptSink
-  alias Spectre.Prompt.Plan, as: PromptPlan
+  alias Spectre.Result
   alias Spectre.Run
   alias Spectre.Run.Boundary
   alias Spectre.Run.Ref
@@ -6654,7 +6655,7 @@ defmodule Spectre.Instance do
       |> Keyword.put(:operation_result_id, result.id)
 
     callback = fn ->
-      outcome = Spectre.Operation.Memory.persist(agent, payload, memory_opts)
+      outcome = Memory.persist(agent, payload, memory_opts)
       send(owner, {:spectre, :operation_memory_result, loop.id, result.id, outcome})
     end
 
