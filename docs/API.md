@@ -4,14 +4,12 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.3.1` hardens the core governed reflective runtime introduced in
-`0.3.0`, with opt-in redacted Experience, mechanical
-Declared/Effective/Observed Reflection,
-compiled critic adapters, oracle-bound evaluation cases, inert Forge
-proposals, and explicit evidence-aware rebase. The current Run and
-format-tagged Instance checkpoint writers are version 3. Their readers accept
-Run versions 1–3 and tagged Instance versions 2–3; retired untagged 0.2.x
-Instance schemas are not silently imported. The
+Spectre `0.3.2` extends the governed reflective runtime with first-class
+inference Invocations, bounded Instance-owned streaming, optional boundary
+receipts, and an additive reply-sanitizer port for host-owned model policy.
+The current Run and format-tagged Instance checkpoint writers are version 3.
+Their readers accept Run versions 1–3 and tagged Instance versions 2–3;
+retired untagged 0.2.x Instance schemas are not silently imported. The
 exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The

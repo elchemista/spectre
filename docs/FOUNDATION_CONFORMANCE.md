@@ -1,6 +1,6 @@
 # Foundation Conformance
 
-Spectre 0.3.1 exposes the compatibility boundary as an executable public
+Spectre 0.3.2 exposes the compatibility boundary as an executable public
 contract. Applications and satellite packages can verify
 durable recovery and Stack composition without importing ExUnit or copying
 Spectre's internal schemas.
@@ -58,13 +58,13 @@ the runtime's `:state_conversation_id` option.
 Every report contains a digest of the current-writer representation. A report
 is evidence that decoding, migration, current validation, and re-encoding all
 succeeded; it does not replace the application's durable-store or restart
-tests. Spectre 0.3.1 also corrects the tagged-map writer to use a stable entry
-order. A 0.3.0 source checkpoint remains readable unchanged, while its report
-digest is derived from the corrected 0.3.1 current-writer representation.
+tests. Tagged-map writers have used stable entry ordering since 0.3.1. A 0.3.0
+source checkpoint remains readable unchanged, while its report digest is
+derived from the running release's current-writer representation.
 
 The append-only `0.2.6/foundation-conformance-v1.json` fixture still records
 the historical 0.2.6 matrix `Instance 4 / readers 1–4`. That evidence is not
-rewritten; it is distinct from the running 0.3.1 matrix above.
+rewritten; it is distinct from the running 0.3.2 matrix above.
 
 ## Checkpoint Store adapter contract
 
@@ -102,7 +102,7 @@ report.authority_digest
 report.closure_digest
 ```
 
-The compiled module-first path remains the golden authoring path in 0.3.1.
+The compiled module-first path remains the golden authoring path in 0.3.2.
 Runtime and generated definitions must lower into the same canonical envelope;
 they do not receive a second publication or activation model.
 

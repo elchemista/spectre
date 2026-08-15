@@ -13,7 +13,7 @@ Review, Approval and the activation CAS.
 ## Historical 0.3.0 upgrade sequence
 
 This sequence records the original 0.3.0 cutover. For a current installation,
-use the 0.3.1 dependency and compatibility procedure in the erratum below.
+use the 0.3.2 dependency and compatibility procedure below.
 
 1. Update the core dependency to `{:spectre, "~> 0.3.0"}`, refresh the lockfile,
    and compile with warnings as errors.
@@ -34,6 +34,27 @@ use the 0.3.1 dependency and compatibility procedure in the erratum below.
    changed Reflection or Experience requires an explicit Forge rebase.
 
 ## Durable compatibility
+
+### 0.3.2 inference and receipt update
+
+Applications should select `{:spectre, "~> 0.3.2"}`. State remains writer 5
+with readers 2–5. Run checkpoints now use writer 3 with readers 1–3, and the
+format-tagged canonical Instance checkpoint uses writer 3 with readers 2–3.
+Existing tagged v2 Instance checkpoints migrate through the production reader;
+retired untagged 0.2.x Instance checkpoints remain outside that contract.
+
+Run v3 adds typed start and inference continuations. A legacy v2 `:ready` Run
+cannot reconstruct the admission queue entry that the old format did not
+store, so recovery terminalizes it explicitly instead of leaving it orphaned.
+Instance v3 adds inference control/progress and the required-receipt outbox.
+Follow [Migrating Run checkpoints to v3](MIGRATING_TO_RUN_V3.md) and
+[Migrating Instance checkpoints to v3](MIGRATING_TO_INSTANCE_CHECKPOINT_V3.md)
+before deploying over durable 0.3.0 or 0.3.1 data.
+
+The module-first Agent path remains source-compatible. Streaming requires an
+explicit `Spectre.Inference.StreamAdapter`; boundary receipts remain optional,
+and model-specific reply sanitizers are additive to Spectre's structural core
+sanitizer rather than replacements for it.
 
 ### 0.3.1 erratum
 

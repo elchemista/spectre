@@ -880,7 +880,7 @@ defmodule SpectreRuntimeSkillDefinitionTest do
     assert projection.content.cache_key == expected["routing_cache_key"]
 
     matrix = Spectre.Foundation.Conformance.matrix()
-    assert matrix.release == "0.3.1"
+    assert matrix.release == "0.3.2"
     assert matrix.skill_runtime.definition_schema == 1
     assert matrix.skill_runtime.applicability_schema == 1
     assert matrix.skill_runtime.prompt_budget_schema == 1

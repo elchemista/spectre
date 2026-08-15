@@ -7,7 +7,7 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
-## Unreleased
+## 0.3.2 — 2026-08-15
 
 ### Added
 
@@ -35,6 +35,10 @@ migration called out explicitly below.
 - Added text-free committed inference progress events, streaming/receipt
   operational guides, six architecture decisions, and Run/Instance v3
   migration guides.
+- Added an optional `Spectre.Reply.Sanitizer` extension port for model-specific
+  terminal and incremental cleanup. Spectre's bounded structural sanitizer
+  remains the first layer; packages such as Pulse can select an additive
+  sanitizer per invocation without moving provider transport into core.
 
 ### Changed
 
@@ -48,6 +52,13 @@ migration called out explicitly below.
 - Inference no longer holds the Instance's conversational Move worker across
   provider latency. Raw stream deltas bypass the actor and remain ephemeral;
   observer progress is throttled, committed, and only then published.
+- Split the large Instance implementation into focused internal coordinators
+  for configuration, recovery, Run queues, inference lifecycle, streaming,
+  receipts, operations and checkpoint interactions without changing the
+  public owner or commit model.
+- Clarified that the 256 KB transport-chunk and parser-residual limits are
+  configurable defaults. Stream adapter conformance now verifies both
+  adapter-owned bounds mechanically.
 
 ### Security
 
@@ -65,6 +76,16 @@ migration called out explicitly below.
   translating its contained index exceptions back to Spectre's existing
   exception and failure tags. Custom index write faults still fail before the
   query embedding provider is invoked.
+- Hardened incremental sanitization across arbitrary UTF-8 chunk boundaries,
+  Unicode indentation and control-prefix variants while preserving the rule
+  that provisional deltas may suppress more text but never expose more than
+  terminal sanitization permits.
+- Fenced late stream-session shutdowns, cancelled providers during orderly
+  Instance termination, rejected inference-only commands from operation
+  controls, and documented provider sequence and mailbox-delivery contracts.
+- Preserved provider usage provenance, removed credentials from recovered
+  model identity, redacted receipt payloads before external delivery, and
+  applied configured receipt/progress bounds during restore and reconciliation.
 
 ## 0.3.1 — 2026-08-14
 

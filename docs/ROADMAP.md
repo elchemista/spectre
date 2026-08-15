@@ -5,7 +5,7 @@ application business logic. The core keeps one canonical Definition and one
 Instance owner for conversational and operational state; adapters and
 distributed integration do not introduce a second runtime owner.
 
-## Unreleased: inference Invocations and boundary receipts
+## 0.3.2 inference Invocations and boundary receipts
 
 Inference now crosses the same portable, revision-fenced Invocation boundary
 as Effects. Run v3 retains start and inference continuations, while canonical

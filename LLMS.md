@@ -1,17 +1,17 @@
-# Spectre 0.3.1 guide for LLMs and coding agents
+# Spectre 0.3.2 guide for LLMs and coding agents
 
 This file is the compact, machine-oriented entry point for using Spectre
 correctly. It is written for coding assistants, autonomous development agents,
 and retrieval systems that need the library's contracts without guessing from
 module names.
 
-It describes Spectre `0.3.1` and Elixir `~> 1.19`. When this guide and the
+It describes Spectre `0.3.2` and Elixir `~> 1.19`. When this guide and the
 library disagree, prefer the compiled API and the following sources, in order:
 
 1. [Public API manifest](docs/PUBLIC_API.md) for the supported compatibility
    surface.
 2. Generated module documentation on
-   [HexDocs](https://hexdocs.pm/spectre/0.3.1) for function contracts.
+   [HexDocs](https://hexdocs.pm/spectre/0.3.2) for function contracts.
 3. [Getting Started](docs/GETTING_STARTED.md) for the complete host lifecycle.
 4. [Architecture](docs/ARCHITECTURE.md) and
    [Production Operations](docs/PRODUCTION.md) for ownership and deployment.
@@ -27,7 +27,7 @@ snapshot:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.3.1"}
+    {:spectre, "~> 0.3.2"}
   ]
 end
 ```
@@ -35,7 +35,7 @@ end
 For an unreleased snapshot, use an exact Git commit with `ref:`. Never suggest
 tracking a moving branch for production. Spectre satellite packages are
 versioned independently; do not assume an existing `spectre_*` `0.2.x` package
-is compatible with core `0.3.1`.
+is compatible with core `0.3.2`.
 
 ## The non-negotiable model
 

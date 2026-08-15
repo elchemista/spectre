@@ -31,7 +31,7 @@ The release matrix covers Elixir `1.19.x` on Erlang/OTP `28.x` and Elixir
 `1.20.x` on Erlang/OTP `29.x`. Any version manager or separately provisioned
 shells are valid; `asdf` is only one convenient way to reproduce both cells.
 
-The following example uses the patch pairs current for the `0.3.1` release.
+The following example uses the patch pairs current for the `0.3.2` release.
 Install them once, without changing the repository's `.tool-versions`:
 
 ```bash
@@ -109,7 +109,7 @@ supplied Ref, so every run needs an isolated identity. The separate
 two adapter configurations. Foundation, Definition Store, Stack, and
 Checkpoint Store conformance live in core; replay fixtures, live-I/O fuses,
 virtual sources, and a future `Spectre.Lab.TestCase` belong to `spectre_lab`
-rather than the Spectre 0.3.1 core.
+rather than the Spectre 0.3.2 core.
 
 ## Safe generators
 

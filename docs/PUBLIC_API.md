@@ -1,6 +1,6 @@
-# Spectre public API — 0.3.1
+# Spectre public API — 0.3.2
 
-This file is the normative public API manifest for Spectre `0.3.1`. It retains
+This file is the normative public API manifest for Spectre `0.3.2`. It retains
 the recoverable conversational and operational surfaces and adds the core
 inference Invocation, streaming adapter, boundary-receipt and determinism
 ports. Compatibility guarantees apply only to the modules and callables listed

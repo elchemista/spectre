@@ -248,7 +248,7 @@ return the existing stale-wait or stale-generation error before the controller
 runs. Correlation fences replay and does not replace Subject/origin
 authorization.
 
-The 0.3.1 default remains `:legacy` for patch-release compatibility. An accepted
+The 0.3.2 default remains `:legacy` for patch-release compatibility. An accepted
 partially or wholly uncorrelated trigger records `correlation: :legacy` in its
 committed `:triggered` event and emits
 `[:spectre, :instance, :uncorrelated_operation_trigger]` telemetry. Supplying

@@ -99,8 +99,9 @@ Historically, Spectre 0.2.4 introduced untagged checkpoint/state schema 3 with
 untagged schema 4. That migration path is documented in
 [Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
 
-Spectre 0.3.0 and 0.3.1 use a distinct, format-tagged Instance checkpoint
-schema 2 that already contains those sections. The reader accepts only tagged
-version 2 and does not silently reinterpret the retired 0.2.x formats.
+Spectre 0.3.0 and 0.3.1 used a distinct, format-tagged Instance checkpoint
+schema 2 that already contained those sections. Readers in those releases
+accepted only tagged version 2. Spectre 0.3.2 migrates tagged version 2 into
+the current schema 3 and still rejects the retired untagged 0.2.x formats.
 
 See [Migrating to 0.2.4](MIGRATING_TO_0_2_4.md) for deployment sequencing.

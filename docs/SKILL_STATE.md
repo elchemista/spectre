@@ -145,7 +145,7 @@ retired too.
 
 ## Checkpoint compatibility
 
-Current canonical checkpoint writers emit format-tagged schema 2 with a
-`skill_states` section. The 0.3.1 reader accepts only tagged version 2;
+Current canonical checkpoint writers emit format-tagged schema 3 with a
+`skill_states` section. The 0.3.2 reader accepts tagged versions 2 and 3;
 untagged 0.2.x schemas are retired. Their historical migration sequence remains
 documented in [Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
