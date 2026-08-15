@@ -1,12 +1,5 @@
 defmodule Spectre.Inference.Failure do
-  @moduledoc """
-  Privacy-safe normalization for failures crossing an inference boundary.
-
-  Provider failures are executable-boundary data: being serializable does not
-  make their messages, response bodies, request identifiers, or nested
-  metadata safe to persist. This module preserves the small set of semantic
-  shapes the runtime needs and reduces every other value to a bounded class.
-  """
+  @moduledoc false
 
   @semantic_details [
     :inference_budget_exceeded,

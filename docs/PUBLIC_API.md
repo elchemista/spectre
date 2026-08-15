@@ -224,14 +224,19 @@ Mix project version.
 - `Spectre.Identity`
   - functions: `idempotency_key/1`, `uuid7/0`
 - `Spectre.Inference`
+- `Spectre.Inference.Budget`
+- `Spectre.Inference.BudgetSnapshot`
 - `Spectre.Inference.Constraints`
   - functions: `from_options/1`, `from_options/2`, `merge/2`
 - `Spectre.Inference.Descriptor`
 - `Spectre.Inference.Event`
 - `Spectre.Inference.Events`
   - functions: `subscribe/1`, `subscribe/2`, `unsubscribe/1`
+- `Spectre.Inference.FrozenSelection`
+  - functions: `model_ref/1`
 - `Spectre.Inference.Profile`
   - functions: `compatible?/3`
+- `Spectre.Inference.Prepared`
 - `Spectre.Inference.Progress`
 - `Spectre.Inference.ProviderEvent`
   - functions: `completed/1`, `completed/2`, `delta/1`, `delta/2`, `new/1`, `new/2`
