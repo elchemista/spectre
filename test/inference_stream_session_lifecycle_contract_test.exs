@@ -346,25 +346,44 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
       )
 
     session = context.session
-    pending = next_task(context, self(), make_ref(), 1)
+    claim = make_ref()
+    pending = next_task(context, self(), claim, 1)
     assert_receive {:adapter_opened, :open, ^session}
 
     {:opening, data} = :sys.get_state(session)
     ref = data.adapter_state.ref
 
-    events = [
-      ProviderEvent.new(:started, provider_sequence: 0),
-      ProviderEvent.new(:usage, provider_sequence: 1, usage: %{output_tokens: 1}),
-      ProviderEvent.new(:usage, provider_sequence: 2, usage: %{output_tokens: 2}),
-      ProviderEvent.new(:usage, provider_sequence: 3, usage: %{output_tokens: 3})
-    ]
+    send(session, {
+      :session_fixture,
+      ref,
+      [
+        ProviderEvent.new(:started, provider_sequence: 0),
+        ProviderEvent.new(:usage, provider_sequence: 1, usage: %{output_tokens: 1})
+      ]
+    })
 
-    Enum.each(events, fn event ->
-      Process.sleep(2)
-      send(session, {:session_fixture, ref, [event]})
+    assert {:ok, [%StreamEvent{kind: :usage}]} = Task.await(pending, 1_000)
+
+    Enum.each(2..3, fn sequence ->
+      pending = next_task(context, self(), claim, 1)
+      Process.sleep(5)
+
+      send(
+        session,
+        {:session_fixture, ref,
+         [
+           ProviderEvent.new(:usage,
+             provider_sequence: sequence,
+             usage: %{output_tokens: sequence}
+           )
+         ]}
+      )
+
+      assert {:ok, [%StreamEvent{kind: :usage}]} = Task.await(pending, 1_000)
     end)
 
-    Process.sleep(2)
+    pending = next_task(context, self(), claim, 1)
+    Process.sleep(5)
 
     send(
       session,
