@@ -123,6 +123,9 @@ defmodule Spectre.Instance.Runs do
       not is_map(receipt.metadata) or is_struct(receipt.metadata) ->
         {:error, :invalid_inference_receipt_metadata}
 
+      receipt.usage_quality not in [:provider, :estimated, :unavailable] ->
+        {:error, :invalid_inference_receipt_usage_quality}
+
       not is_nil(receipt.sequence) and
           (not is_integer(receipt.sequence) or receipt.sequence < 0) ->
         {:error, :invalid_inference_receipt_sequence}

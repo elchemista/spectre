@@ -38,6 +38,8 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Conversation
   alias Spectre.Instance.Deliveries
   alias Spectre.Instance.Events
+  alias Spectre.Instance.InferenceCapacity
+  alias Spectre.Instance.InferenceControl
   alias Spectre.Instance.Lifecycle
   alias Spectre.Instance.Loops
   alias Spectre.Instance.Owner
@@ -45,6 +47,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Registry, as: InstanceRegistry
   alias Spectre.Instance.Runs
   alias Spectre.Instance.Receipts
+  alias Spectre.Instance.ReceiptRecovery
   alias Spectre.Instance.SkillStates
   alias Spectre.Instance.State, as: InstanceState
   alias Spectre.Instance.Telemetry, as: InstanceTelemetry
@@ -64,6 +67,7 @@ defmodule Spectre.Instance do
   alias Spectre.Inference.StreamCheckpoint
   alias Spectre.Inference.Progress, as: InferenceProgress
   alias Spectre.Inference.Usage, as: InferenceUsage
+  alias Spectre.Inference.UsageAccounting
   alias Spectre.Inference.Prepared, as: PreparedInference
   alias Spectre.Inference.Response, as: InferenceResponse
   alias Spectre.Operation.Delivery
@@ -2290,9 +2294,7 @@ defmodule Spectre.Instance do
       end
     end)
 
-    Enum.each(data.stream_reservations, fn {_run_id, reservation} ->
-      _ = StreamCapacity.release(reservation, data.stream_capacity)
-    end)
+    :ok = InferenceCapacity.release_all(data)
 
     Enum.each(data.operation_timers, fn {_loop_id, timer} ->
       if is_reference(timer.ref), do: Process.cancel_timer(timer.ref)
@@ -2616,7 +2618,7 @@ defmodule Spectre.Instance do
         if Map.has_key?(data.runs, run.id) or Map.has_key?(data.tombstones, run.id) do
           {:reply, {:error, {:duplicate_instance_run, run.id}}, arm_idle_timer(data)}
         else
-          case reserve_stream_capacity(data, run, projection) do
+          case InferenceCapacity.reserve(data, run.id, projection) do
             {:ok, reserved, reservation} ->
               entry = %{
                 run_id: run.id,
@@ -2669,7 +2671,7 @@ defmodule Spectre.Instance do
                 {:error, reason} ->
                   next =
                     retained
-                    |> release_stream_reservation(run.id)
+                    |> InferenceCapacity.release(run.id)
                     |> fail_run_commit(run, reason)
 
                   {:noreply, next}
@@ -2682,31 +2684,6 @@ defmodule Spectre.Instance do
 
       {:error, reason} ->
         {:reply, {:error, reason}, arm_idle_timer(data)}
-    end
-  end
-
-  defp reserve_stream_capacity(data, _run, projection) when projection != :stream,
-    do: {:ok, data, nil}
-
-  defp reserve_stream_capacity(data, run, :stream) do
-    active = map_size(data.stream_sessions) + map_size(data.stream_reservations)
-
-    if active >= data.max_stream_sessions do
-      {:error, :stream_capacity_exhausted}
-    else
-      reservation = {data.ref.key, run.id}
-
-      case StreamCapacity.reserve(reservation, self(), data.stream_capacity) do
-        :ok ->
-          reservations = Map.put(data.stream_reservations, run.id, reservation)
-          {:ok, %{data | stream_reservations: reservations}, reservation}
-
-        {:error, :stream_node_capacity_exhausted} ->
-          {:error, :stream_capacity_exhausted}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
     end
   end
 
@@ -2813,30 +2790,16 @@ defmodule Spectre.Instance do
   defp commit_stream_cancel(data, run, command) do
     with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
          control <-
-           Map.get(controls, command.loop_id, %{
-             generation: run.inference_continuation.control_revision,
-             pending: nil,
-             last_command: nil,
-             history: []
-           }) do
-      cond do
-        command_seen?(control, command.id) ->
+           Map.get(
+             controls,
+             command.loop_id,
+             InferenceControl.new(run.inference_continuation.control_revision)
+           ) do
+      case InferenceControl.apply_cancel(control, command) do
+        :duplicate ->
           {:ok, data}
 
-        control.generation != command.base_revision ->
-          {:error, {:stale_inference_control_revision, command.base_revision, control.generation}}
-
-        not is_nil(control.pending) ->
-          {:error, {:inference_control_pending, control.pending.id}}
-
-        true ->
-          applied = command |> ControlCommand.committed() |> ControlCommand.applied()
-
-          next_control =
-            control
-            |> Map.put(:generation, control.generation + 1)
-            |> finish_inference_control(applied)
-
+        {:ok, next_control} ->
           Commit.canonical_sections(
             data,
             %{inference_control: Map.put(controls, command.loop_id, next_control)},
@@ -2845,6 +2808,9 @@ defmodule Spectre.Instance do
             provenance: %{source: :inference_control, command_id: command.id},
             metadata: %{transition: :inference_cancel_applied}
           )
+
+        {:error, _reason} = error ->
+          error
       end
     end
   end
@@ -2961,19 +2927,12 @@ defmodule Spectre.Instance do
   defp commit_pending_steer(data, run, command) do
     with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
          control <-
-           Map.get(controls, run.inference_continuation.inference_id, %{
-             generation: run.inference_continuation.control_revision,
-             pending: nil,
-             last_command: nil,
-             history: []
-           }),
-         :ok <- validate_steer_control_request(control, command),
-         committed_command <- ControlCommand.committed(command),
-         next_control <- %{
-           control
-           | generation: control.generation + 1,
-             pending: committed_command
-         },
+           Map.get(
+             controls,
+             run.inference_continuation.inference_id,
+             InferenceControl.new(run.inference_continuation.control_revision)
+           ),
+         {:ok, next_control} <- InferenceControl.begin_steer(control, command),
          {:ok, committed} <-
            Commit.canonical_sections(
              data,
@@ -2985,27 +2944,6 @@ defmodule Spectre.Instance do
            ) do
       {:ok, committed, next_control}
     end
-  end
-
-  defp validate_steer_control_request(control, command) do
-    cond do
-      control.generation != command.base_revision ->
-        {:error, {:stale_inference_control_revision, command.base_revision, control.generation}}
-
-      not is_nil(control.pending) ->
-        {:error, {:inference_control_pending, control.pending.id}}
-
-      command_seen?(control, command.id) ->
-        {:error, {:duplicate_inference_control, command.id}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp command_seen?(control, id) do
-    match?(%ControlCommand{id: ^id}, control.last_command) or
-      Enum.any?(control.history, &(&1.id == id))
   end
 
   defp apply_committed_steer(
@@ -3022,7 +2960,7 @@ defmodule Spectre.Instance do
            build_steer_successor(data, ownership, run, steer_input, control, opts),
          {:ok, writes} <- Commit.run_writes(data, data.state, successor),
          applied_command <- ControlCommand.applied(control.pending),
-         applied_control <- finish_inference_control(control, applied_command),
+         applied_control <- InferenceControl.finish(control, applied_command),
          {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
          writes <-
            Map.put(
@@ -3032,11 +2970,11 @@ defmodule Spectre.Instance do
            ),
          successor_reservation <- {data.ref.key, run.id, invocation.attempt_id},
          :ok <-
-           StreamCapacity.replace(
+           InferenceCapacity.replace(
+             data,
              ownership.capacity_reservation,
              successor_reservation,
-             self(),
-             data.stream_capacity
+             self()
            ) do
       case Commit.canonical_sections(data, writes,
              correlation_id: run.id,
@@ -3086,11 +3024,11 @@ defmodule Spectre.Instance do
           # Capacity changes before the canonical commit so a session crash
           # cannot leave a committed successor without an admission slot.
           _ =
-            StreamCapacity.replace(
+            InferenceCapacity.replace(
+              data,
               successor_reservation,
               ownership.capacity_reservation,
-              ownership.pid,
-              data.stream_capacity
+              ownership.pid
             )
 
           rejected = reject_pending_steer(data, run, control, reason)
@@ -3282,18 +3220,9 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp finish_inference_control(control, command) do
-    %{
-      control
-      | pending: nil,
-        last_command: command,
-        history: Enum.take([command | control.history], 128)
-    }
-  end
-
   defp reject_pending_steer(data, run, control, reason) do
     rejected = ControlCommand.rejected(control.pending, portable_failure(reason))
-    next_control = finish_inference_control(control, rejected)
+    next_control = InferenceControl.finish(control, rejected)
 
     with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
          {:ok, committed} <-
@@ -4106,6 +4035,9 @@ defmodule Spectre.Instance do
 
         outcome = InferenceFailure.sanitize_outcome(outcome)
 
+        {usage, usage_quality} =
+          UsageAccounting.complete_response_outcome(outcome, budget_snapshot)
+
         receipt = %Receipt{
           invocation_id: invocation.id,
           run_id: run.id,
@@ -4119,7 +4051,8 @@ defmodule Spectre.Instance do
           stream_epoch: invocation.stream_epoch,
           provider_started: true,
           outcome: outcome,
-          usage: inference_outcome_usage(outcome, budget_snapshot),
+          usage: usage,
+          usage_quality: usage_quality,
           metadata: %{remote_status: :confirmed, nondeterminism_samples: samples}
         }
 
@@ -4248,7 +4181,7 @@ defmodule Spectre.Instance do
 
       {:error, reason} ->
         data
-        |> release_stream_reservation(run.id)
+        |> InferenceCapacity.release(run.id)
         |> Map.put(:state_lock, nil)
         |> fail_run_commit(run, {:stream_session_start_failed, reason})
     end
@@ -4497,39 +4430,14 @@ defmodule Spectre.Instance do
   defp inference_receipt_disposition(data, ownership, receipt) do
     invocation = ownership.invocation
 
-    with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control),
-         control when is_map(control) <- Map.get(controls, invocation.inference_id) do
-      cond do
-        control.generation == invocation.control_revision ->
-          :accept
-
-        cancel_command_for_invocation?(control.last_command, invocation.id) and
-            match?({:error, {:cancelled, _reason}}, receipt.outcome) ->
-          :accept
-
-        cancel_command_for_invocation?(control.last_command, invocation.id) ->
-          {:cancel, :control_committed_before_terminal_acceptance}
-
-        true ->
-          :stale
-      end
+    with {:ok, controls} <- Canonical.fetch(data.canonical, :inference_control) do
+      controls
+      |> Map.get(invocation.inference_id)
+      |> InferenceControl.receipt_disposition(invocation, receipt.outcome)
     else
-      nil -> :accept
       {:error, _reason} -> :stale
     end
   end
-
-  defp cancel_command_for_invocation?(
-         %ControlCommand{
-           action: :cancel,
-           status: :applied,
-           causation_id: invocation_id
-         },
-         invocation_id
-       ),
-       do: true
-
-  defp cancel_command_for_invocation?(_command, _invocation_id), do: false
 
   defp cancelled_race_receipt(receipt, reason) do
     metadata =
@@ -4593,6 +4501,7 @@ defmodule Spectre.Instance do
     accepted_continuation = %{
       continuation
       | provider_status: :terminal,
+        stream_usage_quality: receipt.usage_quality,
         last_response: portable_response,
         recovery: %{status: :terminal_receipt_committed}
     }
@@ -4604,6 +4513,7 @@ defmodule Spectre.Instance do
       provider_started: true,
       response: portable_response,
       usage: portable_response.usage,
+      usage_quality: receipt.usage_quality,
       nondeterminism_samples: Map.get(receipt.metadata, :nondeterminism_samples, [])
     }
 
@@ -4971,7 +4881,7 @@ defmodule Spectre.Instance do
        ) do
     {resume, remaining_resumes} = Map.pop(data.receipt_resumes, receipt_id)
 
-    with :ok <- validate_recovered_receipt(data, entry, envelope),
+    with :ok <- ReceiptRecovery.validate(data, entry, envelope),
          {:ok, writes, resume} <- prepare_required_receipt_ack(data, envelope, resume),
          {:ok, committed} <- Receipts.acknowledge(data, receipt_id, writes) do
       committed =
@@ -5076,251 +4986,6 @@ defmodule Spectre.Instance do
 
   defp continue_required_receipted_boundary(data, envelope, resume),
     do: resume_required_receipted_boundary(data, envelope, resume)
-
-  defp validate_recovered_receipt(data, entry, envelope) do
-    cond do
-      envelope.id != entry.id or ReceiptEnvelope.digest(envelope) != entry.digest ->
-        {:error, :required_receipt_envelope_mismatch}
-
-      envelope.canonical_revision != entry.inserted_revision ->
-        {:error, :required_receipt_revision_mismatch}
-
-      true ->
-        validate_recovered_receipt_run(data, envelope)
-    end
-  end
-
-  defp validate_recovered_receipt_run(
-         data,
-         %ReceiptEnvelope{
-           kind: :run_input_admitted,
-           run_id: run_id,
-           run_revision: run_revision
-         }
-       ) do
-    case Map.get(data.runs, run_id) do
-      %Run{
-        revision: ^run_revision,
-        status: :ready,
-        cursor: :turn,
-        start_continuation: %StartContinuation{}
-      } ->
-        :ok
-
-      _mismatch ->
-        {:error, :recovered_input_receipt_fence_mismatch}
-    end
-  end
-
-  defp validate_recovered_receipt_run(
-         data,
-         %ReceiptEnvelope{
-           kind: :inference_attempt_superseded,
-           run_id: run_id,
-           run_revision: run_revision,
-           inference_id: inference_id,
-           invocation_id: invocation_id,
-           attempt_id: attempt_id,
-           control_revision: control_revision,
-           stream_epoch: stream_epoch
-         }
-       ) do
-    case Map.get(data.runs, run_id) do
-      %Run{
-        revision: ^run_revision,
-        status: :awaiting,
-        cursor: :inference,
-        inference_continuation: %{
-          inference_id: ^inference_id,
-          previous_attempts: previous_attempts
-        }
-      }
-      when is_list(previous_attempts) ->
-        if Enum.any?(previous_attempts, fn previous ->
-             Map.get(previous, :attempt_id) == attempt_id and
-               Map.get(previous, :invocation_id) == invocation_id and
-               Map.get(previous, :control_revision) == control_revision and
-               Map.get(previous, :stream_epoch) == stream_epoch and
-               Map.get(previous, :outcome) == :superseded
-           end),
-           do: :ok,
-           else: {:error, :recovered_supersession_receipt_fence_mismatch}
-
-      _mismatch ->
-        {:error, :recovered_supersession_receipt_fence_mismatch}
-    end
-  end
-
-  defp validate_recovered_receipt_run(
-         data,
-         %ReceiptEnvelope{
-           kind: kind,
-           run_id: run_id,
-           run_revision: run_revision,
-           inference_id: inference_id,
-           invocation_id: invocation_id,
-           attempt_id: attempt_id,
-           control_revision: control_revision,
-           stream_epoch: stream_epoch
-         }
-       )
-       when kind in [:inference_selected, :inference_attempt_started] do
-    expected_status =
-      case kind do
-        :inference_selected -> :selected
-        :inference_attempt_started -> :dispatching
-      end
-
-    case Map.get(data.runs, run_id) do
-      %Run{
-        revision: ^run_revision,
-        status: :awaiting,
-        cursor: :inference,
-        waiting: %Invocation{
-          id: ^invocation_id,
-          inference_id: ^inference_id,
-          attempt_id: ^attempt_id,
-          control_revision: ^control_revision,
-          stream_epoch: ^stream_epoch
-        },
-        inference_continuation: %{
-          inference_id: ^inference_id,
-          provider_status: ^expected_status
-        }
-      } ->
-        :ok
-
-      _mismatch ->
-        {:error, :recovered_inference_receipt_fence_mismatch}
-    end
-  end
-
-  defp validate_recovered_receipt_run(
-         data,
-         %ReceiptEnvelope{
-           kind: kind,
-           run_id: run_id,
-           run_revision: run_revision,
-           inference_id: inference_id,
-           invocation_id: invocation_id,
-           attempt_id: attempt_id,
-           control_revision: control_revision,
-           stream_epoch: stream_epoch
-         }
-       )
-       when kind in [:inference_attempt_terminal, :inference_consumer_never_attached] do
-    case Map.get(data.runs, run_id) do
-      %Run{
-        revision: ^run_revision,
-        status: :awaiting,
-        waiting: %Invocation{
-          id: ^invocation_id,
-          inference_id: ^inference_id,
-          attempt_id: ^attempt_id,
-          control_revision: ^control_revision,
-          stream_epoch: ^stream_epoch
-        }
-      } ->
-        :ok
-
-      %Run{revision: ^run_revision, status: :failed, metadata: metadata} ->
-        case Map.get(metadata, :inference_terminal) do
-          %{
-            inference_id: ^inference_id,
-            invocation_id: ^invocation_id,
-            attempt_id: ^attempt_id,
-            control_revision: ^control_revision,
-            stream_epoch: ^stream_epoch
-          } ->
-            :ok
-
-          _mismatch ->
-            {:error, :recovered_inference_receipt_fence_mismatch}
-        end
-
-      _mismatch ->
-        {:error, :recovered_inference_receipt_fence_mismatch}
-    end
-  end
-
-  defp validate_recovered_receipt_run(
-         data,
-         %ReceiptEnvelope{
-           kind: :policy_decision,
-           run_id: run_id,
-           run_revision: run_revision,
-           payload: %{boundary_id: boundary_id}
-         }
-       ) do
-    case Map.get(data.runs, run_id) do
-      %Run{
-        revision: ^run_revision,
-        metadata: %{policy_decision: %{boundary_id: ^boundary_id}}
-      } ->
-        :ok
-
-      _mismatch ->
-        {:error, :recovered_policy_receipt_fence_mismatch}
-    end
-  end
-
-  defp validate_recovered_receipt_run(
-         data,
-         %ReceiptEnvelope{
-           kind: kind,
-           run_id: run_id,
-           run_revision: run_revision,
-           invocation_id: invocation_id,
-           payload: %{effect: %{id: effect_id}, idempotency_key: idempotency_key}
-         }
-       )
-       when kind in [:effect_terminal, :action_terminal] do
-    case Map.get(data.runs, run_id) do
-      %Run{
-        revision: ^run_revision,
-        metadata: %{
-          effect_terminal: %{
-            invocation_id: ^invocation_id,
-            effect_id: ^effect_id,
-            kind: ^kind,
-            idempotency_key: ^idempotency_key
-          }
-        }
-      } ->
-        :ok
-
-      _mismatch ->
-        {:error, :recovered_effect_receipt_fence_mismatch}
-    end
-  end
-
-  defp validate_recovered_receipt_run(
-         data,
-         %ReceiptEnvelope{
-           kind: :authority_decision,
-           definition_ref: definition_ref,
-           payload: %{
-             axis: axis,
-             to: value,
-             lifecycle_revision: lifecycle_revision,
-             authority_epoch: authority_epoch
-           }
-         }
-       ) do
-    with {:ok, lifecycles} <- Canonical.fetch(data.canonical, :lifecycles),
-         %Lifecycle{
-           revision: ^lifecycle_revision,
-           authority_epoch: ^authority_epoch
-         } = lifecycle <- Map.get(lifecycles, definition_ref),
-         true <- Map.get(lifecycle, axis) == value do
-      :ok
-    else
-      _mismatch -> {:error, :recovered_authority_receipt_fence_mismatch}
-    end
-  end
-
-  defp validate_recovered_receipt_run(_data, _envelope),
-    do: {:error, :unsupported_recovered_receipt_boundary}
 
   # Receipt delivery is the durable gate for a non-deterministic boundary. The
   # continuation is intentionally kept outside canonical state while the
@@ -5547,7 +5212,7 @@ defmodule Spectre.Instance do
   end
 
   defp reserve_recovered_stream_capacity(data, run, %{metadata: %{streaming?: true}}) do
-    reserve_stream_capacity(data, run, :stream)
+    InferenceCapacity.reserve(data, run.id, :stream)
   end
 
   defp reserve_recovered_stream_capacity(data, _run, _invocation),
@@ -6349,6 +6014,7 @@ defmodule Spectre.Instance do
       provider_started: receipt.provider_started,
       remote_status: Map.get(receipt.metadata, :remote_status, :unknown),
       usage: receipt.usage,
+      usage_quality: receipt.usage_quality,
       settlement: settlement
     }
 
@@ -6444,6 +6110,7 @@ defmodule Spectre.Instance do
       remote_status: Map.get(receipt.metadata, :remote_status, :unknown),
       control_command_digest: Map.get(receipt.metadata, :control_command_digest),
       usage: receipt.usage,
+      usage_quality: receipt.usage_quality,
       nondeterminism_samples: Map.get(receipt.metadata, :nondeterminism_samples, [])
     }
   end
@@ -6503,6 +6170,7 @@ defmodule Spectre.Instance do
       control_revision: invocation.control_revision,
       stream_epoch: invocation.stream_epoch,
       usage: receipt.usage,
+      usage_quality: receipt.usage_quality,
       budget: continuation.budget
     }
 
@@ -6640,48 +6308,6 @@ defmodule Spectre.Instance do
   # headers, provider request ids or credentials. Normalized fields live on
   # Response itself; untyped provider metadata therefore remains live-only.
   defp portable_response_metadata(_metadata), do: %{}
-
-  defp inference_outcome_usage(outcome, budget_snapshot)
-
-  defp inference_outcome_usage(
-         {:ok, %InferenceResponse{text: text, usage: usage, latency_ms: latency_ms}},
-         budget_snapshot
-       )
-       when is_map(usage) do
-    normalized = InferenceUsage.new(usage)
-    output_bytes = max(normalized.output_bytes, byte_size(text))
-    estimated_output_tokens = div(output_bytes + 3, 4)
-
-    input_floor =
-      case budget_snapshot do
-        %BudgetSnapshot{estimation_policy: :conservative, reserved: reserved} ->
-          reserved.input_tokens
-
-        _snapshot ->
-          0
-      end
-
-    input_tokens = max(normalized.input_tokens, input_floor)
-    output_tokens = max(normalized.output_tokens, estimated_output_tokens)
-    total_tokens = max(normalized.total_tokens, input_tokens + output_tokens)
-
-    duration =
-      if is_integer(latency_ms),
-        do: max(normalized.duration_ms, latency_ms),
-        else: normalized.duration_ms
-
-    normalized
-    |> Map.merge(%{
-      input_tokens: input_tokens,
-      output_tokens: output_tokens,
-      total_tokens: total_tokens,
-      output_bytes: output_bytes,
-      duration_ms: duration
-    })
-    |> InferenceUsage.to_map()
-  end
-
-  defp inference_outcome_usage(_outcome, _budget_snapshot), do: %{}
 
   defp enforce_inference_attempt_budget(%{budget_snapshot: %BudgetSnapshot{} = snapshot}, usage) do
     BudgetSnapshot.exceeded(snapshot, usage)
@@ -6916,7 +6542,7 @@ defmodule Spectre.Instance do
   end
 
   defp reply_caller(data, run_id, reply) do
-    data = data |> notify_stream_result(run_id, reply) |> release_stream_reservation(run_id)
+    data = data |> notify_stream_result(run_id, reply) |> InferenceCapacity.release(run_id)
 
     case Map.pop(data.callers, run_id) do
       {nil, callers} ->
@@ -6949,17 +6575,6 @@ defmodule Spectre.Instance do
     Enum.find(data.stream_sessions, fn {_invocation_id, ownership} ->
       ownership.run_id == run_id
     end)
-  end
-
-  defp release_stream_reservation(data, run_id) do
-    case Map.pop(data.stream_reservations, run_id) do
-      {nil, reservations} ->
-        %{data | stream_reservations: reservations}
-
-      {reservation, reservations} ->
-        _ = StreamCapacity.release(reservation, data.stream_capacity)
-        %{data | stream_reservations: reservations}
-    end
   end
 
   defp run_active?(data, run_id) do
@@ -8477,7 +8092,7 @@ defmodule Spectre.Instance do
   end
 
   defp resume_recovered_stream_dispatch(data, run, invocation, prepared, entry) do
-    case reserve_stream_capacity(data, run, :stream) do
+    case InferenceCapacity.reserve(data, run.id, :stream) do
       {:ok, reserved, reservation} ->
         entry = Map.put(entry, :stream_capacity_reservation, reservation)
         commit_inference_dispatch_intent(reserved, run, invocation, prepared, entry)
@@ -8506,7 +8121,7 @@ defmodule Spectre.Instance do
              opts
            ),
          true <- MapSet.member?(prepared.stream_capabilities, :resume),
-         {:ok, reserved, reservation} <- reserve_stream_capacity(data, run, :stream),
+         {:ok, reserved, reservation} <- InferenceCapacity.reserve(data, run.id, :stream),
          {:ok, successor, invocation, entry} <-
            build_recovered_stream_successor(
              reserved,
@@ -8540,7 +8155,7 @@ defmodule Spectre.Instance do
         recover_uncertain_inference(data, run, :stream_resume_capability_unavailable)
 
       {:error, reason} ->
-        _ = StreamCapacity.release({data.ref.key, run.id}, data.stream_capacity)
+        :ok = InferenceCapacity.release_reservation(data, {data.ref.key, run.id})
         recover_uncertain_inference(data, run, {:stream_resume_unavailable, reason})
     end
   end
@@ -8590,7 +8205,7 @@ defmodule Spectre.Instance do
            Map.get(controls, run.inference_continuation.inference_id),
          rejected <-
            ControlCommand.rejected(pending, :instance_restarted_before_control_apply),
-         next_control <- finish_inference_control(control, rejected),
+         next_control <- InferenceControl.finish(control, rejected),
          {:ok, committed} <-
            Commit.canonical_sections(
              data,
@@ -8621,59 +8236,14 @@ defmodule Spectre.Instance do
   defp recovered_inference_control(data, %Run{waiting: %Invocation{} = invocation}) do
     case Canonical.fetch(data.canonical, :inference_control) do
       {:ok, controls} ->
-        case Map.get(controls, invocation.inference_id) do
-          nil when invocation.control_revision == 0 ->
-            :continue
-
-          nil ->
-            {:error, :missing_inference_control_fence}
-
-          %{pending: %ControlCommand{}} ->
-            {:error, :pending_inference_control_on_recovery}
-
-          %{generation: generation, pending: nil, last_command: _command}
-          when generation == invocation.control_revision ->
-            # The latest applied command belongs to an earlier attempt, or no
-            # command exists. The Invocation already carries this generation.
-            :continue
-
-          %{
-            generation: generation,
-            pending: nil,
-            last_command: %ControlCommand{} = command
-          }
-          when generation == invocation.control_revision + 1 ->
-            if cancel_command_for_invocation?(command, invocation.id) and
-                 command.base_revision == invocation.control_revision do
-              recovered_cancel_reason(command)
-            else
-              {:error, :inference_control_fence_mismatch}
-            end
-
-          _mismatch ->
-            {:error, :inference_control_fence_mismatch}
-        end
+        controls
+        |> Map.get(invocation.inference_id)
+        |> InferenceControl.recover(invocation)
 
       {:error, reason} ->
         {:error, {:inference_control_recovery_failed, reason_class(reason)}}
     end
   end
-
-  defp recovered_cancel_reason(%ControlCommand{payload: payload})
-       when is_map(payload) and not is_struct(payload) do
-    case Map.fetch(payload, :reason) do
-      {:ok, reason} ->
-        {:cancelled, portable_failure(reason)}
-
-      :error ->
-        case Map.fetch(payload, "reason") do
-          {:ok, reason} -> {:cancelled, portable_failure(reason)}
-          :error -> {:error, :missing_recovered_cancel_reason}
-        end
-    end
-  end
-
-  defp recovered_cancel_reason(_command), do: {:error, :invalid_recovered_cancel_payload}
 
   defp start_inference_reconciliation(data, run, prepared, entry) do
     invocation = run.waiting
@@ -8693,6 +8263,9 @@ defmodule Spectre.Instance do
 
         {outcome, provider_started?, remote_status} = reconciliation_outcome(result)
 
+        {usage, usage_quality} =
+          UsageAccounting.complete_response_outcome(outcome, budget_snapshot)
+
         receipt = %Receipt{
           invocation_id: invocation.id,
           run_id: run.id,
@@ -8706,7 +8279,8 @@ defmodule Spectre.Instance do
           stream_epoch: invocation.stream_epoch,
           provider_started: provider_started?,
           outcome: outcome,
-          usage: inference_outcome_usage(outcome, budget_snapshot),
+          usage: usage,
+          usage_quality: usage_quality,
           metadata: %{remote_status: remote_status, reconciliation: true}
         }
 
@@ -8899,7 +8473,7 @@ defmodule Spectre.Instance do
 
       {:error, reason} ->
         data
-        |> release_stream_reservation(successor.id)
+        |> InferenceCapacity.release(successor.id)
         |> Map.put(:state_lock, nil)
         |> fail_run_commit(receipted, reason)
     end

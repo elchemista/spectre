@@ -31,6 +31,7 @@ defmodule Spectre.Invocation.WorkerReceipt do
     kind: :effect,
     provider_started: false,
     usage: %{},
+    usage_quality: :unavailable,
     metadata: %{}
   ]
 
@@ -49,6 +50,7 @@ defmodule Spectre.Invocation.WorkerReceipt do
           kind: :effect | :inference,
           provider_started: boolean(),
           usage: map(),
+          usage_quality: :provider | :estimated | :unavailable,
           metadata: map()
         }
 end
