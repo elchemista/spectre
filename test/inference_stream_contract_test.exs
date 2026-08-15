@@ -7,6 +7,33 @@ defmodule SpectreInferenceStreamContractTest.Model do
   def complete(_prompt, _opts), do: {:error, :streaming_must_not_call_complete}
 end
 
+defmodule SpectreInferenceStreamContractTest.DropTokenSanitizer do
+  @moduledoc false
+
+  @behaviour Spectre.Reply.Sanitizer
+
+  @impl true
+  def sanitize(text, opts), do: String.replace(text, Keyword.fetch!(opts, :token), "")
+
+  @impl true
+  def init_stream(opts), do: {:ok, Keyword.fetch!(opts, :token)}
+
+  @impl true
+  def sanitize_chunk(text, token), do: {:ok, String.replace(text, token, ""), token}
+
+  @impl true
+  def finish_stream(_token), do: {:ok, ""}
+end
+
+defmodule SpectreInferenceStreamContractTest.TerminalOnlySanitizer do
+  @moduledoc false
+
+  @behaviour Spectre.Reply.Sanitizer
+
+  @impl true
+  def sanitize(text, _opts), do: text
+end
+
 defmodule SpectreInferenceStreamContractTest.PullAdapter do
   @moduledoc false
 
@@ -819,6 +846,41 @@ defmodule SpectreInferenceStreamContractTest do
 
     assert %StreamEvent{kind: :result, payload: %Result{reply_text: "raw provisional"}} =
              List.last(events)
+  end
+
+  test "a configured sanitizer applies consistently to deltas and the terminal result" do
+    instance = start_instance()
+
+    {:ok, stream} =
+      start_stream(instance, successful_batches("a~b"),
+        reply_sanitizer: {SpectreInferenceStreamContractTest.DropTokenSanitizer, token: "~"}
+      )
+
+    events = Enum.to_list(stream)
+
+    emitted =
+      events
+      |> Enum.filter(&(&1.kind == :delta))
+      |> Enum.map_join(& &1.payload)
+
+    assert emitted == "ab"
+
+    assert %StreamEvent{kind: :result, payload: %Result{reply_text: "ab"}} =
+             List.last(events)
+  end
+
+  test "streaming rejects a terminal-only sanitizer before opening the provider" do
+    instance = start_instance()
+
+    assert {:error,
+            {:streaming_unsupported,
+             {:reply_sanitizer_callback_missing,
+              SpectreInferenceStreamContractTest.TerminalOnlySanitizer, :init_stream, 1}}} =
+             start_stream(instance, successful_batches("unused"),
+               reply_sanitizer: SpectreInferenceStreamContractTest.TerminalOnlySanitizer
+             )
+
+    refute_receive {:stream_adapter, :opened, _session}
   end
 
   test "Instance stream controls reject malformed options and forged handles" do

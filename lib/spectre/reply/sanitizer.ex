@@ -8,13 +8,36 @@ defmodule Spectre.Reply.Sanitizer do
   also emit reasoning wrappers (`<think>`, HTML comments). None of that may
   reach the user, and without a core scrubber every host rewrites the same
   cleanup. This sanitizer is the runtime default wherever LLM text becomes
-  `reply_text`; pass `sanitize_reply: false` to opt out, or configure an
-  action planner with a `clean_reply/3` callback to take full ownership.
+  `reply_text`; pass `sanitize_reply: false` to opt out. An action planner may
+  perform its own cleanup first, but its visible reply still crosses this
+  structural boundary unless sanitization is explicitly disabled.
 
   Host-specific cleanup (localized model preambles, channel formatting) stays
-  in the host — this module removes only tokens Spectre itself introduces plus
-  universal reasoning wrappers.
+  in the host. It can be supplied through `:reply_sanitizer` as a module, or
+  `{module, options}`, implementing this module's callbacks. The configured
+  sanitizer is an additive layer: Spectre removes its own control tokens
+  first, then invokes the extension. This keeps the core security boundary in
+  place while allowing a package such as Pulse to own model-specific cleanup.
+
+  Streaming extensions must implement all three streaming callbacks as well
+  as `sanitize/2`. They receive only text already accepted by the core
+  incremental sanitizer. A sanitizer may suppress text but must not synthesize
+  or expand it. Its provisional output must also be monotonic with
+  `sanitize/2`: concatenated deltas must not contain text that the terminal
+  callback would remove.
   """
+
+  alias Spectre.Reply.Sanitizer.Runtime
+
+  @type stream_state :: term()
+
+  @callback sanitize(String.t(), keyword()) :: String.t()
+  @callback init_stream(keyword()) :: {:ok, stream_state()} | {:error, term()}
+  @callback sanitize_chunk(String.t(), stream_state()) ::
+              {:ok, String.t(), stream_state()} | {:error, term()}
+  @callback finish_stream(stream_state()) :: {:ok, String.t()} | {:error, term()}
+
+  @optional_callbacks init_stream: 1, sanitize_chunk: 2, finish_stream: 1
 
   @stripped_blocks [
     {"<!--", "-->"},
@@ -34,10 +57,17 @@ defmodule Spectre.Reply.Sanitizer do
       "Hello there"
 
   Honors `sanitize_reply: false` in `opts` by returning the text trimmed but
-  otherwise untouched.
+  otherwise untouched. `:reply_sanitizer` accepts a callback module or
+  `{module, options}` for additional cleanup after Spectre's built-in pass.
   """
   @spec sanitize(String.t(), keyword()) :: String.t()
   def sanitize(text, opts \\ []) when is_binary(text) and is_list(opts) do
+    text
+    |> sanitize_core(opts)
+    |> Runtime.sanitize(opts)
+  end
+
+  defp sanitize_core(text, opts) do
     if Keyword.get(opts, :sanitize_reply, true) do
       @stripped_blocks
       |> Enum.reduce(text, fn {open, close}, acc -> strip_between(acc, open, close) end)

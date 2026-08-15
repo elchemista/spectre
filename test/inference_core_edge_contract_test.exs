@@ -277,6 +277,7 @@ defmodule SpectreInferenceCoreEdgeContractTest do
       descriptor =
         Descriptor.from_request(request,
           route: %Route{label: :selected, strategy: :deterministic},
+          reply_sanitizer: {MyApp.ReplySanitizer, model_family: :reasoning},
           streaming?: true,
           sanitize_reply: true
         )
@@ -284,7 +285,12 @@ defmodule SpectreInferenceCoreEdgeContractTest do
       assert descriptor.purpose == :inference
       assert descriptor.metadata == %{}
       assert descriptor.route.label == :selected
-      assert Descriptor.options(descriptor) == [sanitize_reply: true, streaming?: true]
+
+      assert Descriptor.options(descriptor) == [
+               reply_sanitizer: {MyApp.ReplySanitizer, model_family: :reasoning},
+               sanitize_reply: true,
+               streaming?: true
+             ]
     end
 
     test "validates every durable descriptor invariant" do

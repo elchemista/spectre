@@ -18,6 +18,7 @@ defmodule Spectre.Inference.Descriptor do
     :plan_actions?,
     :policy_prompt?,
     :sanitize_reply,
+    :reply_sanitizer,
     :model_reply_max_bytes,
     :prompt_format,
     :effect_owner,

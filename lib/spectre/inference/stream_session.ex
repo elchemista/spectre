@@ -15,6 +15,7 @@ defmodule Spectre.Inference.StreamSession do
   alias Spectre.Inference.StreamCapacity
   alias Spectre.Inference.StreamCheckpoint
   alias Spectre.Inference.StreamEvent
+  alias Spectre.Inference.StreamSanitizer
   alias Spectre.Inference.Usage
   alias Spectre.Inference.UsageAccounting
   alias Spectre.Invocation
@@ -642,7 +643,8 @@ defmodule Spectre.Inference.StreamSession do
          dispatch_id when is_binary(dispatch_id) and dispatch_id != "" <-
            Keyword.get(opts, :dispatch_id),
          :ok <- validate_budget_snapshot(Keyword.get(opts, :budget_snapshot)),
-         {:ok, config} <- stream_config(prepared, opts) do
+         {:ok, config} <- stream_config(prepared, opts),
+         {:ok, sanitizer} <- stream_sanitizer(prepared, config) do
       started_at = Determinism.monotonic_time(:millisecond)
 
       {recovery_usage, recovery_usage_quality} =
@@ -695,11 +697,7 @@ defmodule Spectre.Inference.StreamSession do
           max_duration_deadline: started_at + config.max_duration_ms,
           usage_quality: recovery_usage_quality,
           output_bytes: recovery_output_bytes(opts),
-          sanitizer:
-            IncrementalSanitizer.new(
-              sanitize_reply: Keyword.get(prepared.provider_opts, :sanitize_reply, true),
-              max_sanitizer_lookahead_bytes: config.max_sanitizer_lookahead_bytes
-            ),
+          sanitizer: sanitizer,
           terminal_outcome: nil,
           terminal_event: nil,
           capacity_released?: false,
@@ -754,6 +752,13 @@ defmodule Spectre.Inference.StreamSession do
          :ok <- validate_state_timeout_ranges(config) do
       {:ok, config}
     end
+  end
+
+  defp stream_sanitizer(prepared, config) do
+    prepared.provider_opts
+    |> Keyword.take([:sanitize_reply, :reply_sanitizer])
+    |> Keyword.put(:max_sanitizer_lookahead_bytes, config.max_sanitizer_lookahead_bytes)
+    |> StreamSanitizer.new()
   end
 
   defp put_stream_config(source, {field, {key, default}}, acc) do
@@ -893,7 +898,8 @@ defmodule Spectre.Inference.StreamSession do
 
   defp apply_provider_event(%ProviderEvent{kind: :delta, payload: text} = event, :streaming, data) do
     with :ok <- validate_delta(text, data.max_delta_bytes),
-         {:ok, clean, sanitizer} <- IncrementalSanitizer.push(data.sanitizer, text) do
+         {:ok, clean, sanitizer} <- StreamSanitizer.push(data.sanitizer, text),
+         :ok <- validate_sanitized_delta(clean, data.max_delta_bytes) do
       output_bytes = data.output_bytes + byte_size(text)
 
       {usage, usage_quality} =
@@ -956,7 +962,8 @@ defmodule Spectre.Inference.StreamSession do
          data
        ) do
     with :ok <- validate_completed_response(response, data.max_response_bytes),
-         {:ok, trailing, sanitizer} <- IncrementalSanitizer.finish(data.sanitizer) do
+         {:ok, trailing, sanitizer} <- StreamSanitizer.finish(data.sanitizer),
+         :ok <- validate_sanitized_delta(trailing, data.max_delta_bytes) do
       {usage, usage_quality} =
         UsageAccounting.merge_stream(
           data.usage,
@@ -1318,6 +1325,13 @@ defmodule Spectre.Inference.StreamSession do
 
   defp validate_delta(text, _limit) when is_binary(text), do: {:error, :provider_delta_too_large}
   defp validate_delta(_text, _limit), do: {:error, :invalid_provider_delta}
+
+  defp validate_sanitized_delta(text, limit)
+       when is_binary(text) and byte_size(text) <= limit,
+       do: :ok
+
+  defp validate_sanitized_delta(text, _limit) when is_binary(text),
+    do: {:error, :reply_sanitizer_delta_too_large}
 
   defp check_budget(%{budget_snapshot: nil}), do: :ok
 

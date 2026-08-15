@@ -181,5 +181,16 @@ runner exercises both limits through the adapter's `conformance_fixture/4`.
 Normalized delta binaries may cross UTF-8 codepoint boundaries because the
 core reassembles them incrementally.
 
+The supplied values default to 256 KB but are not hard ceilings. Applications
+override them with `stream_max_transport_chunk_bytes` and
+`stream_max_parser_residual_bytes`; adapters must use the resolved values in
+`:spectre_bounds`, never their own copy of Spectre's defaults.
+
+Adapters decode transport and emit provider text; they do not own visible-text
+policy. Model-specific cleanup belongs in an optional module implementing the
+`Spectre.Reply.Sanitizer` callbacks, configured with `:reply_sanitizer`. That
+module can live in Pulse or another host package while Spectre retains the
+mandatory structural and bounded-memory boundary.
+
 See [Streaming inference](STREAMING_INFERENCE.md) for the callback contract,
 limits and restart semantics.
