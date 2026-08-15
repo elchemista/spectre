@@ -8,9 +8,10 @@ Spectre `0.3.1` hardens the core governed reflective runtime introduced in
 `0.3.0`, with opt-in redacted Experience, mechanical
 Declared/Effective/Observed Reflection,
 compiled critic adapters, oracle-bound evaluation cases, inert Forge
-proposals, and explicit evidence-aware rebase. The current format-tagged
-Instance checkpoint writer and reader are both version 2; retired untagged
-0.2.x Instance schemas are not silently imported. The
+proposals, and explicit evidence-aware rebase. The current Run and
+format-tagged Instance checkpoint writers are version 3. Their readers accept
+Run versions 1–3 and tagged Instance versions 2–3; retired untagged 0.2.x
+Instance schemas are not silently imported. The
 exact modules, callables, DSL forms, callbacks, types, and
 struct fields covered by its compatibility
 promise are frozen in the normative [Public API Manifest](PUBLIC_API.md). The
@@ -48,6 +49,20 @@ Definition+Manifest pairs. Satellite suites should pass their entire package
 set to `Spectre.Stack.Conformance.run/2` so cross-package requirements,
 conflicts, compatibility, and ownership collisions are checked together. See
 [Foundation Conformance](FOUNDATION_CONFORMANCE.md).
+
+## Record nondeterministic boundaries
+
+Configure an optional `Spectre.Receipt.Sink` on an Instance when a host needs
+provider-neutral evidence for admitted inputs, inference output, Effects,
+policy/authority decisions, timeout/cancellation ambiguity, or sourced clock
+and random values. `:observational` mode appends after canonical commits and
+does not block progress. `:required` mode adds a checkpointed outbox barrier
+and requires both a durable Instance Checkpoint Store and payload-capable sink.
+
+`Spectre.Receipt.Envelope` binds the typed domain payload to the exact
+Definition/closure identity and pre/post canonical state digests. It is
+evidence linkage, not a claim of deterministic replay or exactly-once external
+work. See [Boundary receipts](RECEIPTS.md).
 
 ## Govern a Definition change
 
@@ -247,6 +262,8 @@ resources. PID, connections, clients, and secrets never belong in
 | --- | --- | --- |
 | Full runtime result | `Spectre.ask/3` | `{:ok, %Spectre.Result{}}` |
 | One host-facing decision | `Spectre.turn/3` | `{:ok, %Spectre.Turn{}}` |
+| Stream one Instance-owned response | `Spectre.stream/3` | `{:ok, %Spectre.Inference.Stream{}}` Enumerable |
+| Await only its canonical result | `Spectre.await_result/2` | `{:ok, %Spectre.Result{}}` |
 | Start a continuation | `Spectre.Runtime.start/3` | `{:continue, %Spectre.Run{}}` |
 | Drive a continuation | `Spectre.Runtime.advance/2`, `resume/3` | one closed Runtime step |
 | Activate a published Candidate | `Spectre.activate/3` | generation-fenced Activation snapshot |
@@ -297,6 +314,36 @@ is projected as `{:reply, nil, ref}`; delivery adapters should skip `nil`.
 
 Use `turn/3` for most HTTP, chat, and worker integrations. Use `ask/3` when the
 host needs to inspect multiple effects or build its own reducer.
+
+Streaming requires an Agent Instance and a provider package implementing
+`Spectre.Inference.StreamAdapter`:
+
+```elixir
+{:ok, stream} =
+  Spectre.stream(instance, "explain the report",
+    plan_actions?: false,
+    stream_adapter: MyApp.StreamAdapter
+  )
+
+Enum.each(stream, fn
+  %Spectre.Inference.StreamEvent{kind: :delta, payload: text} ->
+    render_provisional(text)
+
+  %Spectre.Inference.StreamEvent{kind: :result, payload: result} ->
+    deliver_committed(result)
+
+  %Spectre.Inference.StreamEvent{kind: kind}
+  when kind in [:failed, :cancelled, :ambiguous, :interrupted] ->
+    close_stream(kind)
+end)
+```
+
+The Enumerable is one-shot and pull-driven. Deltas are provisional; only the
+`:result` event has passed full post-processing and the canonical Run commit.
+Use `Spectre.await_result/2` instead of enumeration when only that terminal
+Result matters. Steering returns a replacement Enumerable with a new epoch;
+the old stream never follows it in-band. See
+[Streaming inference](STREAMING_INFERENCE.md).
 
 ### Dispatching decisions without a hand-written switch
 
@@ -743,8 +790,10 @@ functions:
 | Behavior | Responsibility |
 | --- | --- |
 | `Spectre.LLM` | Complete rendered prompts and return normalized provider output |
+| `Spectre.Inference.StreamAdapter` | Normalize bounded asynchronous provider streams |
 | `Spectre.State.Store` | Load and compare-and-swap durable conversation state |
 | `Spectre.Instance.CheckpointStore` | Load and compare-and-swap the complete canonical Instance checkpoint |
+| `Spectre.Receipt.Sink` | Append idempotent boundary evidence and optional content-addressed payloads |
 | `Spectre.Operation.Controller` | Reduce deterministic Work, Vigil, or external-controller transitions |
 | `Spectre.Classifier.Embedding` | Produce embedding vectors |
 | `Spectre.Router.SemanticCache` | Lookup and optionally review learned routes |

@@ -8,6 +8,7 @@ defmodule Spectre.Action.Provider do
 
   alias Spectre.Action
   alias Spectre.Action.Provider.Mount
+  alias Spectre.Action.Schema
   alias Spectre.Action.Spec
 
   @type provider_result :: {:ok, term()} | {:error, term()}
@@ -54,14 +55,92 @@ defmodule Spectre.Action.Provider do
   """
   @spec execute(Mount.t(), Action.t(), Spectre.Context.t()) :: provider_result()
   def execute(%Mount{id: id} = mount, %Action{via: id} = action, %Spectre.Context{} = ctx) do
-    case verify_schema(mount, action) do
-      :ok -> call_execute(mount, action, ctx)
-      {:error, _reason} = error -> error
+    with :ok <- verify_schema(mount, action),
+         :ok <- validate_arguments(mount, action) do
+      call_execute(mount, action, ctx)
     end
   end
 
   def execute(%Mount{} = mount, %Action{} = action, %Spectre.Context{}),
     do: {:error, {:action_provider_mismatch, action.via, mount.id}}
+
+  @doc "Validates arguments against the exact provider spec selected for an action."
+  @spec validate_arguments(Mount.t(), Action.t()) :: :ok | {:error, term()}
+  def validate_arguments(%Mount{} = mount, %Action{} = action) do
+    with {:ok, spec} <- action_spec(mount, action) do
+      case spec do
+        nil -> :ok
+        %Spec{} -> Schema.validate(spec.schema, action.args)
+      end
+    end
+  end
+
+  @doc false
+  @spec legacy_schema_free_local?(Mount.t()) :: boolean()
+  def legacy_schema_free_local?(%Mount{
+        id: :local,
+        module: Spectre.Action.Provider.Local,
+        opts: opts
+      }) do
+    case Keyword.get(opts, :module) do
+      module when is_atom(module) and not is_nil(module) ->
+        Code.ensure_loaded?(module) and not function_exported?(module, :__spectre_actions__, 0)
+
+      _other ->
+        false
+    end
+  end
+
+  def legacy_schema_free_local?(%Mount{}), do: false
+
+  @spec action_spec(Mount.t(), Action.t()) :: {:ok, Spec.t() | nil} | {:error, term()}
+  defp action_spec(%Mount{} = mount, %Action{} = action) do
+    case actions(mount, :all) do
+      {:ok, specs} -> select_action_spec(specs, mount, action)
+      {:error, {:action_provider_not_loaded, _id, _module} = reason} -> {:error, reason}
+      {:error, reason} -> {:error, {:action_schema_unavailable, mount.id, reason}}
+    end
+  end
+
+  defp select_action_spec(specs, mount, action) do
+    candidates = Enum.filter(specs, &Action.matches_ref?({mount.id, &1.name}, action))
+
+    selected =
+      case action.schema_hash do
+        hash when is_binary(hash) -> Enum.filter(candidates, &(&1.schema_hash == hash))
+        nil -> candidates
+      end
+
+    case selected do
+      [spec] ->
+        {:ok, spec}
+
+      [] ->
+        missing_action_spec(mount, action)
+
+      _multiple ->
+        {:error, {:ambiguous_action_argument_schema, mount.id, action.name}}
+    end
+  end
+
+  defp missing_action_spec(%Mount{id: :local} = mount, action) do
+    if legacy_schema_free_local?(mount) do
+      # `actions MyApp.Actions` predates provider discovery. Keep that trusted,
+      # locally mounted boundary compatible while requiring a catalog for every
+      # discoverable or external model-planned action.
+      {:ok, nil}
+    else
+      {:error, {:action_argument_schema_unavailable, mount.id, action.name}}
+    end
+  end
+
+  defp missing_action_spec(mount, action)
+       when not is_nil(action.schema_hash) or not is_nil(action.planned_by),
+       do: {:error, {:action_argument_schema_unavailable, mount.id, action.name}}
+
+  # Providers predating discovery remain usable for deterministic DSL actions.
+  # Model-planned actions are rejected by the clause above.
+  defp missing_action_spec(_mount, _action), do: {:ok, nil}
 
   @spec verify_schema(Mount.t(), Action.t()) :: :ok | {:error, term()}
   defp verify_schema(%Mount{}, %Action{schema_hash: nil}), do: :ok

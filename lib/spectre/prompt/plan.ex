@@ -121,6 +121,39 @@ defmodule Spectre.Prompt.Plan do
   @spec legacy(t()) :: String.t()
   def legacy(%__MODULE__{rendered: rendered}), do: rendered
 
+  @doc false
+  @spec append_context_data(t(), String.t(), keyword()) :: t()
+  def append_context_data(%__MODULE__{} = plan, content, opts \\ [])
+      when is_binary(content) and is_list(opts) do
+    fragment = %Fragment{
+      id: Keyword.get(opts, :id, Spectre.Run.Value.token("prompt-data", content)),
+      content: content,
+      scope: Keyword.get(opts, :scope, :inference_control),
+      target: :context,
+      position: :end,
+      source: Keyword.get(opts, :source, :steering),
+      trust: :data,
+      provenance: Keyword.get(opts, :provenance, %{}),
+      metadata: Keyword.get(opts, :metadata, %{})
+    }
+
+    context = plan.context ++ [fragment]
+
+    rendered =
+      render_sections(%{
+        instructions: plan.instructions,
+        context: context,
+        task: plan.task
+      })
+
+    metadata =
+      plan.metadata
+      |> Map.put(:hash, hash(rendered))
+      |> Map.put(:bytes, byte_size(rendered))
+
+    %{plan | context: context, rendered: rendered, metadata: metadata}
+  end
+
   @spec validate_replacements([resolution()]) :: :ok | {:error, term()}
   defp validate_replacements(resolutions) do
     duplicate =

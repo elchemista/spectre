@@ -9,10 +9,13 @@ defmodule Spectre.Application do
       {Registry, keys: :unique, name: Spectre.Instance.Registry},
       {Spectre.Subject.Registry, name: Spectre.Subject.Registry},
       {Registry, keys: :duplicate, name: Spectre.Operation.EventRegistry},
+      {Registry, keys: :unique, name: Spectre.Inference.StreamRegistry},
+      Spectre.Inference.StreamCapacity,
       Spectre.Router.SemanticCache.Owner,
       Spectre.Operation.RunnerSupervisor,
       {Task.Supervisor, name: Spectre.Operation.TaskSupervisor},
       {Task.Supervisor, name: Spectre.Instance.CheckpointTaskSupervisor},
+      {Task.Supervisor, name: Spectre.Receipt.TaskSupervisor},
       {Task.Supervisor, name: Spectre.Journal.TaskSupervisor},
       Spectre.Journal.Buffer
     ]

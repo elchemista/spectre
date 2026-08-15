@@ -4,7 +4,7 @@ defmodule Spectre.Instance.Canonical.Transition do
   alias Spectre.Instance.Canonical.Change
   alias Spectre.Instance.Canonical.Sections
 
-  @schema_version 1
+  @schema_version 2
 
   defstruct schema_version: @schema_version,
             id: nil,
@@ -19,6 +19,8 @@ defmodule Spectre.Instance.Canonical.Transition do
             causation_id: nil,
             provenance: %{},
             metadata: %{},
+            pre_state_digest: nil,
+            post_state_digest: nil,
             committed_at: nil
 
   @type status :: :committed | :duplicate
@@ -37,11 +39,13 @@ defmodule Spectre.Instance.Canonical.Transition do
           causation_id: String.t() | nil,
           provenance: map(),
           metadata: map(),
+          pre_state_digest: String.t() | nil,
+          post_state_digest: String.t() | nil,
           committed_at: integer()
         }
 
-  @spec committed(Change.t(), non_neg_integer(), non_neg_integer()) :: t()
-  def committed(%Change{} = change, from_revision, to_revision) do
+  @spec committed(Change.t(), non_neg_integer(), non_neg_integer(), String.t(), String.t()) :: t()
+  def committed(%Change{} = change, from_revision, to_revision, pre_digest, post_digest) do
     %__MODULE__{
       id: Spectre.Identity.uuid7(),
       change_id: change.id,
@@ -55,12 +59,14 @@ defmodule Spectre.Instance.Canonical.Transition do
       causation_id: change.causation_id,
       provenance: change.provenance,
       metadata: change.metadata,
+      pre_state_digest: pre_digest,
+      post_state_digest: post_digest,
       committed_at: System.system_time(:millisecond)
     }
   end
 
-  @spec duplicate(Change.t(), non_neg_integer()) :: t()
-  def duplicate(%Change{} = change, current_revision) do
+  @spec duplicate(Change.t(), non_neg_integer(), String.t()) :: t()
+  def duplicate(%Change{} = change, current_revision, state_digest) do
     %__MODULE__{
       id: Spectre.Identity.uuid7(),
       change_id: change.id,
@@ -74,6 +80,8 @@ defmodule Spectre.Instance.Canonical.Transition do
       causation_id: change.causation_id,
       provenance: change.provenance,
       metadata: change.metadata,
+      pre_state_digest: state_digest,
+      post_state_digest: state_digest,
       committed_at: System.system_time(:millisecond)
     }
   end

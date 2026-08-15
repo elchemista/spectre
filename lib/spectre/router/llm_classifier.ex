@@ -5,10 +5,13 @@ defmodule Spectre.Router.LLMClassifier do
 
   alias Spectre.Context
   alias Spectre.Inference
+  alias Spectre.Inference.Descriptor
+  alias Spectre.Inference.Prepared
   alias Spectre.Inference.Request
   alias Spectre.Inference.Response
   alias Spectre.Input
   alias Spectre.Prompt.Plan
+  alias Spectre.Prompt
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
   alias Spectre.Route
@@ -17,27 +20,25 @@ defmodule Spectre.Router.LLMClassifier do
   @doc """
   Asks a configured LLM completion function to return exactly one label.
   """
-  @spec classify(String.t(), [atom()], keyword()) :: {:ok, Route.t()} | {:error, term()}
+  @spec classify(String.t(), [atom()], keyword()) ::
+          {:ok, Route.t()} | {:inference, Prepared.t()} | {:error, term()}
   def classify(text, labels, opts \\ [])
 
   def classify(_text, [], _opts), do: {:error, :no_llm_classifier_labels}
 
   def classify(text, labels, opts) when is_binary(text) and is_list(labels) do
     with {:ok, prompt_text} <- prompt(text, labels, opts),
-         {:ok, plan} <- Plan.compose(prompt_text, [], [:agent]),
-         {:ok, model_text, inference_metadata} <- complete(plan, text, opts),
-         {:ok, label} <- normalize_label(model_text, labels) do
-      {:ok,
-       Route.new(%{
-         label: label,
-         confidence: 0.0,
-         margin: 0.0,
-         scores: %{},
-         accepted?: true,
-         strategy: :llm_classifier,
-         raw: model_text,
-         metadata: inference_metadata
-       })}
+         {:ok, plan} <- Plan.compose(prompt_text, [], [:agent]) do
+      case complete(plan, text, opts) do
+        {:ok, model_text, inference_metadata} ->
+          classification_route(model_text, labels, inference_metadata)
+
+        {:inference, %Prepared{} = prepared} ->
+          {:inference, prepared}
+
+        {:error, _reason} = error ->
+          error
+      end
     end
   rescue
     exception ->
@@ -71,7 +72,7 @@ defmodule Spectre.Router.LLMClassifier do
   end
 
   @spec complete(Plan.t(), String.t(), keyword()) ::
-          {:ok, String.t(), map()} | {:error, term()}
+          {:ok, String.t(), map()} | {:inference, Prepared.t()} | {:error, term()}
   defp complete(plan, text, opts) do
     case classifier_model(opts) || Keyword.get(opts, :model) do
       nil ->
@@ -83,52 +84,143 @@ defmodule Spectre.Router.LLMClassifier do
   end
 
   @spec complete_with_boundary(Plan.t(), String.t(), keyword()) ::
-          {:ok, String.t(), map()} | {:error, term()}
+          {:ok, String.t(), map()} | {:inference, Prepared.t()} | {:error, term()}
   defp complete_with_boundary(plan, text, opts) do
     case Keyword.get(opts, :spectre_agent) do
       agent when is_atom(agent) and not is_nil(agent) ->
-        input = Input.new(text)
-
-        ctx = %Context{
-          agent: agent,
-          input: input,
-          state: %State{},
-          opts: opts
-        }
-
-        request = Request.for_classification(plan, ctx, opts)
-
-        case Inference.complete(agent, request, ctx) do
-          {:ok, response} ->
-            metadata = %{
-              inference: %{
-                request_id: request.id,
-                purpose: request.purpose,
-                selection:
-                  Map.take(response.selection, [
-                    :level,
-                    :reason,
-                    :selector,
-                    :profile_hash,
-                    :attempt
-                  ]),
-                latency_ms: response.latency_ms,
-                usage: response.usage
-              }
-            }
-
-            {:ok, response.text, metadata}
-
-          {:error, _reason} = error ->
-            error
-        end
+        complete_for_agent(agent, plan, text, opts)
 
       _no_agent ->
-        case Spectre.LLM.complete(plan, opts) do
-          {:ok, text} when is_binary(text) -> {:ok, text, %{}}
-          {:ok, %Response{text: text}} -> {:ok, text, %{}}
-          {:error, _reason} = error -> error
+        complete_without_agent(plan, opts)
+    end
+  end
+
+  defp complete_for_agent(agent, plan, text, opts) do
+    input = Input.new(text)
+    ctx = %Context{agent: agent, input: input, state: %State{}, opts: opts}
+    request = Request.for_classification(plan, ctx, opts)
+
+    case classifier_inference(agent, request, ctx, opts) do
+      {:ok, response} -> {:ok, response.text, response_metadata(request, response)}
+      {:inference, %Prepared{} = prepared} -> {:inference, prepared}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp complete_without_agent(plan, opts) do
+    case Spectre.LLM.complete(plan, opts) do
+      {:ok, text} when is_binary(text) -> {:ok, text, %{}}
+      {:ok, %Response{text: text}} -> {:ok, text, %{}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp classifier_inference(agent, request, ctx, opts) do
+    case Keyword.get(opts, :inference_classifier_response) do
+      %Response{} = response ->
+        with :ok <- validate_classifier_descriptor(request, ctx, opts),
+             :ok <- validate_response_request_id(response, request.id) do
+          {:ok, response}
         end
+
+      nil ->
+        begin_classifier_inference(agent, request, ctx, opts)
+
+      _invalid ->
+        {:error, :invalid_classifier_inference_response}
+    end
+  end
+
+  defp begin_classifier_inference(agent, request, ctx, opts) do
+    if Keyword.get(opts, :instance_run_lifecycle?, false) do
+      case Inference.prepare(agent, request, ctx) do
+        {:ok, %Prepared{} = prepared} -> {:inference, prepared}
+        {:error, _reason} = error -> error
+      end
+    else
+      Inference.complete(agent, request, ctx)
+    end
+  end
+
+  # The response itself may have provider metadata stripped before it becomes
+  # durable. Correlation therefore comes from the frozen Descriptor; an
+  # explicit response request id, when present, remains an additional fence.
+  defp validate_response_request_id(%Response{metadata: metadata}, expected)
+       when is_map(metadata) do
+    case Map.fetch(metadata, :request_id) do
+      {:ok, ^expected} -> :ok
+      {:ok, _other} -> {:error, :classifier_inference_response_mismatch}
+      :error -> validate_string_response_request_id(metadata, expected)
+    end
+  end
+
+  defp validate_response_request_id(_response, _expected), do: :ok
+
+  defp validate_string_response_request_id(metadata, expected) do
+    case Map.fetch(metadata, "request_id") do
+      {:ok, ^expected} -> :ok
+      {:ok, _other} -> {:error, :classifier_inference_response_mismatch}
+      :error -> :ok
+    end
+  end
+
+  defp validate_classifier_descriptor(request, ctx, opts) do
+    case Keyword.get(opts, :inference_classifier_descriptor) do
+      %Descriptor{} = expected ->
+        candidate_opts =
+          opts
+          |> Keyword.put(:route, ctx.route)
+          |> Keyword.put(:recoverable?, expected.recoverable?)
+          |> Keyword.put(:recovery_reason, expected.recovery_reason)
+
+        candidate = Descriptor.from_request(request, candidate_opts)
+
+        if candidate == expected,
+          do: :ok,
+          else: {:error, :classifier_inference_descriptor_mismatch}
+
+      nil ->
+        {:error, :classifier_inference_descriptor_missing}
+
+      _invalid ->
+        {:error, :invalid_classifier_inference_descriptor}
+    end
+  rescue
+    _exception -> {:error, :invalid_classifier_inference_descriptor}
+  end
+
+  defp response_metadata(request, response) do
+    %{
+      inference: %{
+        request_id: request.id,
+        purpose: request.purpose,
+        selection:
+          Map.take(response.selection, [
+            :level,
+            :reason,
+            :selector,
+            :profile_hash,
+            :attempt
+          ]),
+        latency_ms: response.latency_ms,
+        usage: response.usage
+      }
+    }
+  end
+
+  defp classification_route(model_text, labels, inference_metadata) do
+    with {:ok, label} <- normalize_label(model_text, labels) do
+      {:ok,
+       Route.new(%{
+         label: label,
+         confidence: 0.0,
+         margin: 0.0,
+         scores: %{},
+         accepted?: true,
+         strategy: :llm_classifier,
+         raw: model_text,
+         metadata: inference_metadata
+       })}
     end
   end
 
@@ -333,13 +425,13 @@ defmodule Spectre.Router.LLMClassifier do
     #{labels_section(assigns, labels)}
     #{context_sections(assigns)}
     Recent chat:
-    #{recent_chat}
+    #{Prompt.data(recent_chat)}
 
     Routing evidence:
-    #{format_evidence(evidence)}
+    #{evidence |> format_evidence() |> Prompt.data()}
 
     Latest message:
-    #{text}
+    #{Prompt.data(text)}
     """
   end
 
@@ -452,7 +544,7 @@ defmodule Spectre.Router.LLMClassifier do
   @spec context_section(map(), atom(), (String.t() -> String.t())) :: String.t()
   defp context_section(assigns, key, render) do
     case Map.get(assigns, key) do
-      value when is_binary(value) and value != "" -> render.(value)
+      value when is_binary(value) and value != "" -> value |> Prompt.data() |> render.()
       _missing -> ""
     end
   end

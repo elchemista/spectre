@@ -98,6 +98,14 @@ complete API reference is published on [HexDocs](https://hexdocs.pm/spectre/0.3.
 Spectre is `0.x`: documented APIs may still evolve in minor releases; the
 normative compatibility surface is the [public API manifest](docs/PUBLIC_API.md).
 
+Instance-owned model calls can also cross a durable inference Invocation and,
+when the provider package supplies a bounded transport adapter, expose a
+pull-driven Enumerable. Run ownership, budgets, cancellation, steering and the
+terminal Result remain in Spectre core; provider HTTP/SDK code remains outside
+it. See [Streaming inference](docs/STREAMING_INFERENCE.md). Optional
+[boundary receipts](docs/RECEIPTS.md) record nondeterministic edges and
+canonical state roots without adding a second History runtime.
+
 ## A Small Agent
 
 One readable module declares the stable shape of the agent. The DSL covers the

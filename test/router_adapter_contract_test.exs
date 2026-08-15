@@ -21,6 +21,21 @@ defmodule SpectreRouterAdapterContractTest.Embedding do
   end
 end
 
+defmodule SpectreRouterAdapterContractTest.ClassifierAgent do
+  @moduledoc false
+
+  use Spectre.Agent, prompt_root: "test/fixtures/strategy_matrix/prompts"
+end
+
+defmodule SpectreRouterAdapterContractTest.ClassifierModel do
+  @moduledoc false
+
+  @behaviour Spectre.LLM
+
+  @impl Spectre.LLM
+  def complete(_prompt, _opts), do: {:error, :instance_must_complete_classifier_inference}
+end
+
 defmodule SpectreRouterAdapterContractTest do
   use ExUnit.Case, async: true
 
@@ -77,7 +92,9 @@ defmodule SpectreRouterAdapterContractTest do
     assert {:ok, default_prompt_route} =
              LLMClassifier.classify("hello", [:HELLO],
                model: fn prompt, _opts ->
-                 assert prompt =~ "Routing evidence:\nnone"
+                 assert prompt =~
+                          "Routing evidence:\n<spectre-data trust=\"data\">none</spectre-data>"
+
                  {:ok, "HELLO"}
                end,
                classifier: :invalid,
@@ -120,6 +137,91 @@ defmodule SpectreRouterAdapterContractTest do
     assert LLMClassifier.available?(model: model)
     assert LLMClassifier.available?(classifier: [adapter: model])
     refute LLMClassifier.available?([])
+  end
+
+  test "LLM classifier resumes an Instance inference only through matching descriptor fences" do
+    lifecycle_opts = [
+      spectre_agent: SpectreRouterAdapterContractTest.ClassifierAgent,
+      instance_run_lifecycle?: true,
+      classifier: [adapter: SpectreRouterAdapterContractTest.ClassifierModel]
+    ]
+
+    assert {:inference, prepared} =
+             LLMClassifier.classify("hello", [:HELLO], lifecycle_opts)
+
+    request_id = prepared.descriptor.id
+
+    response =
+      Spectre.Inference.Response.new(
+        text: "HELLO",
+        selection: prepared.selection,
+        metadata: %{request_id: request_id}
+      )
+
+    resume_opts =
+      lifecycle_opts ++
+        [
+          inference_request_id: request_id,
+          inference_classifier_descriptor: prepared.descriptor,
+          inference_classifier_response: response
+        ]
+
+    assert {:ok, %{label: :HELLO}} =
+             LLMClassifier.classify("hello", [:HELLO], resume_opts)
+
+    string_fenced = %{response | metadata: %{"request_id" => request_id}}
+
+    assert {:ok, %{label: :HELLO}} =
+             LLMClassifier.classify(
+               "hello",
+               [:HELLO],
+               Keyword.put(resume_opts, :inference_classifier_response, string_fenced)
+             )
+
+    for metadata <- [%{request_id: "other"}, %{"request_id" => "other"}] do
+      mismatched = %{response | metadata: metadata}
+
+      assert {:error, :classifier_inference_response_mismatch} =
+               LLMClassifier.classify(
+                 "hello",
+                 [:HELLO],
+                 Keyword.put(resume_opts, :inference_classifier_response, mismatched)
+               )
+    end
+
+    assert {:error, :classifier_inference_descriptor_missing} =
+             LLMClassifier.classify(
+               "hello",
+               [:HELLO],
+               Keyword.delete(resume_opts, :inference_classifier_descriptor)
+             )
+
+    assert {:error, :invalid_classifier_inference_descriptor} =
+             LLMClassifier.classify(
+               "hello",
+               [:HELLO],
+               Keyword.put(resume_opts, :inference_classifier_descriptor, :invalid)
+             )
+
+    mismatched_descriptor = %{prepared.descriptor | purpose: :policy_interrupt_classification}
+
+    assert {:error, :classifier_inference_descriptor_mismatch} =
+             LLMClassifier.classify(
+               "hello",
+               [:HELLO],
+               Keyword.put(
+                 resume_opts,
+                 :inference_classifier_descriptor,
+                 mismatched_descriptor
+               )
+             )
+
+    assert {:error, :invalid_classifier_inference_response} =
+             LLMClassifier.classify(
+               "hello",
+               [:HELLO],
+               Keyword.put(resume_opts, :inference_classifier_response, :invalid)
+             )
   end
 
   test "embedding evidence accepts module, tuple, and function adapters while isolating bad vectors" do

@@ -8,7 +8,8 @@ defmodule Spectre.Instance.Canonical.Codec do
   alias Spectre.Run.Value
 
   @format "spectre/instance-checkpoint"
-  @checkpoint_version 2
+  @checkpoint_version 3
+  @supported_checkpoint_versions [2, 3]
   @max_json_bytes 8_000_000
 
   @checkpoint_keys ~w(
@@ -16,12 +17,13 @@ defmodule Spectre.Instance.Canonical.Codec do
   )
   @section_keys ~w(revision value)
   @applied_change_keys ~w(revision digest)
-  @transition_keys ~w(
+  @transition_keys_v1 ~w(
     schema_version id change_id snapshot_id status from_revision to_revision base_revision
     changed_sections correlation_id causation_id provenance metadata committed_at
   )
+  @transition_keys_v2 @transition_keys_v1 ++ ~w(pre_state_digest post_state_digest)
 
-  @section_names %{
+  @section_names_v2 %{
     "flow" => :flow,
     "work" => :work,
     "vigil" => :vigil,
@@ -36,6 +38,12 @@ defmodule Spectre.Instance.Canonical.Codec do
     "event_quarantine" => :event_quarantine,
     "skill_states" => :skill_states
   }
+
+  @section_names_v3 Map.merge(@section_names_v2, %{
+                      "inference_control" => :inference_control,
+                      "inference_progress" => :inference_progress,
+                      "receipt_outbox" => :receipt_outbox
+                    })
 
   @spec encode(Canonical.t()) :: {:ok, map()} | {:error, term()}
   def encode(%Canonical{} = state) do
@@ -86,7 +94,7 @@ defmodule Spectre.Instance.Canonical.Codec do
          {:ok, applied_changes} <-
            decode_applied_changes(Map.fetch!(checkpoint, "applied_changes")) do
       state = %Canonical{
-        schema_version: 2,
+        schema_version: 3,
         revision: revision,
         sections: sections,
         journal: journal,
@@ -181,23 +189,34 @@ defmodule Spectre.Instance.Canonical.Codec do
   defp encode_transition(%Transition{} = transition) do
     with {:ok, provenance} <- Value.encode(transition.provenance),
          {:ok, metadata} <- Value.encode(transition.metadata) do
-      {:ok,
-       %{
-         "schema_version" => transition.schema_version,
-         "id" => transition.id,
-         "change_id" => transition.change_id,
-         "snapshot_id" => transition.snapshot_id,
-         "status" => "committed",
-         "from_revision" => transition.from_revision,
-         "to_revision" => transition.to_revision,
-         "base_revision" => transition.base_revision,
-         "changed_sections" => Enum.map(transition.changed_sections, &section_name/1),
-         "correlation_id" => transition.correlation_id,
-         "causation_id" => transition.causation_id,
-         "provenance" => provenance,
-         "metadata" => metadata,
-         "committed_at" => transition.committed_at
-       }}
+      encoded = %{
+        "schema_version" => transition.schema_version,
+        "id" => transition.id,
+        "change_id" => transition.change_id,
+        "snapshot_id" => transition.snapshot_id,
+        "status" => "committed",
+        "from_revision" => transition.from_revision,
+        "to_revision" => transition.to_revision,
+        "base_revision" => transition.base_revision,
+        "changed_sections" => Enum.map(transition.changed_sections, &section_name/1),
+        "correlation_id" => transition.correlation_id,
+        "causation_id" => transition.causation_id,
+        "provenance" => provenance,
+        "metadata" => metadata,
+        "committed_at" => transition.committed_at
+      }
+
+      encoded =
+        if transition.schema_version == 2 do
+          Map.merge(encoded, %{
+            "pre_state_digest" => transition.pre_state_digest,
+            "post_state_digest" => transition.post_state_digest
+          })
+        else
+          encoded
+        end
+
+      {:ok, encoded}
     end
   end
 
@@ -213,8 +232,9 @@ defmodule Spectre.Instance.Canonical.Codec do
   @spec decode_transition(term()) :: {:ok, Transition.t()} | {:error, term()}
   defp decode_transition(transition)
        when is_map(transition) and not is_struct(transition) do
-    with :ok <- exact_keys(transition, @transition_keys, :transition),
-         {:ok, schema_version} <- non_negative_integer(transition, "schema_version"),
+    with {:ok, schema_version} <- non_negative_integer(transition, "schema_version"),
+         :ok <- transition_schema_version(schema_version),
+         :ok <- exact_keys(transition, transition_keys(schema_version), :transition),
          {:ok, id} <- non_empty_binary(transition, "id"),
          {:ok, change_id} <- non_empty_binary(transition, "change_id"),
          {:ok, snapshot_id} <- non_empty_binary(transition, "snapshot_id"),
@@ -228,6 +248,8 @@ defmodule Spectre.Instance.Canonical.Codec do
          {:ok, causation_id} <- optional_binary(Map.fetch!(transition, "causation_id")),
          {:ok, provenance} <- decode_value(Map.fetch!(transition, "provenance"), [:provenance]),
          {:ok, metadata} <- decode_value(Map.fetch!(transition, "metadata"), [:metadata]),
+         {:ok, pre_state_digest, post_state_digest} <-
+           decode_transition_digests(transition, schema_version),
          {:ok, committed_at} <- non_negative_integer(transition, "committed_at") do
       {:ok,
        %Transition{
@@ -244,6 +266,8 @@ defmodule Spectre.Instance.Canonical.Codec do
          causation_id: causation_id,
          provenance: provenance,
          metadata: metadata,
+         pre_state_digest: pre_state_digest,
+         post_state_digest: post_state_digest,
          committed_at: committed_at
        }}
     end
@@ -297,7 +321,7 @@ defmodule Spectre.Instance.Canonical.Codec do
   @spec decode_section_names(term()) :: {:ok, [Sections.name()]} | {:error, term()}
   defp decode_section_names(names) when is_list(names) do
     Enum.reduce_while(names, {:ok, []}, fn name, {:ok, decoded} ->
-      case Map.fetch(@section_names, name) do
+      case Map.fetch(@section_names_v3, name) do
         {:ok, section_name} ->
           if section_name in decoded do
             {:halt, {:error, {:duplicate_canonical_transition_section, section_name}}}
@@ -337,12 +361,14 @@ defmodule Spectre.Instance.Canonical.Codec do
   end
 
   @spec checkpoint_version(term()) :: :ok | {:error, term()}
-  defp checkpoint_version(@checkpoint_version), do: :ok
+  defp checkpoint_version(version) when version in @supported_checkpoint_versions, do: :ok
   defp checkpoint_version(version), do: {:error, {:unsupported_canonical_checkpoint, version}}
 
-  defp section_names(@checkpoint_version), do: @section_names
+  defp section_names(2), do: @section_names_v2
+  defp section_names(3), do: @section_names_v3
 
-  defp state_schema_version(@checkpoint_version, 2), do: :ok
+  defp state_schema_version(2, 2), do: :ok
+  defp state_schema_version(3, 3), do: :ok
 
   defp state_schema_version(_checkpoint_version, version),
     do: {:error, {:unsupported_canonical_version, version}}
@@ -350,6 +376,23 @@ defmodule Spectre.Instance.Canonical.Codec do
   @spec transition_status(term()) :: {:ok, :committed} | {:error, term()}
   defp transition_status("committed"), do: {:ok, :committed}
   defp transition_status(value), do: {:error, {:invalid_canonical_transition_status, value}}
+
+  defp transition_schema_version(version) when version in [1, 2], do: :ok
+
+  defp transition_schema_version(version),
+    do: {:error, {:unsupported_canonical_transition_version, version}}
+
+  defp transition_keys(1), do: @transition_keys_v1
+  defp transition_keys(2), do: @transition_keys_v2
+
+  defp decode_transition_digests(_transition, 1), do: {:ok, nil, nil}
+
+  defp decode_transition_digests(transition, 2) do
+    with {:ok, pre_digest} <- non_empty_binary(transition, "pre_state_digest"),
+         {:ok, post_digest} <- non_empty_binary(transition, "post_state_digest") do
+      {:ok, pre_digest, post_digest}
+    end
+  end
 
   @spec non_negative_integer(map(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
   defp non_negative_integer(map, key) do
@@ -408,6 +451,9 @@ defmodule Spectre.Instance.Canonical.Codec do
   defp section_name(:event_admissions), do: "event_admissions"
   defp section_name(:event_quarantine), do: "event_quarantine"
   defp section_name(:skill_states), do: "skill_states"
+  defp section_name(:inference_control), do: "inference_control"
+  defp section_name(:inference_progress), do: "inference_progress"
+  defp section_name(:receipt_outbox), do: "receipt_outbox"
 
   @spec shape(term()) :: atom()
   defp shape(value) when is_list(value), do: :list

@@ -5,8 +5,8 @@ defmodule Spectre.Operation.Executor do
   alias Spectre.ActionDispatcher
   alias Spectre.Effect
   alias Spectre.Effect.Executor, as: EffectExecutor
-  alias Spectre.Inference
   alias Spectre.Inference.Request, as: InferenceRequest
+  alias Spectre.Instance
   alias Spectre.Operation.Execution
   alias Spectre.Operation.ExecutionContext
   alias Spectre.Operation.Policy
@@ -15,6 +15,7 @@ defmodule Spectre.Operation.Executor do
   alias Spectre.Operation.Validator
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
+  alias Spectre.Run.Value
 
   @type result :: {:ok, term()} | {:error, term()} | {:ambiguous, term()}
 
@@ -133,8 +134,8 @@ defmodule Spectre.Operation.Executor do
   defp invoke(%Spec{kind: :function, executor: executor} = spec, request, context),
     do: call_registered(executor, request.input, context, spec)
 
-  defp invoke(%Spec{kind: :cognitive, executor: :inference}, request, context),
-    do: inference(request.input, context)
+  defp invoke(%Spec{kind: :cognitive, executor: :inference} = spec, request, context),
+    do: inference(request.input, spec, context)
 
   defp invoke(%Spec{kind: :cognitive, executor: executor} = spec, request, context),
     do: call_registered(executor, request.input, context, spec)
@@ -227,12 +228,35 @@ defmodule Spectre.Operation.Executor do
     )
   end
 
-  @spec inference(term(), ExecutionContext.t()) :: {:ok, term()} | {:error, term()}
-  defp inference(%InferenceRequest{} = request, context) do
-    Inference.complete(context.agent, request, spectre_context(context))
+  @spec inference(term(), Spec.t(), ExecutionContext.t()) ::
+          {:ok, term()} | {:error, term()}
+  defp inference(%InferenceRequest{} = request, spec, context) do
+    case Keyword.get(context.opts, :instance_pid) do
+      instance when is_pid(instance) ->
+        input = spectre_context(context).input
+
+        opts =
+          spec
+          |> operation_opts(context)
+          |> Keyword.put(:timeout, :infinity)
+          |> Keyword.put(:inference_input, input)
+          |> Keyword.put(
+            :run_id,
+            Value.token(
+              "cognitive-inference-run",
+              {context.attempt.id, request.id}
+            )
+          )
+
+        Instance.infer(instance, request, opts)
+
+      _missing ->
+        {:error, :cognitive_inference_requires_agent_instance}
+    end
   end
 
-  defp inference(value, _context), do: {:error, {:invalid_cognitive_request, shape(value)}}
+  defp inference(value, _spec, _context),
+    do: {:error, {:invalid_cognitive_request, shape(value)}}
 
   @spec spectre_context(ExecutionContext.t()) :: Spectre.Context.t()
   defp spectre_context(context) do

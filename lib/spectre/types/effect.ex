@@ -159,7 +159,33 @@ defmodule Spectre.Effect do
   """
   @spec complete(t(), term()) :: t()
   def complete(%__MODULE__{} = effect, result) do
-    %{effect | status: :completed, result: result, error: nil}
+    metadata = Map.put(effect.metadata, :result_evidence, result_evidence_for(effect))
+    %{effect | status: :completed, result: result, error: nil, metadata: metadata}
+  end
+
+  @doc "Returns the non-authoritative trust and provenance attached to a result."
+  @spec result_evidence(t()) :: map()
+  def result_evidence(%__MODULE__{} = effect) do
+    Map.get(effect.metadata, :result_evidence, %{
+      trust: :untrusted,
+      provenance: %{source: :legacy_effect_result},
+      authenticity: %{}
+    })
+  end
+
+  defp result_evidence_for(%__MODULE__{} = effect) do
+    %{
+      trust: :untrusted,
+      provenance: %{
+        source: if(effect.kind == :action, do: :action_provider, else: :effect_provider),
+        effect_id: effect.id,
+        kind: effect.kind,
+        name: effect.name,
+        via: via(effect),
+        schema_hash: schema_hash(effect)
+      },
+      authenticity: %{status: :unverified}
+    }
   end
 
   @doc """

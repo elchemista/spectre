@@ -9,6 +9,56 @@ migration called out explicitly below.
 
 ## Unreleased
 
+### Added
+
+- Added inference as a first-class `Spectre.Invocation` kind. Agent Instances
+  now commit model selection and dispatch intent, execute one-shot attempts
+  outside the mailbox, and accept only generation/Run/invocation/dispatch-
+  fenced terminal receipts before post-processing the Run.
+- Added Instance-owned streaming through `Spectre.stream/3`. The public handle
+  is a one-shot pull Enumerable backed by a supervised `:gen_statem`, with
+  bounded transport/event buffering, correlated cancellation, restart-based
+  steering, aggregate and per-attempt budgets, liveness deadlines, terminal
+  Result waiting, explicit never-attached handling, and resume/reconcile-based
+  recovery. Streaming transport remains an adapter contract; no Prism code or
+  dependency was added to core.
+- Added optional provider-neutral boundary receipts with deterministic
+  envelopes, canonical pre/post state roots, observational and required modes,
+  a payload-capable `Spectre.Receipt.Sink`, an adapter conformance runner, an
+  in-memory reference sink, and a bounded checkpointed outbox for required
+  delivery. This does not claim deterministic replay or exactly-once external
+  work.
+- Added bounded JSON-Schema-subset validation for model-selected Action
+  arguments at planning and execution boundaries, closed canonical prompt
+  renderers and provenance, legacy prompt-asset auditing in Doctor, and a
+  process-local determinism source for receipt-recorded clock/random samples.
+- Added text-free committed inference progress events, streaming/receipt
+  operational guides, six architecture decisions, and Run/Instance v3
+  migration guides.
+
+### Changed
+
+- Run checkpoint writers now emit schema 3 and readers accept schemas 1, 2 and
+  3. The format retains typed start and inference continuations; legacy v2
+  ready Runs become explicitly nonrecoverable instead of remaining orphaned.
+- Format-tagged canonical Instance checkpoint writers now emit schema 3 and
+  readers accept tagged versions 2 and 3. Version 3 adds inference control,
+  bounded inference progress and the required-receipt outbox. Transition
+  schema 2 binds semantic pre/post state digests.
+- Inference no longer holds the Instance's conversational Move worker across
+  provider latency. Raw stream deltas bypass the actor and remain ephemeral;
+  observer progress is throttled, committed, and only then published.
+
+### Security
+
+- Stream handles are live bearer capabilities and hide their consumer token
+  from inspection. Stale epochs and sequences, foreign handles, late provider
+  output and pre-restart deltas fail closed. Push transports must declare a
+  real pre-mailbox bound.
+- Raw provider request ids, cursors, failures and credentials are excluded from
+  public observer and receipt records. Incremental text remains provisional
+  until the complete response passes normal post-processing and Run commit.
+
 ### Fixed
 
 - Preserved Spectre's semantic-cache error contract with Vettore 0.3.3 by

@@ -14,6 +14,8 @@ defmodule Spectre.Runner do
   alias Spectre.ActionProtection
   alias Spectre.Effect
   alias Spectre.Inference
+  alias Spectre.Inference.Descriptor
+  alias Spectre.Inference.Prepared
   alias Spectre.Inference.Request
   alias Spectre.Inference.Response
   alias Spectre.Input
@@ -23,6 +25,12 @@ defmodule Spectre.Runner do
   alias Spectre.Provider.Failure
   alias Spectre.Result
   alias Spectre.Route
+
+  @classifier_resume_opts [
+    :inference_classifier_response,
+    :inference_classifier_descriptor,
+    :inference_request_id
+  ]
 
   @doc """
   Runs the handler selected by a route.
@@ -85,22 +93,64 @@ defmodule Spectre.Runner do
   confirmation question cannot accidentally stage another action.
   """
   @spec ask(atom() | String.t(), Input.t(), Spectre.Context.t() | map(), keyword()) ::
-          {:ok, Result.t()} | {:error, term()}
+          {:ok, Result.t()} | {:inference, Prepared.t()} | {:error, term()}
   def ask(prompt, %Input{} = input, ctx, opts \\ []) do
     ctx = normalize_ctx(ctx, input, [])
-    prompt_opts = merge_prompt_opts(ctx.opts, opts)
+    prompt_opts = ctx.opts |> merge_prompt_opts(opts) |> Keyword.drop(@classifier_resume_opts)
     ctx = %{ctx | opts: prompt_opts}
 
-    with {:ok, %Plan{} = plan} <-
-           Prompt.build(ctx.agent, prompt, ctx, prompt_opts),
-         request_opts <-
-           Keyword.put(
+    with {:ok, %Plan{} = plan} <- Prompt.build(ctx.agent, prompt, ctx, prompt_opts) do
+      request_opts =
+        Keyword.put(
+          prompt_opts,
+          :explicit_model_override?,
+          Keyword.has_key?(opts, :model)
+        )
+
+      request = Request.for_response(plan, ctx, request_opts)
+      dispatch_ask(request, plan, input, ctx, prompt_opts, opts)
+    end
+  end
+
+  defp dispatch_ask(request, plan, input, ctx, prompt_opts, opts) do
+    if Keyword.get(prompt_opts, :instance_run_lifecycle?, false) do
+      case Inference.prepare(ctx.agent, request, ctx) do
+        {:ok, %Prepared{} = prepared} -> {:inference, prepared}
+        {:error, _reason} = error -> error
+      end
+    else
+      complete_ask(request, plan, input, ctx, prompt_opts, opts)
+    end
+  end
+
+  @doc false
+  @spec resume_inference(Descriptor.t(), Response.t(), Input.t(), Spectre.Context.t()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def resume_inference(
+        %Descriptor{} = descriptor,
+        %Response{} = response,
+        %Input{} = input,
+        %Spectre.Context{} = ctx
+      ) do
+    prompt_opts = Keyword.merge(ctx.opts, Descriptor.options(descriptor))
+    ctx = %{ctx | opts: prompt_opts, route: descriptor.route}
+    request = descriptor_request(descriptor)
+
+    with :ok <- validate_model_reply_size(response.text, prompt_opts),
+         {:ok, %Result{} = result} <-
+           ask_result(
+             response.text,
+             input,
+             ctx,
              prompt_opts,
-             :explicit_model_override?,
-             Keyword.has_key?(opts, :model)
-           ),
-         request <- Request.for_response(plan, ctx, request_opts),
-         {:ok, %Response{} = response} <- Inference.complete(ctx.agent, request, ctx),
+             Map.get(descriptor.options, :policy_prompt?)
+           ) do
+      {:ok, put_inference_metadata(result, descriptor.plan, request, response)}
+    end
+  end
+
+  defp complete_ask(request, plan, input, ctx, prompt_opts, handler_opts) do
+    with {:ok, %Response{} = response} <- Inference.complete(ctx.agent, request, ctx),
          :ok <- validate_model_reply_size(response.text, prompt_opts),
          {:ok, %Result{} = result} <-
            ask_result(
@@ -108,10 +158,23 @@ defmodule Spectre.Runner do
              input,
              ctx,
              prompt_opts,
-             Keyword.get(opts, :policy_prompt?)
+             Keyword.get(handler_opts, :policy_prompt?)
            ) do
       {:ok, put_inference_metadata(result, plan, request, response)}
     end
+  end
+
+  defp descriptor_request(%Descriptor{} = descriptor) do
+    Request.new(%{
+      id: descriptor.id,
+      purpose: descriptor.purpose,
+      plan: descriptor.plan,
+      route: descriptor.route && descriptor.route.label,
+      flow: descriptor.flow,
+      modalities: descriptor.modalities,
+      constraints: descriptor.constraints,
+      metadata: descriptor.metadata
+    })
   end
 
   @spec ask_result(String.t(), Input.t(), Spectre.Context.t(), keyword(), boolean() | nil) ::
@@ -239,13 +302,16 @@ defmodule Spectre.Runner do
     |> then(fn result -> %{result | events: result.events ++ [event]} end)
   end
 
-  @spec selection_summary(Spectre.Inference.Selection.t()) :: map()
+  @spec selection_summary(Spectre.Inference.Selection.t() | Spectre.Inference.FrozenSelection.t()) ::
+          map()
   defp selection_summary(selection) do
     Map.take(selection, [
       :request_id,
       :level,
       :reason,
       :selector,
+      :selector_ref,
+      :model_ref,
       :profile_hash,
       :fallback_chain,
       :attempt,

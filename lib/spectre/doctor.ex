@@ -5,6 +5,7 @@ defmodule Spectre.Doctor do
   alias Spectre.Doctor.Report
   alias Spectre.Foundation.Conformance, as: Foundation
   alias Spectre.Instance.CheckpointStore
+  alias Spectre.Prompt.AssetAudit
   alias Spectre.Stack.Conformance, as: StackConformance
   alias Spectre.Stack.Definition, as: StackDefinition
 
@@ -180,7 +181,8 @@ defmodule Spectre.Doctor do
   defp agent_checks(nil) do
     {[
        check(:skipped, "agent.definition", :agent_not_requested),
-       check(:skipped, "agent.manifest", :agent_not_requested)
+       check(:skipped, "agent.manifest", :agent_not_requested),
+       check(:skipped, "agent.prompt_trust", :agent_not_requested)
      ], nil}
   end
 
@@ -193,7 +195,13 @@ defmodule Spectre.Doctor do
             declared_version: definition.version
           })
 
-        {[definition_check, safe("agent.manifest", fn -> manifest_check(agent) end)], definition}
+        checks = [
+          definition_check,
+          safe("agent.manifest", fn -> manifest_check(agent) end),
+          safe("agent.prompt_trust", fn -> prompt_trust_check(definition) end)
+        ]
+
+        {checks, definition}
 
       false ->
         agent_failure(agent, :agent_not_loaded)
@@ -210,8 +218,27 @@ defmodule Spectre.Doctor do
   defp agent_failure(agent, code) do
     {[
        check(:error, "agent.definition", code, %{module: inspect(agent)}),
-       check(:skipped, "agent.manifest", :agent_definition_unavailable)
+       check(:skipped, "agent.manifest", :agent_definition_unavailable),
+       check(:skipped, "agent.prompt_trust", :agent_definition_unavailable)
      ], nil}
+  end
+
+  defp prompt_trust_check(definition) do
+    case AssetAudit.audit(definition) do
+      {:ok, []} ->
+        check(:ok, "agent.prompt_trust", :prompt_assets_data_bounded)
+
+      {:ok, findings} ->
+        check(:warning, "agent.prompt_trust", :unbounded_prompt_data_interpolation, %{
+          finding_count: length(findings),
+          findings: findings
+        })
+
+      {:error, reason} ->
+        check(:error, "agent.prompt_trust", :prompt_asset_audit_failed, %{
+          reason: inspect(reason)
+        })
+    end
   end
 
   defp manifest_check(agent) do

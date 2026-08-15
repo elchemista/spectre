@@ -1,0 +1,78 @@
+# ADR 0005: Boundary receipts, delivery modes and replay claims
+
+Status: accepted
+
+## Context
+
+Reconstructing a Run does not require a log of every internal mutation. It
+requires durable evidence for admitted input, nondeterministic outputs and
+decisions, plus a digest linking each boundary to canonical state.
+
+The core cannot claim the durability of a database it does not own, and a
+BEAM-local worker receipt cannot survive restart because its capability
+reference and Instance generation are intentionally ephemeral.
+
+## Decision
+
+The core defines three distinct concepts:
+
+- `Spectre.Invocation.WorkerReceipt`: live, capability-fenced, non-portable
+  worker evidence;
+- `Spectre.Receipt.Envelope`: portable, deterministic boundary evidence;
+- a sink-specific append acknowledgement: external and not modeled as a Run
+  terminal.
+
+Portable receipt kinds cover input admission, selection, attempt start and
+terminal, supersession, missing consumer, policy/authority decisions,
+Effect/Action terminal outcomes and nondeterminism samples. Existing typed
+domain receipts are payloads; the envelope does not replace their validation.
+
+The canonical state-digest operation hashes every authoritative section and a
+semantic root. It excludes transition journal, applied-change cache and
+`:receipt_outbox`. Delivery retries and acknowledgements therefore do not
+change the state root they prove. In Instance-produced envelopes, `recorded_at`
+is the logical canonical boundary coordinate, not a wall-clock audit timestamp.
+
+Receipt policy is configured per Instance:
+
+| Mode | Commit behavior | Failure behavior |
+| --- | --- | --- |
+| `:disabled` | boundary commits without an external append | no receipt claim |
+| `:observational` | boundary commits, append runs asynchronously | append failure cannot block the Run |
+| `:required` | payload stage, boundary+outbox commit, checkpoint barrier, idempotent append, acknowledged outbox removal | admission remains fenced until append is reconciled |
+
+Required mode needs both a durable Checkpoint Store and a sink implementing
+content-addressed `put_payload/2` and `get_payload/2`. The canonical outbox is
+bounded and contains only id, digest and payload reference. A full or pending
+outbox blocks new admission rather than dropping evidence.
+
+The hot receipt path requires Invocation id, Run id/revision, Instance
+generation, dispatch id and an unforgeable capability. The recovered path
+requires the persisted Invocation/attempt fences and an exact envelope digest
+already present in the sink/outbox. Recovery never weakens hot-path fences.
+
+## Replay claim
+
+The manifest claim remains:
+
+```text
+capture: nondeterministic_boundaries
+state_digest_linkage: true
+deterministic_replay: false
+exactly_once_external_effects: false
+```
+
+`Spectre.Determinism` can capture and replay selected decision-relevant clock,
+UUID and random samples and fails on type/order mismatches or unused samples.
+Coverage is intentionally incremental. Full deterministic replay must not be
+advertised until a verifier can replay all relevant branches against pinned
+Definition/Stack identities and reproduce every post-state digest.
+
+## Consequences
+
+- The in-memory sink proves idempotency and envelope conformance only.
+- An ambiguous append is reconciled with lookup; it is never assumed absent.
+- Provider and sink failures are reduced to bounded classes before entering
+  canonical state or telemetry.
+- A Ledger implementation can consume this contract later without changing
+  Spectre's runtime ownership.

@@ -524,8 +524,13 @@ defmodule NestedFlowTest do
       assert prompt =~ "Available labels, grouped by conversation flow."
       assert prompt =~ "The quoted phrases after a label are examples"
       assert prompt =~ ~s(PAY_CARD — e.g. "pay by card"; "use my visa")
-      assert prompt =~ "Agent context:\nSupport agent for the Acme web shop."
-      assert prompt =~ "Active conversation flow: checkout/shipping"
+
+      assert prompt =~
+               "Agent context:\n<spectre-data trust=\"data\">Support agent for the Acme web shop.</spectre-data>"
+
+      assert prompt =~
+               "Active conversation flow: <spectre-data trust=\"data\">checkout/shipping</spectre-data>"
+
       assert prompt =~ "Prefer labels inside this flow"
     end
 
@@ -615,7 +620,9 @@ defmodule NestedFlowTest do
                )
 
       assert_received {:classifier_prompt, prompt}
-      assert prompt =~ "Active conversation flow: onboarding"
+
+      assert prompt =~
+               "Active conversation flow: <spectre-data trust=\"data\">onboarding</spectre-data>"
     end
 
     test "the arbitrated router pipeline wires state.current_flow into the prompt" do
@@ -659,7 +666,10 @@ defmodule NestedFlowTest do
       assert_received {:classifier_prompt, prompt}
 
       assert prompt =~ "You are the intent router for the agent"
-      assert prompt =~ "Active conversation flow: outer/inner"
+
+      assert prompt =~
+               "Active conversation flow: <spectre-data trust=\"data\">outer/inner</spectre-data>"
+
       assert prompt =~ "outer/\n  inner/\n    INNER_ROUTE"
     end
 

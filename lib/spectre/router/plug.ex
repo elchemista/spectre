@@ -24,5 +24,6 @@ defmodule Spectre.Router.Plug do
   @callback call(Spectre.Router.Context.t(), term()) ::
               {:cont, Spectre.Router.Context.t()}
               | {:halt, Spectre.Router.Context.t()}
+              | {:inference, Spectre.Inference.Prepared.t()}
               | {:error, term()}
 end

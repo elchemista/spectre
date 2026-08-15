@@ -53,7 +53,10 @@ defmodule Spectre.Router do
 
       {:ok, router_context} = Spectre.Router.route_context(input, ctx)
   """
-  @spec route_context(Input.t(), Spectre.Context.t()) :: {:ok, Context.t()} | {:error, term()}
+  @spec route_context(Input.t(), Spectre.Context.t()) ::
+          {:ok, Context.t()}
+          | {:inference, Spectre.Inference.Prepared.t()}
+          | {:error, term()}
   def route_context(%Input{} = input, %{agent: agent, state: %State{} = state, opts: opts} = ctx) do
     rules =
       agent
@@ -79,8 +82,10 @@ defmodule Spectre.Router do
       rules: rules
     }
 
-    with {:ok, context} <- route_with_pipeline(context, pipeline(router_opts, rules)) do
-      Recorder.record_routing(context)
+    case route_with_pipeline(context, pipeline(router_opts, rules)) do
+      {:ok, %Context{} = context} -> Recorder.record_routing(context)
+      {:inference, %Spectre.Inference.Prepared{} = prepared} -> {:inference, prepared}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -135,7 +140,9 @@ defmodule Spectre.Router do
   end
 
   @spec route_with_pipeline(Context.t(), module() | [Spectre.Pipeline.plug_spec()] | nil) ::
-          {:ok, Context.t()} | {:error, term()}
+          {:ok, Context.t()}
+          | {:inference, Spectre.Inference.Prepared.t()}
+          | {:error, term()}
   defp route_with_pipeline(%Context{} = context, nil), do: {:ok, context}
 
   defp route_with_pipeline(%Context{} = context, pipeline) when is_atom(pipeline) do
@@ -151,17 +158,32 @@ defmodule Spectre.Router do
   end
 
   @spec protected_pipeline(Context.t(), (-> term())) ::
-          {:ok, Context.t()} | {:error, term()}
+          {:ok, Context.t()}
+          | {:inference, Spectre.Inference.Prepared.t()}
+          | {:error, term()}
   defp protected_pipeline(%Context{} = context, callback) do
-    Call.run(
-      :router,
-      fn -> callback.() |> normalize_pipeline_reply() end,
-      context.opts |> Call.adapter_opts() |> Keyword.put(:purpose, :router_pipeline)
-    )
+    result =
+      Call.run(
+        :router,
+        fn -> callback.() |> normalize_pipeline_reply() end,
+        context.opts |> Call.adapter_opts() |> Keyword.put(:purpose, :router_pipeline)
+      )
+
+    case result do
+      {:ok, {:inference, %Spectre.Inference.Prepared{} = prepared}} ->
+        {:inference, prepared}
+
+      other ->
+        other
+    end
   end
 
   @spec normalize_pipeline_reply(term()) :: {:ok, Context.t()} | {:error, term()}
   defp normalize_pipeline_reply({:ok, %Context{}} = result), do: result
+
+  defp normalize_pipeline_reply({:inference, %Spectre.Inference.Prepared{} = prepared}),
+    do: {:ok, {:inference, prepared}}
+
   defp normalize_pipeline_reply({:error, _reason} = error), do: error
 
   defp normalize_pipeline_reply(other),

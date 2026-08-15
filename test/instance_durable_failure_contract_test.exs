@@ -626,12 +626,15 @@ defmodule SpectreInstanceDurableFailureContractTest do
   end
 
   defp run_checkpoint(ref, run_id, opts \\ []) do
-    run =
-      Run.new(
+    run_opts = Keyword.merge([run_id: run_id], opts)
+
+    {:ok, run} =
+      Spectre.Runtime.admit(
         TestAgent,
         Spectre.Input.new("restored"),
         %State{conversation_id: ref.key},
-        Keyword.merge([run_id: run_id], opts)
+        run_opts,
+        run_opts
       )
 
     {:ok, checkpoint} = Run.checkpoint(run)

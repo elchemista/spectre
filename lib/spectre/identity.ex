@@ -15,8 +15,8 @@ defmodule Spectre.Identity do
   """
   @spec uuid7() :: uuid7()
   def uuid7 do
-    unix_ms = System.system_time(:millisecond)
-    <<rand_a::12, rand_b::62, _discard::6>> = :crypto.strong_rand_bytes(10)
+    unix_ms = Spectre.Determinism.system_time(:millisecond)
+    <<rand_a::12, rand_b::62, _discard::6>> = Spectre.Determinism.random_bytes(10)
 
     <<unix_ms::unsigned-big-48, 7::4, rand_a::12, 2::2, rand_b::62>>
     |> encode_uuid()

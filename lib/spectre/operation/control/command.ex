@@ -3,7 +3,17 @@ defmodule Spectre.Operation.Control.Command do
 
   alias Spectre.Run.Value
 
-  @actions [:pause, :update, :resume, :stop, :renew, :trigger, :update_and_resume]
+  @actions [
+    :pause,
+    :update,
+    :resume,
+    :stop,
+    :renew,
+    :trigger,
+    :update_and_resume,
+    :steer,
+    :cancel
+  ]
   @modes [:safe, :immediate]
 
   @enforce_keys [:id, :loop_id, :action, :correlation_id, :provenance, :requested_at]
@@ -111,6 +121,8 @@ defmodule Spectre.Operation.Control.Command do
   defp desired_state(:update_and_resume), do: :active
   defp desired_state(:resume), do: :active
   defp desired_state(:stop), do: :terminal
+  defp desired_state(:steer), do: :active
+  defp desired_state(:cancel), do: :terminal
   defp desired_state(_action), do: nil
 
   @doc """

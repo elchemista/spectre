@@ -52,13 +52,16 @@ Keep these rules intact in generated designs and code:
   stay pinned to the exact Definition that admitted them. Never fall back to a
   newer active Definition for convenience.
 - **One Instance owns canonical mutation.** State, activation, events, and
-  Skill state pass through the Instance sequencer with revision, generation,
-  and fencing checks.
+  Skill state, inference control and required-receipt outbox state pass through
+  the Instance sequencer with revision, generation, and fencing checks.
 - **Governance is rechecked at commit.** Evaluation, approval, and activation
   are distinct stages. Durable Candidates and receipts are reread and verified
   before activation and recovery.
 - **Failure is closed.** Missing refs, ambiguous routes, stale generations,
   malformed data, drift, and absent evidence are errors, not fallback signals.
+- **Stream deltas are provisional.** Only the terminal Result has passed full
+  post-processing and canonical Run commit. Never present a delta as an
+  approved final reply.
 
 See [System Overview](SYSTEM.md) for the design rationale.
 
@@ -165,12 +168,29 @@ Use the narrowest operational abstraction:
 | Bounded durable procedure | `Spectre.start_work/3,4` |
 | Durable observation loop | `Spectre.register_vigil/3,4` |
 | Continue a pinned Run | `Spectre.resume/3,4` |
+| Stream one Instance-owned response | `Spectre.stream/2,3` |
+| Await its canonical Result | `Spectre.await_result/1,2` |
 | Inspect or control an operation | `loop/2,3`, `pause_loop/2,3`, `update_and_resume_loop/3,4` |
 
 Read [Instances](docs/INSTANCES.md), [Runs](docs/RUNS.md), and
-[Operations](docs/OPERATIONS.md) before implementing durable adapters. A real
+[Operations](docs/OPERATIONS.md) before implementing durable adapters. Read
+[Streaming inference](docs/STREAMING_INFERENCE.md) before writing a provider
+stream adapter. A real
 deployment needs durable checkpoint and Definition stores plus an owner/lease
 implementation appropriate for its topology.
+
+Streaming belongs to Spectre core only as lifecycle and transport-neutral
+contracts. Provider packages implement `Spectre.Inference.StreamAdapter` and
+must provide pull flow control or a real bound before push messages reach the
+session mailbox. Do not implement provider HTTP/SDK behavior in Spectre core,
+persist a live stream handle, or merge a replacement steering epoch into the
+old Enumerable.
+
+Boundary receipts are optional. Use `:required` mode only with a durable
+Checkpoint Store and payload-capable idempotent `Spectre.Receipt.Sink`.
+Receipts bind evidence and state roots; do not describe them as deterministic
+replay or exactly-once provider execution. See
+[Boundary receipts](docs/RECEIPTS.md).
 
 ## Governed Agent evolution with Morph
 

@@ -115,7 +115,9 @@ defmodule Spectre.Pipeline do
   Runs a router context through initialized or ad-hoc plug specs.
   """
   @spec run(Spectre.Router.Context.t(), [plug_spec()]) ::
-          {:ok, Spectre.Router.Context.t()} | {:error, term()}
+          {:ok, Spectre.Router.Context.t()}
+          | {:inference, Spectre.Inference.Prepared.t()}
+          | {:error, term()}
   def run(%Spectre.Router.Context{} = context, specs) when is_list(specs) do
     Enum.reduce_while(specs, {:ok, context}, fn spec, {:ok, context} ->
       case normalize_spec(spec) do
@@ -151,13 +153,26 @@ defmodule Spectre.Pipeline do
 
   @spec run_plug(module(), term(), Spectre.Router.Context.t()) ::
           {:cont, {:ok, Spectre.Router.Context.t()}}
-          | {:halt, {:ok, Spectre.Router.Context.t()} | {:error, term()}}
+          | {:halt,
+             {:ok, Spectre.Router.Context.t()}
+             | {:inference, Spectre.Inference.Prepared.t()}
+             | {:error, term()}}
   defp run_plug(module, state, context) do
     case module.call(context, state) do
-      {:cont, %Spectre.Router.Context{} = context} -> {:cont, {:ok, context}}
-      {:halt, %Spectre.Router.Context{} = context} -> {:halt, {:ok, %{context | halted?: true}}}
-      {:error, reason} -> {:halt, {:error, {module, reason}}}
-      other -> {:halt, {:error, {module, {:invalid_plug_return, other}}}}
+      {:cont, %Spectre.Router.Context{} = context} ->
+        {:cont, {:ok, context}}
+
+      {:halt, %Spectre.Router.Context{} = context} ->
+        {:halt, {:ok, %{context | halted?: true}}}
+
+      {:inference, %Spectre.Inference.Prepared{} = prepared} ->
+        {:halt, {:inference, prepared}}
+
+      {:error, reason} ->
+        {:halt, {:error, {module, reason}}}
+
+      other ->
+        {:halt, {:error, {module, {:invalid_plug_return, other}}}}
     end
   rescue
     error -> {:halt, {:error, {module, error}}}

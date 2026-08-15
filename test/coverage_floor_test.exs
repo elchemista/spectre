@@ -1416,7 +1416,13 @@ defmodule SpectreCoverageFloorTest do
     logical = Spectre.Run.Codec.logical_input(%Input{text: "ping", meta: :invalid})
     assert logical.meta == %{}
 
-    initial = Run.new(SpectreCoverageFloorTest.BasicAgent, Input.new("ping"), %State{})
+    assert {:ok, initial} =
+             Runtime.admit(
+               SpectreCoverageFloorTest.BasicAgent,
+               Input.new("ping"),
+               %State{}
+             )
+
     assert {:ok, _checkpoint} = Run.checkpoint(initial, max_bytes: :invalid)
 
     {:continue, run} =

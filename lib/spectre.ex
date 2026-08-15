@@ -93,6 +93,43 @@ defmodule Spectre do
   def turn(session, input, opts) when is_list(opts), do: session_turn(session, input, opts)
 
   @doc """
+  Starts a bounded pull stream on an Agent Instance.
+
+  Streaming is an Instance capability because the Run, budget, fencing and
+  terminal result remain canonical. Stateless agent-module calls are rejected
+  explicitly instead of falling back to a buffered one-shot completion.
+  """
+  @spec stream(GenServer.server(), Input.t() | String.t() | map(), keyword()) ::
+          {:ok, Spectre.Inference.Stream.t()} | {:error, term()}
+  def stream(instance, input, opts \\ []) do
+    if is_list(opts) and Keyword.keyword?(opts) do
+      if is_atom(instance) and agent_module?(instance) do
+        {:error, {:streaming_unsupported, :agent_instance_required}}
+      else
+        Spectre.Instance.stream(instance, input, opts)
+      end
+    else
+      {:error, :invalid_stream_options}
+    end
+  end
+
+  @doc "Waits for the canonical Result produced by a stream handle."
+  @spec await_result(Spectre.Inference.Stream.t(), timeout()) ::
+          {:ok, Spectre.Result.t()} | {:error, term()}
+  def await_result(%Spectre.Inference.Stream{} = stream, timeout \\ :timer.minutes(5)) do
+    Spectre.Inference.Stream.await_result(stream, timeout)
+  end
+
+  @doc "Returns the replacement Enumerable for a stream interrupted by Instance restart."
+  @spec resume_stream(GenServer.server(), Spectre.Inference.Stream.t(), keyword()) ::
+          {:ok, Spectre.Inference.Stream.t()} | {:error, term()}
+  def resume_stream(instance, %Spectre.Inference.Stream{} = stream, opts \\ []) do
+    if is_list(opts) and Keyword.keyword?(opts),
+      do: Spectre.Instance.resume_stream(instance, stream, opts),
+      else: {:error, :invalid_stream_options}
+  end
+
+  @doc """
   Summons an Agent Instance or legacy Session process directly.
 
       {:ok, pid} = Spectre.summon(agent: MyApp.Agent, subject: account.id)

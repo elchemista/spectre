@@ -98,7 +98,7 @@ defmodule SpectreCompatibilityFixtureTest do
 
     assert {:ok,
             %Run{
-              run_version: 2,
+              run_version: 3,
               id: "run-0.1.6-ready",
               agent: Spectre,
               status: :ready,
@@ -122,6 +122,8 @@ defmodule SpectreCompatibilityFixtureTest do
     assert run.state.revision == 7
     assert run.state.data == %{checkpoint: :ready}
     assert run.metadata == %{fixture: "0.1.6", role: :baseline}
+    refute run.start_continuation.recoverable?
+    assert run.start_continuation.reason == :legacy_ready_run_without_start_continuation
 
     assert {:ok, reencoded} = Run.checkpoint(run)
     assert {:ok, ^run} = Run.restore(reencoded)
