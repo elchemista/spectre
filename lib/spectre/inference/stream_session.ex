@@ -36,6 +36,7 @@ defmodule Spectre.Inference.StreamSession do
   @default_max_events_per_transport_item 64
   @default_heartbeat_interval 1_000
   @default_max_awaiters 16
+  @shutdown_timeout 1_000
   @max_timer_delay 4_294_967_295
 
   @type state_name ::
@@ -57,6 +58,10 @@ defmodule Spectre.Inference.StreamSession do
       id: {__MODULE__, invocation.id, invocation.stream_epoch},
       start: {__MODULE__, :start_link, [opts]},
       restart: :temporary,
+      # terminate/3 performs best-effort remote cancellation. Bound the grace
+      # period so one stuck adapter cannot retain orderly Instance shutdown for
+      # the DynamicSupervisor default of five seconds per session.
+      shutdown: @shutdown_timeout,
       type: :worker
     }
   end

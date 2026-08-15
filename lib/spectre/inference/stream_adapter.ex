@@ -23,6 +23,16 @@ defmodule Spectre.Inference.StreamAdapter do
   Callbacks run in the session process and therefore must return promptly.
   Adapters should use asynchronous transport messages instead of blocking
   `open/2`, `resume/3`, `request_transport_item/1`, or `cancel/2` indefinitely.
+  Orderly shutdown gives `cancel/2` a one-second best-effort window before the
+  session is killed.
+
+  The session traps exits so its termination callback can cancel an open
+  provider request. Consequently, a provider helper linked to the session
+  delivers `{:EXIT, pid, reason}` through `handle_transport/2` instead of
+  killing the session. Adapters should prefer monitors when helper death is a
+  protocol failure, or explicitly return `{:ignore, state}` for unrelated or
+  expected exit messages. An ignored helper crash is eventually classified by
+  the provider-stall timeout if no owned transport item arrives.
 
   `handle_transport/2` must return `{:ignore, state}` only for a mailbox
   message that did not consume the outstanding pull item. A consumed transport

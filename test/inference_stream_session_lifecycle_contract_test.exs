@@ -137,6 +137,14 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
     :ok
   end
 
+  test "session child spec bounds orderly provider cancellation" do
+    spec = StreamSession.child_spec(session_options(test_pid: self()))
+
+    assert spec.restart == :temporary
+    assert spec.shutdown == 1_000
+    assert spec.type == :worker
+  end
+
   test "session construction rejects malformed durable and runtime bindings" do
     valid = session_options(test_pid: self())
 
