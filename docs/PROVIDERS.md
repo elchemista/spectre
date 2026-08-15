@@ -174,10 +174,12 @@ not observer or receipt fields. A transport can optionally declare `:resume`,
 closed when the requested recovery or budget guarantee depends on them.
 
 The core supplies `max_transport_chunk_bytes` and
-`max_parser_residual_bytes` to every streaming adapter. The adapter owns and
-must enforce those raw transport/parser bounds with
-`:provider_stream_overflow`; normalized delta binaries may cross UTF-8
-codepoint boundaries because the core reassembles them incrementally.
+`max_parser_residual_bytes` to every streaming adapter under the
+`:spectre_bounds` keyword namespace. The adapter owns and must enforce those
+raw transport/parser bounds with `:provider_stream_overflow`; the conformance
+runner exercises both limits through the adapter's `conformance_fixture/4`.
+Normalized delta binaries may cross UTF-8 codepoint boundaries because the
+core reassembles them incrementally.
 
 See [Streaming inference](STREAMING_INFERENCE.md) for the callback contract,
 limits and restart semantics.

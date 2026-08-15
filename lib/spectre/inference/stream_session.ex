@@ -258,11 +258,15 @@ defmodule Spectre.Inference.StreamSession do
   end
 
   def handle_event(:internal, :open, :opening, data) do
+    bounds = [
+      max_transport_chunk_bytes: data.max_transport_chunk_bytes,
+      max_parser_residual_bytes: data.max_parser_residual_bytes
+    ]
+
     opts =
       data.prepared.provider_opts
       |> Keyword.merge(data.prepared.stream_adapter_opts)
-      |> Keyword.put(:max_transport_chunk_bytes, data.max_transport_chunk_bytes)
-      |> Keyword.put(:max_parser_residual_bytes, data.max_parser_residual_bytes)
+      |> Keyword.put(:spectre_bounds, bounds)
       |> Keyword.put(:model, data.prepared.selection.model)
       |> Keyword.delete(:fallback)
 
