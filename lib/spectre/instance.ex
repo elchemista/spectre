@@ -35,6 +35,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Checkpoint
   alias Spectre.Instance.CheckpointStore
   alias Spectre.Instance.Commit
+  alias Spectre.Instance.Configuration
   alias Spectre.Instance.Conversation
   alias Spectre.Instance.Deliveries
   alias Spectre.Instance.Events
@@ -66,7 +67,6 @@ defmodule Spectre.Instance do
   alias Spectre.Inference.Request, as: InferenceRequest
   alias Spectre.Inference.Selection, as: InferenceSelection
   alias Spectre.Inference.Stream, as: InferenceStream
-  alias Spectre.Inference.StreamCapacity
   alias Spectre.Inference.Progress, as: InferenceProgress
   alias Spectre.Inference.Usage, as: InferenceUsage
   alias Spectre.Inference.UsageAccounting
@@ -101,14 +101,7 @@ defmodule Spectre.Instance do
   alias Spectre.Subject
   alias Spectre.Turn
 
-  @default_max_runs 256
-  @default_max_tombstones 256
-  @default_max_operation_runners 8
-  @default_max_stream_sessions 4
-  @default_max_receipt_outbox 256
   @max_timer_delay 4_294_967_295
-  @default_terminal_loop_retention 256
-  @default_correlation_retention 1_024
   @operation_event_limit 512
   @morph_frozen_execution_options [
     :adapter,
@@ -171,7 +164,7 @@ defmodule Spectre.Instance do
   @doc false
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
-    ref = instance_ref!(opts)
+    ref = Configuration.instance_ref!(opts)
 
     %{
       id: {__MODULE__, ref.key},
@@ -191,7 +184,7 @@ defmodule Spectre.Instance do
             "Spectre.Instance is always named by AgentRef + Subject; custom :name is not supported"
     end
 
-    ref = instance_ref!(opts)
+    ref = Configuration.instance_ref!(opts)
     registry = Keyword.get(opts, :registry, InstanceRegistry)
     name = InstanceRegistry.via(ref, registry)
 
@@ -217,7 +210,7 @@ defmodule Spectre.Instance do
   """
   @spec ask(GenServer.server(), term(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def ask(server, input, opts \\ []) do
-    GenServer.call(server, {:handle, input, opts}, timeout(opts))
+    GenServer.call(server, {:handle, input, opts}, Configuration.timeout(opts))
   end
 
   @doc """
@@ -225,7 +218,7 @@ defmodule Spectre.Instance do
   """
   @spec turn(GenServer.server(), term(), keyword()) :: {:ok, Turn.t()} | {:error, term()}
   def turn(server, input, opts \\ []) do
-    GenServer.call(server, {:turn, input, opts}, timeout(opts))
+    GenServer.call(server, {:turn, input, opts}, Configuration.timeout(opts))
   end
 
   @doc """
@@ -238,7 +231,7 @@ defmodule Spectre.Instance do
           {:ok, InferenceStream.t()} | {:error, term()}
   def stream(server, input, opts \\ []) do
     if is_list(opts) and Keyword.keyword?(opts),
-      do: GenServer.call(server, {:stream, input, opts}, timeout(opts)),
+      do: GenServer.call(server, {:stream, input, opts}, Configuration.timeout(opts)),
       else: {:error, :invalid_stream_options}
   end
 
@@ -258,7 +251,7 @@ defmodule Spectre.Instance do
           {:ok, InferenceStream.t()} | {:error, term()}
   def resume_stream(server, %InferenceStream{} = stream, opts \\ []) do
     if is_list(opts) and Keyword.keyword?(opts),
-      do: GenServer.call(server, {:stream_resume, stream, opts}, timeout(opts)),
+      do: GenServer.call(server, {:stream_resume, stream, opts}, Configuration.timeout(opts)),
       else: {:error, :invalid_stream_options}
   end
 
@@ -267,7 +260,8 @@ defmodule Spectre.Instance do
           {:ok, InferenceStream.t()} | {:error, term()}
   def steer_stream(server, %InferenceStream{} = stream, input, opts \\ []) do
     if is_list(opts) and Keyword.keyword?(opts),
-      do: GenServer.call(server, {:stream_steer, stream, input, opts}, timeout(opts)),
+      do:
+        GenServer.call(server, {:stream_steer, stream, input, opts}, Configuration.timeout(opts)),
       else: {:error, :invalid_stream_options}
   end
 
@@ -276,7 +270,12 @@ defmodule Spectre.Instance do
           :ok | {:error, term()}
   def cancel_stream(server, %InferenceStream{} = stream, reason, opts \\ []) do
     if is_list(opts) and Keyword.keyword?(opts),
-      do: GenServer.call(server, {:stream_cancel, stream, reason, opts}, timeout(opts)),
+      do:
+        GenServer.call(
+          server,
+          {:stream_cancel, stream, reason, opts},
+          Configuration.timeout(opts)
+        ),
       else: {:error, :invalid_stream_options}
   end
 
@@ -290,7 +289,7 @@ defmodule Spectre.Instance do
   @spec resume(GenServer.server(), Ref.t(), term(), keyword()) ::
           {:ok, Turn.t()} | {:error, term()}
   def resume(server, %Ref{} = ref, command, opts \\ []) do
-    GenServer.call(server, {:instance_resume, ref, command, opts}, timeout(opts))
+    GenServer.call(server, {:instance_resume, ref, command, opts}, Configuration.timeout(opts))
   end
 
   @doc """
@@ -333,35 +332,39 @@ defmodule Spectre.Instance do
   @spec activate(GenServer.server(), CandidateRef.t() | String.t(), keyword()) ::
           {:ok, Activation.t()} | {:error, term()}
   def activate(server, candidate_ref, opts \\ []) do
-    GenServer.call(server, {:instance_activate, candidate_ref, opts}, timeout(opts))
+    GenServer.call(server, {:instance_activate, candidate_ref, opts}, Configuration.timeout(opts))
   end
 
   @doc "Rolls activation back to an explicitly selected ancestor Candidate."
   @spec rollback(GenServer.server(), CandidateRef.t() | String.t(), keyword()) ::
           {:ok, Activation.t()} | {:error, term()}
   def rollback(server, candidate_ref, opts \\ []) do
-    GenServer.call(server, {:instance_rollback, candidate_ref, opts}, timeout(opts))
+    GenServer.call(server, {:instance_rollback, candidate_ref, opts}, Configuration.timeout(opts))
   end
 
   @doc "Returns the active or explicitly selected branch for a stable Skill id."
   @spec skill_state(GenServer.server(), atom() | String.t(), keyword()) ::
           {:ok, StateBinding.t()} | {:error, term()}
   def skill_state(server, skill_id, opts \\ []) do
-    GenServer.call(server, {:skill_state_fetch, skill_id, opts}, timeout(opts))
+    GenServer.call(server, {:skill_state_fetch, skill_id, opts}, Configuration.timeout(opts))
   end
 
   @doc "Lists non-purged Skill-state branches newest-generation first."
   @spec skill_state_branches(GenServer.server(), atom() | String.t(), keyword()) ::
           {:ok, [StateBinding.t()]} | {:error, term()}
   def skill_state_branches(server, skill_id, opts \\ []) do
-    GenServer.call(server, {:skill_state_list, skill_id, opts}, timeout(opts))
+    GenServer.call(server, {:skill_state_list, skill_id, opts}, Configuration.timeout(opts))
   end
 
   @doc "Updates one active Skill-state branch through schema, generation and revision fences."
   @spec update_skill_state(GenServer.server(), atom() | String.t(), term(), keyword()) ::
           {:ok, StateBinding.t()} | {:error, term()}
   def update_skill_state(server, skill_id, value, opts \\ []) do
-    GenServer.call(server, {:skill_state_update, skill_id, value, opts}, timeout(opts))
+    GenServer.call(
+      server,
+      {:skill_state_update, skill_id, value, opts},
+      Configuration.timeout(opts)
+    )
   end
 
   @doc "Transitions one dormant Skill-state branch through the retention lifecycle."
@@ -376,7 +379,7 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:skill_state_retention, skill_id, branch_id, retention, opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
@@ -390,18 +393,18 @@ defmodule Spectre.Instance do
   @spec admit_event(GenServer.server(), EventEnvelope.t() | map() | keyword(), keyword()) ::
           {:ok, EventEnvelope.t()} | {:error, term()}
   def admit_event(server, event, opts \\ []) do
-    GenServer.call(server, {:event_admit, event, opts}, timeout(opts))
+    GenServer.call(server, {:event_admit, event, opts}, Configuration.timeout(opts))
   end
 
   @doc "Returns committed admitted Event Envelopes, newest first."
   @spec admitted_events(GenServer.server(), keyword()) :: [EventEnvelope.t()]
   def admitted_events(server, opts \\ []),
-    do: GenServer.call(server, {:event_list, :admitted, opts}, timeout(opts))
+    do: GenServer.call(server, {:event_list, :admitted, opts}, Configuration.timeout(opts))
 
   @doc "Returns quarantined Event Envelopes, newest first."
   @spec quarantined_events(GenServer.server(), keyword()) :: [EventEnvelope.t()]
   def quarantined_events(server, opts \\ []),
-    do: GenServer.call(server, {:event_list, :quarantined, opts}, timeout(opts))
+    do: GenServer.call(server, {:event_list, :quarantined, opts}, Configuration.timeout(opts))
 
   @doc "Returns the current lifecycle axes for one Definition or `:active`."
   @spec definition_lifecycle(GenServer.server(), DefinitionRef.t() | String.t() | :active) ::
@@ -421,7 +424,7 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:definition_lifecycle_transition, definition_ref, axis, value, opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
@@ -481,7 +484,12 @@ defmodule Spectre.Instance do
           {:ok, OperationRef.t(), OperationView.t()} | {:error, term()}
   def start_work(server, controller, input, opts \\ []) when is_atom(controller) do
     call_opts = Keyword.put(opts, :__spectre_callers__, operation_callers())
-    GenServer.call(server, {:operation_start, :work, controller, input, call_opts}, timeout(opts))
+
+    GenServer.call(
+      server,
+      {:operation_start, :work, controller, input, call_opts},
+      Configuration.timeout(opts)
+    )
   end
 
   @doc "Starts a verified data-driven Work on the shared operational runtime."
@@ -510,7 +518,7 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:execution_start, materialization, call_opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
@@ -523,7 +531,7 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:operation_start, :vigil, controller, input, call_opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
@@ -536,7 +544,7 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:operation_start, :directive, controller, input, call_opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
@@ -544,13 +552,17 @@ defmodule Spectre.Instance do
   @spec loop(GenServer.server(), OperationRef.t() | String.t(), keyword()) ::
           {:ok, OperationView.t()} | {:error, term()}
   def loop(server, loop, opts \\ []) do
-    GenServer.call(server, {:operation_view, Loops.operation_id(loop), opts}, timeout(opts))
+    GenServer.call(
+      server,
+      {:operation_view, Loops.operation_id(loop), opts},
+      Configuration.timeout(opts)
+    )
   end
 
   @doc "Lists committed Work, Vigil and controller views visible to the caller."
   @spec loops(GenServer.server(), keyword()) :: {:ok, [OperationView.t()]} | {:error, term()}
   def loops(server, opts \\ []) do
-    GenServer.call(server, {:operation_views, opts}, timeout(opts))
+    GenServer.call(server, {:operation_views, opts}, Configuration.timeout(opts))
   end
 
   @doc "Resolves exactly one visible loop or returns an explicit ambiguity."
@@ -561,7 +573,7 @@ defmodule Spectre.Instance do
         ) ::
           {:ok, OperationView.t()} | {:error, term()}
   def resolve_loop(server, selector \\ nil, opts \\ []) do
-    GenServer.call(server, {:operation_resolve, selector, opts}, timeout(opts))
+    GenServer.call(server, {:operation_resolve, selector, opts}, Configuration.timeout(opts))
   end
 
   @doc "Requests a reversible pause, at a safe boundary by default."
@@ -621,7 +633,7 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:operation_trigger, Loops.operation_id(loop), trigger, opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
@@ -633,7 +645,7 @@ defmodule Spectre.Instance do
   @spec flush_checkpoint(GenServer.server(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
   def flush_checkpoint(server, opts \\ []) do
-    GenServer.call(server, :flush_canonical_checkpoint, timeout(opts))
+    GenServer.call(server, :flush_canonical_checkpoint, Configuration.timeout(opts))
   end
 
   @doc """
@@ -649,7 +661,7 @@ defmodule Spectre.Instance do
   @spec reconcile_checkpoint(GenServer.server(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
   def reconcile_checkpoint(server, opts \\ []) do
-    GenServer.call(server, :reconcile_canonical_checkpoint, timeout(opts))
+    GenServer.call(server, :reconcile_canonical_checkpoint, Configuration.timeout(opts))
   end
 
   @doc "Returns committed operational events without turning them into notifications."
@@ -666,14 +678,18 @@ defmodule Spectre.Instance do
         ) ::
           {:ok, DeliveryConsent.t()} | {:error, term()}
   def put_delivery_consent(server, consent, opts \\ []) do
-    GenServer.call(server, {:delivery_consent_put, consent, opts}, timeout(opts))
+    GenServer.call(server, {:delivery_consent_put, consent, opts}, Configuration.timeout(opts))
   end
 
   @doc "Revokes previously stored proactive-delivery consent."
   @spec revoke_delivery_consent(GenServer.server(), String.t(), keyword()) ::
           {:ok, DeliveryConsent.t()} | {:error, term()}
   def revoke_delivery_consent(server, consent_id, opts \\ []) do
-    GenServer.call(server, {:delivery_consent_revoke, consent_id, opts}, timeout(opts))
+    GenServer.call(
+      server,
+      {:delivery_consent_revoke, consent_id, opts},
+      Configuration.timeout(opts)
+    )
   end
 
   @doc "Authorizes, defers, digests or denies delivery without sending it."
@@ -689,7 +705,7 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:delivery_authorize, event_id, destination, policy, opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
@@ -706,14 +722,14 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:delivery_record, receipt_id, outcome, detail, opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
   @doc "Returns redacted committed delivery receipts."
   @spec delivery_receipts(GenServer.server(), keyword()) :: [DeliveryReceipt.t()]
   def delivery_receipts(server, opts \\ []) do
-    GenServer.call(server, {:delivery_receipts, opts}, timeout(opts))
+    GenServer.call(server, {:delivery_receipts, opts}, Configuration.timeout(opts))
   end
 
   @doc false
@@ -796,74 +812,32 @@ defmodule Spectre.Instance do
     instance_ref = Keyword.fetch!(opts, :instance_ref)
     registry = Keyword.get(opts, :registry, InstanceRegistry)
 
-    with {:ok, max_runs} <-
-           positive_integer(Keyword.get(opts, :max_runs, @default_max_runs), :max_runs),
-         {:ok, max_tombstones} <-
-           non_negative_integer(Keyword.get(opts, :max_tombstones, @default_max_tombstones)),
-         {:ok, max_operation_runners} <-
-           positive_integer(
-             Keyword.get(opts, :max_operation_runners, @default_max_operation_runners),
-             :max_operation_runners
-           ),
-         {:ok, max_stream_sessions} <-
-           positive_integer(
-             Keyword.get(opts, :max_stream_sessions, @default_max_stream_sessions),
-             :max_stream_sessions
-           ),
-         base_opts <- base_opts(opts, instance_ref),
-         {:ok, terminal_loop_retention} <-
-           instance_retention(
-             first_configured([
-               {opts, :operation_terminal_loop_retention},
-               {base_opts, :operation_terminal_loop_retention}
-             ]),
-             :operation_terminal_loop_retention,
-             @default_terminal_loop_retention
-           ),
-         {:ok, correlation_retention} <-
-           instance_retention(
-             first_configured([
-               {opts, :operation_correlation_retention},
-               {base_opts, :operation_correlation_retention}
-             ]),
-             :operation_correlation_retention,
-             @default_correlation_retention
-           ),
-         base_opts <-
-           base_opts
-           |> Keyword.put(:operation_terminal_loop_retention, terminal_loop_retention)
-           |> Keyword.put(:operation_correlation_retention, correlation_retention),
-         {:ok, base_opts} <- normalize_inference_observer_config(opts, base_opts),
-         {:ok, checkpoint_store} <- Checkpoint.store_config(agent, opts, base_opts),
-         {:ok, checkpoint_mode} <- Checkpoint.mode(opts, checkpoint_store),
-         {:ok, receipt_mode} <- receipt_mode(opts, base_opts),
-         {:ok, receipt_sink} <- receipt_sink(opts, base_opts),
-         {:ok, max_receipt_outbox} <-
-           positive_integer(
-             first_configured([
-               {opts, :receipt_outbox_limit},
-               {base_opts, :receipt_outbox_limit}
-             ]) || @default_max_receipt_outbox,
-             :receipt_outbox_limit
-           ),
-         base_opts <- Keyword.put(base_opts, :receipt_outbox_limit, max_receipt_outbox),
-         :ok <- validate_receipt_configuration(receipt_mode, receipt_sink, checkpoint_store),
-         {:ok, definition_store} <- definition_store_config(agent, opts, base_opts),
-         :ok <- validate_definition_store_pair(checkpoint_store, definition_store),
-         {:ok, state} <- restore_initial_state(agent, opts, base_opts),
+    with {:ok, config} <- Configuration.load(agent, instance_ref, opts),
+         {:ok, state} <- restore_initial_state(agent, opts, config.base_opts),
          {:ok, state, canonical, checkpoint_revision} <-
-           Checkpoint.restore_canonical(opts, state, checkpoint_store, base_opts),
+           Checkpoint.restore_canonical(opts, state, config.checkpoint_store, config.base_opts),
          {:ok, activation} <-
-           restore_activation(canonical, definition_store, checkpoint_store, base_opts),
+           restore_activation(
+             canonical,
+             config.definition_store,
+             config.checkpoint_store,
+             config.base_opts
+           ),
          {:ok, restored_runs} <-
-           restore_runs(canonical, definition_store, checkpoint_store, base_opts, max_runs),
+           restore_runs(
+             canonical,
+             config.definition_store,
+             config.checkpoint_store,
+             config.base_opts,
+             config.max_runs
+           ),
          {:ok, registry_monitor} <- monitor_registry(registry, instance_ref),
          fencing_floor <- persisted_owner_fencing_floor(activation, canonical),
          {:ok, owner, owner_lease} <-
            Owner.claim(
-             owner_config(agent, opts, base_opts),
+             config.owner,
              instance_ref,
-             Keyword.put(base_opts, :minimum_fencing_token, fencing_floor)
+             Keyword.put(config.base_opts, :minimum_fencing_token, fencing_floor)
            ) do
       data = %InstanceState{
         agent: agent,
@@ -873,28 +847,29 @@ defmodule Spectre.Instance do
         state: state,
         canonical: canonical,
         activation: activation,
-        definition_store: definition_store,
+        definition_store: config.definition_store,
         owner: owner,
         owner_lease: owner_lease,
         runs: restored_runs,
         completed: restored_completed_queue(restored_runs),
         terminal_recorded: restored_terminal_ids(restored_runs),
-        base_opts: base_opts,
-        idle_timeout: idle_timeout(agent, opts, base_opts),
-        max_runs: max_runs,
-        max_tombstones: max_tombstones,
-        max_operation_runners: max_operation_runners,
-        max_stream_sessions: max_stream_sessions,
-        stream_registry: Keyword.get(opts, :stream_registry, Spectre.Inference.StreamRegistry),
-        stream_capacity: Keyword.get(opts, :stream_capacity, StreamCapacity),
+        base_opts: config.base_opts,
+        idle_timeout: config.idle_timeout,
+        max_runs: config.max_runs,
+        max_tombstones: config.max_tombstones,
+        max_operation_runners: config.max_operation_runners,
+        max_stream_sessions: config.max_stream_sessions,
+        stream_registry: config.stream_registry,
+        stream_capacity: config.stream_capacity,
         generation: Spectre.Identity.uuid7(),
-        runner_supervisor: Keyword.get(opts, :runner_supervisor, RunnerSupervisor),
-        checkpoint_store: checkpoint_store,
-        checkpoint_mode: checkpoint_mode,
-        receipt_mode: receipt_mode,
-        receipt_sink: receipt_sink,
-        max_receipt_outbox: max_receipt_outbox,
-        receipt_recovery_deferred: required_receipt_recovery_pending?(receipt_mode, canonical),
+        runner_supervisor: config.runner_supervisor,
+        checkpoint_store: config.checkpoint_store,
+        checkpoint_mode: config.checkpoint_mode,
+        receipt_mode: config.receipt_mode,
+        receipt_sink: config.receipt_sink,
+        max_receipt_outbox: config.max_receipt_outbox,
+        receipt_recovery_deferred:
+          required_receipt_recovery_pending?(config.receipt_mode, canonical),
         checkpoint_revision: checkpoint_revision,
         checkpoint_persisted:
           if(checkpoint_revision == canonical.revision, do: canonical, else: nil),
@@ -6049,7 +6024,7 @@ defmodule Spectre.Instance do
     GenServer.call(
       server,
       {:operation_control, Loops.operation_id(loop), action, payload, opts},
-      timeout(opts)
+      Configuration.timeout(opts)
     )
   end
 
@@ -8046,6 +8021,9 @@ defmodule Spectre.Instance do
     Keyword.put(opts, :run_metadata, metadata)
   end
 
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
   defp put_activation_pin(opts, nil), do: opts
 
   defp put_activation_pin(opts, %Activation{} = activation) do
@@ -8325,25 +8303,6 @@ defmodule Spectre.Instance do
     |> Keyword.put(:on_drift, :reject)
   end
 
-  defp definition_store_config(agent, opts, base_opts) do
-    value =
-      first_configured([
-        {opts, :definition_store},
-        {base_opts, :definition_store},
-        {agent.__spectre_config__(), :definition_store}
-      ])
-
-    case value do
-      value when value in [nil, false] -> {:ok, nil}
-      value -> DefinitionStore.normalize(value)
-    end
-  end
-
-  defp validate_definition_store_pair(_checkpoint_store, nil), do: :ok
-
-  defp validate_definition_store_pair(checkpoint_store, definition_store),
-    do: DefinitionStore.validate_durability_pair(checkpoint_store, definition_store)
-
   defp checkpoint_store_opts(data) do
     Keyword.put(data.base_opts, :owner_fencing_token, data.owner_lease.fencing_token)
   end
@@ -8412,14 +8371,6 @@ defmodule Spectre.Instance do
 
   defp require_definition_store(nil), do: {:error, :definition_store_not_configured}
   defp require_definition_store(store), do: {:ok, store}
-
-  defp owner_config(agent, opts, base_opts) do
-    first_configured([
-      {opts, :owner},
-      {base_opts, :owner},
-      {agent.__spectre_config__(), :owner}
-    ])
-  end
 
   defp owner_guard(data, operation) do
     Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
@@ -8606,33 +8557,6 @@ defmodule Spectre.Instance do
     |> :queue.from_list()
   end
 
-  defp base_opts(opts, instance_ref) do
-    state_conversation_id =
-      Keyword.get(opts, :state_conversation_id, instance_ref.key)
-      |> validate_state_conversation_id!()
-
-    opts
-    |> Keyword.get(:opts, [])
-    |> maybe_put(:event_schema_registry, Keyword.get(opts, :event_schema_registry))
-    |> Keyword.put(:conversation_id, state_conversation_id)
-    |> Keyword.put(:subject, instance_ref.subject)
-    |> Keyword.put(:subject_id, instance_ref.subject.id)
-  end
-
-  defp validate_state_conversation_id!(value) do
-    case Value.validate(value, [:instance, :state_conversation_id]) do
-      :ok ->
-        value
-
-      {:error, reason} ->
-        raise ArgumentError,
-              "invalid Instance state_conversation_id: #{inspect(reason)}"
-    end
-  end
-
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
-
   defp restore_initial_state(agent, opts, base_opts) do
     if Keyword.has_key?(opts, :state) do
       state =
@@ -8649,53 +8573,6 @@ defmodule Spectre.Instance do
 
   defp put_conversation_id(%State{} = state, nil), do: state
   defp put_conversation_id(%State{} = state, id), do: %{state | conversation_id: id}
-
-  defp instance_ref!(opts) do
-    agent_ref =
-      case Keyword.get(opts, :agent_ref) do
-        %AgentRef{} = ref ->
-          AgentRef.new(ref)
-
-        nil ->
-          agent = Keyword.fetch!(opts, :agent)
-
-          case Keyword.get(opts, :agent_id) do
-            nil -> AgentRef.new(agent)
-            id -> AgentRef.new(agent, id: id)
-          end
-      end
-
-    subject =
-      case Keyword.fetch(opts, :subject) do
-        {:ok, %Subject{} = subject} -> Subject.new(subject)
-        {:ok, subject} -> Subject.new(subject)
-        :error -> raise ArgumentError, "Spectre.Instance requires an explicit :subject"
-      end
-
-    InstanceRef.new(agent_ref, subject)
-  end
-
-  defp idle_timeout(agent, opts, base_opts) do
-    config = agent.__spectre_config__()
-
-    first_configured([
-      {opts, :idle},
-      {opts, :shutdown},
-      {base_opts, :idle},
-      {base_opts, :shutdown},
-      {config, :idle},
-      {config, :shutdown}
-    ])
-  end
-
-  defp first_configured(entries) do
-    Enum.reduce_while(entries, nil, fn {options, key}, _acc ->
-      case Keyword.fetch(options, key) do
-        {:ok, value} -> {:halt, value}
-        :error -> {:cont, nil}
-      end
-    end)
-  end
 
   defp arm_idle_timer(data) do
     data = disarm_idle_timer(data)
@@ -8719,119 +8596,6 @@ defmodule Spectre.Instance do
     if is_reference(data.idle_timer), do: Process.cancel_timer(data.idle_timer)
     %{data | idle_timer: nil}
   end
-
-  defp positive_integer(value, _key) when is_integer(value) and value > 0, do: {:ok, value}
-  defp positive_integer(value, :max_runs), do: {:error, {:invalid_instance_max_runs, value}}
-
-  # Preserve the pre-streaming public error for the existing runner limit.
-  defp positive_integer(value, :max_operation_runners),
-    do: {:error, {:invalid_instance_max_runs, value}}
-
-  defp positive_integer(value, key), do: {:error, {:invalid_instance_option, key, value}}
-
-  defp non_negative_integer(value) when is_integer(value) and value >= 0, do: {:ok, value}
-
-  defp non_negative_integer(value),
-    do: {:error, {:invalid_instance_max_tombstones, value}}
-
-  defp receipt_mode(opts, base_opts) do
-    mode =
-      first_configured([
-        {opts, :receipt_mode},
-        {base_opts, :receipt_mode}
-      ]) || :disabled
-
-    if mode in [:disabled, :observational, :required],
-      do: {:ok, mode},
-      else: {:error, {:invalid_receipt_mode, mode}}
-  end
-
-  defp normalize_inference_observer_config(opts, base_opts) do
-    enabled =
-      first_configured([
-        {opts, :inference_observer_lane},
-        {base_opts, :inference_observer_lane}
-      ]) || false
-
-    interval =
-      first_configured([
-        {opts, :inference_progress_commit_interval},
-        {base_opts, :inference_progress_commit_interval}
-      ]) || 5_000
-
-    limit =
-      first_configured([
-        {opts, :inference_progress_limit},
-        {base_opts, :inference_progress_limit}
-      ]) || 256
-
-    checkpoint_interval =
-      first_configured([
-        {opts, :inference_stream_checkpoint_interval},
-        {base_opts, :inference_stream_checkpoint_interval}
-      ]) || 5_000
-
-    cond do
-      not is_boolean(enabled) ->
-        {:error, {:invalid_inference_observer_lane, enabled}}
-
-      not is_integer(interval) or interval <= 0 ->
-        {:error, {:invalid_inference_progress_commit_interval, interval}}
-
-      not is_integer(limit) or limit <= 0 ->
-        {:error, {:invalid_inference_progress_limit, limit}}
-
-      not is_integer(checkpoint_interval) or checkpoint_interval <= 0 ->
-        {:error, {:invalid_inference_stream_checkpoint_interval, checkpoint_interval}}
-
-      true ->
-        {:ok,
-         base_opts
-         |> Keyword.put(:inference_observer_lane, enabled)
-         |> Keyword.put(:inference_progress_commit_interval, interval)
-         |> Keyword.put(:inference_progress_limit, limit)
-         |> Keyword.put(:inference_stream_checkpoint_interval, checkpoint_interval)}
-    end
-  end
-
-  defp receipt_sink(opts, base_opts) do
-    first_configured([
-      {opts, :receipt_sink},
-      {base_opts, :receipt_sink}
-    ])
-    |> ReceiptSink.normalize()
-  end
-
-  defp validate_receipt_configuration(:disabled, _sink, _checkpoint_store), do: :ok
-
-  defp validate_receipt_configuration(:observational, nil, _checkpoint_store),
-    do: {:error, :receipt_sink_required}
-
-  defp validate_receipt_configuration(:observational, _sink, _checkpoint_store), do: :ok
-
-  defp validate_receipt_configuration(:required, nil, _checkpoint_store),
-    do: {:error, :receipt_sink_required}
-
-  defp validate_receipt_configuration(:required, _sink, nil),
-    do: {:error, :required_receipts_need_checkpoint_store}
-
-  defp validate_receipt_configuration(:required, sink, _checkpoint_store) do
-    if ReceiptSink.payload_capable?(sink),
-      do: :ok,
-      else: {:error, :required_receipt_sink_lacks_payload_store}
-  end
-
-  defp instance_retention(nil, _key, default), do: {:ok, default}
-  defp instance_retention(:unlimited, _key, _default), do: {:ok, :unlimited}
-
-  defp instance_retention(value, _key, _default)
-       when is_integer(value) and value >= 0,
-       do: {:ok, value}
-
-  defp instance_retention(value, key, _default),
-    do: {:error, {:invalid_instance_retention, key, value}}
-
-  defp timeout(opts), do: Keyword.get(opts, :timeout, :timer.minutes(5))
 
   defp execution_shape(value) when is_map(value), do: :map
   defp execution_shape(value) when is_list(value), do: :list
