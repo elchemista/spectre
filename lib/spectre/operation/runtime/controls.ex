@@ -32,6 +32,7 @@ defmodule Spectre.Operation.Runtime.Controls do
           | {:error, term()}
   def request(%Loop{} = loop, %Control{} = control, %Command{} = command, env) do
     with :ok <- Command.validate(command),
+         :ok <- operational_action(command),
          :ok <- Contract.authorize_revision(loop, command.base_revision),
          {:ok, definition} <- Contract.current_definition(loop),
          :ok <- Contract.authorize_control(definition, command),
@@ -59,11 +60,18 @@ defmodule Spectre.Operation.Runtime.Controls do
       :stop -> finish_stop(loop, control, command, env)
       :renew -> finish_renew(loop, control, command, env)
       :trigger -> finish_trigger_command(loop, control, command, env)
+      action -> {:error, {:unsupported_operational_control_action, action}}
     end
   end
 
   def advance(%Loop{} = loop, %Control{}, _env),
     do: {:error, {:loop_not_quiescent_for_control, loop.id}}
+
+  defp operational_action(%Command{action: action}) do
+    if Command.operational_action?(action),
+      do: :ok,
+      else: {:error, {:unsupported_operational_control_action, action}}
+  end
 
   @doc "Rejects a control command, pausing after rejected updates."
   @spec reject(Loop.t(), Control.t(), Command.t(), term(), map()) ::
