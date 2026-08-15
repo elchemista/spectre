@@ -39,6 +39,13 @@ bounds production before the session mailbox. The session's own bounded queue
 does not make an Erlang mailbox bounded; a push adapter without this capability
 is rejected.
 
+Selectors with a profile catalog must attest `:stream` in the selected
+profile metadata. The built-in default selector has no catalog and cannot
+make that attestation, so its profile check is explicitly not applicable; the
+adapter capability set remains the fail-closed authority for streaming. A
+missing adapter `:stream` capability is still a typed rejection, never a
+synchronous fallback.
+
 Every public event carries inference, Invocation, attempt, Run revision,
 Instance generation, dispatch, control revision, epoch and sequence fences.
 The consumer validates all fences and exact sequence progression.
