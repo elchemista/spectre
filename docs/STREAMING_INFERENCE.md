@@ -87,6 +87,37 @@ is likewise suppressed once it fills the bounded lookahead; it does not fail
 the provider attempt. The committed Result is authoritative; consumers must
 not reconstruct it by concatenating deltas.
 
+### Optional sanitizer extensions
+
+Spectre always owns the structural sanitizer that removes its control markup
+and bounds incremental lookahead. A host package can add model-specific
+cleanup without replacing that boundary:
+
+```elixir
+reply_sanitizer: {Pulse.ModelSanitizer, model_family: :reasoning}
+```
+
+The module implements the `Spectre.Reply.Sanitizer` callbacks. `sanitize/2`
+receives the core-cleaned terminal text. Streaming additionally requires
+`init_stream/1`, `sanitize_chunk/2`, and `finish_stream/1`; Spectre validates
+those callbacks before opening the provider and feeds them only valid,
+core-screened UTF-8. The extension owns any bounded lookahead needed for its
+model-specific syntax.
+
+The same extension specification is stored in the portable inference
+descriptor, so recovery does not silently select a different policy. A stack
+or package such as Pulse may choose the module and its portable options per
+invocation or model family; provider adapters remain responsible only for
+transport decoding. Omitting `:reply_sanitizer` preserves the built-in behavior
+exactly. `sanitize_reply: false` explicitly bypasses both layers.
+
+An extension must preserve the same one-way stream invariant as the built-in
+sanitizer and may suppress, but never synthesize or expand, visible text.
+Spectre rejects invalid UTF-8 and oversized extension deltas. A terminal
+callback failure falls back to the already-safe core result. An incremental
+callback failure terminates the attempt because Spectre cannot safely continue
+a partially transformed stream.
+
 If only the canonical terminal matters, do not enumerate:
 
 ```elixir
@@ -310,6 +341,19 @@ their enforcement:
 | `stream_max_transport_chunk_bytes` | 256 KB | before retaining a raw transport item |
 | `stream_max_parser_residual_bytes` | 256 KB | while retaining incomplete parser state |
 
+These are defaults, not fixed ceilings. Override them on the inference when a
+provider's real event envelope requires more space:
+
+```elixir
+stream_max_transport_chunk_bytes: 1_000_000,
+stream_max_parser_residual_bytes: 1_000_000
+```
+
+Both values must remain finite positive integers. Raising the parser residual
+also raises the worst-case memory retained by every live stream, so configure
+it from the provider protocol's maximum event size rather than the model's
+total response size.
+
 Capacity is enforced separately from byte and time limits:
 
 | Capacity option | Default | Enforced at |
@@ -334,8 +378,8 @@ counter from the reserved-input or output-byte floor, the attempt is labelled
 `:estimated`; that weaker label remains sticky because a later cumulative
 update cannot prove the retained maximum was token-exact.
 
-The session passes the two adapter-owned limits to `open/2` and `resume/3`
-under an explicit namespace:
+The session translates those runtime option names and passes their resolved
+values to `open/2` and `resume/3` under an explicit namespace:
 
 ```elixir
 spectre_bounds: [

@@ -61,9 +61,10 @@ defmodule Spectre.ActionPlanner do
   @doc """
   Removes planner syntax from a visible model reply.
 
-  A mounted planner with a `clean_reply/3` callback owns the cleanup;
-  otherwise `Spectre.Reply.Sanitizer` strips Spectre control tokens
-  (`sanitize_reply: false` opts out).
+  A mounted planner with a `clean_reply/3` callback performs the first cleanup
+  pass. `Spectre.Reply.Sanitizer` then enforces the structural core boundary
+  and any configured additive sanitizer (`sanitize_reply: false` explicitly
+  opts out).
   """
   @spec clean_reply(String.t(), keyword()) :: String.t()
   def clean_reply(text, opts \\ []) when is_binary(text) and is_list(opts) do
@@ -91,7 +92,7 @@ defmodule Spectre.ActionPlanner do
            end),
          {:ok, reply_text, actions} <- normalize_response(response),
          {:ok, effects} <- stage_actions(actions, opts) do
-      {:ok, %{reply_text: reply_text, effects: effects}}
+      {:ok, %{reply_text: Sanitizer.sanitize(reply_text, opts), effects: effects}}
     end
   end
 
@@ -126,7 +127,9 @@ defmodule Spectre.ActionPlanner do
           String.t()
   defp clean_reply_with(planner, text, ctx, opts) do
     if Code.ensure_loaded?(planner) and function_exported?(planner, :clean_reply, 3) do
-      invoke_clean_reply(planner, text, ctx, opts)
+      planner
+      |> invoke_clean_reply(text, ctx, opts)
+      |> Sanitizer.sanitize(opts)
     else
       Sanitizer.sanitize(text, opts)
     end

@@ -41,6 +41,7 @@ defmodule Spectre.LLM do
     :prompt_format,
     :explicit_model_override?,
     :sanitize_reply,
+    :reply_sanitizer,
     :plan_actions?,
     :policy_prompt?,
     :agent,

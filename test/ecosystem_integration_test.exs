@@ -256,6 +256,7 @@ defmodule SpectreEcosystemIntegrationTest do
         state: %State{},
         route: :fake,
         model: "x",
+        reply_sanitizer: {MyApp.ReplySanitizer, model_family: :reasoning},
         classifier: [model: "classifier"],
         embedding: :embedder,
         journal: :audit,
@@ -272,6 +273,7 @@ defmodule SpectreEcosystemIntegrationTest do
 
       assert Spectre.LLM.provider_opts(opts, [:test_pid]) == [temperature: 0.2, max_tokens: 64]
       assert :state in Spectre.LLM.runtime_opt_keys()
+      assert :reply_sanitizer in Spectre.LLM.runtime_opt_keys()
       assert :spectre_bounds in Spectre.LLM.runtime_opt_keys()
       assert :max_transport_chunk_bytes in Spectre.LLM.runtime_opt_keys()
       assert :max_parser_residual_bytes in Spectre.LLM.runtime_opt_keys()

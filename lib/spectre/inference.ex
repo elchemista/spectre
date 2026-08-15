@@ -15,6 +15,7 @@ defmodule Spectre.Inference do
   alias Spectre.Inference.Selection
   alias Spectre.Inference.Selector.Default
   alias Spectre.Inference.StreamAdapter
+  alias Spectre.Reply.Sanitizer.Runtime, as: SanitizerRuntime
 
   @doc false
   @spec prepare(module(), Request.t(), Spectre.Context.t()) ::
@@ -598,14 +599,15 @@ defmodule Spectre.Inference do
   end
 
   defp incremental_cleaner_supported(agent, provider_opts) do
-    case Spectre.ActionConfig.planner(agent) do
-      {planner, _opts} ->
-        planner_incremental_cleaner_supported(planner)
+    case SanitizerRuntime.validate(provider_opts, :stream) do
+      :ok ->
+        case Spectre.ActionConfig.planner(agent) do
+          {planner, _opts} -> planner_incremental_cleaner_supported(planner)
+          nil -> :ok
+        end
 
-      nil ->
-        if Keyword.get(provider_opts, :sanitize_reply, true) in [true, false],
-          do: :ok,
-          else: {:error, {:streaming_unsupported, :invalid_sanitizer_configuration}}
+      {:error, reason} ->
+        {:error, {:streaming_unsupported, reason}}
     end
   rescue
     _exception -> {:error, {:streaming_unsupported, :planner_cleaner}}
