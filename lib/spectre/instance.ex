@@ -47,6 +47,7 @@ defmodule Spectre.Instance do
   alias Spectre.Instance.Owner
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Instance.Registry, as: InstanceRegistry
+  alias Spectre.Instance.RunQueue
   alias Spectre.Instance.Runs
   alias Spectre.Instance.Receipts
   alias Spectre.Instance.ReceiptRecovery
@@ -908,7 +909,7 @@ defmodule Spectre.Instance do
           {:ok,
            data
            |> Timers.schedule_restored()
-           |> maybe_schedule()
+           |> RunQueue.schedule()
            |> maybe_schedule_operations()
            |> maybe_start_receipt_deliveries()
            |> arm_idle_timer()}
@@ -981,7 +982,7 @@ defmodule Spectre.Instance do
     with :ok <- morph_turn_options(data, opts),
          {:ok, run} <- Runs.owned_result_run(data, supplied),
          :ok <- Events.authorize(data, run.definition_ref, :continuation),
-         false <- run_active?(data, run.id),
+         false <- RunQueue.active?(data, run.id),
          %Boundary{kind: :needs, ref: boundary_ref} <- run.waiting do
       entry = %{
         run_id: run.id,
@@ -993,7 +994,7 @@ defmodule Spectre.Instance do
         internal?: false
       }
 
-      {:noreply, data |> enqueue(entry, true) |> put_caller(run.id, from)}
+      {:noreply, data |> RunQueue.enqueue(entry, true) |> RunQueue.put_caller(run.id, from)}
     else
       true -> {:reply, {:error, :run_already_active}, arm_idle_timer(data)}
       nil -> {:reply, {:error, :run_not_waiting_for_policy}, arm_idle_timer(data)}
@@ -1616,7 +1617,7 @@ defmodule Spectre.Instance do
         case Events.authorize(data, run.definition_ref, :continuation) do
           :ok ->
             cond do
-              run_active?(data, run.id) ->
+              RunQueue.active?(data, run.id) ->
                 {:reply, {:error, {:run_already_active, run.id}}, data}
 
               execute_command?(command) ->
@@ -1633,7 +1634,8 @@ defmodule Spectre.Instance do
                   internal?: false
                 }
 
-                {:noreply, data |> enqueue(entry, true) |> put_caller(run.id, from)}
+                {:noreply,
+                 data |> RunQueue.enqueue(entry, true) |> RunQueue.put_caller(run.id, from)}
             end
 
           {:error, reason} ->
@@ -1673,12 +1675,12 @@ defmodule Spectre.Instance do
   def handle_info({:spectre, :advance, run_id}, data) do
     data = %{data | scheduled: false}
 
-    case pop_ready(data, run_id) do
+    case RunQueue.pop(data, run_id) do
       {:ok, entry, data} ->
         {:noreply, start_advance_worker(data, entry)}
 
       {:error, _reason, data} ->
-        {:noreply, maybe_schedule(data)}
+        {:noreply, RunQueue.schedule(data)}
     end
   end
 
@@ -2575,7 +2577,7 @@ defmodule Spectre.Instance do
   defp submit_lifecycle_input(input, opts, projection, from, %Run{} = run, data) do
     case run do
       %Run{status: :boundary, cursor: :policy, waiting: %Boundary{}} ->
-        if run_active?(data, run.id) do
+        if RunQueue.active?(data, run.id) do
           {:reply, {:error, {:run_already_active, run.id}}, arm_idle_timer(data)}
         else
           entry = %{
@@ -2588,7 +2590,7 @@ defmodule Spectre.Instance do
             internal?: false
           }
 
-          {:noreply, data |> enqueue(entry, true) |> put_caller(run.id, from)}
+          {:noreply, data |> RunQueue.enqueue(entry, true) |> RunQueue.put_caller(run.id, from)}
         end
 
       _invalid ->
@@ -2633,7 +2635,7 @@ defmodule Spectre.Instance do
               retained =
                 reserved
                 |> Runs.put_run(run)
-                |> put_caller(run.id, from)
+                |> RunQueue.put_caller(run.id, from)
 
               case Receipts.prepare_run(
                      retained,
@@ -2681,7 +2683,7 @@ defmodule Spectre.Instance do
            inference_continuation: %{stream_recovery: recovery}
          } = run <- Map.get(data.runs, old_stream.run_id),
          :ok <- validate_stream_resume_handle(run, recovery, old_stream) do
-      case stream_session_for_run(data, run.id) do
+      case RunQueue.stream_session(data, run.id) do
         {_invocation_id, %{stream: %InferenceStream{} = stream}} ->
           {:reply, {:ok, stream}, data}
 
@@ -2689,7 +2691,7 @@ defmodule Spectre.Instance do
           {:reply, {:error, :stream_resume_already_waiting}, data}
 
         nil ->
-          {:noreply, put_caller(data, run.id, from)}
+          {:noreply, RunQueue.put_caller(data, run.id, from)}
       end
     else
       nil -> {:reply, {:error, :stream_resume_unavailable}, data}
@@ -2993,7 +2995,7 @@ defmodule Spectre.Instance do
               state_lock: %{run_id: run.id, invocation_id: invocation.id}
           }
 
-          next = put_caller(next, run.id, from)
+          next = RunQueue.put_caller(next, run.id, from)
 
           {:ok,
            commit_inference_supersession_receipt(
@@ -3239,7 +3241,7 @@ defmodule Spectre.Instance do
     with :ok <- owner_guard(data, :effect_dispatch),
          :ok <- Events.authorize(data, run.definition_ref, :dispatch),
          %Invocation{} = invocation <- run.waiting,
-         false <- run_active?(data, run.id),
+         false <- RunQueue.active?(data, run.id),
          nil <- other_active_run(data, run.id),
          nil <- data.state_lock do
       run = Runs.rebase_run(run, data.state)
@@ -3288,7 +3290,7 @@ defmodule Spectre.Instance do
 
       next =
         data
-        |> put_caller(run.id, from)
+        |> RunQueue.put_caller(run.id, from)
         |> Map.put(:state_lock, %{run_id: run.id, invocation_id: invocation.id})
         |> Map.put(:invocations, Map.put(data.invocations, invocation.id, ownership))
         |> Map.put(:workers, Map.put(data.workers, pid, worker))
@@ -3619,7 +3621,7 @@ defmodule Spectre.Instance do
     cond do
       Runs.terminal_run?(run) ->
         data
-        |> reply_caller(run.id, {:error, reason})
+        |> RunQueue.reply_caller(run.id, {:error, reason})
         |> tap(
           &emit(:run_failed, &1, %{count: 1}, %{
             run_id: id_digest(run.id),
@@ -3627,7 +3629,7 @@ defmodule Spectre.Instance do
           })
         )
         |> Runs.record_terminal(run)
-        |> maybe_schedule()
+        |> RunQueue.schedule()
         |> arm_idle_timer()
 
       start_operation?(entry) ->
@@ -3635,7 +3637,7 @@ defmodule Spectre.Instance do
 
         data
         |> Runs.put_run(failed)
-        |> reply_caller(run.id, {:error, reason})
+        |> RunQueue.reply_caller(run.id, {:error, reason})
         |> tap(
           &emit(:run_failed, &1, %{count: 1}, %{
             run_id: id_digest(run.id),
@@ -3643,7 +3645,7 @@ defmodule Spectre.Instance do
           })
         )
         |> Runs.record_terminal(failed)
-        |> maybe_schedule()
+        |> RunQueue.schedule()
         |> arm_idle_timer()
 
       advanced_run?(current, run) ->
@@ -3651,7 +3653,7 @@ defmodule Spectre.Instance do
 
         data
         |> Runs.put_run(degraded)
-        |> reply_caller(run.id, {:error, reason})
+        |> RunQueue.reply_caller(run.id, {:error, reason})
         |> tap(
           &emit(:run_move_degraded, &1, %{count: 1}, %{
             run_id: id_digest(run.id),
@@ -3659,19 +3661,19 @@ defmodule Spectre.Instance do
           })
         )
         |> maybe_finalize_degraded_run(degraded)
-        |> maybe_schedule()
+        |> RunQueue.schedule()
         |> arm_idle_timer()
 
       true ->
         data
-        |> reply_caller(run.id, {:error, reason})
+        |> RunQueue.reply_caller(run.id, {:error, reason})
         |> tap(
           &emit(:run_resume_rejected, &1, %{count: 1}, %{
             run_id: id_digest(run.id),
             reason_class: reason_class(reason)
           })
         )
-        |> maybe_schedule()
+        |> RunQueue.schedule()
         |> arm_idle_timer()
     end
   end
@@ -3687,7 +3689,7 @@ defmodule Spectre.Instance do
     }
 
     data
-    |> enqueue_continuation(continuation, start_operation?(entry))
+    |> RunQueue.enqueue_continuation(continuation, start_operation?(entry))
     |> arm_idle_timer()
   end
 
@@ -3698,7 +3700,7 @@ defmodule Spectre.Instance do
     data = if Runs.terminal_run?(run), do: Runs.record_terminal(data, run), else: data
 
     data
-    |> maybe_schedule()
+    |> RunQueue.schedule()
     |> arm_idle_timer()
   end
 
@@ -4150,7 +4152,7 @@ defmodule Spectre.Instance do
         |> Map.put(:stream_sessions, Map.put(data.stream_sessions, invocation.id, ownership))
         |> Map.put(:stream_monitors, Map.put(data.stream_monitors, pid, invocation.id))
         |> Map.put(:stream_reservations, Map.delete(data.stream_reservations, run.id))
-        |> reply_stream_caller(run.id, stream)
+        |> RunQueue.reply_stream_caller(run.id, stream)
         |> disarm_idle_timer()
         |> tap(fn next ->
           emit(
@@ -4796,7 +4798,7 @@ defmodule Spectre.Instance do
     # receipt lock created for this admission.
     data
     |> release_admission_receipt_lock(run.id)
-    |> enqueue_continuation(entry, false)
+    |> RunQueue.enqueue_continuation(entry, false)
   end
 
   defp resume_live_receipted_boundary(
@@ -5006,7 +5008,7 @@ defmodule Spectre.Instance do
         case recover_runtime_state(candidate) do
           {:ok, recovered} ->
             recovered
-            |> maybe_schedule()
+            |> RunQueue.schedule()
             |> maybe_schedule_operations()
 
           {:error, reason} ->
@@ -5076,9 +5078,9 @@ defmodule Spectre.Instance do
         data
         |> Map.put(:state_lock, nil)
         |> notify_stream_attempt_failed(receipt_invocation_id, failure)
-        |> reply_caller(run.id, {:error, failure})
+        |> RunQueue.reply_caller(run.id, {:error, failure})
         |> Runs.record_terminal(run)
-        |> maybe_schedule()
+        |> RunQueue.schedule()
         |> arm_idle_timer()
 
       _already_applied_or_missing ->
@@ -5100,9 +5102,9 @@ defmodule Spectre.Instance do
         data
         |> Map.put(:state_lock, nil)
         |> notify_stream_attempt_failed(invocation_id, failure)
-        |> reply_caller(run.id, {:error, failure})
+        |> RunQueue.reply_caller(run.id, {:error, failure})
         |> Runs.record_terminal(run)
-        |> maybe_schedule()
+        |> RunQueue.schedule()
         |> arm_idle_timer()
 
       _already_applied_or_missing ->
@@ -5238,7 +5240,7 @@ defmodule Spectre.Instance do
             # A terminal receipt consumes the invocation before the enclosing
             # Run necessarily replies. A later session DOWN belongs to that
             # already-settled attempt and must only release transient ownership.
-            data |> maybe_schedule() |> arm_idle_timer()
+            data |> RunQueue.schedule() |> arm_idle_timer()
         end
 
       _stale ->
@@ -5318,9 +5320,9 @@ defmodule Spectre.Instance do
     )
     |> Map.put(:state_lock, nil)
     |> notify_stream_attempt_failed(ownership.invocation.id, failure)
-    |> reply_caller(run.id, {:error, failure})
+    |> RunQueue.reply_caller(run.id, {:error, failure})
     |> Runs.record_terminal(run)
-    |> maybe_schedule()
+    |> RunQueue.schedule()
     |> arm_idle_timer()
   end
 
@@ -5443,9 +5445,9 @@ defmodule Spectre.Instance do
       {:ok, committed} ->
         committed
         |> Map.put(:state_lock, nil)
-        |> reply_caller(run.id, {:error, failure})
+        |> RunQueue.reply_caller(run.id, {:error, failure})
         |> Runs.record_terminal(failed)
-        |> maybe_schedule()
+        |> RunQueue.schedule()
         |> arm_idle_timer()
 
       {:error, commit_reason} ->
@@ -5815,8 +5817,8 @@ defmodule Spectre.Instance do
       {:stale_instance_state, run.id, entry.state_revision, data.state.revision}
 
     failed = Runs.terminalize_failed_run(run, reason)
-    data = data |> Runs.put_run(failed) |> reply_caller(run.id, {:error, reason})
-    data |> Runs.record_terminal(failed) |> maybe_schedule() |> arm_idle_timer()
+    data = data |> Runs.put_run(failed) |> RunQueue.reply_caller(run.id, {:error, reason})
+    data |> Runs.record_terminal(failed) |> RunQueue.schedule() |> arm_idle_timer()
   end
 
   defp maybe_record_started_conversation(
@@ -5868,7 +5870,7 @@ defmodule Spectre.Instance do
 
     data
     |> Runs.put_run(failed)
-    |> reply_caller(run.id, {:error, reason})
+    |> RunQueue.reply_caller(run.id, {:error, reason})
     |> tap(
       &emit(:run_failed, &1, %{count: 1}, %{
         run_id: id_digest(run.id),
@@ -5876,7 +5878,7 @@ defmodule Spectre.Instance do
       })
     )
     |> Runs.record_terminal(failed)
-    |> maybe_schedule()
+    |> RunQueue.schedule()
     |> arm_idle_timer()
   end
 
@@ -5886,7 +5888,7 @@ defmodule Spectre.Instance do
       |> Runs.step_result()
       |> cognitive_inference_response()
 
-    reply_caller(data, entry.run_id, reply)
+    RunQueue.reply_caller(data, entry.run_id, reply)
   end
 
   defp reply_projection(data, %{internal?: true, run_id: run_id}, step) do
@@ -5894,8 +5896,8 @@ defmodule Spectre.Instance do
     # still waiting for the canonical Run result. Treat that session as the
     # terminal projection consumer so a successful recovered Run cannot leave
     # its replacement Enumerable parked in `:awaiting_result`.
-    if stream_session_for_run(data, run_id) do
-      reply_caller(data, run_id, {:ok, Runs.step_result(step)})
+    if RunQueue.stream_session(data, run_id) do
+      RunQueue.reply_caller(data, run_id, {:ok, Runs.step_result(step)})
     else
       data
     end
@@ -5909,7 +5911,7 @@ defmodule Spectre.Instance do
         :stream -> stream_projection(data, entry.run_id, step)
       end
 
-    reply_caller(data, entry.run_id, reply)
+    RunQueue.reply_caller(data, entry.run_id, reply)
   end
 
   defp cognitive_inference_response(%Result{
@@ -5924,7 +5926,7 @@ defmodule Spectre.Instance do
     do: {:error, :cognitive_inference_result_missing}
 
   defp stream_projection(data, run_id, step) do
-    if stream_session_for_run(data, run_id) do
+    if RunQueue.stream_session(data, run_id) do
       {:ok, Runs.step_result(step)}
     else
       {:error, {:streaming_unsupported, :handler_did_not_start_inference}}
@@ -5942,142 +5944,10 @@ defmodule Spectre.Instance do
       internal?: true
     }
 
-    enqueue(data, entry)
+    RunQueue.enqueue(data, entry)
   end
 
   defp maybe_finalize_reply(data, _step), do: data
-
-  defp enqueue(data, entry, priority? \\ false) do
-    if MapSet.member?(data.queued, entry.run_id) or run_active?(data, entry.run_id) do
-      data
-    else
-      put_ready_entry(data, entry, priority?)
-    end
-  end
-
-  # A closed `{:continue, run}` is the same public call advancing by another
-  # mailbox move. Its caller remains registered while the Run returns to the
-  # ready queue. Start is intentionally a bounded two-move sequence so another
-  # Run cannot normalize against State and then wait behind the first Run's
-  # commit.
-  defp enqueue_continuation(data, entry, priority?),
-    do: put_ready_entry(data, entry, priority?)
-
-  defp put_ready_entry(data, entry, priority?) do
-    ready =
-      if priority?,
-        do: :queue.in_r(entry.run_id, data.ready),
-        else: :queue.in(entry.run_id, data.ready)
-
-    data =
-      %{
-        data
-        | ready: ready,
-          queued: MapSet.put(data.queued, entry.run_id),
-          entries: Map.put(data.entries, entry.run_id, entry)
-      }
-
-    maybe_schedule(data)
-  end
-
-  defp maybe_schedule(%{scheduled: true} = data), do: data
-  defp maybe_schedule(%{active: active} = data) when not is_nil(active), do: data
-  defp maybe_schedule(%{state_lock: lock} = data) when not is_nil(lock), do: data
-
-  defp maybe_schedule(data) do
-    case :queue.peek(data.ready) do
-      {:value, run_id} ->
-        maybe_schedule_run(data, run_id)
-
-      :empty ->
-        data
-    end
-  end
-
-  defp maybe_schedule_run(data, run_id) do
-    send(self(), {:spectre, :advance, run_id})
-    %{data | scheduled: true}
-  end
-
-  defp pop_ready(data, expected_run_id) do
-    case :queue.out(data.ready) do
-      {{:value, ^expected_run_id}, ready} ->
-        entry = Map.fetch!(data.entries, expected_run_id)
-
-        next = %{
-          data
-          | ready: ready,
-            queued: MapSet.delete(data.queued, expected_run_id),
-            entries: Map.delete(data.entries, expected_run_id)
-        }
-
-        {:ok, entry, next}
-
-      {{:value, _other}, _ready} ->
-        {:error, :out_of_order_advance, data}
-
-      {:empty, _ready} ->
-        {:error, :empty_ready_queue, data}
-    end
-  end
-
-  defp put_caller(data, run_id, from) do
-    %{data | callers: Map.put_new(data.callers, run_id, from)}
-  end
-
-  defp reply_stream_caller(data, run_id, stream) do
-    case Map.pop(data.callers, run_id) do
-      {nil, callers} ->
-        %{data | callers: callers}
-
-      {from, callers} ->
-        GenServer.reply(from, {:ok, stream})
-        %{data | callers: callers}
-    end
-  end
-
-  defp reply_caller(data, run_id, reply) do
-    data = data |> notify_stream_result(run_id, reply) |> InferenceCapacity.release(run_id)
-
-    case Map.pop(data.callers, run_id) do
-      {nil, callers} ->
-        %{data | callers: callers}
-
-      {from, callers} ->
-        GenServer.reply(from, reply)
-        %{data | callers: callers}
-    end
-  end
-
-  defp notify_stream_result(data, run_id, reply) do
-    case stream_session_for_run(data, run_id) do
-      nil ->
-        data
-
-      {invocation_id, ownership} ->
-        send(ownership.pid, {:spectre, :stream_result, invocation_id, reply})
-        Process.demonitor(ownership.monitor, [:flush])
-
-        %{
-          data
-          | stream_sessions: Map.delete(data.stream_sessions, invocation_id),
-            stream_monitors: Map.delete(data.stream_monitors, ownership.pid)
-        }
-    end
-  end
-
-  defp stream_session_for_run(data, run_id) do
-    Enum.find(data.stream_sessions, fn {_invocation_id, ownership} ->
-      ownership.run_id == run_id
-    end)
-  end
-
-  defp run_active?(data, run_id) do
-    match?(%{run_id: ^run_id}, data.active) or
-      MapSet.member?(data.queued, run_id) or
-      Map.has_key?(data.callers, run_id) or
-      Enum.any?(data.invocations, fn {_id, ownership} -> ownership.run_id == run_id end)
-  end
 
   defp execute_command?({:execute, _value}), do: true
   defp execute_command?(_command), do: false
@@ -6180,9 +6050,9 @@ defmodule Spectre.Instance do
       )
 
     data = if failed, do: Runs.put_run(data, failed), else: data
-    data = reply_caller(data, worker.run_id, {:error, failure})
+    data = RunQueue.reply_caller(data, worker.run_id, {:error, failure})
     data = if failed, do: Runs.record_terminal(data, failed), else: data
-    data |> maybe_schedule() |> arm_idle_timer()
+    data |> RunQueue.schedule() |> arm_idle_timer()
   end
 
   defp spawn_worker(fun) do
@@ -6318,7 +6188,7 @@ defmodule Spectre.Instance do
     events
     |> Enum.filter(&route_operation_event?(&1, configured))
     |> Enum.reduce(data, &enqueue_operation_event/2)
-    |> maybe_schedule()
+    |> RunQueue.schedule()
   end
 
   defp route_operation_event?(_event, false), do: false
@@ -6376,7 +6246,7 @@ defmodule Spectre.Instance do
             retained = %{data | runs: Map.put(data.runs, run.id, run)}
 
             case Commit.run_state(retained, data.state, run) do
-              {:ok, committed} -> committed |> enqueue(entry)
+              {:ok, committed} -> committed |> RunQueue.enqueue(entry)
               {:error, _reason} -> data
             end
           end
@@ -7214,7 +7084,7 @@ defmodule Spectre.Instance do
       |> put_run_pin(run)
 
     case recovered_start_entry(run, continuation, restored_opts, data.state.revision) do
-      {:ok, entry} -> {:ok, enqueue(data, entry)}
+      {:ok, entry} -> {:ok, RunQueue.enqueue(data, entry)}
       {:error, reason} -> terminalize_unrecoverable_run(data, run, reason)
     end
   end
@@ -7416,7 +7286,7 @@ defmodule Spectre.Instance do
       recovered?: true
     }
 
-    {:ok, enqueue(data, entry)}
+    {:ok, RunQueue.enqueue(data, entry)}
   end
 
   # Policy boundaries are intentionally durable waits for a future host
