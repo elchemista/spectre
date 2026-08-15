@@ -5441,8 +5441,8 @@ defmodule Spectre.Instance do
             stream_monitors: Map.delete(data.stream_monitors, pid)
         }
 
-        case Map.get(data.runs, run_id) do
-          %Run{status: status} when status not in [:complete, :failed] ->
+        case {Map.has_key?(data.invocations, invocation_id), Map.get(data.runs, run_id)} do
+          {true, %Run{status: status}} when status not in [:complete, :failed] ->
             liveness = Map.get(data.inference_liveness_clock, invocation_id, %{})
 
             receipt = %Receipt{
@@ -5464,7 +5464,10 @@ defmodule Spectre.Instance do
 
             accept_inference_receipt(data, ownership, receipt)
 
-          _terminal_or_missing ->
+          _consumed_terminal_or_missing ->
+            # A terminal receipt consumes the invocation before the enclosing
+            # Run necessarily replies. A later session DOWN belongs to that
+            # already-settled attempt and must only release transient ownership.
             data |> maybe_schedule() |> arm_idle_timer()
         end
 
