@@ -266,6 +266,13 @@ explicit package matrix for release tooling. Database connectivity, migrations,
 and package-specific health checks remain in the adapter package that owns
 them.
 
+Agent diagnostics also warn about planner-visible actions without `protect`,
+external action/effect executors without a configured egress allowlist, and
+`sanitize_reply: false`. Runtime consent records are not part of a compiled
+Definition; programmatic callers can pass `consents: [...]` to audit that each
+sample has an expiry. Without that sample the named consent check is reported
+as skipped.
+
 ## Semantic cache
 
 The built-in cache is owned by a supervised process and survives individual
