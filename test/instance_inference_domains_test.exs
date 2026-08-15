@@ -68,7 +68,7 @@ defmodule SpectreInstanceInferenceDomainsTest do
     assert {:cancelled, :host_cancelled} = InferenceControl.recover(applied, invocation)
 
     missing_reason =
-      command(:cancel, "cancel-without-reason")
+      command(:cancel, "cancel-without-reason", payload: %{})
       |> Command.committed()
       |> Command.applied()
 
