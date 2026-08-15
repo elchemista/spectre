@@ -256,7 +256,9 @@ defmodule SpectreEvalTest do
 
     assert_receive {:eval_local_called, "needs llm"}
     assert_receive {:eval_llm_called, prompt}
-    assert prompt =~ "Latest message:\nneeds llm"
+
+    assert prompt =~
+             "Latest message:\n<spectre-data trust=\"data\">needs llm</spectre-data>"
   end
 
   test "LLM policy records a call only after prompt construction succeeds" do

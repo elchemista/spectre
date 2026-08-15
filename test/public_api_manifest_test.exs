@@ -29,6 +29,40 @@ defmodule SpectrePublicApiManifestTest do
     end)
   end
 
+  test "the documented inference modules agree with the normative manifest" do
+    manifest_modules =
+      @manifest_path |> File.read!() |> parse_manifest() |> elem(0) |> MapSet.new()
+
+    documented_modules =
+      Mix.Project.config()
+      |> get_in([:docs, :groups_for_modules])
+      |> Keyword.fetch!(:"Inference and boundary evidence")
+      |> Enum.map(&inspect/1)
+      |> MapSet.new()
+
+    assert MapSet.subset?(documented_modules, manifest_modules)
+
+    refute MapSet.member?(documented_modules, inspect(Spectre.Inference.IncrementalSanitizer))
+    refute MapSet.member?(documented_modules, inspect(Spectre.Inference.Failure))
+  end
+
+  test "internal receipt transport modules stay out of the public surface" do
+    assert {:docs_v1, _, _, _, :hidden, _, _} =
+             Code.fetch_docs(Spectre.Invocation.WorkerReceipt)
+
+    assert {:docs_v1, _, _, _, :hidden, _, _} =
+             Code.fetch_docs(Spectre.Receipt.OutboxEntry)
+  end
+
+  test "HexDocs excludes internal architecture decision records" do
+    docs = Mix.Project.config() |> Keyword.fetch!(:docs)
+    extras = Keyword.fetch!(docs, :extras)
+    groups = Keyword.fetch!(docs, :groups_for_extras)
+
+    refute Enum.any?(extras, &String.starts_with?(&1, "docs/adr/"))
+    refute Keyword.has_key?(groups, :"Architecture decisions")
+  end
+
   defp parse_manifest(manifest) do
     manifest
     |> String.split("\n")

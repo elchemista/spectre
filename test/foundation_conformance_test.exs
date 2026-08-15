@@ -131,15 +131,20 @@ defmodule SpectreFoundationConformanceTest do
 
     matrix = Conformance.matrix()
 
-    assert Map.drop(fixture["durable_formats"], ["instance"]) ==
-             matrix.durable_formats |> stringify() |> Map.drop(["instance"])
+    assert fixture["durable_formats"]["state"] == stringify(matrix.durable_formats.state)
+
+    assert fixture["durable_formats"]["run"] == %{
+             "writer" => 2,
+             "readers" => [1, 2]
+           }
 
     assert fixture["durable_formats"]["instance"] == %{
              "writer" => 4,
              "readers" => [1, 2, 3, 4]
            }
 
-    assert stringify(matrix.durable_formats.instance) == %{"writer" => 2, "readers" => [2]}
+    assert stringify(matrix.durable_formats.run) == %{"writer" => 3, "readers" => [1, 2, 3]}
+    assert stringify(matrix.durable_formats.instance) == %{"writer" => 3, "readers" => [2, 3]}
     assert fixture["definition"] == stringify(matrix.definition)
     assert fixture["stack"] == stringify(matrix.stack)
   end
@@ -151,7 +156,7 @@ defmodule SpectreFoundationConformanceTest do
     assert {:ok, %{source_version: 5, writer_version: 5, revision: 12}} =
              Conformance.verify_state(File.read!(fixture("0.1.6/state-v5.json")))
 
-    assert {:ok, %{source_version: 1, writer_version: 2, run_id: "run-0.1.6-ready"}} =
+    assert {:ok, %{source_version: 1, writer_version: 3, run_id: "run-0.1.6-ready"}} =
              Conformance.verify_run(read_base64("0.1.6/run-v1.checkpoint.base64"))
 
     for {path, source_version} <- [
@@ -161,7 +166,7 @@ defmodule SpectreFoundationConformanceTest do
           {"0.2.5/skill-state-canonical-v4.json.base64", 4}
         ] do
       expected =
-        if source_version == 2,
+        if source_version in [2, 3],
           do: {:invalid_canonical_checkpoint_format, nil},
           else: {:unsupported_canonical_checkpoint, source_version}
 

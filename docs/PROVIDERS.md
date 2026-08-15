@@ -11,7 +11,7 @@ The boundary currently covers:
 - LLM classifier completion;
 - local classifier adapters;
 - router embedding adapters;
-- semantic-cache lookups.
+- semantic-cache lookups;
 - turn-handler callbacks.
 
 Provider-specific training and semantic-cache administration remain explicit
@@ -151,3 +151,33 @@ Spectre does not automatically retry calls. Retries require provider-specific
 knowledge about rate limits, idempotency, and billing, and therefore belong in
 the adapter or an optional provider middleware package. The core boundary
 supplies stable failure categories that such middleware can inspect.
+
+## Streaming adapters
+
+Streaming inference uses a different transport contract from synchronous
+`Spectre.LLM.complete/2`. A provider package implements
+`Spectre.Inference.StreamAdapter`; Spectre keeps Run ownership, budgets,
+cancellation, steering, fences and terminal processing in the Instance.
+
+Prefer adapters with `:pull_transport`. Spectre issues one transport credit at
+a time and bounds every normalized batch. A push adapter is accepted only when
+it declares both `:push_transport` and `:bounded_push_transport`; that second
+capability certifies that the provider/client imposes a real bound before
+messages enter the session mailbox. The core never treats an Erlang mailbox as
+a backpressure mechanism.
+
+Adapter callbacks run in the supervised stream session, must return promptly,
+and must never expose credentials or raw provider errors in normalized events.
+Provider request ids and resume cursors are confidential recovery coordinates,
+not observer or receipt fields. A transport can optionally declare `:resume`,
+`:reconcile`, `:incremental_usage` and `:cost_usage`; missing capabilities fail
+closed when the requested recovery or budget guarantee depends on them.
+
+The core supplies `max_transport_chunk_bytes` and
+`max_parser_residual_bytes` to every streaming adapter. The adapter owns and
+must enforce those raw transport/parser bounds with
+`:provider_stream_overflow`; normalized delta binaries may cross UTF-8
+codepoint boundaries because the core reassembles them incrementally.
+
+See [Streaming inference](STREAMING_INFERENCE.md) for the callback contract,
+limits and restart semantics.

@@ -19,7 +19,12 @@ defmodule Spectre.Prompt.Fragment do
   @placeholder ~r/\{\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}\}/
   @legacy_placeholder ~r/<%=\s*@([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*%>/
   @legacy_inspect_placeholder ~r/<%=\s*inspect\(\s*@([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\)\s*%>/
-  @renderer_refs ["spectre.renderer.text/1", "spectre.renderer.inspect/1"]
+  @legacy_data_placeholder ~r/<%=\s*(?:Spectre\.)?Prompt\.data\(\s*@([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\)\s*%>/
+  @renderer_refs [
+    "spectre.renderer.text/1",
+    "spectre.renderer.inspect/1",
+    "spectre.renderer.data/1"
+  ]
 
   defstruct [
     :id,
@@ -145,11 +150,13 @@ defmodule Spectre.Prompt.Fragment do
   """
   @spec close_template(String.t()) :: {:ok, String.t(), map()} | {:error, term()}
   def close_template(content) when is_binary(content) do
+    data = legacy_paths(@legacy_data_placeholder, content)
     inspected = legacy_paths(@legacy_inspect_placeholder, content)
     scalar = legacy_paths(@legacy_placeholder, content)
 
     closed =
       content
+      |> then(&Regex.replace(@legacy_data_placeholder, &1, "{{\\1}}"))
       |> then(&Regex.replace(@legacy_inspect_placeholder, &1, "{{\\1}}"))
       |> then(&Regex.replace(@legacy_placeholder, &1, "{{\\1}}"))
 
@@ -157,11 +164,11 @@ defmodule Spectre.Prompt.Fragment do
       String.contains?(closed, "<%") ->
         {:error, :executable_prompt_template}
 
-      not MapSet.disjoint?(inspected, scalar) ->
+      not pairwise_disjoint?([data, inspected, scalar]) ->
         {:error, :ambiguous_prompt_placeholder_renderer}
 
       true ->
-        {:ok, closed, closed_placeholders(closed, inspected)}
+        {:ok, closed, closed_placeholders(closed, inspected, data)}
     end
   end
 
@@ -368,19 +375,27 @@ defmodule Spectre.Prompt.Fragment do
     |> MapSet.new()
   end
 
-  @spec closed_placeholders(String.t(), MapSet.t(String.t())) :: map()
-  defp closed_placeholders(content, inspected) do
+  @spec closed_placeholders(String.t(), MapSet.t(String.t()), MapSet.t(String.t())) :: map()
+  defp closed_placeholders(content, inspected, data) do
     @placeholder
     |> Regex.scan(content, capture: :all_but_first)
     |> List.flatten()
     |> Enum.uniq()
     |> Map.new(fn name ->
       renderer_ref =
-        if MapSet.member?(inspected, name),
-          do: "spectre.renderer.inspect/1",
-          else: "spectre.renderer.text/1"
+        cond do
+          MapSet.member?(data, name) -> "spectre.renderer.data/1"
+          MapSet.member?(inspected, name) -> "spectre.renderer.inspect/1"
+          true -> "spectre.renderer.text/1"
+        end
 
       {name, %{path: String.split(name, "."), renderer_ref: renderer_ref}}
     end)
   end
+
+  defp pairwise_disjoint?([head | tail]) do
+    Enum.all?(tail, &MapSet.disjoint?(head, &1)) and pairwise_disjoint?(tail)
+  end
+
+  defp pairwise_disjoint?([]), do: true
 end

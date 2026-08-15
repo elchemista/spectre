@@ -167,26 +167,31 @@ defmodule Spectre.Instance.Loops do
   def control_command(loop, action, payload, opts) do
     mode = Keyword.get(opts, :mode, :safe)
 
-    if mode == :immediate and not Keyword.get(opts, :authorize_immediate?, false) do
-      {:error, :immediate_loop_interruption_not_authorized}
-    else
-      command =
-        ControlCommand.new(loop.id, action,
-          id: Keyword.get(opts, :command_id, Spectre.Identity.uuid7()),
-          payload: payload,
-          mode: mode,
-          desired_state: Keyword.get(opts, :desired_state),
-          correlation_id: Keyword.get(opts, :correlation_id, Spectre.Identity.uuid7()),
-          causation_id: Keyword.get(opts, :causation_id),
-          provenance: Keyword.get(opts, :provenance, %{}),
-          base_revision: Keyword.get(opts, :revision),
-          metadata: Keyword.get(opts, :metadata, %{})
-        )
+    cond do
+      not ControlCommand.operational_action?(action) ->
+        {:error, {:unsupported_operational_control_action, action}}
 
-      case Value.validate(command, [:loop_control, loop.id]) do
-        :ok -> {:ok, command}
-        {:error, reason} -> {:error, {:nonportable_loop_control, reason}}
-      end
+      mode == :immediate and not Keyword.get(opts, :authorize_immediate?, false) ->
+        {:error, :immediate_loop_interruption_not_authorized}
+
+      true ->
+        command =
+          ControlCommand.new(loop.id, action,
+            id: Keyword.get(opts, :command_id, Spectre.Identity.uuid7()),
+            payload: payload,
+            mode: mode,
+            desired_state: Keyword.get(opts, :desired_state),
+            correlation_id: Keyword.get(opts, :correlation_id, Spectre.Identity.uuid7()),
+            causation_id: Keyword.get(opts, :causation_id),
+            provenance: Keyword.get(opts, :provenance, %{}),
+            base_revision: Keyword.get(opts, :revision),
+            metadata: Keyword.get(opts, :metadata, %{})
+          )
+
+        case Value.validate(command, [:loop_control, loop.id]) do
+          :ok -> {:ok, command}
+          {:error, reason} -> {:error, {:nonportable_loop_control, reason}}
+        end
     end
   end
 

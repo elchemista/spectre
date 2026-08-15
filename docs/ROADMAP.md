@@ -1,10 +1,35 @@
 # Roadmap
 
 Spectre remains a focused OTP-native runtime rather than a framework that owns
-application business logic. Version `0.3.1` hardens the core governed
-reflective-runtime concept on one canonical Definition and one operational
-runtime; future work extends adapters and distributed integration without
-adding a second owner for Agent or operational state.
+application business logic. The core keeps one canonical Definition and one
+Instance owner for conversational and operational state; adapters and
+distributed integration do not introduce a second runtime owner.
+
+## Unreleased: inference Invocations and boundary receipts
+
+Inference now crosses the same portable, revision-fenced Invocation boundary
+as Effects. Run v3 retains start and inference continuations, while canonical
+Instance checkpoint v3 adds inference control/progress and a required-receipt
+outbox. The current compatibility matrix is State `5 / [2, 3, 4, 5]`, Run
+`3 / [1, 2, 3]`, and tagged Instance `3 / [2, 3]`.
+
+The first streaming slice is an Instance-owned, text-only, pull-driven
+Enumerable backed by a supervised `:gen_statem`. Raw deltas stay in a bounded
+authoritative data lane; committed text-free progress uses the existing event
+lane. Cancellation, restart-based steering, budgets, liveness, recovery and
+terminal post-processing remain core-owned. Provider transports stay in
+adapter packages.
+
+Ledger v2 support is a narrow optional `Spectre.Receipt.Sink`, not a generic
+History subsystem. Core records admitted nondeterministic boundaries and
+canonical state roots; `:required` delivery uses the existing checkpoint seam
+and a bounded outbox. Receipt capture does not turn provider work into
+deterministic replay.
+
+The implemented runtime contract is documented in
+[Streaming inference](STREAMING_INFERENCE.md) and
+[Boundary receipts](RECEIPTS.md). Concrete Prism and Ledger adapters remain
+work for their own repositories.
 
 ## 0.3.1 foundation, diagnostics, and satellite boundaries
 

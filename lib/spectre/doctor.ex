@@ -1,15 +1,30 @@
 defmodule Spectre.Doctor do
   @moduledoc "Read-only public-contract diagnostics that never start resources or invoke stores."
 
+  alias Spectre.Action
+  alias Spectre.Action.Provider, as: ActionProvider
+  alias Spectre.Action.Schema, as: ActionSchema
+  alias Spectre.Action.Spec, as: ActionSpec
+  alias Spectre.ActionConfig
   alias Spectre.Definition
   alias Spectre.Doctor.Report
+  alias Spectre.EffectConfig
   alias Spectre.Foundation.Conformance, as: Foundation
   alias Spectre.Instance.CheckpointStore
+  alias Spectre.Operation.Delivery.Consent
+  alias Spectre.Prompt.AssetAudit
   alias Spectre.Stack.Conformance, as: StackConformance
   alias Spectre.Stack.Definition, as: StackDefinition
 
   @contract_version 1
-  @options [:agent, :checkpoint_store, :packages, :stack]
+  @options [:agent, :checkpoint_store, :consents, :packages, :stack]
+  @egress_allowlist_keys [
+    :allowlist,
+    :egress_allowlist,
+    :allowed_destinations,
+    :allowed_domains,
+    :allowed_hosts
+  ]
 
   @doc "Runs runtime, Foundation, Agent, Stack, package, and store diagnostics."
   @spec run(keyword()) :: {:ok, Report.t()} | {:error, term()}
@@ -26,6 +41,9 @@ defmodule Spectre.Doctor do
         ] ++
           agent_checks ++
           [
+            safe("delivery.consent_expiry", fn ->
+              consent_expiry_check(opts[:consents])
+            end),
             safe("stack.compatibility", fn ->
               stack_check(option(opts, :stack, definition))
             end),
@@ -74,6 +92,9 @@ defmodule Spectre.Doctor do
 
       not (is_nil(opts[:packages]) or is_list(opts[:packages])) ->
         {:error, {:invalid_doctor_option, :packages}}
+
+      not (is_nil(opts[:consents]) or is_list(opts[:consents])) ->
+        {:error, {:invalid_doctor_option, :consents}}
 
       true ->
         :ok
@@ -180,7 +201,12 @@ defmodule Spectre.Doctor do
   defp agent_checks(nil) do
     {[
        check(:skipped, "agent.definition", :agent_not_requested),
-       check(:skipped, "agent.manifest", :agent_not_requested)
+       check(:skipped, "agent.manifest", :agent_not_requested),
+       check(:skipped, "agent.prompt_trust", :agent_not_requested),
+       check(:skipped, "agent.planner_action_protection", :agent_not_requested),
+       check(:skipped, "agent.planner_action_schema", :agent_not_requested),
+       check(:skipped, "agent.executor_egress", :agent_not_requested),
+       check(:skipped, "agent.reply_sanitization", :agent_not_requested)
      ], nil}
   end
 
@@ -193,7 +219,19 @@ defmodule Spectre.Doctor do
             declared_version: definition.version
           })
 
-        {[definition_check, safe("agent.manifest", fn -> manifest_check(agent) end)], definition}
+        checks = [
+          definition_check,
+          safe("agent.manifest", fn -> manifest_check(agent) end),
+          safe("agent.prompt_trust", fn -> prompt_trust_check(definition) end),
+          safe("agent.planner_action_protection", fn ->
+            planner_action_protection_check(definition)
+          end),
+          safe("agent.planner_action_schema", fn -> planner_action_schema_check(definition) end),
+          safe("agent.executor_egress", fn -> executor_egress_check(definition) end),
+          safe("agent.reply_sanitization", fn -> reply_sanitization_check(definition) end)
+        ]
+
+        {checks, definition}
 
       false ->
         agent_failure(agent, :agent_not_loaded)
@@ -210,9 +248,254 @@ defmodule Spectre.Doctor do
   defp agent_failure(agent, code) do
     {[
        check(:error, "agent.definition", code, %{module: inspect(agent)}),
-       check(:skipped, "agent.manifest", :agent_definition_unavailable)
+       check(:skipped, "agent.manifest", :agent_definition_unavailable),
+       check(:skipped, "agent.prompt_trust", :agent_definition_unavailable),
+       check(:skipped, "agent.planner_action_protection", :agent_definition_unavailable),
+       check(:skipped, "agent.planner_action_schema", :agent_definition_unavailable),
+       check(:skipped, "agent.executor_egress", :agent_definition_unavailable),
+       check(:skipped, "agent.reply_sanitization", :agent_definition_unavailable)
      ], nil}
   end
+
+  defp prompt_trust_check(definition) do
+    case AssetAudit.audit(definition) do
+      {:ok, []} ->
+        check(:ok, "agent.prompt_trust", :prompt_assets_data_bounded)
+
+      {:ok, findings} ->
+        check(:warning, "agent.prompt_trust", :unbounded_prompt_data_interpolation, %{
+          finding_count: length(findings),
+          findings: findings
+        })
+
+      {:error, reason} ->
+        check(:error, "agent.prompt_trust", :prompt_asset_audit_failed, %{
+          reason: inspect(reason)
+        })
+    end
+  end
+
+  defp planner_action_protection_check(%Definition{owner: agent}) do
+    protections = Definition.protections(agent)
+
+    case planner_action_specs(agent) do
+      {:ok, specs} ->
+        unprotected =
+          Enum.reject(specs, fn spec ->
+            action = Action.new(spec.name, via: spec.via)
+            Enum.any?(protections, &Action.matches_ref?(&1.action, action))
+          end)
+
+        if unprotected == [] do
+          check(
+            :ok,
+            "agent.planner_action_protection",
+            :planner_actions_protected,
+            %{planner_action_count: length(specs)}
+          )
+        else
+          check(
+            :warning,
+            "agent.planner_action_protection",
+            :unprotected_planner_actions,
+            %{
+              planner_action_count: length(specs),
+              unprotected_count: length(unprotected),
+              actions: Enum.map(unprotected, &action_ref/1)
+            }
+          )
+        end
+
+      {:error, count} ->
+        check(
+          :error,
+          "agent.planner_action_protection",
+          :planner_action_catalog_unavailable,
+          %{provider_failure_count: count}
+        )
+    end
+  end
+
+  defp planner_action_specs(agent) do
+    agent
+    |> ActionConfig.providers()
+    |> Enum.reduce({[], 0}, fn mount, {specs, failures} ->
+      case ActionProvider.actions(mount, :all) do
+        {:ok, provider_specs} ->
+          planner_specs = Enum.filter(provider_specs, &ActionSpec.planner_visible?/1)
+          {planner_specs ++ specs, failures}
+
+        {:error, _reason} ->
+          {specs, failures + 1}
+      end
+    end)
+    |> case do
+      {specs, 0} -> {:ok, Enum.reverse(specs)}
+      {_specs, failures} -> {:error, failures}
+    end
+  end
+
+  defp planner_action_schema_check(%Definition{owner: agent}) do
+    case planner_action_specs(agent) do
+      {:ok, specs} ->
+        planner_action_schema_result(specs)
+
+      {:error, count} ->
+        check(
+          :error,
+          "agent.planner_action_schema",
+          :planner_action_schema_catalog_unavailable,
+          %{provider_failure_count: count}
+        )
+    end
+  end
+
+  defp planner_action_schema_result(specs) do
+    findings = Enum.flat_map(specs, &planner_action_schema_findings/1)
+
+    if findings == [] do
+      check(:ok, "agent.planner_action_schema", :planner_action_schemas_bounded, %{
+        planner_action_count: length(specs),
+        closure_scope: :declared_object_schemas
+      })
+    else
+      check(:warning, "agent.planner_action_schema", :planner_action_schemas_permissive, %{
+        planner_action_count: length(specs),
+        finding_count: length(findings),
+        unconstrained_count: Enum.count(findings, &(&1.reason == :unconstrained)),
+        open_object_count: Enum.count(findings, &(&1.reason == :additional_properties_permitted)),
+        closure_scope: :declared_object_schemas,
+        actions: findings
+      })
+    end
+  end
+
+  defp planner_action_schema_findings(spec) do
+    cond do
+      not ActionSchema.constrained?(spec.schema) ->
+        [Map.put(action_ref(spec), :reason, :unconstrained)]
+
+      not ActionSchema.rejects_additional_properties?(spec.schema) ->
+        [Map.put(action_ref(spec), :reason, :additional_properties_permitted)]
+
+      true ->
+        []
+    end
+  end
+
+  defp action_ref(spec),
+    do: %{provider: inspect(spec.via), action: to_string(spec.name)}
+
+  defp executor_egress_check(%Definition{owner: agent}) do
+    action_providers =
+      agent
+      |> ActionConfig.providers()
+      |> Enum.reject(&(&1.module == Spectre.Action.Provider.Local))
+      |> Enum.map(&%{kind: {:action, &1.id}, opts: &1.opts})
+
+    effect_executors =
+      agent
+      |> EffectConfig.executors()
+      |> Enum.map(&%{kind: {:effect, &1.kind}, opts: &1.opts})
+
+    executors = action_providers ++ effect_executors
+    unbounded = Enum.reject(executors, &egress_allowlisted?(&1.opts))
+
+    if unbounded == [] do
+      check(:ok, "agent.executor_egress", :executor_egress_bounded, %{
+        executor_count: length(executors)
+      })
+    else
+      check(:warning, "agent.executor_egress", :executor_egress_allowlist_missing, %{
+        executor_count: length(executors),
+        unbounded_count: length(unbounded),
+        executors: Enum.map(unbounded, &inspect(&1.kind))
+      })
+    end
+  end
+
+  defp egress_allowlisted?(opts) do
+    direct? = Enum.any?(@egress_allowlist_keys, &bounded_allowlist?(Keyword.get(opts, &1)))
+
+    nested? =
+      case Keyword.get(opts, :egress) do
+        egress when is_list(egress) and egress != [] ->
+          Keyword.keyword?(egress) and
+            Enum.any?(@egress_allowlist_keys, &bounded_allowlist?(Keyword.get(egress, &1)))
+
+        _other ->
+          false
+      end
+
+    direct? or nested?
+  end
+
+  defp bounded_allowlist?(%MapSet{} = values), do: MapSet.size(values) > 0
+  defp bounded_allowlist?(values) when is_list(values), do: values != []
+  defp bounded_allowlist?(values) when is_map(values), do: map_size(values) > 0
+  defp bounded_allowlist?(_values), do: false
+
+  defp reply_sanitization_check(%Definition{config: config}) do
+    model_opts =
+      case Keyword.get(config, :model) do
+        {_adapter, _function, opts} when is_list(opts) -> opts
+        _model -> []
+      end
+
+    sanitize? =
+      Keyword.get(config, :sanitize_reply, Keyword.get(model_opts, :sanitize_reply, true))
+
+    if sanitize? == false do
+      check(:warning, "agent.reply_sanitization", :reply_sanitization_disabled)
+    else
+      check(:ok, "agent.reply_sanitization", :reply_sanitization_enabled)
+    end
+  end
+
+  defp consent_expiry_check(nil),
+    do: check(:skipped, "delivery.consent_expiry", :delivery_consents_not_supplied)
+
+  defp consent_expiry_check(consents) do
+    {valid, invalid} =
+      Enum.reduce(consents, {[], 0}, fn value, {accepted, rejected} ->
+        case normalize_consent(value) do
+          {:ok, consent} -> {[consent | accepted], rejected}
+          :error -> {accepted, rejected + 1}
+        end
+      end)
+
+    without_expiry = Enum.count(valid, &is_nil(&1.expires_at))
+
+    cond do
+      invalid > 0 ->
+        check(:error, "delivery.consent_expiry", :delivery_consents_invalid, %{
+          invalid_count: invalid
+        })
+
+      without_expiry > 0 ->
+        check(:warning, "delivery.consent_expiry", :delivery_consent_expiry_missing, %{
+          consent_count: length(valid),
+          unbounded_count: without_expiry
+        })
+
+      true ->
+        check(:ok, "delivery.consent_expiry", :delivery_consents_expiring, %{
+          consent_count: length(valid)
+        })
+    end
+  end
+
+  defp normalize_consent(%Consent{} = consent) do
+    if Consent.validate(consent) == :ok, do: {:ok, consent}, else: :error
+  end
+
+  defp normalize_consent(value) when is_map(value) or is_list(value) do
+    {:ok, Consent.new(value)}
+  rescue
+    _exception -> :error
+  end
+
+  defp normalize_consent(_value), do: :error
 
   defp manifest_check(agent) do
     with {:ok, canonical} <- Definition.canonical(agent),

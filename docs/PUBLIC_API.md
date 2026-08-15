@@ -1,9 +1,10 @@
 # Spectre public API — 0.3.1
 
 This file is the normative public API manifest for Spectre `0.3.1`. It retains
-the recoverable conversational and operational surfaces while hardening their
-existing public boundaries. Compatibility guarantees apply only to the modules and callables
-listed below. Any module, function, macro, or callback not listed here is an
+the recoverable conversational and operational surfaces and adds the core
+inference Invocation, streaming adapter, boundary-receipt and determinism
+ports. Compatibility guarantees apply only to the modules and callables listed
+below. Any module, function, macro, or callback not listed here is an
 implementation detail even when it is exported or visible in generated docs.
 
 Default arguments are expanded into every callable arity. For the listed
@@ -27,17 +28,19 @@ Mix project version.
 - `Mix.Tasks.Spectre.Gen.CheckpointStore`
 - `Mix.Tasks.Spectre.Gen.Installable`
 - `Spectre`
-  - functions: `activate/2`, `activate/3`, `activation/1`, `admit_event/2`, `admit_event/3`, `admitted_events/1`, `admitted_events/2`, `after_action/4`, `after_action/5`, `ask/2`, `ask/3`, `authorize_delivery/4`, `authorize_delivery/5`, `cancel/2`, `checkpoint/1`, `checkpoint_status/1`, `definition_lifecycle/1`, `definition_lifecycle/2`, `delivery_receipts/1`, `delivery_receipts/2`, `dismiss/2`, `drain_definition/1`, `drain_definition/2`, `drain_definition/3`, `ensure_instance/3`, `ensure_instance/4`, `execute/2`, `execute/3`, `flush_checkpoint/1`, `flush_checkpoint/2`, `instance/3`, `instance/4`, `lookup_instance/2`, `lookup_instance/3`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `quarantined_events/1`, `quarantined_events/2`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `reset/1`, `reset/2`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resolve_policy/3`, `resolve_policy/4`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `revoke_definition/1`, `revoke_definition/2`, `revoke_definition/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `start_controller/3`, `start_controller/4`, `start_execution/2`, `start_execution/3`, `start_work/3`, `start_work/4`, `state/1`, `skill_state/2`, `skill_state/3`, `skill_state_branches/2`, `skill_state_branches/3`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `subscribe_operation_events/1`, `subscribe_operation_events/2`, `summon/1`, `summon/3`, `transition_definition_lifecycle/4`, `transition_definition_lifecycle/5`, `transition_skill_state_retention/4`, `transition_skill_state_retention/5`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `unsubscribe_operation_events/1`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`, `update_skill_state/3`, `update_skill_state/4`, `version/0`
+  - functions: `activate/2`, `activate/3`, `activation/1`, `admit_event/2`, `admit_event/3`, `admitted_events/1`, `admitted_events/2`, `after_action/4`, `after_action/5`, `ask/2`, `ask/3`, `await_result/1`, `await_result/2`, `authorize_delivery/4`, `authorize_delivery/5`, `cancel/2`, `checkpoint/1`, `checkpoint_status/1`, `definition_lifecycle/1`, `definition_lifecycle/2`, `delivery_receipts/1`, `delivery_receipts/2`, `dismiss/2`, `drain_definition/1`, `drain_definition/2`, `drain_definition/3`, `ensure_instance/3`, `ensure_instance/4`, `execute/2`, `execute/3`, `flush_checkpoint/1`, `flush_checkpoint/2`, `instance/3`, `instance/4`, `lookup_instance/2`, `lookup_instance/3`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `quarantined_events/1`, `quarantined_events/2`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `reset/1`, `reset/2`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resolve_policy/3`, `resolve_policy/4`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `resume_stream/2`, `resume_stream/3`, `revoke_definition/1`, `revoke_definition/2`, `revoke_definition/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `start_controller/3`, `start_controller/4`, `start_execution/2`, `start_execution/3`, `start_work/3`, `start_work/4`, `state/1`, `skill_state/2`, `skill_state/3`, `skill_state_branches/2`, `skill_state_branches/3`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `stream/2`, `stream/3`, `subscribe_operation_events/1`, `subscribe_operation_events/2`, `summon/1`, `summon/3`, `transition_definition_lifecycle/4`, `transition_definition_lifecycle/5`, `transition_skill_state_retention/4`, `transition_skill_state_retention/5`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `unsubscribe_operation_events/1`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`, `update_skill_state/3`, `update_skill_state/4`, `version/0`
   - functions: `rollback/2`, `rollback/3`
 - `Spectre.Action`
   - functions: `from_effect/1`, `matches_ref?/2`, `new/1`, `ref/1`, `split_ref/1`, `to_effect_attrs/1`, `valid_ref?/1`
 - `Spectre.Action.Planner`
-  - callbacks: `clean_reply/3`, `plan/3`, `plan_response/3`
+  - callbacks: `clean_reply/3`, `incremental_cleaner?/0`, `plan/3`, `plan_response/3`
 - `Spectre.Action.Provider`
-  - functions: `actions/1`, `actions/2`, `execute/3`
+  - functions: `actions/1`, `actions/2`, `execute/3`, `validate_arguments/2`
   - callbacks: `actions/1`, `execute/3`, `schema_hash/2`
 - `Spectre.Action.Provider.Local`
 - `Spectre.Action.Provider.Mount`
+- `Spectre.Action.Schema`
+  - functions: `constrained?/1`, `validate/2`
 - `Spectre.Action.Spec`
   - functions: `hash/3`, `new/1`, `planner_visible?/1`
 - `Spectre.ActionConfig`
@@ -103,12 +106,16 @@ Mix project version.
   - functions: `count/1`, `start_link/0`, `start_link/1`
 - `Spectre.Definition.Validator`
   - functions: `validate!/1`
+- `Spectre.Determinism`
+  - functions: `begin_capture/1`, `capture/2`, `monotonic_time/0`, `monotonic_time/1`, `random_bytes/1`, `samples/0`, `system_time/0`, `system_time/1`
+- `Spectre.Determinism.Source`
+  - callbacks: `monotonic_time/2`, `random_bytes/2`, `system_time/2`
 - `Spectre.Doctor`
   - functions: `contract_version/0`, `run/1`
 - `Spectre.Doctor.Report`
   - functions: `acceptable?/1`, `acceptable?/2`, `format/1`, `format/2`, `to_map/1`
 - `Spectre.Effect`
-  - functions: `al/1`, `approve/1`, `bind_run/2`, `cancel/1`, `cancel/2`, `complete/2`, `effect_key/1`, `executable?/1`, `fail/2`, `hooks/1`, `idempotency_key/1`, `outcome/1`, `owner/1`, `planned_by/1`, `restore/1`, `schema_hash/1`, `scope/1`, `selected_tool/1`, `source/1`, `stage/1`, `stage_action/3`, `terminal?/1`, `via/1`, `waiting_policy/2`
+  - functions: `al/1`, `approve/1`, `bind_run/2`, `cancel/1`, `cancel/2`, `complete/2`, `effect_key/1`, `executable?/1`, `fail/2`, `hooks/1`, `idempotency_key/1`, `outcome/1`, `owner/1`, `planned_by/1`, `prompt_result/1`, `restore/1`, `result_evidence/1`, `schema_hash/1`, `scope/1`, `selected_tool/1`, `source/1`, `stage/1`, `stage_action/3`, `terminal?/1`, `via/1`, `waiting_policy/2`
 - `Spectre.Effect.Executor`
   - functions: `dispatch/2`, `dispatch/3`
   - callbacks: `execute/3`
@@ -217,10 +224,22 @@ Mix project version.
 - `Spectre.Identity`
   - functions: `idempotency_key/1`, `uuid7/0`
 - `Spectre.Inference`
+- `Spectre.Inference.Budget`
+- `Spectre.Inference.BudgetSnapshot`
 - `Spectre.Inference.Constraints`
   - functions: `from_options/1`, `from_options/2`, `merge/2`
+- `Spectre.Inference.Descriptor`
+- `Spectre.Inference.Event`
+- `Spectre.Inference.Events`
+  - functions: `subscribe/1`, `subscribe/2`, `unsubscribe/1`
+- `Spectre.Inference.FrozenSelection`
+  - functions: `model_ref/1`
 - `Spectre.Inference.Profile`
   - functions: `compatible?/3`
+- `Spectre.Inference.Prepared`
+- `Spectre.Inference.Progress`
+- `Spectre.Inference.ProviderEvent`
+  - functions: `completed/1`, `completed/2`, `delta/1`, `delta/2`, `new/1`, `new/2`
 - `Spectre.Inference.Request`
   - functions: `for_classification/3`, `for_response/3`
 - `Spectre.Inference.Response`
@@ -228,8 +247,19 @@ Mix project version.
 - `Spectre.Inference.Selector`
   - callbacks: `select/4`
 - `Spectre.Inference.Selector.Default`
+- `Spectre.Inference.Stream`
+  - functions: `await_result/1`, `await_result/2`, `cancel/1`, `cancel/2`, `steer/2`, `steer/3`
+- `Spectre.Inference.StreamAdapter`
+  - functions: `validate/2`, `validate/3`
+  - callbacks: `cancel/2`, `capabilities/2`, `handle_transport/2`, `open/2`, `reconcile/3`, `request_transport_item/1`, `resume/3`
+- `Spectre.Inference.StreamAdapter.Conformance`
+  - functions: `run/3`, `run/4`
+- `Spectre.Inference.StreamEvent`
+  - functions: `new/2`, `terminal?/1`
+- `Spectre.Inference.Usage`
+  - functions: `add/2`, `merge/2`, `new/1`, `to_map/1`
 - `Spectre.Input`
-  - functions: `fetch_meta/2`, `merge_meta/2`, `new/1`, `put_meta/3`
+  - functions: `fetch_meta/2`, `merge_meta/2`, `new/1`, `put_meta/3`, `source_evidence/1`, `trust/1`, `validate/1`
 - `Spectre.Input.Pipeline`
   - functions: `init_specs/1`, `init_specs/2`, `run/3`
 - `Spectre.Input.Pipeline.Spec`
@@ -237,9 +267,11 @@ Mix project version.
   - callbacks: `call/3`, `init/1`
 - `Spectre.Input.Plugs.NormalizeText`
 - `Spectre.Input.Source`
+  - functions: `new/1`, `trust_classes/0`, `validate/1`
 - `Spectre.Instance`
   - functions: `activate/2`, `activate/3`, `activation/1`, `admit_event/2`, `admit_event/3`, `admitted_events/1`, `admitted_events/2`, `ask/2`, `ask/3`, `authorize_delivery/4`, `authorize_delivery/5`, `checkpoint/1`, `checkpoint_status/1`, `definition_lifecycle/1`, `definition_lifecycle/2`, `delivery_receipts/1`, `delivery_receipts/2`, `drain_definition/1`, `drain_definition/2`, `drain_definition/3`, `flush_checkpoint/1`, `flush_checkpoint/2`, `info/1`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `quarantined_events/1`, `quarantined_events/2`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `ref/1`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `revoke_definition/1`, `revoke_definition/2`, `revoke_definition/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `run/2`, `start_controller/3`, `start_controller/4`, `start_execution/2`, `start_execution/3`, `start_link/1`, `skill_state/2`, `skill_state/3`, `skill_state_branches/2`, `skill_state_branches/3`, `start_work/3`, `start_work/4`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `trace_id/1`, `transition_definition_lifecycle/4`, `transition_definition_lifecycle/5`, `transition_skill_state_retention/4`, `transition_skill_state_retention/5`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`, `update_skill_state/3`, `update_skill_state/4`
   - functions: `rollback/2`, `rollback/3`
+  - functions: `stream/2`, `stream/3`
 - `Spectre.Instance.Activation`
   - functions: `authority_epoch/1`, `build/1`, `compare_and_swap/3`, `decode/1`, `encode/1`, `from_data/1`, `generation/1`, `new/3`, `schema_version/0`, `to_data/1`
 - `Spectre.Instance.CheckpointStore`
@@ -366,7 +398,7 @@ Mix project version.
 - `Spectre.Projection.Routing`
   - functions: `id/0`, `project/2`, `version/0`
 - `Spectre.Prompt`
-  - functions: `build/3`, `build/4`, `render/3`, `render/4`, `resolve/3`, `resolve/4`
+  - functions: `build/3`, `build/4`, `data/1`, `render/3`, `render/4`, `resolve/3`, `resolve/4`
 - `Spectre.Prompt.Fragment`
   - functions: `base/1`, `canonical/1`, `canonical!/1`, `canonical_data/1`, `close_template/1`, `new/2`, `new/3`
 - `Spectre.Prompt.Materializer`
@@ -377,9 +409,19 @@ Mix project version.
   - functions: `compose/3`, `legacy/1`, `metadata/1`, `sections/1`
 - `Spectre.Prompt.Receipt`
   - functions: `from_data/1`, `to_data/1`
+- `Spectre.Prompt.Value`
 - `Spectre.Provider.Call`
   - functions: `run/2`, `run/3`
 - `Spectre.Provider.Failure`
+- `Spectre.Receipt.Envelope`
+  - functions: `digest/1`, `kinds/0`, `new/1`, `new!/1`, `to_data/1`
+- `Spectre.Receipt.Sink`
+  - functions: `append/3`, `get_payload/3`, `lookup/3`, `normalize/1`, `payload_capable?/1`, `payload_ref/1`, `put_payload/3`
+  - callbacks: `append/2`, `get_payload/2`, `lookup/2`, `put_payload/2`
+- `Spectre.Receipt.Sink.Conformance`
+  - functions: `run/1`
+- `Spectre.Receipt.Sink.Memory`
+  - functions: `all/1`, `append/2`, `get_payload/2`, `lookup/2`, `put_payload/2`, `start_link/0`, `start_link/1`
 - `Spectre.Result`
   - functions: `action_outcome/1`, `completions/1`, `latest_completion/1`, `lifecycle/1`, `open_awaitable/1`, `pending_effect/1`, `visible_reply?/1`
 - `Spectre.Reply.Sanitizer`
@@ -439,9 +481,11 @@ Mix project version.
 - `Spectre.Run`
   - functions: `checkpoint/1`, `checkpoint/2`, `ref/3`, `ref/4`, `restore/1`, `restore/2`
 - `Spectre.Run.Boundary`
+- `Spectre.Run.InferenceContinuation`
 - `Spectre.Run.Ref`
   - functions: `token/1`
 - `Spectre.Run.Request`
+- `Spectre.Run.StartContinuation`
 - `Spectre.Runner`
   - functions: `action/3`, `action/4`, `ask/3`, `ask/4`, `reply/3`, `reply/4`, `run/2`, `run_function/3`
 - `Spectre.Runtime`

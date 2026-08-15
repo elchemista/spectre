@@ -18,10 +18,39 @@ defmodule Spectre.Prompt do
   alias Spectre.Definition
   alias Spectre.Prompt.Operation
   alias Spectre.Prompt.Plan
+  alias Spectre.Prompt.Value, as: PromptValue
   alias Spectre.Provider.Call
 
   @default_max_fragment_bytes 64_000
   @default_max_prompt_bytes 256_000
+
+  @doc """
+  Wraps untrusted interpolated content in an escaped data-trust boundary.
+
+  This helper is intended for legacy EEx prompt assets whose rendered base
+  fragment otherwise has instruction trust.
+  """
+  @spec data(term()) :: String.t()
+  def data(%PromptValue{} = wrapped) do
+    case PromptValue.validate(wrapped) do
+      :ok -> data(wrapped.value)
+      {:error, reason} -> raise ArgumentError, "invalid prompt value: #{inspect(reason)}"
+    end
+  end
+
+  def data(value) when is_binary(value) do
+    escaped =
+      value
+      |> String.replace("&", "&amp;")
+      |> String.replace("<", "&lt;")
+      |> String.replace(">", "&gt;")
+      |> String.replace("\"", "&quot;")
+      |> String.replace("'", "&#39;")
+
+    ~s(<spectre-data trust="data">#{escaped}</spectre-data>)
+  end
+
+  def data(value), do: value |> inspect(limit: 100, printable_limit: 4_096) |> data()
 
   @doc """
   Resolves, composes, and renders a prompt for a model-backed turn.

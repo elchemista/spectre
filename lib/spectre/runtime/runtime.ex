@@ -21,6 +21,9 @@ defmodule Spectre.Runtime do
   alias Spectre.Effect
   alias Spectre.Input
   alias Spectre.Input.Pipeline
+  alias Spectre.Inference.Request, as: InferenceRequest
+  alias Spectre.Inference.Prepared, as: PreparedInference
+  alias Spectre.Inference.Response, as: InferenceResponse
   alias Spectre.Invocation
   alias Spectre.Journal.Recorder
   alias Spectre.Policy
@@ -30,6 +33,8 @@ defmodule Spectre.Runtime do
   alias Spectre.Run.Boundary
   alias Spectre.Run.Ref
   alias Spectre.Run.Request
+  alias Spectre.Run.InferenceContinuation
+  alias Spectre.Run.StartContinuation
   alias Spectre.Run.Value
   alias Spectre.Runtime.Persistence
   alias Spectre.Runtime.SkillDispatch
@@ -38,10 +43,128 @@ defmodule Spectre.Runtime do
 
   @type step_result ::
           {:continue, Run.t()}
+          | {:dispatch, Invocation.t(), Run.t(), PreparedInference.t()}
           | {:await, Invocation.t(), Run.t()}
           | {:boundary, Boundary.t(), Run.t()}
           | {:complete, Result.t(), Run.t()}
           | {:error, term(), Run.t()}
+
+  @doc false
+  @spec admit(
+          module(),
+          Input.t() | String.t() | map() | term(),
+          State.t(),
+          keyword(),
+          keyword()
+        ) ::
+          {:ok, Run.t()} | {:error, term()}
+  def admit(agent, input, %State{} = state, opts \\ [], admission_opts \\ [])
+      when is_atom(agent) and not is_nil(agent) and is_list(opts) and is_list(admission_opts) do
+    with :ok <- Run.validate_options(opts),
+         input <- Input.new(input) do
+      # Admission runs in the owning Instance and therefore must remain a
+      # bounded, mailbox-safe reservation. Input plugs and state loading run in
+      # the first worker move (`start/3`); recovery can replay that move from
+      # this transport-neutral logical input.
+      logical = Spectre.Run.Codec.logical_input(input)
+      continuation = StartContinuation.new(logical, admission_opts)
+
+      {:ok,
+       agent
+       |> Run.new(logical, state, opts)
+       |> Map.put(:start_continuation, continuation)}
+    end
+  rescue
+    exception -> {:error, {:run_admission_failed, exception.__struct__}}
+  catch
+    kind, reason -> {:error, {:run_admission_failed, kind, reason}}
+  end
+
+  @doc false
+  @spec admit_inference(
+          module(),
+          InferenceRequest.t(),
+          Input.t() | String.t() | map() | term(),
+          State.t(),
+          keyword(),
+          keyword()
+        ) :: {:ok, Run.t()} | {:error, term()}
+  def admit_inference(agent, request, input, state, opts \\ [], admission_opts \\ [])
+
+  def admit_inference(
+        agent,
+        %InferenceRequest{} = request,
+        input,
+        %State{} = state,
+        opts,
+        admission_opts
+      )
+      when is_atom(agent) and not is_nil(agent) and is_list(opts) and
+             is_list(admission_opts) do
+    with :ok <- Run.validate_options(opts) do
+      # Cognitive operations already run after input admission. Preserve that
+      # normalized logical view instead of executing the host input pipeline a
+      # second time for the nested, state-neutral Run.
+      logical = input |> Input.new() |> Spectre.Run.Codec.logical_input()
+      continuation = StartContinuation.for_inference(logical, request, admission_opts)
+
+      {:ok,
+       agent
+       |> Run.new(logical, state, opts)
+       |> Map.put(:start_continuation, continuation)}
+    end
+  rescue
+    exception -> {:error, {:inference_run_admission_failed, exception.__struct__}}
+  catch
+    kind, reason -> {:error, {:inference_run_admission_failed, kind, reason}}
+  end
+
+  @doc false
+  @spec prepare_inference(Run.t(), InferenceRequest.t(), keyword()) :: step_result()
+  def prepare_inference(
+        %Run{
+          status: :ready,
+          cursor: :turn,
+          start_continuation: %StartContinuation{entrypoint: :inference}
+        } = run,
+        %InferenceRequest{} = request,
+        opts
+      )
+      when is_list(opts) do
+    opts = run.agent |> runtime_opts(opts) |> put_run_identity(run) |> put_turn_identity()
+
+    ctx = %Context{
+      agent: run.agent,
+      input: run.input,
+      state: run.state,
+      opts: opts,
+      assigns: Keyword.get(opts, :assigns, %{})
+    }
+
+    case Spectre.Inference.prepare(run.agent, request, ctx) do
+      {:ok, %PreparedInference{} = prepared} ->
+        stage_inference(run, prepared, opts, :cognitive_operation)
+
+      {:error, reason} ->
+        fail_run_step(run, reason, opts, :run_advance_failed)
+    end
+  rescue
+    exception ->
+      fail_run_step(
+        run,
+        {:inference_run_prepare_failed, exception.__struct__},
+        put_run_identity(opts, run),
+        :run_advance_failed
+      )
+  catch
+    kind, reason ->
+      fail_run_step(
+        run,
+        {:inference_run_prepare_failed, kind, reason},
+        put_run_identity(opts, run),
+        :run_advance_failed
+      )
+  end
 
   @doc """
   Handles one normalized input turn for an agent module.
@@ -100,7 +223,13 @@ defmodule Spectre.Runtime do
       {:ok, normalized} ->
         case Persistence.load_state(seed.agent, normalized, runtime_opts) do
           {:ok, state} ->
-            run = %{seed | input: normalized, state: state}
+            # Keep the live normalized input (including request-local `raw`)
+            # for this process, but persist the same logical projection that
+            # recovery will receive. The continuation is committed before a
+            # caller can checkpoint the newly started Run.
+            logical = Spectre.Run.Codec.logical_input(normalized)
+            continuation = StartContinuation.new(logical, opts)
+            run = %{seed | input: normalized, state: state, start_continuation: continuation}
             record_run_step({:continue, run}, :run_started, runtime_opts)
 
           {:error, reason} ->
@@ -174,16 +303,23 @@ defmodule Spectre.Runtime do
       assigns: Keyword.get(opts, :assigns, %{})
     }
 
-    with {:ok, memory} <- Persistence.load_memory(run.agent, run.input, run.state, opts),
-         ctx = %{ctx | memory: memory},
-         {:ok, result} <- run_turn(ctx),
-         result = put_runtime_identity(result, opts),
-         result = record_history(result, ctx),
-         {:ok, result} <- Recorder.record_result(result, ctx),
-         {:ok, result} <- Persistence.persist(result, ctx) do
-      finish_run_step(run, result, opts, :run_advanced)
-    else
-      {:error, reason} -> fail_run_step(run, reason, opts, :run_advance_failed)
+    case Persistence.load_memory(run.agent, run.input, run.state, opts) do
+      {:ok, memory} ->
+        ctx = %{ctx | memory: memory}
+
+        case run_turn(ctx) do
+          {:ok, %Result{} = result} ->
+            finish_turn_result(run, result, ctx, opts)
+
+          {:inference, %PreparedInference{} = prepared} ->
+            stage_inference(run, prepared, opts)
+
+          {:error, reason} ->
+            fail_run_step(run, reason, opts, :run_advance_failed)
+        end
+
+      {:error, reason} ->
+        fail_run_step(run, reason, opts, :run_advance_failed)
     end
   end
 
@@ -251,6 +387,48 @@ defmodule Spectre.Runtime do
         case resolve_policy(run.agent, run.result, resolution, opts) do
           {:ok, %Result{} = result} ->
             finish_run_step(run, result, opts, :run_resumed)
+
+          {:error, reason} ->
+            fail_run_step(run, reason, opts, :run_resume_failed)
+        end
+
+      {:error, reason} ->
+        reject_run_resume(run, reason, opts)
+    end
+  end
+
+  defp do_resume(
+         %Run{
+           status: :awaiting,
+           cursor: :inference,
+           waiting: %Invocation{kind: :inference} = invocation,
+           inference_continuation: %InferenceContinuation{} = continuation
+         } = run,
+         {:inference, supplied, %InferenceResponse{} = response},
+         opts
+       ) do
+    case validate_invocation_fence(invocation, supplied) do
+      :ok ->
+        opts = run.agent |> runtime_opts(opts) |> put_run_identity(run) |> put_turn_identity()
+
+        ctx = %Context{
+          agent: run.agent,
+          input: run.input,
+          state: run.state,
+          opts: opts,
+          assigns: Keyword.get(opts, :assigns, %{}),
+          route: continuation.descriptor.route
+        }
+
+        case Persistence.load_memory(run.agent, run.input, run.state, opts) do
+          {:ok, memory} ->
+            resume_inference_postprocessor(
+              run,
+              continuation,
+              response,
+              %{ctx | memory: memory},
+              opts
+            )
 
           {:error, reason} ->
             fail_run_step(run, reason, opts, :run_resume_failed)
@@ -461,7 +639,8 @@ defmodule Spectre.Runtime do
     end
   end
 
-  @spec run_turn(Context.t()) :: {:ok, Result.t()} | {:error, term()}
+  @spec run_turn(Context.t()) ::
+          {:ok, Result.t()} | {:inference, PreparedInference.t()} | {:error, term()}
   defp run_turn(%Context{state: state} = ctx) do
     if Policy.awaiting?(state, instance_lifecycle_run_id(ctx.opts)) do
       run_policy_turn(ctx)
@@ -474,7 +653,161 @@ defmodule Spectre.Runtime do
     end
   end
 
-  @spec run_skill_or_routed_turn(Context.t()) :: {:ok, Result.t()} | {:error, term()}
+  defp finish_turn_result(run, result, ctx, opts) do
+    result = put_runtime_identity(result, opts)
+    result = record_history(result, ctx)
+
+    with {:ok, result} <- Recorder.record_result(result, ctx),
+         {:ok, result} <- Persistence.persist(result, ctx) do
+      finish_run_step(run, result, opts, :run_advanced)
+    else
+      {:error, reason} -> fail_run_step(run, reason, opts, :run_advance_failed)
+    end
+  end
+
+  defp stage_inference(
+         %Run{} = run,
+         %PreparedInference{} = prepared,
+         opts,
+         postprocessor \\ nil
+       ) do
+    revision = run.revision + 1
+    step_id = Value.token("inference-step", {run.id, revision, prepared.descriptor.id})
+
+    continuation =
+      InferenceContinuation.new(prepared.descriptor,
+        frozen_selection: prepared.frozen_selection,
+        postprocessor: postprocessor || inference_postprocessor(prepared.descriptor),
+        recoverable?: prepared.descriptor.recoverable?
+      )
+
+    staged = %{
+      run
+      | status: :awaiting,
+        cursor: :inference,
+        revision: revision,
+        step_id: step_id,
+        start_continuation: nil,
+        result: nil,
+        waiting: nil,
+        inference_continuation: continuation,
+        last_error: nil
+    }
+
+    invocation =
+      Invocation.from_inference(staged, continuation,
+        streaming?:
+          Keyword.get(opts, :streaming?, false) and
+            continuation.postprocessor == :response_generation
+      )
+
+    continuation = %{
+      continuation
+      | invocation: invocation,
+        stream_epoch: invocation.stream_epoch,
+        provider_request_digest: nil,
+        provider_status: :selected
+    }
+
+    staged = %{staged | waiting: invocation, inference_continuation: continuation}
+
+    record_run_step(
+      {:dispatch, invocation, staged, prepared},
+      :run_awaiting,
+      put_run_identity(opts, staged)
+    )
+  end
+
+  defp inference_postprocessor(%{purpose: :route_classification}),
+    do: :route_classification
+
+  defp inference_postprocessor(%{purpose: :policy_interrupt_classification}),
+    do: :policy_interrupt_classification
+
+  defp inference_postprocessor(_descriptor), do: :response_generation
+
+  defp resume_inference_postprocessor(
+         run,
+         %{postprocessor: :cognitive_operation, descriptor: descriptor},
+         response,
+         _ctx,
+         opts
+       ) do
+    # The operational loop owns validation and domain handling. This Run only
+    # commits the nondeterministic inference boundary and returns its portable
+    # response without recording chat history or mutating Agent state.
+    result = %Result{
+      input: run.input,
+      route: descriptor.route,
+      state: run.state,
+      metadata: %{
+        cognitive_inference: %{
+          inference_id: descriptor.id,
+          purpose: descriptor.purpose,
+          response: response
+        }
+      }
+    }
+
+    finish_run_step(run, result, opts, :run_resumed)
+  end
+
+  defp resume_inference_postprocessor(
+         run,
+         %{postprocessor: :response_generation, descriptor: descriptor},
+         response,
+         ctx,
+         opts
+       ) do
+    case Spectre.Runner.resume_inference(descriptor, response, run.input, ctx) do
+      {:ok, result} -> finish_turn_result(run, result, ctx, opts)
+      {:error, reason} -> fail_run_step(run, reason, opts, :run_resume_failed)
+    end
+  end
+
+  defp resume_inference_postprocessor(
+         run,
+         %{
+           postprocessor: postprocessor,
+           inference_id: inference_id,
+           descriptor: descriptor
+         },
+         response,
+         ctx,
+         opts
+       )
+       when postprocessor in [:route_classification, :policy_interrupt_classification] do
+    opts =
+      opts
+      |> Keyword.put(:inference_classifier_response, response)
+      |> Keyword.put(:inference_classifier_descriptor, descriptor)
+      |> Keyword.put(:inference_request_id, inference_id)
+
+    ctx = %{ctx | opts: opts}
+
+    result =
+      case postprocessor do
+        :route_classification -> run_routed_turn(ctx)
+        :policy_interrupt_classification -> run_policy_interrupt_or_resume(ctx)
+      end
+
+    downstream_opts = drop_classifier_resume_opts(opts)
+    downstream_ctx = %{ctx | opts: downstream_opts}
+
+    case result do
+      {:ok, %Result{} = result} ->
+        finish_turn_result(run, result, downstream_ctx, downstream_opts)
+
+      {:inference, %PreparedInference{} = prepared} ->
+        stage_inference(run, prepared, downstream_opts)
+
+      {:error, reason} ->
+        fail_run_step(run, reason, downstream_opts, :run_resume_failed)
+    end
+  end
+
+  @spec run_skill_or_routed_turn(Context.t()) ::
+          {:ok, Result.t()} | {:inference, PreparedInference.t()} | {:error, term()}
   defp run_skill_or_routed_turn(%Context{} = ctx) do
     case SkillDispatch.dispatch(ctx) do
       :cont -> run_routed_turn(ctx)
@@ -483,13 +816,19 @@ defmodule Spectre.Runtime do
     end
   end
 
-  @spec run_routed_turn(Context.t()) :: {:ok, Result.t()} | {:error, term()}
+  @spec run_routed_turn(Context.t()) ::
+          {:ok, Result.t()} | {:inference, PreparedInference.t()} | {:error, term()}
   defp run_routed_turn(%Context{} = ctx) do
     with {:ok, router_context} <- Router.route_context(ctx.input, ctx),
          {:ok, route} <- Router.route_from_context(router_context) do
       # Router plugs may enrich the input before a handler runs, so the runner
       # receives the router context input rather than the original input.
-      Spectre.Runner.run(route, %{ctx | input: router_context.input, route: route})
+      Spectre.Runner.run(route, %{
+        ctx
+        | input: router_context.input,
+          route: route,
+          opts: drop_classifier_resume_opts(ctx.opts)
+      })
     end
   end
 
@@ -507,18 +846,33 @@ defmodule Spectre.Runtime do
       ctx.opts
       |> Keyword.put(:policy_interrupt_only?, true)
       |> Keyword.put(:via, Keyword.get(ctx.opts, :policy_interrupt_via, [:regex]))
+      |> Keyword.put(:classifier_inference_purpose, :policy_interrupt_classification)
 
     interrupt_ctx = %{ctx | opts: interrupt_opts}
+    downstream_ctx = %{ctx | opts: drop_classifier_resume_opts(ctx.opts)}
 
     with {:ok, router_context} <- Router.route_context(ctx.input, interrupt_ctx),
          {:ok, %Spectre.Route{rule: %Spectre.Rule{global?: true}} = route} <-
            Router.route_from_context(router_context) do
-      Spectre.Runner.run(route, %{ctx | input: router_context.input, route: route})
+      Spectre.Runner.run(route, %{
+        downstream_ctx
+        | input: router_context.input,
+          route: route
+      })
     else
+      {:inference, %PreparedInference{} = prepared} -> {:inference, prepared}
       {:error, {:journal_append_failed, _reason} = failure} -> {:error, failure}
       {:error, {:invalid_journal_configuration, _reason} = failure} -> {:error, failure}
-      _no_interrupt -> Policy.resume(ctx.input, ctx)
+      _no_interrupt -> Policy.resume(downstream_ctx.input, downstream_ctx)
     end
+  end
+
+  defp drop_classifier_resume_opts(opts) do
+    Keyword.drop(opts, [
+      :inference_classifier_response,
+      :inference_classifier_descriptor,
+      :inference_request_id
+    ])
   end
 
   @spec inherit_execution_context(Result.t(), Result.t()) :: Result.t()
@@ -591,6 +945,8 @@ defmodule Spectre.Runtime do
     base = %{
       run
       | input: input,
+        start_continuation: nil,
+        inference_continuation: nil,
         result: result,
         state: State.new(result.state),
         revision: revision,
@@ -724,6 +1080,8 @@ defmodule Spectre.Runtime do
       run
       | status: :failed,
         cursor: :complete,
+        start_continuation: nil,
+        inference_continuation: nil,
         revision: run.revision + 1,
         waiting: nil,
         last_error: reason,
@@ -753,6 +1111,9 @@ defmodule Spectre.Runtime do
   @spec legacy_result(step_result()) :: {:ok, Result.t()} | {:error, term()}
   defp legacy_result({:await, %Invocation{}, %Run{result: %Result{} = result}}),
     do: {:ok, result}
+
+  defp legacy_result({:dispatch, %Invocation{}, %Run{}, _binding}),
+    do: {:error, :inference_dispatch_requires_agent_instance}
 
   defp legacy_result({:boundary, %Boundary{}, %Run{result: %Result{} = result}}),
     do: {:ok, result}
@@ -863,6 +1224,7 @@ defmodule Spectre.Runtime do
 
   @spec step_run(step_result()) :: Run.t()
   defp step_run({:continue, %Run{} = run}), do: run
+  defp step_run({:dispatch, %Invocation{}, %Run{} = run, %PreparedInference{}}), do: run
   defp step_run({:await, %Invocation{}, %Run{} = run}), do: run
   defp step_run({:boundary, %Boundary{}, %Run{} = run}), do: run
   defp step_run({:complete, %Result{}, %Run{} = run}), do: run
@@ -877,6 +1239,10 @@ defmodule Spectre.Runtime do
   defp run_step_events(_step, event), do: [event]
 
   defp outcome_event({:await, %Invocation{}, %Run{}}), do: :run_awaiting
+
+  defp outcome_event({:dispatch, %Invocation{}, %Run{}, %PreparedInference{}}),
+    do: :run_awaiting
+
   defp outcome_event({:boundary, %Boundary{}, %Run{}}), do: :run_boundary
   defp outcome_event({:complete, %Result{}, %Run{}}), do: :run_completed
 
@@ -975,6 +1341,7 @@ defmodule Spectre.Runtime do
       end
 
     with {:ok, input} <- normalized,
+         :ok <- Input.validate(input),
          :ok <- validate_binary_size(input.text, :input, opts, :input_max_bytes, 64_000) do
       {:ok, input}
     end

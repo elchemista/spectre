@@ -20,10 +20,11 @@ defmodule Spectre.Run do
   alias Spectre.Result
   alias Spectre.Run.Codec
   alias Spectre.Run.Ref
+  alias Spectre.Run.StartContinuation
   alias Spectre.Run.Value
   alias Spectre.State
 
-  @run_version 2
+  @run_version 3
 
   @enforce_keys [:id, :agent, :input, :state, :trace_id]
   defstruct run_version: @run_version,
@@ -45,11 +46,13 @@ defmodule Spectre.Run do
             authority_epoch: 0,
             closure_digest: nil,
             deployment_requirement: nil,
+            start_continuation: nil,
+            inference_continuation: nil,
             metadata: %{},
             last_error: nil
 
   @type status :: :ready | :boundary | :awaiting | :complete | :failed
-  @type cursor :: :turn | :policy | :effect | :complete
+  @type cursor :: :turn | :policy | :effect | :inference | :complete
 
   @type t :: %__MODULE__{
           run_version: pos_integer(),
@@ -71,6 +74,8 @@ defmodule Spectre.Run do
           authority_epoch: non_neg_integer(),
           closure_digest: String.t(),
           deployment_requirement: term() | nil,
+          start_continuation: StartContinuation.t() | nil,
+          inference_continuation: Spectre.Run.InferenceContinuation.t() | nil,
           metadata: map(),
           last_error: term()
         }

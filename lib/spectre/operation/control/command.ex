@@ -1,9 +1,19 @@
 defmodule Spectre.Operation.Control.Command do
-  @moduledoc "Durable, idempotent command for controlling one operational loop."
+  @moduledoc "Durable, idempotent command shared by operation and inference control lanes."
 
   alias Spectre.Run.Value
 
-  @actions [:pause, :update, :resume, :stop, :renew, :trigger, :update_and_resume]
+  @operational_actions [
+    :pause,
+    :update,
+    :resume,
+    :stop,
+    :renew,
+    :trigger,
+    :update_and_resume
+  ]
+  @inference_actions [:steer, :cancel]
+  @actions @operational_actions ++ @inference_actions
   @modes [:safe, :immediate]
 
   @enforce_keys [:id, :loop_id, :action, :correlation_id, :provenance, :requested_at]
@@ -48,10 +58,12 @@ defmodule Spectre.Operation.Control.Command do
   @doc """
   Builds a pending control command for `loop_id`.
 
-  `action` must be one of `:pause`, `:update`, `:resume`, `:stop`, `:renew`,
-  `:trigger` or `:update_and_resume`; the desired loop state is derived from it
-  unless `:desired_state` is given. Missing ids and `requested_at` default to
-  fresh UUIDv7s and the current time. Raises `ArgumentError` on an invalid mode.
+  Operational loops accept `:pause`, `:update`, `:resume`, `:stop`, `:renew`,
+  `:trigger` and `:update_and_resume`. Inference control accepts `:steer` and
+  `:cancel`. Each runtime rejects commands from the other domain. The desired
+  state is derived from the action unless `:desired_state` is given. Missing
+  ids and `requested_at` default to fresh UUIDv7s and the current time. Raises
+  `ArgumentError` on an invalid mode.
   """
   @spec new(String.t(), atom(), keyword()) :: t()
   def new(loop_id, action, opts \\ [])
@@ -74,6 +86,14 @@ defmodule Spectre.Operation.Control.Command do
       metadata: Keyword.get(opts, :metadata, %{})
     }
   end
+
+  @doc false
+  @spec operational_action?(term()) :: boolean()
+  def operational_action?(action), do: action in @operational_actions
+
+  @doc false
+  @spec inference_action?(term()) :: boolean()
+  def inference_action?(action), do: action in @inference_actions
 
   @doc """
   Marks the command as `:committed`, stamping `committed_at` with the current time.
@@ -111,6 +131,8 @@ defmodule Spectre.Operation.Control.Command do
   defp desired_state(:update_and_resume), do: :active
   defp desired_state(:resume), do: :active
   defp desired_state(:stop), do: :terminal
+  defp desired_state(:steer), do: :active
+  defp desired_state(:cancel), do: :terminal
   defp desired_state(_action), do: nil
 
   @doc """

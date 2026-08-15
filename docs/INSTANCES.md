@@ -107,8 +107,8 @@ legacy key migration.
 
 ### Private Skill state
 
-The format-tagged schema-2 checkpoint also retains private Skill state as Definition-owned,
-generational branches. The active branch is selected by the current
+The format-tagged schema-3 checkpoint also retains private Skill state as
+Definition-owned, generational branches. The active branch is selected by the current
 Activation; older branches remain dormant until an explicit resume, fork,
 migration, abandonment, or reference-safe retention transition. Activating
 A → B → A never merges B's state into A.
@@ -158,10 +158,11 @@ that behavior. This is a narrow monitoring exception: direct state, `ref/1`,
 `agent/1`, configuration, lifecycle, retained-record, and checkpoint-payload
 reads count as active use and re-arm the timer.
 
-Effect work runs outside the Instance mailbox. Its internal receipt is fenced
-by Instance generation, Run id and revision, Invocation id, and dispatch id.
-Late, duplicate, foreign, and stale receipts are ignored. The Instance remains
-responsive while the capability is in flight.
+Effect and inference work run outside the Instance mailbox. Their internal
+receipts are fenced by Instance generation, Run id and revision, Invocation id,
+and dispatch id. Inference also carries attempt, control-revision and stream
+epoch fences. Late, duplicate, foreign, and stale receipts are ignored. The
+Instance remains responsive while a capability is in flight.
 
 Each Effect and policy Awaitable staged by an Instance carries its owning Run
 id. Several Runs can therefore wait independently at policy or Effect
@@ -217,31 +218,54 @@ startup and use `flush_checkpoint/2`, `checkpoint_status/1`, and
 `reconcile_checkpoint/2` at the host boundary. An ambiguous compare-and-swap
 write erects a persistence fence and is never retried automatically.
 
-Current format-tagged schema-2 checkpoints retain the Activation, every retained Run,
-Definition lifecycle and event records, and the complete private Skill-state
-branch graph. The 0.3.1 reader accepts only this tagged version; retired
-untagged 0.2.x schemas are rejected instead of being guessed or silently
-migrated. `migrate_instance_key/5` migrates a validated checkpoint between the
-old and stable Instance keys; it is not a legacy schema decoder. Divergent
-histories under old and new keys are rejected.
+Current format-tagged schema-3 checkpoints retain the Activation, every
+retained Run, Definition lifecycle and event records, the complete private
+Skill-state branch graph, inference control/progress, and the required-receipt
+outbox. The reader accepts tagged versions 2 and 3; retired untagged 0.2.x
+schemas are rejected instead of being guessed or silently migrated.
+`migrate_instance_key/5` migrates a validated checkpoint between the old and
+stable Instance keys; it is not a legacy schema decoder. Divergent histories
+under old and new keys are rejected. See
+[Migrating canonical Instance checkpoints to v3](MIGRATING_TO_INSTANCE_CHECKPOINT_V3.md).
 
 See [Work, Vigil, and the operational runtime](OPERATIONS.md) for controller,
 operation, recovery, event, and delivery contracts.
 
+### Inference Invocations and streaming
+
+Model selection is now an explicit `Spectre.Invocation` kind. The Instance
+commits selection and dispatch intent before it releases one-shot or streaming
+provider work, then accepts one typed terminal worker receipt through the same
+owner fences as Effects. This removes provider latency from the Instance
+mailbox without creating a second owner for the Run.
+
+`Spectre.stream/3` starts an Instance-owned, pull-driven Enumerable. Raw deltas
+flow directly from the supervised stream session to one authoritative
+consumer; they do not pass through the Instance or enter its checkpoint. The
+Instance receives text-free heartbeat snapshots for watchdogs and, when
+enabled, commits throttled progress before publishing it to observers.
+
+Cancellation is committed before remote cancel is requested. Steering is a
+restart: the old Enumerable ends as superseded and the caller receives a new
+handle with a new epoch. A consumer that never attaches becomes the explicit
+terminal `:consumer_never_attached`; Instance death interrupts the session and
+best-effort cancels the provider. Recovery either resumes/reconciles through a
+declared adapter capability or reaches an explicit interrupted/ambiguous
+terminal state. See [Streaming inference](STREAMING_INFERENCE.md).
+
 ### Conversational Move scheduling
 
 The GenServer mailbox never executes input plugs, routing, model calls, memory
-callbacks, renderers, or Actions directly. An ordinary Move runs those bounded
-callbacks in its worker, so operational calls such as `info/1` remain
-responsive. However, Prism inference and other ordinary provider calls still
-execute synchronously *within that one active Move worker*. Ready Runs wait for
-that Move to finish or hit its configured provider timeout.
+callbacks, renderers, or Actions directly. An ordinary Move runs bounded pure
+or host callbacks in its worker, so operational calls such as `info/1` remain
+responsive. When that Move reaches an inference boundary it returns a portable
+continuation; the Instance commits it and dispatches the provider separately.
+Ready Runs therefore do not hold the Move lock for model latency.
 
-The explicit in-flight `Invocation + Receipt` path in this release covers
-staged Effect/Action execution, including Lens when it is mounted as an
-Action. A generic provider Invocation requires a serializable mid-turn
-continuation and typed provider receipt; it is intentionally not simulated by
-renaming the whole Move or running stale-State workers concurrently.
+The explicit in-flight `Invocation + Receipt` path covers staged Effect/Action
+execution, including Lens when mounted as an Action, and selected inference.
+Post-processing resumes only after a correlated provider receipt and is
+rebased against current shared State before its canonical commit.
 
 This conversational one-Move limit is independent from the bounded
 operational Runner pool described above.

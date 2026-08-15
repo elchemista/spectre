@@ -1,5 +1,5 @@
 defmodule Spectre.Operation.RunnerSupervisor do
-  @moduledoc "Dynamic supervisor for isolated one-attempt operational Runners."
+  @moduledoc "Dynamic supervisor for isolated, temporary runtime workers."
 
   use DynamicSupervisor
 
@@ -14,6 +14,13 @@ defmodule Spectre.Operation.RunnerSupervisor do
   @spec start_runner(GenServer.server(), keyword()) :: DynamicSupervisor.on_start_child()
   def start_runner(supervisor \\ __MODULE__, opts) when is_list(opts) do
     DynamicSupervisor.start_child(supervisor, {Spectre.Operation.Runner, opts})
+  end
+
+  @doc false
+  @spec start_stream_session(GenServer.server(), keyword()) ::
+          DynamicSupervisor.on_start_child()
+  def start_stream_session(supervisor \\ __MODULE__, opts) when is_list(opts) do
+    DynamicSupervisor.start_child(supervisor, {Spectre.Inference.StreamSession, opts})
   end
 
   @spec stop_runner(GenServer.server(), pid()) :: :ok | {:error, term()}

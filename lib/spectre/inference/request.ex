@@ -90,7 +90,8 @@ defmodule Spectre.Inference.Request do
       |> put_context_tokens(plan)
 
     new(%{
-      purpose: :route_classification,
+      id: Keyword.get(opts, :inference_request_id) || Spectre.Identity.uuid7(),
+      purpose: Keyword.get(opts, :classifier_inference_purpose, :route_classification),
       plan: plan,
       modalities: modalities(input, opts),
       constraints: constraints,

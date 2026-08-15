@@ -21,5 +21,7 @@ defmodule Spectre.Action.Planner do
 
   @callback clean_reply(String.t(), Spectre.Context.t() | map(), keyword()) :: String.t()
 
-  @optional_callbacks plan: 3, clean_reply: 3
+  @callback incremental_cleaner?() :: boolean()
+
+  @optional_callbacks plan: 3, clean_reply: 3, incremental_cleaner?: 0
 end

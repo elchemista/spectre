@@ -20,10 +20,17 @@ defmodule Spectre.Instance.Checkpoint do
   @spec restore_canonical(keyword(), State.t(), CheckpointStore.config() | nil, keyword()) ::
           {:ok, State.t(), Canonical.t(), non_neg_integer()} | {:error, term()}
   def restore_canonical(opts, state, checkpoint_store, base_opts) do
+    validation_opts = canonical_validation_opts(opts, base_opts)
+
     case Keyword.fetch(opts, :canonical_checkpoint) do
       {:ok, checkpoint} ->
         with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-             :ok <- validate_canonical_instance(canonical, Keyword.fetch!(opts, :instance_ref)),
+             :ok <-
+               validate_canonical_instance(
+                 canonical,
+                 Keyword.fetch!(opts, :instance_ref),
+                 validation_opts
+               ),
              {:ok, %State{} = flow_state} <- Canonical.fetch(canonical, :flow) do
           expected = Keyword.get(opts, :checkpoint_expected_revision, 0)
           {:ok, flow_state, canonical, expected}
@@ -33,7 +40,12 @@ defmodule Spectre.Instance.Checkpoint do
         end
 
       :error ->
-        restore_stored_or_new_canonical(opts, state, checkpoint_store, base_opts)
+        restore_stored_or_new_canonical(
+          opts,
+          state,
+          checkpoint_store,
+          Keyword.merge(base_opts, validation_opts)
+        )
     end
   end
 
@@ -188,7 +200,7 @@ defmodule Spectre.Instance.Checkpoint do
   def apply_reconciliation(%InstanceState{} = data, result) do
     reconciliation = data.checkpoint_reconciliation
 
-    case decode_reconciled_checkpoint(result, data.ref) do
+    case decode_reconciled_checkpoint(result, data) do
       :not_found when reconciliation.expected_revision == 0 ->
         checkpoint_not_committed(data)
 
@@ -261,17 +273,17 @@ defmodule Spectre.Instance.Checkpoint do
         restore_stable_with_legacy_ref(store, checkpoint, instance_ref, legacy_ref, opts)
 
       {:error, :legacy_agent_ref_source_unavailable} ->
-        restore_stable_checkpoint(checkpoint, instance_ref)
+        restore_stable_checkpoint(checkpoint, instance_ref, opts)
     end
   end
 
   defp restore_stable_with_legacy_ref(store, checkpoint, instance_ref, legacy_ref, opts) do
     case CheckpointStore.load(store, legacy_ref, opts) do
       :not_found ->
-        restore_stable_checkpoint(checkpoint, instance_ref)
+        restore_stable_checkpoint(checkpoint, instance_ref, opts)
 
       {:ok, ^checkpoint} ->
-        restore_stable_checkpoint(checkpoint, instance_ref)
+        restore_stable_checkpoint(checkpoint, instance_ref, opts)
 
       {:ok, _different} ->
         {:error, {:divergent_instance_key_histories, legacy_ref.key, instance_ref.key}}
@@ -302,9 +314,9 @@ defmodule Spectre.Instance.Checkpoint do
     end
   end
 
-  defp restore_stable_checkpoint(checkpoint, instance_ref) do
+  defp restore_stable_checkpoint(checkpoint, instance_ref, validation_opts) do
     with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-         :ok <- validate_canonical_instance(canonical, instance_ref),
+         :ok <- validate_canonical_instance(canonical, instance_ref, validation_opts),
          {:ok, %State{} = flow_state} <- Canonical.fetch(canonical, :flow) do
       {:ok, flow_state, canonical, canonical.revision}
     else
@@ -469,16 +481,17 @@ defmodule Spectre.Instance.Checkpoint do
 
   defp checkpoint_reconciliation_required?(_reason), do: false
 
-  defp decode_reconciled_checkpoint(:not_found, _instance_ref), do: :not_found
+  defp decode_reconciled_checkpoint(:not_found, %InstanceState{}), do: :not_found
 
-  defp decode_reconciled_checkpoint({:ok, checkpoint}, instance_ref) do
+  defp decode_reconciled_checkpoint({:ok, checkpoint}, %InstanceState{} = data) do
     with {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-         :ok <- validate_canonical_instance(canonical, instance_ref) do
+         :ok <-
+           validate_canonical_instance(canonical, data.ref, canonical_validation_opts(data)) do
       {:ok, canonical}
     end
   end
 
-  defp decode_reconciled_checkpoint({:error, reason}, _instance_ref),
+  defp decode_reconciled_checkpoint({:error, reason}, %InstanceState{}),
     do: {:error, {:checkpoint_reconciliation_load_failed, reason}}
 
   defp checkpoint_committed(data, stored) do
@@ -508,10 +521,38 @@ defmodule Spectre.Instance.Checkpoint do
     {:ok, next, revision}
   end
 
-  defp validate_canonical_instance(canonical, instance_ref) do
-    CanonicalValidator.validate(canonical, instance_ref,
-      event_limit: Spectre.Instance.operation_event_limit()
-    )
+  defp validate_canonical_instance(canonical, instance_ref, validation_opts) do
+    validation_opts =
+      Keyword.put(validation_opts, :event_limit, Spectre.Instance.operation_event_limit())
+
+    CanonicalValidator.validate(canonical, instance_ref, validation_opts)
+  end
+
+  defp canonical_validation_opts(opts, base_opts) do
+    [
+      receipt_outbox_limit:
+        first_configured([
+          {opts, :receipt_outbox_limit},
+          {base_opts, :receipt_outbox_limit}
+        ]) || 256,
+      inference_progress_limit:
+        first_configured([
+          {opts, :inference_progress_limit},
+          {base_opts, :inference_progress_limit}
+        ]) || 256
+    ]
+  end
+
+  defp canonical_validation_opts(%InstanceState{} = data) do
+    receipt_limit =
+      if is_integer(data.max_receipt_outbox) and data.max_receipt_outbox > 0,
+        do: data.max_receipt_outbox,
+        else: Keyword.get(data.base_opts, :receipt_outbox_limit, 256)
+
+    [
+      receipt_outbox_limit: receipt_limit,
+      inference_progress_limit: Keyword.get(data.base_opts, :inference_progress_limit, 256)
+    ]
   end
 
   defp first_configured(entries) do
