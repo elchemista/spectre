@@ -388,7 +388,9 @@ defmodule SpectreReceiptSinkFailureContractTest do
       assert {:ok, %Envelope{kind: ^kind}} = Envelope.new(attrs)
     end
 
-    assert {:ok, %Envelope{kind: :canonical_commit}} =
+    refute :canonical_commit in Envelope.kinds()
+
+    assert {:error, {:invalid_receipt_kind, :canonical_commit}} =
              Envelope.new(
                kind: :canonical_commit,
                correlation_id: "commit",

@@ -25,8 +25,7 @@ defmodule Spectre.Receipt.Envelope do
     :authority_decision,
     :effect_terminal,
     :action_terminal,
-    :nondeterminism_sample,
-    :canonical_commit
+    :nondeterminism_sample
   ]
   @privacy_classes [:public, :internal, :confidential, :restricted]
 
@@ -318,15 +317,6 @@ defmodule Spectre.Receipt.Envelope do
          :ok <- required_fields(attrs, [:pre_state_digest, :post_state_digest]) do
       validate_inference_boundary_identity(kind, attrs)
     end
-  end
-
-  defp validate_boundary_identity(%{kind: :canonical_commit} = attrs) do
-    required_fields(attrs, [
-      :instance_ref,
-      :canonical_revision,
-      :pre_state_digest,
-      :post_state_digest
-    ])
   end
 
   defp validate_boundary_identity(%{kind: :policy_decision} = attrs) do

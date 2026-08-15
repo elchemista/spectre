@@ -93,3 +93,9 @@ receipts use `recorded_at` as a logical canonical coordinate.
 Receipt capture plus state roots proves boundary evidence linkage. It does not
 prove deterministic replay, exactly-once provider work or exactly-once external
 Effects. Those claims remain false until separately verified.
+
+Schema v1 deliberately has no generic `:canonical_commit` receipt. Canonical
+pre/post state roots travel on the receipt for the nondeterministic or authority
+boundary that caused the commit; routine internal mutations are not duplicated
+as history entries. The kind name is reserved for a future schema that defines
+an emitter and verifier together, and schema v1 rejects it explicitly.
