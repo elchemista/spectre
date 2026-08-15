@@ -49,7 +49,36 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest.FixtureAdapter do
   end
 
   @impl Spectre.Inference.StreamAdapter
+  def conformance_fixture(kind, oversized, _descriptor, opts)
+      when kind in [:transport_chunk, :parser_residual] do
+    {:ok, {:conformance_bound, kind, oversized}, %{opts: opts, demand: 0}}
+  end
+
+  @impl Spectre.Inference.StreamAdapter
   def handle_transport(message, %{opts: opts} = state) do
+    case message do
+      {:conformance_bound, kind, payload} ->
+        enforce_conformance_bound(kind, payload, opts, state)
+
+      message ->
+        handle_fixture_transport(message, opts, state)
+    end
+  end
+
+  defp enforce_conformance_bound(kind, payload, opts, state) do
+    if Keyword.get(opts, :ignore_conformance_bound) == kind do
+      {:ok, [], state}
+    else
+      bounds = Keyword.fetch!(opts, :spectre_bounds)
+      limit = Keyword.fetch!(bounds, bound_key(kind))
+
+      if byte_size(payload) > limit,
+        do: {:error, :provider_stream_overflow, state},
+        else: {:ok, [], state}
+    end
+  end
+
+  defp handle_fixture_transport(message, opts, state) do
     case {Keyword.get(opts, :transport_reply), message} do
       {:raise, _message} -> raise "transport fixture failed"
       {:throw, _message} -> throw(:transport_fixture_failed)
@@ -60,6 +89,9 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest.FixtureAdapter do
       {nil, reply} -> reply
     end
   end
+
+  defp bound_key(:transport_chunk), do: :max_transport_chunk_bytes
+  defp bound_key(:parser_residual), do: :max_parser_residual_bytes
 
   @impl Spectre.Inference.StreamAdapter
   def cancel(%{opts: opts}, _reason) do
@@ -117,6 +149,16 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest.MissingReconcile do
   def capabilities(_profile, _opts),
     do: MapSet.new([:stream, :pull_transport, :reconcile])
 
+  def open(_descriptor, _opts), do: {:ok, %{}, %{}}
+  def request_transport_item(state), do: {:ok, state}
+  def handle_transport(_message, state), do: {:ignore, state}
+  def cancel(_state, _reason), do: :ok
+end
+
+defmodule SpectreInferenceStreamAdapterFailureContractTest.MissingConformanceFixture do
+  @moduledoc false
+
+  def capabilities(_profile, _opts), do: MapSet.new([:stream, :pull_transport])
   def open(_descriptor, _opts), do: {:ok, %{}, %{}}
   def request_transport_item(state), do: {:ok, state}
   def handle_transport(_message, state), do: {:ignore, state}
@@ -247,9 +289,20 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest do
              max_parser_residual_bytes: 6_789
            }
 
+    assert bounded.bound_checks == %{
+             transport_chunk: :enforced,
+             parser_residual: :enforced
+           }
+
     assert_receive {:adapter_open_opts, bounded_opts}
-    assert bounded_opts[:max_transport_chunk_bytes] == 12_345
-    assert bounded_opts[:max_parser_residual_bytes] == 6_789
+
+    bounded_spectre_opts = Keyword.fetch!(bounded_opts, :spectre_bounds)
+
+    assert bounded_spectre_opts[:max_transport_chunk_bytes] == 12_345
+    assert bounded_spectre_opts[:max_parser_residual_bytes] == 6_789
+
+    refute Keyword.has_key?(bounded_opts, :max_transport_chunk_bytes)
+    refute Keyword.has_key?(bounded_opts, :max_parser_residual_bytes)
 
     push_capabilities = MapSet.new([:stream, :push_transport, :bounded_push_transport])
 
@@ -415,6 +468,24 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest do
         run_with(transport_reply: reply, messages: [:transport])
       end)
     end
+  end
+
+  test "conformance requires and mechanically exercises both adapter-owned bounds" do
+    missing = SpectreInferenceStreamAdapterFailureContractTest.MissingConformanceFixture
+
+    assert_failed(
+      :bounds,
+      {:stream_adapter_callback_missing, missing, :conformance_fixture, 4},
+      fn -> Conformance.run(missing, descriptor(), []) end
+    )
+
+    assert_failed(:transport_chunk_bound, {:bound_not_enforced, :tuple, 256_000}, fn ->
+      run_with(ignore_conformance_bound: :transport_chunk)
+    end)
+
+    assert_failed(:parser_residual_bound, {:bound_not_enforced, :tuple, 256_000}, fn ->
+      run_with(ignore_conformance_bound: :parser_residual)
+    end)
   end
 
   test "conformance rejects invalid event framing, global ordering, and terminal misuse" do

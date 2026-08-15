@@ -79,6 +79,7 @@ defmodule Spectre.LLM do
     :stream_terminal_retention,
     :stream_max_transport_chunk_bytes,
     :stream_max_parser_residual_bytes,
+    :spectre_bounds,
     :max_transport_chunk_bytes,
     :max_parser_residual_bytes,
     :stream_max_buffer_events,
