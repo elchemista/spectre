@@ -661,6 +661,27 @@ defmodule SpectreOperationRuntimeControlContractTest do
     assert paused_control.last_command.id == pause.id
   end
 
+  test "inference commands cannot enter the operational state machine" do
+    env = env()
+    {:ok, loop, control, _events} = Runtime.start(:work, @work, %{}, [], env)
+
+    for action <- [:cancel, :steer] do
+      command =
+        Command.new(loop.id, action,
+          id: "wrong-lane-#{action}",
+          correlation_id: "wrong-lane-#{action}"
+        )
+
+      assert {:error, {:unsupported_operational_control_action, ^action}} =
+               Runtime.request_control(loop, control, command, env)
+
+      assert {:ok, pending} = Control.request(control, command)
+
+      assert {:error, {:unsupported_operational_control_action, ^action}} =
+               Runtime.advance_control(loop, pending, env)
+    end
+  end
+
   test "failure, retry, reconciliation and unknown side effects take distinct paths" do
     env = env()
 

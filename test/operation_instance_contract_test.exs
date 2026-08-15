@@ -1102,6 +1102,19 @@ defmodule SpectreOperationInstanceContractTest do
            )
   end
 
+  test "direct inference actions are rejected by the operation control lane" do
+    instance = start_instance(opts: [test_pid: self()])
+    assert {:ok, ref, _view} = Spectre.start_work(instance, @waiting_work, %{value: :wrong_lane})
+    assert {:ok, _waiting} = eventually_loop(instance, ref, &(&1.status == :waiting))
+
+    for action <- [:cancel, :steer] do
+      assert {:error, {:unsupported_operational_control_action, ^action}} =
+               GenServer.call(instance, {:operation_control, ref.id, action, nil, []})
+
+      assert Process.alive?(instance)
+    end
+  end
+
   test "ambiguous checkpoint writes remain fenced until explicit reconciliation" do
     {:ok, store} =
       start_supervised(
