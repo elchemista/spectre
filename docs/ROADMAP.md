@@ -26,10 +26,10 @@ canonical state roots; `:required` delivery uses the existing checkpoint seam
 and a bounded outbox. Receipt capture does not turn provider work into
 deterministic replay.
 
-The implementation decisions are recorded in
-[ADR 0001](adr/0001-inference-runtime-ownership.md) through
-[ADR 0006](adr/0006-inference-security-boundaries.md). Concrete Prism and
-Ledger adapters remain work for their own repositories.
+The implemented runtime contract is documented in
+[Streaming inference](STREAMING_INFERENCE.md) and
+[Boundary receipts](RECEIPTS.md). Concrete Prism and Ledger adapters remain
+work for their own repositories.
 
 ## 0.3.1 foundation, diagnostics, and satellite boundaries
 
