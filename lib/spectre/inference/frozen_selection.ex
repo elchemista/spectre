@@ -7,6 +7,7 @@ defmodule Spectre.Inference.FrozenSelection do
   denotes the selection committed with the Run.
   """
 
+  alias Spectre.Inference.ModelIdentity
   alias Spectre.Inference.Selection
   alias Spectre.Run.Value
 
@@ -120,7 +121,7 @@ defmodule Spectre.Inference.FrozenSelection do
     }
   end
 
-  defp safe_model_identity(model), do: model
+  defp safe_model_identity(model), do: ModelIdentity.sanitize(model)
 
   defp portable_metadata(metadata) when is_map(metadata) do
     metadata =

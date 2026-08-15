@@ -628,6 +628,19 @@ defmodule SpectreInferenceStreamAdapterFailureContractTest do
     assert ProviderProtocol.next_sequence(1, 2) == 2
   end
 
+  test "numbered deltas require numbered usage through conformance" do
+    assert_failed(:events, :provider_sequence_violation, fn ->
+      Conformance.run(
+        @adapter,
+        descriptor(),
+        [
+          {:events, [ProviderEvent.delta("numbered", provider_sequence: 0)]},
+          {:events, [ProviderEvent.new(:usage, usage: %{output_tokens: 1})]}
+        ]
+      )
+    end)
+  end
+
   test "stream checkpoints reject invalid bounds and corrupt restored usage" do
     assert {:ok, empty} = StreamCheckpoint.new(nil, nil)
     refute StreamCheckpoint.meaningful?(empty)

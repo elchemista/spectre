@@ -158,6 +158,14 @@ the first owned transport item proves provider progress. For pull mode,
 credit. A consumed chunk that produces no complete logical event returns
 `{:ok, [], state}`.
 
+Provider sequencing is all-or-nothing for one attempt. An adapter may leave
+`provider_sequence` unset on every normalized event. Once it emits the first
+numbered event, every later delta, usage, started, completed or failed event
+must carry exactly the next non-negative integer. In particular, a numbered
+delta followed by unnumbered usage is a protocol violation. This rule spans
+transport batches and also applies after resume from the durable sequence
+floor.
+
 Use `Spectre.LLM.provider_opts/2` when translating the supplied keyword list to
 an HTTP/SDK request. Core state, control, budget and stream options must not be
 sent to a provider endpoint.

@@ -41,6 +41,12 @@ defmodule Spectre.Inference.StreamAdapter do
   codepoint boundary; Spectre incrementally reassembles and validates UTF-8
   before yielding public `StreamEvent` values.
 
+  `ProviderEvent.provider_sequence` is optional only for an entirely
+  unnumbered attempt. Once any event supplies a non-negative sequence, every
+  later event -- including usage and terminal events -- must supply exactly
+  the next integer. Mixing numbered deltas with unnumbered usage is rejected
+  as `:provider_sequence_violation`.
+
   Provider packages can run `Spectre.Inference.StreamAdapter.Conformance`
   against deterministic transport fixtures without depending on ExUnit.
   """
