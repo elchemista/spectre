@@ -274,33 +274,34 @@ defmodule Spectre.Doctor do
   defp planner_action_protection_check(%Definition{owner: agent}) do
     protections = Definition.protections(agent)
 
-    with {:ok, specs} <- planner_action_specs(agent) do
-      unprotected =
-        Enum.reject(specs, fn spec ->
-          action = Action.new(spec.name, via: spec.via)
-          Enum.any?(protections, &Action.matches_ref?(&1.action, action))
-        end)
+    case planner_action_specs(agent) do
+      {:ok, specs} ->
+        unprotected =
+          Enum.reject(specs, fn spec ->
+            action = Action.new(spec.name, via: spec.via)
+            Enum.any?(protections, &Action.matches_ref?(&1.action, action))
+          end)
 
-      if unprotected == [] do
-        check(
-          :ok,
-          "agent.planner_action_protection",
-          :planner_actions_protected,
-          %{planner_action_count: length(specs)}
-        )
-      else
-        check(
-          :warning,
-          "agent.planner_action_protection",
-          :unprotected_planner_actions,
-          %{
-            planner_action_count: length(specs),
-            unprotected_count: length(unprotected),
-            actions: Enum.map(unprotected, &action_ref/1)
-          }
-        )
-      end
-    else
+        if unprotected == [] do
+          check(
+            :ok,
+            "agent.planner_action_protection",
+            :planner_actions_protected,
+            %{planner_action_count: length(specs)}
+          )
+        else
+          check(
+            :warning,
+            "agent.planner_action_protection",
+            :unprotected_planner_actions,
+            %{
+              planner_action_count: length(specs),
+              unprotected_count: length(unprotected),
+              actions: Enum.map(unprotected, &action_ref/1)
+            }
+          )
+        end
+
       {:error, count} ->
         check(
           :error,
