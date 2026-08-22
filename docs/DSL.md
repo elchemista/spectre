@@ -133,7 +133,10 @@ embedding(MyApp.Embeddings, model: "intfloat/multilingual-e5-small")
 
 actions MyApp.SupportActions, namespace: :support do
   protect(:delete_account, with: :delete_account_confirmation)
+  protect(:issue_refund, with: :refund_approval, resolver: :external)
 end
+
+approval_pending_reply(:approval_pending)
 
 action_provider({:mcp, :github}, MyApp.GitHubProvider)
 
@@ -152,6 +155,11 @@ What they mean:
 - `embedding/2` provides the adapter used by embedding routing.
 - `classifier/2` provides classifier-specific LLM and local adapters.
 - `journal/2` configures structured decision recording.
+- `protect/2` defaults to `resolver: :conversation`. With
+  `resolver: :external`, user turns keep routing normally and only a trusted
+  host resolution may close the policy awaitable.
+- `approval_pending_reply/2` renders the reply for a second protected action
+  while an external approval remains open; no second gate is created.
 - `turn_handler/2` appends an optional owner of a complete normal turn.
 - `actions/2` mounts an ordinary Elixir module as the built-in `:local` action
   provider.

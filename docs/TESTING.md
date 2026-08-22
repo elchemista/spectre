@@ -31,7 +31,7 @@ The release matrix covers Elixir `1.19.x` on Erlang/OTP `28.x` and Elixir
 `1.20.x` on Erlang/OTP `29.x`. Any version manager or separately provisioned
 shells are valid; `asdf` is only one convenient way to reproduce both cells.
 
-The following example uses the patch pairs current for the `0.3.2` release.
+The following example uses the patch pairs current for the `0.3.3` release.
 Install them once, without changing the repository's `.tool-versions`:
 
 ```bash
@@ -109,7 +109,47 @@ supplied Ref, so every run needs an isolated identity. The separate
 two adapter configurations. Foundation, Definition Store, Stack, and
 Checkpoint Store conformance live in core; replay fixtures, live-I/O fuses,
 virtual sources, and a future `Spectre.Lab.TestCase` belong to `spectre_lab`
-rather than the Spectre 0.3.2 core.
+rather than the Spectre 0.3.3 core.
+
+Ownership and destructive checkpoint maintenance have independent gates:
+
+```elixir
+assert {:ok, owner_report} =
+         Spectre.Instance.Owner.Conformance.run(MyApp.InstanceOwner, owner_ref,
+           profile: :distributed
+         )
+
+assert owner_report.concurrent_claims == :single_current
+
+assert {:ok, erasure_report} =
+         Spectre.Instance.CheckpointStore.ErasureConformance.run(
+           MyApp.CheckpointStore,
+           erasure_ref
+         )
+
+assert erasure_report.post_erasure_write == :rejected
+```
+
+Both refs must be fresh and isolated. The erasure runner intentionally leaves
+anti-resurrection markers behind; use a disposable namespace rather than a
+shared fixture database.
+
+## Instance performance budgets
+
+Performance tests are excluded from the ordinary deterministic suite and run
+in a dedicated CI job. Execute them locally with:
+
+```bash
+SPECTRE_PERF_TESTS=1 \
+mix test test/instance_performance_test.exs --include perf
+```
+
+Use `mix spectre.profile` for diagnosis rather than converting one machine's
+wall time into a universal assertion. The task has `fresh`, `restore_runs`,
+and `large_checkpoint` scenarios, reports medians, and can skip the allocation
+table with `--no-tprof`. Committed tests bound reductions and post-GC owner
+footprint with deliberately generous ceilings; the separate CI environment
+keeps scheduler and compilation noise out of the main suite.
 
 ## Safe generators
 
@@ -129,11 +169,12 @@ and non-regular overwrite targets.
 
 The Agent keeps the DSL's module-based default identity. The Installable uses
 the public Stack contract, and the generated Checkpoint Store is explicitly
-process-local for tests and development. Every template includes an executable
-contract test; the generator suite compiles and runs the generated files in a
-separate test process. Evidence/replay generators are reserved for
-`spectre_lab`, and database migration generators stay in the package that owns
-the adapter.
+process-local for tests and development. It includes atomic
+anti-resurrection markers and exercises both CAS and erasure conformance.
+Every template includes an executable contract test; the generator suite
+compiles and runs the generated files in a separate test process.
+Evidence/replay generators are reserved for `spectre_lab`, and database
+migration generators stay in the package that owns the adapter.
 
 ## Foundation release gate
 

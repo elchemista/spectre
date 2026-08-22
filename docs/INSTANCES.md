@@ -105,6 +105,37 @@ See [Stable Identity, Activation, and Definition-Pinned Runs](IDENTITY_ACTIVATIO
 for the publication flow and [Migrating to 0.2.3](MIGRATING_TO_0_2_3.md) for
 legacy key migration.
 
+Adapter authors should run `Spectre.Instance.Owner.Conformance` with the
+`:local` or `:distributed` profile that matches the deployment. The
+distributed gate proves monotonically increasing fences, supersession,
+cross-Ref isolation, and exactly one current lease after concurrent claims;
+the local profile intentionally relies on the unique local Registry instead
+of claiming cross-node safety.
+
+### Offline checkpoint erasure
+
+The canonical checkpoint can be erased only while the Instance is offline:
+
+```elixir
+ref = Spectre.Instance.Ref.new(MyApp.SupportAgent, subject)
+
+{:ok, proof} =
+  Spectre.erase_instance(MyApp.SupportAgent, subject,
+    checkpoint_store: MyApp.Checkpoints,
+    owner: MyApp.InstanceOwner,
+    confirm: ref.key
+  )
+```
+
+The Checkpoint Store must atomically replace either a present checkpoint or an
+observed absence with an anti-resurrection marker. The Owner must expose a
+non-preemptive maintenance claim. Existing adapters remain valid for normal
+Instance operation when those optional callbacks are absent, but erasure
+returns an explicit capability error. The proof covers stable and applicable
+legacy checkpoint keys only; see [Production Operations](PRODUCTION.md) for
+the host-owned data that remains outside its scope and the adapter conformance
+gates.
+
 ### Private Skill state
 
 The format-tagged schema-3 checkpoint also retains private Skill state as

@@ -102,6 +102,101 @@ GC-eligible: core sees its Activation, Runs, operations, and child branches,
 but not application tables or backups. See
 [Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
 
+### Offline Instance checkpoint erasure
+
+`Spectre.erase_instance/3` removes only the canonical Instance checkpoint. It
+does not erase application State or Memory stores, receipt payloads, Journal
+sinks, telemetry, provider logs, replicas, exports, or backups. Treat the
+returned proof as evidence for that narrow scope, not as a whole-subject data
+deletion certificate.
+
+Erasure is deliberately offline and fail-closed:
+
+1. Drain and stop the Instance on every node.
+2. Build its stable Ref and require an operator to supply that exact key.
+3. Use an Owner adapter whose `claim_maintenance/3` never supersedes a live
+   lease.
+4. Use a Checkpoint Store whose atomic `erase/3` installs a durable
+   anti-resurrection marker and whose `erasure_status/2` reads it back.
+5. Retain and replicate the marker anywhere stale writers or restored backups
+   could otherwise recreate the checkpoint.
+
+```elixir
+ref = Spectre.Instance.Ref.new(MyApp.SupportAgent, account_subject)
+
+{:ok, proof} =
+  Spectre.erase_instance(MyApp.SupportAgent, account_subject,
+    checkpoint_store: MyApp.Checkpoints,
+    owner: MyApp.InstanceOwner,
+    confirm: ref.key
+  )
+
+:canonical_instance_checkpoint = proof.scope
+```
+
+Core reserves the local Registry key, observes stable and legacy checkpoint
+keys, takes the maintenance lease above every observed fence, re-reads the
+same checkpoint identities, erases them, and verifies both `load/2` and the
+marker projection. A partial multi-key result is reported as ambiguous and
+must be reconciled from the store; core never reports an optimistic success.
+
+Run both executable adapter gates in an isolated production-equivalent
+namespace before enabling the operation:
+
+```elixir
+{:ok, _} =
+  Spectre.Instance.Owner.Conformance.run(MyApp.InstanceOwner, fresh_ref,
+    profile: :distributed
+  )
+
+{:ok, _} =
+  Spectre.Instance.CheckpointStore.ErasureConformance.run(
+    MyApp.Checkpoints,
+    another_fresh_ref
+  )
+```
+
+### Instance footprint tuning
+
+Instance startup remains synchronous: a supervisor does not receive
+`{:ok, pid}` until restore, ownership, and recovery have completed. Expensive
+read-only decode and verification work runs in disposable supervised workers,
+so its temporary heap dies outside the long-lived owner. The default
+`boot_concurrency: 1` preserves serial per-Instance restore; increase it only
+after profiling retained Runs that share few Definition refs.
+
+The node-wide limiter defaults to `System.schedulers_online/0` and bounds all
+concurrent boot workers, including restart herds:
+
+```elixir
+config :spectre, :boot_max_concurrency, 8
+
+instance_opts = [
+  boot_concurrency: 2,
+  boot_worker_timeout: 30_000,
+  hibernate_after: 30_000
+]
+```
+
+`boot_worker_timeout` defaults to `:infinity`. A successful boot always
+hibernates once to compact the owner. Recurring idle hibernation remains off by
+default (`hibernate_after: :infinity`); a finite value uses the standard OTP
+server option. Any periodic local call wakes the process, so a dashboard that
+polls `Spectre.Instance.info/1` every second prevents a longer idle interval
+while it is open.
+
+Measure representative data before choosing limits:
+
+```shell
+mix spectre.profile
+mix spectre.profile --scenario restore_runs --runs 64 --iterations 5
+mix spectre.profile --scenario large_checkpoint --bytes 2000000
+```
+
+The task reports owner and node reductions, post-GC owner footprint, retained
+binary bytes, wall time, and an OTP `:tprof` call-memory breakdown without
+printing checkpoint contents.
+
 Canonical operational history is bounded by default. An Instance retains the
 256 most recently updated terminal loops and up to 1,024 additional historical
 correlations, while always preserving live loops and their primary

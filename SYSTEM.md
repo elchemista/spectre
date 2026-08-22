@@ -1,6 +1,6 @@
 # The Spectre System
 
-Spectre `0.3.2` is an OTP-native kernel for building conversational and
+Spectre `0.3.3` is an OTP-native kernel for building conversational and
 operational agents in Elixir. It is deliberately not a package that owns every
 model, tool, memory store, browser, transport, and workflow. Those capabilities
 live in focused libraries that integrate through explicit, versioned contracts.
@@ -70,6 +70,9 @@ what lets optional libraries compose without competing for ownership.
 | `Spectre.Foundation.Conformance` | Executable durable-format and Definition compatibility gate | Spectre core |
 | `Spectre.Stack.Conformance` | Whole-ecosystem package compatibility and collision gate | Spectre core + package tests |
 | `Spectre.Instance.CheckpointStore.Conformance` | Adapter-neutral canonical checkpoint CAS and restart gate | Spectre core + adapter tests |
+| `Spectre.Instance.Owner.Conformance` | Local or distributed ownership, fencing, and concurrency gate | Spectre core + adapter tests |
+| `Spectre.Instance.CheckpointStore.ErasureConformance` | Atomic checkpoint erasure and anti-resurrection gate | Spectre core + adapter tests |
+| `Spectre.Instance.Erasure.Proof` | Privacy-safe proof scoped to stable and legacy canonical checkpoint keys | Spectre core |
 | `Spectre.Doctor` | Read-only runtime, Foundation, Agent, Stack, package, and adapter-shape diagnostics | Spectre core |
 | `Spectre.Projection.Audit` | Exact deterministic view of a canonical Definition | Spectre core |
 | `Spectre.Experience` | Opt-in redacted observational evidence, separate from canonical Instance state | trusted host + Spectre core |
@@ -154,23 +157,23 @@ observation loop between triggers); **Work** is exactly what it says (a
 bounded, terminating operational procedure); a **Subject** is who the work is
 about; an **Instance** is the process that owns both for that Subject.
 
-## Core 0.3.2 and satellite compatibility
+## Core 0.3.3 and satellite compatibility
 
 The stable Spectre core is distributed through Hex:
 
 ```elixir
-{:spectre, "~> 0.3.2"}
+{:spectre, "~> 0.3.3"}
 ```
 
 The satellite releases listed below belong to the historical `0.2.x` release
 train. They remain owned and versioned by their repositories and must not be
-assumed compatible with core `0.3.2` until their manifests and adapter suites
+assumed compatible with core `0.3.3` until their manifests and adapter suites
 say so. This separation is intentional: installing the new core never silently
 upgrades another `spectre_*` package.
 
 | Package | Release | Spectre requirement |
 | --- | ---: | ---: |
-| `spectre` | `0.3.2` | — |
+| `spectre` | `0.3.3` | — |
 | `spectre_beam` | `0.2.0` | `~> 0.2.0` |
 | `spectre_directive` | `0.2.0` | `~> 0.2.0` |
 | `spectre_kinetic` | `0.2.0` | `~> 0.2.0` |
@@ -716,7 +719,7 @@ a bundle of unrelated integrations.
 
 The following command documents the historical `0.2.x` satellite train. It
 requires a Spectre core checkout from that same train; do not point these
-packages at the `0.3.2` core and treat a compile as proof of compatibility.
+packages at the `0.3.3` core and treat a compile as proof of compatibility.
 Each historical package accepts `SPECTRE_PATH` for local compatibility testing.
 Pulse also accepts paths for all satellite packages and runs the complete
 seven-package Stack conformance test:
@@ -734,9 +737,9 @@ mix test
 
 Run that command from `spectre_pulse` with a core checkout reporting `0.2.0`.
 Run `SPECTRE_PATH=../spectre mix test` from every other historical sibling
-repository under the same constraint. New satellites targeting core `0.3.2`
+repository under the same constraint. New satellites targeting core `0.3.3`
 must instead declare that requirement in their Installable manifest and test
-against the local `0.3.2` checkout plus the published package independently.
+against the local `0.3.3` checkout plus the published package independently.
 
 ## Further Reading
 

@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.3.2"
+  @version "0.3.3"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
@@ -284,10 +284,14 @@ defmodule Spectre.MixProject do
           Spectre.LinkIntent,
           Spectre.SubjectLink,
           Spectre.Subject.Registry,
+          Spectre.Event.Envelope,
           Spectre.Instance,
           Spectre.Instance.Activation,
-          Spectre.Event.Envelope,
+          Spectre.Instance.Erasure.Proof,
+          Spectre.Instance.Erasure.Request,
+          Spectre.Instance.Erasure.Status,
           Spectre.Instance.Owner,
+          Spectre.Instance.Owner.Conformance,
           Spectre.Instance.Owner.Lease,
           Spectre.Instance.Owner.Local,
           Spectre.Instance.Ref,
@@ -464,7 +468,9 @@ defmodule Spectre.MixProject do
           Spectre.Operation.Delivery.Consent,
           Spectre.Operation.Delivery.Policy,
           Spectre.Operation.Delivery.Receipt,
-          Spectre.Instance.CheckpointStore
+          Spectre.Instance.CheckpointStore,
+          Spectre.Instance.CheckpointStore.Conformance,
+          Spectre.Instance.CheckpointStore.ErasureConformance
         ],
         Extensions: [
           Spectre.Extension,

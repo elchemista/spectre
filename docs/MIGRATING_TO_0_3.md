@@ -13,7 +13,7 @@ Review, Approval and the activation CAS.
 ## Historical 0.3.0 upgrade sequence
 
 This sequence records the original 0.3.0 cutover. For a current installation,
-use the 0.3.2 dependency and compatibility procedure below.
+use the 0.3.3 dependency and compatibility procedure below.
 
 1. Update the core dependency to `{:spectre, "~> 0.3.0"}`, refresh the lockfile,
    and compile with warnings as errors.
@@ -35,13 +35,35 @@ use the 0.3.2 dependency and compatibility procedure below.
 
 ## Durable compatibility
 
+### 0.3.3 ownership, erasure, and Instance footprint update
+
+Select `{:spectre, "~> 0.3.3"}`. No State, Run, Definition, or canonical
+Instance checkpoint migration is required from 0.3.2. Existing Owner and
+Checkpoint Store adapters continue to compile because the new maintenance and
+erasure callbacks are optional.
+
+Before enabling `Spectre.erase_instance/3`, implement `claim_maintenance/3`
+without superseding a live owner and implement atomic Checkpoint Store
+`erase/3` plus `erasure_status/2`. Run
+`Spectre.Instance.Owner.Conformance` and
+`Spectre.Instance.CheckpointStore.ErasureConformance` against isolated
+production-equivalent namespaces. Erasure is an offline operation: stop and
+drain the Instance first, then supply its exact stable Ref key as `:confirm`.
+
+Boot remains synchronous. The new worker path defaults to one task per
+Instance and a node-wide scheduler-count bound. Existing deployments therefore
+need no tuning; large fleets should set a deliberate `:boot_max_concurrency`
+after measuring `mix spectre.profile`. Recurring Instance hibernation and
+off-heap stream mailboxes remain opt-in.
+
 ### 0.3.2 inference and receipt update
 
-Applications should select `{:spectre, "~> 0.3.2"}`. State remains writer 5
-with readers 2–5. Run checkpoints now use writer 3 with readers 1–3, and the
-format-tagged canonical Instance checkpoint uses writer 3 with readers 2–3.
-Existing tagged v2 Instance checkpoints migrate through the production reader;
-retired untagged 0.2.x Instance checkpoints remain outside that contract.
+Applications on the 0.3.2 line selected `{:spectre, "~> 0.3.2"}`. State
+remains writer 5 with readers 2–5. Run checkpoints now use writer 3 with
+readers 1–3, and the format-tagged canonical Instance checkpoint uses writer 3
+with readers 2–3. Existing tagged v2 Instance checkpoints migrate through the
+production reader; retired untagged 0.2.x Instance checkpoints remain outside
+that contract.
 
 Run v3 adds typed start and inference continuations. A legacy v2 `:ready` Run
 cannot reconstruct the admission queue entry that the old format did not

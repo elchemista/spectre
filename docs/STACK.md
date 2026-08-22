@@ -71,9 +71,9 @@ A package implements `Spectre.Stack.Installable`:
 defmodule MyApp.Inference do
   use Spectre.Stack.Installable,
     id: :inference,
-    version: "0.3.2",
+    version: "0.3.3",
     contract: 1,
-    spectre: "~> 0.3.2",
+    spectre: "~> 0.3.3",
     provides: [{:service, :inference}],
     operations: [{:inference, :complete}],
     resources: [:client],

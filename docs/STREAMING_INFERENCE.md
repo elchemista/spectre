@@ -365,6 +365,19 @@ Node-wide capacity is owned by an internal supervised capacity process. A slot
 is reserved before dispatch, transferred to the stream session, and released
 on every terminal path, including never-attached consumers and process death.
 
+Two optional OTP footprint controls do not change the logical buffer bounds:
+
+| Session option | Default | Constraint |
+| --- | ---: | --- |
+| `stream_hibernate_after` | `:infinity` | `:infinity` or a non-negative timeout |
+| `stream_message_queue_data` | `:on_heap` | `:on_heap` or `:off_heap` |
+
+A finite hibernation timeout compacts an idle StreamSession. Off-heap mailbox
+data is accepted only when the adapter declares both `:push_transport` and
+`:bounded_push_transport`; it is unnecessary for the preferred pull path and
+does not turn an unbounded callback source into a bounded one. Both settings
+may come from provider options or one invocation's stream options.
+
 `inference_budget` accepts `input_tokens`, `output_tokens`, `total_tokens`,
 `cost`, `attempts` and `duration_ms`. The Instance owns aggregate reservation
 and settlement; each session receives an immutable `BudgetSnapshot`. A hard

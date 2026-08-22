@@ -28,9 +28,10 @@ policy :delete_account_confirmation do
 end
 ```
 
-While a policy is active, the next user turn bypasses the normal agent router.
-That matters: a short answer like `"yes"` should approve the open policy
-awaitable, not accidentally route to some generic conversation intent.
+By default, while a policy is active the next user turn bypasses the normal
+agent router. That matters: a short answer like `"yes"` should approve the open
+policy awaitable, not accidentally route to some generic conversation intent.
+This is the `resolver: :conversation` mode and remains the default.
 
 Approved actions still do not run automatically inside normal routing. A matching
 policy response produces an `:approved` effect and the runtime persists that
@@ -66,6 +67,50 @@ the accepted awaitable, the `:approved` effect, and a
 `:policy_resolved` audit event with `source: :host`. An unknown label is
 rejected, so external resolution cannot bypass the policy declaration. With a
 live session, the session state advances in the same operation.
+
+### Approval outside the conversation
+
+Use an externally addressed policy when the customer requests an action but a
+trusted host actor, such as an administrator, must approve it:
+
+```elixir
+actions MyApp.SupportActions do
+  protect(:issue_refund, with: :refund_approval, resolver: :external)
+end
+
+approval_pending_reply(:approval_pending)
+```
+
+The awaitable opens normally, but subsequent customer messages continue
+through handlers and routing. They never enter the policy matcher and never
+increment its attempt counter, so text such as `"yes"` cannot self-approve the
+action. Resolve the exact current gate by id:
+
+```elixir
+awaitable = Spectre.Result.open_awaitable(staged)
+
+{:ok, approved} =
+  Spectre.resolve_policy(
+    session_or_instance,
+    {:awaitable, awaitable.id},
+    {:accept, :refund_approved},
+    assigns: %{admin_id: admin.id}
+  )
+```
+
+For an Instance, the transport-safe `turn.boundary.request.id` is accepted as
+the addressed id as well. Resolution loads or rebases onto current state, so
+normal turns may advance revisions after the request. A missing, closed,
+expired, or already-resolved id returns a typed error without mutation. An
+external awaitable accepts only a `%Spectre.Policy.Resolution{source: :host}`;
+the compact tuple form constructs that trusted source. Journal policy records
+include both `source` and `resolver`.
+
+Only one protected approval may be pending in this first version. A second
+protected action is rejected without staging another effect. Configure
+`approval_pending_reply/2` to turn that typed `:approval_pending` outcome into
+a normal customer-facing reply. Expiration and `Spectre.cancel/2` retain their
+existing cancellation semantics.
 
 `Spectre.execute/3` rejects `:waiting_policy` effects. It also injects
 `:effect_id` and `:idempotency_key` into `ctx.opts`, so application code can

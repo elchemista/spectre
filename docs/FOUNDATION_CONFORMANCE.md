@@ -1,6 +1,6 @@
 # Foundation Conformance
 
-Spectre 0.3.2 exposes the compatibility boundary as an executable public
+Spectre 0.3.3 exposes the compatibility boundary as an executable public
 contract. Applications and satellite packages can verify
 durable recovery and Stack composition without importing ExUnit or copying
 Spectre's internal schemas.
@@ -64,7 +64,7 @@ derived from the running release's current-writer representation.
 
 The append-only `0.2.6/foundation-conformance-v1.json` fixture still records
 the historical 0.2.6 matrix `Instance 4 / readers 1–4`. That evidence is not
-rewritten; it is distinct from the running 0.3.2 matrix above.
+rewritten; it is distinct from the running 0.3.3 matrix above.
 
 ## Checkpoint Store adapter contract
 
@@ -85,6 +85,22 @@ tests.
 
 See [Testing](TESTING.md) for an executable adapter-suite example.
 
+### Ownership and erasure extensions
+
+The running matrix also exposes contract versions for
+`Spectre.Instance.Owner.Conformance` and
+`Spectre.Instance.CheckpointStore.ErasureConformance`. The Owner gate has a
+Registry-scoped local profile and a distributed profile that exercises real
+concurrent claims. The erasure gate writes isolated checkpoints and durable
+absence markers, then races erase against compare-and-swap. These contracts
+are separate from ordinary Checkpoint Store conformance because their
+callbacks are optional and erasure-capable adapters must preserve markers
+beyond the lifetime of stale writers.
+
+Neither gate certifies deployment topology, database replication, backup
+retention, or whole-subject privacy compliance. They prove only the adapter
+semantics they can observe.
+
 ## Definition golden path
 
 `verify_definition/2` accepts either validated structs or canonical bytes and
@@ -102,7 +118,7 @@ report.authority_digest
 report.closure_digest
 ```
 
-The compiled module-first path remains the golden authoring path in 0.3.2.
+The compiled module-first path remains the golden authoring path in 0.3.3.
 Runtime and generated definitions must lower into the same canonical envelope;
 they do not receive a second publication or activation model.
 

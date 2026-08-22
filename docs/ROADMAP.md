@@ -357,7 +357,10 @@ Before moving code, freeze these rules as executable contract tests:
 9. Every completed, failed, or cancelled transition is idempotently recorded.
 10. A terminal effect cannot return to a pending state.
 11. An invalid host resolution cannot mutate state.
-12. A policy reply bypasses normal routing while its awaitable is open.
+12. A policy reply bypasses normal routing while a
+    `resolver: :conversation` awaitable is open. An external awaitable never
+    captures conversation input and can be resolved only by its current id
+    from a trusted host source.
 13. A live session never replaces committed state with an older result.
 14. Host decisions are derived from authoritative state plus the current
     transition, never from stale local arrays alone.

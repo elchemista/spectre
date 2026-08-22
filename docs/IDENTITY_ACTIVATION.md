@@ -104,7 +104,7 @@ and all retained Run checkpoints. On restart, Spectre re-resolves every non-lega
 pinned Definition and verifies its closure digest before accepting work. A
 missing or changed artifact fails closed.
 
-Run checkpoint schemas 1, 2 and 3 remain readable. The 0.3.2 Instance reader
+Run checkpoint schemas 1, 2 and 3 remain readable. The 0.3.3 Instance reader
 accepts format-tagged schemas 2 and 3; retired untagged Instance schemas are
 rejected rather than interpreted as the new format. Historical 0.2.5 schema-4
 deployment guidance remains in [Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
