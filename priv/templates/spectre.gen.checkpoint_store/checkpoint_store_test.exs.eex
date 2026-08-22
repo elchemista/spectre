@@ -3,6 +3,7 @@ defmodule <%= @module %>Test do
 
   alias Spectre.AgentRef
   alias Spectre.Instance.CheckpointStore.Conformance
+  alias Spectre.Instance.CheckpointStore.ErasureConformance
   alias Spectre.Instance.Ref
   alias Spectre.Subject
 
@@ -19,5 +20,17 @@ defmodule <%= @module %>Test do
     assert report.revision == 3
     assert report.stale_write == :rejected
     assert report.concurrent_cas == :single_winner
+
+    erasure_ref =
+      Ref.new(
+        AgentRef.from_id("<%= @module %>"),
+        Subject.new({"checkpoint-store-erasure", Spectre.Identity.uuid7()})
+      )
+
+    assert {:ok, erasure} =
+             ErasureConformance.run({<%= @module %>, server: server}, erasure_ref)
+
+    assert erasure.post_erasure_write == :rejected
+    assert erasure.race in [:erase_won, :write_won]
   end
 end

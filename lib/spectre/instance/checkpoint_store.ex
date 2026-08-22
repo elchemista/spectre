@@ -9,6 +9,8 @@ defmodule Spectre.Instance.CheckpointStore do
   not retry that write automatically.
   """
 
+  alias Spectre.Instance.Erasure.Request, as: ErasureRequest
+  alias Spectre.Instance.Erasure.Status, as: ErasureStatus
   alias Spectre.Instance.Ref
 
   @type config :: module() | {module(), keyword()} | false | nil
@@ -32,7 +34,17 @@ defmodule Spectre.Instance.CheckpointStore do
               keyword()
             ) :: :ok | {:ok, :moved | :aliased} | {:error, term()}
 
-  @optional_callbacks load: 2, compare_and_swap: 5, migrate_instance_key: 5
+  @callback erase(Ref.t(), ErasureRequest.t(), keyword()) ::
+              {:ok, :erased | :already_erased} | {:error, term()}
+
+  @callback erasure_status(Ref.t(), keyword()) ::
+              :not_erased | {:ok, ErasureStatus.t()} | {:error, term()}
+
+  @optional_callbacks load: 2,
+                      compare_and_swap: 5,
+                      migrate_instance_key: 5,
+                      erase: 3,
+                      erasure_status: 2
 
   @doc """
   Normalizes a user-facing store configuration into `nil` (checkpointing
@@ -124,6 +136,78 @@ defmodule Spectre.Instance.CheckpointStore do
   end
 
   @doc """
+  Returns whether a normalized store implements the complete erasure boundary.
+
+  Both mutation and status read-back are required: core never reports success
+  from a delete callback that it cannot verify independently.
+  """
+  @spec erasure_capability(nil | {module(), keyword()}) :: :ok | {:error, term()}
+  def erasure_capability(nil), do: {:error, :instance_checkpoint_store_required}
+
+  def erasure_capability({module, store_opts}) when is_atom(module) and is_list(store_opts) do
+    cond do
+      not Code.ensure_loaded?(module) ->
+        {:error, {:checkpoint_store_not_loaded, module}}
+
+      not function_exported?(module, :erase, 3) ->
+        {:error, {:checkpoint_store_erasure_unsupported, module, :erase, 3}}
+
+      not function_exported?(module, :erasure_status, 2) ->
+        {:error, {:checkpoint_store_erasure_unsupported, module, :erasure_status, 2}}
+
+      true ->
+        :ok
+    end
+  end
+
+  @doc """
+  Atomically removes or marks absent one exact checkpoint identity.
+
+  An adapter must leave a private marker that makes subsequent `load/3`
+  return `:not_found`, rejects stale CAS writes, and remains observable through
+  `erasure_status/3`.
+  """
+  @spec erase(
+          {module(), keyword()},
+          Ref.t(),
+          ErasureRequest.t(),
+          keyword()
+        ) :: {:ok, :erased | :already_erased} | {:error, term()}
+  def erase({module, store_opts} = store, %Ref{} = ref, %ErasureRequest{} = request, opts) do
+    with :ok <- erasure_capability(store),
+         :ok <- ErasureRequest.validate(request),
+         true <- request.instance_key == ref.key,
+         reply <- module.erase(ref, request, Keyword.merge(store_opts, opts)) do
+      normalize_erase(reply, module)
+    else
+      false -> {:error, :instance_erasure_request_ref_mismatch}
+      {:error, _reason} = error -> error
+    end
+  rescue
+    exception ->
+      {:error, {:ambiguous, {:checkpoint_erase_exception, module, exception.__struct__}}}
+  catch
+    kind, reason ->
+      {:error, {:ambiguous, {:checkpoint_erase_failure, module, kind, reason}}}
+  end
+
+  @doc "Reads and validates the privacy-safe projection of an erasure marker."
+  @spec erasure_status({module(), keyword()}, Ref.t(), keyword()) ::
+          :not_erased | {:ok, ErasureStatus.t()} | {:error, term()}
+  def erasure_status({module, store_opts} = store, %Ref{} = ref, opts) do
+    with :ok <- erasure_capability(store),
+         reply <- module.erasure_status(ref, Keyword.merge(store_opts, opts)) do
+      normalize_erasure_status(reply, module, ref)
+    end
+  rescue
+    exception ->
+      {:error, {:checkpoint_erasure_status_exception, module, exception.__struct__}}
+  catch
+    kind, reason ->
+      {:error, {:checkpoint_erasure_status_failure, module, kind, reason}}
+  end
+
+  @doc """
   Atomically migrates a validated legacy Instance key to its stable key.
 
   The adapter receives both the exact legacy checkpoint observed by core and
@@ -193,6 +277,28 @@ defmodule Spectre.Instance.CheckpointStore do
 
   defp normalize_persist(value, module),
     do: {:error, {:ambiguous, {:invalid_checkpoint_persist_reply, module, value}}}
+
+  defp normalize_erase({:ok, status}, _module) when status in [:erased, :already_erased],
+    do: {:ok, status}
+
+  defp normalize_erase({:error, _reason} = error, _module), do: error
+
+  defp normalize_erase(value, module),
+    do: {:error, {:ambiguous, {:invalid_checkpoint_erase_reply, module, value}}}
+
+  defp normalize_erasure_status(:not_erased, _module, _ref), do: :not_erased
+
+  defp normalize_erasure_status({:ok, %ErasureStatus{} = status}, _module, ref) do
+    case ErasureStatus.validate(status, ref) do
+      :ok -> {:ok, status}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_erasure_status({:error, _reason} = error, _module, _ref), do: error
+
+  defp normalize_erasure_status(value, module, _ref),
+    do: {:error, {:invalid_checkpoint_erasure_status_reply, module, value}}
 
   defp ensure_migration_callback(module) do
     cond do

@@ -31,6 +31,7 @@ defmodule Spectre do
   """
 
   alias Spectre.Input
+  alias Spectre.Instance.Erasure
   alias Spectre.Runtime
   alias Spectre.State
 
@@ -205,6 +206,26 @@ defmodule Spectre do
         ) :: {:ok, pid()} | {:error, :instance_not_found}
   def lookup_instance(agent, subject, registry \\ Spectre.Instance.Registry) do
     Spectre.Instance.Registry.lookup(agent, subject, registry)
+  end
+
+  @doc """
+  Erases the durable canonical checkpoint for one offline Instance.
+
+  The operation refuses a live local Instance, requires an erasure-capable
+  Checkpoint Store and Owner, and installs a fenced anti-resurrection marker.
+  `:confirm` must equal the exact stable `Spectre.Instance.Ref.key`.
+
+  The returned proof covers only the canonical Instance checkpoint. Host-owned
+  State, Memory, receipt, Journal, telemetry, provider, replica, and backup
+  data require their own retention and erasure procedures.
+  """
+  @spec erase_instance(
+          module() | Spectre.AgentRef.t() | Spectre.Instance.Ref.t(),
+          Spectre.Subject.t() | term(),
+          keyword()
+        ) :: {:ok, Spectre.Instance.Erasure.Proof.t()} | {:error, term()}
+  def erase_instance(agent_or_ref, subject, opts \\ []) do
+    Erasure.run(agent_or_ref, subject, opts)
   end
 
   @doc """

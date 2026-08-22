@@ -16,10 +16,12 @@ defmodule Spectre.Instance.Owner do
   @type config :: module() | {module(), keyword()} | nil
 
   @callback claim(Ref.t(), keyword()) :: {:ok, Lease.t()} | {:error, term()}
+  @callback claim_maintenance(Ref.t(), atom(), keyword()) ::
+              {:ok, Lease.t()} | {:error, term()}
   @callback validate(Ref.t(), Lease.t(), keyword()) :: :ok | {:error, term()}
   @callback release(Ref.t(), Lease.t(), keyword()) :: :ok | {:error, term()}
 
-  @optional_callbacks release: 3
+  @optional_callbacks claim_maintenance: 3, release: 3
 
   @doc "Normalizes an ownership adapter; `nil` selects the local-only adapter."
   @spec normalize(config()) :: {:ok, {module(), keyword()}} | {:error, term()}
@@ -48,6 +50,38 @@ defmodule Spectre.Instance.Owner do
       {:ok, normalized, lease}
     end
   end
+
+  @doc """
+  Claims an unowned Instance for one offline maintenance operation.
+
+  Unlike an ordinary claim, an adapter must not supersede a live owner. The
+  callback is optional so existing adapters remain source compatible, but
+  maintenance operations fail with an explicit capability error when it is
+  absent. The local adapter is safe only after core has reserved the unique
+  local Registry key.
+  """
+  @spec claim_maintenance(config(), Ref.t(), atom(), keyword()) ::
+          {:ok, {module(), keyword()}, Lease.t()} | {:error, term()}
+  def claim_maintenance(config, ref, purpose, opts \\ [])
+
+  def claim_maintenance(config, %Ref{} = ref, purpose, opts) when is_atom(purpose) do
+    with {:ok, {module, adapter_opts} = normalized} <- normalize(config),
+         :ok <- ensure_maintenance_callback(module),
+         {:ok, reply} <-
+           invoke(module, :claim_maintenance, [
+             ref,
+             purpose,
+             Keyword.merge(adapter_opts, opts)
+           ]),
+         {:ok, lease} <- normalize_claim(reply),
+         :ok <- fencing_floor(lease, Keyword.get(opts, :minimum_fencing_token, 0)),
+         :ok <- validate(normalized, ref, lease, opts) do
+      {:ok, normalized, lease}
+    end
+  end
+
+  def claim_maintenance(_config, %Ref{}, purpose, _opts),
+    do: {:error, {:invalid_instance_owner_maintenance_purpose, purpose}}
 
   @doc "Validates that a lease remains current at a guarded boundary."
   @spec validate(config(), Ref.t(), Lease.t(), keyword()) :: :ok | {:error, term()}
@@ -121,6 +155,19 @@ defmodule Spectre.Instance.Owner do
 
       not function_exported?(module, function, arity) ->
         {:error, {:instance_owner_callback_missing, module, function, arity}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp ensure_maintenance_callback(module) do
+    cond do
+      not Code.ensure_loaded?(module) ->
+        {:error, {:instance_owner_not_loaded, module}}
+
+      not function_exported?(module, :claim_maintenance, 3) ->
+        {:error, {:instance_owner_maintenance_unsupported, module}}
 
       true ->
         :ok
