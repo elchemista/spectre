@@ -13,6 +13,8 @@ defmodule Spectre.Application do
       Spectre.Inference.StreamCapacity,
       Spectre.Router.SemanticCache.Owner,
       Spectre.Operation.RunnerSupervisor,
+      {Task.Supervisor, name: Spectre.Instance.BootTaskSupervisor},
+      Spectre.Instance.BootCapacity,
       {Task.Supervisor, name: Spectre.Operation.TaskSupervisor},
       {Task.Supervisor, name: Spectre.Instance.CheckpointTaskSupervisor},
       {Task.Supervisor, name: Spectre.Receipt.TaskSupervisor},

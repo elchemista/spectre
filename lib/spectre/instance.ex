@@ -30,15 +30,16 @@ defmodule Spectre.Instance do
   alias Spectre.Inference.Stream, as: InferenceStream
   alias Spectre.Instance.Activation
   alias Spectre.Instance.Activations
+  alias Spectre.Instance.Boot
   alias Spectre.Instance.Canonical.Codec, as: CanonicalCodec
   alias Spectre.Instance.Checkpoint
   alias Spectre.Instance.CheckpointStore
+  alias Spectre.Instance.Cleanup
   alias Spectre.Instance.Commit
   alias Spectre.Instance.Configuration
   alias Spectre.Instance.DefinitionCompatibility
   alias Spectre.Instance.Deliveries
   alias Spectre.Instance.Events
-  alias Spectre.Instance.InferenceCapacity
   alias Spectre.Instance.InferenceCoordinator
   alias Spectre.Instance.InferenceHeartbeat
   alias Spectre.Instance.InferenceSteering
@@ -72,7 +73,6 @@ defmodule Spectre.Instance do
   alias Spectre.Operation.Progress, as: OperationProgress
   alias Spectre.Operation.Ref, as: OperationRef
   alias Spectre.Operation.Result, as: OperationResult
-  alias Spectre.Operation.RunnerSupervisor
   alias Spectre.Operation.View, as: OperationView
   alias Spectre.Receipt.Sink, as: ReceiptSink
   alias Spectre.Result
@@ -98,6 +98,9 @@ defmodule Spectre.Instance do
           | {:shutdown, timeout() | false | nil}
           | {:max_runs, pos_integer()}
           | {:max_tombstones, non_neg_integer()}
+          | {:boot_concurrency, pos_integer()}
+          | {:boot_worker_timeout, timeout()}
+          | {:hibernate_after, timeout()}
           | {:canonical_checkpoint, String.t() | map()}
           | {:checkpoint_store, CheckpointStore.config()}
           | {:checkpoint_mode, :async | :manual}
@@ -156,7 +159,12 @@ defmodule Spectre.Instance do
       |> Keyword.put(:subject, ref.subject)
       |> Keyword.put(:instance_ref, ref)
 
-    GenServer.start_link(__MODULE__, opts, name: name)
+    with {:ok, hibernate_after} <- Configuration.hibernate_after(agent, opts) do
+      GenServer.start_link(__MODULE__, {__MODULE__, opts},
+        name: name,
+        hibernate_after: hibernate_after
+      )
+    end
   end
 
   @doc """
@@ -757,6 +765,13 @@ defmodule Spectre.Instance do
   end
 
   @impl GenServer
+  def init({__MODULE__, opts}) when is_list(opts) do
+    case init(opts) do
+      {:ok, data} -> {:ok, data, :hibernate}
+      other -> other
+    end
+  end
+
   def init(opts) do
     Process.flag(:trap_exit, true)
 
@@ -769,13 +784,28 @@ defmodule Spectre.Instance do
     with {:ok, config} <- Configuration.load(agent, instance_ref, opts),
          {:ok, state} <- restore_initial_state(agent, opts, config.base_opts),
          {:ok, state, canonical, checkpoint_revision} <-
-           Checkpoint.restore_canonical(opts, state, config.checkpoint_store, config.base_opts),
+           Boot.run(
+             fn ->
+               Checkpoint.restore_canonical(
+                 opts,
+                 state,
+                 config.checkpoint_store,
+                 config.base_opts
+               )
+             end,
+             timeout: config.boot_worker_timeout
+           ),
          {:ok, activation} <-
-           Restore.activation(
-             canonical,
-             config.definition_store,
-             config.checkpoint_store,
-             config.base_opts
+           Boot.run(
+             fn ->
+               Restore.activation(
+                 canonical,
+                 config.definition_store,
+                 config.checkpoint_store,
+                 config.base_opts
+               )
+             end,
+             timeout: config.boot_worker_timeout
            ),
          {:ok, restored_runs} <-
            Restore.runs(
@@ -783,7 +813,9 @@ defmodule Spectre.Instance do
              config.definition_store,
              config.checkpoint_store,
              config.base_opts,
-             config.max_runs
+             config.max_runs,
+             max_concurrency: config.boot_concurrency,
+             timeout: config.boot_worker_timeout
            ),
          {:ok, registry_monitor} <- monitor_registry(registry, instance_ref),
          fencing_floor <- Restore.owner_fencing_floor(activation, canonical),
@@ -831,20 +863,27 @@ defmodule Spectre.Instance do
         registry_monitor: registry_monitor
       }
 
-      case RuntimeRecovery.recover(data) do
-        {:ok, data} ->
-          emit(:started, data, %{count: 1})
+      try do
+        case RuntimeRecovery.recover_boot(data) do
+          {:ok, data} ->
+            emit(:started, data, %{count: 1})
 
-          {:ok,
-           data
-           |> Timers.schedule_restored()
-           |> RunQueue.schedule()
-           |> Operations.schedule()
-           |> ReceiptCoordinator.start_deliveries()
-           |> Idle.arm()}
+            {:ok,
+             data
+             |> Timers.schedule_restored()
+             |> RunQueue.schedule()
+             |> Operations.schedule()
+             |> ReceiptCoordinator.start_deliveries()
+             |> Idle.arm()}
 
-        {:error, reason} ->
-          {:stop, reason}
+          {:error, reason, partial} ->
+            :ok = Cleanup.run(partial)
+            {:stop, reason}
+        end
+      catch
+        kind, reason ->
+          :ok = Cleanup.run(data)
+          :erlang.raise(kind, reason, __STACKTRACE__)
       end
     else
       {:error, reason} -> {:stop, reason}
@@ -1684,63 +1723,7 @@ defmodule Spectre.Instance do
   def handle_info(_message, data), do: {:noreply, data}
 
   @impl true
-  def terminate(_reason, data) do
-    Enum.each(Map.keys(data.workers), fn pid ->
-      if Process.alive?(pid), do: Process.exit(pid, :kill)
-    end)
-
-    Enum.each(data.operation_runners, fn {_attempt_id, ownership} ->
-      if Process.alive?(ownership.pid) do
-        _ = RunnerSupervisor.stop_runner(data.runner_supervisor, ownership.pid)
-      end
-    end)
-
-    Enum.each(data.stream_sessions, fn {_invocation_id, ownership} ->
-      if Process.alive?(ownership.pid) do
-        _ = RunnerSupervisor.stop_runner(data.runner_supervisor, ownership.pid)
-      end
-    end)
-
-    :ok = InferenceCapacity.release_all(data)
-
-    Enum.each(data.operation_timers, fn {_loop_id, timer} ->
-      if is_reference(timer.ref), do: Process.cancel_timer(timer.ref)
-    end)
-
-    Enum.each(data.operation_attempt_timers, fn {_attempt_id, timer} ->
-      if is_reference(timer.ref), do: Process.cancel_timer(timer.ref)
-    end)
-
-    Enum.each(data.inference_attempt_timers, fn {_invocation_id, timer} ->
-      if is_reference(timer.ref), do: Process.cancel_timer(timer.ref)
-    end)
-
-    case data.checkpoint_inflight do
-      %{pid: pid} when is_pid(pid) -> Process.exit(pid, :shutdown)
-      _none -> :ok
-    end
-
-    case data.checkpoint_reconcile_inflight do
-      %{pid: pid} when is_pid(pid) -> Process.exit(pid, :shutdown)
-      _none -> :ok
-    end
-
-    Enum.each(data.receipt_staging, fn {_token, staging} ->
-      if Process.alive?(staging.pid), do: Process.exit(staging.pid, :shutdown)
-    end)
-
-    Enum.each(data.receipt_deliveries, fn {_receipt_id, delivery} ->
-      if Process.alive?(delivery.pid), do: Process.exit(delivery.pid, :shutdown)
-    end)
-
-    Enum.each(data.receipt_retry_timers, fn {_receipt_id, timer} ->
-      if is_reference(timer), do: Process.cancel_timer(timer)
-    end)
-
-    _ = Owner.release(data.owner, data.ref, data.owner_lease, data.base_opts)
-
-    :ok
-  end
+  def terminate(_reason, data), do: Cleanup.run(data)
 
   # A normal task sends its result before terminating. Keep the fence until that
   # message is reduced; an abnormal DOWN has no trustworthy commit outcome.

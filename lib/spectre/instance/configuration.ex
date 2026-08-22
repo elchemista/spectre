@@ -25,7 +25,10 @@ defmodule Spectre.Instance.Configuration do
 
   @enforce_keys [
     :base_opts,
+    :boot_concurrency,
+    :boot_worker_timeout,
     :checkpoint_mode,
+    :hibernate_after,
     :idle_timeout,
     :max_operation_runners,
     :max_receipt_outbox,
@@ -41,9 +44,12 @@ defmodule Spectre.Instance.Configuration do
 
   @type t :: %__MODULE__{
           base_opts: keyword(),
+          boot_concurrency: pos_integer(),
+          boot_worker_timeout: timeout(),
           checkpoint_mode: :async | :manual,
           checkpoint_store: Spectre.Instance.CheckpointStore.config() | nil,
           definition_store: DefinitionStore.config() | nil,
+          hibernate_after: timeout(),
           idle_timeout: timeout() | false | nil,
           max_operation_runners: pos_integer(),
           max_receipt_outbox: pos_integer(),
@@ -76,6 +82,17 @@ defmodule Spectre.Instance.Configuration do
              :max_stream_sessions
            ),
          base_opts <- base_opts(opts, instance_ref),
+         {:ok, boot_concurrency} <-
+           positive_integer(
+             configured_strict(opts, base_opts, :boot_concurrency, 1),
+             :boot_concurrency
+           ),
+         {:ok, boot_worker_timeout} <-
+           timeout_option(
+             configured_strict(opts, base_opts, :boot_worker_timeout, :infinity),
+             :boot_worker_timeout
+           ),
+         {:ok, hibernate_after} <- hibernate_after(agent, opts),
          {:ok, terminal_loop_retention} <-
            retention(
              first_configured([
@@ -111,9 +128,12 @@ defmodule Spectre.Instance.Configuration do
       {:ok,
        %__MODULE__{
          base_opts: base_opts,
+         boot_concurrency: boot_concurrency,
+         boot_worker_timeout: boot_worker_timeout,
          checkpoint_mode: checkpoint_mode,
          checkpoint_store: checkpoint_store,
          definition_store: definition_store,
+         hibernate_after: hibernate_after,
          idle_timeout: idle_timeout(agent, opts, base_opts),
          max_operation_runners: max_operation_runners,
          max_receipt_outbox: max_receipt_outbox,
@@ -155,6 +175,28 @@ defmodule Spectre.Instance.Configuration do
       end
 
     InstanceRef.new(agent_ref, subject)
+  end
+
+  @doc false
+  @spec hibernate_after(module(), keyword()) :: {:ok, timeout()} | {:error, term()}
+  def hibernate_after(agent, opts) when is_atom(agent) and is_list(opts) do
+    nested = Keyword.get(opts, :opts, [])
+
+    if is_list(nested) and Keyword.keyword?(nested) do
+      value =
+        case first_present([
+               {opts, :hibernate_after},
+               {nested, :hibernate_after},
+               {agent.__spectre_config__(), :hibernate_after}
+             ]) do
+          :missing -> :infinity
+          {:ok, configured} -> configured
+        end
+
+      hibernate_timeout(value)
+    else
+      {:error, {:invalid_instance_option, :hibernate_after, :invalid_opts}}
+    end
   end
 
   @doc false
@@ -252,6 +294,16 @@ defmodule Spectre.Instance.Configuration do
   defp non_negative_integer(value),
     do: {:error, {:invalid_instance_max_tombstones, value}}
 
+  defp timeout_option(:infinity, _key), do: {:ok, :infinity}
+  defp timeout_option(value, _key) when is_integer(value) and value > 0, do: {:ok, value}
+  defp timeout_option(value, key), do: {:error, {:invalid_instance_option, key, value}}
+
+  defp hibernate_timeout(:infinity), do: {:ok, :infinity}
+  defp hibernate_timeout(value) when is_integer(value) and value >= 0, do: {:ok, value}
+
+  defp hibernate_timeout(value),
+    do: {:error, {:invalid_instance_option, :hibernate_after, value}}
+
   defp retention(nil, _key, default), do: {:ok, default}
   defp retention(:unlimited, _key, _default), do: {:ok, :unlimited}
 
@@ -288,6 +340,22 @@ defmodule Spectre.Instance.Configuration do
 
   defp configured(opts, base_opts, key, default) do
     first_configured([{opts, key}, {base_opts, key}]) || default
+  end
+
+  defp configured_strict(opts, base_opts, key, default) do
+    case first_present([{opts, key}, {base_opts, key}]) do
+      :missing -> default
+      {:ok, value} -> value
+    end
+  end
+
+  defp first_present(entries) do
+    Enum.reduce_while(entries, :missing, fn {options, key}, _acc ->
+      case Keyword.fetch(options, key) do
+        {:ok, value} -> {:halt, {:ok, value}}
+        :error -> {:cont, :missing}
+      end
+    end)
   end
 
   defp validate_boolean(value, _error) when is_boolean(value), do: :ok

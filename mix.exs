@@ -70,6 +70,8 @@ defmodule Spectre.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      elixirc_paths: elixirc_paths(Mix.env()),
+      test_ignore_filters: [&String.starts_with?(&1, "test/support/")],
       test_coverage: [summary: [threshold: 95]],
       description: description(),
       package: package(),
@@ -120,6 +122,16 @@ defmodule Spectre.MixProject do
       {:stream_data, "~> 1.4", only: :test, runtime: false}
     ] ++ real_embedding_test_deps()
   end
+
+  defp elixirc_paths(:test) do
+    if System.get_env("SPECTRE_PERF_TESTS") in ["1", "true"] do
+      ["lib", "test/support"]
+    else
+      ["lib"]
+    end
+  end
+
+  defp elixirc_paths(_env), do: ["lib"]
 
   defp real_embedding_test_deps do
     case real_embedding_test_path() do

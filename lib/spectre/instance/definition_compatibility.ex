@@ -128,6 +128,28 @@ defmodule Spectre.Instance.DefinitionCompatibility do
     do: {:error, :pinned_run_requires_definition_store}
 
   def verify_pinned_run(run, definition_store, checkpoint_store, base_opts) do
+    with {:ok, resolution} <-
+           resolve_pinned_run(run, definition_store, checkpoint_store, base_opts) do
+      verify_pinned_run_against_resolution(run, resolution)
+    end
+  end
+
+  @doc false
+  @spec resolve_pinned_run(Run.t(), term(), term(), keyword()) ::
+          {:ok, term()} | {:error, term()}
+  def resolve_pinned_run(
+        %Run{activation_generation: generation},
+        _definition_store,
+        _checkpoint_store,
+        _base_opts
+      )
+      when generation == 0,
+      do: {:error, :legacy_run_has_no_pinned_definition}
+
+  def resolve_pinned_run(%Run{}, nil, _checkpoint_store, _base_opts),
+    do: {:error, :pinned_run_requires_definition_store}
+
+  def resolve_pinned_run(run, definition_store, checkpoint_store, base_opts) do
     opts =
       base_opts
       |> Keyword.put(:checkpoint_store, checkpoint_store)
@@ -136,21 +158,27 @@ defmodule Spectre.Instance.DefinitionCompatibility do
 
     case DefinitionResolver.resolve_for_activation(definition_store, run.definition_ref, opts) do
       {:ok, resolution} ->
-        expected = Closure.digest(resolution.manifest.execution_closure)
-
-        with :ok <- verify_run_marker(run, resolution.definition),
-             true <- expected == run.closure_digest do
-          :ok
-        else
-          false -> {:error, {:run_closure_digest_mismatch, run.closure_digest, expected}}
-          {:error, _reason} = error -> error
-        end
+        {:ok, resolution}
 
       :not_found ->
         {:error, {:pinned_run_definition_not_found, to_string(run.definition_ref)}}
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  @doc false
+  @spec verify_pinned_run_against_resolution(Run.t(), term()) :: :ok | {:error, term()}
+  def verify_pinned_run_against_resolution(%Run{} = run, resolution) do
+    expected = Closure.digest(resolution.manifest.execution_closure)
+
+    with :ok <- verify_run_marker(run, resolution.definition),
+         true <- expected == run.closure_digest do
+      :ok
+    else
+      false -> {:error, {:run_closure_digest_mismatch, run.closure_digest, expected}}
+      {:error, _reason} = error -> error
     end
   end
 

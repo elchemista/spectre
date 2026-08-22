@@ -9,6 +9,7 @@ defmodule Spectre.Instance.Restore do
   alias Spectre.Event.Envelope, as: EventEnvelope
   alias Spectre.Governance.Verifier, as: GovernanceVerifier
   alias Spectre.Instance.Activation
+  alias Spectre.Instance.Boot
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.DefinitionCompatibility
   alias Spectre.Instance.Runs
@@ -25,13 +26,26 @@ defmodule Spectre.Instance.Restore do
   end
 
   @doc false
-  @spec runs(Canonical.t(), term(), term(), keyword(), pos_integer()) ::
+  @spec runs(Canonical.t(), term(), term(), keyword(), pos_integer(), keyword()) ::
           {:ok, %{optional(String.t()) => Run.t()}} | {:error, term()}
-  def runs(canonical, definition_store, checkpoint_store, base_opts, max_runs) do
+  def runs(
+        canonical,
+        definition_store,
+        checkpoint_store,
+        base_opts,
+        max_runs,
+        boot_opts \\ []
+      ) do
     with {:ok, checkpoints} <- Canonical.fetch(canonical, :runs),
          true <- is_map(checkpoints) and not is_struct(checkpoints),
          true <- map_size(checkpoints) <= max_runs do
-      restore_checkpoints(checkpoints, definition_store, checkpoint_store, base_opts)
+      restore_checkpoints(
+        checkpoints,
+        definition_store,
+        checkpoint_store,
+        base_opts,
+        boot_opts
+      )
     else
       false ->
         {:error, {:restored_run_capacity_exceeded, map_size(canonical_runs(canonical)), max_runs}}
@@ -41,26 +55,26 @@ defmodule Spectre.Instance.Restore do
     end
   end
 
-  defp restore_checkpoints(checkpoints, definition_store, checkpoint_store, base_opts) do
-    Enum.reduce_while(checkpoints, {:ok, %{}}, fn entry, {:ok, runs} ->
-      case restore_run(entry, definition_store, checkpoint_store, base_opts) do
-        {:ok, run_id, run} -> {:cont, {:ok, Map.put(runs, run_id, run)}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+  defp restore_checkpoints(checkpoints, definition_store, checkpoint_store, base_opts, boot_opts) do
+    decoded =
+      checkpoints
+      |> Enum.with_index()
+      |> Boot.map(
+        fn {entry, index} -> decode_run(entry, index) end,
+        boot_opts
+      )
+
+    with {:ok, decoded} <- decoded_runs(decoded),
+         {:ok, verified} <-
+           verify_runs(decoded, definition_store, checkpoint_store, base_opts, boot_opts) do
+      {:ok, Map.new(verified, fn {_index, run_id, run} -> {run_id, run} end)}
+    end
   end
 
-  defp restore_run({run_id, checkpoint}, definition_store, checkpoint_store, base_opts) do
+  defp decode_run({run_id, checkpoint}, index) do
     with true <- is_binary(run_id) and is_binary(checkpoint),
-         {:ok, %Run{id: ^run_id} = run} <- Run.restore(checkpoint),
-         :ok <-
-           DefinitionCompatibility.verify_pinned_run(
-             run,
-             definition_store,
-             checkpoint_store,
-             base_opts
-           ) do
-      {:ok, run_id, run}
+         {:ok, %Run{id: ^run_id} = run} <- Run.restore(checkpoint) do
+      {:ok, index, run_id, run}
     else
       false ->
         {:error, {:invalid_restored_run_checkpoint, run_id}}
@@ -71,6 +85,119 @@ defmodule Spectre.Instance.Restore do
       {:error, reason} ->
         {:error, {:restored_run_invalid, run_id, reason}}
     end
+  end
+
+  defp decoded_runs(results) do
+    Enum.reduce_while(results, {:ok, []}, fn
+      {:ok, index, run_id, run}, {:ok, decoded} ->
+        {:cont, {:ok, [{index, run_id, run} | decoded]}}
+
+      {:error, _reason} = error, _decoded ->
+        {:halt, error}
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp verify_runs(decoded, definition_store, checkpoint_store, base_opts, boot_opts) do
+    groups = ordered_groups(decoded)
+
+    results =
+      Boot.map(
+        groups,
+        fn group ->
+          verify_group(group, definition_store, checkpoint_store, base_opts)
+        end,
+        boot_opts
+      )
+
+    with {:ok, entries} <- verified_group_entries(results) do
+      entries
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.reduce_while({:ok, []}, fn
+        {index, run_id, {:ok, run}}, {:ok, verified} ->
+          {:cont, {:ok, [{index, run_id, run} | verified]}}
+
+        {_index, _run_id, {:error, _reason} = error}, _verified ->
+          {:halt, error}
+      end)
+      |> case do
+        {:ok, verified} -> {:ok, Enum.reverse(verified)}
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  defp verified_group_entries(results) do
+    Enum.reduce_while(results, {:ok, []}, fn
+      {:group, entries}, {:ok, groups} ->
+        {:cont, {:ok, [entries | groups]}}
+
+      {:error, _reason} = error, _groups ->
+        {:halt, error}
+    end)
+    |> case do
+      {:ok, groups} -> {:ok, groups |> Enum.reverse() |> List.flatten()}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ordered_groups(decoded) do
+    {order, groups} =
+      Enum.reduce(decoded, {[], %{}}, fn {index, run_id, run} = entry, {order, groups} ->
+        key =
+          if run.activation_generation == 0,
+            do: {:legacy, index},
+            else: {:definition, run.definition_ref}
+
+        case Map.fetch(groups, key) do
+          {:ok, entries} -> {order, Map.put(groups, key, [entry | entries])}
+          :error -> {[key | order], Map.put(groups, key, [{index, run_id, run}])}
+        end
+      end)
+
+    order
+    |> Enum.reverse()
+    |> Enum.map(fn key -> groups |> Map.fetch!(key) |> Enum.reverse() end)
+  end
+
+  defp verify_group(
+         [{_index, _run_id, %Run{activation_generation: 0}} | _rest] = group,
+         _store,
+         _checkpoint,
+         _opts
+       ) do
+    {:group, Enum.map(group, fn {index, run_id, run} -> {index, run_id, {:ok, run}} end)}
+  end
+
+  defp verify_group(group, definition_store, checkpoint_store, base_opts) do
+    {_index, _run_id, first} = hd(group)
+
+    resolution =
+      DefinitionCompatibility.resolve_pinned_run(
+        first,
+        definition_store,
+        checkpoint_store,
+        base_opts
+      )
+
+    entries =
+      Enum.map(group, fn {index, run_id, run} ->
+        outcome =
+          with {:ok, resolution} <- resolution,
+               :ok <-
+                 DefinitionCompatibility.verify_pinned_run_against_resolution(run, resolution) do
+            {:ok, run}
+          else
+            {:error, reason} -> {:error, {:restored_run_invalid, run_id, reason}}
+          end
+
+        {index, run_id, outcome}
+      end)
+
+    {:group, entries}
   end
 
   @doc false

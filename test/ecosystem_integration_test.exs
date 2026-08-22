@@ -277,6 +277,11 @@ defmodule SpectreEcosystemIntegrationTest do
       assert :spectre_bounds in Spectre.LLM.runtime_opt_keys()
       assert :max_transport_chunk_bytes in Spectre.LLM.runtime_opt_keys()
       assert :max_parser_residual_bytes in Spectre.LLM.runtime_opt_keys()
+      assert :boot_concurrency in Spectre.LLM.runtime_opt_keys()
+      assert :boot_worker_timeout in Spectre.LLM.runtime_opt_keys()
+      assert :hibernate_after in Spectre.LLM.runtime_opt_keys()
+      assert :stream_hibernate_after in Spectre.LLM.runtime_opt_keys()
+      assert :stream_message_queue_data in Spectre.LLM.runtime_opt_keys()
     end
   end
 

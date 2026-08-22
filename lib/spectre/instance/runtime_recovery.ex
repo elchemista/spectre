@@ -43,13 +43,22 @@ defmodule Spectre.Instance.RuntimeRecovery do
 
   @doc false
   @spec recover(InstanceState.t()) :: {:ok, InstanceState.t()} | {:error, term()}
-  def recover(%{receipt_recovery_deferred: true} = data),
-    do: {:ok, data}
-
   def recover(data) do
+    case recover_boot(data) do
+      {:ok, recovered} -> {:ok, recovered}
+      {:error, reason, _partial} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec recover_boot(InstanceState.t()) ::
+          {:ok, InstanceState.t()} | {:error, term(), InstanceState.t()}
+  def recover_boot(%{receipt_recovery_deferred: true} = data), do: {:ok, data}
+
+  def recover_boot(data) do
     case recover_conversational_state(data) do
-      {:ok, data} -> Operations.recover(data)
-      {:error, _reason} = error -> error
+      {:ok, data} -> Operations.recover_with_state(data)
+      {:error, _reason, _partial} = error -> error
     end
   end
 
@@ -134,8 +143,11 @@ defmodule Spectre.Instance.RuntimeRecovery do
     |> Enum.sort_by(& &1.id)
     |> Enum.reduce_while({:ok, data}, fn run, {:ok, acc} ->
       case recover_conversational_run(acc, run) do
-        {:ok, next} -> {:cont, {:ok, next}}
-        {:error, reason} -> {:halt, {:error, {:run_recovery_failed, run.id, reason}}}
+        {:ok, next} ->
+          {:cont, {:ok, next}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:run_recovery_failed, run.id, reason}, acc}}
       end
     end)
   end
