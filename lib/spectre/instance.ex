@@ -946,6 +946,34 @@ defmodule Spectre.Instance do
   end
 
   # Compatibility with Spectre.Session and Spectre.Turn.resolve_policy/3.
+  def handle_call(
+        {:resolve_policy, {:awaitable, awaitable_id}, resolution, opts},
+        from,
+        data
+      ) do
+    with :ok <- DefinitionCompatibility.validate_turn(data, opts),
+         {:ok, run, policy_awaitable_id} <- Runs.policy_awaitable_run(data, awaitable_id),
+         :ok <- Events.authorize(data, run.definition_ref, :continuation),
+         false <- RunQueue.active?(data, run.id),
+         %Boundary{kind: :needs, ref: boundary_ref} <- run.waiting do
+      entry = %{
+        run_id: run.id,
+        operation: {:resume, {:policy, boundary_ref, policy_awaitable_id, resolution}},
+        projection: :result,
+        input: run.input,
+        opts: RuntimeOptions.build(data, opts, run.input),
+        state_revision: data.state.revision,
+        internal?: false
+      }
+
+      {:noreply, data |> RunQueue.enqueue(entry, true) |> RunQueue.put_caller(run.id, from)}
+    else
+      true -> {:reply, {:error, :run_already_active}, Idle.arm(data)}
+      {:error, reason} -> {:reply, {:error, reason}, Idle.arm(data)}
+      _other -> {:reply, {:error, :run_not_waiting_for_policy}, Idle.arm(data)}
+    end
+  end
+
   def handle_call({:resolve_policy, %Result{} = supplied, resolution, opts}, from, data) do
     with :ok <- DefinitionCompatibility.validate_turn(data, opts),
          {:ok, run} <- Runs.owned_result_run(data, supplied),

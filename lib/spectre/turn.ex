@@ -286,8 +286,8 @@ defmodule Spectre.Turn do
     cond do
       get_in(result.metadata, [:run, :status]) == :failed -> :error
       get_in(result.metadata, [:run, :status]) == :complete -> :complete
-      match?(%Spectre.Awaitable{}, Result.open_awaitable(result)) -> :policy
-      match?(%Spectre.Effect{}, Result.pending_effect(result)) -> :invocation
+      match?(%Spectre.Awaitable{}, Result.boundary_awaitable(result)) -> :policy
+      match?(%Spectre.Effect{}, Result.executable_effect(result)) -> :invocation
       Result.visible_reply?(result) -> :reply
       true -> :complete
     end
@@ -298,8 +298,8 @@ defmodule Spectre.Turn do
   @spec projection_subject(Result.t(), decision()) :: term() | nil
   defp projection_subject(result, decision) do
     case projection_kind(result, decision) do
-      :policy -> result |> Result.open_awaitable() |> Map.get(:id)
-      :invocation -> result |> Result.pending_effect() |> Map.get(:id)
+      :policy -> result |> Result.boundary_awaitable() |> Map.get(:id)
+      :invocation -> result |> Result.executable_effect() |> Map.get(:id)
       _kind -> nil
     end
   end

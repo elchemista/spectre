@@ -2,9 +2,9 @@ defmodule Spectre.Policy do
   @moduledoc """
   Policy gate evaluator for pending effects.
 
-  A policy is a temporary deterministic router for one pending effect. While a
-  policy is active, Spectre ignores normal flow routing and interprets the next
-  user turn as approval, rejection, or retry.
+  A conversation-resolved policy is a temporary deterministic router for one
+  pending effect. Externally resolved policies keep normal flow routing active
+  and accept only an addressed trusted-host decision.
   """
 
   alias Spectre.Awaitable
@@ -61,12 +61,24 @@ defmodule Spectre.Policy do
   @spec awaiting?(State.t(), String.t() | nil) :: boolean()
   def awaiting?(%State{} = state, run_id), do: State.awaiting_policy?(state, run_id)
 
+  @doc false
+  @spec captures_conversation?(State.t(), String.t() | nil) :: boolean()
+  def captures_conversation?(%State{} = state, run_id \\ nil) do
+    match?(
+      %Awaitable{resolver: :conversation},
+      State.open_policy_awaitable(state, run_id)
+    )
+  end
+
   @doc """
   Resumes the active policy with the user's latest input.
   """
   @spec resume(Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
   def resume(%Input{} = input, %{state: %State{} = state} = ctx) do
     case State.open_policy_awaitable(state, lifecycle_run_id(ctx)) do
+      %Awaitable{resolver: :external, id: awaitable_id} ->
+        {:error, {:policy_resolution_source_not_allowed, awaitable_id, :external, :conversation}}
+
       %Awaitable{name: policy_name} ->
         case find_policy(ctx.agent, policy_name) do
           %__MODULE__{} = policy -> resume_policy(policy, input, ctx)
@@ -97,14 +109,54 @@ defmodule Spectre.Policy do
   end
 
   def resolve(%Resolution{} = resolution, %Input{} = input, %{state: %State{}} = ctx) do
+    resolve_with_awaitable(nil, resolution, input, ctx)
+  end
+
+  def resolve(resolution, _input, _ctx), do: {:error, {:invalid_policy_resolution, resolution}}
+
+  @doc false
+  @spec resolve(term(), resolution(), Input.t(), Spectre.Context.t() | map()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def resolve(awaitable_id, {kind, label}, %Input{} = input, %{state: %State{}} = ctx)
+      when kind in [:accept, :reject] and is_atom(label) do
+    with {:ok, resolution} <- Resolution.new(kind, label, :host) do
+      resolve(awaitable_id, resolution, input, ctx)
+    end
+  end
+
+  def resolve(
+        awaitable_id,
+        %Resolution{} = resolution,
+        %Input{} = input,
+        %{state: %State{}} = ctx
+      ) do
+    resolve_with_awaitable(awaitable_id, resolution, input, ctx)
+  end
+
+  def resolve(awaitable_id, resolution, _input, _ctx),
+    do: {:error, {:invalid_policy_resolution, awaitable_id, resolution}}
+
+  @spec resolve_with_awaitable(
+          term() | nil,
+          Resolution.t(),
+          Input.t(),
+          Spectre.Context.t() | map()
+        ) :: {:ok, Result.t()} | {:error, term()}
+  defp resolve_with_awaitable(awaitable_id, resolution, input, ctx) do
     tuple = Resolution.to_tuple(resolution)
 
-    with {:ok, policy} <- active_policy(ctx),
+    with {:ok, policy, awaitable} <- active_policy(ctx, awaitable_id),
+         :ok <- validate_resolution_address(awaitable_id, awaitable),
+         :ok <- validate_resolution_source(awaitable, resolution),
          :ok <- validate_resolution(policy, tuple),
-         {:ok, %Result{} = result} <- apply_resolution(policy, tuple, input, ctx) do
+         {:ok, %Result{} = result} <-
+           apply_resolution(policy, awaitable, tuple, input, ctx) do
+      result = annotate_resolution_events(result, resolution, awaitable)
+
       event = %{
         type: :policy_resolved,
         source: resolution.source,
+        resolver: awaitable.resolver,
         kind: resolution.kind,
         name: policy_identifier(policy),
         label: resolution.label,
@@ -115,7 +167,28 @@ defmodule Spectre.Policy do
     end
   end
 
-  def resolve(resolution, _input, _ctx), do: {:error, {:invalid_policy_resolution, resolution}}
+  @spec validate_resolution_address(term() | nil, Awaitable.t()) ::
+          :ok | {:error, term()}
+  defp validate_resolution_address(nil, %Awaitable{id: id, resolver: :external}),
+    do: {:error, {:external_policy_requires_awaitable_id, id}}
+
+  defp validate_resolution_address(_awaitable_id, %Awaitable{}), do: :ok
+
+  @spec annotate_resolution_events(Result.t(), Resolution.t(), Awaitable.t()) :: Result.t()
+  defp annotate_resolution_events(%Result{} = result, resolution, awaitable) do
+    events =
+      Enum.map(result.events, fn
+        %{type: type} = event when type in [:awaitable_accepted, :awaitable_rejected] ->
+          event
+          |> Map.put(:source, resolution.source)
+          |> Map.put(:resolver, awaitable.resolver)
+
+        event ->
+          event
+      end)
+
+    %{result | events: events}
+  end
 
   @doc """
   Decides whether policy text accepts, rejects, or misses all policy branches.
@@ -131,17 +204,20 @@ defmodule Spectre.Policy do
   @spec resume_policy(t(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()} | {:error, term()}
   defp resume_policy(policy, input, ctx) do
     case Matcher.match(policy, input.text) do
-      {:ok, %Resolution{kind: :accept, label: label}} -> approve(policy, label, input, ctx)
-      {:ok, %Resolution{kind: :reject, label: label}} -> reject(policy, label, input, ctx)
-      :no_match -> retry(policy, input, ctx)
+      {:ok, %Resolution{kind: :accept, label: label}} ->
+        approve(policy, current_awaitable(ctx), label, input, ctx)
+
+      {:ok, %Resolution{kind: :reject, label: label}} ->
+        reject(policy, current_awaitable(ctx), label, input, ctx)
+
+      :no_match ->
+        retry(policy, input, ctx)
     end
   end
 
-  @spec approve(t(), atom(), Input.t(), Spectre.Context.t()) ::
+  @spec approve(t(), Awaitable.t() | nil, atom(), Input.t(), Spectre.Context.t()) ::
           {:ok, Result.t()} | {:error, term()}
-  defp approve(policy, label, input, %{state: state} = ctx) do
-    current = State.open_policy_awaitable(state, lifecycle_run_id(ctx))
-
+  defp approve(policy, current, label, input, %{state: state}) do
     with %Awaitable{} <- current,
          {:ok, transition} <- Lifecycle.resolve_policy(state, current.id, :accept, label) do
       approved = transition.effect
@@ -178,10 +254,9 @@ defmodule Spectre.Policy do
     end
   end
 
-  @spec reject(t(), atom(), Input.t(), Spectre.Context.t()) :: {:ok, Result.t()}
-  defp reject(policy, label, input, %{state: state} = ctx) do
-    current = State.open_policy_awaitable(state, lifecycle_run_id(ctx))
-
+  @spec reject(t(), Awaitable.t() | nil, atom(), Input.t(), Spectre.Context.t()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp reject(policy, current, label, input, %{state: state}) do
     with %Awaitable{} <- current,
          {:ok, transition} <- Lifecycle.resolve_policy(state, current.id, :reject, label) do
       cancelled = transition.effect
@@ -332,17 +407,69 @@ defmodule Spectre.Policy do
      }}
   end
 
-  @spec active_policy(Spectre.Context.t() | map()) :: {:ok, t()} | {:error, term()}
-  defp active_policy(%{agent: agent, state: %State{} = state} = ctx) do
-    case State.open_policy_awaitable(state, lifecycle_run_id(ctx)) do
-      %Awaitable{name: policy_name} ->
-        case find_policy(agent, policy_name) do
-          %__MODULE__{} = policy -> {:ok, policy}
-          nil -> {:error, {:unknown_policy, policy_name}}
-        end
+  @spec active_policy(Spectre.Context.t() | map(), term() | nil) ::
+          {:ok, t(), Awaitable.t()} | {:error, term()}
+  defp active_policy(%{agent: agent} = ctx, awaitable_id) do
+    with {:ok, %Awaitable{name: policy_name} = awaitable} <-
+           addressed_awaitable(ctx, awaitable_id),
+         {:ok, %__MODULE__{} = policy} <- fetch_policy(agent, policy_name) do
+      {:ok, policy, awaitable}
+    end
+  end
 
+  @spec fetch_policy(module(), term()) :: {:ok, t()} | {:error, term()}
+  defp fetch_policy(agent, policy_name) do
+    case find_policy(agent, policy_name) do
+      %__MODULE__{} = policy -> {:ok, policy}
+      nil -> {:error, {:unknown_policy, policy_name}}
+    end
+  end
+
+  @spec addressed_awaitable(Spectre.Context.t() | map(), term() | nil) ::
+          {:ok, Awaitable.t()} | {:error, term()}
+  defp addressed_awaitable(%{state: %State{} = state} = ctx, nil) do
+    case State.open_policy_awaitable(state, lifecycle_run_id(ctx)) do
+      %Awaitable{} = awaitable -> {:ok, awaitable}
+      nil -> {:error, :no_open_policy}
+    end
+  end
+
+  defp addressed_awaitable(%{state: %State{} = state} = ctx, awaitable_id) do
+    case Enum.find(state.awaitables, &(&1.id == awaitable_id)) do
       nil ->
-        {:error, :no_open_policy}
+        {:error, {:policy_awaitable_not_found, awaitable_id}}
+
+      %Awaitable{kind: kind} when kind != :policy ->
+        {:error, {:policy_awaitable_kind_mismatch, awaitable_id, kind}}
+
+      %Awaitable{status: status} when status != :open ->
+        {:error, {:policy_awaitable_not_open, awaitable_id, status}}
+
+      %Awaitable{} = awaitable ->
+        case lifecycle_run_id(ctx) do
+          nil -> {:ok, awaitable}
+          run_id when run_id == awaitable.run_id -> {:ok, awaitable}
+          run_id -> {:error, {:policy_awaitable_not_owned, awaitable_id, run_id}}
+        end
+    end
+  end
+
+  @spec validate_resolution_source(Awaitable.t(), Resolution.t()) ::
+          :ok | {:error, term()}
+  defp validate_resolution_source(%Awaitable{} = awaitable, %Resolution{} = resolution) do
+    cond do
+      awaitable.resolver == :external and resolution.source == :host ->
+        :ok
+
+      awaitable.resolver == :external ->
+        {:error,
+         {:policy_resolution_source_not_allowed, awaitable.id, :external, resolution.source}}
+
+      awaitable.resolver == :conversation ->
+        :ok
+
+      true ->
+        {:error, {:invalid_policy_resolver, awaitable.id, awaitable.resolver}}
     end
   end
 
@@ -357,13 +484,23 @@ defmodule Spectre.Policy do
     end
   end
 
-  @spec apply_resolution(t(), resolution(), Input.t(), Spectre.Context.t() | map()) ::
+  @spec apply_resolution(
+          t(),
+          Awaitable.t(),
+          resolution(),
+          Input.t(),
+          Spectre.Context.t() | map()
+        ) ::
           {:ok, Result.t()} | {:error, term()}
-  defp apply_resolution(policy, {:accept, label}, input, ctx),
-    do: approve(policy, label, input, ctx)
+  defp apply_resolution(policy, awaitable, {:accept, label}, input, ctx),
+    do: approve(policy, awaitable, label, input, ctx)
 
-  defp apply_resolution(policy, {:reject, label}, input, ctx),
-    do: reject(policy, label, input, ctx)
+  defp apply_resolution(policy, awaitable, {:reject, label}, input, ctx),
+    do: reject(policy, awaitable, label, input, ctx)
+
+  @spec current_awaitable(Spectre.Context.t() | map()) :: Awaitable.t() | nil
+  defp current_awaitable(%{state: %State{} = state} = ctx),
+    do: State.open_policy_awaitable(state, lifecycle_run_id(ctx))
 
   @spec find_policy(module(), term()) :: t() | nil
   defp find_policy(agent, name) do

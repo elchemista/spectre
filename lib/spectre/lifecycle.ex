@@ -86,8 +86,8 @@ defmodule Spectre.Lifecycle do
   @spec next(Result.t()) :: Spectre.Turn.decision()
   def next(%Result{} = result) do
     cond do
-      awaitable = Result.open_awaitable(result) -> {:awaiting, awaitable, result}
-      effect = Result.pending_effect(result) -> {:needs, effect, result}
+      awaitable = Result.boundary_awaitable(result) -> {:awaiting, awaitable, result}
+      effect = Result.executable_effect(result) -> {:needs, effect, result}
       completion = Result.latest_completion(result) -> {:completed, completion, result}
       Result.visible_reply?(result) -> {:reply, result}
       true -> {:no_response, result}
@@ -114,9 +114,18 @@ defmodule Spectre.Lifecycle do
   """
   @spec stage(State.t(), Effect.t(), term()) :: result()
   def stage(%State{} = state, %Effect{} = effect, policy \\ nil) do
+    {policy, resolver} = policy_gate(policy)
+    external = if is_nil(policy), do: nil, else: external_policy_awaitable(state)
+
     cond do
+      resolver not in [:conversation, :external] ->
+        {:error, {:invalid_policy_resolver, resolver}}
+
       current = pending_effect_for_run(state, effect.run_id) ->
         {:error, {:pending_effect_not_resolved, current.id, current.status}}
+
+      external ->
+        {:error, {:approval_pending, external.id}}
 
       effect.status != :pending ->
         {:error, {:invalid_effect_transition, effect.id, effect.status, :staged}}
@@ -134,7 +143,7 @@ defmodule Spectre.Lifecycle do
 
       true ->
         staged = Effect.waiting_policy(effect, policy)
-        awaitable = Awaitable.open_policy(policy, staged)
+        awaitable = Awaitable.open_policy(policy, staged, resolver: resolver)
 
         to = %{
           state
@@ -147,9 +156,26 @@ defmodule Spectre.Lifecycle do
          Transition.new(:policy_opened, state, to,
            effect: staged,
            awaitable: awaitable,
-           entity_id: staged.id
+           entity_id: staged.id,
+           metadata: %{resolver: resolver}
          )}
     end
+  end
+
+  @spec policy_gate(term()) :: {term(), Awaitable.resolver()}
+  defp policy_gate(nil), do: {nil, :conversation}
+
+  defp policy_gate(%{policy: policy} = gate),
+    do: {policy, Map.get(gate, :resolver, :conversation)}
+
+  defp policy_gate(policy), do: {policy, :conversation}
+
+  @spec external_policy_awaitable(State.t()) :: Awaitable.t() | nil
+  defp external_policy_awaitable(%State{} = state) do
+    Enum.find(
+      state.awaitables,
+      &(&1.kind == :policy and &1.status == :open and &1.resolver == :external)
+    )
   end
 
   @doc """

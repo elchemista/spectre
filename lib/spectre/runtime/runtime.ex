@@ -376,25 +376,15 @@ defmodule Spectre.Runtime do
          {:policy, supplied_ref, resolution},
          opts
        ) do
-    case validate_boundary_fence(boundary, supplied_ref) do
-      :ok ->
-        opts =
-          run.agent
-          |> runtime_opts(opts)
-          |> put_run_identity(run)
-          |> Keyword.put(:input, run.input)
+    resume_policy_boundary(run, boundary, supplied_ref, nil, resolution, opts)
+  end
 
-        case resolve_policy(run.agent, run.result, resolution, opts) do
-          {:ok, %Result{} = result} ->
-            finish_run_step(run, result, opts, :run_resumed)
-
-          {:error, reason} ->
-            fail_run_step(run, reason, opts, :run_resume_failed)
-        end
-
-      {:error, reason} ->
-        reject_run_resume(run, reason, opts)
-    end
+  defp do_resume(
+         %Run{status: :boundary, cursor: :policy, waiting: %Boundary{} = boundary} = run,
+         {:policy, supplied_ref, awaitable_id, resolution},
+         opts
+       ) do
+    resume_policy_boundary(run, boundary, supplied_ref, awaitable_id, resolution, opts)
   end
 
   defp do_resume(
@@ -495,6 +485,41 @@ defmodule Spectre.Runtime do
       {:error, {:invalid_run_resume, run.id, run.revision, run.cursor, command_kind(command)},
        run}
 
+  @spec resume_policy_boundary(
+          Run.t(),
+          Boundary.t(),
+          term(),
+          term() | nil,
+          Policy.resolution(),
+          keyword()
+        ) :: step_result()
+  defp resume_policy_boundary(run, boundary, supplied_ref, awaitable_id, resolution, opts) do
+    case validate_boundary_fence(boundary, supplied_ref) do
+      :ok ->
+        opts =
+          run.agent
+          |> runtime_opts(opts)
+          |> put_run_identity(run)
+          |> Keyword.put(:input, run.input)
+
+        run.agent
+        |> resolve_policy_result(run.result, awaitable_id, resolution, opts)
+        |> finish_policy_resume(run, opts)
+
+      {:error, reason} ->
+        reject_run_resume(run, reason, opts)
+    end
+  end
+
+  defp finish_policy_resume({:ok, %Result{} = result}, run, opts),
+    do: finish_run_step(run, result, opts, :run_resumed)
+
+  defp finish_policy_resume({:error, reason}, run, opts) do
+    if policy_resolution_rejection?(reason),
+      do: reject_run_resume(run, reason, opts),
+      else: fail_run_step(run, reason, opts, :run_resume_failed)
+  end
+
   @doc """
   Restores initial session state from the configured state adapter.
 
@@ -521,7 +546,8 @@ defmodule Spectre.Runtime do
   the state transition before returning it.
 
   Unlike a user turn, this does not route synthetic text, append chat history,
-  or invoke the memory adapter.
+  or invoke the memory adapter. Passing `{:awaitable, id}` loads current state
+  before applying the host decision.
 
       {:ok, approved} =
         Spectre.Runtime.resolve_policy(
@@ -531,10 +557,48 @@ defmodule Spectre.Runtime do
           assigns: %{user: user}
         )
   """
-  @spec resolve_policy(module(), Result.t(), Policy.resolution(), keyword()) ::
+  @spec resolve_policy(
+          module(),
+          Result.t() | {:awaitable, term()},
+          Policy.resolution(),
+          keyword()
+        ) ::
           {:ok, Result.t()} | {:error, term()}
-  def resolve_policy(agent, %Result{} = result, resolution, opts \\ [])
+  def resolve_policy(agent, result_or_awaitable, resolution, opts \\ [])
+
+  def resolve_policy(agent, {:awaitable, awaitable_id}, resolution, opts)
       when is_atom(agent) and is_list(opts) do
+    opts = agent |> runtime_opts(opts) |> put_turn_identity()
+    input = addressed_policy_resolution_input(opts)
+
+    with {:ok, %State{} = state} <- Persistence.load_state(agent, input, opts) do
+      ctx = %Context{
+        agent: agent,
+        input: input,
+        state: state,
+        opts: opts,
+        assigns: Keyword.get(opts, :assigns, %{}),
+        route: Keyword.get(opts, :route)
+      }
+
+      with {:ok, %Result{} = resolved} <-
+             Policy.resolve(awaitable_id, resolution, input, ctx),
+           resolved = put_runtime_identity(resolved, opts),
+           {:ok, %Result{} = resolved} <- Recorder.record_result(resolved, ctx),
+           {:ok, %Result{} = persisted} <- Persistence.persist_state(resolved, ctx) do
+        {:ok, persisted}
+      end
+    end
+  end
+
+  def resolve_policy(agent, %Result{} = result, resolution, opts)
+      when is_atom(agent) and is_list(opts) do
+    resolve_policy_result(agent, result, nil, resolution, opts)
+  end
+
+  @spec resolve_policy_result(module(), Result.t(), term() | nil, Policy.resolution(), keyword()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp resolve_policy_result(agent, result, awaitable_id, resolution, opts) do
     opts = continuation_runtime_opts(agent, result, opts)
     input = policy_resolution_input(result, opts)
     state = State.new(result.state)
@@ -548,7 +612,13 @@ defmodule Spectre.Runtime do
       route: result.route
     }
 
-    with {:ok, %Result{} = resolved} <- Policy.resolve(resolution, input, ctx),
+    policy_result =
+      case awaitable_id do
+        nil -> Policy.resolve(resolution, input, ctx)
+        id -> Policy.resolve(id, resolution, input, ctx)
+      end
+
+    with {:ok, %Result{} = resolved} <- policy_result,
          resolved = put_runtime_identity(resolved, opts),
          resolved = advance_run_lineage(resolved, result),
          {:ok, %Result{} = resolved} <- Recorder.record_result(resolved, ctx),
@@ -642,7 +712,7 @@ defmodule Spectre.Runtime do
   @spec run_turn(Context.t()) ::
           {:ok, Result.t()} | {:inference, PreparedInference.t()} | {:error, term()}
   defp run_turn(%Context{state: state} = ctx) do
-    if Policy.awaiting?(state, instance_lifecycle_run_id(ctx.opts)) do
+    if Policy.captures_conversation?(state, instance_lifecycle_run_id(ctx.opts)) do
       run_policy_turn(ctx)
     else
       case Handlers.dispatch(ctx) do
@@ -955,9 +1025,8 @@ defmodule Spectre.Runtime do
         last_error: nil
     }
 
-    run_id = instance_lifecycle_run_id(opts)
-    awaitable = Result.open_awaitable(result, run_id)
-    effect = Result.pending_effect(result, run_id)
+    awaitable = Result.boundary_awaitable(result)
+    effect = Result.executable_effect(result)
 
     step =
       cond do
@@ -1261,6 +1330,28 @@ defmodule Spectre.Runtime do
     {:error, reason, run}
   end
 
+  @spec policy_resolution_rejection?(term()) :: boolean()
+  defp policy_resolution_rejection?(:no_open_policy), do: true
+  defp policy_resolution_rejection?({:unknown_policy, _name}), do: true
+
+  defp policy_resolution_rejection?({:unknown_policy_resolution_label, _name, _kind, _label}),
+    do: true
+
+  defp policy_resolution_rejection?({:invalid_policy_resolution, _resolution}), do: true
+  defp policy_resolution_rejection?({:invalid_policy_resolution, _id, _resolution}), do: true
+
+  defp policy_resolution_rejection?({:policy_resolution_source_not_allowed, _id, _to, _from}),
+    do: true
+
+  defp policy_resolution_rejection?({:external_policy_requires_awaitable_id, _id}), do: true
+
+  defp policy_resolution_rejection?({:policy_awaitable_not_found, _id}), do: true
+  defp policy_resolution_rejection?({:policy_awaitable_kind_mismatch, _id, _kind}), do: true
+  defp policy_resolution_rejection?({:policy_awaitable_not_open, _id, _status}), do: true
+  defp policy_resolution_rejection?({:policy_awaitable_not_owned, _id, _run_id}), do: true
+  defp policy_resolution_rejection?({:invalid_policy_resolver, _id, _resolver}), do: true
+  defp policy_resolution_rejection?(_reason), do: false
+
   @spec boundary_id(Run.t(), atom(), term()) :: String.t()
   defp boundary_id(%Run{} = run, kind, subject_id) do
     digest =
@@ -1281,6 +1372,7 @@ defmodule Spectre.Runtime do
   @spec command_kind(term()) :: atom()
   defp command_kind({kind, _value}) when is_atom(kind), do: kind
   defp command_kind({kind, _value, _more}) when is_atom(kind), do: kind
+  defp command_kind({kind, _value, _more, _last}) when is_atom(kind), do: kind
   defp command_kind(_command), do: :unknown
 
   @spec definition_config(module()) :: keyword()
@@ -1307,6 +1399,7 @@ defmodule Spectre.Runtime do
     |> maybe_put_config(config, :journal)
     |> maybe_put_config(config, :history)
     |> maybe_put_config(config, :chat_history_limit)
+    |> maybe_put_config(config, :approval_pending_reply)
     |> maybe_put_config(config, :state_timeout)
     |> maybe_put_config(config, :memory_timeout)
     |> maybe_put_config(config, :run_timeout)
@@ -1485,6 +1578,23 @@ defmodule Spectre.Runtime do
       %Input{} = input -> input
       nil -> Input.new("")
       input -> Input.new(input)
+    end
+  end
+
+  @spec addressed_policy_resolution_input(keyword()) :: Input.t()
+  defp addressed_policy_resolution_input(opts) do
+    case Keyword.get(opts, :input) do
+      %Input{} = input ->
+        input
+
+      nil ->
+        Input.new(%{
+          text: "",
+          meta: Map.take(Map.new(opts), [:conversation_id])
+        })
+
+      input ->
+        Input.new(input)
     end
   end
 

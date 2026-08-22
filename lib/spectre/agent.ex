@@ -743,6 +743,21 @@ defmodule Spectre.Agent do
   end
 
   @doc """
+  Configures the deterministic reply returned when another protected action is
+  requested while an externally resolved approval is still open.
+
+      approval_pending_reply :approval_pending
+  """
+  defmacro approval_pending_reply(prompt, opts \\ []) do
+    prompt = Macro.expand(prompt, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    quote bind_quoted: [prompt: prompt, opts: opts] do
+      @spectre_config Keyword.put(@spectre_config, :approval_pending_reply, {prompt, opts})
+    end
+  end
+
+  @doc """
   Configures router behavior for the agent.
 
   `via:` is the common path: it expands into router plugs and then appends the
@@ -809,7 +824,7 @@ defmodule Spectre.Agent do
     action_or_opts = eval_action_arg(action_or_opts, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
     {action, opts} = normalize_protect_args(action_or_opts, opts)
-    protection = %{action: action, policy: Keyword.fetch!(opts, :with)}
+    protection = build_protection(action, opts)
 
     quote do
       @spectre_protections unquote(Macro.escape(protection))
@@ -1658,7 +1673,19 @@ defmodule Spectre.Agent do
     action_or_opts = eval_action_arg(action_or_opts, caller)
     opts = eval_opts(opts, caller)
     {action, opts} = normalize_protect_args(action_or_opts, opts)
-    %{action: action, policy: Keyword.fetch!(opts, :with)}
+    build_protection(action, opts)
+  end
+
+  @spec build_protection(term(), keyword()) :: map()
+  defp build_protection(action, opts) do
+    resolver = Keyword.get(opts, :resolver, :conversation)
+    protection = %{action: action, policy: Keyword.fetch!(opts, :with)}
+
+    # Omitting the established default keeps existing compiled Definitions and
+    # their canonical digests byte-for-byte stable.
+    if resolver == :conversation,
+      do: protection,
+      else: Map.put(protection, :resolver, resolver)
   end
 
   @spec parse_input_pipeline(Macro.t(), Macro.Env.t()) :: [module() | {module(), keyword()}]
@@ -1737,6 +1764,7 @@ defmodule Spectre.Agent do
   @spec normalize_protect_args(term(), keyword()) :: {term(), keyword()}
   defp normalize_protect_args(action_or_opts, []) when is_list(action_or_opts) do
     {with, rest} = Keyword.pop(action_or_opts, :with)
+    {resolver, rest} = Keyword.pop(rest, :resolver, :conversation)
 
     action =
       cond do
@@ -1745,7 +1773,7 @@ defmodule Spectre.Agent do
         true -> rest
       end
 
-    {action, [with: with]}
+    {action, [with: with, resolver: resolver]}
   end
 
   defp normalize_protect_args(action, opts), do: {action, opts}

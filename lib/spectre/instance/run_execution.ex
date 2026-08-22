@@ -44,11 +44,7 @@ defmodule Spectre.Instance.RunExecution do
       data = finish_worker(data, active.pid)
       data = %{data | active: nil}
 
-      if policy_resolution_entry?(active.entry) do
-        commit_policy_decision(data, outcome, active.entry)
-      else
-        apply_step(outcome, active.entry, data)
-      end
+      apply_advance_outcome(data, current, outcome, active.entry)
     else
       nil ->
         data
@@ -57,6 +53,20 @@ defmodule Spectre.Instance.RunExecution do
         emit(:invalid_move_result, data, %{count: 1}, %{run_id: id_digest(active.run_id)})
         data
     end
+  end
+
+  defp apply_advance_outcome(data, current, outcome, entry) do
+    if policy_resolution_entry?(entry) do
+      apply_policy_outcome(data, current, outcome, entry)
+    else
+      apply_step(outcome, entry, data)
+    end
+  end
+
+  defp apply_policy_outcome(data, current, outcome, entry) do
+    if rejected_policy_outcome?(outcome, current),
+      do: reject_policy_decision(data, outcome),
+      else: commit_policy_decision(data, outcome, entry)
   end
 
   @doc false
@@ -544,10 +554,35 @@ defmodule Spectre.Instance.RunExecution do
   defp policy_resolution_entry?(%{operation: {:resume, {:policy, _ref, _resolution}}}),
     do: true
 
+  defp policy_resolution_entry?(%{
+         operation: {:resume, {:policy, _ref, _awaitable_id, _resolution}}
+       }),
+       do: true
+
   defp policy_resolution_entry?(_entry), do: false
 
+  @spec rejected_policy_outcome?(term(), Run.t()) :: boolean()
+  defp rejected_policy_outcome?({:error, _reason, %Run{} = returned}, %Run{} = current),
+    do: returned == current
+
+  defp rejected_policy_outcome?(_outcome, _current), do: false
+
+  @spec reject_policy_decision(InstanceState.t(), term()) :: InstanceState.t()
+  defp reject_policy_decision(data, {:error, reason, %Run{} = run}) do
+    data
+    |> RunQueue.reply_caller(run.id, {:error, reason})
+    |> tap(
+      &emit(:run_resume_rejected, &1, %{count: 1}, %{
+        run_id: id_digest(run.id),
+        reason_class: reason_class(reason)
+      })
+    )
+    |> RunQueue.schedule()
+    |> Idle.arm()
+  end
+
   defp commit_policy_decision(data, outcome, entry) do
-    {:resume, {:policy, boundary_ref, resolution}} = entry.operation
+    {boundary_ref, resolution} = policy_resolution_command(entry.operation)
 
     outcome =
       map_returned_step_run(outcome, fn run ->
@@ -577,6 +612,13 @@ defmodule Spectre.Instance.RunExecution do
       privacy: :confidential
     )
   end
+
+  @spec policy_resolution_command(term()) :: {Spectre.Run.Ref.t(), term()}
+  defp policy_resolution_command({:resume, {:policy, boundary_ref, resolution}}),
+    do: {boundary_ref, resolution}
+
+  defp policy_resolution_command({:resume, {:policy, boundary_ref, _awaitable_id, resolution}}),
+    do: {boundary_ref, resolution}
 
   @doc false
   @spec commit_effect_terminal(InstanceState.t(), map(), Receipt.t()) :: InstanceState.t()

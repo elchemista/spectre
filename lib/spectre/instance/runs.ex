@@ -2,6 +2,7 @@ defmodule Spectre.Instance.Runs do
   @moduledoc false
 
   alias Spectre.Instance.State, as: InstanceState
+  alias Spectre.Awaitable
   alias Spectre.Invocation
   alias Spectre.Invocation.Receipt
   alias Spectre.Invocation.WorkerReceipt
@@ -218,6 +219,42 @@ defmodule Spectre.Instance.Runs do
       _missing ->
         {:error, :result_has_no_run_reference}
     end
+  end
+
+  @doc "Resolves the retained policy Run addressed by an authoritative Awaitable id."
+  @spec policy_awaitable_run(InstanceState.t(), term()) ::
+          {:ok, Run.t(), String.t()} | {:error, term()}
+  def policy_awaitable_run(%InstanceState{} = data, awaitable_id) do
+    case Enum.find(data.state.awaitables, &awaitable_id_matches?(&1, awaitable_id)) do
+      nil ->
+        {:error, {:policy_awaitable_not_found, awaitable_id}}
+
+      %Awaitable{kind: kind} when kind != :policy ->
+        {:error, {:policy_awaitable_kind_mismatch, awaitable_id, kind}}
+
+      %Awaitable{status: status} when status != :open ->
+        {:error, {:policy_awaitable_not_open, awaitable_id, status}}
+
+      %Awaitable{id: id, run_id: run_id} when is_binary(run_id) ->
+        case Map.get(data.runs, run_id) do
+          %Run{status: :boundary, cursor: :policy, waiting: %Boundary{kind: :needs}} = run ->
+            {:ok, run, id}
+
+          %Run{} ->
+            {:error, {:policy_awaitable_run_not_waiting, awaitable_id, run_id}}
+
+          nil ->
+            {:error, {:policy_awaitable_run_not_found, awaitable_id, run_id}}
+        end
+
+      %Awaitable{} ->
+        {:error, {:policy_awaitable_has_no_run, awaitable_id}}
+    end
+  end
+
+  @spec awaitable_id_matches?(Spectre.Awaitable.t(), term()) :: boolean()
+  defp awaitable_id_matches?(%Spectre.Awaitable{id: id}, supplied) do
+    id == supplied or Value.opaque_id(id, "request") == {:ok, supplied}
   end
 
   @doc "Returns true when the Run reached a terminal status."

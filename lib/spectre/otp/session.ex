@@ -85,18 +85,29 @@ defmodule Spectre.Session do
   Resolves the session's currently open policy from a trusted host decision.
 
   The session uses its current state rather than trusting a potentially stale
-  state embedded in the supplied result.
+  state embedded in the supplied result. `{:awaitable, id}` addresses the
+  current gate directly and is the preferred form for external approvals.
   """
   @spec resolve_policy(
           GenServer.server(),
-          Result.t(),
+          Result.t() | {:awaitable, term()},
           Spectre.Policy.resolution(),
           keyword()
         ) :: {:ok, Result.t()} | {:error, term()}
-  def resolve_policy(server, %Result{} = result, resolution, opts \\ []) do
+  def resolve_policy(server, result_or_awaitable, resolution, opts \\ [])
+
+  def resolve_policy(server, %Result{} = result, resolution, opts) do
     GenServer.call(
       server,
       {:resolve_policy, result, resolution, Keyword.drop(opts, [:timeout])},
+      Keyword.get(opts, :timeout, :timer.minutes(5))
+    )
+  end
+
+  def resolve_policy(server, {:awaitable, _id} = reference, resolution, opts) do
+    GenServer.call(
+      server,
+      {:resolve_policy, reference, resolution, Keyword.drop(opts, [:timeout])},
       Keyword.get(opts, :timeout, :timer.minutes(5))
     )
   end
@@ -219,6 +230,27 @@ defmodule Spectre.Session do
     result = %{result | state: data.state}
 
     case Spectre.Runtime.resolve_policy(data.agent, result, resolution, runtime_opts) do
+      {:ok, %Result{} = resolved} ->
+        data = data |> retain_committed_result(resolved) |> arm_idle_timer()
+        {:reply, {:ok, resolved}, data}
+
+      {:error, reason} ->
+        data = data |> retain_failure_result(reason) |> arm_idle_timer()
+        {:reply, {:error, reason}, data}
+    end
+  end
+
+  def handle_call(
+        {:resolve_policy, {:awaitable, _id} = reference, resolution, opts},
+        _from,
+        data
+      ) do
+    runtime_opts =
+      data.base_opts
+      |> Keyword.merge(opts)
+      |> Keyword.put(:state, data.state)
+
+    case Spectre.Runtime.resolve_policy(data.agent, reference, resolution, runtime_opts) do
       {:ok, %Result{} = resolved} ->
         data = data |> retain_committed_result(resolved) |> arm_idle_timer()
         {:reply, {:ok, resolved}, data}

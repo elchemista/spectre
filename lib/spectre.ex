@@ -409,6 +409,10 @@ defmodule Spectre do
   before returning. For sessions it also advances the session's in-memory
   state.
 
+  Pass `{:awaitable, id}` instead of a Result to resolve the exact gate against
+  current state. This form is required for externally addressed approvals
+  because conversation turns may advance while the gate remains open.
+
       {:ok, approved} =
         Spectre.resolve_policy(
           MyApp.Agent,
@@ -416,10 +420,17 @@ defmodule Spectre do
           {:accept, :terms_accepted},
           assigns: %{user: user}
         )
+
+      {:ok, approved} =
+        Spectre.resolve_policy(
+          session,
+          {:awaitable, awaitable.id},
+          {:accept, :terms_accepted}
+        )
   """
   @spec resolve_policy(
           module() | GenServer.server(),
-          Spectre.Result.t(),
+          Spectre.Result.t() | {:awaitable, term()},
           Spectre.Policy.resolution(),
           keyword()
         ) :: {:ok, Spectre.Result.t()} | {:error, term()}
@@ -437,6 +448,20 @@ defmodule Spectre do
   def resolve_policy(session, %Spectre.Result{} = result, resolution, opts)
       when is_list(opts) do
     Spectre.Session.resolve_policy(session, result, resolution, opts)
+  end
+
+  def resolve_policy(agent, {:awaitable, _id} = reference, resolution, opts)
+      when is_atom(agent) and is_list(opts) do
+    if agent_module?(agent) do
+      Runtime.resolve_policy(agent, reference, resolution, opts)
+    else
+      Spectre.Session.resolve_policy(agent, reference, resolution, opts)
+    end
+  end
+
+  def resolve_policy(session, {:awaitable, _id} = reference, resolution, opts)
+      when is_list(opts) do
+    Spectre.Session.resolve_policy(session, reference, resolution, opts)
   end
 
   @doc """

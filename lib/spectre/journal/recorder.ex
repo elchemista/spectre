@@ -312,6 +312,7 @@ defmodule Spectre.Journal.Recorder do
               :awaitable_rejected,
               :awaitable_cancelled,
               :awaitable_expired,
+              :approval_pending,
               :policy_resolved
             ],
        do: :policy
@@ -457,10 +458,18 @@ defmodule Spectre.Journal.Recorder do
         name: Map.get(event, :name),
         kind: Map.get(event, :kind),
         label: Map.get(event, :label),
-        source: Map.get(event, :source)
+        source: policy_source(event),
+        resolver: Map.get(event, :resolver, :conversation)
       }
     end
   end
+
+  defp policy_source(%{source: source}), do: source
+
+  defp policy_source(%{type: type}) when type in [:awaitable_accepted, :awaitable_rejected],
+    do: :user
+
+  defp policy_source(_event), do: nil
 
   defp effect_summary(event) do
     if Map.has_key?(event, :effect_id) or event_phase(Map.get(event, :type)) == :execution do
