@@ -56,6 +56,18 @@ defmodule SpectreInstanceCleanupTest do
     assert :ok = StreamCapacity.reserve(reservation, self(), capacity)
     assert StreamCapacity.status(capacity).active == 1
 
+    test_pid = self()
+
+    capacity_proxy =
+      spawn_link(fn ->
+        receive do
+          {:"$gen_call", from, {:release, ^reservation}} ->
+            reply = StreamCapacity.release(reservation, capacity)
+            send(test_pid, {:inference_capacity_released, reservation})
+            GenServer.reply(from, reply)
+        end
+      end)
+
     data = %State{
       workers: %{worker => %{}},
       operation_runners: %{"partial" => %{}},
@@ -64,7 +76,7 @@ defmodule SpectreInstanceCleanupTest do
       receipt_staging: %{"staging" => %{pid: staging}},
       receipt_deliveries: %{"delivery" => %{pid: delivery}},
       receipt_retry_timers: %{"invalid" => :not_a_timer},
-      stream_capacity: capacity,
+      stream_capacity: capacity_proxy,
       stream_reservations: %{"stream-run" => reservation},
       owner: {Owner, test_pid: self()},
       ref: ref,
@@ -78,6 +90,7 @@ defmodule SpectreInstanceCleanupTest do
     assert_receive {:DOWN, ^delivery_monitor, :process, ^delivery, :shutdown}, 1_000
     assert Process.read_timer(attempt_timer) == false
     assert Process.read_timer(inference_timer) == false
+    assert_receive {:inference_capacity_released, ^reservation}, 1_000
     assert StreamCapacity.status(capacity).active == 0
     assert_receive {:owner_released, ^ref, ^lease}, 1_000
     refute_receive :stale_attempt_timer
