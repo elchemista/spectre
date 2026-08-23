@@ -26,8 +26,8 @@ true = plan.ready
 
 The plan only inspects configuration and exported callbacks. It never reads a
 store, starts an Instance, acquires a lease, or deletes data. Run the Owner,
-Checkpoint Store, and Receipt Sink conformance suites in isolated namespaces;
-the plan does not prove adapter semantics or durability.
+Checkpoint Store, Journal erasure, and Receipt Sink conformance suites in
+isolated namespaces; the plan does not prove adapter durability.
 
 ## Execution order
 

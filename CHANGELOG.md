@@ -23,7 +23,8 @@ migration called out explicitly below.
   startup rather than allowing an erased identity to run in memory.
 - Added the I/O-free `Spectre.Privacy.erasure_plan/3`, optional Journal Store
   `erase_instance/2` and Receipt Sink `delete_payload/2` callbacks, Doctor
-  erasure-posture checks, and the data-map and operator runbook documentation.
+  erasure-posture checks, executable exact-Ref Journal erasure conformance, and
+  the data-map and operator runbook documentation.
 - Added optional Checkpoint Store `erase/3` and `erasure_status/2` callbacks,
   portable erasure Request/Status contracts, and
   `Spectre.Instance.CheckpointStore.ErasureConformance`. The conformance gate

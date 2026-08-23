@@ -27,7 +27,7 @@ defmodule Spectre.Journal.Store do
   def normalize(module) when is_atom(module) and not is_boolean(module), do: {:ok, {module, []}}
 
   def normalize({module, opts})
-      when is_atom(module) and not is_nil(module) and is_list(opts) do
+      when is_atom(module) and not is_nil(module) and not is_boolean(module) and is_list(opts) do
     if Keyword.keyword?(opts),
       do: {:ok, {module, opts}},
       else: {:error, {:invalid_journal_store, :options}}

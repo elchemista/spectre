@@ -371,6 +371,8 @@ Mix project version.
 - `Spectre.Journal.Store`
   - functions: `erase_instance/3`, `erasure_capability/1`, `normalize/1`
   - callbacks: `append/2`, `erase_instance/2`
+- `Spectre.Journal.Store.ErasureConformance`
+  - functions: `contract_version/0`, `run/2`
 - `Spectre.LLM`
   - functions: `complete/1`, `complete/2`, `complete_once/1`, `complete_once/2`, `provider_opts/1`, `provider_opts/2`, `runtime_opt_keys/0`
   - callbacks: `complete/2`, `complete_plan/2`

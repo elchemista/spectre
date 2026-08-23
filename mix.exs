@@ -506,6 +506,7 @@ defmodule Spectre.MixProject do
           Spectre.Journal.Record,
           Spectre.Journal.Recorder,
           Spectre.Journal.Store,
+          Spectre.Journal.Store.ErasureConformance,
           Spectre.Monitor,
           Spectre.Telemetry
         ],

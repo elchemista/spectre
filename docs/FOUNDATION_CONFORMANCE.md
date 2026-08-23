@@ -104,9 +104,10 @@ semantics they can observe.
 The Checkpoint erasure gate also keeps a neighboring Ref populated and verifies
 it after the target operation, so an adapter that deletes a namespace rather
 than one exact key fails conformance. Receipt Sink conformance separately
-proves content-addressed payload deletion and read-back. Journal erasure has no
-core-provided storage fixture; adapter suites must prove idempotency and exact
-stable/legacy Ref scoping in their own isolated namespace.
+proves content-addressed payload deletion, read-back, and neighboring-payload
+isolation when `delete_payload/2` is exported.
+`Spectre.Journal.Store.ErasureConformance` appends records for two isolated
+Refs and proves exact deletion through the adapter's idempotent outcomes.
 
 ## Definition golden path
 

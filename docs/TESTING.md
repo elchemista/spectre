@@ -130,6 +130,15 @@ assert {:ok, erasure_report} =
 assert erasure_report.post_erasure_write == :rejected
 assert erasure_report.neighbor_isolation == :verified
 
+assert {:ok, journal_report} =
+         Spectre.Journal.Store.ErasureConformance.run(
+           MyApp.JournalStore,
+           journal_erasure_ref
+         )
+
+assert journal_report.idempotency == :verified
+assert journal_report.neighbor_isolation == :verified
+
 assert {:ok, receipt_report} =
          Spectre.Receipt.Sink.Conformance.run(MyApp.ReceiptSink)
 
