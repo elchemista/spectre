@@ -17,6 +17,10 @@ defmodule SpectreInstanceErasureContractTest.Store do
     Agent.update(server, &Map.put(&1, ref.key, {:checkpoint, revision, checkpoint}))
   end
 
+  def seed_erased(server, ref, status) do
+    Agent.update(server, &Map.put(&1, ref.key, {:erased, status}))
+  end
+
   def entry(server, ref), do: Agent.get(server, &Map.get(&1, ref.key))
 
   @impl true
@@ -189,6 +193,18 @@ defmodule SpectreInstanceErasureContractTest.FaultStore do
   defp erase_mode(:erase_error, _role, _ref, _request, _opts),
     do: {:error, :erase_rejected}
 
+  defp erase_mode(:erase_neighbors, :present, ref, request, opts) do
+    case Store.erase(ref, request, opts) do
+      {:ok, :erased} = result ->
+        Agent.update(server(opts), &drop_neighbor_entries(&1, ref.key))
+
+        result
+
+      other ->
+        other
+    end
+  end
+
   defp erase_mode({:erase_only, stable_key}, _role, %{key: key}, _request, _opts)
        when key != stable_key,
        do: {:error, :second_key_rejected}
@@ -223,6 +239,12 @@ defmodule SpectreInstanceErasureContractTest.FaultStore do
   end
 
   defp erase_mode(_mode, _role, ref, request, opts), do: Store.erase(ref, request, opts)
+
+  defp drop_neighbor_entries(entries, target_key) do
+    Map.filter(entries, fn {key, _value} ->
+      key == target_key or key == {__MODULE__, :refs}
+    end)
+  end
 
   @impl true
   def erasure_status(ref, opts) do
@@ -279,8 +301,9 @@ defmodule SpectreInstanceErasureContractTest.FaultStore do
   end
 
   defp role_for(1), do: :present
-  defp role_for(2), do: :absent
-  defp role_for(3), do: :race
+  defp role_for(2), do: :neighbor
+  defp role_for(3), do: :absent
+  defp role_for(4), do: :race
   defp role_for(_index), do: :other
 
   defp status(ref) do
@@ -444,6 +467,45 @@ defmodule SpectreInstanceErasureContractTest.MaintenanceOwner do
   end
 end
 
+defmodule SpectreInstanceErasureContractTest.MutatingMaintenanceOwner do
+  @moduledoc false
+
+  @behaviour Spectre.Instance.Owner
+
+  alias Spectre.Instance.Owner.Lease
+  alias SpectreInstanceErasureContractTest.Store
+
+  @impl true
+  def claim(ref, opts), do: issue(ref, opts)
+
+  @impl true
+  def claim_maintenance(ref, :erasure, opts) do
+    Store.seed(Keyword.fetch!(opts, :server), ref, Keyword.fetch!(opts, :replacement))
+    issue(ref, opts)
+  end
+
+  @impl true
+  def validate(ref, lease, _opts) do
+    if lease.metadata.instance_key == ref.key,
+      do: :ok,
+      else: {:error, :instance_mismatch}
+  end
+
+  @impl true
+  def release(_ref, _lease, _opts), do: :ok
+
+  defp issue(ref, opts) do
+    token = Keyword.get(opts, :minimum_fencing_token, 0) + 1
+
+    Lease.new(
+      owner_id: "mutating-maintenance",
+      fencing_token: token,
+      issued_at: token,
+      metadata: %{instance_key: ref.key}
+    )
+  end
+end
+
 defmodule SpectreInstanceErasureContractTest.AgentDefinition do
   @moduledoc false
 
@@ -458,6 +520,7 @@ defmodule SpectreInstanceErasureContractTest do
   alias Spectre.Instance.CheckpointStore
   alias Spectre.Instance.CheckpointStore.ErasureConformance
   alias Spectre.Instance.Erasure.Proof
+  alias Spectre.Instance.Erasure.Request
   alias Spectre.Instance.Erasure.Status
   alias Spectre.Instance.Ref
   alias Spectre.Instance.Registry, as: InstanceRegistry
@@ -465,6 +528,7 @@ defmodule SpectreInstanceErasureContractTest do
   alias SpectreInstanceErasureContractTest.AgentDefinition
   alias SpectreInstanceErasureContractTest.FaultStore
   alias SpectreInstanceErasureContractTest.MaintenanceOwner
+  alias SpectreInstanceErasureContractTest.MutatingMaintenanceOwner
   alias SpectreInstanceErasureContractTest.Store
   alias SpectreInstanceErasureContractTest.SupersededMaintenanceOwner
   alias SpectreInstanceErasureContractTest.UnsupportedMaintenanceOwner
@@ -526,6 +590,31 @@ defmodule SpectreInstanceErasureContractTest do
              )
 
     assert Enum.all?(retry_keys, &(&1.outcome == :already_erased))
+  end
+
+  test "an erasure marker prevents the Instance from being summoned again", context do
+    subject = "erasure-boot-#{System.unique_integer([:positive])}"
+    ref = Ref.new(AgentDefinition, subject)
+
+    assert {:ok, %Proof{outcome: :erased}} =
+             Spectre.erase_instance(AgentDefinition, subject,
+               checkpoint_store: context.store,
+               confirm: ref.key,
+               now: 10
+             )
+
+    previous_trap = Process.flag(:trap_exit, true)
+
+    try do
+      assert {:error, :instance_erased} =
+               Spectre.summon(
+                 agent: AgentDefinition,
+                 subject: subject,
+                 checkpoint_store: context.store
+               )
+    after
+      Process.flag(:trap_exit, previous_trap)
+    end
   end
 
   test "stable and legacy aliases sharing one checkpoint are verified once", context do
@@ -659,6 +748,63 @@ defmodule SpectreInstanceErasureContractTest do
     assert :not_erased = CheckpointStore.erasure_status(context.store, ref, [])
   end
 
+  test "erasure rejects a checkpoint changed while acquiring maintenance ownership", context do
+    subject = "erasure-toctou-#{System.unique_integer([:positive])}"
+    ref = Ref.new(AgentDefinition, subject)
+    initial = checkpoint(ref, :initial)
+    replacement = checkpoint(ref, :replacement)
+    Store.seed(context.server, ref, initial)
+
+    assert {:error, :instance_erasure_checkpoint_changed} =
+             Spectre.erase_instance(AgentDefinition, subject,
+               checkpoint_store: context.store,
+               owner:
+                 {MutatingMaintenanceOwner, server: context.server, replacement: replacement},
+               confirm: ref.key
+             )
+
+    assert {:checkpoint, 0, ^replacement} = Store.entry(context.server, ref)
+    assert :not_erased = CheckpointStore.erasure_status(context.store, ref, [])
+  end
+
+  test "an existing marker raises the maintenance fencing floor and keeps a mixed proof erased",
+       context do
+    {:ok, owner_server} = MaintenanceOwner.start_link()
+    subject = "erasure-floor-#{System.unique_integer([:positive])}"
+    ref = Ref.new(AgentDefinition, subject)
+
+    {:ok, request} =
+      Request.new(ref,
+        erasure_id: "prior-erasure",
+        expected_revision: nil,
+        checkpoint_digest: nil,
+        owner_fencing_token: 73,
+        requested_at: 1
+      )
+
+    {:ok, status} = Status.from_request(request, 1)
+    Store.seed_erased(context.server, ref, status)
+
+    assert {:ok,
+            %Proof{
+              outcome: :erased,
+              owner_fencing_token: token,
+              keys: [
+                %{kind: :stable, outcome: :already_erased},
+                %{kind: :legacy, outcome: :erased}
+              ]
+            }} =
+             Spectre.erase_instance(AgentDefinition, subject,
+               checkpoint_store: context.store,
+               owner: {MaintenanceOwner, server: owner_server},
+               confirm: ref.key,
+               now: 2
+             )
+
+    assert token > 73
+    Agent.stop(owner_server)
+  end
+
   test "a supplied Ref remains bound to the exact supplied Subject", context do
     ref = Ref.new(AgentDefinition, "erasure-subject-a")
 
@@ -682,6 +828,7 @@ defmodule SpectreInstanceErasureContractTest do
               present_erasure: :verified,
               absent_erasure: :verified,
               idempotency: :verified,
+              neighbor_isolation: :verified,
               post_erasure_write: :rejected,
               race: race,
               marker_digest: marker_digest
@@ -756,7 +903,8 @@ defmodule SpectreInstanceErasureContractTest do
 
     assert {:error,
             {:ambiguous,
-             {:instance_erasure_partial, [:stable], :instance_checkpoint_erase_failed}}} =
+             {:instance_erasure_partial, [:stable],
+              {:instance_checkpoint_erase_failed, :legacy, :second_key_rejected}}}} =
              Spectre.erase_instance(AgentDefinition, ref.subject,
                checkpoint_store:
                  {FaultStore, server: context.server, mode: {:erase_only, ref.key}},
@@ -785,7 +933,8 @@ defmodule SpectreInstanceErasureContractTest do
       {:marker_missing, :present_readback, :marker_missing},
       {:marker_mismatch, :present_readback, :marker_mismatch},
       {:accept_post_erasure, :post_erasure_write, :write_accepted},
-      {:ambiguous_post_erasure, :post_erasure_write, :ambiguous_rejection}
+      {:ambiguous_post_erasure, :post_erasure_write, :ambiguous_rejection},
+      {:erase_neighbors, :neighbor_isolation, :neighbor_erased}
     ]
 
     Enum.each(phase_failures, fn {mode, phase, code} ->
@@ -879,7 +1028,7 @@ defmodule SpectreInstanceErasureContractTest do
     assert :ok = Registry.unregister(registry, ref.key)
   end
 
-  defp checkpoint(ref) do
+  defp checkpoint(ref, marker \\ nil) do
     {:ok, canonical} =
       Canonical.new(%{
         flow: %Spectre.State{conversation_id: ref.key},
@@ -887,7 +1036,7 @@ defmodule SpectreInstanceErasureContractTest do
         vigil: %{},
         directive: %{},
         control: %{},
-        correlations: %{instance_key: ref.key},
+        correlations: %{instance_key: ref.key, erasure_fixture: marker},
         events: %{records: [], ids: %{}}
       })
 

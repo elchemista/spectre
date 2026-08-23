@@ -190,13 +190,10 @@ defmodule Spectre.Instance.Erasure do
         {:error, reason} when keys == [] ->
           {:halt, {:error, reason}}
 
-        {:error, _reason} ->
+        {:error, reason} ->
           completed = keys |> Enum.map(& &1.kind) |> Enum.reverse()
 
-          {:halt,
-           {:error,
-            {:ambiguous,
-             {:instance_erasure_partial, completed, :instance_checkpoint_erase_failed}}}}
+          {:halt, {:error, {:ambiguous, {:instance_erasure_partial, completed, reason}}}}
       end
     end)
     |> case do

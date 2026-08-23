@@ -24,6 +24,7 @@ defmodule Spectre.Instance.CheckpointStore.ErasureConformance do
           required(:present_erasure) => :verified,
           required(:absent_erasure) => :verified,
           required(:idempotency) => :verified,
+          required(:neighbor_isolation) => :verified,
           required(:post_erasure_write) => :rejected,
           required(:race) => :erase_won | :write_won,
           required(:marker_digest) => String.t()
@@ -45,19 +46,24 @@ defmodule Spectre.Instance.CheckpointStore.ErasureConformance do
          {:ok, create, update} <- fixtures(ref),
          :ok <- initially_empty(store, ref, :present_initial),
          :ok <- write(store, ref, create, 0, :present_create),
+         {:ok, neighbor_ref, neighbor} <- neighbor_fixture(ref),
+         :ok <- initially_empty(store, neighbor_ref, :neighbor_initial),
+         :ok <- write(store, neighbor_ref, neighbor, 0, :neighbor_create),
          {:ok, request} <- request(ref, create, opts, "present"),
          {:ok, :erased} <- erase(store, ref, request, :present_erase),
          {:ok, marker} <- erased_readback(store, ref, request, :present_readback),
          {:ok, :already_erased} <- erase(store, ref, request, :idempotent_retry),
          :ok <- reject_write(store, ref, update, create.revision, :post_erasure_write),
          :ok <- absent_erasure(store, ref, opts),
-         {:ok, race} <- race(store, ref, opts) do
+         {:ok, race} <- race(store, ref, opts),
+         :ok <- neighbor_intact(store, neighbor_ref, neighbor) do
       {:ok,
        %{
          contract_version: @contract_version,
          present_erasure: :verified,
          absent_erasure: :verified,
          idempotency: :verified,
+         neighbor_isolation: :verified,
          post_erasure_write: :rejected,
          race: race,
          marker_digest: Status.digest(marker)
@@ -68,6 +74,27 @@ defmodule Spectre.Instance.CheckpointStore.ErasureConformance do
   end
 
   def run(_store, _ref, _opts), do: failure(:options, :invalid_arguments)
+
+  defp neighbor_fixture(ref) do
+    neighbor_ref = Ref.new(ref.agent_ref, {:checkpoint_erasure_neighbor, ref.key})
+
+    with {:ok, create, _update} <- fixtures(neighbor_ref) do
+      {:ok, neighbor_ref, create}
+    end
+  end
+
+  defp neighbor_intact(store, ref, fixture) do
+    case {CheckpointStore.load(store, ref, []), CheckpointStore.erasure_status(store, ref, [])} do
+      {{:ok, checkpoint}, :not_erased} ->
+        case Foundation.verify_instance_checkpoint(checkpoint, ref) do
+          {:ok, %{digest: digest}} when digest == fixture.digest -> :ok
+          _invalid -> failure(:neighbor_isolation, :checkpoint_changed)
+        end
+
+      _other ->
+        failure(:neighbor_isolation, :neighbor_erased)
+    end
+  end
 
   defp absent_erasure(store, ref, opts) do
     absent_ref = Ref.new(ref.agent_ref, {:checkpoint_erasure_absent, ref.key})

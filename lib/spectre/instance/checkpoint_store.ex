@@ -207,6 +207,32 @@ defmodule Spectre.Instance.CheckpointStore do
       {:error, {:checkpoint_erasure_status_failure, module, kind, reason}}
   end
 
+  @doc false
+  @spec ensure_not_erased(nil | {module(), keyword()}, Ref.t(), keyword()) ::
+          :ok | {:error, term()}
+  def ensure_not_erased(nil, %Ref{}, _opts), do: :ok
+
+  def ensure_not_erased({module, store_opts} = store, %Ref{} = ref, opts)
+      when is_atom(module) and is_list(store_opts) do
+    case erasure_capability(store) do
+      :ok ->
+        case erasure_status(store, ref, opts) do
+          :not_erased -> :ok
+          {:ok, %ErasureStatus{}} -> {:error, :instance_erased}
+          {:error, reason} -> {:error, {:instance_erasure_status_failed, reason}}
+        end
+
+      {:error, {:checkpoint_store_erasure_unsupported, ^module, _callback, _arity}} ->
+        :ok
+
+      {:error, {:checkpoint_store_not_loaded, ^module}} ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   @doc """
   Atomically migrates a validated legacy Instance key to its stable key.
 

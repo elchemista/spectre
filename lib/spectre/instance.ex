@@ -782,6 +782,12 @@ defmodule Spectre.Instance do
     registry = Keyword.get(opts, :registry, InstanceRegistry)
 
     with {:ok, config} <- Configuration.load(agent, instance_ref, opts),
+         :ok <-
+           CheckpointStore.ensure_not_erased(
+             config.checkpoint_store,
+             instance_ref,
+             config.base_opts
+           ),
          {:ok, state} <- restore_initial_state(agent, opts, config.base_opts),
          {:ok, state, canonical, checkpoint_revision} <-
            Boot.run(
