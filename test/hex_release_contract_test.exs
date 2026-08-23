@@ -38,6 +38,16 @@ defmodule SpectreHexReleaseContractTest do
     priv/templates/spectre.gen.installable/installable.ex.eex
     priv/templates/spectre.gen.installable/installable_test.exs.eex
   )
+  @public_package_assets ~w(
+    docs/examples/routing-eval.jsonl
+  )
+  @excluded_package_paths ~w(
+    docs/adr
+    lib/spectre/instance/README.md
+    test
+    scripts
+    .github
+  )
   @v030_fixture_digests %{
     "test/fixtures/compatibility/0.3.0/instance-v2.json" =>
       "3453904230c641c12a5b099a8448454642bdf8729c29f9914d60142977268375",
@@ -70,6 +80,15 @@ defmodule SpectreHexReleaseContractTest do
     assert package[:licenses] == ["Apache-2.0"]
     assert "LLMS.md" in package[:files]
     assert "priv" in package[:files]
+    assert "lib/**/*.ex" in package[:files]
+    refute "lib" in package[:files]
+    refute "docs" in package[:files]
+
+    assert MapSet.subset?(MapSet.new(docs[:extras]), MapSet.new(package[:files]))
+
+    for asset <- @public_package_assets do
+      assert asset in package[:files]
+    end
 
     assert package[:links] == %{
              "Website" => "https://spectre.elchemista.com",
@@ -120,6 +139,14 @@ defmodule SpectreHexReleaseContractTest do
 
     for template <- @generator_templates do
       assert workflow =~ ~s(test -f "$RUNNER_TEMP/hex-package/#{template}")
+    end
+
+    for asset <- @public_package_assets do
+      assert workflow =~ ~s(test -f "$RUNNER_TEMP/hex-package/#{asset}")
+    end
+
+    for excluded <- @excluded_package_paths do
+      assert workflow =~ ~s(test ! -e "$RUNNER_TEMP/hex-package/#{excluded}")
     end
 
     workflow_sources =
