@@ -14,16 +14,22 @@ migration called out explicitly below.
 - Added `Spectre.Instance.Owner.Conformance` with separate local and
   distributed profiles for portable leases, Ref binding, fencing floors,
   monotonic supersession, cross-Ref isolation, and concurrent claims.
-- Added fenced offline checkpoint erasure through
+- Added fenced offline configured-data erasure through
   `Spectre.erase_instance/3`. Erasure requires exact stable-key confirmation,
   refuses a live local Instance, uses a non-preemptive maintenance claim,
-  covers stable and legacy keys, verifies marker read-back, and returns a
-  privacy-safe proof scoped only to the canonical Instance checkpoint.
+  orders configured Journal records, pending receipt payloads, and stable plus
+  legacy checkpoint keys, verifies marker read-back, and returns a
+  privacy-safe component proof. Durable markers also reject later Instance
+  startup rather than allowing an erased identity to run in memory.
+- Added the I/O-free `Spectre.Privacy.erasure_plan/3`, optional Journal Store
+  `erase_instance/2` and Receipt Sink `delete_payload/2` callbacks, Doctor
+  erasure-posture checks, and the data-map and operator runbook documentation.
 - Added optional Checkpoint Store `erase/3` and `erasure_status/2` callbacks,
   portable erasure Request/Status contracts, and
   `Spectre.Instance.CheckpointStore.ErasureConformance`. The conformance gate
-  proves present and absent erasure, idempotency, stale-write rejection, and a
-  single authoritative result for erase-versus-CAS races.
+  proves present and absent erasure, neighboring-Ref isolation, idempotency,
+  stale-write rejection, and a single authoritative result for
+  erase-versus-CAS races.
 - Added `mix spectre.profile` and opt-in `:perf` tests for Instance boot
   reductions, post-GC footprint, retained binaries, monitoring cost, and
   `:tprof` allocation breakdowns. CI runs the pinned budgets separately.
@@ -60,9 +66,10 @@ migration called out explicitly below.
   record adds an optional resolver that decodes to `:conversation` when
   absent. Run and canonical Instance checkpoint schemas are unchanged. No
   runtime dependency was added.
-- Existing Checkpoint Store and Owner adapters remain source-compatible
-  because erasure callbacks and the maintenance claim are optional. The new
-  erase API fails explicitly when either capability is unavailable.
+- Existing Checkpoint Store, Owner, Journal, and Receipt adapters remain
+  source-compatible because destructive callbacks and the maintenance claim
+  are optional. The erase API fails before mutation when a configured
+  component lacks its capability.
 - Defaults remain serial boot, no recurring idle hibernation, and on-heap
   stream mailboxes. The one post-boot hibernation is the only default runtime
   change and affects footprint, not message or recovery semantics.

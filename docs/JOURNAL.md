@@ -99,6 +99,12 @@ The redactor receives a `%Spectre.Journal.Record{}` and returns a record,
 `{:ok, record}`, or `{:error, reason}`. Policy and execution phases default to
 unsampled delivery; `sample_rates: %{policy: 0.5}` can override that explicitly.
 
+Stores used by the offline Instance erasure coordinator also implement the
+optional idempotent `erase_instance/2` callback. It receives an exact stable or
+legacy `%Spectre.Instance.Ref{}` and must delete only records indexed to that
+Ref. `Spectre.Privacy.erasure_plan/3` and `Spectre.Doctor` inspect this
+capability without invoking the store; see [Offline Instance erasure](ERASURE.md).
+
 ## Delivery And Failures
 
 The monitoring default is `mode: :async, on_error: :warn`. A supervised,

@@ -101,6 +101,13 @@ Neither gate certifies deployment topology, database replication, backup
 retention, or whole-subject privacy compliance. They prove only the adapter
 semantics they can observe.
 
+The Checkpoint erasure gate also keeps a neighboring Ref populated and verifies
+it after the target operation, so an adapter that deletes a namespace rather
+than one exact key fails conformance. Receipt Sink conformance separately
+proves content-addressed payload deletion and read-back. Journal erasure has no
+core-provided storage fixture; adapter suites must prove idempotency and exact
+stable/legacy Ref scoping in their own isolated namespace.
+
 ## Definition golden path
 
 `verify_definition/2` accepts either validated structs or canonical bytes and

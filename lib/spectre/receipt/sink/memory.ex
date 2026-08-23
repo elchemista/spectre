@@ -63,6 +63,16 @@ defmodule Spectre.Receipt.Sink.Memory do
     end
   end
 
+  @impl true
+  def delete_payload(ref, opts) do
+    Agent.get_and_update(server(opts), fn state ->
+      case Map.pop(state.payloads, ref) do
+        {nil, _payloads} -> {{:ok, :not_found}, state}
+        {_envelope, payloads} -> {{:ok, :deleted}, %{state | payloads: payloads}}
+      end
+    end)
+  end
+
   @spec all(keyword()) :: [Envelope.t()]
   def all(opts), do: opts |> server() |> Agent.get(&Map.values(&1.receipts))
 

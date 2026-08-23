@@ -3,7 +3,7 @@
 This file is the normative public API manifest for Spectre `0.3.3`. It retains
 the recoverable conversational, operational, inference, streaming, receipt,
 and determinism surfaces and adds ownership conformance plus fenced offline
-checkpoint erasure. Compatibility guarantees apply only to the modules and
+configured-data erasure. Compatibility guarantees apply only to the modules and
 callables listed below. Any module, function, macro, or callback not listed
 here is an implementation detail even when it is exported or visible in
 generated docs.
@@ -291,7 +291,7 @@ Mix project version.
 - `Spectre.Instance.Lifecycle`
   - functions: `activate/3`, `activate/4`, `authorize/2`, `fetch/2`, `fetch/3`, `from_activation/1`, `from_data/1`, `key/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`, `transition/3`, `transition/4`
 - `Spectre.Instance.Owner`
-  - functions: `assert_current/4`, `assert_current/5`, `claim/2`, `claim/3`, `claim_maintenance/3`, `claim_maintenance/4`, `normalize/1`, `release/3`, `release/4`, `validate/3`, `validate/4`
+  - functions: `assert_current/4`, `assert_current/5`, `claim/2`, `claim/3`, `claim_maintenance/3`, `claim_maintenance/4`, `maintenance_capability/1`, `normalize/1`, `release/3`, `release/4`, `validate/3`, `validate/4`
   - callbacks: `claim/2`, `claim_maintenance/3`, `release/3`, `validate/3`
 - `Spectre.Instance.Owner.Conformance`
   - functions: `contract_version/0`, `run/2`, `run/3`
@@ -369,7 +369,8 @@ Mix project version.
 - `Spectre.Journal.Recorder`
   - functions: `record_extension/4`, `record_persistence/2`, `record_result/2`, `record_routing/1`
 - `Spectre.Journal.Store`
-  - callbacks: `append/2`
+  - functions: `erase_instance/3`, `erasure_capability/1`, `normalize/1`
+  - callbacks: `append/2`, `erase_instance/2`
 - `Spectre.LLM`
   - functions: `complete/1`, `complete/2`, `complete_once/1`, `complete_once/2`, `provider_opts/1`, `provider_opts/2`, `runtime_opt_keys/0`
   - callbacks: `complete/2`, `complete_plan/2`
@@ -424,15 +425,18 @@ Mix project version.
 - `Spectre.Provider.Call`
   - functions: `run/2`, `run/3`
 - `Spectre.Provider.Failure`
+- `Spectre.Privacy`
+  - functions: `erasure_plan/2`, `erasure_plan/3`
+- `Spectre.Privacy.ErasurePlan`
 - `Spectre.Receipt.Envelope`
   - functions: `digest/1`, `kinds/0`, `new/1`, `new!/1`, `to_data/1`
 - `Spectre.Receipt.Sink`
-  - functions: `append/3`, `get_payload/3`, `lookup/3`, `normalize/1`, `payload_capable?/1`, `payload_ref/1`, `put_payload/3`
-  - callbacks: `append/2`, `get_payload/2`, `lookup/2`, `put_payload/2`
+  - functions: `append/3`, `delete_payload/3`, `get_payload/3`, `lookup/3`, `normalize/1`, `payload_capable?/1`, `payload_erasure_capability/1`, `payload_ref/1`, `put_payload/3`
+  - callbacks: `append/2`, `delete_payload/2`, `get_payload/2`, `lookup/2`, `put_payload/2`
 - `Spectre.Receipt.Sink.Conformance`
   - functions: `run/1`
 - `Spectre.Receipt.Sink.Memory`
-  - functions: `all/1`, `append/2`, `get_payload/2`, `lookup/2`, `put_payload/2`, `start_link/0`, `start_link/1`
+  - functions: `all/1`, `append/2`, `delete_payload/2`, `get_payload/2`, `lookup/2`, `put_payload/2`, `start_link/0`, `start_link/1`
 - `Spectre.Result`
   - functions: `action_outcome/1`, `completions/1`, `latest_completion/1`, `lifecycle/1`, `open_awaitable/1`, `pending_effect/1`, `visible_reply?/1`
 - `Spectre.Reply.Sanitizer`

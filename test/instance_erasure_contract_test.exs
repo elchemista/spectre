@@ -549,7 +549,7 @@ defmodule SpectreInstanceErasureContractTest do
 
     assert {:ok,
             %Proof{
-              scope: :canonical_instance_checkpoint,
+              scope: :configured_instance_data,
               outcome: :erased,
               instance_key: instance_key,
               keys: keys

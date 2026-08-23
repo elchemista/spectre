@@ -13,6 +13,8 @@ defmodule Spectre.Instance.Erasure do
   alias Spectre.Instance.Ref
   alias Spectre.Instance.Registry, as: InstanceRegistry
   alias Spectre.Instance.Restore
+  alias Spectre.Journal.Store, as: JournalStore
+  alias Spectre.Receipt.Sink, as: ReceiptSink
 
   @spec run(module() | AgentRef.t() | Ref.t(), term(), keyword()) ::
           {:ok, Proof.t()} | {:error, term()}
@@ -21,7 +23,10 @@ defmodule Spectre.Instance.Erasure do
          {:ok, ref, agent} <- instance_ref(agent_or_ref, subject),
          :ok <- confirmation(ref, opts),
          {:ok, config} <- configuration(agent, ref, opts),
+         :ok <- Owner.maintenance_capability(config.owner),
          :ok <- CheckpointStore.erasure_capability(config.checkpoint_store),
+         :ok <- JournalStore.erasure_capability(config.journal),
+         :ok <- ReceiptSink.payload_erasure_capability(config.receipt_sink),
          {:ok, reservation} <- InstanceRegistry.reserve(ref, :erasure, config.registry) do
       try do
         erase_reserved(ref, config)
@@ -56,17 +61,196 @@ defmodule Spectre.Instance.Erasure do
       with {:ok, confirmed} <-
              observe_all(config.checkpoint_store, erasure_refs(ref), config.base_opts),
            :ok <- unchanged(observed, confirmed),
-           {:ok, keys} <- erase_observations(confirmed, ref, owner_lease, config) do
-        Proof.new(ref,
-          outcome: proof_outcome(keys),
-          owner_fencing_token: owner_lease.fencing_token,
-          completed_at: now(config),
-          keys: keys
-        )
+           :ok <- receipt_sink_present(confirmed, config.receipt_sink) do
+        erase_configured(ref, confirmed, owner_lease, config)
       end
     after
       _ = Owner.release(config.owner, ref, owner_lease, config.base_opts)
     end
+  end
+
+  defp erase_configured(ref, observations, owner_lease, config) do
+    with {:ok, journal} <- erase_journal_refs(ref, owner_lease, config),
+         {:ok, receipts} <-
+           erase_receipt_payloads(observations, ref, owner_lease, journal, config),
+         {:ok, keys} <- erase_checkpoints(observations, ref, owner_lease, receipts, config) do
+      Proof.new(ref,
+        outcome: proof_outcome(keys),
+        owner_fencing_token: owner_lease.fencing_token,
+        completed_at: now(config),
+        components: proof_components(journal, receipts, keys),
+        keys: keys
+      )
+    end
+  end
+
+  defp erase_journal_refs(_ref, _owner_lease, %{journal: nil}),
+    do: {:ok, %{outcome: :not_configured, key_count: 0, completed: []}}
+
+  defp erase_journal_refs(ref, owner_lease, config) do
+    ref
+    |> erasure_refs()
+    |> Enum.reduce_while({:ok, []}, fn {_kind, journal_ref}, {:ok, outcomes} ->
+      with :ok <-
+             Owner.assert_current(
+               config.owner,
+               ref,
+               owner_lease,
+               :instance_journal_erasure,
+               config.base_opts
+             ),
+           {:ok, outcome} <-
+             JournalStore.erase_instance(config.journal, journal_ref, config.base_opts) do
+        {:cont, {:ok, [outcome | outcomes]}}
+      else
+        {:error, reason} -> {:halt, journal_error(outcomes, reason)}
+      end
+    end)
+    |> case do
+      {:ok, outcomes} ->
+        outcomes = Enum.reverse(outcomes)
+
+        {:ok,
+         %{
+           outcome: aggregate_outcome(outcomes),
+           key_count: length(outcomes),
+           completed: [:journal]
+         }}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp journal_error([], reason), do: {:error, {:instance_journal_erase_failed, reason}}
+
+  defp journal_error(outcomes, reason) do
+    {:error,
+     {:ambiguous,
+      {:instance_erasure_partial, [:journal],
+       {:instance_journal_erase_failed, length(outcomes), reason}}}}
+  end
+
+  defp erase_receipt_payloads(
+         observations,
+         _owner_ref,
+         _owner_lease,
+         journal,
+         %{receipt_sink: nil}
+       ) do
+    refs = payload_refs(observations)
+
+    if refs == [] do
+      {:ok,
+       %{
+         outcome: :not_configured,
+         payload_count: 0,
+         deleted_count: 0,
+         not_found_count: 0,
+         completed: journal.completed
+       }}
+    else
+      partial_error(journal.completed, :receipt_sink_required_for_erasure)
+    end
+  end
+
+  defp erase_receipt_payloads(observations, owner_ref, owner_lease, journal, config) do
+    refs = payload_refs(observations)
+
+    refs
+    |> Enum.reduce_while({:ok, %{deleted: 0, not_found: 0}}, fn payload_ref, {:ok, counts} ->
+      with :ok <-
+             Owner.assert_current(
+               config.owner,
+               owner_ref,
+               owner_lease,
+               :instance_receipt_payload_erasure,
+               config.base_opts
+             ),
+           {:ok, outcome} <-
+             ReceiptSink.delete_payload(config.receipt_sink, payload_ref, config.base_opts) do
+        next = Map.update!(counts, outcome, &(&1 + 1))
+        {:cont, {:ok, next}}
+      else
+        {:error, reason} -> {:halt, {:error, reason, counts}}
+      end
+    end)
+    |> receipt_outcome(length(refs), journal.completed)
+  end
+
+  defp receipt_outcome({:ok, counts}, total, completed) do
+    outcome = if counts.deleted > 0, do: :erased, else: :already_erased
+
+    {:ok,
+     %{
+       outcome: outcome,
+       payload_count: total,
+       deleted_count: counts.deleted,
+       not_found_count: counts.not_found,
+       completed: completed ++ if(total > 0, do: [:receipt_payloads], else: [])
+     }}
+  end
+
+  defp receipt_outcome({:error, reason, counts}, _total, completed) do
+    completed =
+      completed ++ if(counts.deleted + counts.not_found > 0, do: [:receipt_payloads], else: [])
+
+    partial_error(
+      completed,
+      {:receipt_payload_erase_failed, counts.deleted + counts.not_found, reason}
+    )
+  end
+
+  defp erase_checkpoints(observations, ref, owner_lease, receipts, config) do
+    case erase_observations(observations, ref, owner_lease, config) do
+      {:ok, keys} ->
+        {:ok, keys}
+
+      {:error, {:ambiguous, {:instance_erasure_partial, checkpoint_keys, reason}}} ->
+        partial_error(receipts.completed ++ checkpoint_keys, reason)
+
+      {:error, reason} ->
+        partial_error(receipts.completed, reason)
+    end
+  end
+
+  defp partial_error([], reason), do: {:error, reason}
+
+  defp partial_error(completed, reason),
+    do: {:error, {:ambiguous, {:instance_erasure_partial, completed, reason}}}
+
+  defp proof_components(journal, receipts, keys) do
+    %{
+      journal: Map.take(journal, [:outcome, :key_count]),
+      receipt_payloads:
+        Map.take(receipts, [
+          :outcome,
+          :payload_count,
+          :deleted_count,
+          :not_found_count
+        ]),
+      checkpoint: %{outcome: proof_outcome(keys), key_count: length(keys)}
+    }
+  end
+
+  defp aggregate_outcome(outcomes) do
+    if Enum.all?(outcomes, &(&1 == :already_erased)),
+      do: :already_erased,
+      else: :erased
+  end
+
+  defp receipt_sink_present(observations, nil) do
+    if payload_refs(observations) == [],
+      do: :ok,
+      else: {:error, :receipt_sink_required_for_erasure}
+  end
+
+  defp receipt_sink_present(_observations, _sink), do: :ok
+
+  defp payload_refs(observations) do
+    observations
+    |> Enum.flat_map(& &1.payload_refs)
+    |> Enum.uniq()
   end
 
   defp observe_all(store, refs, opts) do
@@ -101,6 +285,7 @@ defmodule Spectre.Instance.Erasure do
            revision: status.erased_revision,
            digest: status.checkpoint_digest,
            fencing_floor: status.owner_fencing_token,
+           payload_refs: [],
            status: status
          }}
 
@@ -114,6 +299,7 @@ defmodule Spectre.Instance.Erasure do
            revision: nil,
            digest: nil,
            fencing_floor: 0,
+           payload_refs: [],
            status: nil
          }}
 
@@ -139,7 +325,9 @@ defmodule Spectre.Instance.Erasure do
 
     with {:ok, report} <- verifier.(checkpoint),
          {:ok, canonical} <- CanonicalCodec.decode(checkpoint),
-         {:ok, activation} <- Canonical.fetch(canonical, :activation) do
+         {:ok, activation} <- Canonical.fetch(canonical, :activation),
+         {:ok, receipt_outbox} <- Canonical.fetch(canonical, :receipt_outbox),
+         {:ok, payload_refs} <- receipt_payload_refs(receipt_outbox) do
       {:ok,
        %{
          kind: kind,
@@ -149,12 +337,23 @@ defmodule Spectre.Instance.Erasure do
          revision: report.revision,
          digest: report.digest,
          fencing_floor: Restore.owner_fencing_floor(activation, canonical),
+         payload_refs: payload_refs,
          status: nil
        }}
     else
       {:error, reason} -> {:error, {:instance_erasure_checkpoint_invalid, kind, reason}}
     end
   end
+
+  defp receipt_payload_refs(%{entries: entries}) when is_list(entries) do
+    refs = Enum.map(entries, &Map.get(&1, :payload_ref))
+
+    if Enum.all?(refs, &(is_binary(&1) and &1 != "")),
+      do: {:ok, refs},
+      else: {:error, :invalid_receipt_payload_refs}
+  end
+
+  defp receipt_payload_refs(_outbox), do: {:error, :invalid_receipt_payload_refs}
 
   defp unchanged(before, after_claim) do
     before_fingerprints = Enum.map(before, &fingerprint/1)
@@ -299,7 +498,9 @@ defmodule Spectre.Instance.Erasure do
     with {:ok, base_opts} <- base_opts(opts),
          {:ok, checkpoint_store} <-
            checkpoint_store(agent, opts, base_opts) |> CheckpointStore.normalize(),
-         {:ok, owner} <- owner(agent, opts, base_opts) |> Owner.normalize() do
+         {:ok, owner} <- owner(agent, opts, base_opts) |> Owner.normalize(),
+         {:ok, journal} <- journal(agent, opts, base_opts) |> JournalStore.normalize(),
+         {:ok, receipt_sink} <- receipt_sink(agent, opts, base_opts) |> ReceiptSink.normalize() do
       requested_at = Keyword.get(opts, :now, System.system_time(:millisecond))
 
       if is_integer(requested_at) and requested_at >= 0 do
@@ -308,7 +509,9 @@ defmodule Spectre.Instance.Erasure do
            base_opts: Keyword.put(base_opts, :instance_ref, ref),
            checkpoint_store: checkpoint_store,
            erasure_id: Keyword.get(opts, :erasure_id),
+           journal: journal,
            owner: owner,
+           receipt_sink: receipt_sink,
            registry: Keyword.get(opts, :registry, InstanceRegistry),
            requested_at: requested_at
          }}
@@ -343,6 +546,22 @@ defmodule Spectre.Instance.Erasure do
       {opts, :owner},
       {base_opts, :owner},
       {agent_config(agent), :owner}
+    ])
+  end
+
+  defp journal(agent, opts, base_opts) do
+    first_configured([
+      {opts, :journal},
+      {base_opts, :journal},
+      {agent_config(agent), :journal}
+    ])
+  end
+
+  defp receipt_sink(agent, opts, base_opts) do
+    first_configured([
+      {opts, :receipt_sink},
+      {base_opts, :receipt_sink},
+      {agent_config(agent), :receipt_sink}
     ])
   end
 

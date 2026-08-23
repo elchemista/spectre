@@ -43,12 +43,15 @@ Checkpoint Store adapters continue to compile because the new maintenance and
 erasure callbacks are optional.
 
 Before enabling `Spectre.erase_instance/3`, implement `claim_maintenance/3`
-without superseding a live owner and implement atomic Checkpoint Store
-`erase/3` plus `erasure_status/2`. Run
+without superseding a live owner, atomic Checkpoint Store `erase/3` plus
+`erasure_status/2`, Journal `erase_instance/2` when journaling is configured,
+and Receipt Sink `delete_payload/2` when required payload staging is configured.
+Run
 `Spectre.Instance.Owner.Conformance` and
 `Spectre.Instance.CheckpointStore.ErasureConformance` against isolated
 production-equivalent namespaces. Erasure is an offline operation: stop and
 drain the Instance first, then supply its exact stable Ref key as `:confirm`.
+Use `Spectre.Privacy.erasure_plan/3` as an I/O-free deployment preflight.
 
 Boot remains synchronous. The new worker path defaults to one task per
 Instance and a node-wide scheduler-count bound. Existing deployments therefore

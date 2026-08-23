@@ -27,6 +27,8 @@ defmodule Spectre.MixProject do
     "docs/EVENT_LIFECYCLE.md",
     "docs/SKILL_STATE.md",
     "docs/JOURNAL.md",
+    "docs/DATA_LIFECYCLE.md",
+    "docs/ERASURE.md",
     "docs/PRODUCTION.md",
     "docs/TESTING.md",
     "docs/PROVIDERS.md",
@@ -193,6 +195,8 @@ defmodule Spectre.MixProject do
           "docs/JOURNAL.md"
         ],
         Operations: [
+          "docs/DATA_LIFECYCLE.md",
+          "docs/ERASURE.md",
           "docs/PRODUCTION.md",
           "docs/TESTING.md",
           "docs/PROVIDERS.md",
@@ -296,6 +300,8 @@ defmodule Spectre.MixProject do
           Spectre.Instance.Owner.Local,
           Spectre.Instance.Ref,
           Spectre.Instance.Registry,
+          Spectre.Privacy,
+          Spectre.Privacy.ErasurePlan,
           Spectre.Session,
           Spectre.Supervisor
         ],

@@ -127,13 +127,14 @@ implemented—that a released lease immediately fails validation. An omitted
 release callback is reported as `:optional_noop`; in that case the host must
 document and rehearse its expiry or revocation path before deployment.
 
-### Offline Instance checkpoint erasure
+### Offline Instance data erasure
 
-`Spectre.erase_instance/3` removes only the canonical Instance checkpoint. It
-does not erase application State or Memory stores, receipt payloads, Journal
-sinks, telemetry, provider logs, replicas, exports, or backups. Treat the
-returned proof as evidence for that narrow scope, not as a whole-subject data
-deletion certificate.
+`Spectre.erase_instance/3` coordinates configured Journal records, pending
+required-receipt payloads referenced by the checkpoint, and the canonical
+Instance checkpoint. It does not erase delivered receipt records, application
+State or Memory stores, telemetry, provider logs, replicas, exports, or
+backups. Treat the returned proof as evidence for its configured scope, not as
+a whole-subject deletion certificate. See [Instance data lifecycle](DATA_LIFECYCLE.md).
 
 Erasure is deliberately offline and fail-closed:
 
@@ -141,9 +142,12 @@ Erasure is deliberately offline and fail-closed:
 2. Build its stable Ref and require an operator to supply that exact key.
 3. Use an Owner adapter whose `claim_maintenance/3` never supersedes a live
    lease.
-4. Use a Checkpoint Store whose atomic `erase/3` installs a durable
+4. Verify `Spectre.Privacy.erasure_plan/3` reports every configured adapter as
+   ready; Journal and receipt callbacks are optional only when those stores
+   are not part of the Instance deployment.
+5. Use a Checkpoint Store whose atomic `erase/3` installs a durable
    anti-resurrection marker and whose `erasure_status/2` reads it back.
-5. Retain and replicate the marker anywhere stale writers or restored backups
+6. Retain and replicate the marker anywhere stale writers or restored backups
    could otherwise recreate the checkpoint.
 
 ```elixir
@@ -153,17 +157,21 @@ ref = Spectre.Instance.Ref.new(MyApp.SupportAgent, account_subject)
   Spectre.erase_instance(MyApp.SupportAgent, account_subject,
     checkpoint_store: MyApp.Checkpoints,
     owner: MyApp.InstanceOwner,
+    journal: MyApp.Journal,
+    receipt_sink: MyApp.Receipts,
     confirm: ref.key
   )
 
-:canonical_instance_checkpoint = proof.scope
+:configured_instance_data = proof.scope
 ```
 
 Core reserves the local Registry key, observes stable and legacy checkpoint
-keys, takes the maintenance lease above every observed fence, re-reads the
-same checkpoint identities, erases them, and verifies both `load/2` and the
-marker projection. A partial multi-key result is reported as ambiguous and
-must be reconciled from the store; core never reports an optimistic success.
+keys, takes the maintenance lease above every observed fence, and re-reads the
+same identities. It then erases Journal refs, pending receipt payloads, and
+checkpoints in that order, verifying both checkpoint `load/2` and marker
+projection. A partial cross-store or multi-key result is reported as ambiguous
+and must be reconciled; core never reports optimistic success. See the full
+[erasure runbook](ERASURE.md).
 
 Run both executable adapter gates in an isolated production-equivalent
 namespace before enabling the operation:
@@ -382,9 +390,10 @@ Before deployment, `mix spectre.doctor --strict` performs read-only runtime and
 Foundation checks. Pass `--agent MyApp.Agent` to inspect its compiled
 Definition, Manifest, configured Stack, and Checkpoint Store callback shape;
 use `--format json` for automation. `Spectre.Doctor.run/1` also accepts an
-explicit package matrix for release tooling. Database connectivity, migrations,
-and package-specific health checks remain in the adapter package that owns
-them.
+explicit Journal or Receipt Sink configuration and reports the three erasure
+callback postures without invoking those stores. Database connectivity,
+migrations, and package-specific health checks remain in the adapter package
+that owns them.
 
 Agent diagnostics also warn about planner-visible actions without `protect`,
 planner schemas that are unconstrained or omit `additionalProperties: false`

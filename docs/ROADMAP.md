@@ -5,6 +5,16 @@ application business logic. The core keeps one canonical Definition and one
 Instance owner for conversational and operational state; adapters and
 distributed integration do not introduce a second runtime owner.
 
+## 0.3.3 ownership, erasure, policy addressing, and Instance efficiency
+
+The 0.3.3 core adds executable Owner conformance, coordinated offline Instance
+erasure, externally addressed policy gates, and bounded disposable boot work.
+Erasure now preflights and orders configured Journal, pending receipt-payload,
+and checkpoint deletion, while durable checkpoint markers block later Instance
+resurrection. The operational scope and host responsibilities are documented
+in [Instance data lifecycle](DATA_LIFECYCLE.md) and
+[Offline Instance erasure](ERASURE.md).
+
 ## 0.3.2 inference Invocations and boundary receipts
 
 Inference now crosses the same portable, revision-fenced Invocation boundary

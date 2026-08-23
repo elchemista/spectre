@@ -75,13 +75,19 @@ defmodule MyApp.ReceiptSink do
 
   @impl true
   def get_payload(ref, opts), do: :not_found
+
+  @impl true
+  def delete_payload(ref, opts), do: {:ok, :not_found}
 end
 ```
 
 Run `Spectre.Receipt.Sink.Conformance.run/1` against an isolated sink instance.
-The conformance suite verifies append, exact idempotency, lookup and payload
-round-trip. It cannot certify database durability, transactions, retention,
-encryption, tenancy or deployment topology.
+The conformance suite verifies append, exact idempotency, lookup, payload
+round-trip, idempotent deletion, and deletion read-back. The deletion callback
+is used by offline Instance erasure for payloads still retained in the required
+outbox; see [Offline Instance erasure](ERASURE.md). The suite cannot certify
+database durability, transactions, retention, encryption, tenancy, or
+deployment topology.
 
 ## Privacy and claims
 

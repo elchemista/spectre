@@ -15,13 +15,17 @@ defmodule Spectre.Receipt.Sink.Conformance do
          :not_found <- Sink.lookup(sink, envelope.id <> ":missing", []),
          {:ok, payload_ref} <- Sink.put_payload(sink, envelope, []),
          true <- payload_ref == Sink.payload_ref(envelope),
-         {:ok, ^envelope} <- Sink.get_payload(sink, payload_ref, []) do
+         {:ok, ^envelope} <- Sink.get_payload(sink, payload_ref, []),
+         {:ok, :deleted} <- Sink.delete_payload(sink, payload_ref, []),
+         :not_found <- Sink.get_payload(sink, payload_ref, []),
+         {:ok, :not_found} <- Sink.delete_payload(sink, payload_ref, []) do
       {:ok,
        %{
          append: :verified,
          idempotency: :verified,
          lookup: :verified,
-         payload_store: :verified
+         payload_store: :verified,
+         payload_erasure: :verified
        }}
     else
       {:error, reason} -> {:error, {:receipt_sink_conformance_failed, reason}}

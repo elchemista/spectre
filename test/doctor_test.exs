@@ -43,6 +43,33 @@ defmodule SpectreDoctorTest.EmptyCheckpointStore do
   @moduledoc false
 end
 
+defmodule SpectreDoctorTest.ErasureReadyCheckpointStore do
+  @moduledoc false
+  @behaviour Spectre.Instance.CheckpointStore
+  def load(_ref, _opts), do: raise("doctor must not read")
+
+  def compare_and_swap(_ref, _checkpoint, _expected, _revision, _opts),
+    do: raise("doctor must not write")
+
+  def erase(_ref, _request, _opts), do: raise("doctor must not erase")
+  def erasure_status(_ref, _opts), do: raise("doctor must not read markers")
+end
+
+defmodule SpectreDoctorTest.ErasureReadyJournalStore do
+  @moduledoc false
+  @behaviour Spectre.Journal.Store
+  def append(_record, _opts), do: raise("doctor must not append")
+  def erase_instance(_ref, _opts), do: raise("doctor must not erase journal")
+end
+
+defmodule SpectreDoctorTest.ErasureReadyReceiptSink do
+  @moduledoc false
+  @behaviour Spectre.Receipt.Sink
+  def append(_envelope, _opts), do: raise("doctor must not append receipts")
+  def lookup(_id, _opts), do: raise("doctor must not read receipts")
+  def delete_payload(_ref, _opts), do: raise("doctor must not erase payloads")
+end
+
 defmodule SpectreDoctorTest.Agent do
   @moduledoc false
   use Spectre.Agent, id: :doctor_agent, version: 1, stack: SpectreDoctorTest.Stack
@@ -222,7 +249,7 @@ defmodule SpectreDoctorTest do
     assert {:ok, report} =
              Doctor.run(agent: SpectreDoctorTest.Agent, packages: [SpectreDoctorTest.Package])
 
-    assert report.status == :ok
+    assert report.status == :warning
     checks = Map.new(report.checks, &{&1.id, &1})
     assert checks["foundation.contract"].code == :foundation_contract_valid
     assert checks["agent.definition"].code == :agent_definition_valid
@@ -230,13 +257,39 @@ defmodule SpectreDoctorTest do
     assert checks["stack.compatibility"].code == :stack_definition_valid
     assert checks["packages.compatibility"].code == :packages_matrix_valid
     assert checks["checkpoint_store.config"].code == :checkpoint_store_callbacks_valid
+    assert checks["privacy.checkpoint_erasure"].code == :checkpoint_erasure_unsupported
+    assert checks["privacy.journal_erasure"].code == :journal_erasure_not_configured
+
+    assert checks["privacy.receipt_payload_erasure"].code ==
+             :receipt_payload_erasure_not_configured
+
     refute Map.has_key?(checks, "foundation.roundtrip")
     refute Enum.any?(Map.keys(checks), &String.starts_with?(&1, "ecosystem."))
 
     json = Report.format(report, :json)
     refute json =~ "super-secret"
     refute json =~ "doctor must not"
-    assert Jason.decode!(json)["status"] == "ok"
+    assert Jason.decode!(json)["status"] == "warning"
+  end
+
+  test "privacy posture verifies erasure callbacks without invoking adapters" do
+    assert {:ok, report} =
+             Doctor.run(
+               checkpoint_store: SpectreDoctorTest.ErasureReadyCheckpointStore,
+               journal: SpectreDoctorTest.ErasureReadyJournalStore,
+               receipt_sink: SpectreDoctorTest.ErasureReadyReceiptSink
+             )
+
+    assert %{status: :ok, code: :checkpoint_erasure_ready} =
+             find(report, "privacy.checkpoint_erasure")
+
+    assert %{status: :ok, code: :journal_erasure_ready} =
+             find(report, "privacy.journal_erasure")
+
+    assert %{status: :ok, code: :receipt_payload_erasure_ready} =
+             find(report, "privacy.receipt_payload_erasure")
+
+    refute Report.format(report, :json) =~ "doctor must not"
   end
 
   test "failures and option validation expose stable codes without reasons" do

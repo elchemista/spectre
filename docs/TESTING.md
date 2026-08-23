@@ -128,11 +128,18 @@ assert {:ok, erasure_report} =
          )
 
 assert erasure_report.post_erasure_write == :rejected
+assert erasure_report.neighbor_isolation == :verified
+
+assert {:ok, receipt_report} =
+         Spectre.Receipt.Sink.Conformance.run(MyApp.ReceiptSink)
+
+assert receipt_report.payload_erasure == :verified
 ```
 
 Both refs must be fresh and isolated. The erasure runner intentionally leaves
 anti-resurrection markers behind; use a disposable namespace rather than a
-shared fixture database.
+shared fixture database. Journal adapters must additionally test idempotent,
+exact-Ref `erase_instance/2` behavior in their own storage suite.
 
 ## Instance performance budgets
 

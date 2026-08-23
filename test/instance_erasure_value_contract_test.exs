@@ -124,7 +124,25 @@ defmodule SpectreInstanceErasureValueContractTest do
       marker_digest: @digest
     }
 
-    attrs = [outcome: :erased, owner_fencing_token: 12, completed_at: 13, keys: [key]]
+    components = %{
+      journal: %{outcome: :not_configured, key_count: 0},
+      receipt_payloads: %{
+        outcome: :not_configured,
+        payload_count: 0,
+        deleted_count: 0,
+        not_found_count: 0
+      },
+      checkpoint: %{outcome: :erased, key_count: 1}
+    }
+
+    attrs = [
+      outcome: :erased,
+      owner_fencing_token: 12,
+      completed_at: 13,
+      components: components,
+      keys: [key]
+    ]
+
     assert {:ok, %Proof{} = proof} = Proof.new(ref, attrs)
     assert :ok = Proof.validate(proof)
 
@@ -134,6 +152,7 @@ defmodule SpectreInstanceErasureValueContractTest do
           %{proof | outcome: :unknown},
           %{proof | owner_fencing_token: 0},
           %{proof | completed_at: -1},
+          %{proof | components: %{}},
           %{proof | keys: []},
           %{proof | keys: [%{key | kind: :unknown}]},
           %{proof | keys: [%{key | marker_digest: "short"}]}

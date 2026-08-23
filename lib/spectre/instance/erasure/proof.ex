@@ -1,17 +1,18 @@
 defmodule Spectre.Instance.Erasure.Proof do
   @moduledoc """
-  Privacy-safe proof of canonical Instance checkpoint erasure.
+  Privacy-safe proof of configured Instance-data erasure.
 
-  This proof is intentionally scoped. It says nothing about State or Memory
-  stores, receipt payloads, Journal sinks, telemetry, provider logs, replicas,
-  or backups owned by the host.
+  The component map covers the configured Journal store, receipt payloads
+  still referenced by the canonical outbox, and stable/legacy checkpoints.
+  It says nothing about State or Memory stores, delivered receipt records,
+  telemetry, provider logs, replicas, exports, or backups owned by the host.
   """
 
   alias Spectre.Canonical.Value
   alias Spectre.Instance.Ref
 
   @schema_version 1
-  @scope :canonical_instance_checkpoint
+  @scope :configured_instance_data
   @outcomes [:erased, :already_erased]
 
   @enforce_keys [
@@ -21,6 +22,7 @@ defmodule Spectre.Instance.Erasure.Proof do
     :outcome,
     :owner_fencing_token,
     :completed_at,
+    :components,
     :keys
   ]
   defstruct schema_version: @schema_version,
@@ -29,6 +31,7 @@ defmodule Spectre.Instance.Erasure.Proof do
             outcome: nil,
             owner_fencing_token: nil,
             completed_at: nil,
+            components: %{},
             keys: []
 
   @type key_proof :: %{
@@ -41,10 +44,11 @@ defmodule Spectre.Instance.Erasure.Proof do
   @type t :: %__MODULE__{
           schema_version: pos_integer(),
           instance_key: String.t(),
-          scope: :canonical_instance_checkpoint,
+          scope: :configured_instance_data,
           outcome: :erased | :already_erased,
           owner_fencing_token: pos_integer(),
           completed_at: non_neg_integer(),
+          components: map(),
           keys: [key_proof()]
         }
 
@@ -60,6 +64,7 @@ defmodule Spectre.Instance.Erasure.Proof do
       outcome: Map.get(attrs, :outcome),
       owner_fencing_token: Map.get(attrs, :owner_fencing_token),
       completed_at: Map.get(attrs, :completed_at),
+      components: Map.get(attrs, :components, %{}),
       keys: Map.get(attrs, :keys, [])
     }
 
@@ -80,6 +85,7 @@ defmodule Spectre.Instance.Erasure.Proof do
          true <- proof.outcome in @outcomes,
          true <- is_integer(proof.owner_fencing_token) and proof.owner_fencing_token > 0,
          true <- is_integer(proof.completed_at) and proof.completed_at >= 0,
+         :ok <- components(proof.components),
          :ok <- keys(proof.keys),
          :ok <- Value.validate(Map.from_struct(proof)) do
       :ok
@@ -90,6 +96,48 @@ defmodule Spectre.Instance.Erasure.Proof do
   end
 
   def validate(value), do: {:error, {:invalid_instance_erasure_proof, shape(value)}}
+
+  defp components(%{
+         journal: journal,
+         receipt_payloads: receipt_payloads,
+         checkpoint: checkpoint
+       }) do
+    with :ok <- journal_component(journal),
+         :ok <- receipt_component(receipt_payloads),
+         :ok <- checkpoint_component(checkpoint) do
+      :ok
+    else
+      {:error, :invalid_component} -> {:error, :invalid_instance_erasure_proof_components}
+    end
+  end
+
+  defp components(_components), do: {:error, :invalid_instance_erasure_proof_components}
+
+  defp journal_component(%{outcome: outcome, key_count: count})
+       when outcome in [:erased, :already_erased, :not_configured] and is_integer(count) and
+              count >= 0,
+       do: :ok
+
+  defp journal_component(_component), do: {:error, :invalid_component}
+
+  defp receipt_component(%{
+         outcome: outcome,
+         payload_count: total,
+         deleted_count: deleted,
+         not_found_count: not_found
+       })
+       when outcome in [:erased, :already_erased, :not_configured] and is_integer(total) and
+              total >= 0 and is_integer(deleted) and deleted >= 0 and is_integer(not_found) and
+              not_found >= 0 and deleted + not_found == total,
+       do: :ok
+
+  defp receipt_component(_component), do: {:error, :invalid_component}
+
+  defp checkpoint_component(%{outcome: outcome, key_count: count})
+       when outcome in @outcomes and is_integer(count) and count > 0,
+       do: :ok
+
+  defp checkpoint_component(_component), do: {:error, :invalid_component}
 
   defp keys(entries) when is_list(entries) and entries != [] do
     valid? =

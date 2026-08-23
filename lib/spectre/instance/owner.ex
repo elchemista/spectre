@@ -37,6 +37,14 @@ defmodule Spectre.Instance.Owner do
 
   def normalize(value), do: {:error, {:invalid_instance_owner, value}}
 
+  @doc "Checks whether an Owner can fence an offline maintenance operation."
+  @spec maintenance_capability(config()) :: :ok | {:error, term()}
+  def maintenance_capability(config) do
+    with {:ok, {module, _adapter_opts}} <- normalize(config),
+         :ok <- ensure_maintenance_callback(module),
+         do: ensure_callback(module, :validate, 3)
+  end
+
   @doc "Claims ownership and validates the returned portable lease."
   @spec claim(config(), Ref.t(), keyword()) ::
           {:ok, {module(), keyword()}, Lease.t()} | {:error, term()}
@@ -66,7 +74,7 @@ defmodule Spectre.Instance.Owner do
 
   def claim_maintenance(config, %Ref{} = ref, purpose, opts) when is_atom(purpose) do
     with {:ok, {module, adapter_opts} = normalized} <- normalize(config),
-         :ok <- ensure_maintenance_callback(module),
+         :ok <- maintenance_capability(normalized),
          {:ok, reply} <-
            invoke(module, :claim_maintenance, [
              ref,

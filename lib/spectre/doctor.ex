@@ -11,13 +11,15 @@ defmodule Spectre.Doctor do
   alias Spectre.EffectConfig
   alias Spectre.Foundation.Conformance, as: Foundation
   alias Spectre.Instance.CheckpointStore
+  alias Spectre.Journal.Store, as: JournalStore
   alias Spectre.Operation.Delivery.Consent
   alias Spectre.Prompt.AssetAudit
+  alias Spectre.Receipt.Sink, as: ReceiptSink
   alias Spectre.Stack.Conformance, as: StackConformance
   alias Spectre.Stack.Definition, as: StackDefinition
 
   @contract_version 1
-  @options [:agent, :checkpoint_store, :consents, :packages, :stack]
+  @options [:agent, :checkpoint_store, :consents, :journal, :packages, :receipt_sink, :stack]
   @egress_allowlist_keys [
     :allowlist,
     :egress_allowlist,
@@ -50,6 +52,15 @@ defmodule Spectre.Doctor do
             safe("packages.compatibility", fn -> packages_check(opts[:packages]) end),
             safe("checkpoint_store.config", fn ->
               checkpoint_check(option(opts, :checkpoint_store, definition))
+            end),
+            safe("privacy.checkpoint_erasure", fn ->
+              checkpoint_erasure_check(option(opts, :checkpoint_store, definition))
+            end),
+            safe("privacy.journal_erasure", fn ->
+              journal_erasure_check(option(opts, :journal, definition))
+            end),
+            safe("privacy.receipt_payload_erasure", fn ->
+              receipt_erasure_check(option(opts, :receipt_sink, definition))
             end)
           ]
 
@@ -520,6 +531,8 @@ defmodule Spectre.Doctor do
   defp option(opts, name, nil), do: opts[name]
   defp definition_option(definition, :stack), do: definition.stack
   defp definition_option(definition, :checkpoint_store), do: definition.config[:checkpoint_store]
+  defp definition_option(definition, :journal), do: definition.config[:journal]
+  defp definition_option(definition, :receipt_sink), do: definition.config[:receipt_sink]
 
   defp stack_check(nil), do: check(:skipped, "stack.compatibility", :stack_not_configured)
 
@@ -603,6 +616,71 @@ defmodule Spectre.Doctor do
     details = if module, do: %{module: inspect(module)}, else: %{}
     check(:error, "checkpoint_store.config", code, details)
   end
+
+  defp checkpoint_erasure_check(value) when value in [nil, false],
+    do: check(:skipped, "privacy.checkpoint_erasure", :checkpoint_erasure_not_configured)
+
+  defp checkpoint_erasure_check(value) do
+    with {:ok, checkpoint} <- CheckpointStore.normalize(value),
+         :ok <- CheckpointStore.erasure_capability(checkpoint) do
+      check(:ok, "privacy.checkpoint_erasure", :checkpoint_erasure_ready)
+    else
+      {:error, {:checkpoint_store_not_loaded, module}} ->
+        privacy_error("privacy.checkpoint_erasure", :checkpoint_erasure_store_unavailable, module)
+
+      {:error, _reason} ->
+        privacy_warning("privacy.checkpoint_erasure", :checkpoint_erasure_unsupported)
+    end
+  end
+
+  defp journal_erasure_check(value) when value in [nil, false],
+    do: check(:skipped, "privacy.journal_erasure", :journal_erasure_not_configured)
+
+  defp journal_erasure_check(value) do
+    with {:ok, journal} <- JournalStore.normalize(value),
+         :ok <- JournalStore.erasure_capability(journal) do
+      check(:ok, "privacy.journal_erasure", :journal_erasure_ready)
+    else
+      {:error, {:journal_store_not_loaded, module}} ->
+        privacy_error("privacy.journal_erasure", :journal_erasure_store_unavailable, module)
+
+      {:error, _reason} ->
+        privacy_warning("privacy.journal_erasure", :journal_erasure_unsupported)
+    end
+  end
+
+  defp receipt_erasure_check(value) when value in [nil, false],
+    do:
+      check(
+        :skipped,
+        "privacy.receipt_payload_erasure",
+        :receipt_payload_erasure_not_configured
+      )
+
+  defp receipt_erasure_check(value) do
+    with {:ok, sink} <- ReceiptSink.normalize(value),
+         :ok <- ReceiptSink.payload_erasure_capability(sink) do
+      check(:ok, "privacy.receipt_payload_erasure", :receipt_payload_erasure_ready)
+    else
+      {:error, {:receipt_sink_not_loaded, module}} ->
+        privacy_error(
+          "privacy.receipt_payload_erasure",
+          :receipt_payload_erasure_sink_unavailable,
+          module
+        )
+
+      {:error, _reason} ->
+        privacy_warning(
+          "privacy.receipt_payload_erasure",
+          :receipt_payload_erasure_unsupported
+        )
+    end
+  end
+
+  defp privacy_warning(id, code), do: check(:warning, id, code)
+
+  defp privacy_error(id, code, module),
+    do: check(:error, id, code, %{module: inspect(module)})
 
   defp check(status, id, code, details \\ %{}) do
     summary = code |> Atom.to_string() |> String.replace("_", " ")

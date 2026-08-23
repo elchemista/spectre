@@ -6,7 +6,7 @@ explains how the pieces fit together and which layer an integration should use.
 
 Spectre `0.3.3` extends the governed reflective runtime with first-class
 inference Invocations, bounded Instance-owned streaming, optional boundary
-receipts, ownership conformance, fenced offline checkpoint erasure, and an
+receipts, ownership conformance, fenced offline configured-data erasure, and an
 additive reply-sanitizer port for host-owned model policy.
 The current Run and format-tagged Instance checkpoint writers are version 3.
 Their readers accept Run versions 1–3 and tagged Instance versions 2–3;
@@ -561,11 +561,13 @@ Prefer supervised `Spectre.instance/4` in production. See
 per-Run lifecycle ownership, and serialized capability execution.
 
 After an Instance has been drained and stopped, `Spectre.erase_instance/3`
-can remove its canonical checkpoint through an erasure-capable Store and a
-non-preemptive maintenance Owner. The exact stable Ref key is a mandatory
-confirmation value. Its proof does not cover host-owned State, Memory,
-receipt, Journal, telemetry, provider, replica, or backup data; see
-[Production Operations](PRODUCTION.md).
+coordinates configured Journal records, receipt payloads still retained by the
+required outbox, and stable/legacy checkpoints under a non-preemptive
+maintenance Owner. The exact stable Ref key is a mandatory confirmation value.
+Use the I/O-free `Spectre.Privacy.erasure_plan/3` first. The proof does not
+cover delivered receipt records, host State or Memory, telemetry, providers,
+replicas, exports, or backups; see [Instance data lifecycle](DATA_LIFECYCLE.md)
+and [Offline Instance erasure](ERASURE.md).
 
 ### Operational Work and Vigil
 
@@ -812,7 +814,8 @@ contract and `--strict` treats warnings as a failure. Programmatic callers can
 pass an explicit Stack or package matrix to `Spectre.Doctor.run/1`. Doctor
 inspects compiled public metadata and side-effect-free action discovery
 catalogs; it does not execute actions, start package resources or read/write a
-store.
+store. Its privacy checks also report whether configured Checkpoint, Journal,
+and Receipt adapters expose their erasure callbacks.
 
 The Agent report includes named checks for planner action protection, executor
 egress allowlists and reply sanitization. Pass runtime delivery consent samples

@@ -209,15 +209,17 @@ defmodule Spectre do
   end
 
   @doc """
-  Erases the durable canonical checkpoint for one offline Instance.
+  Erases configured data for one offline Instance.
 
   The operation refuses a live local Instance, requires an erasure-capable
-  Checkpoint Store and Owner, and installs a fenced anti-resurrection marker.
+  Checkpoint Store and Owner, erases configured Journal and pending receipt
+  payload data first, and installs a fenced anti-resurrection marker.
   `:confirm` must equal the exact stable `Spectre.Instance.Ref.key`.
 
-  The returned proof covers only the canonical Instance checkpoint. Host-owned
-  State, Memory, receipt, Journal, telemetry, provider, replica, and backup
-  data require their own retention and erasure procedures.
+  The returned proof covers configured Journal records, pending receipt
+  payloads referenced by the canonical outbox, and stable/legacy Instance
+  checkpoints. Delivered receipt records and host-owned State, Memory,
+  telemetry, provider, replica, export, and backup data remain outside it.
   """
   @spec erase_instance(
           module() | Spectre.AgentRef.t() | Spectre.Instance.Ref.t(),

@@ -112,7 +112,7 @@ cross-Ref isolation, and exactly one current lease after concurrent claims;
 the local profile intentionally relies on the unique local Registry instead
 of claiming cross-node safety.
 
-### Offline checkpoint erasure
+### Offline configured-data erasure
 
 The canonical checkpoint can be erased only while the Instance is offline:
 
@@ -123,18 +123,19 @@ ref = Spectre.Instance.Ref.new(MyApp.SupportAgent, subject)
   Spectre.erase_instance(MyApp.SupportAgent, subject,
     checkpoint_store: MyApp.Checkpoints,
     owner: MyApp.InstanceOwner,
+    journal: MyApp.Journal,
+    receipt_sink: MyApp.Receipts,
     confirm: ref.key
   )
 ```
 
-The Checkpoint Store must atomically replace either a present checkpoint or an
-observed absence with an anti-resurrection marker. The Owner must expose a
-non-preemptive maintenance claim. Existing adapters remain valid for normal
-Instance operation when those optional callbacks are absent, but erasure
-returns an explicit capability error. The proof covers stable and applicable
-legacy checkpoint keys only; see [Production Operations](PRODUCTION.md) for
-the host-owned data that remains outside its scope and the adapter conformance
-gates.
+The coordinator deletes configured Journal records and pending receipt
+payloads before atomically replacing present or absent checkpoint keys with
+anti-resurrection markers. The Owner must expose a non-preemptive maintenance
+claim. Existing adapters remain valid for normal Instance operation when the
+optional deletion callbacks are absent, but configured-data erasure returns an
+explicit capability error. See [Offline Instance erasure](ERASURE.md) and
+[Instance data lifecycle](DATA_LIFECYCLE.md) for proof scope and host-owned data.
 
 ### Private Skill state
 

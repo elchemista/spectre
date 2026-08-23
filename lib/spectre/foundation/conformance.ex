@@ -112,6 +112,7 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre, :turn, 2},
         {Spectre, :instance, 3},
         {Spectre, :erase_instance, 3},
+        {Spectre.Privacy, :erasure_plan, 3},
         {Spectre, :activate, 2},
         {Spectre, :rollback, 3},
         {Spectre.Definition, :canonical, 1},
