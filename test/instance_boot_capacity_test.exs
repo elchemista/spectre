@@ -357,7 +357,7 @@ defmodule SpectreInstanceBootCapacityTest do
              Boot.run(fn -> :ok end, capacity: unavailable)
 
     assert [{:error, {:instance_boot_capacity_unavailable, _reason}}] =
-             Boot.map([:entry], fn _entry -> :ok end, capacity: unavailable)
+             Boot.map([:first, :second], fn _entry -> :ok end, capacity: unavailable)
 
     assert :ok = BootCapacity.cancel(make_ref(), unavailable)
   end
