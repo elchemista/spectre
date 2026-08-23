@@ -106,11 +106,14 @@ external awaitable accepts only a `%Spectre.Policy.Resolution{source: :host}`;
 the compact tuple form constructs that trusted source. Journal policy records
 include both `source` and `resolver`.
 
-Only one protected approval may be pending in this first version. A second
-protected action is rejected without staging another effect. Configure
-`approval_pending_reply/2` to turn that typed `:approval_pending` outcome into
-a normal customer-facing reply. Expiration and `Spectre.cancel/2` retain their
-existing cancellation semantics.
+Only one protected approval may be pending in this first version. A Session
+cannot stage another effect while the waiting effect remains, so protected and
+unprotected action attempts both produce the typed `:approval_pending`
+outcome without staging anything. Configure `approval_pending_reply/2` to turn
+it into a normal customer-facing reply. Instance Runs remain isolated: an
+unprotected action in another Run may proceed, but a protected action is
+rejected globally and cannot open a second gate. Expiration and
+`Spectre.cancel/2` retain their existing cancellation semantics.
 
 `Spectre.execute/3` rejects `:waiting_policy` effects. It also injects
 `:effect_id` and `:idempotency_key` into `ctx.opts`, so application code can

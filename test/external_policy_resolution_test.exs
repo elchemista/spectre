@@ -3,6 +3,7 @@ defmodule SpectreExternalPolicyResolutionTest.Actions do
 
   def transfer(args, _ctx), do: {:ok, {:transferred, args}}
   def delete(args, _ctx), do: {:ok, {:deleted, args}}
+  def status(args, _ctx), do: {:ok, {:status, args}}
 end
 
 defmodule SpectreExternalPolicyResolutionTest.Renderer do
@@ -61,6 +62,10 @@ defmodule SpectreExternalPolicyResolutionTest.Agent do
         reply: :approval_requested,
         renderer: {SpectreExternalPolicyResolutionTest.Renderer, :render}
       )
+    end
+
+    on :STATUS, regex: ~r/^status$/i do
+      action(:status, args: %{scope: :current})
     end
 
     on :CHAT, regex: ~r/\S/u do
@@ -472,6 +477,28 @@ defmodule SpectreExternalPolicyResolutionTest do
     assert id == first.id
   end
 
+  test "an unprotected Session action gets the same approval-pending surface" do
+    session = start_session()
+
+    assert {:ok, opened} = Spectre.ask(session, "transfer")
+    first = Result.open_awaitable(opened)
+    before_rejection = Spectre.state(session)
+
+    assert {:ok, rejected} = Spectre.ask(session, "status")
+    assert rejected.reply_text == "approval already pending"
+
+    assert rejected.metadata.policy_rejection == %{
+             code: :approval_pending,
+             awaitable_id: first.id
+           }
+
+    after_rejection = Spectre.state(session)
+    assert after_rejection.pending_effects == before_rejection.pending_effects
+    assert after_rejection.planned_effects == before_rejection.planned_effects
+    assert after_rejection.awaitables == before_rejection.awaitables
+    assert after_rejection.revision == before_rejection.revision + 1
+  end
+
   test "approval-pending reply configuration remains optional and validated" do
     state = external_policy_state()
     awaitable = State.open_policy_awaitable(state)
@@ -508,6 +535,14 @@ defmodule SpectreExternalPolicyResolutionTest do
     assert {:ok, chat_turn} = Spectre.turn(instance, "yes")
     assert {:reply, %Result{reply_text: "chat:yes"}} = chat_turn.decision
     assert {:reply, "chat:yes", _ref} = chat_turn.observable
+
+    assert {:ok, status_turn} = Spectre.turn(instance, "status")
+
+    assert {:needs, %Effect{name: :status, status: :pending}, status_result} =
+             status_turn.decision
+
+    assert {:ok, status_completed} = Spectre.execute(instance, status_result)
+    assert {:ok, {:status, %{scope: :current}}} = Result.action_outcome(status_completed)
 
     assert %Awaitable{attempts: 0, status: :open, resolver: :external} =
              State.open_policy_awaitable(Spectre.state(instance))

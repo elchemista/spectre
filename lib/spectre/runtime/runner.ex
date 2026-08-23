@@ -787,14 +787,14 @@ defmodule Spectre.Runner do
 
   @spec ensure_no_pending_effect(Spectre.State.t(), String.t() | nil, map() | nil) ::
           :ok | {:error, term()}
-  defp ensure_no_pending_effect(%Spectre.State{} = state, run_id, protection) do
+  defp ensure_no_pending_effect(%Spectre.State{} = state, run_id, _protection) do
     case Spectre.State.pending_effect(state, run_id) do
       nil ->
         :ok
 
       %Effect{} = effect ->
-        case {protection, Spectre.State.open_policy_awaitable(state)} do
-          {%{} = _protection, %Spectre.Awaitable{resolver: :external} = awaitable} ->
+        case Spectre.State.open_policy_awaitable(state) do
+          %Spectre.Awaitable{resolver: :external} = awaitable ->
             {:error, {:approval_pending, awaitable.id}}
 
           _other ->

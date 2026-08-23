@@ -158,8 +158,10 @@ What they mean:
 - `protect/2` defaults to `resolver: :conversation`. With
   `resolver: :external`, user turns keep routing normally and only a trusted
   host resolution may close the policy awaitable.
-- `approval_pending_reply/2` renders the reply for a second protected action
-  while an external approval remains open; no second gate is created.
+- `approval_pending_reply/2` renders the reply when a Session action cannot
+  stage another effect while an external approval remains open; no second gate
+  is created. In Instance mode, unprotected actions in independent Runs remain
+  isolated and may proceed.
 - `turn_handler/2` appends an optional owner of a complete normal turn.
 - `actions/2` mounts an ordinary Elixir module as the built-in `:local` action
   provider.

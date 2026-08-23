@@ -491,9 +491,11 @@ The id is checked against current state. Wrong, closed, expired, and repeated
 resolutions are typed errors with no mutation. Instances also accept the
 transport-safe `turn.boundary.request.id`. Only host-sourced resolutions may
 close an external gate; policy journal records distinguish the `:host` source
-and `:external` resolver. A second protected action remains unsupported while
-one external gate is open and can be surfaced with the Agent DSL
-`approval_pending_reply/2`.
+and `:external` resolver. A Session cannot stage another effect while its first
+effect waits; protected and unprotected action attempts share the configurable
+`approval_pending_reply/2` surface. Instance Runs remain isolated: an
+unprotected action in another Run may proceed, while a second protected action
+is rejected globally so it cannot open another approval gate.
 
 Execution remains explicit and separate from approval:
 
