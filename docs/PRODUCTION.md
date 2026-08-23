@@ -123,9 +123,16 @@ a restored backup cannot lower the floor.
 Run `Spectre.Instance.Owner.Conformance` with `profile: :distributed` against
 the production adapter before a rolling deploy. The gate proves supersession,
 cross-Ref isolation, one current race winner, and—when `release/3` is
-implemented—that a released lease immediately fails validation. An omitted
-release callback is reported as `:optional_noop`; in that case the host must
-document and rehearse its expiry or revocation path before deployment.
+implemented—that a released lease immediately fails validation and the next
+claim advances its fencing token. An omitted release callback is reported as
+`:optional_noop`; in that case the host must document and rehearse its expiry
+or revocation path before deployment.
+
+These contracts deliberately do not provide Instance placement, node
+membership or discovery, leader election, traffic routing, failover
+orchestration, lease storage, or replication. Those remain host concerns; the
+Owner boundary only makes their resulting authority observable and fenceable
+inside Spectre.
 
 ### Offline Instance data erasure
 

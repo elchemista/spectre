@@ -6,7 +6,8 @@ defmodule Spectre.Instance.Owner.Conformance do
   the unique local Instance Registry. It deliberately makes no claim about
   cross-node supersession. The `:distributed` profile additionally requires
   monotonic fencing, supersession, cross-Ref isolation, and a single current
-  lease after concurrent claims.
+  lease after concurrent claims. When an adapter exports `release/3`, the gate
+  also proves immediate invalidation and a strictly newer post-release claim.
 
   The runner has no ExUnit dependency. Adapter authors can call it from their
   own test suites with fresh, isolated Instance references.
@@ -146,18 +147,24 @@ defmodule Spectre.Instance.Owner.Conformance do
   end
 
   defp successful_leases(outcomes) do
-    Enum.reduce_while(outcomes, {:ok, []}, fn
+    Enum.reduce(outcomes, {:ok, []}, fn
       {:ok, {:ok, _normalized, %Lease{} = lease}}, {:ok, leases} ->
-        {:cont, {:ok, [lease | leases]}}
+        {:ok, [lease | leases]}
+
+      {:ok, {:ok, _normalized, %Lease{} = lease}}, {:error, code, leases} ->
+        {:error, code, [lease | leases]}
 
       {:ok, {:error, _reason}}, {:ok, leases} ->
-        {:cont, {:ok, leases}}
+        {:ok, leases}
 
       {:exit, _reason}, {:ok, leases} ->
-        {:halt, {:error, :contender_exit, leases}}
+        {:error, :contender_exit, leases}
 
       _invalid, {:ok, leases} ->
-        {:halt, {:error, :invalid_contender_reply, leases}}
+        {:error, :invalid_contender_reply, leases}
+
+      _later_failure, {:error, code, leases} ->
+        {:error, code, leases}
     end)
     |> case do
       {:ok, []} -> {:error, :no_successful_claim, []}
@@ -220,14 +227,32 @@ defmodule Spectre.Instance.Owner.Conformance do
 
   defp release_semantics(owner, {module, _adapter_opts}, ref, minimum) do
     if Code.ensure_loaded?(module) and function_exported?(module, :release, 3) do
-      with {:ok, _normalized, %Lease{} = lease} <- claim(owner, ref, minimum),
-           :ok <- validates(owner, ref, lease, :release),
-           :ok <- release(owner, ref, lease),
-           :ok <- rejects(owner, ref, lease, :release) do
-        {:ok, :verified}
+      with {:ok, _normalized, %Lease{} = lease} <- claim(owner, ref, minimum) do
+        try do
+          with :ok <- validates(owner, ref, lease, :release),
+               :ok <- release(owner, ref, lease),
+               :ok <- rejects(owner, ref, lease, :release) do
+            verify_post_release_reclaim(owner, ref, lease.fencing_token)
+          end
+        after
+          _ = Owner.release(owner, ref, lease)
+        end
       end
     else
       {:ok, :optional_noop}
+    end
+  end
+
+  defp verify_post_release_reclaim(owner, ref, minimum) do
+    with {:ok, _normalized, %Lease{} = replacement} <- reclaim(owner, ref, minimum) do
+      try do
+        case validates(owner, ref, replacement, :release_reclaim) do
+          :ok -> {:ok, :verified}
+          {:error, _reason} = error -> error
+        end
+      after
+        _ = Owner.release(owner, ref, replacement)
+      end
     end
   end
 

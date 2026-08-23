@@ -250,7 +250,10 @@ defmodule SpectreInstanceOwnerConformanceTest.ConcurrencyFaultOwner do
   alias Spectre.Instance.Owner.Lease
 
   def start_link(mode),
-    do: Agent.start_link(fn -> %{mode: mode, next: 0, current: %{}, attempts: 0} end)
+    do:
+      Agent.start_link(fn ->
+        %{mode: mode, next: 0, current: %{}, attempts: 0, validations: %{}}
+      end)
 
   @impl true
   def claim(ref, opts) do
@@ -282,6 +285,9 @@ defmodule SpectreInstanceOwnerConformanceTest.ConcurrencyFaultOwner do
       {:duplicate_tokens, value} when value >= 2 ->
         issue(server, ref, minimum + 1, false)
 
+      {:no_current, value} when value >= 2 ->
+        issue(server, ref, minimum + 1, true, :first_validation_only)
+
       _other ->
         issue(server, ref, minimum + 1, true)
     end
@@ -289,11 +295,21 @@ defmodule SpectreInstanceOwnerConformanceTest.ConcurrencyFaultOwner do
 
   @impl true
   def validate(ref, lease, opts) do
-    state = Agent.get(Keyword.fetch!(opts, :server), & &1)
+    server = Keyword.fetch!(opts, :server)
+
+    state =
+      Agent.get_and_update(server, fn state ->
+        validations = Map.update(state.validations, lease.fencing_token, 1, &(&1 + 1))
+        {state, %{state | validations: validations}}
+      end)
 
     cond do
       lease.metadata.instance_key != ref.key ->
         {:error, :instance_mismatch}
+
+      lease.metadata[:validation_mode] == :first_validation_only and
+          Map.get(state.validations, lease.fencing_token, 0) > 0 ->
+        {:error, :lease_superseded}
 
       state.mode == :multiple_current and lease.fencing_token >= 3 ->
         :ok
@@ -317,7 +333,10 @@ defmodule SpectreInstanceOwnerConformanceTest.ConcurrencyFaultOwner do
     :ok
   end
 
-  defp issue(server, ref, requested, increment?) do
+  defp issue(server, ref, requested, increment?),
+    do: issue(server, ref, requested, increment?, nil)
+
+  defp issue(server, ref, requested, increment?, validation_mode) do
     Agent.get_and_update(server, fn state ->
       token = if increment?, do: max(state.next + 1, requested), else: requested
 
@@ -326,7 +345,7 @@ defmodule SpectreInstanceOwnerConformanceTest.ConcurrencyFaultOwner do
           owner_id: "concurrency-fault-#{token}",
           fencing_token: token,
           issued_at: token,
-          metadata: %{instance_key: ref.key}
+          metadata: %{instance_key: ref.key, validation_mode: validation_mode}
         )
 
       next = %{
@@ -480,6 +499,7 @@ defmodule SpectreInstanceOwnerConformanceTest do
       {:no_successful_claim, :no_successful_claim, []},
       {:contender_timeout, :contender_exit, [timeout: 10]},
       {:duplicate_tokens, :duplicate_fencing_token, []},
+      {:no_current, :no_current_lease, []},
       {:multiple_current, :multiple_current_leases, []}
     ]
 
