@@ -401,7 +401,7 @@ defmodule SpectreReceiptContractTest do
   test "sink conformance rejects payload erasure that deletes a neighbor" do
     sink = start_supervised!({Memory, []})
 
-    assert {:error, {:receipt_sink_conformance_failed, :not_found}} =
+    assert {:error, {:receipt_sink_conformance_failed, :payload_neighbor_isolation, :not_found}} =
              Sink.Conformance.run({SpectreReceiptContractTest.BroadDeleteSink, server: sink})
   end
 

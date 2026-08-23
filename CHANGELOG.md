@@ -67,6 +67,9 @@ migration called out explicitly below.
   endpoint strings before they enter canonical state or digests.
 - Receipt erasure proofs report `:not_applicable`, rather than
   `:already_erased`, when a configured sink has no pending payload references.
+- Receipt Sink conformance failures now identify the exact rejected phase as
+  `{:receipt_sink_conformance_failed, phase, reason}`, including neighboring-
+  payload isolation failures.
 
 ### Compatibility
 
@@ -80,7 +83,8 @@ migration called out explicitly below.
   `delete_payload/2` report `payload_erasure: :not_exported`, while sinks that
   expose it are checked for exact deletion and neighboring-payload isolation.
   The erase API fails before mutation when a configured component lacks its
-  capability.
+  capability. Only assertions that matched the old error shape of an already
+  failing Receipt conformance run need to include the new phase field.
 - Defaults remain serial boot, no recurring idle hibernation, and on-heap
   stream mailboxes. The one post-boot hibernation is the only default runtime
   change and affects footprint, not message or recovery semantics.

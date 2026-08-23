@@ -87,6 +87,10 @@ round-trip and, when `delete_payload/2` is exported, idempotent exact deletion,
 deletion read-back, and neighboring-payload isolation. Existing sinks without
 the optional deletion callback still pass and report
 `payload_erasure: :not_exported`; sinks that implement it report `:verified`.
+Failures use
+`{:error, {:receipt_sink_conformance_failed, phase, reason}}`; the phase names
+the rejected boundary, such as `:lookup`, `:payload_erasure`, or
+`:payload_neighbor_isolation`, while the reason remains privacy-safe.
 The callback is used by offline Instance erasure for payloads still retained in
 the required outbox; see [Offline Instance erasure](ERASURE.md). The suite
 cannot certify database durability, transactions, retention, encryption,
