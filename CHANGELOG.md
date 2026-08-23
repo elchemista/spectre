@@ -62,6 +62,8 @@ migration called out explicitly below.
   limiter; timed-out queued entries and their process monitors are removed
   before startup fails.
 - Policy journal records now carry both the resolution source and resolver.
+- Frozen model identities strip URI userinfo from both `%URI{}` values and
+  endpoint strings before they enter canonical state or digests.
 
 ### Compatibility
 

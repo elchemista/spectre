@@ -34,4 +34,22 @@ defmodule SpectreInferenceModelIdentityTest do
     refute Map.has_key?(endpoint, :userinfo)
     refute inspect(ModelIdentity.sanitize(identity)) =~ "admin:password"
   end
+
+  test "credentialed endpoint strings lose userinfo without rewriting ordinary identities" do
+    identity = %{
+      model: "provider:reasoning-model",
+      endpoint: "https://admin:password@example.test/v1?region=eu",
+      fallbacks: ["//service:token@fallback.test/inference", "not a URI"]
+    }
+
+    assert %{
+             model: "provider:reasoning-model",
+             endpoint: "https://example.test/v1?region=eu",
+             fallbacks: ["//fallback.test/inference", "not a URI"]
+           } = ModelIdentity.sanitize(identity)
+
+    sanitized = inspect(ModelIdentity.sanitize(identity))
+    refute sanitized =~ "admin:password"
+    refute sanitized =~ "service:token"
+  end
 end

@@ -40,6 +40,19 @@ defmodule Spectre.Inference.ModelIdentity do
     |> List.to_tuple()
   end
 
+  defp sanitize_value(value) when is_binary(value) do
+    case URI.parse(value) do
+      %URI{host: host, userinfo: userinfo} = uri
+      when is_binary(host) and host != "" and is_binary(userinfo) ->
+        uri
+        |> Map.put(:userinfo, nil)
+        |> URI.to_string()
+
+      _uri ->
+        value
+    end
+  end
+
   defp sanitize_value(value), do: value
 
   defp sanitize_map(value) do
