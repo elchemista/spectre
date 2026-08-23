@@ -168,6 +168,56 @@ defmodule SpectreReceiptContractTest.BlockingSink do
   end
 end
 
+defmodule SpectreReceiptContractTest.LegacyPayloadSink do
+  @moduledoc false
+
+  @behaviour Spectre.Receipt.Sink
+
+  alias Spectre.Receipt.Sink.Memory
+
+  @impl true
+  defdelegate append(envelope, opts), to: Memory
+
+  @impl true
+  defdelegate lookup(id, opts), to: Memory
+
+  @impl true
+  defdelegate put_payload(envelope, opts), to: Memory
+
+  @impl true
+  defdelegate get_payload(ref, opts), to: Memory
+end
+
+defmodule SpectreReceiptContractTest.BroadDeleteSink do
+  @moduledoc false
+
+  @behaviour Spectre.Receipt.Sink
+
+  alias Spectre.Receipt.Sink.Memory
+
+  @impl true
+  defdelegate append(envelope, opts), to: Memory
+
+  @impl true
+  defdelegate lookup(id, opts), to: Memory
+
+  @impl true
+  defdelegate put_payload(envelope, opts), to: Memory
+
+  @impl true
+  defdelegate get_payload(ref, opts), to: Memory
+
+  @impl true
+  def delete_payload(ref, opts) do
+    server = Keyword.fetch!(opts, :server)
+
+    Agent.get_and_update(server, fn state ->
+      outcome = if Map.has_key?(state.payloads, ref), do: :deleted, else: :not_found
+      {{:ok, outcome}, %{state | payloads: %{}}}
+    end)
+  end
+end
+
 defmodule SpectreReceiptContractTest.Agent do
   @moduledoc false
 
@@ -317,7 +367,9 @@ defmodule SpectreReceiptContractTest do
               append: :verified,
               idempotency: :verified,
               lookup: :verified,
-              payload_store: :verified
+              payload_store: :verified,
+              payload_erasure: :verified,
+              payload_neighbor_isolation: :verified
             }} = Sink.Conformance.run({Memory, server: sink})
 
     receipt = envelope()
@@ -332,6 +384,25 @@ defmodule SpectreReceiptContractTest do
 
     assert {:error, :invalid_receipt_outbox_payload_ref} =
              OutboxEntry.validate(%{entry | payload_ref: "receipt-payload:wrong"})
+  end
+
+  test "sink conformance preserves legacy adapters without payload erasure" do
+    sink = start_supervised!({Memory, []})
+
+    assert {:ok,
+            %{
+              payload_store: :verified,
+              payload_erasure: :not_exported,
+              payload_neighbor_isolation: :not_exported
+            }} =
+             Sink.Conformance.run({SpectreReceiptContractTest.LegacyPayloadSink, server: sink})
+  end
+
+  test "sink conformance rejects payload erasure that deletes a neighbor" do
+    sink = start_supervised!({Memory, []})
+
+    assert {:error, {:receipt_sink_conformance_failed, :not_found}} =
+             Sink.Conformance.run({SpectreReceiptContractTest.BroadDeleteSink, server: sink})
   end
 
   test "memory sink rejects forged identity collisions and reports missing entries" do

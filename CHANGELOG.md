@@ -71,8 +71,11 @@ migration called out explicitly below.
   runtime dependency was added.
 - Existing Checkpoint Store, Owner, Journal, and Receipt adapters remain
   source-compatible because destructive callbacks and the maintenance claim
-  are optional. The erase API fails before mutation when a configured
-  component lacks its capability.
+  are optional. Receipt conformance also remains compatible: sinks without
+  `delete_payload/2` report `payload_erasure: :not_exported`, while sinks that
+  expose it are checked for exact deletion and neighboring-payload isolation.
+  The erase API fails before mutation when a configured component lacks its
+  capability.
 - Defaults remain serial boot, no recurring idle hibernation, and on-heap
   stream mailboxes. The one post-boot hibernation is the only default runtime
   change and affects footprint, not message or recovery semantics.

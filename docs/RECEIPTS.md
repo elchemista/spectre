@@ -83,11 +83,14 @@ end
 
 Run `Spectre.Receipt.Sink.Conformance.run/1` against an isolated sink instance.
 The conformance suite verifies append, exact idempotency, lookup, payload
-round-trip, idempotent deletion, and deletion read-back. The deletion callback
-is used by offline Instance erasure for payloads still retained in the required
-outbox; see [Offline Instance erasure](ERASURE.md). The suite cannot certify
-database durability, transactions, retention, encryption, tenancy, or
-deployment topology.
+round-trip and, when `delete_payload/2` is exported, idempotent exact deletion,
+deletion read-back, and neighboring-payload isolation. Existing sinks without
+the optional deletion callback still pass and report
+`payload_erasure: :not_exported`; sinks that implement it report `:verified`.
+The callback is used by offline Instance erasure for payloads still retained in
+the required outbox; see [Offline Instance erasure](ERASURE.md). The suite
+cannot certify database durability, transactions, retention, encryption,
+tenancy, or deployment topology.
 
 ## Privacy and claims
 

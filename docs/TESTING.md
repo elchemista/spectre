@@ -133,7 +133,8 @@ assert erasure_report.neighbor_isolation == :verified
 assert {:ok, receipt_report} =
          Spectre.Receipt.Sink.Conformance.run(MyApp.ReceiptSink)
 
-assert receipt_report.payload_erasure == :verified
+assert receipt_report.payload_erasure in [:verified, :not_exported]
+assert receipt_report.payload_neighbor_isolation in [:verified, :not_exported]
 ```
 
 Both refs must be fresh and isolated. The erasure runner intentionally leaves
@@ -440,11 +441,14 @@ cardinality, not only concatenated text. At minimum cover:
 - raw deltas, provider ids, cursors and failures never appear in committed
   observer events.
 
-Run `Spectre.Receipt.Sink.Conformance.run/1` for every sink adapter. Required
-mode also needs fault injection around payload staging, checkpoint commit,
-append acknowledgement and outbox acknowledgement. Restart after each fault
-and assert idempotent append, exact payload digest, bounded outbox state and no
-provider dispatch before its required receipt barrier.
+Run `Spectre.Receipt.Sink.Conformance.run/1` for every sink adapter. Adapters
+without the optional `delete_payload/2` callback remain conformant and report
+`payload_erasure: :not_exported`; adapters that export it must additionally
+prove exact deletion and neighboring-payload isolation. Required mode also
+needs fault injection around payload staging, checkpoint commit, append
+acknowledgement and outbox acknowledgement. Restart after each fault and assert
+idempotent append, exact payload digest, bounded outbox state and no provider
+dispatch before its required receipt barrier.
 
 Keep permanent v2 Run and tagged Instance fixtures. Every v3 writer change must
 prove legacy decode/migration/current re-encode, corruption rejection, and a
