@@ -79,6 +79,13 @@ actions MyApp.SupportActions do
 end
 
 approval_pending_reply(:approval_pending)
+
+policy :refund_approval do
+  # These labels are the closed vocabulary accepted from the host. Customer
+  # text never reaches these matchers while the resolver is external.
+  accept(:refund_approved, regex: ~r/^approved$/i)
+  reject(:refund_rejected, regex: ~r/^rejected$/i)
+end
 ```
 
 The awaitable opens normally, but subsequent customer messages continue
@@ -114,6 +121,78 @@ it into a normal customer-facing reply. Instance Runs remain isolated: an
 unprotected action in another Run may proceed, but a protected action is
 rejected globally and cannot open a second gate. Expiration and
 `Spectre.cancel/2` retain their existing cancellation semantics.
+
+#### Complete Session flow
+
+The application should persist the awaitable id in its admin inbox together
+with its own tenant, customer, and authorization context. Do not expose the
+host resolution endpoint as a customer-callable API: Spectre verifies the
+current gate, source, and declared label, while authentication and the decision
+to grant an administrator authority remain host responsibilities.
+
+```elixir
+{:ok, session} =
+  Spectre.Session.start_link(
+    agent: MyApp.SupportAgent,
+    conversation_id: "customer-42"
+  )
+
+# 1. The customer requests the protected action.
+{:ok, opening_turn} = Spectre.turn(session, "refund order 481")
+
+%Spectre.Awaitable{
+  id: approval_id,
+  resolver: :external,
+  status: :open,
+  attempts: 0
+} = Spectre.Result.open_awaitable(opening_turn.result)
+
+MyApp.ApprovalInbox.insert!(%{
+  id: approval_id,
+  customer_id: "customer-42",
+  kind: :refund
+})
+
+# 2. Ordinary customer conversation continues. Even text matching an accept
+# regex cannot resolve the external gate or increment its attempts.
+{:ok, _ordinary_turn} = Spectre.turn(session, "yes — when will it arrive?")
+
+%Spectre.Awaitable{status: :open, attempts: 0} =
+  session
+  |> Spectre.state()
+  |> Spectre.State.open_policy_awaitable()
+
+# 3. An authenticated admin resolves the exact current id. Use an explicit
+# Resolution when the audit event should carry application-owned metadata.
+{:ok, resolution} =
+  Spectre.Policy.Resolution.new(
+    :accept,
+    :refund_approved,
+    :host,
+    %{approval_ticket: "approval-9001"}
+  )
+
+{:ok, approved} =
+  Spectre.resolve_policy(
+    session,
+    {:awaitable, approval_id},
+    resolution,
+    assigns: %{admin_id: "admin-7"}
+  )
+
+%Spectre.Effect{status: :approved} = Spectre.Result.pending_effect(approved)
+
+# 4. Approval and execution remain separate durable boundaries.
+{:ok, completed} = Spectre.execute(session, approved)
+{:ok, refund_result} = Spectre.Result.action_outcome(completed)
+```
+
+The compact `{:accept, :refund_approved}` form is equivalent to a resolution
+with `source: :host` but carries no resolution metadata. To reject, construct
+`:reject, :refund_rejected, :host`; the effect is cancelled and must not be
+executed. A missing id, a stale/closed/expired id, a duplicate resolution, a
+user-sourced resolution, or an undeclared label returns a typed error and
+leaves current state unchanged.
 
 `Spectre.execute/3` rejects `:waiting_policy` effects. It also injects
 `:effect_id` and `:idempotency_key` into `ctx.opts`, so application code can

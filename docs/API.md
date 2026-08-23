@@ -497,6 +497,13 @@ effect waits; protected and unprotected action attempts share the configurable
 unprotected action in another Run may proceed, while a second protected action
 is rejected globally so it cannot open another approval gate.
 
+Calling `resolve_policy/4` is a host authority boundary, not an authentication
+mechanism. Authenticate and authorize the administrator before the call, keep
+the awaitable id in a durable admin inbox, and use an explicit
+`Spectre.Policy.Resolution` when the result event should carry an application
+approval-ticket reference. See the [complete external-approval
+example](ACTIONS.md#complete-session-flow).
+
 Execution remains explicit and separate from approval:
 
 ```elixir

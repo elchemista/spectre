@@ -157,7 +157,10 @@ What they mean:
 - `journal/2` configures structured decision recording.
 - `protect/2` defaults to `resolver: :conversation`. With
   `resolver: :external`, user turns keep routing normally and only a trusted
-  host resolution may close the policy awaitable.
+  host resolution addressed by awaitable id may close the policy awaitable.
+  The policy's accept/reject labels remain the closed host decision vocabulary,
+  even though customer text never reaches its matcher. See the
+  [end-to-end external approval example](ACTIONS.md#complete-session-flow).
 - `approval_pending_reply/2` renders the reply when a Session action cannot
   stage another effect while an external approval remains open; no second gate
   is created. In Instance mode, unprotected actions in independent Runs remain

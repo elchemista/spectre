@@ -415,6 +415,11 @@ defmodule Spectre do
   current state. This form is required for externally addressed approvals
   because conversation turns may advance while the gate remains open.
 
+  This function is a host authority boundary, not an authentication mechanism.
+  The caller must authenticate and authorize the actor. The compact tuple form
+  creates a `source: :host` resolution; pass an explicit
+  `Spectre.Policy.Resolution` to attach application-owned audit metadata.
+
       {:ok, approved} =
         Spectre.resolve_policy(
           MyApp.Agent,
@@ -423,11 +428,19 @@ defmodule Spectre do
           assigns: %{user: user}
         )
 
+      {:ok, resolution} =
+        Spectre.Policy.Resolution.new(
+          :accept,
+          :terms_accepted,
+          :host,
+          %{approval_ticket: "approval-42"}
+        )
+
       {:ok, approved} =
         Spectre.resolve_policy(
           session,
           {:awaitable, awaitable.id},
-          {:accept, :terms_accepted}
+          resolution
         )
   """
   @spec resolve_policy(
