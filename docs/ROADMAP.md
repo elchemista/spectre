@@ -15,6 +15,12 @@ resurrection. The operational scope and host responsibilities are documented
 in [Instance data lifecycle](DATA_LIFECYCLE.md) and
 [Offline Instance erasure](ERASURE.md).
 
+This release does not claim GDPR/ISO certification and intentionally does not
+ship a `COMPLIANCE.md` mapping or a GDPR Article 15 subject-access export
+recipe. Those require an inventory and legal policy for host-owned stores,
+providers, logs, backups, and exports that the core cannot discover; they
+remain host-integration work outside the 0.3.3 scope.
+
 ## 0.3.2 inference Invocations and boundary receipts
 
 Inference now crosses the same portable, revision-fenced Invocation boundary
