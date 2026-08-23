@@ -65,6 +65,8 @@ migration called out explicitly below.
 - Policy journal records now carry both the resolution source and resolver.
 - Frozen model identities strip URI userinfo from both `%URI{}` values and
   endpoint strings before they enter canonical state or digests.
+- Receipt erasure proofs report `:not_applicable`, rather than
+  `:already_erased`, when a configured sink has no pending payload references.
 
 ### Compatibility
 

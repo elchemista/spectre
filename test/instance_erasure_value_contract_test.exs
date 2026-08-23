@@ -146,6 +146,15 @@ defmodule SpectreInstanceErasureValueContractTest do
     assert {:ok, %Proof{} = proof} = Proof.new(ref, attrs)
     assert :ok = Proof.validate(proof)
 
+    assert :ok =
+             Proof.validate(
+               put_in(
+                 proof,
+                 [Access.key(:components), :receipt_payloads, :outcome],
+                 :not_applicable
+               )
+             )
+
     invalid_components = [
       put_in(components, [:journal, :key_count], -1),
       put_in(components, [:receipt_payloads, :deleted_count], 1),

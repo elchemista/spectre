@@ -55,7 +55,10 @@ Core preflights every configured capability before mutation, then performs:
 
 The proof has `scope: :configured_instance_data` and reports each component's
 outcome and count. Its receipt component covers pending outbox payloads only;
-delivered receipt records and all other host-owned data remain in the data map.
+`not_applicable` means that a sink was configured but the observed checkpoint
+contained no pending payload references, while `not_configured` means no sink
+participated. Delivered receipt records and all other host-owned data remain in
+the data map.
 
 ## Adapter requirements
 

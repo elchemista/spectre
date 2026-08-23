@@ -14,6 +14,13 @@ defmodule Spectre.Privacy do
   alias Spectre.Privacy.ErasurePlan
   alias Spectre.Receipt.Sink, as: ReceiptSink
 
+  @unavailable_reasons [
+    :checkpoint_store_not_loaded,
+    :instance_owner_not_loaded,
+    :journal_store_not_loaded,
+    :receipt_sink_not_loaded
+  ]
+
   @doc "Builds a read-only erasure capability plan for one Agent and Subject."
   @spec erasure_plan(module() | AgentRef.t() | Ref.t(), term(), keyword()) ::
           {:ok, ErasurePlan.t()} | {:error, term()}
@@ -108,9 +115,10 @@ defmodule Spectre.Privacy do
     ErasurePlan.component(true, status, module)
   end
 
-  defp unavailable?(reason) when is_tuple(reason) do
-    reason |> elem(0) |> Atom.to_string() |> String.ends_with?("not_loaded")
-  end
+  # Capability boundaries expose a closed set of load failures. Match those
+  # exact tags so a future, unrelated adapter error cannot be misclassified by
+  # a coincidental suffix.
+  defp unavailable?({reason, _module}) when reason in @unavailable_reasons, do: true
 
   defp unavailable?(_reason), do: false
 

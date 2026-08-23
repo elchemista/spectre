@@ -173,7 +173,12 @@ defmodule Spectre.Instance.Erasure do
   end
 
   defp receipt_outcome({:ok, counts}, total, completed) do
-    outcome = if counts.deleted > 0, do: :erased, else: :already_erased
+    outcome =
+      cond do
+        total == 0 -> :not_applicable
+        counts.deleted > 0 -> :erased
+        true -> :already_erased
+      end
 
     {:ok,
      %{

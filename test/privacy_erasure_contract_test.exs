@@ -334,7 +334,7 @@ defmodule SpectrePrivacyErasureContractTest do
     assert {:checkpoint, 0, ^checkpoint} = CheckpointStore.entry(context.checkpoint_server, ref)
   end
 
-  test "a payload failure reports completed journal work and leaves the checkpoint intact",
+  test "a payload failure retries cleanly after the sink recovers",
        context do
     ref = fresh_ref("partial")
     {checkpoint, envelope, payload_ref} = checkpoint_with_payload(ref)
@@ -358,6 +358,49 @@ defmodule SpectrePrivacyErasureContractTest do
     refute JournalStore.present?(context.journal_server, ref)
     assert {:ok, ^envelope} = Sink.get_payload(context.receipt, payload_ref, [])
     assert {:checkpoint, 0, ^checkpoint} = CheckpointStore.entry(context.checkpoint_server, ref)
+
+    assert {:ok,
+            %Proof{
+              outcome: :erased,
+              components: %{
+                journal: %{outcome: :already_erased, key_count: 2},
+                receipt_payloads: %{
+                  outcome: :erased,
+                  payload_count: 1,
+                  deleted_count: 1,
+                  not_found_count: 0
+                },
+                checkpoint: %{outcome: :erased, key_count: 2}
+              }
+            }} =
+             Spectre.erase_instance(ref, ref.subject,
+               checkpoint_store: context.checkpoint,
+               journal: context.journal,
+               receipt_sink: context.receipt,
+               confirm: ref.key
+             )
+
+    assert :not_found = Sink.get_payload(context.receipt, payload_ref, [])
+    assert :not_found = Spectre.Instance.CheckpointStore.load(context.checkpoint, ref, [])
+
+    assert {:ok,
+            %Proof{
+              outcome: :already_erased,
+              components: %{
+                receipt_payloads: %{
+                  outcome: :not_applicable,
+                  payload_count: 0,
+                  deleted_count: 0,
+                  not_found_count: 0
+                }
+              }
+            }} =
+             Spectre.erase_instance(ref, ref.subject,
+               checkpoint_store: context.checkpoint,
+               journal: context.journal,
+               receipt_sink: context.receipt,
+               confirm: ref.key
+             )
   end
 
   test "journal failures distinguish no mutation from a partial stable-ref erase", context do
@@ -477,6 +520,7 @@ defmodule SpectrePrivacyErasureContractTest do
 
   test "the privacy plan covers identity forms and invalid read-only configuration" do
     subject = "privacy-plan-identities"
+    missing_owner = Module.concat(__MODULE__, MissingOwner)
 
     assert {:ok, module_plan} =
              Privacy.erasure_plan(AgentDefinition, subject, checkpoint_store: false)
@@ -494,12 +538,14 @@ defmodule SpectrePrivacyErasureContractTest do
     assert {:ok, unavailable} =
              Privacy.erasure_plan(AgentDefinition, subject,
                checkpoint_store: MissingCheckpointStore,
+               owner: missing_owner,
                journal: MissingJournalStore,
                receipt_sink: MissingReceiptSink
              )
 
     refute unavailable.ready
     assert unavailable.components.checkpoint.status == :unavailable
+    assert unavailable.components.owner.status == :unavailable
     assert unavailable.components.journal.status == :unavailable
     assert unavailable.components.receipt_payloads.status == :unavailable
 

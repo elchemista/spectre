@@ -126,9 +126,9 @@ defmodule Spectre.Instance.Erasure.Proof do
          deleted_count: deleted,
          not_found_count: not_found
        })
-       when outcome in [:erased, :already_erased, :not_configured] and is_integer(total) and
-              total >= 0 and is_integer(deleted) and deleted >= 0 and is_integer(not_found) and
-              not_found >= 0 and deleted + not_found == total,
+       when outcome in [:erased, :already_erased, :not_applicable, :not_configured] and
+              is_integer(total) and total >= 0 and is_integer(deleted) and deleted >= 0 and
+              is_integer(not_found) and not_found >= 0 and deleted + not_found == total,
        do: :ok
 
   defp receipt_component(_component), do: {:error, :invalid_component}
