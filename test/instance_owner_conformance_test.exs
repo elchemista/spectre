@@ -89,6 +89,117 @@ defmodule SpectreInstanceOwnerConformanceTest.NonSupersedingOwner do
   end
 end
 
+defmodule SpectreInstanceOwnerConformanceTest.NonMonotonicOwner do
+  @moduledoc false
+
+  @behaviour Spectre.Instance.Owner
+
+  alias Spectre.Instance.Owner.Lease
+
+  @impl true
+  def claim(ref, opts) do
+    minimum = Keyword.get(opts, :minimum_fencing_token, 0)
+    token = max(minimum, 1)
+
+    Lease.new(
+      owner_id: "non-monotonic-owner",
+      fencing_token: token,
+      issued_at: token,
+      metadata: %{instance_key: ref.key}
+    )
+  end
+
+  @impl true
+  def validate(ref, lease, _opts) do
+    if lease.metadata.instance_key == ref.key,
+      do: :ok,
+      else: {:error, :instance_mismatch}
+  end
+end
+
+defmodule SpectreInstanceOwnerConformanceTest.BrokenReleaseOwner do
+  @moduledoc false
+
+  @behaviour Spectre.Instance.Owner
+
+  alias SpectreInstanceOwnerConformanceTest.DistributedOwner
+
+  @impl true
+  defdelegate claim(ref, opts), to: DistributedOwner
+
+  @impl true
+  defdelegate validate(ref, lease, opts), to: DistributedOwner
+
+  @impl true
+  def release(_ref, _lease, _opts), do: :ok
+end
+
+defmodule SpectreInstanceOwnerConformanceTest.OptionalReleaseOwner do
+  @moduledoc false
+
+  @behaviour Spectre.Instance.Owner
+
+  alias SpectreInstanceOwnerConformanceTest.DistributedOwner
+
+  @impl true
+  defdelegate claim(ref, opts), to: DistributedOwner
+
+  @impl true
+  defdelegate validate(ref, lease, opts), to: DistributedOwner
+end
+
+defmodule SpectreInstanceOwnerConformanceTest.CrossRefOwner do
+  @moduledoc false
+
+  @behaviour Spectre.Instance.Owner
+
+  alias Spectre.Instance.Owner.Lease
+
+  def start_link do
+    Agent.start_link(fn -> %{next: 0, current: %{}} end)
+  end
+
+  @impl true
+  def claim(ref, opts) do
+    server = Keyword.fetch!(opts, :server)
+    minimum = Keyword.get(opts, :minimum_fencing_token, 0)
+
+    Agent.get_and_update(server, fn state ->
+      token = max(state.next + 1, minimum + 1)
+
+      lease =
+        Lease.new!(
+          owner_id: "cross-ref-owner-#{token}",
+          fencing_token: token,
+          issued_at: token,
+          metadata: %{instance_key: ref.key}
+        )
+
+      {{:ok, lease}, %{state | next: token, current: Map.put(state.current, ref.key, token)}}
+    end)
+  end
+
+  @impl true
+  def validate(ref, lease, opts) do
+    current = opts |> Keyword.fetch!(:server) |> Agent.get(& &1.current)
+
+    if Map.has_key?(current, ref.key) and lease.fencing_token in Map.values(current),
+      do: :ok,
+      else: {:error, :lease_superseded}
+  end
+
+  @impl true
+  def release(ref, lease, opts) do
+    Agent.update(Keyword.fetch!(opts, :server), fn state ->
+      if Map.get(state.current, ref.key) == lease.fencing_token,
+        do: %{state | current: Map.delete(state.current, ref.key)},
+        else: state
+    end)
+
+    :ok
+  end
+end
+
 defmodule SpectreInstanceOwnerConformanceTest.RejectedOwner do
   @moduledoc false
 
@@ -138,7 +249,8 @@ defmodule SpectreInstanceOwnerConformanceTest.ConcurrencyFaultOwner do
 
   alias Spectre.Instance.Owner.Lease
 
-  def start_link(mode), do: Agent.start_link(fn -> %{mode: mode, next: 0, current: %{}} end)
+  def start_link(mode),
+    do: Agent.start_link(fn -> %{mode: mode, next: 0, current: %{}, attempts: 0} end)
 
   @impl true
   def claim(ref, opts) do
@@ -153,6 +265,19 @@ defmodule SpectreInstanceOwnerConformanceTest.ConcurrencyFaultOwner do
       {:contender_timeout, value} when value >= 2 ->
         Process.sleep(100)
         {:error, :contender_timeout}
+
+      {:contender_timeout_after_success, value} when value >= 2 ->
+        attempt =
+          Agent.get_and_update(server, fn state ->
+            {state.attempts, %{state | attempts: state.attempts + 1}}
+          end)
+
+        if attempt == 1 do
+          Process.sleep(100)
+          {:error, :contender_timeout}
+        else
+          issue(server, ref, minimum + 1, true)
+        end
 
       {:duplicate_tokens, value} when value >= 2 ->
         issue(server, ref, minimum + 1, false)
@@ -229,9 +354,13 @@ defmodule SpectreInstanceOwnerConformanceTest do
   alias Spectre.Instance.Ref
 
   alias SpectreInstanceOwnerConformanceTest.AgentDefinition
+  alias SpectreInstanceOwnerConformanceTest.BrokenReleaseOwner
   alias SpectreInstanceOwnerConformanceTest.ConcurrencyFaultOwner
+  alias SpectreInstanceOwnerConformanceTest.CrossRefOwner
   alias SpectreInstanceOwnerConformanceTest.DistributedOwner
+  alias SpectreInstanceOwnerConformanceTest.NonMonotonicOwner
   alias SpectreInstanceOwnerConformanceTest.NonSupersedingOwner
+  alias SpectreInstanceOwnerConformanceTest.OptionalReleaseOwner
   alias SpectreInstanceOwnerConformanceTest.RejectedOwner
   alias SpectreInstanceOwnerConformanceTest.SecondValidationRejectOwner
 
@@ -246,7 +375,7 @@ defmodule SpectreInstanceOwnerConformanceTest do
               ref_binding: :verified,
               fencing_floor: :verified,
               validation: :verified,
-              release: :callback_acknowledged,
+              release: :registry_scoped,
               supersession: :registry_scoped,
               concurrent_claims: :not_applicable
             }} = Conformance.run(Local, ref, minimum_fencing_token: 50)
@@ -259,6 +388,7 @@ defmodule SpectreInstanceOwnerConformanceTest do
     assert {:ok,
             %{
               profile: :distributed,
+              release: :verified,
               supersession: :verified,
               concurrent_claims: :single_current
             }} =
@@ -275,6 +405,40 @@ defmodule SpectreInstanceOwnerConformanceTest do
 
     assert {:error, {:instance_owner_conformance_failed, :supersession, :lease_accepted}} =
              Conformance.run(NonSupersedingOwner, ref, profile: :distributed)
+  end
+
+  test "distributed profile rejects non-monotonic reclaim and a decorative release callback" do
+    ref = Ref.new(AgentDefinition, "owner-conformance-non-monotonic")
+
+    assert {:error, {:instance_owner_conformance_failed, :fencing, :non_monotonic_reclaim}} =
+             Conformance.run(NonMonotonicOwner, ref, profile: :distributed)
+
+    {:ok, server} = DistributedOwner.start_link()
+
+    assert {:error, {:instance_owner_conformance_failed, :release, :lease_accepted}} =
+             Conformance.run({BrokenReleaseOwner, server: server}, ref, profile: :distributed)
+
+    Agent.stop(server)
+  end
+
+  test "distributed profile reports an omitted release callback honestly" do
+    {:ok, server} = DistributedOwner.start_link()
+    ref = Ref.new(AgentDefinition, "owner-conformance-optional-release")
+
+    assert {:ok, %{release: :optional_noop}} =
+             Conformance.run({OptionalReleaseOwner, server: server}, ref, profile: :distributed)
+
+    Agent.stop(server)
+  end
+
+  test "distributed profile rejects leases that are not bound to their Ref" do
+    {:ok, server} = CrossRefOwner.start_link()
+    ref = Ref.new(AgentDefinition, "owner-conformance-cross-ref")
+
+    assert {:error, {:instance_owner_conformance_failed, :cross_ref_binding, :lease_accepted}} =
+             Conformance.run({CrossRefOwner, server: server}, ref, profile: :distributed)
+
+    Agent.stop(server)
   end
 
   test "options and alternate Ref are validated without invoking the adapter" do
@@ -332,5 +496,20 @@ defmodule SpectreInstanceOwnerConformanceTest do
 
       Agent.stop(server)
     end)
+  end
+
+  test "a contender exit releases leases returned by the other contenders" do
+    {:ok, server} = ConcurrencyFaultOwner.start_link(:contender_timeout_after_success)
+    ref = Ref.new(AgentDefinition, "owner-conformance-contender-cleanup")
+
+    assert {:error, {:instance_owner_conformance_failed, :concurrency, :contender_exit}} =
+             Conformance.run({ConcurrencyFaultOwner, server: server}, ref,
+               profile: :distributed,
+               concurrent_claims: 3,
+               timeout: 10
+             )
+
+    assert nil == server |> Agent.get(& &1.current) |> Map.get(ref.key)
+    Agent.stop(server)
   end
 end

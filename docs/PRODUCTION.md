@@ -102,6 +102,31 @@ GC-eligible: core sees its Activation, Runs, operations, and child branches,
 but not application tables or backups. See
 [Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
 
+### Multi-node ownership and rolling deploys
+
+A rolling deploy must transfer authority explicitly; process discovery and the
+local Registry are not a distributed ownership protocol. Before replacing a
+node, stop admission for the Instance, drain in-flight Runs and streams, flush
+its checkpoint, and release its current lease. The replacement may claim only
+after the old owner is no longer current, and must pass the last durable
+fencing token as `:minimum_fencing_token`. Every later write and dispatch must
+continue validating that newly claimed lease.
+
+If the old node crashes before release, do not let the replacement guess that
+the lease disappeared. The host authority must wait for or revoke the expired
+lease according to its own linearizable protocol, then issue a token strictly
+above the durable floor. A partitioned old owner may still be alive, so TTL
+alone is insufficient unless every guarded boundary rejects its expired or
+superseded token. Keep the last accepted fencing token with the checkpoint so
+a restored backup cannot lower the floor.
+
+Run `Spectre.Instance.Owner.Conformance` with `profile: :distributed` against
+the production adapter before a rolling deploy. The gate proves supersession,
+cross-Ref isolation, one current race winner, and—when `release/3` is
+implemented—that a released lease immediately fails validation. An omitted
+release callback is reported as `:optional_noop`; in that case the host must
+document and rehearse its expiry or revocation path before deployment.
+
 ### Offline Instance checkpoint erasure
 
 `Spectre.erase_instance/3` removes only the canonical Instance checkpoint. It
