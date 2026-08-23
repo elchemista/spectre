@@ -103,10 +103,10 @@ defmodule SpectreReceiptSinkFailureContractTest do
     assert {:error, {:receipt_sink_callback_missing, _, :get_payload, 2}} =
              Sink.get_payload(no_callbacks, Sink.payload_ref(receipt), [])
 
-    assert {:error, {:receipt_sink_conformance_failed, {:receipt_sink_error, :down}}} =
+    assert {:error, {:receipt_sink_conformance_failed, :append, {:receipt_sink_error, :down}}} =
              Sink.Conformance.run({@sink, append_reply: {:error, :down}})
 
-    assert {:error, {:receipt_sink_conformance_failed, :not_found}} =
+    assert {:error, {:receipt_sink_conformance_failed, :lookup, :not_found}} =
              Sink.Conformance.run({@sink, []})
   end
 

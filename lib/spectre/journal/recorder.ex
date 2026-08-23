@@ -194,15 +194,30 @@ defmodule Spectre.Journal.Recorder do
           :disabled | {:ok, module(), keyword()} | {:error, term()}
   defp normalize_configuration(value) when value in [nil, false], do: :disabled
   defp normalize_configuration(true), do: {:error, true}
-  defp normalize_configuration(store) when is_atom(store), do: {:ok, store, []}
 
-  defp normalize_configuration({store, config}) when is_atom(store) and is_list(config),
-    do: {:ok, store, config}
+  defp normalize_configuration(store)
+       when is_atom(store) and not is_nil(store) and not is_boolean(store),
+       do: {:ok, store, []}
+
+  defp normalize_configuration({store, config} = configuration)
+       when is_atom(store) and not is_nil(store) and not is_boolean(store) and is_list(config) do
+    if Keyword.keyword?(config),
+      do: {:ok, store, config},
+      else: {:error, configuration}
+  end
 
   defp normalize_configuration(config) when is_list(config) do
-    case Keyword.fetch(config, :store) do
-      {:ok, store} when is_atom(store) -> {:ok, store, Keyword.delete(config, :store)}
-      _other -> {:error, config}
+    if Keyword.keyword?(config) do
+      case Keyword.fetch(config, :store) do
+        {:ok, store}
+        when is_atom(store) and not is_nil(store) and not is_boolean(store) ->
+          {:ok, store, Keyword.delete(config, :store)}
+
+        _other ->
+          {:error, config}
+      end
+    else
+      {:error, config}
     end
   end
 
@@ -312,6 +327,7 @@ defmodule Spectre.Journal.Recorder do
               :awaitable_rejected,
               :awaitable_cancelled,
               :awaitable_expired,
+              :approval_pending,
               :policy_resolved
             ],
        do: :policy
@@ -457,10 +473,18 @@ defmodule Spectre.Journal.Recorder do
         name: Map.get(event, :name),
         kind: Map.get(event, :kind),
         label: Map.get(event, :label),
-        source: Map.get(event, :source)
+        source: policy_source(event),
+        resolver: Map.get(event, :resolver, :conversation)
       }
     end
   end
+
+  defp policy_source(%{source: source}), do: source
+
+  defp policy_source(%{type: type}) when type in [:awaitable_accepted, :awaitable_rejected],
+    do: :user
+
+  defp policy_source(_event), do: nil
 
   defp effect_summary(event) do
     if Map.has_key?(event, :effect_id) or event_phase(Map.get(event, :type)) == :execution do

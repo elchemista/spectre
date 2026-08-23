@@ -6,6 +6,11 @@ defmodule Spectre.Inference.ModelIdentity do
   @spec sanitize(term()) :: term()
   def sanitize(value), do: sanitize_value(value)
 
+  defp sanitize_value(%URI{} = value) do
+    fields = value |> Map.from_struct() |> Map.delete(:userinfo) |> sanitize_map()
+    {:struct, URI, fields}
+  end
+
   defp sanitize_value(%{__struct__: module} = value) do
     {:struct, module, value |> Map.from_struct() |> sanitize_map()}
   end
@@ -33,6 +38,19 @@ defmodule Spectre.Inference.ModelIdentity do
     |> Tuple.to_list()
     |> Enum.map(&sanitize_value/1)
     |> List.to_tuple()
+  end
+
+  defp sanitize_value(value) when is_binary(value) do
+    case URI.parse(value) do
+      %URI{host: host, userinfo: userinfo} = uri
+      when is_binary(host) and host != "" and is_binary(userinfo) ->
+        uri
+        |> Map.put(:userinfo, nil)
+        |> URI.to_string()
+
+      _uri ->
+        value
+    end
   end
 
   defp sanitize_value(value), do: value

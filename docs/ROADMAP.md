@@ -5,6 +5,22 @@ application business logic. The core keeps one canonical Definition and one
 Instance owner for conversational and operational state; adapters and
 distributed integration do not introduce a second runtime owner.
 
+## 0.3.3 ownership, erasure, policy addressing, and Instance efficiency
+
+The 0.3.3 core adds executable Owner conformance, coordinated offline Instance
+erasure, externally addressed policy gates, and bounded disposable boot work.
+Erasure now preflights and orders configured Journal, pending receipt-payload,
+and checkpoint deletion, while durable checkpoint markers block later Instance
+resurrection. The operational scope and host responsibilities are documented
+in [Instance data lifecycle](DATA_LIFECYCLE.md) and
+[Offline Instance erasure](ERASURE.md).
+
+This release does not claim GDPR/ISO certification and intentionally does not
+ship a `COMPLIANCE.md` mapping or a GDPR Article 15 subject-access export
+recipe. Those require an inventory and legal policy for host-owned stores,
+providers, logs, backups, and exports that the core cannot discover; they
+remain host-integration work outside the 0.3.3 scope.
+
 ## 0.3.2 inference Invocations and boundary receipts
 
 Inference now crosses the same portable, revision-fenced Invocation boundary
@@ -357,7 +373,10 @@ Before moving code, freeze these rules as executable contract tests:
 9. Every completed, failed, or cancelled transition is idempotently recorded.
 10. A terminal effect cannot return to a pending state.
 11. An invalid host resolution cannot mutate state.
-12. A policy reply bypasses normal routing while its awaitable is open.
+12. A policy reply bypasses normal routing while a
+    `resolver: :conversation` awaitable is open. An external awaitable never
+    captures conversation input and can be resolved only by its current id
+    from a trusted host source.
 13. A live session never replaces committed state with an older result.
 14. Host decisions are derived from authoritative state plus the current
     transition, never from stale local arrays alone.

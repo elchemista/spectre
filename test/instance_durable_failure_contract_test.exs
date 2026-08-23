@@ -60,16 +60,19 @@ defmodule SpectreInstanceDurableFailureContractTest.DefinitionStore do
 
   @impl true
   def get(key, opts) do
-    Agent.get(Keyword.fetch!(opts, :server), fn
-      %{fault: reason} when not is_nil(reason) ->
-        {:error, reason}
-
-      %{entries: entries} ->
-        case Map.fetch(entries, key) do
-          {:ok, value} -> {:ok, value}
-          :error -> :not_found
-        end
+    Agent.get_and_update(Keyword.fetch!(opts, :server), fn state ->
+      reply = get_reply(state, key)
+      {reply, Map.update(state, :gets, 1, &(&1 + 1))}
     end)
+  end
+
+  defp get_reply(%{fault: reason}, _key) when not is_nil(reason), do: {:error, reason}
+
+  defp get_reply(%{entries: entries}, key) do
+    case Map.fetch(entries, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> :not_found
+    end
   end
 
   @impl true
@@ -82,6 +85,9 @@ defmodule SpectreInstanceDurableFailureContractTest.DefinitionStore do
       end
     end)
   end
+
+  def reset_get_count(server), do: Agent.update(server, &Map.put(&1, :gets, 0))
+  def get_count(server), do: Agent.get(server, &Map.get(&1, :gets, 0))
 end
 
 defmodule SpectreInstanceDurableFailureContractTest.CheckpointStore do
@@ -177,6 +183,7 @@ defmodule SpectreInstanceDurableFailureContractTest do
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec
   alias Spectre.Instance.Ref, as: InstanceRef
+  alias Spectre.Instance.Runs, as: InstanceRuns
   alias Spectre.Run
   alias Spectre.State
   alias Spectre.Subject
@@ -358,6 +365,72 @@ defmodule SpectreInstanceDurableFailureContractTest do
                definition_store: failing_definition_store,
                idle: false
              )
+  end
+
+  test "boot resolves one shared pinned Definition once for every retained Run group" do
+    definition_store = definition_store()
+
+    {definition_ref, _candidate_a, _definition_b, _candidate_b} =
+      publish_lineage(definition_store)
+
+    closure_digest = closure() |> Closure.digest()
+    definition_server = definition_server(definition_store)
+
+    single_subject = unique_subject("restore-shared-definition-single")
+    single_ref = InstanceRef.new(TestAgent, single_subject)
+
+    single_run =
+      run_checkpoint(single_ref, "shared-single",
+        activation_generation: 1,
+        definition_ref: definition_ref,
+        closure_digest: closure_digest,
+        terminal?: true
+      )
+
+    DefinitionStore.reset_get_count(definition_server)
+
+    single =
+      start_instance(
+        subject: single_subject,
+        definition_store: definition_store,
+        canonical_checkpoint:
+          canonical_checkpoint(single_ref, runs: %{"shared-single" => single_run})
+      )
+
+    single_resolution_reads = DefinitionStore.get_count(definition_server)
+    assert single_resolution_reads > 0
+    stop_instance(single)
+
+    grouped_subject = unique_subject("restore-shared-definition-group")
+    grouped_ref = InstanceRef.new(TestAgent, grouped_subject)
+
+    grouped_runs =
+      Map.new(1..4, fn index ->
+        run_id = "shared-group-#{index}"
+
+        checkpoint =
+          run_checkpoint(grouped_ref, run_id,
+            activation_generation: 1,
+            definition_ref: definition_ref,
+            closure_digest: closure_digest,
+            terminal?: true
+          )
+
+        {run_id, checkpoint}
+      end)
+
+    DefinitionStore.reset_get_count(definition_server)
+
+    grouped =
+      start_instance(
+        subject: grouped_subject,
+        definition_store: definition_store,
+        canonical_checkpoint: canonical_checkpoint(grouped_ref, runs: grouped_runs),
+        boot_concurrency: 4
+      )
+
+    assert DefinitionStore.get_count(definition_server) == single_resolution_reads
+    assert map_size(Instance.info(grouped).runs) == 4
   end
 
   test "an activated checkpoint cannot be restored without its Definition Store" do
@@ -626,7 +699,8 @@ defmodule SpectreInstanceDurableFailureContractTest do
   end
 
   defp run_checkpoint(ref, run_id, opts \\ []) do
-    run_opts = Keyword.merge([run_id: run_id], opts)
+    terminal? = Keyword.get(opts, :terminal?, false)
+    run_opts = opts |> Keyword.delete(:terminal?) |> Keyword.put_new(:run_id, run_id)
 
     {:ok, run} =
       Spectre.Runtime.admit(
@@ -637,6 +711,7 @@ defmodule SpectreInstanceDurableFailureContractTest do
         run_opts
       )
 
+    run = if terminal?, do: InstanceRuns.terminalize_failed_run(run, :profile_fixture), else: run
     {:ok, checkpoint} = Run.checkpoint(run)
     checkpoint
   end
@@ -665,11 +740,13 @@ defmodule SpectreInstanceDurableFailureContractTest do
   end
 
   defp definition_store(opts \\ []) do
-    server = start_agent(%{entries: %{}, fault: Keyword.get(opts, :fault)})
+    server = start_agent(%{entries: %{}, fault: Keyword.get(opts, :fault), gets: 0})
 
     {DefinitionStore,
      server: server, id: "definition-store-#{System.unique_integer([:positive])}"}
   end
+
+  defp definition_server({DefinitionStore, opts}), do: Keyword.fetch!(opts, :server)
 
   defp checkpoint_store do
     server = start_agent(%{entries: %{}, load_replies: [], write_faults: []})

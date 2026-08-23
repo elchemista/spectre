@@ -505,7 +505,17 @@ defmodule Spectre.Instance.Operations do
 
   @doc false
   @spec recover(InstanceState.t()) :: {:ok, InstanceState.t()} | {:error, term()}
-  def recover(%InstanceState{} = data), do: recover_operational_state(data)
+  def recover(%InstanceState{} = data) do
+    case recover_with_state(data) do
+      {:ok, recovered} -> {:ok, recovered}
+      {:error, reason, _partial} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec recover_with_state(InstanceState.t()) ::
+          {:ok, InstanceState.t()} | {:error, term(), InstanceState.t()}
+  def recover_with_state(%InstanceState{} = data), do: recover_operational_state(data)
 
   defp control_loop(server, loop, action, payload, opts) do
     GenServer.call(
@@ -1411,7 +1421,7 @@ defmodule Spectre.Instance.Operations do
         commit_recovered_operation(data, loop, next_loop, next_control, event_specs)
 
       {:error, reason} ->
-        {:halt, {:error, {:operational_recovery_failed, loop.id, reason}}}
+        {:halt, {:error, {:operational_recovery_failed, loop.id, reason}, data}}
     end
   end
 
@@ -1428,7 +1438,7 @@ defmodule Spectre.Instance.Operations do
         {:cont, {:ok, maybe_queue_after_transition(next, loop, control)}}
 
       {:error, reason} ->
-        {:halt, {:error, reason}}
+        {:halt, {:error, reason, data}}
     end
   end
 

@@ -4,9 +4,10 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.3.2` extends the governed reflective runtime with first-class
+Spectre `0.3.3` extends the governed reflective runtime with first-class
 inference Invocations, bounded Instance-owned streaming, optional boundary
-receipts, and an additive reply-sanitizer port for host-owned model policy.
+receipts, ownership conformance, fenced offline configured-data erasure, and an
+additive reply-sanitizer port for host-owned model policy.
 The current Run and format-tagged Instance checkpoint writers are version 3.
 Their readers accept Run versions 1–3 and tagged Instance versions 2–3;
 retired untagged 0.2.x Instance schemas are not silently imported. The
@@ -468,6 +469,41 @@ without injecting synthetic user text:
   )
 ```
 
+For asymmetric approval, declare the protection with
+`resolver: :external`. The opening turn still exposes the awaitable, but later
+conversation turns route normally and cannot match, reject, or consume policy
+attempts. The administrator addresses the authoritative gate rather than a
+stale Result:
+
+```elixir
+awaitable = Spectre.Result.open_awaitable(result)
+
+{:ok, approved} =
+  Spectre.resolve_policy(
+    session_or_instance,
+    {:awaitable, awaitable.id},
+    {:accept, :delete_confirmed},
+    assigns: %{admin_id: "admin-7"}
+  )
+```
+
+The id is checked against current state. Wrong, closed, expired, and repeated
+resolutions are typed errors with no mutation. Instances also accept the
+transport-safe `turn.boundary.request.id`. Only host-sourced resolutions may
+close an external gate; policy journal records distinguish the `:host` source
+and `:external` resolver. A Session cannot stage another effect while its first
+effect waits; protected and unprotected action attempts share the configurable
+`approval_pending_reply/2` surface. Instance Runs remain isolated: an
+unprotected action in another Run may proceed, while a second protected action
+is rejected globally so it cannot open another approval gate.
+
+Calling `resolve_policy/4` is a host authority boundary, not an authentication
+mechanism. Authenticate and authorize the administrator before the call, keep
+the awaitable id in a durable admin inbox, and use an explicit
+`Spectre.Policy.Resolution` when the result event should carry an application
+approval-ticket reference. See the [complete external-approval
+example](ACTIONS.md#complete-session-flow).
+
 Execution remains explicit and separate from approval:
 
 ```elixir
@@ -532,6 +568,15 @@ subject = Spectre.Subject.new({:account, account.id})
 Prefer supervised `Spectre.instance/4` in production. See
 [Agent Instances and Subjects](INSTANCES.md) for Run resume, identity linking,
 per-Run lifecycle ownership, and serialized capability execution.
+
+After an Instance has been drained and stopped, `Spectre.erase_instance/3`
+coordinates configured Journal records, receipt payloads still retained by the
+required outbox, and stable/legacy checkpoints under a non-preemptive
+maintenance Owner. The exact stable Ref key is a mandatory confirmation value.
+Use the I/O-free `Spectre.Privacy.erasure_plan/3` first. The proof does not
+cover delivered receipt records, host State or Memory, telemetry, providers,
+replicas, exports, or backups; see [Instance data lifecycle](DATA_LIFECYCLE.md)
+and [Offline Instance erasure](ERASURE.md).
 
 ### Operational Work and Vigil
 
@@ -778,7 +823,8 @@ contract and `--strict` treats warnings as a failure. Programmatic callers can
 pass an explicit Stack or package matrix to `Spectre.Doctor.run/1`. Doctor
 inspects compiled public metadata and side-effect-free action discovery
 catalogs; it does not execute actions, start package resources or read/write a
-store.
+store. Its privacy checks also report whether configured Checkpoint, Journal,
+and Receipt adapters expose their erasure callbacks.
 
 The Agent report includes named checks for planner action protection, executor
 egress allowlists and reply sanitization. Pass runtime delivery consent samples
@@ -796,7 +842,7 @@ functions:
 | `Spectre.LLM` | Complete rendered prompts and return normalized provider output |
 | `Spectre.Inference.StreamAdapter` | Normalize bounded asynchronous provider streams |
 | `Spectre.State.Store` | Load and compare-and-swap durable conversation state |
-| `Spectre.Instance.CheckpointStore` | Load and compare-and-swap the complete canonical Instance checkpoint |
+| `Spectre.Instance.CheckpointStore` | Load, compare-and-swap, and optionally erase the complete canonical Instance checkpoint with an anti-resurrection marker |
 | `Spectre.Receipt.Sink` | Append idempotent boundary evidence and optional content-addressed payloads |
 | `Spectre.Operation.Controller` | Reduce deterministic Work, Vigil, or external-controller transitions |
 | `Spectre.Classifier.Embedding` | Produce embedding vectors |

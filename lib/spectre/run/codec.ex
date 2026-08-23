@@ -685,8 +685,14 @@ defmodule Spectre.Run.Codec do
     request.kind == awaitable.kind and request.name == awaitable.name and
       request.label == awaitable.label and request.max_attempts == awaitable.max_attempts and
       request.status == awaitable.status and request.attempts == awaitable.attempts and
-      request.metadata == awaitable.metadata
+      request.metadata == awaitable_request_metadata(awaitable)
   end
+
+  @spec awaitable_request_metadata(Awaitable.t()) :: map()
+  defp awaitable_request_metadata(%Awaitable{resolver: :external, metadata: metadata}),
+    do: Map.put(metadata, :resolver, :external)
+
+  defp awaitable_request_metadata(%Awaitable{metadata: metadata}), do: metadata
 
   @spec invocation_matches_effect?(Invocation.t(), Effect.t()) :: boolean()
   defp invocation_matches_effect?(%Invocation{} = invocation, %Effect{} = effect) do

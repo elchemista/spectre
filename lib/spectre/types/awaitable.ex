@@ -1,9 +1,9 @@
 defmodule Spectre.Awaitable do
   @moduledoc """
-  Runtime state waiting for user input.
+  Runtime state waiting for a policy resolution.
 
   Awaitables are deliberately small. They identify what kind of input is
-  needed and, when applicable, which effect they are gating.
+  needed, who may resolve it, and, when applicable, which effect they gate.
   """
 
   defstruct [
@@ -16,10 +16,12 @@ defmodule Spectre.Awaitable do
     :max_attempts,
     status: :open,
     attempts: 0,
+    resolver: :conversation,
     metadata: %{}
   ]
 
   @type status :: :open | :accepted | :rejected | :cancelled | :expired
+  @type resolver :: :conversation | :external
 
   @type t :: %__MODULE__{
           id: term(),
@@ -31,11 +33,15 @@ defmodule Spectre.Awaitable do
           label: atom() | nil,
           attempts: non_neg_integer(),
           max_attempts: pos_integer() | nil,
+          resolver: resolver(),
           metadata: map()
         }
 
   @doc """
   Opens a policy awaitable for an effect.
+
+  `:conversation` is the compatibility default. `:external` keeps subsequent
+  conversation turns on normal routing and requires a host-sourced decision.
   """
   @spec open_policy(term(), Spectre.Effect.t() | term(), keyword()) :: t()
   def open_policy(policy, subject, opts \\ []) when not is_nil(policy) do
@@ -52,6 +58,7 @@ defmodule Spectre.Awaitable do
       subject_id: subject_id,
       run_id: run_id,
       max_attempts: Keyword.get(opts, :max_attempts),
+      resolver: Keyword.get(opts, :resolver, :conversation),
       metadata: Keyword.get(opts, :metadata, %{})
     }
   end

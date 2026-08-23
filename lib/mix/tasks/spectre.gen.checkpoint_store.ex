@@ -4,9 +4,11 @@ defmodule Mix.Tasks.Spectre.Gen.CheckpointStore do
 
       mix spectre.gen.checkpoint_store MyApp.SpectreCheckpointStore
 
-  The generated adapter is intentionally process-local and intended for tests
-  and development. Replace it with durable storage for production. Files are
-  never overwritten unless `--force` is passed. `--dry-run` changes no files.
+  The generated adapter includes compare-and-swap plus atomic erasure markers
+  and runs both public conformance gates. It is intentionally process-local
+  and intended for tests and development. Replace it with durable storage for
+  production. Files are never overwritten unless `--force` is passed.
+  `--dry-run` changes no files.
 
   ## Options
 

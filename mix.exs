@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.3.2"
+  @version "0.3.3"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
@@ -27,6 +27,8 @@ defmodule Spectre.MixProject do
     "docs/EVENT_LIFECYCLE.md",
     "docs/SKILL_STATE.md",
     "docs/JOURNAL.md",
+    "docs/DATA_LIFECYCLE.md",
+    "docs/ERASURE.md",
     "docs/PRODUCTION.md",
     "docs/TESTING.md",
     "docs/PROVIDERS.md",
@@ -70,6 +72,8 @@ defmodule Spectre.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      elixirc_paths: elixirc_paths(Mix.env()),
+      test_ignore_filters: [&String.starts_with?(&1, "test/support/")],
       test_coverage: [summary: [threshold: 95]],
       description: description(),
       package: package(),
@@ -120,6 +124,16 @@ defmodule Spectre.MixProject do
       {:stream_data, "~> 1.4", only: :test, runtime: false}
     ] ++ real_embedding_test_deps()
   end
+
+  defp elixirc_paths(:test) do
+    if System.get_env("SPECTRE_PERF_TESTS") in ["1", "true"] do
+      ["lib", "test/support"]
+    else
+      ["lib"]
+    end
+  end
+
+  defp elixirc_paths(_env), do: ["lib"]
 
   defp real_embedding_test_deps do
     case real_embedding_test_path() do
@@ -181,6 +195,8 @@ defmodule Spectre.MixProject do
           "docs/JOURNAL.md"
         ],
         Operations: [
+          "docs/DATA_LIFECYCLE.md",
+          "docs/ERASURE.md",
           "docs/PRODUCTION.md",
           "docs/TESTING.md",
           "docs/PROVIDERS.md",
@@ -272,14 +288,20 @@ defmodule Spectre.MixProject do
           Spectre.LinkIntent,
           Spectre.SubjectLink,
           Spectre.Subject.Registry,
+          Spectre.Event.Envelope,
           Spectre.Instance,
           Spectre.Instance.Activation,
-          Spectre.Event.Envelope,
+          Spectre.Instance.Erasure.Proof,
+          Spectre.Instance.Erasure.Request,
+          Spectre.Instance.Erasure.Status,
           Spectre.Instance.Owner,
+          Spectre.Instance.Owner.Conformance,
           Spectre.Instance.Owner.Lease,
           Spectre.Instance.Owner.Local,
           Spectre.Instance.Ref,
           Spectre.Instance.Registry,
+          Spectre.Privacy,
+          Spectre.Privacy.ErasurePlan,
           Spectre.Session,
           Spectre.Supervisor
         ],
@@ -452,7 +474,9 @@ defmodule Spectre.MixProject do
           Spectre.Operation.Delivery.Consent,
           Spectre.Operation.Delivery.Policy,
           Spectre.Operation.Delivery.Receipt,
-          Spectre.Instance.CheckpointStore
+          Spectre.Instance.CheckpointStore,
+          Spectre.Instance.CheckpointStore.Conformance,
+          Spectre.Instance.CheckpointStore.ErasureConformance
         ],
         Extensions: [
           Spectre.Extension,
@@ -482,6 +506,7 @@ defmodule Spectre.MixProject do
           Spectre.Journal.Record,
           Spectre.Journal.Recorder,
           Spectre.Journal.Store,
+          Spectre.Journal.Store.ErasureConformance,
           Spectre.Monitor,
           Spectre.Telemetry
         ],

@@ -2,6 +2,7 @@ defmodule Spectre.Instance.Conversation do
   @moduledoc false
 
   alias Spectre.Instance.State, as: InstanceState
+  alias Spectre.Awaitable
   alias Spectre.Run
   alias Spectre.Run.Boundary
   alias Spectre.Run.Value
@@ -148,9 +149,15 @@ defmodule Spectre.Instance.Conversation do
   defp policy_boundary?(%Run{
          status: :boundary,
          cursor: :policy,
-         waiting: %Boundary{kind: :needs}
-       }),
-       do: true
+         waiting: %Boundary{kind: :needs},
+         state: state,
+         id: run_id
+       }) do
+    match?(
+      %Awaitable{resolver: :conversation},
+      Spectre.State.open_policy_awaitable(state, run_id)
+    )
+  end
 
   defp policy_boundary?(_run), do: false
 

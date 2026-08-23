@@ -31,10 +31,11 @@ defmodule Spectre do
   """
 
   alias Spectre.Input
+  alias Spectre.Instance.Erasure
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.3.2"
+  @version "0.3.3"
 
   @doc """
   Returns the running Spectre library version.
@@ -205,6 +206,28 @@ defmodule Spectre do
         ) :: {:ok, pid()} | {:error, :instance_not_found}
   def lookup_instance(agent, subject, registry \\ Spectre.Instance.Registry) do
     Spectre.Instance.Registry.lookup(agent, subject, registry)
+  end
+
+  @doc """
+  Erases configured data for one offline Instance.
+
+  The operation refuses a live local Instance, requires an erasure-capable
+  Checkpoint Store and Owner, erases configured Journal and pending receipt
+  payload data first, and installs a fenced anti-resurrection marker.
+  `:confirm` must equal the exact stable `Spectre.Instance.Ref.key`.
+
+  The returned proof covers configured Journal records, pending receipt
+  payloads referenced by the canonical outbox, and stable/legacy Instance
+  checkpoints. Delivered receipt records and host-owned State, Memory,
+  telemetry, provider, replica, export, and backup data remain outside it.
+  """
+  @spec erase_instance(
+          module() | Spectre.AgentRef.t() | Spectre.Instance.Ref.t(),
+          Spectre.Subject.t() | term(),
+          keyword()
+        ) :: {:ok, Spectre.Instance.Erasure.Proof.t()} | {:error, term()}
+  def erase_instance(agent_or_ref, subject, opts \\ []) do
+    Erasure.run(agent_or_ref, subject, opts)
   end
 
   @doc """
@@ -388,6 +411,15 @@ defmodule Spectre do
   before returning. For sessions it also advances the session's in-memory
   state.
 
+  Pass `{:awaitable, id}` instead of a Result to resolve the exact gate against
+  current state. This form is required for externally addressed approvals
+  because conversation turns may advance while the gate remains open.
+
+  This function is a host authority boundary, not an authentication mechanism.
+  The caller must authenticate and authorize the actor. The compact tuple form
+  creates a `source: :host` resolution; pass an explicit
+  `Spectre.Policy.Resolution` to attach application-owned audit metadata.
+
       {:ok, approved} =
         Spectre.resolve_policy(
           MyApp.Agent,
@@ -395,10 +427,25 @@ defmodule Spectre do
           {:accept, :terms_accepted},
           assigns: %{user: user}
         )
+
+      {:ok, resolution} =
+        Spectre.Policy.Resolution.new(
+          :accept,
+          :terms_accepted,
+          :host,
+          %{approval_ticket: "approval-42"}
+        )
+
+      {:ok, approved} =
+        Spectre.resolve_policy(
+          session,
+          {:awaitable, awaitable.id},
+          resolution
+        )
   """
   @spec resolve_policy(
           module() | GenServer.server(),
-          Spectre.Result.t(),
+          Spectre.Result.t() | {:awaitable, term()},
           Spectre.Policy.resolution(),
           keyword()
         ) :: {:ok, Spectre.Result.t()} | {:error, term()}
@@ -416,6 +463,20 @@ defmodule Spectre do
   def resolve_policy(session, %Spectre.Result{} = result, resolution, opts)
       when is_list(opts) do
     Spectre.Session.resolve_policy(session, result, resolution, opts)
+  end
+
+  def resolve_policy(agent, {:awaitable, _id} = reference, resolution, opts)
+      when is_atom(agent) and is_list(opts) do
+    if agent_module?(agent) do
+      Runtime.resolve_policy(agent, reference, resolution, opts)
+    else
+      Spectre.Session.resolve_policy(agent, reference, resolution, opts)
+    end
+  end
+
+  def resolve_policy(session, {:awaitable, _id} = reference, resolution, opts)
+      when is_list(opts) do
+    Spectre.Session.resolve_policy(session, reference, resolution, opts)
   end
 
   @doc """

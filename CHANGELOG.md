@@ -7,6 +7,88 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
+## 0.3.3 — 2026-08-23
+
+### Added
+
+- Added `Spectre.Instance.Owner.Conformance` with separate local and
+  distributed profiles for portable leases, Ref binding, fencing floors,
+  monotonic supersession, cross-Ref isolation, and concurrent claims.
+- Added fenced offline configured-data erasure through
+  `Spectre.erase_instance/3`. Erasure requires exact stable-key confirmation,
+  refuses a live local Instance, uses a non-preemptive maintenance claim,
+  orders configured Journal records, pending receipt payloads, and stable plus
+  legacy checkpoint keys, verifies marker read-back, and returns a
+  privacy-safe component proof. Durable markers also reject later Instance
+  startup rather than allowing an erased identity to run in memory.
+- Added the I/O-free `Spectre.Privacy.erasure_plan/3`, optional Journal Store
+  `erase_instance/2` and Receipt Sink `delete_payload/2` callbacks, Doctor
+  erasure-posture checks, executable exact-Ref Journal erasure conformance, and
+  the data-map and operator runbook documentation.
+- Added optional Checkpoint Store `erase/3` and `erasure_status/2` callbacks,
+  portable erasure Request/Status contracts, and
+  `Spectre.Instance.CheckpointStore.ErasureConformance`. The conformance gate
+  proves present and absent erasure, neighboring-Ref isolation, idempotency,
+  stale-write rejection, and a single authoritative result for
+  erase-versus-CAS races.
+- Added `mix spectre.profile` and opt-in `:perf` tests for Instance boot
+  reductions, post-GC footprint, retained binaries, monitoring cost, and
+  `:tprof` allocation breakdowns. CI runs the pinned budgets separately.
+- Added externally addressed policy gates with
+  `protect(..., resolver: :external)`, current-state
+  `{:awaitable, id}` resolution, host-source enforcement, normal conversation
+  routing while approval is pending, and a configurable
+  `approval_pending_reply/2` for a second protected request.
+
+### Changed
+
+- Instance startup remains synchronous and fail-closed, but checkpoint
+  decode/validation, Activation restore, and retained-Run verification now run
+  in supervised disposable workers. Per-Instance concurrency defaults to `1`;
+  a node-wide `:boot_max_concurrency` bound prevents restart herds. Runs pinned
+  to one Definition share one resolved artifact closure during restore.
+- Successful Instance startup performs one OTP hibernation so boot garbage is
+  not retained by the long-lived owner. `:hibernate_after` remains
+  `:infinity` by default for subsequent idle periods; operators may configure
+  a finite value explicitly.
+- Stream sessions accept `:stream_hibernate_after` and the opt-in
+  `stream_message_queue_data: :off_heap`. Off-heap queues are accepted only
+  for push adapters that declare and enforce `:bounded_push_transport`.
+- Generated Checkpoint Store adapters now include atomic anti-resurrection
+  markers and run both ordinary CAS and erasure conformance checks.
+- Boot failure and normal termination share one cleanup path, including
+  partial recovery state, worker/session teardown, timer cancellation,
+  capacity release, and owner-lease release.
+- `boot_worker_timeout` now includes time queued behind the node-wide boot
+  limiter; timed-out queued entries and their process monitors are removed
+  before startup fails.
+- Policy journal records now carry both the resolution source and resolver.
+- Frozen model identities strip URI userinfo from both `%URI{}` values and
+  endpoint strings before they enter canonical state or digests.
+- Receipt erasure proofs report `:not_applicable`, rather than
+  `:already_erased`, when a configured sink has no pending payload references.
+- Receipt Sink conformance failures now identify the exact rejected phase as
+  `{:receipt_sink_conformance_failed, phase, reason}`, including neighboring-
+  payload isolation failures.
+
+### Compatibility
+
+- State remains schema v5 and accepts old payloads unchanged; its Awaitable
+  record adds an optional resolver that decodes to `:conversation` when
+  absent. Run and canonical Instance checkpoint schemas are unchanged. No
+  runtime dependency was added.
+- Existing Checkpoint Store, Owner, Journal, and Receipt adapters remain
+  source-compatible because destructive callbacks and the maintenance claim
+  are optional. Receipt conformance also remains compatible: sinks without
+  `delete_payload/2` report `payload_erasure: :not_exported`, while sinks that
+  expose it are checked for exact deletion and neighboring-payload isolation.
+  The erase API fails before mutation when a configured component lacks its
+  capability. Only assertions that matched the old error shape of an already
+  failing Receipt conformance run need to include the new phase field.
+- Defaults remain serial boot, no recurring idle hibernation, and on-heap
+  stream mailboxes. The one post-boot hibernation is the only default runtime
+  change and affects footprint, not message or recovery semantics.
+
 ## 0.3.2 — 2026-08-15
 
 ### Added

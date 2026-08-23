@@ -39,6 +39,12 @@ defmodule Spectre.Instance.Owner.Local do
   end
 
   @impl true
+  def claim_maintenance(%Ref{} = ref, :erasure, opts), do: claim(ref, opts)
+
+  def claim_maintenance(%Ref{}, purpose, _opts),
+    do: {:error, {:unsupported_local_owner_maintenance, purpose}}
+
+  @impl true
   def validate(%Ref{} = ref, %Lease{} = lease, opts) do
     now = Keyword.get(opts, :now, System.system_time(:millisecond))
 

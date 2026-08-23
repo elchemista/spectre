@@ -13,13 +13,19 @@ defmodule Spectre.Instance.Registry do
   Returns the live local Instance for an Agent and Subject.
   """
   @spec lookup(module() | Spectre.AgentRef.t(), Spectre.Subject.t() | term(), atom()) ::
-          {:ok, pid()} | {:error, :instance_not_found}
+          {:ok, pid()} | {:error, :instance_not_found | :instance_in_maintenance}
   def lookup(agent, subject, registry \\ __MODULE__) do
     ref = Ref.new(agent, subject)
 
     case Registry.lookup(registry, ref.key) do
-      [{pid, _value}] when is_pid(pid) -> {:ok, pid}
-      [] -> {:error, :instance_not_found}
+      [{_pid, {:instance_maintenance, _purpose, _token}}] ->
+        {:error, :instance_in_maintenance}
+
+      [{pid, _value}] when is_pid(pid) ->
+        {:ok, pid}
+
+      [] ->
+        {:error, :instance_not_found}
     end
   end
 
@@ -63,22 +69,72 @@ defmodule Spectre.Instance.Registry do
           {:error, _reason} = error -> resolve_start_race(ref, registry, error)
           :ignore -> :ignore
         end
+
+      {:error, :instance_in_maintenance} = error ->
+        error
     end
   end
 
   @doc false
-  @spec lookup_ref(Ref.t(), atom()) :: {:ok, pid()} | {:error, :instance_not_found}
+  @spec lookup_ref(Ref.t(), atom()) ::
+          {:ok, pid()} | {:error, :instance_not_found | :instance_in_maintenance}
   def lookup_ref(%Ref{} = ref, registry \\ __MODULE__) do
     case Registry.lookup(registry, ref.key) do
-      [{pid, _value}] when is_pid(pid) -> {:ok, pid}
-      [] -> {:error, :instance_not_found}
+      [{_pid, {:instance_maintenance, _purpose, _token}}] ->
+        {:error, :instance_in_maintenance}
+
+      [{pid, _value}] when is_pid(pid) ->
+        {:ok, pid}
+
+      [] ->
+        {:error, :instance_not_found}
     end
+  end
+
+  @doc false
+  @spec reserve(Ref.t(), atom(), atom()) :: {:ok, reference()} | {:error, term()}
+  def reserve(%Ref{} = ref, purpose, registry \\ __MODULE__) when is_atom(purpose) do
+    token = make_ref()
+
+    case Registry.register(registry, ref.key, {:instance_maintenance, purpose, token}) do
+      {:ok, _owner} ->
+        {:ok, token}
+
+      {:error, {:already_registered, _pid}} ->
+        case lookup_ref(ref, registry) do
+          {:ok, _pid} -> {:error, :instance_active}
+          {:error, :instance_in_maintenance} -> {:error, :instance_in_maintenance}
+          {:error, :instance_not_found} -> {:error, :instance_registry_race}
+        end
+    end
+  rescue
+    ArgumentError -> {:error, :instance_registry_unavailable}
+  catch
+    :exit, _reason -> {:error, :instance_registry_unavailable}
+  end
+
+  @doc false
+  @spec release_reservation(Ref.t(), reference(), atom()) :: :ok | {:error, term()}
+  def release_reservation(%Ref{} = ref, token, registry \\ __MODULE__)
+      when is_reference(token) do
+    case Registry.lookup(registry, ref.key) do
+      [{pid, {:instance_maintenance, _purpose, ^token}}] when pid == self() ->
+        Registry.unregister(registry, ref.key)
+
+      _other ->
+        {:error, :instance_maintenance_reservation_lost}
+    end
+  rescue
+    ArgumentError -> {:error, :instance_registry_unavailable}
+  catch
+    :exit, _reason -> {:error, :instance_registry_unavailable}
   end
 
   defp resolve_start_race(ref, registry, original_error) do
     case lookup_ref(ref, registry) do
       {:ok, pid} -> {:ok, pid}
       {:error, :instance_not_found} -> original_error
+      {:error, :instance_in_maintenance} = error -> error
     end
   end
 end

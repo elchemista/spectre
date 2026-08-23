@@ -9,7 +9,7 @@ Install the stable package from Hex:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.3.2"}
+    {:spectre, "~> 0.3.3"}
   ]
 end
 ```
@@ -36,7 +36,7 @@ Start with [Getting Started](GETTING_STARTED.md), then use the
 [Production Operations](PRODUCTION.md) checklist before deploying.
 
 The generated module reference is available on
-[HexDocs](https://hexdocs.pm/spectre/0.3.2). Verify the selected release with
+[HexDocs](https://hexdocs.pm/spectre/0.3.3). Verify the selected release with
 `mix hex.info spectre` when preparing a production lockfile.
 
 Run the read-only diagnostics after compilation:
@@ -93,7 +93,7 @@ library when model replies use Action Language or tool planning:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.3.2"},
+    {:spectre, "~> 0.3.3"},
     {:spectre_kinetic, github: "elchemista/spectre_kinetic"}
   ]
 end
@@ -123,7 +123,7 @@ application that needs local embeddings:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.3.2"},
+    {:spectre, "~> 0.3.3"},
     {:ex_fastembed, github: "elchemista/ex_fastembed", branch: "master"}
   ]
 end

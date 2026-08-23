@@ -29,11 +29,26 @@ defmodule Spectre.ActionProtection do
   """
   @spec protected_by(module(), Effect.t(), Spectre.Definition.scope() | nil) :: term()
   def protected_by(agent, %Effect{} = effect, scope) when is_atom(agent) do
+    case protection_for(agent, effect, scope) do
+      %{policy: policy} -> policy
+      nil -> nil
+    end
+  end
+
+  @doc false
+  @spec protection_for(module(), Effect.t()) :: map() | nil
+  def protection_for(agent, %Effect{} = effect) when is_atom(agent) do
+    protection_for(agent, effect, Effect.scope(effect))
+  end
+
+  @doc false
+  @spec protection_for(module(), Effect.t(), Spectre.Definition.scope() | nil) :: map() | nil
+  def protection_for(agent, %Effect{} = effect, scope) when is_atom(agent) do
     agent
     |> Spectre.Definition.protections()
     |> Enum.find_value(fn protection ->
       if protection_scope_matches?(protection, scope) do
-        matching_policy(protection, effect)
+        matching_protection(protection, effect)
       end
     end)
   end
@@ -44,9 +59,9 @@ defmodule Spectre.ActionProtection do
   defp protection_scope_matches?(%{scope: scope}, scope), do: true
   defp protection_scope_matches?(_protection, _scope), do: false
 
-  @spec matching_policy(map(), Effect.t()) :: term()
-  defp matching_policy(%{action: protected, policy: policy}, %Effect{} = effect) do
-    if action_matches?(protected, effect), do: policy
+  @spec matching_protection(map(), Effect.t()) :: map() | nil
+  defp matching_protection(%{action: protected} = protection, %Effect{} = effect) do
+    if action_matches?(protected, effect), do: protection
   end
 
   @spec action_matches?(term(), Effect.t()) :: boolean()

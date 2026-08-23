@@ -102,6 +102,145 @@ GC-eligible: core sees its Activation, Runs, operations, and child branches,
 but not application tables or backups. See
 [Migrating to 0.2.5](MIGRATING_TO_0_2_5.md).
 
+### Multi-node ownership and rolling deploys
+
+A rolling deploy must transfer authority explicitly; process discovery and the
+local Registry are not a distributed ownership protocol. Before replacing a
+node, stop admission for the Instance, drain in-flight Runs and streams, flush
+its checkpoint, and release its current lease. The replacement may claim only
+after the old owner is no longer current, and must pass the last durable
+fencing token as `:minimum_fencing_token`. Every later write and dispatch must
+continue validating that newly claimed lease.
+
+If the old node crashes before release, do not let the replacement guess that
+the lease disappeared. The host authority must wait for or revoke the expired
+lease according to its own linearizable protocol, then issue a token strictly
+above the durable floor. A partitioned old owner may still be alive, so TTL
+alone is insufficient unless every guarded boundary rejects its expired or
+superseded token. Keep the last accepted fencing token with the checkpoint so
+a restored backup cannot lower the floor.
+
+Run `Spectre.Instance.Owner.Conformance` with `profile: :distributed` against
+the production adapter before a rolling deploy. The gate proves supersession,
+cross-Ref isolation, one current race winner, and—when `release/3` is
+implemented—that a released lease immediately fails validation and the next
+claim advances its fencing token. An omitted release callback is reported as
+`:optional_noop`; in that case the host must document and rehearse its expiry
+or revocation path before deployment.
+
+These contracts deliberately do not provide Instance placement, node
+membership or discovery, leader election, traffic routing, failover
+orchestration, lease storage, or replication. Those remain host concerns; the
+Owner boundary only makes their resulting authority observable and fenceable
+inside Spectre.
+
+### Offline Instance data erasure
+
+`Spectre.erase_instance/3` coordinates configured Journal records, pending
+required-receipt payloads referenced by the checkpoint, and the canonical
+Instance checkpoint. It does not erase delivered receipt records, application
+State or Memory stores, telemetry, provider logs, replicas, exports, or
+backups. Treat the returned proof as evidence for its configured scope, not as
+a whole-subject deletion certificate. See [Instance data lifecycle](DATA_LIFECYCLE.md).
+
+Erasure is deliberately offline and fail-closed:
+
+1. Drain and stop the Instance on every node.
+2. Build its stable Ref and require an operator to supply that exact key.
+3. Use an Owner adapter whose `claim_maintenance/3` never supersedes a live
+   lease.
+4. Verify `Spectre.Privacy.erasure_plan/3` reports every configured adapter as
+   ready; Journal and receipt callbacks are optional only when those stores
+   are not part of the Instance deployment.
+5. Use a Checkpoint Store whose atomic `erase/3` installs a durable
+   anti-resurrection marker and whose `erasure_status/2` reads it back.
+6. Retain and replicate the marker anywhere stale writers or restored backups
+   could otherwise recreate the checkpoint.
+
+```elixir
+ref = Spectre.Instance.Ref.new(MyApp.SupportAgent, account_subject)
+
+{:ok, proof} =
+  Spectre.erase_instance(MyApp.SupportAgent, account_subject,
+    checkpoint_store: MyApp.Checkpoints,
+    owner: MyApp.InstanceOwner,
+    journal: MyApp.Journal,
+    receipt_sink: MyApp.Receipts,
+    confirm: ref.key
+  )
+
+:configured_instance_data = proof.scope
+```
+
+Core reserves the local Registry key, observes stable and legacy checkpoint
+keys, takes the maintenance lease above every observed fence, and re-reads the
+same identities. It then erases Journal refs, pending receipt payloads, and
+checkpoints in that order, verifying both checkpoint `load/2` and marker
+projection. A partial cross-store or multi-key result is reported as ambiguous
+and must be reconciled; core never reports optimistic success. See the full
+[erasure runbook](ERASURE.md).
+
+Run both executable adapter gates in an isolated production-equivalent
+namespace before enabling the operation:
+
+```elixir
+{:ok, _} =
+  Spectre.Instance.Owner.Conformance.run(MyApp.InstanceOwner, fresh_ref,
+    profile: :distributed
+  )
+
+{:ok, _} =
+  Spectre.Instance.CheckpointStore.ErasureConformance.run(
+    MyApp.Checkpoints,
+    another_fresh_ref
+  )
+```
+
+### Instance footprint tuning
+
+Instance startup remains synchronous: a supervisor does not receive
+`{:ok, pid}` until restore, ownership, and recovery have completed. Expensive
+read-only decode and verification work runs in disposable supervised workers,
+so its temporary heap dies outside the long-lived owner. The default
+`boot_concurrency: 1` preserves serial per-Instance restore; increase it only
+after profiling retained Runs that share few Definition refs.
+
+The node-wide limiter defaults to `System.schedulers_online/0` and bounds all
+concurrent boot workers, including restart herds:
+
+```elixir
+config :spectre, :boot_max_concurrency, 8
+
+instance_opts = [
+  boot_concurrency: 2,
+  boot_worker_timeout: 30_000,
+  hibernate_after: 30_000
+]
+```
+
+`boot_worker_timeout` defaults to `:infinity` and bounds both time queued behind
+the node-wide limiter and callback execution for each boot worker. Boot adapter
+callbacks execute in that disposable worker process; adapters must use the
+explicit Ref and options as identity and must not infer ownership from
+`self/0`. A successful boot always hibernates once to compact the owner.
+Recurring idle hibernation remains off by default
+(`hibernate_after: :infinity`); a finite value uses the standard OTP server
+option. Any periodic local call wakes the process, so a dashboard that polls
+`Spectre.Instance.info/1` every second prevents a longer idle interval while it
+is open.
+
+Measure representative data before choosing limits:
+
+```shell
+mix spectre.profile
+mix spectre.profile --scenario restore_runs --runs 64 --iterations 5
+mix spectre.profile --scenario large_checkpoint --bytes 2000000
+```
+
+The task reports owner and node reductions, post-GC owner footprint, retained
+binary bytes, wall time, and an OTP `:tprof` call-memory breakdown without
+printing checkpoint contents.
+
 Canonical operational history is bounded by default. An Instance retains the
 256 most recently updated terminal loops and up to 1,024 additional historical
 correlations, while always preserving live loops and their primary
@@ -262,9 +401,10 @@ Before deployment, `mix spectre.doctor --strict` performs read-only runtime and
 Foundation checks. Pass `--agent MyApp.Agent` to inspect its compiled
 Definition, Manifest, configured Stack, and Checkpoint Store callback shape;
 use `--format json` for automation. `Spectre.Doctor.run/1` also accepts an
-explicit package matrix for release tooling. Database connectivity, migrations,
-and package-specific health checks remain in the adapter package that owns
-them.
+explicit Journal or Receipt Sink configuration and reports the three erasure
+callback postures without invoking those stores. Database connectivity,
+migrations, and package-specific health checks remain in the adapter package
+that owns them.
 
 Agent diagnostics also warn about planner-visible actions without `protect`,
 planner schemas that are unconstrained or omit `additionalProperties: false`

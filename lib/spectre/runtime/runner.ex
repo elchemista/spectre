@@ -427,13 +427,13 @@ defmodule Spectre.Runner do
       |> Effect.stage_action(route_owner(ctx), route_scope(ctx))
       |> Effect.bind_run(lifecycle_run_id(ctx.opts))
 
-    policy =
-      Keyword.get(opts, :policy) ||
-        ActionProtection.protected_by(ctx.agent, effect)
+    protection = action_protection(ctx.agent, effect, opts)
+    policy = protection && protection.policy
 
-    with :ok <- ensure_no_pending_effect(ctx.state, lifecycle_run_id(ctx.opts)),
+    with :ok <-
+           ensure_no_pending_effect(ctx.state, lifecycle_run_id(ctx.opts), protection),
          {:ok, transition} <-
-           Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, policy}) do
+           Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, protection}) do
       state = transition.to
       ctx = %{ctx | state: state}
       # The lifecycle transition carries policy metadata/status into state.
@@ -456,6 +456,12 @@ defmodule Spectre.Runner do
              events: [effect_event(:effect_staged, effect)]
            }}
       end
+    else
+      {:error, {:approval_pending, awaitable_id} = reason} ->
+        approval_pending_result(reason, awaitable_id, input, ctx)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -488,11 +494,13 @@ defmodule Spectre.Runner do
 
   defp stage_effects(reply_text, [effect], input, ctx, opts) do
     effect = Effect.bind_run(effect, lifecycle_run_id(ctx.opts))
-    policy = ActionProtection.protected_by(ctx.agent, effect)
+    protection = ActionProtection.protection_for(ctx.agent, effect)
+    policy = protection && protection.policy
 
-    with :ok <- ensure_no_pending_effect(ctx.state, lifecycle_run_id(ctx.opts)),
+    with :ok <-
+           ensure_no_pending_effect(ctx.state, lifecycle_run_id(ctx.opts), protection),
          {:ok, transition} <-
-           Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, policy}) do
+           Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, protection}) do
       state = transition.to
       ctx = %{ctx | state: state}
       staged_effect = pending_effect(state, lifecycle_run_id(ctx.opts))
@@ -512,6 +520,12 @@ defmodule Spectre.Runner do
            events: [effect_event(:effect_staged, effect)]
          }}
       end
+    else
+      {:error, {:approval_pending, awaitable_id} = reason} ->
+        approval_pending_result(reason, awaitable_id, input, ctx)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -771,15 +785,58 @@ defmodule Spectre.Runner do
   defp maybe_put_prompt_inject(opts, _key, nil), do: opts
   defp maybe_put_prompt_inject(opts, key, inject), do: Keyword.put(opts, key, inject)
 
-  @spec ensure_no_pending_effect(Spectre.State.t(), String.t() | nil) ::
+  @spec ensure_no_pending_effect(Spectre.State.t(), String.t() | nil, map() | nil) ::
           :ok | {:error, term()}
-  defp ensure_no_pending_effect(%Spectre.State{} = state, run_id) do
+  defp ensure_no_pending_effect(%Spectre.State{} = state, run_id, _protection) do
     case Spectre.State.pending_effect(state, run_id) do
       nil ->
         :ok
 
       %Effect{} = effect ->
-        {:error, {:pending_effect_not_resolved, effect.id, effect.status}}
+        case Spectre.State.open_policy_awaitable(state) do
+          %Spectre.Awaitable{resolver: :external} = awaitable ->
+            {:error, {:approval_pending, awaitable.id}}
+
+          _other ->
+            {:error, {:pending_effect_not_resolved, effect.id, effect.status}}
+        end
+    end
+  end
+
+  @spec action_protection(module(), Effect.t(), keyword()) :: map() | nil
+  defp action_protection(agent, %Effect{} = effect, opts) do
+    if Keyword.has_key?(opts, :policy) do
+      %{
+        policy: Keyword.fetch!(opts, :policy),
+        resolver: Keyword.get(opts, :resolver, :conversation)
+      }
+    else
+      ActionProtection.protection_for(agent, effect)
+    end
+  end
+
+  @spec approval_pending_result(term(), term(), Input.t(), Spectre.Context.t()) ::
+          {:ok, Result.t()} | {:error, term()}
+  defp approval_pending_result(reason, awaitable_id, input, ctx) do
+    case Keyword.get(ctx.opts, :approval_pending_reply) do
+      {prompt, reply_opts} when is_list(reply_opts) ->
+        with {:ok, %Result{} = result} <- reply(prompt, input, ctx, reply_opts) do
+          rejection = %{code: :approval_pending, awaitable_id: awaitable_id}
+          event = %{type: :approval_pending, reason: reason, awaitable_id: awaitable_id}
+
+          {:ok,
+           %{
+             result
+             | metadata: Map.put(result.metadata, :policy_rejection, rejection),
+               events: result.events ++ [event]
+           }}
+        end
+
+      nil ->
+        {:error, reason}
+
+      invalid ->
+        {:error, {:invalid_approval_pending_reply, invalid}}
     end
   end
 

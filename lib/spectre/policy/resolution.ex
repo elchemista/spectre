@@ -3,7 +3,9 @@ defmodule Spectre.Policy.Resolution do
   Validated policy matcher decision shared by user text and trusted hosts.
 
   `source` identifies who supplied the evidence; lifecycle semantics depend
-  only on `kind` and `label`.
+  only on `kind` and `label`. Calling code remains responsible for
+  authenticating and authorizing a host actor before constructing a
+  `source: :host` resolution.
   """
 
   defstruct [:kind, :label, :source, metadata: %{}]

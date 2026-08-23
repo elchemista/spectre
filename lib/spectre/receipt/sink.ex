@@ -3,8 +3,9 @@ defmodule Spectre.Receipt.Sink do
   Adapter boundary for portable boundary receipts.
 
   `:disabled`, `:observational`, and `:required` are orchestration policies;
-  adapters only implement idempotent append and lookup. Any exception during
-  append is classified as ambiguous because the write may have committed.
+  adapters implement idempotent append and lookup, with optional payload
+  staging and erasure callbacks. Any exception during append is classified as
+  ambiguous because the write may have committed.
   """
 
   alias Spectre.Receipt.Envelope
@@ -19,8 +20,10 @@ defmodule Spectre.Receipt.Sink do
   @callback put_payload(Envelope.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   @callback get_payload(String.t(), keyword()) ::
               {:ok, Envelope.t()} | :not_found | {:error, term()}
+  @callback delete_payload(String.t(), keyword()) ::
+              {:ok, :deleted | :not_found} | {:error, term()}
 
-  @optional_callbacks put_payload: 2, get_payload: 2
+  @optional_callbacks put_payload: 2, get_payload: 2, delete_payload: 2
 
   @spec normalize(config()) :: {:ok, normalized()} | {:error, term()}
   def normalize(value) when value in [nil, false], do: {:ok, nil}
@@ -127,6 +130,35 @@ defmodule Spectre.Receipt.Sink do
 
   def get_payload(nil, _ref, _opts), do: :not_found
 
+  @doc "Returns whether a configured sink can delete staged receipt payloads."
+  @spec payload_erasure_capability(normalized()) :: :ok | {:error, term()}
+  def payload_erasure_capability(nil), do: :ok
+
+  def payload_erasure_capability({module, _opts}) do
+    callback(module, :delete_payload, 2)
+  end
+
+  @doc "Idempotently deletes one exact content-addressed receipt payload."
+  @spec delete_payload(normalized(), String.t(), keyword()) ::
+          {:ok, :deleted | :not_found | :not_configured} | {:error, term()}
+  def delete_payload(nil, ref, _opts) when is_binary(ref) and ref != "",
+    do: {:ok, :not_configured}
+
+  def delete_payload({module, sink_opts} = sink, ref, opts)
+      when is_binary(ref) and ref != "" do
+    with :ok <- payload_erasure_capability(sink) do
+      module.delete_payload(ref, Keyword.merge(sink_opts, opts))
+      |> normalize_payload_delete(module)
+    end
+  rescue
+    _exception -> {:error, {:ambiguous, :receipt_payload_delete_exception}}
+  catch
+    _kind, _reason -> {:error, {:ambiguous, :receipt_payload_delete_failure}}
+  end
+
+  def delete_payload(_sink, _ref, _opts),
+    do: {:error, {:receipt_sink_error, :invalid_receipt_payload_ref}}
+
   @doc "Returns the mandatory content-addressed reference for a receipt payload."
   @spec payload_ref(Envelope.t()) :: String.t()
   def payload_ref(%Envelope{} = envelope),
@@ -156,7 +188,6 @@ defmodule Spectre.Receipt.Sink do
   defp reconcile_ambiguous_payload_put(sink, envelope, ref, error, opts) do
     case get_payload(sink, ref, opts) do
       {:ok, ^envelope} -> {:ok, ref}
-      {:ok, _different} -> {:error, :receipt_payload_reconciliation_conflict}
       :not_found -> error
       {:error, reason} -> {:error, {:receipt_payload_reconciliation_failed, reason}}
     end
@@ -210,6 +241,15 @@ defmodule Spectre.Receipt.Sink do
       {:error, _reason} -> {:error, {:receipt_sink_error, :invalid_receipt_envelope}}
     end
   end
+
+  defp normalize_payload_delete({:ok, outcome}, _module)
+       when outcome in [:deleted, :not_found],
+       do: {:ok, outcome}
+
+  defp normalize_payload_delete({:error, reason}, _module), do: {:error, external_error(reason)}
+
+  defp normalize_payload_delete(_reply, _module),
+    do: {:error, {:ambiguous, :invalid_receipt_payload_delete_reply}}
 
   # Sink failures are external data. Preserve only the ambiguity bit and a
   # bounded class so provider messages, response bodies, or credentials can

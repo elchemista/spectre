@@ -73,7 +73,10 @@ defmodule Spectre.Inference.StreamSession do
     registry = Keyword.get(opts, :registry, Spectre.Inference.StreamRegistry)
     key = {invocation.id, invocation.stream_epoch}
     name = {:via, Registry, {registry, key, registry_metadata(invocation)}}
-    :gen_statem.start_link(name, __MODULE__, opts, [])
+
+    with {:ok, server_opts} <- server_options(opts) do
+      :gen_statem.start_link(name, __MODULE__, opts, server_opts)
+    end
   end
 
   @impl :gen_statem
@@ -717,6 +720,54 @@ defmodule Spectre.Inference.StreamSession do
   rescue
     exception -> {:error, {:invalid_stream_session_options, exception.__struct__}}
   end
+
+  defp server_options(opts) do
+    case Keyword.get(opts, :prepared) do
+      %Prepared{} = prepared ->
+        prepared_server_options(prepared, opts)
+
+      _invalid ->
+        {:error, :invalid_stream_session_options}
+    end
+  end
+
+  defp prepared_server_options(prepared, opts) do
+    source = Keyword.merge(prepared.provider_opts, opts)
+    hibernate_after = Keyword.get(source, :stream_hibernate_after, :infinity)
+    queue_data = Keyword.get(source, :stream_message_queue_data, :on_heap)
+
+    with :ok <- validate_hibernate_after(hibernate_after),
+         :ok <- validate_queue_data(queue_data, prepared.stream_capabilities) do
+      spawn_opts = if queue_data == :off_heap, do: [message_queue_data: :off_heap], else: []
+
+      {:ok,
+       [hibernate_after: hibernate_after]
+       |> maybe_put_spawn_opts(spawn_opts)}
+    end
+  end
+
+  defp validate_hibernate_after(:infinity), do: :ok
+  defp validate_hibernate_after(value) when is_integer(value) and value >= 0, do: :ok
+
+  defp validate_hibernate_after(value),
+    do: {:error, {:invalid_stream_option, :stream_hibernate_after, value}}
+
+  defp validate_queue_data(value, _capabilities) when value not in [:on_heap, :off_heap],
+    do: {:error, {:invalid_stream_option, :stream_message_queue_data, value}}
+
+  defp validate_queue_data(:off_heap, capabilities) do
+    if MapSet.member?(capabilities, :push_transport) and
+         MapSet.member?(capabilities, :bounded_push_transport) do
+      :ok
+    else
+      {:error, :stream_off_heap_requires_bounded_push_transport}
+    end
+  end
+
+  defp validate_queue_data(:on_heap, _capabilities), do: :ok
+
+  defp maybe_put_spawn_opts(opts, []), do: opts
+  defp maybe_put_spawn_opts(opts, spawn_opts), do: Keyword.put(opts, :spawn_opt, spawn_opts)
 
   defp stream_config(prepared, opts) do
     source = Keyword.merge(prepared.provider_opts, opts)

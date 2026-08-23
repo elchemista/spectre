@@ -57,6 +57,25 @@ defmodule Spectre.Result do
     end)
   end
 
+  @doc false
+  @spec boundary_awaitable(t()) :: Awaitable.t() | nil
+  def boundary_awaitable(%__MODULE__{} = result) do
+    awaitable = open_awaitable(result)
+
+    case awaitable do
+      %Awaitable{resolver: :conversation} ->
+        awaitable
+
+      %Awaitable{resolver: :external} ->
+        if Enum.any?(result.events, &match?(%{type: :awaitable_opened}, &1)),
+          do: awaitable,
+          else: nil
+
+      _missing ->
+        nil
+    end
+  end
+
   @doc """
   Returns the current pending effect from authoritative state, or from a
   state-less result assembled by a host.
@@ -76,6 +95,15 @@ defmodule Spectre.Result do
       effect.status in [:pending, :waiting_policy, :approved] and
         (is_nil(run_id) or effect.run_id == run_id)
     end)
+  end
+
+  @doc false
+  @spec executable_effect(t()) :: Effect.t() | nil
+  def executable_effect(%__MODULE__{} = result) do
+    case pending_effect(result) do
+      %Effect{status: status} = effect when status in [:pending, :approved] -> effect
+      _waiting_or_missing -> nil
+    end
   end
 
   @doc """

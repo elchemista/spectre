@@ -1,11 +1,12 @@
-# Spectre public API — 0.3.2
+# Spectre public API — 0.3.3
 
-This file is the normative public API manifest for Spectre `0.3.2`. It retains
-the recoverable conversational and operational surfaces and adds the core
-inference Invocation, streaming adapter, boundary-receipt and determinism
-ports. Compatibility guarantees apply only to the modules and callables listed
-below. Any module, function, macro, or callback not listed here is an
-implementation detail even when it is exported or visible in generated docs.
+This file is the normative public API manifest for Spectre `0.3.3`. It retains
+the recoverable conversational, operational, inference, streaming, receipt,
+and determinism surfaces and adds ownership conformance plus fenced offline
+configured-data erasure. Compatibility guarantees apply only to the modules and
+callables listed below. Any module, function, macro, or callback not listed
+here is an implementation detail even when it is exported or visible in
+generated docs.
 
 Default arguments are expanded into every callable arity. For the listed
 modules, documented types, opaque types, and documented struct fields are also
@@ -27,8 +28,9 @@ Mix project version.
 - `Mix.Tasks.Spectre.Gen.Agent`
 - `Mix.Tasks.Spectre.Gen.CheckpointStore`
 - `Mix.Tasks.Spectre.Gen.Installable`
+- `Mix.Tasks.Spectre.Profile`
 - `Spectre`
-  - functions: `activate/2`, `activate/3`, `activation/1`, `admit_event/2`, `admit_event/3`, `admitted_events/1`, `admitted_events/2`, `after_action/4`, `after_action/5`, `ask/2`, `ask/3`, `await_result/1`, `await_result/2`, `authorize_delivery/4`, `authorize_delivery/5`, `cancel/2`, `checkpoint/1`, `checkpoint_status/1`, `definition_lifecycle/1`, `definition_lifecycle/2`, `delivery_receipts/1`, `delivery_receipts/2`, `dismiss/2`, `drain_definition/1`, `drain_definition/2`, `drain_definition/3`, `ensure_instance/3`, `ensure_instance/4`, `execute/2`, `execute/3`, `flush_checkpoint/1`, `flush_checkpoint/2`, `instance/3`, `instance/4`, `lookup_instance/2`, `lookup_instance/3`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `quarantined_events/1`, `quarantined_events/2`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `reset/1`, `reset/2`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resolve_policy/3`, `resolve_policy/4`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `resume_stream/2`, `resume_stream/3`, `revoke_definition/1`, `revoke_definition/2`, `revoke_definition/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `start_controller/3`, `start_controller/4`, `start_execution/2`, `start_execution/3`, `start_work/3`, `start_work/4`, `state/1`, `skill_state/2`, `skill_state/3`, `skill_state_branches/2`, `skill_state_branches/3`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `stream/2`, `stream/3`, `subscribe_operation_events/1`, `subscribe_operation_events/2`, `summon/1`, `summon/3`, `transition_definition_lifecycle/4`, `transition_definition_lifecycle/5`, `transition_skill_state_retention/4`, `transition_skill_state_retention/5`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `unsubscribe_operation_events/1`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`, `update_skill_state/3`, `update_skill_state/4`, `version/0`
+  - functions: `activate/2`, `activate/3`, `activation/1`, `admit_event/2`, `admit_event/3`, `admitted_events/1`, `admitted_events/2`, `after_action/4`, `after_action/5`, `ask/2`, `ask/3`, `await_result/1`, `await_result/2`, `authorize_delivery/4`, `authorize_delivery/5`, `cancel/2`, `checkpoint/1`, `checkpoint_status/1`, `definition_lifecycle/1`, `definition_lifecycle/2`, `delivery_receipts/1`, `delivery_receipts/2`, `dismiss/2`, `drain_definition/1`, `drain_definition/2`, `drain_definition/3`, `ensure_instance/3`, `ensure_instance/4`, `erase_instance/2`, `erase_instance/3`, `execute/2`, `execute/3`, `flush_checkpoint/1`, `flush_checkpoint/2`, `instance/3`, `instance/4`, `lookup_instance/2`, `lookup_instance/3`, `loop/2`, `loop/3`, `loops/1`, `loops/2`, `operation_events/1`, `operation_events/2`, `pause_loop/2`, `pause_loop/3`, `put_delivery_consent/2`, `put_delivery_consent/3`, `quarantined_events/1`, `quarantined_events/2`, `reconcile_checkpoint/1`, `reconcile_checkpoint/2`, `record_delivery/4`, `record_delivery/5`, `register_vigil/3`, `register_vigil/4`, `renew_loop/3`, `renew_loop/4`, `reset/1`, `reset/2`, `resolve_loop/1`, `resolve_loop/2`, `resolve_loop/3`, `resolve_policy/3`, `resolve_policy/4`, `resume/3`, `resume/4`, `resume_loop/2`, `resume_loop/3`, `resume_stream/2`, `resume_stream/3`, `revoke_definition/1`, `revoke_definition/2`, `revoke_definition/3`, `revoke_delivery_consent/2`, `revoke_delivery_consent/3`, `start_controller/3`, `start_controller/4`, `start_execution/2`, `start_execution/3`, `start_work/3`, `start_work/4`, `state/1`, `skill_state/2`, `skill_state/3`, `skill_state_branches/2`, `skill_state_branches/3`, `stop_loop/2`, `stop_loop/3`, `stop_loop/4`, `stream/2`, `stream/3`, `subscribe_operation_events/1`, `subscribe_operation_events/2`, `summon/1`, `summon/3`, `transition_definition_lifecycle/4`, `transition_definition_lifecycle/5`, `transition_skill_state_retention/4`, `transition_skill_state_retention/5`, `trigger_loop/3`, `trigger_loop/4`, `turn/2`, `turn/3`, `unsubscribe_operation_events/1`, `update_and_resume_loop/3`, `update_and_resume_loop/4`, `update_loop/3`, `update_loop/4`, `update_skill_state/3`, `update_skill_state/4`, `version/0`
   - functions: `rollback/2`, `rollback/3`
 - `Spectre.Action`
   - functions: `from_effect/1`, `matches_ref?/2`, `new/1`, `ref/1`, `split_ref/1`, `to_effect_attrs/1`, `valid_ref?/1`
@@ -56,7 +58,7 @@ Mix project version.
 - `Spectre.ActionProtection`
   - functions: `protected_by/2`, `protected_by/3`
 - `Spectre.Agent`
-  - macros: `__using__/1`, `act/1`, `act/2`, `action/1`, `action/2`, `action_planner/1`, `action_planner/2`, `action_provider/2`, `action_provider/3`, `actions/1`, `actions/2`, `actions/3`, `after_action/2`, `arbitrator/1`, `arbitrator/2`, `ask/1`, `ask/2`, `before_action/2`, `call_operation/1`, `call_operation/2`, `checkpoint_store/1`, `checkpoint_store/2`, `classifier/1`, `classifier/2`, `embedding/1`, `embedding/2`, `fail/1`, `fail/2`, `flow/2`, `flow/3`, `history/1`, `history/2`, `idle/1`, `inject/1`, `inject/2`, `input_pipeline/1`, `interrupt/2`, `interrupt/3`, `journal/1`, `journal/2`, `memory/1`, `model/1`, `model/2`, `operation/2`, `operation/3`, `policy/2`, `protect/1`, `protect/2`, `reason/1`, `reason/2`, `reply/1`, `reply/2`, `requires_action/1`, `requires_action/2`, `requires_operation/1`, `requires_operation/2`, `requires_tool/1`, `requires_tool/2`, `route_operation_events/0`, `route_operation_events/1`, `router/1`, `run/1`, `run/2`, `shutdown/1`, `skill/1`, `skill/2`, `state/1`, `turn_handler/1`, `turn_handler/2`, `turn_handlers/1`, `work/1`, `work/2`
+  - macros: `__using__/1`, `act/1`, `act/2`, `action/1`, `action/2`, `action_planner/1`, `action_planner/2`, `action_provider/2`, `action_provider/3`, `actions/1`, `actions/2`, `actions/3`, `after_action/2`, `approval_pending_reply/1`, `approval_pending_reply/2`, `arbitrator/1`, `arbitrator/2`, `ask/1`, `ask/2`, `before_action/2`, `call_operation/1`, `call_operation/2`, `checkpoint_store/1`, `checkpoint_store/2`, `classifier/1`, `classifier/2`, `embedding/1`, `embedding/2`, `fail/1`, `fail/2`, `flow/2`, `flow/3`, `history/1`, `history/2`, `idle/1`, `inject/1`, `inject/2`, `input_pipeline/1`, `interrupt/2`, `interrupt/3`, `journal/1`, `journal/2`, `memory/1`, `model/1`, `model/2`, `operation/2`, `operation/3`, `policy/2`, `protect/1`, `protect/2`, `reason/1`, `reason/2`, `reply/1`, `reply/2`, `requires_action/1`, `requires_action/2`, `requires_operation/1`, `requires_operation/2`, `requires_tool/1`, `requires_tool/2`, `route_operation_events/0`, `route_operation_events/1`, `router/1`, `run/1`, `run/2`, `shutdown/1`, `skill/1`, `skill/2`, `state/1`, `turn_handler/1`, `turn_handler/2`, `turn_handlers/1`, `work/1`, `work/2`
 - `Spectre.AgentRef`
   - functions: `from_data/1`, `from_id/1`, `from_id/2`, `key/1`, `legacy_key/1`, `new/1`, `new/2`, `schema_version/0`, `to_data/1`
 - `Spectre.Awaitable`
@@ -275,19 +277,28 @@ Mix project version.
 - `Spectre.Instance.Activation`
   - functions: `authority_epoch/1`, `build/1`, `compare_and_swap/3`, `decode/1`, `encode/1`, `from_data/1`, `generation/1`, `new/3`, `schema_version/0`, `to_data/1`
 - `Spectre.Instance.CheckpointStore`
-  - functions: `load/3`, `migrate_instance_key/6`, `normalize/1`, `persist/6`
-  - callbacks: `compare_and_swap/5`, `load/2`, `migrate_instance_key/5`
+  - functions: `erase/4`, `erasure_capability/1`, `erasure_status/3`, `load/3`, `migrate_instance_key/6`, `normalize/1`, `persist/6`
+  - callbacks: `compare_and_swap/5`, `erase/3`, `erasure_status/2`, `load/2`, `migrate_instance_key/5`
 - `Spectre.Instance.CheckpointStore.Conformance`
   - functions: `read_after_restart/3`, `run/2`
+- `Spectre.Instance.CheckpointStore.ErasureConformance`
+  - functions: `contract_version/0`, `run/2`, `run/3`
+- `Spectre.Instance.Erasure.Proof`
+- `Spectre.Instance.Erasure.Request`
+  - functions: `new/2`
+- `Spectre.Instance.Erasure.Status`
+  - functions: `digest/1`, `from_request/2`
 - `Spectre.Instance.Lifecycle`
   - functions: `activate/3`, `activate/4`, `authorize/2`, `fetch/2`, `fetch/3`, `from_activation/1`, `from_data/1`, `key/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`, `transition/3`, `transition/4`
 - `Spectre.Instance.Owner`
-  - functions: `assert_current/4`, `assert_current/5`, `claim/2`, `claim/3`, `normalize/1`, `release/3`, `release/4`, `validate/3`, `validate/4`
-  - callbacks: `claim/2`, `release/3`, `validate/3`
+  - functions: `assert_current/4`, `assert_current/5`, `claim/2`, `claim/3`, `claim_maintenance/3`, `claim_maintenance/4`, `maintenance_capability/1`, `normalize/1`, `release/3`, `release/4`, `validate/3`, `validate/4`
+  - callbacks: `claim/2`, `claim_maintenance/3`, `release/3`, `validate/3`
+- `Spectre.Instance.Owner.Conformance`
+  - functions: `contract_version/0`, `run/2`, `run/3`
 - `Spectre.Instance.Owner.Lease`
   - functions: `current?/2`, `new/1`, `new!/1`
 - `Spectre.Instance.Owner.Local`
-  - functions: `claim/2`, `release/3`, `validate/3`
+  - functions: `claim/2`, `claim_maintenance/3`, `release/3`, `validate/3`
 - `Spectre.Instance.Ref`
   - functions: `legacy/1`, `new/2`, `new/3`, `schema_version/0`
 - `Spectre.Instance.Registry`
@@ -358,7 +369,10 @@ Mix project version.
 - `Spectre.Journal.Recorder`
   - functions: `record_extension/4`, `record_persistence/2`, `record_result/2`, `record_routing/1`
 - `Spectre.Journal.Store`
-  - callbacks: `append/2`
+  - functions: `erase_instance/3`, `erasure_capability/1`, `normalize/1`
+  - callbacks: `append/2`, `erase_instance/2`
+- `Spectre.Journal.Store.ErasureConformance`
+  - functions: `contract_version/0`, `run/2`
 - `Spectre.LLM`
   - functions: `complete/1`, `complete/2`, `complete_once/1`, `complete_once/2`, `provider_opts/1`, `provider_opts/2`, `runtime_opt_keys/0`
   - callbacks: `complete/2`, `complete_plan/2`
@@ -413,15 +427,18 @@ Mix project version.
 - `Spectre.Provider.Call`
   - functions: `run/2`, `run/3`
 - `Spectre.Provider.Failure`
+- `Spectre.Privacy`
+  - functions: `erasure_plan/2`, `erasure_plan/3`
+- `Spectre.Privacy.ErasurePlan`
 - `Spectre.Receipt.Envelope`
   - functions: `digest/1`, `kinds/0`, `new/1`, `new!/1`, `to_data/1`
 - `Spectre.Receipt.Sink`
-  - functions: `append/3`, `get_payload/3`, `lookup/3`, `normalize/1`, `payload_capable?/1`, `payload_ref/1`, `put_payload/3`
-  - callbacks: `append/2`, `get_payload/2`, `lookup/2`, `put_payload/2`
+  - functions: `append/3`, `delete_payload/3`, `get_payload/3`, `lookup/3`, `normalize/1`, `payload_capable?/1`, `payload_erasure_capability/1`, `payload_ref/1`, `put_payload/3`
+  - callbacks: `append/2`, `delete_payload/2`, `get_payload/2`, `lookup/2`, `put_payload/2`
 - `Spectre.Receipt.Sink.Conformance`
   - functions: `run/1`
 - `Spectre.Receipt.Sink.Memory`
-  - functions: `all/1`, `append/2`, `get_payload/2`, `lookup/2`, `put_payload/2`, `start_link/0`, `start_link/1`
+  - functions: `all/1`, `append/2`, `delete_payload/2`, `get_payload/2`, `lookup/2`, `put_payload/2`, `start_link/0`, `start_link/1`
 - `Spectre.Result`
   - functions: `action_outcome/1`, `completions/1`, `latest_completion/1`, `lifecycle/1`, `open_awaitable/1`, `pending_effect/1`, `visible_reply?/1`
 - `Spectre.Reply.Sanitizer`

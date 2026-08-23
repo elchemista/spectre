@@ -22,6 +22,8 @@ defmodule Spectre.Foundation.Conformance do
   alias Spectre.Instance.Canonical
   alias Spectre.Instance.Canonical.Codec, as: InstanceCodec
   alias Spectre.Instance.Canonical.Validator, as: InstanceValidator
+  alias Spectre.Instance.CheckpointStore.ErasureConformance
+  alias Spectre.Instance.Owner.Conformance, as: OwnerConformance
   alias Spectre.Instance.Ref, as: InstanceRef
   alias Spectre.Projection
   alias Spectre.Projection.Reflection
@@ -58,6 +60,10 @@ defmodule Spectre.Foundation.Conformance do
         state: %{writer: 5, readers: [2, 3, 4, 5]},
         run: %{writer: 3, readers: [1, 2, 3]},
         instance: %{writer: 3, readers: [2, 3]}
+      },
+      instance_lifecycle: %{
+        owner_conformance: OwnerConformance.contract_version(),
+        checkpoint_erasure_conformance: ErasureConformance.contract_version()
       },
       definition: %{
         canonicalization: 1,
@@ -105,6 +111,8 @@ defmodule Spectre.Foundation.Conformance do
         {Spectre, :ask, 2},
         {Spectre, :turn, 2},
         {Spectre, :instance, 3},
+        {Spectre, :erase_instance, 3},
+        {Spectre.Privacy, :erasure_plan, 3},
         {Spectre, :activate, 2},
         {Spectre, :rollback, 3},
         {Spectre.Definition, :canonical, 1},

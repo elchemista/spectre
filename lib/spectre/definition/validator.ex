@@ -27,6 +27,7 @@ defmodule Spectre.Definition.Validator do
     :journal,
     :history,
     :chat_history_limit,
+    :approval_pending_reply,
     :idle,
     :shutdown,
     :fail
@@ -621,7 +622,7 @@ defmodule Spectre.Definition.Validator do
        })
        when is_list(protections) do
     case Enum.find(protections, fn protection ->
-           not is_map(protection) or not Map.has_key?(protection, :action) or
+           not valid_protection?(protection) or
              not Map.has_key?(policies, Map.get(protection, :policy))
          end) do
       nil -> :ok
@@ -631,8 +632,7 @@ defmodule Spectre.Definition.Validator do
 
   defp validate_protections(%Definition{protections: protections}) when is_list(protections) do
     case Enum.find(protections, fn protection ->
-           not is_map(protection) or not Map.has_key?(protection, :action) or
-             not Map.has_key?(protection, :policy)
+           not valid_protection?(protection)
          end) do
       nil -> :ok
       protection -> {:error, {:invalid_protection, protection}}
@@ -641,6 +641,14 @@ defmodule Spectre.Definition.Validator do
 
   defp validate_protections(%Definition{protections: protections}),
     do: {:error, {:invalid_protections, protections}}
+
+  @spec valid_protection?(term()) :: boolean()
+  defp valid_protection?(protection) when is_map(protection) do
+    Map.has_key?(protection, :action) and Map.has_key?(protection, :policy) and
+      Map.get(protection, :resolver, :conversation) in [:conversation, :external]
+  end
+
+  defp valid_protection?(_protection), do: false
 
   @spec duplicate([term()]) :: term() | nil
   defp duplicate(values) do

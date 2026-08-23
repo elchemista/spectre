@@ -23,6 +23,7 @@ defmodule Spectre.State.Codec do
   @supported_versions [2, 3, 4, 5]
   @effect_statuses [:pending, :waiting_policy, :approved, :completed, :failed, :cancelled]
   @awaitable_statuses [:open, :accepted, :rejected, :cancelled, :expired]
+  @awaitable_resolvers [:conversation, :external]
   @effect_kinds [:action]
   @awaitable_kinds [:policy]
 
@@ -48,7 +49,7 @@ defmodule Spectre.State.Codec do
   )
 
   @awaitable_keys ~w(
-    id kind name subject_id run_id label max_attempts status attempts metadata
+    id kind name subject_id run_id label max_attempts status attempts resolver metadata
   )
 
   @doc """
@@ -299,19 +300,25 @@ defmodule Spectre.State.Codec do
          {:ok, run_id} <- encode_value(awaitable.run_id),
          {:ok, label} <- encode_value(awaitable.label),
          {:ok, metadata} <- encode_value(awaitable.metadata) do
-      {:ok,
-       %{
-         "id" => id,
-         "kind" => Atom.to_string(awaitable.kind),
-         "name" => name,
-         "subject_id" => subject_id,
-         "run_id" => run_id,
-         "label" => label,
-         "max_attempts" => awaitable.max_attempts,
-         "status" => Atom.to_string(awaitable.status),
-         "attempts" => awaitable.attempts,
-         "metadata" => metadata
-       }}
+      encoded = %{
+        "id" => id,
+        "kind" => Atom.to_string(awaitable.kind),
+        "name" => name,
+        "subject_id" => subject_id,
+        "run_id" => run_id,
+        "label" => label,
+        "max_attempts" => awaitable.max_attempts,
+        "status" => Atom.to_string(awaitable.status),
+        "attempts" => awaitable.attempts,
+        "metadata" => metadata
+      }
+
+      encoded =
+        if awaitable.resolver == :external,
+          do: Map.put(encoded, "resolver", "external"),
+          else: encoded
+
+      {:ok, encoded}
     end
   end
 
@@ -330,6 +337,8 @@ defmodule Spectre.State.Codec do
          {:ok, max_attempts} <- optional_positive_integer(attrs, "max_attempts"),
          {:ok, status} <- decode_enum(attrs, "status", @awaitable_statuses),
          {:ok, attempts} <- optional_non_neg_integer(attrs, "attempts", 0),
+         {:ok, resolver} <-
+           decode_optional_enum(attrs, "resolver", @awaitable_resolvers),
          {:ok, metadata} <- decode_field(attrs, "metadata", %{}),
          :ok <- require_map(metadata, :awaitable_metadata) do
       {:ok,
@@ -343,6 +352,7 @@ defmodule Spectre.State.Codec do
          max_attempts: max_attempts,
          status: status,
          attempts: attempts,
+         resolver: resolver || :conversation,
          metadata: metadata
        }}
     end
@@ -530,6 +540,9 @@ defmodule Spectre.State.Codec do
 
       awaitable.status not in @awaitable_statuses ->
         {:error, {:invalid_awaitable_status, awaitable.status}}
+
+      awaitable.resolver not in @awaitable_resolvers ->
+        {:error, {:invalid_awaitable_resolver, awaitable.resolver}}
 
       not is_integer(awaitable.attempts) or awaitable.attempts < 0 ->
         {:error, {:invalid_awaitable_attempts, awaitable.attempts}}

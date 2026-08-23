@@ -49,7 +49,7 @@ defmodule Spectre.Run.Request do
           max_attempts: awaitable.max_attempts,
           status: awaitable.status,
           attempts: awaitable.attempts,
-          metadata: logical_metadata(awaitable.metadata)
+          metadata: request_metadata(awaitable)
         }
 
       case Value.validate(request, [:request]) do
@@ -69,6 +69,15 @@ defmodule Spectre.Run.Request do
   end
 
   defp logical_metadata(_metadata), do: %{}
+
+  @spec request_metadata(Awaitable.t()) :: map()
+  defp request_metadata(%Awaitable{} = awaitable) do
+    metadata = logical_metadata(awaitable.metadata)
+
+    if awaitable.resolver == :external,
+      do: Map.put(metadata, :resolver, :external),
+      else: metadata
+  end
 
   defp raise_nonportable_request(reason) do
     raise ArgumentError, "non-portable Run request: #{inspect(reason)}"

@@ -145,6 +145,43 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
     assert spec.type == :worker
   end
 
+  test "off-heap mailboxes require a bounded push transport" do
+    pull_opts =
+      session_options(
+        test_pid: self(),
+        stream_message_queue_data: :off_heap
+      )
+
+    assert {:error, :stream_off_heap_requires_bounded_push_transport} =
+             StreamSession.start_link(pull_opts)
+
+    push = MapSet.new([:stream, :push_transport, :bounded_push_transport])
+
+    context =
+      start_session(
+        mode: :stall,
+        ack: :auto,
+        stream_capabilities: push,
+        stream_message_queue_data: :off_heap,
+        stream_hibernate_after: 10
+      )
+
+    assert {:message_queue_data, :off_heap} =
+             Process.info(context.session, :message_queue_data)
+  end
+
+  test "stream process options reject malformed tuning values" do
+    assert {:error, {:invalid_stream_option, :stream_hibernate_after, -1}} =
+             StreamSession.start_link(
+               session_options(test_pid: self(), stream_hibernate_after: -1)
+             )
+
+    assert {:error, {:invalid_stream_option, :stream_message_queue_data, :external}} =
+             StreamSession.start_link(
+               session_options(test_pid: self(), stream_message_queue_data: :external)
+             )
+  end
+
   test "session construction rejects malformed durable and runtime bindings" do
     valid = session_options(test_pid: self())
 
@@ -989,7 +1026,12 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
       provider_opts: adapter_opts,
       stream_adapter: @adapter,
       stream_adapter_opts: [],
-      stream_capabilities: MapSet.new([:stream, :pull_transport, :resume])
+      stream_capabilities:
+        Keyword.get(
+          opts,
+          :stream_capabilities,
+          MapSet.new([:stream, :pull_transport, :resume])
+        )
     }
 
     defaults = [
@@ -1024,7 +1066,9 @@ defmodule SpectreInferenceStreamSessionLifecycleContractTest do
           :stream_max_parser_residual_bytes,
           :stream_max_delta_bytes,
           :model_reply_max_bytes,
-          :max_sanitizer_lookahead_bytes
+          :max_sanitizer_lookahead_bytes,
+          :stream_hibernate_after,
+          :stream_message_queue_data
         ]
 
     Keyword.merge(defaults, Keyword.take(opts, override_keys))
