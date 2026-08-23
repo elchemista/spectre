@@ -179,7 +179,7 @@ jobs:
       - name: Validate package locally (no publish)
         run: mix hex.build --unpack --output "$RUNNER_TEMP/hex-package"
 
-      - name: Verify packaged generator contracts
+      - name: Verify packaged runtime and documentation contracts
         run: |
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent.ex.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent_test.exs.eex"
@@ -187,6 +187,12 @@ jobs:
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable_test.exs.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store.ex.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store_test.exs.eex"
+          test -f "$RUNNER_TEMP/hex-package/docs/examples/routing-eval.jsonl"
+          test ! -e "$RUNNER_TEMP/hex-package/docs/adr"
+          test ! -e "$RUNNER_TEMP/hex-package/lib/spectre/instance/README.md"
+          test ! -e "$RUNNER_TEMP/hex-package/test"
+          test ! -e "$RUNNER_TEMP/hex-package/scripts"
+          test ! -e "$RUNNER_TEMP/hex-package/.github"
 
   real-ex-fastembed:
     name: Real ExFastembed system test

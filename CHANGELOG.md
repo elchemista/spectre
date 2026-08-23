@@ -70,6 +70,10 @@ migration called out explicitly below.
 - Receipt Sink conformance failures now identify the exact rejected phase as
   `{:receipt_sink_conformance_failed, phase, reason}`, including neighboring-
   payload isolation failures.
+- The Hex source package now uses an explicit public-file allowlist. Runtime
+  sources, generator templates, ExDoc extras, and the linked evaluation sample
+  remain included; internal ADRs and the Instance maintainer guide remain
+  repository-only.
 
 ### Compatibility
 
