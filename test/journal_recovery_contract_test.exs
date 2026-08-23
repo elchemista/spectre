@@ -183,14 +183,23 @@ defmodule SpectreJournalRecoveryContractTest do
                     %{metadata: %{retention: %{days: 30, tier: :audit}}}}
   end
 
-  test "invalid scalar configuration is rejected at routing and runtime boundaries" do
-    assert {:error, {:invalid_journal_configuration, 123}} =
-             Recorder.record_routing(routing_context(123))
-
+  test "invalid store configuration is rejected at routing and runtime boundaries" do
     result = runtime_result([%{type: :custom_lifecycle}])
 
-    assert {:error, {:invalid_journal_configuration, 123}} =
-             Recorder.record_result(result, runtime_context(123))
+    for invalid <- [
+          123,
+          [store: nil],
+          [store: false],
+          {nil, []},
+          {false, []},
+          {@store, [:not_keyword]}
+        ] do
+      assert {:error, {:invalid_journal_configuration, ^invalid}} =
+               Recorder.record_routing(routing_context(invalid))
+
+      assert {:error, {:invalid_journal_configuration, ^invalid}} =
+               Recorder.record_result(result, runtime_context(invalid))
+    end
   end
 
   test "buffer overflow remains observational and never fails the routed turn" do

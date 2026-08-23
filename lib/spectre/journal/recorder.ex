@@ -194,15 +194,30 @@ defmodule Spectre.Journal.Recorder do
           :disabled | {:ok, module(), keyword()} | {:error, term()}
   defp normalize_configuration(value) when value in [nil, false], do: :disabled
   defp normalize_configuration(true), do: {:error, true}
-  defp normalize_configuration(store) when is_atom(store), do: {:ok, store, []}
 
-  defp normalize_configuration({store, config}) when is_atom(store) and is_list(config),
-    do: {:ok, store, config}
+  defp normalize_configuration(store)
+       when is_atom(store) and not is_nil(store) and not is_boolean(store),
+       do: {:ok, store, []}
+
+  defp normalize_configuration({store, config} = configuration)
+       when is_atom(store) and not is_nil(store) and not is_boolean(store) and is_list(config) do
+    if Keyword.keyword?(config),
+      do: {:ok, store, config},
+      else: {:error, configuration}
+  end
 
   defp normalize_configuration(config) when is_list(config) do
-    case Keyword.fetch(config, :store) do
-      {:ok, store} when is_atom(store) -> {:ok, store, Keyword.delete(config, :store)}
-      _other -> {:error, config}
+    if Keyword.keyword?(config) do
+      case Keyword.fetch(config, :store) do
+        {:ok, store}
+        when is_atom(store) and not is_nil(store) and not is_boolean(store) ->
+          {:ok, store, Keyword.delete(config, :store)}
+
+        _other ->
+          {:error, config}
+      end
+    else
+      {:error, config}
     end
   end
 
