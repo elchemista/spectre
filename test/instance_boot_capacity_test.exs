@@ -70,6 +70,15 @@ defmodule SpectreInstanceBootCapacityTest do
                max_concurrency: 2
              )
 
+    {:ok, one_shot_capacity} = OneShotCapacity.start()
+    on_exit(fn -> if Process.alive?(one_shot_capacity), do: GenServer.stop(one_shot_capacity) end)
+
+    assert [:completed, {:error, :verification_capacity_unavailable}] =
+             Boot.map([:completed, :blocked], & &1,
+               capacity: one_shot_capacity,
+               max_concurrency: 1
+             )
+
     assert [2, 4] =
              Boot.map([1, 2], &(&1 * 2),
                max_concurrency: 2,
