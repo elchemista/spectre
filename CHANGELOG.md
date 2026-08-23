@@ -58,6 +58,9 @@ migration called out explicitly below.
 - Boot failure and normal termination share one cleanup path, including
   partial recovery state, worker/session teardown, timer cancellation,
   capacity release, and owner-lease release.
+- `boot_worker_timeout` now includes time queued behind the node-wide boot
+  limiter; timed-out queued entries and their process monitors are removed
+  before startup fails.
 - Policy journal records now carry both the resolution source and resolver.
 
 ### Compatibility

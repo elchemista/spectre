@@ -11,10 +11,22 @@ defmodule Spectre.Instance.BootCapacity do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @spec start((-> term()), GenServer.server()) ::
+  @spec start((-> term()), GenServer.server(), timeout()) ::
           {:ok, reference(), pid()} | {:error, term()}
-  def start(callback, server \\ __MODULE__) when is_function(callback, 0) do
-    GenServer.call(server, {:start, self(), callback}, :infinity)
+  def start(callback, server \\ __MODULE__, timeout \\ :infinity)
+
+  def start(callback, server, timeout)
+      when is_function(callback, 0) and
+             (timeout == :infinity or (is_integer(timeout) and timeout > 0)) do
+    ref = make_ref()
+
+    try do
+      GenServer.call(server, {:start, self(), ref, callback}, timeout)
+    catch
+      :exit, {:timeout, _call} ->
+        :ok = cancel(ref, server)
+        {:error, :boot_task_start_timeout}
+    end
   end
 
   @spec cancel(reference(), GenServer.server()) :: :ok
@@ -45,13 +57,14 @@ defmodule Spectre.Instance.BootCapacity do
   end
 
   @impl GenServer
-  def handle_call({:start, owner, callback}, from, state) when is_pid(owner) do
+  def handle_call({:start, owner, ref, callback}, from, state)
+      when is_pid(owner) and is_reference(ref) and is_function(callback, 0) do
     entry = %{
       callback: callback,
       from: from,
       owner: owner,
       owner_monitor: Process.monitor(owner),
-      ref: make_ref()
+      ref: ref
     }
 
     state = put_monitor(state, entry.owner_monitor, {:owner, entry.ref})
@@ -175,27 +188,25 @@ defmodule Spectre.Instance.BootCapacity do
   defp cancel_entry(ref, state) do
     case Map.get(state.running, ref) do
       nil ->
-        queue =
+        {cancelled, retained} =
           state.queue
           |> :queue.to_list()
-          |> Enum.reject(&cancel_queued_entry?(&1, ref))
-          |> :queue.from_list()
+          |> Enum.split_with(&(&1.ref == ref))
 
-        %{state | queue: queue}
+        monitors =
+          Enum.reduce(cancelled, state.monitors, fn entry, monitors ->
+            Process.demonitor(entry.owner_monitor, [:flush])
+            GenServer.reply(entry.from, {:error, :boot_task_cancelled})
+            Map.delete(monitors, entry.owner_monitor)
+          end)
+
+        %{state | queue: :queue.from_list(retained), monitors: monitors}
 
       entry ->
         if Process.alive?(entry.pid), do: Process.exit(entry.pid, :kill)
         state
     end
   end
-
-  defp cancel_queued_entry?(%{ref: ref} = entry, ref) do
-    Process.demonitor(entry.owner_monitor, [:flush])
-    GenServer.reply(entry.from, {:error, :boot_task_cancelled})
-    true
-  end
-
-  defp cancel_queued_entry?(_entry, _ref), do: false
 
   defp drain(state) when map_size(state.running) >= state.limit, do: state
 

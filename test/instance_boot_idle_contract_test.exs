@@ -64,7 +64,7 @@ defmodule SpectreInstanceBootIdleContractTest do
     assert {:ok, ^instance} = Task.await(starter, 1_000)
   end
 
-  test "a successful boot hibernates once and configured idle hibernation repeats" do
+  test "a successful boot hibernates, wakes for a call, and hibernates again" do
     subject = "boot-hibernate-#{System.unique_integer([:positive])}"
 
     assert {:ok, instance} =

@@ -15,9 +15,7 @@ defmodule SpectreInstanceBootCapacityTest.OneShotCapacity do
   def init(state), do: {:ok, state}
 
   @impl GenServer
-  def handle_call({:start, owner, callback}, _from, :available) do
-    ref = make_ref()
-
+  def handle_call({:start, owner, ref, callback}, _from, :available) do
     worker =
       spawn(fn ->
         send(owner, {:spectre_instance_boot, ref, {:return, callback.()}})
@@ -26,7 +24,7 @@ defmodule SpectreInstanceBootCapacityTest.OneShotCapacity do
     {:reply, {:ok, ref, worker}, :unavailable}
   end
 
-  def handle_call({:start, _owner, _callback}, _from, :unavailable) do
+  def handle_call({:start, _owner, _ref, _callback}, _from, :unavailable) do
     {:reply, {:error, :verification_capacity_unavailable}, :unavailable}
   end
 end
@@ -182,6 +180,10 @@ defmodule SpectreInstanceBootCapacityTest do
     assert_receive {:queued_start_result, {:error, :boot_task_cancelled}}, 1_000
     refute Process.alive?(queued_owner)
 
+    capacity_state = :sys.get_state(capacity)
+    assert :queue.is_empty(capacity_state.queue)
+    assert map_size(capacity_state.monitors) == 2
+
     send(first_worker, :finish)
     assert_receive {:spectre_instance_boot, ^first_ref, {:return, :first}}, 1_000
   end
@@ -272,6 +274,56 @@ defmodule SpectreInstanceBootCapacityTest do
       end)
 
     assert {:instance_boot_worker_timeout, 25} = Task.await(map_timeout, 1_000)
+    assert :available = Boot.run(fn -> :available end, capacity: capacity)
+  end
+
+  test "the timeout includes time queued behind global boot capacity" do
+    capacity = start_capacity(limit: 1)
+
+    {:ok, first_ref, first_worker} =
+      BootCapacity.start(
+        fn ->
+          receive do
+            :finish -> :first
+          end
+        end,
+        capacity
+      )
+
+    started_at = System.monotonic_time(:millisecond)
+
+    queued =
+      Task.async(fn ->
+        catch_exit(Boot.run(fn -> :must_not_start end, capacity: capacity, timeout: 100))
+      end)
+
+    assert wait_until(fn -> queued_count(capacity) == 1 end)
+    assert {:instance_boot_worker_timeout, 100} = Task.await(queued, 1_000)
+    assert System.monotonic_time(:millisecond) - started_at < 500
+
+    capacity_state = :sys.get_state(capacity)
+    assert :queue.is_empty(capacity_state.queue)
+    assert map_size(capacity_state.monitors) == 2
+
+    queued_map =
+      Task.async(fn ->
+        catch_exit(
+          Boot.map([:queued], fn _entry -> :must_not_start end,
+            capacity: capacity,
+            timeout: 100
+          )
+        )
+      end)
+
+    assert wait_until(fn -> queued_count(capacity) == 1 end)
+    assert {:instance_boot_worker_timeout, 100} = Task.await(queued_map, 1_000)
+
+    capacity_state = :sys.get_state(capacity)
+    assert :queue.is_empty(capacity_state.queue)
+    assert map_size(capacity_state.monitors) == 2
+
+    send(first_worker, :finish)
+    assert_receive {:spectre_instance_boot, ^first_ref, {:return, :first}}, 1_000
     assert :available = Boot.run(fn -> :available end, capacity: capacity)
   end
 

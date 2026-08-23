@@ -211,12 +211,16 @@ instance_opts = [
 ]
 ```
 
-`boot_worker_timeout` defaults to `:infinity`. A successful boot always
-hibernates once to compact the owner. Recurring idle hibernation remains off by
-default (`hibernate_after: :infinity`); a finite value uses the standard OTP
-server option. Any periodic local call wakes the process, so a dashboard that
-polls `Spectre.Instance.info/1` every second prevents a longer idle interval
-while it is open.
+`boot_worker_timeout` defaults to `:infinity` and bounds both time queued behind
+the node-wide limiter and callback execution for each boot worker. Boot adapter
+callbacks execute in that disposable worker process; adapters must use the
+explicit Ref and options as identity and must not infer ownership from
+`self/0`. A successful boot always hibernates once to compact the owner.
+Recurring idle hibernation remains off by default
+(`hibernate_after: :infinity`); a finite value uses the standard OTP server
+option. Any periodic local call wakes the process, so a dashboard that polls
+`Spectre.Instance.info/1` every second prevents a longer idle interval while it
+is open.
 
 Measure representative data before choosing limits:
 
