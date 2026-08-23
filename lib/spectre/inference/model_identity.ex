@@ -6,6 +6,11 @@ defmodule Spectre.Inference.ModelIdentity do
   @spec sanitize(term()) :: term()
   def sanitize(value), do: sanitize_value(value)
 
+  defp sanitize_value(%URI{} = value) do
+    fields = value |> Map.from_struct() |> Map.delete(:userinfo) |> sanitize_map()
+    {:struct, URI, fields}
+  end
+
   defp sanitize_value(%{__struct__: module} = value) do
     {:struct, module, value |> Map.from_struct() |> sanitize_map()}
   end

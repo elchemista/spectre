@@ -12,7 +12,12 @@ defmodule SpectreInferenceModelIdentityTest do
         {:safe, %{password: "secret", temperature: 0.2}},
         {:tuple, 42, %{authorization: "secret", region: "eu"}}
       ],
-      endpoint: %URI{scheme: "https", host: "example.test", path: "/v1"}
+      endpoint: %URI{
+        scheme: "https",
+        userinfo: "admin:password",
+        host: "example.test",
+        path: "/v1"
+      }
     }
 
     assert %{
@@ -26,5 +31,7 @@ defmodule SpectreInferenceModelIdentityTest do
 
     assert endpoint.scheme == "https"
     assert endpoint.host == "example.test"
+    refute Map.has_key?(endpoint, :userinfo)
+    refute inspect(ModelIdentity.sanitize(identity)) =~ "admin:password"
   end
 end
