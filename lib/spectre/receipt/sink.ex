@@ -188,7 +188,6 @@ defmodule Spectre.Receipt.Sink do
   defp reconcile_ambiguous_payload_put(sink, envelope, ref, error, opts) do
     case get_payload(sink, ref, opts) do
       {:ok, ^envelope} -> {:ok, ref}
-      {:ok, _different} -> {:error, :receipt_payload_reconciliation_conflict}
       :not_found -> error
       {:error, reason} -> {:error, {:receipt_payload_reconciliation_failed, reason}}
     end

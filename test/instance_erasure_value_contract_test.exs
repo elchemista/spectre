@@ -146,6 +146,17 @@ defmodule SpectreInstanceErasureValueContractTest do
     assert {:ok, %Proof{} = proof} = Proof.new(ref, attrs)
     assert :ok = Proof.validate(proof)
 
+    invalid_components = [
+      put_in(components, [:journal, :key_count], -1),
+      put_in(components, [:receipt_payloads, :deleted_count], 1),
+      put_in(components, [:checkpoint, :key_count], 0)
+    ]
+
+    Enum.each(invalid_components, fn components ->
+      assert {:error, :invalid_instance_erasure_proof_components} =
+               Proof.validate(%{proof | components: components})
+    end)
+
     for invalid <- [
           %{proof | schema_version: 2},
           %{proof | scope: :all_subject_data},

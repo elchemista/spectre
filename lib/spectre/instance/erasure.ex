@@ -132,26 +132,20 @@ defmodule Spectre.Instance.Erasure do
   end
 
   defp erase_receipt_payloads(
-         observations,
+         _observations,
          _owner_ref,
          _owner_lease,
          journal,
          %{receipt_sink: nil}
        ) do
-    refs = payload_refs(observations)
-
-    if refs == [] do
-      {:ok,
-       %{
-         outcome: :not_configured,
-         payload_count: 0,
-         deleted_count: 0,
-         not_found_count: 0,
-         completed: journal.completed
-       }}
-    else
-      partial_error(journal.completed, :receipt_sink_required_for_erasure)
-    end
+    {:ok,
+     %{
+       outcome: :not_configured,
+       payload_count: 0,
+       deleted_count: 0,
+       not_found_count: 0,
+       completed: journal.completed
+     }}
   end
 
   defp erase_receipt_payloads(observations, owner_ref, owner_lease, journal, config) do

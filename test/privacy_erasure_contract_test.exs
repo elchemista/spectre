@@ -108,6 +108,8 @@ defmodule SpectrePrivacyErasureContractTest.JournalStore do
       nil -> erase_stored(ref, opts)
       :raise -> raise "journal erasure failed"
       :throw -> throw(:journal_erasure_failed)
+      {:fail_ref, key, reason} when key == ref.key -> {:error, reason}
+      {:fail_ref, _key, _reason} -> erase_stored(ref, opts)
       reply -> reply
     end
   end
@@ -358,14 +360,90 @@ defmodule SpectrePrivacyErasureContractTest do
     assert {:checkpoint, 0, ^checkpoint} = CheckpointStore.entry(context.checkpoint_server, ref)
   end
 
+  test "journal failures distinguish no mutation from a partial stable-ref erase", context do
+    failed_ref = fresh_ref("journal-first-failure")
+    failed_checkpoint = checkpoint(failed_ref)
+    CheckpointStore.seed(context.checkpoint_server, failed_ref, failed_checkpoint)
+    JournalStore.seed(context.journal_server, failed_ref)
+
+    assert {:error, {:instance_journal_erase_failed, :offline}} =
+             Spectre.erase_instance(failed_ref, failed_ref.subject,
+               checkpoint_store: context.checkpoint,
+               journal:
+                 {JournalStore, server: context.journal_server, erase_reply: {:error, :offline}},
+               confirm: failed_ref.key
+             )
+
+    assert JournalStore.present?(context.journal_server, failed_ref)
+
+    assert {:checkpoint, 0, ^failed_checkpoint} =
+             CheckpointStore.entry(context.checkpoint_server, failed_ref)
+
+    partial_ref = fresh_ref("journal-partial-failure")
+    {:ok, legacy_ref} = Ref.legacy(partial_ref)
+    partial_checkpoint = checkpoint(partial_ref)
+    CheckpointStore.seed(context.checkpoint_server, partial_ref, partial_checkpoint)
+    JournalStore.seed(context.journal_server, partial_ref)
+    JournalStore.seed(context.journal_server, legacy_ref)
+
+    assert {:error,
+            {:ambiguous,
+             {:instance_erasure_partial, [:journal],
+              {:instance_journal_erase_failed, 1, :offline}}}} =
+             Spectre.erase_instance(partial_ref, partial_ref.subject,
+               checkpoint_store: context.checkpoint,
+               journal:
+                 {JournalStore,
+                  server: context.journal_server,
+                  erase_reply: {:fail_ref, legacy_ref.key, :offline}},
+               confirm: partial_ref.key
+             )
+
+    refute JournalStore.present?(context.journal_server, partial_ref)
+    assert JournalStore.present?(context.journal_server, legacy_ref)
+
+    assert {:checkpoint, 0, ^partial_checkpoint} =
+             CheckpointStore.entry(context.checkpoint_server, partial_ref)
+  end
+
   test "journal and receipt erasure wrappers keep failures typed and bounded", context do
     ref = fresh_ref("wrappers")
+    journal_server = context.journal_server
 
     assert {:ok, nil} = Spectre.Journal.Store.normalize(false)
     assert {:ok, {JournalStore, []}} = Spectre.Journal.Store.normalize(JournalStore)
 
+    assert {:ok, {JournalStore, [server: ^journal_server]}} =
+             Spectre.Journal.Store.normalize(
+               store: JournalStore,
+               server: context.journal_server
+             )
+
+    assert {:error, :invalid_journal_store} =
+             Spectre.Journal.Store.normalize(server: context.journal_server)
+
+    assert {:error, :invalid_journal_store} = Spectre.Journal.Store.normalize({nil, []})
+
+    assert {:error, {:invalid_journal_store, :options}} =
+             Spectre.Journal.Store.normalize([:not_keyword])
+
+    assert {:error, :invalid_journal_store} = Spectre.Journal.Store.normalize(%{})
+
+    assert {:error, {:journal_store_not_loaded, MissingJournalStore}} =
+             Spectre.Journal.Store.erasure_capability({MissingJournalStore, []})
+
     assert {:error, {:journal_store_erasure_unsupported, UnsupportedJournal}} =
              Spectre.Journal.Store.erasure_capability({UnsupportedJournal, []})
+
+    assert {:ok, :not_configured} =
+             Spectre.Journal.Store.erase_instance(nil, ref, [])
+
+    assert {:error, :offline} =
+             Spectre.Journal.Store.erase_instance(
+               {JournalStore, server: context.journal_server, erase_reply: {:error, :offline}},
+               ref,
+               []
+             )
 
     for reply <- [:invalid, :raise, :throw] do
       assert {:error, {:ambiguous, _reason}} =
@@ -395,6 +473,47 @@ defmodule SpectrePrivacyErasureContractTest do
 
     assert {:error, :privacy_erasure_subject_mismatch} =
              Privacy.erasure_plan(ref, "different-subject")
+  end
+
+  test "the privacy plan covers identity forms and invalid read-only configuration" do
+    subject = "privacy-plan-identities"
+
+    assert {:ok, module_plan} =
+             Privacy.erasure_plan(AgentDefinition, subject, checkpoint_store: false)
+
+    refute module_plan.ready
+    assert module_plan.components.checkpoint == %{configured: false, status: :required}
+
+    agent_ref = Spectre.AgentRef.new(AgentDefinition)
+
+    assert {:ok, agent_ref_plan} =
+             Privacy.erasure_plan(agent_ref, subject, checkpoint_store: false)
+
+    assert agent_ref_plan.instance_key == module_plan.instance_key
+
+    assert {:ok, unavailable} =
+             Privacy.erasure_plan(AgentDefinition, subject,
+               checkpoint_store: MissingCheckpointStore,
+               journal: MissingJournalStore,
+               receipt_sink: MissingReceiptSink
+             )
+
+    refute unavailable.ready
+    assert unavailable.components.checkpoint.status == :unavailable
+    assert unavailable.components.journal.status == :unavailable
+    assert unavailable.components.receipt_payloads.status == :unavailable
+
+    assert {:error, {:invalid_privacy_erasure_option, :opts}} =
+             Privacy.erasure_plan(AgentDefinition, subject, opts: :invalid)
+
+    assert {:error, :invalid_privacy_erasure_options} =
+             Privacy.erasure_plan(AgentDefinition, subject, %{})
+
+    assert {:error, :invalid_privacy_erasure_identity} =
+             Privacy.erasure_plan(%{}, subject)
+
+    assert {:error, :invalid_privacy_erasure_identity} =
+             Privacy.erasure_plan(AgentDefinition, %Spectre.Subject{id: ""})
   end
 
   defp fresh_ref(label) do
