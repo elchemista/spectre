@@ -13,6 +13,7 @@ defmodule Spectre.Privacy do
   alias Spectre.Journal.Store, as: JournalStore
   alias Spectre.Privacy.ErasurePlan
   alias Spectre.Receipt.Sink, as: ReceiptSink
+  alias Spectre.Stack.PackageData
 
   @unavailable_reasons [
     :checkpoint_store_not_loaded,
@@ -33,11 +34,13 @@ defmodule Spectre.Privacy do
          {:ok, checkpoint} <- checkpoint(agent, opts, base_opts),
          {:ok, owner} <- owner(agent, opts, base_opts),
          {:ok, journal} <- journal(agent, opts, base_opts),
-         {:ok, receipt_sink} <- receipt_sink(agent, opts, base_opts) do
+         {:ok, receipt_sink} <- receipt_sink(agent, opts, base_opts),
+         {:ok, package_data} <- PackageData.erasure_plan(ref, package_opts(opts, base_opts)) do
       components = %{
         owner: owner_component(owner),
         journal: journal_component(journal),
         receipt_payloads: receipt_component(receipt_sink),
+        package_data: package_data,
         checkpoint: checkpoint_component(checkpoint)
       }
 
@@ -131,6 +134,14 @@ defmodule Spectre.Privacy do
 
       _invalid ->
         {:error, {:invalid_privacy_erasure_option, :opts}}
+    end
+  end
+
+  @spec package_opts(keyword(), keyword()) :: keyword()
+  defp package_opts(opts, base_opts) do
+    case Keyword.fetch(opts, :stack_runtime) do
+      {:ok, runtime} -> Keyword.put(base_opts, :stack_runtime, runtime)
+      :error -> base_opts
     end
   end
 

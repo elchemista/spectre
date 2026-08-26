@@ -107,6 +107,7 @@ defmodule Spectre.Instance do
           | {:definition_store, DefinitionStore.config()}
           | {:owner, Owner.config()}
           | {:runner_supervisor, GenServer.server()}
+          | {:stack_runtime, atom() | {:via, module(), term()}}
           | {:max_operation_runners, pos_integer()}
           | {:max_stream_sessions, pos_integer()}
           | {:stream_registry, atom()}
@@ -855,6 +856,7 @@ defmodule Spectre.Instance do
         stream_capacity: config.stream_capacity,
         generation: Spectre.Identity.uuid7(),
         runner_supervisor: config.runner_supervisor,
+        stack_runtime: config.stack_runtime,
         checkpoint_store: config.checkpoint_store,
         checkpoint_mode: config.checkpoint_mode,
         receipt_mode: config.receipt_mode,

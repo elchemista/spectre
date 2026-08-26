@@ -253,7 +253,10 @@ Operation or Action. Capability visibility and policy remain explicit.
 
 Use `Spectre.Stack.Runtime` only for explicitly started, caller-owned package
 resources. PID, connections, clients, and secrets never belong in
-`Spectre.Stack.Definition`.
+`Spectre.Stack.Definition`. A long-lived Instance may receive a named runtime
+through top-level `stack_runtime: MyApp.AIRuntime` (or a `:via` reference).
+Process handles are rejected and the runtime address remains outside Run and
+checkpoint data.
 
 ## Choose the right turn API
 

@@ -37,6 +37,7 @@ defmodule Spectre.Instance.Configuration do
     :max_tombstones,
     :receipt_mode,
     :runner_supervisor,
+    :stack_runtime,
     :stream_capacity,
     :stream_registry
   ]
@@ -60,6 +61,7 @@ defmodule Spectre.Instance.Configuration do
           receipt_mode: :disabled | :observational | :required,
           receipt_sink: Spectre.Receipt.Sink.normalized(),
           runner_supervisor: GenServer.server(),
+          stack_runtime: nil | atom() | {:via, module(), term()},
           stream_capacity: GenServer.server(),
           stream_registry: atom()
         }
@@ -82,6 +84,8 @@ defmodule Spectre.Instance.Configuration do
              :max_stream_sessions
            ),
          base_opts <- base_opts(opts, instance_ref),
+         {:ok, stack_runtime} <- stack_runtime(opts, base_opts),
+         base_opts <- Keyword.delete(base_opts, :stack_runtime),
          {:ok, boot_concurrency} <-
            positive_integer(
              configured_strict(opts, base_opts, :boot_concurrency, 1),
@@ -144,6 +148,7 @@ defmodule Spectre.Instance.Configuration do
          receipt_mode: receipt_mode,
          receipt_sink: receipt_sink,
          runner_supervisor: Keyword.get(opts, :runner_supervisor, RunnerSupervisor),
+         stack_runtime: stack_runtime,
          stream_capacity: Keyword.get(opts, :stream_capacity, StreamCapacity),
          stream_registry: Keyword.get(opts, :stream_registry, Spectre.Inference.StreamRegistry)
        }}
@@ -230,6 +235,24 @@ defmodule Spectre.Instance.Configuration do
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  @spec stack_runtime(keyword(), keyword()) ::
+          {:ok, nil | atom() | {:via, module(), term()}} | {:error, term()}
+  defp stack_runtime(opts, base_opts) do
+    case first_present([{opts, :stack_runtime}, {base_opts, :stack_runtime}]) do
+      :missing ->
+        {:ok, nil}
+
+      {:ok, name} when is_atom(name) and not is_nil(name) ->
+        {:ok, name}
+
+      {:ok, {:via, module, _term} = name} when is_atom(module) and not is_nil(module) ->
+        {:ok, name}
+
+      {:ok, invalid} ->
+        {:error, {:invalid_instance_option, :stack_runtime, invalid}}
+    end
+  end
 
   defp definition_store(agent, opts, base_opts) do
     value =

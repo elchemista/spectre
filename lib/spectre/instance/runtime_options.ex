@@ -38,6 +38,7 @@ defmodule Spectre.Instance.RuntimeOptions do
       |> Keyword.put(:instance_run_lifecycle?, true)
       |> Keyword.put(:instance_pid, self())
       |> Keyword.put(:instance_definition_store, data.definition_store)
+      |> put_stack_runtime(data.stack_runtime)
       |> pin_activation(data.activation)
       |> put_if_present(:origin_conversation_id, origin_conversation_id)
 
@@ -106,4 +107,7 @@ defmodule Spectre.Instance.RuntimeOptions do
 
   defp put_if_present(opts, _key, nil), do: opts
   defp put_if_present(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp put_stack_runtime(opts, nil), do: Keyword.delete(opts, :stack_runtime)
+  defp put_stack_runtime(opts, runtime), do: Keyword.put(opts, :stack_runtime, runtime)
 end

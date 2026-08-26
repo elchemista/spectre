@@ -156,22 +156,43 @@ def child_specs(_installation, runtime_opts) do
 end
 ```
 
-Start a runtime explicitly and pass secrets only at that boundary:
+Start a runtime explicitly and pass secrets only at that boundary. For a
+long-lived Instance integration, supervise it under a stable atom or `:via`
+name:
 
 ```elixir
-{:ok, runtime} =
-  Spectre.Stack.start_link(MyApp.AI,
-    packages: [inference: [client: runtime_client_options()]]
-  )
+children = [
+  {Spectre.Stack.Runtime,
+   stack: MyApp.AI,
+   name: MyApp.AIRuntime,
+   packages: [inference: [client: runtime_client_options()]]}
+]
 
 {:ok, ref} = Spectre.Stack.resolve(MyApp.AI, :resource, :client)
-{:ok, client_pid} = Spectre.Stack.Runtime.resolve(runtime, ref)
+{:ok, client_pid} = Spectre.Stack.Runtime.resolve(MyApp.AIRuntime, ref)
 ```
 
-The runtime has no default registered name. Child identifiers are fenced by
-the Stack, Installation, package version, and digests, so stale Refs do not
-resolve. Existing core application children are not yet claimed to be
-per-Stack; their migration belongs to the Agent Instance and runtime phases.
+The runtime has no default registered name. Resource resolution is read-through
+cached; a supervisor child scan occurs only on a cache miss. Runtime and
+resource monitors invalidate stale entries, so restarting the named runtime or
+one resource resolves the replacement process rather than retaining an old PID.
+Child identifiers are fenced by the Stack, Installation, package version, and
+digests, so stale Refs do not resolve.
+
+An Instance accepts the runtime address as a top-level runtime-only option:
+
+```elixir
+{:ok, instance} =
+  Spectre.instance(MyApp.Agent, subject,
+    stack_runtime: MyApp.AIRuntime
+  )
+```
+
+Only an atom name or `{:via, Registry, ...}` reference is accepted. PID, port,
+and reference handles are rejected. The historical nested
+`opts: [stack_runtime: ...]` form remains compatible, but the address is removed
+from base options and never enters Run metadata, checkpoints, Journal records,
+receipts, or Definitions.
 
 ## Journal identity
 

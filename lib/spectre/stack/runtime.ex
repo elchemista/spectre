@@ -19,6 +19,28 @@ defmodule Spectre.Stack.Runtime do
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Package
   alias Spectre.Stack.Ref
+  alias Spectre.Stack.Runtime.ResourceCache
+
+  @doc false
+  @spec child_spec(keyword() | module() | Definition.t()) :: Supervisor.child_spec()
+  def child_spec(opts) when is_list(opts) do
+    {stack, runtime_opts} = Keyword.pop!(opts, :stack)
+    id = Keyword.get(runtime_opts, :name, {__MODULE__, stack})
+
+    %{
+      id: id,
+      start: {__MODULE__, :start_link, [stack, runtime_opts]},
+      type: :supervisor
+    }
+  end
+
+  def child_spec(stack_or_definition) do
+    %{
+      id: {__MODULE__, stack_or_definition},
+      start: {__MODULE__, :start_link, [stack_or_definition, []]},
+      type: :supervisor
+    }
+  end
 
   @doc """
   Starts a Stack runtime.
@@ -58,18 +80,53 @@ defmodule Spectre.Stack.Runtime do
   """
   @spec resolve(Supervisor.supervisor(), Ref.t()) :: {:ok, pid()} | {:error, term()}
   def resolve(supervisor, %Ref{kind: :resource} = ref) do
-    case Enum.find(Supervisor.which_children(supervisor), fn {id, _pid, _type, _modules} ->
-           id == Ref.key(ref)
-         end) do
-      {_id, pid, _type, _modules} when is_pid(pid) -> {:ok, pid}
-      {_id, :undefined, _type, _modules} -> {:error, {:stack_resource_not_running, ref}}
-      {_id, :restarting, _type, _modules} -> {:error, {:stack_resource_restarting, ref}}
-      nil -> {:error, {:unknown_stack_runtime_ref, ref}}
+    with {:ok, runtime} <- runtime_pid(supervisor) do
+      case ResourceCache.lookup(runtime, Ref.key(ref)) do
+        {:ok, resource} ->
+          {:ok, resource}
+
+        :miss ->
+          resolve_uncached(runtime, ref)
+      end
     end
   end
 
   def resolve(_supervisor, %Ref{} = ref),
     do: {:error, {:stack_runtime_requires_resource_ref, ref.kind}}
+
+  @spec resolve_uncached(pid(), Ref.t()) :: {:ok, pid()} | {:error, term()}
+  defp resolve_uncached(runtime, ref) do
+    case Enum.find(Supervisor.which_children(runtime), fn {id, _pid, _type, _modules} ->
+           id == Ref.key(ref)
+         end) do
+      {_id, pid, _type, _modules} when is_pid(pid) ->
+        ResourceCache.put(runtime, Ref.key(ref), pid)
+        {:ok, pid}
+
+      {_id, :undefined, _type, _modules} ->
+        {:error, {:stack_resource_not_running, ref}}
+
+      {_id, :restarting, _type, _modules} ->
+        {:error, {:stack_resource_restarting, ref}}
+
+      nil ->
+        {:error, {:unknown_stack_runtime_ref, ref}}
+    end
+  end
+
+  @spec runtime_pid(Supervisor.supervisor()) :: {:ok, pid()} | {:error, term()}
+  defp runtime_pid(pid) when is_pid(pid) do
+    if Process.alive?(pid),
+      do: {:ok, pid},
+      else: {:error, {:stack_runtime_not_running, pid}}
+  end
+
+  defp runtime_pid(name) do
+    case GenServer.whereis(name) do
+      pid when is_pid(pid) -> {:ok, pid}
+      nil -> {:error, {:stack_runtime_not_running, name}}
+    end
+  end
 
   @impl Supervisor
   def init({%Definition{} = definition, opts}) do

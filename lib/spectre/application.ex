@@ -19,6 +19,7 @@ defmodule Spectre.Application do
       {Task.Supervisor, name: Spectre.Instance.CheckpointTaskSupervisor},
       {Task.Supervisor, name: Spectre.Receipt.TaskSupervisor},
       {Task.Supervisor, name: Spectre.Journal.TaskSupervisor},
+      Spectre.Stack.Runtime.ResourceCache,
       Spectre.Journal.Buffer
     ]
 

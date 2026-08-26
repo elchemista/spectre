@@ -106,12 +106,15 @@ Run it with the browser runtime supplied at the boundary, never stored in the
 definition:
 
 ```elixir
-{:ok, stack_runtime} =
-  Spectre.Stack.start_link(MyApp.AI, packages: [lens: [binary: "/opt/lightpanda"]])
+{:ok, _stack_runtime} =
+  Spectre.Stack.start_link(MyApp.AI,
+    name: MyApp.AIRuntime,
+    packages: [lens: [binary: "/opt/lightpanda"]]
+  )
 
 {:ok, turn} =
   Spectre.turn(MyApp.ResearchAgent, "check the release page",
-    stack_runtime: stack_runtime
+    stack_runtime: MyApp.AIRuntime
   )
 ```
 

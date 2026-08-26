@@ -7,6 +7,26 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
+## Unreleased
+
+### Added
+
+- Added top-level, runtime-only `:stack_runtime` Instance configuration. Stable
+  atom and `:via` names are accepted; PID, port, and reference handles are
+  rejected and cannot enter Run metadata or checkpoints.
+- Added explicit keyword child-spec support to `Spectre.Stack.Runtime` and a
+  monitored read-through resource cache that invalidates runtime and child
+  restarts.
+- Added generic installed-package data erasure between pending receipts and
+  checkpoint markers, including preflight capability reporting and per-package
+  proof evidence.
+
+### Compatibility
+
+- Nested `opts: [stack_runtime: ...]` remains accepted and is normalized into
+  the explicit runtime-only field. Existing schema-v1 erasure proofs without a
+  `package_data` component remain valid and are interpreted as not configured.
+
 ## 0.3.3 — 2026-08-23
 
 ### Added
