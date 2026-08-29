@@ -30,6 +30,15 @@ migration called out explicitly below.
   checkpoint markers, including preflight capability reporting and per-package
   proof evidence.
 
+### Fixed
+
+- Prevented runtime options from retaining a forged private Router Adapter plan
+  on Agents that compile no Adapters.
+- Deduplicated descriptor-drift diagnostics in default routing and made
+  pre-invocation Adapter skips visible through privacy-safe telemetry spans.
+- Clarified the fail-closed 32-result Adapter contract and updated examples to
+  rank and bound evidence before returning it.
+
 ### Compatibility
 
 - The 0.3.4 patch deliberately extends the normative 0.x public surface with

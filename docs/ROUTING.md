@@ -194,14 +194,26 @@ defmodule MyApp.BinaryRouter do
   @impl Spectre.Router.Adapter
   def evaluate(%Spectre.Router.Adapter.Request{text: text, rules: rules}) do
     results =
-      Enum.flat_map(rules, fn rule ->
-        Enum.flat_map(examples(rule), fn example ->
-          case MyApp.BinarySimilarity.score(text, example) do
-            nil -> []
-            score -> [result(rule, score, matched: example)]
-          end
-        end)
+      rules
+      |> Enum.flat_map(fn rule ->
+        best_match =
+          rule
+          |> examples()
+          |> Enum.flat_map(fn example ->
+            case MyApp.BinarySimilarity.score(text, example) do
+              nil -> []
+              score -> [{score, example}]
+            end
+          end)
+          |> Enum.max_by(&elem(&1, 0), fn -> nil end)
+
+        case best_match do
+          nil -> []
+          {score, example} -> [result(rule, score, matched: example)]
+        end
       end)
+      |> Enum.sort_by(& &1.score, :desc)
+      |> Enum.take(32)
 
     {:ok, results}
   end
@@ -254,6 +266,10 @@ so a secondary result can form provider agreement. A missing result margin is
 valid; when supplied, it must clear the configured margin. Structurally valid
 results below a threshold remain observable Candidates with
 `accepted?: false`, but cannot win.
+
+The 32-result limit is fail-closed: Spectre rejects the complete oversized
+reply instead of silently selecting evidence on behalf of the Adapter. Rank or
+filter results before returning, as in the example above.
 
 Descriptor strength is a precedence band and a ceiling, not forced Candidate
 strength. A global hard interrupt remains hard. A non-global rule keeps its
