@@ -181,6 +181,52 @@ defmodule SpectrePrivacyErasureContractTest.AgentDefinition do
   use Spectre.Agent, id: :privacy_erasure_contract_agent
 end
 
+defmodule SpectrePrivacyErasureContractTest.PackageDataPackage do
+  @moduledoc false
+
+  @behaviour Spectre.Stack.PackageData
+
+  use Spectre.Stack.Installable,
+    id: :privacy_package_data,
+    version: "0.1.0",
+    spectre: ">= 0.3.0 and < 0.4.0"
+
+  @impl Spectre.Stack.PackageData
+  def erasure_plan(_ref, opts) do
+    server = Keyword.fetch!(opts, :package_server)
+    {:ok, %{supported?: true, entries: Agent.get(server, &MapSet.size/1)}}
+  end
+
+  @impl Spectre.Stack.PackageData
+  def erase_instance(ref, opts) do
+    server = Keyword.fetch!(opts, :package_server)
+
+    outcome =
+      Agent.get_and_update(server, fn entries ->
+        if MapSet.member?(entries, ref.key),
+          do: {:erased, MapSet.delete(entries, ref.key)},
+          else: {:already_erased, entries}
+      end)
+
+    if pid = Keyword.get(opts, :audit_pid), do: send(pid, {:package_data_erased, ref.key})
+    {:ok, outcome}
+  end
+end
+
+defmodule SpectrePrivacyErasureContractTest.PackageDataStack do
+  @moduledoc false
+  use Spectre.Stack, id: :privacy_package_data_stack
+  install(SpectrePrivacyErasureContractTest.PackageDataPackage)
+end
+
+defmodule SpectrePrivacyErasureContractTest.PackageDataAgent do
+  @moduledoc false
+
+  use Spectre.Agent,
+    id: :privacy_package_data_agent,
+    stack: SpectrePrivacyErasureContractTest.PackageDataStack
+end
+
 defmodule SpectrePrivacyErasureContractTest do
   use ExUnit.Case, async: false
 
@@ -215,13 +261,19 @@ defmodule SpectrePrivacyErasureContractTest do
 
     receipt_server = start_supervised!({Memory, []})
 
+    package_server =
+      start_supervised!(
+        Supervisor.child_spec({Agent, fn -> MapSet.new() end}, id: :privacy_package_server)
+      )
+
     %{
       checkpoint: {CheckpointStore, server: checkpoint_server},
       checkpoint_server: checkpoint_server,
       journal: {JournalStore, server: journal_server},
       journal_server: journal_server,
       receipt: {LifecycleReceiptSink, server: receipt_server},
-      receipt_server: receipt_server
+      receipt_server: receipt_server,
+      package_server: package_server
     }
   end
 
@@ -243,11 +295,12 @@ defmodule SpectrePrivacyErasureContractTest do
     assert {:ok,
             %Spectre.Privacy.ErasurePlan{
               ready: true,
-              order: [:journal, :receipt_payloads, :checkpoint],
+              order: [:journal, :receipt_payloads, :package_data, :checkpoint],
               components: %{
                 owner: %{status: :ready},
                 journal: %{status: :ready},
                 receipt_payloads: %{status: :ready},
+                package_data: %{status: :not_configured},
                 checkpoint: %{status: :ready}
               }
             }} = Privacy.erasure_plan(ref, ref.subject, opts)
@@ -268,6 +321,7 @@ defmodule SpectrePrivacyErasureContractTest do
                   deleted_count: 1,
                   not_found_count: 0
                 },
+                package_data: %{outcome: :not_configured, package_count: 0},
                 checkpoint: %{outcome: :erased, key_count: 2}
               }
             }} =
@@ -332,6 +386,54 @@ defmodule SpectrePrivacyErasureContractTest do
              )
 
     assert {:checkpoint, 0, ^checkpoint} = CheckpointStore.entry(context.checkpoint_server, ref)
+  end
+
+  test "Stack package data participates in planning, ordered erasure, and proof", context do
+    ref =
+      Ref.new(
+        SpectrePrivacyErasureContractTest.PackageDataAgent,
+        "privacy-package-data-#{System.unique_integer([:positive])}"
+      )
+
+    checkpoint = checkpoint(ref)
+    CheckpointStore.seed(context.checkpoint_server, ref, checkpoint)
+    Agent.update(context.package_server, &MapSet.put(&1, ref.key))
+
+    runtime_opts = [package_server: context.package_server, audit_pid: self()]
+    opts = [checkpoint_store: context.checkpoint, opts: runtime_opts]
+
+    assert {:ok, plan} = Privacy.erasure_plan(ref, ref.subject, opts)
+    assert plan.ready
+    assert plan.components.package_data.status == :ready
+    assert plan.components.package_data.package_count == 1
+
+    assert {:ok, %Proof{components: %{package_data: package_data}}} =
+             Spectre.erase_instance(
+               ref,
+               ref.subject,
+               opts ++ [confirm: ref.key, now: 10]
+             )
+
+    assert package_data.outcome == :erased
+    assert package_data.package_count == 1
+    assert package_data.erased_count == 1
+    assert_receive {:package_data_erased, key}
+    assert key == ref.key
+    assert_receive {:checkpoint_erased, ^key}
+    refute Agent.get(context.package_server, &MapSet.member?(&1, ref.key))
+
+    assert {:ok,
+            %Proof{
+              outcome: :already_erased,
+              components: %{
+                package_data: %{outcome: :already_erased, already_erased_count: 1}
+              }
+            }} =
+             Spectre.erase_instance(
+               ref,
+               ref.subject,
+               opts ++ [confirm: ref.key, now: 11]
+             )
   end
 
   test "a payload failure retries cleanly after the sink recovers",

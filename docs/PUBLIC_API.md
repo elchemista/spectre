@@ -548,6 +548,9 @@ Mix project version.
   - functions: `from_extension_mount/1`, `from_provider_mount/1`
 - `Spectre.Stack.Package`
   - functions: `compatible?/2`, `entry_id/1`, `new!/2`
+- `Spectre.Stack.PackageData`
+  - functions: `erase_instance/1`, `erase_instance/2`, `erase_instance/3`, `erasure_capability/1`, `erasure_plan/1`, `erasure_plan/2`
+  - callbacks: `erase_instance/2`, `erasure_plan/2`
 - `Spectre.Stack.Ref`
   - functions: `key/1`, `valid?/1`
 - `Spectre.Stack.Runtime`

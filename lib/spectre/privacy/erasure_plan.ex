@@ -14,7 +14,7 @@ defmodule Spectre.Privacy.ErasurePlan do
   defstruct schema_version: @schema_version,
             instance_key: nil,
             ready: false,
-            order: [:journal, :receipt_payloads, :checkpoint],
+            order: [:journal, :receipt_payloads, :package_data, :checkpoint],
             components: %{}
 
   @type component :: %{
@@ -27,11 +27,12 @@ defmodule Spectre.Privacy.ErasurePlan do
           schema_version: 1,
           instance_key: String.t(),
           ready: boolean(),
-          order: [:journal | :receipt_payloads | :checkpoint],
+          order: [:journal | :receipt_payloads | :package_data | :checkpoint],
           components: %{
             required(:owner) => component(),
             required(:journal) => component(),
             required(:receipt_payloads) => component(),
+            required(:package_data) => component(),
             required(:checkpoint) => component()
           }
         }
@@ -46,7 +47,7 @@ defmodule Spectre.Privacy.ErasurePlan do
       schema_version: @schema_version,
       instance_key: instance_key,
       ready: ready,
-      order: [:journal, :receipt_payloads, :checkpoint],
+      order: [:journal, :receipt_payloads, :package_data, :checkpoint],
       components: components
     }
   end

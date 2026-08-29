@@ -21,13 +21,14 @@ ref = Spectre.Instance.Ref.new(MyApp.SupportAgent, account_subject)
   )
 
 true = plan.ready
-[:journal, :receipt_payloads, :checkpoint] = plan.order
+[:journal, :receipt_payloads, :package_data, :checkpoint] = plan.order
 ```
 
 The plan only inspects configuration and exported callbacks. It never reads a
 store, starts an Instance, acquires a lease, or deletes data. Run the Owner,
 Checkpoint Store, Journal erasure, and Receipt Sink conformance suites in
-isolated namespaces; the plan does not prove adapter durability.
+isolated namespaces, plus every installed package's own erasure conformance;
+the plan does not prove adapter durability.
 
 ## Execution order
 
@@ -50,7 +51,9 @@ Core preflights every configured capability before mutation, then performs:
 1. `Journal.Store.erase_instance/2` for stable and applicable legacy Refs;
 2. `Receipt.Sink.delete_payload/2` for every distinct payload ref retained in
    the canonical required-receipt outbox;
-3. `CheckpointStore.erase/3` for stable and applicable legacy keys, followed
+3. `erase_instance/2` for every installed Stack package that declares
+   Instance-scoped package data;
+4. `CheckpointStore.erase/3` for stable and applicable legacy keys, followed
    by independent marker read-back.
 
 The proof has `scope: :configured_instance_data` and reports each component's
@@ -59,6 +62,25 @@ outcome and count. Its receipt component covers pending outbox payloads only;
 contained no pending payload references, while `not_configured` means no sink
 participated. Delivered receipt records and all other host-owned data remain in
 the data map.
+
+## Stack package data
+
+An installable that owns Instance-scoped data implements both callbacks on its
+package module:
+
+```elixir
+@spec erasure_plan(Spectre.Instance.Ref.t(), keyword()) ::
+        {:ok, map()} | {:error, term()}
+
+@spec erase_instance(Spectre.Instance.Ref.t(), keyword()) ::
+        {:ok, term()} | {:error, term()}
+```
+
+Core discovers these callbacks from the immutable Stack bound to the Agent.
+It passes the installation and package identifiers in the callback options;
+runtime handles remain call-local. A package that implements only one callback
+is fail-closed as incomplete. The proof records per-package outcomes and never
+claims deletion for packages that did not participate.
 
 ## Adapter requirements
 

@@ -72,6 +72,14 @@ defmodule SpectreRunCodecEdgeContractTest do
     assert {:error, {:invalid_run_option, :run_metadata, {:nonportable_run_value, _, :pid}}} =
              Run.validate_options(run_metadata: %{client: self()})
 
+    for key <- [:stack_runtime, :memory_engine, :instance_pid, :runtime_client] do
+      assert {:error, {:invalid_run_option, :run_metadata, {:runtime_handle_key_forbidden, ^key}}} =
+               Run.validate_options(run_metadata: %{key => :runtime_name})
+
+      assert {:error, {:invalid_run_option, :run_metadata, {:runtime_handle_key_forbidden, ^key}}} =
+               Run.validate_options(run_metadata: %{Atom.to_string(key) => :runtime_name})
+    end
+
     assert %Run{metadata: %{}} =
              Run.new(Agent, %Input{}, %State{}, run_metadata: :invalid)
 

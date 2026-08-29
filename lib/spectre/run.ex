@@ -25,6 +25,7 @@ defmodule Spectre.Run do
   alias Spectre.State
 
   @run_version 3
+  @runtime_metadata_keys [:stack_runtime, :memory_engine, :instance_pid, :runtime_client]
 
   @enforce_keys [:id, :agent, :input, :state, :trace_id]
   defstruct run_version: @run_version,
@@ -223,8 +224,10 @@ defmodule Spectre.Run do
   defp validate_metadata_option(opts) do
     case Keyword.get(opts, :run_metadata, %{}) do
       metadata when is_map(metadata) ->
-        case Value.validate(metadata, [:run_metadata]) do
-          :ok -> :ok
+        with :ok <- reject_runtime_metadata_keys(metadata),
+             :ok <- Value.validate(metadata, [:run_metadata]) do
+          :ok
+        else
           {:error, reason} -> {:error, {:invalid_run_option, :run_metadata, reason}}
         end
 
@@ -235,6 +238,16 @@ defmodule Spectre.Run do
 
   defp logical_metadata(metadata) when is_map(metadata), do: metadata
   defp logical_metadata(_metadata), do: %{}
+
+  @spec reject_runtime_metadata_keys(map()) :: :ok | {:error, term()}
+  defp reject_runtime_metadata_keys(metadata) do
+    case Enum.find(@runtime_metadata_keys, fn key ->
+           Map.has_key?(metadata, key) or Map.has_key?(metadata, Atom.to_string(key))
+         end) do
+      nil -> :ok
+      key -> {:error, {:runtime_handle_key_forbidden, key}}
+    end
+  end
 
   defp compiled_definition_ref(agent) do
     case CanonicalDefinition.lower(agent) do

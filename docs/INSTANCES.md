@@ -130,7 +130,8 @@ ref = Spectre.Instance.Ref.new(MyApp.SupportAgent, subject)
 ```
 
 The coordinator deletes configured Journal records and pending receipt
-payloads before atomically replacing present or absent checkpoint keys with
+payloads, invokes erasure for Instance-scoped data owned by installed Stack
+packages, then atomically replaces present or absent checkpoint keys with
 anti-resurrection markers. The Owner must expose a non-preemptive maintenance
 claim. Existing adapters remain valid for normal Instance operation when the
 optional deletion callbacks are absent, but configured-data erasure returns an

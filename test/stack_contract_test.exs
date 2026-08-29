@@ -429,6 +429,46 @@ defmodule SpectreStackContractTest do
     refute Keyword.has_key?(child_spec.start |> elem(2), :name)
   end
 
+  test "keyword child specs start a caller-owned runtime" do
+    spec =
+      Runtime.child_spec(
+        stack: TestStack,
+        packages: [inference: [token: "keyword-child-spec"]]
+      )
+
+    assert spec.type == :supervisor
+    runtime = start_supervised!(spec)
+    assert {:ok, ref} = Definition.resolve(TestStack, :resource, :client)
+    assert {:ok, client} = Runtime.resolve(runtime, ref)
+    assert Agent.get(client, & &1.runtime) == [token: "keyword-child-spec"]
+  end
+
+  test "resource resolution is cached and invalidated when the resource restarts" do
+    runtime =
+      start_supervised!(
+        {Runtime, stack: TestStack, packages: [inference: [token: "cached-runtime"]]}
+      )
+
+    assert {:ok, ref} = Definition.resolve(TestStack, :resource, :client)
+    assert {:ok, first} = Runtime.resolve(runtime, ref)
+
+    assert {:ok, ^first} =
+             Spectre.Stack.Runtime.ResourceCache.lookup(runtime, Ref.key(ref))
+
+    Process.exit(first, :kill)
+
+    assert {:ok, second} =
+             eventually(fn ->
+               case Runtime.resolve(runtime, ref) do
+                 {:ok, pid} when pid != first -> {:ok, pid}
+                 _pending -> :retry
+               end
+             end)
+
+    refute first == second
+    assert Process.alive?(second)
+  end
+
   test "converts Extension and Provider mounts into explicit legacy installations" do
     extension_mount = Spectre.Extension.Mount.new(LegacyExtension, namespace: :legacy)
     extension = Installation.from_extension_mount(extension_mount)
@@ -754,6 +794,21 @@ defmodule SpectreStackContractTest do
   end
 
   defp compile_module(source), do: Code.compile_string(source)
+
+  defp eventually(fun, attempts \\ 100)
+
+  defp eventually(fun, attempts) when attempts > 0 do
+    case fun.() do
+      :retry ->
+        Process.sleep(10)
+        eventually(fun, attempts - 1)
+
+      result ->
+        result
+    end
+  end
+
+  defp eventually(_fun, 0), do: flunk("condition did not become true")
 
   defp unique_module(suffix) do
     modules = Map.fetch!(@dynamic_modules, suffix)

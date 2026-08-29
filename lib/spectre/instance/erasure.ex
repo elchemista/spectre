@@ -15,6 +15,7 @@ defmodule Spectre.Instance.Erasure do
   alias Spectre.Instance.Restore
   alias Spectre.Journal.Store, as: JournalStore
   alias Spectre.Receipt.Sink, as: ReceiptSink
+  alias Spectre.Stack.PackageData
 
   @spec run(module() | AgentRef.t() | Ref.t(), term(), keyword()) ::
           {:ok, Proof.t()} | {:error, term()}
@@ -27,6 +28,7 @@ defmodule Spectre.Instance.Erasure do
          :ok <- CheckpointStore.erasure_capability(config.checkpoint_store),
          :ok <- JournalStore.erasure_capability(config.journal),
          :ok <- ReceiptSink.payload_erasure_capability(config.receipt_sink),
+         :ok <- PackageData.erasure_capability(config.package_data),
          {:ok, reservation} <- InstanceRegistry.reserve(ref, :erasure, config.registry) do
       try do
         erase_reserved(ref, config)
@@ -73,12 +75,14 @@ defmodule Spectre.Instance.Erasure do
     with {:ok, journal} <- erase_journal_refs(ref, owner_lease, config),
          {:ok, receipts} <-
            erase_receipt_payloads(observations, ref, owner_lease, journal, config),
-         {:ok, keys} <- erase_checkpoints(observations, ref, owner_lease, receipts, config) do
+         {:ok, package_data} <- erase_package_data(ref, owner_lease, receipts, config),
+         {:ok, keys} <-
+           erase_checkpoints(observations, ref, owner_lease, package_data, config) do
       Proof.new(ref,
         outcome: proof_outcome(keys),
         owner_fencing_token: owner_lease.fencing_token,
         completed_at: now(config),
-        components: proof_components(journal, receipts, keys),
+        components: proof_components(journal, receipts, package_data, keys),
         keys: keys
       )
     end
@@ -200,16 +204,44 @@ defmodule Spectre.Instance.Erasure do
     )
   end
 
-  defp erase_checkpoints(observations, ref, owner_lease, receipts, config) do
+  defp erase_package_data(ref, owner_lease, receipts, config) do
+    authorize = fn ->
+      Owner.assert_current(
+        config.owner,
+        ref,
+        owner_lease,
+        :instance_package_data_erasure,
+        config.base_opts
+      )
+    end
+
+    case PackageData.erase_instance(ref, config.package_opts, authorize) do
+      {:ok, result} ->
+        completed =
+          receipts.completed ++
+            if(result.package_count > 0, do: [:package_data], else: [])
+
+        {:ok, Map.put(result, :completed, completed)}
+
+      {:error, {:package_data_erase_failed, completed, adapter, reason}} ->
+        prior = receipts.completed ++ if(completed == [], do: [], else: [:package_data])
+        partial_error(prior, {:package_data_erase_failed, completed, adapter, reason})
+
+      {:error, reason} ->
+        partial_error(receipts.completed, {:package_data_erase_failed, reason})
+    end
+  end
+
+  defp erase_checkpoints(observations, ref, owner_lease, package_data, config) do
     case erase_observations(observations, ref, owner_lease, config) do
       {:ok, keys} ->
         {:ok, keys}
 
       {:error, {:ambiguous, {:instance_erasure_partial, checkpoint_keys, reason}}} ->
-        partial_error(receipts.completed ++ checkpoint_keys, reason)
+        partial_error(package_data.completed ++ checkpoint_keys, reason)
 
       {:error, reason} ->
-        partial_error(receipts.completed, reason)
+        partial_error(package_data.completed, reason)
     end
   end
 
@@ -218,7 +250,7 @@ defmodule Spectre.Instance.Erasure do
   defp partial_error(completed, reason),
     do: {:error, {:ambiguous, {:instance_erasure_partial, completed, reason}}}
 
-  defp proof_components(journal, receipts, keys) do
+  defp proof_components(journal, receipts, package_data, keys) do
     %{
       journal: Map.take(journal, [:outcome, :key_count]),
       receipt_payloads:
@@ -227,6 +259,14 @@ defmodule Spectre.Instance.Erasure do
           :payload_count,
           :deleted_count,
           :not_found_count
+        ]),
+      package_data:
+        Map.take(package_data, [
+          :outcome,
+          :package_count,
+          :erased_count,
+          :already_erased_count,
+          :packages
         ]),
       checkpoint: %{outcome: proof_outcome(keys), key_count: length(keys)}
     }
@@ -499,7 +539,9 @@ defmodule Spectre.Instance.Erasure do
            checkpoint_store(agent, opts, base_opts) |> CheckpointStore.normalize(),
          {:ok, owner} <- owner(agent, opts, base_opts) |> Owner.normalize(),
          {:ok, journal} <- journal(agent, opts, base_opts) |> JournalStore.normalize(),
-         {:ok, receipt_sink} <- receipt_sink(agent, opts, base_opts) |> ReceiptSink.normalize() do
+         {:ok, receipt_sink} <- receipt_sink(agent, opts, base_opts) |> ReceiptSink.normalize(),
+         package_opts <- package_opts(opts, base_opts),
+         {:ok, package_data} <- PackageData.erasure_plan(ref, package_opts) do
       requested_at = Keyword.get(opts, :now, System.system_time(:millisecond))
 
       if is_integer(requested_at) and requested_at >= 0 do
@@ -510,6 +552,8 @@ defmodule Spectre.Instance.Erasure do
            erasure_id: Keyword.get(opts, :erasure_id),
            journal: journal,
            owner: owner,
+           package_data: package_data,
+           package_opts: package_opts,
            receipt_sink: receipt_sink,
            registry: Keyword.get(opts, :registry, InstanceRegistry),
            requested_at: requested_at
@@ -529,6 +573,14 @@ defmodule Spectre.Instance.Erasure do
 
       _invalid ->
         {:error, {:invalid_instance_erasure_option, :opts}}
+    end
+  end
+
+  @spec package_opts(keyword(), keyword()) :: keyword()
+  defp package_opts(opts, base_opts) do
+    case Keyword.fetch(opts, :stack_runtime) do
+      {:ok, runtime} -> Keyword.put(base_opts, :stack_runtime, runtime)
+      :error -> base_opts
     end
   end
 
