@@ -76,6 +76,16 @@ defmodule Spectre.Router.Arbitrators.Default do
 
   defp eligibility(%Candidate{handler: nil}, _opts), do: {false, :missing_handler, %{}}
 
+  defp eligibility(%Candidate{metadata: %{router_adapter: %{} = adapter}} = candidate, _opts) do
+    required = Map.get(adapter, :required, %{})
+
+    if candidate.accepted? == true do
+      {true, nil, required}
+    else
+      {false, Map.get(adapter, :threshold_reason, :provider_rejected), required}
+    end
+  end
+
   defp eligibility(%Candidate{accepted?: accepted?}, _opts) when accepted? != true,
     do: {false, :provider_rejected, %{}}
 
@@ -169,7 +179,7 @@ defmodule Spectre.Router.Arbitrators.Default do
   defp provider_reason(:local_classifier), do: :classifier_precedence
   defp provider_reason(:embedding), do: :embedding_precedence
   defp provider_reason(provider) when provider in [:bag, :jaro], do: :similarity_precedence
-  defp provider_reason(_provider), do: :best_candidate
+  defp provider_reason(_adapter), do: :best_candidate
 
   defp agreement_winner?(winner, candidates) do
     candidates
@@ -196,16 +206,21 @@ defmodule Spectre.Router.Arbitrators.Default do
 
   @spec select_candidate([Candidate.t()]) :: Candidate.t() | nil
   defp select_candidate(candidates) do
+    adapter_slots? = not Enum.any?(candidates, &(&1.provider == :llm_classifier))
+
     [
       fn -> best_by_strength(candidates, :hard) end,
       fn -> agreement(candidates) end,
+      fn -> adapter_in_bands(candidates, [:hard, :strong], adapter_slots?) end,
       fn -> confident_provider(candidates, :local_classifier) end,
       fn -> confident_provider(candidates, :embedding) end,
+      fn -> adapter_in_bands(candidates, [:medium], adapter_slots?) end,
       fn -> confident_provider(candidates, :semantic_cache_exact) end,
       fn -> confident_provider(candidates, :semantic_cache_search) end,
       fn -> confident_provider(candidates, :semantic_cache) end,
       fn -> confident_provider(candidates, :bag) end,
-      fn -> confident_provider(candidates, :jaro) end
+      fn -> confident_provider(candidates, :jaro) end,
+      fn -> adapter_in_bands(candidates, [:weak], adapter_slots?) end
     ]
     |> Enum.find_value(& &1.())
   end
@@ -314,6 +329,12 @@ defmodule Spectre.Router.Arbitrators.Default do
     Enum.find(candidates, &(&1.provider == provider))
   end
 
+  defp adapter_in_bands(_candidates, _bands, false), do: nil
+
+  defp adapter_in_bands(candidates, bands, true) do
+    Enum.find(candidates, &(adapter_band(&1) in bands))
+  end
+
   defp conflict?(candidates) do
     candidates
     |> Enum.map(&candidate_identity/1)
@@ -326,7 +347,8 @@ defmodule Spectre.Router.Arbitrators.Default do
   defp candidate_order_key(%Candidate{} = candidate) do
     {
       -strength_rank(candidate.strength),
-      -provider_rank(candidate.provider),
+      -candidate_provider_rank(candidate),
+      adapter_order(candidate),
       -(candidate.score || 0.0),
       -(candidate.margin || 0.0),
       stable_id(candidate.scope),
@@ -349,6 +371,27 @@ defmodule Spectre.Router.Arbitrators.Default do
   defp strength_rank(:medium), do: 2
   defp strength_rank(:weak), do: 1
   defp strength_rank(_strength), do: 0
+
+  defp candidate_provider_rank(%Candidate{} = candidate) do
+    case adapter_band(candidate) do
+      band when band in [:hard, :strong] -> 55
+      :medium -> 35
+      :weak -> 15
+      nil -> provider_rank(candidate.provider) * 10
+    end
+  end
+
+  defp adapter_band(%Candidate{metadata: %{router_adapter: %{band: band}}})
+       when band in [:hard, :strong, :medium, :weak],
+       do: band
+
+  defp adapter_band(%Candidate{}), do: nil
+
+  defp adapter_order(%Candidate{metadata: %{router_adapter: %{order: order}}})
+       when is_integer(order) and order >= 0,
+       do: order
+
+  defp adapter_order(%Candidate{}), do: 0
 
   defp provider_rank(:llm_classifier), do: 6
   defp provider_rank(:local_classifier), do: 5

@@ -79,6 +79,7 @@ defmodule SpectreMorphBoundaryCoverageTest do
   alias Spectre.Governance.EvaluationDelta
   alias Spectre.Governance.Approval.Policy, as: ApprovalPolicy
   alias Spectre.Instance
+  alias Spectre.Instance.DefinitionCompatibility
   alias Spectre.Morph
   alias Spectre.Morph.Change
   alias Spectre.Morph.Surface
@@ -637,6 +638,15 @@ defmodule SpectreMorphBoundaryCoverageTest do
   end
 
   test "Morph seals the Instance execution profile at activation and at every turn" do
+    canonical = Definition.canonical!(Agent)
+
+    assert {:error,
+            {:morph_instance_execution_profile_overridden, [:__spectre_router_adapters__]}} =
+             DefinitionCompatibility.verify_profile(
+               [__spectre_router_adapters__: %{evil: true}],
+               canonical
+             )
+
     %{instance: overridden, bootstrap: bootstrap} =
       baseline(Agent,
         activate?: false,

@@ -176,6 +176,121 @@ receive the full evidence stream unless `hard_short_circuit?: true` is set;
 `hard_short_circuit?: false` also disables the optimization for the default
 arbitrator.
 
+## Native Router Adapters
+
+Use `Spectre.Router.Adapter` when an application or package has its own
+evidence source, such as a vector database or domain-specific scorer. The
+Adapter is declared directly in the Agent's main `via`; no plug wrapper or
+separate registry is required:
+
+```elixir
+defmodule MyApp.BinaryRouter do
+  use Spectre.Router.Adapter,
+    id: :binary,
+    accept: 0.86,
+    margin: 0.04,
+    strength: :medium
+
+  @impl Spectre.Router.Adapter
+  def evaluate(%Spectre.Router.Adapter.Request{text: text, rules: rules}) do
+    results =
+      Enum.flat_map(rules, fn rule ->
+        Enum.flat_map(examples(rule), fn example ->
+          case MyApp.BinarySimilarity.score(text, example) do
+            nil -> []
+            score -> [result(rule, score, matched: example)]
+          end
+        end)
+      end)
+
+    {:ok, results}
+  end
+end
+
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent
+
+  router(via: [:regex, MyApp.BinaryRouter, :llm_classifier])
+
+  flow :support do
+    on :DUPLICATE_TICKET,
+      binary: [examples: ["disk full", "no space left on device"]],
+      via: [:binary, :llm_classifier] do
+      reply(:duplicate_ticket)
+    end
+  end
+end
+```
+
+The compiled descriptor snapshots `id`, `accept`, optional `margin`, and the
+symbolic `strength` band. Adapter ids cannot collide with built-in Router
+steps or options consumed by the rule compiler. Rule data remains in
+`rule.opts`; `examples/1` normalizes a scalar, a list, or
+`[examples: [...]]` without mutating it.
+
+`evaluate/1` receives a read-only Request containing normalized text,
+`input.meta`, current flow/scope, the same bounded recent-chat projection used
+by the LLM classifier, and visible RuleViews. A RuleView contains data and a
+`{scope, label}` ref, but never a handler, owner, raw input, mutable Candidate,
+or runtime host context. Text, metadata, and chat are application data and
+must not be copied into logs or telemetry by the Adapter.
+
+Return `{:ok, result_or_results}`, `:skip`, `{:skip, reason}`, or
+`{:error, reason}`. A result contains only:
+
+```elixir
+%{
+  rule: {{:skill, :tickets}, :DUPLICATE_TICKET},
+  score: 0.91,
+  margin: 0.08,       # optional
+  matched: "disk full" # optional, never emitted in receipts or telemetry
+}
+```
+
+The core rejects label-only or non-visible refs, unknown fields, non-finite or
+out-of-range scores/margins, and more than 32 distinct refs. Duplicate refs are
+reduced deterministically, while distinct results remain distinct Candidates
+so a secondary result can form provider agreement. A missing result margin is
+valid; when supplied, it must clear the configured margin. Structurally valid
+results below a threshold remain observable Candidates with
+`accepted?: false`, but cannot win.
+
+Descriptor strength is a precedence band and a ceiling, not forced Candidate
+strength. A global hard interrupt remains hard. A non-global rule keeps its
+own weaker strength, while an explicit stronger rule value can be clamped by
+the descriptor. The `:hard` and `:strong` descriptor bands intentionally share
+one precedence slot; they differ only in how that ceiling can preserve rule
+strength.
+
+Skills may refer to a custom id without registering its module. At Agent
+composition, a missing id is a warning when another provider in the rule
+`via` remains available, and an error when the rule would be wholly invisible.
+Modules are never accepted inside a rule-level `via`.
+
+A custom `pipeline:` retains complete control. Declaring the Adapter module in
+the main `via` still compiles and authorizes it, but does not insert it into the
+custom pipeline. A custom plug invokes it by id:
+
+```elixir
+def call(context, _state) do
+  Spectre.Router.Adapter.run(context, :binary)
+end
+```
+
+Each active descriptor is compared with the live module once per routing
+evaluation. Drift or an unreadable module disables only that Adapter for the
+evaluation, records a privacy-safe diagnostic, and leaves built-ins and
+fallbacks available. No global descriptor cache is used. Inspect effective
+order, dependencies, drift, and thresholds without invoking `evaluate/1`:
+
+```elixir
+Spectre.Doctor.run(agent: MyApp.SupportAgent)
+Spectre.Doctor.run(agent: MyApp.SupportAgent, router_opts: [via: [:binary]])
+```
+
+Package authors can run the same result normalizer against a deterministic
+fixture with `Spectre.Router.Adapter.Conformance.run/3`.
+
 Per-route `via:` limits which strategies can see a route:
 
 ```elixir
@@ -224,8 +339,9 @@ The privacy-safe receipt exposes the outcome, label, strategy, provider
 attempts, candidate summaries, total duration, sanitized provider-call
 outcomes/durations, and `llm_called?`. The LLM flag reflects an actual provider
 worker invocation, not merely selection of the LLM arbitration branch. Journal
-delivery and online semantic learning are forced off during evaluation. Router
-provider adapters still run, so live LLM evaluations may incur provider usage.
+delivery and online semantic learning are forced off during evaluation. Native
+Router Adapters and built-in providers still run, so live vector, API, and LLM
+evaluations may incur provider usage.
 
 For corpus metrics and CI regression thresholds, see
 [Routing Evaluation](EVALUATION.md).
@@ -274,18 +390,22 @@ The decision order is:
 1. Pick hard evidence first. Global interrupts are hard by default, so cancel,
    help, unsafe, spam, and similar commands can cut through normal routing.
 2. If two or more providers agree on the same label, accept that agreement and
-   keep the highest-scored candidate for that label.
-3. Accept a confident local classifier candidate.
-4. Accept a confident embedding candidate.
-5. Accept a confident bag-distance candidate.
-6. Accept a confident Jaro candidate.
-7. If eligible candidates disagree and `conflict: :llm`, ask the LLM classifier
+   keep the highest-ranked representative for that label.
+3. Accept an Adapter in the `:hard`/`:strong` band.
+4. Accept a confident local classifier candidate.
+5. Accept a confident embedding candidate.
+6. Accept an Adapter in the `:medium` band.
+7. Accept semantic-cache evidence.
+8. Accept a confident bag-distance candidate.
+9. Accept a confident Jaro candidate.
+10. Accept an Adapter in the `:weak` band.
+11. If eligible candidates disagree and `conflict: :llm`, ask the LLM classifier
    to arbitrate among labels when that strategy and a model are configured.
-8. If no cheaper evidence is eligible and `no_decision: :llm`, ask the
+12. If no cheaper evidence is eligible and `no_decision: :llm`, ask the
    configured LLM classifier.
-9. If LLM routing is disabled/unavailable, or `no_decision: :clarify` is set,
+13. If LLM routing is disabled/unavailable, or `no_decision: :clarify` is set,
    return a clarify route with `"Please rephrase your request."`.
-10. Otherwise return `{:error, :no_route_candidate}`.
+14. Otherwise return `{:error, :no_route_candidate}`.
 
 The LLM only sees rules visible to `:llm_classifier`. Spectre does not widen an
 empty route-level `via:` result to every rule, and it never calls the model with
@@ -337,6 +457,13 @@ thresholds. The built-in rank is:
 ```elixir
 llm_classifier > local_classifier > embedding > semantic_cache > bag/jaro > regex
 ```
+
+Adapter bands occupy private slots between those built-ins: hard/strong before
+the local classifier, medium after embedding, and weak after Jaro. Adapter
+order within one band follows the effective `via` before score and margin. In
+the LLM re-arbitration pass, direct Adapter slots are disabled and the existing
+LLM rank remains highest; genuine hard evidence and provider agreement still
+retain their earlier semantics.
 
 That ordering is why a weak regex can be beaten by a strong classifier, while a
 hard interrupt still wins immediately.

@@ -14,6 +14,9 @@ defmodule Spectre.Router do
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
   alias Spectre.Route
+  alias Spectre.Router.Adapter
+  alias Spectre.Router.Adapter.Compiler, as: AdapterCompiler
+  alias Spectre.Router.Adapter.Plan, as: AdapterPlan
   alias Spectre.Router.Context
   alias Spectre.Router.Evaluator
   alias Spectre.Router.Receipt
@@ -66,26 +69,45 @@ defmodule Spectre.Router do
 
     labels = Enum.map(rules, & &1.label)
 
-    router_opts =
-      agent.__spectre_router__()
+    compiled_router = agent.__spectre_router__()
+    compiled_adapters = AdapterCompiler.compiled_adapters(compiled_router)
+
+    merged_opts =
+      compiled_router
       |> Keyword.merge(opts)
       |> Keyword.put_new(:arbitrator, {Spectre.Router.Arbitrators.Default, []})
       |> Keyword.put_new(:labels, labels)
       |> Keyword.put_new(:spectre_agent, agent)
       |> Keyword.put_new(:spectre_rules, rules)
 
-    context = %Context{
-      input: input,
-      host_context: Map.from_struct(ctx),
-      opts: router_opts,
-      labels: labels,
-      rules: rules
-    }
+    with {:ok, router_opts, diagnostics} <-
+           put_adapter_plan(merged_opts, compiled_adapters) do
+      context = %Context{
+        input: input,
+        host_context: Map.from_struct(ctx),
+        opts: router_opts,
+        labels: labels,
+        rules: rules,
+        traces: Enum.reverse(diagnostics),
+        errors: diagnostics
+      }
 
-    case route_with_pipeline(context, pipeline(router_opts, rules)) do
-      {:ok, %Context{} = context} -> Recorder.record_routing(context)
-      {:inference, %Spectre.Inference.Prepared{} = prepared} -> {:inference, prepared}
-      {:error, _reason} = error -> error
+      case route_with_pipeline(context, pipeline(router_opts, rules)) do
+        {:ok, %Context{} = context} -> Recorder.record_routing(context)
+        {:inference, %Spectre.Inference.Prepared{} = prepared} -> {:inference, prepared}
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  @spec put_adapter_plan(keyword(), map()) :: {:ok, keyword(), [term()]} | {:error, term()}
+  defp put_adapter_plan(opts, compiled_adapters) when map_size(compiled_adapters) == 0,
+    do: {:ok, opts, []}
+
+  defp put_adapter_plan(opts, compiled_adapters) do
+    with {:ok, plan} <- AdapterPlan.build(compiled_adapters, opts) do
+      {:ok, Keyword.put(opts, AdapterCompiler.compiled_key(), plan),
+       AdapterPlan.diagnostics(plan)}
     end
   end
 
@@ -145,6 +167,10 @@ defmodule Spectre.Router do
           | {:error, term()}
   defp route_with_pipeline(%Context{} = context, nil), do: {:ok, context}
 
+  defp route_with_pipeline(%Context{} = context, {:mixed, steps}) when is_list(steps) do
+    protected_pipeline(context, fn -> run_mixed_pipeline(context, steps) end)
+  end
+
   defp route_with_pipeline(%Context{} = context, pipeline) when is_atom(pipeline) do
     protected_pipeline(context, fn -> pipeline.call(context) end)
   end
@@ -156,6 +182,40 @@ defmodule Spectre.Router do
       end
     end)
   end
+
+  @spec run_mixed_pipeline(Context.t(), [term()]) ::
+          {:ok, Context.t()}
+          | {:inference, Spectre.Inference.Prepared.t()}
+          | {:error, term()}
+  defp run_mixed_pipeline(%Context{} = context, steps) do
+    Enum.reduce_while(steps, {:ok, context}, fn step, {:ok, context} ->
+      step
+      |> run_mixed_step(context)
+      |> reduce_mixed_reply()
+    end)
+  end
+
+  @spec run_mixed_step(term(), Context.t()) ::
+          {:ok, Context.t()}
+          | {:inference, Spectre.Inference.Prepared.t()}
+          | {:error, term()}
+  defp run_mixed_step({:plug, spec}, context), do: Spectre.Pipeline.run(context, [spec])
+
+  defp run_mixed_step({:adapter, adapter_id}, context) do
+    case Adapter.run(context, adapter_id) do
+      {:cont, %Context{} = context} -> {:ok, context}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec reduce_mixed_reply(term()) :: {:cont, term()} | {:halt, term()}
+  defp reduce_mixed_reply({:ok, %Context{halted?: true}} = result), do: {:halt, result}
+  defp reduce_mixed_reply({:ok, %Context{}} = result), do: {:cont, result}
+
+  defp reduce_mixed_reply({:inference, %Spectre.Inference.Prepared{}} = result),
+    do: {:halt, result}
+
+  defp reduce_mixed_reply({:error, _reason} = error), do: {:halt, error}
 
   @spec protected_pipeline(Context.t(), (-> term())) ::
           {:ok, Context.t()}
@@ -189,11 +249,25 @@ defmodule Spectre.Router do
   defp normalize_pipeline_reply(other),
     do: {:error, Failure.invalid_reply(:router, other)}
 
-  @spec pipeline(keyword(), [Rule.t()]) :: module() | [Spectre.Pipeline.plug_spec()]
+  @spec pipeline(keyword(), [Rule.t()]) ::
+          module() | [Spectre.Pipeline.plug_spec()] | {:mixed, [term()]}
   defp pipeline(opts, rules) do
     case Keyword.get(opts, :pipeline) do
-      nil -> pipeline_from_via(default_via(opts, rules))
+      nil -> generated_pipeline(default_via(opts, rules), opts)
       pipeline -> pipeline
+    end
+  end
+
+  @spec generated_pipeline([atom()], keyword()) ::
+          [Spectre.Pipeline.plug_spec()] | {:mixed, [term()]}
+  defp generated_pipeline(via, opts) do
+    plan = Keyword.get(opts, AdapterCompiler.compiled_key())
+
+    if AdapterPlan.adapter_plan?(plan) and
+         Enum.any?(via, &match?({:ok, _}, AdapterPlan.fetch(plan, &1))) do
+      {:mixed, mixed_pipeline_from_via(via, plan)}
+    else
+      pipeline_from_via(via)
     end
   end
 
@@ -217,6 +291,29 @@ defmodule Spectre.Router do
     |> List.wrap()
     |> Enum.flat_map(&pipeline_step/1)
     |> append_terminalize()
+  end
+
+  @spec mixed_pipeline_from_via([atom()], AdapterPlan.t()) :: [term()]
+  defp mixed_pipeline_from_via(via, plan) do
+    via
+    |> Enum.flat_map(fn step ->
+      case AdapterPlan.fetch(plan, step) do
+        {:ok, _entry} -> [{:adapter, step}]
+        :error -> Enum.map(pipeline_step(step), &{:plug, &1})
+      end
+    end)
+    |> append_mixed_terminalize()
+  end
+
+  @spec append_mixed_terminalize([term()]) :: [term()]
+  defp append_mixed_terminalize(steps) do
+    steps = append_mixed_plug(steps, Spectre.Router.Plugs.Arbitrate)
+    append_mixed_plug(steps, Spectre.Router.Plugs.Terminalize)
+  end
+
+  @spec append_mixed_plug([term()], module()) :: [term()]
+  defp append_mixed_plug(steps, plug) do
+    if {:plug, plug} in steps, do: steps, else: steps ++ [{:plug, plug}]
   end
 
   @spec pipeline_step(atom()) :: [module()]

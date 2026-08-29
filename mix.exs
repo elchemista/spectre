@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.3.3"
+  @version "0.3.4"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
@@ -361,6 +361,10 @@ defmodule Spectre.MixProject do
         ],
         Routing: [
           Spectre.Router,
+          Spectre.Router.Adapter,
+          Spectre.Router.Adapter.Conformance,
+          Spectre.Router.Adapter.Request,
+          Spectre.Router.Adapter.RuleView,
           Spectre.Router.Arbitration,
           Spectre.Router.Arbitrator,
           Spectre.Router.Candidate,

@@ -4,7 +4,8 @@ This guide maps Spectre's public boundary to the job a host application needs
 to perform. The module pages remain the exact function reference; this page
 explains how the pieces fit together and which layer an integration should use.
 
-Spectre `0.3.3` extends the governed reflective runtime with first-class
+Spectre `0.3.4` extends the governed reflective runtime with native Router
+Adapters, first-class
 inference Invocations, bounded Instance-owned streaming, optional boundary
 receipts, ownership conformance, fenced offline configured-data erasure, and an
 additive reply-sanitizer port for host-owned model policy.

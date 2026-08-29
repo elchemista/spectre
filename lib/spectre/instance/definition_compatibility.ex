@@ -38,6 +38,7 @@ defmodule Spectre.Instance.DefinitionCompatibility do
     :semantic_cache?,
     :spectre_agent,
     :spectre_rules,
+    :__spectre_router_adapters__,
     :turn_handlers,
     :via
   ]

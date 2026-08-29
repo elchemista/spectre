@@ -7,10 +7,19 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
-## Unreleased
+## 0.3.4 — 2026-08-29
 
 ### Added
 
+- Added the normative `Spectre.Router.Adapter` API for native, evidence-only
+  routing providers declared directly in an Agent `via`. The contract includes
+  privacy-scoped Request and RuleView structs, strict multi-result validation,
+  per-rule data helpers, custom-pipeline invocation by compiled id, and
+  `Spectre.Router.Adapter.Conformance` for package authors.
+- Added per-evaluation descriptor drift containment, dedicated Adapter
+  telemetry and receipt provider calls, effective Adapter checks in
+  `Spectre.Doctor`, symbolic precedence bands, and the independent
+  `router_adapter_timeout` provider deadline.
 - Added top-level, runtime-only `:stack_runtime` Instance configuration. Stable
   atom and `:via` names are accepted; PID, port, and reference handles are
   rejected and cannot enter Run metadata or checkpoints.
@@ -23,6 +32,11 @@ migration called out explicitly below.
 
 ### Compatibility
 
+- The 0.3.4 patch deliberately extends the normative 0.x public surface with
+  the additive Router Adapter behaviour. Existing Agents retain their compiled
+  Definition, pipeline path, provider ordering, and runtime behavior when they
+  do not declare an Adapter; no migration step or new runtime dependency is
+  required.
 - Nested `opts: [stack_runtime: ...]` remains accepted and is normalized into
   the explicit runtime-only field. Existing schema-v1 erasure proofs without a
   `package_data` component remain valid and are interpreted as not configured.

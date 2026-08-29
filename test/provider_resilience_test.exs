@@ -149,6 +149,34 @@ defmodule SpectreProviderResilienceTest do
                Call.run(:llm, fn -> {:error, :provider_busy} end, provider_timeout: 100)
     end
 
+    test "shares purpose between the provider observer and generic telemetry" do
+      observer_ref = make_ref()
+      test_pid = self()
+
+      telemetry_handler = fn event, measurements, metadata ->
+        send(test_pid, {:provider_telemetry, event, measurements, metadata})
+      end
+
+      assert {:ok, :completed} =
+               Call.run(:llm, fn -> {:ok, :completed} end,
+                 purpose: :existing_provider,
+                 spectre_provider_observer: {self(), observer_ref},
+                 telemetry_handler: telemetry_handler
+               )
+
+      assert_receive {:spectre_provider_call, ^observer_ref, observer_event}
+
+      assert_receive {:provider_telemetry, [:spectre, :provider, :stop], measurements,
+                      telemetry_metadata}
+
+      assert observer_event.purpose == :existing_provider
+      assert telemetry_metadata.purpose == :existing_provider
+      assert telemetry_metadata.provider == observer_event.provider
+      assert telemetry_metadata.outcome == observer_event.outcome
+      assert telemetry_metadata.invoked? == observer_event.invoked?
+      assert measurements.duration_us == observer_event.duration_us
+    end
+
     test "supports an explicitly unbounded call without changing its result contract" do
       assert {:ok, :completed} =
                Call.run(:llm, fn -> {:ok, :completed} end, provider_timeout: :infinity)
@@ -166,6 +194,26 @@ defmodule SpectreProviderResilienceTest do
               }} =
                Call.run(:custom_provider, fn -> flunk("adapter must not run") end,
                  provider_timeout: 0
+               )
+    end
+
+    test "gives Router Adapters an independent timeout hierarchy" do
+      timeout_call = fn ->
+        Process.sleep(100)
+        {:ok, :late}
+      end
+
+      assert {:error, %Failure{provider: :router_adapter, kind: :timeout, timeout: 5}} =
+               Call.run(:router_adapter, timeout_call,
+                 router_adapter_timeout: 5,
+                 provider_timeout: 20,
+                 router_timeout: 1
+               )
+
+      assert {:error, %Failure{provider: :router_adapter, kind: :timeout, timeout: 7}} =
+               Call.run(:router_adapter, timeout_call,
+                 provider_timeout: 7,
+                 router_timeout: 1
                )
     end
 
