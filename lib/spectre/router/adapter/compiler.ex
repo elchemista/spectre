@@ -127,6 +127,43 @@ defmodule Spectre.Router.Adapter.Compiler do
   end
 
   @doc false
+  @spec preflight_rule_data!(map(), Definition.scope()) :: map()
+  def preflight_rule_data!(%{via: via, opts: opts} = rule, scope)
+      when is_list(via) and is_list(opts) do
+    via
+    |> Enum.filter(&(ordinary_atom?(&1) and &1 not in @built_in_steps))
+    |> Enum.uniq()
+    |> Enum.each(&preflight_rule_value!(opts, rule, scope, &1))
+
+    rule
+  end
+
+  def preflight_rule_data!(rule, _scope), do: rule
+
+  @spec preflight_rule_value!(keyword(), map(), Definition.scope(), atom()) :: :ok
+  defp preflight_rule_value!(opts, rule, scope, id) do
+    case Keyword.fetch(opts, id) do
+      {:ok, value} -> validate_preflight_value!(value, rule, scope, id)
+      :error -> :ok
+    end
+  end
+
+  @spec validate_preflight_value!(term(), map(), Definition.scope(), atom()) :: :ok
+  defp validate_preflight_value!(value, rule, scope, id) do
+    label = Map.get(rule, :label)
+
+    case structural_rule_data(value, rule, id, scope, label) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "invalid router Adapter rule data for #{inspect(id)} " <>
+                "on #{inspect({scope, label})}: #{inspect(reason)}"
+    end
+  end
+
+  @doc false
   @spec dependency_report(Definition.t(), [atom()] | nil) :: %{
           warnings: [map()],
           errors: [map()]
@@ -533,15 +570,24 @@ defmodule Spectre.Router.Adapter.Compiler do
   @spec validate_adapter_rule_value(term(), map(), atom(), Definition.scope(), atom()) ::
           {:cont, :ok} | {:halt, {:error, term()}}
   defp validate_adapter_rule_value(value, rule, id, scope, label) do
-    case Data.structural(value,
-           owner: Map.get(rule, :owner),
-           path: [:routing, :adapter, id, scope, label]
-         ) do
-      {:ok, _lowered} ->
+    case structural_rule_data(value, rule, id, scope, label) do
+      :ok ->
         {:cont, :ok}
 
       {:error, reason} ->
         {:halt, {:error, {:invalid_router_adapter_rule_data, id, scope, label, reason}}}
+    end
+  end
+
+  @spec structural_rule_data(term(), map(), atom(), Definition.scope(), atom()) ::
+          :ok | {:error, term()}
+  defp structural_rule_data(value, rule, id, scope, label) do
+    case Data.structural(value,
+           owner: Map.get(rule, :owner),
+           path: [:routing, :adapter, id, scope, label]
+         ) do
+      {:ok, _lowered} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 

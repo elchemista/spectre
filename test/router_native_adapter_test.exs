@@ -9,49 +9,53 @@ defmodule SpectreRouterNativeAdapterTest.Binary do
 
   @impl Spectre.Router.Adapter
   def evaluate(%Spectre.Router.Adapter.Request{} = request) do
-    if test_pid = Map.get(request.meta, :test_pid) do
-      send(test_pid, {:router_adapter_request, request})
-    end
+    maybe_notify(request)
+    {:ok, results(request)}
+  end
 
-    results =
-      case request.text do
-        "duplicate" ->
-          rule = Enum.find(request.rules, &(&1.label == :BINARY_ROUTE))
-          [result(rule, 0.71), result(rule, 0.93, margin: 0.07)]
+  defp maybe_notify(request) do
+    if test_pid = Map.get(request.meta, :test_pid),
+      do: send(test_pid, {:router_adapter_request, request})
+  end
 
-        "invalid ref" ->
-          [%{rule: {:agent, :INVENTED}, score: 0.99}]
+  defp results(%{text: "duplicate", rules: rules}) do
+    rule = Enum.find(rules, &(&1.label == :BINARY_ROUTE))
+    [result(rule, 0.71), result(rule, 0.93, margin: 0.07)]
+  end
 
-        "invalid field" ->
-          rule = Enum.find(request.rules, &(&1.label == :BINARY_ROUTE))
-          [%{rule: rule.ref, score: 0.99, accepted?: true}]
+  defp results(%{text: "invalid ref"}),
+    do: [%{rule: {:agent, :INVENTED}, score: 0.99}]
 
-        "raise" ->
-          raise "private Adapter failure"
+  defp results(%{text: "invalid field", rules: rules}) do
+    rule = Enum.find(rules, &(&1.label == :BINARY_ROUTE))
+    [%{rule: rule.ref, score: 0.99, accepted?: true}]
+  end
 
-        "slow" ->
-          Process.sleep(100)
-          []
+  defp results(%{text: "raise"}), do: raise("private Adapter failure")
 
-        "multiple" ->
-          Enum.with_index(request.rules, fn rule, index ->
-            result(rule, 0.95 - index * 0.05, margin: 0.08)
-          end)
+  defp results(%{text: "slow"}) do
+    Process.sleep(100)
+    []
+  end
 
-        "second" ->
-          request.rules
-          |> Enum.filter(&(&1.label == :SECOND_ROUTE))
-          |> Enum.map(&result(&1, 0.94, margin: 0.06))
+  defp results(%{text: "multiple", rules: rules}) do
+    Enum.with_index(rules, fn rule, index ->
+      result(rule, 0.95 - index * 0.05, margin: 0.08)
+    end)
+  end
 
-        _other ->
-          request.rules
-          |> Enum.filter(&(&1.label == :BINARY_ROUTE))
-          |> Enum.map(fn rule ->
-            result(rule, Map.get(request.meta, :score, 0.91), margin: 0.08)
-          end)
-      end
+  defp results(%{text: "second", rules: rules}) do
+    rules
+    |> Enum.filter(&(&1.label == :SECOND_ROUTE))
+    |> Enum.map(&result(&1, 0.94, margin: 0.06))
+  end
 
-    {:ok, results}
+  defp results(request) do
+    request.rules
+    |> Enum.filter(&(&1.label == :BINARY_ROUTE))
+    |> Enum.map(fn rule ->
+      result(rule, Map.get(request.meta, :score, 0.91), margin: 0.08)
+    end)
   end
 end
 
@@ -88,11 +92,13 @@ defmodule SpectreRouterNativeAdapterTest.InvokeBinary do
   @moduledoc false
   @behaviour Spectre.Router.Plug
 
+  alias Spectre.Router.Adapter
+
   @impl Spectre.Router.Plug
   def init(opts), do: opts
 
   @impl Spectre.Router.Plug
-  def call(context, _opts), do: Spectre.Router.Adapter.run(context, :binary)
+  def call(context, _opts), do: Adapter.run(context, :binary)
 end
 
 defmodule SpectreRouterNativeAdapterTest.CustomPipeline do
@@ -230,8 +236,10 @@ defmodule SpectreRouterNativeAdapterTest do
 
   import ExUnit.CaptureIO
 
+  alias Spectre.Router.Adapter
   alias Spectre.Router.Adapter.Compiler
   alias Spectre.Router.Adapter.Conformance
+  alias Spectre.Router.Adapter.Plan
   alias Spectre.Router.Adapter.Request
   alias Spectre.Router.Adapter.RuleView
   alias Spectre.Router.Adapter.Runner
@@ -483,7 +491,7 @@ defmodule SpectreRouterNativeAdapterTest do
     }
 
     assert {:ok, routed} = Spectre.Router.route_context(input, context)
-    assert {:ok, entry} = Spectre.Router.Adapter.Plan.fetch(routed.opts[key], :binary)
+    assert {:ok, entry} = Plan.fetch(routed.opts[key], :binary)
     assert entry.module == SpectreRouterNativeAdapterTest.Binary
 
     bad_context = %{context | opts: [via: [SpectreRouterNativeAdapterTest.Reserved]]}
@@ -735,6 +743,62 @@ defmodule SpectreRouterNativeAdapterTest do
     assert {:router_adapter_failed, :binary, :timeout} in timed_out.errors
   end
 
+  test "contains malformed callback envelopes, declared failures, throws and exits" do
+    adapter =
+      compile_module("""
+      use Spectre.Router.Adapter, id: :faulty_runtime
+
+      @impl Spectre.Router.Adapter
+      def evaluate(%{text: "bare reply"}),
+        do: %{rule: {:agent, :FAULTY_RUNTIME}, score: 0.9}
+
+      def evaluate(%{text: "invalid results"}), do: {:ok, :not_a_result}
+      def evaluate(%{text: "declared error"}), do: {:error, {:backend_unavailable, "private"}}
+      def evaluate(%{text: "throw"}), do: throw({:private_throw, "private"})
+      def evaluate(%{text: "exit"}), do: exit({:private_exit, "private"})
+      def evaluate(%{text: "skip"}), do: :skip
+      def evaluate(%{text: "skip reason"}), do: {:skip, {:not_applicable, "private"}}
+      """)
+
+    agent =
+      compile_agent("""
+      router via: [#{inspect(adapter)}], semantic_cache?: false
+
+      flow :support do
+        on :FAULTY_RUNTIME,
+          faulty_runtime: ["faulty"],
+          via: [:faulty_runtime],
+          cache: false do
+          reply :must_not_route
+        end
+      end
+      """)
+
+    for {text, reason} <- [
+          {"bare reply", :invalid_reply},
+          {"invalid results", :invalid_result},
+          {"declared error", :backend_unavailable},
+          {"throw", :throw},
+          {"exit", :exit}
+        ] do
+      assert {:ok, routed} = route_dynamic_agent(agent, text)
+      assert routed.route.strategy == :clarify
+      assert {:router_adapter_failed, :faulty_runtime, reason} in routed.errors
+      refute inspect(routed.errors) =~ "private"
+    end
+
+    for {text, reason} <- [
+          {"skip", :adapter_skip},
+          {"skip reason", :not_applicable}
+        ] do
+      assert {:ok, routed} = route_dynamic_agent(agent, text)
+      assert routed.route.strategy == :clarify
+      assert {:router_adapter_skip, :faulty_runtime, reason} in routed.traces
+      refute Enum.any?(routed.errors, &match?({:router_adapter_failed, :faulty_runtime, _}, &1))
+      refute inspect(routed.traces) =~ "private"
+    end
+  end
+
   test "normalizer rejects label-only, out-of-range and oversized result sets" do
     visible_rules =
       SpectreRouterNativeAdapterTest.Agent.__spectre_rules__()
@@ -760,6 +824,32 @@ defmodule SpectreRouterNativeAdapterTest do
 
     assert {:error, {:too_many_results, 32}} =
              Runner.normalize_results(many_results, many_rules)
+  end
+
+  test "normalizer rejects wrong containers, structs and incomplete result maps" do
+    visible_rules =
+      SpectreRouterNativeAdapterTest.Agent.__spectre_rules__()
+      |> Enum.map(&Spectre.Rule.new/1)
+
+    ref = {:agent, :BINARY_ROUTE}
+
+    assert {:error, :result_must_be_a_map_or_list} =
+             Runner.normalize_results(:not_a_result, visible_rules)
+
+    assert {:error, :result_must_be_a_map_or_list} =
+             Runner.normalize_results(%Request{}, visible_rules)
+
+    assert {:error, :results_must_be_plain_maps} =
+             Runner.normalize_results([%{rule: ref, score: 0.9}, :not_a_map], visible_rules)
+
+    for {result, reason} <- [
+          {%{rule: ref}, {:missing_fields, [:score]}},
+          {%{score: 0.9}, {:missing_fields, [:rule]}},
+          {%{rule: ref, score: 0.9, accepted?: true}, {:unknown_fields, [:accepted?]}}
+        ] do
+      assert {:error, {:invalid_result, 0, ^reason}} =
+               Runner.normalize_results(result, visible_rules)
+    end
   end
 
   test "applies zero-score and optional-margin semantics exactly" do
@@ -791,9 +881,9 @@ defmodule SpectreRouterNativeAdapterTest do
       data: [examples: ["disk full", nil, "no space left"]]
     }
 
-    assert Spectre.Router.Adapter.examples(rule) == ["disk full", "no space left"]
+    assert Adapter.examples(rule) == ["disk full", "no space left"]
 
-    assert Spectre.Router.Adapter.result(rule, 0.91, margin: 0.08, matched: "disk full") ==
+    assert Adapter.result(rule, 0.91, margin: 0.08, matched: "disk full") ==
              %{
                rule: {:agent, :BINARY_ROUTE},
                score: 0.91,
@@ -802,11 +892,11 @@ defmodule SpectreRouterNativeAdapterTest do
              }
 
     assert_raise ArgumentError, ~r/unknown router Adapter result options/, fn ->
-      Spectre.Router.Adapter.result(rule, 0.91, accepted?: true)
+      Adapter.result(rule, 0.91, accepted?: true)
     end
 
     assert_raise ArgumentError, ~r/must be a keyword list/, fn ->
-      Spectre.Router.Adapter.result(rule, 0.91, [:margin, 0.08])
+      Adapter.result(rule, 0.91, [:margin, 0.08])
     end
   end
 
@@ -858,6 +948,78 @@ defmodule SpectreRouterNativeAdapterTest do
       use Spectre.Router.Adapter, id: :missing_callback
       """)
     end
+  end
+
+  test "rejects missing modules and loaded modules that are not Router Adapters" do
+    missing =
+      Module.concat(
+        __MODULE__,
+        "MissingAdapter#{System.unique_integer([:positive])}"
+      )
+
+    refute Code.ensure_loaded?(missing)
+
+    for module <- [missing, String] do
+      assert_raise ArgumentError,
+                   ~r/invalid router Adapter .*module_or_callback_unavailable/s,
+                   fn ->
+                     compile_agent("router via: [#{inspect(module)}]")
+                   end
+    end
+  end
+
+  test "rejects manual behaviour implementations with missing callbacks" do
+    missing_descriptor =
+      compile_module_quietly("""
+      @behaviour Spectre.Router.Adapter
+      @impl Spectre.Router.Adapter
+      def evaluate(_request), do: :skip
+      """)
+
+    missing_evaluate =
+      compile_module_quietly("""
+      @behaviour Spectre.Router.Adapter
+      def __spectre_router_adapter__ do
+        %{contract: 1, id: :manual_missing_evaluate, accept: 0.0, margin: nil, strength: :weak}
+      end
+      """)
+
+    for module <- [missing_descriptor, missing_evaluate] do
+      assert_raise ArgumentError,
+                   ~r/invalid router Adapter .*module_or_callback_unavailable/s,
+                   fn ->
+                     compile_agent("router via: [#{inspect(module)}]")
+                   end
+    end
+  end
+
+  test "rejects malformed or failing descriptor callbacks in manual implementations" do
+    descriptors = [
+      ":not_a_descriptor",
+      "%{contract: 1, id: :missing_strength, accept: 0.0, margin: nil}",
+      "%{contract: 1, id: :extra_key, accept: 0.0, margin: nil, strength: :weak, extra: true}",
+      "raise(\"private descriptor contents\")",
+      "throw({:private_descriptor, \"private descriptor contents\"})",
+      "exit({:private_descriptor, \"private descriptor contents\"})"
+    ]
+
+    Enum.each(descriptors, fn descriptor_expression ->
+      adapter =
+        compile_module("""
+        @behaviour Spectre.Router.Adapter
+        def __spectre_router_adapter__, do: #{descriptor_expression}
+        @impl Spectre.Router.Adapter
+        def evaluate(_request), do: :skip
+        """)
+
+      error =
+        assert_raise ArgumentError, fn ->
+          compile_agent("router via: [#{inspect(adapter)}]")
+        end
+
+      assert error.message =~ "invalid router Adapter"
+      refute error.message =~ "private descriptor contents"
+    end)
   end
 
   test "rejects malformed descriptors, unsupported contracts and duplicate ids" do
@@ -942,16 +1104,20 @@ defmodule SpectreRouterNativeAdapterTest do
   end
 
   test "validates Adapter rule data in structural mode" do
-    assert_raise ArgumentError, ~r/invalid_router_adapter_rule_data.*binary/s, fn ->
-      compile_agent("""
-      router via: [SpectreRouterNativeAdapterTest.Binary]
+    for value <- ["&String.trim/1", "self()", "make_ref()", "String"] do
+      assert_raise ArgumentError,
+                   ~r/invalid router Adapter rule data.*binary.*agent.*BAD/s,
+                   fn ->
+                     compile_agent("""
+                     router via: [SpectreRouterNativeAdapterTest.Binary]
 
-      flow :bad do
-        on :BAD, binary: &String.trim/1, via: [:binary] do
-          reply :bad
-        end
-      end
-      """)
+                     flow :bad do
+                       on :BAD, binary: #{value}, via: [:binary] do
+                         reply :bad
+                       end
+                     end
+                     """)
+                   end
     end
   end
 
@@ -1061,6 +1227,17 @@ defmodule SpectreRouterNativeAdapterTest do
     })
   end
 
+  defp route_dynamic_agent(agent, text) do
+    input = Spectre.Input.new(text)
+
+    Spectre.Router.route_context(input, %Spectre.Context{
+      agent: agent,
+      input: input,
+      state: %Spectre.State{},
+      opts: [classification_log?: false]
+    })
+  end
+
   defp conformance_request(text, score) do
     %Request{
       text: text,
@@ -1092,5 +1269,20 @@ defmodule SpectreRouterNativeAdapterTest do
     """)
 
     module
+  end
+
+  defp compile_module_quietly(body) do
+    ref = make_ref()
+    caller = self()
+
+    capture_io(:stderr, fn ->
+      send(caller, {ref, compile_module(body)})
+    end)
+
+    receive do
+      {^ref, module} -> module
+    after
+      1_000 -> flunk("timed out while compiling malformed Router Adapter fixture")
+    end
   end
 end

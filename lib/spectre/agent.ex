@@ -1469,7 +1469,7 @@ defmodule Spectre.Agent do
     opts = eval_opts(opts_ast, caller)
     reject_training_opts!(opts)
 
-    %{
+    rule = %{
       label: label,
       flow: List.last(flow_path),
       flow_path: flow_path,
@@ -1486,6 +1486,16 @@ defmodule Spectre.Agent do
       injections: [],
       opts: Keyword.drop(opts, @consumed_rule_option_keys)
     }
+
+    RouterAdapterCompiler.preflight_rule_data!(rule, definition_scope(caller.module))
+  end
+
+  @spec definition_scope(module()) :: Definition.scope()
+  defp definition_scope(module) do
+    case Module.get_attribute(module, :spectre_kind) do
+      :skill -> {:skill, Module.get_attribute(module, :spectre_definition_id)}
+      _agent -> :agent
+    end
   end
 
   @spec examples_from_opts(keyword(), atom()) :: [term()]
