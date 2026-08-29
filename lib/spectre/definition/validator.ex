@@ -6,6 +6,7 @@ defmodule Spectre.Definition.Validator do
   alias Spectre.Definition
   alias Spectre.Morph.Surface
   alias Spectre.Prompt.Operation
+  alias Spectre.Router.Adapter.Compiler, as: RouterAdapterCompiler
   alias Spectre.Skill.Mount
   alias Spectre.Stack.Definition, as: StackDefinition
   alias Spectre.Stack.Ref
@@ -31,19 +32,6 @@ defmodule Spectre.Definition.Validator do
     :idle,
     :shutdown,
     :fail
-  ]
-
-  @router_steps [
-    :regex,
-    :bag,
-    :jaro,
-    :embedding,
-    :semantic_cache,
-    :classifier,
-    :llm,
-    :llm_classifier,
-    :arbitrate,
-    :terminalize
   ]
 
   # `Definition.t()` describes the valid compiled shape, while this validator
@@ -77,6 +65,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_policies(definition),
          :ok <- validate_injections(definition),
          :ok <- validate_mounts(definition),
+         :ok <- validate_router_adapter_rules(definition),
          :ok <- validate_extensions(definition),
          :ok <- validate_requirements(definition),
          :ok <- validate_before_actions(definition),
@@ -251,10 +240,7 @@ defmodule Spectre.Definition.Validator do
 
   @spec validate_router(map()) :: :ok | {:error, term()}
   defp validate_router(%Definition{router: router}) when is_list(router) do
-    case Enum.find(List.wrap(Keyword.get(router, :via, [])), &(&1 not in @router_steps)) do
-      nil -> :ok
-      step -> {:error, {:unknown_router_step, step}}
-    end
+    RouterAdapterCompiler.validate_router(router)
   end
 
   defp validate_router(%Definition{router: router}), do: {:error, {:invalid_router, router}}
@@ -287,6 +273,11 @@ defmodule Spectre.Definition.Validator do
   end
 
   defp validate_rules(%Definition{rules: rules}), do: {:error, {:invalid_rules, rules}}
+
+  @spec validate_router_adapter_rules(Definition.t()) :: :ok | {:error, term()}
+  defp validate_router_adapter_rules(%Definition{} = definition) do
+    RouterAdapterCompiler.validate_definition(definition)
+  end
 
   @spec valid_handler?(term()) :: boolean()
   defp valid_handler?({kind, value, opts})
@@ -683,5 +674,5 @@ defmodule Spectre.Definition.Validator do
   defp format_reason({:duplicate_unconditional_replacement, scope, target}),
     do: "multiple unconditional prompt replacements for #{inspect(target)} in #{inspect(scope)}"
 
-  defp format_reason(reason), do: inspect(reason)
+  defp format_reason(reason), do: RouterAdapterCompiler.format_reason(reason)
 end

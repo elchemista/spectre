@@ -1,4 +1,4 @@
-# Two Realistic Agents
+# Three Realistic Agents
 
 The support agent in the [README](../README.md) is deliberately minimal. These
 two compositions show what a useful agent looks like with one satellite
@@ -124,3 +124,56 @@ with `agent_context/2` before any model sees it. Because the Stack declares
 `planner_exposure: [:look, :discover]`, an `act` route may also let the model
 plan browsing — but only over those two operations, and every browser step
 still passes through the same staged-Effect lifecycle.
+
+## Route through a vector index (native Router Adapter)
+
+The index stores only stable `{scope, label}` refs and scores. Spectre resolves
+the ref back to the compiled rule and remains the only component that can build
+an authoritative Candidate:
+
+```elixir
+defmodule MyApp.TicketVectorRouter do
+  use Spectre.Router.Adapter,
+    id: :ticket_vectors,
+    accept: 0.87,
+    margin: 0.04,
+    strength: :medium
+
+  @impl Spectre.Router.Adapter
+  def evaluate(%Spectre.Router.Adapter.Request{text: text, rules: rules}) do
+    allowed = Map.new(rules, &{&1.ref, &1})
+
+    with {:ok, hits} <- MyApp.TicketIndex.search(text, limit: 32) do
+      {:ok,
+       Enum.flat_map(hits, fn hit ->
+         case Map.fetch(allowed, hit.rule_ref) do
+           {:ok, rule} ->
+             [result(rule, hit.score, margin: hit.margin, matched: hit.example_id)]
+
+           :error ->
+             []
+         end
+       end)}
+    end
+  end
+end
+
+defmodule MyApp.TicketAgent do
+  use Spectre.Agent
+
+  router(via: [:regex, MyApp.TicketVectorRouter, :llm_classifier])
+
+  flow :tickets do
+    on :DUPLICATE_TICKET,
+      ticket_vectors: [examples: ["disk full", "no space left"]],
+      via: [:ticket_vectors, :llm_classifier] do
+      reply(:duplicate_ticket)
+    end
+  end
+end
+```
+
+The Adapter may return several distinct refs; Spectre keeps each structurally
+valid result so a secondary vector hit can agree with another provider. Run
+`Spectre.Router.Adapter.Conformance` against an isolated index fixture in CI,
+and reserve live index evaluation for an opt-in corpus.

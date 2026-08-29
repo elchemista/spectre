@@ -85,8 +85,23 @@ defmodule Spectre.Agent do
   alias Spectre.Definition.Validator
   alias Spectre.Extension
   alias Spectre.Prompt.Operation
+  alias Spectre.Router.Adapter.Compiler, as: RouterAdapterCompiler
   alias Spectre.Skill.Mount
   alias Spectre.Stack.Binding
+
+  @consumed_rule_option_keys [
+    :regex,
+    :bag,
+    :jaro,
+    :embedding,
+    :train,
+    :training,
+    :cache,
+    :learn,
+    :check,
+    :checks,
+    :via
+  ]
 
   @doc """
   Imports the DSL and initializes compile-time metadata for an agent module.
@@ -1153,9 +1168,12 @@ defmodule Spectre.Agent do
     base_config = Module.get_attribute(module, :spectre_config) || []
     config = Extension.merge_agent_config(base_config, extensions)
 
+    router = Module.get_attribute(module, :spectre_router) || []
+    router = RouterAdapterCompiler.compile_router!(module, router, @consumed_rule_option_keys)
+
     %{
       config: config,
-      router: Module.get_attribute(module, :spectre_router) || [],
+      router: router,
       rules: rules,
       policies: module |> Module.get_attribute(:spectre_policies) |> policy_map(),
       after_actions:
@@ -1466,20 +1484,7 @@ defmodule Spectre.Agent do
       via: route_via(opts),
       global?: Keyword.fetch!(extra, :global?),
       injections: [],
-      opts:
-        Keyword.drop(opts, [
-          :regex,
-          :bag,
-          :jaro,
-          :embedding,
-          :train,
-          :training,
-          :cache,
-          :learn,
-          :check,
-          :checks,
-          :via
-        ])
+      opts: Keyword.drop(opts, @consumed_rule_option_keys)
     }
   end
 

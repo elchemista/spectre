@@ -11,6 +11,7 @@ The boundary currently covers:
 - LLM classifier completion;
 - local classifier adapters;
 - router embedding adapters;
+- native Router Adapters;
 - semantic-cache lookups;
 - turn-handler callbacks.
 
@@ -25,6 +26,7 @@ host operations and are not silently given runtime retry policies.
 | Local classifier | `local_classifier_timeout` | 30 seconds |
 | Embedding | `embedding_timeout` | 30 seconds |
 | Semantic-cache lookup | `semantic_cache_timeout` | 30 seconds |
+| Router Adapter | `router_adapter_timeout` | 30 seconds |
 | Turn handler | `turn_handler_timeout` | 30 seconds |
 
 `provider_timeout` is a common fallback when the provider-specific option is
@@ -38,6 +40,7 @@ config :spectre, :provider,
   local_classifier_timeout: 5_000,
   embedding_timeout: 10_000,
   semantic_cache_timeout: 2_000,
+  router_adapter_timeout: 5_000,
   turn_handler_timeout: 20_000
 ```
 
@@ -66,8 +69,14 @@ embedding MyApp.Embeddings, embedding_timeout: 8_000
 
 router
   via: [:semantic_cache, :embedding, :classifier, :llm_classifier],
-  semantic_cache_timeout: 1_500
+  semantic_cache_timeout: 1_500,
+  router_adapter_timeout: 5_000
 ```
+
+`router_adapter_timeout` bounds one native Adapter call. `router_timeout`
+continues to bound the complete routing pipeline; changing one does not change
+the other. Resolution order is `router_adapter_timeout`, then
+`provider_timeout`, then the 30-second default.
 
 Per-call options passed to `Spectre.ask/3`, `Spectre.turn/3`, or
 `Spectre.Router.evaluate/3` override agent and application defaults.
@@ -109,6 +118,14 @@ outcome, elapsed microseconds, whether a worker was invoked, and an optional
 purpose such as `:classifier`. This is the canonical source for evaluation LLM
 usage: a prompt-rendering failure before `Spectre.LLM` is entered does not count
 as a model call. No prompt, input, provider response, or raw error is retained.
+
+A native Router Adapter uses `provider: :router_adapter` and its compiled id as
+the purpose. The same enriched event reaches the observer and generic provider
+telemetry, so Router receipts and corpus evaluation see the call without a
+second instrumentation path. Adapter-specific events are emitted as
+`[:spectre, :router, :adapter, :start]` and
+`[:spectre, :router, :adapter, :stop]`; they contain only id, outcome,
+invocation state, duration, and result count.
 
 ## Reply Validation
 

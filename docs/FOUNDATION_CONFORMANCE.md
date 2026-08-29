@@ -1,6 +1,6 @@
 # Foundation Conformance
 
-Spectre 0.3.3 exposes the compatibility boundary as an executable public
+Spectre 0.3.4 exposes the compatibility boundary as an executable public
 contract. Applications and satellite packages can verify
 durable recovery and Stack composition without importing ExUnit or copying
 Spectre's internal schemas.
@@ -64,7 +64,7 @@ derived from the running release's current-writer representation.
 
 The append-only `0.2.6/foundation-conformance-v1.json` fixture still records
 the historical 0.2.6 matrix `Instance 4 / readers 1–4`. That evidence is not
-rewritten; it is distinct from the running 0.3.3 matrix above.
+rewritten; it is distinct from the running 0.3.4 matrix above.
 
 ## Checkpoint Store adapter contract
 
@@ -126,7 +126,7 @@ report.authority_digest
 report.closure_digest
 ```
 
-The compiled module-first path remains the golden authoring path in 0.3.3.
+The compiled module-first path remains the golden authoring path in 0.3.4.
 Runtime and generated definitions must lower into the same canonical envelope;
 they do not receive a second publication or activation model.
 

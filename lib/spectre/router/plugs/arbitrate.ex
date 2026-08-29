@@ -14,6 +14,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   alias Spectre.Router.Candidate
   alias Spectre.Router.Context
   alias Spectre.Router.LLMClassifier
+  alias Spectre.Router.RecentChat
   alias Spectre.Router.SemanticCache
   alias Spectre.Router.Support
 
@@ -189,7 +190,7 @@ defmodule Spectre.Router.Plugs.Arbitrate do
       |> normalize_assigns()
       |> Map.merge(assigns)
     end)
-    |> put_recent_chat(arbitration.state)
+    |> RecentChat.put(arbitration.state)
   end
 
   @spec candidate_evidence(Candidate.t()) :: map()
@@ -209,53 +210,6 @@ defmodule Spectre.Router.Plugs.Arbitrate do
   defp normalize_assigns(assigns) when is_map(assigns), do: assigns
   defp normalize_assigns(assigns) when is_list(assigns), do: Map.new(assigns)
   defp normalize_assigns(_assigns), do: %{}
-
-  @spec put_recent_chat(keyword(), Spectre.State.t() | nil) :: keyword()
-  defp put_recent_chat(opts, state) do
-    cond do
-      Keyword.has_key?(opts, :recent_chat) ->
-        opts
-
-      Keyword.get(opts, :classifier_history, true) == false ->
-        Keyword.put(opts, :recent_chat, "none")
-
-      true ->
-        Keyword.put(opts, :recent_chat, format_recent_chat(state, opts))
-    end
-  end
-
-  @spec format_recent_chat(Spectre.State.t() | nil, keyword()) :: String.t()
-  defp format_recent_chat(%Spectre.State{data: data}, opts) do
-    limit = history_limit(opts)
-
-    data
-    |> Map.get(:chat_history, [])
-    |> Enum.take(-limit)
-    |> Enum.map_join("\n", fn turn ->
-      "User: #{history_value(turn, :user)}\nAssistant: #{history_value(turn, :assistant)}"
-    end)
-    |> case do
-      "" -> "none"
-      chat -> chat
-    end
-  end
-
-  defp format_recent_chat(_state, _opts), do: "none"
-
-  @spec history_limit(keyword()) :: pos_integer()
-  defp history_limit(opts) do
-    case Keyword.get(opts, :classifier_history_limit, 5) do
-      limit when is_integer(limit) and limit > 0 -> limit
-      _invalid -> 5
-    end
-  end
-
-  @spec history_value(map() | term(), atom()) :: term()
-  defp history_value(turn, key) when is_map(turn) do
-    Map.get(turn, key, Map.get(turn, Atom.to_string(key), ""))
-  end
-
-  defp history_value(_turn, _key), do: ""
 
   @spec finish_llm_route(Context.t(), Spectre.Route.t(), [Spectre.Rule.t()]) ::
           {:cont, Context.t()} | {:error, term()}

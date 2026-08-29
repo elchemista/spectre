@@ -1,17 +1,17 @@
-# Spectre 0.3.3 guide for LLMs and coding agents
+# Spectre 0.3.4 guide for LLMs and coding agents
 
 This file is the compact, machine-oriented entry point for using Spectre
 correctly. It is written for coding assistants, autonomous development agents,
 and retrieval systems that need the library's contracts without guessing from
 module names.
 
-It describes Spectre `0.3.3` and Elixir `~> 1.19`. When this guide and the
+It describes Spectre `0.3.4` and Elixir `~> 1.19`. When this guide and the
 library disagree, prefer the compiled API and the following sources, in order:
 
 1. [Public API manifest](docs/PUBLIC_API.md) for the supported compatibility
    surface.
 2. Generated module documentation on
-   [HexDocs](https://hexdocs.pm/spectre/0.3.3) for function contracts.
+   [HexDocs](https://hexdocs.pm/spectre/0.3.4) for function contracts.
 3. [Getting Started](docs/GETTING_STARTED.md) for the complete host lifecycle.
 4. [Architecture](docs/ARCHITECTURE.md) and
    [Production Operations](docs/PRODUCTION.md) for ownership and deployment.
@@ -27,7 +27,7 @@ snapshot:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.3.3"}
+    {:spectre, "~> 0.3.4"}
   ]
 end
 ```
@@ -35,7 +35,7 @@ end
 For an unreleased snapshot, use an exact Git commit with `ref:`. Never suggest
 tracking a moving branch for production. Spectre satellite packages are
 versioned independently; do not assume an existing `spectre_*` `0.2.x` package
-is compatible with core `0.3.3`.
+is compatible with core `0.3.4`.
 
 ## The non-negotiable model
 
@@ -150,6 +150,14 @@ Regex routing is deterministic. Embedding, classifier, cache, and LLM routing
 require their documented host adapters and still select only declared routes.
 Do not claim that an LLM may invent a route or bypass the normal lifecycle.
 Read [Routing](docs/ROUTING.md) before adding a provider.
+
+For a domain scorer or vector index, implement one native
+`Spectre.Router.Adapter` and place its module in the Agent-level `via`. Return
+only scored `{scope, label}` refs from the supplied RuleViews; never return
+handlers, modules, or executable callbacks. Keep the rule-level `via` to the
+compiled Adapter id. Use `Spectre.Router.Adapter.Conformance.run/3` with a
+deterministic fixture, and remember that route evaluation executes live
+Adapters just as production routing does.
 
 ## Durable Instances and operations
 

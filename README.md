@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
 [![Hex](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
-[![HexDocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/spectre/0.3.3)
+[![HexDocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/spectre/0.3.4)
 
 **An OTP-native Elixir runtime for building agents whose routing, state,
 policies, and side effects stay explicit.**
@@ -87,14 +87,14 @@ the [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md).
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.3.3"}
+    {:spectre, "~> 0.3.4"}
   ]
 end
 ```
 
 See [Installation](docs/INSTALLATION.md) for release verification, snapshot
 pinning, and the optional SpectreKinetic and ExFastembed integrations. The
-complete API reference is published on [HexDocs](https://hexdocs.pm/spectre/0.3.3).
+complete API reference is published on [HexDocs](https://hexdocs.pm/spectre/0.3.4).
 Spectre is `0.x`: documented APIs may still evolve in minor releases; the
 normative compatibility surface is the [public API manifest](docs/PUBLIC_API.md).
 

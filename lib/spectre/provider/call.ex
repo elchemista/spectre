@@ -22,6 +22,7 @@ defmodule Spectre.Provider.Call do
   | `:input` | `init/1`, `call/3` | a valid pipeline transition | `:input_timeout`, 10s | abort the turn |
   | `:turn_handler` | `handle_turn/2` | `:cont` or a typed reply | `:turn_handler_timeout`, 30s | abort the turn (fail closed) |
   | `:router` | `init/1`, `call/2` | a valid pipeline transition | `:router_timeout`, 120s | abort the routing pipeline |
+  | `:router_adapter` | `evaluate/1` | scored rule references | `:router_adapter_timeout`, 30s | skip that Adapter and continue routing |
   | `:monitor` | 0, 1, 2, 3 | callback-specific host data | `:monitor_timeout`, 60s | enter or continue recovery |
 
   Model, classifier, embedding, semantic-cache, action, state, memory, and
@@ -51,6 +52,7 @@ defmodule Spectre.Provider.Call do
     hook: 10_000,
     input: 10_000,
     router: 120_000,
+    router_adapter: 30_000,
     monitor: 60_000
   }
 
@@ -79,6 +81,7 @@ defmodule Spectre.Provider.Call do
     * `:hook_timeout`
     * `:input_timeout`
     * `:router_timeout`
+    * `:router_adapter_timeout`
     * `:monitor_timeout`
     * `:turn_handler_timeout`
 
@@ -97,7 +100,7 @@ defmodule Spectre.Provider.Call do
           {:error, %Failure{} = failure} -> {{:error, failure}, false}
         end
 
-      event = event(provider, result, invoked?, started_at)
+      event = provider |> event(result, invoked?, started_at) |> maybe_put_purpose(opts)
       notify_observer(opts, event)
 
       Spectre.Telemetry.emit(
@@ -256,6 +259,14 @@ defmodule Spectre.Provider.Call do
     }
   end
 
+  @spec maybe_put_purpose(event(), keyword()) :: event()
+  defp maybe_put_purpose(event, opts) do
+    case Keyword.get(opts, :purpose) do
+      purpose when is_atom(purpose) and not is_nil(purpose) -> Map.put(event, :purpose, purpose)
+      _other -> event
+    end
+  end
+
   @spec outcome(result(term())) :: atom()
   defp outcome({:ok, _value}), do: :ok
   defp outcome({:error, %Failure{kind: kind}}), do: kind
@@ -265,13 +276,6 @@ defmodule Spectre.Provider.Call do
   defp notify_observer(opts, event) do
     case Keyword.get(opts, @observer_key) do
       {observer, reference} when is_pid(observer) and is_reference(reference) ->
-        purpose = Keyword.get(opts, :purpose)
-
-        event =
-          if is_atom(purpose) and not is_nil(purpose),
-            do: Map.put(event, :purpose, purpose),
-            else: event
-
         send(observer, {:spectre_provider_call, reference, event})
         :ok
 
@@ -330,6 +334,10 @@ defmodule Spectre.Provider.Call do
   defp timeout_keys(:hook), do: [:hook_timeout, :callback_timeout, :provider_timeout]
   defp timeout_keys(:input), do: [:input_timeout, :callback_timeout, :provider_timeout]
   defp timeout_keys(:router), do: [:router_timeout, :callback_timeout, :provider_timeout]
+
+  defp timeout_keys(:router_adapter),
+    do: [:router_adapter_timeout, :provider_timeout]
+
   defp timeout_keys(:monitor), do: [:monitor_timeout, :callback_timeout, :provider_timeout]
   defp timeout_keys(_provider), do: [:provider_timeout]
 

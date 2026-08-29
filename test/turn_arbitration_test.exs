@@ -50,6 +50,57 @@ defmodule SpectreTurnArbitrationTest do
       assert route.confidence == 0.85
     end
 
+    test "Router Adapter bands occupy the documented precedence slots" do
+      strong = candidate(:STRONG, :binary, adapter_band: :strong)
+      medium = candidate(:MEDIUM, :vector, adapter_band: :medium)
+      weak = candidate(:WEAK, :heuristic, adapter_band: :weak)
+      local = candidate(:LOCAL, :local_classifier, score: 0.99, margin: 0.5)
+      embedding = candidate(:EMBEDDING, :embedding, score: 0.95, margin: 0.2)
+      cache = candidate(:CACHE, :semantic_cache, score: 0.99)
+      jaro = candidate(:JARO, :jaro, score: 0.99)
+
+      assert {:ok, %{label: :STRONG}} = Default.decide(arbitration([local, strong]), [])
+      assert {:ok, %{label: :EMBEDDING}} = Default.decide(arbitration([medium, embedding]), [])
+      assert {:ok, %{label: :MEDIUM}} = Default.decide(arbitration([cache, medium]), [])
+      assert {:ok, %{label: :JARO}} = Default.decide(arbitration([weak, jaro]), [])
+    end
+
+    test "Router Adapters in the same band follow effective via order before score" do
+      first = candidate(:FIRST, :first_adapter, score: 0.7, adapter_band: :medium, order: 1)
+      second = candidate(:SECOND, :second_adapter, score: 0.99, adapter_band: :medium, order: 2)
+
+      for candidates <- [[first, second], [second, first]] do
+        assert {:ok, route} = Default.decide(arbitration(candidates), conflict: :best)
+        assert route.label == :FIRST
+      end
+    end
+
+    test "LLM re-arbitration disables direct Adapter slots and keeps LLM precedence" do
+      adapter = candidate(:ADAPTER, :binary, score: 1.0, adapter_band: :strong)
+
+      llm =
+        candidate(:LLM, :llm_classifier,
+          score: 0.0,
+          margin: 0.0,
+          accepted?: true
+        )
+
+      assert {:ok, route} = Default.decide(arbitration([adapter, llm]), conflict: :best)
+      assert route.label == :LLM
+      assert route.strategy == :llm_classifier
+    end
+
+    test "agreement with a secondary Adapter result beats its isolated top result" do
+      adapter_top = candidate(:TOP, :binary, score: 0.95, adapter_band: :strong)
+      adapter_secondary = candidate(:AGREED, :binary, score: 0.85, adapter_band: :strong)
+      bag = candidate(:AGREED, :bag, score: 0.8)
+
+      assert {:ok, route} =
+               Default.decide(arbitration([adapter_top, adapter_secondary, bag]), [])
+
+      assert route.label == :AGREED
+    end
+
     test "same local label in different Skill scopes is not false agreement" do
       first = candidate(:SEARCH, :bag, score: 0.80, scope: {:skill, :first})
       second = candidate(:SEARCH, :semantic_cache, score: 0.85, scope: {:skill, :second})
@@ -503,10 +554,27 @@ defmodule SpectreTurnArbitrationTest do
       strength: Keyword.get(opts, :strength, :weak),
       raw: Keyword.get(opts, :raw, label),
       matched: Keyword.get(opts, :matched),
-      metadata: %{},
+      metadata: adapter_metadata(opts),
       accepted?: Keyword.get(opts, :accepted?, true),
       terminal?: Keyword.get(opts, :terminal?, false)
     }
+  end
+
+  defp adapter_metadata(opts) do
+    case Keyword.get(opts, :adapter_band) do
+      nil ->
+        %{}
+
+      band ->
+        %{
+          router_adapter: %{
+            band: band,
+            order: Keyword.get(opts, :order, 0),
+            required: %{score: 0.0, margin: nil},
+            threshold_reason: nil
+          }
+        }
+    end
   end
 
   defp arbitration(candidates) do

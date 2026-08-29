@@ -15,11 +15,21 @@ defmodule Spectre.Doctor do
   alias Spectre.Operation.Delivery.Consent
   alias Spectre.Prompt.AssetAudit
   alias Spectre.Receipt.Sink, as: ReceiptSink
+  alias Spectre.Router.Adapter.Diagnostics, as: RouterAdapterDiagnostics
   alias Spectre.Stack.Conformance, as: StackConformance
   alias Spectre.Stack.Definition, as: StackDefinition
 
   @contract_version 1
-  @options [:agent, :checkpoint_store, :consents, :journal, :packages, :receipt_sink, :stack]
+  @options [
+    :agent,
+    :checkpoint_store,
+    :consents,
+    :journal,
+    :packages,
+    :receipt_sink,
+    :router_opts,
+    :stack
+  ]
   @egress_allowlist_keys [
     :allowlist,
     :egress_allowlist,
@@ -28,11 +38,17 @@ defmodule Spectre.Doctor do
     :allowed_hosts
   ]
 
-  @doc "Runs runtime, Foundation, Agent, Stack, package, and store diagnostics."
+  @doc """
+  Runs runtime, Foundation, Agent, Stack, package, and store diagnostics.
+
+  When `:agent` is present, optional `:router_opts` diagnoses the effective
+  Router Adapter order and availability under a trusted runtime override.
+  `:router_opts` must be a keyword list and cannot be used without `:agent`.
+  """
   @spec run(keyword()) :: {:ok, Report.t()} | {:error, term()}
   def run(opts) when is_list(opts) do
     with :ok <- options(opts) do
-      {agent_checks, definition} = agent_checks(opts[:agent])
+      {agent_checks, definition} = agent_checks(opts[:agent], opts[:router_opts] || [])
 
       checks =
         [
@@ -94,6 +110,13 @@ defmodule Spectre.Doctor do
   end
 
   defp option_values(opts) do
+    with :ok <- standard_option_values(opts) do
+      router_option_values(opts)
+    end
+  end
+
+  @spec standard_option_values(keyword()) :: :ok | {:error, term()}
+  defp standard_option_values(opts) do
     cond do
       not module_option?(opts[:agent]) ->
         {:error, {:invalid_doctor_option, :agent}}
@@ -106,6 +129,20 @@ defmodule Spectre.Doctor do
 
       not (is_nil(opts[:consents]) or is_list(opts[:consents])) ->
         {:error, {:invalid_doctor_option, :consents}}
+
+      true ->
+        :ok
+    end
+  end
+
+  @spec router_option_values(keyword()) :: :ok | {:error, term()}
+  defp router_option_values(opts) do
+    cond do
+      not (is_nil(opts[:router_opts]) or Keyword.keyword?(opts[:router_opts])) ->
+        {:error, {:invalid_doctor_option, :router_opts}}
+
+      Keyword.has_key?(opts, :router_opts) and is_nil(opts[:agent]) ->
+        {:error, :doctor_router_opts_require_agent}
 
       true ->
         :ok
@@ -209,7 +246,7 @@ defmodule Spectre.Doctor do
 
   defp exported?(_entry), do: false
 
-  defp agent_checks(nil) do
+  defp agent_checks(nil, _router_opts) do
     {[
        check(:skipped, "agent.definition", :agent_not_requested),
        check(:skipped, "agent.manifest", :agent_not_requested),
@@ -218,10 +255,11 @@ defmodule Spectre.Doctor do
        check(:skipped, "agent.planner_action_schema", :agent_not_requested),
        check(:skipped, "agent.executor_egress", :agent_not_requested),
        check(:skipped, "agent.reply_sanitization", :agent_not_requested)
+       | RouterAdapterDiagnostics.skipped(:agent_not_requested)
      ], nil}
   end
 
-  defp agent_checks(agent) do
+  defp agent_checks(agent, router_opts) do
     case Code.ensure_loaded?(agent) && Definition.fetch(agent) do
       {:ok, %Definition{kind: :agent} = definition} ->
         definition_check =
@@ -230,17 +268,18 @@ defmodule Spectre.Doctor do
             declared_version: definition.version
           })
 
-        checks = [
-          definition_check,
-          safe("agent.manifest", fn -> manifest_check(agent) end),
-          safe("agent.prompt_trust", fn -> prompt_trust_check(definition) end),
-          safe("agent.planner_action_protection", fn ->
-            planner_action_protection_check(definition)
-          end),
-          safe("agent.planner_action_schema", fn -> planner_action_schema_check(definition) end),
-          safe("agent.executor_egress", fn -> executor_egress_check(definition) end),
-          safe("agent.reply_sanitization", fn -> reply_sanitization_check(definition) end)
-        ]
+        checks =
+          [
+            definition_check,
+            safe("agent.manifest", fn -> manifest_check(agent) end),
+            safe("agent.prompt_trust", fn -> prompt_trust_check(definition) end),
+            safe("agent.planner_action_protection", fn ->
+              planner_action_protection_check(definition)
+            end),
+            safe("agent.planner_action_schema", fn -> planner_action_schema_check(definition) end),
+            safe("agent.executor_egress", fn -> executor_egress_check(definition) end),
+            safe("agent.reply_sanitization", fn -> reply_sanitization_check(definition) end)
+          ] ++ RouterAdapterDiagnostics.checks(definition, router_opts)
 
         {checks, definition}
 
@@ -265,6 +304,7 @@ defmodule Spectre.Doctor do
        check(:skipped, "agent.planner_action_schema", :agent_definition_unavailable),
        check(:skipped, "agent.executor_egress", :agent_definition_unavailable),
        check(:skipped, "agent.reply_sanitization", :agent_definition_unavailable)
+       | RouterAdapterDiagnostics.skipped(:agent_definition_unavailable)
      ], nil}
   end
 

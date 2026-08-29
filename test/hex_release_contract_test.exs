@@ -2,7 +2,7 @@ defmodule SpectreHexReleaseContractTest do
   use ExUnit.Case, async: true
 
   @root Path.expand("..", __DIR__)
-  @release "0.3.3"
+  @release "0.3.4"
   @workflow Path.join(@root, ".github/workflows/ci.yml")
   @satellite_apps ~w(
     spectre_history
@@ -65,7 +65,7 @@ defmodule SpectreHexReleaseContractTest do
                          "SECURITY.md"
                        ] ++ Path.wildcard("docs/*.md", match_dot: true)
 
-  test "Hex package metadata describes the stable 0.3.3 release" do
+  test "Hex package metadata describes the stable 0.3.4 release" do
     config = Mix.Project.config()
     package = Keyword.fetch!(config, :package)
     docs = Keyword.fetch!(config, :docs)
@@ -226,9 +226,10 @@ defmodule SpectreHexReleaseContractTest do
     llm_guide = File.read!(Path.join(@root, "LLMS.md"))
     changelog = File.read!(Path.join(@root, "CHANGELOG.md"))
 
-    assert readme =~ ~s({:spectre, "~> 0.3.3"})
-    assert installation =~ ~s({:spectre, "~> 0.3.3"})
-    assert llm_guide =~ ~s({:spectre, "~> 0.3.3"})
+    assert readme =~ ~s({:spectre, "~> 0.3.4"})
+    assert installation =~ ~s({:spectre, "~> 0.3.4"})
+    assert llm_guide =~ ~s({:spectre, "~> 0.3.4"})
+    assert changelog =~ "## 0.3.4 — 2026-08-29"
     assert changelog =~ "## 0.3.3 — 2026-08-23"
     assert installation =~ ~s({:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"})
 

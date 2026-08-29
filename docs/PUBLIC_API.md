@@ -1,12 +1,12 @@
-# Spectre public API — 0.3.3
+# Spectre public API — 0.3.4
 
-This file is the normative public API manifest for Spectre `0.3.3`. It retains
+This file is the normative public API manifest for Spectre `0.3.4`. It retains
 the recoverable conversational, operational, inference, streaming, receipt,
-and determinism surfaces and adds ownership conformance plus fenced offline
-configured-data erasure. Compatibility guarantees apply only to the modules and
-callables listed below. Any module, function, macro, or callback not listed
-here is an implementation detail even when it is exported or visible in
-generated docs.
+and determinism surfaces and adds the native Router Adapter behaviour,
+privacy-scoped request structs, and executable Adapter conformance.
+Compatibility guarantees apply only to the modules and callables listed below.
+Any module, function, macro, or callback not listed here is an implementation
+detail even when it is exported or visible in generated docs.
 
 Default arguments are expanded into every callable arity. For the listed
 modules, documented types, opaque types, and documented struct fields are also
@@ -454,6 +454,14 @@ Mix project version.
   - functions: `from_rule/3`, `new/1`
 - `Spectre.Router`
   - functions: `candidate_rules/2`, `evaluate/2`, `evaluate/3`, `route/2`, `route_context/2`, `route_from_context/1`
+- `Spectre.Router.Adapter`
+  - functions: `examples/1`, `result/2`, `result/3`, `run/2`
+  - macros: `__using__/1`
+  - callbacks: `evaluate/1`
+- `Spectre.Router.Adapter.Conformance`
+  - functions: `contract_version/0`, `run/2`, `run/3`
+- `Spectre.Router.Adapter.Request`
+- `Spectre.Router.Adapter.RuleView`
 - `Spectre.Router.Arbitration`
   - functions: `from_context/1`
 - `Spectre.Router.Arbitrator`

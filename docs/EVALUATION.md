@@ -151,10 +151,18 @@ different path would give misleading results. It does not:
 - deliver journal records;
 - write online semantic-learning examples.
 
-Classifier, embedding, semantic-cache lookup, and LLM adapters are router
-providers and therefore may be called. A real LLM evaluation can incur latency
-and provider charges. CI should normally use deterministic adapter fixtures;
-run a separate opt-in corpus when measuring a live provider.
+Classifier, embedding, semantic-cache lookup, LLM, and native Router Adapters
+are router providers and therefore may be called. A corpus can make up to
+`case count × active Adapter count` native Adapter calls, reduced by hard
+locks, explicit skips, runtime `via` subsets, and cases with no visible rule.
+Vector databases, APIs, or models used by an Adapter can therefore add latency
+and provider charges just like the built-in providers.
+
+CI should use deterministic Adapter fixtures that also pass
+`Spectre.Router.Adapter.Conformance`. Keep a separate, explicitly opt-in corpus
+for live vector stores, models, and paid APIs. There is no evaluation-only
+switch that disables Router Adapters: doing so would measure a different
+routing pipeline from production.
 
 The receipt is intended to become the common fact source for evaluation,
 journaling, and minimal telemetry. It does not calculate monetary token cost or
