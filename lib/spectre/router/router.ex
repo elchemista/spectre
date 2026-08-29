@@ -102,7 +102,7 @@ defmodule Spectre.Router do
 
   @spec put_adapter_plan(keyword(), map()) :: {:ok, keyword(), [term()]} | {:error, term()}
   defp put_adapter_plan(opts, compiled_adapters) when map_size(compiled_adapters) == 0,
-    do: {:ok, opts, []}
+    do: {:ok, Keyword.delete(opts, AdapterCompiler.compiled_key()), []}
 
   defp put_adapter_plan(opts, compiled_adapters) do
     with {:ok, plan} <- AdapterPlan.build(compiled_adapters, opts) do

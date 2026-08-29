@@ -16,12 +16,20 @@ defmodule Spectre.Router.Adapter do
 
         @impl Spectre.Router.Adapter
         def evaluate(%Spectre.Router.Adapter.Request{text: text, rules: rules}) do
-          {:ok, Enum.map(rules, &result(&1, score(text, &1)))}
+          results =
+            rules
+            |> Enum.map(&result(&1, score(text, &1)))
+            |> Enum.sort_by(& &1.score, :desc)
+            |> Enum.take(32)
+
+          {:ok, results}
         end
       end
 
   Adapters return evidence only. They cannot provide handlers, owners, terminal
-  routes, acceptance decisions, or executable callbacks.
+  routes, acceptance decisions, or executable callbacks. They must rank or
+  filter evidence to at most 32 distinct rule references; the core rejects an
+  oversized response rather than silently choosing evidence for the Adapter.
   """
 
   alias Spectre.Router.Adapter.Compiler

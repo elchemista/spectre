@@ -17,18 +17,44 @@ defmodule Spectre.Router.Adapter.Runner do
   @max_results 32
   @strength_rank %{weak: 1, medium: 2, strong: 3, hard: 4}
 
+  @typep run_reply :: {:cont, Context.t()} | {:error, term()}
+  @typep execution_result ::
+           {run_reply(), atom(), non_neg_integer(), boolean(), map()}
+
   @doc false
   @spec run(Context.t(), atom()) :: {:cont, Context.t()} | {:error, term()}
   def run(%Context{} = context, adapter_id) when is_atom(adapter_id) do
+    started_at = System.monotonic_time()
+    call_opts = Keyword.put(context.opts, :purpose, adapter_id)
+    emit_start(adapter_id, call_opts)
+
+    {reply, outcome, result_count, invoked?, metadata} =
+      execute(context, adapter_id, call_opts)
+
+    emit_stop(
+      adapter_id,
+      outcome,
+      result_count,
+      invoked?,
+      metadata,
+      started_at,
+      call_opts
+    )
+
+    reply
+  end
+
+  @spec execute(Context.t(), atom(), keyword()) :: execution_result()
+  defp execute(context, adapter_id, call_opts) do
     cond do
       Context.halted?(context) ->
-        {:cont, context}
+        {{:cont, context}, :skip, 0, false, %{skip_reason: :halted}}
 
       Context.hard_candidate_locked?(context) ->
-        {:cont, put_skip(context, adapter_id, :hard_candidate)}
+        preinvoke_skip(context, adapter_id, :hard_candidate)
 
       true ->
-        run_planned(context, adapter_id)
+        run_planned(context, adapter_id, call_opts)
     end
   end
 
@@ -63,14 +89,14 @@ defmodule Spectre.Router.Adapter.Runner do
     end
   end
 
-  @spec run_planned(Context.t(), atom()) :: {:cont, Context.t()} | {:error, term()}
-  defp run_planned(%Context{} = context, adapter_id) do
+  @spec run_planned(Context.t(), atom(), keyword()) :: execution_result()
+  defp run_planned(%Context{} = context, adapter_id, call_opts) do
     with {:ok, plan} <- fetch_plan(context.opts),
          {:ok, entry} <- Plan.fetch(plan, adapter_id) do
-      run_entry(context, entry)
+      run_entry(context, entry, call_opts)
     else
-      :error -> {:error, {:unknown_router_adapter, adapter_id}}
-      {:error, _reason} = error -> error
+      :error -> {{:error, {:unknown_router_adapter, adapter_id}}, :error, 0, false, %{}}
+      {:error, _reason} = error -> {error, :error, 0, false, %{}}
     end
   end
 
@@ -83,37 +109,31 @@ defmodule Spectre.Router.Adapter.Runner do
       else: {:error, :router_adapter_plan_unavailable}
   end
 
-  @spec run_entry(Context.t(), Plan.entry()) :: {:cont, Context.t()}
-  defp run_entry(context, %{availability: {:unavailable, diagnostic}} = entry) do
-    {:cont,
-     context
-     |> Context.put_error(diagnostic)
-     |> put_skip(entry.id, :descriptor_unavailable)}
+  @spec run_entry(Context.t(), Plan.entry(), keyword()) :: execution_result()
+  defp run_entry(context, %{availability: {:unavailable, _diagnostic}} = entry, _call_opts) do
+    preinvoke_skip(context, entry.id, :descriptor_unavailable)
   end
 
-  defp run_entry(context, %{availability: :available} = entry) do
+  defp run_entry(context, %{availability: :available} = entry, call_opts) do
     visible_rules = Support.rules_for(context.rules, entry.id, context.input)
 
     if visible_rules == [] do
-      {:cont, put_skip(context, entry.id, :no_visible_rules)}
+      preinvoke_skip(context, entry.id, :no_visible_rules)
     else
-      invoke(context, entry, visible_rules)
+      invoke(context, entry, visible_rules, call_opts)
     end
   end
 
-  @spec invoke(Context.t(), Plan.entry(), [Spectre.Rule.t()]) :: {:cont, Context.t()}
-  defp invoke(context, entry, visible_rules) do
-    call_opts = Keyword.put(context.opts, :purpose, entry.id)
+  @spec preinvoke_skip(Context.t(), atom(), atom()) :: execution_result()
+  defp preinvoke_skip(context, adapter_id, reason) do
+    context = put_skip(context, adapter_id, reason)
+    {{:cont, context}, :skip, 0, false, %{skip_reason: reason}}
+  end
+
+  @spec invoke(Context.t(), Plan.entry(), [Spectre.Rule.t()], keyword()) :: execution_result()
+  defp invoke(context, entry, visible_rules, call_opts) do
     adapter_opts = Call.adapter_opts(call_opts)
     request = request(context, entry.id, visible_rules, adapter_opts)
-    started_at = System.monotonic_time()
-
-    Spectre.Telemetry.emit(
-      [:router, :adapter, :start],
-      %{system_time: System.system_time()},
-      %{adapter_id: entry.id},
-      call_opts
-    )
 
     result =
       Call.run(
@@ -125,14 +145,41 @@ defmodule Spectre.Router.Adapter.Runner do
     {context, outcome, result_count, invoked?} =
       handle_result(context, entry, visible_rules, result)
 
+    {{:cont, context}, outcome, result_count, invoked?, %{}}
+  end
+
+  @spec emit_start(atom(), keyword()) :: :ok
+  defp emit_start(adapter_id, opts) do
+    Spectre.Telemetry.emit(
+      [:router, :adapter, :start],
+      %{system_time: System.system_time()},
+      %{adapter_id: adapter_id},
+      opts
+    )
+  end
+
+  @spec emit_stop(
+          atom(),
+          atom(),
+          non_neg_integer(),
+          boolean(),
+          map(),
+          integer(),
+          keyword()
+        ) :: :ok
+  defp emit_stop(adapter_id, outcome, result_count, invoked?, metadata, started_at, opts) do
+    metadata =
+      Map.merge(
+        metadata,
+        %{adapter_id: adapter_id, outcome: outcome, invoked?: invoked?}
+      )
+
     Spectre.Telemetry.emit(
       [:router, :adapter, :stop],
       %{duration_us: elapsed_us(started_at), result_count: result_count},
-      %{adapter_id: entry.id, outcome: outcome, invoked?: invoked?},
-      call_opts
+      metadata,
+      opts
     )
-
-    {:cont, context}
   end
 
   @spec request(Context.t(), atom(), [Spectre.Rule.t()], keyword()) :: Request.t()

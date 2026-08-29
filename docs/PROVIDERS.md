@@ -125,7 +125,11 @@ telemetry, so Router receipts and corpus evaluation see the call without a
 second instrumentation path. Adapter-specific events are emitted as
 `[:spectre, :router, :adapter, :start]` and
 `[:spectre, :router, :adapter, :stop]`; they contain only id, outcome,
-invocation state, duration, and result count.
+invocation state, duration, and result count. Every Adapter step reached emits
+this span. A pre-invocation skip uses `outcome: :skip`, `invoked?: false`, and a
+bounded `skip_reason` such as `:hard_candidate`, `:no_visible_rules`, or
+`:descriptor_unavailable`. Because no provider boundary was entered, the skip
+does not create a synthetic `provider_calls` receipt entry.
 
 ## Reply Validation
 
