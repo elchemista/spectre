@@ -12,8 +12,8 @@ defmodule SpectrePortableValuePropertyTest do
       assert StackValue.portable?(value)
 
       assert {:ok, encoded} = Value.encode(value)
-      assert {:ok, json} = Jason.encode(encoded)
-      assert {:ok, decoded_json} = Jason.decode(json)
+      assert {:ok, json} = Spectre.JSON.encode(encoded)
+      assert {:ok, decoded_json} = Spectre.JSON.decode(json)
       assert :ok = Value.prepare(decoded_json)
       assert {:ok, restored} = Value.decode(decoded_json)
       assert restored == value

@@ -140,7 +140,7 @@ defmodule Spectre.Training.Dataset do
   @spec collect_json_file(String.t(), MapSet.t(String.t())) :: {:ok, [row()]} | {:error, term()}
   defp collect_json_file(path, labels) do
     with {:ok, text} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(text),
+         {:ok, decoded} <- Spectre.JSON.decode(text),
          true <- is_list(decoded) || {:error, {:invalid_dataset_json, path}} do
       {:ok, decoded |> Enum.flat_map(&normalize_source_row(&1, labels))}
     end
@@ -166,7 +166,7 @@ defmodule Spectre.Training.Dataset do
   defp collect_jsonl_line("#" <> _comment, rows, _path, _labels), do: {:cont, {:ok, rows}}
 
   defp collect_jsonl_line(line, rows, path, labels) do
-    case Jason.decode(line) do
+    case Spectre.JSON.decode(line) do
       {:ok, decoded} ->
         {:cont, {:ok, Enum.reverse(normalize_source_row(decoded, labels), rows)}}
 

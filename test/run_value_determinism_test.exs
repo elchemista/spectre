@@ -60,7 +60,7 @@ defmodule SpectreRunValueDeterminismTest do
     [instance_checkpoint, state_checkpoint]
     |> Enum.flat_map(fn checkpoint ->
       checkpoint
-      |> Jason.decode!()
+      |> Spectre.JSON.decode!()
       |> SpectreRunValueDeterminismChild.atom_names()
     end)
 

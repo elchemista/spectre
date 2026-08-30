@@ -72,7 +72,7 @@ defmodule Spectre.Classifier.Trainer do
   @spec read_dataset(String.t()) :: {:ok, [map()]} | {:error, term()}
   defp read_dataset(path) do
     with {:ok, bytes} <- File.read(path),
-         {:ok, examples} <- Jason.decode(bytes),
+         {:ok, examples} <- Spectre.JSON.decode(bytes),
          true <- is_list(examples) do
       {:ok, Enum.filter(examples, &valid_example?/1)}
     else
@@ -187,17 +187,17 @@ defmodule Spectre.Classifier.Trainer do
          :ok <-
            atomic_write(
              Path.join(out_dir, "metadata.json"),
-             Jason.encode!(metadata, pretty: true)
+             Spectre.JSON.encode!(metadata, pretty: true)
            ),
          :ok <-
            atomic_write(
              Path.join(out_dir, "calibration.json"),
-             Jason.encode!(calibration, pretty: true)
+             Spectre.JSON.encode!(calibration, pretty: true)
            ),
          :ok <-
            atomic_write(
              Path.join(out_dir, "labels.json"),
-             Jason.encode!(classifier.labels, pretty: true)
+             Spectre.JSON.encode!(classifier.labels, pretty: true)
            ),
          :ok <-
            atomic_write(
@@ -223,7 +223,7 @@ defmodule Spectre.Classifier.Trainer do
         embedding: vector
       }
     end)
-    |> Enum.map_join("", &(Jason.encode!(&1) <> "\n"))
+    |> Enum.map_join("", &(Spectre.JSON.encode!(&1) <> "\n"))
   end
 
   @spec atomic_write(String.t(), binary()) :: :ok | {:error, term()}

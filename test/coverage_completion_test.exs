@@ -159,7 +159,7 @@ defmodule SpectreCoverageCompletionTest do
 
       File.write!(
         source,
-        Jason.encode!([
+        Spectre.JSON.encode!([
           %{text: "alpha training", label: "ALPHA"},
           %{text: "beta training", label: "BETA"}
         ])
@@ -183,7 +183,7 @@ defmodule SpectreCoverageCompletionTest do
                  "--pretty"
                ])
 
-      assert {:ok, rows} = dataset |> File.read!() |> Jason.decode()
+      assert {:ok, rows} = dataset |> File.read!() |> Spectre.JSON.decode()
       assert Enum.any?(rows, &(&1["label"] == "ALPHA"))
 
       reenable("spectre.classifier.download_model")
@@ -602,13 +602,13 @@ defmodule SpectreCoverageCompletionTest do
       jsonl = Path.join(tmp, "rows.jsonl")
       unsupported = Path.join(tmp, "rows.txt")
 
-      File.write!(json, Jason.encode!([%{text: "alpha json", label: "ALPHA"}]))
+      File.write!(json, Spectre.JSON.encode!([%{text: "alpha json", label: "ALPHA"}]))
       File.write!(unsupported, "unsupported")
 
       File.write!(
         jsonl,
         "# comment\n" <>
-          Jason.encode!(%{text: "beta jsonl", intent: "BETA"}) <> "\n{bad-json}\n"
+          Spectre.JSON.encode!(%{text: "beta jsonl", intent: "BETA"}) <> "\n{bad-json}\n"
       )
 
       assert {:ok, json_rows} =
@@ -812,7 +812,7 @@ defmodule SpectreCoverageCompletionTest do
       assert Enum.any?(rows, &(&1.text == "alpha rich"))
 
       path = Path.join(tmp, "rows.jsonl")
-      File.write!(path, Jason.encode!(%{text: "alpha opts", label: "ALPHA"}) <> "\n")
+      File.write!(path, Spectre.JSON.encode!(%{text: "alpha opts", label: "ALPHA"}) <> "\n")
       assert {:ok, %{loaded: 1}} = Learned.load_snapshot(@agent, path: path)
 
       missing = Path.join(tmp, "missing.jsonl")
@@ -831,11 +831,11 @@ defmodule SpectreCoverageCompletionTest do
       json = Path.join(tmp, "object.json")
       valid = Path.join(tmp, "mixed.json")
 
-      File.write!(json, Jason.encode!(%{text: "not a list", label: "ALPHA"}))
+      File.write!(json, Spectre.JSON.encode!(%{text: "not a list", label: "ALPHA"}))
 
       File.write!(
         valid,
-        Jason.encode!([
+        Spectre.JSON.encode!([
           123,
           %{text: "", label: "ALPHA"},
           %{text: "alpha", label: ""},
@@ -858,7 +858,7 @@ defmodule SpectreCoverageCompletionTest do
 
       File.write!(
         first,
-        Jason.encode!([
+        Spectre.JSON.encode!([
           %{text: "first alpha", label: "ALPHA"},
           %{text: "second beta", label: "BETA"}
         ])
@@ -866,7 +866,7 @@ defmodule SpectreCoverageCompletionTest do
 
       File.write!(
         second,
-        Jason.encode!(%{text: "third alpha", label: "ALPHA"}) <> "\n"
+        Spectre.JSON.encode!(%{text: "third alpha", label: "ALPHA"}) <> "\n"
       )
 
       opts =

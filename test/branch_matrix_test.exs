@@ -615,7 +615,7 @@ defmodule SpectreBranchMatrixTest do
 
       File.write!(
         source,
-        "# comment\n" <> Jason.encode!(%{text: "alpha", label: "ALPHA"}) <> "\n"
+        "# comment\n" <> Spectre.JSON.encode!(%{text: "alpha", label: "ALPHA"}) <> "\n"
       )
 
       assert {:ok, [%{label: "ALPHA", text: "alpha"}]} =
@@ -630,16 +630,16 @@ defmodule SpectreBranchMatrixTest do
       File.write!(
         first,
         [
-          Jason.encode!(%{text: "first", label: "ALPHA"}),
-          Jason.encode!(%{text: "bad object", label: %{nested: "ALPHA"}}),
-          Jason.encode!(%{text: "second", label: "BETA"})
+          Spectre.JSON.encode!(%{text: "first", label: "ALPHA"}),
+          Spectre.JSON.encode!(%{text: "bad object", label: %{nested: "ALPHA"}}),
+          Spectre.JSON.encode!(%{text: "second", label: "BETA"})
         ]
         |> Enum.join("\n")
       )
 
       File.write!(
         second,
-        Jason.encode!([
+        Spectre.JSON.encode!([
           %{text: "third", label: "ALPHA"},
           %{text: "bad list", label: ["BETA"]}
         ])
@@ -671,7 +671,7 @@ defmodule SpectreBranchMatrixTest do
                Dataset.from_agent(SpectreBranchMatrixTest.CacheAgent, source: unsupported)
 
       invalid_json = Path.join(tmp, "rows.json")
-      File.write!(invalid_json, Jason.encode!(%{text: "not-a-list"}))
+      File.write!(invalid_json, Spectre.JSON.encode!(%{text: "not-a-list"}))
 
       assert {:error, {:invalid_dataset_json, ^invalid_json}} =
                Dataset.from_agent(SpectreBranchMatrixTest.CacheAgent, source: invalid_json)

@@ -380,7 +380,7 @@ defmodule SpectreEvalTest do
     File.write!(path, "\n{\"id\":\"valid\",\"input\":\"help\"}\nnot-json\n")
     on_exit(fn -> File.rm(path) end)
 
-    assert {:error, {:invalid_eval_case, 3, %Jason.DecodeError{}}} = Eval.load(path)
+    assert {:error, {:invalid_eval_case, 3, %JSON.DecodeError{}}} = Eval.load(path)
   end
 
   test "mix task writes a JSON artifact and enforces thresholds" do
@@ -400,7 +400,7 @@ defmodule SpectreEvalTest do
 
     assert output =~ "Cases:                    3"
     assert output =~ "Unnecessary LLM calls:    0"
-    assert {:ok, artifact} = path |> File.read!() |> Jason.decode()
+    assert {:ok, artifact} = path |> File.read!() |> Spectre.JSON.decode()
     assert artifact["total"] == 3
     assert length(artifact["results"]) == 3
     assert is_list(get_in(artifact, ["results", Access.at(0), "actual", "provider_calls"]))

@@ -87,7 +87,7 @@ defmodule Mix.Tasks.Spectre.Eval do
 
   defp maybe_write_json(report, path) do
     path |> Path.dirname() |> File.mkdir_p!()
-    File.write!(path, Jason.encode!(Report.to_map(report), pretty: true))
+    File.write!(path, Spectre.JSON.encode!(Report.to_map(report), pretty: true))
     Mix.shell().info("Wrote Spectre evaluation report to #{path}")
     :ok
   end

@@ -14,7 +14,7 @@ defmodule SpectreIdentityActivationCompatibilityFixtureTest do
     assert %{
              "checkpoint_version" => 2,
              "state_schema_version" => 2
-           } = Jason.decode!(checkpoint)
+           } = Spectre.JSON.decode!(checkpoint)
 
     assert {:error, {:invalid_canonical_checkpoint_format, nil}} = Codec.decode(checkpoint)
   end

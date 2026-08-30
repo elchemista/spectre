@@ -2516,7 +2516,7 @@ defmodule SpectreTest do
 
     File.write!(
       source_path,
-      Jason.encode!([
+      Spectre.JSON.encode!([
         %{"text" => "ciao", "intent" => "GREETING"},
         %{"text" => "hello", "label" => "GREETING"},
         %{"text" => "cheap crypto promo", "label" => "SPAM"},
@@ -2544,7 +2544,7 @@ defmodule SpectreTest do
 
     File.write!(
       source_path,
-      Jason.encode!([
+      Spectre.JSON.encode!([
         %{"text" => "ciao configurato", "intent" => "GREETING"},
         %{"text" => "ignored action", "label" => "ACTION"}
       ])
@@ -2579,7 +2579,7 @@ defmodule SpectreTest do
 
     File.write!(
       dataset_path,
-      Jason.encode!([
+      Spectre.JSON.encode!([
         %{"text" => "right", "label" => "go_right"},
         %{"text" => "left", "label" => "go_left"}
       ])
@@ -2609,7 +2609,7 @@ defmodule SpectreTest do
       artifact_dir
       |> Path.join("semantic_cache.jsonl")
       |> File.stream!()
-      |> Enum.map(&Jason.decode!/1)
+      |> Enum.map(&Spectre.JSON.decode!/1)
 
     assert semantic_rows == [
              %{"text" => "right", "label" => "go_right", "embedding" => [1.0, 0.0]},
@@ -2636,7 +2636,7 @@ defmodule SpectreTest do
 
     File.write!(
       dataset_path,
-      Jason.encode!([
+      Spectre.JSON.encode!([
         %{"text" => "right", "label" => "go_right"},
         %{"text" => "left", "label" => "go_left"}
       ])

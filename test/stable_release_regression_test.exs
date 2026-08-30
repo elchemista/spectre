@@ -195,11 +195,11 @@ defmodule SpectreStableReleaseRegressionTest do
 
     assert {:ok, encoded_value} = Value.encode(%{opaque: opaque})
     assert {:ok, %{opaque: ^opaque}} = Value.decode(encoded_value)
-    assert {:ok, _json} = Jason.encode(encoded_value)
+    assert {:ok, _json} = Spectre.JSON.encode(encoded_value)
 
     assert {:ok, encoded_atom} = Value.encode(nul_atom)
     assert {:ok, ^nul_atom} = Value.decode(encoded_atom)
-    assert {:ok, atom_json} = Jason.encode(encoded_atom)
+    assert {:ok, atom_json} = Spectre.JSON.encode(encoded_atom)
     refute atom_json =~ "\\u0000"
 
     assert {:ok, state_json} =
@@ -232,7 +232,7 @@ defmodule SpectreStableReleaseRegressionTest do
         metadata: %{opaque => :hostile_key, opaque: opaque, nul_atom: nul_atom}
       )
 
-    persisted = record |> Record.to_json_map() |> Jason.encode!() |> Jason.decode!()
+    persisted = record |> Record.to_json_map() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
 
     assert {:ok, restored_record} = Record.restore(persisted)
     assert restored_record.phase == :policy

@@ -8,6 +8,8 @@ defmodule Spectre.Classifier.Math do
 
   alias Vettore.Distance
 
+  @automatic_compute_options [gpu: :auto, gpu_fallback: :cpu, gpu_min_size: 1_000_000]
+
   @doc """
   Returns a normalized centroid for vectors.
   """
@@ -24,7 +26,7 @@ defmodule Spectre.Classifier.Math do
   @spec cosine([number()], [number()]) :: float()
   def cosine(left, right) when is_list(left) and is_list(right) do
     left
-    |> Distance.cosine(right)
+    |> Distance.cosine(right, @automatic_compute_options)
     |> raw_cosine_score()
   end
 
@@ -42,7 +44,7 @@ defmodule Spectre.Classifier.Math do
   """
   @spec normalize([number()]) :: [float()]
   def normalize(vector) when is_list(vector) do
-    case Distance.normalize(vector, :l2) do
+    case Distance.normalize(vector, :l2, @automatic_compute_options) do
       {:ok, normalized} -> normalized
       {:error, _reason} -> Enum.map(vector, fn _ -> 0.0 end)
     end

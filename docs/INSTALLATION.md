@@ -1,6 +1,10 @@
 # Installation
 
 Spectre requires Elixir `~> 1.19` and includes Vettore as a required dependency.
+JSON encoding and decoding use Elixir's standard `JSON` module. Spectre does
+not expose a JSON-backend setting and does not include Jason as a direct
+dependency; applications that call Jason themselves must declare it in their
+own `deps/0`.
 
 ## Hex
 
@@ -20,6 +24,26 @@ Then fetch and compile dependencies:
 mix deps.get
 mix compile
 ```
+
+## Optional Vettore GPU normalization
+
+No Vettore configuration is required to install or run Spectre. Classifier
+math and built-in Flat scans already use `gpu: :auto` with CPU fallback. An
+eligible workload uses an available GPU; smaller workloads and hosts without a
+GPU use CPU.
+
+Without additional configuration, Vettore's internal collection-vector and
+query normalization stays on CPU. To apply the same automatic selection to
+those normalization steps too, optionally add:
+
+```elixir
+config :vettore,
+  gpu: :auto,
+  gpu_fallback: :cpu,
+  gpu_min_size: 1_000_000
+```
+
+This is a performance option, not an installation requirement.
 
 Import Spectre's formatter metadata so `mix format` preserves the documented
 DSL style without parentheses:

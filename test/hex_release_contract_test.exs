@@ -103,8 +103,14 @@ defmodule SpectreHexReleaseContractTest do
     assert ex_doc_opts[:only] == :dev
     assert ex_doc_opts[:runtime] == false
 
-    assert {:vettore, "~> 0.3.3"} =
+    assert {:vettore, "~> 0.3.5"} =
              Enum.find(config[:deps], &match?({:vettore, _requirement}, &1))
+
+    refute Enum.any?(config[:deps], fn
+             {:jason, _requirement} -> true
+             {:jason, _requirement, _options} -> true
+             _dependency -> false
+           end)
   end
 
   test "the source package owns every executable generator contract" do
@@ -229,7 +235,7 @@ defmodule SpectreHexReleaseContractTest do
     assert readme =~ ~s({:spectre, "~> 0.3.4"})
     assert installation =~ ~s({:spectre, "~> 0.3.4"})
     assert llm_guide =~ ~s({:spectre, "~> 0.3.4"})
-    assert changelog =~ "## 0.3.4 — 2026-08-29"
+    assert changelog =~ "## 0.3.4 — Unreleased"
     assert changelog =~ "## 0.3.3 — 2026-08-23"
     assert installation =~ ~s({:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"})
 

@@ -250,7 +250,7 @@ defmodule SpectreReflectiveRuntimeTest do
     assert ["facts", "token"] in evidence.redactions
     refute inspect(evidence) =~ "raw-secret"
 
-    json = evidence |> Evidence.to_data() |> Jason.encode!() |> Jason.decode!()
+    json = evidence |> Evidence.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
     assert {:ok, ^evidence} = Evidence.from_data(json)
     assert :ok = Evidence.verify(evidence)
 
@@ -742,10 +742,11 @@ defmodule SpectreReflectiveRuntimeTest do
     refute inspect(first.content) =~ "raw-secret"
 
     assert {:ok, snapshot_data} = ExperienceStore.snapshot_to_data(snapshot)
-    snapshot_json = snapshot_data |> Jason.encode!() |> Jason.decode!()
+    snapshot_json = snapshot_data |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
     assert {:ok, ^snapshot} = ExperienceStore.snapshot_from_data(snapshot_json)
 
-    transported = first |> ReflectionProjection.to_data() |> Jason.encode!() |> Jason.decode!()
+    transported =
+      first |> ReflectionProjection.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
 
     assert {:ok, ^first} =
              ReflectionProjection.from_data(
@@ -1028,7 +1029,9 @@ defmodule SpectreReflectiveRuntimeTest do
     refute inspect(ChangeSet.to_data(proposal.change_set)) =~ "forge-unapproved"
     assert :ok = Proposal.verify(proposal)
 
-    transported = proposal |> Proposal.to_data() |> Jason.encode!() |> Jason.decode!()
+    transported =
+      proposal |> Proposal.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
+
     assert {:ok, ^proposal} = Proposal.from_data(transported)
 
     assert {:ok, %{format: :forge_proposal, digest: proposal_digest}} =
@@ -1137,7 +1140,7 @@ defmodule SpectreReflectiveRuntimeTest do
 
     assert {:error, {:invalid_state_payload, :list}} = Conformance.verify_state("[]")
 
-    assert {:error, %Jason.DecodeError{}} = Conformance.verify_state("{bad-json}")
+    assert {:error, %JSON.DecodeError{}} = Conformance.verify_state("{bad-json}")
   end
 
   test "model agreement is not evidence and malformed textual critique fails closed" do
@@ -1498,7 +1501,7 @@ defmodule SpectreReflectiveRuntimeTest do
 
     expected = permanent_fixture()
     assert File.exists?(fixture_path)
-    assert Jason.decode!(File.read!(fixture_path)) == expected
+    assert Spectre.JSON.decode!(File.read!(fixture_path)) == expected
   end
 
   defp forge_fixture do

@@ -269,7 +269,7 @@ defmodule SpectreDoctorTest do
     json = Report.format(report, :json)
     refute json =~ "super-secret"
     refute json =~ "doctor must not"
-    assert Jason.decode!(json)["status"] == "warning"
+    assert Spectre.JSON.decode!(json)["status"] == "warning"
   end
 
   test "privacy posture verifies erasure callbacks without invoking adapters" do
@@ -458,7 +458,7 @@ defmodule SpectreDoctorTest do
     Mix.Task.reenable("app.config")
     assert :ok = DoctorTask.run(["--format", "json"])
     assert_receive {:mix_shell, :info, [json]}
-    assert %{"status" => "ok"} = Jason.decode!(json)
+    assert %{"status" => "ok"} = Spectre.JSON.decode!(json)
 
     assert_raise Mix.Error, ~r/\[spectre_doctor_invalid_format\]/, fn ->
       DoctorTask.run(["--format", "yaml"])

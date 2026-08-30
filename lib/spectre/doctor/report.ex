@@ -21,7 +21,9 @@ defmodule Spectre.Doctor.Report do
   @doc "Formats a report as terminal text or JSON."
   @spec format(t(), :text | :json) :: String.t()
   def format(report, format \\ :text)
-  def format(%__MODULE__{} = report, :json), do: report |> to_map() |> Jason.encode!(pretty: true)
+
+  def format(%__MODULE__{} = report, :json),
+    do: report |> to_map() |> Spectre.JSON.encode!(pretty: true)
 
   def format(%__MODULE__{} = report, :text) do
     data = to_map(report)
@@ -70,7 +72,10 @@ defmodule Spectre.Doctor.Report do
 
   defp check_line(check) do
     status = check.status |> String.upcase() |> String.pad_trailing(7)
-    suffix = if map_size(check.details) == 0, do: "", else: " #{Jason.encode!(check.details)}"
+
+    suffix =
+      if map_size(check.details) == 0, do: "", else: " #{Spectre.JSON.encode!(check.details)}"
+
     "#{status} #{check.id} [#{check.code}] #{check.summary}#{suffix}"
   end
 end

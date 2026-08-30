@@ -92,7 +92,7 @@ defmodule SpectreReflectiveExecutionContractTest do
     assert definition.branches[Program.migration_branch()] == ["echo"]
 
     data = Program.to_data(program)
-    transported = data |> Jason.encode!() |> Jason.decode!()
+    transported = data |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
     assert {:ok, restored} = Program.from_data(transported)
     assert restored == program
 

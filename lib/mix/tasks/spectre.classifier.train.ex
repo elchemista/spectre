@@ -49,7 +49,7 @@ defmodule Mix.Tasks.Spectre.Classifier.Train do
     case Trainer.train(dataset_path, out_dir, opts) do
       {:ok, stats} ->
         Mix.shell().info("Spectre classifier trained")
-        Mix.shell().info(Jason.encode!(stats, pretty: true))
+        Mix.shell().info(Spectre.JSON.encode!(stats, pretty: true))
         :ok
 
       {:error, {:missing_dependency, :ex_fastembed}} ->

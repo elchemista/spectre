@@ -913,6 +913,14 @@ Useful built-in learned-cache options:
 - `semantic_cache_top_k` changes the Vettore search limit, default `3`.
 - `semantic_cache_index` and `semantic_cache_index_options` configure the
   Vettore index, default `:flat`.
+- Built-in Flat indexes default to `gpu: :auto`, `gpu_fallback: :cpu`, and
+  `gpu_min_size: 1_000_000`. Eligible scans use an available GPU; smaller scans
+  and hosts without one use CPU. Valid `semantic_cache_index_options` override
+  these defaults and are validated by Vettore. HNSW and custom index options
+  are passed through unchanged. Vettore 0.3.5 still uses its global compute
+  setting for collection normalization. No Vettore configuration is required;
+  optionally set the same `gpu: :auto` policy under `config :vettore` when
+  those steps should select automatically too.
 - `semantic_cache_compressed?` controls compressed ETS storage for the learned
   Vettore collection, default `true`.
 - `semantic_cache_source` supplies dataset files.

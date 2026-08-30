@@ -24,7 +24,7 @@ defmodule Spectre.Execution.HandoffTest do
     assert handoff.id =~ "execution-handoff:"
     assert handoff.correlation_id == "correlation:" <> handoff.id
 
-    json_data = handoff |> Handoff.to_data() |> Jason.encode!() |> Jason.decode!()
+    json_data = handoff |> Handoff.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
 
     assert {:ok, restored} = Handoff.from_data(json_data)
     assert restored == handoff
@@ -39,8 +39,8 @@ defmodule Spectre.Execution.HandoffTest do
     assert {:ok, ^timer_handoff} =
              timer_handoff
              |> Handoff.to_data()
-             |> Jason.encode!()
-             |> Jason.decode!()
+             |> Spectre.JSON.encode!()
+             |> Spectre.JSON.decode!()
              |> Handoff.from_data()
 
     assert {:ok, event_handoff} =

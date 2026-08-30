@@ -194,5 +194,5 @@ defmodule SpectrePortableArtifactIntegrityCoverageTest do
     )
   end
 
-  defp fixture_data, do: @fixture |> File.read!() |> Jason.decode!()
+  defp fixture_data, do: @fixture |> File.read!() |> Spectre.JSON.decode!()
 end
