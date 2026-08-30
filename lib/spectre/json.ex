@@ -115,8 +115,6 @@ defmodule Spectre.JSON do
     do: format_json(rest, indent, [byte | acc])
 
   @spec format_string(binary(), non_neg_integer(), boolean(), iodata()) :: iodata()
-  defp format_string(<<>>, _indent, _escaped, acc), do: acc
-
   defp format_string(<<byte, rest::binary>>, indent, true, acc),
     do: format_string(rest, indent, false, [byte | acc])
 

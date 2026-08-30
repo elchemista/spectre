@@ -1993,6 +1993,15 @@ defmodule SpectreDataDrivenExecutionTest do
     assert {:error, {:invalid_execution_materializer, :atom, :map, :list}} =
              Materializer.materialize(:invalid, %{}, %{}, [])
 
+    assert {:error, {:invalid_execution_materializer, :atom, :map, :list}} =
+             Materializer.materialize(:invalid, %{})
+
+    assert {:error, {:invalid_execution_materializer, :binary, :binary, :tuple}} =
+             Materializer.materialize("invalid", %{}, "context", {:opts})
+
+    assert {:error, {:invalid_execution_materializer, :other, :other, :other}} =
+             Materializer.materialize(1.5, %{}, 2.5, 3.5)
+
     assert {:error, {:invalid_execution_runtime_start, :atom, :list, :map}} =
              ExecutionRuntime.start(:invalid)
 

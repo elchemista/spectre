@@ -227,6 +227,7 @@ defmodule SpectreGovernanceGateTest.InventoryProvider do
   def snapshot(_store, opts) do
     case Keyword.get(opts, :mode) do
       :invalid_reply -> :invalid_reply
+      :error -> {:error, :inventory_unavailable}
       :raise -> raise "inventory failure"
       :throw -> throw(:inventory_failure)
       _mode -> {:ok, Keyword.fetch!(opts, :snapshot)}
@@ -1367,6 +1368,13 @@ defmodule SpectreGovernanceGateTest do
                []
              )
 
+    assert {:error, :inventory_unavailable} =
+             Spectre.Governance.GC.InventoryProvider.load(
+               {InventoryProvider, mode: :error},
+               store,
+               []
+             )
+
     assert {:error, {:governance_gc_inventory_exception, InventoryProvider, RuntimeError}} =
              Spectre.Governance.GC.InventoryProvider.load(
                {InventoryProvider, mode: :raise},
@@ -1399,6 +1407,22 @@ defmodule SpectreGovernanceGateTest do
                store,
                []
              )
+
+    for {field, value, reason} <- [
+          {"snapshot_id", "", :invalid_governance_gc_inventory_snapshot_id},
+          {"revision", -1, :invalid_governance_gc_inventory_revision},
+          {"fencing_token", 0, :invalid_governance_gc_inventory_fencing_token},
+          {"candidate_refs", :not_a_list, :invalid_governance_gc_inventory_refs}
+        ] do
+      snapshot = inventory_snapshot([], []) |> Map.put(field, value)
+
+      assert {:error, ^reason} =
+               Spectre.Governance.GC.InventoryProvider.load(
+                 {InventoryProvider, snapshot: snapshot},
+                 store,
+                 []
+               )
+    end
   end
 
   test "the complete built-in vocabulary remains declarative and bounded" do
@@ -1555,6 +1579,29 @@ defmodule SpectreGovernanceGateTest do
 
     assert {:error, {:candidate_authority_limit_expansion, :max_tokens, 101}} =
              GovernanceAuthority.no_expansion(parent, wider)
+
+    risk_parent = Envelope.new!(limits: %{max_risk: :high})
+    risk_narrower = Envelope.new!(limits: %{max_risk: :medium})
+    risk_wider = Envelope.new!(limits: %{max_risk: :critical})
+
+    assert :ok = GovernanceAuthority.no_expansion(risk_parent, risk_narrower)
+
+    assert {:error, {:candidate_authority_limit_expansion, :max_risk, :critical}} =
+             GovernanceAuthority.no_expansion(risk_parent, risk_wider)
+
+    custom_parent = %{Envelope.empty() | limits: %{max_risk: :custom, region: :eu}}
+    same_custom = %{Envelope.empty() | limits: %{max_risk: :custom, region: :eu}}
+    changed_custom = %{Envelope.empty() | limits: %{max_risk: :other, region: :us}}
+
+    assert :ok = GovernanceAuthority.no_expansion(custom_parent, same_custom)
+
+    assert {:error, {:candidate_authority_limit_expansion, :max_risk, :other}} =
+             GovernanceAuthority.no_expansion(custom_parent, changed_custom)
+
+    changed_region = %{same_custom | limits: %{max_risk: :custom, region: :us}}
+
+    assert {:error, {:candidate_authority_limit_expansion, :region, :us}} =
+             GovernanceAuthority.no_expansion(custom_parent, changed_region)
   end
 
   test "checker versions are mandatory and approval policies reject duplicate aliases" do

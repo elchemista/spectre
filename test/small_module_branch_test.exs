@@ -628,6 +628,7 @@ defmodule SpectreSmallModuleBranchTest do
     assert 0.0 == Math.raw_cosine_score({:error, :bad})
     assert 0.0 == Math.raw_cosine_score(:bad)
     assert [0.0, 0.0] == Math.normalize([0.0, 0.0])
+    assert [0.0, 0.0] == Math.normalize([1.0, :invalid_coordinate])
 
     context = %Spectre.Router.Context{}
     assert {:cont, ^context} = Terminalize.call(context, [])
