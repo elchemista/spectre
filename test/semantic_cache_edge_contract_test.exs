@@ -326,7 +326,7 @@ defmodule SpectreSemanticCacheEdgeContractTest do
 
     assert {:ok, snapshots} = Learned.snapshot(@agent, opts)
     snapshot = Enum.find(snapshots, &(&1.id == first.id))
-    encoded = Jason.encode!(snapshot)
+    encoded = Spectre.JSON.encode!(snapshot)
     assert encoded =~ "reviewed_at"
     assert encoded =~ "origin"
 
@@ -486,7 +486,7 @@ defmodule SpectreSemanticCacheEdgeContractTest do
 
     File.write!(
       json,
-      Jason.encode!([
+      Spectre.JSON.encode!([
         %{
           text: "offline without a valid vector",
           intent: "CACHE",

@@ -75,7 +75,7 @@ defmodule SpectreEventLifecycleSemanticsTest.CheckpointStore do
     Agent.get_and_update(Keyword.fetch!(opts, :server), fn entries ->
       case {Map.get(entries, legacy_ref.key), Map.get(entries, stable_ref.key)} do
         {{_revision, ^legacy}, nil} ->
-          revision = migrated |> Jason.decode!() |> Map.fetch!("revision")
+          revision = migrated |> Spectre.JSON.decode!() |> Map.fetch!("revision")
 
           next =
             entries |> Map.delete(legacy_ref.key) |> Map.put(stable_ref.key, {revision, migrated})
@@ -553,7 +553,7 @@ defmodule SpectreEventLifecycleSemanticsTest do
              "format" => "spectre/instance-checkpoint",
              "checkpoint_version" => 3,
              "state_schema_version" => 3
-           } = Jason.decode!(checkpoint)
+           } = Spectre.JSON.decode!(checkpoint)
 
     :ok = GenServer.stop(restarted, :normal)
   end

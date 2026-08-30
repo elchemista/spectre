@@ -433,7 +433,7 @@ defmodule Spectre.Foundation.Conformance do
 
   @spec json_data(binary() | map()) :: {:ok, map()} | {:error, term()}
   defp json_data(payload) when is_binary(payload) do
-    case Jason.decode(payload) do
+    case Spectre.JSON.decode(payload) do
       {:ok, value} when is_map(value) -> {:ok, value}
       {:ok, value} -> {:error, {:invalid_foundation_json_map, shape(value)}}
       {:error, reason} -> {:error, {:invalid_foundation_json, reason}}

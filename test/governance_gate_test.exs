@@ -227,6 +227,7 @@ defmodule SpectreGovernanceGateTest.InventoryProvider do
   def snapshot(_store, opts) do
     case Keyword.get(opts, :mode) do
       :invalid_reply -> :invalid_reply
+      :error -> {:error, :inventory_unavailable}
       :raise -> raise "inventory failure"
       :throw -> throw(:inventory_failure)
       _mode -> {:ok, Keyword.fetch!(opts, :snapshot)}
@@ -299,7 +300,7 @@ defmodule SpectreGovernanceGateTest do
     fixture =
       "test/fixtures/compatibility/0.2.9/governance-v1.json"
       |> File.read!()
-      |> Jason.decode!()
+      |> Spectre.JSON.decode!()
 
     assert fixture["schema_version"] == 1
     assert fixture["release"] == "0.2.9"
@@ -416,7 +417,9 @@ defmodule SpectreGovernanceGateTest do
     assert reviewed_governance.report == report
     assert reviewed_governance.report.evaluation_delta == EvaluationDelta.to_data(delta)
 
-    report_data = report |> HumanReport.to_data() |> Jason.encode!() |> Jason.decode!()
+    report_data =
+      report |> HumanReport.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
+
     assert {:ok, ^report} = HumanReport.from_data(report_data)
     assert {:ok, ^report} = report |> HumanReport.encode() |> elem(1) |> HumanReport.decode()
 
@@ -1212,14 +1215,18 @@ defmodule SpectreGovernanceGateTest do
     assert decoded_receipt == receipt
     assert Receipt.ref(decoded_receipt) == Receipt.ref(receipt)
 
-    json_change_set = change_set |> ChangeSet.to_data() |> Jason.encode!() |> Jason.decode!()
+    json_change_set =
+      change_set |> ChangeSet.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
+
     assert {:ok, ^change_set} = ChangeSet.from_data(json_change_set)
 
-    json_receipt = receipt |> Receipt.to_data() |> Jason.encode!() |> Jason.decode!()
+    json_receipt =
+      receipt |> Receipt.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
+
     assert {:ok, ^receipt} = Receipt.new(json_receipt)
 
     json_governance =
-      governance |> CandidateState.to_data() |> Jason.encode!() |> Jason.decode!()
+      governance |> CandidateState.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
 
     assert {:ok, ^governance} = CandidateState.new(json_governance)
     assert CandidateState.proposal_digest(json_governance) == governance.proposal_digest
@@ -1315,7 +1322,7 @@ defmodule SpectreGovernanceGateTest do
 
     assert "live_reference" in definition_reasons
 
-    plan_data = plan |> GCPlan.to_data() |> Jason.encode!() |> Jason.decode!()
+    plan_data = plan |> GCPlan.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
     assert {:ok, ^plan} = GCPlan.from_data(plan_data)
     assert {:ok, ^plan} = plan |> GCPlan.encode() |> elem(1) |> GCPlan.decode()
   end
@@ -1361,6 +1368,13 @@ defmodule SpectreGovernanceGateTest do
                []
              )
 
+    assert {:error, :inventory_unavailable} =
+             Spectre.Governance.GC.InventoryProvider.load(
+               {InventoryProvider, mode: :error},
+               store,
+               []
+             )
+
     assert {:error, {:governance_gc_inventory_exception, InventoryProvider, RuntimeError}} =
              Spectre.Governance.GC.InventoryProvider.load(
                {InventoryProvider, mode: :raise},
@@ -1393,6 +1407,22 @@ defmodule SpectreGovernanceGateTest do
                store,
                []
              )
+
+    for {field, value, reason} <- [
+          {"snapshot_id", "", :invalid_governance_gc_inventory_snapshot_id},
+          {"revision", -1, :invalid_governance_gc_inventory_revision},
+          {"fencing_token", 0, :invalid_governance_gc_inventory_fencing_token},
+          {"candidate_refs", :not_a_list, :invalid_governance_gc_inventory_refs}
+        ] do
+      snapshot = inventory_snapshot([], []) |> Map.put(field, value)
+
+      assert {:error, ^reason} =
+               Spectre.Governance.GC.InventoryProvider.load(
+                 {InventoryProvider, snapshot: snapshot},
+                 store,
+                 []
+               )
+    end
   end
 
   test "the complete built-in vocabulary remains declarative and bounded" do
@@ -1549,6 +1579,29 @@ defmodule SpectreGovernanceGateTest do
 
     assert {:error, {:candidate_authority_limit_expansion, :max_tokens, 101}} =
              GovernanceAuthority.no_expansion(parent, wider)
+
+    risk_parent = Envelope.new!(limits: %{max_risk: :high})
+    risk_narrower = Envelope.new!(limits: %{max_risk: :medium})
+    risk_wider = Envelope.new!(limits: %{max_risk: :critical})
+
+    assert :ok = GovernanceAuthority.no_expansion(risk_parent, risk_narrower)
+
+    assert {:error, {:candidate_authority_limit_expansion, :max_risk, :critical}} =
+             GovernanceAuthority.no_expansion(risk_parent, risk_wider)
+
+    custom_parent = %{Envelope.empty() | limits: %{max_risk: :custom, region: :eu}}
+    same_custom = %{Envelope.empty() | limits: %{max_risk: :custom, region: :eu}}
+    changed_custom = %{Envelope.empty() | limits: %{max_risk: :other, region: :us}}
+
+    assert :ok = GovernanceAuthority.no_expansion(custom_parent, same_custom)
+
+    assert {:error, {:candidate_authority_limit_expansion, :max_risk, :other}} =
+             GovernanceAuthority.no_expansion(custom_parent, changed_custom)
+
+    changed_region = %{same_custom | limits: %{max_risk: :custom, region: :us}}
+
+    assert {:error, {:candidate_authority_limit_expansion, :region, :us}} =
+             GovernanceAuthority.no_expansion(custom_parent, changed_region)
   end
 
   test "checker versions are mandatory and approval policies reject duplicate aliases" do
@@ -2014,7 +2067,7 @@ defmodule SpectreGovernanceGateTest do
     kinds = report.structural_changes |> Enum.map(& &1["change"]) |> MapSet.new()
     assert MapSet.subset?(MapSet.new(["added", "removed", "changed"]), kinds)
     assert Enum.any?(report.textual_changes, &(&1["before"] == "old text"))
-    assert {:ok, _json} = report |> HumanReport.to_data() |> Jason.encode()
+    assert {:ok, _json} = report |> HumanReport.to_data() |> Spectre.JSON.encode()
 
     assert Enum.any?(report.structural_changes, fn change ->
              match?(%{"$spectre_value" => "bytes"}, Map.get(change, "before"))
@@ -3334,7 +3387,7 @@ defmodule SpectreGovernanceGateTest do
     assert {:ok, quoted} =
              GovernanceData.quote(%{:atom => {:tuple, <<255>>}, "list" => [:value]})
 
-    assert {:ok, _json} = Jason.encode(quoted)
+    assert {:ok, _json} = Spectre.JSON.encode(quoted)
 
     oversized = String.duplicate("x", 1_048_577)
 

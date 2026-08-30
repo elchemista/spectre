@@ -430,16 +430,35 @@ defmodule Spectre.Classifier do
   @spec new_classifier_collection(String.t(), pos_integer(), keyword()) ::
           {:ok, Vettore.Collection.t()} | {:error, term()}
   defp new_classifier_collection(collection, dimensions, opts) do
+    index = Keyword.get(opts, :local_classifier_index, :flat)
+
+    index_options =
+      opts
+      |> Keyword.get(:local_classifier_index_options, [])
+      |> automatic_flat_index_options(index)
+
     Vettore.new(
       name: collection,
       dimensions: dimensions,
       metric: :cosine,
       normalize: :l2,
-      index: Keyword.get(opts, :local_classifier_index, :flat),
-      index_options: Keyword.get(opts, :local_classifier_index_options, []),
+      index: index,
+      index_options: index_options,
       score: :raw
     )
   end
+
+  @automatic_compute_options [gpu: :auto, gpu_fallback: :cpu, gpu_min_size: 1_000_000]
+
+  @spec automatic_flat_index_options(term(), term()) :: term()
+  defp automatic_flat_index_options(options, index)
+       when index in [:flat, Vettore.Index.Flat] and is_list(options) do
+    if Keyword.keyword?(options),
+      do: Keyword.merge(@automatic_compute_options, options),
+      else: options
+  end
+
+  defp automatic_flat_index_options(options, _index), do: options
 
   @spec rank_labels([number()], map(), keyword()) :: [{String.t(), float()}]
   defp rank_labels(

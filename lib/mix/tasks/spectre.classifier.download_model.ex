@@ -33,7 +33,11 @@ defmodule Mix.Tasks.Spectre.Classifier.DownloadModel do
     case Encoder.download(model, configured_opts()) do
       {:ok, dimensions} ->
         Mix.shell().info("Spectre classifier model ready")
-        Mix.shell().info(Jason.encode!(%{model: model, dimensions: dimensions}, pretty: true))
+
+        Mix.shell().info(
+          Spectre.JSON.encode!(%{model: model, dimensions: dimensions}, pretty: true)
+        )
+
         :ok
 
       {:error, {:missing_dependency, :ex_fastembed}} ->

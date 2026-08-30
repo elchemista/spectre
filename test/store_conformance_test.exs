@@ -33,7 +33,9 @@ defmodule SpectreStoreConformanceTest.Store do
   end
 
   defp maybe_decode(checkpoint, opts) do
-    if Keyword.get(opts, :load_as_map, false), do: Jason.decode!(checkpoint), else: checkpoint
+    if Keyword.get(opts, :load_as_map, false),
+      do: Spectre.JSON.decode!(checkpoint),
+      else: checkpoint
   end
 
   defp notify_attempt(opts, expected, revision) do

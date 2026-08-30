@@ -474,8 +474,8 @@ defmodule SpectreDataDrivenExecutionTest do
     assert {:ok, restored} =
              program
              |> Program.to_data()
-             |> Jason.encode!()
-             |> Jason.decode!()
+             |> Spectre.JSON.encode!()
+             |> Spectre.JSON.decode!()
              |> Program.from_data()
 
     assert restored == program
@@ -1628,8 +1628,8 @@ defmodule SpectreDataDrivenExecutionTest do
 
     assert {:ok, json_receipt} =
              receipt_data
-             |> Jason.encode!()
-             |> Jason.decode!()
+             |> Spectre.JSON.encode!()
+             |> Spectre.JSON.decode!()
              |> Spectre.Prompt.Receipt.from_data()
 
     assert json_receipt.digest == receipt.digest
@@ -1993,6 +1993,15 @@ defmodule SpectreDataDrivenExecutionTest do
     assert {:error, {:invalid_execution_materializer, :atom, :map, :list}} =
              Materializer.materialize(:invalid, %{}, %{}, [])
 
+    assert {:error, {:invalid_execution_materializer, :atom, :map, :list}} =
+             Materializer.materialize(:invalid, %{})
+
+    assert {:error, {:invalid_execution_materializer, :binary, :binary, :tuple}} =
+             Materializer.materialize("invalid", %{}, "context", {:opts})
+
+    assert {:error, {:invalid_execution_materializer, :other, :other, :other}} =
+             Materializer.materialize(1.5, %{}, 2.5, 3.5)
+
     assert {:error, {:invalid_execution_runtime_start, :atom, :list, :map}} =
              ExecutionRuntime.start(:invalid)
 
@@ -2045,8 +2054,8 @@ defmodule SpectreDataDrivenExecutionTest do
     assert {:ok, json_receipt} =
              receipt
              |> MigrationReceipt.to_data()
-             |> Jason.encode!()
-             |> Jason.decode!()
+             |> Spectre.JSON.encode!()
+             |> Spectre.JSON.decode!()
              |> MigrationReceipt.from_data()
 
     assert json_receipt == receipt
@@ -2067,8 +2076,8 @@ defmodule SpectreDataDrivenExecutionTest do
     assert {:ok, ^structured_receipt} =
              structured_receipt
              |> MigrationReceipt.to_data()
-             |> Jason.encode!()
-             |> Jason.decode!()
+             |> Spectre.JSON.encode!()
+             |> Spectre.JSON.decode!()
              |> MigrationReceipt.from_data()
 
     assert {:ok, _migrated, %MigrationReceipt{operation_receipt_digest: nil}} =
@@ -2759,7 +2768,7 @@ defmodule SpectreDataDrivenExecutionTest do
     fixture =
       "test/fixtures/compatibility/0.2.8/data-driven-execution-v1.json"
       |> File.read!()
-      |> Jason.decode!()
+      |> Spectre.JSON.decode!()
 
     assert fixture["schema_version"] == 1
     assert fixture["release"] == "0.2.8"

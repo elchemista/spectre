@@ -107,7 +107,7 @@ defmodule SpectreRealExFastembedSemanticCacheTest do
       %{"text" => "talk to enterprise sales", "label" => "SALES"}
     ]
 
-    File.write!(dataset_path, Jason.encode!(training_rows))
+    File.write!(dataset_path, Spectre.JSON.encode!(training_rows))
 
     training_opts = [
       embedding_adapter: @adapter,
@@ -233,7 +233,7 @@ defmodule SpectreRealExFastembedSemanticCacheTest do
   defp read_jsonl(path) do
     path
     |> File.stream!()
-    |> Enum.map(&Jason.decode!/1)
+    |> Enum.map(&Spectre.JSON.decode!/1)
   end
 
   defp embedding_for(rows, text) do

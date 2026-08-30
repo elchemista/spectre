@@ -24,7 +24,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Snapshot do
   def write(rows, path) when is_binary(path) do
     rows
     |> Enum.map(&encode_snapshot_row/1)
-    |> Enum.map_join("\n", &Jason.encode!/1)
+    |> Enum.map_join("\n", &Spectre.JSON.encode!/1)
     |> write_snapshot_file(path)
   end
 
@@ -140,7 +140,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Snapshot do
   end
 
   defp decode_snapshot_line(line) do
-    case Jason.decode(line) do
+    case Spectre.JSON.decode(line) do
       {:ok, row} -> row
       {:error, reason} -> %{"__error__" => {:invalid_json, reason}}
     end

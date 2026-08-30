@@ -68,13 +68,13 @@ defmodule Spectre.Instance.Canonical.Codec do
 
   @spec encode_json(Canonical.t()) :: {:ok, String.t()} | {:error, term()}
   def encode_json(%Canonical{} = state) do
-    with {:ok, encoded} <- encode(state), do: Jason.encode(encoded)
+    with {:ok, encoded} <- encode(state), do: Spectre.JSON.encode(encoded)
   end
 
   @spec decode(String.t() | map()) :: {:ok, Canonical.t()} | {:error, term()}
   def decode(json) when is_binary(json) do
     if byte_size(json) <= @max_json_bytes do
-      with {:ok, decoded} <- Jason.decode(json), do: decode(decoded)
+      with {:ok, decoded} <- Spectre.JSON.decode(json), do: decode(decoded)
     else
       {:error, {:canonical_checkpoint_too_large, byte_size(json), @max_json_bytes}}
     end

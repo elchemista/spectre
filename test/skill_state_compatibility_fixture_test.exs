@@ -14,7 +14,7 @@ defmodule SpectreSkillStateCompatibilityFixtureTest do
     assert %{
              "checkpoint_version" => 4,
              "state_schema_version" => 4
-           } = Jason.decode!(checkpoint)
+           } = Spectre.JSON.decode!(checkpoint)
 
     assert {:error, {:unsupported_canonical_checkpoint, 4}} = Codec.decode(checkpoint)
   end

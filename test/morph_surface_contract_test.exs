@@ -59,7 +59,9 @@ defmodule SpectreMorphSurfaceContractTest do
     assert surface.prompt_token_ceiling == 512
     assert surface.approval_requirement == :human
 
-    surface_json = surface |> Surface.to_data() |> Jason.encode!() |> Jason.decode!()
+    surface_json =
+      surface |> Surface.to_data() |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
+
     assert {:ok, ^surface} = Surface.from_data(surface_json)
 
     assert {:ok, encoded} = Canonical.encode(canonical)

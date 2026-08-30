@@ -320,7 +320,7 @@ defmodule SpectreEcosystemIntegrationTest do
       assert map["decision"] == %{"outcome" => "ok", "tuple" => ["a", 1]}
       assert is_binary(map["occurred_at"])
       assert is_binary(map["metadata"]["pid_like"])
-      assert {:ok, _json} = Jason.encode(map)
+      assert {:ok, _json} = Spectre.JSON.encode(map)
     end
   end
 

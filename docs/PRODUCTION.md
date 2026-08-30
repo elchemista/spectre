@@ -424,6 +424,30 @@ request-process exits, but its online rows are ETS data. Snapshot verified rows
 or use a custom durable adapter when learned examples must survive application
 restarts.
 
+Spectre uses Elixir's standard `JSON` module for checkpoints, snapshots,
+JSONL, evaluation artifacts, and Doctor output. There is no runtime backend
+selection, and no JSON configuration is forwarded to Vettore because Vettore
+does not serialize JSON. Pretty-printed artifacts can differ byte-for-byte
+from older Jason output while remaining semantically equivalent.
+
+The built-in Flat search and classifier math default to automatic GPU selection
+with CPU fallback and a 1,000,000-coordinate threshold. Eligible workloads use
+an available GPU; smaller workloads and hosts without one use CPU. Flat index
+options can override this policy and are validated by Vettore.
+
+Vettore 0.3.5 still performs collection input and query normalization through
+its application-level compute configuration, which has no per-collection
+override. No Vettore configuration is required to run Spectre; without one,
+these normalization steps stay on CPU. To apply the same automatic policy to
+them, optionally configure it at the host level:
+
+```elixir
+config :vettore,
+  gpu: :auto,
+  gpu_fallback: :cpu,
+  gpu_min_size: 1_000_000
+```
+
 Online rows are capped at 1,000 per Agent by default and the least recently
 updated rows are evicted. Set `semantic_cache_online_capacity` per call or
 `:online_capacity` under `config :spectre, :semantic_cache`; `:unlimited` is
@@ -453,6 +477,9 @@ unverified online examples in sensitive flows.
 - Configure finite provider deadlines.
 - Keep authorization in the action/provider boundary.
 - Keep prompt, journal, and telemetry content privacy-safe.
+- Optionally configure Vettore's global `gpu: :auto` policy when collection
+  normalization should use the same automatic GPU-or-CPU selection as
+  Spectre-owned scans; it is not an installation requirement.
 - Configure session idle shutdown for unbounded conversation IDs.
 - Snapshot or externalize learned semantic-cache rows and their embeddings;
   runtime snapshot loading must not regenerate stored vectors.

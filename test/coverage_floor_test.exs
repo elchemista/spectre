@@ -1163,10 +1163,10 @@ defmodule SpectreCoverageFloorTest do
     failed_embedding = Path.join(tmp, "failed.json")
     intent_dataset = Path.join(tmp, "intent.json")
 
-    File.write!(invalid_dataset, Jason.encode!(%{text: "not a list"}))
-    File.write!(filtered_dataset, Jason.encode!([123, %{"text" => "missing label"}]))
-    File.write!(failed_embedding, Jason.encode!([%{"text" => "fail", "label" => "FAIL"}]))
-    File.write!(intent_dataset, Jason.encode!([%{"text" => "alpha", "intent" => "ALPHA"}]))
+    File.write!(invalid_dataset, Spectre.JSON.encode!(%{text: "not a list"}))
+    File.write!(filtered_dataset, Spectre.JSON.encode!([123, %{"text" => "missing label"}]))
+    File.write!(failed_embedding, Spectre.JSON.encode!([%{"text" => "fail", "label" => "FAIL"}]))
+    File.write!(intent_dataset, Spectre.JSON.encode!([%{"text" => "alpha", "intent" => "ALPHA"}]))
 
     assert {:error, :invalid_dataset} =
              Trainer.train(invalid_dataset, Path.join(tmp, "invalid-out"),
@@ -1210,7 +1210,7 @@ defmodule SpectreCoverageFloorTest do
 
     adapter = SpectreCoverageFloorTest.ClassifierAdapter
     dataset = Path.join(tmp, "dataset.json")
-    File.write!(dataset, Jason.encode!([%{"text" => "alpha", "label" => "ALPHA"}]))
+    File.write!(dataset, Spectre.JSON.encode!([%{"text" => "alpha", "label" => "ALPHA"}]))
 
     Application.put_env(:spectre, :classifier,
       embedding_adapter: adapter,

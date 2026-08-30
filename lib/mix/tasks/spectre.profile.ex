@@ -261,7 +261,8 @@ defmodule Mix.Tasks.Spectre.Profile do
       {Spectre.Instance.Restore, :_, :_},
       {Spectre.Instance.DefinitionCompatibility, :_, :_},
       {Spectre.Run.Codec, :_, :_},
-      {Jason, :_, :_}
+      {Spectre.JSON, :_, :_},
+      {JSON, :_, :_}
     ]
   end
 

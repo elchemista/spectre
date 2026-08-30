@@ -113,7 +113,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
 
   defp collect_json_file(path, rules, opts) do
     with {:ok, text} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(text),
+         {:ok, decoded} <- Spectre.JSON.decode(text),
          true <- is_list(decoded) || {:error, {:invalid_learning_json, path}} do
       {:ok, Enum.flat_map(decoded, &source_rows(&1, rules, opts, path))}
     end
@@ -138,7 +138,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Sources do
   end
 
   defp collect_jsonl_line(line, acc, path, rules, opts) do
-    case Jason.decode(line) do
+    case Spectre.JSON.decode(line) do
       {:ok, decoded} ->
         {:cont, {:ok, Enum.reverse(source_rows(decoded, rules, opts, path), acc)}}
 

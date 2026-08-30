@@ -318,17 +318,36 @@ defmodule Spectre.Router.SemanticCache.Learned.Index do
   end
 
   defp new_collection(dimensions, opts) do
+    index = Keyword.get(opts, :semantic_cache_index, :flat)
+
+    index_options =
+      opts
+      |> Keyword.get(:semantic_cache_index_options, [])
+      |> automatic_flat_index_options(index)
+
     Owner.new_collection(
       name: "spectre_learned_semantic_cache:#{System.unique_integer([:positive])}",
       dimensions: dimensions,
       metric: :cosine,
       normalize: :l2,
-      index: Keyword.get(opts, :semantic_cache_index, :flat),
-      index_options: Keyword.get(opts, :semantic_cache_index_options, []),
+      index: index,
+      index_options: index_options,
       score: :raw,
       compressed: Keyword.get(opts, :semantic_cache_compressed?, true)
     )
   end
+
+  @automatic_compute_options [gpu: :auto, gpu_fallback: :cpu, gpu_min_size: 1_000_000]
+
+  @spec automatic_flat_index_options(term(), term()) :: term()
+  defp automatic_flat_index_options(options, index)
+       when index in [:flat, Vettore.Index.Flat] and is_list(options) do
+    if Keyword.keyword?(options),
+      do: Keyword.merge(@automatic_compute_options, options),
+      else: options
+  end
+
+  defp automatic_flat_index_options(options, _index), do: options
 
   defp stored_vectors(rows) do
     Enum.flat_map(rows, fn

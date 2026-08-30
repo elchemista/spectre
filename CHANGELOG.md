@@ -7,7 +7,7 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
-## 0.3.4 — 2026-08-29
+## 0.3.4 — Unreleased
 
 ### Added
 
@@ -30,6 +30,20 @@ migration called out explicitly below.
   checkpoint markers, including preflight capability reporting and per-package
   proof evidence.
 
+### Changed
+
+- Replaced Spectre's direct Jason usage with the standard Elixir `JSON` module
+  behind an internal boundary. Compact and pretty artifacts
+  remain semantically compatible, but key order, escaping, and pretty bytes can
+  differ; malformed input errors are now `%JSON.DecodeError{}`.
+- Updated Vettore to `~> 0.3.5`. Classifier math and built-in Flat scans default
+  to `gpu: :auto`, with CPU fallback and Vettore's 1,000,000-coordinate
+  threshold. Eligible workloads use an available GPU and all other workloads
+  stay on CPU. Valid Flat compute options can override those defaults and are
+  validated by Vettore; HNSW and custom index options remain untouched.
+  Collection vector and query normalization still follows Vettore's global
+  compute configuration.
+
 ### Fixed
 
 - Prevented runtime options from retaining a forged private Router Adapter plan
@@ -49,6 +63,10 @@ migration called out explicitly below.
 - Nested `opts: [stack_runtime: ...]` remains accepted and is normalized into
   the explicit runtime-only field. Existing schema-v1 erasure proofs without a
   `package_data` component remain valid and are interpreted as not configured.
+- Jason is no longer a direct or transitively guaranteed Spectre dependency.
+  Consumers that invoke Jason in application code must declare it themselves;
+  consumers that use only Spectre need no replacement dependency because
+  Elixir `~> 1.19` provides `JSON`.
 
 ## 0.3.3 — 2026-08-23
 

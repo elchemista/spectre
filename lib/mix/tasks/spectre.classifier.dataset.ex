@@ -50,7 +50,12 @@ defmodule Mix.Tasks.Spectre.Classifier.Dataset do
     case Dataset.from_agent(agent, cli_opts) do
       {:ok, rows} ->
         File.mkdir_p!(Path.dirname(out_path))
-        File.write!(out_path, Jason.encode!(rows, pretty: Keyword.get(cli_opts, :pretty, true)))
+
+        File.write!(
+          out_path,
+          Spectre.JSON.encode!(rows, pretty: Keyword.get(cli_opts, :pretty, true))
+        )
+
         Mix.shell().info("Wrote #{length(rows)} Spectre classifier rows to #{out_path}")
         :ok
 

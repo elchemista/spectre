@@ -79,6 +79,26 @@ Classifier artifacts use compact centroids by default. At runtime, the local
 classifier indexes centroids with Vettore, while semantic-cache search uses the
 saved row vectors in `semantic_cache.jsonl`.
 
+The default Flat classifier index uses `gpu: :auto`, `gpu_fallback: :cpu`, and
+`gpu_min_size: 1_000_000`. Vettore sends an eligible scan to an available GPU;
+smaller scans and hosts without a GPU stay on CPU. Valid
+`local_classifier_index_options` override these defaults and are validated by
+Vettore, so `gpu: false` forces CPU while `gpu: true` forces a GPU attempt under
+the selected fallback policy. Options for HNSW and custom indexes are passed
+through unchanged.
+
+Vettore 0.3.5 still reads its application-level compute configuration while
+normalizing collection vectors and queries. No Vettore configuration is
+required; without one, those normalization steps stay on CPU. To apply
+automatic selection to them too, optionally configure the host:
+
+```elixir
+config :vettore,
+  gpu: :auto,
+  gpu_fallback: :cpu,
+  gpu_min_size: 1_000_000
+```
+
 For larger datasets, nearest-example routing can be worth the extra memory:
 
 ```elixir

@@ -78,7 +78,7 @@ defmodule Spectre.Eval do
     if trimmed == "" or String.starts_with?(trimmed, "#") do
       {:cont, {:ok, cases}}
     else
-      with {:ok, attrs} <- Jason.decode(trimmed),
+      with {:ok, attrs} <- Spectre.JSON.decode(trimmed),
            {:ok, evaluation_case} <- Case.new(attrs) do
         {:cont, {:ok, [evaluation_case | cases]}}
       else

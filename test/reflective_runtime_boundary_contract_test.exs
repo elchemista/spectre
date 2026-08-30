@@ -293,8 +293,8 @@ defmodule SpectreReflectiveRuntimeBoundaryContractTest do
     assert {:error, {:invalid_definition_lifecycle_transition, :unknown, :state}} =
              Lifecycle.transition(lifecycle, :unknown, :state)
 
-    assert {:ok, encoded_data} = lifecycle |> Lifecycle.to_data() |> Jason.encode()
-    assert {:ok, restored_data} = encoded_data |> Jason.decode!() |> Lifecycle.from_data()
+    assert {:ok, encoded_data} = lifecycle |> Lifecycle.to_data() |> Spectre.JSON.encode()
+    assert {:ok, restored_data} = encoded_data |> Spectre.JSON.decode!() |> Lifecycle.from_data()
     assert restored_data == lifecycle
 
     Enum.each(

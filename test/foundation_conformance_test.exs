@@ -118,7 +118,7 @@ defmodule SpectreFoundationConformanceTest do
 
   test "the 0.2.6 golden fixture pins every earlier recovery artifact" do
     _fixture_atoms = @fixture_atoms
-    fixture = @gate_fixture |> File.read!() |> Jason.decode!()
+    fixture = @gate_fixture |> File.read!() |> Spectre.JSON.decode!()
 
     assert fixture["schema_version"] == 1
     assert fixture["release"] == "0.2.6"
@@ -235,7 +235,7 @@ defmodule SpectreFoundationConformanceTest do
   end
 
   test "the gates reject corruption, incompatible packages, and ambiguous ownership" do
-    state = fixture("0.1.6/state-v5.json") |> File.read!() |> Jason.decode!()
+    state = fixture("0.1.6/state-v5.json") |> File.read!() |> Spectre.JSON.decode!()
     assert {:error, _reason} = state |> Map.put("unknown", true) |> Conformance.verify_state()
 
     run = read_base64("0.1.6/run-v1.checkpoint.base64")
@@ -244,7 +244,7 @@ defmodule SpectreFoundationConformanceTest do
     assert {:error, _reason} = Conformance.verify_run(corrupted_run)
 
     checkpoint = read_base64("0.2.5/skill-state-canonical-v4.json.base64")
-    corrupted = checkpoint |> Jason.decode!() |> Map.put("checkpoint_version", 99)
+    corrupted = checkpoint |> Spectre.JSON.decode!() |> Map.put("checkpoint_version", 99)
 
     assert {:error, {:unsupported_canonical_checkpoint, 99}} =
              Conformance.verify_checkpoint(corrupted)
@@ -279,7 +279,7 @@ defmodule SpectreFoundationConformanceTest do
   test "foundation and Stack public boundaries return stable errors for malformed shapes" do
     _fixture_atoms = @fixture_atoms
 
-    state = fixture("0.1.6/state-v5.json") |> File.read!() |> Jason.decode!()
+    state = fixture("0.1.6/state-v5.json") |> File.read!() |> Spectre.JSON.decode!()
     assert {:ok, %{format: :state, source_version: 5}} = Conformance.verify_state(state)
 
     for {value, shape} <- [
@@ -394,7 +394,7 @@ defmodule SpectreFoundationConformanceTest do
     # Canonical checkpoints never create atoms while decoding. These are
     # trusted, hash-pinned release fixtures, so the test preloads their finite
     # atom vocabulary before exercising the production-safe reader.
-    case Jason.decode(decoded) do
+    case Spectre.JSON.decode(decoded) do
       {:ok, json} -> preload_fixture_atoms(json)
       {:error, _reason} -> :ok
     end
@@ -426,5 +426,5 @@ defmodule SpectreFoundationConformanceTest do
     |> Base.encode16(case: :lower)
   end
 
-  defp stringify(value), do: value |> Jason.encode!() |> Jason.decode!()
+  defp stringify(value), do: value |> Spectre.JSON.encode!() |> Spectre.JSON.decode!()
 end

@@ -865,7 +865,7 @@ defmodule SpectreRuntimeSkillDefinitionTest do
     fixture =
       "test/fixtures/compatibility/0.2.7/runtime-skill-routing-v1.json"
       |> File.read!()
-      |> Jason.decode!()
+      |> Spectre.JSON.decode!()
 
     assert fixture["schema_version"] == 1
     assert fixture["release"] == "0.2.7"

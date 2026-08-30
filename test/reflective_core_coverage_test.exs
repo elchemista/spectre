@@ -1379,6 +1379,25 @@ defmodule SpectreReflectiveCoreCoverageTest do
 
     assert {:error, {:invalid_experience_redaction_input, :map, :tuple}} =
              Redactor.redact(%{}, {:bad})
+
+    assert {:error, {:invalid_portable_redaction_options, :tuple}} =
+             Redactor.redact_portable(%{}, {:bad})
+
+    assert {:ok, {1, "safe"}, []} = Redactor.redact_portable({1, "safe"})
+
+    assert {:error, {:nonportable_redaction_value, [0], :pid}} =
+             Redactor.redact_portable([self()])
+
+    assert {:error, {:nonportable_redaction_value, [1], :pid}} =
+             Redactor.redact_portable({:safe, self()})
+
+    assert {:error, {:nonportable_redaction_value, [:key], :pid}} =
+             Redactor.redact_portable(%{{:complex, :key} => self()})
+
+    too_deep_portable = Enum.reduce(1..66, :leaf, fn _index, nested -> [nested] end)
+
+    assert {:error, {:portable_redaction_depth_exceeded, _path, 64}} =
+             Redactor.redact_portable(too_deep_portable)
   end
 
   test "governance data normalization rejects ambiguous, oversized and process-local evidence" do

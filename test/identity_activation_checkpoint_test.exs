@@ -131,7 +131,7 @@ defmodule SpectreIdentityActivationCheckpointTest.CheckpointStore do
     Agent.get_and_update(Keyword.fetch!(opts, :server), fn entries ->
       case {Map.get(entries, legacy_ref.key), Map.get(entries, stable_ref.key)} do
         {{_revision, ^legacy}, nil} ->
-          revision = migrated |> Jason.decode!() |> Map.fetch!("revision")
+          revision = migrated |> Spectre.JSON.decode!() |> Map.fetch!("revision")
 
           next =
             entries
