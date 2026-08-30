@@ -830,14 +830,8 @@ defmodule Spectre.Runtime do
          opts
        ) do
     case Spectre.Runner.resume_inference(descriptor, response, run.input, ctx) do
-      {:ok, result} ->
-        finish_turn_result(run, result, ctx, opts)
-
-      {:inference, %PreparedInference{} = prepared} ->
-        stage_chained_inference(run, prepared, opts)
-
-      {:error, reason} ->
-        fail_run_step(run, reason, opts, :run_resume_failed)
+      {:ok, result} -> finish_turn_result(run, result, ctx, opts)
+      {:error, reason} -> fail_run_step(run, reason, opts, :run_resume_failed)
     end
   end
 
@@ -880,22 +874,6 @@ defmodule Spectre.Runtime do
       {:error, reason} ->
         fail_run_step(run, reason, downstream_opts, :run_resume_failed)
     end
-  end
-
-  # A response-generation continuation may stage an effect and open its policy
-  # before asking for the policy prompt. That is the only inference handoff
-  # allowed to advance the authoritative Run state. Router classifiers prepare
-  # inference from their own state-neutral context and must never replace it.
-  defp stage_chained_inference(
-         %Run{} = run,
-         %PreparedInference{state: %State{} = state} = prepared,
-         opts
-       ) do
-    stage_inference(%{run | state: state}, prepared, opts)
-  end
-
-  defp stage_chained_inference(%Run{} = run, %PreparedInference{} = prepared, opts) do
-    stage_inference(run, prepared, opts)
   end
 
   @spec run_skill_or_routed_turn(Context.t()) ::

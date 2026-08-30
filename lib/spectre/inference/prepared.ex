@@ -22,7 +22,6 @@ defmodule Spectre.Inference.Prepared do
     :selection,
     :frozen_selection,
     :provider_opts,
-    :state,
     :stream_adapter,
     stream_adapter_opts: [],
     stream_capabilities: MapSet.new()
@@ -33,7 +32,6 @@ defmodule Spectre.Inference.Prepared do
           selection: Selection.t(),
           frozen_selection: FrozenSelection.t(),
           provider_opts: keyword(),
-          state: Spectre.State.t() | nil,
           stream_adapter: module() | nil,
           stream_adapter_opts: keyword(),
           stream_capabilities: MapSet.t(atom())

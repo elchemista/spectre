@@ -125,7 +125,7 @@ defmodule Spectre.Runner do
 
   @doc false
   @spec resume_inference(Descriptor.t(), Response.t(), Input.t(), Spectre.Context.t()) ::
-          {:ok, Result.t()} | {:inference, Prepared.t()} | {:error, term()}
+          {:ok, Result.t()} | {:error, term()}
   def resume_inference(
         %Descriptor{} = descriptor,
         %Response{} = response,
