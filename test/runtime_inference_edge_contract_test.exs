@@ -81,6 +81,32 @@ defmodule SpectreRuntimeInferenceEdgeContractTest.Agent do
   def pong(_input, _context), do: "pong"
 end
 
+defmodule SpectreRuntimeInferenceEdgeContractTest.ClassifierModel do
+  @moduledoc false
+
+  @behaviour Spectre.LLM
+
+  @impl Spectre.LLM
+  def complete(_prompt, _opts), do: {:ok, "PING"}
+end
+
+defmodule SpectreRuntimeInferenceEdgeContractTest.ClassifierAgent do
+  @moduledoc false
+
+  use Spectre.Agent
+
+  classifier(SpectreRuntimeInferenceEdgeContractTest.ClassifierModel)
+  router(via: [:llm_classifier], semantic_cache?: false, classification_log?: false)
+
+  flow :runtime_classifier_edges do
+    on :PING, via: [:llm_classifier], cache: false do
+      run(:pong)
+    end
+  end
+
+  def pong(_input, _context), do: "pong"
+end
+
 defmodule SpectreRuntimeInferenceEdgeContractTest.DefinitionBoundary do
   @moduledoc false
 
@@ -109,6 +135,7 @@ defmodule SpectreRuntimeInferenceEdgeContractTest do
   alias Spectre.State
 
   @agent SpectreRuntimeInferenceEdgeContractTest.Agent
+  @classifier_agent SpectreRuntimeInferenceEdgeContractTest.ClassifierAgent
   @definition_boundary SpectreRuntimeInferenceEdgeContractTest.DefinitionBoundary
   @model SpectreRuntimeInferenceEdgeContractTest.Model
   @planner SpectreRuntimeInferenceEdgeContractTest.Planner
@@ -288,6 +315,26 @@ defmodule SpectreRuntimeInferenceEdgeContractTest do
     assert completed.result.reply_text == "confirm protected action"
     assert Result.open_awaitable(completed.result).name == :confirm
     assert Result.pending_effect(completed.result).name == :protected
+  end
+
+  test "route classifier inference cannot replace the authoritative Run state" do
+    state = %State{
+      revision: 2,
+      conversation_id: "classifier-conversation",
+      data: %{authoritative: true}
+    }
+
+    opts = [
+      state: state,
+      instance_run_lifecycle?: true
+    ]
+
+    assert {:continue, started} = Runtime.start(@classifier_agent, "classify this", opts)
+
+    assert {:dispatch, %Invocation{}, awaiting, _prepared} =
+             Runtime.advance(started, opts)
+
+    assert awaiting.state == state
   end
 
   test "legacy Runtime.handle refuses inference dispatch outside an Instance" do
