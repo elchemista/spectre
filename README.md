@@ -31,7 +31,7 @@ Every side effect crosses a fixed safety boundary:
 
 - models and routes may **propose** work;
 - protected work must pass a **deterministic policy**;
-- **approval changes state** — it does not run anything;
+- **approval changes state** - it does not run anything;
 - **execution happens only through an explicit host call**;
 - every outcome is returned as plain data.
 
@@ -56,7 +56,7 @@ input
 ### 2. Routing is a dial, not a dogma.
 
 The lifecycle around a decision is always deterministic. How the agent
-*decides* — which route handles this input — is exactly as deterministic as
+*decides* - which route handles this input - is exactly as deterministic as
 you configure it to be:
 
 ```elixir
@@ -66,17 +66,17 @@ router(via: [:regex, :embedding, :classifier,
              :semantic_cache, :llm_classifier])      # model-in-the-loop
 ```
 
-With `:llm_classifier` in the chain, routing is genuinely model-driven — but
+With `:llm_classifier` in the chain, routing is genuinely model-driven - but
 only between routes the agent declares, only after cheaper evidence was not
 decisive, and always inside the same deterministic lifecycle. A refunds bot can
 run pure regex; an open-ended assistant can lean on the LLM; both get the same
 guarantees. See [Routing](docs/ROUTING.md).
 
-### 3. Everything durable is data — and data never becomes code.
+### 3. Everything durable is data - and data never becomes code.
 
 Agents compile to canonical, content-addressed **Definitions**. Runtime-authored
 behavior (skills, work programs, change proposals) is portable data that can
-only reference operations the host already registered — never callbacks, never
+only reference operations the host already registered - never callbacks, never
 executable templates. An agent can even propose changes to *itself*, but only
 through the same governance every change passes: evaluation, review, explicit
 approval, activation, and rollback. See [Governance](docs/GOVERNANCE.md) and
@@ -166,14 +166,14 @@ case turn.decision do
 end
 ```
 
-The safety boundary in action — starting a protected action never executes it:
+The safety boundary in action - starting a protected action never executes it:
 
 ```elixir
 # The model/route proposes; the effect waits for the policy.
 {:ok, awaiting} = Spectre.turn(MyApp.SupportAgent, "delete my account")
 {:awaiting, %Spectre.Awaitable{status: :open}, result} = awaiting.decision
 
-# Approval changes state — still nothing has run.
+# Approval changes state - still nothing has run.
 {:ok, approved} =
   Spectre.turn(MyApp.SupportAgent, "yes, delete it", state: result.state)
 {:needs, %Spectre.Effect{status: :approved}, approved_result} = approved.decision
@@ -188,7 +188,7 @@ The safety boundary in action — starting a protected action never executes it:
   })
 ```
 
-A full walkthrough — approval, rejection, retries, sessions, persistence — is
+A full walkthrough - approval, rejection, retries, sessions, persistence - is
 in [Getting Started](docs/GETTING_STARTED.md).
 
 ## Core Concepts
@@ -196,7 +196,7 @@ in [Getting Started](docs/GETTING_STARTED.md).
 | Concept | In one sentence | Docs |
 | --- | --- | --- |
 | **Agent** | One module declaring routes, policies, actions, and prompts. | [DSL](docs/DSL.md) |
-| **Route** | How one input is matched to one handler — via the routing dial. | [Routing](docs/ROUTING.md) |
+| **Route** | How one input is matched to one handler - via the routing dial. | [Routing](docs/ROUTING.md) |
 | **Effect** | A described side effect with an explicit lifecycle; it never runs implicitly. | [Actions](docs/ACTIONS.md) |
 | **Policy** | A deterministic confirmation gate in front of protected actions. | [Actions](docs/ACTIONS.md) |
 | **Skill** | Reusable scoped behavior (flows, prompts, policies) an Agent mounts. | [Skills](docs/SKILLS.md) |
@@ -206,7 +206,7 @@ in [Getting Started](docs/GETTING_STARTED.md).
 | **Stack** | Installable packages with immutable manifests; activation is not authorization. | [Stack](docs/STACK.md) |
 | **Definition** | The canonical, content-addressed form of an agent. | [Canonical Definitions](docs/CANONICAL_DEFINITIONS.md) |
 | **Governance** | How Definitions change: closed ChangeSets, review, approval, activation, rollback. | [Governance](docs/GOVERNANCE.md) |
-| **Reflection / Forge** | The agent examining itself and proposing changes — under the same governance. | [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md) |
+| **Reflection / Forge** | The agent examining itself and proposing changes - under the same governance. | [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md) |
 
 ## Spectre Ecosystem
 
