@@ -743,6 +743,7 @@ defmodule Spectre.Runtime do
        ) do
     revision = run.revision + 1
     step_id = Value.token("inference-step", {run.id, revision, prepared.descriptor.id})
+    state = if match?(%State{}, prepared.state), do: prepared.state, else: run.state
 
     continuation =
       InferenceContinuation.new(prepared.descriptor,
@@ -754,6 +755,7 @@ defmodule Spectre.Runtime do
     staged = %{
       run
       | status: :awaiting,
+        state: state,
         cursor: :inference,
         revision: revision,
         step_id: step_id,
@@ -831,6 +833,7 @@ defmodule Spectre.Runtime do
        ) do
     case Spectre.Runner.resume_inference(descriptor, response, run.input, ctx) do
       {:ok, result} -> finish_turn_result(run, result, ctx, opts)
+      {:inference, %PreparedInference{} = prepared} -> stage_inference(run, prepared, opts)
       {:error, reason} -> fail_run_step(run, reason, opts, :run_resume_failed)
     end
   end

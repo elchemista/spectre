@@ -42,6 +42,7 @@ defmodule Spectre.Inference do
          selection: selection,
          frozen_selection: FrozenSelection.from_selection(selection),
          provider_opts: put_provider_output_limit(provider_opts, descriptor),
+         state: ctx.state,
          stream_adapter: stream_binding.adapter,
          stream_adapter_opts: stream_binding.opts,
          stream_capabilities: stream_binding.capabilities

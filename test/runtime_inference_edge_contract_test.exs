@@ -28,10 +28,39 @@ defmodule SpectreRuntimeInferenceEdgeContractTest.StreamAdapter do
   def cancel(_state, _reason), do: :ok
 end
 
+defmodule SpectreRuntimeInferenceEdgeContractTest.Actions do
+  @moduledoc false
+
+  def protected(args), do: {:ok, args}
+end
+
+defmodule SpectreRuntimeInferenceEdgeContractTest.Planner do
+  @moduledoc false
+
+  @behaviour Spectre.Action.Planner
+
+  @impl true
+  def plan_response("PLAN PROTECTED", _ctx, _opts) do
+    {:ok, %{reply_text: "", actions: [%{name: :protected}]}}
+  end
+
+  def plan_response(text, _ctx, _opts), do: {:ok, %{reply_text: text, actions: []}}
+end
+
 defmodule SpectreRuntimeInferenceEdgeContractTest.Agent do
   @moduledoc false
 
   use Spectre.Agent, prompt_root: "test/fixtures/strategy_matrix/prompts"
+
+  actions(SpectreRuntimeInferenceEdgeContractTest.Actions)
+
+  protect(:protected, with: :confirm)
+
+  policy :confirm do
+    request("base.text.heex")
+    accept(:approved, regex: ~r/^yes$/)
+    reject(:rejected, regex: ~r/^no$/)
+  end
 
   router(via: [:regex], semantic_cache?: false, classification_log?: false)
 
@@ -41,6 +70,10 @@ defmodule SpectreRuntimeInferenceEdgeContractTest.Agent do
     end
 
     on :ASK, regex: ~r/^ask$/ do
+      ask(:base)
+    end
+
+    on :PROTECTED, regex: ~r/^protected$/ do
       ask(:base)
     end
   end
@@ -78,6 +111,7 @@ defmodule SpectreRuntimeInferenceEdgeContractTest do
   @agent SpectreRuntimeInferenceEdgeContractTest.Agent
   @definition_boundary SpectreRuntimeInferenceEdgeContractTest.DefinitionBoundary
   @model SpectreRuntimeInferenceEdgeContractTest.Model
+  @planner SpectreRuntimeInferenceEdgeContractTest.Planner
   @stream_adapter SpectreRuntimeInferenceEdgeContractTest.StreamAdapter
 
   test "admission converts raised and thrown definition boundaries into stable failures" do
@@ -212,6 +246,48 @@ defmodule SpectreRuntimeInferenceEdgeContractTest do
                {:inference, bounded_invocation, Spectre.Inference.Response.new("too long")},
                bounded_opts
              )
+  end
+
+  test "response inference can durably chain into a protected action policy prompt" do
+    opts = [
+      model: @model,
+      action_planner: @planner,
+      instance_run_lifecycle?: true
+    ]
+
+    {:continue, started} = Runtime.start(@agent, "protected", opts)
+
+    assert {:dispatch, %Invocation{} = response_invocation, response_awaiting, _prepared} =
+             Runtime.advance(started, opts)
+
+    assert {:dispatch, %Invocation{} = policy_invocation, policy_awaiting, _prepared} =
+             Runtime.resume(
+               response_awaiting,
+               {:inference, response_invocation,
+                Spectre.Inference.Response.new("PLAN PROTECTED")},
+               opts
+             )
+
+    assert %Spectre.Effect{name: :protected, status: :waiting_policy} =
+             State.pending_effect(policy_awaiting.state, policy_awaiting.id)
+
+    assert %Spectre.Awaitable{name: :confirm, status: :open} =
+             State.open_policy_awaitable(policy_awaiting.state, policy_awaiting.id)
+
+    assert {:boundary, %Boundary{kind: :needs}, completed} =
+             Runtime.resume(
+               policy_awaiting,
+               {:inference, policy_invocation,
+                Spectre.Inference.Response.new(
+                  text: "confirm protected action",
+                  selection: policy_awaiting.inference_continuation.frozen_selection
+                )},
+               opts
+             )
+
+    assert completed.result.reply_text == "confirm protected action"
+    assert Result.open_awaitable(completed.result).name == :confirm
+    assert Result.pending_effect(completed.result).name == :protected
   end
 
   test "legacy Runtime.handle refuses inference dispatch outside an Instance" do
