@@ -1,70 +1,51 @@
 defmodule Mix.Tasks.Spectre.Doctor do
-  @moduledoc "Runs read-only Spectre diagnostics in text or JSON form."
+  @shortdoc "Checks Spectre's declared governance boundary"
+
+  @moduledoc """
+  Runs the Spectre boundary and Zone M dependency checks.
+
+  Application-specific modules and records can be supplied through:
+
+      config :spectre, :doctor,
+        mind_modules: [MyApp.AgentMind],
+        executor_modules: [MyApp.PaymentExecutor],
+        ingress: MyApp.Ingress,
+        store: {Spectre.Ledger.Store.Postgres, repo: MyApp.Repo},
+        genesis: genesis,
+        host_profile: host_profile,
+        surface: surface
+
+  The static result is evidence about ordinary compiled dependencies, not proof
+  of process or machine isolation.
+  """
 
   use Mix.Task
 
   alias Spectre.Doctor
-  alias Spectre.Doctor.Report
-
-  @shortdoc "Check Spectre runtime contracts"
-  @switches [agent: :string, format: :string, strict: :boolean]
 
   @impl Mix.Task
-  @doc false
-  @spec run([String.t()]) :: :ok | no_return()
   def run(argv) do
-    Mix.Task.run("app.config")
-    {opts, args, invalid} = OptionParser.parse(argv, strict: @switches)
-    if args != [] or invalid != [], do: fail("invalid_arguments", "invalid arguments")
+    if argv != [], do: Mix.raise("spectre.doctor does not accept command-line arguments")
 
-    format = format!(opts[:format] || "text")
-    agent = agent!(opts[:agent])
-    doctor_opts = if agent, do: [agent: agent], else: []
+    Mix.Task.run("compile")
+    opts = Application.get_env(:spectre, :doctor, [])
+    report = Doctor.check(opts)
 
-    report =
-      case Doctor.run(doctor_opts) do
-        {:ok, report} -> report
-        _error -> fail("invalid_options", "invalid doctor options")
-      end
+    Enum.each(report.warnings, fn finding ->
+      Mix.shell().info([:yellow, "warning: ", :reset, format_finding(finding)])
+    end)
 
-    Mix.shell().info(Report.format(report, format))
-    enforce!(report, opts[:strict] == true)
-    :ok
-  end
+    Enum.each(report.errors, fn finding ->
+      Mix.shell().error(["error: ", format_finding(finding)])
+    end)
 
-  defp format!("text"), do: :text
-  defp format!("json"), do: :json
-  defp format!(_format), do: fail("invalid_format", "expected --format text or json")
-
-  defp agent!(nil), do: nil
-
-  defp agent!(name) do
-    parts =
-      name
-      |> String.trim()
-      |> String.trim_leading("Elixir.")
-      |> String.split(".", trim: true)
-
-    if parts != [] and Enum.all?(parts, &Regex.match?(~r/^[A-Z][A-Za-z0-9_]*$/, &1)) do
-      module = Module.safe_concat(parts)
-
-      if Code.ensure_loaded?(module),
-        do: module,
-        else: fail("invalid_agent", "agent is unavailable")
+    if report.ok? do
+      Mix.shell().info([:green, "Spectre doctor passed", :reset])
     else
-      fail("invalid_agent", "agent is unavailable")
-    end
-  rescue
-    _exception -> fail("invalid_agent", "agent is unavailable")
-  end
-
-  defp enforce!(report, strict?) do
-    unless Report.acceptable?(report, strict: strict?) do
-      code = if report.summary.errors == 0 and strict?, do: "strict_failed", else: "failed"
-      fail(code, "checks did not pass")
+      Mix.raise("Spectre doctor found #{length(report.errors)} error(s)")
     end
   end
 
-  @spec fail(String.t(), String.t()) :: no_return()
-  defp fail(code, message), do: Mix.raise("[spectre_doctor_#{code}] #{message}")
+  defp format_finding(%{check: check, reason: reason}),
+    do: "#{check}: #{inspect(reason)}"
 end

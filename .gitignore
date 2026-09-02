@@ -29,6 +29,7 @@ GUIDELINE.md
 SKILL.md
 
 PLAN.md
+piano*.md
 
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump

@@ -1,4 +1,0 @@
-# Spectre routing evaluation fixture
-{"id":"deterministic-help","input":"  HELP  ","expected_route":"HELP","expected_strategy":"regex","llm":"forbidden","tags":["deterministic","english"]}
-{"id":"local-paraphrase","input":"local request","expected_route":"LOCAL","expected_strategy":"local_classifier","llm":"forbidden","tags":["local","english"]}
-{"id":"ambiguous-needs-llm","input":"needs llm","expected_route":"LLM_ROUTE","expected_strategy":"llm_classifier","llm":"required","tags":["llm","english"]}
