@@ -101,7 +101,8 @@ defmodule Spectre.Consequence.Contract do
 
   @doc "Restores a consequence contract and verifies its content reference."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :consequence_contract)
 
   @doc "Returns the reference derived from the immutable contract content."
   @spec content_ref(t()) :: String.t()

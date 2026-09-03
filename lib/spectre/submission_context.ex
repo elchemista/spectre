@@ -108,7 +108,8 @@ defmodule Spectre.SubmissionContext do
 
   @doc "Restores a context from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :submission_context)
 
   @doc "Returns the stable digest of the complete context."
   @spec digest(t()) :: String.t()

@@ -14,6 +14,7 @@ defmodule Spectre.Kernel.Authority do
   """
 
   alias Spectre.{Candidate, Condition, Declassification, Disclosure, Mandate, Portable, Row}
+  alias Spectre.Mandate.Ancestry
 
   @retained_revocation_class "mandate.revoke"
   @retained_revocation_purpose_ref "spectre:purpose:retained-mandate-revocation:v1"
@@ -676,19 +677,21 @@ defmodule Spectre.Kernel.Authority do
   end
 
   defp not_revoked(mandate, view, time) do
-    ref = mandate_ref(mandate)
-
-    if revocation_effective?(ref, mandate, view, time) do
-      {:error, :mandate_revoked}
-    else
-      ancestor_revocation_status(mandate, view, time, MapSet.new([ref]))
+    with {:ok, mandates, revocations} <- ancestry_view(view),
+         {:ok, status} <- Ancestry.status(mandates, revocations, mandate, time) do
+      case status do
+        :current -> :ok
+        {:revoked, :direct, _ref} -> {:error, :mandate_revoked}
+        {:revoked, :ancestor, _ref} -> {:error, :mandate_ancestor_revoked}
+      end
     end
   end
 
   defp not_directly_revoked(mandate, view, time) do
-    if revocation_effective?(mandate.ref, mandate, view, time),
-      do: {:error, :mandate_revoked},
-      else: :ok
+    with {:ok, _mandates, revocations} <- ancestry_view(view),
+         {:ok, revoked?} <- Ancestry.directly_revoked?(revocations, mandate, time) do
+      if revoked?, do: {:error, :mandate_revoked}, else: :ok
+    end
   end
 
   defp meter_debt_status_for(mandate, view, visited, level) do
@@ -774,43 +777,6 @@ defmodule Spectre.Kernel.Authority do
 
   defp mandate_superseded?(_view, _ref), do: false
 
-  defp ancestor_revocation_status(mandate, view, time, visited) do
-    parent_ref = get(mandate, [:parent_ref, :parent])
-
-    cond do
-      not present?(parent_ref) ->
-        :ok
-
-      MapSet.member?(visited, parent_ref) ->
-        {:error, :mandate_ancestry_cycle}
-
-      true ->
-        with {:ok, parent} <- mandate_by_ref(view, parent_ref),
-             :ok <- delegation_within?(parent, mandate, time),
-             :ok <- ancestor_not_cascade_revoked(parent, view, time) do
-          ancestor_revocation_status(parent, view, time, MapSet.put(visited, parent_ref))
-        end
-    end
-  end
-
-  defp ancestor_not_cascade_revoked(parent, view, time) do
-    ref = mandate_ref(parent)
-
-    if revocation_effective?(ref, parent, view, time) and cascade_revocation?(parent),
-      do: {:error, :mandate_ancestor_revoked},
-      else: :ok
-  end
-
-  defp cascade_revocation?(mandate) do
-    configured = get(mandate, [:revocation], %{})
-
-    case revocation_mode(configured) do
-      :cascade -> true
-      :retained_controller -> false
-      _invalid -> true
-    end
-  end
-
   defp revocation_mode(nil), do: nil
   defp revocation_mode(:cascade), do: :cascade
   defp revocation_mode(:retained_controller), do: :retained_controller
@@ -822,47 +788,25 @@ defmodule Spectre.Kernel.Authority do
 
   defp revocation_mode(_value), do: :invalid
 
-  defp revocation_effective?(ref, mandate, view, time) do
-    local_time = get(mandate, [:revoked_at])
-    info = revocation_info(view, ref)
-
-    local_effective =
-      present?(local_time) and (not present?(time) or comparable_at_or_after?(time, local_time))
-
-    local_effective or revocation_info_effective?(info, time)
-  end
-
-  defp revocation_info_effective?(nil, _time), do: false
-  defp revocation_info_effective?(false, _time), do: false
-  defp revocation_info_effective?(true, _time), do: true
-
-  defp revocation_info_effective?(at, time) when is_integer(at) do
-    not present?(time) or comparable_at_or_after?(time, at)
-  end
-
-  defp revocation_info_effective?(info, time) when is_map(info) do
-    effective_at = get(info, [:effective_at, :revoked_at, :at])
-    active = get(info, [:active, :revoked], true)
-
-    active != false and
-      (not present?(effective_at) or not present?(time) or
-         comparable_at_or_after?(time, effective_at))
-  end
-
-  defp revocation_info_effective?(_info, _time), do: true
-
-  defp revocation_info(view, ref) when is_map(view) do
-    revoked = get(view, [:revoked, :revocations], %{})
+  defp ancestry_view(view) do
+    mandates = current_mandates(view)
+    refs = Enum.map(mandates, &mandate_ref/1)
+    revocations = if is_map(view), do: get(view, [:revocations], %{}), else: %{}
 
     cond do
-      match?(%MapSet{}, revoked) -> if MapSet.member?(revoked, ref), do: true
-      is_list(revoked) -> if ref in revoked, do: true
-      is_map(revoked) -> Map.get(revoked, ref) || Map.get(revoked, stringify(ref))
-      true -> nil
+      Enum.any?(refs, &(not present?(&1))) ->
+        {:error, :invalid_mandate_identity}
+
+      length(refs) != MapSet.size(MapSet.new(refs)) ->
+        {:error, :mandate_revision_ambiguous}
+
+      not is_map(revocations) or is_struct(revocations) ->
+        {:error, :invalid_mandate_revocation_view}
+
+      true ->
+        {:ok, Map.new(mandates, &{mandate_ref(&1), &1}), revocations}
     end
   end
-
-  defp revocation_info(_view, _ref), do: nil
 
   defp current_mandates(view) do
     mandates =

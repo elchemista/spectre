@@ -45,7 +45,9 @@ defmodule Spectre.Attempt.Runner do
   alias Spectre.{Act, Attempt, Decision, Evidence, Outcome, Portable}
   alias Spectre.Attempt.Runner.Result
   alias Spectre.Domain.Sequencer
+  alias Spectre.Execution.Boundary
   alias Spectre.Kernel.Grant
+  alias Spectre.Outcome.Attestation
   alias Spectre.Secret.CheckoutReceipt
 
   @decision_act_fields [
@@ -463,56 +465,34 @@ defmodule Spectre.Attempt.Runner do
 
   defp classify_outcome(status, evidence, act, attempt, observed_at, details_ref) do
     supporting = outcome_attestations(evidence, status, act, attempt, observed_at)
+    causal = causal_outcome_attestations(evidence, act, attempt, observed_at)
 
     cond do
       status == :ambiguous ->
-        {:ambiguous, supporting, observed_at, details_ref}
+        {:ambiguous, causal, observed_at, details_ref}
 
       supporting != [] and
           not conflicting_outcome_attestation?(evidence, status, act, attempt, observed_at) ->
         {status, supporting, observed_at, details_ref}
 
       true ->
-        ambiguous = outcome_attestations(evidence, :ambiguous, act, attempt, observed_at)
-
-        {:ambiguous, ambiguous, observed_at, "spectre:attempt-boundary:unattested-outcome:v1"}
+        {:ambiguous, causal, observed_at, "spectre:attempt-boundary:unattested-outcome:v1"}
     end
   end
 
   defp outcome_attestations(evidence, status, act, attempt, observed_at) do
-    expected_stance = Outcome.evidence_stance(status)
+    Enum.filter(evidence, &Attestation.supports?(&1, status, act, attempt, observed_at))
+  end
 
-    Enum.filter(evidence, fn item ->
-      outcome_attestation?(item, status, act, attempt, observed_at) and
-        item.stance == expected_stance
-    end)
+  defp causal_outcome_attestations(evidence, act, attempt, observed_at) do
+    Enum.filter(evidence, &Attestation.causal?(&1, act, attempt, observed_at))
   end
 
   defp conflicting_outcome_attestation?(evidence, status, act, attempt, observed_at) do
-    expected_stance = Outcome.evidence_stance(status)
-
     Enum.any?(evidence, fn item ->
-      outcome_attestation?(item, status, act, attempt, observed_at) and
-        item.stance != expected_stance
+      Attestation.causal?(item, act, attempt, observed_at) and
+        not Attestation.supports?(item, status, act, attempt, observed_at)
     end)
-  end
-
-  defp outcome_attestation?(%Evidence{} = evidence, status, act, attempt, observed_at) do
-    evidence.provenance == :observed and not evidence.provisional and
-      evidence.source_ref == act.executor_ref and evidence.issuer_ref == act.executor_ref and
-      evidence.proposition ==
-        Outcome.proposition(status, act.ref, attempt.ref, act.executor_contract_ref) and
-      evidence.bindings == %{"act_ref" => act.ref, "attempt_ref" => attempt.ref} and
-      evidence.observed_at >= attempt.started_at and
-      evidence_current_at?(evidence, observed_at)
-  end
-
-  defp evidence_current_at?(evidence, observed_at) do
-    evidence.observed_at <= observed_at and
-      (is_nil(evidence.valid_from) or evidence.valid_from <= observed_at) and
-      (is_nil(evidence.valid_until) or observed_at < evidence.valid_until) and
-      (is_nil(evidence.freshness_ms) or
-         observed_at - evidence.observed_at <= evidence.freshness_ms)
   end
 
   defp commit_attempt_outcome(
@@ -652,7 +632,7 @@ defmodule Spectre.Attempt.Runner do
          :ok <- callback(route.broker, :checkout, 4, :broker),
          :ok <- validate_keyword(route.broker_opts, :broker_opts),
          :ok <- validate_keyword(route.executor_opts, :executor_opts),
-         :ok <- validate_broker_descriptor(route.broker_descriptor) do
+         :ok <- Boundary.validate_broker_descriptor(route.broker_descriptor) do
       :ok
     else
       false -> {:error, :invalid_execution_route}
@@ -661,12 +641,6 @@ defmodule Spectre.Attempt.Runner do
   end
 
   defp validate_execution_route(_route), do: {:error, :invalid_execution_route}
-
-  defp validate_broker_descriptor(%{ref: ref, profile: profile} = descriptor)
-       when map_size(descriptor) == 2 and profile in [:development, :mediated, :isolated],
-       do: Portable.validate_ref(ref, :broker_ref)
-
-  defp validate_broker_descriptor(_descriptor), do: {:error, :invalid_broker_descriptor}
 
   defp callback(module, function, arity, boundary)
        when is_atom(module) and module not in [nil, true, false] do

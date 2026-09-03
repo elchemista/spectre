@@ -32,9 +32,10 @@ defmodule Spectre.Domain.Projection do
   alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Kernel.{Authority, Meter, Recognition}
-  alias Spectre.Legacy.V03Importer
   alias Spectre.Ledger
   alias Spectre.Ledger.Entry
+  alias Spectre.Mandate.Ancestry
+  alias Spectre.Outcome.Attestation
   alias Spectre.Scope.Opening
 
   @known_events ~w(
@@ -317,36 +318,9 @@ defmodule Spectre.Domain.Projection do
          :ok <- validate_admission_batch(before, after_projection, events),
          :ok <- validate_world_stage_batch(before, events),
          :ok <- validate_foundation_batch(events),
-         :ok <- validate_legacy_import_batch(before.domain_ref, events),
          :ok <- validate_mandate_batch(after_projection, events),
          :ok <- validate_governance_batch(events) do
       validate_meter_batch(before, after_projection, events)
-    end
-  end
-
-  defp validate_legacy_import_batch(domain_ref, events) do
-    with {:ok, evidence} <- decode_batch_records(events, "evidence_recorded", Evidence),
-         {:ok, duties} <- decode_batch_records(events, "duty_opened", Spectre.Duty) do
-      V03Importer.validate_import_batch(domain_ref, evidence, duties,
-        genesis_batch?: Enum.any?(events, &(&1.type == "genesis_recorded"))
-      )
-    end
-  end
-
-  defp decode_batch_records(events, type, module) do
-    Enum.reduce_while(events, {:ok, []}, fn event, {:ok, records} ->
-      if event.type == type do
-        case decode(module, event.data) do
-          {:ok, record} -> {:cont, {:ok, [record | records]}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      else
-        {:cont, {:ok, records}}
-      end
-    end)
-    |> case do
-      {:ok, records} -> {:ok, Enum.reverse(records)}
-      {:error, _reason} = error -> error
     end
   end
 
@@ -1983,7 +1957,7 @@ defmodule Spectre.Domain.Projection do
   end
 
   defp validate_event_keys(payload) do
-    validate_exact_keys(payload, @event_fields, :domain_event)
+    validate_exact_string_keys(payload, @event_fields, :domain_event)
   end
 
   defp validate_manual_event_data(type, identity, data) do
@@ -1993,7 +1967,7 @@ defmodule Spectre.Domain.Projection do
 
       {:ok, fields} ->
         with true <- is_map(data) and not is_struct(data),
-             :ok <- validate_exact_keys(data, fields, String.to_atom(type)),
+             :ok <- validate_exact_string_keys(data, fields, String.to_atom(type)),
              :ok <- validate_manual_event_identity(type, identity, data) do
           :ok
         else
@@ -2040,26 +2014,16 @@ defmodule Spectre.Domain.Projection do
   defp exact_prefixed_identity(_identity, _prefix, _ref),
     do: {:error, :invalid_domain_event_identity_binding}
 
-  defp validate_exact_keys(map, fields, context) when is_map(map) and not is_struct(map) do
-    allowed = fields ++ Enum.map(fields, &Atom.to_string/1)
-    unknown = Map.keys(map) -- allowed
-
-    collisions =
-      Enum.filter(fields, fn key ->
-        Map.has_key?(map, key) and Map.has_key?(map, Atom.to_string(key))
-      end)
-
-    missing =
-      Enum.reject(fields, fn key ->
-        Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key))
-      end)
+  defp validate_exact_string_keys(map, fields, context)
+       when is_map(map) and not is_struct(map) do
+    expected = Enum.map(fields, &Atom.to_string/1)
+    actual = Map.keys(map)
+    unknown = actual -- expected
+    missing = expected -- actual
 
     cond do
       unknown != [] ->
         {:error, {:unknown_fields, context, Enum.sort_by(unknown, &inspect/1)}}
-
-      collisions != [] ->
-        {:error, {:ambiguous_fields, context, collisions}}
 
       missing != [] ->
         {:error, {:missing_field, context, List.first(missing)}}
@@ -4150,53 +4114,11 @@ defmodule Spectre.Domain.Projection do
   end
 
   defp validate_outcome_evidence(projection, outcome, attempt, act) do
-    expected_proposition =
-      Outcome.proposition(
-        outcome.status,
-        outcome.act_ref,
-        outcome.attempt_ref,
-        act.executor_contract_ref
-      )
-
     with :ok <- ErasureAnalysis.validate_evidence_available(projection, outcome.evidence_refs),
          :ok <- evidence_exists(projection, outcome.evidence_refs) do
       Enum.reduce_while(outcome.evidence_refs, :ok, fn ref, :ok ->
         evidence = Map.fetch!(projection.evidence, ref)
-
-        result =
-          cond do
-            evidence.provenance != :observed ->
-              {:error, {:outcome_evidence_not_observed, outcome.ref, ref}}
-
-            evidence.provisional ->
-              {:error, {:outcome_evidence_provisional, outcome.ref, ref}}
-
-            evidence.observed_at < attempt.started_at ->
-              {:error, {:outcome_evidence_precedes_attempt, outcome.ref, ref}}
-
-            evidence.source_ref != act.executor_ref ->
-              {:error, {:outcome_evidence_source_mismatch, outcome.ref, ref}}
-
-            evidence.issuer_ref != act.executor_ref ->
-              {:error, {:outcome_evidence_issuer_mismatch, outcome.ref, ref}}
-
-            evidence.proposition != expected_proposition ->
-              {:error, {:outcome_evidence_proposition_mismatch, outcome.ref, ref}}
-
-            not outcome_bindings?(evidence.bindings, outcome) ->
-              {:error, {:outcome_evidence_binding_mismatch, outcome.ref, ref}}
-
-            evidence.stance != Outcome.evidence_stance(outcome.status) ->
-              {:error,
-               {:outcome_evidence_stance_mismatch, outcome.ref, ref,
-                Outcome.evidence_stance(outcome.status), evidence.stance}}
-
-            not outcome_evidence_current_at?(evidence, outcome.observed_at) ->
-              {:error, {:outcome_evidence_not_current, outcome.ref, ref}}
-
-            true ->
-              :ok
-          end
+        result = Attestation.validate(evidence, outcome, attempt, act)
 
         case result do
           :ok -> {:cont, :ok}
@@ -4204,18 +4126,6 @@ defmodule Spectre.Domain.Projection do
         end
       end)
     end
-  end
-
-  defp outcome_bindings?(bindings, outcome) do
-    is_map(bindings) and Map.get(bindings, "act_ref") == outcome.act_ref and
-      Map.get(bindings, "attempt_ref") == outcome.attempt_ref
-  end
-
-  defp outcome_evidence_current_at?(evidence, time) do
-    evidence.observed_at <= time and
-      (is_nil(evidence.valid_from) or evidence.valid_from <= time) and
-      (is_nil(evidence.valid_until) or time < evidence.valid_until) and
-      (is_nil(evidence.freshness_ms) or time - evidence.observed_at <= evidence.freshness_ms)
   end
 
   defp unique_duty(projection, duty) do
@@ -4245,8 +4155,6 @@ defmodule Spectre.Domain.Projection do
       validate_builtin_duty_cause(projection, duty)
     end
   end
-
-  defp duty_required_at_prefix(_projection, %{class: :pre_governance_ambiguity}), do: :ok
 
   defp duty_required_at_prefix(projection, duty) do
     required? =
@@ -4345,6 +4253,30 @@ defmodule Spectre.Domain.Projection do
 
   defp validate_builtin_duty_cause(
          projection,
+         %{class: :disputed_evidence} = duty
+       ) do
+    cause =
+      projection
+      |> Derive.required_duties(%{}, duty.opened_at)
+      |> Enum.find(&(&1.cause_key == duty.cause_key))
+
+    expected = if cause, do: Derive.materialization_attrs(cause, duty.opened_at)
+    act = if expected, do: Map.get(projection.acts, expected.act_ref)
+
+    valid? =
+      is_map(expected) and not is_nil(act) and duty.act_ref == expected.act_ref and
+        duty.attempt_ref == expected.attempt_ref and duty.mandate_ref == expected.mandate_ref and
+        duty.subjects == expected.subjects and duty.accountable == expected.accountable and
+        duty.evidence_refs == expected.evidence_refs and duty.missing == expected.missing and
+        duty.opened_at == expected.opened_at and valid_builtin_duty_containment?(duty, act)
+
+    if valid?,
+      do: :ok,
+      else: {:error, {:invalid_disputed_evidence_duty_cause, duty.ref}}
+  end
+
+  defp validate_builtin_duty_cause(
+         projection,
          %{
            class: :scope_promise_overdue,
            cause_key: {:scope_promise_overdue, scope_ref}
@@ -4354,23 +4286,13 @@ defmodule Spectre.Domain.Projection do
       {:ok, %Opening{} = opening} ->
         condition = opening.promise_condition
         source_act = Map.get(projection.acts, opening.source_act_ref)
-
-        timely_evidence =
-          projection.evidence
-          |> Map.values()
-          |> Enum.filter(fn evidence ->
-            case Map.get(
-                   projection.event_recorded_at,
-                   {"evidence_recorded", evidence.ref}
-                 ) do
-              recorded_at when is_integer(recorded_at) -> recorded_at <= opening.due_at
-              _missing -> false
-            end
-          end)
+        timely_evidence = Derive.available_evidence_at(projection, opening.due_at)
 
         valid? =
-          opening.kind in [:work, :vigil] and duty.act_ref == nil and duty.attempt_ref == nil and
-            duty.mandate_ref == nil and duty.subjects == [] and
+          opening.kind in [:work, :vigil] and duty.act_ref == opening.source_act_ref and
+            duty.attempt_ref == nil and not is_nil(source_act) and
+            duty.mandate_ref == source_act.mandate_ref and
+            duty.subjects == source_act.subject_refs and
             duty.accountable == opening.accountable_ref and
             duty.disposition_authority_refs == opening.disposition_authority_refs and
             duty_conflicts_include_cause_roles?(duty, source_act) and
@@ -4425,20 +4347,6 @@ defmodule Spectre.Domain.Projection do
        ),
        do: {:error, {:invalid_erasure_verifiability_duty_cause, duty.ref}}
 
-  defp validate_builtin_duty_cause(
-         projection,
-         %{class: :pre_governance_ambiguity, evidence_refs: [evidence_ref]} = duty
-       ) do
-    with {:ok, evidence} <- Map.fetch(projection.evidence, evidence_ref) do
-      V03Importer.validate_import_duty(projection.domain_ref, evidence, duty)
-    else
-      :error -> {:error, {:pre_governance_evidence_not_found, duty.ref, evidence_ref}}
-    end
-  end
-
-  defp validate_builtin_duty_cause(_projection, %{class: :pre_governance_ambiguity} = duty),
-    do: {:error, {:invalid_pre_governance_duty_cause, duty.ref}}
-
   defp validate_builtin_duty_cause(_projection, %{class: class} = duty)
        when is_binary(class),
        do: {:error, {:application_duty_requires_canonical_cause, duty.ref, class}}
@@ -4448,8 +4356,6 @@ defmodule Spectre.Domain.Projection do
     |> Derive.conflict_refs([], act)
     |> Enum.all?(&(&1 in duty.conflict_refs))
   end
-
-  defp duty_conflicts_include_cause_roles?(_duty, _act), do: false
 
   defp valid_builtin_duty_containment?(duty, act) do
     case duty.containment do
@@ -4470,7 +4376,7 @@ defmodule Spectre.Domain.Projection do
   defp validate_duty_disposition(projection, act, duty, disposition) do
     with :ok <- validate_disposition_act(act, duty),
          :ok <- validate_disposition_binding(duty, disposition),
-         {:ok, supporting} <- disposition_support(projection, disposition, act.committed_at),
+         {:ok, supporting} <- disposition_support(projection, disposition, act),
          :ok <- validate_disposition_authority(projection, act, duty, disposition),
          :ok <- validate_disposition_basis(projection, act, duty, disposition, supporting) do
       {:ok, supporting}
@@ -4547,13 +4453,16 @@ defmodule Spectre.Domain.Projection do
     end
   end
 
-  defp disposition_support(projection, disposition, committed_at) do
+  defp disposition_support(projection, disposition, act) do
     Enum.reduce_while(disposition.supporting_refs, {:ok, []}, fn ref, {:ok, records} ->
       case supporting_record(projection, ref) do
         {:ok, record} ->
-          case support_available_at?(record, committed_at) do
-            true -> {:cont, {:ok, [record | records]}}
+          with :ok <- support_frozen_and_available(projection, act, ref, record),
+               true <- support_available_at?(record, act.committed_at) do
+            {:cont, {:ok, [record | records]}}
+          else
             false -> {:halt, {:error, {:duty_disposition_support_from_future, ref}}}
+            {:error, _reason} = error -> {:halt, error}
           end
 
         {:error, _reason} = error ->
@@ -4565,6 +4474,14 @@ defmodule Spectre.Domain.Projection do
       {:error, _reason} = error -> error
     end
   end
+
+  defp support_frozen_and_available(projection, act, ref, {:evidence, _evidence}) do
+    if ref in act.evidence_refs,
+      do: ErasureAnalysis.validate_evidence_available(projection, [ref]),
+      else: {:error, {:duty_disposition_evidence_not_frozen, act.ref, ref}}
+  end
+
+  defp support_frozen_and_available(_projection, _act, _ref, {_kind, _record}), do: :ok
 
   defp supporting_record(projection, ref) do
     matches =
@@ -5184,44 +5101,12 @@ defmodule Spectre.Domain.Projection do
       time >= mandate.expires_at ->
         {:ok, true}
 
-      effective_revocation?(Map.get(projection.revocations, mandate.ref), time) ->
-        {:ok, true}
-
       true ->
-        cascade_ancestor_revoked?(
-          projection,
-          mandate.parent_ref,
-          time,
-          MapSet.new([mandate.ref])
-        )
+        Ancestry.revoked?(projection.mandates, projection.revocations, mandate, time)
     end
   end
 
   defp mandate_terminal?(_projection, _mandate, _time), do: {:error, :invalid_devolution_time}
-
-  defp cascade_ancestor_revoked?(_projection, nil, _time, _visited), do: {:ok, false}
-
-  defp cascade_ancestor_revoked?(projection, parent_ref, time, visited) do
-    cond do
-      MapSet.member?(visited, parent_ref) ->
-        {:error, {:mandate_ancestry_cycle, parent_ref}}
-
-      true ->
-        with {:ok, parent} <- fetch_mandate(projection, parent_ref) do
-          if effective_revocation?(Map.get(projection.revocations, parent.ref), time) and
-               field(parent.revocation, :mode) == :cascade do
-            {:ok, true}
-          else
-            cascade_ancestor_revoked?(
-              projection,
-              parent.parent_ref,
-              time,
-              MapSet.put(visited, parent.ref)
-            )
-          end
-        end
-    end
-  end
 
   defp recontain_released_reservation(projection, data) do
     outcome_ref = field(data, :outcome_ref)

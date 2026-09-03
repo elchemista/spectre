@@ -56,7 +56,8 @@ defmodule Spectre.Duty.Disposition do
   end
 
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :duty_disposition)
 
   @spec from_consequence(term()) :: {:ok, t()} | {:error, term()}
   def from_consequence(%{"duty_disposition" => value} = consequence)

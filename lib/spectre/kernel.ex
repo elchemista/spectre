@@ -93,7 +93,7 @@ defmodule Spectre.Kernel do
            :ok <- validate_presentation_requirement(surface, candidate),
            :ok <- validate_evidence_availability(candidate, projection),
            :ok <- validate_disclosure(candidate, projection),
-           :ok <- validate_governance_facts(candidate, projection, time) do
+           :ok <- Surface.validate_facts(surface, candidate, projection, time) do
         authority_view = authority_view(projection)
 
         # Evidence is deliberately not present in this call or in authority_view.
@@ -160,54 +160,6 @@ defmodule Spectre.Kernel do
   defp validate_evidence_availability(candidate, projection) do
     ErasureAnalysis.validate_evidence_available(projection, candidate.evidence_refs)
   end
-
-  defp validate_governance_facts(
-         %Candidate{class: "data.erase", consequence: %{"erasure_request" => draft}} = candidate,
-         projection,
-         time
-       )
-       when map_size(candidate.consequence) == 1 do
-    with {:ok, canonical} <- Spectre.Erasure.request_draft(draft),
-         true <- canonical == draft,
-         true <- canonical["scope_ref"] == candidate.scope_ref,
-         true <- canonical["target_ref"] in candidate.target_refs,
-         true <- canonical["requested_at"] <= time,
-         :ok <- ErasureAnalysis.requestable?(projection, canonical["target_ref"]),
-         :ok <- ErasureAnalysis.validate_request(projection, canonical) do
-      :ok
-    else
-      false -> {:error, :invalid_erasure_request}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_governance_facts(%Candidate{class: "data.erase"}, _projection, _time),
-    do: {:error, :invalid_erasure_request}
-
-  defp validate_governance_facts(
-         %Candidate{
-           class: "mandate.revoke",
-           consequence: %{"mandate_revoke" => %{"mandate_ref" => mandate_ref}}
-         } = candidate,
-         projection,
-         time
-       )
-       when map_size(candidate.consequence) == 1 do
-    with true <- candidate.target_refs == [mandate_ref],
-         {:ok, mandate} <- Map.fetch(projection.mandates, mandate_ref),
-         true <- candidate.proposer_ref in Map.fetch!(mandate.revocation, "controller_refs"),
-         true <- mandate.not_before <= time and time < mandate.expires_at,
-         false <- Map.has_key?(projection.revocations, mandate_ref) do
-      :ok
-    else
-      _invalid -> {:error, :invalid_mandate_revocation}
-    end
-  end
-
-  defp validate_governance_facts(%Candidate{class: "mandate.revoke"}, _projection, _time),
-    do: {:error, :invalid_mandate_revocation}
-
-  defp validate_governance_facts(_candidate, _projection, _time), do: :ok
 
   defp forced_decision(candidate, context, view, time, outcome, reasons) do
     attrs =

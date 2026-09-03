@@ -254,7 +254,8 @@ defmodule Spectre.Declassification do
 
   @doc "Restores a declassification record and verifies its content reference."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :declassification)
 
   @doc "Returns the stable digest of the complete declassification record."
   @spec digest(t()) :: String.t()

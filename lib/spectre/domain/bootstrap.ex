@@ -4,7 +4,6 @@ defmodule Spectre.Domain.Bootstrap do
   alias Spectre.Domain.Event
   alias Spectre.Domain.Projection
   alias Spectre.Duty.Derive
-  alias Spectre.Legacy.V03Importer
   alias Spectre.{Constitution, Duty, Genesis, HostProfile, Mandate, Principal, Surface}
 
   @type prepared :: %{batch_id: String.t(), payloads: [map()]}
@@ -28,9 +27,7 @@ defmodule Spectre.Domain.Bootstrap do
              mandates
            ),
          :ok <- verify_attestation(genesis, opts),
-         {:ok, legacy_import} <- legacy_import(domain_ref, opts, principals, mandates),
-         {:ok, payloads} <-
-           events(genesis, principals, host_profile, surface, mandates, legacy_import) do
+         {:ok, payloads} <- events(genesis, principals, host_profile, surface, mandates) do
       {:ok, %{batch_id: "genesis:" <> genesis.ref, payloads: payloads}}
     end
   end
@@ -321,27 +318,12 @@ defmodule Spectre.Domain.Bootstrap do
          do: normalize_records(rest, module, [record | records])
   end
 
-  defp legacy_import(domain_ref, opts, principals, mandates) do
-    case Keyword.fetch(opts, :legacy_import) do
-      :error ->
-        V03Importer.prepare(domain_ref, nil, sorted_refs(principals))
-
-      {:ok, _config} when mandates == [] ->
-        {:error, :legacy_import_requires_new_root_mandate}
-
-      {:ok, config} ->
-        V03Importer.prepare(domain_ref, config, sorted_refs(principals))
-    end
-  end
-
-  defp events(genesis, principals, host_profile, surface, mandates, legacy_import) do
+  defp events(genesis, principals, host_profile, surface, mandates) do
     records =
       [{:genesis, genesis}] ++
         Enum.map(principals, &{:principal, &1}) ++
         [{:host_profile, host_profile}, {:surface, surface}] ++
-        Enum.map(mandates, &{:mandate, &1}) ++
-        Enum.map(legacy_import.evidence, &{:evidence, &1}) ++
-        Enum.map(legacy_import.duties, &{:duty, &1})
+        Enum.map(mandates, &{:mandate, &1})
 
     Enum.reduce_while(records, {:ok, []}, fn {kind, record}, {:ok, payloads} ->
       case Event.record(kind, record) do

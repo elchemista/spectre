@@ -114,7 +114,8 @@ defmodule Spectre.Genesis do
 
   @doc "Restores genesis from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :genesis)
 
   @doc "Returns the stable digest of the complete genesis record."
   @spec digest(t()) :: String.t()

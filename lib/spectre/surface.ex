@@ -9,6 +9,7 @@ defmodule Spectre.Surface do
 
   alias Spectre.{Candidate, Portable, Presentation, Row}
   alias Spectre.Consequence.Contract
+  alias Spectre.Consequence.Validator
   alias Spectre.Fallback.Policy
 
   @schema_version 1
@@ -18,6 +19,7 @@ defmodule Spectre.Surface do
     :revision,
     :declarations,
     :consequence_contracts,
+    :consequence_validators,
     :presentation_required_classes,
     :fallbacks
   ]
@@ -28,6 +30,7 @@ defmodule Spectre.Surface do
     :revision,
     :declarations,
     :consequence_contracts,
+    :consequence_validators,
     :presentation_required_classes,
     :fallbacks
   ]
@@ -36,6 +39,7 @@ defmodule Spectre.Surface do
             revision: nil,
             declarations: %{},
             consequence_contracts: %{},
+            consequence_validators: %{},
             presentation_required_classes: [],
             fallbacks: %{}
 
@@ -46,6 +50,7 @@ defmodule Spectre.Surface do
           revision: pos_integer(),
           declarations: %{class() => Row.t()},
           consequence_contracts: %{optional(class()) => Contract.t()},
+          consequence_validators: %{optional(class()) => Validator.id()},
           presentation_required_classes: [class()],
           fallbacks: %{optional(class()) => Policy.t()}
         }
@@ -61,12 +66,18 @@ defmodule Spectre.Surface do
            |> Map.put_new(:schema_version, @schema_version)
            |> Map.put_new(:declarations, %{})
            |> Map.put_new(:consequence_contracts, %{})
+           |> Map.put_new(:consequence_validators, %{})
            |> Map.put_new(:presentation_required_classes, [])
            |> Map.put_new(:fallbacks, %{}),
          {:ok, declarations} <- normalize_declarations(Map.fetch!(attrs, :declarations)),
          {:ok, consequence_contracts} <-
            normalize_consequence_contracts(
              Map.fetch!(attrs, :consequence_contracts),
+             declarations
+           ),
+         {:ok, consequence_validators} <-
+           normalize_consequence_validators(
+             Map.fetch!(attrs, :consequence_validators),
              declarations
            ),
          {:ok, presentation_required_classes} <-
@@ -79,6 +90,7 @@ defmodule Spectre.Surface do
            attrs
            |> Map.put(:declarations, declarations)
            |> Map.put(:consequence_contracts, consequence_contracts)
+           |> Map.put(:consequence_validators, consequence_validators)
            |> Map.put(:presentation_required_classes, presentation_required_classes)
            |> Map.put(:fallbacks, fallbacks),
          {:ok, ref} <- resolve_ref(Map.get(attrs, :ref), attrs),
@@ -126,6 +138,18 @@ defmodule Spectre.Surface do
   def validate_consequence(%__MODULE__{}, _candidate),
     do: {:error, :invalid_consequence_candidate}
 
+  @doc "Validates projection- and time-dependent facts through the active Surface table."
+  @spec validate_facts(t(), Candidate.t(), map(), integer()) :: :ok | {:error, term()}
+  def validate_facts(%__MODULE__{} = surface, %Candidate{} = candidate, projection, time) do
+    case Map.fetch(surface.consequence_validators, candidate.class) do
+      {:ok, validator} -> Validator.validate(validator, candidate, projection, time)
+      :error -> {:error, {:consequence_validator_not_declared, candidate.class}}
+    end
+  end
+
+  def validate_facts(%__MODULE__{}, _candidate, _projection, _time),
+    do: {:error, :invalid_consequence_validator_input}
+
   @doc "Returns whether the declared class requires materially bound consent."
   @spec presentation_required?(t(), class()) :: boolean()
   def presentation_required?(%__MODULE__{} = surface, class) when is_binary(class),
@@ -161,6 +185,7 @@ defmodule Spectre.Surface do
         Map.new(surface.consequence_contracts, fn {class, contract} ->
           {class, Contract.canonical(contract)}
         end),
+      "consequence_validators" => surface.consequence_validators,
       "presentation_required_classes" => surface.presentation_required_classes,
       "fallbacks" =>
         Map.new(surface.fallbacks, fn {class, policy} -> {class, Policy.canonical(policy)} end)
@@ -169,7 +194,8 @@ defmodule Spectre.Surface do
 
   @doc "Restores a surface from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :surface)
 
   @doc "Returns the stable digest of the complete surface."
   @spec digest(t()) :: String.t()
@@ -234,6 +260,28 @@ defmodule Spectre.Surface do
       do: :ok,
       else: {:error, {:missing_surface_consequence_contracts, missing}}
   end
+
+  defp normalize_consequence_validators(value, declarations)
+       when is_map(value) and not is_struct(value) do
+    defaults =
+      Map.new(declarations, fn {class, _row} ->
+        {class, Validator.default_for_class(class)}
+      end)
+
+    Enum.reduce_while(value, {:ok, defaults}, fn {class, validator}, {:ok, validators} ->
+      with :ok <- Portable.validate_non_empty_binary(class, :consequence_validator_class),
+           true <- Map.has_key?(declarations, class),
+           :ok <- Validator.validate_id(validator) do
+        {:cont, {:ok, Map.put(validators, class, validator)}}
+      else
+        false -> {:halt, {:error, {:consequence_validator_for_unknown_class, class}}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp normalize_consequence_validators(value, _declarations),
+    do: {:error, {:invalid_surface_consequence_validators, Portable.shape(value)}}
 
   defp contract_covers_row(class, row, contract) do
     bound = Contract.binding_kinds(contract)
@@ -320,6 +368,7 @@ defmodule Spectre.Surface do
         Map.new(Map.get(attrs, :consequence_contracts, %{}), fn {class, contract} ->
           {class, Contract.canonical(contract)}
         end),
+      "consequence_validators" => Map.get(attrs, :consequence_validators, %{}),
       "presentation_required_classes" => Map.get(attrs, :presentation_required_classes, []),
       "fallbacks" =>
         Map.new(Map.get(attrs, :fallbacks, %{}), fn {class, policy} ->

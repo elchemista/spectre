@@ -336,7 +336,17 @@ defmodule Spectre.Ledger.Entry do
 
   @doc "Restores and verifies an Entry from its plain-map durable form."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(data), do: new(data)
+  def from_data(data) when is_map(data) and not is_struct(data) do
+    with {:ok, entry} <- new(data),
+         true <- to_data(entry) == data do
+      {:ok, entry}
+    else
+      false -> {:error, :noncanonical_ledger_entry}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def from_data(_data), do: {:error, :invalid_ledger_entry_data}
 
   @doc "Encodes an Entry with the canonical value codec."
   @spec encode(t()) :: {:ok, binary()} | {:error, term()}

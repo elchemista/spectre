@@ -65,7 +65,8 @@ defmodule Spectre.Disclosure do
 
   @doc "Restores a descriptor from its canonical representation."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :disclosure)
 
   @doc "Validates how the descriptor relates to one Candidate or Act."
   @spec validate_boundary(Row.t(), t() | nil, [String.t()], [String.t()]) ::

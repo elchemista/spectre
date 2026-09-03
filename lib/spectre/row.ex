@@ -104,7 +104,8 @@ defmodule Spectre.Row do
 
   @doc "Restores a row from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :row)
 
   @doc "Returns the stable digest of a row."
   @spec digest(t()) :: String.t()

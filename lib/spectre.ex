@@ -36,6 +36,7 @@ defmodule Spectre do
   """
 
   alias Spectre.Attempt.Runner
+  alias Spectre.Authority.View, as: AuthorityView
   alias Spectre.Candidate
   alias Spectre.Domain
   alias Spectre.Domain.Projection
@@ -85,8 +86,7 @@ defmodule Spectre do
     :host_profile,
     :surface,
     :root_mandates,
-    :genesis_verifier,
-    :legacy_import
+    :genesis_verifier
   ]
   @authentication_options [:ingress_opts, :sequencer_opts]
   @observation_options [:ingress_opts, :sequencer_opts]
@@ -660,6 +660,31 @@ defmodule Spectre do
   end
 
   def view(_scope), do: {:error, :invalid_scope}
+
+  @doc """
+  Returns the current capability-free authority inventory for an authenticated Scope.
+
+  The result lists Mandates held by the authenticated Principal, their shared
+  state blockers and retained revocation controls. It does not decide whether
+  any particular Candidate is admissible and cannot be used as a Grant.
+  """
+  @spec authority(Scope.t(), keyword()) :: {:ok, AuthorityView.t()} | {:error, term()}
+  def authority(scope, opts \\ [])
+
+  def authority(%Scope{} = scope, opts) when is_list(opts) do
+    with :ok <- empty_query_options(opts, :authority),
+         {:ok, scope} <- refresh_scope(scope),
+         {:ok, projection} <- fetch_projection(scope.domain),
+         {:ok, observed_at} <-
+           sequencer_result(
+             fn -> Sequencer.trusted_time(scope.domain.server) end,
+             :trusted_time_unavailable
+           ) do
+      AuthorityView.from_projection(projection, scope, observed_at)
+    end
+  end
+
+  def authority(_scope, _opts), do: {:error, :authenticated_scope_required}
 
   @doc "Issues a subtractive child Mandate through a normal governance Act."
   @spec issue_mandate(

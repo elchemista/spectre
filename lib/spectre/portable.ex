@@ -53,6 +53,37 @@ defmodule Spectre.Portable do
 
   def canonical_map(value), do: {:error, {:invalid_canonical_map, shape(value)}}
 
+  @doc """
+  Restores a record only from the exact plain representation emitted by it.
+
+  Record constructors may accept atom-keyed maps, keyword lists and omitted
+  defaults for ergonomic in-memory construction. Durable decoding must be
+  stricter: accepting those alternate shapes would give one semantic record
+  more than one canonical byte representation and digest.
+  """
+  @spec restore_canonical(
+          term(),
+          (term() -> {:ok, term()} | {:error, reason()}),
+          (term() -> map()),
+          atom()
+        ) :: {:ok, term()} | {:error, reason()}
+  def restore_canonical(value, builder, canonicalizer, record_name)
+      when is_map(value) and not is_struct(value) and is_function(builder, 1) and
+             is_function(canonicalizer, 1) and is_atom(record_name) do
+    with {:ok, record} <- builder.(value),
+         canonical when is_map(canonical) and not is_struct(canonical) <- canonicalizer.(record),
+         true <- canonical == value do
+      {:ok, record}
+    else
+      false -> {:error, {:noncanonical_record, record_name}}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, {:invalid_canonical_record, record_name}}
+    end
+  end
+
+  def restore_canonical(_value, _builder, _canonicalizer, record_name),
+    do: {:error, {:invalid_canonical_record, record_name}}
+
   @doc "Returns the lowercase SHA-256 digest of a portable value."
   @spec digest(term()) :: {:ok, String.t()} | {:error, reason()}
   def digest(value) do

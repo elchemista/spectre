@@ -13,6 +13,7 @@ defmodule Spectre.Kernel.Observation do
   alias Spectre.Duty.Derive
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Kernel.Meter
+  alias Spectre.Outcome.Attestation
   alias Spectre.{Act, Attempt, Duty, Evidence, Outcome}
 
   @type result :: {:ok, [map()]} | {:error, term()}
@@ -178,24 +179,10 @@ defmodule Spectre.Kernel.Observation do
   end
 
   defp validate_outcome_evidence(projection, outcome, attempt, act) do
-    expected_proposition =
-      Outcome.proposition(
-        outcome.status,
-        outcome.act_ref,
-        outcome.attempt_ref,
-        act.executor_contract_ref
-      )
-
     Enum.reduce_while(outcome.evidence_refs, :ok, fn ref, :ok ->
       case Map.fetch(projection.evidence, ref) do
         {:ok, %Evidence{} = evidence} ->
-          case validate_outcome_evidence_record(
-                 evidence,
-                 outcome,
-                 attempt,
-                 act,
-                 expected_proposition
-               ) do
+          case Attestation.validate(evidence, outcome, attempt, act) do
             :ok -> {:cont, :ok}
             {:error, _reason} = error -> {:halt, error}
           end
@@ -207,54 +194,6 @@ defmodule Spectre.Kernel.Observation do
           {:halt, {:error, {:invalid_outcome_evidence, ref}}}
       end
     end)
-  end
-
-  defp validate_outcome_evidence_record(evidence, outcome, attempt, act, expected_proposition) do
-    cond do
-      evidence.provenance != :observed ->
-        {:error, {:outcome_evidence_not_observed, outcome.ref, evidence.ref}}
-
-      evidence.provisional ->
-        {:error, {:outcome_evidence_provisional, outcome.ref, evidence.ref}}
-
-      evidence.observed_at < attempt.started_at ->
-        {:error, {:outcome_evidence_precedes_attempt, outcome.ref, evidence.ref}}
-
-      evidence.source_ref != act.executor_ref ->
-        {:error, {:outcome_evidence_source_mismatch, outcome.ref, evidence.ref}}
-
-      evidence.issuer_ref != act.executor_ref ->
-        {:error, {:outcome_evidence_issuer_mismatch, outcome.ref, evidence.ref}}
-
-      evidence.proposition != expected_proposition ->
-        {:error, {:outcome_evidence_proposition_mismatch, outcome.ref, evidence.ref}}
-
-      not bindings_cover_outcome?(evidence.bindings, outcome) ->
-        {:error, {:outcome_evidence_binding_mismatch, outcome.ref, evidence.ref}}
-
-      evidence.stance != Outcome.evidence_stance(outcome.status) ->
-        {:error,
-         {:outcome_evidence_stance_mismatch, outcome.ref, evidence.ref,
-          Outcome.evidence_stance(outcome.status), evidence.stance}}
-
-      not evidence_current_at?(evidence, outcome.observed_at) ->
-        {:error, {:outcome_evidence_not_current, outcome.ref, evidence.ref}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp bindings_cover_outcome?(bindings, outcome) do
-    is_map(bindings) and Map.get(bindings, "act_ref") == outcome.act_ref and
-      Map.get(bindings, "attempt_ref") == outcome.attempt_ref
-  end
-
-  defp evidence_current_at?(evidence, time) do
-    evidence.observed_at <= time and
-      (is_nil(evidence.valid_from) or evidence.valid_from <= time) and
-      (is_nil(evidence.valid_until) or time < evidence.valid_until) and
-      (is_nil(evidence.freshness_ms) or time - evidence.observed_at <= evidence.freshness_ms)
   end
 
   defp duty_events(projection, act, attempt, outcome, time, constitution) do

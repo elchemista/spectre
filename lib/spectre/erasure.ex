@@ -130,7 +130,8 @@ defmodule Spectre.Erasure do
 
   @doc "Restores an erasure record and verifies its content reference."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :erasure)
 
   @doc "Returns the stable digest of the complete erasure record."
   @spec digest(t()) :: String.t()

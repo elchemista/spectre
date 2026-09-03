@@ -150,7 +150,8 @@ defmodule Spectre.Scope.Opening do
 
   @doc "Restores a Scope opening from canonical data."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :scope_opening)
 
   @doc "Returns the stable digest of the complete opening."
   @spec digest(t()) :: String.t()

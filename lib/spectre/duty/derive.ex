@@ -14,8 +14,9 @@ defmodule Spectre.Duty.Derive do
 
   @definitive_outcomes [:succeeded, :failed, :definitive_no_effect]
 
-  alias Spectre.{Act, Candidate, Evidence, Outcome, Presentation}
+  alias Spectre.{Act, Attempt, Candidate, Evidence, Outcome, Presentation}
   alias Spectre.Kernel.Recognition
+  alias Spectre.Outcome.Attestation
 
   @type cause :: %{
           required(:cause_key) => term(),
@@ -76,6 +77,19 @@ defmodule Spectre.Duty.Derive do
   @spec cause_key(cause() | map()) :: term()
   def cause_key(cause) when is_map(cause), do: get(cause, [:cause_key, :key])
   def cause_key(_cause), do: nil
+
+  @doc false
+  @spec available_evidence_at(map() | list(), integer()) :: [map()]
+  def available_evidence_at(facts, time) when is_integer(time) do
+    facts = normalize_facts(facts)
+    unavailable = unavailable_evidence_at(facts, time)
+
+    facts.evidence
+    |> records_available_at(time)
+    |> Enum.reject(&MapSet.member?(unavailable, ref(&1, :evidence)))
+  end
+
+  def available_evidence_at(_facts, _time), do: []
 
   @doc """
   Converts a cause into the exact attributes accepted by `Spectre.Duty.new/1`.
@@ -732,15 +746,15 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp trusted_outcome_attestation?(evidence, status, act, attempt, observed_at) do
-    trusted_executor_observation?(evidence, act, attempt, observed_at) and
-      get(evidence, [:proposition]) ==
-        Outcome.proposition(
-          status,
-          ref(act, :act),
-          ref(attempt, :attempt),
-          get(act, [:executor_contract_ref])
-        ) and
-      get(evidence, [:stance]) == Outcome.evidence_stance(status)
+    with {:ok, evidence} <- rebuild_evidence(evidence),
+         {:ok, act} <- rebuild_act(act),
+         {:ok, attempt} <- rebuild_attempt(attempt) do
+      if status == :ambiguous,
+        do: Attestation.causal?(evidence, act, attempt, observed_at),
+        else: Attestation.supports?(evidence, status, act, attempt, observed_at)
+    else
+      {:error, _reason} -> false
+    end
   end
 
   defp trusted_executor_observation?(evidence, act, attempt, time) do
@@ -750,6 +764,7 @@ defmodule Spectre.Duty.Derive do
 
     get(evidence, [:provenance]) == :observed and
       get(evidence, [:provisional], false) == false and
+      get(evidence, [:assumptions], []) == [] and
       get(evidence, [:parent_refs], []) == [] and
       get(evidence, [:source_ref]) == get(act, [:executor_ref]) and
       get(evidence, [:issuer_ref]) == get(act, [:executor_ref]) and
@@ -876,8 +891,6 @@ defmodule Spectre.Duty.Derive do
     records_recorded_through(evidence, revision)
   end
 
-  defp rebuild_act(%Act{} = act), do: Act.new(act)
-
   defp rebuild_act(record) when is_map(record) do
     record
     |> without_ledger_metadata()
@@ -885,9 +898,6 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp rebuild_act(_record), do: {:error, :invalid_act}
-
-  defp rebuild_presentation(%Presentation{} = presentation),
-    do: Presentation.new(presentation)
 
   defp rebuild_presentation(record) when is_map(record) do
     record
@@ -897,8 +907,6 @@ defmodule Spectre.Duty.Derive do
 
   defp rebuild_presentation(_record), do: {:error, :invalid_presentation}
 
-  defp rebuild_evidence(%Evidence{} = evidence), do: Evidence.new(evidence)
-
   defp rebuild_evidence(record) when is_map(record) do
     record
     |> without_ledger_metadata()
@@ -906,6 +914,14 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp rebuild_evidence(_record), do: {:error, :invalid_evidence}
+
+  defp rebuild_attempt(record) when is_map(record) do
+    record
+    |> without_ledger_metadata()
+    |> Attempt.new()
+  end
+
+  defp rebuild_attempt(_record), do: {:error, :invalid_attempt}
 
   defp rebuild_evidence_records(records) do
     Enum.flat_map(records, fn record ->
@@ -962,17 +978,21 @@ defmodule Spectre.Duty.Derive do
         kind in [:work, :vigil] and present?(opening_ref) and is_integer(due_at) and
           at_or_after?(time, due_at) and is_map(condition)
 
-      if eligible? and not scope_promise_satisfied?(condition, facts.evidence, due_at) do
-        source_act = Map.get(facts.acts_by_ref, get(opening, [:source_act_ref]))
+      if eligible? and not scope_promise_satisfied?(condition, facts, due_at) do
+        source_act_ref = get(opening, [:source_act_ref])
+        source_act = Map.get(facts.acts_by_ref, source_act_ref)
 
         [
           duty_cause(
             :scope_promise_overdue,
             {:scope_promise_overdue, opening_ref},
-            %{"scope_ref" => opening_ref},
+            %{"scope_ref" => opening_ref, "act_ref" => source_act_ref},
             constitution,
             %{
               act: source_act,
+              act_ref: source_act_ref,
+              mandate_ref: get(source_act || %{}, [:mandate_ref]),
+              subject_refs: get(source_act || %{}, [:subject_refs, :subjects], []),
               accountable_ref: get(opening, [:accountable_ref]),
               missing_evidence: [%{"condition_ref" => get(condition, [:ref])}],
               closure_conditions: [canonical_condition(condition)],
@@ -987,16 +1007,39 @@ defmodule Spectre.Duty.Derive do
     end)
   end
 
-  defp scope_promise_satisfied?(condition, evidence, due_at) do
-    timely =
-      Enum.filter(evidence, fn item ->
-        case timestamp(get(item, [:ledger_recorded_at, :recorded_at, :observed_at])) do
-          {:ok, available_at} -> available_at <= due_at
-          :error -> false
-        end
-      end)
+  defp scope_promise_satisfied?(condition, facts, due_at) do
+    Recognition.check([condition], available_evidence_at(facts, due_at), due_at) == :satisfied
+  end
 
-    Recognition.check([condition], timely, due_at) == :satisfied
+  defp unavailable_evidence_at(facts, time) do
+    erasures = records_available_at(facts.erasures, time)
+
+    prefix = %{
+      erasures: index_by_ref(erasures, :erasure),
+      attempts: facts.attempts |> records_available_at(time) |> index_by_ref(:attempt),
+      outcomes: facts.outcomes |> records_available_at(time) |> index_by_ref(:outcome)
+    }
+
+    Enum.reduce(erasures, MapSet.new(), fn erasure, unavailable ->
+      case Spectre.Erasure.Analysis.execution_state(prefix, get(erasure, [:target_ref])) do
+        {:ok, state} when state in [:possibly_absent, :erased] ->
+          erasure
+          |> get([:affected_refs], [])
+          |> Enum.reduce(unavailable, &MapSet.put(&2, &1))
+
+        _live_or_invalid ->
+          unavailable
+      end
+    end)
+  end
+
+  defp records_available_at(records, time) do
+    Enum.filter(records, fn record ->
+      case ledger_time(record) do
+        {:ok, recorded_at} -> recorded_at <= time
+        :error -> false
+      end
+    end)
   end
 
   defp canonical_condition(%Spectre.Condition{} = condition),

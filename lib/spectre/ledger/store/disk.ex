@@ -928,12 +928,16 @@ defmodule Spectre.Ledger.Store.Disk do
 
   @spec directory_chain(String.t()) :: [String.t()]
   defp directory_chain(directory) do
-    Stream.unfold(directory, fn current ->
-      parent = Path.dirname(current)
+    Stream.unfold(directory, fn
+      nil ->
+        nil
 
-      if parent == current,
-        do: {current, nil},
-        else: {current, parent}
+      current ->
+        parent = Path.dirname(current)
+
+        if parent == current,
+          do: {current, nil},
+          else: {current, parent}
     end)
     |> Enum.to_list()
   end

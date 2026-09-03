@@ -17,7 +17,8 @@ defmodule Spectre.Audit do
   alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Kernel.{Authority, Meter, Recognition}
-  alias Spectre.Legacy.V03Importer
+  alias Spectre.Mandate.Ancestry
+  alias Spectre.Outcome.Attestation
   alias Spectre.Scope.Opening
 
   alias Spectre.{
@@ -1450,8 +1451,9 @@ defmodule Spectre.Audit do
 
   defp restrictable_predecessor(state, predecessor, time) do
     with :ok <- Authority.restriction_status(predecessor, authority_view(state)),
-         false <-
-           time >= predecessor.expires_at or revocation_effective?(state, predecessor, time) do
+         {:ok, revoked?} <-
+           Ancestry.revoked?(state.mandates, state.revocations, predecessor, time),
+         false <- time >= predecessor.expires_at or revoked? do
       :ok
     else
       true -> {:error, {:mandate_restriction_predecessor_inactive, predecessor.ref}}
@@ -1692,7 +1694,9 @@ defmodule Spectre.Audit do
        do: :ok
 
   defp decision_authority(state, decision) do
-    with {:ok, mandate} <- fetch(state.mandates, decision.mandate_ref, :mandate) do
+    with {:ok, mandate} <- fetch(state.mandates, decision.mandate_ref, :mandate),
+         {:ok, revoked?} <-
+           Ancestry.revoked?(state.mandates, state.revocations, mandate, decision.decided_at) do
       cond do
         decision.mandate_revision != mandate.revision ->
           {:error, {:decision_mandate_revision_mismatch, decision.ref}}
@@ -1721,7 +1725,7 @@ defmodule Spectre.Audit do
         decision.decided_at < mandate.not_before or decision.decided_at >= mandate.expires_at ->
           {:error, {:decision_mandate_not_current, decision.ref}}
 
-        revocation_effective?(state, mandate, decision.decided_at) ->
+        revoked? ->
           {:error, {:decision_mandate_revoked, decision.ref}}
 
         true ->
@@ -1739,34 +1743,37 @@ defmodule Spectre.Audit do
   defp validate_retained_revocation_decision(state, decision, mandate) do
     controllers = Map.get(mandate.revocation, "controller_refs", [])
 
-    cond do
-      decision.authenticated_principal_ref not in controllers ->
-        {:error, {:decision_revocation_controller_mismatch, decision.ref}}
+    with {:ok, revoked?} <-
+           Ancestry.revoked?(state.mandates, state.revocations, mandate, decision.decided_at) do
+      cond do
+        decision.authenticated_principal_ref not in controllers ->
+          {:error, {:decision_revocation_controller_mismatch, decision.ref}}
 
-      decision.proposer_ref != decision.authenticated_principal_ref ->
-        {:error, {:decision_revocation_proposer_mismatch, decision.ref}}
+        decision.proposer_ref != decision.authenticated_principal_ref ->
+          {:error, {:decision_revocation_proposer_mismatch, decision.ref}}
 
-      decision.authorizer_ref != decision.authenticated_principal_ref ->
-        {:error, {:decision_revocation_authorizer_mismatch, decision.ref}}
+        decision.authorizer_ref != decision.authenticated_principal_ref ->
+          {:error, {:decision_revocation_authorizer_mismatch, decision.ref}}
 
-      decision.accountable_ref != mandate.accountable_ref ->
-        {:error, {:decision_accountable_mismatch, decision.ref}}
+        decision.accountable_ref != mandate.accountable_ref ->
+          {:error, {:decision_accountable_mismatch, decision.ref}}
 
-      decision.executor_ref != Governance.kernel_executor_ref() ->
-        {:error, {:decision_revocation_executor_mismatch, decision.ref}}
+        decision.executor_ref != Governance.kernel_executor_ref() ->
+          {:error, {:decision_revocation_executor_mismatch, decision.ref}}
 
-      decision.recognition_refs != [] or decision.recognition_evidence_refs != [] or
-          decision.reservations not in [%{}, []] ->
-        {:error, {:decision_revocation_not_narrow, decision.ref}}
+        decision.recognition_refs != [] or decision.recognition_evidence_refs != [] or
+            decision.reservations not in [%{}, []] ->
+          {:error, {:decision_revocation_not_narrow, decision.ref}}
 
-      decision.decided_at < mandate.not_before or decision.decided_at >= mandate.expires_at ->
-        {:error, {:decision_mandate_not_current, decision.ref}}
+        decision.decided_at < mandate.not_before or decision.decided_at >= mandate.expires_at ->
+          {:error, {:decision_mandate_not_current, decision.ref}}
 
-      revocation_effective?(state, mandate, decision.decided_at) ->
-        {:error, {:decision_mandate_revoked, decision.ref}}
+        revoked? ->
+          {:error, {:decision_mandate_revoked, decision.ref}}
 
-      true ->
-        :ok
+        true ->
+          :ok
+      end
     end
   end
 
@@ -2106,9 +2113,12 @@ defmodule Spectre.Audit do
   end
 
   defp mandate_terminal(state, mandate, time) do
-    if time >= mandate.expires_at or revocation_effective?(state, mandate, time),
-      do: :ok,
-      else: {:error, {:mandate_not_terminal_for_devolution, mandate.ref}}
+    with {:ok, revoked?} <-
+           Ancestry.revoked?(state.mandates, state.revocations, mandate, time) do
+      if time >= mandate.expires_at or revoked?,
+        do: :ok,
+        else: {:error, {:mandate_not_terminal_for_devolution, mandate.ref}}
+    end
   end
 
   defp record_dispatch(state, event) do
@@ -2857,67 +2867,14 @@ defmodule Spectre.Audit do
   defp validate_erasure_outcome(_act, _outcome), do: :ok
 
   defp validate_outcome_evidence(outcome, evidence, attempt, act) do
-    expected_proposition =
-      Outcome.proposition(
-        outcome.status,
-        outcome.act_ref,
-        outcome.attempt_ref,
-        act.executor_contract_ref
-      )
-
     Enum.reduce_while(evidence, :ok, fn item, :ok ->
-      result =
-        cond do
-          item.provenance != :observed ->
-            {:error, {:outcome_evidence_not_observed, outcome.ref, item.ref}}
-
-          item.provisional ->
-            {:error, {:outcome_evidence_provisional, outcome.ref, item.ref}}
-
-          item.observed_at < attempt.started_at ->
-            {:error, {:outcome_evidence_precedes_attempt, outcome.ref, item.ref}}
-
-          item.source_ref != act.executor_ref ->
-            {:error, {:outcome_evidence_source_mismatch, outcome.ref, item.ref}}
-
-          item.issuer_ref != act.executor_ref ->
-            {:error, {:outcome_evidence_issuer_mismatch, outcome.ref, item.ref}}
-
-          item.proposition != expected_proposition ->
-            {:error, {:outcome_evidence_proposition_mismatch, outcome.ref, item.ref}}
-
-          not outcome_bindings?(item.bindings, outcome) ->
-            {:error, {:outcome_evidence_binding_mismatch, outcome.ref, item.ref}}
-
-          item.stance != Outcome.evidence_stance(outcome.status) ->
-            {:error,
-             {:outcome_evidence_stance_mismatch, outcome.ref, item.ref,
-              Outcome.evidence_stance(outcome.status), item.stance}}
-
-          not outcome_evidence_current_at?(item, outcome.observed_at) ->
-            {:error, {:outcome_evidence_not_current, outcome.ref, item.ref}}
-
-          true ->
-            :ok
-        end
+      result = Attestation.validate(item, outcome, attempt, act)
 
       case result do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
-  end
-
-  defp outcome_bindings?(bindings, outcome) do
-    is_map(bindings) and Map.get(bindings, "act_ref") == outcome.act_ref and
-      Map.get(bindings, "attempt_ref") == outcome.attempt_ref
-  end
-
-  defp outcome_evidence_current_at?(evidence, time) do
-    evidence.observed_at <= time and
-      (is_nil(evidence.valid_from) or evidence.valid_from <= time) and
-      (is_nil(evidence.valid_until) or time < evidence.valid_until) and
-      (is_nil(evidence.freshness_ms) or time - evidence.observed_at <= evidence.freshness_ms)
   end
 
   defp valid_outcome_transition(state, outcome) do
@@ -2971,10 +2928,7 @@ defmodule Spectre.Audit do
          {:ok, required_cause} <- required_duty_cause_at_prefix(state, duty, event.recorded_at),
          :ok <- validate_builtin_duty(state, duty) do
       required_duty_causes =
-        case required_cause do
-          nil -> state.required_duty_causes
-          cause -> Map.put_new(state.required_duty_causes, cause.cause_key, cause)
-        end
+        Map.put_new(state.required_duty_causes, required_cause.cause_key, required_cause)
 
       {:ok,
        %{
@@ -2988,13 +2942,6 @@ defmodule Spectre.Audit do
       {:error, _reason} = error -> error
     end
   end
-
-  defp required_duty_cause_at_prefix(
-         _state,
-         %Duty{class: :pre_governance_ambiguity},
-         _recorded_at
-       ),
-       do: {:ok, nil}
 
   defp required_duty_cause_at_prefix(state, duty, recorded_at) do
     cause =
@@ -3111,6 +3058,8 @@ defmodule Spectre.Audit do
   defp validate_builtin_duty(_state, %Duty{class: :contradicted_outcome} = duty),
     do: {:error, {:invalid_contradicted_duty_cause, duty.ref}}
 
+  defp validate_builtin_duty(_state, %Duty{class: :disputed_evidence}), do: :ok
+
   defp validate_builtin_duty(
          state,
          %Duty{
@@ -3120,19 +3069,14 @@ defmodule Spectre.Audit do
        ) do
     case Map.fetch(state.scopes, scope_ref) do
       {:ok, %Opening{} = opening} ->
-        timely_evidence =
-          state.evidence
-          |> Map.values()
-          |> Enum.filter(fn evidence ->
-            case Map.get(state.event_recorded_at, {"evidence_recorded", evidence.ref}) do
-              recorded_at when is_integer(recorded_at) -> recorded_at <= opening.due_at
-              _missing -> false
-            end
-          end)
+        source_act = Map.get(state.acts, opening.source_act_ref)
+        timely_evidence = Derive.available_evidence_at(state, opening.due_at)
 
         valid? =
-          opening.kind in [:work, :vigil] and is_nil(duty.act_ref) and
-            is_nil(duty.attempt_ref) and is_nil(duty.mandate_ref) and duty.subjects == [] and
+          opening.kind in [:work, :vigil] and duty.act_ref == opening.source_act_ref and
+            is_nil(duty.attempt_ref) and not is_nil(source_act) and
+            duty.mandate_ref == source_act.mandate_ref and
+            duty.subjects == source_act.subject_refs and
             duty.accountable == opening.accountable_ref and
             duty.disposition_authority_refs == opening.disposition_authority_refs and
             duty.closing_conditions == [Condition.canonical(opening.promise_condition)] and
@@ -3187,20 +3131,6 @@ defmodule Spectre.Audit do
        ),
        do: {:error, {:invalid_erasure_verifiability_duty_cause, duty.ref}}
 
-  defp validate_builtin_duty(
-         state,
-         %Duty{class: :pre_governance_ambiguity, evidence_refs: [evidence_ref]} = duty
-       ) do
-    with {:ok, evidence} <- Map.fetch(state.evidence, evidence_ref) do
-      V03Importer.validate_import_duty(state.domain_ref, evidence, duty)
-    else
-      :error -> {:error, {:pre_governance_evidence_not_found, duty.ref, evidence_ref}}
-    end
-  end
-
-  defp validate_builtin_duty(_state, %Duty{class: :pre_governance_ambiguity} = duty),
-    do: {:error, {:invalid_pre_governance_duty_cause, duty.ref}}
-
   defp validate_builtin_duty(_state, %Duty{class: class} = duty) when is_binary(class),
     do: {:error, {:application_duty_requires_canonical_cause, duty.ref, class}}
 
@@ -3238,7 +3168,7 @@ defmodule Spectre.Audit do
   defp validate_duty_disposition(state, act, duty, disposition) do
     with :ok <- validate_disposition_act(act, duty),
          :ok <- validate_disposition_binding(duty, disposition),
-         {:ok, supporting} <- disposition_support(state, disposition, act.committed_at),
+         {:ok, supporting} <- disposition_support(state, disposition, act),
          :ok <- validate_disposition_authority(state, act, duty, disposition),
          :ok <- validate_disposition_basis(state, act, duty, disposition, supporting) do
       {:ok, supporting}
@@ -3315,10 +3245,11 @@ defmodule Spectre.Audit do
     end
   end
 
-  defp disposition_support(state, disposition, committed_at) do
+  defp disposition_support(state, disposition, act) do
     Enum.reduce_while(disposition.supporting_refs, {:ok, []}, fn ref, {:ok, records} ->
       with {:ok, record} <- supporting_record(state, ref),
-           true <- support_available_at?(record, committed_at) do
+           :ok <- support_frozen_and_available(state, act, ref, record),
+           true <- support_available_at?(record, act.committed_at) do
         {:cont, {:ok, [record | records]}}
       else
         false -> {:halt, {:error, {:duty_disposition_support_from_future, ref}}}
@@ -3330,6 +3261,14 @@ defmodule Spectre.Audit do
       {:error, _reason} = error -> error
     end
   end
+
+  defp support_frozen_and_available(state, act, ref, {:evidence, _evidence}) do
+    if ref in act.evidence_refs,
+      do: ErasureAnalysis.validate_evidence_available(state, [ref]),
+      else: {:error, {:duty_disposition_evidence_not_frozen, act.ref, ref}}
+  end
+
+  defp support_frozen_and_available(_state, _act, _ref, {_kind, _record}), do: :ok
 
   defp supporting_record(state, ref) do
     matches =
@@ -3721,8 +3660,7 @@ defmodule Spectre.Audit do
          :ok <- validate_admission_batch(before, state, events),
          :ok <- validate_suspension_batch(state, events),
          :ok <- validate_recontainment_batch(events),
-         :ok <- validate_duty_meter_resolution_batch(events),
-         :ok <- validate_legacy_import_batch(state.domain_ref, events) do
+         :ok <- validate_duty_meter_resolution_batch(events) do
       validate_required_recontainments(before, events)
     else
       {:error, reason} -> {:batch_error, hd(events).revision, reason}
@@ -3820,32 +3758,6 @@ defmodule Spectre.Audit do
     |> Enum.all?(fn {{type, identity, data}, index} ->
       exact_event_at?(events, index, type, identity, data)
     end)
-  end
-
-  defp validate_legacy_import_batch(domain_ref, events) do
-    with {:ok, evidence} <- decode_batch_records(events, "evidence_recorded", Evidence),
-         {:ok, duties} <- decode_batch_records(events, "duty_opened", Duty) do
-      V03Importer.validate_import_batch(domain_ref, evidence, duties,
-        genesis_batch?: Enum.any?(events, &(&1.type == "genesis_recorded"))
-      )
-    end
-  end
-
-  defp decode_batch_records(events, type, module) do
-    Enum.reduce_while(events, {:ok, []}, fn event, {:ok, records} ->
-      if event.type == type do
-        case decode_record(event, module) do
-          {:ok, record} -> {:cont, {:ok, [record | records]}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      else
-        {:cont, {:ok, records}}
-      end
-    end)
-    |> case do
-      {:ok, records} -> {:ok, Enum.reverse(records)}
-      {:error, _reason} = error -> error
-    end
   end
 
   defp validate_admission_batch(before, state, events) do
@@ -5068,7 +4980,6 @@ defmodule Spectre.Audit do
       unexpected =
         state.duties
         |> Map.values()
-        |> Enum.reject(&V03Importer.imported_duty?/1)
         |> Enum.map(& &1.cause_key)
         |> MapSet.new()
         |> MapSet.difference(required_keys)
@@ -5293,46 +5204,6 @@ defmodule Spectre.Audit do
 
       {mandate_ref, canonical_accounts}
     end)
-  end
-
-  defp revocation_effective?(state, mandate, time) do
-    local_revocation_effective?(state.revocations[mandate.ref], time) or
-      cascade_ancestor_revoked?(state, mandate.parent_ref, time, MapSet.new([mandate.ref]))
-  end
-
-  defp cascade_ancestor_revoked?(_state, nil, _time, _visited), do: false
-
-  defp cascade_ancestor_revoked?(state, parent_ref, time, visited) do
-    cond do
-      MapSet.member?(visited, parent_ref) ->
-        true
-
-      true ->
-        case Map.fetch(state.mandates, parent_ref) do
-          {:ok, parent} ->
-            cascade_here? =
-              Map.fetch!(parent.revocation, "mode") == :cascade and
-                local_revocation_effective?(state.revocations[parent.ref], time)
-
-            cascade_here? or
-              cascade_ancestor_revoked?(
-                state,
-                parent.parent_ref,
-                time,
-                MapSet.put(visited, parent_ref)
-              )
-
-          :error ->
-            true
-        end
-    end
-  end
-
-  defp local_revocation_effective?(nil, _time), do: false
-
-  defp local_revocation_effective?(revocation, time) do
-    effective_at = Map.get(revocation, "effective_at")
-    not is_integer(effective_at) or time >= effective_at
   end
 
   defp fetch_meter_accounts(state, mandate_ref) do

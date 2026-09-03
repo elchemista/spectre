@@ -19,13 +19,10 @@ defmodule Spectre.Duty do
     :contradicted_outcome,
     :disputed_evidence,
     :scope_promise_overdue,
-    :erasure_reduces_verifiability,
-    :pre_governance_ambiguity
+    :erasure_reduces_verifiability
   ]
-  @configurable_core_classes @core_classes -- [:pre_governance_ambiguity]
+  @configurable_core_classes @core_classes
   @core_classes_by_name Map.new(@core_classes, &{Atom.to_string(&1), &1})
-  @pre_governance_containment %{"dispatch" => :blocked, "retry" => :forbidden}
-  @pre_governance_missing [%{"kind" => "definitive_outcome"}]
   @fields [
     :schema_version,
     :ref,
@@ -56,7 +53,6 @@ defmodule Spectre.Duty do
           | :disputed_evidence
           | :scope_promise_overdue
           | :erasure_reduces_verifiability
-          | :pre_governance_ambiguity
           | String.t()
 
   @type t :: %__MODULE__{
@@ -108,7 +104,8 @@ defmodule Spectre.Duty do
 
   @doc "Restores a duty from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value), do: new(value)
+  def from_canonical(value),
+    do: Portable.restore_canonical(value, &new/1, &canonical/1, :duty)
 
   @doc "Returns the stable digest of the complete duty projection."
   @spec digest(t()) :: String.t()
@@ -151,14 +148,6 @@ defmodule Spectre.Duty do
   end
 
   def application_class?(_class), do: false
-
-  @doc false
-  @spec pre_governance_containment() :: map()
-  def pre_governance_containment, do: @pre_governance_containment
-
-  @doc false
-  @spec pre_governance_missing() :: [map()]
-  def pre_governance_missing, do: @pre_governance_missing
 
   defp defaults(attrs) do
     default_conflicts =
@@ -278,29 +267,6 @@ defmodule Spectre.Duty do
 
   defp validate_cause_key(nil), do: {:error, :missing_duty_cause_key}
   defp validate_cause_key(value), do: Portable.validate(value)
-
-  defp validate_class_contract(%__MODULE__{class: :pre_governance_ambiguity} = duty) do
-    case duty do
-      %__MODULE__{
-        cause_key: {:pre_governance_ambiguity, cause_evidence_ref},
-        act_ref: nil,
-        attempt_ref: nil,
-        mandate_ref: nil,
-        evidence_refs: [evidence_ref],
-        missing: @pre_governance_missing,
-        containment: @pre_governance_containment,
-        closing_conditions: [],
-        disposition_authority_refs: [_ | _]
-      }
-      when is_binary(evidence_ref) and evidence_ref == cause_evidence_ref ->
-        if duty.accountable in duty.disposition_authority_refs,
-          do: {:error, :pre_governance_duty_disposition_not_independent},
-          else: :ok
-
-      _invalid ->
-        {:error, :invalid_pre_governance_duty}
-    end
-  end
 
   defp validate_class_contract(%__MODULE__{}), do: :ok
 

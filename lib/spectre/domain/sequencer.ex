@@ -27,11 +27,13 @@ defmodule Spectre.Domain.Sequencer do
   alias Spectre.Domain.{Bootstrap, Event, Projection, Recovery}
   alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.Execution.Boundary
   alias Spectre.Kernel, as: GovernedKernel
   alias Spectre.Kernel.{Authority, Commit, Grant, Observation}
   alias Spectre.Ledger.Writer
   alias Spectre.Ledger.Store
   alias Spectre.Mind.Turn
+  alias Spectre.Mandate.Ancestry
   alias Spectre.Payload.Store, as: PayloadStore
   alias Spectre.Scope.Opening
   alias Spectre.Scope.View, as: ScopeView
@@ -75,8 +77,7 @@ defmodule Spectre.Domain.Sequencer do
     :host_profile,
     :surface,
     :root_mandates,
-    :genesis_verifier,
-    :legacy_import
+    :genesis_verifier
   ]
 
   defmodule State do
@@ -831,6 +832,12 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   @impl GenServer
+  def handle_info({:stop_halted, reason}, %State{halted_reason: reason} = state),
+    do: {:stop, {:shutdown, {:sequencer_halted, reason}}, state}
+
+  def handle_info({:stop_halted, _stale_reason}, %State{} = state),
+    do: {:noreply, state}
+
   def handle_info({:flush, token}, %State{flush_token: token} = state) do
     ordered = Enum.reverse(state.pending)
     {requests, remaining} = Enum.split(ordered, state.batch_size)
@@ -882,8 +889,8 @@ defmodule Spectre.Domain.Sequencer do
            module_with_callback(opts, :id_source, Spectre.Id.UUIDv7, :generate, 0),
          {:ok, late_observer} <- late_observer_option(opts),
          {:ok, {mind, mind_ref}} <- mind_option(opts),
-         {:ok, execution_routes} <- execution_routes_option(opts),
-         {:ok, broker} <- broker_option(opts, execution_routes),
+         {:ok, execution_boundary} <-
+           Boundary.normalize(Keyword.get(opts, :executors, []), Keyword.get(opts, :broker)),
          {:ok, generation} <- generation_option(opts),
          {:ok, grant_secret} <- grant_secret_option(opts),
          {:ok, checkout_receipt_secret} <- checkout_receipt_secret_option(opts),
@@ -909,8 +916,8 @@ defmodule Spectre.Domain.Sequencer do
          late_observer: late_observer,
          mind: mind,
          mind_ref: mind_ref,
-         execution_routes: execution_routes,
-         broker: broker,
+         execution_routes: execution_boundary.routes,
+         broker: execution_boundary.broker,
          generation: generation,
          grant_secret: grant_secret,
          checkout_receipt_secret: checkout_receipt_secret,
@@ -994,119 +1001,6 @@ defmodule Spectre.Domain.Sequencer do
     case Keyword.get(opts, :mind) do
       nil -> {:ok, {nil, nil}}
       module -> Mind.resolve(module)
-    end
-  end
-
-  defp execution_routes_option(opts) do
-    case Keyword.get(opts, :executors, []) do
-      entries when is_list(entries) ->
-        Enum.reduce_while(entries, {:ok, %{}}, fn entry, {:ok, routes} ->
-          with {:ok, route} <- executor_route(entry),
-               false <- Map.has_key?(routes, route.key) do
-            {:cont, {:ok, Map.put(routes, route.key, Map.delete(route, :key))}}
-          else
-            true -> {:halt, {:error, {:duplicate_executor_route, route_key(entry)}}}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
-
-      _invalid ->
-        {:error, {:invalid_sequencer_option, :executors}}
-    end
-  end
-
-  defp executor_route(module) when is_atom(module), do: executor_route({module, []})
-
-  defp executor_route({module, executor_opts}) do
-    with :ok <- boundary_callback(module, :execute, 4, :executor),
-         :ok <- boundary_callback(module, :executor_ref, 0, :executor),
-         :ok <- boundary_callback(module, :contract_ref, 0, :executor),
-         {:ok, executor_opts} <- normalize_boundary_opts(executor_opts, :executor),
-         {:ok, executor_ref} <- static_boundary_value(module, :executor_ref, :executor),
-         {:ok, contract_ref} <- static_boundary_value(module, :contract_ref, :executor),
-         :ok <- Portable.validate_ref(executor_ref, :executor_ref),
-         :ok <- Portable.validate_ref(contract_ref, :executor_contract_ref) do
-      {:ok,
-       %{
-         key: {executor_ref, contract_ref},
-         executor: module,
-         executor_opts: executor_opts
-       }}
-    end
-  end
-
-  defp executor_route(_invalid), do: {:error, {:invalid_sequencer_option, :executors}}
-
-  defp route_key({module, _opts}) when is_atom(module), do: module
-  defp route_key(module), do: module
-
-  defp broker_option(opts, execution_routes) do
-    case Keyword.get(opts, :broker) do
-      nil when map_size(execution_routes) == 0 ->
-        {:ok, nil}
-
-      nil ->
-        {:error, {:missing_sequencer_option, :broker}}
-
-      entry ->
-        broker_config(entry)
-    end
-  end
-
-  defp broker_config(module) when is_atom(module), do: broker_config({module, []})
-
-  defp broker_config({module, broker_opts}) do
-    with :ok <- boundary_callback(module, :checkout, 4, :broker),
-         :ok <- boundary_callback(module, :ref, 0, :broker),
-         :ok <- boundary_callback(module, :profile, 0, :broker),
-         {:ok, broker_opts} <- normalize_boundary_opts(broker_opts, :broker),
-         {:ok, ref} <- static_boundary_value(module, :ref, :broker),
-         {:ok, profile} <- static_boundary_value(module, :profile, :broker),
-         {:ok, descriptor} <- broker_descriptor(%{ref: ref, profile: profile}) do
-      {:ok, %{broker: module, broker_opts: broker_opts, descriptor: descriptor}}
-    end
-  end
-
-  defp broker_config(_invalid), do: {:error, {:invalid_sequencer_option, :broker}}
-
-  defp normalize_boundary_opts(value, boundary) when is_list(value) do
-    if Keyword.keyword?(value),
-      do: {:ok, value},
-      else: {:error, {:invalid_sequencer_option, {boundary, :opts}}}
-  end
-
-  defp normalize_boundary_opts(_value, boundary),
-    do: {:error, {:invalid_sequencer_option, {boundary, :opts}}}
-
-  defp boundary_callback(module, function, arity, boundary)
-       when is_atom(module) and module not in [nil, true, false] do
-    cond do
-      not Code.ensure_loaded?(module) -> {:error, {boundary, :module_not_loaded}}
-      not function_exported?(module, function, arity) -> {:error, {boundary, :callback_missing}}
-      true -> :ok
-    end
-  end
-
-  defp boundary_callback(_module, _function, _arity, boundary),
-    do: {:error, {boundary, :invalid_module}}
-
-  defp static_boundary_value(module, function, boundary) do
-    try do
-      case apply(module, function, []) do
-        value when is_binary(value) and value != "" ->
-          {:ok, value}
-
-        value when function == :profile and value in [:development, :mediated, :isolated] ->
-          {:ok, value}
-
-        _invalid ->
-          {:error, {boundary, {:invalid_static_value, function}}}
-      end
-    rescue
-      _exception -> {:error, {boundary, {function, :exception}}}
-    catch
-      :exit, _reason -> {:error, {boundary, {function, :exit}}}
-      :throw, _reason -> {:error, {boundary, {function, :throw}}}
     end
   end
 
@@ -1581,20 +1475,20 @@ defmodule Spectre.Domain.Sequencer do
           {:error, {:candidate_identity_conflict, candidate.identity_key}}
 
         :error ->
-          with :ok <- validate_candidate_execution_route(state, candidate) do
-            evaluate_submission(request, candidate, context, projection, admitted_at)
-          end
+          evaluate_submission(state, request, candidate, context, projection, admitted_at)
       end
     end
   end
 
-  defp validate_candidate_execution_route(_state, %Candidate{row: %{attempt: false}}), do: :ok
+  defp validate_admitted_execution_route(_state, nil), do: :ok
 
-  defp validate_candidate_execution_route(state, %Candidate{} = candidate) do
+  defp validate_admitted_execution_route(_state, %Act{row: %{attempt: false}}), do: :ok
+
+  defp validate_admitted_execution_route(state, %Act{} = act) do
     case configured_execution_route(
            state,
-           candidate.executor_ref,
-           candidate.executor_contract_ref
+           act.executor_ref,
+           act.executor_contract_ref
          ) do
       {:ok, _route} -> :ok
       {:error, _reason} = error -> error
@@ -1728,9 +1622,10 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp evaluate_submission(request, candidate, context, projection, admitted_at) do
+  defp evaluate_submission(state, request, candidate, context, projection, admitted_at) do
     with {:ok, decision, act} <-
            GovernedKernel.evaluate(candidate, context, projection, admitted_at),
+         :ok <- validate_admitted_execution_route(state, act),
          {:ok, payloads} <- Commit.payloads(projection, decision, act),
          {:ok, next_projection} <- apply_payloads(projection, payloads) do
       {:ok, success_plan(request, candidate), next_projection, payloads}
@@ -2023,7 +1918,7 @@ defmodule Spectre.Domain.Sequencer do
         material_digest: act.material_digest,
         generation: attempt.generation,
         grant_nonce_digest: attempt.grant_nonce_digest,
-        broker_ref: broker.ref,
+        broker_ref: broker.descriptor.ref,
         ledger_revision: state.projection.revision,
         issued_at: now,
         expires_at: now + state.grant_ttl_ms
@@ -2033,18 +1928,16 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp broker_supports_act(projection, act, broker) do
+    broker_profile = broker.descriptor.profile
+
     with {:ok, host_profile} <- Map.fetch(projection.host_profiles, act.host_profile_ref),
-         true <- profile_rank(broker.profile) >= profile_rank(host_profile.mode) do
+         true <- Boundary.profile_covers?(broker_profile, host_profile.mode) do
       :ok
     else
       :error -> {:error, {:act_host_profile_not_found, act.host_profile_ref}}
-      false -> {:error, {:broker_profile_too_weak, broker.profile, act.host_profile_ref}}
+      false -> {:error, {:broker_profile_too_weak, broker_profile, act.host_profile_ref}}
     end
   end
-
-  defp profile_rank(:development), do: 0
-  defp profile_rank(:mediated), do: 1
-  defp profile_rank(:isolated), do: 2
 
   defp configured_execution_route(state, executor_ref, contract_ref) do
     with :ok <- Portable.validate_ref(executor_ref, :executor_ref),
@@ -2084,22 +1977,6 @@ defmodule Spectre.Domain.Sequencer do
 
   defp configured_broker(%{broker: nil}), do: {:error, :broker_not_configured}
   defp configured_broker(%{broker: broker}), do: {:ok, broker}
-
-  defp broker_descriptor(broker) when is_map(broker) and not is_struct(broker) do
-    if Map.keys(broker) |> Enum.sort() == [:profile, :ref] do
-      with :ok <- Portable.validate_ref(broker.ref, :broker_ref),
-           true <- broker.profile in [:development, :mediated, :isolated] do
-        {:ok, broker}
-      else
-        false -> {:error, :invalid_broker_profile}
-        {:error, _reason} = error -> error
-      end
-    else
-      {:error, :invalid_broker_descriptor}
-    end
-  end
-
-  defp broker_descriptor(_broker), do: {:error, :invalid_broker_descriptor}
 
   defp record_observation(state, input, ledger_opts, conflicts_left) do
     case Outcome.new(input) do
@@ -3276,7 +3153,7 @@ defmodule Spectre.Domain.Sequencer do
          true <- now >= mandate.not_before and now < mandate.expires_at,
          :ok <- Authority.restriction_status(mandate, authority_view),
          :ok <- Authority.meter_debt_status(mandate, authority_view),
-         :ok <- not_revoked(projection, mandate, now, MapSet.new()) do
+         :ok <- mandate_not_revoked(projection, mandate, now) do
       :ok
     else
       :error -> {:error, {:mandate_not_found, act.mandate_ref}}
@@ -3285,79 +3162,14 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp not_revoked(projection, mandate, now, visited) do
-    cond do
-      MapSet.member?(visited, mandate.ref) ->
-        {:error, {:mandate_parent_cycle, mandate.ref}}
-
-      effective_revocation?(Map.get(projection.revocations, mandate.ref), now) ->
-        {:error, {:mandate_revoked, mandate.ref}}
-
-      is_nil(mandate.parent_ref) ->
-        :ok
-
-      true ->
-        ancestor_not_revoked(
-          projection,
-          mandate.parent_ref,
-          now,
-          MapSet.put(visited, mandate.ref)
-        )
+  defp mandate_not_revoked(projection, mandate, now) do
+    case Ancestry.status(projection.mandates, projection.revocations, mandate, now) do
+      {:ok, :current} -> :ok
+      {:ok, {:revoked, :direct, ref}} -> {:error, {:mandate_revoked, ref}}
+      {:ok, {:revoked, :ancestor, ref}} -> {:error, {:mandate_ancestor_revoked, ref}}
+      {:error, _reason} = error -> error
     end
   end
-
-  defp ancestor_not_revoked(projection, parent_ref, now, visited) do
-    if MapSet.member?(visited, parent_ref),
-      do: {:error, {:mandate_parent_cycle, parent_ref}},
-      else: check_ancestor(projection, parent_ref, now, visited)
-  end
-
-  defp check_ancestor(projection, parent_ref, now, visited) do
-    case Map.fetch(projection.mandates, parent_ref) do
-      {:ok, parent} ->
-        revocation = Map.get(projection.revocations, parent.ref)
-
-        cond do
-          effective_revocation?(revocation, now) and cascade_revocation?(parent, revocation) ->
-            {:error, {:mandate_ancestor_revoked, parent.ref}}
-
-          is_nil(parent.parent_ref) ->
-            :ok
-
-          true ->
-            ancestor_not_revoked(
-              projection,
-              parent.parent_ref,
-              now,
-              MapSet.put(visited, parent.ref)
-            )
-        end
-
-      :error ->
-        {:error, {:mandate_parent_not_found, parent_ref}}
-    end
-  end
-
-  defp effective_revocation?(nil, _now), do: false
-
-  defp effective_revocation?(revocation, now) when is_map(revocation) do
-    effective_at = field(revocation, :effective_at)
-    is_integer(effective_at) and effective_at <= now
-  end
-
-  defp effective_revocation?(_invalid, _now), do: true
-
-  defp cascade_revocation?(mandate, _revocation) do
-    mandate
-    |> Map.get(:revocation, %{})
-    |> field(:mode)
-    |> normalize_mode()
-    |> Kernel.==(:cascade)
-  end
-
-  defp normalize_mode(:retained_controller), do: :retained_controller
-  defp normalize_mode("retained_controller"), do: :retained_controller
-  defp normalize_mode(_other), do: :cascade
 
   defp authenticate_context(state, scope_ref, input, opts) do
     with :ok <- validate_authentication_options(opts),
@@ -3519,5 +3331,10 @@ defmodule Spectre.Domain.Sequencer do
 
   defp field(_value, _key), do: nil
 
-  defp halt(state, reason), do: %{state | halted_reason: reason}
+  defp halt(%State{halted_reason: nil} = state, reason) do
+    send(self(), {:stop_halted, reason})
+    %{state | halted_reason: reason}
+  end
+
+  defp halt(%State{} = state, _reason), do: state
 end
