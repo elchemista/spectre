@@ -38,6 +38,7 @@ defmodule Spectre.Evidence do
     :schema_version,
     :ref,
     :proposition,
+    :issuer_ref,
     :source_ref,
     :provenance,
     :parent_refs,
@@ -72,7 +73,7 @@ defmodule Spectre.Evidence do
           ref: String.t(),
           proposition: term(),
           stance: stance(),
-          issuer_ref: String.t() | nil,
+          issuer_ref: String.t(),
           source_ref: String.t(),
           provenance: :observed | :derived | :generated,
           parent_refs: [String.t()],
@@ -159,7 +160,6 @@ defmodule Spectre.Evidence do
     attrs
     |> Map.put_new(:schema_version, @schema_version)
     |> Map.put_new(:stance, :supports)
-    |> Map.put_new(:issuer_ref, nil)
     |> Map.put_new(:parent_refs, [])
     |> Map.put_new(:valid_from, nil)
     |> Map.put_new(:valid_until, nil)
@@ -272,7 +272,7 @@ defmodule Spectre.Evidence do
 
   defp validate_refs(evidence) do
     with :ok <- Portable.validate_ref(evidence.ref, :ref),
-         :ok <- validate_optional_ref(evidence.issuer_ref, :issuer_ref),
+         :ok <- Portable.validate_ref(evidence.issuer_ref, :issuer_ref),
          :ok <- Portable.validate_ref(evidence.source_ref, :source_ref),
          :ok <- Portable.validate_refs(evidence.parent_refs, :parent_refs) do
       validate_optional_payload_ref(evidence.payload_ref)
@@ -289,9 +289,6 @@ defmodule Spectre.Evidence do
     do:
       is_integer(from) and is_integer(until) and until > observed_at and
         from < until
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 
   defp validate_optional_payload_ref(nil), do: :ok
 

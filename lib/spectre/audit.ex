@@ -69,6 +69,7 @@ defmodule Spectre.Audit do
   }
 
   @manual_fields %{
+    "principal_registered" => ~w(act_ref principal),
     "mandate_revoked" => ~w(mandate_ref effective_at),
     "mandate_restricted" => ~w(act_ref predecessor_ref successor),
     "host_profile_revised" => ~w(act_ref previous_ref host_profile),
@@ -491,6 +492,9 @@ defmodule Spectre.Audit do
   defp apply_event(state, %{type: "principal_recorded"} = event),
     do: record_foundation(state, event, Principal, :principals, :principal_refs)
 
+  defp apply_event(state, %{type: "principal_registered"} = event),
+    do: register_principal(state, event)
+
   defp apply_event(state, %{type: "host_profile_recorded"} = event),
     do: record_host_profile(state, event)
 
@@ -590,6 +594,46 @@ defmodule Spectre.Audit do
          :ok <- absent(Map.fetch!(state, collection), event.identity, collection) do
       {:ok,
        Map.put(state, collection, Map.put(Map.fetch!(state, collection), event.identity, record))}
+    end
+  end
+
+  defp register_principal(state, event) do
+    with {:ok, principal} <- decode_embedded_record(event, Principal, "principal"),
+         :ok <- absent(state.principals, principal.ref, :principal),
+         {:ok, act} <- fetch(state.acts, event.data["act_ref"], :act),
+         :ok <- same_act_batch(state, act, event, :principal_registration),
+         :ok <- validate_principal_registration(act, principal, event.data) do
+      {:ok, %{state | principals: Map.put(state.principals, principal.ref, principal)}}
+    end
+  end
+
+  defp validate_principal_registration(act, principal, data) do
+    expected = %{"principal_registration" => Principal.canonical(principal)}
+
+    cond do
+      act.class != "principal.register" ->
+        {:error, {:principal_registration_act_class_mismatch, act.ref, act.class}}
+
+      not exact_row?(act.row, [:govern]) ->
+        {:error, {:principal_registration_act_row_mismatch, act.ref}}
+
+      has_reservations?(act) ->
+        {:error, {:principal_registration_act_has_reservations, act.ref}}
+
+      not Governance.ledger_internal?(act) ->
+        {:error, {:principal_registration_act_not_ledger_internal, act.ref}}
+
+      principal.ref not in act.target_refs ->
+        {:error, {:principal_registration_target_missing, act.ref, principal.ref}}
+
+      data["act_ref"] != act.ref ->
+        {:error, {:principal_registration_act_ref_mismatch, principal.ref}}
+
+      act.consequence != expected ->
+        {:error, {:principal_registration_consequence_mismatch, act.ref}}
+
+      true ->
+        :ok
     end
   end
 
@@ -987,6 +1031,7 @@ defmodule Spectre.Audit do
          true <- ledger_internal_act?(act),
          {:ok, decoded} <- Declassification.decode_draft(draft),
          true <- decoded.canonical == draft,
+         :ok <- Declassification.validate_producer(decoded.evidence, act.proposer_ref),
          {:ok, mandate} <- fetch(state.mandates, act.mandate_ref, :mandate),
          :ok <-
            Authority.owners_authorize_mandate?(
@@ -1077,34 +1122,18 @@ defmodule Spectre.Audit do
   end
 
   defp validate_evidence_scope_binding(state, evidence) do
-    scope_ref = map_field(evidence.bindings, :scope_ref)
+    with {:ok, context} <- SubmissionContext.extract_evidence_context(evidence.bindings) do
+      validate_evidence_context(state, evidence, context)
+    end
+  end
 
-    if is_nil(scope_ref) do
-      :ok
-    else
-      case Map.fetch(state.scopes, scope_ref) do
-        {:ok, opening} ->
-          cond do
-            map_field(evidence.bindings, :domain_ref) != state.domain_ref ->
-              {:error, {:evidence_scope_domain_mismatch, evidence.ref, scope_ref}}
+  defp validate_evidence_context(_state, _evidence, nil), do: :ok
 
-            map_field(evidence.bindings, :authenticated_principal_ref) !=
-                opening.opened_by_ref ->
-              {:error, {:evidence_scope_principal_mismatch, evidence.ref, scope_ref}}
-
-            map_field(evidence.bindings, :authentication_ref) != opening.authentication_ref ->
-              {:error, {:evidence_scope_authentication_mismatch, evidence.ref, scope_ref}}
-
-            evidence.provenance == :observed and evidence.source_ref != opening.ingress_ref ->
-              {:error, {:evidence_scope_ingress_source_mismatch, evidence.ref, scope_ref}}
-
-            true ->
-              :ok
-          end
-
-        :error ->
-          {:error, {:evidence_scope_not_open, evidence.ref, scope_ref}}
-      end
+  defp validate_evidence_context(state, evidence, context) do
+    with {:ok, opening} <- decision_scope_context(state, context) do
+      if evidence.provenance != :observed or evidence.source_ref == opening.ingress_ref,
+        do: :ok,
+        else: {:error, {:evidence_scope_ingress_source_mismatch, evidence.ref, context.scope_ref}}
     end
   end
 
@@ -3988,6 +4017,25 @@ defmodule Spectre.Audit do
 
   defp governance_effect_adjacent?(
          events,
+         %Act{
+           class: "principal.register",
+           consequence: %{"principal_registration" => canonical}
+         } = act,
+         index
+       )
+       when map_size(act.consequence) == 1 do
+    with {:ok, principal} <- Principal.from_canonical(canonical) do
+      exact_event_at?(events, index + 1, "principal_registered", principal.ref, %{
+        "act_ref" => act.ref,
+        "principal" => Principal.canonical(principal)
+      })
+    else
+      {:error, _reason} -> false
+    end
+  end
+
+  defp governance_effect_adjacent?(
+         events,
          %Act{class: "mandate.delegate", consequence: %{"mandate_issue" => draft}} = act,
          index
        )
@@ -4167,6 +4215,7 @@ defmodule Spectre.Audit do
 
   defp governance_effect_adjacent?(_events, %Act{class: class}, _index)
        when class in [
+              "principal.register",
               "mandate.delegate",
               "mandate.restrict",
               "mandate.revoke",
@@ -4581,7 +4630,7 @@ defmodule Spectre.Audit do
       is_nil(state.surface) ->
         {:error, :surface_missing}
 
-      required_principals != actual_principals ->
+      not MapSet.subset?(required_principals, actual_principals) ->
         {:error, {:genesis_principals_incomplete, MapSet.to_list(required_principals)}}
 
       required_mandates != actual_roots ->
@@ -5171,6 +5220,11 @@ defmodule Spectre.Audit do
       audited_at: audited_at,
       foundation: %{
         genesis: Genesis.canonical(state.genesis),
+        principals:
+          state.principals
+          |> Map.values()
+          |> Enum.sort_by(& &1.ref)
+          |> Enum.map(&Principal.canonical/1),
         host_profile: HostProfile.canonical(state.host_profile),
         host_profile_history:
           state.host_profiles
@@ -5215,10 +5269,13 @@ defmodule Spectre.Audit do
         |> Enum.map(&Declassification.canonical/1),
       erasures: erasures,
       counts: %{
+        principals: map_size(state.principals),
         mandates: map_size(state.mandates),
         mandate_restrictions: map_size(state.mandate_successors),
         revocations: map_size(state.revocations),
         declassifications: map_size(state.declassifications),
+        evidence: map_size(state.evidence),
+        presentations: map_size(state.presentations),
         decisions: map_size(state.decisions),
         acts: map_size(state.acts),
         attempts: map_size(state.attempts),

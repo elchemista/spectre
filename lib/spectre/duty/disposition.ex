@@ -1,7 +1,7 @@
 defmodule Spectre.Duty.Disposition do
   @moduledoc false
 
-  alias Spectre.Portable
+  alias Spectre.{Duty, Portable}
 
   @schema_version 1
   @kinds [:condition_met, :ratify, :repudiate, :compensate, :assign, :accept_loss]
@@ -55,6 +55,29 @@ defmodule Spectre.Duty.Disposition do
     end
   end
 
+  @doc "Builds a disposition bound to the exact current opening of an open Duty."
+  @spec for_duty(Duty.t(), kind(), [String.t()], meter_resolution()) ::
+          {:ok, t()} | {:error, term()}
+  def for_duty(duty, kind, supporting_refs, meter_resolution \\ :none)
+
+  def for_duty(%Duty{} = duty, kind, supporting_refs, meter_resolution)
+      when is_list(supporting_refs) do
+    with {:ok, duty} <- Duty.new(duty),
+         :ok <- open_duty(duty) do
+      new(%{
+        kind: kind,
+        duty_ref: duty.ref,
+        opening_digest: Duty.digest(duty),
+        cause_key: duty.cause_key,
+        supporting_refs: supporting_refs,
+        meter_resolution: meter_resolution
+      })
+    end
+  end
+
+  def for_duty(_duty, _kind, _supporting_refs, _meter_resolution),
+    do: {:error, :invalid_duty_disposition_source}
+
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
   def from_canonical(value),
     do: Portable.restore_canonical(value, &new/1, &canonical/1, :duty_disposition)
@@ -86,6 +109,9 @@ defmodule Spectre.Duty.Disposition do
 
   @spec discretionary?(t()) :: boolean()
   def discretionary?(%__MODULE__{kind: kind}), do: kind in @discretionary_kinds
+
+  defp open_duty(%Duty{status: :open, disposition_act_ref: nil}), do: :ok
+  defp open_duty(%Duty{ref: ref}), do: {:error, {:duty_not_open, ref}}
 
   defp validate(%__MODULE__{} = disposition) do
     cond do

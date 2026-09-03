@@ -424,6 +424,7 @@ defmodule Spectre.Surface do
     do: match?({:ok, _dimensions}, intrinsic_dimensions(class))
 
   defp intrinsic_dimensions("scope.open"), do: {:ok, [:write, :govern]}
+  defp intrinsic_dimensions("principal.register"), do: {:ok, [:govern]}
   defp intrinsic_dimensions("mandate.delegate"), do: {:ok, [:delegate, :govern]}
   defp intrinsic_dimensions("mandate.devolve"), do: {:ok, [:delegate, :govern]}
   defp intrinsic_dimensions("mandate.restrict"), do: {:ok, [:govern]}

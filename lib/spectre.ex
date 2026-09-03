@@ -52,6 +52,7 @@ defmodule Spectre do
   alias Spectre.Outcome
   alias Spectre.Portable
   alias Spectre.Presentation
+  alias Spectre.Principal
   alias Spectre.Proposal.Result, as: ProposalResult
   alias Spectre.Scope
   alias Spectre.Scope.Opening
@@ -685,6 +686,24 @@ defmodule Spectre do
   end
 
   def authority(_scope, _opts), do: {:error, :authenticated_scope_required}
+
+  @doc "Registers an immutable Principal through a normal governance Act; it grants no authority."
+  @spec register_principal(
+          Scope.t(),
+          Principal.t() | map() | keyword(),
+          map() | keyword(),
+          keyword()
+        ) :: {:ok, ProposalResult.t()} | {:error, term()}
+  def register_principal(scope, principal, candidate_attrs, opts \\ [])
+
+  def register_principal(%Scope{} = scope, principal, candidate_attrs, opts)
+      when is_list(opts) do
+    with {:ok, candidate} <- Governance.register_principal(scope, principal, candidate_attrs),
+         do: propose(scope, candidate, opts)
+  end
+
+  def register_principal(_scope, _principal, _candidate_attrs, _opts),
+    do: {:error, :invalid_principal_registration}
 
   @doc "Issues a subtractive child Mandate through a normal governance Act."
   @spec issue_mandate(

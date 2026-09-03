@@ -231,7 +231,7 @@ defmodule Spectre.Domain.Bootstrap do
       genesis.domain_ref != projection.domain_ref ->
         {:error, :genesis_domain_mismatch}
 
-      genesis.principal_refs != principals ->
+      not MapSet.subset?(MapSet.new(genesis.principal_refs), MapSet.new(principals)) ->
         {:error, :genesis_principal_refs_mismatch}
 
       not MapSet.subset?(MapSet.new(genesis.root_mandate_refs), MapSet.new(mandates)) ->

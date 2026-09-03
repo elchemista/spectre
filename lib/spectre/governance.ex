@@ -17,6 +17,7 @@ defmodule Spectre.Governance do
   alias Spectre.HostProfile
   alias Spectre.Mandate
   alias Spectre.Portable
+  alias Spectre.Principal
   alias Spectre.Row
   alias Spectre.Scope
   alias Spectre.Scope.Opening
@@ -29,6 +30,7 @@ defmodule Spectre.Governance do
   @scope_open_class "scope.open"
   @scope_open_dimensions [:write, :govern]
   @ledger_internal_classes [
+    "principal.register",
     "mandate.delegate",
     "mandate.devolve",
     "mandate.restrict",
@@ -91,6 +93,22 @@ defmodule Spectre.Governance do
   @doc "Stable, closed purpose used by a retained controller to revoke its exact Mandate."
   @spec retained_revocation_purpose_ref() :: String.t()
   def retained_revocation_purpose_ref, do: @retained_revocation_purpose_ref
+
+  @doc "Builds a governed proposal that registers an immutable Principal without granting power."
+  @spec register_principal(Scope.t(), Principal.t() | map() | keyword(), map() | keyword()) ::
+          {:ok, Candidate.t()} | {:error, term()}
+  def register_principal(%Scope{} = scope, principal, candidate_attrs) do
+    with {:ok, principal} <- Principal.new(principal) do
+      internal_candidate(
+        scope,
+        "principal.register",
+        %{"principal_registration" => Principal.canonical(principal)},
+        [:govern],
+        candidate_attrs,
+        [principal.ref]
+      )
+    end
+  end
 
   @doc false
   @spec ledger_internal?(map()) :: boolean()
@@ -421,6 +439,11 @@ defmodule Spectre.Governance do
           {:ok, Candidate.t()} | {:error, term()}
   def declassify_evidence(%Scope{} = scope, evidence, removed_labels, candidate_attrs) do
     with {:ok, evidence} <- Evidence.new(evidence),
+         {:ok, evidence} <-
+           Declassification.bind_producer(
+             evidence,
+             scope.context.authenticated_principal_ref
+           ),
          {:ok, draft} <- Declassification.draft(evidence, removed_labels),
          {:ok, required_targets} <-
            Declassification.required_target_refs(evidence, draft["removed_labels"]) do

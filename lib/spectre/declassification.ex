@@ -130,6 +130,35 @@ defmodule Spectre.Declassification do
     end
   end
 
+  @doc "Attributes the relabelled Evidence to the authenticated declassification proposer."
+  @spec bind_producer(Evidence.t() | map() | keyword(), String.t()) ::
+          {:ok, Evidence.t()} | {:error, term()}
+  def bind_producer(evidence, producer_ref) when is_binary(producer_ref) and producer_ref != "" do
+    with {:ok, evidence} <- Evidence.new(evidence),
+         :ok <- Portable.validate_ref(producer_ref, :declassification_producer_ref) do
+      evidence
+      |> Map.from_struct()
+      |> Map.drop([:ref])
+      |> Map.merge(%{issuer_ref: producer_ref, source_ref: producer_ref})
+      |> Evidence.new()
+    end
+  end
+
+  def bind_producer(_evidence, _producer_ref),
+    do: {:error, :invalid_declassification_producer}
+
+  @doc "Verifies who attested the newly declassified Evidence."
+  @spec validate_producer(Evidence.t(), String.t()) :: :ok | {:error, term()}
+  def validate_producer(%Evidence{} = evidence, producer_ref)
+      when is_binary(producer_ref) and producer_ref != "" do
+    if evidence.issuer_ref == producer_ref and evidence.source_ref == producer_ref,
+      do: :ok,
+      else: {:error, {:declassification_producer_mismatch, evidence.ref, producer_ref}}
+  end
+
+  def validate_producer(_evidence, _producer_ref),
+    do: {:error, :invalid_declassification_producer}
+
   @doc "Decodes and canonicalizes Candidate declassification material."
   @spec decode_draft(map() | keyword()) :: {:ok, decoded_draft()} | {:error, term()}
   def decode_draft(attrs) do

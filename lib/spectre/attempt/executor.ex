@@ -12,7 +12,7 @@ defmodule Spectre.Attempt.Executor do
   not valid result metadata. Evidence may be empty only for an ambiguous result.
   """
 
-  alias Spectre.{Act, Attempt, Evidence, Portable}
+  alias Spectre.{Act, Attempt, Evidence, Outcome, Portable}
 
   @evidence_fields [
     :ref,
@@ -28,6 +28,15 @@ defmodule Spectre.Attempt.Executor do
     :payload,
     :payload_ref,
     :provisional
+  ]
+  @outcome_evidence_fields [
+    :ref,
+    :valid_from,
+    :valid_until,
+    :freshness_ms,
+    :labels,
+    :payload,
+    :payload_ref
   ]
 
   @type observation :: %{
@@ -67,6 +76,41 @@ defmodule Spectre.Attempt.Executor do
 
   def evidence(_act, _attempt, _observed_at, _attrs),
     do: {:error, :invalid_executor_evidence}
+
+  @doc "Builds a final Evidence attestation for one exact Outcome classification."
+  @spec outcome_evidence(
+          Act.t(),
+          Attempt.t(),
+          Outcome.status(),
+          integer(),
+          map() | keyword()
+        ) :: {:ok, Evidence.t()} | {:error, term()}
+  def outcome_evidence(%Act{} = act, %Attempt{} = attempt, status, observed_at, attrs)
+      when status in [:succeeded, :failed, :definitive_no_effect, :ambiguous] and
+             is_integer(observed_at) do
+    with {:ok, act} <- Act.new(act),
+         {:ok, attempt} <- Attempt.new(attempt),
+         {:ok, attrs} <-
+           Portable.normalize_attrs(
+             attrs,
+             @outcome_evidence_fields,
+             :executor_outcome_evidence
+           ) do
+      attrs
+      |> Map.merge(%{
+        proposition: Outcome.proposition(status, act.ref, attempt.ref, act.executor_contract_ref),
+        stance: Outcome.evidence_stance(status),
+        provenance: :observed,
+        parent_refs: [],
+        assumptions: [],
+        provisional: false
+      })
+      |> then(&evidence(act, attempt, observed_at, &1))
+    end
+  end
+
+  def outcome_evidence(_act, _attempt, _status, _observed_at, _attrs),
+    do: {:error, :invalid_executor_outcome_evidence}
 
   @doc "Returns the stable executor identity accepted by this adapter."
   @callback executor_ref() :: String.t()

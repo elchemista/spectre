@@ -195,6 +195,19 @@ defmodule Spectre.SubmissionContext do
   def from_evidence_bindings(_bindings),
     do: {:error, :invalid_evidence_submission_context}
 
+  @doc "Returns the complete scoped context in Evidence bindings, or `nil` when unscoped."
+  @spec extract_evidence_context(map()) :: {:ok, t() | nil} | {:error, term()}
+  def extract_evidence_context(bindings) when is_map(bindings) and not is_struct(bindings) do
+    if Enum.any?(@evidence_binding_fields, &evidence_binding_present?(bindings, &1)) do
+      from_evidence_bindings(bindings)
+    else
+      {:ok, nil}
+    end
+  end
+
+  def extract_evidence_context(_bindings),
+    do: {:error, :invalid_evidence_submission_context}
+
   @doc "Checks that scoped Evidence carries exactly this trusted context."
   @spec validate_evidence_bindings(t(), map()) :: :ok | {:error, term()}
   def validate_evidence_bindings(%__MODULE__{} = expected, bindings) do
@@ -310,6 +323,10 @@ defmodule Spectre.SubmissionContext do
 
   defp validate_additional_evidence_bindings(_bindings),
     do: {:error, :invalid_additional_evidence_bindings}
+
+  defp evidence_binding_present?(bindings, field) do
+    Map.has_key?(bindings, field) or Map.has_key?(bindings, Atom.to_string(field))
+  end
 
   defp canonical_evidence_binding_keys(bindings) do
     case Enum.find(@evidence_binding_fields, &Map.has_key?(bindings, &1)) do

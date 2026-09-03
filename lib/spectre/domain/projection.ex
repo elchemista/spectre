@@ -24,6 +24,7 @@ defmodule Spectre.Domain.Projection do
     Mandate,
     Outcome,
     Presentation,
+    Principal,
     Row,
     SubmissionContext,
     Surface
@@ -43,6 +44,7 @@ defmodule Spectre.Domain.Projection do
   @known_events ~w(
     genesis_recorded
     principal_recorded
+    principal_registered
     host_profile_recorded
     host_profile_revised
     surface_recorded
@@ -74,6 +76,7 @@ defmodule Spectre.Domain.Projection do
   )
   @event_fields [:type, :identity, :data, :schema_version]
   @manual_event_fields %{
+    "principal_registered" => [:act_ref, :principal],
     "mandate_revoked" => [:mandate_ref, :effective_at],
     "mandate_restricted" => [:act_ref, :predecessor_ref, :successor],
     "host_profile_revised" => [:act_ref, :previous_ref, :host_profile],
@@ -512,6 +515,31 @@ defmodule Spectre.Domain.Projection do
 
   defp exact_governance_effect?(
          events,
+         %Act{
+           class: "principal.register",
+           consequence: %{"principal_registration" => canonical}
+         } = act,
+         act_index
+       )
+       when map_size(act.consequence) == 1 do
+    with {:ok, principal} <- Principal.from_canonical(canonical) do
+      exact_manual_event_at?(
+        events,
+        act_index + 1,
+        "principal_registered",
+        principal.ref,
+        %{
+          "act_ref" => act.ref,
+          "principal" => Principal.canonical(principal)
+        }
+      )
+    else
+      {:error, _reason} -> false
+    end
+  end
+
+  defp exact_governance_effect?(
+         events,
          %Act{class: "mandate.delegate", consequence: %{"mandate_issue" => draft}} = act,
          act_index
        )
@@ -751,6 +779,7 @@ defmodule Spectre.Domain.Projection do
 
   defp exact_governance_effect?(_events, %Act{class: class}, _act_index)
        when class in [
+              "principal.register",
               "mandate.delegate",
               "mandate.restrict",
               "mandate.revoke",
@@ -1197,6 +1226,7 @@ defmodule Spectre.Domain.Projection do
       required_act_ref =
         case event.type do
           "mandate_revoked" -> event.identity
+          "principal_registered" -> field(event.data, :act_ref)
           "mandate_restricted" -> field(event.data, :act_ref)
           "meter_devolved" -> field(event.data, :act_ref)
           "surface_revised" -> field(event.data, :act_ref)
@@ -2089,6 +2119,16 @@ defmodule Spectre.Domain.Projection do
     end
   end
 
+  defp reduce("principal_registered", identity, data, _revision, projection) do
+    with {:ok, principal} <- decode(Principal, field(data, :principal)),
+         :ok <- exact_identity(identity, principal.ref),
+         :ok <- unique(projection.principals, identity, :principal),
+         {:ok, act} <- fetch_act(projection, field(data, :act_ref)),
+         :ok <- validate_principal_registration(act, principal, data) do
+      {:ok, %{projection | principals: Map.put(projection.principals, identity, principal)}}
+    end
+  end
+
   defp reduce("host_profile_recorded", identity, data, _revision, projection) do
     if projection.host_profile do
       {:error, :duplicate_host_profile}
@@ -2574,6 +2614,36 @@ defmodule Spectre.Domain.Projection do
     end
   end
 
+  defp validate_principal_registration(act, principal, data) do
+    expected_consequence = %{"principal_registration" => Principal.canonical(principal)}
+
+    cond do
+      act.class != "principal.register" ->
+        {:error, {:principal_registration_act_class_mismatch, act.ref, act.class}}
+
+      not exact_row?(act.row, [:govern]) ->
+        {:error, {:principal_registration_act_row_mismatch, act.ref}}
+
+      act.reservations not in [%{}, []] ->
+        {:error, {:principal_registration_act_has_reservations, act.ref}}
+
+      not Governance.ledger_internal?(act) ->
+        {:error, {:principal_registration_act_not_ledger_internal, act.ref}}
+
+      principal.ref not in act.target_refs ->
+        {:error, {:principal_registration_target_missing, act.ref, principal.ref}}
+
+      field(data, :act_ref) != act.ref ->
+        {:error, {:principal_registration_act_ref_mismatch, principal.ref}}
+
+      act.consequence != expected_consequence ->
+        {:error, {:principal_registration_consequence_mismatch, act.ref}}
+
+      true ->
+        :ok
+    end
+  end
+
   defp validate_scope_opening(projection, opening) do
     with :ok <- scope_domain_matches(projection, opening),
          :ok <- scope_parent_exists(projection, opening),
@@ -2720,6 +2790,7 @@ defmodule Spectre.Domain.Projection do
          true <- ledger_internal_act?(act),
          {:ok, decoded} <- Declassification.decode_draft(draft),
          true <- decoded.canonical == draft,
+         :ok <- Declassification.validate_producer(decoded.evidence, act.proposer_ref),
          {:ok, mandate} <- fetch_mandate(projection, act.mandate_ref),
          :ok <-
            Authority.owners_authorize_mandate?(
@@ -4022,33 +4093,18 @@ defmodule Spectre.Domain.Projection do
   end
 
   defp validate_evidence_scope_binding(projection, evidence) do
-    scope_ref = field(evidence.bindings, :scope_ref)
+    with {:ok, context} <- SubmissionContext.extract_evidence_context(evidence.bindings) do
+      validate_evidence_context(projection, evidence, context)
+    end
+  end
 
-    if is_nil(scope_ref) do
-      :ok
-    else
-      case Map.fetch(projection.scopes, scope_ref) do
-        {:ok, opening} ->
-          cond do
-            field(evidence.bindings, :domain_ref) != projection.domain_ref ->
-              {:error, {:evidence_scope_domain_mismatch, evidence.ref, scope_ref}}
+  defp validate_evidence_context(_projection, _evidence, nil), do: :ok
 
-            field(evidence.bindings, :authenticated_principal_ref) != opening.opened_by_ref ->
-              {:error, {:evidence_scope_principal_mismatch, evidence.ref, scope_ref}}
-
-            field(evidence.bindings, :authentication_ref) != opening.authentication_ref ->
-              {:error, {:evidence_scope_authentication_mismatch, evidence.ref, scope_ref}}
-
-            evidence.provenance == :observed and evidence.source_ref != opening.ingress_ref ->
-              {:error, {:evidence_scope_ingress_source_mismatch, evidence.ref, scope_ref}}
-
-            true ->
-              :ok
-          end
-
-        :error ->
-          {:error, {:evidence_scope_not_open, evidence.ref, scope_ref}}
-      end
+  defp validate_evidence_context(projection, evidence, context) do
+    with {:ok, opening} <- scope_context(projection, context) do
+      if evidence.provenance != :observed or evidence.source_ref == opening.ingress_ref,
+        do: :ok,
+        else: {:error, {:evidence_scope_ingress_source_mismatch, evidence.ref, context.scope_ref}}
     end
   end
 

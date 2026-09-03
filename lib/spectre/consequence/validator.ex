@@ -22,6 +22,7 @@ defmodule Spectre.Consequence.Validator do
 
   @none "spectre:consequence-validator:none:v1"
   @scope_opening "spectre:consequence-validator:scope-opening:v1"
+  @principal_registration "spectre:consequence-validator:principal-registration:v1"
   @mandate_delegation "spectre:consequence-validator:mandate-delegation:v1"
   @mandate_devolution "spectre:consequence-validator:mandate-devolution:v1"
   @mandate_restriction "spectre:consequence-validator:mandate-restriction:v1"
@@ -36,6 +37,7 @@ defmodule Spectre.Consequence.Validator do
 
   @class_defaults %{
     "scope.open" => @scope_opening,
+    "principal.register" => @principal_registration,
     "mandate.delegate" => @mandate_delegation,
     "mandate.devolve" => @mandate_devolution,
     "mandate.restrict" => @mandate_restriction,

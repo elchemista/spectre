@@ -8,7 +8,7 @@ defmodule Spectre.Mind.Turn do
   """
 
   alias Spectre.Canonical.Value
-  alias Spectre.{Evidence, Label}
+  alias Spectre.{Evidence, Label, SubmissionContext}
   alias Spectre.Evidence.Derivation
   alias Spectre.Portable
   alias Spectre.Scope
@@ -20,6 +20,7 @@ defmodule Spectre.Mind.Turn do
     :mind_ref,
     :submission_context_ref,
     :authenticated_principal_ref,
+    :context_bindings,
     :evidence,
     :evidence_refs,
     :context_labels,
@@ -34,6 +35,7 @@ defmodule Spectre.Mind.Turn do
           mind_ref: String.t(),
           submission_context_ref: String.t(),
           authenticated_principal_ref: String.t(),
+          context_bindings: map(),
           evidence: [Evidence.t()],
           evidence_refs: [String.t()],
           context_labels: [Label.t()],
@@ -61,6 +63,7 @@ defmodule Spectre.Mind.Turn do
          mind_ref: mind_ref,
          submission_context_ref: scope.context.ref,
          authenticated_principal_ref: scope.context.authenticated_principal_ref,
+         context_bindings: SubmissionContext.evidence_bindings(scope.context),
          evidence: evidence,
          evidence_refs: evidence |> Enum.map(& &1.ref) |> Enum.sort(),
          context_labels: labels,
@@ -119,6 +122,7 @@ defmodule Spectre.Mind.Turn do
       "mind_ref" => turn.mind_ref,
       "submission_context_ref" => turn.submission_context_ref,
       "authenticated_principal_ref" => turn.authenticated_principal_ref,
+      "context_bindings" => turn.context_bindings,
       "evidence" => Enum.map(turn.evidence, &%{"ref" => &1.ref, "digest" => Evidence.digest(&1)}),
       "evidence_refs" => turn.evidence_refs,
       "context_labels" => Enum.map(turn.context_labels, &Label.canonical/1),

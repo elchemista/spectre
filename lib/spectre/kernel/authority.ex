@@ -578,7 +578,12 @@ defmodule Spectre.Kernel.Authority do
     case {get(candidate, [:class, :consequence_class]), get(candidate, [:consequence])} do
       {"data.declassify", %{"evidence_declassification" => draft} = consequence}
       when map_size(consequence) == 1 ->
-        with {:ok, decoded} <- Declassification.decode_draft(draft) do
+        with {:ok, decoded} <- Declassification.decode_draft(draft),
+             :ok <-
+               Declassification.validate_producer(
+                 decoded.evidence,
+                 get(candidate, [:proposer_ref, :principal_ref])
+               ) do
           owners_authorize_mandate?(mandate, decoded.removed_owner_refs, view)
         end
 

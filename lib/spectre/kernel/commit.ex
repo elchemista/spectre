@@ -22,6 +22,7 @@ defmodule Spectre.Kernel.Commit do
     Governance,
     HostProfile,
     Mandate,
+    Principal,
     Row,
     Surface
   }
@@ -121,6 +122,26 @@ defmodule Spectre.Kernel.Commit do
            {:ok, settlement} <- Event.meter(:settle, act) do
         {:ok, [reservation, settlement]}
       end
+    end
+  end
+
+  defp governance_events(
+         %Act{
+           class: "principal.register",
+           consequence: %{"principal_registration" => canonical}
+         } = act
+       )
+       when map_size(act.consequence) == 1 do
+    with true <- exact_row?(act.row, [:govern]),
+         true <- act.reservations in [%{}, []],
+         true <- ledger_internal?(act),
+         {:ok, principal} <- Principal.from_canonical(canonical),
+         true <- principal.ref in act.target_refs,
+         {:ok, event} <- Event.principal_registered(act, principal) do
+      {:ok, [event]}
+    else
+      false -> {:error, :invalid_principal_registration}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -279,6 +300,7 @@ defmodule Spectre.Kernel.Commit do
          true <- ledger_internal?(act),
          {:ok, decoded} <- Declassification.decode_draft(draft),
          true <- decoded.canonical == draft,
+         :ok <- Declassification.validate_producer(decoded.evidence, act.proposer_ref),
          {:ok, required_targets} <-
            Declassification.required_target_refs(decoded.evidence, decoded.removed_labels),
          true <- Enum.all?(required_targets, &(&1 in act.target_refs)),

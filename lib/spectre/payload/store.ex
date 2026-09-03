@@ -114,7 +114,7 @@ defmodule Spectre.Payload.Store do
   def verify_new_references(_config, _facts, _refs),
     do: {:error, :invalid_new_payload_references}
 
-  @doc "Returns external payload refs consumed when an Act is dispatched."
+  @doc "Returns external payload refs which must be usable before an Attempt is recorded."
   @spec act_payload_refs(map(), map()) :: [ref()]
   def act_payload_refs(facts, act) when is_map(facts) and is_map(act) do
     act_evidence_refs =
@@ -152,6 +152,16 @@ defmodule Spectre.Payload.Store do
   end
 
   def act_payload_refs(_facts, _act), do: []
+
+  @doc "Returns payload refs still needed after an Attempt has made its target mutable."
+  @spec post_attempt_payload_refs(map(), map()) :: [ref()]
+  def post_attempt_payload_refs(facts, act) when is_map(facts) and is_map(act) do
+    facts
+    |> act_payload_refs(act)
+    |> Kernel.--(erasure_target_refs(act))
+  end
+
+  def post_attempt_payload_refs(_facts, _act), do: []
 
   @doc false
   @spec evidence_payload_refs([String.t()], map()) :: [ref()]
@@ -216,6 +226,13 @@ defmodule Spectre.Payload.Store do
 
   defp optional_ref(nil), do: []
   defp optional_ref(ref), do: [ref]
+
+  defp erasure_target_refs(act) do
+    case field(act, :consequence) do
+      %{"erasure_request" => %{"target_ref" => ref}} -> [ref]
+      _other -> []
+    end
+  end
 
   defp validate_ref(ref) when is_binary(ref) do
     if String.match?(ref, ~r/\Apayload:[0-9a-f]{64}\z/),

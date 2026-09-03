@@ -222,6 +222,22 @@ defmodule Spectre.Domain.Event do
   def definition_revised(_act, _previous_ref, _definition),
     do: {:error, :invalid_definition_revision_event}
 
+  @spec principal_registered(Spectre.Act.t(), Spectre.Principal.t()) ::
+          {:ok, map()} | {:error, term()}
+  def principal_registered(%Spectre.Act{} = act, %Spectre.Principal{} = principal) do
+    with {:ok, act} <- Spectre.Act.new(act),
+         {:ok, principal} <- Spectre.Principal.new(principal) do
+      {:ok,
+       Projection.event("principal_registered", principal.ref, %{
+         "act_ref" => act.ref,
+         "principal" => Spectre.Principal.canonical(principal)
+       })}
+    end
+  end
+
+  def principal_registered(_act, _principal),
+    do: {:error, :invalid_principal_registration_event}
+
   @spec dispatch_ready(Spectre.Act.t()) :: map()
   def dispatch_ready(%Spectre.Act{} = act) do
     Projection.event("dispatch_ready", "dispatch_ready:" <> act.ref, %{

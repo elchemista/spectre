@@ -1836,6 +1836,11 @@ defmodule Spectre.Domain.Sequencer do
     PayloadStore.verify_usable(state.payload_store, state.projection, refs)
   end
 
+  defp verify_post_attempt_payloads(state, act) do
+    refs = PayloadStore.post_attempt_payload_refs(state.projection, act)
+    PayloadStore.verify_usable(state.payload_store, state.projection, refs)
+  end
+
   defp fetch_granted_act(state, grant, now) do
     with {:ok, %Act{} = act} <- Map.fetch(state.projection.acts, grant.act_ref),
          :ok <-
@@ -1899,7 +1904,7 @@ defmodule Spectre.Domain.Sequencer do
          {:ok, broker} <- configured_broker(recovered_state),
          :ok <- mandate_still_active(projection, act, now),
          :ok <- broker_supports_act(projection, act, broker),
-         :ok <- verify_act_payloads(recovered_state, act),
+         :ok <- verify_post_attempt_payloads(recovered_state, act),
          {:ok, receipt} <- mint_checkout_receipt(recovered_state, act, attempt, broker, now) do
       {:ok, recovered_state, act, attempt, receipt}
     else
@@ -2468,6 +2473,9 @@ defmodule Spectre.Domain.Sequencer do
       turn.authenticated_principal_ref != context.authenticated_principal_ref ->
         {:error, :turn_principal_mismatch}
 
+      turn.context_bindings != SubmissionContext.evidence_bindings(context) ->
+        {:error, :turn_context_bindings_mismatch}
+
       not is_integer(turn.opened_at) or turn.opened_at < opening.opened_at or
           turn.opened_at > now ->
         {:error, :turn_time_invalid}
@@ -2504,27 +2512,15 @@ defmodule Spectre.Domain.Sequencer do
       evidence.source_ref != turn.mind_ref ->
         {:error, {:derived_evidence_source_mismatch, evidence.ref}}
 
-      evidence.issuer_ref != context.authenticated_principal_ref ->
+      evidence.issuer_ref != turn.mind_ref ->
         {:error, {:derived_evidence_issuer_mismatch, evidence.ref}}
 
       evidence.observed_at < turn.opened_at or evidence.observed_at > now ->
         {:error, {:derived_evidence_time_invalid, evidence.ref}}
 
-      evidence_binding(evidence, :domain_ref) != context.domain_ref ->
-        {:error, {:derived_evidence_binding_mismatch, evidence.ref, :domain_ref}}
-
-      evidence_binding(evidence, :scope_ref) != context.scope_ref ->
-        {:error, {:derived_evidence_binding_mismatch, evidence.ref, :scope_ref}}
-
-      evidence_binding(evidence, :authentication_ref) != context.authentication_ref ->
-        {:error, {:derived_evidence_binding_mismatch, evidence.ref, :authentication_ref}}
-
-      evidence_binding(evidence, :authenticated_principal_ref) !=
-          context.authenticated_principal_ref ->
-        {:error, {:derived_evidence_binding_mismatch, evidence.ref, :authenticated_principal_ref}}
-
       true ->
-        Derivation.validate(evidence, parents)
+        with :ok <- SubmissionContext.validate_evidence_bindings(context, evidence.bindings),
+             do: Derivation.validate(evidence, parents)
     end
   end
 
@@ -2600,10 +2596,6 @@ defmodule Spectre.Domain.Sequencer do
 
   defp evidence_identity(evidence) do
     Map.new(evidence, &{&1.ref, Evidence.digest(&1)})
-  end
-
-  defp evidence_binding(evidence, key) do
-    Map.get(evidence.bindings, key, Map.get(evidence.bindings, Atom.to_string(key)))
   end
 
   defp record_presentation_record(state, context, input, ledger_opts, conflicts_left) do

@@ -358,7 +358,10 @@ defmodule Spectre.Erasure.Analysis do
       |> Map.values()
       |> Enum.filter(&(field(&1, :act_ref) == act_ref))
 
-    attempts != [] and Enum.all?(attempts, &(attempt_execution_state(facts, &1) == :live))
+    case attempts do
+      [] -> Map.has_key?(facts.dispatch_cancellations, act_ref)
+      attempts -> Enum.all?(attempts, &(attempt_execution_state(facts, &1) == :live))
+    end
   end
 
   defp more_conservative(:erased, _state), do: :erased
@@ -377,7 +380,8 @@ defmodule Spectre.Erasure.Analysis do
       outcomes: records(facts, :outcomes),
       duties: records(facts, :duties),
       declassifications: records(facts, :declassifications),
-      erasures: records(facts, :erasures)
+      erasures: records(facts, :erasures),
+      dispatch_cancellations: records(facts, :dispatch_cancellations)
     }
   end
 

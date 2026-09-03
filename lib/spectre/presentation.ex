@@ -15,12 +15,23 @@ defmodule Spectre.Presentation do
   its authenticated issuer must be one of the declared recipients.
   """
 
-  alias Spectre.{Consent, Disclosure, Evidence, Outcome, Portable, Row}
+  alias Spectre.{Act, Consent, Disclosure, Evidence, Ingress, Outcome, Portable, Row}
+  alias Spectre.SubmissionContext
 
   @schema_version 1
   @show_class "presentation.show"
   @show_dimensions [:attempt, :disclose, :present]
   @approval_contract_ref "spectre.presentation.approval.v1"
+  @response_evidence_fields [
+    :ref,
+    :valid_from,
+    :valid_until,
+    :freshness_ms,
+    :assumptions,
+    :labels,
+    :payload,
+    :payload_ref
+  ]
   @fields [
     :schema_version,
     :ref,
@@ -301,6 +312,60 @@ defmodule Spectre.Presentation do
       "show_act_ref" => show_act_ref
     }
   end
+
+  @doc "Builds an authenticated supporting or contradicting response to one exact show Act."
+  @spec response_evidence(
+          SubmissionContext.t(),
+          t(),
+          Act.t(),
+          Evidence.stance(),
+          integer(),
+          map() | keyword()
+        ) :: {:ok, Evidence.t()} | {:error, term()}
+  def response_evidence(
+        %SubmissionContext{} = context,
+        %__MODULE__{} = presentation,
+        %Act{} = show_act,
+        stance,
+        observed_at,
+        attrs
+      )
+      when stance in [:supports, :contradicts] and is_integer(observed_at) do
+    with {:ok, context} <- SubmissionContext.new(context),
+         {:ok, presentation} <- new(presentation),
+         {:ok, show_act} <- Act.new(show_act),
+         :ok <- response_context(context, presentation, show_act, observed_at),
+         {:ok, attrs} <-
+           Portable.normalize_attrs(
+             attrs,
+             @response_evidence_fields,
+             :presentation_response_evidence
+           ) do
+      attrs
+      |> Map.merge(%{
+        proposition: approval_proposition(presentation.ref, show_act.ref),
+        stance: stance,
+        issuer_ref: context.authenticated_principal_ref,
+        bindings: %{
+          "presentation_ref" => presentation.ref,
+          "show_act_ref" => show_act.ref,
+          "recipient_ref" => context.authenticated_principal_ref
+        },
+        provisional: false
+      })
+      |> then(&Ingress.evidence(context, observed_at, &1))
+    end
+  end
+
+  def response_evidence(
+        _context,
+        _presentation,
+        _show_act,
+        _stance,
+        _observed_at,
+        _attrs
+      ),
+      do: {:error, :invalid_presentation_response_evidence}
 
   @doc "Classifies a reserved approval proposition and rejects non-canonical variants."
   @spec approval_refs(Evidence.t()) ::
@@ -727,6 +792,25 @@ defmodule Spectre.Presentation do
 
       true ->
         :ok
+    end
+  end
+
+  defp response_context(context, presentation, show_act, observed_at) do
+    cond do
+      context.scope_ref != presentation.scope_ref ->
+        {:error, :presentation_response_scope_mismatch}
+
+      context.authenticated_principal_ref not in presentation.recipient_refs ->
+        {:error, :presentation_response_recipient_mismatch}
+
+      context.ingress_ref not in presentation.approval_source_refs ->
+        {:error, :presentation_response_source_not_configured}
+
+      observed_at < show_act.committed_at ->
+        {:error, :presentation_response_precedes_show_act}
+
+      true ->
+        validate_show(show_act, presentation)
     end
   end
 
