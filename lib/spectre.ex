@@ -33,17 +33,20 @@ defmodule Spectre do
 
   A Scope and Domain handle are routing values, not authority. Copying either
   does not copy a Mandate, reservation or capability.
+
+  See `Spectre.GovernedAct` for a map of the pure model implementation and its
+  relationship to the ledger, kernel, projection and audit drivers.
   """
 
   alias Spectre.Attempt.Runner
   alias Spectre.Authority.View, as: AuthorityView
   alias Spectre.Candidate
   alias Spectre.Domain
-  alias Spectre.Domain.Projection
   alias Spectre.Domain.Sequencer
   alias Spectre.Domain.Supervisor, as: DomainSupervisor
   alias Spectre.Evidence
   alias Spectre.Fallback
+  alias Spectre.GovernedAct.State
   alias Spectre.Governance
   alias Spectre.Ledger.Store
   alias Spectre.Mind
@@ -1042,7 +1045,7 @@ defmodule Spectre do
   defp presentation_scope(%Presentation{scope_ref: scope_ref}, scope_ref), do: :ok
   defp presentation_scope(%Presentation{}, _scope_ref), do: {:error, :presentation_scope_mismatch}
 
-  defp fetch_presentation(%Projection{} = projection, presentation_ref) do
+  defp fetch_presentation(%State{} = projection, presentation_ref) do
     case Map.fetch(projection.presentations, presentation_ref) do
       {:ok, %Presentation{} = presentation} -> {:ok, presentation}
       {:ok, _invalid} -> {:error, {:invalid_presentation_record, presentation_ref}}
@@ -1050,7 +1053,7 @@ defmodule Spectre do
     end
   end
 
-  defp fetch_mandate(%Projection{} = projection, mandate_ref)
+  defp fetch_mandate(%State{} = projection, mandate_ref)
        when is_binary(mandate_ref) and mandate_ref != "" do
     case Map.fetch(projection.mandates, mandate_ref) do
       {:ok, %Mandate{} = mandate} -> {:ok, mandate}
@@ -1059,7 +1062,7 @@ defmodule Spectre do
     end
   end
 
-  defp fetch_mandate(%Projection{}, _mandate_ref), do: {:error, :invalid_mandate_ref}
+  defp fetch_mandate(%State{}, _mandate_ref), do: {:error, :invalid_mandate_ref}
 
   defp presentation_show_candidate(scope, presentation, candidate_attrs) do
     with {:ok, attrs} <-
@@ -1381,7 +1384,7 @@ defmodule Spectre do
 
   defp fetch_projection(domain_input) do
     with {:ok, domain} <- resolve_domain(domain_input),
-         {:ok, %Projection{} = projection} <-
+         {:ok, %State{} = projection} <-
            safe_call(
              fn -> Sequencer.projection(domain.server) end,
              :domain_projection_unavailable

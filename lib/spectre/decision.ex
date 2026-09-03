@@ -10,6 +10,7 @@ defmodule Spectre.Decision do
   """
 
   alias Spectre.{Consent, Portable}
+  alias Spectre.Kernel.Meter.Amounts
 
   @schema_version 1
   @outcomes [:admitted, :refused, :undecidable, :unknown_class]
@@ -124,7 +125,7 @@ defmodule Spectre.Decision do
           mandate_revision: pos_integer() | nil,
           recognition_refs: [String.t()],
           recognition_evidence_refs: [String.t()],
-          reservations: map() | list(),
+          reservations: Amounts.t(),
           proposer_ref: String.t(),
           executor_ref: String.t() | nil,
           authorizer_ref: String.t() | nil,
@@ -154,6 +155,7 @@ defmodule Spectre.Decision do
            attrs
            |> Map.put(:recognition_refs, recognition_refs)
            |> Map.put(:recognition_evidence_refs, recognition_evidence_refs),
+         {:ok, attrs} <- normalize_reservations(attrs),
          {:ok, attrs} <- normalize_consent(attrs),
          {:ok, ref} <- resolve_ref(Map.get(attrs, :ref), attrs),
          decision = struct(__MODULE__, Map.put(attrs, :ref, ref)),
@@ -167,6 +169,10 @@ defmodule Spectre.Decision do
   @spec admitted?(t()) :: boolean()
   def admitted?(%__MODULE__{outcome: :admitted}), do: true
   def admitted?(%__MODULE__{}), do: false
+
+  @doc "Returns whether Admission planned any Meter reservation."
+  @spec reservations?(t()) :: boolean()
+  def reservations?(%__MODULE__{reservations: reservations}), do: map_size(reservations) > 0
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
@@ -268,7 +274,7 @@ defmodule Spectre.Decision do
       decision.outcome != :admitted and decision.reasons == [] ->
         {:error, {:missing_decision_reasons, decision.outcome}}
 
-      not portable_collection?(decision.reservations) ->
+      not is_map(decision.reservations) or is_struct(decision.reservations) ->
         {:error, {:invalid_decision_reservations, Portable.shape(decision.reservations)}}
 
       not is_integer(decision.surface_revision) or decision.surface_revision < 0 ->
@@ -361,7 +367,10 @@ defmodule Spectre.Decision do
   defp validate_optional_ref(nil, _field), do: :ok
   defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 
-  defp portable_collection?(value) when is_map(value), do: not is_struct(value)
-  defp portable_collection?(value) when is_list(value), do: true
-  defp portable_collection?(_value), do: false
+  defp normalize_reservations(attrs) do
+    case Amounts.normalize(Map.fetch!(attrs, :reservations)) do
+      {:ok, reservations} -> {:ok, Map.put(attrs, :reservations, reservations)}
+      {:error, reason} -> {:error, {:invalid_decision_reservations, reason}}
+    end
+  end
 end

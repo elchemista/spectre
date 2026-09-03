@@ -1,9 +1,11 @@
 defmodule Spectre.Domain.Bootstrap do
   @moduledoc false
 
+  alias Spectre.Adapter
   alias Spectre.Domain.Event
   alias Spectre.Domain.Projection
   alias Spectre.Duty.Derive
+  alias Spectre.GovernedAct.State
   alias Spectre.{Constitution, Duty, Genesis, HostProfile, Mandate, Principal, Surface}
 
   @type prepared :: %{batch_id: String.t(), payloads: [map()]}
@@ -35,7 +37,7 @@ defmodule Spectre.Domain.Bootstrap do
   def prepare(_domain_ref, _opts), do: {:error, :invalid_domain_bootstrap}
 
   @spec verify_projection(Projection.t(), keyword()) :: :ok | {:error, term()}
-  def verify_projection(%Projection{} = projection, opts) when is_list(opts) do
+  def verify_projection(%State{} = projection, opts) when is_list(opts) do
     case projection.surface do
       %Surface{declarations: declarations} when map_size(declarations) == 0 ->
         with :ok <- verify_optional_genesis(projection, opts),
@@ -67,18 +69,18 @@ defmodule Spectre.Domain.Bootstrap do
 
   def verify_projection(_projection, _opts), do: {:error, :invalid_domain_projection}
 
-  defp verify_optional_genesis(%Projection{genesis: nil}, _opts), do: :ok
+  defp verify_optional_genesis(%State{genesis: nil}, _opts), do: :ok
 
-  defp verify_optional_genesis(%Projection{genesis: %Genesis{} = genesis} = projection, opts) do
+  defp verify_optional_genesis(%State{genesis: %Genesis{} = genesis} = projection, opts) do
     with :ok <- verify_projection_links(projection, genesis),
          do: verify_attestation(genesis, opts)
   end
 
   defp verify_optional_genesis(_projection, _opts), do: {:error, :invalid_domain_genesis}
 
-  defp verify_projection_constitution(%Projection{genesis: nil}, _opts), do: :ok
+  defp verify_projection_constitution(%State{genesis: nil}, _opts), do: :ok
 
-  defp verify_projection_constitution(%Projection{genesis: %Genesis{} = genesis}, opts),
+  defp verify_projection_constitution(%State{genesis: %Genesis{} = genesis}, opts),
     do: verify_constitution(genesis, opts)
 
   defp verify_bundle(
@@ -155,33 +157,28 @@ defmodule Spectre.Domain.Bootstrap do
   end
 
   defp emergency_duration_within_policy(mandate, rules) do
-    case optional_rule(rules, :emergency_max_duration_ms) do
-      nil ->
-        {:error, :emergency_max_duration_required}
-
-      maximum when is_integer(maximum) and maximum > 0 ->
+    case Constitution.emergency_max_duration(rules) do
+      {:ok, maximum} ->
         if mandate.expires_at - mandate.not_before <= maximum,
           do: :ok,
           else: {:error, :emergency_mandate_duration_exceeded}
 
-      _invalid ->
-        {:error, :invalid_emergency_max_duration_ms}
+      {:error, _reason} = error ->
+        error
     end
   end
 
-  defp optional_rule(rules, key), do: Map.get(rules, key, Map.get(rules, Atom.to_string(key)))
+  defp verify_projection_emergency(%State{genesis: nil}, _opts), do: :ok
 
-  defp verify_projection_emergency(%Projection{genesis: nil}, _opts), do: :ok
-
-  defp verify_projection_emergency(%Projection{genesis: %Genesis{} = genesis} = projection, opts) do
+  defp verify_projection_emergency(%State{genesis: %Genesis{} = genesis} = projection, opts) do
     with {:ok, rules} <- constitution(opts) do
       verify_emergency_mandate(genesis, Map.values(projection.mandates), rules)
     end
   end
 
-  defp verify_projection_duty_routes(%Projection{genesis: nil}, _opts), do: :ok
+  defp verify_projection_duty_routes(%State{genesis: nil}, _opts), do: :ok
 
-  defp verify_projection_duty_routes(%Projection{} = projection, opts) do
+  defp verify_projection_duty_routes(%State{} = projection, opts) do
     known_authorities = Map.keys(projection.principals) ++ Map.keys(projection.mandates)
 
     with {:ok, rules} <- constitution(opts),
@@ -266,17 +263,28 @@ defmodule Spectre.Domain.Bootstrap do
 
   defp verify_attestation(genesis, opts) do
     with {:ok, {module, verifier_opts}} <- verifier(opts),
-         true <- Code.ensure_loaded?(module),
-         true <- function_exported?(module, :verify, 2) do
-      module.verify(genesis, verifier_opts)
+         :ok <- Adapter.validate(module, verify: 2),
+         {:ok, result} <- Adapter.invoke(module, :verify, [genesis, verifier_opts]) do
+      result
     else
-      false -> {:error, :genesis_verifier_unavailable}
-      {:error, _reason} = error -> error
+      {:error, {:adapter_callback_exception, _module, :verify, exception}} ->
+        {:error, {:genesis_verifier_failed, exception}}
+
+      {:error, {:adapter_callback_failure, _module, :verify, kind}} ->
+        {:error, {:genesis_verifier_failed, kind}}
+
+      {:error, {:adapter_module_not_loaded, _module}} ->
+        {:error, :genesis_verifier_unavailable}
+
+      {:error, {:adapter_callback_missing, _module, :verify, 2}} ->
+        {:error, :genesis_verifier_unavailable}
+
+      {:error, {:invalid_adapter_module, _module}} ->
+        {:error, :genesis_verifier_unavailable}
+
+      {:error, _reason} = error ->
+        error
     end
-  rescue
-    exception -> {:error, {:genesis_verifier_failed, exception.__struct__}}
-  catch
-    kind, _reason -> {:error, {:genesis_verifier_failed, kind}}
   end
 
   defp verifier(opts) do

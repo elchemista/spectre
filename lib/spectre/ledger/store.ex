@@ -8,6 +8,8 @@ defmodule Spectre.Ledger.Store do
   adapter's advertised durability boundary has acknowledged the batch.
   """
 
+  alias Spectre.Adapter
+
   @type config :: module() | {module(), keyword()}
   @type domain_ref :: Spectre.Ledger.domain_ref()
   @type batch_id :: Spectre.Ledger.batch_id()
@@ -98,22 +100,24 @@ defmodule Spectre.Ledger.Store do
 
   @spec invoke_append(module(), [term()]) :: {:ok, non_neg_integer()} | {:error, term()}
   defp invoke_append(module, args) do
-    module
-    |> apply(:append, args)
-    |> normalize_append()
-  rescue
-    _exception -> {:error, :ambiguous}
-  catch
-    _kind, _reason -> {:error, :ambiguous}
+    case Adapter.invoke(module, :append, args) do
+      {:ok, reply} -> normalize_append(reply)
+      {:error, _reason} -> {:error, :ambiguous}
+    end
   end
 
   @spec invoke_read(module(), atom(), [term()]) :: term()
   defp invoke_read(module, function, args) do
-    apply(module, function, args)
-  rescue
-    exception -> {:error, {:ledger_store_exception, module, function, exception.__struct__}}
-  catch
-    kind, _reason -> {:error, {:ledger_store_failure, module, function, kind}}
+    case Adapter.invoke(module, function, args) do
+      {:ok, reply} ->
+        reply
+
+      {:error, {:adapter_callback_exception, _, _, exception}} ->
+        {:error, {:ledger_store_exception, module, function, exception}}
+
+      {:error, {:adapter_callback_failure, _, _, kind}} ->
+        {:error, {:ledger_store_failure, module, function, kind}}
+    end
   end
 
   @spec normalize_append(term()) :: {:ok, non_neg_integer()} | {:error, term()}
@@ -153,15 +157,18 @@ defmodule Spectre.Ledger.Store do
 
   @spec ensure_callback(module(), atom(), non_neg_integer()) :: :ok | {:error, term()}
   defp ensure_callback(module, function, arity) do
-    cond do
-      not Code.ensure_loaded?(module) ->
+    case Adapter.validate(module, [{function, arity}]) do
+      :ok ->
+        :ok
+
+      {:error, {:adapter_module_not_loaded, _module}} ->
         {:error, {:ledger_store_not_loaded, module}}
 
-      not function_exported?(module, function, arity) ->
+      {:error, {:adapter_callback_missing, _module, _function, _arity}} ->
         {:error, {:ledger_store_callback_missing, module, function, arity}}
 
-      true ->
-        :ok
+      {:error, _reason} ->
+        {:error, {:ledger_store_not_loaded, module}}
     end
   end
 

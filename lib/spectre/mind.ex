@@ -8,7 +8,7 @@ defmodule Spectre.Mind do
   """
 
   alias Spectre.Evidence.Derivation
-  alias Spectre.{Candidate, Disclosure, Evidence, Portable, SubmissionContext}
+  alias Spectre.{Adapter, Candidate, Disclosure, Evidence, Portable, SubmissionContext}
   alias Spectre.Mind.Turn
 
   @candidate_fields [
@@ -143,29 +143,30 @@ defmodule Spectre.Mind do
   @doc false
   @spec resolve(module()) :: {:ok, {module(), String.t()}} | {:error, term()}
   def resolve(module) when is_atom(module) and module not in [nil, true, false] do
-    with true <- Code.ensure_loaded?(module),
-         true <- function_exported?(module, :ref, 0),
-         true <- function_exported?(module, :deliberate, 2),
+    with :ok <- validate_adapter(module),
          {:ok, ref} <- safe_ref(module),
          :ok <- Portable.validate_ref(ref, :mind_ref) do
       {:ok, {module, ref}}
     else
-      false -> {:error, {:mind_unavailable, module}}
       {:error, _reason} = error -> error
     end
   end
 
   def resolve(module), do: {:error, {:mind_unavailable, module}}
 
-  defp safe_ref(module) do
-    case module.ref() do
-      ref when is_binary(ref) and ref != "" -> {:ok, ref}
-      _invalid -> {:error, {:invalid_mind_ref, module}}
+  defp validate_adapter(module) do
+    case Adapter.validate(module, ref: 0, deliberate: 2) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, {:mind_unavailable, module}}
     end
-  rescue
-    _exception -> {:error, {:mind_ref_failed, module}}
-  catch
-    _kind, _reason -> {:error, {:mind_ref_failed, module}}
+  end
+
+  defp safe_ref(module) do
+    case Adapter.invoke(module, :ref, []) do
+      {:ok, ref} when is_binary(ref) and ref != "" -> {:ok, ref}
+      {:ok, _invalid} -> {:error, {:invalid_mind_ref, module}}
+      {:error, _reason} -> {:error, {:mind_ref_failed, module}}
+    end
   end
 
   defp turn_context(%Turn{} = turn) do
@@ -188,15 +189,22 @@ defmodule Spectre.Mind do
     do: {:error, {:invalid_mind_evidence_provenance, provenance}}
 
   defp safe_deliberate(module, turn, opts) do
-    case module.deliberate(turn, opts) do
-      {:ok, result} -> {:ok, result}
-      {:error, _reason} = error -> error
-      _invalid -> {:error, {:invalid_mind_result, module}}
+    case Adapter.invoke(module, :deliberate, [turn, opts]) do
+      {:ok, {:ok, result}} ->
+        {:ok, result}
+
+      {:ok, {:error, _reason} = error} ->
+        error
+
+      {:ok, _invalid} ->
+        {:error, {:invalid_mind_result, module}}
+
+      {:error, {:adapter_callback_exception, _, _, exception}} ->
+        {:error, {:mind_failed, module, exception}}
+
+      {:error, {:adapter_callback_failure, _, _, kind}} ->
+        {:error, {:mind_failed, module, kind}}
     end
-  rescue
-    exception -> {:error, {:mind_failed, module, exception.__struct__}}
-  catch
-    kind, _reason -> {:error, {:mind_failed, module, kind}}
   end
 
   defp normalize_result(result) when is_list(result) do

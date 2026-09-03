@@ -15,7 +15,7 @@ defmodule Spectre.Candidate do
   covers the Presentation and every Evidence ref.
   """
 
-  alias Spectre.{Consent, Disclosure, Portable, Row}
+  alias Spectre.{Act, Consent, Disclosure, Portable, Row}
 
   @schema_version 1
   @fields [
@@ -255,22 +255,26 @@ defmodule Spectre.Candidate do
     do: Portable.content_ref!(:candidate, identity(candidate))
 
   @doc false
-  @spec effect_digest(map()) :: {:ok, String.t()} | {:error, term()}
-  def effect_digest(record) when is_map(record) do
-    with {:ok, row} <- Row.new(field(record, :row)),
+  @spec effect_digest(t() | Act.t()) :: {:ok, String.t()} | {:error, term()}
+  def effect_digest(%__MODULE__{} = record), do: effect_digest_fields(record)
+  def effect_digest(%Act{} = record), do: effect_digest_fields(record)
+  def effect_digest(_record), do: {:error, :invalid_candidate_effect}
+
+  defp effect_digest_fields(record) do
+    with {:ok, row} <- Row.new(record.row),
          {:ok, subject_refs} <-
-           Portable.normalize_refs(field(record, :subject_refs, []), :subject_refs),
+           Portable.normalize_refs(record.subject_refs, :subject_refs),
          {:ok, target_refs} <-
-           Portable.normalize_refs(field(record, :target_refs, []), :target_refs),
-         class when is_binary(class) and class != "" <- field(record, :class),
-         consequence when not is_nil(consequence) <- field(record, :consequence) do
+           Portable.normalize_refs(record.target_refs, :target_refs),
+         class when is_binary(class) and class != "" <- record.class,
+         consequence when not is_nil(consequence) <- record.consequence do
       Portable.digest(%{
         "class" => class,
         "consequence" => consequence,
         "row" => Row.canonical(row),
         "subject_refs" => subject_refs,
         "target_refs" => target_refs,
-        "disclosure" => canonical_disclosure(field(record, :disclosure))
+        "disclosure" => canonical_disclosure(record.disclosure)
       })
     else
       nil -> {:error, :invalid_candidate_effect}
@@ -278,8 +282,6 @@ defmodule Spectre.Candidate do
       _invalid -> {:error, :invalid_candidate_effect}
     end
   end
-
-  def effect_digest(_record), do: {:error, :invalid_candidate_effect}
 
   defp defaults(attrs) do
     attrs
@@ -422,7 +424,4 @@ defmodule Spectre.Candidate do
   defp canonical_disclosure(nil), do: nil
   defp canonical_disclosure(%Disclosure{} = disclosure), do: Disclosure.canonical(disclosure)
   defp canonical_disclosure(value), do: value
-
-  defp field(map, key, default \\ nil),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 end

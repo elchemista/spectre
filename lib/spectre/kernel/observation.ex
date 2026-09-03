@@ -12,6 +12,7 @@ defmodule Spectre.Kernel.Observation do
   alias Spectre.Domain.{Event, Projection}
   alias Spectre.Duty.Derive
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Meter
   alias Spectre.Outcome.Attestation
   alias Spectre.{Act, Attempt, Duty, Evidence, Outcome}
@@ -21,7 +22,7 @@ defmodule Spectre.Kernel.Observation do
   @spec payloads(Projection.t(), Outcome.t() | map() | keyword(), integer(), map()) :: result()
   def payloads(projection, outcome, time, constitution \\ %{})
 
-  def payloads(%Projection{} = projection, outcome, time, constitution)
+  def payloads(%State{} = projection, outcome, time, constitution)
       when is_integer(time) and is_map(constitution) do
     with {:ok, outcome} <- Outcome.new(outcome),
          :ok <- outcome_not_future(outcome, time),
@@ -39,7 +40,7 @@ defmodule Spectre.Kernel.Observation do
     end
   end
 
-  def payloads(%Projection{}, _outcome, time, _constitution),
+  def payloads(%State{}, _outcome, time, _constitution),
     do: {:error, {:invalid_trusted_time, time}}
 
   def payloads(_projection, _outcome, _time, _constitution),
@@ -121,7 +122,7 @@ defmodule Spectre.Kernel.Observation do
   end
 
   defp meter_events(_projection, %Act{reservations: reservations}, _outcome)
-       when reservations in [%{}, []],
+       when map_size(reservations) == 0,
        do: {:ok, []}
 
   defp meter_events(projection, act, outcome) do
@@ -198,9 +199,7 @@ defmodule Spectre.Kernel.Observation do
 
   defp duty_events(projection, act, attempt, outcome, time, constitution) do
     if outcome.status == :ambiguous or Outcome.correction?(outcome) do
-      durable_view = outcome |> Map.from_struct() |> Map.put(:ledger_recorded_at, time)
-
-      with {:ok, cause} <- Derive.outcome_cause(act, attempt, durable_view, constitution) do
+      with {:ok, cause} <- Derive.outcome_cause(act, attempt, outcome, constitution, time) do
         if Map.has_key?(projection.duties, cause.cause_key) do
           {:ok, []}
         else

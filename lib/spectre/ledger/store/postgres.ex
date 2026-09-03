@@ -18,6 +18,7 @@ defmodule Spectre.Ledger.Store.Postgres do
 
   @behaviour Spectre.Ledger.Store
 
+  alias Spectre.Adapter
   alias Spectre.Canonical.Value
   alias Spectre.Ledger
   alias Spectre.Ledger.Entry
@@ -769,24 +770,35 @@ defmodule Spectre.Ledger.Store.Postgres do
   end
 
   defp adapter_available(config) do
-    cond do
-      not Code.ensure_loaded?(config.repo) ->
-        {:error, {:ledger_postgres_repo_unavailable, config.repo}}
+    with :ok <- postgres_repo_available(config.repo),
+         :ok <- postgres_query_available(config.query_module) do
+      :ok
+    end
+  end
 
-      not function_exported?(config.repo, :transaction, 2) ->
-        {:error, {:ledger_postgres_repo_callback_missing, :transaction, 2}}
+  defp postgres_repo_available(repo) do
+    case Adapter.validate(repo, transaction: 2, rollback: 1) do
+      :ok ->
+        :ok
 
-      not function_exported?(config.repo, :rollback, 1) ->
-        {:error, {:ledger_postgres_repo_callback_missing, :rollback, 1}}
+      {:error, {:adapter_callback_missing, ^repo, callback, arity}} ->
+        {:error, {:ledger_postgres_repo_callback_missing, callback, arity}}
 
-      not Code.ensure_loaded?(config.query_module) ->
-        {:error, {:ledger_postgres_query_module_unavailable, config.query_module}}
+      {:error, _reason} ->
+        {:error, {:ledger_postgres_repo_unavailable, repo}}
+    end
+  end
 
-      not function_exported?(config.query_module, :query, 4) ->
+  defp postgres_query_available(query_module) do
+    case Adapter.validate(query_module, query: 4) do
+      :ok ->
+        :ok
+
+      {:error, {:adapter_callback_missing, ^query_module, :query, 4}} ->
         {:error, {:ledger_postgres_query_callback_missing, :query, 4}}
 
-      true ->
-        :ok
+      {:error, _reason} ->
+        {:error, {:ledger_postgres_query_module_unavailable, query_module}}
     end
   end
 

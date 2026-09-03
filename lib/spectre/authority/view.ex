@@ -14,6 +14,7 @@ defmodule Spectre.Authority.View do
   """
 
   alias Spectre.Domain.Projection
+  alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Authority
   alias Spectre.Mandate
   alias Spectre.Mandate.Ancestry
@@ -74,7 +75,7 @@ defmodule Spectre.Authority.View do
 
   @doc "Builds an immutable authority inventory for a validated Scope handle."
   @spec from_projection(Projection.t(), Scope.t(), integer()) :: {:ok, t()} | {:error, term()}
-  def from_projection(%Projection{} = projection, %Scope{} = scope, observed_at)
+  def from_projection(%State{} = projection, %Scope{} = scope, observed_at)
       when is_integer(observed_at) do
     principal_ref = scope.context.authenticated_principal_ref
 

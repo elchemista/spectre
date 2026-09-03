@@ -13,7 +13,7 @@ defmodule Spectre.Ingress do
   its authentication mechanism independently verifiable.
   """
 
-  alias Spectre.{Evidence, Portable, SubmissionContext}
+  alias Spectre.{Adapter, Evidence, Portable, SubmissionContext}
 
   @required_callbacks [ref: 0, authenticate: 5, observe: 4]
   @evidence_fields [
@@ -72,9 +72,7 @@ defmodule Spectre.Ingress do
   @doc false
   @spec resolve(module()) :: {:ok, binding()} | {:error, term()}
   def resolve(module) when is_atom(module) and not is_nil(module) do
-    if Code.ensure_loaded?(module),
-      do: resolve_callbacks(module),
-      else: {:error, {:ingress_module_unavailable, module}}
+    with :ok <- validate_adapter(module), do: resolve_ref(module)
   end
 
   def resolve(invalid), do: {:error, {:invalid_ingress, Portable.shape(invalid)}}
@@ -100,41 +98,47 @@ defmodule Spectre.Ingress do
   def observe(_module, _context, _input, _observed_at, _opts),
     do: {:error, :invalid_ingress_observation}
 
-  defp resolve_callbacks(module) do
-    case Enum.find(@required_callbacks, fn {callback, arity} ->
-           not function_exported?(module, callback, arity)
-         end) do
-      nil ->
-        resolve_ref(module)
+  defp validate_adapter(module) do
+    case Adapter.validate(module, @required_callbacks) do
+      :ok ->
+        :ok
 
-      {callback, arity} ->
+      {:error, {:adapter_callback_missing, ^module, callback, arity}} ->
         {:error, {:ingress_callback_unavailable, module, callback, arity}}
+
+      {:error, _reason} ->
+        {:error, {:ingress_module_unavailable, module}}
     end
   end
 
   defp resolve_ref(module) do
-    ref = module.ref()
-
-    case Portable.validate_ref(ref, :ingress_ref) do
-      :ok -> {:ok, {module, ref}}
-      {:error, _reason} -> {:error, {:invalid_ingress_ref, module, Portable.shape(ref)}}
+    with {:ok, ref} <- Adapter.invoke(module, :ref, []) do
+      case Portable.validate_ref(ref, :ingress_ref) do
+        :ok -> {:ok, {module, ref}}
+        {:error, _reason} -> {:error, {:invalid_ingress_ref, module, Portable.shape(ref)}}
+      end
+    else
+      {:error, _reason} -> {:error, {:ingress_ref_unavailable, module}}
     end
-  rescue
-    _exception -> {:error, {:ingress_ref_unavailable, module}}
-  catch
-    _kind, _reason -> {:error, {:ingress_ref_unavailable, module}}
   end
 
   defp call_observer(module, context, input, observed_at, opts) do
-    case module.observe(context, input, observed_at, opts) do
-      {:ok, evidence} -> {:ok, evidence}
-      {:error, _reason} = error -> error
-      _invalid -> {:error, :invalid_ingress_observation_response}
+    case Adapter.invoke(module, :observe, [context, input, observed_at, opts]) do
+      {:ok, {:ok, evidence}} ->
+        {:ok, evidence}
+
+      {:ok, {:error, _reason} = error} ->
+        error
+
+      {:ok, _invalid} ->
+        {:error, :invalid_ingress_observation_response}
+
+      {:error, {:adapter_callback_exception, _, _, exception}} ->
+        {:error, {:ingress_observation_exception, exception}}
+
+      {:error, {:adapter_callback_failure, _, _, kind}} ->
+        {:error, {:ingress_observation_failure, kind}}
     end
-  rescue
-    exception -> {:error, {:ingress_observation_exception, exception.__struct__}}
-  catch
-    kind, _reason -> {:error, {:ingress_observation_failure, kind}}
   end
 
   defp normalize_observation(evidence) do

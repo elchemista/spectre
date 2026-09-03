@@ -14,6 +14,7 @@ defmodule Spectre.Act do
   """
 
   alias Spectre.{Consent, Disclosure, Portable, Row}
+  alias Spectre.Kernel.Meter.Amounts
 
   @schema_version 1
   @fields [
@@ -93,7 +94,7 @@ defmodule Spectre.Act do
           recognition_refs: [String.t()],
           recognition_evidence_refs: [String.t()],
           presentation_ref: String.t() | nil,
-          reservations: map() | list(),
+          reservations: Amounts.t(),
           host_profile_ref: String.t(),
           surface_revision: non_neg_integer(),
           executor_contract_ref: String.t(),
@@ -111,6 +112,7 @@ defmodule Spectre.Act do
          {:ok, row} <- Row.new(Map.get(attrs, :row, %{})),
          attrs = Map.put(attrs, :row, row),
          {:ok, attrs} <- normalize_ref_sets(attrs),
+         {:ok, attrs} <- normalize_reservations(attrs),
          {:ok, attrs} <- normalize_disclosure(attrs),
          {:ok, attrs} <- normalize_consent(attrs),
          {:ok, ref} <- resolve_ref(Map.get(attrs, :ref), attrs),
@@ -138,6 +140,20 @@ defmodule Spectre.Act do
   @doc "Returns the stable digest of the complete Act."
   @spec digest(t()) :: String.t()
   def digest(%__MODULE__{} = act), do: act |> canonical() |> Portable.digest!()
+
+  @doc "Returns whether the Act commits any Meter reservation."
+  @spec reservations?(t()) :: boolean()
+  def reservations?(%__MODULE__{reservations: reservations}), do: map_size(reservations) > 0
+
+  @doc "Checks the Act's exact declared effect-row dimensions."
+  @spec row?(t(), [Row.dimension()]) :: boolean()
+  def row?(%__MODULE__{row: %Row{} = row}, dimensions) when is_list(dimensions),
+    do: Row.dimensions(row) == dimensions
+
+  @doc "Checks that every required reference is frozen in the Act targets."
+  @spec targets?(t(), [String.t()]) :: boolean()
+  def targets?(%__MODULE__{target_refs: target_refs}, required_refs) when is_list(required_refs),
+    do: Enum.all?(required_refs, &(&1 in target_refs))
 
   @doc "Returns the content-derived Act reference, independent of an assigned `ref`."
   @spec content_ref(t()) :: String.t()
@@ -199,6 +215,13 @@ defmodule Spectre.Act do
     end
   end
 
+  defp normalize_reservations(attrs) do
+    case Amounts.normalize(Map.fetch!(attrs, :reservations)) do
+      {:ok, reservations} -> {:ok, Map.put(attrs, :reservations, reservations)}
+      {:error, reason} -> {:error, {:invalid_act_reservations, reason}}
+    end
+  end
+
   defp resolve_ref(ref, attrs), do: Portable.resolve_content_ref(:act, ref, content(attrs))
 
   defp content(%__MODULE__{} = act), do: act |> canonical() |> Map.delete("ref")
@@ -228,7 +251,7 @@ defmodule Spectre.Act do
       not is_map(act.purpose_params) or is_struct(act.purpose_params) ->
         {:error, {:invalid_act_purpose_params, Portable.shape(act.purpose_params)}}
 
-      not portable_collection?(act.reservations) ->
+      not is_map(act.reservations) or is_struct(act.reservations) ->
         {:error, {:invalid_act_reservations, Portable.shape(act.reservations)}}
 
       not is_integer(act.mandate_revision) or act.mandate_revision <= 0 ->
@@ -323,8 +346,4 @@ defmodule Spectre.Act do
   defp canonical_disclosure(nil), do: nil
   defp canonical_disclosure(%Disclosure{} = disclosure), do: Disclosure.canonical(disclosure)
   defp canonical_disclosure(value), do: value
-
-  defp portable_collection?(value) when is_map(value), do: not is_struct(value)
-  defp portable_collection?(value) when is_list(value), do: true
-  defp portable_collection?(_value), do: false
 end

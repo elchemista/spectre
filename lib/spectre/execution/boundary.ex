@@ -8,7 +8,7 @@ defmodule Spectre.Execution.Boundary do
   enter a diagnostic report or the ledger.
   """
 
-  alias Spectre.Portable
+  alias Spectre.{Adapter, Portable}
 
   @profiles [:development, :mediated, :isolated]
 
@@ -151,10 +151,18 @@ defmodule Spectre.Execution.Boundary do
 
   defp callback(module, function, arity, boundary)
        when is_atom(module) and module not in [nil, true, false] do
-    cond do
-      not Code.ensure_loaded?(module) -> {:error, {boundary, :module_not_loaded}}
-      not function_exported?(module, function, arity) -> {:error, {boundary, :callback_missing}}
-      true -> :ok
+    case Adapter.validate(module, [{function, arity}]) do
+      :ok ->
+        :ok
+
+      {:error, {:adapter_module_not_loaded, _module}} ->
+        {:error, {boundary, :module_not_loaded}}
+
+      {:error, {:adapter_callback_missing, _module, _function, _arity}} ->
+        {:error, {boundary, :callback_missing}}
+
+      {:error, _reason} ->
+        {:error, {boundary, :invalid_module}}
     end
   end
 
@@ -162,22 +170,24 @@ defmodule Spectre.Execution.Boundary do
     do: {:error, {boundary, :invalid_module}}
 
   defp static_value(module, function, boundary) do
-    try do
-      case apply(module, function, []) do
-        value when is_binary(value) and value != "" ->
-          {:ok, value}
+    case Adapter.invoke(module, function, []) do
+      {:ok, value} ->
+        case value do
+          value when is_binary(value) and value != "" ->
+            {:ok, value}
 
-        value when function == :profile and value in @profiles ->
-          {:ok, value}
+          value when function == :profile and value in @profiles ->
+            {:ok, value}
 
-        _invalid ->
-          {:error, {boundary, {:invalid_static_value, function}}}
-      end
-    rescue
-      _exception -> {:error, {boundary, {function, :exception}}}
-    catch
-      :exit, _reason -> {:error, {boundary, {function, :exit}}}
-      :throw, _reason -> {:error, {boundary, {function, :throw}}}
+          _invalid ->
+            {:error, {boundary, {:invalid_static_value, function}}}
+        end
+
+      {:error, {:adapter_callback_exception, _, _, _exception}} ->
+        {:error, {boundary, {function, :exception}}}
+
+      {:error, {:adapter_callback_failure, _, _, kind}} ->
+        {:error, {boundary, {function, kind}}}
     end
   end
 

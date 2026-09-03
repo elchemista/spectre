@@ -10,6 +10,7 @@ defmodule Spectre.Scope.View do
 
   alias Spectre.Domain.Projection
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.State
   alias Spectre.Scope.Opening
 
   @enforce_keys [
@@ -51,7 +52,7 @@ defmodule Spectre.Scope.View do
 
   @doc "Builds a capability-free view for an already opened Scope."
   @spec from_projection(Projection.t(), String.t()) :: {:ok, t()} | {:error, term()}
-  def from_projection(%Projection{} = projection, scope_ref)
+  def from_projection(%State{} = projection, scope_ref)
       when is_binary(scope_ref) and scope_ref != "" do
     with {:ok, %Opening{} = opening} <- Map.fetch(projection.scopes, scope_ref) do
       decisions = records_for_scope(projection.decisions, scope_ref)
@@ -75,7 +76,7 @@ defmodule Spectre.Scope.View do
         projection.presentations
         |> records_for_scope(scope_ref)
         |> Kernel.++(records_by_refs(projection.presentations, presentation_refs))
-        |> Enum.uniq_by(&field(&1, :ref))
+        |> Enum.uniq_by(& &1.ref)
         |> stable_records()
 
       declassifications = records_for_source_acts(projection.declassifications, act_refs)
@@ -118,27 +119,27 @@ defmodule Spectre.Scope.View do
     end
   end
 
-  def from_projection(%Projection{}, scope_ref), do: {:error, {:invalid_scope_ref, scope_ref}}
+  def from_projection(%State{}, scope_ref), do: {:error, {:invalid_scope_ref, scope_ref}}
   def from_projection(_projection, _scope_ref), do: {:error, :invalid_domain_projection}
 
   defp records_for_scope(index, scope_ref) do
     index
     |> values()
-    |> Enum.filter(&(field(&1, :scope_ref) == scope_ref))
+    |> Enum.filter(&(Map.get(&1, :scope_ref) == scope_ref))
     |> stable_records()
   end
 
   defp records_for_acts(index, act_refs) do
     index
     |> values()
-    |> Enum.filter(&MapSet.member?(act_refs, field(&1, :act_ref)))
+    |> Enum.filter(&MapSet.member?(act_refs, Map.get(&1, :act_ref)))
     |> stable_records()
   end
 
   defp records_for_source_acts(index, act_refs) do
     index
     |> values()
-    |> Enum.filter(&MapSet.member?(act_refs, field(&1, :source_act_ref)))
+    |> Enum.filter(&MapSet.member?(act_refs, Map.get(&1, :source_act_ref)))
     |> stable_records()
   end
 
@@ -146,8 +147,8 @@ defmodule Spectre.Scope.View do
     index
     |> values()
     |> Enum.filter(fn outcome ->
-      MapSet.member?(act_refs, field(outcome, :act_ref)) and
-        MapSet.member?(attempt_refs, field(outcome, :attempt_ref))
+      MapSet.member?(act_refs, outcome.act_ref) and
+        MapSet.member?(attempt_refs, outcome.attempt_ref)
     end)
     |> stable_records()
   end
@@ -156,20 +157,19 @@ defmodule Spectre.Scope.View do
     index
     |> values()
     |> Enum.filter(fn duty ->
-      MapSet.member?(act_refs, field(duty, :act_ref)) or
-        scope_cause?(field(duty, :cause_key), scope_ref) or
+      MapSet.member?(act_refs, duty.act_ref) or
+        scope_cause?(duty.cause_key, scope_ref) or
         duty_evidence_bound_to_scope?(duty, evidence, scope_ref)
     end)
     |> stable_records()
   end
 
   defp duty_evidence_bound_to_scope?(duty, evidence, scope_ref) do
-    duty
-    |> field(:evidence_refs, [])
+    duty.evidence_refs
     |> Enum.any?(fn evidence_ref ->
       case Map.get(evidence, evidence_ref) do
         nil -> false
-        record -> record |> field(:bindings, %{}) |> field(:scope_ref) == scope_ref
+        record -> Map.get(record.bindings, "scope_ref") == scope_ref
       end
     end)
   end
@@ -205,14 +205,13 @@ defmodule Spectre.Scope.View do
     index
     |> values()
     |> Enum.filter(fn evidence ->
-      bindings = field(evidence, :bindings, %{})
-      field(bindings, :scope_ref) == scope_ref
+      Map.get(evidence.bindings, "scope_ref") == scope_ref
     end)
   end
 
   defp reject_unavailable_evidence(evidence, projection) do
     unavailable = ErasureAnalysis.unavailable_evidence_refs(projection)
-    Enum.reject(evidence, &MapSet.member?(unavailable, field(&1, :ref)))
+    Enum.reject(evidence, &MapSet.member?(unavailable, &1.ref))
   end
 
   # Approval Evidence points to a Presentation through its closed binding. The
@@ -225,10 +224,10 @@ defmodule Spectre.Scope.View do
     index
     |> values()
     |> Enum.filter(fn evidence ->
-      bindings = field(evidence, :bindings, %{})
+      bindings = evidence.bindings
 
-      MapSet.member?(presentation_refs, field(bindings, :presentation_ref)) or
-        MapSet.member?(act_refs, field(bindings, :show_act_ref))
+      MapSet.member?(presentation_refs, Map.get(bindings, "presentation_ref")) or
+        MapSet.member?(act_refs, Map.get(bindings, "show_act_ref"))
     end)
     |> record_refs([:ref])
   end
@@ -247,7 +246,7 @@ defmodule Spectre.Scope.View do
     else
       parents =
         case Map.fetch(index, ref) do
-          {:ok, evidence} -> List.wrap(field(evidence, :parent_refs, []))
+          {:ok, evidence} -> evidence.parent_refs
           :error -> []
         end
 
@@ -257,7 +256,7 @@ defmodule Spectre.Scope.View do
 
   defp record_refs(records, fields) do
     Enum.flat_map(records, fn record ->
-      Enum.flat_map(fields, fn key -> List.wrap(field(record, key)) end)
+      Enum.flat_map(fields, fn key -> List.wrap(Map.get(record, key)) end)
     end)
   end
 
@@ -291,7 +290,7 @@ defmodule Spectre.Scope.View do
   defp scope_cause?({:scope_promise_overdue, scope_ref}, scope_ref), do: true
   defp scope_cause?(_cause_key, _scope_ref), do: false
 
-  defp ref_set(records), do: records |> Enum.map(&field(&1, :ref)) |> present_ref_set()
+  defp ref_set(records), do: records |> Enum.map(& &1.ref) |> present_ref_set()
 
   defp present_ref_set(refs) do
     refs
@@ -302,12 +301,5 @@ defmodule Spectre.Scope.View do
   defp values(index) when is_map(index), do: Map.values(index)
   defp values(_index), do: []
 
-  defp stable_records(records), do: Enum.sort_by(records, &field(&1, :ref, ""))
-
-  defp field(map, key, default \\ nil)
-
-  defp field(map, key, default) when is_map(map),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
-
-  defp field(_value, _key, default), do: default
+  defp stable_records(records), do: Enum.sort_by(records, & &1.ref)
 end

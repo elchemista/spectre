@@ -17,6 +17,7 @@ defmodule Spectre.Consequence.Validator do
   alias Spectre.Domain.Projection
   alias Spectre.Erasure
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Commit
   alias Spectre.Mandate
 
@@ -104,7 +105,7 @@ defmodule Spectre.Consequence.Validator do
         %Candidate{} = candidate,
         %Decision{outcome: :admitted} = decision,
         %Act{} = act,
-        %Projection{} = projection
+        %State{} = projection
       ) do
     validate_committable_transition(@none, candidate, decision, act, projection)
   end
@@ -114,13 +115,13 @@ defmodule Spectre.Consequence.Validator do
         %Candidate{} = candidate,
         %Decision{outcome: :admitted} = decision,
         %Act{} = act,
-        %Projection{} = projection
+        %State{} = projection
       )
       when id in @intrinsic_validators do
     validate_committable_transition(id, candidate, decision, act, projection)
   end
 
-  def validate_transition(id, %Candidate{}, %Decision{}, %Act{}, %Projection{})
+  def validate_transition(id, %Candidate{}, %Decision{}, %Act{}, %State{})
       when id in @validators,
       do: {:error, :invalid_consequence_transition}
 

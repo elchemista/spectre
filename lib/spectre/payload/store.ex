@@ -8,6 +8,7 @@ defmodule Spectre.Payload.Store do
   reason a referenced payload may be absent; its ledger tombstone remains.
   """
 
+  alias Spectre.Adapter
   alias Spectre.Erasure.Analysis
   alias Spectre.Presentation
 
@@ -24,15 +25,12 @@ defmodule Spectre.Payload.Store do
 
   def normalize({module, opts})
       when is_atom(module) and not is_nil(module) and is_list(opts) do
-    cond do
-      not Keyword.keyword?(opts) ->
-        {:error, :invalid_payload_store_options}
-
-      not Code.ensure_loaded?(module) or not function_exported?(module, :verify, 2) ->
-        {:error, {:payload_store_unavailable, module}}
-
-      true ->
-        {:ok, {module, opts}}
+    with true <- Keyword.keyword?(opts),
+         :ok <- Adapter.validate(module, verify: 2) do
+      {:ok, {module, opts}}
+    else
+      false -> {:error, :invalid_payload_store_options}
+      {:error, _reason} -> {:error, {:payload_store_unavailable, module}}
     end
   end
 
@@ -185,16 +183,25 @@ defmodule Spectre.Payload.Store do
   defp verify_normalized(nil, ref), do: {:error, {:payload_store_required, ref}}
 
   defp verify_normalized({module, opts}, ref) do
-    case module.verify(ref, opts) do
-      :ok -> :ok
-      {:error, :not_found} -> {:error, {:payload_not_found, ref}}
-      {:error, reason} -> {:error, {:payload_verification_failed, ref, reason}}
-      _invalid -> {:error, {:invalid_payload_store_response, module}}
+    case Adapter.invoke(module, :verify, [ref, opts]) do
+      {:ok, :ok} ->
+        :ok
+
+      {:ok, {:error, :not_found}} ->
+        {:error, {:payload_not_found, ref}}
+
+      {:ok, {:error, reason}} ->
+        {:error, {:payload_verification_failed, ref, reason}}
+
+      {:ok, _invalid} ->
+        {:error, {:invalid_payload_store_response, module}}
+
+      {:error, {:adapter_callback_exception, _, _, exception}} ->
+        {:error, {:payload_store_exception, module, exception}}
+
+      {:error, {:adapter_callback_failure, _, _, kind}} ->
+        {:error, {:payload_store_failure, module, kind}}
     end
-  rescue
-    exception -> {:error, {:payload_store_exception, module, exception.__struct__}}
-  catch
-    kind, _reason -> {:error, {:payload_store_failure, module, kind}}
   end
 
   defp verify_live(config, ref) do

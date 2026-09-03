@@ -1,10 +1,25 @@
 defmodule Spectre.Mandate.Ancestry do
-  @moduledoc false
+  @moduledoc """
+  Pure traversal of the current typed Mandate lineage.
+
+  The caller supplies the exact indexes derived by the governed-act fold. This
+  module neither decodes records nor tolerates alternate key shapes: a missing
+  ancestor, malformed index entry or cycle is a history error, never an
+  implicit revocation decision.
+  """
+
+  alias Spectre.Mandate
+  alias Spectre.Mandate.Revocation
+
+  @type mandates :: %{optional(String.t()) => Mandate.t()}
+  @type revocations :: %{optional(String.t()) => Revocation.t()}
+  @type status :: :current | {:revoked, :direct | :ancestor, String.t()}
 
   @doc "Checks direct and cascading revocation without guessing through an invalid lineage."
-  @spec revoked?(map(), map(), map(), integer()) :: {:ok, boolean()} | {:error, term()}
-  def revoked?(mandates, revocations, mandate, time)
-      when is_map(mandates) and is_map(revocations) and is_map(mandate) and is_integer(time) do
+  @spec revoked?(mandates(), revocations(), Mandate.t(), integer()) ::
+          {:ok, boolean()} | {:error, term()}
+  def revoked?(mandates, revocations, %Mandate{} = mandate, time)
+      when is_map(mandates) and is_map(revocations) and is_integer(time) do
     with {:ok, status} <- status(mandates, revocations, mandate, time) do
       {:ok, status != :current}
     end
@@ -13,23 +28,21 @@ defmodule Spectre.Mandate.Ancestry do
   def revoked?(_mandates, _revocations, _mandate, _time),
     do: {:error, :invalid_mandate_ancestry_input}
 
-  @type status :: :current | {:revoked, :direct | :ancestor, String.t()}
-
   @doc "Returns the exact Mandate in the lineage whose recorded revocation applies."
-  @spec status(map(), map(), map(), integer()) :: {:ok, status()} | {:error, term()}
-  def status(mandates, revocations, mandate, time)
-      when is_map(mandates) and is_map(revocations) and is_map(mandate) and is_integer(time) do
-    with {:ok, ref} <- required_ref(mandate, :ref),
-         {:ok, direct?} <- local_revoked?(Map.get(revocations, ref), ref, time) do
+  @spec status(mandates(), revocations(), Mandate.t(), integer()) ::
+          {:ok, status()} | {:error, term()}
+  def status(mandates, revocations, %Mandate{} = mandate, time)
+      when is_map(mandates) and is_map(revocations) and is_integer(time) do
+    with {:ok, direct?} <- local_revoked?(Map.get(revocations, mandate.ref), mandate.ref, time) do
       if direct? do
-        {:ok, {:revoked, :direct, ref}}
+        {:ok, {:revoked, :direct, mandate.ref}}
       else
         cascade_status(
           mandates,
           revocations,
-          field(mandate, :parent_ref),
+          mandate.parent_ref,
           time,
-          MapSet.new([ref])
+          MapSet.new([mandate.ref])
         )
       end
     end
@@ -39,14 +52,50 @@ defmodule Spectre.Mandate.Ancestry do
     do: {:error, :invalid_mandate_ancestry_input}
 
   @doc "Checks only the Mandate's own revocation record, excluding ancestors."
-  @spec directly_revoked?(map(), map(), integer()) :: {:ok, boolean()} | {:error, term()}
-  def directly_revoked?(revocations, mandate, time)
-      when is_map(revocations) and is_map(mandate) and is_integer(time) do
-    with {:ok, ref} <- required_ref(mandate, :ref),
-         do: local_revoked?(Map.get(revocations, ref), ref, time)
-  end
+  @spec directly_revoked?(revocations(), Mandate.t(), integer()) ::
+          {:ok, boolean()} | {:error, term()}
+  def directly_revoked?(revocations, %Mandate{} = mandate, time)
+      when is_map(revocations) and is_integer(time),
+      do: local_revoked?(Map.get(revocations, mandate.ref), mandate.ref, time)
 
   def directly_revoked?(_revocations, _mandate, _time),
+    do: {:error, :invalid_mandate_ancestry_input}
+
+  @doc "Returns whether a Mandate is expired or revoked at the supplied trusted time."
+  @spec terminal?(mandates(), revocations(), Mandate.t(), integer()) ::
+          {:ok, boolean()} | {:error, term()}
+  def terminal?(mandates, revocations, %Mandate{} = mandate, time)
+      when is_map(mandates) and is_map(revocations) and is_integer(time) do
+    if time >= mandate.expires_at,
+      do: {:ok, true},
+      else: revoked?(mandates, revocations, mandate, time)
+  end
+
+  def terminal?(_mandates, _revocations, _mandate, _time),
+    do: {:error, :invalid_mandate_ancestry_input}
+
+  @doc "Checks whether a Mandate is the target or descends from it."
+  @spec descendant?(mandates(), String.t(), String.t()) ::
+          {:ok, boolean()} | {:error, term()}
+  def descendant?(mandates, mandate_ref, ancestor_ref)
+      when is_map(mandates) and is_binary(mandate_ref) and mandate_ref != "" and
+             is_binary(ancestor_ref) and ancestor_ref != "" do
+    descendant?(mandates, mandate_ref, ancestor_ref, MapSet.new())
+  end
+
+  def descendant?(_mandates, _mandate_ref, _ancestor_ref),
+    do: {:error, :invalid_mandate_ancestry_input}
+
+  @doc "Checks whether an authority change affects a Mandate."
+  @spec affected_by?(mandates(), String.t(), String.t(), boolean()) ::
+          {:ok, boolean()} | {:error, term()}
+  def affected_by?(_mandates, mandate_ref, mandate_ref, _cascade?), do: {:ok, true}
+  def affected_by?(_mandates, _mandate_ref, _target_ref, false), do: {:ok, false}
+
+  def affected_by?(mandates, mandate_ref, target_ref, true),
+    do: descendant?(mandates, mandate_ref, target_ref)
+
+  def affected_by?(_mandates, _mandate_ref, _target_ref, _cascade?),
     do: {:error, :invalid_mandate_ancestry_input}
 
   defp cascade_status(_mandates, _revocations, nil, _time, _visited), do: {:ok, :current}
@@ -61,16 +110,14 @@ defmodule Spectre.Mandate.Ancestry do
 
       true ->
         with {:ok, parent} <- fetch_parent(mandates, parent_ref),
-             {:ok, parent_ref} <- required_ref(parent, :ref),
-             {:ok, revoked?} <- local_revoked?(Map.get(revocations, parent_ref), parent_ref, time),
-             {:ok, cascade?} <- cascade_mode(parent) do
-          if revoked? and cascade? do
+             {:ok, revoked?} <- local_revoked?(Map.get(revocations, parent_ref), parent_ref, time) do
+          if revoked? and parent.revocation["mode"] == :cascade do
             {:ok, {:revoked, :ancestor, parent_ref}}
           else
             cascade_status(
               mandates,
               revocations,
-              field(parent, :parent_ref),
+              parent.parent_ref,
               time,
               MapSet.put(visited, parent_ref)
             )
@@ -79,9 +126,39 @@ defmodule Spectre.Mandate.Ancestry do
     end
   end
 
+  defp descendant?(_mandates, target_ref, target_ref, _visited), do: {:ok, true}
+
+  defp descendant?(mandates, mandate_ref, ancestor_ref, visited) do
+    if MapSet.member?(visited, mandate_ref) do
+      {:error, {:mandate_ancestry_cycle, mandate_ref}}
+    else
+      case Map.fetch(mandates, mandate_ref) do
+        {:ok, %Mandate{parent_ref: nil}} ->
+          {:ok, false}
+
+        {:ok, %Mandate{parent_ref: parent_ref}} when is_binary(parent_ref) and parent_ref != "" ->
+          descendant?(
+            mandates,
+            parent_ref,
+            ancestor_ref,
+            MapSet.put(visited, mandate_ref)
+          )
+
+        {:ok, %Mandate{parent_ref: invalid}} ->
+          {:error, {:invalid_mandate_parent_ref, invalid}}
+
+        {:ok, _invalid} ->
+          {:error, {:invalid_mandate_ancestor, mandate_ref}}
+
+        :error ->
+          {:error, {:mandate_not_found, mandate_ref}}
+      end
+    end
+  end
+
   defp fetch_parent(mandates, ref) do
     case Map.fetch(mandates, ref) do
-      {:ok, parent} when is_map(parent) -> {:ok, parent}
+      {:ok, %Mandate{ref: ^ref} = parent} -> {:ok, parent}
       {:ok, _invalid} -> {:error, {:invalid_mandate_ancestor, ref}}
       :error -> {:error, {:mandate_ancestor_missing, ref}}
     end
@@ -89,41 +166,11 @@ defmodule Spectre.Mandate.Ancestry do
 
   defp local_revoked?(nil, _ref, _time), do: {:ok, false}
 
-  defp local_revoked?(revocation, ref, time) when is_map(revocation) do
-    case field(revocation, :effective_at) do
-      effective_at when is_integer(effective_at) -> {:ok, time >= effective_at}
-      _invalid -> {:error, {:invalid_mandate_revocation, ref}}
-    end
-  end
+  defp local_revoked?(%Revocation{effective_at: effective_at}, _ref, time),
+    do: {:ok, time >= effective_at}
 
   defp local_revoked?(_revocation, ref, _time),
     do: {:error, {:invalid_mandate_revocation, ref}}
-
-  defp cascade_mode(mandate) do
-    mode = mandate |> field(:revocation, %{}) |> field(:mode)
-
-    case mode do
-      :cascade -> {:ok, true}
-      "cascade" -> {:ok, true}
-      :retained_controller -> {:ok, false}
-      "retained_controller" -> {:ok, false}
-      _invalid -> {:error, {:invalid_mandate_revocation_mode, field(mandate, :ref)}}
-    end
-  end
-
-  defp required_ref(record, key) do
-    case field(record, key) do
-      ref when is_binary(ref) and ref != "" -> {:ok, ref}
-      _invalid -> {:error, {:invalid_mandate_ref, key}}
-    end
-  end
-
-  defp field(map, key, default \\ nil)
-
-  defp field(map, key, default) when is_map(map),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
-
-  defp field(_value, _key, default), do: default
 
   defp present_ref?(ref), do: is_binary(ref) and ref != ""
 end

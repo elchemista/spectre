@@ -54,7 +54,7 @@ defmodule Spectre.Constitution do
   @doc false
   @spec duty_rule(map(), atom() | String.t()) :: map()
   def duty_rule(rules, class) when is_map(rules) and not is_struct(rules) do
-    duty_rules = field(rules, :duty_rules, %{})
+    duty_rules = rule_value(rules, :duty_rules, %{})
 
     if is_map(duty_rules) and not is_struct(duty_rules) do
       Map.get(duty_rules, class) || Map.get(duty_rules, to_string(class)) || %{}
@@ -65,12 +65,30 @@ defmodule Spectre.Constitution do
 
   def duty_rule(_rules, _class), do: %{}
 
+  @doc """
+  Reads one field from host-authored Constitution configuration.
+
+  Governed records are always structs after replay. Constitution rules remain
+  intentionally portable user configuration, so this is the single boundary
+  where atom and string keys are accepted. Core modules should not duplicate
+  tolerant field lookup for durable records.
+  """
+  @spec rule_value(map(), atom(), term()) :: term()
+  def rule_value(rule, key, default \\ nil)
+
+  def rule_value(rule, key, default)
+      when is_map(rule) and not is_struct(rule) and is_atom(key) do
+    Map.get(rule, key, Map.get(rule, Atom.to_string(key), default))
+  end
+
+  def rule_value(_rule, _key, default), do: default
+
   @doc false
   @spec disposition_authority_refs(map(), atom() | String.t()) :: [String.t()]
   def disposition_authority_refs(rules, class) do
     rules
     |> duty_rule(class)
-    |> field(:disposition_authority_refs, [])
+    |> rule_value(:disposition_authority_refs, [])
     |> List.wrap()
     |> Enum.filter(&(is_binary(&1) and &1 != ""))
     |> Enum.uniq()
@@ -82,12 +100,24 @@ defmodule Spectre.Constitution do
   def conflict_refs(rules, class) do
     rules
     |> duty_rule(class)
-    |> field(:conflict_refs, [])
+    |> rule_value(:conflict_refs, [])
     |> List.wrap()
     |> Enum.filter(&(is_binary(&1) and &1 != ""))
     |> Enum.uniq()
     |> Enum.sort()
   end
+
+  @doc false
+  @spec emergency_max_duration(map()) :: {:ok, pos_integer()} | {:error, term()}
+  def emergency_max_duration(rules) when is_map(rules) and not is_struct(rules) do
+    case rule_value(rules, :emergency_max_duration_ms, nil) do
+      duration when is_integer(duration) and duration > 0 -> {:ok, duration}
+      nil -> {:error, :emergency_max_duration_required}
+      _invalid -> {:error, :invalid_emergency_max_duration_ms}
+    end
+  end
+
+  def emergency_max_duration(_rules), do: {:error, :invalid_constitution}
 
   @doc false
   @spec validate_duty_routes(map(), [String.t()] | MapSet.t()) :: :ok | {:error, term()}
@@ -113,7 +143,7 @@ defmodule Spectre.Constitution do
   defp discretionary_duty_classes(rules) do
     configured_classes =
       rules
-      |> field(:duty_rules, %{})
+      |> rule_value(:duty_rules, %{})
       |> Map.keys()
       |> Enum.map(fn class ->
         {:ok, normalized} = configurable_duty_class(class)
@@ -133,7 +163,7 @@ defmodule Spectre.Constitution do
   end
 
   defp validate_duty_rules(rules) do
-    case field(rules, :duty_rules, %{}) do
+    case rule_value(rules, :duty_rules, %{}) do
       duty_rules when is_map(duty_rules) and not is_struct(duty_rules) ->
         duty_rules
         |> Enum.reduce_while({:ok, MapSet.new()}, fn {class, rule}, {:ok, seen} ->
@@ -165,11 +195,11 @@ defmodule Spectre.Constitution do
   end
 
   defp validate_duty_rule_fields(class, rule) do
-    authorities = field(rule, :disposition_authority_refs, [])
-    cause_sources = field(rule, :cause_source_refs, [])
-    conflicts = field(rule, :conflict_refs, [])
-    closing = field(rule, :closing_conditions, field(rule, :closure_conditions, []))
-    containment = field(rule, :containment, %{})
+    authorities = rule_value(rule, :disposition_authority_refs, [])
+    cause_sources = rule_value(rule, :cause_source_refs, [])
+    conflicts = rule_value(rule, :conflict_refs, [])
+    closing = rule_value(rule, :closing_conditions, [])
+    containment = rule_value(rule, :containment, %{})
 
     cond do
       not is_list(authorities) or
@@ -196,10 +226,6 @@ defmodule Spectre.Constitution do
       true ->
         :ok
     end
-  end
-
-  defp field(map, key, default) do
-    Map.get(map, key, Map.get(map, Atom.to_string(key), default))
   end
 
   defp configurable_duty_class(class) do

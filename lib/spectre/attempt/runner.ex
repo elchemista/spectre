@@ -42,9 +42,11 @@ defmodule Spectre.Attempt.Runner do
   Runner never retries an executor.
   """
 
-  alias Spectre.{Act, Attempt, Decision, Evidence, Governance, Outcome, Portable}
+  alias Spectre.GovernedAct.State
+
+  alias Spectre.{Act, Adapter, Attempt, Decision, Evidence, Governance, Outcome, Portable}
   alias Spectre.Attempt.Runner.Result
-  alias Spectre.Domain.{Projection, Sequencer}
+  alias Spectre.Domain.Sequencer
   alias Spectre.Execution.Boundary
   alias Spectre.Kernel.Grant
   alias Spectre.Outcome.Attestation
@@ -248,7 +250,7 @@ defmodule Spectre.Attempt.Runner do
 
   defp durable_attempt_result(sequencer, decision, expected_act) do
     case safe_internal_call(fn -> Sequencer.projection(sequencer) end) do
-      {:reply, %Projection{} = projection} ->
+      {:reply, %State{} = projection} ->
         recover_from_projection(projection, decision, expected_act)
 
       {:reply, _invalid} ->
@@ -326,7 +328,13 @@ defmodule Spectre.Attempt.Runner do
   end
 
   defp event_order(projection, type, ref) do
-    {Map.get(projection.event_revisions, {type, ref}, 0), ref}
+    revision =
+      case Map.get(projection.event_metadata, {type, ref}) do
+        %{revision: revision} -> revision
+        nil -> 0
+      end
+
+    {revision, ref}
   end
 
   defp consume_grant(sequencer, grant, expected_act, config) do
@@ -761,10 +769,18 @@ defmodule Spectre.Attempt.Runner do
 
   defp callback(module, function, arity, boundary)
        when is_atom(module) and module not in [nil, true, false] do
-    cond do
-      not Code.ensure_loaded?(module) -> {:error, {boundary, :module_not_loaded}}
-      not function_exported?(module, function, arity) -> {:error, {boundary, :callback_missing}}
-      true -> :ok
+    case Adapter.validate(module, [{function, arity}]) do
+      :ok ->
+        :ok
+
+      {:error, {:adapter_module_not_loaded, _module}} ->
+        {:error, {boundary, :module_not_loaded}}
+
+      {:error, {:adapter_callback_missing, _module, _function, _arity}} ->
+        {:error, {boundary, :callback_missing}}
+
+      {:error, _reason} ->
+        {:error, {boundary, :invalid_module}}
     end
   end
 

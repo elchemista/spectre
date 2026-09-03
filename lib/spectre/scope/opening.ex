@@ -290,11 +290,8 @@ defmodule Spectre.Scope.Opening do
     minimum = Map.fetch!(condition.cardinality, "min")
 
     minimum > 0 and
-      field(condition.bindings, :scope_ref) == opening.ref
+      Map.get(condition.bindings, "scope_ref") == opening.ref
   end
-
-  defp field(map, key) when is_map(map),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
   defp validate_refs(opening) do
     with :ok <- Portable.validate_ref(opening.ref, :ref),

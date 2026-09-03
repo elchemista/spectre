@@ -1,0 +1,389 @@
+defmodule Spectre.GovernedAct.Transition.Execution do
+  @moduledoc """
+  Replays the world-side transitions of an admitted governed Act.
+
+  `dispatch_ready` is the last ledger-side state before capability use.
+  `attempt_started` consumes the grant nonce and rechecks authority at the
+  actual start time. `outcome_recorded` then binds observation to that exact
+  Attempt and validates its attested Evidence.
+
+  This module is deliberately pure: executors and other I/O live outside the
+  governed-act fold.
+  """
+
+  alias Spectre.{Act, Governance, Outcome}
+  alias Spectre.Canonical.Record
+  alias Spectre.Domain.Event
+  alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.{AuthorityChange, Index, State}
+  alias Spectre.GovernedAct.Transition.Admission
+  alias Spectre.Outcome.Attestation
+
+  @event_types ~w(dispatch_ready dispatch_cancelled attempt_started outcome_recorded)
+
+  @doc false
+  @spec event_types() :: [String.t()]
+  def event_types, do: @event_types
+
+  @spec apply(State.t(), Event.t(), non_neg_integer() | nil) ::
+          {:ok, State.t()} | {:error, term()}
+  def apply(%State{} = state, %Event{type: "dispatch_ready", data: data}, _revision) do
+    act_ref = data["act_ref"]
+
+    with {:ok, act} <- Index.fetch_act(state, act_ref),
+         :ok <- validate_dispatch(state, act, data) do
+      {:ok, %{state | dispatch_ready: MapSet.put(state.dispatch_ready, act_ref)}}
+    end
+  end
+
+  def apply(
+        %State{} = state,
+        %Event{type: "dispatch_cancelled", identity: identity, data: data},
+        _revision
+      ) do
+    act_ref = data["act_ref"]
+
+    with :ok <- exact_prefixed_identity(identity, "dispatch_cancelled", act_ref),
+         {:ok, act} <- Index.fetch_act(state, act_ref),
+         :ok <- validate_dispatch_cancellation(state, act, data) do
+      cancellation = %{
+        act_ref: act.ref,
+        mandate_ref: act.mandate_ref,
+        cause_ref: data["cause_ref"],
+        reason: data["reason"],
+        cancelled_at: data["cancelled_at"]
+      }
+
+      {:ok,
+       %{
+         state
+         | dispatch_ready: MapSet.delete(state.dispatch_ready, act.ref),
+           dispatch_cancellations: Map.put(state.dispatch_cancellations, act.ref, cancellation)
+       }}
+    end
+  end
+
+  def apply(
+        %State{} = state,
+        %Event{type: "attempt_started", identity: identity, data: data},
+        _revision
+      ) do
+    with {:ok, attempt} <- Record.decode(Spectre.Attempt, data),
+         :ok <- Record.match_identity(identity, Record.ref(attempt)),
+         :ok <- Index.unique(state.attempts, identity, :attempt),
+         {:ok, act} <- Index.fetch_act(state, attempt.act_ref),
+         :ok <- attempt_available(state, attempt, act),
+         :ok <- nonce_available(state, attempt.grant_nonce_digest),
+         :ok <- match_attempt_to_act(attempt, act),
+         :ok <- validate_attempt_authority(state, attempt, act) do
+      act_ref = attempt.act_ref
+
+      {:ok,
+       %{
+         state
+         | attempts: Map.put(state.attempts, identity, attempt),
+           attempts_by_act: Map.put(state.attempts_by_act, act_ref, identity),
+           dispatch_ready: MapSet.delete(state.dispatch_ready, act_ref),
+           consumed_nonces: MapSet.put(state.consumed_nonces, attempt.grant_nonce_digest)
+       }}
+    end
+  end
+
+  def apply(
+        %State{} = state,
+        %Event{type: "outcome_recorded", identity: identity, data: data},
+        _revision
+      ) do
+    with {:ok, outcome} <- Record.decode(Spectre.Outcome, data),
+         :ok <- Record.match_identity(identity, Record.ref(outcome)),
+         :ok <- Index.unique(state.outcomes, identity, :outcome),
+         {:ok, attempt} <- Index.fetch_attempt(state, outcome.attempt_ref),
+         {:ok, act} <- Index.fetch_act(state, outcome.act_ref),
+         :ok <- match_outcome_to_attempt(state, outcome, attempt),
+         :ok <- validate_erasure_outcome(act, outcome),
+         :ok <- validate_outcome_time(outcome, attempt),
+         :ok <- validate_outcome_transition(state, outcome),
+         :ok <- validate_outcome_evidence(state, outcome, attempt, act) do
+      {:ok, %{state | outcomes: Map.put(state.outcomes, identity, outcome)}}
+    end
+  end
+
+  def apply(%State{}, %Event{type: type}, _revision),
+    do: {:error, {:unsupported_execution_event, type}}
+
+  defp exact_prefixed_identity(identity, prefix, ref) when is_binary(ref) and ref != "",
+    do: Record.match_identity(identity, prefix <> ":" <> ref)
+
+  defp exact_prefixed_identity(_identity, _prefix, _ref),
+    do: {:error, :invalid_domain_event_identity_binding}
+
+  defp validate_erasure_outcome(%Act{class: "data.erase"}, %Outcome{status: :failed}),
+    do: {:error, :erasure_failure_must_be_definitive_or_ambiguous}
+
+  defp validate_erasure_outcome(_act, _outcome), do: :ok
+
+  defp attempt_available(state, attempt, act) do
+    cond do
+      not Governance.executor_mediated?(act) ->
+        {:error, {:act_not_executor_mediated, act.ref}}
+
+      not MapSet.member?(state.dispatch_ready, act.ref) ->
+        {:error, {:act_not_dispatch_ready, act.ref}}
+
+      Act.reservations?(act) and Map.get(state.reservation_states, act.ref) != :reserved ->
+        {:error, {:act_reservation_not_attemptable, act.ref}}
+
+      true ->
+        case Map.fetch(state.attempts_by_act, attempt.act_ref) do
+          :error -> :ok
+          {:ok, existing_ref} -> {:error, {:act_already_attempted, attempt.act_ref, existing_ref}}
+        end
+    end
+  end
+
+  defp nonce_available(state, nonce_digest) do
+    if MapSet.member?(state.consumed_nonces, nonce_digest),
+      do: {:error, {:grant_nonce_already_consumed, nonce_digest}},
+      else: :ok
+  end
+
+  defp match_attempt_to_act(attempt, act) do
+    cond do
+      attempt.executor_ref != act.executor_ref ->
+        {:error, {:attempt_executor_mismatch, attempt.ref, act.ref}}
+
+      attempt.material_digest != act.material_digest ->
+        {:error, {:attempt_material_mismatch, attempt.ref, act.ref}}
+
+      attempt.started_at < act.committed_at ->
+        {:error, {:attempt_precedes_act, attempt.ref, act.ref}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp match_outcome_to_attempt(state, outcome, attempt) do
+    cond do
+      outcome.act_ref != attempt.act_ref ->
+        {:error, {:outcome_act_mismatch, outcome.ref, attempt.ref}}
+
+      Map.get(state.attempts_by_act, outcome.act_ref) != attempt.ref ->
+        {:error, {:outcome_attempt_index_mismatch, outcome.ref, attempt.ref}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_outcome_time(outcome, attempt) do
+    if outcome.observed_at >= attempt.started_at,
+      do: :ok,
+      else: {:error, {:outcome_precedes_attempt, outcome.ref, attempt.ref}}
+  end
+
+  defp validate_outcome_transition(state, outcome) do
+    prior =
+      state.outcomes
+      |> Map.values()
+      |> Enum.filter(&(&1.attempt_ref == outcome.attempt_ref))
+
+    if Outcome.correction?(outcome) do
+      validate_outcome_correction(prior, outcome)
+    else
+      case Enum.find(prior, &(&1.status != :ambiguous)) do
+        nil ->
+          :ok
+
+        terminal ->
+          {:error,
+           {:attempt_already_has_definitive_outcome, outcome.attempt_ref, terminal.ref,
+            terminal.status}}
+      end
+    end
+  end
+
+  defp validate_outcome_correction(prior, outcome) do
+    target = Enum.find(prior, &(&1.ref == outcome.contradicts_outcome_ref))
+    existing = Enum.find(prior, &(&1.contradicts_outcome_ref == outcome.contradicts_outcome_ref))
+
+    cond do
+      is_nil(target) ->
+        {:error, {:corrected_outcome_not_found, outcome.contradicts_outcome_ref}}
+
+      target.status != :definitive_no_effect ->
+        {:error, {:corrected_outcome_not_no_effect, target.ref}}
+
+      target.act_ref != outcome.act_ref or target.attempt_ref != outcome.attempt_ref ->
+        {:error, {:outcome_correction_cause_mismatch, outcome.ref, target.ref}}
+
+      outcome.observed_at < target.observed_at ->
+        {:error, {:outcome_correction_precedes_target, outcome.ref, target.ref}}
+
+      not is_nil(existing) ->
+        {:error, {:outcome_already_corrected, target.ref, existing.ref}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_attempt_authority(state, attempt, act) do
+    with {:ok, candidate} <- Admission.rebuild_candidate(state, act),
+         {:ok, mandate} <- Index.fetch_mandate(state, act.mandate_ref) do
+      case Admission.authorize_candidate(state, candidate, act, mandate, attempt.started_at) do
+        {:ok, _effective_mandate} -> :ok
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  defp validate_dispatch(state, act, data) do
+    cond do
+      not Governance.executor_mediated?(act) ->
+        {:error, {:act_not_executor_mediated, act.ref}}
+
+      data["executor_ref"] != act.executor_ref ->
+        {:error, {:dispatch_executor_mismatch, act.ref}}
+
+      data["executor_contract_ref"] != act.executor_contract_ref ->
+        {:error, {:dispatch_contract_mismatch, act.ref}}
+
+      MapSet.member?(state.dispatch_ready, act.ref) ->
+        {:error, {:duplicate_dispatch_ready, act.ref}}
+
+      Map.has_key?(state.dispatch_cancellations, act.ref) ->
+        {:error, {:dispatch_already_cancelled, act.ref}}
+
+      Map.has_key?(state.attempts_by_act, act.ref) ->
+        {:error, {:act_already_attempted, act.ref}}
+
+      open_disputed_duty_for_act?(state, act.ref) ->
+        {:error, {:act_dispatch_blocked_by_disputed_evidence, act.ref}}
+
+      Act.reservations?(act) and Map.get(state.reservation_states, act.ref) != :reserved ->
+        {:error, {:act_reservation_not_ready, act.ref}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_dispatch_cancellation(state, act, data) do
+    cond do
+      not Governance.executor_mediated?(act) ->
+        {:error, {:dispatch_cancellation_act_not_executor_mediated, act.ref}}
+
+      not MapSet.member?(state.dispatch_ready, act.ref) ->
+        {:error, {:dispatch_cancellation_not_pending, act.ref}}
+
+      Map.has_key?(state.attempts_by_act, act.ref) ->
+        {:error, {:dispatch_cancellation_after_attempt, act.ref}}
+
+      Map.has_key?(state.dispatch_cancellations, act.ref) ->
+        {:error, {:duplicate_dispatch_cancellation, act.ref}}
+
+      data["mandate_ref"] != act.mandate_ref ->
+        {:error, {:dispatch_cancellation_mandate_mismatch, act.ref}}
+
+      Act.reservations?(act) and Map.get(state.reservation_states, act.ref) != :reserved ->
+        {:error, {:dispatch_cancellation_reservation_not_pending, act.ref}}
+
+      true ->
+        validate_dispatch_cancellation_cause(state, act, data)
+    end
+  end
+
+  defp validate_dispatch_cancellation_cause(state, act, data) do
+    case data["reason"] do
+      reason when reason in [:mandate_revoked, :mandate_restricted] ->
+        with {:ok, cause_act} <- Index.fetch_act(state, data["cause_ref"]),
+             :ok <- validate_governance_cancellation_time(act, cause_act, data),
+             {:ok, target_mandate_ref, cascade?} <-
+               AuthorityChange.resolve(state, cause_act, reason),
+             {:ok, true} <-
+               AuthorityChange.affects?(
+                 state,
+                 act.mandate_ref,
+                 target_mandate_ref,
+                 cascade?
+               ) do
+          :ok
+        else
+          {:ok, false} -> {:error, {:dispatch_cancellation_mandate_not_affected, act.ref}}
+          {:error, _reason} = error -> error
+        end
+
+      :disputed_evidence ->
+        with {:ok, duty} <- Index.fetch_duty_by_ref(state, data["cause_ref"]),
+             true <- duty.class == :disputed_evidence,
+             true <- duty.status == :open,
+             true <- duty.act_ref == act.ref,
+             true <- is_nil(duty.attempt_ref),
+             true <- duty.mandate_ref == act.mandate_ref,
+             true <- data["cancelled_at"] == duty.opened_at,
+             true <- act.committed_at <= duty.opened_at do
+          :ok
+        else
+          false -> {:error, {:invalid_disputed_dispatch_cancellation, act.ref}}
+          {:error, _reason} = error -> error
+        end
+
+      :mandate_expired ->
+        with {:ok, mandate} <- Index.fetch_mandate(state, act.mandate_ref),
+             true <- data["cause_ref"] == mandate.ref,
+             true <- act.mandate_revision == mandate.revision,
+             true <- data["cancelled_at"] == mandate.expires_at do
+          :ok
+        else
+          false -> {:error, {:invalid_dispatch_expiration, act.ref}}
+          {:error, _reason} = error -> error
+        end
+
+      reason ->
+        {:error, {:invalid_dispatch_cancellation_reason, act.ref, reason}}
+    end
+  end
+
+  defp validate_governance_cancellation_time(act, cause_act, data) do
+    cond do
+      data["cause_ref"] != cause_act.ref ->
+        {:error, {:dispatch_cancellation_cause_mismatch, act.ref}}
+
+      data["cancelled_at"] != cause_act.committed_at ->
+        {:error, {:dispatch_cancellation_time_mismatch, act.ref}}
+
+      act.committed_at > cause_act.committed_at ->
+        {:error, {:dispatch_cancellation_precedes_act, act.ref}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp open_disputed_duty_for_act?(state, act_ref) do
+    Enum.any?(state.duties, fn {_cause_key, duty} ->
+      duty.class == :disputed_evidence and duty.status == :open and duty.act_ref == act_ref and
+        is_nil(duty.attempt_ref)
+    end)
+  end
+
+  defp validate_outcome_evidence(state, outcome, attempt, act) do
+    with :ok <- ErasureAnalysis.validate_evidence_available(state, outcome.evidence_refs),
+         :ok <-
+           Index.ensure_present(
+             state.evidence,
+             outcome.evidence_refs,
+             :outcome_evidence_not_found
+           ) do
+      Enum.reduce_while(outcome.evidence_refs, :ok, fn ref, :ok ->
+        evidence = Map.fetch!(state.evidence, ref)
+
+        case Attestation.validate(evidence, outcome, attempt, act) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    end
+  end
+end

@@ -10,14 +10,33 @@ defmodule Spectre.Duty.Derive do
   without a definitive Outcome. Application gaps are declared by canonical
   Evidence from sources named by the Constitution; this module does not infer
   application quality or invent domain policy.
+
+  The public boundary accepts only a replayed `Spectre.GovernedAct.State`.
+  `Spectre.Duty.Derive.Facts` prepares the few indexes needed here while
+  preserving every durable record as a struct. Canonical maps are therefore
+  decoded exactly once during replay, never guessed inside the Duty algebra.
   """
 
   @definitive_outcomes [:succeeded, :failed, :definitive_no_effect]
 
-  alias Spectre.{Act, Attempt, Candidate, Evidence, Outcome, Presentation}
+  alias Spectre.{
+    Act,
+    Attempt,
+    Candidate,
+    Condition,
+    Constitution,
+    Erasure,
+    Evidence,
+    Outcome,
+    Presentation
+  }
+
+  alias Spectre.Duty.Derive.Facts
   alias Spectre.Duty.EvidenceCause
+  alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Recognition
   alias Spectre.Outcome.Attestation
+  alias Spectre.Scope.Opening
 
   @type cause :: %{
           required(:cause_key) => term(),
@@ -27,17 +46,21 @@ defmodule Spectre.Duty.Derive do
         }
 
   @doc """
-  Returns every distinct Duty cause implied by `facts` at trusted `time`.
-
-  `facts` may be a projection exposing `:acts`, `:attempts`, `:outcomes`,
-  `:duties` and `:evidence`, or a list of ledger entry envelopes. Existing Duty
-  records do not erase their cause, so the result remains useful to an auditor.
-  Use `missing_openings/3` for recovery materialization.
+  Returns every distinct Duty cause implied by replayed `state` at trusted
+  `time`. Existing Duty records do not erase their cause, so the result remains
+  useful to an auditor. Use `missing_openings/3` for recovery materialization.
   """
-  @spec required_duties(map() | list(), map(), term()) :: [cause()]
-  def required_duties(facts, constitution, time) when is_map(constitution) do
-    facts = normalize_facts(facts)
+  @spec required_duties(State.t(), map(), integer()) :: [cause()]
+  def required_duties(%State{} = state, constitution, time)
+      when is_map(constitution) and is_integer(time) do
+    state
+    |> Facts.from_state()
+    |> derive_required_duties(constitution, time)
+  end
 
+  def required_duties(_state, _constitution, _time), do: []
+
+  defp derive_required_duties(%Facts{} = facts, constitution, time) do
     ambiguous = ambiguous_attempt_causes(facts, constitution, time)
     contradicted = contradicted_outcome_causes(facts, constitution, time)
     disputed = disputed_evidence_causes(facts, constitution, time)
@@ -56,43 +79,43 @@ defmodule Spectre.Duty.Derive do
     |> Enum.sort_by(&stable_sort_key(&1.cause_key))
   end
 
-  def required_duties(_facts, _constitution, _time), do: []
-
   @doc """
   Returns derived causes which have no durable Duty record yet.
 
   Both open and disposed records count as materialized. If an opening append was
   lost or ambiguous, its key is absent and the same cause is returned again.
   """
-  @spec missing_openings(map() | list(), map(), term()) :: [cause()]
-  def missing_openings(facts, constitution, time) do
-    normalized = normalize_facts(facts)
+  @spec missing_openings(State.t(), map(), integer()) :: [cause()]
+  def missing_openings(%State{} = state, constitution, time)
+      when is_map(constitution) and is_integer(time) do
+    facts = Facts.from_state(state)
 
     existing =
-      normalized.duties
-      |> Enum.map(&get(&1, [:cause_key]))
-      |> Enum.reject(&is_nil/1)
+      facts.duties
+      |> Enum.map(& &1.cause_key)
       |> MapSet.new()
 
     facts
-    |> required_duties(constitution, time)
+    |> derive_required_duties(constitution, time)
     |> Enum.reject(&MapSet.member?(existing, &1.cause_key))
   end
 
+  def missing_openings(_state, _constitution, _time), do: []
+
   @doc "Returns the stable identity of a derived cause."
   @spec cause_key(cause() | map()) :: term()
-  def cause_key(cause) when is_map(cause), do: get(cause, [:cause_key, :key])
+  def cause_key(cause) when is_map(cause), do: Map.get(cause, :cause_key)
   def cause_key(_cause), do: nil
 
   @doc false
-  @spec available_evidence_at(map() | list(), integer()) :: [map()]
-  def available_evidence_at(facts, time) when is_integer(time) do
-    facts = normalize_facts(facts)
+  @spec available_evidence_at(State.t(), integer()) :: [Evidence.t()]
+  def available_evidence_at(%State{} = state, time) when is_integer(time) do
+    facts = Facts.from_state(state)
     unavailable = unavailable_evidence_at(facts, time)
 
     facts.evidence
-    |> records_available_at(time)
-    |> Enum.reject(&MapSet.member?(unavailable, ref(&1, :evidence)))
+    |> records_available_at(facts, :evidence, time)
+    |> Enum.reject(&MapSet.member?(unavailable, &1.ref))
   end
 
   def available_evidence_at(_facts, _time), do: []
@@ -107,25 +130,24 @@ defmodule Spectre.Duty.Derive do
   @spec materialization_attrs(cause(), integer()) :: map()
   def materialization_attrs(cause, fallback_opened_at)
       when is_map(cause) and is_integer(fallback_opened_at) do
-    causal_refs = get(cause, [:causal_refs], %{})
+    causal_refs = Map.get(cause, :causal_refs, %{})
     opened_at = required_at(cause, fallback_opened_at)
-    accountable = get(cause, [:accountable_ref, :accountable])
+    accountable = Map.get(cause, :accountable_ref)
 
     %{
-      cause_key: get(cause, [:cause_key]),
-      class: get(cause, [:cause_class, :class]),
-      act_ref: get(cause, [:act_ref]) || get(causal_refs, [:act_ref]),
-      attempt_ref: get(causal_refs, [:attempt_ref]),
-      mandate_ref: get(cause, [:mandate_ref]),
-      subjects: get(cause, [:subject_refs, :subjects], []),
+      cause_key: Map.get(cause, :cause_key),
+      class: Map.get(cause, :cause_class),
+      act_ref: Map.get(cause, :act_ref) || Map.get(causal_refs, "act_ref"),
+      attempt_ref: Map.get(causal_refs, "attempt_ref"),
+      mandate_ref: Map.get(cause, :mandate_ref),
+      subjects: Map.get(cause, :subject_refs, []),
       accountable: accountable,
-      evidence_refs: get(cause, [:known_evidence_refs, :evidence_refs], []),
-      missing: get(cause, [:missing_evidence, :missing], []),
-      containment: get(cause, [:containment], %{}),
-      closing_conditions: get(cause, [:closing_conditions, :closure_conditions], []),
-      disposition_authority_refs:
-        cause |> get([:disposition_authority, :disposition_authority_refs]) |> authority_refs(),
-      conflict_refs: get(cause, [:conflict_refs], conflict_refs(accountable, [], nil)),
+      evidence_refs: Map.get(cause, :known_evidence_refs, []),
+      missing: Map.get(cause, :missing_evidence, []),
+      containment: Map.get(cause, :containment, %{}),
+      closing_conditions: Map.get(cause, :closing_conditions, []),
+      disposition_authority_refs: cause |> Map.get(:disposition_authority) |> authority_refs(),
+      conflict_refs: Map.get(cause, :conflict_refs, conflict_refs(accountable, [], nil)),
       opened_at: opened_at,
       status: :open,
       disposition_act_ref: nil
@@ -139,30 +161,31 @@ defmodule Spectre.Duty.Derive do
   is the Outcome's trusted observation time, so delayed materialization cannot
   rewrite when the Duty became required.
   """
-  @spec outcome_cause(map(), map(), map(), map()) :: {:ok, cause()} | {:error, term()}
-  def outcome_cause(act, attempt, outcome, constitution)
-      when is_map(act) and is_map(attempt) and is_map(outcome) and is_map(constitution) do
-    act_ref = ref(act, :act)
-    attempt_ref = ref(attempt, :attempt)
-    outcome_ref = ref(outcome, :outcome)
-    status = get(outcome, [:classification, :outcome, :status])
-    correction? = present?(get(outcome, [:contradicts_outcome_ref]))
+  @spec outcome_cause(Act.t(), Attempt.t(), Outcome.t(), map(), integer()) ::
+          {:ok, cause()} | {:error, term()}
+  def outcome_cause(
+        %Act{} = act,
+        %Attempt{} = attempt,
+        %Outcome{} = outcome,
+        constitution,
+        recorded_at
+      )
+      when is_map(constitution) and is_integer(recorded_at) do
+    status = outcome.status
+    correction? = present?(outcome.contradicts_outcome_ref)
 
     with true <- status == :ambiguous or correction?,
-         true <- present?(act_ref) and present?(attempt_ref) and present?(outcome_ref),
-         true <- get(attempt, [:act_ref]) == act_ref,
-         true <- get(outcome, [:act_ref]) == act_ref,
-         true <- get(outcome, [:attempt_ref]) == attempt_ref,
-         {:ok, required_at} <- outcome_time(outcome) do
+         true <- attempt.act_ref == act.ref,
+         true <- outcome.act_ref == act.ref,
+         true <- outcome.attempt_ref == attempt.ref do
       kind = if correction?, do: :correction, else: :ambiguous
-      build_outcome_cause(kind, act, attempt, outcome, constitution, required_at)
+      build_outcome_cause(kind, act, attempt, outcome, constitution, recorded_at)
     else
       false -> {:error, :invalid_duty_outcome_cause}
-      :error -> {:error, :invalid_duty_outcome_time}
     end
   end
 
-  def outcome_cause(_act, _attempt, _outcome, _constitution),
+  def outcome_cause(_act, _attempt, _outcome, _constitution, _recorded_at),
     do: {:error, :invalid_duty_outcome_cause}
 
   defp build_outcome_cause(:ambiguous, act, attempt, outcome, constitution, observed_at) do
@@ -180,21 +203,21 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp ambiguous_attempt_causes(facts, constitution, time) do
-    Enum.flat_map(facts.attempts, fn attempt ->
-      attempt_ref = ref(attempt, :attempt)
-      act_ref = get(attempt, [:act_ref])
-      act = Map.get(facts.acts_by_ref, act_ref)
-      outcomes = outcomes_for(facts.outcomes, attempt_ref)
+    Enum.flat_map(facts.attempts, fn %Attempt{} = attempt ->
+      act = Map.get(facts.acts_by_ref, attempt.act_ref)
+      outcomes = Map.get(facts.outcomes_by_attempt, attempt.ref, [])
 
-      with true <- present?(attempt_ref) and present?(act_ref),
+      with %Act{} = act <- act,
            {:ok, deadline} <- observation_deadline(attempt, act),
-           ambiguous_outcome = first_outcome(outcomes, :ambiguous, min_time(time, deadline)),
-           ambiguous_at = outcome_time_value(ambiguous_outcome),
+           ambiguous_outcome =
+             first_outcome(facts, outcomes, :ambiguous, min(time, deadline)),
+           ambiguous_at = outcome_time_value(facts, ambiguous_outcome),
            {:ok, required_at} <- ambiguity_required_at(ambiguous_at, deadline, time),
-           false <- is_nil(ambiguous_at) and definitive_outcome_by?(outcomes, deadline) do
+           false <-
+             is_nil(ambiguous_at) and definitive_outcome_by?(facts, outcomes, deadline) do
         case ambiguous_outcome do
           nil ->
-            timely_outcomes = Enum.filter(outcomes, &observed_by?(&1, deadline))
+            timely_outcomes = Enum.filter(outcomes, &observed_by?(facts, &1, deadline))
 
             [
               ambiguous_timeout_cause(
@@ -207,9 +230,15 @@ defmodule Spectre.Duty.Derive do
             ]
 
           outcome ->
-            case outcome_cause(act, attempt, outcome, constitution) do
-              {:ok, cause} -> [Map.put(cause, :required_at, required_at)]
-              {:error, _reason} -> []
+            case Facts.metadata(facts, :outcome, outcome.ref) do
+              {:ok, metadata} ->
+                case outcome_cause(act, attempt, outcome, constitution, metadata.recorded_at) do
+                  {:ok, cause} -> [Map.put(cause, :required_at, required_at)]
+                  {:error, _reason} -> []
+                end
+
+              {:error, :missing_event_metadata} ->
+                []
             end
         end
       else
@@ -220,30 +249,16 @@ defmodule Spectre.Duty.Derive do
 
   defp contradicted_outcome_causes(facts, constitution, time) do
     facts.outcomes
-    |> Enum.filter(
-      &(present?(get(&1, [:contradicts_outcome_ref])) and
-          observed_by?(&1, time))
-    )
-    |> Enum.flat_map(fn outcome ->
-      attempt_ref = get(outcome, [:attempt_ref])
-      act_ref = get(outcome, [:act_ref]) || act_ref_for_attempt(facts, attempt_ref)
-      outcome_ref = ref(outcome, :outcome)
-
-      if present?(outcome_ref) and present?(act_ref) do
-        act = Map.get(facts.acts_by_ref, act_ref, %{})
-
-        case Map.get(facts.attempts_by_ref, attempt_ref) do
-          nil ->
-            []
-
-          attempt ->
-            case outcome_cause(act, attempt, outcome, constitution) do
-              {:ok, cause} -> [cause]
-              {:error, _reason} -> []
-            end
-        end
+    |> Enum.filter(&(present?(&1.contradicts_outcome_ref) and observed_by?(facts, &1, time)))
+    |> Enum.flat_map(fn %Outcome{} = outcome ->
+      with %Act{} = act <- Map.get(facts.acts_by_ref, outcome.act_ref),
+           %Attempt{} = attempt <- Map.get(facts.attempts_by_ref, outcome.attempt_ref),
+           {:ok, metadata} <- Facts.metadata(facts, :outcome, outcome.ref),
+           {:ok, cause} <-
+             outcome_cause(act, attempt, outcome, constitution, metadata.recorded_at) do
+        [cause]
       else
-        []
+        _missing_or_invalid -> []
       end
     end)
   end
@@ -256,29 +271,23 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp mandate_evidence_dispute_causes(facts, constitution, time) do
-    Enum.flat_map(facts.acts, fn act ->
-      with act_ref when is_binary(act_ref) <- ref(act, :act),
-           mandate_ref when is_binary(mandate_ref) <- get(act, [:mandate_ref]),
-           {:ok, mandate} <- Map.fetch(facts.mandates_by_ref, mandate_ref),
-           {:ok, committed_at} <- timestamp(get(act, [:committed_at, :ledger_recorded_at])),
-           {:ok, act_revision} <- ledger_revision(act),
-           recognition_evidence_refs when recognition_evidence_refs != [] <-
-             listify(get(act, [:recognition_evidence_refs], [])) do
-        historical = evidence_recorded_through(facts.evidence, act_revision)
+    Enum.flat_map(facts.acts, fn %Act{} = act ->
+      with {:ok, mandate} <- Map.fetch(facts.mandates_by_ref, act.mandate_ref),
+           {:ok, act_metadata} <- Facts.metadata(facts, :act, act.ref),
+           true <- act.recognition_evidence_refs != [] do
+        historical = evidence_recorded_through(facts, act_metadata.revision)
 
-        mandate
-        |> get([:conditions], [])
-        |> listify()
+        mandate.conditions
         |> Enum.flat_map(fn condition ->
           condition_disputes(
             condition,
             act,
-            recognition_evidence_refs,
+            act.recognition_evidence_refs,
             historical,
-            facts.evidence,
+            facts,
             constitution,
-            committed_at,
-            act_revision,
+            act.committed_at,
+            act_metadata.revision,
             time
           )
         end)
@@ -293,7 +302,7 @@ defmodule Spectre.Duty.Derive do
          act,
          recognition_evidence_refs,
          historical,
-         all_evidence,
+         facts,
          constitution,
          committed_at,
          act_revision,
@@ -303,16 +312,17 @@ defmodule Spectre.Duty.Derive do
     case Recognition.check_with_basis([condition], historical, committed_at) do
       {:satisfied, basis_refs} ->
         used_refs = Enum.filter(basis_refs, &(&1 in recognition_evidence_refs))
-        used = Enum.filter(historical, &(ref(&1, :evidence) in used_refs))
+        used_refs = MapSet.new(used_refs)
+        used = Enum.filter(historical, &MapSet.member?(used_refs, &1.ref))
 
-        all_evidence
+        facts.evidence
         |> Enum.filter(
           &evidence_dispute?(
             &1,
             used,
             recognition_evidence_refs,
             condition,
-            all_evidence,
+            facts,
             act_revision,
             time
           )
@@ -323,7 +333,7 @@ defmodule Spectre.Duty.Derive do
             condition,
             recognition_evidence_refs,
             &1,
-            all_evidence,
+            facts,
             constitution
           )
         )
@@ -351,22 +361,19 @@ defmodule Spectre.Duty.Derive do
          used,
          recognition_evidence_refs,
          condition,
-         all_evidence,
+         facts,
          act_revision,
          time
        ) do
-    with evidence_ref when is_binary(evidence_ref) <- ref(evidence, :evidence),
-         false <- evidence_ref in recognition_evidence_refs,
-         {:ok, recorded_at} <- ledger_time(evidence),
-         {:ok, evidence_revision} <- ledger_revision(evidence),
-         {:ok, current_time} <- timestamp(time),
-         true <- evidence_revision > act_revision and recorded_at <= current_time,
+    with false <- evidence.ref in recognition_evidence_refs,
+         {:ok, metadata} <- Facts.metadata(facts, :evidence, evidence.ref),
+         true <- metadata.revision > act_revision and metadata.recorded_at <= time,
          true <- opposite_to_used?(evidence, used) do
       Recognition.qualified?(
         evidence,
         condition,
-        evidence_recorded_through(all_evidence, evidence_revision),
-        recorded_at
+        evidence_recorded_through(facts, metadata.revision),
+        metadata.recorded_at
       )
     else
       _not_a_dispute -> false
@@ -374,12 +381,9 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp opposite_to_used?(evidence, used) do
-    proposition = get(evidence, [:proposition])
-    stance = get(evidence, [:stance])
-
     Enum.any?(used, fn prior ->
-      get(prior, [:proposition]) == proposition and
-        opposite_stance?(get(prior, [:stance]), stance)
+      prior.proposition == evidence.proposition and
+        opposite_stance?(prior.stance, evidence.stance)
     end)
   end
 
@@ -392,87 +396,83 @@ defmodule Spectre.Duty.Derive do
          condition,
          recognition_evidence_refs,
          evidence,
-         all_evidence,
+         facts,
          constitution
        ) do
-    act_ref = ref(act, :act)
-    evidence_ref = ref(evidence, :evidence)
-    condition_ref = get(condition, [:ref, :condition_ref])
-    {:ok, required_at} = ledger_time(evidence)
-    {:ok, evidence_revision} = ledger_revision(evidence)
-    contemporaneous = evidence_recorded_through(all_evidence, evidence_revision)
+    condition_ref = condition.ref
+    {:ok, metadata} = Facts.metadata(facts, :evidence, evidence.ref)
+    contemporaneous = evidence_recorded_through(facts, metadata.revision)
 
     {_result, current_basis_refs} =
-      Recognition.check_with_basis([condition], contemporaneous, required_at)
+      Recognition.check_with_basis([condition], contemporaneous, metadata.recorded_at)
 
     known_evidence_refs =
-      (recognition_evidence_refs ++ current_basis_refs ++ [evidence_ref])
+      (recognition_evidence_refs ++ current_basis_refs ++ [evidence.ref])
       |> Enum.uniq()
       |> Enum.sort()
 
     duty_cause(
       :disputed_evidence,
-      {:disputed_evidence, act_ref, condition_ref, evidence_ref},
+      {:disputed_evidence, act.ref, condition_ref, evidence.ref},
       %{
-        "act_ref" => act_ref,
-        "mandate_ref" => get(act, [:mandate_ref]),
+        "act_ref" => act.ref,
+        "mandate_ref" => act.mandate_ref,
         "condition_ref" => condition_ref,
-        "evidence_ref" => evidence_ref
+        "evidence_ref" => evidence.ref
       },
       constitution,
       %{
         act: act,
-        act_ref: act_ref,
-        mandate_ref: get(act, [:mandate_ref]),
-        subject_refs: get(act, [:subject_refs, :subjects], []),
-        accountable_ref: get(act, [:accountable_ref]),
+        act_ref: act.ref,
+        mandate_ref: act.mandate_ref,
+        subject_refs: act.subject_refs,
+        accountable_ref: act.accountable_ref,
         known_evidence_refs: known_evidence_refs,
         missing_evidence: [:independent_resolution],
         closing_conditions: configured_closing_conditions(constitution, :disputed_evidence, []),
-        required_at: required_at
+        required_at: metadata.recorded_at
       }
     )
   end
 
   defp presentation_evidence_dispute_causes(facts, constitution, time) do
-    Enum.flat_map(facts.acts, fn act ->
-      with act_ref when is_binary(act_ref) <- ref(act, :act),
-           presentation_ref when is_binary(presentation_ref) <- get(act, [:presentation_ref]),
-           recognition_evidence_refs when recognition_evidence_refs != [] <-
-             listify(get(act, [:recognition_evidence_refs], [])),
-           {:ok, committed_at} <- timestamp(get(act, [:committed_at, :ledger_recorded_at])),
-           {:ok, act_revision} <- ledger_revision(act),
-           {:ok, presentation_record} <-
-             Map.fetch(facts.presentations_by_ref, presentation_ref),
-           true <- recorded_through?(presentation_record, act_revision),
-           {:ok, presentation} <- rebuild_presentation(presentation_record) do
+    Enum.flat_map(facts.acts, fn %Act{} = act ->
+      with presentation_ref when is_binary(presentation_ref) <- act.presentation_ref,
+           true <- act.recognition_evidence_refs != [],
+           {:ok, act_metadata} <- Facts.metadata(facts, :act, act.ref),
+           {:ok, presentation} <- Map.fetch(facts.presentations_by_ref, presentation_ref),
+           true <-
+             Facts.recorded_through?(
+               facts,
+               :presentation,
+               presentation.ref,
+               act_metadata.revision
+             ) do
         historical_evidence =
           facts.evidence
-          |> records_recorded_through(act_revision)
-          |> rebuild_evidence_records()
+          |> records_recorded_through(facts, :evidence, act_metadata.revision)
 
         historical_outcomes =
           facts.outcomes
-          |> records_recorded_through(act_revision)
-          |> rebuild_outcome_records()
+          |> records_recorded_through(facts, :outcome, act_metadata.revision)
 
         facts
         |> presentation_approval_contexts(
           presentation,
-          recognition_evidence_refs,
+          act.recognition_evidence_refs,
           historical_evidence,
           historical_outcomes,
-          committed_at,
-          act_revision
+          act.committed_at,
+          act_metadata.revision
         )
         |> Enum.flat_map(
           &presentation_context_disputes(
             &1,
             act,
-            recognition_evidence_refs,
+            act.recognition_evidence_refs,
             facts,
             constitution,
-            act_revision,
+            act_metadata.revision,
             time
           )
         )
@@ -491,16 +491,17 @@ defmodule Spectre.Duty.Derive do
          committed_at,
          act_revision
        ) do
+    recognition_evidence_refs = MapSet.new(recognition_evidence_refs)
+
     historical_evidence
-    |> Enum.filter(&(&1.ref in recognition_evidence_refs))
+    |> Enum.filter(&MapSet.member?(recognition_evidence_refs, &1.ref))
     |> Enum.sort_by(& &1.ref)
     |> Enum.flat_map(fn approval ->
       with {:ok, approved_presentation_ref, show_act_ref} <-
              Presentation.approval_refs(approval),
            true <- approved_presentation_ref == presentation.ref,
-           {:ok, show_act_record} <- Map.fetch(facts.acts_by_ref, show_act_ref),
-           true <- recorded_through?(show_act_record, act_revision),
-           {:ok, show_act} <- rebuild_act(show_act_record),
+           {:ok, show_act} <- Map.fetch(facts.acts_by_ref, show_act_ref),
+           true <- Facts.recorded_through?(facts, :act, show_act.ref, act_revision),
            {:ok, basis_refs} <-
              Presentation.validate_approval_with_basis(
                approval,
@@ -510,8 +511,9 @@ defmodule Spectre.Duty.Derive do
                historical_evidence,
                committed_at
              ),
-           true <- Enum.all?(basis_refs, &(&1 in recognition_evidence_refs)) do
-        basis_evidence = Enum.filter(historical_evidence, &(&1.ref in basis_refs))
+           true <- Enum.all?(basis_refs, &MapSet.member?(recognition_evidence_refs, &1)) do
+        basis_refs_set = MapSet.new(basis_refs)
+        basis_evidence = Enum.filter(historical_evidence, &MapSet.member?(basis_refs_set, &1.ref))
 
         [
           %{
@@ -542,21 +544,19 @@ defmodule Spectre.Duty.Derive do
         {if(item.ref == context.approval.ref, do: 0, else: 1), item.ref}
       end)
 
-    Enum.flat_map(facts.evidence, fn evidence_record ->
+    recognition_evidence_refs_set = MapSet.new(recognition_evidence_refs)
+
+    Enum.flat_map(facts.evidence, fn %Evidence{} = evidence ->
       with {:ok, evidence_revision, recorded_at} <-
-             later_record(evidence_record, act_revision, time),
-           evidence_ref when is_binary(evidence_ref) <- ref(evidence_record, :evidence),
-           false <- evidence_ref in recognition_evidence_refs,
-           {:ok, evidence} <- rebuild_evidence(evidence_record),
+             later_record(facts, evidence, act_revision, time),
+           false <- MapSet.member?(recognition_evidence_refs_set, evidence.ref),
            %Evidence{} = prior <- Enum.find(ordered_basis, &opposite_evidence?(&1, evidence)),
            prefix_evidence <-
              facts.evidence
-             |> records_recorded_through(evidence_revision)
-             |> rebuild_evidence_records(),
+             |> records_recorded_through(facts, :evidence, evidence_revision),
            prefix_outcomes <-
              facts.outcomes
-             |> records_recorded_through(evidence_revision)
-             |> rebuild_outcome_records(),
+             |> records_recorded_through(facts, :outcome, evidence_revision),
            {:ok, counter_basis_refs} <-
              validate_presentation_counter(
                evidence,
@@ -571,7 +571,7 @@ defmodule Spectre.Duty.Derive do
             act,
             context,
             prior.ref,
-            evidence_ref,
+            evidence.ref,
             recognition_evidence_refs ++ counter_basis_refs,
             constitution,
             recorded_at
@@ -627,15 +627,14 @@ defmodule Spectre.Duty.Derive do
          constitution,
          required_at
        ) do
-    act_ref = ref(act, :act)
     presentation_ref = context.presentation.ref
 
     duty_cause(
       :disputed_evidence,
-      {:disputed_evidence, act_ref, {:presentation, presentation_ref}, evidence_ref},
+      {:disputed_evidence, act.ref, {:presentation, presentation_ref}, evidence_ref},
       %{
-        "act_ref" => act_ref,
-        "mandate_ref" => get(act, [:mandate_ref]),
+        "act_ref" => act.ref,
+        "mandate_ref" => act.mandate_ref,
         "presentation_ref" => presentation_ref,
         "approval_evidence_ref" => context.approval.ref,
         "disputed_evidence_ref" => prior_evidence_ref,
@@ -644,10 +643,10 @@ defmodule Spectre.Duty.Derive do
       constitution,
       %{
         act: act,
-        act_ref: act_ref,
-        mandate_ref: get(act, [:mandate_ref]),
-        subject_refs: get(act, [:subject_refs, :subjects], []),
-        accountable_ref: get(act, [:accountable_ref]),
+        act_ref: act.ref,
+        mandate_ref: act.mandate_ref,
+        subject_refs: act.subject_refs,
+        accountable_ref: act.accountable_ref,
         known_evidence_refs:
           normalize_refs(context.basis_refs ++ known_evidence_refs ++ [evidence_ref]),
         missing_evidence: [:independent_resolution],
@@ -658,36 +657,27 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp outcome_evidence_dispute_causes(facts, constitution, time) do
-    Enum.flat_map(facts.outcomes, fn outcome ->
-      status = get(outcome, [:classification, :outcome, :status])
-      outcome_ref = ref(outcome, :outcome)
-      act_ref = get(outcome, [:act_ref])
-      attempt_ref = get(outcome, [:attempt_ref])
-
-      with true <- status in @definitive_outcomes,
-           true <- is_binary(outcome_ref) and is_binary(act_ref) and is_binary(attempt_ref),
-           {:ok, outcome_revision} <- ledger_revision(outcome),
-           {:ok, outcome_recorded_at} <- ledger_time(outcome),
-           {:ok, current_time} <- timestamp(time),
-           true <- outcome_recorded_at <= current_time,
-           {:ok, act} <- Map.fetch(facts.acts_by_ref, act_ref),
-           {:ok, attempt} <- Map.fetch(facts.attempts_by_ref, attempt_ref),
-           true <- get(attempt, [:act_ref]) == act_ref,
-           evidence_refs when evidence_refs != [] <- listify(get(outcome, [:evidence_refs], [])),
+    Enum.flat_map(facts.outcomes, fn %Outcome{} = outcome ->
+      with true <- outcome.status in @definitive_outcomes,
+           {:ok, outcome_metadata} <- Facts.metadata(facts, :outcome, outcome.ref),
+           true <- outcome_metadata.recorded_at <= time,
+           {:ok, act} <- Map.fetch(facts.acts_by_ref, outcome.act_ref),
+           {:ok, attempt} <- Map.fetch(facts.attempts_by_ref, outcome.attempt_ref),
+           true <- attempt.act_ref == act.ref,
+           true <- outcome.evidence_refs != [],
            used_evidence when used_evidence != [] <-
              trusted_outcome_evidence(
-               facts.evidence,
-               evidence_refs,
+               facts,
+               outcome.evidence_refs,
                outcome,
                act,
                attempt,
-               outcome_revision
+               outcome_metadata.revision
              ) do
         Enum.flat_map(facts.evidence, fn evidence ->
           with {:ok, _evidence_revision, recorded_at} <-
-                 later_record(evidence, outcome_revision, time),
-               evidence_ref when is_binary(evidence_ref) <- ref(evidence, :evidence),
-               false <- evidence_ref in evidence_refs,
+                 later_record(facts, evidence, outcome_metadata.revision, time),
+               false <- evidence.ref in outcome.evidence_refs,
                true <-
                  trusted_outcome_counter?(
                    evidence,
@@ -701,8 +691,8 @@ defmodule Spectre.Duty.Derive do
                 act,
                 attempt,
                 outcome,
-                evidence_ref,
-                evidence_refs,
+                evidence.ref,
+                outcome.evidence_refs,
                 constitution,
                 recorded_at
               )
@@ -718,7 +708,7 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp trusted_outcome_evidence(
-         all_evidence,
+         facts,
          evidence_refs,
          outcome,
          act,
@@ -726,20 +716,20 @@ defmodule Spectre.Duty.Derive do
          outcome_revision
        ) do
     trusted =
-      all_evidence
-      |> records_recorded_through(outcome_revision)
-      |> Enum.filter(&(ref(&1, :evidence) in evidence_refs))
+      facts.evidence
+      |> records_recorded_through(facts, :evidence, outcome_revision)
+      |> Enum.filter(&(&1.ref in evidence_refs))
       |> Enum.filter(
         &trusted_outcome_attestation?(
           &1,
-          get(outcome, [:classification, :outcome, :status]),
+          outcome.status,
           act,
           attempt,
-          get(outcome, [:observed_at])
+          outcome.observed_at
         )
       )
 
-    if normalize_refs(Enum.map(trusted, &ref(&1, :evidence))) == normalize_refs(evidence_refs),
+    if normalize_refs(Enum.map(trusted, & &1.ref)) == normalize_refs(evidence_refs),
       do: trusted,
       else: []
   end
@@ -752,45 +742,35 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp trusted_outcome_attestation?(evidence, status, act, attempt, observed_at) do
-    with {:ok, evidence} <- rebuild_evidence(evidence),
-         {:ok, act} <- rebuild_act(act),
-         {:ok, attempt} <- rebuild_attempt(attempt) do
-      if status == :ambiguous,
-        do: Attestation.causal?(evidence, act, attempt, observed_at),
-        else: Attestation.supports?(evidence, status, act, attempt, observed_at)
-    else
-      {:error, _reason} -> false
-    end
+    if status == :ambiguous,
+      do: Attestation.causal?(evidence, act, attempt, observed_at),
+      else: Attestation.supports?(evidence, status, act, attempt, observed_at)
   end
 
-  defp trusted_executor_observation?(evidence, act, attempt, time) do
-    bindings = %{"act_ref" => ref(act, :act), "attempt_ref" => ref(attempt, :attempt)}
-    observed_at = get(evidence, [:observed_at])
-    started_at = get(attempt, [:started_at])
+  defp trusted_executor_observation?(
+         %Evidence{} = evidence,
+         %Act{} = act,
+         %Attempt{} = attempt,
+         time
+       ) do
+    bindings = %{"act_ref" => act.ref, "attempt_ref" => attempt.ref}
 
-    get(evidence, [:provenance]) == :observed and
-      get(evidence, [:provisional], false) == false and
-      get(evidence, [:assumptions], []) == [] and
-      get(evidence, [:parent_refs], []) == [] and
-      get(evidence, [:source_ref]) == get(act, [:executor_ref]) and
-      get(evidence, [:issuer_ref]) == get(act, [:executor_ref]) and
-      get(evidence, [:bindings]) == bindings and
-      is_integer(observed_at) and is_integer(started_at) and observed_at >= started_at and
+    evidence.provenance == :observed and
+      evidence.provisional == false and
+      evidence.assumptions == [] and
+      evidence.parent_refs == [] and
+      evidence.source_ref == act.executor_ref and
+      evidence.issuer_ref == act.executor_ref and
+      evidence.bindings == bindings and
+      evidence.observed_at >= attempt.started_at and
       evidence_current_at?(evidence, time)
   end
 
-  defp evidence_current_at?(evidence, time) do
-    observed_at = get(evidence, [:observed_at])
-    valid_from = get(evidence, [:valid_from])
-    valid_until = get(evidence, [:valid_until])
-    freshness_ms = get(evidence, [:freshness_ms])
-
-    is_integer(time) and is_integer(observed_at) and observed_at <= time and
-      (is_nil(valid_from) or valid_from <= time) and
-      (is_nil(valid_until) or time < valid_until) and
-      (is_nil(freshness_ms) or
-         (is_integer(freshness_ms) and freshness_ms >= 0 and
-            time - observed_at <= freshness_ms))
+  defp evidence_current_at?(%Evidence{} = evidence, time) do
+    evidence.observed_at <= time and
+      (is_nil(evidence.valid_from) or evidence.valid_from <= time) and
+      (is_nil(evidence.valid_until) or time < evidence.valid_until) and
+      (is_nil(evidence.freshness_ms) or time - evidence.observed_at <= evidence.freshness_ms)
   end
 
   defp outcome_disputed_evidence_cause(
@@ -802,31 +782,24 @@ defmodule Spectre.Duty.Derive do
          constitution,
          required_at
        ) do
-    act_ref = ref(act, :act)
-    attempt_ref = ref(attempt, :attempt)
-    outcome_ref = ref(outcome, :outcome)
-
     duty_cause(
       :disputed_evidence,
-      {:disputed_evidence, act_ref, {:outcome, outcome_ref}, evidence_ref},
+      {:disputed_evidence, act.ref, {:outcome, outcome.ref}, evidence_ref},
       %{
-        "act_ref" => act_ref,
-        "attempt_ref" => attempt_ref,
-        "outcome_ref" => outcome_ref,
+        "act_ref" => act.ref,
+        "attempt_ref" => attempt.ref,
+        "outcome_ref" => outcome.ref,
         "evidence_ref" => evidence_ref
       },
       constitution,
       %{
         act: act,
-        act_ref: act_ref,
-        mandate_ref: get(act, [:mandate_ref]),
-        subject_refs: get(act, [:subject_refs, :subjects], []),
-        accountable_ref: get(act, [:accountable_ref]),
+        act_ref: act.ref,
+        mandate_ref: act.mandate_ref,
+        subject_refs: act.subject_refs,
+        accountable_ref: act.accountable_ref,
         known_evidence_refs:
-          normalize_refs(
-            listify(get(act, [:recognition_evidence_refs], [])) ++
-              outcome_evidence_refs ++ [evidence_ref]
-          ),
+          normalize_refs(act.recognition_evidence_refs ++ outcome_evidence_refs ++ [evidence_ref]),
         missing_evidence: [:independent_resolution],
         closing_conditions: configured_closing_conditions(constitution, :disputed_evidence, []),
         required_at: required_at
@@ -844,8 +817,7 @@ defmodule Spectre.Duty.Derive do
       }
     end)
     |> Enum.reduce(%{}, fn cause, unique ->
-      causal_refs = get(cause, [:causal_refs], %{})
-      identity = {get(causal_refs, [:act_ref]), get(causal_refs, [:evidence_ref])}
+      identity = {cause.causal_refs["act_ref"], cause.causal_refs["evidence_ref"]}
 
       Map.update(unique, identity, cause, fn existing ->
         Map.update!(existing, :known_evidence_refs, fn refs ->
@@ -866,144 +838,51 @@ defmodule Spectre.Duty.Derive do
   defp dispute_lane_rank(_mandate_condition), do: 0
 
   defp opposite_evidence?(left, right) do
-    get(left, [:proposition]) == get(right, [:proposition]) and
-      opposite_stance?(get(left, [:stance]), get(right, [:stance]))
+    left.proposition == right.proposition and opposite_stance?(left.stance, right.stance)
   end
 
-  defp later_record(record, minimum_revision, time) do
-    with evidence_ref when is_binary(evidence_ref) <- ref(record, :evidence),
-         {:ok, recorded_at} <- ledger_time(record),
-         {:ok, revision} <- ledger_revision(record),
-         {:ok, current_time} <- timestamp(time),
-         true <- revision > minimum_revision and recorded_at <= current_time do
-      {:ok, revision, recorded_at}
+  defp later_record(facts, %Evidence{} = evidence, minimum_revision, time) do
+    with {:ok, metadata} <- Facts.metadata(facts, :evidence, evidence.ref),
+         true <- metadata.revision > minimum_revision and metadata.recorded_at <= time do
+      {:ok, metadata.revision, metadata.recorded_at}
     else
       _not_later -> :error
     end
   end
 
-  defp recorded_through?(record, revision) do
-    case ledger_revision(record) do
-      {:ok, record_revision} -> record_revision <= revision
-      :error -> false
-    end
+  defp records_recorded_through(records, facts, kind, revision) do
+    Enum.filter(records, &Facts.recorded_through?(facts, kind, &1.ref, revision))
   end
 
-  defp records_recorded_through(records, revision) do
-    Enum.filter(records, &recorded_through?(&1, revision))
-  end
-
-  defp evidence_recorded_through(evidence, revision) do
-    records_recorded_through(evidence, revision)
-  end
-
-  defp rebuild_act(record) when is_map(record) do
-    record
-    |> without_ledger_metadata()
-    |> Act.new()
-  end
-
-  defp rebuild_act(_record), do: {:error, :invalid_act}
-
-  defp rebuild_presentation(record) when is_map(record) do
-    record
-    |> without_ledger_metadata()
-    |> Presentation.new()
-  end
-
-  defp rebuild_presentation(_record), do: {:error, :invalid_presentation}
-
-  defp rebuild_evidence(record) when is_map(record) do
-    record
-    |> without_ledger_metadata()
-    |> Evidence.new()
-  end
-
-  defp rebuild_evidence(_record), do: {:error, :invalid_evidence}
-
-  defp rebuild_attempt(record) when is_map(record) do
-    record
-    |> without_ledger_metadata()
-    |> Attempt.new()
-  end
-
-  defp rebuild_attempt(_record), do: {:error, :invalid_attempt}
-
-  defp rebuild_evidence_records(records) do
-    Enum.flat_map(records, fn record ->
-      case rebuild_evidence(record) do
-        {:ok, evidence} -> [evidence]
-        {:error, _reason} -> []
-      end
-    end)
-  end
-
-  defp rebuild_outcome(record) when is_map(record) do
-    record
-    |> without_ledger_metadata()
-    |> Outcome.new()
-  end
-
-  defp rebuild_outcome(_record), do: {:error, :invalid_outcome}
-
-  defp rebuild_outcome_records(records) do
-    Enum.flat_map(records, fn record ->
-      case rebuild_outcome(record) do
-        {:ok, outcome} -> [outcome]
-        {:error, _reason} -> []
-      end
-    end)
-  end
-
-  defp without_ledger_metadata(record) do
-    Map.drop(record, [
-      :ledger_recorded_at,
-      :ledger_revision,
-      "ledger_recorded_at",
-      "ledger_revision"
-    ])
-  end
-
-  defp ledger_time(record), do: record |> get([:ledger_recorded_at]) |> timestamp()
-
-  defp ledger_revision(record) do
-    case get(record, [:ledger_revision]) do
-      revision when is_integer(revision) and revision > 0 -> {:ok, revision}
-      _missing -> :error
-    end
-  end
+  defp evidence_recorded_through(facts, revision),
+    do: records_recorded_through(facts.evidence, facts, :evidence, revision)
 
   defp overdue_scope_causes(facts, constitution, time) do
-    Enum.flat_map(facts.scopes, fn opening ->
-      kind = get(opening, [:kind])
-      due_at = get(opening, [:due_at])
-      condition = get(opening, [:promise_condition])
-      opening_ref = ref(opening, :scope)
-
+    Enum.flat_map(facts.scopes, fn %Opening{} = opening ->
       eligible? =
-        kind in [:work, :vigil] and present?(opening_ref) and is_integer(due_at) and
-          at_or_after?(time, due_at) and is_map(condition)
+        opening.kind in [:work, :vigil] and is_integer(opening.due_at) and
+          time >= opening.due_at and match?(%Condition{}, opening.promise_condition)
 
-      if eligible? and not scope_promise_satisfied?(condition, facts, due_at) do
-        source_act_ref = get(opening, [:source_act_ref])
-        source_act = Map.get(facts.acts_by_ref, source_act_ref)
+      if eligible? and
+           not scope_promise_satisfied?(opening.promise_condition, facts, opening.due_at) do
+        source_act = Map.get(facts.acts_by_ref, opening.source_act_ref)
 
         [
           duty_cause(
             :scope_promise_overdue,
-            {:scope_promise_overdue, opening_ref},
-            %{"scope_ref" => opening_ref, "act_ref" => source_act_ref},
+            {:scope_promise_overdue, opening.ref},
+            %{"scope_ref" => opening.ref, "act_ref" => opening.source_act_ref},
             constitution,
             %{
               act: source_act,
-              act_ref: source_act_ref,
-              mandate_ref: get(source_act || %{}, [:mandate_ref]),
-              subject_refs: get(source_act || %{}, [:subject_refs, :subjects], []),
-              accountable_ref: get(opening, [:accountable_ref]),
-              missing_evidence: [%{"condition_ref" => get(condition, [:ref])}],
-              closure_conditions: [canonical_condition(condition)],
-              disposition_authority: get(opening, [:disposition_authority_refs], []),
-              required_at: due_at
+              act_ref: opening.source_act_ref,
+              mandate_ref: act_field(source_act, :mandate_ref),
+              subject_refs: act_field(source_act, :subject_refs, []),
+              accountable_ref: opening.accountable_ref,
+              missing_evidence: [%{"condition_ref" => opening.promise_condition.ref}],
+              closing_conditions: [Condition.canonical(opening.promise_condition)],
+              disposition_authority: opening.disposition_authority_refs,
+              required_at: opening.due_at
             }
           )
         ]
@@ -1014,70 +893,65 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp scope_promise_satisfied?(condition, facts, due_at) do
-    Recognition.check([condition], available_evidence_at(facts, due_at), due_at) == :satisfied
+    Recognition.check([condition], available_evidence(facts, due_at), due_at) == :satisfied
+  end
+
+  defp available_evidence(%Facts{} = facts, time) do
+    unavailable = unavailable_evidence_at(facts, time)
+
+    facts.evidence
+    |> records_available_at(facts, :evidence, time)
+    |> Enum.reject(&MapSet.member?(unavailable, &1.ref))
   end
 
   defp unavailable_evidence_at(facts, time) do
     prefix = %{
-      evidence: facts.evidence |> records_available_at(time) |> index_by_ref(:evidence),
+      evidence: facts.evidence |> records_available_at(facts, :evidence, time) |> index_by_ref(),
       presentations:
-        facts.presentations |> records_available_at(time) |> index_by_ref(:presentation),
-      acts: facts.acts |> records_available_at(time) |> index_by_ref(:act),
-      attempts: facts.attempts |> records_available_at(time) |> index_by_ref(:attempt),
-      outcomes: facts.outcomes |> records_available_at(time) |> index_by_ref(:outcome),
-      duties: facts.duties |> records_available_at(time) |> index_by_ref(:duty),
-      erasures: facts.erasures |> records_available_at(time) |> index_by_ref(:erasure)
+        facts.presentations
+        |> records_available_at(facts, :presentation, time)
+        |> index_by_ref(),
+      acts: facts.acts |> records_available_at(facts, :act, time) |> index_by_ref(),
+      attempts: facts.attempts |> records_available_at(facts, :attempt, time) |> index_by_ref(),
+      outcomes: facts.outcomes |> records_available_at(facts, :outcome, time) |> index_by_ref(),
+      duties: facts.duties |> records_available_at(facts, :duty, time) |> index_by_ref(),
+      erasures: facts.erasures |> records_available_at(facts, :erasure, time) |> index_by_ref()
     }
 
     Spectre.Erasure.Analysis.unavailable_evidence_refs(prefix)
   end
 
-  defp records_available_at(records, time) do
-    Enum.filter(records, fn record ->
-      case ledger_time(record) do
-        {:ok, recorded_at} -> recorded_at <= time
-        :error -> false
-      end
-    end)
-  end
+  defp records_available_at(records, facts, kind, time),
+    do: Enum.filter(records, &Facts.available_at?(facts, kind, &1.ref, time))
 
-  defp canonical_condition(%Spectre.Condition{} = condition),
-    do: Spectre.Condition.canonical(condition)
-
-  defp canonical_condition(condition), do: condition
+  defp index_by_ref(records), do: Map.new(records, &{&1.ref, &1})
 
   defp erasure_verifiability_causes(facts, constitution, time) do
-    Enum.flat_map(facts.erasures, fn erasure ->
-      act_ref = get(erasure, [:source_act_ref])
-      act = Map.get(facts.acts_by_ref, act_ref)
-
-      with true <- get(erasure, [:reduces_verifiability], false) == true,
-           true <- present?(ref(erasure, :erasure)) and not is_nil(act),
-           {:ok, attempt, outcome} <- succeeded_erasure_outcome(facts, act_ref, time) do
-        erasure_ref = ref(erasure, :erasure)
-        attempt_ref = ref(attempt, :attempt)
-        outcome_ref = ref(outcome, :outcome)
-
+    Enum.flat_map(facts.erasures, fn %Erasure{} = erasure ->
+      with true <- erasure.reduces_verifiability,
+           %Act{} = act <- Map.get(facts.acts_by_ref, erasure.source_act_ref),
+           {:ok, attempt, outcome} <-
+             succeeded_erasure_outcome(facts, erasure.source_act_ref, time) do
         [
           duty_cause(
             :erasure_reduces_verifiability,
-            {:erasure_reduces_verifiability, erasure_ref, act_ref, attempt_ref, outcome_ref},
+            {:erasure_reduces_verifiability, erasure.ref, act.ref, attempt.ref, outcome.ref},
             %{
-              "erasure_ref" => erasure_ref,
-              "act_ref" => act_ref,
-              "attempt_ref" => attempt_ref,
-              "outcome_ref" => outcome_ref
+              "erasure_ref" => erasure.ref,
+              "act_ref" => act.ref,
+              "attempt_ref" => attempt.ref,
+              "outcome_ref" => outcome.ref
             },
             constitution,
             %{
               act: act,
-              act_ref: act_ref,
-              mandate_ref: get(act, [:mandate_ref]),
-              subject_refs: get(act, [:subject_refs, :subjects], []),
-              accountable_ref: get(act, [:accountable_ref]),
-              known_evidence_refs: get(outcome, [:evidence_refs], []),
+              act_ref: act.ref,
+              mandate_ref: act.mandate_ref,
+              subject_refs: act.subject_refs,
+              accountable_ref: act.accountable_ref,
+              known_evidence_refs: outcome.evidence_refs,
               missing_evidence: [:continued_verifiability],
-              required_at: get(outcome, [:observed_at, :recorded_at])
+              required_at: outcome.observed_at
             }
           )
         ]
@@ -1090,30 +964,25 @@ defmodule Spectre.Duty.Derive do
   defp succeeded_erasure_outcome(facts, act_ref, time) do
     outcomes =
       facts.outcomes
-      |> Enum.filter(fn outcome ->
-        get(outcome, [:act_ref]) == act_ref and
-          get(outcome, [:classification, :outcome, :status]) == :succeeded and
-          observed_by?(outcome, time)
+      |> Enum.filter(fn %Outcome{} = outcome ->
+        outcome.act_ref == act_ref and outcome.status == :succeeded and
+          observed_by?(facts, outcome, time)
       end)
       |> Enum.sort_by(&stable_sort_key/1)
 
-    Enum.find_value(outcomes, :not_found, fn outcome ->
-      attempt_ref = get(outcome, [:attempt_ref])
-
-      case Map.get(facts.attempts_by_ref, attempt_ref) do
+    Enum.find_value(outcomes, :not_found, fn %Outcome{} = outcome ->
+      case Map.get(facts.attempts_by_ref, outcome.attempt_ref) do
         nil -> nil
-        attempt -> if get(attempt, [:act_ref]) == act_ref, do: {:ok, attempt, outcome}
+        attempt -> if attempt.act_ref == act_ref, do: {:ok, attempt, outcome}
       end
     end)
   end
 
   defp evidence_causes(facts, constitution, time) do
-    Enum.flat_map(facts.evidence, fn record ->
-      with {:ok, evidence} <- rebuild_evidence(record),
-           true <- evidence_cause_known_by?(record, evidence, time),
+    Enum.flat_map(facts.evidence, fn %Evidence{} = evidence ->
+      with {:ok, metadata} <- Facts.metadata(facts, :evidence, evidence.ref),
+           true <- evidence_cause_known_by?(metadata.recorded_at, evidence, time),
            {:ok, marker} <- EvidenceCause.extract(evidence, constitution) do
-        required_at = get(record, [:ledger_recorded_at], evidence.observed_at)
-
         [
           duty_cause(
             marker.class,
@@ -1126,7 +995,7 @@ defmodule Spectre.Duty.Derive do
               accountable_ref: marker.accountable_ref,
               known_evidence_refs: normalize_refs([evidence.ref | marker.related_evidence_refs]),
               missing_evidence: marker.missing,
-              required_at: required_at
+              required_at: metadata.recorded_at
             }
           )
         ]
@@ -1136,9 +1005,7 @@ defmodule Spectre.Duty.Derive do
     end)
   end
 
-  defp evidence_cause_known_by?(record, evidence, time) do
-    recorded_at = get(record, [:ledger_recorded_at], evidence.observed_at)
-
+  defp evidence_cause_known_by?(recorded_at, %Evidence{} = evidence, time) do
     is_integer(recorded_at) and recorded_at <= time and evidence.observed_at <= time
   end
 
@@ -1148,7 +1015,7 @@ defmodule Spectre.Duty.Derive do
     act = Map.get(attrs, :act)
 
     configured_containment =
-      Map.get(attrs, :containment) || get(rule, [:containment], %{})
+      Map.get(attrs, :containment) || Constitution.rule_value(rule, :containment, %{})
 
     containment =
       if class in [:ambiguous_outcome, :contradicted_outcome, :disputed_evidence] do
@@ -1158,7 +1025,10 @@ defmodule Spectre.Duty.Derive do
       end
 
     configured_conflicts =
-      [Map.get(attrs, :mandate_ref) | listify(get(rule, [:conflict_refs], []))]
+      [
+        Map.get(attrs, :mandate_ref)
+        | listify(Constitution.rule_value(rule, :conflict_refs, []))
+      ]
 
     conflict_refs = conflict_refs(accountable_ref, configured_conflicts, act)
 
@@ -1174,11 +1044,11 @@ defmodule Spectre.Duty.Derive do
       missing_evidence: Map.get(attrs, :missing_evidence, []),
       containment: containment,
       closing_conditions:
-        get(attrs, [:closing_conditions, :closure_conditions]) ||
-          get(rule, [:closing_conditions, :closure_conditions], []) || [],
+        Map.get(attrs, :closing_conditions) ||
+          Constitution.rule_value(rule, :closing_conditions, []) || [],
       disposition_authority:
         Map.get(attrs, :disposition_authority) ||
-          get(rule, [:disposition_authority, :disposition_authority_refs]),
+          Constitution.rule_value(rule, :disposition_authority_refs),
       conflict_refs: conflict_refs,
       required_at: Map.get(attrs, :required_at),
       condition_met: Map.get(attrs, :condition_met, false),
@@ -1187,7 +1057,7 @@ defmodule Spectre.Duty.Derive do
   end
 
   @doc false
-  @spec conflict_refs(String.t() | nil, term(), map() | nil) :: [String.t()]
+  @spec conflict_refs(String.t() | nil, term(), Act.t() | nil) :: [String.t()]
   def conflict_refs(accountable_ref, configured_refs, act) do
     ([accountable_ref] ++ authority_refs(configured_refs) ++ causal_role_refs(act))
     |> Enum.filter(&(is_binary(&1) and &1 != ""))
@@ -1195,72 +1065,79 @@ defmodule Spectre.Duty.Derive do
     |> Enum.sort()
   end
 
-  defp causal_role_refs(act) when is_map(act) do
+  defp causal_role_refs(%Act{} = act) do
     [
-      get(act, [:mandate_ref]),
-      get(act, [:proposer_ref]),
-      get(act, [:authenticated_principal_ref]),
-      get(act, [:executor_ref]),
-      get(act, [:authorizer_ref]),
-      get(act, [:accountable_ref])
+      act.mandate_ref,
+      act.proposer_ref,
+      act.authenticated_principal_ref,
+      act.executor_ref,
+      act.authorizer_ref,
+      act.accountable_ref
     ] ++
-      listify(get(act, [:subject_refs, :subjects], [])) ++
-      listify(get(act, [:target_refs, :targets], []))
+      act.subject_refs ++ act.target_refs
   end
 
   defp causal_role_refs(_act), do: []
 
-  defp outcome_duty_cause(:ambiguous, act, attempt, outcome, constitution, required_at) do
-    attempt_ref = ref(attempt, :attempt)
-
+  defp outcome_duty_cause(
+         :ambiguous,
+         %Act{} = act,
+         %Attempt{} = attempt,
+         %Outcome{} = outcome,
+         constitution,
+         required_at
+       ) do
     duty_cause(
       :ambiguous_outcome,
-      {:ambiguous_outcome, ref(act, :act), attempt_ref},
+      {:ambiguous_outcome, act.ref, attempt.ref},
       %{
-        "act_ref" => ref(act, :act),
-        "attempt_ref" => attempt_ref,
-        "outcome_ref" => ref(outcome, :outcome)
+        "act_ref" => act.ref,
+        "attempt_ref" => attempt.ref,
+        "outcome_ref" => outcome.ref
       },
       constitution,
       %{
         act: act,
-        act_ref: ref(act, :act),
-        mandate_ref: get(act, [:mandate_ref]),
-        subject_refs: get(act, [:subject_refs, :subjects], []),
-        accountable_ref: get(act, [:accountable_ref]),
-        known_evidence_refs: get(outcome, [:evidence_refs], []),
+        act_ref: act.ref,
+        mandate_ref: act.mandate_ref,
+        subject_refs: act.subject_refs,
+        accountable_ref: act.accountable_ref,
+        known_evidence_refs: outcome.evidence_refs,
         missing_evidence: [:definitive_outcome],
         closing_conditions:
           configured_closing_conditions(constitution, :ambiguous_outcome, [
-            %{"kind" => :definitive_outcome, "attempt_ref" => attempt_ref}
+            %{"kind" => :definitive_outcome, "attempt_ref" => attempt.ref}
           ]),
         required_at: required_at
       }
     )
   end
 
-  defp outcome_duty_cause(:correction, act, attempt, outcome, constitution, required_at) do
-    act_ref = ref(act, :act)
-    attempt_ref = ref(attempt, :attempt)
-    outcome_ref = ref(outcome, :outcome)
-
+  defp outcome_duty_cause(
+         :correction,
+         %Act{} = act,
+         %Attempt{} = attempt,
+         %Outcome{} = outcome,
+         constitution,
+         required_at
+       ) do
     duty_cause(
       :contradicted_outcome,
-      {:contradicted_outcome, act_ref, attempt_ref, outcome_ref},
+      {:contradicted_outcome, act.ref, attempt.ref, outcome.ref},
       %{
-        "act_ref" => act_ref,
-        "attempt_ref" => attempt_ref,
-        "outcome_ref" => outcome_ref,
-        "corrected_outcome_ref" => get(outcome, [:contradicts_outcome_ref])
+        "act_ref" => act.ref,
+        "attempt_ref" => attempt.ref,
+        "outcome_ref" => outcome.ref,
+        "corrected_outcome_ref" => outcome.contradicts_outcome_ref
       },
       constitution,
       %{
         act: act,
-        act_ref: act_ref,
-        mandate_ref: get(act, [:mandate_ref]),
-        subject_refs: get(act, [:subject_refs, :subjects], []),
-        accountable_ref: get(act, [:accountable_ref]),
-        known_evidence_refs: get(outcome, [:evidence_refs], []),
+        act_ref: act.ref,
+        mandate_ref: act.mandate_ref,
+        subject_refs: act.subject_refs,
+        accountable_ref: act.accountable_ref,
+        known_evidence_refs: outcome.evidence_refs,
         missing_evidence: [:reconciliation],
         closing_conditions:
           configured_closing_conditions(constitution, :contradicted_outcome, []),
@@ -1269,26 +1146,29 @@ defmodule Spectre.Duty.Derive do
     )
   end
 
-  defp ambiguous_timeout_cause(act, attempt, outcomes, required_at, constitution) do
-    act_ref = ref(act || %{}, :act)
-    attempt_ref = ref(attempt, :attempt)
-
+  defp ambiguous_timeout_cause(
+         %Act{} = act,
+         %Attempt{} = attempt,
+         outcomes,
+         required_at,
+         constitution
+       ) do
     duty_cause(
       :ambiguous_outcome,
-      {:ambiguous_outcome, act_ref, attempt_ref},
-      %{"act_ref" => act_ref, "attempt_ref" => attempt_ref},
+      {:ambiguous_outcome, act.ref, attempt.ref},
+      %{"act_ref" => act.ref, "attempt_ref" => attempt.ref},
       constitution,
       %{
         act: act,
-        act_ref: act_ref,
-        mandate_ref: get(act || %{}, [:mandate_ref]),
-        subject_refs: get(act || %{}, [:subject_refs, :subjects], []),
-        accountable_ref: get(act || %{}, [:accountable_ref]),
+        act_ref: act.ref,
+        mandate_ref: act.mandate_ref,
+        subject_refs: act.subject_refs,
+        accountable_ref: act.accountable_ref,
         known_evidence_refs: outcome_evidence_refs(outcomes),
         missing_evidence: [:definitive_outcome],
         closing_conditions:
           configured_closing_conditions(constitution, :ambiguous_outcome, [
-            %{"kind" => :definitive_outcome, "attempt_ref" => attempt_ref}
+            %{"kind" => :definitive_outcome, "attempt_ref" => attempt.ref}
           ]),
         required_at: required_at
       }
@@ -1298,12 +1178,12 @@ defmodule Spectre.Duty.Derive do
   defp configured_closing_conditions(constitution, class, default) do
     constitution
     |> duty_rule(class)
-    |> get([:closing_conditions, :closure_conditions], default)
+    |> Constitution.rule_value(:closing_conditions, default)
   end
 
-  defp hard_containment(configured, act) do
+  defp hard_containment(configured, %Act{} = act) do
     consequence_digest =
-      case Candidate.effect_digest(act || %{}) do
+      case Candidate.effect_digest(act) do
         {:ok, digest} -> digest
         {:error, _reason} -> nil
       end
@@ -1313,7 +1193,19 @@ defmodule Spectre.Duty.Derive do
     |> ensure_plain_map()
     |> Map.merge(%{
       "consequence_digest" => consequence_digest,
-      "meter_reservations" => get(act || %{}, [:reservations], []),
+      "meter_reservations" => act.reservations,
+      "dispatch" => :blocked,
+      "retry" => :forbidden
+    })
+  end
+
+  defp hard_containment(configured, nil) do
+    configured
+    |> canonical_string_keys()
+    |> ensure_plain_map()
+    |> Map.merge(%{
+      "consequence_digest" => nil,
+      "meter_reservations" => %{},
       "dispatch" => :blocked,
       "retry" => :forbidden
     })
@@ -1338,36 +1230,21 @@ defmodule Spectre.Duty.Derive do
 
   defp canonical_string_keys(value), do: value
 
-  defp observation_deadline(attempt, act) do
-    explicit = get(attempt, [:observation_deadline, :observation_deadline_at])
+  defp observation_deadline(%Attempt{} = attempt, %Act{} = act),
+    do: {:ok, attempt.started_at + act.observation_window_ms}
 
-    if present?(explicit) do
-      timestamp(explicit)
-    else
-      started_at = get(attempt, [:started_at, :attempted_at, :recorded_at])
-      window = get(act || %{}, [:observation_window_ms, :observation_window])
-
-      with {:ok, started_at} <- timestamp(started_at),
-           true <- is_integer(window) and window >= 0 do
-        {:ok, started_at + window}
-      else
-        _other -> :error
-      end
-    end
-  end
-
-  defp definitive_outcome_by?(outcomes, deadline) do
+  defp definitive_outcome_by?(facts, outcomes, deadline) do
     Enum.any?(outcomes, fn outcome ->
-      definitive_outcome?(outcome) and observed_by?(outcome, deadline)
+      definitive_outcome?(outcome) and observed_by?(facts, outcome, deadline)
     end)
   end
 
-  defp first_outcome(outcomes, status, time) do
+  defp first_outcome(facts, outcomes, status, time) do
     outcomes
-    |> Enum.filter(&(get(&1, [:classification, :outcome, :status]) == status))
-    |> Enum.filter(&observed_by?(&1, time))
+    |> Enum.filter(&(&1.status == status))
+    |> Enum.filter(&observed_by?(facts, &1, time))
     |> Enum.min_by(
-      fn outcome -> {outcome_time_value(outcome), stable_sort_key(ref(outcome, :outcome))} end,
+      fn outcome -> {outcome_time_value(facts, outcome), outcome.ref} end,
       fn -> nil end
     )
   end
@@ -1379,421 +1256,47 @@ defmodule Spectre.Duty.Derive do
     if at_or_after?(time, deadline), do: {:ok, deadline}, else: :not_required
   end
 
-  defp definitive_outcome?(outcome) do
-    classification = get(outcome, [:classification, :outcome, :status])
-    get(outcome, [:definitive], false) == true or classification in @definitive_outcomes
-  end
+  defp definitive_outcome?(%Outcome{status: status}), do: status in @definitive_outcomes
 
-  defp observed_by?(outcome, deadline) do
-    case outcome_time(outcome) do
-      {:ok, observed_at} -> observed_at <= deadline
-      :error -> false
+  defp observed_by?(facts, %Outcome{} = outcome, deadline) do
+    case Facts.metadata(facts, :outcome, outcome.ref) do
+      {:ok, metadata} -> metadata.recorded_at <= deadline
+      {:error, :missing_event_metadata} -> false
     end
   end
 
-  defp outcome_time(outcome),
-    do:
-      outcome
-      |> get([:ledger_recorded_at, :recorded_at, :observed_at, :committed_at])
-      |> timestamp()
-
-  defp outcome_time_value(outcome) do
-    case outcome_time(outcome) do
-      {:ok, value} -> value
-      :error -> nil
+  defp outcome_time_value(facts, %Outcome{} = outcome) do
+    case Facts.metadata(facts, :outcome, outcome.ref) do
+      {:ok, metadata} -> metadata.recorded_at
+      {:error, :missing_event_metadata} -> nil
     end
   end
 
-  defp min_time(time, deadline) do
-    case timestamp(time) do
-      {:ok, value} -> min(value, deadline)
-      :error -> time
-    end
-  end
-
-  defp outcomes_for(outcomes, attempt_ref) do
-    Enum.filter(outcomes, &(get(&1, [:attempt_ref]) == attempt_ref))
-  end
+  defp outcome_time_value(_facts, nil), do: nil
 
   defp outcome_evidence_refs(outcomes) do
     outcomes
-    |> Enum.flat_map(&listify(get(&1, [:evidence_refs], [])))
-    |> Enum.reject(&is_nil/1)
+    |> Enum.flat_map(& &1.evidence_refs)
     |> Enum.uniq()
-    |> Enum.sort_by(&stable_sort_key/1)
+    |> Enum.sort()
   end
 
   defp duty_rule(constitution, class) do
-    rules = get(constitution, [:duty_rules, :duties], %{})
-
-    cond do
-      is_map(rules) -> Map.get(rules, class) || Map.get(rules, to_string(class)) || %{}
-      is_list(rules) -> Enum.find(rules, %{}, &(get(&1, [:class, :cause_class]) == class))
-      true -> %{}
-    end
+    Constitution.duty_rule(constitution, class)
   end
-
-  defp act_ref_for_attempt(facts, attempt_ref) do
-    case Map.get(facts.attempts_by_ref, attempt_ref) do
-      nil -> nil
-      attempt -> get(attempt, [:act_ref])
-    end
-  end
-
-  defp normalize_facts(facts) when is_map(facts) do
-    event_times = get(facts, [:event_recorded_at], %{})
-    event_revisions = get(facts, [:event_revisions], %{})
-
-    from_entries =
-      facts
-      |> get([:entries], [])
-      |> normalize_entries()
-
-    acts =
-      from_entries.acts
-      |> merge_records(collection(facts, [:acts]), :act)
-      |> attach_event_metadata(event_times, event_revisions, "act_committed", :act)
-
-    attempts =
-      from_entries.attempts
-      |> merge_records(collection(facts, [:attempts]), :attempt)
-      |> attach_event_metadata(event_times, event_revisions, "attempt_started", :attempt)
-
-    outcomes =
-      from_entries.outcomes
-      |> merge_records(collection(facts, [:outcomes]), :outcome)
-      |> attach_event_metadata(event_times, event_revisions, "outcome_recorded", :outcome)
-
-    presentations =
-      from_entries.presentations
-      |> merge_records(collection(facts, [:presentations]), :presentation)
-      |> attach_event_metadata(
-        event_times,
-        event_revisions,
-        "presentation_recorded",
-        :presentation
-      )
-
-    duties =
-      from_entries.duties
-      |> merge_records(collection(facts, [:duties]), :duty)
-      |> attach_event_metadata(event_times, event_revisions, "duty_opened", :duty)
-
-    scopes =
-      from_entries.scopes
-      |> merge_records(collection(facts, [:scopes]), :scope)
-      |> attach_event_metadata(event_times, event_revisions, "scope_opened", :scope)
-
-    evidence =
-      from_entries.evidence
-      |> merge_records(collection(facts, [:evidence]), :evidence)
-      |> attach_event_metadata(event_times, event_revisions, "evidence_recorded", :evidence)
-
-    mandates =
-      from_entries.mandates
-      |> merge_records(collection(facts, [:mandates]), :mandate)
-      |> attach_event_metadata(event_times, event_revisions, "mandate_issued", :mandate)
-
-    erasures =
-      from_entries.erasures
-      |> merge_records(collection(facts, [:erasures]), :erasure)
-      |> attach_event_metadata(event_times, event_revisions, "erasure_requested", :erasure)
-
-    %{
-      acts: acts,
-      attempts: attempts,
-      outcomes: outcomes,
-      presentations: presentations,
-      duties: duties,
-      scopes: scopes,
-      evidence: evidence,
-      mandates: mandates,
-      erasures: erasures,
-      acts_by_ref: index_by_ref(acts, :act),
-      attempts_by_ref: index_by_ref(attempts, :attempt),
-      presentations_by_ref: index_by_ref(presentations, :presentation),
-      mandates_by_ref: index_by_ref(mandates, :mandate)
-    }
-  end
-
-  defp normalize_facts(facts) when is_list(facts) do
-    normalized = normalize_entries(facts)
-
-    %{
-      acts: normalized.acts,
-      attempts: normalized.attempts,
-      outcomes: normalized.outcomes,
-      presentations: normalized.presentations,
-      duties: normalized.duties,
-      scopes: normalized.scopes,
-      evidence: normalized.evidence,
-      mandates: normalized.mandates,
-      erasures: normalized.erasures,
-      acts_by_ref: index_by_ref(normalized.acts, :act),
-      attempts_by_ref: index_by_ref(normalized.attempts, :attempt),
-      presentations_by_ref: index_by_ref(normalized.presentations, :presentation),
-      mandates_by_ref: index_by_ref(normalized.mandates, :mandate)
-    }
-  end
-
-  defp normalize_facts(_facts) do
-    %{
-      acts: [],
-      attempts: [],
-      outcomes: [],
-      presentations: [],
-      duties: [],
-      scopes: [],
-      evidence: [],
-      mandates: [],
-      erasures: [],
-      acts_by_ref: %{},
-      attempts_by_ref: %{},
-      presentations_by_ref: %{},
-      mandates_by_ref: %{}
-    }
-  end
-
-  defp normalize_entries(entries) when is_list(entries) do
-    initial = %{
-      acts: [],
-      attempts: [],
-      outcomes: [],
-      presentations: [],
-      duties: [],
-      scopes: [],
-      evidence: [],
-      mandates: [],
-      erasures: []
-    }
-
-    Enum.reduce(entries, initial, &add_entry/2)
-  end
-
-  defp normalize_entries(_entries),
-    do: %{
-      acts: [],
-      attempts: [],
-      outcomes: [],
-      presentations: [],
-      duties: [],
-      scopes: [],
-      evidence: [],
-      mandates: [],
-      erasures: []
-    }
-
-  defp add_entry(entry, acc) do
-    {kind, record} = normalize_entry(entry)
-    add_record(acc, kind, record)
-  end
-
-  defp add_record(acc, :act, record), do: Map.update!(acc, :acts, &[record | &1])
-  defp add_record(acc, :attempt, record), do: Map.update!(acc, :attempts, &[record | &1])
-  defp add_record(acc, :outcome, record), do: Map.update!(acc, :outcomes, &[record | &1])
-
-  defp add_record(acc, :presentation, record),
-    do: Map.update!(acc, :presentations, &[record | &1])
-
-  defp add_record(acc, :duty, record), do: Map.update!(acc, :duties, &[record | &1])
-  defp add_record(acc, :scope, record), do: Map.update!(acc, :scopes, &[record | &1])
-  defp add_record(acc, :evidence, record), do: Map.update!(acc, :evidence, &[record | &1])
-  defp add_record(acc, :mandate, record), do: Map.update!(acc, :mandates, &[record | &1])
-  defp add_record(acc, :erasure, record), do: Map.update!(acc, :erasures, &[record | &1])
-
-  defp add_record(acc, _kind, _record), do: acc
-
-  defp collection(facts, fields) do
-    case get(facts, fields, []) do
-      values when is_list(values) -> Enum.filter(values, &is_map/1)
-      values when is_map(values) -> values |> Map.values() |> Enum.filter(&is_map/1)
-      _other -> []
-    end
-  end
-
-  defp merge_records(left, right, kind) do
-    (left ++ right)
-    |> Enum.uniq_by(fn record ->
-      ref(record, kind) || stable_sort_key(record)
-    end)
-  end
-
-  defp attach_event_metadata(records, event_times, event_revisions, event_type, kind)
-       when is_map(event_times) and is_map(event_revisions) do
-    Enum.map(records, fn record ->
-      case ref(record, kind) do
-        nil ->
-          record
-
-        ref ->
-          annotate_record(
-            record,
-            Map.get(event_times, {event_type, ref}),
-            Map.get(event_revisions, {event_type, ref})
-          )
-      end
-    end)
-  end
-
-  defp attach_event_metadata(
-         records,
-         _event_times,
-         _event_revisions,
-         _event_type,
-         _kind
-       ),
-       do: records
-
-  defp normalize_entry(entry) when is_map(entry) do
-    payload = get(entry, [:payload])
-    recorded_at = get(entry, [:recorded_at])
-    revision = get(entry, [:revision])
-
-    cond do
-      event_envelope?(payload) ->
-        event_parts(payload, recorded_at, revision)
-
-      event_envelope?(entry) ->
-        event_parts(entry, recorded_at, revision)
-
-      is_map(payload) ->
-        record = annotate_record(payload, recorded_at, revision)
-        {normalize_kind(get(entry, [:entry_type, :event_type, :type, :kind]), record), record}
-
-      true ->
-        record = get(entry, [:record, :data], entry)
-        record = annotate_record(record, recorded_at, revision)
-        {normalize_kind(get(entry, [:entry_type, :event_type, :type, :kind]), record), record}
-    end
-  end
-
-  defp normalize_entry(_entry), do: {:unknown, %{}}
-
-  defp event_envelope?(event) when is_map(event) do
-    present?(get(event, [:type, :event_type])) and is_map(get(event, [:data]))
-  end
-
-  defp event_envelope?(_event), do: false
-
-  defp event_parts(event, recorded_at, revision) do
-    record = event |> get([:data], %{}) |> annotate_record(recorded_at, revision)
-    {normalize_kind(get(event, [:type, :event_type]), record), record}
-  end
-
-  defp annotate_record(%{__struct__: _module} = record, recorded_at, revision) do
-    record
-    |> Map.from_struct()
-    |> annotate_record(recorded_at, revision)
-  end
-
-  defp annotate_record(record, recorded_at, revision) when is_map(record) do
-    record
-    |> maybe_put_metadata(:ledger_recorded_at, recorded_at)
-    |> maybe_put_metadata(:ledger_revision, revision)
-  end
-
-  defp annotate_record(record, _recorded_at, _revision), do: record
-
-  defp maybe_put_metadata(record, key, value) when is_integer(value) and value >= 0,
-    do: Map.put(record, key, value)
-
-  defp maybe_put_metadata(record, _key, _value), do: record
-
-  defp normalize_kind(nil, record), do: struct_kind(record)
-
-  defp normalize_kind(kind, record) when is_atom(kind),
-    do: kind |> Atom.to_string() |> normalize_kind(record)
-
-  defp normalize_kind(kind, _record) when is_binary(kind) do
-    case String.downcase(kind) do
-      "act" -> :act
-      "act_committed" -> :act
-      "attempt" -> :attempt
-      "attempt_started" -> :attempt
-      "outcome" -> :outcome
-      "outcome_recorded" -> :outcome
-      "presentation" -> :presentation
-      "presentation_recorded" -> :presentation
-      "duty" -> :duty
-      "duty_opened" -> :duty
-      "scope" -> :scope
-      "scope_opened" -> :scope
-      "evidence" -> :evidence
-      "evidence_recorded" -> :evidence
-      "mandate" -> :mandate
-      "mandate_issued" -> :mandate
-      "erasure" -> :erasure
-      "erasure_requested" -> :erasure
-      _other -> :unknown
-    end
-  end
-
-  defp normalize_kind(_kind, record), do: struct_kind(record)
-
-  defp struct_kind(%{__struct__: module}) do
-    module
-    |> Module.split()
-    |> List.last()
-    |> String.downcase()
-    |> normalize_kind(%{})
-  end
-
-  defp struct_kind(_record), do: :unknown
-
-  defp index_by_ref(records, kind) do
-    Enum.reduce(records, %{}, fn record, index ->
-      case ref(record, kind) do
-        nil -> index
-        ref -> Map.put(index, ref, record)
-      end
-    end)
-  end
-
-  defp ref(record, :act), do: get(record, [:act_ref, :ref])
-  defp ref(record, :attempt), do: get(record, [:attempt_ref, :ref])
-  defp ref(record, :outcome), do: get(record, [:outcome_ref, :ref])
-  defp ref(record, :presentation), do: get(record, [:presentation_ref, :ref])
-  defp ref(record, :duty), do: get(record, [:duty_ref, :ref])
-  defp ref(record, :scope), do: get(record, [:scope_ref, :ref])
-  defp ref(record, :evidence), do: get(record, [:evidence_ref, :ref])
-  defp ref(record, :mandate), do: get(record, [:mandate_ref, :ref])
-  defp ref(record, :erasure), do: get(record, [:erasure_ref, :ref])
 
   defp authority_refs(nil), do: []
   defp authority_refs(value) when is_binary(value), do: [value]
   defp authority_refs(value) when is_list(value), do: Enum.filter(value, &is_binary/1)
 
-  defp authority_refs(value) when is_map(value) do
-    value
-    |> get([:principal_refs, :controller_refs, :refs], [])
-    |> authority_refs()
-  end
-
   defp authority_refs(_value), do: []
 
-  defp at_or_after?(left, right) do
-    case {timestamp(left), timestamp(right)} do
-      {{:ok, left}, {:ok, right}} -> left >= right
-      _other -> false
-    end
-  end
-
-  defp timestamp(value) when is_integer(value), do: {:ok, value}
-  defp timestamp(%DateTime{} = value), do: {:ok, DateTime.to_unix(value, :millisecond)}
-
-  defp timestamp(%NaiveDateTime{} = value) do
-    value
-    |> DateTime.from_naive!("Etc/UTC")
-    |> DateTime.to_unix(:millisecond)
-    |> then(&{:ok, &1})
-  end
-
-  defp timestamp(_value), do: :error
+  defp at_or_after?(left, right), do: is_integer(left) and is_integer(right) and left >= right
 
   defp required_at(cause, fallback) do
-    case cause |> get([:required_at]) |> timestamp() do
-      {:ok, value} -> value
-      :error -> fallback
+    case Map.get(cause, :required_at) do
+      value when is_integer(value) -> value
+      _missing -> fallback
     end
   end
 
@@ -1814,28 +1317,7 @@ defmodule Spectre.Duty.Derive do
   defp present?(""), do: false
   defp present?(_value), do: true
 
-  defp get(map, fields, default \\ nil)
-
-  defp get(map, fields, default) when is_map(map) do
-    Enum.find_value(fields, default, fn field ->
-      case fetch(map, field) do
-        {:ok, nil} -> nil
-        {:ok, value} -> {:found, value}
-        :error -> nil
-      end
-    end)
-    |> case do
-      {:found, value} -> value
-      value -> value
-    end
-  end
-
-  defp get(_other, _fields, default), do: default
-
-  defp fetch(map, field) do
-    case Map.fetch(map, field) do
-      {:ok, value} -> {:ok, value}
-      :error -> Map.fetch(map, Atom.to_string(field))
-    end
-  end
+  defp act_field(act, field, default \\ nil)
+  defp act_field(%Act{} = act, field, default), do: Map.get(act, field, default)
+  defp act_field(nil, _field, default), do: default
 end

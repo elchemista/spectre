@@ -23,13 +23,13 @@ defmodule Spectre.Kernel.Commit do
     HostProfile,
     Mandate,
     Principal,
-    Row,
     Surface
   }
 
   alias Spectre.Domain.{Event, Projection}
   alias Spectre.Duty.Disposition
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.{AuthorityChange, State}
   alias Spectre.Scope.Opening
 
   @type payload :: map()
@@ -37,7 +37,7 @@ defmodule Spectre.Kernel.Commit do
   @doc "Builds the ordered event payloads for one Admission transaction."
   @spec payloads(Projection.t(), Decision.t(), Act.t() | nil) ::
           {:ok, [payload()]} | {:error, term()}
-  def payloads(%Projection{} = projection, %Decision{} = decision, act)
+  def payloads(%State{} = projection, %Decision{} = decision, act)
       when is_nil(act) or is_struct(act, Act) do
     with {:ok, decision} <- Decision.new(decision),
          {:ok, act} <- normalize_act(act),
@@ -111,7 +111,7 @@ defmodule Spectre.Kernel.Commit do
     end
   end
 
-  defp meter_events(%Act{reservations: reservations}) when reservations in [%{}, []],
+  defp meter_events(%Act{reservations: reservations}) when map_size(reservations) == 0,
     do: {:ok, []}
 
   defp meter_events(%Act{} = act) do
@@ -132,8 +132,8 @@ defmodule Spectre.Kernel.Commit do
          } = act
        )
        when map_size(act.consequence) == 1 do
-    with true <- exact_row?(act.row, [:govern]),
-         true <- act.reservations in [%{}, []],
+    with true <- Act.row?(act, [:govern]),
+         true <- not Act.reservations?(act),
          true <- ledger_internal?(act),
          {:ok, principal} <- Principal.from_canonical(canonical),
          true <- principal.ref in act.target_refs,
@@ -149,8 +149,8 @@ defmodule Spectre.Kernel.Commit do
          %Act{class: "mandate.delegate", consequence: %{"mandate_issue" => draft}} = act
        )
        when map_size(act.consequence) == 1 do
-    with true <- exact_row?(act.row, [:delegate, :govern]),
-         true <- act.reservations in [%{}, []],
+    with true <- Act.row?(act, [:delegate, :govern]),
+         true <- not Act.reservations?(act),
          {:ok, mandate} <- Mandate.from_issue_draft(draft, act.ref),
          false <- Mandate.root?(mandate),
          {:ok, event} <- Event.record(:mandate, mandate) do
@@ -171,8 +171,8 @@ defmodule Spectre.Kernel.Commit do
          } = act
        )
        when map_size(act.consequence) == 1 and map_size(command) == 2 do
-    with true <- exact_row?(act.row, [:delegate, :govern]),
-         true <- act.reservations in [%{}, []],
+    with true <- Act.row?(act, [:delegate, :govern]),
+         true <- not Act.reservations?(act),
          {:ok, event} <- Event.meter_devolved(act, child_mandate_ref, amounts) do
       {:ok, [event]}
     else
@@ -190,8 +190,8 @@ defmodule Spectre.Kernel.Commit do
          } = act
        )
        when map_size(act.consequence) == 1 and map_size(command) == 1 do
-    with true <- exact_row?(act.row, [:govern]),
-         true <- act.reservations in [%{}, []],
+    with true <- Act.row?(act, [:govern]),
+         true <- not Act.reservations?(act),
          event when is_map(event) <-
            Event.mandate_revoked(act.ref, mandate_ref, act.committed_at) do
       {:ok, [event]}
@@ -211,8 +211,8 @@ defmodule Spectre.Kernel.Commit do
          } = act
        )
        when map_size(act.consequence) == 1 and map_size(command) == 2 do
-    with true <- exact_row?(act.row, [:govern]),
-         true <- act.reservations in [%{}, []],
+    with true <- Act.row?(act, [:govern]),
+         true <- not Act.reservations?(act),
          true <- ledger_internal?(act),
          {:ok, successor} <- Mandate.from_issue_draft(draft, act.ref),
          {:ok, event} <- Event.mandate_restricted(act, predecessor_ref, successor) do
@@ -233,7 +233,7 @@ defmodule Spectre.Kernel.Commit do
          } = act
        )
        when map_size(act.consequence) == 1 and map_size(command) == 2 do
-    with true <- exact_row?(act.row, [:govern]),
+    with true <- Act.row?(act, [:govern]),
          {:ok, surface} <- Surface.from_canonical(canonical),
          true <- canonical == Surface.canonical(surface),
          {:ok, event} <- Event.surface_revised(act, previous_ref, surface) do
@@ -254,7 +254,7 @@ defmodule Spectre.Kernel.Commit do
          } = act
        )
        when map_size(act.consequence) == 1 and map_size(command) == 2 do
-    with true <- exact_row?(act.row, [:govern]),
+    with true <- Act.row?(act, [:govern]),
          {:ok, profile} <- HostProfile.from_canonical(canonical),
          true <- canonical == HostProfile.canonical(profile),
          {:ok, event} <- Event.host_profile_revised(act, previous_ref, profile) do
@@ -275,8 +275,8 @@ defmodule Spectre.Kernel.Commit do
          } = act
        )
        when map_size(act.consequence) == 1 and map_size(command) == 2 do
-    with true <- exact_row?(act.row, [:govern]),
-         true <- act.reservations in [%{}, []],
+    with true <- Act.row?(act, [:govern]),
+         true <- not Act.reservations?(act),
          {:ok, definition} <- Definition.from_canonical(canonical),
          true <- canonical == Definition.canonical(definition),
          true <- previous_ref == definition.previous_ref,
@@ -295,8 +295,8 @@ defmodule Spectre.Kernel.Commit do
          } = act
        )
        when map_size(act.consequence) == 1 do
-    with true <- exact_row?(act.row, [:write, :govern]),
-         true <- act.reservations in [%{}, []],
+    with true <- Act.row?(act, [:write, :govern]),
+         true <- not Act.reservations?(act),
          true <- ledger_internal?(act),
          {:ok, decoded} <- Declassification.decode_draft(draft),
          true <- decoded.canonical == draft,
@@ -317,8 +317,8 @@ defmodule Spectre.Kernel.Commit do
 
   defp governance_events(%Act{class: "scope.open", consequence: %{"scope_open" => draft}} = act)
        when map_size(act.consequence) == 1 do
-    with true <- exact_row?(act.row, [:write, :govern]),
-         true <- act.reservations in [%{}, []],
+    with true <- Act.row?(act, [:write, :govern]),
+         true <- not Act.reservations?(act),
          true <- ledger_internal?(act),
          {:ok, opening} <- Opening.from_governed_draft(draft, act.ref, act.committed_at),
          true <- opening.parent_ref == act.scope_ref,
@@ -340,7 +340,7 @@ defmodule Spectre.Kernel.Commit do
   defp governance_events(%Act{}), do: {:ok, []}
 
   defp governance_events(
-         %Projection{} = projection,
+         %State{} = projection,
          %Act{
            class: "mandate.revoke",
            consequence: %{"mandate_revoke" => %{"mandate_ref" => mandate_ref}}
@@ -359,7 +359,7 @@ defmodule Spectre.Kernel.Commit do
   end
 
   defp governance_events(
-         %Projection{} = projection,
+         %State{} = projection,
          %Act{
            class: "mandate.restrict",
            consequence: %{
@@ -380,11 +380,11 @@ defmodule Spectre.Kernel.Commit do
   end
 
   defp governance_events(
-         %Projection{} = projection,
+         %State{} = projection,
          %Act{class: "data.erase", consequence: %{"erasure_request" => draft}} = act
        )
        when map_size(act.consequence) == 1 do
-    with true <- exact_row?(act.row, [:attempt, :write, :govern]),
+    with true <- Act.row?(act, [:attempt, :write, :govern]),
          {:ok, canonical_draft} <- Erasure.request_draft(draft),
          true <- canonical_draft == draft,
          :ok <- ErasureAnalysis.requestable?(projection, canonical_draft["target_ref"]),
@@ -401,9 +401,9 @@ defmodule Spectre.Kernel.Commit do
     end
   end
 
-  defp governance_events(%Projection{} = projection, %Act{class: "duty.dispose"} = act) do
-    with true <- exact_row?(act.row, [:govern]),
-         true <- act.reservations in [%{}, []],
+  defp governance_events(%State{} = projection, %Act{class: "duty.dispose"} = act) do
+    with true <- Act.row?(act, [:govern]),
+         true <- not Act.reservations?(act),
          {:ok, disposition} <- Disposition.from_consequence(act.consequence),
          {:ok, duty} <- fetch_open_duty(projection, disposition),
          {:ok, meter_events} <- duty_meter_events(projection, duty, disposition, act),
@@ -416,17 +416,18 @@ defmodule Spectre.Kernel.Commit do
     end
   end
 
-  defp governance_events(%Projection{}, %Act{} = act), do: governance_events(act)
+  defp governance_events(%State{}, %Act{} = act), do: governance_events(act)
 
   defp authority_cancellation_events(projection, cause_act, mandate_ref, reason) do
-    cascade? = reason == :mandate_restricted or revocation_cascades?(projection, mandate_ref)
+    cascade? =
+      reason == :mandate_restricted or AuthorityChange.cascades?(projection, mandate_ref)
 
     projection.dispatch_ready
     |> Enum.sort()
-    |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, events} ->
+    |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, reversed} ->
       with {:ok, pending_act} <- Map.fetch(projection.acts, act_ref),
            {:ok, affected?} <-
-             mandate_affected?(
+             AuthorityChange.affects?(
                projection,
                pending_act.mandate_ref,
                mandate_ref,
@@ -434,51 +435,15 @@ defmodule Spectre.Kernel.Commit do
              ),
            {:ok, cancellation_events} <-
              maybe_cancellation_events(pending_act, cause_act, reason, affected?) do
-        {:cont, {:ok, events ++ cancellation_events}}
+        {:cont, {:ok, Enum.reverse(cancellation_events, reversed)}}
       else
         :error -> {:halt, {:error, {:dispatch_act_not_found, act_ref}}}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
-  end
-
-  defp revocation_cascades?(projection, mandate_ref) do
-    case Map.fetch(projection.mandates, mandate_ref) do
-      {:ok, mandate} -> Map.get(mandate.revocation, "mode") == :cascade
-      :error -> false
-    end
-  end
-
-  defp mandate_affected?(_projection, mandate_ref, mandate_ref, _cascade?), do: {:ok, true}
-  defp mandate_affected?(_projection, _mandate_ref, _target_ref, false), do: {:ok, false}
-
-  defp mandate_affected?(projection, mandate_ref, target_ref, true) do
-    descendant_of?(projection, mandate_ref, target_ref, MapSet.new())
-  end
-
-  defp descendant_of?(_projection, target_ref, target_ref, _visited), do: {:ok, true}
-
-  defp descendant_of?(projection, mandate_ref, target_ref, visited) do
-    cond do
-      MapSet.member?(visited, mandate_ref) ->
-        {:error, {:mandate_ancestry_cycle, mandate_ref}}
-
-      true ->
-        case Map.fetch(projection.mandates, mandate_ref) do
-          {:ok, %{parent_ref: nil}} ->
-            {:ok, false}
-
-          {:ok, %{parent_ref: parent_ref}} ->
-            descendant_of?(
-              projection,
-              parent_ref,
-              target_ref,
-              MapSet.put(visited, mandate_ref)
-            )
-
-          :error ->
-            {:error, {:mandate_not_found, mandate_ref}}
-        end
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -492,7 +457,7 @@ defmodule Spectre.Kernel.Commit do
   end
 
   defp cancellation_meter_events(%Act{reservations: reservations})
-       when reservations in [%{}, []],
+       when map_size(reservations) == 0,
        do: {:ok, []}
 
   defp cancellation_meter_events(%Act{} = act) do
@@ -529,7 +494,7 @@ defmodule Spectre.Kernel.Commit do
          disposition,
          _disposition_act
        )
-       when reservations in [%{}, []] do
+       when map_size(reservations) == 0 do
     cond do
       disposition.meter_resolution != :none ->
         {:error, {:duty_has_no_meter_reservation, disposition.duty_ref}}
@@ -589,8 +554,6 @@ defmodule Spectre.Kernel.Commit do
       {:ok, [event]}
     end
   end
-
-  defp exact_row?(%Row{} = row, dimensions), do: Row.dimensions(row) == dimensions
 
   defp ledger_internal?(act) do
     Governance.ledger_internal?(act)

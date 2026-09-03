@@ -1,8 +1,39 @@
 defmodule Spectre.Domain.Event do
-  @moduledoc false
+  @moduledoc """
+  Canonical envelope and decoder for facts stored in a Domain ledger.
 
-  alias Spectre.Domain.Projection
-  alias Spectre.Governance
+  This module is deliberately smaller than the semantics that consume an
+  event. It owns the wire grammar shared by writers, live projections and the
+  independent auditor: exact keys, event identity bindings and acquisition
+  time. It does not decide whether an event is authorized or whether its
+  transition is valid; those are governed-act semantics.
+
+  Keeping the durable grammar here gives both replay paths the same strict
+  boundary while allowing them to fold the decoded event independently.
+  """
+
+  alias Spectre.Domain.Event.Builder
+  alias Spectre.Ledger.Entry
+
+  defmodule Metadata do
+    @moduledoc """
+    Trusted ledger position attached to a decoded Domain event.
+
+    Record-specific metadata maps used to be repeated by projections and the
+    auditor. A single value indexed by `{event_type, identity}` keeps replay
+    ordering, batch adjacency and acquisition time in one consistent shape.
+    """
+
+    @enforce_keys [:revision, :batch_id, :batch_index, :recorded_at]
+    defstruct [:revision, :batch_id, :batch_index, :recorded_at]
+
+    @type t :: %__MODULE__{
+            revision: pos_integer(),
+            batch_id: String.t(),
+            batch_index: non_neg_integer(),
+            recorded_at: non_neg_integer()
+          }
+  end
 
   @record_events %{
     genesis: {"genesis_recorded", Spectre.Genesis},
@@ -22,76 +53,141 @@ defmodule Spectre.Domain.Event do
     erasure: {"erasure_requested", Spectre.Erasure}
   }
 
-  @spec record(atom(), struct()) :: {:ok, map()} | {:error, term()}
-  def record(kind, record) do
-    with {:ok, {type, module}} <- fetch_record_event(kind),
-         true <- is_struct(record, module),
-         {:ok, record} <- module.new(record),
-         ref when is_binary(ref) and ref != "" <- Map.get(record, :ref),
-         data when is_map(data) <- module.canonical(record) do
-      {:ok, Projection.event(type, ref, data)}
-    else
-      false -> {:error, {:invalid_domain_record, kind}}
-      nil -> {:error, {:invalid_domain_record_ref, kind}}
-      {:error, _reason} = error -> error
-      _invalid -> {:error, {:invalid_domain_record, kind}}
+  @manual_fields %{
+    "principal_registered" => ~w(act_ref principal),
+    "mandate_revoked" => ~w(mandate_ref effective_at),
+    "mandate_restricted" => ~w(act_ref predecessor_ref successor),
+    "host_profile_revised" => ~w(act_ref previous_ref host_profile),
+    "surface_revised" => ~w(act_ref previous_ref surface),
+    "definition_revised" => ~w(act_ref previous_ref definition),
+    "meter_reserved" => ~w(act_ref mandate_ref amounts),
+    "meter_settled" => ~w(act_ref mandate_ref amounts),
+    "meter_released" => ~w(act_ref mandate_ref amounts),
+    "meter_suspended" => ~w(act_ref mandate_ref amounts),
+    "meter_recontained" => ~w(act_ref mandate_ref outcome_ref amounts recontained deficits),
+    "meter_duty_resolved" =>
+      ~w(act_ref disposition_act_ref duty_ref mandate_ref operation amounts),
+    "meter_devolved" => ~w(act_ref child_mandate_ref amounts),
+    "dispatch_ready" => ~w(act_ref executor_ref executor_contract_ref),
+    "dispatch_cancelled" => ~w(act_ref mandate_ref cause_ref reason cancelled_at),
+    "duty_disposed" => ~w(cause_key disposition_act_ref)
+  }
+
+  @known_events Map.keys(@record_events) ++ Map.keys(@manual_fields)
+  @envelope_fields ~w(type identity data schema_version)
+
+  @enforce_keys [:type, :identity, :data]
+  defstruct [:type, :identity, :data, :revision, :batch_id, :batch_index, :recorded_at]
+
+  @type t :: %__MODULE__{
+          type: String.t(),
+          identity: String.t(),
+          data: map(),
+          revision: pos_integer() | nil,
+          batch_id: String.t() | nil,
+          batch_index: non_neg_integer() | nil,
+          recorded_at: non_neg_integer() | nil
+        }
+
+  @type key :: {String.t(), String.t()}
+
+  @doc "Returns the stable lookup key for an event identity within its class."
+  @spec key(t()) :: key()
+  def key(%__MODULE__{type: type, identity: identity}), do: {type, identity}
+
+  @doc "Returns ledger metadata from an event decoded with `decode_entry/1`."
+  @spec metadata(t()) :: {:ok, Metadata.t()} | {:error, :missing_event_metadata}
+  def metadata(%__MODULE__{
+        revision: revision,
+        batch_id: batch_id,
+        batch_index: batch_index,
+        recorded_at: recorded_at
+      })
+      when is_integer(revision) and revision > 0 and is_binary(batch_id) and batch_id != "" and
+             is_integer(batch_index) and batch_index >= 0 and is_integer(recorded_at) and
+             recorded_at >= 0 do
+    {:ok,
+     %Metadata{
+       revision: revision,
+       batch_id: batch_id,
+       batch_index: batch_index,
+       recorded_at: recorded_at
+     }}
+  end
+
+  def metadata(%__MODULE__{}), do: {:error, :missing_event_metadata}
+
+  @doc "Builds the exact plain-map envelope persisted as an Entry payload."
+  @spec envelope(String.t(), String.t(), map()) :: map()
+  def envelope(type, identity, data)
+      when type in @known_events and is_binary(identity) and identity != "" and is_map(data) and
+             not is_struct(data) do
+    %{
+      "type" => type,
+      "identity" => identity,
+      "data" => data,
+      "schema_version" => 1
+    }
+  end
+
+  @doc false
+  @spec record_event(atom()) :: {:ok, {String.t(), module()}} | {:error, term()}
+  def record_event(kind) do
+    case Map.fetch(@record_events, kind) do
+      {:ok, event} -> {:ok, event}
+      :error -> {:error, {:unknown_domain_record_kind, kind}}
     end
   end
+
+  @doc "Decodes and validates an event envelope without ledger metadata."
+  @spec decode(map()) :: {:ok, t()} | {:error, term()}
+  def decode(payload) when is_map(payload) and not is_struct(payload) do
+    with :ok <- exact_keys(payload, @envelope_fields, :domain_event),
+         :ok <- supported_version(payload["schema_version"]),
+         {:ok, type} <- known_type(payload["type"]),
+         :ok <- valid_identity(payload["identity"]),
+         :ok <- valid_data(payload["data"]),
+         :ok <- validate_manual_data(type, payload["identity"], payload["data"]) do
+      {:ok,
+       %__MODULE__{
+         type: type,
+         identity: payload["identity"],
+         data: payload["data"]
+       }}
+    end
+  end
+
+  def decode(_payload), do: {:error, :invalid_domain_event}
+
+  @doc "Decodes an Entry payload and binds its trusted ledger metadata."
+  @spec decode_entry(Entry.t()) :: {:ok, t()} | {:error, term()}
+  def decode_entry(%Entry{} = entry) do
+    with {:ok, event} <- decode(entry.payload),
+         :ok <- validate_acquisition_time(event, entry.recorded_at) do
+      {:ok,
+       %{
+         event
+         | revision: entry.revision,
+           batch_id: entry.batch_id,
+           batch_index: entry.batch_index,
+           recorded_at: entry.recorded_at
+       }}
+    end
+  end
+
+  def decode_entry(_entry), do: {:error, :invalid_domain_event_entry}
+
+  @doc "Builds a canonical envelope for a typed Domain record."
+  @spec record(atom(), struct()) :: {:ok, map()} | {:error, term()}
+  defdelegate record(kind, record), to: Builder
 
   @spec meter(:reserve | :settle | :release | :suspend, Spectre.Act.t()) ::
           {:ok, map()} | {:error, term()}
-  def meter(operation, %Spectre.Act{} = act)
-      when operation in [:reserve, :settle, :release, :suspend] do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, amounts} <- reservation_amounts(act.reservations) do
-      type = meter_event_type(operation)
-      identity = type <> ":" <> act.ref
-
-      {:ok,
-       Projection.event(type, identity, %{
-         "act_ref" => act.ref,
-         "mandate_ref" => act.mandate_ref,
-         "amounts" => amounts
-       })}
-    end
-  end
-
-  def meter(_operation, _act), do: {:error, :invalid_meter_event}
+  defdelegate meter(operation, act), to: Builder
 
   @spec meter_recontained(Spectre.Act.t(), Spectre.Outcome.t(), map(), map()) ::
           {:ok, map()} | {:error, term()}
-  def meter_recontained(
-        %Spectre.Act{} = act,
-        %Spectre.Outcome{status: status, contradicts_outcome_ref: corrected_ref} = outcome,
-        recontained,
-        deficits
-      )
-      when status in [:succeeded, :failed] and is_binary(corrected_ref) and
-             corrected_ref != "" do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, outcome} <- Spectre.Outcome.new(outcome),
-         true <- outcome.act_ref == act.ref,
-         {:ok, amounts} <- reservation_amounts(act.reservations),
-         {:ok, recontained} <- partial_amounts(recontained),
-         {:ok, deficits} <- partial_amounts(deficits),
-         :ok <- exact_partition(amounts, recontained, deficits) do
-      {:ok,
-       Projection.event("meter_recontained", "meter_recontained:" <> act.ref, %{
-         "act_ref" => act.ref,
-         "mandate_ref" => act.mandate_ref,
-         "outcome_ref" => outcome.ref,
-         "amounts" => amounts,
-         "recontained" => recontained,
-         "deficits" => deficits
-       })}
-    else
-      false -> {:error, :meter_recontainment_cause_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def meter_recontained(_act, _outcome, _recontained, _deficits),
-    do: {:error, :invalid_meter_recontainment_event}
+  defdelegate meter_recontained(act, outcome, recontained, deficits), to: Builder
 
   @spec meter_duty_resolved(
           Spectre.Act.t(),
@@ -100,387 +196,224 @@ defmodule Spectre.Domain.Event do
           :settle | :release,
           map()
         ) :: {:ok, map()} | {:error, term()}
-  def meter_duty_resolved(
-        %Spectre.Act{} = cause_act,
-        %Spectre.Act{} = disposition_act,
-        %Spectre.Duty{} = duty,
-        operation,
-        amounts
-      )
-      when operation in [:settle, :release] and is_map(amounts) and not is_struct(amounts) do
-    with {:ok, cause_act} <- Spectre.Act.new(cause_act),
-         {:ok, disposition_act} <- Spectre.Act.new(disposition_act),
-         {:ok, duty} <- Spectre.Duty.new(duty),
-         {:ok, disposition} <-
-           Spectre.Duty.Disposition.from_consequence(disposition_act.consequence),
-         true <- duty.status == :open,
-         true <- duty.act_ref == cause_act.ref,
-         true <- disposition.duty_ref == duty.ref,
-         true <- disposition.cause_key == duty.cause_key,
-         true <- disposition.meter_resolution == operation,
-         {:ok, amounts} <- duty_resolution_amounts(amounts) do
-      {:ok,
-       Projection.event(
-         "meter_duty_resolved",
-         "meter_duty_resolved:" <> disposition_act.ref,
-         %{
-           "act_ref" => cause_act.ref,
-           "disposition_act_ref" => disposition_act.ref,
-           "duty_ref" => duty.ref,
-           "mandate_ref" => cause_act.mandate_ref,
-           "operation" => operation,
-           "amounts" => amounts
-         }
-       )}
-    else
-      false -> {:error, :duty_meter_resolution_binding_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def meter_duty_resolved(_cause_act, _disposition_act, _duty, _operation, _amounts),
-    do: {:error, :invalid_duty_meter_resolution_event}
+  defdelegate meter_duty_resolved(cause_act, disposition_act, duty, operation, amounts),
+    to: Builder
 
   @spec meter_devolved(Spectre.Act.t(), String.t(), map()) ::
           {:ok, map()} | {:error, term()}
-  def meter_devolved(%Spectre.Act{} = act, child_mandate_ref, amounts)
-      when is_binary(child_mandate_ref) and child_mandate_ref != "" and is_map(amounts) and
-             not is_struct(amounts) do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, amounts} <- devolution_amounts(amounts) do
-      {:ok,
-       Projection.event("meter_devolved", "meter_devolved:" <> act.ref, %{
-         "act_ref" => act.ref,
-         "child_mandate_ref" => child_mandate_ref,
-         "amounts" => amounts
-       })}
-    end
-  end
-
-  def meter_devolved(_act, _child_mandate_ref, _amounts),
-    do: {:error, :invalid_meter_devolution_event}
+  defdelegate meter_devolved(act, child_mandate_ref, amounts), to: Builder
 
   @spec surface_revised(Spectre.Act.t(), String.t(), Spectre.Surface.t()) ::
           {:ok, map()} | {:error, term()}
-  def surface_revised(%Spectre.Act{} = act, previous_ref, %Spectre.Surface{} = surface)
-      when is_binary(previous_ref) and previous_ref != "" do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, surface} <- Spectre.Surface.new(surface) do
-      {:ok,
-       Projection.event("surface_revised", surface.ref, %{
-         "act_ref" => act.ref,
-         "previous_ref" => previous_ref,
-         "surface" => Spectre.Surface.canonical(surface)
-       })}
-    end
-  end
-
-  def surface_revised(_act, _previous_ref, _surface),
-    do: {:error, :invalid_surface_revision_event}
+  defdelegate surface_revised(act, previous_ref, surface), to: Builder
 
   @spec host_profile_revised(Spectre.Act.t(), String.t(), Spectre.HostProfile.t()) ::
           {:ok, map()} | {:error, term()}
-  def host_profile_revised(
-        %Spectre.Act{} = act,
-        previous_ref,
-        %Spectre.HostProfile{} = profile
-      )
-      when is_binary(previous_ref) and previous_ref != "" do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, profile} <- Spectre.HostProfile.new(profile) do
-      {:ok,
-       Projection.event("host_profile_revised", profile.ref, %{
-         "act_ref" => act.ref,
-         "previous_ref" => previous_ref,
-         "host_profile" => Spectre.HostProfile.canonical(profile)
-       })}
-    end
-  end
-
-  def host_profile_revised(_act, _previous_ref, _profile),
-    do: {:error, :invalid_host_profile_revision_event}
+  defdelegate host_profile_revised(act, previous_ref, profile), to: Builder
 
   @spec definition_revised(Spectre.Act.t(), String.t() | nil, Spectre.Definition.t()) ::
           {:ok, map()} | {:error, term()}
-  def definition_revised(%Spectre.Act{} = act, previous_ref, %Spectre.Definition{} = definition)
-      when is_nil(previous_ref) or (is_binary(previous_ref) and previous_ref != "") do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, definition} <- Spectre.Definition.new(definition),
-         true <- definition.previous_ref == previous_ref do
-      {:ok,
-       Projection.event("definition_revised", definition.ref, %{
-         "act_ref" => act.ref,
-         "previous_ref" => previous_ref,
-         "definition" => Spectre.Definition.canonical(definition)
-       })}
-    else
-      false -> {:error, :definition_previous_ref_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def definition_revised(_act, _previous_ref, _definition),
-    do: {:error, :invalid_definition_revision_event}
+  defdelegate definition_revised(act, previous_ref, definition), to: Builder
 
   @spec principal_registered(Spectre.Act.t(), Spectre.Principal.t()) ::
           {:ok, map()} | {:error, term()}
-  def principal_registered(%Spectre.Act{} = act, %Spectre.Principal{} = principal) do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, principal} <- Spectre.Principal.new(principal) do
-      {:ok,
-       Projection.event("principal_registered", principal.ref, %{
-         "act_ref" => act.ref,
-         "principal" => Spectre.Principal.canonical(principal)
-       })}
-    end
-  end
-
-  def principal_registered(_act, _principal),
-    do: {:error, :invalid_principal_registration_event}
+  defdelegate principal_registered(act, principal), to: Builder
 
   @spec dispatch_ready(Spectre.Act.t()) :: map()
-  def dispatch_ready(%Spectre.Act{} = act) do
-    Projection.event("dispatch_ready", "dispatch_ready:" <> act.ref, %{
-      "act_ref" => act.ref,
-      "executor_ref" => act.executor_ref,
-      "executor_contract_ref" => act.executor_contract_ref
-    })
-  end
+  defdelegate dispatch_ready(act), to: Builder
 
   @spec dispatch_cancelled(
           Spectre.Act.t(),
           Spectre.Act.t() | Spectre.Duty.t() | Spectre.Mandate.t(),
           atom()
         ) :: {:ok, map()} | {:error, term()}
-  def dispatch_cancelled(%Spectre.Act{} = act, %Spectre.Act{} = cause_act, reason)
-      when reason in [:mandate_revoked, :mandate_restricted] do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, cause_act} <- Spectre.Act.new(cause_act),
-         :ok <- executor_mediated_dispatch(act),
-         :ok <- ledger_internal_cause(cause_act) do
-      {:ok,
-       Projection.event("dispatch_cancelled", "dispatch_cancelled:" <> act.ref, %{
-         "act_ref" => act.ref,
-         "mandate_ref" => act.mandate_ref,
-         "cause_ref" => cause_act.ref,
-         "reason" => reason,
-         "cancelled_at" => cause_act.committed_at
-       })}
-    else
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def dispatch_cancelled(
-        %Spectre.Act{} = act,
-        %Spectre.Duty{class: :disputed_evidence} = duty,
-        :disputed_evidence
-      ) do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, duty} <- Spectre.Duty.new(duty),
-         true <- Governance.executor_mediated?(act),
-         true <- duty.status == :open,
-         true <- duty.act_ref == act.ref,
-         true <- is_nil(duty.attempt_ref),
-         true <- duty.mandate_ref == act.mandate_ref do
-      {:ok,
-       Projection.event("dispatch_cancelled", "dispatch_cancelled:" <> act.ref, %{
-         "act_ref" => act.ref,
-         "mandate_ref" => act.mandate_ref,
-         "cause_ref" => duty.ref,
-         "reason" => :disputed_evidence,
-         "cancelled_at" => duty.opened_at
-       })}
-    else
-      false -> {:error, :disputed_dispatch_cancellation_binding_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def dispatch_cancelled(
-        %Spectre.Act{} = act,
-        %Spectre.Mandate{} = mandate,
-        :mandate_expired
-      ) do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, mandate} <- Spectre.Mandate.new(mandate),
-         true <- Governance.executor_mediated?(act),
-         true <- act.mandate_ref == mandate.ref,
-         true <- act.mandate_revision == mandate.revision do
-      {:ok,
-       Projection.event("dispatch_cancelled", "dispatch_cancelled:" <> act.ref, %{
-         "act_ref" => act.ref,
-         "mandate_ref" => mandate.ref,
-         "cause_ref" => mandate.ref,
-         "reason" => :mandate_expired,
-         "cancelled_at" => mandate.expires_at
-       })}
-    else
-      false -> {:error, :dispatch_expiration_mandate_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def dispatch_cancelled(_act, _cause_act, _reason),
-    do: {:error, :invalid_dispatch_cancellation_event}
-
-  defp executor_mediated_dispatch(act) do
-    if Governance.executor_mediated?(act),
-      do: :ok,
-      else: {:error, :dispatch_cancellation_requires_executor_mediated_act}
-  end
-
-  defp ledger_internal_cause(act) do
-    if Governance.ledger_internal?(act),
-      do: :ok,
-      else: {:error, :dispatch_cancellation_cause_not_ledger_internal}
-  end
+  defdelegate dispatch_cancelled(act, cause, reason), to: Builder
 
   @spec mandate_revoked(String.t(), String.t(), integer()) ::
           map() | {:error, :invalid_mandate_revocation_event}
-  def mandate_revoked(identity, mandate_ref, effective_at)
-      when is_binary(identity) and identity != "" and is_binary(mandate_ref) and
-             mandate_ref != "" and is_integer(effective_at) do
-    Projection.event("mandate_revoked", identity, %{
-      "mandate_ref" => mandate_ref,
-      "effective_at" => effective_at
-    })
-  end
-
-  def mandate_revoked(_identity, _mandate_ref, _effective_at),
-    do: {:error, :invalid_mandate_revocation_event}
+  defdelegate mandate_revoked(identity, mandate_ref, effective_at), to: Builder
 
   @spec mandate_restricted(Spectre.Act.t(), String.t(), Spectre.Mandate.t()) ::
           {:ok, map()} | {:error, term()}
-  def mandate_restricted(
-        %Spectre.Act{} = act,
-        predecessor_ref,
-        %Spectre.Mandate{} = successor
-      )
-      when is_binary(predecessor_ref) and predecessor_ref != "" do
-    with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, successor} <- Spectre.Mandate.new(successor) do
-      {:ok,
-       Projection.event("mandate_restricted", successor.ref, %{
-         "act_ref" => act.ref,
-         "predecessor_ref" => predecessor_ref,
-         "successor" => Spectre.Mandate.canonical(successor)
-       })}
-    end
-  end
-
-  def mandate_restricted(_act, _predecessor_ref, _successor),
-    do: {:error, :invalid_mandate_restriction_event}
+  defdelegate mandate_restricted(act, predecessor_ref, successor), to: Builder
 
   @spec duty_disposed(String.t(), term(), String.t()) ::
           map() | {:error, :invalid_duty_disposition_event}
-  def duty_disposed(disposition_act_ref, cause_key, disposition_act_ref)
-      when is_binary(disposition_act_ref) and disposition_act_ref != "" and
-             not is_nil(cause_key) do
-    Projection.event("duty_disposed", disposition_act_ref, %{
-      "cause_key" => cause_key,
-      "disposition_act_ref" => disposition_act_ref
-    })
-  end
-
-  def duty_disposed(_identity, _cause_key, _disposition_act_ref),
-    do: {:error, :invalid_duty_disposition_event}
+  defdelegate duty_disposed(identity, cause_key, disposition_act_ref), to: Builder
 
   @spec scope_opened(Spectre.Scope.Opening.t()) :: {:ok, map()} | {:error, term()}
-  def scope_opened(%Spectre.Scope.Opening{} = opening), do: record(:scope, opening)
-  def scope_opened(_opening), do: {:error, :invalid_scope_event}
+  defdelegate scope_opened(opening), to: Builder
 
-  defp fetch_record_event(kind) do
-    case Map.fetch(@record_events, kind) do
-      {:ok, event} -> {:ok, event}
-      :error -> {:error, {:unknown_domain_record_kind, kind}}
+  defp supported_version(1), do: :ok
+
+  defp supported_version(version) when is_integer(version),
+    do: {:error, {:unsupported_domain_event_schema_version, version}}
+
+  defp supported_version(_version), do: {:error, :invalid_domain_event_schema_version}
+
+  defp known_type(type) when type in @known_events, do: {:ok, type}
+  defp known_type(type), do: {:error, {:unknown_domain_event, type}}
+
+  defp valid_identity(identity) when is_binary(identity) and identity != "", do: :ok
+  defp valid_identity(_identity), do: {:error, :invalid_domain_event_identity}
+
+  defp valid_data(data) when is_map(data) and not is_struct(data), do: :ok
+  defp valid_data(_data), do: {:error, :invalid_domain_event_data}
+
+  defp validate_manual_data(type, identity, data) do
+    case Map.fetch(@manual_fields, type) do
+      :error ->
+        :ok
+
+      {:ok, fields} ->
+        with :ok <- exact_keys(data, fields, type),
+             :ok <- validate_manual_identity(type, identity, data) do
+          :ok
+        end
     end
   end
 
-  defp reservation_amounts(reservations) when is_map(reservations) do
-    if map_size(reservations) == 0,
-      do: {:error, :empty_meter_reservations},
-      else: validate_amounts(reservations)
+  defp validate_manual_identity(type, identity, %{"act_ref" => act_ref})
+       when type in [
+              "meter_reserved",
+              "meter_settled",
+              "meter_released",
+              "meter_suspended",
+              "meter_recontained",
+              "meter_devolved",
+              "dispatch_ready",
+              "dispatch_cancelled"
+            ],
+       do: prefixed_identity(identity, type, act_ref)
+
+  defp validate_manual_identity(
+         "meter_duty_resolved",
+         identity,
+         %{"disposition_act_ref" => act_ref}
+       ),
+       do: prefixed_identity(identity, "meter_duty_resolved", act_ref)
+
+  defp validate_manual_identity(
+         "duty_disposed",
+         identity,
+         %{"disposition_act_ref" => act_ref}
+       ) do
+    if identity == act_ref,
+      do: :ok,
+      else: {:error, {:domain_event_identity_mismatch, identity, act_ref}}
   end
 
-  defp reservation_amounts(reservations) when is_list(reservations) do
-    reservations
-    |> Enum.reduce_while({:ok, %{}}, fn reservation, {:ok, amounts} ->
-      with ref when is_binary(ref) and ref != "" <- field(reservation, :meter_ref),
-           quantity when is_integer(quantity) and quantity > 0 <- field(reservation, :quantity),
-           false <- Map.has_key?(amounts, ref) do
-        {:cont, {:ok, Map.put(amounts, ref, quantity)}}
-      else
-        true -> {:halt, {:error, :duplicate_meter_reservation}}
-        _invalid -> {:halt, {:error, :invalid_meter_reservation}}
-      end
-    end)
-    |> case do
-      {:ok, amounts} when map_size(amounts) == 0 -> {:error, :empty_meter_reservations}
-      result -> result
+  defp validate_manual_identity(_type, _identity, _data), do: :ok
+
+  defp prefixed_identity(identity, prefix, ref) when is_binary(ref) and ref != "" do
+    expected = prefix <> ":" <> ref
+
+    if identity == expected,
+      do: :ok,
+      else: {:error, {:domain_event_identity_mismatch, identity, expected}}
+  end
+
+  defp prefixed_identity(_identity, _prefix, ref),
+    do: {:error, {:invalid_domain_event_act_ref, ref}}
+
+  defp validate_acquisition_time(%__MODULE__{} = event, recorded_at)
+       when is_integer(recorded_at) and recorded_at >= 0 do
+    data = event.data
+
+    case event.type do
+      "genesis_recorded" ->
+        not_future_time(event.type, "issued_at", data, recorded_at)
+
+      "host_profile_recorded" ->
+        not_future_time(event.type, "declared_at", data, recorded_at)
+
+      "host_profile_revised" ->
+        not_future_time(event.type, "declared_at", data["host_profile"], recorded_at)
+
+      "definition_revised" ->
+        not_future_time(event.type, "declared_at", data["definition"], recorded_at)
+
+      "declassification_recorded" ->
+        exact_event_time(event.type, "recorded_at", data, recorded_at)
+
+      "evidence_recorded" ->
+        not_future_time(event.type, "observed_at", data, recorded_at)
+
+      "presentation_recorded" ->
+        not_future_time(event.type, "prepared_at", data, recorded_at)
+
+      "decision_recorded" ->
+        exact_event_time(event.type, "decided_at", data, recorded_at)
+
+      "act_committed" ->
+        exact_event_time(event.type, "committed_at", data, recorded_at)
+
+      "attempt_started" ->
+        exact_event_time(event.type, "started_at", data, recorded_at)
+
+      "outcome_recorded" ->
+        not_future_time(event.type, "observed_at", data, recorded_at)
+
+      "duty_opened" ->
+        not_future_time(event.type, "opened_at", data, recorded_at)
+
+      "mandate_revoked" ->
+        exact_event_time(event.type, "effective_at", data, recorded_at)
+
+      "dispatch_cancelled" ->
+        not_future_time(event.type, "cancelled_at", data, recorded_at)
+
+      "scope_opened" ->
+        scope_acquisition_time(event.type, data, recorded_at)
+
+      "erasure_requested" ->
+        not_future_time(event.type, "requested_at", data, recorded_at)
+
+      _other ->
+        :ok
     end
   end
 
-  defp reservation_amounts(_reservations), do: {:error, :invalid_meter_reservations}
+  defp validate_acquisition_time(_event, _recorded_at),
+    do: {:error, :invalid_event_acquisition_time}
 
-  defp devolution_amounts(amounts) when map_size(amounts) == 0,
-    do: {:error, :empty_meter_devolution}
+  defp scope_acquisition_time(type, data, recorded_at) do
+    if is_nil(data["source_act_ref"]),
+      do: not_future_time(type, "opened_at", data, recorded_at),
+      else: exact_event_time(type, "opened_at", data, recorded_at)
+  end
 
-  defp devolution_amounts(amounts) do
-    case validate_amounts(amounts) do
-      {:ok, amounts} -> {:ok, amounts}
-      {:error, _reason} -> {:error, :invalid_meter_devolution}
+  defp exact_event_time(type, field_name, data, recorded_at) when is_map(data) do
+    case Map.get(data, field_name) do
+      ^recorded_at -> :ok
+      value -> {:error, {:event_time_mismatch, type, field_name, value, recorded_at}}
     end
   end
 
-  defp validate_amounts(amounts) do
-    if Enum.all?(amounts, fn
-         {ref, quantity} ->
-           is_binary(ref) and ref != "" and is_integer(quantity) and quantity > 0
-       end) do
-      {:ok, amounts}
-    else
-      {:error, :invalid_meter_reservations}
+  defp exact_event_time(type, field_name, data, recorded_at),
+    do: {:error, {:event_time_mismatch, type, field_name, data, recorded_at}}
+
+  defp not_future_time(type, field_name, data, recorded_at) when is_map(data) do
+    case Map.get(data, field_name) do
+      value when is_integer(value) and value <= recorded_at -> :ok
+      value -> {:error, {:event_from_future, type, field_name, value, recorded_at}}
     end
   end
 
-  defp partial_amounts(amounts) when is_map(amounts) and not is_struct(amounts) do
-    if Enum.all?(amounts, fn
-         {ref, quantity} ->
-           is_binary(ref) and ref != "" and is_integer(quantity) and quantity > 0
-       end) do
-      {:ok, amounts}
-    else
-      {:error, :invalid_meter_recontainment_amounts}
+  defp not_future_time(type, field_name, data, recorded_at),
+    do: {:error, {:event_from_future, type, field_name, data, recorded_at}}
+
+  defp exact_keys(map, expected, context) when is_map(map) and not is_struct(map) do
+    actual = Map.keys(map)
+    unknown = actual -- expected
+    missing = expected -- actual
+
+    cond do
+      unknown != [] -> {:error, {:unknown_fields, context, Enum.sort_by(unknown, &inspect/1)}}
+      missing != [] -> {:error, {:missing_field, context, List.first(missing)}}
+      true -> :ok
     end
   end
 
-  defp partial_amounts(_amounts), do: {:error, :invalid_meter_recontainment_amounts}
-
-  defp duty_resolution_amounts(amounts) do
-    case partial_amounts(amounts) do
-      {:ok, amounts} -> {:ok, amounts}
-      {:error, _reason} -> {:error, :invalid_duty_meter_resolution_amounts}
-    end
-  end
-
-  defp exact_partition(amounts, recontained, deficits) do
-    keys = Map.keys(recontained) ++ Map.keys(deficits)
-
-    valid? =
-      Enum.all?(keys, &Map.has_key?(amounts, &1)) and
-        Enum.all?(amounts, fn {ref, quantity} ->
-          Map.get(recontained, ref, 0) + Map.get(deficits, ref, 0) == quantity
-        end)
-
-    if valid?, do: :ok, else: {:error, :invalid_meter_recontainment_partition}
-  end
-
-  defp meter_event_type(:reserve), do: "meter_reserved"
-  defp meter_event_type(:settle), do: "meter_settled"
-  defp meter_event_type(:release), do: "meter_released"
-  defp meter_event_type(:suspend), do: "meter_suspended"
-
-  defp field(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
-  defp field(_value, _key), do: nil
+  defp exact_keys(_map, _expected, context), do: {:error, {:invalid_fields, context}}
 end

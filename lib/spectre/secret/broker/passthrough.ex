@@ -10,7 +10,7 @@ defmodule Spectre.Secret.Broker.Passthrough do
   use GenServer
   @behaviour Spectre.Secret.Broker
 
-  alias Spectre.Secret.CheckoutReceipt
+  alias Spectre.{Adapter, Secret.CheckoutReceipt}
 
   @ref "spectre:secret-broker:passthrough:v1"
   @option_keys [:capability, :checkout_receipt_secret, :domain_ref, :clock, :timeout]
@@ -83,11 +83,9 @@ defmodule Spectre.Secret.Broker.Passthrough do
   defp current_time(opts) do
     clock = Keyword.get(opts, :clock, Spectre.Clock.System)
 
-    cond do
-      not is_atom(clock) or is_nil(clock) -> {:error, :invalid_checkout_clock}
-      not Code.ensure_loaded?(clock) -> {:error, :invalid_checkout_clock}
-      not function_exported?(clock, :now, 0) -> {:error, :invalid_checkout_clock}
-      true -> read_clock(clock)
+    case Adapter.validate(clock, now: 0) do
+      :ok -> read_clock(clock)
+      {:error, _reason} -> {:error, :invalid_checkout_clock}
     end
   end
 

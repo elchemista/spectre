@@ -30,8 +30,10 @@ defmodule Spectre.Kernel do
 
   alias Spectre.Domain.Projection
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Authority
   alias Spectre.Kernel.Decision, as: DecisionEngine
+  alias Spectre.Kernel.Decision.Context, as: DecisionContext
   alias Spectre.Kernel.Recognition
 
   @type result :: {:ok, Decision.t(), Act.t() | nil} | {:error, term()}
@@ -49,7 +51,7 @@ defmodule Spectre.Kernel do
   def evaluate(
         %Candidate{} = candidate,
         %SubmissionContext{} = context,
-        %Projection{} = projection,
+        %State{} = projection,
         time
       )
       when is_integer(time) do
@@ -64,7 +66,7 @@ defmodule Spectre.Kernel do
     end
   end
 
-  def evaluate(%Candidate{}, %SubmissionContext{}, %Projection{}, time),
+  def evaluate(%Candidate{}, %SubmissionContext{}, %State{}, time),
     do: {:error, {:invalid_trusted_time, time}}
 
   def evaluate(_candidate, _context, _projection, _time),
@@ -94,7 +96,7 @@ defmodule Spectre.Kernel do
            :ok <- validate_evidence_availability(candidate, projection),
            :ok <- validate_disclosure(candidate, projection),
            :ok <- Surface.validate_facts(surface, candidate, projection, time) do
-        authority_view = authority_view(projection)
+        authority_view = Projection.authority_view(projection)
 
         # Evidence is deliberately not present in this call or in authority_view.
         resolution = Authority.resolve(candidate, context, authority_view, time)
@@ -491,7 +493,7 @@ defmodule Spectre.Kernel do
     end
   end
 
-  defp foundations(%Projection{
+  defp foundations(%State{
          surface: %Surface{} = surface,
          host_profile: %HostProfile{} = profile
        }) do
@@ -501,25 +503,12 @@ defmodule Spectre.Kernel do
     end
   end
 
-  defp foundations(%Projection{surface: nil}), do: {:error, :surface_not_initialized}
-  defp foundations(%Projection{host_profile: nil}), do: {:error, :host_profile_not_initialized}
+  defp foundations(%State{surface: nil}), do: {:error, :surface_not_initialized}
+  defp foundations(%State{host_profile: nil}), do: {:error, :host_profile_not_initialized}
   defp foundations(_projection), do: {:error, :invalid_admission_foundations}
 
-  defp authority_view(projection) do
-    projection_view = Projection.authority_view(projection)
-
-    %{
-      mandates: projection.mandates,
-      mandate_successors: projection.mandate_successors,
-      revocations: projection.revocations,
-      blocked_mandate_refs: projection_view.blocked_mandate_refs,
-      blocked_effect_digests: projection_view.blocked_effect_digests,
-      authority_revision: projection.revision
-    }
-  end
-
   defp decision_view(projection, surface, profile) do
-    %{
+    %DecisionContext{
       meter_accounts: Projection.meter_view(projection),
       surface: surface,
       host_profile_ref: profile.ref,

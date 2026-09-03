@@ -4,6 +4,7 @@ defmodule Spectre.Attempt.Reconciler do
   alias Spectre.Domain.{Event, Projection}
   alias Spectre.Duty
   alias Spectre.Duty.Derive
+  alias Spectre.GovernedAct.State
   alias Spectre.{Act, Mandate, Portable}
 
   @type plan :: %{
@@ -12,16 +13,16 @@ defmodule Spectre.Attempt.Reconciler do
           required(:batch_id) => String.t() | nil
         }
 
-  @spec required_duties(map() | list(), map(), integer()) :: [Derive.cause()]
-  def required_duties(facts, constitution, time),
-    do: Derive.required_duties(facts, constitution, time)
+  @spec required_duties(State.t(), map(), integer()) :: [Derive.cause()]
+  def required_duties(%State{} = state, constitution, time),
+    do: Derive.required_duties(state, constitution, time)
 
-  @spec missing_openings(map() | list(), map(), integer()) :: [Derive.cause()]
-  def missing_openings(facts, constitution, time),
-    do: Derive.missing_openings(facts, constitution, time)
+  @spec missing_openings(State.t(), map(), integer()) :: [Derive.cause()]
+  def missing_openings(%State{} = state, constitution, time),
+    do: Derive.missing_openings(state, constitution, time)
 
   @spec repair_plan(Projection.t(), map(), integer()) :: {:ok, plan()} | {:error, term()}
-  def repair_plan(%Projection{} = projection, constitution, time)
+  def repair_plan(%State{} = projection, constitution, time)
       when is_map(constitution) and not is_struct(constitution) and is_integer(time) do
     causes = missing_openings(projection, constitution, time)
 
@@ -48,13 +49,13 @@ defmodule Spectre.Attempt.Reconciler do
     end
   end
 
-  def repair_plan(%Projection{}, %{__struct__: _module}, _time),
+  def repair_plan(%State{}, %{__struct__: _module}, _time),
     do: {:error, :invalid_reconciliation_constitution}
 
-  def repair_plan(%Projection{}, constitution, _time) when not is_map(constitution),
+  def repair_plan(%State{}, constitution, _time) when not is_map(constitution),
     do: {:error, :invalid_reconciliation_constitution}
 
-  def repair_plan(%Projection{}, _constitution, time),
+  def repair_plan(%State{}, _constitution, time),
     do: {:error, {:invalid_reconciliation_time, time}}
 
   def repair_plan(_projection, _constitution, _time),
@@ -97,11 +98,12 @@ defmodule Spectre.Attempt.Reconciler do
     Enum.reduce_while(expirations, {:ok, []}, fn {act, mandate}, {:ok, events} ->
       with {:ok, expiration} <- Event.dispatch_cancelled(act, mandate, :mandate_expired),
            {:ok, releases} <- release_events(act) do
-        {:cont, {:ok, events ++ [expiration | releases]}}
+        {:cont, {:ok, Enum.reverse(releases, [expiration | events])}}
       else
         {:error, _reason} = error -> {:halt, error}
       end
     end)
+    |> reverse_result()
   end
 
   defp dispatch_dispute_causes(projection, causes, excluded_refs) do
@@ -110,7 +112,7 @@ defmodule Spectre.Attempt.Reconciler do
     |> Enum.reduce({[], excluded_refs}, fn cause, {selected, seen_refs} ->
       act_ref = cause_act_ref(cause)
 
-      if field(cause, :cause_class) == :disputed_evidence and
+      if cause.cause_class == :disputed_evidence and
            MapSet.member?(projection.dispatch_ready, act_ref) and
            not MapSet.member?(seen_refs, act_ref) and
            not Map.has_key?(projection.attempts_by_act, act_ref) do
@@ -131,13 +133,15 @@ defmodule Spectre.Attempt.Reconciler do
            {:ok, duty_event} <- Event.record(:duty, duty),
            {:ok, cancellation} <- Event.dispatch_cancelled(act, duty, :disputed_evidence),
            {:ok, releases} <- release_events(act) do
-        {:cont, {:ok, events ++ [duty_event, cancellation | releases]}}
+        reversed = Enum.reverse(releases, [cancellation, duty_event | events])
+        {:cont, {:ok, reversed}}
       else
         :error -> {:halt, {:error, {:reconciliation_act_not_found, act_ref}}}
         {:error, _reason} = error -> {:halt, error}
         _invalid -> {:halt, {:error, {:invalid_reconciliation_act, act_ref}}}
       end
     end)
+    |> reverse_result()
   end
 
   defp opening_events(causes, time) do
@@ -179,7 +183,7 @@ defmodule Spectre.Attempt.Reconciler do
     |> reverse_result()
   end
 
-  defp release_events(%Act{reservations: reservations}) when reservations in [%{}, []],
+  defp release_events(%Act{reservations: reservations}) when map_size(reservations) == 0,
     do: {:ok, []}
 
   defp release_events(%Act{} = act) do
@@ -199,20 +203,13 @@ defmodule Spectre.Attempt.Reconciler do
   defp reverse_result({:error, _reason} = error), do: error
 
   defp required_at(cause, fallback) do
-    case field(cause, :required_at) do
+    case Map.get(cause, :required_at) do
       value when is_integer(value) -> value
       _missing -> fallback
     end
   end
 
   defp cause_act_ref(cause) do
-    field(cause, :act_ref) || cause |> field(:causal_refs, %{}) |> field(:act_ref)
+    Map.get(cause, :act_ref) || get_in(cause, [:causal_refs, :act_ref])
   end
-
-  defp field(map, key, default \\ nil)
-
-  defp field(map, key, default) when is_map(map),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
-
-  defp field(_value, _key, default), do: default
 end
