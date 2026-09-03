@@ -150,6 +150,28 @@ defmodule Spectre.Surface do
   def validate_facts(%__MODULE__{}, _candidate, _projection, _time),
     do: {:error, :invalid_consequence_validator_input}
 
+  @doc "Validates an admitted intrinsic transition before it can enter a Domain batch."
+  @spec validate_transition(t(), Candidate.t(), Spectre.Decision.t(), Spectre.Act.t(), map()) ::
+          :ok | {:error, term()}
+  def validate_transition(
+        %__MODULE__{} = surface,
+        %Candidate{} = candidate,
+        %Spectre.Decision{} = decision,
+        %Spectre.Act{} = act,
+        projection
+      ) do
+    case Map.fetch(surface.consequence_validators, candidate.class) do
+      {:ok, validator} ->
+        Validator.validate_transition(validator, candidate, decision, act, projection)
+
+      :error ->
+        {:error, {:consequence_validator_not_declared, candidate.class}}
+    end
+  end
+
+  def validate_transition(%__MODULE__{}, _candidate, _decision, _act, _projection),
+    do: {:error, :invalid_consequence_transition_input}
+
   @doc "Returns whether the declared class requires materially bound consent."
   @spec presentation_required?(t(), class()) :: boolean()
   def presentation_required?(%__MODULE__{} = surface, class) when is_binary(class),
@@ -211,7 +233,7 @@ defmodule Spectre.Surface do
       with :ok <- Portable.validate_non_empty_binary(class, :class),
            {:ok, row} <- Row.new(row),
            true <- Row.dimensions(row) != [],
-           :ok <- validate_presentation_class(class, row) do
+           :ok <- validate_class_row(class, row) do
         {:cont, {:ok, Map.put(declarations, class, row)}}
       else
         false -> {:halt, {:error, {:empty_governed_surface_row, class}}}
@@ -271,7 +293,8 @@ defmodule Spectre.Surface do
     Enum.reduce_while(value, {:ok, defaults}, fn {class, validator}, {:ok, validators} ->
       with :ok <- Portable.validate_non_empty_binary(class, :consequence_validator_class),
            true <- Map.has_key?(declarations, class),
-           :ok <- Validator.validate_id(validator) do
+           :ok <- Validator.validate_id(validator),
+           :ok <- Validator.validate_binding(class, validator) do
         {:cont, {:ok, Map.put(validators, class, validator)}}
       else
         false -> {:halt, {:error, {:consequence_validator_for_unknown_class, class}}}
@@ -288,7 +311,10 @@ defmodule Spectre.Surface do
 
     required =
       []
-      |> require_binding(row.attempt or row.read or row.write or row.govern, :target)
+      |> require_binding(
+        row.attempt or row.observe or row.read or row.write or row.govern,
+        :target
+      )
       |> require_binding(row.disclose, :destination)
       |> require_binding(row.spend, :meter)
       |> MapSet.new()
@@ -303,18 +329,22 @@ defmodule Spectre.Surface do
   defp require_binding(bindings, true, binding), do: [binding | bindings]
   defp require_binding(bindings, false, _binding), do: bindings
 
-  defp validate_presentation_class(class, row) do
+  defp validate_class_row(class, row) do
     dimensions = Row.dimensions(row)
 
-    cond do
-      class == Presentation.show_class() and dimensions != Presentation.show_dimensions() ->
-        {:error, {:invalid_presentation_show_row, dimensions}}
-
-      class != Presentation.show_class() and row.present ->
-        {:error, {:present_dimension_reserved, class}}
-
-      true ->
+    case intrinsic_dimensions(class) do
+      {:ok, ^dimensions} ->
         :ok
+
+      {:ok, expected} ->
+        {:error, {:invalid_intrinsic_surface_row, class, dimensions, expected}}
+
+      :application ->
+        reserved = Enum.filter(dimensions, &(&1 in [:delegate, :govern, :present]))
+
+        if reserved == [],
+          do: :ok,
+          else: {:error, {:reserved_surface_dimensions, class, reserved}}
     end
   end
 
@@ -390,22 +420,25 @@ defmodule Spectre.Surface do
     end
   end
 
-  defp intrinsic_consequence_class?(class) do
-    class in [
-      "scope.open",
-      "mandate.delegate",
-      "mandate.devolve",
-      "mandate.restrict",
-      "mandate.revoke",
-      "duty.dispose",
-      "surface.revise",
-      "host_profile.revise",
-      "definition.revise",
-      "data.declassify",
-      "data.erase",
-      Presentation.show_class()
-    ]
-  end
+  defp intrinsic_consequence_class?(class),
+    do: match?({:ok, _dimensions}, intrinsic_dimensions(class))
+
+  defp intrinsic_dimensions("scope.open"), do: {:ok, [:write, :govern]}
+  defp intrinsic_dimensions("mandate.delegate"), do: {:ok, [:delegate, :govern]}
+  defp intrinsic_dimensions("mandate.devolve"), do: {:ok, [:delegate, :govern]}
+  defp intrinsic_dimensions("mandate.restrict"), do: {:ok, [:govern]}
+  defp intrinsic_dimensions("mandate.revoke"), do: {:ok, [:govern]}
+  defp intrinsic_dimensions("duty.dispose"), do: {:ok, [:govern]}
+  defp intrinsic_dimensions("surface.revise"), do: {:ok, [:govern]}
+  defp intrinsic_dimensions("host_profile.revise"), do: {:ok, [:govern]}
+  defp intrinsic_dimensions("definition.revise"), do: {:ok, [:govern]}
+  defp intrinsic_dimensions("data.declassify"), do: {:ok, [:write, :govern]}
+  defp intrinsic_dimensions("data.erase"), do: {:ok, [:attempt, :write, :govern]}
+
+  defp intrinsic_dimensions("presentation.show"),
+    do: {:ok, Presentation.show_dimensions()}
+
+  defp intrinsic_dimensions(_class), do: :application
 
   defp disclosure_destinations(%Candidate{disclosure: nil}), do: []
 

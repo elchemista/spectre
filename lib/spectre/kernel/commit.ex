@@ -7,9 +7,10 @@ defmodule Spectre.Kernel.Commit do
   payloads for a sequencer to commit atomically.  A Decision is always first;
   only an admitted Decision may carry an Act.
 
-  Executor-mediated Acts add `dispatch_ready` only when their frozen Row has
-  `attempt: true`.  Ledger-internal governed consequences therefore finish at
-  Admission and can never accidentally enter the Grant path.
+  Executor-mediated Acts add `dispatch_ready`. Execution mode comes from the
+  frozen executor route, not from an effect-row dimension: a protected read or
+  disclosure may need an executor without declaring `attempt`. Ledger-internal
+  governed consequences finish at Admission and cannot enter the Grant path.
   """
 
   alias Spectre.{
@@ -53,7 +54,8 @@ defmodule Spectre.Kernel.Commit do
          {:ok, act_event} <- Event.record(:act, act),
          {:ok, meter_events} <- meter_events(act),
          {:ok, governance_events} <- governance_events(projection, act) do
-      dispatch_events = if act.row.attempt, do: [Event.dispatch_ready(act)], else: []
+      dispatch_events =
+        if Governance.executor_mediated?(act), do: [Event.dispatch_ready(act)], else: []
 
       {:ok, [decision_event, act_event] ++ meter_events ++ governance_events ++ dispatch_events}
     end
@@ -112,7 +114,14 @@ defmodule Spectre.Kernel.Commit do
     do: {:ok, []}
 
   defp meter_events(%Act{} = act) do
-    with {:ok, event} <- Event.meter(:reserve, act), do: {:ok, [event]}
+    if Governance.executor_mediated?(act) do
+      with {:ok, event} <- Event.meter(:reserve, act), do: {:ok, [event]}
+    else
+      with {:ok, reservation} <- Event.meter(:reserve, act),
+           {:ok, settlement} <- Event.meter(:settle, act) do
+        {:ok, [reservation, settlement]}
+      end
+    end
   end
 
   defp governance_events(

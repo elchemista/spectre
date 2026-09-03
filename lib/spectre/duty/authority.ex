@@ -61,6 +61,10 @@ defmodule Spectre.Duty.Authority do
 
   defp causal_mandates(%Duty{mandate_ref: nil}, nil), do: {:ok, MapSet.new()}
 
+  defp causal_mandates(%Duty{act_ref: nil, mandate_ref: mandate_ref}, nil)
+       when is_binary(mandate_ref),
+       do: {:ok, MapSet.new([mandate_ref])}
+
   defp causal_mandates(%Duty{} = duty, nil),
     do: {:error, {:duty_cause_act_not_found, duty.ref}}
 
@@ -77,7 +81,13 @@ defmodule Spectre.Duty.Authority do
     end
   end
 
-  defp causal_conflicts_frozen(_duty, nil), do: :ok
+  defp causal_conflicts_frozen(%Duty{mandate_ref: nil}, nil), do: :ok
+
+  defp causal_conflicts_frozen(%Duty{} = duty, nil) do
+    if duty.mandate_ref in duty.conflict_refs,
+      do: :ok,
+      else: {:error, {:duty_causal_conflict_not_frozen, duty.ref, duty.mandate_ref}}
+  end
 
   defp causal_conflicts_frozen(%Duty{} = duty, %Act{} = cause_act) do
     expected = Derive.conflict_refs(duty.accountable, [], cause_act)

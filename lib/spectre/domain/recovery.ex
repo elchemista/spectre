@@ -25,8 +25,16 @@ defmodule Spectre.Domain.Recovery do
   @spec recover(Ledger.Store.config(), Ledger.domain_ref(), keyword()) ::
           :not_found | {:ok, Projection.t()} | {:error, term()}
   def recover(store, domain_ref, opts \\ []) do
+    recover(store, domain_ref, %{}, opts)
+  end
+
+  @doc "Loads and replays a Domain against the exact Constitution pinned by Genesis."
+  @spec recover(Ledger.Store.config(), Ledger.domain_ref(), map(), keyword()) ::
+          :not_found | {:ok, Projection.t()} | {:error, term()}
+  def recover(store, domain_ref, constitution, opts)
+      when is_map(constitution) and not is_struct(constitution) and is_list(opts) do
     case Ledger.load(store, domain_ref, opts) do
-      {:ok, snapshot} -> recover_snapshot(snapshot, domain_ref)
+      {:ok, snapshot} -> recover_snapshot(snapshot, domain_ref, constitution)
       :not_found -> :not_found
       {:error, _reason} = error -> error
     end
@@ -74,11 +82,11 @@ defmodule Spectre.Domain.Recovery do
     end
   end
 
-  @spec recover_snapshot(map(), Ledger.domain_ref()) ::
+  @spec recover_snapshot(map(), Ledger.domain_ref(), map()) ::
           {:ok, Projection.t()} | {:error, term()}
-  defp recover_snapshot(snapshot, domain_ref) do
+  defp recover_snapshot(snapshot, domain_ref, constitution) do
     with {:ok, verified} <- Ledger.verify_snapshot(snapshot, domain_ref),
-         {:ok, projection} <- Projection.replay(verified),
+         {:ok, projection} <- Projection.replay(verified, constitution),
          :ok <- match_snapshot(projection, verified) do
       {:ok, projection}
     end

@@ -145,7 +145,9 @@ defmodule Spectre.Domain.Bootstrap do
 
   defp emergency_cannot_rewrite_itself(%Mandate{classes: classes}) do
     forbidden =
-      MapSet.new(~w(mandate.delegate surface.revise host_profile.revise definition.revise))
+      MapSet.new(
+        ~w(mandate.delegate mandate.restrict surface.revise host_profile.revise definition.revise)
+      )
 
     if Enum.any?(classes, &MapSet.member?(forbidden, &1)),
       do: {:error, :emergency_mandate_may_not_rewrite_exception},

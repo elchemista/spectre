@@ -449,8 +449,7 @@ defmodule Spectre.Domain.Sequencer do
              projection,
              config.ledger_opts,
              config.conflict_retries
-           ),
-         :ok <- validate_pending_execution_routes(projection, config) do
+           ) do
       {:ok, schedule_reconciliation(%{state | projection: projection})}
     else
       {:error, reason} -> {:stop, reason}
@@ -1070,7 +1069,12 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp recover_or_bootstrap(config) do
-    case Recovery.recover(config.store, config.domain_ref, config.ledger_opts) do
+    case Recovery.recover(
+           config.store,
+           config.domain_ref,
+           config.constitution,
+           config.ledger_opts
+         ) do
       {:ok, projection} ->
         with :ok <- PayloadStore.verify_live_references(config.payload_store, projection) do
           {:ok, projection}
@@ -1163,7 +1167,12 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp recover_bootstrapped(config) do
-    case Recovery.recover(config.store, config.domain_ref, config.ledger_opts) do
+    case Recovery.recover(
+           config.store,
+           config.domain_ref,
+           config.constitution,
+           config.ledger_opts
+         ) do
       {:ok, projection} ->
         with :ok <- PayloadStore.verify_live_references(config.payload_store, projection) do
           {:ok, projection}
@@ -1475,23 +1484,10 @@ defmodule Spectre.Domain.Sequencer do
           {:error, {:candidate_identity_conflict, candidate.identity_key}}
 
         :error ->
-          evaluate_submission(state, request, candidate, context, projection, admitted_at)
+          with :ok <- validate_candidate_execution_route(state, projection, candidate) do
+            evaluate_submission(state, request, candidate, context, projection, admitted_at)
+          end
       end
-    end
-  end
-
-  defp validate_admitted_execution_route(_state, nil), do: :ok
-
-  defp validate_admitted_execution_route(_state, %Act{row: %{attempt: false}}), do: :ok
-
-  defp validate_admitted_execution_route(state, %Act{} = act) do
-    case configured_execution_route(
-           state,
-           act.executor_ref,
-           act.executor_contract_ref
-         ) do
-      {:ok, _route} -> :ok
-      {:error, _reason} = error -> error
     end
   end
 
@@ -1590,6 +1586,9 @@ defmodule Spectre.Domain.Sequencer do
       candidate.meter_requests != %{} or candidate.observation_window_ms != 0 ->
         {:error, :invalid_governed_scope_opening_execution}
 
+      candidate.accountable_ref != Map.fetch!(draft, "accountable_ref") ->
+        {:error, :governed_scope_accountable_mismatch}
+
       child_context.scope_ref not in candidate.target_refs ->
         {:error, :governed_scope_opening_target_missing}
 
@@ -1622,10 +1621,9 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp evaluate_submission(state, request, candidate, context, projection, admitted_at) do
+  defp evaluate_submission(_state, request, candidate, context, projection, admitted_at) do
     with {:ok, decision, act} <-
            GovernedKernel.evaluate(candidate, context, projection, admitted_at),
-         :ok <- validate_admitted_execution_route(state, act),
          {:ok, payloads} <- Commit.payloads(projection, decision, act),
          {:ok, next_projection} <- apply_payloads(projection, payloads) do
       {:ok, success_plan(request, candidate), next_projection, payloads}
@@ -1718,11 +1716,26 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp maybe_mint_grant(_state, nil), do: {:ok, nil}
-  defp maybe_mint_grant(_state, %Act{row: %{attempt: false}}), do: {:ok, nil}
 
   defp maybe_mint_grant(state, %Act{} = act) do
+    case Governance.execution_mode(act) do
+      {:ok, :ledger_internal} ->
+        {:ok, nil}
+
+      {:ok, :executor_mediated} ->
+        mint_executor_grant(state, act)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp mint_executor_grant(state, act) do
     cond do
       Map.has_key?(state.projection.attempts_by_act, act.ref) ->
+        {:ok, nil}
+
+      Map.has_key?(state.projection.dispatch_cancellations, act.ref) ->
         {:ok, nil}
 
       not MapSet.member?(state.projection.dispatch_ready, act.ref) ->
@@ -1733,6 +1746,18 @@ defmodule Spectre.Domain.Sequencer do
              :ok <- duties_materialized(state.projection, state.constitution, now),
              :ok <- mandate_still_active(state.projection, act, now),
              :ok <- verify_act_payloads(state, act),
+             {:ok, route} <-
+               configured_execution_route(
+                 state,
+                 act.executor_ref,
+                 act.executor_contract_ref
+               ),
+             :ok <-
+               execution_profile_supports_act(
+                 state.projection,
+                 act,
+                 route.broker_descriptor
+               ),
              {:ok, nonce} <- operational_id(state, "grant") do
           Grant.mint(
             %{
@@ -1835,8 +1860,8 @@ defmodule Spectre.Domain.Sequencer do
     nonce_digest = nonce_digest(grant.nonce)
 
     cond do
-      not act.row.attempt ->
-        {:error, {:act_not_externally_attemptable, act.ref}}
+      not Governance.executor_mediated?(act) ->
+        {:error, {:act_not_executor_mediated, act.ref}}
 
       not MapSet.member?(projection.dispatch_ready, act.ref) ->
         {:error, {:act_not_dispatch_ready, act.ref}}
@@ -1928,7 +1953,11 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp broker_supports_act(projection, act, broker) do
-    broker_profile = broker.descriptor.profile
+    execution_profile_supports_act(projection, act, broker.descriptor)
+  end
+
+  defp execution_profile_supports_act(projection, act, descriptor) do
+    broker_profile = descriptor.profile
 
     with {:ok, host_profile} <- Map.fetch(projection.host_profiles, act.host_profile_ref),
          true <- Boundary.profile_covers?(broker_profile, host_profile.mode) do
@@ -1938,6 +1967,39 @@ defmodule Spectre.Domain.Sequencer do
       false -> {:error, {:broker_profile_too_weak, broker_profile, act.host_profile_ref}}
     end
   end
+
+  defp validate_candidate_execution_route(state, projection, %Candidate{} = candidate) do
+    case Governance.execution_mode(candidate) do
+      {:ok, :ledger_internal} ->
+        :ok
+
+      {:ok, :executor_mediated} ->
+        with {:ok, route} <-
+               configured_execution_route(
+                 state,
+                 candidate.executor_ref,
+                 candidate.executor_contract_ref
+               ),
+             :ok <- candidate_execution_profile(projection, route.broker_descriptor) do
+          :ok
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp candidate_execution_profile(
+         %Projection{host_profile: %Spectre.HostProfile{} = profile},
+         %{profile: broker_profile}
+       ) do
+    if Boundary.profile_covers?(broker_profile, profile.mode),
+      do: :ok,
+      else: {:error, {:broker_profile_too_weak, broker_profile, profile.ref}}
+  end
+
+  defp candidate_execution_profile(%Projection{}, _descriptor),
+    do: {:error, :host_profile_not_initialized}
 
   defp configured_execution_route(state, executor_ref, contract_ref) do
     with :ok <- Portable.validate_ref(executor_ref, :executor_ref),
@@ -1956,23 +2018,6 @@ defmodule Spectre.Domain.Sequencer do
       :error -> {:error, {:executor_route_not_configured, executor_ref, contract_ref}}
       {:error, _reason} = error -> error
     end
-  end
-
-  defp validate_pending_execution_routes(projection, config) do
-    Enum.reduce_while(projection.dispatch_ready, :ok, fn act_ref, :ok ->
-      with {:ok, act} <- Map.fetch(projection.acts, act_ref),
-           {:ok, _route} <-
-             configured_execution_route(
-               config,
-               act.executor_ref,
-               act.executor_contract_ref
-             ) do
-        {:cont, :ok}
-      else
-        :error -> {:halt, {:error, {:dispatch_act_not_found, act_ref}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
   end
 
   defp configured_broker(%{broker: nil}), do: {:error, :broker_not_configured}
@@ -3129,7 +3174,7 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp recover_verified(state, ledger_opts) do
-    case Recovery.recover(state.store, state.domain_ref, ledger_opts) do
+    case Recovery.recover(state.store, state.domain_ref, state.constitution, ledger_opts) do
       {:ok, projection} ->
         with :ok <- Bootstrap.verify_projection(projection, state.bootstrap_opts),
              :ok <- PayloadStore.verify_live_references(state.payload_store, projection) do

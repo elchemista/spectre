@@ -94,7 +94,7 @@ defmodule Spectre.Constitution do
   def validate_duty_routes(rules, known_authority_refs) do
     known = MapSet.new(known_authority_refs)
 
-    Enum.reduce_while(@discretionary_duty_classes, :ok, fn class, :ok ->
+    Enum.reduce_while(discretionary_duty_classes(rules), :ok, fn class, :ok ->
       authority_refs = disposition_authority_refs(rules, class)
 
       cond do
@@ -108,6 +108,21 @@ defmodule Spectre.Constitution do
           {:cont, :ok}
       end
     end)
+  end
+
+  defp discretionary_duty_classes(rules) do
+    configured_classes =
+      rules
+      |> field(:duty_rules, %{})
+      |> Map.keys()
+      |> Enum.map(fn class ->
+        {:ok, normalized} = configurable_duty_class(class)
+        normalized
+      end)
+
+    (@discretionary_duty_classes ++ configured_classes)
+    |> Enum.uniq()
+    |> Enum.sort_by(&to_string/1)
   end
 
   defp portable_rules(rules) do
@@ -151,6 +166,7 @@ defmodule Spectre.Constitution do
 
   defp validate_duty_rule_fields(class, rule) do
     authorities = field(rule, :disposition_authority_refs, [])
+    cause_sources = field(rule, :cause_source_refs, [])
     conflicts = field(rule, :conflict_refs, [])
     closing = field(rule, :closing_conditions, field(rule, :closure_conditions, []))
     containment = field(rule, :containment, %{})
@@ -159,6 +175,13 @@ defmodule Spectre.Constitution do
       not is_list(authorities) or
           not Enum.all?(authorities, &(is_binary(&1) and &1 != "")) ->
         {:error, {:invalid_duty_disposition_authorities, class}}
+
+      not is_list(cause_sources) or
+          not Enum.all?(cause_sources, &(is_binary(&1) and &1 != "")) ->
+        {:error, {:invalid_duty_cause_sources, class}}
+
+      is_binary(class) and cause_sources == [] ->
+        {:error, {:application_duty_cause_source_required, class}}
 
       not is_list(conflicts) or
           not Enum.all?(conflicts, &(is_binary(&1) and &1 != "")) ->

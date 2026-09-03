@@ -12,7 +12,7 @@ defmodule Spectre.Audit do
   attestation scheme that is external to the ledger.
   """
 
-  alias Spectre.Duty.{Derive, Disposition}
+  alias Spectre.Duty.{Derive, Disposition, EvidenceCause}
   alias Spectre.Duty.Authority, as: DutyAuthority
   alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
@@ -895,6 +895,9 @@ defmodule Spectre.Audit do
         act.scope_ref != opening.parent_ref ->
           {:error, {:scope_opening_parent_act_mismatch, opening.ref, act.ref}}
 
+        act.accountable_ref != opening.accountable_ref ->
+          {:error, {:scope_opening_accountable_act_mismatch, opening.ref, act.ref}}
+
         opening.ref not in act.target_refs ->
           {:error, {:scope_opening_target_missing, opening.ref, act.ref}}
 
@@ -1020,8 +1023,37 @@ defmodule Spectre.Audit do
          :ok <- absent(state.evidence, evidence.ref, :evidence),
          :ok <- validate_evidence_scope_binding(state, evidence),
          :ok <- validate_evidence_lineage(state, evidence, event),
-         :ok <- validate_presentation_approval_evidence(state, evidence) do
+         :ok <- validate_presentation_approval_evidence(state, evidence),
+         :ok <- validate_duty_cause_evidence(state, evidence) do
       {:ok, %{state | evidence: Map.put(state.evidence, evidence.ref, evidence)}}
+    end
+  end
+
+  defp validate_duty_cause_evidence(state, evidence) do
+    case EvidenceCause.extract(evidence, state.constitution) do
+      :not_cause ->
+        :ok
+
+      {:ok, cause} ->
+        with {:ok, _accountable} <-
+               fetch(state.principals, cause.accountable_ref, :duty_evidence_accountable),
+             {:ok, _mandate} <- optional_fetch(state.mandates, cause.mandate_ref, :mandate),
+             :ok <-
+               ErasureAnalysis.validate_evidence_available(
+                 state,
+                 cause.related_evidence_refs
+               ),
+             {:ok, _evidence} <-
+               fetch_many(
+                 state.evidence,
+                 cause.related_evidence_refs,
+                 :duty_related_evidence
+               ) do
+          :ok
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -1955,10 +1987,26 @@ defmodule Spectre.Audit do
           state.last_event
         )
 
-    if outcome_in_batch? or silent_attempt? or cancellation_release?,
+    internal_settlement? = internal_settlement_evidenced?(state, event, operation, act_ref)
+
+    if outcome_in_batch? or silent_attempt? or cancellation_release? or internal_settlement?,
       do: :ok,
       else: {:error, {:meter_disposition_without_same_batch_evidence, act_ref, operation}}
   end
+
+  defp internal_settlement_evidenced?(state, event, :settle, act_ref) do
+    case {Map.get(state.acts, act_ref), Map.get(state.act_meta, act_ref), state.last_event} do
+      {%Act{row: %{spend: true}} = act, %{batch_id: batch_id},
+       %{type: "meter_reserved", batch_id: batch_id, data: %{"act_ref" => ^act_ref}}} ->
+        Governance.ledger_internal?(act) and has_reservations?(act) and
+          batch_id == event.batch_id
+
+      _other ->
+        false
+    end
+  end
+
+  defp internal_settlement_evidenced?(_state, _event, _operation, _act_ref), do: false
 
   defp meter_operation("meter_settled"), do: :settle
   defp meter_operation("meter_released"), do: :release
@@ -2127,7 +2175,7 @@ defmodule Spectre.Audit do
     with {:ok, act} <- fetch(state.acts, act_ref, :act),
          %{batch_id: batch_id} <- Map.get(state.act_meta, act_ref),
          true <- batch_id == event.batch_id,
-         true <- act.row.attempt,
+         true <- Governance.executor_mediated?(act),
          true <- event.data["executor_ref"] == act.executor_ref,
          true <- event.data["executor_contract_ref"] == act.executor_contract_ref,
          false <- MapSet.member?(state.dispatch_ready, act_ref),
@@ -2170,8 +2218,8 @@ defmodule Spectre.Audit do
     data = event.data
 
     cond do
-      not act.row.attempt ->
-        {:error, {:dispatch_cancellation_act_not_attemptable, act.ref}}
+      not Governance.executor_mediated?(act) ->
+        {:error, {:dispatch_cancellation_act_not_executor_mediated, act.ref}}
 
       not MapSet.member?(state.dispatch_ready, act.ref) ->
         {:error, {:dispatch_cancellation_not_pending, act.ref}}
@@ -2386,8 +2434,8 @@ defmodule Spectre.Audit do
 
   defp attempt_available(state, act) do
     cond do
-      not act.row.attempt ->
-        {:error, {:act_not_attemptable, act.ref}}
+      not Governance.executor_mediated?(act) ->
+        {:error, {:act_not_executor_mediated, act.ref}}
 
       not MapSet.member?(state.dispatch_ready, act.ref) ->
         {:error, {:act_not_dispatch_ready, act.ref}}
@@ -3131,8 +3179,7 @@ defmodule Spectre.Audit do
        ),
        do: {:error, {:invalid_erasure_verifiability_duty_cause, duty.ref}}
 
-  defp validate_builtin_duty(_state, %Duty{class: class} = duty) when is_binary(class),
-    do: {:error, {:application_duty_requires_canonical_cause, duty.ref, class}}
+  defp validate_builtin_duty(_state, %Duty{class: class}) when is_binary(class), do: :ok
 
   defp valid_builtin_duty_containment?(duty, act) do
     case duty.containment do
@@ -3689,7 +3736,7 @@ defmodule Spectre.Audit do
     |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, expired} ->
       with {:ok, act} <- fetch(state.acts, act_ref, :act),
            {:ok, mandate} <- fetch(state.mandates, act.mandate_ref, :mandate),
-           true <- act.row.attempt,
+           true <- Governance.executor_mediated?(act),
            true <- act.mandate_revision == mandate.revision,
            false <- Map.has_key?(state.attempts_by_act, act.ref),
            false <- Map.has_key?(state.dispatch_cancellations, act.ref) do
@@ -3807,6 +3854,7 @@ defmodule Spectre.Audit do
   defp complete_act_batch(before, state, events, event) do
     act = Map.fetch!(state.acts, event.identity)
     reservation_events = events_for_act(events, "meter_reserved", act.ref)
+    settlement_events = events_for_act(events, "meter_settled", act.ref)
     dispatch_events = events_for_act(events, "dispatch_ready", act.ref)
 
     cond do
@@ -3816,14 +3864,26 @@ defmodule Spectre.Audit do
       not has_reservations?(act) and reservation_events != [] ->
         {:error, {:act_has_unexpected_reservation, act.ref}}
 
-      act.row.attempt and length(dispatch_events) != 1 ->
+      internal_spend_act?(act) and length(settlement_events) != 1 ->
+        {:error, {:internal_act_settlement_batch_incomplete, act.ref}}
+
+      not internal_spend_act?(act) and settlement_events != [] ->
+        {:error, {:act_has_unexpected_admission_settlement, act.ref}}
+
+      Governance.executor_mediated?(act) and length(dispatch_events) != 1 ->
         {:error, {:act_dispatch_batch_incomplete, act.ref}}
 
-      not act.row.attempt and dispatch_events != [] ->
+      not Governance.executor_mediated?(act) and dispatch_events != [] ->
         {:error, {:internal_act_has_dispatch, act.ref}}
 
-      Enum.any?(reservation_events ++ dispatch_events, &(&1.batch_index <= event.batch_index)) ->
+      Enum.any?(reservation_events ++ settlement_events ++ dispatch_events, fn effect ->
+        effect.batch_index <= event.batch_index
+      end) ->
         {:error, {:admission_effect_precedes_act, act.ref}}
+
+      internal_spend_act?(act) and
+          not exact_internal_settlement?(reservation_events, settlement_events, event.batch_index) ->
+        {:error, {:internal_act_settlement_not_adjacent, act.ref}}
 
       true ->
         governance_effect_complete(before, state, events, act, event.batch_index)
@@ -4557,7 +4617,9 @@ defmodule Spectre.Audit do
            fetch(state.mandates, state.genesis.emergency_mandate_ref, :emergency_mandate),
          {:ok, maximum_duration} <- emergency_max_duration(constitution) do
       forbidden =
-        MapSet.new(~w(mandate.delegate surface.revise host_profile.revise definition.revise))
+        MapSet.new(
+          ~w(mandate.delegate mandate.restrict surface.revise host_profile.revise definition.revise)
+        )
 
       cond do
         mandate.delegation != %{"allowed" => false, "max_depth" => 0} ->
@@ -4602,7 +4664,8 @@ defmodule Spectre.Audit do
         has_reservations?(act) and not Map.has_key?(state.reservation_states, act.ref) ->
           {:halt, {:error, {:act_reservation_missing, act.ref}}}
 
-        act.row.attempt and not Map.has_key?(state.attempts_by_act, act.ref) and
+        Governance.executor_mediated?(act) and
+          not Map.has_key?(state.attempts_by_act, act.ref) and
           not MapSet.member?(state.dispatch_ready, act.ref) and
             not Map.has_key?(state.dispatch_cancellations, act.ref) ->
           {:halt, {:error, {:act_dispatch_state_missing, act.ref}}}
@@ -5305,6 +5368,17 @@ defmodule Spectre.Audit do
   end
 
   defp has_reservations?(%{reservations: reservations}), do: reservations not in [%{}, []]
+
+  defp internal_spend_act?(%Act{row: %{spend: true}} = act),
+    do: Governance.ledger_internal?(act) and has_reservations?(act)
+
+  defp internal_spend_act?(_act), do: false
+
+  defp exact_internal_settlement?([reservation], [settlement], act_index) do
+    reservation.batch_index == act_index + 1 and settlement.batch_index == act_index + 2
+  end
+
+  defp exact_internal_settlement?(_reservations, _settlements, _act_index), do: false
 
   defp exact_row?(%Row{} = row, dimensions), do: Row.dimensions(row) == dimensions
 

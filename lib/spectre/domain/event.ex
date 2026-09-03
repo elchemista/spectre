@@ -2,6 +2,7 @@ defmodule Spectre.Domain.Event do
   @moduledoc false
 
   alias Spectre.Domain.Projection
+  alias Spectre.Governance
 
   @record_events %{
     genesis: {"genesis_recorded", Spectre.Genesis},
@@ -239,8 +240,8 @@ defmodule Spectre.Domain.Event do
       when reason in [:mandate_revoked, :mandate_restricted] do
     with {:ok, act} <- Spectre.Act.new(act),
          {:ok, cause_act} <- Spectre.Act.new(cause_act),
-         true <- act.row.attempt,
-         false <- cause_act.row.attempt do
+         :ok <- executor_mediated_dispatch(act),
+         :ok <- ledger_internal_cause(cause_act) do
       {:ok,
        Projection.event("dispatch_cancelled", "dispatch_cancelled:" <> act.ref, %{
          "act_ref" => act.ref,
@@ -250,8 +251,6 @@ defmodule Spectre.Domain.Event do
          "cancelled_at" => cause_act.committed_at
        })}
     else
-      true -> {:error, :dispatch_cancellation_cause_is_external}
-      false -> {:error, :dispatch_cancellation_requires_attempt_act}
       {:error, _reason} = error -> error
     end
   end
@@ -263,7 +262,7 @@ defmodule Spectre.Domain.Event do
       ) do
     with {:ok, act} <- Spectre.Act.new(act),
          {:ok, duty} <- Spectre.Duty.new(duty),
-         true <- act.row.attempt,
+         true <- Governance.executor_mediated?(act),
          true <- duty.status == :open,
          true <- duty.act_ref == act.ref,
          true <- is_nil(duty.attempt_ref),
@@ -289,7 +288,7 @@ defmodule Spectre.Domain.Event do
       ) do
     with {:ok, act} <- Spectre.Act.new(act),
          {:ok, mandate} <- Spectre.Mandate.new(mandate),
-         true <- act.row.attempt,
+         true <- Governance.executor_mediated?(act),
          true <- act.mandate_ref == mandate.ref,
          true <- act.mandate_revision == mandate.revision do
       {:ok,
@@ -308,6 +307,18 @@ defmodule Spectre.Domain.Event do
 
   def dispatch_cancelled(_act, _cause_act, _reason),
     do: {:error, :invalid_dispatch_cancellation_event}
+
+  defp executor_mediated_dispatch(act) do
+    if Governance.executor_mediated?(act),
+      do: :ok,
+      else: {:error, :dispatch_cancellation_requires_executor_mediated_act}
+  end
+
+  defp ledger_internal_cause(act) do
+    if Governance.ledger_internal?(act),
+      do: :ok,
+      else: {:error, :dispatch_cancellation_cause_not_ledger_internal}
+  end
 
   @spec mandate_revoked(String.t(), String.t(), integer()) ::
           map() | {:error, :invalid_mandate_revocation_event}

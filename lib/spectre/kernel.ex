@@ -115,7 +115,16 @@ defmodule Spectre.Kernel do
 
         with {:ok, decision} <- Decision.new(decision_attrs),
              {:ok, act} <- maybe_build_act(candidate, decision, time) do
-          {:ok, decision, act}
+          validate_transition(
+            candidate,
+            context,
+            projection,
+            surface,
+            view,
+            decision,
+            act,
+            time
+          )
         end
       else
         {:error, reason} -> forced_decision(candidate, context, view, time, :refused, [reason])
@@ -130,6 +139,34 @@ defmodule Spectre.Kernel do
       ])
     end
   end
+
+  defp validate_transition(
+         candidate,
+         context,
+         projection,
+         surface,
+         view,
+         %Decision{outcome: :admitted} = decision,
+         %Act{} = act,
+         time
+       ) do
+    case Surface.validate_transition(surface, candidate, decision, act, projection) do
+      :ok -> {:ok, decision, act}
+      {:error, reason} -> forced_decision(candidate, context, view, time, :refused, [reason])
+    end
+  end
+
+  defp validate_transition(
+         _candidate,
+         _context,
+         _projection,
+         _surface,
+         _view,
+         %Decision{} = decision,
+         nil,
+         _time
+       ),
+       do: {:ok, decision, nil}
 
   defp validate_disclosure(%Candidate{disclosure: nil}, _projection), do: :ok
 

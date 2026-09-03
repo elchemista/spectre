@@ -267,9 +267,6 @@ defmodule Spectre.Scope.Opening do
       promised?(opening) and not promise_bound_to_scope?(opening) ->
         {:error, :scope_promise_condition_not_bound_to_scope}
 
-      promised?(opening) and opening.accountable_ref != opening.opened_by_ref ->
-        {:error, :scope_promise_must_be_self_accountable}
-
       not is_integer(opening.opened_at) ->
         {:error, {:invalid_scope_opened_at, opening.opened_at}}
 

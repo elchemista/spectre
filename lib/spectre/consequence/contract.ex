@@ -5,7 +5,9 @@ defmodule Spectre.Consequence.Contract do
   A contract is deliberately small. Maps name every allowed key, `$list`
   describes a homogeneous list, `$optional` and `$nullable` are explicit, and
   `$const` fixes a literal value. Scalar leaves use one of the documented type
-  names. The four binding leaves (`subject_ref`, `subject_refs`, `target_ref`
+  names; `portable` accepts any canonical portable value so application tools
+  can carry their own nested arguments. The four binding leaves (`subject_ref`,
+  `subject_refs`, `target_ref`
   and `target_refs`) derive the exact Candidate endpoints. `destination_ref(s)`
   additionally bind the disclosure destination, while `meter_requests` binds
   the exact quantitative request. A proposer therefore cannot validate
@@ -21,7 +23,7 @@ defmodule Spectre.Consequence.Contract do
   @fields [:schema_version, :ref, :shape]
   @scalar_types ~w(
     binary string ref refs integer non_negative_integer positive_integer
-    float number boolean atom nil portable_scalar
+    float number boolean atom nil portable portable_scalar
     subject_ref subject_refs target_ref target_refs destination_ref destination_refs
     meter_requests
   )
@@ -187,6 +189,13 @@ defmodule Spectre.Consequence.Contract do
 
   defp validate_value("refs", value, path, bindings),
     do: validate_refs(value, path, bindings)
+
+  defp validate_value("portable", value, path, bindings) do
+    case Portable.validate(value) do
+      :ok -> {:ok, bindings}
+      {:error, _reason} -> shape_error(path, "portable", value)
+    end
+  end
 
   defp validate_value(type, value, path, bindings) when type in @scalar_types do
     if scalar?(type, value) do

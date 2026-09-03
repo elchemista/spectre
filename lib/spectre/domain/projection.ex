@@ -12,9 +12,11 @@ defmodule Spectre.Domain.Projection do
     Act,
     Candidate,
     Condition,
+    Constitution,
     Declassification,
     Definition,
     Disclosure,
+    Duty,
     Erasure,
     Evidence,
     Governance,
@@ -27,7 +29,7 @@ defmodule Spectre.Domain.Projection do
     Surface
   }
 
-  alias Spectre.Duty.{Derive, Disposition}
+  alias Spectre.Duty.{Derive, Disposition, EvidenceCause}
   alias Spectre.Duty.Authority, as: DutyAuthority
   alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
@@ -111,6 +113,7 @@ defmodule Spectre.Domain.Projection do
 
   @enforce_keys [:domain_ref]
   defstruct domain_ref: nil,
+            constitution: %{},
             revision: 0,
             head_digest: Entry.genesis_digest(),
             event_recorded_at: %{},
@@ -156,6 +159,7 @@ defmodule Spectre.Domain.Projection do
 
   @type t :: %__MODULE__{
           domain_ref: String.t(),
+          constitution: map(),
           revision: non_neg_integer(),
           head_digest: String.t(),
           event_recorded_at: %{
@@ -241,25 +245,34 @@ defmodule Spectre.Domain.Projection do
           required(:amounts) => %{optional(String.t()) => pos_integer()}
         }
 
-  @spec new(String.t()) :: t()
-  def new(domain_ref) when is_binary(domain_ref) and domain_ref != "",
-    do: %__MODULE__{domain_ref: domain_ref}
+  @spec new(String.t(), map()) :: t()
+  def new(domain_ref, constitution \\ %{})
+
+  def new(domain_ref, constitution)
+      when is_binary(domain_ref) and domain_ref != "" and is_map(constitution) and
+             not is_struct(constitution),
+      do: %__MODULE__{domain_ref: domain_ref, constitution: constitution}
 
   @doc "Rebuilds a projection only after independently verifying the supplied ledger snapshot."
-  @spec replay(Ledger.snapshot()) :: {:ok, t()} | {:error, term()}
-  def replay(snapshot) when is_map(snapshot) and not is_struct(snapshot) do
-    with {:ok, verified} <- Ledger.verify_snapshot(snapshot) do
-      replay_entries(verified.domain_ref, verified.entries)
+  @spec replay(Ledger.snapshot(), map()) :: {:ok, t()} | {:error, term()}
+  def replay(snapshot, constitution \\ %{})
+
+  def replay(snapshot, constitution)
+      when is_map(snapshot) and not is_struct(snapshot) and is_map(constitution) and
+             not is_struct(constitution) do
+    with :ok <- Constitution.validate(constitution),
+         {:ok, verified} <- Ledger.verify_snapshot(snapshot) do
+      replay_entries(verified.domain_ref, verified.entries, constitution)
     end
   end
 
-  def replay(_snapshot), do: {:error, :invalid_domain_snapshot}
+  def replay(_snapshot, _constitution), do: {:error, :invalid_domain_snapshot}
 
-  @spec replay_entries(String.t(), [Entry.t()]) :: {:ok, t()} | {:error, term()}
-  defp replay_entries(domain_ref, entries) do
+  @spec replay_entries(String.t(), [Entry.t()], map()) :: {:ok, t()} | {:error, term()}
+  defp replay_entries(domain_ref, entries, constitution) do
     entries
     |> Enum.chunk_by(& &1.batch_id)
-    |> Enum.reduce_while({:ok, new(domain_ref)}, fn batch, {:ok, projection} ->
+    |> Enum.reduce_while({:ok, new(domain_ref, constitution)}, fn batch, {:ok, projection} ->
       case replay_batch(projection, batch) do
         {:ok, projection} -> {:cont, {:ok, projection}}
         {:error, _reason} = error -> {:halt, error}
@@ -346,7 +359,7 @@ defmodule Spectre.Domain.Projection do
     |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, expired} ->
       with {:ok, act} <- fetch_act(projection, act_ref),
            {:ok, mandate} <- fetch_mandate(projection, act.mandate_ref),
-           true <- act.row.attempt,
+           true <- Governance.executor_mediated?(act),
            true <- act.mandate_revision == mandate.revision,
            false <- Map.has_key?(projection.attempts_by_act, act.ref),
            false <- Map.has_key?(projection.dispatch_cancellations, act.ref) do
@@ -476,7 +489,11 @@ defmodule Spectre.Domain.Projection do
           not batch_event?(events, "meter_reserved", "meter_reserved:" <> act.ref, event.index) ->
         {:error, {:act_reservation_missing_from_admission_batch, act.ref}}
 
-      act.row.attempt and
+      has_reservations?(act) and not Governance.executor_mediated?(act) and
+          not internal_settlement_at?(events, act, event.index) ->
+        {:error, {:internal_act_settlement_missing_from_admission_batch, act.ref}}
+
+      Governance.executor_mediated?(act) and
           not batch_event?(events, "dispatch_ready", "dispatch_ready:" <> act.ref, event.index) ->
         {:error, {:act_dispatch_missing_from_admission_batch, act.ref}}
 
@@ -1215,10 +1232,15 @@ defmodule Spectre.Domain.Projection do
                    validate_reserve_batch_event(events, event)
 
                  "meter_settled" ->
-                   validate_disposition_batch_event(events, event, [:succeeded, :failed])
+                   validate_disposition_batch_event(projection, events, event, [
+                     :succeeded,
+                     :failed
+                   ])
 
                  "meter_released" ->
-                   validate_disposition_batch_event(events, event, [:definitive_no_effect])
+                   validate_disposition_batch_event(projection, events, event, [
+                     :definitive_no_effect
+                   ])
 
                  "meter_suspended" ->
                    validate_suspend_batch_event(before, projection, events, event)
@@ -1250,7 +1272,7 @@ defmodule Spectre.Domain.Projection do
       else: {:error, {:meter_reservation_outside_admission_batch, act_ref}}
   end
 
-  defp validate_disposition_batch_event(events, event, allowed_statuses) do
+  defp validate_disposition_batch_event(projection, events, event, allowed_statuses) do
     act_ref = field(event.data, :act_ref)
 
     outcome_disposition? =
@@ -1269,7 +1291,14 @@ defmodule Spectre.Domain.Projection do
             false
         end
 
-    if outcome_disposition? or cancellation_release? do
+    internal_settlement? =
+      event.type == "meter_settled" and
+        case Map.get(projection.acts, act_ref) do
+          %Act{} = act -> internal_settlement_at?(events, act, event.index - 2)
+          nil -> false
+        end
+
+    if outcome_disposition? or cancellation_release? or internal_settlement? do
       :ok
     else
       {:error, {:meter_disposition_outside_outcome_batch, act_ref, event.type}}
@@ -1399,7 +1428,8 @@ defmodule Spectre.Domain.Projection do
         has_reservations?(act) and not Map.has_key?(projection.reservation_states, act.ref) ->
           {:halt, {:error, {:act_reservation_not_recorded, act.ref}}}
 
-        act.row.attempt and not Map.has_key?(projection.attempts_by_act, act.ref) and
+        Governance.executor_mediated?(act) and
+          not Map.has_key?(projection.attempts_by_act, act.ref) and
           not MapSet.member?(projection.dispatch_ready, act.ref) and
             not Map.has_key?(projection.dispatch_cancellations, act.ref) ->
           {:halt, {:error, {:act_dispatch_state_missing, act.ref}}}
@@ -2242,7 +2272,8 @@ defmodule Spectre.Domain.Projection do
          :ok <- unique(projection.evidence, identity, :evidence),
          :ok <- validate_evidence_scope_binding(projection, evidence),
          :ok <- validate_evidence_lineage(projection, evidence),
-         :ok <- validate_presentation_approval_evidence(projection, evidence) do
+         :ok <- validate_presentation_approval_evidence(projection, evidence),
+         :ok <- validate_duty_cause_evidence(projection, evidence) do
       {:ok, %{projection | evidence: Map.put(projection.evidence, identity, evidence)}}
     end
   end
@@ -2577,6 +2608,9 @@ defmodule Spectre.Domain.Projection do
 
         act.scope_ref != opening.parent_ref ->
           {:error, {:scope_opening_parent_act_mismatch, opening.ref, act.ref}}
+
+        act.accountable_ref != opening.accountable_ref ->
+          {:error, {:scope_opening_accountable_act_mismatch, opening.ref, act.ref}}
 
         opening.ref not in act.target_refs ->
           {:error, {:scope_opening_target_missing, opening.ref, act.ref}}
@@ -3103,8 +3137,8 @@ defmodule Spectre.Domain.Projection do
 
   defp attempt_available(projection, attempt, act) do
     cond do
-      not act.row.attempt ->
-        {:error, {:act_not_externally_attemptable, act.ref}}
+      not Governance.executor_mediated?(act) ->
+        {:error, {:act_not_executor_mediated, act.ref}}
 
       not MapSet.member?(projection.dispatch_ready, act.ref) ->
         {:error, {:act_not_dispatch_ready, act.ref}}
@@ -3769,8 +3803,8 @@ defmodule Spectre.Domain.Projection do
 
   defp validate_dispatch(projection, act, data) do
     cond do
-      not act.row.attempt ->
-        {:error, {:act_not_externally_attemptable, act.ref}}
+      not Governance.executor_mediated?(act) ->
+        {:error, {:act_not_executor_mediated, act.ref}}
 
       field(data, :executor_ref) != act.executor_ref ->
         {:error, {:dispatch_executor_mismatch, act.ref}}
@@ -3801,8 +3835,8 @@ defmodule Spectre.Domain.Projection do
 
   defp validate_dispatch_cancellation(projection, act, data) do
     cond do
-      not act.row.attempt ->
-        {:error, {:dispatch_cancellation_act_not_attemptable, act.ref}}
+      not Governance.executor_mediated?(act) ->
+        {:error, {:dispatch_cancellation_act_not_executor_mediated, act.ref}}
 
       not MapSet.member?(projection.dispatch_ready, act.ref) ->
         {:error, {:dispatch_cancellation_not_pending, act.ref}}
@@ -4075,6 +4109,42 @@ defmodule Spectre.Domain.Projection do
     end
   end
 
+  defp validate_duty_cause_evidence(projection, evidence) do
+    case EvidenceCause.extract(evidence, projection.constitution) do
+      :not_cause ->
+        :ok
+
+      {:ok, cause} ->
+        with true <- Map.has_key?(projection.principals, cause.accountable_ref),
+             :ok <- optional_mandate_exists(projection, cause.mandate_ref),
+             :ok <-
+               ErasureAnalysis.validate_evidence_available(
+                 projection,
+                 cause.related_evidence_refs
+               ),
+             :ok <- evidence_exists(projection, cause.related_evidence_refs) do
+          :ok
+        else
+          false ->
+            {:error, {:duty_evidence_accountable_not_found, evidence.ref, cause.accountable_ref}}
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp optional_mandate_exists(_projection, nil), do: :ok
+
+  defp optional_mandate_exists(projection, mandate_ref) do
+    if Map.has_key?(projection.mandates, mandate_ref),
+      do: :ok,
+      else: {:error, {:duty_evidence_mandate_not_found, mandate_ref}}
+  end
+
   defp validate_evidence_lineage(_projection, %Evidence{provenance: :observed, parent_refs: []}),
     do: :ok
 
@@ -4157,14 +4227,27 @@ defmodule Spectre.Domain.Projection do
   end
 
   defp duty_required_at_prefix(projection, duty) do
-    required? =
+    cause =
       projection
-      |> Derive.required_duties(%{}, duty.opened_at)
-      |> Enum.any?(&(&1.cause_key == duty.cause_key))
+      |> Derive.required_duties(projection.constitution, duty.opened_at)
+      |> Enum.find(&(&1.cause_key == duty.cause_key))
 
-    if required?,
-      do: :ok,
-      else: {:error, {:duty_cause_not_required_at_prefix, duty.ref}}
+    case cause do
+      nil ->
+        {:error, {:duty_cause_not_required_at_prefix, duty.ref}}
+
+      cause ->
+        with {:ok, expected} <-
+               cause
+               |> Derive.materialization_attrs(duty.opened_at)
+               |> Duty.new(),
+             true <- expected == duty do
+          :ok
+        else
+          false -> {:error, {:duty_cause_materialization_mismatch, duty.ref}}
+          {:error, reason} -> {:error, {:invalid_required_duty, duty.cause_key, reason}}
+        end
+    end
   end
 
   defp match_duty_act(_projection, %{act_ref: nil}), do: :ok
@@ -4347,9 +4430,9 @@ defmodule Spectre.Domain.Projection do
        ),
        do: {:error, {:invalid_erasure_verifiability_duty_cause, duty.ref}}
 
-  defp validate_builtin_duty_cause(_projection, %{class: class} = duty)
+  defp validate_builtin_duty_cause(_projection, %{class: class})
        when is_binary(class),
-       do: {:error, {:application_duty_requires_canonical_cause, duty.ref, class}}
+       do: :ok
 
   defp duty_conflicts_include_cause_roles?(duty, act) when is_map(act) do
     duty.accountable
@@ -5246,6 +5329,9 @@ defmodule Spectre.Domain.Projection do
       Enum.any?(outcomes, &(&1.status in allowed_statuses)) ->
         :ok
 
+      operation == :settle and internal_spend_act?(Map.get(projection.acts, act_ref)) ->
+        :ok
+
       operation == :release and Map.has_key?(projection.dispatch_cancellations, act_ref) ->
         :ok
 
@@ -5370,6 +5456,22 @@ defmodule Spectre.Domain.Projection do
 
   defp has_reservations?(%{reservations: reservations}),
     do: reservations not in [%{}, []]
+
+  defp internal_settlement_at?(events, %Act{} = act, act_index) do
+    case {event_at(events, act_index + 1), event_at(events, act_index + 2)} do
+      {%{type: "meter_reserved", data: reservation}, %{type: "meter_settled", data: settlement}} ->
+        internal_spend_act?(act) and field(reservation, :act_ref) == act.ref and
+          field(settlement, :act_ref) == act.ref
+
+      _missing_or_interposed ->
+        false
+    end
+  end
+
+  defp internal_spend_act?(%Act{row: %{spend: true}} = act),
+    do: Governance.ledger_internal?(act) and has_reservations?(act)
+
+  defp internal_spend_act?(_act), do: false
 
   defp effective_revocation?(nil, _time), do: false
 

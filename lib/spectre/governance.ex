@@ -17,6 +17,7 @@ defmodule Spectre.Governance do
   alias Spectre.HostProfile
   alias Spectre.Mandate
   alias Spectre.Portable
+  alias Spectre.Row
   alias Spectre.Scope
   alias Spectre.Scope.Opening
   alias Spectre.SubmissionContext
@@ -39,6 +40,7 @@ defmodule Spectre.Governance do
     "data.declassify",
     @scope_open_class
   ]
+  @application_ledger_dimensions [:write, :spend]
 
   @governed_scope_fields [
     :kind,
@@ -93,32 +95,54 @@ defmodule Spectre.Governance do
   @doc false
   @spec ledger_internal?(map()) :: boolean()
   def ledger_internal?(record) when is_map(record) do
-    reservations = map_field(record, :reservations) || map_field(record, :meter_requests)
+    class = map_field(record, :class)
 
-    map_field(record, :executor_ref) == @kernel_executor_ref and
-      map_field(record, :executor_contract_ref) == @kernel_contract_ref and
-      map_field(record, :observation_window_ms) == 0 and reservations in [%{}, []]
+    exact_kernel_route?(record) and zero_observation_window?(record) and
+      if class in @ledger_internal_classes do
+        no_reservations?(record)
+      else
+        application_ledger_row?(record)
+      end
   end
 
   def ledger_internal?(_record), do: false
 
   @doc false
-  @spec execution_boundary(map()) :: :ok | {:error, term()}
-  def execution_boundary(record) when is_map(record) do
+  @spec execution_mode(map()) ::
+          {:ok, :ledger_internal | :executor_mediated} | {:error, term()}
+  def execution_mode(record) when is_map(record) do
     class = map_field(record, :class)
 
     cond do
       class in @ledger_internal_classes and ledger_internal?(record) ->
-        :ok
+        {:ok, :ledger_internal}
 
       class in @ledger_internal_classes ->
         {:error, {:governance_act_not_ledger_internal, class}}
 
-      class == "data.erase" and reserved_kernel_route?(record) ->
-        {:error, :executor_mediated_act_uses_kernel_route}
+      ledger_internal?(record) ->
+        {:ok, :ledger_internal}
+
+      reserved_kernel_route?(record) ->
+        {:error, :invalid_ledger_internal_application_act}
 
       true ->
-        :ok
+        {:ok, :executor_mediated}
+    end
+  end
+
+  def execution_mode(_record), do: {:error, :invalid_governance_execution_boundary}
+
+  @doc false
+  @spec executor_mediated?(map()) :: boolean()
+  def executor_mediated?(record), do: execution_mode(record) == {:ok, :executor_mediated}
+
+  @doc false
+  @spec execution_boundary(map()) :: :ok | {:error, term()}
+  def execution_boundary(record) when is_map(record) do
+    case execution_mode(record) do
+      {:ok, _mode} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 
@@ -579,9 +603,35 @@ defmodule Spectre.Governance do
     end)
   end
 
+  defp exact_kernel_route?(record) do
+    map_field(record, :executor_ref) == @kernel_executor_ref and
+      map_field(record, :executor_contract_ref) == @kernel_contract_ref
+  end
+
   defp reserved_kernel_route?(record) do
     map_field(record, :executor_ref) == @kernel_executor_ref or
       map_field(record, :executor_contract_ref) == @kernel_contract_ref
+  end
+
+  defp application_ledger_row?(record) do
+    case Row.new(map_field(record, :row)) do
+      {:ok, row} ->
+        dimensions = Row.dimensions(row)
+
+        dimensions != [] and
+          Enum.all?(dimensions, &(&1 in @application_ledger_dimensions))
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp zero_observation_window?(record),
+    do: map_field(record, :observation_window_ms) == 0
+
+  defp no_reservations?(record) do
+    reservations = map_field(record, :reservations) || map_field(record, :meter_requests)
+    reservations in [%{}, []]
   end
 
   defp map_field(map, key) when is_map(map),

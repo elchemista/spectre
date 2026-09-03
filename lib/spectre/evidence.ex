@@ -225,12 +225,20 @@ defmodule Spectre.Evidence do
       not is_integer(evidence.observed_at) ->
         {:error, {:invalid_evidence_observed_at, evidence.observed_at}}
 
-      not valid_time_range?(evidence.valid_from, evidence.valid_until) ->
+      not valid_time_range?(
+        evidence.observed_at,
+        evidence.valid_from,
+        evidence.valid_until
+      ) ->
         {:error, {:invalid_evidence_time_window, evidence.valid_from, evidence.valid_until}}
 
       not (is_nil(evidence.freshness_ms) or
                (is_integer(evidence.freshness_ms) and evidence.freshness_ms >= 0)) ->
         {:error, {:invalid_evidence_freshness_ms, evidence.freshness_ms}}
+
+      evidence.provisional and is_nil(evidence.valid_until) and
+          is_nil(evidence.freshness_ms) ->
+        {:error, :provisional_evidence_requires_finite_lifetime}
 
       true ->
         :ok
@@ -271,10 +279,16 @@ defmodule Spectre.Evidence do
     end
   end
 
-  defp valid_time_range?(nil, nil), do: true
-  defp valid_time_range?(from, nil), do: is_integer(from)
-  defp valid_time_range?(nil, until), do: is_integer(until)
-  defp valid_time_range?(from, until), do: is_integer(from) and is_integer(until) and from < until
+  defp valid_time_range?(_observed_at, nil, nil), do: true
+  defp valid_time_range?(_observed_at, from, nil), do: is_integer(from)
+
+  defp valid_time_range?(observed_at, nil, until),
+    do: is_integer(until) and until > observed_at
+
+  defp valid_time_range?(observed_at, from, until),
+    do:
+      is_integer(from) and is_integer(until) and until > observed_at and
+        from < until
 
   defp validate_optional_ref(nil, _field), do: :ok
   defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)

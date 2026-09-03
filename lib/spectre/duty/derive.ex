@@ -7,14 +7,15 @@ defmodule Spectre.Duty.Derive do
   recovery to retain containment and retry materialization idempotently.
 
   The principal built-in cause is an Attempt whose observation window elapsed
-  without a definitive Outcome. Additional domain gaps are accepted only when a
-  canonical fact marks them explicitly; this module does not infer application
-  quality or invent domain policy.
+  without a definitive Outcome. Application gaps are declared by canonical
+  Evidence from sources named by the Constitution; this module does not infer
+  application quality or invent domain policy.
   """
 
   @definitive_outcomes [:succeeded, :failed, :definitive_no_effect]
 
   alias Spectre.{Act, Attempt, Candidate, Evidence, Outcome, Presentation}
+  alias Spectre.Duty.EvidenceCause
   alias Spectre.Kernel.Recognition
   alias Spectre.Outcome.Attestation
 
@@ -29,7 +30,7 @@ defmodule Spectre.Duty.Derive do
   Returns every distinct Duty cause implied by `facts` at trusted `time`.
 
   `facts` may be a projection exposing `:acts`, `:attempts`, `:outcomes`,
-  `:duties` and `:gaps`, or a list of ledger entry envelopes. Existing Duty
+  `:duties` and `:evidence`, or a list of ledger entry envelopes. Existing Duty
   records do not erase their cause, so the result remains useful to an auditor.
   Use `missing_openings/3` for recovery materialization.
   """
@@ -42,9 +43,14 @@ defmodule Spectre.Duty.Derive do
     disputed = disputed_evidence_causes(facts, constitution, time)
     overdue_scopes = overdue_scope_causes(facts, constitution, time)
     erasure_debts = erasure_verifiability_causes(facts, constitution, time)
-    explicit = explicit_causes(facts, constitution, time)
+    evidence_causes = evidence_causes(facts, constitution, time)
 
-    (ambiguous ++ contradicted ++ disputed ++ overdue_scopes ++ erasure_debts ++ explicit)
+    (ambiguous ++
+       contradicted ++
+       disputed ++
+       overdue_scopes ++
+       erasure_debts ++
+       evidence_causes)
     |> Enum.reduce(%{}, fn cause, unique -> Map.put_new(unique, cause.cause_key, cause) end)
     |> Map.values()
     |> Enum.sort_by(&stable_sort_key(&1.cause_key))
@@ -1012,25 +1018,18 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp unavailable_evidence_at(facts, time) do
-    erasures = records_available_at(facts.erasures, time)
-
     prefix = %{
-      erasures: index_by_ref(erasures, :erasure),
+      evidence: facts.evidence |> records_available_at(time) |> index_by_ref(:evidence),
+      presentations:
+        facts.presentations |> records_available_at(time) |> index_by_ref(:presentation),
+      acts: facts.acts |> records_available_at(time) |> index_by_ref(:act),
       attempts: facts.attempts |> records_available_at(time) |> index_by_ref(:attempt),
-      outcomes: facts.outcomes |> records_available_at(time) |> index_by_ref(:outcome)
+      outcomes: facts.outcomes |> records_available_at(time) |> index_by_ref(:outcome),
+      duties: facts.duties |> records_available_at(time) |> index_by_ref(:duty),
+      erasures: facts.erasures |> records_available_at(time) |> index_by_ref(:erasure)
     }
 
-    Enum.reduce(erasures, MapSet.new(), fn erasure, unavailable ->
-      case Spectre.Erasure.Analysis.execution_state(prefix, get(erasure, [:target_ref])) do
-        {:ok, state} when state in [:possibly_absent, :erased] ->
-          erasure
-          |> get([:affected_refs], [])
-          |> Enum.reduce(unavailable, &MapSet.put(&2, &1))
-
-        _live_or_invalid ->
-          unavailable
-      end
-    end)
+    Spectre.Erasure.Analysis.unavailable_evidence_refs(prefix)
   end
 
   defp records_available_at(records, time) do
@@ -1108,47 +1107,39 @@ defmodule Spectre.Duty.Derive do
     end)
   end
 
-  defp explicit_causes(facts, constitution, time) do
-    facts.gaps
-    |> Enum.map(&active_explicit_cause(&1, constitution, time, facts.acts_by_ref))
-    |> Enum.reject(&is_nil/1)
+  defp evidence_causes(facts, constitution, time) do
+    Enum.flat_map(facts.evidence, fn record ->
+      with {:ok, evidence} <- rebuild_evidence(record),
+           true <- evidence_cause_known_by?(record, evidence, time),
+           {:ok, marker} <- EvidenceCause.extract(evidence, constitution) do
+        required_at = get(record, [:ledger_recorded_at], evidence.observed_at)
+
+        [
+          duty_cause(
+            marker.class,
+            EvidenceCause.cause_key(evidence, marker),
+            %{"evidence_ref" => evidence.ref},
+            constitution,
+            %{
+              mandate_ref: marker.mandate_ref,
+              subject_refs: marker.subject_refs,
+              accountable_ref: marker.accountable_ref,
+              known_evidence_refs: normalize_refs([evidence.ref | marker.related_evidence_refs]),
+              missing_evidence: marker.missing,
+              required_at: required_at
+            }
+          )
+        ]
+      else
+        _not_a_cause_or_not_yet_known -> []
+      end
+    end)
   end
 
-  defp active_explicit_cause(gap, constitution, time, acts_by_ref) do
-    if explicit_gap_active?(gap, time), do: explicit_cause(gap, constitution, acts_by_ref)
-  end
+  defp evidence_cause_known_by?(record, evidence, time) do
+    recorded_at = get(record, [:ledger_recorded_at], evidence.observed_at)
 
-  defp explicit_cause(gap, constitution, acts_by_ref) do
-    class = get(gap, [:cause_class, :duty_class, :gap_class, :class])
-    supplied_key = get(gap, [:cause_key, :key])
-    causal_refs = get(gap, [:causal_refs, :refs], %{})
-    primary_ref = get(gap, [:ref, :gap_ref, :evidence_ref, :act_ref, :attempt_ref])
-    act_ref = get(gap, [:act_ref])
-
-    cond do
-      not present?(class) ->
-        nil
-
-      not present?(supplied_key) and not present?(primary_ref) and empty_map?(causal_refs) ->
-        nil
-
-      true ->
-        key = supplied_key || {:explicit_gap, class, primary_ref || canonical_pairs(causal_refs)}
-
-        duty_cause(class, key, causal_refs, constitution, %{
-          act: Map.get(acts_by_ref, act_ref),
-          act_ref: act_ref,
-          mandate_ref: get(gap, [:mandate_ref]),
-          subject_refs: get(gap, [:subject_refs, :subjects], []),
-          accountable_ref: get(gap, [:accountable_ref]),
-          known_evidence_refs: get(gap, [:known_evidence_refs, :evidence_refs], []),
-          missing_evidence: get(gap, [:missing_evidence], []),
-          containment: get(gap, [:containment]),
-          closing_conditions: get(gap, [:closing_conditions, :closure_conditions]),
-          disposition_authority: get(gap, [:disposition_authority]),
-          required_at: get(gap, [:required_at, :occurred_at, :recorded_at])
-        })
-    end
+    is_integer(recorded_at) and recorded_at <= time and evidence.observed_at <= time
   end
 
   defp duty_cause(class, key, causal_refs, constitution, attrs) do
@@ -1166,8 +1157,10 @@ defmodule Spectre.Duty.Derive do
         canonical_string_keys(configured_containment)
       end
 
-    conflict_refs =
-      conflict_refs(accountable_ref, get(rule, [:conflict_refs], []), act)
+    configured_conflicts =
+      [Map.get(attrs, :mandate_ref) | listify(get(rule, [:conflict_refs], []))]
+
+    conflict_refs = conflict_refs(accountable_ref, configured_conflicts, act)
 
     %{
       cause_key: key,
@@ -1440,13 +1433,6 @@ defmodule Spectre.Duty.Derive do
     end
   end
 
-  defp explicit_gap_active?(gap, time) do
-    required? = get(gap, [:duty_required, :required], true) != false
-    effective_at = get(gap, [:required_at, :effective_at])
-
-    required? and (not present?(effective_at) or at_or_after?(time, effective_at))
-  end
-
   defp act_ref_for_attempt(facts, attempt_ref) do
     case Map.get(facts.attempts_by_ref, attempt_ref) do
       nil -> nil
@@ -1513,12 +1499,6 @@ defmodule Spectre.Duty.Derive do
       |> merge_records(collection(facts, [:erasures]), :erasure)
       |> attach_event_metadata(event_times, event_revisions, "erasure_requested", :erasure)
 
-    gaps =
-      from_entries.gaps
-      |> Kernel.++(collection(facts, [:gaps, :duty_causes]))
-      |> Kernel.++(explicitly_marked_records(facts))
-      |> Enum.uniq_by(&stable_sort_key/1)
-
     %{
       acts: acts,
       attempts: attempts,
@@ -1529,7 +1509,6 @@ defmodule Spectre.Duty.Derive do
       evidence: evidence,
       mandates: mandates,
       erasures: erasures,
-      gaps: gaps,
       acts_by_ref: index_by_ref(acts, :act),
       attempts_by_ref: index_by_ref(attempts, :attempt),
       presentations_by_ref: index_by_ref(presentations, :presentation),
@@ -1550,7 +1529,6 @@ defmodule Spectre.Duty.Derive do
       evidence: normalized.evidence,
       mandates: normalized.mandates,
       erasures: normalized.erasures,
-      gaps: normalized.gaps,
       acts_by_ref: index_by_ref(normalized.acts, :act),
       attempts_by_ref: index_by_ref(normalized.attempts, :attempt),
       presentations_by_ref: index_by_ref(normalized.presentations, :presentation),
@@ -1569,7 +1547,6 @@ defmodule Spectre.Duty.Derive do
       evidence: [],
       mandates: [],
       erasures: [],
-      gaps: [],
       acts_by_ref: %{},
       attempts_by_ref: %{},
       presentations_by_ref: %{},
@@ -1587,8 +1564,7 @@ defmodule Spectre.Duty.Derive do
       scopes: [],
       evidence: [],
       mandates: [],
-      erasures: [],
-      gaps: []
+      erasures: []
     }
 
     Enum.reduce(entries, initial, &add_entry/2)
@@ -1604,8 +1580,7 @@ defmodule Spectre.Duty.Derive do
       scopes: [],
       evidence: [],
       mandates: [],
-      erasures: [],
-      gaps: []
+      erasures: []
     }
 
   defp add_entry(entry, acc) do
@@ -1626,12 +1601,7 @@ defmodule Spectre.Duty.Derive do
   defp add_record(acc, :mandate, record), do: Map.update!(acc, :mandates, &[record | &1])
   defp add_record(acc, :erasure, record), do: Map.update!(acc, :erasures, &[record | &1])
 
-  defp add_record(acc, kind, record) when kind in [:gap, :duty_cause, :duty_required],
-    do: Map.update!(acc, :gaps, &[record | &1])
-
-  defp add_record(acc, _kind, record) do
-    if explicit_gap?(record), do: Map.update!(acc, :gaps, &[record | &1]), else: acc
-  end
+  defp add_record(acc, _kind, _record), do: acc
 
   defp collection(facts, fields) do
     case get(facts, fields, []) do
@@ -1673,23 +1643,6 @@ defmodule Spectre.Duty.Derive do
          _kind
        ),
        do: records
-
-  defp explicitly_marked_records(facts) do
-    facts
-    |> Map.values()
-    |> Enum.flat_map(fn
-      values when is_list(values) -> Enum.filter(values, &explicit_gap?/1)
-      value when is_map(value) -> if explicit_gap?(value), do: [value], else: []
-      _value -> []
-    end)
-  end
-
-  defp explicit_gap?(record) when is_map(record) do
-    get(record, [:duty_required], false) == true or
-      present?(get(record, [:cause_class, :duty_class, :gap_class]))
-  end
-
-  defp explicit_gap?(_record), do: false
 
   defp normalize_entry(entry) when is_map(entry) do
     payload = get(entry, [:payload])
@@ -1771,9 +1724,6 @@ defmodule Spectre.Duty.Derive do
       "mandate_issued" -> :mandate
       "erasure" -> :erasure
       "erasure_requested" -> :erasure
-      "gap" -> :gap
-      "duty_cause" -> :duty_cause
-      "duty_required" -> :duty_required
       _other -> :unknown
     end
   end
@@ -1809,14 +1759,6 @@ defmodule Spectre.Duty.Derive do
   defp ref(record, :mandate), do: get(record, [:mandate_ref, :ref])
   defp ref(record, :erasure), do: get(record, [:erasure_ref, :ref])
 
-  defp canonical_pairs(map) when is_map(map) do
-    map
-    |> Enum.map(fn {key, value} -> {key, value} end)
-    |> Enum.sort_by(fn {key, _value} -> stable_sort_key(key) end)
-  end
-
-  defp canonical_pairs(value), do: value
-
   defp authority_refs(nil), do: []
   defp authority_refs(value) when is_binary(value), do: [value]
   defp authority_refs(value) when is_list(value), do: Enum.filter(value, &is_binary/1)
@@ -1828,8 +1770,6 @@ defmodule Spectre.Duty.Derive do
   end
 
   defp authority_refs(_value), do: []
-
-  defp empty_map?(value), do: is_map(value) and map_size(value) == 0
 
   defp at_or_after?(left, right) do
     case {timestamp(left), timestamp(right)} do

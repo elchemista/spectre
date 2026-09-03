@@ -26,6 +26,7 @@ defmodule Spectre.Scope.View do
     :declassifications,
     :presentations,
     :erasures,
+    :dispatch_cancellations,
     :pending_act_refs
   ]
   defstruct @enforce_keys
@@ -44,6 +45,7 @@ defmodule Spectre.Scope.View do
           declassifications: [Spectre.Declassification.t()],
           presentations: [Spectre.Presentation.t()],
           erasures: [Spectre.Erasure.t()],
+          dispatch_cancellations: [Projection.dispatch_cancellation()],
           pending_act_refs: [String.t()]
         }
 
@@ -58,7 +60,15 @@ defmodule Spectre.Scope.View do
       attempts = records_for_acts(projection.attempts, act_refs)
       attempt_refs = ref_set(attempts)
       outcomes = records_for_attempts(projection.outcomes, act_refs, attempt_refs)
-      duties = records_for_duties(projection.duties, scope_ref, act_refs)
+
+      duties =
+        records_for_duties(
+          projection.duties,
+          projection.evidence,
+          scope_ref,
+          act_refs
+        )
+
       presentation_refs = acts |> Enum.map(& &1.presentation_ref) |> present_ref_set()
 
       presentations =
@@ -99,6 +109,7 @@ defmodule Spectre.Scope.View do
          declassifications: declassifications,
          presentations: presentations,
          erasures: erasures,
+         dispatch_cancellations: dispatch_cancellations(projection, act_refs),
          pending_act_refs: pending_act_refs(projection, act_refs)
        }}
     else
@@ -141,14 +152,26 @@ defmodule Spectre.Scope.View do
     |> stable_records()
   end
 
-  defp records_for_duties(index, scope_ref, act_refs) do
+  defp records_for_duties(index, evidence, scope_ref, act_refs) do
     index
     |> values()
     |> Enum.filter(fn duty ->
       MapSet.member?(act_refs, field(duty, :act_ref)) or
-        scope_cause?(field(duty, :cause_key), scope_ref)
+        scope_cause?(field(duty, :cause_key), scope_ref) or
+        duty_evidence_bound_to_scope?(duty, evidence, scope_ref)
     end)
     |> stable_records()
+  end
+
+  defp duty_evidence_bound_to_scope?(duty, evidence, scope_ref) do
+    duty
+    |> field(:evidence_refs, [])
+    |> Enum.any?(fn evidence_ref ->
+      case Map.get(evidence, evidence_ref) do
+        nil -> false
+        record -> record |> field(:bindings, %{}) |> field(:scope_ref) == scope_ref
+      end
+    end)
   end
 
   defp records_for_evidence(
@@ -255,6 +278,14 @@ defmodule Spectre.Scope.View do
     |> MapSet.difference(MapSet.new(Map.keys(projection.attempts_by_act)))
     |> MapSet.to_list()
     |> Enum.sort()
+  end
+
+  defp dispatch_cancellations(projection, act_refs) do
+    projection.dispatch_cancellations
+    |> Enum.flat_map(fn {act_ref, cancellation} ->
+      if MapSet.member?(act_refs, act_ref), do: [cancellation], else: []
+    end)
+    |> Enum.sort_by(& &1.act_ref)
   end
 
   defp scope_cause?({:scope_promise_overdue, scope_ref}, scope_ref), do: true

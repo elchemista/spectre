@@ -13,20 +13,43 @@ defmodule Spectre.Consequence.Validator do
   projection or trusted time.
   """
 
-  alias Spectre.Candidate
+  alias Spectre.{Act, Candidate, Decision}
+  alias Spectre.Domain.Projection
   alias Spectre.Erasure
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.Kernel.Commit
   alias Spectre.Mandate
 
   @none "spectre:consequence-validator:none:v1"
+  @scope_opening "spectre:consequence-validator:scope-opening:v1"
+  @mandate_delegation "spectre:consequence-validator:mandate-delegation:v1"
+  @mandate_devolution "spectre:consequence-validator:mandate-devolution:v1"
+  @mandate_restriction "spectre:consequence-validator:mandate-restriction:v1"
   @erasure_request "spectre:consequence-validator:erasure-request:v1"
   @mandate_revocation "spectre:consequence-validator:mandate-revocation:v1"
+  @duty_disposition "spectre:consequence-validator:duty-disposition:v1"
+  @surface_revision "spectre:consequence-validator:surface-revision:v1"
+  @host_profile_revision "spectre:consequence-validator:host-profile-revision:v1"
+  @definition_revision "spectre:consequence-validator:definition-revision:v1"
+  @evidence_declassification "spectre:consequence-validator:evidence-declassification:v1"
+  @presentation_show "spectre:consequence-validator:presentation-show:v1"
 
-  @validators [@none, @erasure_request, @mandate_revocation]
   @class_defaults %{
+    "scope.open" => @scope_opening,
+    "mandate.delegate" => @mandate_delegation,
+    "mandate.devolve" => @mandate_devolution,
+    "mandate.restrict" => @mandate_restriction,
+    "mandate.revoke" => @mandate_revocation,
+    "duty.dispose" => @duty_disposition,
+    "surface.revise" => @surface_revision,
+    "host_profile.revise" => @host_profile_revision,
+    "definition.revise" => @definition_revision,
+    "data.declassify" => @evidence_declassification,
     "data.erase" => @erasure_request,
-    "mandate.revoke" => @mandate_revocation
+    "presentation.show" => @presentation_show
   }
+  @intrinsic_validators Map.values(@class_defaults)
+  @validators [@none | @intrinsic_validators]
 
   @type id :: String.t()
 
@@ -43,18 +66,26 @@ defmodule Spectre.Consequence.Validator do
   def validate_id(id) when id in @validators, do: :ok
   def validate_id(id), do: {:error, {:unknown_consequence_validator, id}}
 
-  @doc "Applies the validator selected by the active Surface."
-  @spec validate(id(), Candidate.t(), map(), integer()) :: :ok | {:error, term()}
-  def validate(@none, %Candidate{}, _projection, time) when is_integer(time), do: :ok
+  @doc "Validates the immutable class-to-validator binding recorded by a Surface."
+  @spec validate_binding(String.t(), term()) :: :ok | {:error, term()}
+  def validate_binding(class, id) when is_binary(class) do
+    expected = default_for_class(class)
 
-  def validate(@erasure_request, %Candidate{} = candidate, projection, time)
-      when is_map(projection) and is_integer(time) do
-    validate_erasure_request(candidate, projection, time)
+    if id == expected,
+      do: :ok,
+      else: {:error, {:invalid_consequence_validator_binding, class, id, expected}}
   end
 
-  def validate(@mandate_revocation, %Candidate{} = candidate, projection, time)
-      when is_map(projection) and is_integer(time) do
-    validate_mandate_revocation(candidate, projection, time)
+  def validate_binding(class, id),
+    do: {:error, {:invalid_consequence_validator_binding, class, id}}
+
+  @doc "Applies the validator selected by the active Surface."
+  @spec validate(id(), Candidate.t(), map(), integer()) :: :ok | {:error, term()}
+  def validate(id, %Candidate{} = candidate, projection, time)
+      when id in @validators and is_map(projection) and is_integer(time) do
+    with :ok <- validate_binding(candidate.class, id) do
+      validate_facts(id, candidate, projection, time)
+    end
   end
 
   def validate(id, %Candidate{}, _projection, _time) when id in @validators,
@@ -62,6 +93,62 @@ defmodule Spectre.Consequence.Validator do
 
   def validate(id, _candidate, _projection, _time),
     do: {:error, {:unknown_consequence_validator, id}}
+
+  @doc "Checks an admitted intrinsic transition against a provisional projection."
+  @spec validate_transition(id(), Candidate.t(), Decision.t(), Act.t(), Projection.t()) ::
+          :ok | {:error, term()}
+  def validate_transition(
+        @none,
+        %Candidate{} = candidate,
+        %Decision{outcome: :admitted} = decision,
+        %Act{} = act,
+        %Projection{} = projection
+      ) do
+    validate_committable_transition(@none, candidate, decision, act, projection)
+  end
+
+  def validate_transition(
+        id,
+        %Candidate{} = candidate,
+        %Decision{outcome: :admitted} = decision,
+        %Act{} = act,
+        %Projection{} = projection
+      )
+      when id in @intrinsic_validators do
+    validate_committable_transition(id, candidate, decision, act, projection)
+  end
+
+  def validate_transition(id, %Candidate{}, %Decision{}, %Act{}, %Projection{})
+      when id in @validators,
+      do: {:error, :invalid_consequence_transition}
+
+  def validate_transition(id, _candidate, _decision, _act, _projection),
+    do: {:error, {:unknown_consequence_validator, id}}
+
+  defp validate_facts(@none, %Candidate{}, _projection, _time), do: :ok
+
+  defp validate_facts(@erasure_request, %Candidate{} = candidate, projection, time) do
+    validate_erasure_request(candidate, projection, time)
+  end
+
+  defp validate_facts(@mandate_revocation, %Candidate{} = candidate, projection, time) do
+    validate_mandate_revocation(candidate, projection, time)
+  end
+
+  defp validate_facts(id, %Candidate{}, _projection, _time) when id in @intrinsic_validators,
+    do: :ok
+
+  defp validate_committable_transition(id, candidate, decision, act, projection) do
+    with :ok <- validate_binding(candidate.class, id),
+         true <- act.class == candidate.class,
+         {:ok, payloads} <- Commit.payloads(projection, decision, act),
+         {:ok, _projection} <- apply_payloads(projection, payloads) do
+      :ok
+    else
+      false -> {:error, :consequence_transition_class_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
 
   defp validate_erasure_request(
          %Candidate{consequence: %{"erasure_request" => draft}} = candidate,
@@ -108,4 +195,15 @@ defmodule Spectre.Consequence.Validator do
 
   defp validate_mandate_revocation(%Candidate{}, _projection, _time),
     do: {:error, :invalid_mandate_revocation}
+
+  defp apply_payloads(projection, payloads) do
+    Enum.reduce_while(payloads, {:ok, projection}, fn payload, {:ok, current} ->
+      revision = current.revision + 1
+
+      case Projection.apply_payload(current, payload, revision) do
+        {:ok, next} -> {:cont, {:ok, %{next | revision: revision}}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
 end

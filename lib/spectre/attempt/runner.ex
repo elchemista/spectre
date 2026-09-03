@@ -42,9 +42,9 @@ defmodule Spectre.Attempt.Runner do
   Runner never retries an executor.
   """
 
-  alias Spectre.{Act, Attempt, Decision, Evidence, Outcome, Portable}
+  alias Spectre.{Act, Attempt, Decision, Evidence, Governance, Outcome, Portable}
   alias Spectre.Attempt.Runner.Result
-  alias Spectre.Domain.Sequencer
+  alias Spectre.Domain.{Projection, Sequencer}
   alias Spectre.Execution.Boundary
   alias Spectre.Kernel.Grant
   alias Spectre.Outcome.Attestation
@@ -173,10 +173,10 @@ defmodule Spectre.Attempt.Runner do
        ) do
     with {:ok, act} <- Act.new(act),
          :ok <- decision_act_binding(decision, act) do
-      if act.row.attempt do
-        run_attempt(sequencer, decision, act, grant, opts)
-      else
-        internal_result(decision, act, grant)
+      case Governance.execution_mode(act) do
+        {:ok, :executor_mediated} -> run_attempt(sequencer, decision, act, grant, opts)
+        {:ok, :ledger_internal} -> internal_result(decision, act, grant)
+        {:error, _reason} = error -> error
       end
     end
   end
@@ -189,28 +189,145 @@ defmodule Spectre.Attempt.Runner do
   defp internal_result(_decision, _act, _grant),
     do: {:error, :internal_act_must_not_have_grant}
 
+  defp run_attempt(sequencer, decision, act, nil, _opts) do
+    case durable_attempt_result(sequencer, decision, act) do
+      {:ok, %Result{}} = recovered -> recovered
+      :dispatch_ready -> {:error, :executor_mediated_act_missing_grant}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp run_attempt(sequencer, decision, act, %Grant{} = grant, opts) do
-    with :ok <- grant_act_binding(grant, act),
-         {:ok, config} <- execution_config(sequencer, act, opts),
-         {:ok, consumed_act, attempt, receipt} <-
-           consume_grant(sequencer, grant, act, config),
-         {:ok, status, evidence, details_ref} <-
-           cross_boundary(config, receipt, consumed_act, attempt) do
-      finish_attempt(
-        sequencer,
-        decision,
-        consumed_act,
-        attempt,
-        status,
-        evidence,
-        details_ref,
-        config
-      )
+    with :ok <- grant_act_binding(grant, act) do
+      case durable_attempt_result(sequencer, decision, act) do
+        {:ok, %Result{}} = recovered ->
+          recovered
+
+        :dispatch_ready ->
+          run_new_attempt(sequencer, decision, act, grant, opts)
+
+        {:error, _reason} = error ->
+          error
+      end
     end
   end
 
   defp run_attempt(_sequencer, _decision, _act, _grant, _opts),
     do: {:error, :executor_mediated_act_missing_grant}
+
+  defp run_new_attempt(sequencer, decision, act, grant, opts) do
+    result =
+      with {:ok, config} <- execution_config(sequencer, act, opts),
+           {:ok, consumed_act, attempt, receipt} <-
+             consume_grant(sequencer, grant, act, config),
+           {:ok, status, evidence, details_ref} <-
+             cross_boundary(config, receipt, consumed_act, attempt) do
+        finish_attempt(
+          sequencer,
+          decision,
+          consumed_act,
+          attempt,
+          status,
+          evidence,
+          details_ref,
+          config
+        )
+      end
+
+    recover_after_failed_start(result, sequencer, decision, act)
+  end
+
+  defp recover_after_failed_start({:error, _reason} = error, sequencer, decision, act) do
+    case durable_attempt_result(sequencer, decision, act) do
+      {:ok, %Result{}} = recovered -> recovered
+      _not_completed -> error
+    end
+  end
+
+  defp recover_after_failed_start(result, _sequencer, _decision, _act), do: result
+
+  defp durable_attempt_result(sequencer, decision, expected_act) do
+    case safe_internal_call(fn -> Sequencer.projection(sequencer) end) do
+      {:reply, %Projection{} = projection} ->
+        recover_from_projection(projection, decision, expected_act)
+
+      {:reply, _invalid} ->
+        {:error, :invalid_projection_response}
+
+      {:failure, kind} ->
+        {:error, {:projection_boundary_failure, kind}}
+    end
+  end
+
+  defp recover_from_projection(projection, decision, expected_act) do
+    with {:ok, act} <- Map.fetch(projection.acts, expected_act.ref),
+         true <- act == expected_act do
+      case Map.fetch(projection.attempts_by_act, act.ref) do
+        {:ok, attempt_ref} ->
+          recover_recorded_attempt(projection, decision, act, attempt_ref)
+
+        :error ->
+          recover_cancelled_dispatch(projection, decision, act)
+      end
+    else
+      :error -> {:error, {:admitted_act_not_found, expected_act.ref}}
+      false -> {:error, {:admitted_act_changed, expected_act.ref}}
+    end
+  end
+
+  defp recover_recorded_attempt(projection, decision, act, attempt_ref) do
+    with {:ok, attempt} <- Map.fetch(projection.attempts, attempt_ref),
+         {:ok, attempt} <- Attempt.new(attempt),
+         :ok <- recovered_attempt_binding(attempt, act) do
+      evidence = recovered_evidence(projection, act, attempt)
+      outcome = recovered_outcome(projection, act, attempt)
+      result(decision, act, attempt, evidence, outcome)
+    else
+      :error -> {:error, {:attempt_not_found, attempt_ref}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp recover_cancelled_dispatch(projection, decision, act) do
+    cond do
+      Map.has_key?(projection.dispatch_cancellations, act.ref) and
+          not MapSet.member?(projection.dispatch_ready, act.ref) ->
+        result(decision, act, nil, [], nil)
+
+      MapSet.member?(projection.dispatch_ready, act.ref) ->
+        :dispatch_ready
+
+      true ->
+        {:error, {:invalid_dispatch_state, act.ref}}
+    end
+  end
+
+  defp recovered_attempt_binding(attempt, act) do
+    if attempt.act_ref == act.ref and attempt.executor_ref == act.executor_ref and
+         attempt.material_digest == act.material_digest,
+       do: :ok,
+       else: {:error, :recorded_attempt_binding_mismatch}
+  end
+
+  defp recovered_evidence(projection, act, attempt) do
+    expected_bindings = %{"act_ref" => act.ref, "attempt_ref" => attempt.ref}
+
+    projection.evidence
+    |> Map.values()
+    |> Enum.filter(&(&1.bindings == expected_bindings))
+    |> Enum.sort_by(&event_order(projection, "evidence_recorded", &1.ref))
+  end
+
+  defp recovered_outcome(projection, act, attempt) do
+    projection.outcomes
+    |> Map.values()
+    |> Enum.filter(&(&1.act_ref == act.ref and &1.attempt_ref == attempt.ref))
+    |> Enum.max_by(&event_order(projection, "outcome_recorded", &1.ref), fn -> nil end)
+  end
+
+  defp event_order(projection, type, ref) do
+    {Map.get(projection.event_revisions, {type, ref}, 0), ref}
+  end
 
   defp consume_grant(sequencer, grant, expected_act, config) do
     case safe_internal_call(fn ->

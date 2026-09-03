@@ -31,6 +31,18 @@ defmodule Spectre.SubmissionContext do
     :session_ref,
     :host_generation
   ]
+  @evidence_binding_fields [
+    :submission_context_ref,
+    :domain_ref,
+    :scope_ref,
+    :authenticated_principal_ref,
+    :authentication_ref,
+    :ingress_ref,
+    :channel_ref,
+    :session_ref,
+    :host_generation
+  ]
+  @evidence_binding_keys Enum.map(@evidence_binding_fields, &Atom.to_string/1)
   @fields @canonical_fields ++ [:seal]
   @minimum_secret_bytes 32
   @seal_domain "spectre:submission-context:v1\0"
@@ -120,6 +132,85 @@ defmodule Spectre.SubmissionContext do
   def content_ref(%__MODULE__{} = context),
     do: Portable.content_ref!(:submission_context, content(context))
 
+  @doc "Returns the exact trusted context fields embedded in scoped Evidence."
+  @spec evidence_bindings(t()) :: map()
+  def evidence_bindings(%__MODULE__{} = context) do
+    %{
+      "submission_context_ref" => context.ref,
+      "domain_ref" => context.domain_ref,
+      "scope_ref" => context.scope_ref,
+      "authenticated_principal_ref" => context.authenticated_principal_ref,
+      "authentication_ref" => context.authentication_ref,
+      "ingress_ref" => context.ingress_ref,
+      "channel_ref" => context.channel_ref,
+      "session_ref" => context.session_ref,
+      "host_generation" => context.host_generation
+    }
+  end
+
+  @doc "Adds application bindings without permitting trusted context fields to be supplied."
+  @spec merge_evidence_bindings(t(), map()) :: {:ok, map()} | {:error, term()}
+  def merge_evidence_bindings(context, additional \\ %{})
+
+  def merge_evidence_bindings(%__MODULE__{} = context, additional) do
+    with {:ok, context} <- new(context),
+         :ok <- validate_additional_evidence_bindings(additional) do
+      {:ok, Map.merge(additional, evidence_bindings(context))}
+    end
+  end
+
+  def merge_evidence_bindings(_context, _additional),
+    do: {:error, :invalid_evidence_submission_context}
+
+  @doc "Restores and verifies a context from the trusted portion of Evidence bindings."
+  @spec from_evidence_bindings(map()) :: {:ok, t()} | {:error, term()}
+  def from_evidence_bindings(bindings) when is_map(bindings) and not is_struct(bindings) do
+    with :ok <- canonical_evidence_binding_keys(bindings),
+         {:ok, ref} <- Map.fetch(bindings, "submission_context_ref"),
+         {:ok, domain_ref} <- Map.fetch(bindings, "domain_ref"),
+         {:ok, scope_ref} <- Map.fetch(bindings, "scope_ref"),
+         {:ok, principal_ref} <- Map.fetch(bindings, "authenticated_principal_ref"),
+         {:ok, authentication_ref} <- Map.fetch(bindings, "authentication_ref"),
+         {:ok, ingress_ref} <- Map.fetch(bindings, "ingress_ref"),
+         {:ok, channel_ref} <- Map.fetch(bindings, "channel_ref"),
+         {:ok, session_ref} <- Map.fetch(bindings, "session_ref"),
+         {:ok, host_generation} <- Map.fetch(bindings, "host_generation") do
+      new(%{
+        ref: ref,
+        domain_ref: domain_ref,
+        scope_ref: scope_ref,
+        authenticated_principal_ref: principal_ref,
+        authentication_ref: authentication_ref,
+        ingress_ref: ingress_ref,
+        channel_ref: channel_ref,
+        session_ref: session_ref,
+        host_generation: host_generation
+      })
+    else
+      :error -> {:error, :incomplete_evidence_submission_context}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def from_evidence_bindings(_bindings),
+    do: {:error, :invalid_evidence_submission_context}
+
+  @doc "Checks that scoped Evidence carries exactly this trusted context."
+  @spec validate_evidence_bindings(t(), map()) :: :ok | {:error, term()}
+  def validate_evidence_bindings(%__MODULE__{} = expected, bindings) do
+    with {:ok, expected} <- new(expected),
+         {:ok, actual} <- from_evidence_bindings(bindings),
+         true <- canonical(actual) == canonical(expected) do
+      :ok
+    else
+      false -> {:error, :evidence_submission_context_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def validate_evidence_bindings(_expected, _bindings),
+    do: {:error, :invalid_evidence_submission_context}
+
   @doc false
   @spec seal(t(), binary()) :: {:ok, t()} | {:error, term()}
   def seal(%__MODULE__{} = context, secret)
@@ -200,4 +291,36 @@ defmodule Spectre.SubmissionContext do
 
   defp validate_optional_ref(nil, _field), do: :ok
   defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
+
+  defp validate_additional_evidence_bindings(bindings)
+       when is_map(bindings) and not is_struct(bindings) do
+    collision =
+      Enum.find(@evidence_binding_fields, fn field ->
+        Map.has_key?(bindings, field) or Map.has_key?(bindings, Atom.to_string(field))
+      end)
+
+    cond do
+      not is_nil(collision) ->
+        {:error, {:reserved_evidence_binding, collision}}
+
+      true ->
+        Portable.validate(bindings)
+    end
+  end
+
+  defp validate_additional_evidence_bindings(_bindings),
+    do: {:error, :invalid_additional_evidence_bindings}
+
+  defp canonical_evidence_binding_keys(bindings) do
+    case Enum.find(@evidence_binding_fields, &Map.has_key?(bindings, &1)) do
+      nil ->
+        case Enum.find(@evidence_binding_keys, &(not Map.has_key?(bindings, &1))) do
+          nil -> :ok
+          missing -> {:error, {:missing_evidence_context_binding, missing}}
+        end
+
+      atom_key ->
+        {:error, {:noncanonical_evidence_context_binding, atom_key}}
+    end
+  end
 end

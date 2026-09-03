@@ -16,6 +16,21 @@ defmodule Spectre.Ingress do
   alias Spectre.{Evidence, Portable, SubmissionContext}
 
   @required_callbacks [ref: 0, authenticate: 5, observe: 4]
+  @evidence_fields [
+    :ref,
+    :proposition,
+    :stance,
+    :issuer_ref,
+    :valid_from,
+    :valid_until,
+    :freshness_ms,
+    :bindings,
+    :assumptions,
+    :labels,
+    :payload,
+    :payload_ref,
+    :provisional
+  ]
 
   @typedoc "Validated module and its stable ingress reference."
   @type binding :: {module(), String.t()}
@@ -28,6 +43,31 @@ defmodule Spectre.Ingress do
 
   @callback observe(SubmissionContext.t(), term(), integer(), keyword()) ::
               {:ok, Evidence.t() | [Evidence.t()]} | {:error, term()}
+
+  @doc "Builds observed Evidence with every trusted ingress binding forced by the context."
+  @spec evidence(SubmissionContext.t(), integer(), map() | keyword()) ::
+          {:ok, Evidence.t()} | {:error, term()}
+  def evidence(%SubmissionContext{} = context, observed_at, attrs)
+      when is_integer(observed_at) do
+    with {:ok, context} <- SubmissionContext.new(context),
+         {:ok, attrs} <- Portable.normalize_attrs(attrs, @evidence_fields, :ingress_evidence),
+         {:ok, bindings} <-
+           SubmissionContext.merge_evidence_bindings(
+             context,
+             Map.get(attrs, :bindings, %{})
+           ) do
+      attrs
+      |> Map.put(:source_ref, context.ingress_ref)
+      |> Map.put(:provenance, :observed)
+      |> Map.put(:parent_refs, [])
+      |> Map.put(:observed_at, observed_at)
+      |> Map.put(:bindings, bindings)
+      |> Evidence.new()
+    end
+  end
+
+  def evidence(_context, _observed_at, _attrs),
+    do: {:error, :invalid_ingress_evidence}
 
   @doc false
   @spec resolve(module()) :: {:ok, binding()} | {:error, term()}
@@ -131,6 +171,16 @@ defmodule Spectre.Ingress do
   end
 
   defp observation_error(record, context, ingress_ref, observed_at) do
+    case SubmissionContext.validate_evidence_bindings(context, record.bindings) do
+      :ok ->
+        observation_record_error(record, ingress_ref, observed_at)
+
+      {:error, reason} ->
+        {:ingress_evidence_context_mismatch, record.ref, reason}
+    end
+  end
+
+  defp observation_record_error(record, ingress_ref, observed_at) do
     cond do
       record.provenance != :observed ->
         {:ingress_evidence_not_observed, record.ref}
@@ -144,23 +194,8 @@ defmodule Spectre.Ingress do
       record.observed_at > observed_at ->
         {:ingress_evidence_from_future, record.ref}
 
-      binding(record, :domain_ref) != context.domain_ref ->
-        {:ingress_evidence_binding_mismatch, record.ref, :domain_ref}
-
-      binding(record, :scope_ref) != context.scope_ref ->
-        {:ingress_evidence_binding_mismatch, record.ref, :scope_ref}
-
-      binding(record, :authentication_ref) != context.authentication_ref ->
-        {:ingress_evidence_binding_mismatch, record.ref, :authentication_ref}
-
-      binding(record, :authenticated_principal_ref) != context.authenticated_principal_ref ->
-        {:ingress_evidence_binding_mismatch, record.ref, :authenticated_principal_ref}
-
       true ->
         nil
     end
   end
-
-  defp binding(evidence, key),
-    do: Map.get(evidence.bindings, key, Map.get(evidence.bindings, Atom.to_string(key)))
 end
