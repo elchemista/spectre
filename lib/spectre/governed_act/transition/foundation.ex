@@ -8,10 +8,11 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
   fold and stores restored structs in disposable `GovernedAct.State`.
   """
 
-  alias Spectre.{Act, Definition, Governance, HostProfile, Principal, Surface}
+  alias Spectre.{Act, Definition, HostProfile, Principal, Surface}
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.{Index, State}
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
 
   def apply(
         %State{} = projection,
@@ -66,7 +67,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         %Event{type: "host_profile_recorded", identity: identity, data: data},
         _revision
       ) do
-    if projection.host_profile do
+    if State.host_profile(projection) do
       {:error, :duplicate_host_profile}
     else
       with :ok <- named_by_genesis(projection, :host_profile_ref, identity),
@@ -76,7 +77,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         {:ok,
          %{
            projection
-           | host_profile: profile,
+           | host_profile_ref: identity,
              host_profiles: Map.put(projection.host_profiles, identity, profile)
          }}
       end
@@ -88,7 +89,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         %Event{type: "host_profile_revised", identity: identity, data: data},
         _revision
       ) do
-    with %HostProfile{} = current <- projection.host_profile,
+    with %HostProfile{} = current <- State.host_profile(projection),
          {:ok, profile} <- Record.decode(HostProfile, data["host_profile"]),
          :ok <- Record.match_identity(identity, profile.ref),
          :ok <- Index.unique(projection.host_profiles, identity, :host_profile),
@@ -97,7 +98,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       {:ok,
        %{
          projection
-         | host_profile: profile,
+         | host_profile_ref: identity,
            host_profiles: Map.put(projection.host_profiles, identity, profile)
        }}
     else
@@ -132,7 +133,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         %Event{type: "surface_recorded", identity: identity, data: data},
         _revision
       ) do
-    if projection.surface do
+    if State.surface(projection) do
       {:error, :duplicate_surface}
     else
       with :ok <- named_by_genesis(projection, :surface_ref, identity),
@@ -142,7 +143,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         {:ok,
          %{
            projection
-           | surface: surface,
+           | surface_ref: identity,
              surfaces: Map.put(projection.surfaces, identity, surface)
          }}
       end
@@ -154,7 +155,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         %Event{type: "surface_revised", identity: identity, data: data},
         _revision
       ) do
-    with %Surface{} = current <- projection.surface,
+    with %Surface{} = current <- State.surface(projection),
          {:ok, surface} <- Record.decode(Surface, data["surface"]),
          :ok <- Record.match_identity(identity, surface.ref),
          :ok <- Index.unique(projection.surfaces, identity, :surface),
@@ -163,7 +164,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       {:ok,
        %{
          projection
-         | surface: surface,
+         | surface_ref: identity,
            surfaces: Map.put(projection.surfaces, identity, surface)
        }}
     else
@@ -254,7 +255,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       Act.reservations?(act) ->
         {:error, {:principal_registration_act_has_reservations, act.ref}}
 
-      not Governance.ledger_internal?(act) ->
+      not GovernedExecution.ledger_internal?(act) ->
         {:error, {:principal_registration_act_not_ledger_internal, act.ref}}
 
       principal.ref not in act.target_refs ->

@@ -33,8 +33,11 @@ defmodule Spectre.Principal do
 
   def new(attrs) do
     with {:ok, attrs} <- Portable.normalize_attrs(attrs, @fields, :principal),
-         attrs = Map.put_new(attrs, :schema_version, @schema_version),
-         attrs = Map.put_new(attrs, :attributes, %{}),
+         attrs =
+           attrs
+           |> Map.put_new(:schema_version, @schema_version)
+           |> Map.put_new(:display_name, nil)
+           |> Map.put_new(:attributes, %{}),
          {:ok, ref} <- resolve_ref(Map.get(attrs, :ref), attrs),
          principal = struct(__MODULE__, Map.put(attrs, :ref, ref)),
          :ok <- validate_record(principal),
@@ -45,15 +48,7 @@ defmodule Spectre.Principal do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = principal) do
-    %{
-      "schema_version" => principal.schema_version,
-      "ref" => principal.ref,
-      "kind" => principal.kind,
-      "display_name" => principal.display_name,
-      "attributes" => principal.attributes
-    }
-  end
+  def canonical(%__MODULE__{} = principal), do: Portable.canonical_fields(principal, @fields)
 
   @doc "Restores a principal from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -73,14 +68,7 @@ defmodule Spectre.Principal do
 
   defp content(%__MODULE__{} = principal), do: principal |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.get(attrs, :schema_version, @schema_version),
-      "kind" => Map.get(attrs, :kind),
-      "display_name" => Map.get(attrs, :display_name),
-      "attributes" => Map.get(attrs, :attributes, %{})
-    }
-  end
+  defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = principal) do
     cond do

@@ -6,43 +6,29 @@ defmodule Spectre.Governance do
   authenticated handle, force the exact governance Row and construct a
   canonical consequence; they never append, select a Mandate or mint a Grant.
   The returned Candidate must cross normal `Spectre.propose/4` admission.
+  Ordinary application classes do not need a helper here and remain declared
+  through their Surface contracts.
   """
 
-  alias Spectre.Candidate
+  alias Spectre.{Act, Candidate}
   alias Spectre.Declassification
   alias Spectre.Definition
   alias Spectre.Duty.Disposition
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Evidence
   alias Spectre.HostProfile
+  alias Spectre.GovernedAct.Class, as: GovernedClass
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.Governance.Builder
   alias Spectre.Mandate
   alias Spectre.Portable
   alias Spectre.Principal
-  alias Spectre.Row
   alias Spectre.Scope
   alias Spectre.Scope.Opening
   alias Spectre.SubmissionContext
   alias Spectre.Surface
 
-  @kernel_executor_ref "spectre:kernel:ledger"
-  @kernel_contract_ref "spectre:kernel:ledger:v1"
-  @retained_revocation_purpose_ref "spectre:purpose:retained-mandate-revocation:v1"
   @scope_open_class "scope.open"
-  @scope_open_dimensions [:write, :govern]
-  @ledger_internal_classes [
-    "principal.register",
-    "mandate.delegate",
-    "mandate.devolve",
-    "mandate.restrict",
-    "mandate.revoke",
-    "duty.dispose",
-    "surface.revise",
-    "host_profile.revise",
-    "definition.revise",
-    "data.declassify",
-    @scope_open_class
-  ]
-  @application_ledger_dimensions [:write, :spend]
 
   @governed_scope_fields [
     :kind,
@@ -52,35 +38,15 @@ defmodule Spectre.Governance do
     :due_at
   ]
 
-  @internal_fields [
-    :identity_key,
-    :requested_mandate_ref,
-    :accountable_ref,
-    :subject_refs,
-    :target_refs,
-    :purpose_ref,
-    :purpose_params,
-    :consent,
-    :evidence_refs,
-    :presentation_ref
-  ]
-
-  @erasure_fields @internal_fields ++
-                    [
-                      :executor_ref,
-                      :executor_contract_ref,
-                      :observation_window_ms
-                    ]
-
   @retained_revocation_fields [:identity_key]
 
   @doc "Stable executor identity used for consequences completed inside the ledger."
   @spec kernel_executor_ref() :: String.t()
-  def kernel_executor_ref, do: @kernel_executor_ref
+  defdelegate kernel_executor_ref(), to: GovernedExecution
 
   @doc "Stable executor contract used for consequences completed inside the ledger."
   @spec kernel_contract_ref() :: String.t()
-  def kernel_contract_ref, do: @kernel_contract_ref
+  defdelegate kernel_contract_ref(), to: GovernedExecution
 
   @doc "Stable governed class used to open Work and Vigil scopes."
   @spec scope_open_class() :: String.t()
@@ -88,22 +54,24 @@ defmodule Spectre.Governance do
 
   @doc "Exact Row dimensions required by a governed Scope opening."
   @spec scope_open_dimensions() :: [Spectre.Row.dimension()]
-  def scope_open_dimensions, do: @scope_open_dimensions
+  def scope_open_dimensions do
+    {:ok, dimensions} = GovernedClass.dimensions(@scope_open_class)
+    dimensions
+  end
 
   @doc "Stable, closed purpose used by a retained controller to revoke its exact Mandate."
   @spec retained_revocation_purpose_ref() :: String.t()
-  def retained_revocation_purpose_ref, do: @retained_revocation_purpose_ref
+  defdelegate retained_revocation_purpose_ref(), to: GovernedClass
 
   @doc "Builds a governed proposal that registers an immutable Principal without granting power."
   @spec register_principal(Scope.t(), Principal.t() | map() | keyword(), map() | keyword()) ::
           {:ok, Candidate.t()} | {:error, term()}
   def register_principal(%Scope{} = scope, principal, candidate_attrs) do
     with {:ok, principal} <- Principal.new(principal) do
-      internal_candidate(
+      Builder.internal(
         scope,
         "principal.register",
         %{"principal_registration" => Principal.canonical(principal)},
-        [:govern],
         candidate_attrs,
         [principal.ref]
       )
@@ -111,60 +79,21 @@ defmodule Spectre.Governance do
   end
 
   @doc false
-  @spec ledger_internal?(map()) :: boolean()
-  def ledger_internal?(record) when is_map(record) do
-    class = map_field(record, :class)
-
-    exact_kernel_route?(record) and zero_observation_window?(record) and
-      if class in @ledger_internal_classes do
-        no_reservations?(record)
-      else
-        application_ledger_row?(record)
-      end
-  end
-
-  def ledger_internal?(_record), do: false
+  @spec ledger_internal?(Candidate.t() | Act.t()) :: boolean()
+  defdelegate ledger_internal?(record), to: GovernedExecution
 
   @doc false
-  @spec execution_mode(map()) ::
+  @spec execution_mode(Candidate.t() | Act.t()) ::
           {:ok, :ledger_internal | :executor_mediated} | {:error, term()}
-  def execution_mode(record) when is_map(record) do
-    class = map_field(record, :class)
-
-    cond do
-      class in @ledger_internal_classes and ledger_internal?(record) ->
-        {:ok, :ledger_internal}
-
-      class in @ledger_internal_classes ->
-        {:error, {:governance_act_not_ledger_internal, class}}
-
-      ledger_internal?(record) ->
-        {:ok, :ledger_internal}
-
-      reserved_kernel_route?(record) ->
-        {:error, :invalid_ledger_internal_application_act}
-
-      true ->
-        {:ok, :executor_mediated}
-    end
-  end
-
-  def execution_mode(_record), do: {:error, :invalid_governance_execution_boundary}
+  def execution_mode(record), do: GovernedExecution.mode(record)
 
   @doc false
-  @spec executor_mediated?(map()) :: boolean()
-  def executor_mediated?(record), do: execution_mode(record) == {:ok, :executor_mediated}
+  @spec executor_mediated?(Candidate.t() | Act.t()) :: boolean()
+  defdelegate executor_mediated?(record), to: GovernedExecution
 
   @doc false
-  @spec execution_boundary(map()) :: :ok | {:error, term()}
-  def execution_boundary(record) when is_map(record) do
-    case execution_mode(record) do
-      {:ok, _mode} -> :ok
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def execution_boundary(_record), do: {:error, :invalid_governance_execution_boundary}
+  @spec execution_boundary(Candidate.t() | Act.t()) :: :ok | {:error, term()}
+  def execution_boundary(record), do: GovernedExecution.validate(record)
 
   @doc "Builds a Work/Vigil opening proposal in an already-open parent Scope."
   @spec open_scope(
@@ -184,11 +113,10 @@ defmodule Spectre.Governance do
          {:ok, opening_attrs} <-
            Portable.normalize_attrs(opening_attrs, @governed_scope_fields, :governed_scope),
          {:ok, draft} <- governed_scope_draft(parent_scope, child_context, opening_attrs) do
-      internal_candidate(
+      Builder.internal(
         parent_scope,
         @scope_open_class,
         %{"scope_open" => draft},
-        @scope_open_dimensions,
         candidate_attrs,
         [Map.fetch!(draft, "ref")]
       )
@@ -205,11 +133,10 @@ defmodule Spectre.Governance do
     with {:ok, draft} <- Mandate.issue_draft(mandate),
          parent_ref when is_binary(parent_ref) and parent_ref != "" <-
            Map.get(draft, "parent_ref") do
-      internal_candidate(
+      Builder.internal(
         scope,
         "mandate.delegate",
         %{"mandate_issue" => draft},
-        [:delegate, :govern],
         candidate_attrs,
         [parent_ref]
       )
@@ -226,7 +153,7 @@ defmodule Spectre.Governance do
       when is_binary(child_mandate_ref) and child_mandate_ref != "" and is_map(amounts) and
              not is_struct(amounts) do
     with :ok <- positive_amounts(amounts) do
-      internal_candidate(
+      Builder.internal(
         scope,
         "mandate.devolve",
         %{
@@ -235,7 +162,6 @@ defmodule Spectre.Governance do
             "amounts" => amounts
           }
         },
-        [:delegate, :govern],
         candidate_attrs,
         [child_mandate_ref]
       )
@@ -255,7 +181,7 @@ defmodule Spectre.Governance do
   def restrict_mandate(%Scope{} = scope, predecessor_ref, successor, candidate_attrs)
       when is_binary(predecessor_ref) and predecessor_ref != "" do
     with {:ok, draft} <- Mandate.issue_draft(successor) do
-      internal_candidate(
+      Builder.internal(
         scope,
         "mandate.restrict",
         %{
@@ -264,7 +190,6 @@ defmodule Spectre.Governance do
             "successor" => draft
           }
         },
-        [:govern],
         candidate_attrs,
         [predecessor_ref]
       )
@@ -294,11 +219,10 @@ defmodule Spectre.Governance do
 
   def revoke_mandate(%Scope{} = scope, mandate_ref, candidate_attrs)
       when is_binary(mandate_ref) and mandate_ref != "" do
-    internal_candidate(
+    Builder.internal(
       scope,
       "mandate.revoke",
       %{"mandate_revoke" => %{"mandate_ref" => mandate_ref}},
-      [:govern],
       candidate_attrs,
       [mandate_ref]
     )
@@ -309,27 +233,28 @@ defmodule Spectre.Governance do
 
   defp retained_revocation_candidate(scope, target, candidate_attrs) do
     with {:ok, attrs} <-
-           normalize_attrs(candidate_attrs, @retained_revocation_fields) do
+           normalize_attrs(candidate_attrs, @retained_revocation_fields),
+         {:ok, row} <- Builder.intrinsic_row("mandate.revoke") do
       attrs =
         Map.merge(attrs, %{
           requested_mandate_ref: target.ref,
           accountable_ref: target.accountable_ref,
-          purpose_ref: @retained_revocation_purpose_ref,
+          purpose_ref: GovernedClass.retained_revocation_purpose_ref(),
           purpose_params: %{},
           subject_refs: [],
           evidence_refs: [],
           presentation_ref: nil
         })
 
-      candidate(
+      Builder.build(
         scope,
         attrs,
         %{
           class: "mandate.revoke",
           consequence: %{"mandate_revoke" => %{"mandate_ref" => target.ref}},
-          row: row([:govern]),
-          executor_ref: @kernel_executor_ref,
-          executor_contract_ref: @kernel_contract_ref,
+          row: row,
+          executor_ref: GovernedExecution.kernel_executor_ref(),
+          executor_contract_ref: GovernedExecution.kernel_contract_ref(),
           target_refs: [target.ref],
           meter_requests: %{},
           observation_window_ms: 0
@@ -343,11 +268,10 @@ defmodule Spectre.Governance do
           {:ok, Candidate.t()} | {:error, term()}
   def dispose_duty(%Scope{} = scope, disposition, candidate_attrs) do
     with {:ok, disposition} <- Disposition.new(disposition) do
-      internal_candidate(
+      Builder.internal(
         scope,
         "duty.dispose",
         Disposition.consequence(disposition),
-        [:govern],
         candidate_attrs,
         [disposition.duty_ref]
       )
@@ -360,7 +284,7 @@ defmodule Spectre.Governance do
   def revise_surface(%Scope{} = scope, previous_ref, surface, candidate_attrs)
       when is_binary(previous_ref) and previous_ref != "" do
     with {:ok, surface} <- Surface.new(surface) do
-      internal_candidate(
+      Builder.internal(
         scope,
         "surface.revise",
         %{
@@ -369,7 +293,6 @@ defmodule Spectre.Governance do
             "surface" => Surface.canonical(surface)
           }
         },
-        [:govern],
         candidate_attrs,
         [previous_ref, surface.ref]
       )
@@ -389,7 +312,7 @@ defmodule Spectre.Governance do
   def revise_host_profile(%Scope{} = scope, previous_ref, profile, candidate_attrs)
       when is_binary(previous_ref) and previous_ref != "" do
     with {:ok, profile} <- HostProfile.new(profile) do
-      internal_candidate(
+      Builder.internal(
         scope,
         "host_profile.revise",
         %{
@@ -398,7 +321,6 @@ defmodule Spectre.Governance do
             "host_profile" => HostProfile.canonical(profile)
           }
         },
-        [:govern],
         candidate_attrs,
         [previous_ref, profile.ref]
       )
@@ -413,7 +335,7 @@ defmodule Spectre.Governance do
           {:ok, Candidate.t()} | {:error, term()}
   def revise_definition(%Scope{} = scope, definition, candidate_attrs) do
     with {:ok, definition} <- Definition.new(definition) do
-      internal_candidate(
+      Builder.internal(
         scope,
         "definition.revise",
         %{
@@ -422,7 +344,6 @@ defmodule Spectre.Governance do
             "definition" => Definition.canonical(definition)
           }
         },
-        [:govern],
         candidate_attrs,
         Enum.reject([definition.previous_ref, definition.ref], &is_nil/1)
       )
@@ -447,11 +368,10 @@ defmodule Spectre.Governance do
          {:ok, draft} <- Declassification.draft(evidence, removed_labels),
          {:ok, required_targets} <-
            Declassification.required_target_refs(evidence, draft["removed_labels"]) do
-      internal_candidate(
+      Builder.internal(
         scope,
         "data.declassify",
         %{"evidence_declassification" => draft},
-        [:write, :govern],
         candidate_attrs,
         required_targets
       )
@@ -465,32 +385,38 @@ defmodule Spectre.Governance do
       when is_map(facts) do
     with {:ok, request} <-
            normalize_attrs(request_attrs, [:target_ref, :reason, :requested_at]),
-         {:ok, target_ref} <- required_ref(request, :target_ref),
-         {:ok, reason} <- required_binary(request, :reason),
-         {:ok, requested_at} <- required_integer(request, :requested_at),
+         {:ok, target_ref} <- Builder.required_ref(request, :target_ref),
+         {:ok, reason} <- Builder.required_binary(request, :reason),
+         {:ok, requested_at} <- Builder.required_integer(request, :requested_at),
          :ok <- ErasureAnalysis.requestable?(facts, target_ref),
          {:ok, draft_attrs} <-
            ErasureAnalysis.derive_request(
              facts,
              target_ref,
-             scope.ref,
+             Scope.ref(scope),
              reason,
              requested_at
            ),
          {:ok, draft} <- Spectre.Erasure.request_draft(draft_attrs),
-         {:ok, attrs} <- normalize_attrs(candidate_attrs, @erasure_fields),
-         {:ok, executor_ref} <- required_ref(attrs, :executor_ref),
-         {:ok, contract_ref} <- required_ref(attrs, :executor_contract_ref) do
-      candidate(
+         {:ok, row} <- Builder.intrinsic_row("data.erase"),
+         {:ok, attrs} <-
+           Builder.normalize_attrs(
+             candidate_attrs,
+             [:executor_ref, :executor_contract_ref, :observation_window_ms]
+           ),
+         {:ok, executor_ref} <- Builder.required_ref(attrs, :executor_ref),
+         {:ok, contract_ref} <- Builder.required_ref(attrs, :executor_contract_ref) do
+      Builder.build(
         scope,
         attrs,
         %{
           class: "data.erase",
           consequence: %{"erasure_request" => draft},
-          row: row([:attempt, :write, :govern]),
+          row: row,
           executor_ref: executor_ref,
           executor_contract_ref: contract_ref,
-          target_refs: required_refs(attrs, :target_refs, [Map.fetch!(draft, "target_ref")]),
+          target_refs:
+            Builder.target_refs(attrs, :target_refs, [Map.fetch!(draft, "target_ref")]),
           meter_requests: %{},
           observation_window_ms: Map.get(attrs, :observation_window_ms, 0)
         }
@@ -501,54 +427,6 @@ defmodule Spectre.Governance do
   def request_erasure(_scope, _facts, _request_attrs, _candidate_attrs),
     do: {:error, :invalid_erasure_request}
 
-  defp internal_candidate(scope, class, consequence, dimensions, candidate_attrs, targets) do
-    with {:ok, attrs} <- normalize_attrs(candidate_attrs, @internal_fields) do
-      candidate(
-        scope,
-        attrs,
-        %{
-          class: class,
-          consequence: consequence,
-          row: row(dimensions),
-          executor_ref: @kernel_executor_ref,
-          executor_contract_ref: @kernel_contract_ref,
-          target_refs: required_refs(attrs, :target_refs, targets),
-          meter_requests: %{},
-          observation_window_ms: 0
-        }
-      )
-    end
-  end
-
-  defp candidate(scope, attrs, forced) do
-    with {:ok, identity_key} <- required_binary(attrs, :identity_key),
-         {:ok, mandate_ref} <- required_ref(attrs, :requested_mandate_ref),
-         {:ok, accountable_ref} <- required_ref(attrs, :accountable_ref),
-         {:ok, purpose_ref} <- required_ref(attrs, :purpose_ref) do
-      Candidate.new(%{
-        identity_key: identity_key,
-        class: forced.class,
-        consequence: forced.consequence,
-        row: forced.row,
-        requested_mandate_ref: mandate_ref,
-        proposer_ref: scope.context.authenticated_principal_ref,
-        executor_ref: forced.executor_ref,
-        accountable_ref: accountable_ref,
-        scope_ref: scope.ref,
-        subject_refs: Map.get(attrs, :subject_refs, []),
-        target_refs: forced.target_refs,
-        purpose_ref: purpose_ref,
-        purpose_params: Map.get(attrs, :purpose_params, %{}),
-        consent: Map.get(attrs, :consent),
-        evidence_refs: Map.get(attrs, :evidence_refs, []),
-        presentation_ref: Map.get(attrs, :presentation_ref),
-        meter_requests: forced.meter_requests,
-        executor_contract_ref: forced.executor_contract_ref,
-        observation_window_ms: forced.observation_window_ms
-      })
-    end
-  end
-
   defp normalize_attrs(attrs, fields), do: Portable.normalize_attrs(attrs, fields, :governance)
 
   defp governed_scope_draft(parent_scope, child_context, attrs) do
@@ -556,7 +434,7 @@ defmodule Spectre.Governance do
     |> Map.merge(%{
       ref: child_context.scope_ref,
       domain_ref: child_context.domain_ref,
-      parent_ref: parent_scope.ref,
+      parent_ref: Scope.ref(parent_scope),
       opened_by_ref: child_context.authenticated_principal_ref,
       submission_context_ref: child_context.ref,
       authentication_ref: child_context.authentication_ref,
@@ -570,43 +448,18 @@ defmodule Spectre.Governance do
 
   defp child_context_matches_parent_domain(parent_scope, child_context) do
     cond do
-      child_context.domain_ref != parent_scope.domain.ref ->
+      child_context.domain_ref != Scope.domain_ref(parent_scope) ->
         {:error, :child_scope_domain_mismatch}
 
       child_context.host_generation != parent_scope.context.host_generation ->
         {:error, :child_scope_generation_mismatch}
 
-      child_context.scope_ref == parent_scope.ref ->
+      child_context.scope_ref == Scope.ref(parent_scope) ->
         {:error, :child_scope_ref_must_differ_from_parent}
 
       true ->
         :ok
     end
-  end
-
-  defp required_ref(attrs, key) do
-    case Map.get(attrs, key) do
-      value when is_binary(value) and value != "" -> {:ok, value}
-      _missing -> {:error, {:missing_governance_candidate_field, key}}
-    end
-  end
-
-  defp required_binary(attrs, key), do: required_ref(attrs, key)
-
-  defp required_integer(attrs, key) do
-    case Map.get(attrs, key) do
-      value when is_integer(value) -> {:ok, value}
-      _missing -> {:error, {:missing_governance_candidate_field, key}}
-    end
-  end
-
-  defp required_refs(attrs, key, required) do
-    attrs
-    |> Map.get(key, [])
-    |> List.wrap()
-    |> Kernel.++(required)
-    |> Enum.uniq()
-    |> Enum.sort()
   end
 
   defp positive_amounts(amounts) do
@@ -619,44 +472,4 @@ defmodule Spectre.Governance do
       {:error, :invalid_mandate_devolution_amounts}
     end
   end
-
-  defp row(dimensions) do
-    Map.new(~w(attempt observe read write disclose spend delegate govern present), fn dimension ->
-      {dimension, String.to_existing_atom(dimension) in dimensions}
-    end)
-  end
-
-  defp exact_kernel_route?(record) do
-    map_field(record, :executor_ref) == @kernel_executor_ref and
-      map_field(record, :executor_contract_ref) == @kernel_contract_ref
-  end
-
-  defp reserved_kernel_route?(record) do
-    map_field(record, :executor_ref) == @kernel_executor_ref or
-      map_field(record, :executor_contract_ref) == @kernel_contract_ref
-  end
-
-  defp application_ledger_row?(record) do
-    case Row.new(map_field(record, :row)) do
-      {:ok, row} ->
-        dimensions = Row.dimensions(row)
-
-        dimensions != [] and
-          Enum.all?(dimensions, &(&1 in @application_ledger_dimensions))
-
-      {:error, _reason} ->
-        false
-    end
-  end
-
-  defp zero_observation_window?(record),
-    do: map_field(record, :observation_window_ms) == 0
-
-  defp no_reservations?(record) do
-    reservations = map_field(record, :reservations) || map_field(record, :meter_requests)
-    reservations in [%{}, []]
-  end
-
-  defp map_field(map, key) when is_map(map),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

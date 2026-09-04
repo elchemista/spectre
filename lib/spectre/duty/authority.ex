@@ -3,6 +3,7 @@ defmodule Spectre.Duty.Authority do
 
   alias Spectre.{Act, Duty, Mandate, Principal}
   alias Spectre.Duty.Derive
+  alias Spectre.Mandate.Ancestry
 
   @doc "Validates the exact, independent authority route used by a discretionary disposition."
   @spec validate(
@@ -114,34 +115,32 @@ defmodule Spectre.Duty.Authority do
     end
   end
 
-  defp mandate_route(duty, mandate_ref, mandates),
-    do: mandate_route(duty, mandate_ref, mandates, MapSet.new(), [])
+  defp mandate_route(_duty, nil, _mandates), do: {:ok, []}
 
-  defp mandate_route(_duty, nil, _mandates, _visited, route),
-    do: {:ok, Enum.reverse(route)}
+  defp mandate_route(duty, mandate_ref, mandates) do
+    with {:ok, mandate} <- fetch_route_mandate(duty, mandates, mandate_ref),
+         {:ok, route} <- Ancestry.lineage(mandates, mandate) do
+      {:ok, route}
+    else
+      {:error, {:mandate_ancestry_cycle, ref}} ->
+        {:error, {:duty_disposition_mandate_ancestry_cycle, duty.ref, ref}}
 
-  defp mandate_route(duty, mandate_ref, mandates, visited, route) do
-    cond do
-      MapSet.member?(visited, mandate_ref) ->
-        {:error, {:duty_disposition_mandate_ancestry_cycle, duty.ref, mandate_ref}}
+      {:error, {:mandate_ancestor_missing, ref}} ->
+        {:error, {:duty_disposition_mandate_not_found, duty.ref, ref}}
 
-      true ->
-        case Map.fetch(mandates, mandate_ref) do
-          {:ok, %Mandate{} = mandate} ->
-            mandate_route(
-              duty,
-              mandate.parent_ref,
-              mandates,
-              MapSet.put(visited, mandate_ref),
-              [mandate | route]
-            )
+      {:error, {:invalid_mandate_ancestor, ref}} ->
+        {:error, {:invalid_duty_disposition_mandate, duty.ref, ref}}
 
-          :error ->
-            {:error, {:duty_disposition_mandate_not_found, duty.ref, mandate_ref}}
+      {:error, _reason} = error ->
+        error
+    end
+  end
 
-          {:ok, _invalid} ->
-            {:error, {:invalid_duty_disposition_mandate, duty.ref, mandate_ref}}
-        end
+  defp fetch_route_mandate(duty, mandates, mandate_ref) do
+    case Map.fetch(mandates, mandate_ref) do
+      {:ok, %Mandate{} = mandate} -> {:ok, mandate}
+      :error -> {:error, {:duty_disposition_mandate_not_found, duty.ref, mandate_ref}}
+      {:ok, _invalid} -> {:error, {:invalid_duty_disposition_mandate, duty.ref, mandate_ref}}
     end
   end
 

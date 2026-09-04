@@ -18,13 +18,12 @@ defmodule Spectre.Ledger.Store.Mnesia do
 
   alias Spectre.Ledger
   alias Spectre.Ledger.Entry
+  alias Spectre.Ledger.Store.Support
 
   @default_heads :spectre_ledger_heads
   @default_batches :spectre_ledger_batches
   @default_entries :spectre_ledger_entries
   @storage_types [:disc_copies, :disc_only_copies]
-  @digest_pattern ~r/\A[0-9a-f]{64}\z/
-  @max_identifier_bytes 1_024
   @heads_attributes [:key, :revision, :head_digest]
   @batches_attributes [
     :key,
@@ -65,8 +64,8 @@ defmodule Spectre.Ledger.Store.Mnesia do
          :ok <- tables_available(config),
          {:ok, identity} <-
            Entry.batch_identity(domain_ref, batch_id, payloads, expected_revision),
-         {:ok, recorded_at} <- recorded_at(opts),
-         {:ok, fault} <- fault_phase(opts) do
+         {:ok, recorded_at} <- Support.recorded_at(opts),
+         {:ok, fault} <- Support.fault_phase(opts) do
       append_transaction(
         config,
         domain_ref,
@@ -251,7 +250,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
          {:ok, encoded_entries} <- encode_entries(entries),
          :ok <- ensure_entry_slots_empty(config, domain_ref, encoded_entries) do
       last = List.last(entries)
-      info = batch_info(batch_id, identity, expected_revision, entries, last)
+      info = Support.batch_info(batch_id, identity, expected_revision, entries, last)
 
       Enum.each(encoded_entries, fn {revision, encoded} ->
         :mnesia.write(
@@ -440,18 +439,6 @@ defmodule Spectre.Ledger.Store.Mnesia do
   defp decode_entry_row(_row, _config, _domain_ref),
     do: {:error, :invalid_ledger_mnesia_entry_row}
 
-  defp batch_info(batch_id, identity, expected_revision, entries, last) do
-    %{
-      batch_id: batch_id,
-      identity_digest: identity,
-      expected_revision: expected_revision,
-      first_revision: expected_revision + 1,
-      last_revision: last.revision,
-      entry_count: length(entries),
-      head_digest: last.digest
-    }
-  end
-
   defp batch_record(table, domain_ref, info) do
     {
       table,
@@ -489,34 +476,18 @@ defmodule Spectre.Ledger.Store.Mnesia do
     do: {:error, :invalid_ledger_mnesia_batch_row}
 
   defp validate_batch_info(info) do
-    cond do
-      not valid_identifier?(info.batch_id) ->
-        {:error, :invalid_ledger_mnesia_batch_id}
-
-      not valid_digest?(info.identity_digest) ->
-        {:error, :invalid_ledger_mnesia_batch_identity}
-
-      not is_integer(info.expected_revision) or info.expected_revision < 0 ->
-        {:error, :invalid_ledger_mnesia_batch_revision}
-
-      info.first_revision != info.expected_revision + 1 ->
-        {:error, :invalid_ledger_mnesia_batch_range}
-
-      not is_integer(info.last_revision) or info.last_revision < info.first_revision ->
-        {:error, :invalid_ledger_mnesia_batch_range}
-
-      not is_integer(info.entry_count) or info.entry_count <= 0 or
-        info.entry_count > Entry.max_batch_entries() or
-          info.entry_count != info.last_revision - info.first_revision + 1 ->
-        {:error, :invalid_ledger_mnesia_batch_count}
-
-      not valid_digest?(info.head_digest) ->
-        {:error, :invalid_ledger_mnesia_batch_head}
-
-      true ->
-        :ok
+    case Support.validate_batch_info(info) do
+      :ok -> :ok
+      {:error, field} -> {:error, batch_info_error(field)}
     end
   end
+
+  defp batch_info_error(:batch_id), do: :invalid_ledger_mnesia_batch_id
+  defp batch_info_error(:identity), do: :invalid_ledger_mnesia_batch_identity
+  defp batch_info_error(:revision), do: :invalid_ledger_mnesia_batch_revision
+  defp batch_info_error(:range), do: :invalid_ledger_mnesia_batch_range
+  defp batch_info_error(:count), do: :invalid_ledger_mnesia_batch_count
+  defp batch_info_error(:head), do: :invalid_ledger_mnesia_batch_head
 
   defp validate_stored_batch(config, domain_ref, info) do
     rows =
@@ -596,7 +567,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
              Enum.map(entries, & &1.payload),
              expected_revision
            ) do
-      {:ok, batch_info(first.batch_id, identity, expected_revision, entries, last)}
+      {:ok, Support.batch_info(first.batch_id, identity, expected_revision, entries, last)}
     else
       false -> {:error, {:mismatched_mnesia_ledger_batch, first.batch_id}}
       {:error, reason} -> {:error, {:invalid_mnesia_ledger_batch, reason}}
@@ -625,18 +596,10 @@ defmodule Spectre.Ledger.Store.Mnesia do
   defp batch_record_id(_row), do: nil
 
   defp validate_head(revision, digest) do
-    if is_integer(revision) and revision > 0 and valid_digest?(digest),
+    if is_integer(revision) and revision > 0 and Support.valid_digest?(digest),
       do: :ok,
       else: {:error, :invalid_ledger_mnesia_head_row}
   end
-
-  defp valid_identifier?(value),
-    do: is_binary(value) and value != "" and byte_size(value) <= @max_identifier_bytes
-
-  defp valid_digest?(value) when is_binary(value) and byte_size(value) == 64,
-    do: Regex.match?(@digest_pattern, value)
-
-  defp valid_digest?(_value), do: false
 
   defp configuration(opts, allowed) when is_list(opts) do
     with :ok <- validate_options(opts, allowed) do
@@ -743,32 +706,12 @@ defmodule Spectre.Ledger.Store.Mnesia do
     end
   end
 
-  defp fault_phase(opts) do
-    value = Keyword.get(opts, :fault_injection, Keyword.get(opts, :fault))
-
-    if value in [nil, :before_commit, :after_commit],
-      do: {:ok, value},
-      else: {:error, {:invalid_ledger_fault_injection, value}}
-  end
-
-  defp recorded_at(opts) do
-    case Keyword.fetch(opts, :recorded_at) do
-      {:ok, value} when is_integer(value) and value >= 0 -> {:ok, value}
-      _missing_or_invalid -> {:error, :ledger_recorded_at_required}
-    end
-  end
-
-  defp validate_options(opts, allowed) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      case Keyword.keys(opts) -- allowed do
-        [] ->
-          :ok
-
-        unknown ->
-          {:error, {:unknown_ledger_mnesia_options, unknown |> Enum.uniq() |> Enum.sort()}}
-      end
-    else
-      {:error, :invalid_ledger_mnesia_options}
-    end
+  defp validate_options(opts, allowed) do
+    Support.validate_options(
+      opts,
+      allowed,
+      :invalid_ledger_mnesia_options,
+      :unknown_ledger_mnesia_options
+    )
   end
 end

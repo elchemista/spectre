@@ -57,7 +57,11 @@ defmodule Spectre.Definition do
 
   def new(attrs) do
     with {:ok, attrs} <- Portable.normalize_attrs(attrs, @fields, :definition),
-         attrs <- Map.put_new(attrs, :schema_version, @schema_version),
+         attrs =
+           attrs
+           |> Map.put_new(:schema_version, @schema_version)
+           |> Map.put_new(:previous_ref, nil)
+           |> Map.put_new(:body, %{}),
          {:ok, ref} <- resolve_ref(Map.get(attrs, :ref), attrs),
          definition = struct(__MODULE__, Map.put(attrs, :ref, ref)),
          :ok <- validate_record(definition),
@@ -72,18 +76,7 @@ defmodule Spectre.Definition do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = definition) do
-    %{
-      "schema_version" => definition.schema_version,
-      "ref" => definition.ref,
-      "namespace" => definition.namespace,
-      "name" => definition.name,
-      "revision" => definition.revision,
-      "previous_ref" => definition.previous_ref,
-      "body" => definition.body,
-      "declared_at" => definition.declared_at
-    }
-  end
+  def canonical(%__MODULE__{} = definition), do: Portable.canonical_fields(definition, @fields)
 
   @doc "Restores a Definition and verifies its content reference."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -105,17 +98,7 @@ defmodule Spectre.Definition do
   defp content(%__MODULE__{} = definition),
     do: definition |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.get(attrs, :schema_version, @schema_version),
-      "namespace" => Map.get(attrs, :namespace),
-      "name" => Map.get(attrs, :name),
-      "revision" => Map.get(attrs, :revision),
-      "previous_ref" => Map.get(attrs, :previous_ref),
-      "body" => Map.get(attrs, :body, %{}),
-      "declared_at" => Map.get(attrs, :declared_at)
-    }
-  end
+  defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = definition) do
     cond do
@@ -141,12 +124,9 @@ defmodule Spectre.Definition do
         with :ok <- Portable.validate_ref(definition.ref, :ref),
              :ok <- Portable.validate_non_empty_binary(definition.namespace, :namespace),
              :ok <- Portable.validate_non_empty_binary(definition.name, :name),
-             :ok <- validate_optional_ref(definition.previous_ref, :previous_ref) do
+             :ok <- Portable.validate_optional_ref(definition.previous_ref, :previous_ref) do
           :ok
         end
     end
   end
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 end

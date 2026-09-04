@@ -9,7 +9,7 @@ defmodule Spectre.Audit.Report do
 
   alias Spectre.{Constitution, Declassification, Definition, Duty, Erasure, Genesis}
   alias Spectre.{HostProfile, Mandate, Surface}
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{DispatchState, MeterState, State}
   alias Spectre.Scope.Opening
 
   @format "spectre-semantic-audit"
@@ -35,28 +35,27 @@ defmodule Spectre.Audit.Report do
         }
 
   @doc "Builds the portable semantic audit report from verified folded state."
-  @spec build(State.t(), map(), map(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
-  def build(%State{} = state, snapshot, constitution, audited_at)
-      when is_map(snapshot) and is_map(constitution) and is_integer(audited_at) do
+  @spec build(State.t(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
+  def build(%State{} = state, audited_at) when is_integer(audited_at) do
     with {:ok, act_contexts} <- act_contexts(state),
          {:ok, erasures} <- erasure_reports(state),
-         {:ok, constitution_ref} <- Constitution.ref(constitution) do
+         {:ok, constitution_ref} <- Constitution.ref(state.constitution) do
       {:ok,
        %{
          format: @format,
          format_version: @format_version,
          domain_ref: state.domain_ref,
-         ledger_revision: snapshot.revision,
-         head_digest: snapshot.head_digest,
+         ledger_revision: state.revision,
+         head_digest: state.head_digest,
          constitution_ref: constitution_ref,
          audited_at: audited_at,
          foundation: foundation(state),
          act_contexts: act_contexts,
          mandate_restrictions: mandate_restrictions(state),
          meters: canonical_meters(state.meters),
-         meter_owners: state.meter_owners,
+         meter_owners: meter_owners(state),
          meter_recontainments: meter_recontainments(state),
-         dispatch_cancellations: sorted_values(state.dispatch_cancellations, & &1.act_ref),
+         dispatch_cancellations: dispatch_cancellations(state),
          open_duties: open_duties(state),
          scopes: canonical_scopes(state),
          definitions: canonical_definitions(state),
@@ -68,7 +67,7 @@ defmodule Spectre.Audit.Report do
     end
   end
 
-  def build(_state, _snapshot, _constitution, _audited_at),
+  def build(_state, _audited_at),
     do: {:error, :invalid_audit_report_input}
 
   defp foundation(state) do
@@ -79,13 +78,13 @@ defmodule Spectre.Audit.Report do
         |> Map.values()
         |> Enum.sort_by(& &1.ref)
         |> Enum.map(&Spectre.Principal.canonical/1),
-      host_profile: HostProfile.canonical(state.host_profile),
+      host_profile: state |> State.host_profile() |> HostProfile.canonical(),
       host_profile_history:
         state.host_profiles
         |> Map.values()
         |> Enum.sort_by(& &1.revision)
         |> Enum.map(&HostProfile.canonical/1),
-      surface: Surface.canonical(state.surface),
+      surface: state |> State.surface() |> Surface.canonical(),
       surface_history:
         state.surfaces
         |> Map.values()
@@ -100,7 +99,7 @@ defmodule Spectre.Audit.Report do
     state.acts
     |> Map.values()
     |> Enum.reduce_while({:ok, []}, fn act, {:ok, contexts} ->
-      with {:ok, metadata} <- metadata(state, "act_committed", act.ref),
+      with {:ok, metadata} <- metadata(state, act.ref),
            {:ok, host_profile} <- fetch(state.host_profiles, act.host_profile_ref, :host_profile),
            {:ok, surface} <- surface_at(state, act.surface_revision) do
         context = %{
@@ -150,20 +149,41 @@ defmodule Spectre.Audit.Report do
 
   defp meter_recontainments(state) do
     state.meter_recontainments
-    |> Map.values()
-    |> Enum.sort_by(& &1.act_ref)
-    |> Enum.map(fn record ->
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {act_ref, record} ->
+      {:ok, reservation} = MeterState.reservation(state, act_ref)
+
       %{
-        act_ref: record.act_ref,
-        mandate_ref: record.mandate_ref,
+        act_ref: act_ref,
+        mandate_ref: reservation.mandate_ref,
         outcome_ref: record.outcome_ref,
         cause_key: record.cause_key,
-        amounts: record.amounts,
+        amounts: reservation.amounts,
         recontained: record.recontained,
         deficits: record.deficits,
-        status: record.status,
+        status: if(is_nil(record.disposition_act_ref), do: :open, else: :disposed),
         disposition_act_ref: record.disposition_act_ref
       }
+    end)
+  end
+
+  defp meter_owners(state) do
+    Map.new(state.mandates, fn {mandate_ref, _mandate} ->
+      {:ok, owner_ref} = MeterState.owner(state, mandate_ref)
+      {mandate_ref, owner_ref}
+    end)
+  end
+
+  defp dispatch_cancellations(state) do
+    state
+    |> DispatchState.cancellations()
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {act_ref, cancellation} ->
+      act = Map.fetch!(state.acts, act_ref)
+
+      cancellation
+      |> Map.put(:act_ref, act_ref)
+      |> Map.put(:mandate_ref, act.mandate_ref)
     end)
   end
 
@@ -242,7 +262,7 @@ defmodule Spectre.Audit.Report do
     |> Map.values()
     |> Enum.filter(&(&1.act_ref == act_ref))
     |> Enum.reduce_while({:ok, []}, fn outcome, {:ok, outcomes} ->
-      case metadata(state, "outcome_recorded", outcome.ref) do
+      case metadata(state, outcome.ref) do
         {:ok, metadata} -> {:cont, {:ok, [{metadata.revision, outcome} | outcomes]}}
         {:error, _reason} = error -> {:halt, error}
       end
@@ -288,18 +308,16 @@ defmodule Spectre.Audit.Report do
       scopes: map_size(state.scopes),
       definitions: map_size(state.definitions),
       erasures: map_size(state.erasures),
-      meter_owners: map_size(state.meter_owners),
+      meter_owners: map_size(state.mandates),
       meter_recontainments: map_size(state.meter_recontainments),
       meter_devolutions: MapSet.size(state.meter_devolutions),
-      dispatch_cancellations: map_size(state.dispatch_cancellations)
+      dispatch_cancellations: Enum.count(DispatchState.cancellations(state))
     }
   end
 
-  defp metadata(state, type, ref) do
-    fetch(state.event_metadata, {type, ref}, :event_metadata)
+  defp metadata(state, ref) do
+    fetch(state.event_metadata, ref, :event_metadata)
   end
-
-  defp sorted_values(map, sorter), do: map |> Map.values() |> Enum.sort_by(sorter)
 
   defp fetch(collection, key, kind) do
     case Map.fetch(collection, key) do

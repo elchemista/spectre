@@ -13,6 +13,7 @@ defmodule Spectre.Attempt.Executor do
   """
 
   alias Spectre.{Act, Attempt, Evidence, Outcome, Portable}
+  alias Spectre.Attempt.Binding
 
   @evidence_fields [
     :ref,
@@ -121,18 +122,20 @@ defmodule Spectre.Attempt.Executor do
   @callback execute(Act.t(), Attempt.t(), term(), keyword()) :: result()
 
   defp validate_cause(act, attempt, observed_at) do
-    cond do
-      attempt.act_ref != act.ref ->
+    case Binding.mismatch(attempt, act) do
+      {:act_ref, _expected, _actual} ->
         {:error, :executor_evidence_act_mismatch}
 
-      attempt.executor_ref != act.executor_ref ->
+      {:executor_ref, _expected, _actual} ->
         {:error, :executor_evidence_executor_mismatch}
 
-      observed_at < attempt.started_at ->
-        {:error, :executor_evidence_precedes_attempt}
+      {:material_digest, _expected, _actual} ->
+        {:error, :executor_evidence_material_mismatch}
 
-      true ->
-        :ok
+      nil ->
+        if observed_at < attempt.started_at,
+          do: {:error, :executor_evidence_precedes_attempt},
+          else: :ok
     end
   end
 

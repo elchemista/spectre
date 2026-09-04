@@ -3,16 +3,18 @@ defmodule Spectre.Domain.Sequencer.State do
   Private process state for one Domain sequencer.
 
   Immutable host wiring and the latest disposable governed projection live in
-  this container. Queue and timer fields are operational only; none of them is
-  ledger truth or authority. Keeping the shape outside the GenServer module
-  lets focused command modules operate on an explicit value rather than on the
-  Sequencer mailbox itself.
+  this container. Domain identity and Constitution are read from the verified
+  projection instead of being copied here. Likewise only the Genesis verifier
+  option survives bootstrap; the initial record bundle is not retained by the
+  long-lived process. Queue and timer fields are operational only; none of them
+  is ledger truth or authority.
   """
 
-  @enforce_keys [
-    :domain_ref,
+  alias Spectre.Domain.Configuration
+  alias Spectre.GovernedAct.State, as: GovernedState
+
+  @configuration_fields [
     :store,
-    :projection,
     :clock,
     :id_source,
     :late_observer,
@@ -30,22 +32,39 @@ defmodule Spectre.Domain.Sequencer.State do
     :ambiguous_retries,
     :ledger_opts,
     :payload_store,
-    :execution_routes,
-    :broker,
-    :bootstrap_opts,
-    :constitution
+    :execution_boundary
   ]
+
+  @enforce_keys [:projection, :genesis_verifier | @configuration_fields]
 
   defstruct @enforce_keys ++
               [
                 pending: :queue.new(),
                 pending_count: 0,
-                flush_token: nil,
-                flush_timer: nil,
-                reconciliation_token: nil,
-                reconciliation_timer: nil,
+                flush: nil,
+                reconciliation: nil,
                 halted_reason: nil
               ]
 
   @type t :: %__MODULE__{}
+
+  @doc false
+  @spec new(Configuration.t(), GovernedState.t()) :: t()
+  def new(%Configuration{} = config, %GovernedState{} = projection) do
+    values =
+      config
+      |> Map.from_struct()
+      |> Map.take(@configuration_fields)
+      |> Map.put(:projection, projection)
+      |> Map.put(:genesis_verifier, Configuration.genesis_verifier(config))
+
+    struct!(__MODULE__, values)
+  end
+
+  @doc false
+  @spec verification_opts(t()) :: keyword()
+  def verification_opts(%__MODULE__{genesis_verifier: nil}), do: []
+
+  def verification_opts(%__MODULE__{genesis_verifier: verifier}),
+    do: [genesis_verifier: verifier]
 end

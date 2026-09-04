@@ -8,6 +8,11 @@ defmodule Spectre.Duty do
   cause and evidence remain unchanged. `conflict_refs` freezes both interested
   principals and the causal Mandate reference so independence can be verified
   from the ledger rather than inferred from the current configuration.
+
+  `Spectre.Duty.Derive` is the pure cause-family facade. Commit materializes
+  missing causes idempotently, while `GovernedAct.Transition.Duty` proves and
+  replays disposition. The record itself contains no scheduler or policy
+  callback.
   """
 
   alias Spectre.Portable
@@ -99,7 +104,7 @@ defmodule Spectre.Duty do
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = duty) do
-    Map.new(@fields, fn field -> {Atom.to_string(field), Map.fetch!(duty, field)} end)
+    Portable.canonical_fields(duty, @fields)
   end
 
   @doc "Restores a duty from its canonical map."
@@ -245,9 +250,9 @@ defmodule Spectre.Duty do
   defp validate_refs(duty) do
     with :ok <- Portable.validate_ref(duty.ref, :ref),
          :ok <- validate_cause_key(duty.cause_key),
-         :ok <- validate_optional_ref(duty.act_ref, :act_ref),
-         :ok <- validate_optional_ref(duty.attempt_ref, :attempt_ref),
-         :ok <- validate_optional_ref(duty.mandate_ref, :mandate_ref),
+         :ok <- Portable.validate_optional_ref(duty.act_ref, :act_ref),
+         :ok <- Portable.validate_optional_ref(duty.attempt_ref, :attempt_ref),
+         :ok <- Portable.validate_optional_ref(duty.mandate_ref, :mandate_ref),
          :ok <- Portable.validate_refs(duty.subjects, :subjects),
          :ok <- Portable.validate_ref(duty.accountable, :accountable),
          :ok <- Portable.validate_refs(duty.evidence_refs, :evidence_refs),
@@ -257,13 +262,11 @@ defmodule Spectre.Duty do
              :disposition_authority_refs
            ),
          :ok <- Portable.validate_refs(duty.conflict_refs, :conflict_refs),
-         :ok <- validate_optional_ref(duty.disposition_act_ref, :disposition_act_ref) do
+         :ok <-
+           Portable.validate_optional_ref(duty.disposition_act_ref, :disposition_act_ref) do
       :ok
     end
   end
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 
   defp validate_cause_key(nil), do: {:error, :missing_duty_cause_key}
   defp validate_cause_key(value), do: Portable.validate(value)

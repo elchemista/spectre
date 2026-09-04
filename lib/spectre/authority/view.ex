@@ -47,7 +47,6 @@ defmodule Spectre.Authority.View do
 
   @type held_mandate :: %{
           required(:mandate) => Mandate.t(),
-          required(:current?) => boolean(),
           required(:blockers) => [blocker()],
           required(:meters) => map()
         }
@@ -55,7 +54,6 @@ defmodule Spectre.Authority.View do
   @type revocation_control :: %{
           required(:mandate_ref) => String.t(),
           required(:accountable_ref) => String.t(),
-          required(:current?) => boolean(),
           required(:blockers) => [:not_yet_valid | :expired | :already_revoked]
         }
 
@@ -79,17 +77,18 @@ defmodule Spectre.Authority.View do
       when is_integer(observed_at) do
     principal_ref = scope.context.authenticated_principal_ref
 
-    with true <- projection.domain_ref == scope.domain.ref,
-         true <- scope.ref == scope.context.scope_ref,
-         %{ref: surface_ref, revision: surface_revision} <- projection.surface,
-         %{ref: profile_ref, mode: profile_mode} <- projection.host_profile,
+    scope_ref = Scope.ref(scope)
+
+    with true <- projection.domain_ref == Scope.domain_ref(scope),
+         %{ref: surface_ref, revision: surface_revision} <- State.surface(projection),
+         %{ref: profile_ref, mode: profile_mode} <- State.host_profile(projection),
          {:ok, held_mandates} <-
-           held_mandates(projection, scope.ref, principal_ref, observed_at),
+           held_mandates(projection, scope_ref, principal_ref, observed_at),
          {:ok, controls} <- retained_controls(projection, principal_ref, observed_at) do
       {:ok,
        %__MODULE__{
          domain_ref: projection.domain_ref,
-         scope_ref: scope.ref,
+         scope_ref: scope_ref,
          principal_ref: principal_ref,
          revision: projection.revision,
          observed_at: observed_at,
@@ -112,12 +111,14 @@ defmodule Spectre.Authority.View do
     do: {:error, :invalid_authority_view_input}
 
   defp held_mandates(projection, scope_ref, principal_ref, observed_at) do
+    authority_view = Projection.authority_view(projection)
+
     projection.mandates
     |> Map.values()
     |> Enum.filter(&(&1.holder_ref == principal_ref and scope_ref in &1.scope_refs))
     |> Enum.sort_by(& &1.ref)
     |> Enum.reduce_while({:ok, []}, fn mandate, {:ok, entries} ->
-      case held_mandate(projection, mandate, observed_at) do
+      case held_mandate(projection, authority_view, mandate, observed_at) do
         {:ok, entry} -> {:cont, {:ok, [entry | entries]}}
         {:error, _reason} = error -> {:halt, error}
       end
@@ -125,9 +126,7 @@ defmodule Spectre.Authority.View do
     |> reverse_ok()
   end
 
-  defp held_mandate(projection, %Mandate{} = mandate, observed_at) do
-    authority_view = Projection.authority_view(projection)
-
+  defp held_mandate(projection, authority_view, %Mandate{} = mandate, observed_at) do
     with {:ok, revocation_status} <-
            Ancestry.status(
              projection.mandates,
@@ -145,7 +144,6 @@ defmodule Spectre.Authority.View do
       {:ok,
        %{
          mandate: mandate,
-         current?: blockers == [],
          blockers: blockers,
          meters: meters
        }}
@@ -200,7 +198,6 @@ defmodule Spectre.Authority.View do
           control = %{
             mandate_ref: mandate.ref,
             accountable_ref: mandate.accountable_ref,
-            current?: blockers == [],
             blockers: blockers
           }
 

@@ -126,26 +126,9 @@ defmodule Spectre.Scope.Opening do
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = opening) do
-    %{
-      "schema_version" => opening.schema_version,
-      "ref" => opening.ref,
-      "domain_ref" => opening.domain_ref,
-      "parent_ref" => opening.parent_ref,
-      "kind" => opening.kind,
-      "opened_by_ref" => opening.opened_by_ref,
-      "submission_context_ref" => opening.submission_context_ref,
-      "authentication_ref" => opening.authentication_ref,
-      "ingress_ref" => opening.ingress_ref,
-      "channel_ref" => opening.channel_ref,
-      "session_ref" => opening.session_ref,
-      "host_generation" => opening.host_generation,
-      "promise_condition" => canonical_condition(opening.promise_condition),
-      "accountable_ref" => opening.accountable_ref,
-      "disposition_authority_refs" => opening.disposition_authority_refs,
-      "source_act_ref" => opening.source_act_ref,
-      "opened_at" => opening.opened_at,
-      "due_at" => opening.due_at
-    }
+    opening
+    |> Portable.canonical_fields(@fields)
+    |> Map.update!("promise_condition", &canonical_condition/1)
   end
 
   @doc "Restores a Scope opening from canonical data."
@@ -296,15 +279,15 @@ defmodule Spectre.Scope.Opening do
   defp validate_refs(opening) do
     with :ok <- Portable.validate_ref(opening.ref, :ref),
          :ok <- Portable.validate_ref(opening.domain_ref, :domain_ref),
-         :ok <- validate_optional_ref(opening.parent_ref, :parent_ref),
+         :ok <- Portable.validate_optional_ref(opening.parent_ref, :parent_ref),
          :ok <- Portable.validate_ref(opening.opened_by_ref, :opened_by_ref),
          :ok <- Portable.validate_ref(opening.submission_context_ref, :submission_context_ref),
          :ok <- Portable.validate_ref(opening.authentication_ref, :authentication_ref),
          :ok <- Portable.validate_ref(opening.ingress_ref, :ingress_ref),
-         :ok <- validate_optional_ref(opening.channel_ref, :channel_ref),
-         :ok <- validate_optional_ref(opening.session_ref, :session_ref),
-         :ok <- validate_optional_ref(opening.accountable_ref, :accountable_ref),
-         :ok <- validate_optional_ref(opening.source_act_ref, :source_act_ref),
+         :ok <- Portable.validate_optional_ref(opening.channel_ref, :channel_ref),
+         :ok <- Portable.validate_optional_ref(opening.session_ref, :session_ref),
+         :ok <- Portable.validate_optional_ref(opening.accountable_ref, :accountable_ref),
+         :ok <- Portable.validate_optional_ref(opening.source_act_ref, :source_act_ref),
          :ok <-
            Portable.validate_refs(
              opening.disposition_authority_refs,
@@ -313,7 +296,4 @@ defmodule Spectre.Scope.Opening do
       :ok
     end
   end
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 end

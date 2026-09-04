@@ -8,12 +8,14 @@ defmodule Spectre.GovernedAct.Transition.Authority do
   cancellation consumers therefore share one typed representation.
   """
 
-  alias Spectre.{Act, Governance, Mandate}
+  alias Spectre.{Act, Mandate}
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.{Index, MeterState, State, View}
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.Transition.Foundation
   alias Spectre.Kernel.{Authority, Meter}
+  alias Spectre.Kernel.Meter.Account
   alias Spectre.Mandate.{Ancestry, Revocation}
 
   def apply(
@@ -31,8 +33,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
        %{
          projection
          | mandates: Map.put(projection.mandates, identity, mandate),
-           meters: meters,
-           meter_owners: Map.put(projection.meter_owners, identity, identity)
+           meters: meters
        }}
     end
   end
@@ -54,7 +55,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
          :ok <- validate_mandate_principals(projection, successor),
          :ok <- validate_restriction_contract(act, predecessor, successor, data),
          :ok <- restrictable_predecessor(projection, predecessor, act.committed_at),
-         :ok <- restriction_link_available(projection, predecessor.ref, successor.ref),
+         :ok <- restriction_link_available(projection, predecessor.ref),
          {:ok, owner_ref} <- MeterState.owner(projection, predecessor.ref) do
       {:ok,
        %{
@@ -62,9 +63,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
          | mandates: Map.put(projection.mandates, successor.ref, successor),
            mandate_successors:
              Map.put(projection.mandate_successors, predecessor.ref, successor.ref),
-           mandate_predecessors:
-             Map.put(projection.mandate_predecessors, successor.ref, predecessor.ref),
-           meter_owners: Map.put(projection.meter_owners, successor.ref, owner_ref)
+           meter_owner_aliases: Map.put(projection.meter_owner_aliases, successor.ref, owner_ref)
        }}
     end
   end
@@ -72,7 +71,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
   def apply(
         %State{} = projection,
         %Event{type: "mandate_revoked", identity: identity, data: data},
-        revision
+        _revision
       ) do
     mandate_ref = data["mandate_ref"]
 
@@ -84,8 +83,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
              Revocation.from_event(
                identity,
                data,
-               Map.fetch!(mandate.revocation, "mode"),
-               revision
+               Map.fetch!(mandate.revocation, "mode")
              ) do
         {:ok,
          %{projection | revocations: Map.put(projection.revocations, mandate_ref, revocation)}}
@@ -168,15 +166,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
 
   defp empty_meter_accounts(mandate) do
     Map.new(mandate.meters, fn {meter_ref, _quantity} ->
-      {meter_ref,
-       %{
-         ceiling: 0,
-         available: 0,
-         reserved: 0,
-         suspended: 0,
-         spent: 0,
-         delegated: 0
-       }}
+      {meter_ref, Account.child(meter_ref)}
     end)
   end
 
@@ -222,7 +212,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
       Act.reservations?(act) ->
         {:error, {:mandate_restriction_act_has_reservations, act.ref}}
 
-      not Governance.ledger_internal?(act) ->
+      not GovernedExecution.ledger_internal?(act) ->
         {:error, {:mandate_restriction_act_not_ledger_internal, act.ref}}
 
       not Act.targets?(act, [predecessor.ref]) ->
@@ -245,20 +235,10 @@ defmodule Spectre.GovernedAct.Transition.Authority do
     end
   end
 
-  defp restriction_link_available(projection, predecessor_ref, successor_ref) do
-    cond do
-      Map.has_key?(projection.mandate_successors, predecessor_ref) ->
-        {:error, {:mandate_already_has_successor, predecessor_ref}}
-
-      Map.has_key?(projection.mandate_predecessors, successor_ref) ->
-        {:error, {:mandate_already_has_predecessor, successor_ref}}
-
-      succession_reaches?(projection.mandate_successors, successor_ref, predecessor_ref) ->
-        {:error, {:mandate_restriction_cycle, predecessor_ref, successor_ref}}
-
-      true ->
-        :ok
-    end
+  defp restriction_link_available(projection, predecessor_ref) do
+    if Map.has_key?(projection.mandate_successors, predecessor_ref),
+      do: {:error, {:mandate_already_has_successor, predecessor_ref}},
+      else: :ok
   end
 
   defp restrictable_predecessor(projection, predecessor, time) do
@@ -274,30 +254,6 @@ defmodule Spectre.GovernedAct.Transition.Authority do
     else
       {:ok, true} -> {:error, {:mandate_restriction_predecessor_inactive, predecessor.ref}}
       {:error, _reason} = error -> error
-    end
-  end
-
-  defp succession_reaches?(successors, current_ref, target_ref),
-    do: succession_reaches?(successors, current_ref, target_ref, MapSet.new())
-
-  defp succession_reaches?(successors, current_ref, target_ref, visited) do
-    cond do
-      current_ref == target_ref ->
-        true
-
-      MapSet.member?(visited, current_ref) ->
-        true
-
-      is_nil(Map.get(successors, current_ref)) ->
-        false
-
-      true ->
-        succession_reaches?(
-          successors,
-          Map.fetch!(successors, current_ref),
-          target_ref,
-          MapSet.put(visited, current_ref)
-        )
     end
   end
 

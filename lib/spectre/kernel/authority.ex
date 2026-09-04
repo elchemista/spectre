@@ -13,14 +13,25 @@ defmodule Spectre.Kernel.Authority do
   shapes here would make authority semantics depend on map-key guesses.
   """
 
-  alias Spectre.{Act, Candidate, Declassification, Mandate, Portable, Row}
-  alias Spectre.Kernel.Authority.{Attenuation, Effective, Facts}
-  alias Spectre.Mandate.Ancestry
+  alias Spectre.{Act, Candidate, Mandate}
 
-  @retained_revocation_class "mandate.revoke"
-  @retained_revocation_purpose_ref "spectre:purpose:retained-mandate-revocation:v1"
-  @kernel_executor_ref "spectre:kernel:ledger"
-  @kernel_contract_ref "spectre:kernel:ledger:v1"
+  alias Spectre.Kernel.Authority.{
+    Attenuation,
+    Coverage,
+    Effective,
+    Facts,
+    RetainedRevocation,
+    Status
+  }
+
+  @required_context_fields [
+    :domain_ref,
+    :scope_ref,
+    :authenticated_principal_ref,
+    :authentication_ref,
+    :ingress_ref,
+    :host_generation
+  ]
 
   @typedoc "The authority-relevant subset shared by a live or replayed submission context."
   @type context :: %{
@@ -103,10 +114,10 @@ defmodule Spectre.Kernel.Authority do
   def authorize(%Candidate{} = candidate, context, %Mandate{} = mandate, %Facts{} = view, time)
       when is_map(context) and is_integer(time) do
     with :ok <- authenticated_context(context),
-         :ok <- exact_mandate_in_view(mandate, view),
+         :ok <- Status.exact_snapshot(mandate, view),
          :ok <- matching_scope_context(candidate, context) do
-      if retained_revocation_request?(candidate, mandate) do
-        retained_revocation_authority(candidate, context, mandate, view, time)
+      if RetainedRevocation.request?(candidate, mandate) do
+        RetainedRevocation.authorize(candidate, context, mandate, view, time)
       else
         ordinary_authority(candidate, context, mandate, view, time)
       end
@@ -117,24 +128,23 @@ defmodule Spectre.Kernel.Authority do
     do: {:error, :invalid_authority_input}
 
   defp ordinary_authority(candidate, context, mandate, view, time) do
-    with :ok <-
-           restriction_status_for(mandate, view, MapSet.new(), :mandate),
-         :ok <- meter_debt_status_for(mandate, view, MapSet.new(), :mandate),
+    with :ok <- Status.restriction(mandate, view),
+         :ok <- Status.meter_debt(mandate, view),
          :ok <- containment_status(candidate, view),
-         :ok <- matching_principal(candidate, context, mandate),
-         :ok <- covered_executor(candidate, mandate),
-         :ok <- requested_mandate(candidate, mandate),
-         :ok <- current_at(mandate, time),
-         :ok <- not_revoked(mandate, view, time),
-         :ok <- matching_scope(candidate, context, mandate),
-         :ok <- covered_values(:subjects, candidate, mandate),
-         :ok <- covered_values(:targets, candidate, mandate),
-         :ok <- covered_class(candidate, mandate),
-         :ok <- declassification_owners_authorized(candidate, mandate, view),
-         :ok <- covered_row(candidate, mandate),
-         :ok <- covered_disclosure(candidate, mandate),
-         :ok <- covered_purpose(candidate, mandate),
-         :ok <- matching_accountable(candidate, mandate) do
+         :ok <- Coverage.matching_principal(candidate, context, mandate),
+         :ok <- Coverage.covered_executor(candidate, mandate),
+         :ok <- Coverage.requested_mandate(candidate, mandate),
+         :ok <- Status.current_at(mandate, time),
+         :ok <- Status.not_revoked(mandate, view, time),
+         :ok <- Coverage.matching_scope(candidate, mandate),
+         :ok <- Coverage.covered_values(:subjects, candidate, mandate),
+         :ok <- Coverage.covered_values(:targets, candidate, mandate),
+         :ok <- Coverage.covered_class(candidate, mandate),
+         :ok <- Coverage.declassification_owners(candidate, mandate, view),
+         :ok <- Coverage.covered_row(candidate, mandate),
+         :ok <- Coverage.covered_disclosure(candidate, mandate),
+         :ok <- Coverage.covered_purpose(candidate, mandate),
+         :ok <- Coverage.matching_accountable(candidate, mandate) do
       {:ok, Effective.from_mandate(mandate)}
     end
   end
@@ -143,7 +153,7 @@ defmodule Spectre.Kernel.Authority do
   @spec meter_debt_status(Mandate.t(), Facts.t()) ::
           :ok | {:error, term()}
   def meter_debt_status(%Mandate{} = mandate, %Facts{} = view),
-    do: meter_debt_status_for(mandate, view, MapSet.new(), :mandate)
+    do: Status.meter_debt(mandate, view)
 
   def meter_debt_status(_mandate, _view), do: {:error, :invalid_authority_input}
 
@@ -151,7 +161,7 @@ defmodule Spectre.Kernel.Authority do
   @spec restriction_status(Mandate.t(), Facts.t()) ::
           :ok | {:error, term()}
   def restriction_status(%Mandate{} = mandate, %Facts{} = view),
-    do: restriction_status_for(mandate, view, MapSet.new(), :mandate)
+    do: Status.restriction(mandate, view)
 
   def restriction_status(_mandate, _view), do: {:error, :invalid_authority_input}
 
@@ -211,38 +221,10 @@ defmodule Spectre.Kernel.Authority do
           Facts.t()
         ) ::
           :ok | {:error, term()}
-  def owners_authorize_mandate?(%Mandate{} = mandate, owner_refs, %Facts{} = view)
-      when is_list(owner_refs) do
-    with {:ok, owner_refs} <- Portable.normalize_refs(owner_refs, :label_owner_refs),
-         true <- owner_refs != [],
-         :ok <- exact_mandate_in_view(mandate, view),
-         {:ok, lineage} <- mandate_lineage(mandate, view, MapSet.new(), []) do
-      grantors = MapSet.new(lineage, & &1.grantor_ref)
-
-      case Enum.find(owner_refs, &(not MapSet.member?(grantors, &1))) do
-        nil -> :ok
-        owner_ref -> {:error, {:label_owner_not_in_mandate_lineage, owner_ref}}
-      end
-    else
-      false -> {:error, :declassification_label_owners_required}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def owners_authorize_mandate?(_mandate, _owner_refs, _view),
-    do: {:error, :invalid_declassification_authority}
+  defdelegate owners_authorize_mandate?(mandate, owner_refs, view), to: Coverage
 
   defp authenticated_context(context) do
-    required = [
-      :domain_ref,
-      :scope_ref,
-      :authenticated_principal_ref,
-      :authentication_ref,
-      :ingress_ref,
-      :host_generation
-    ]
-
-    case Enum.find(required, &(not present?(Map.get(context, &1)))) do
+    case Enum.find(@required_context_fields, &(not present?(Map.get(context, &1)))) do
       nil ->
         if is_integer(context.host_generation) and context.host_generation >= 0,
           do: :ok,
@@ -262,325 +244,8 @@ defmodule Spectre.Kernel.Authority do
       else: {:error, :candidate_scope_mismatch}
   end
 
-  defp matching_principal(candidate, context, mandate) do
-    authenticated = context.authenticated_principal_ref
-    claimed = candidate.proposer_ref
-
-    cond do
-      not present?(claimed) ->
-        {:error, :candidate_proposer_missing}
-
-      present?(claimed) and claimed != authenticated ->
-        {:error, :proposer_claim_mismatch}
-
-      mandate.holder_ref == authenticated ->
-        :ok
-
-      true ->
-        {:error, :principal_not_mandate_holder}
-    end
-  end
-
-  defp retained_revocation_request?(candidate, mandate) do
-    candidate.class == @retained_revocation_class and
-      candidate.requested_mandate_ref == mandate.ref and
-      mandate.revocation["mode"] == :retained_controller
-  end
-
-  defp retained_revocation_authority(candidate, context, mandate, view, time) do
-    controller_ref = context.authenticated_principal_ref
-
-    with :ok <- current_at(mandate, time),
-         :ok <- not_directly_revoked(mandate, view, time),
-         :ok <- retained_controller(candidate, controller_ref, mandate),
-         :ok <- exact_retained_revocation(candidate, context, mandate) do
-      {:ok, Effective.retained_revocation(mandate, candidate, controller_ref)}
-    end
-  end
-
-  defp retained_controller(candidate, controller_ref, mandate) do
-    claimed = candidate.proposer_ref
-    controllers = mandate.revocation["controller_refs"]
-
-    cond do
-      not present?(claimed) -> {:error, :candidate_proposer_missing}
-      claimed != controller_ref -> {:error, :proposer_claim_mismatch}
-      controller_ref not in controllers -> {:error, :principal_not_revocation_controller}
-      true -> :ok
-    end
-  end
-
-  defp exact_retained_revocation(candidate, context, mandate) do
-    expected_consequence = %{
-      "mandate_revoke" => %{"mandate_ref" => mandate.ref}
-    }
-
-    checks = [
-      {candidate.consequence == expected_consequence, :revocation_consequence_mismatch},
-      {candidate.executor_ref == @kernel_executor_ref, :retained_revocation_executor_mismatch},
-      {candidate.executor_contract_ref == @kernel_contract_ref,
-       :retained_revocation_contract_mismatch},
-      {candidate.scope_ref == context.scope_ref, :candidate_scope_mismatch},
-      {candidate.subject_refs == [], :retained_revocation_subjects_not_empty},
-      {candidate.target_refs == [mandate.ref], :retained_revocation_targets_mismatch},
-      {candidate.purpose_ref == @retained_revocation_purpose_ref,
-       :retained_revocation_purpose_mismatch},
-      {candidate.purpose_params == %{}, :retained_revocation_purpose_parameters_not_empty},
-      {candidate.evidence_refs == [], :retained_revocation_evidence_not_empty},
-      {is_nil(candidate.disclosure), :retained_revocation_disclosure_present},
-      {is_nil(candidate.presentation_ref), :retained_revocation_presentation_present},
-      {candidate.meter_requests == %{}, :retained_revocation_meter_request_present},
-      {candidate.observation_window_ms == 0, :retained_revocation_observation_window_present},
-      {candidate.accountable_ref == mandate.accountable_ref, :accountable_claim_mismatch},
-      {Row.dimensions(candidate.row) == [:govern], :retained_revocation_row_mismatch}
-    ]
-
-    case Enum.find(checks, fn {valid?, _reason} -> not valid? end) do
-      nil -> :ok
-      {false, reason} -> {:error, reason}
-    end
-  end
-
-  defp requested_mandate(candidate, mandate) do
-    if is_nil(candidate.requested_mandate_ref) or candidate.requested_mandate_ref == mandate.ref,
-      do: :ok,
-      else: {:error, :different_mandate_requested}
-  end
-
-  defp covered_executor(candidate, mandate) do
-    cond do
-      not present?(candidate.executor_ref) ->
-        {:error, :candidate_executor_missing}
-
-      candidate.executor_ref not in mandate.executor_refs ->
-        {:error, :executor_outside_mandate}
-
-      not present?(candidate.executor_contract_ref) ->
-        {:error, :candidate_executor_contract_missing}
-
-      candidate.executor_contract_ref not in mandate.executor_contract_refs ->
-        {:error, :executor_contract_outside_mandate}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp matching_scope(candidate, _context, mandate) do
-    if candidate.scope_ref in mandate.scope_refs,
-      do: :ok,
-      else: {:error, :scope_outside_mandate}
-  end
-
-  defp covered_values(kind, candidate, mandate) do
-    {requested, allowed} =
-      case kind do
-        :subjects -> {candidate.subject_refs, mandate.subject_refs}
-        :targets -> {candidate.target_refs, mandate.target_refs}
-      end
-
-    allowed = MapSet.new(allowed)
-
-    if Enum.all?(requested, &MapSet.member?(allowed, &1)),
-      do: :ok,
-      else: {:error, {kind, :outside_mandate}}
-  end
-
-  defp covered_class(candidate, mandate) do
-    if candidate.class in mandate.classes, do: :ok, else: {:error, :class_outside_mandate}
-  end
-
-  defp declassification_owners_authorized(candidate, mandate, view) do
-    case {candidate.class, candidate.consequence} do
-      {"data.declassify", %{"evidence_declassification" => draft} = consequence}
-      when map_size(consequence) == 1 ->
-        with {:ok, decoded} <- Declassification.decode_draft(draft),
-             :ok <-
-               Declassification.validate_producer(
-                 decoded.evidence,
-                 candidate.proposer_ref
-               ) do
-          owners_authorize_mandate?(mandate, decoded.removed_owner_refs, view)
-        end
-
-      {"data.declassify", _invalid} ->
-        {:error, :invalid_declassification_consequence}
-
-      {_other_class, _consequence} ->
-        :ok
-    end
-  end
-
-  defp covered_row(candidate, mandate) do
-    if Row.subset?(candidate.row, mandate.ceiling),
-      do: :ok,
-      else: {:error, :row_exceeds_mandate_ceiling}
-  end
-
-  defp covered_disclosure(candidate, mandate) do
-    case {candidate.row.disclose, candidate.disclosure} do
-      {false, nil} ->
-        :ok
-
-      {true, disclosure} when not is_nil(disclosure) ->
-        if Spectre.Disclosure.labels_covered?(disclosure, mandate.disclosable_labels) do
-          :ok
-        else
-          {:error, :disclosure_labels_outside_mandate}
-        end
-
-      _invalid ->
-        {:error, :candidate_disclosure_row_mismatch}
-    end
-  end
-
-  defp covered_purpose(candidate, mandate) do
-    cond do
-      not present?(candidate.purpose_ref) ->
-        {:error, :candidate_purpose_missing}
-
-      candidate.purpose_ref != mandate.purpose_ref ->
-        {:error, :purpose_outside_mandate}
-
-      candidate.purpose_params != mandate.purpose_params ->
-        {:error, :purpose_parameters_outside_mandate}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp matching_accountable(candidate, mandate) do
-    cond do
-      not present?(candidate.accountable_ref) -> {:error, :candidate_accountable_missing}
-      candidate.accountable_ref == mandate.accountable_ref -> :ok
-      true -> {:error, :accountable_claim_mismatch}
-    end
-  end
-
-  defp current_at(mandate, time) do
-    cond do
-      time < mandate.not_before ->
-        {:error, :mandate_not_yet_valid}
-
-      time >= mandate.expires_at ->
-        {:error, :mandate_expired}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp not_revoked(mandate, view, time) do
-    with {:ok, status} <- Ancestry.status(view.mandates, view.revocations, mandate, time) do
-      case status do
-        :current -> :ok
-        {:revoked, :direct, _ref} -> {:error, :mandate_revoked}
-        {:revoked, :ancestor, _ref} -> {:error, :mandate_ancestor_revoked}
-      end
-    end
-  end
-
-  defp not_directly_revoked(mandate, view, time) do
-    with {:ok, revoked?} <- Ancestry.directly_revoked?(view.revocations, mandate, time) do
-      if revoked?, do: {:error, :mandate_revoked}, else: :ok
-    end
-  end
-
-  defp meter_debt_status_for(mandate, view, visited, level) do
-    ref = mandate.ref
-
-    cond do
-      MapSet.member?(visited, ref) ->
-        {:error, :mandate_ancestry_cycle}
-
-      MapSet.member?(view.blocked_mandate_refs, ref) ->
-        case level do
-          :mandate -> {:error, :mandate_meter_debt}
-          :ancestor -> {:error, :mandate_ancestor_meter_debt}
-        end
-
-      true ->
-        meter_debt_parent_status(mandate, view, MapSet.put(visited, ref))
-    end
-  end
-
-  defp meter_debt_parent_status(mandate, view, visited) do
-    case mandate.parent_ref do
-      nil ->
-        :ok
-
-      parent_ref ->
-        with {:ok, parent} <- mandate_by_ref(view, parent_ref) do
-          meter_debt_status_for(parent, view, visited, :ancestor)
-        end
-    end
-  end
-
-  defp restriction_status_for(mandate, view, visited, level) do
-    ref = mandate.ref
-
-    cond do
-      MapSet.member?(visited, ref) ->
-        {:error, :mandate_ancestry_cycle}
-
-      Map.has_key?(view.mandate_successors, ref) ->
-        case level do
-          :mandate -> {:error, :mandate_superseded}
-          :ancestor -> {:error, :mandate_ancestor_superseded}
-        end
-
-      true ->
-        restriction_parent_status(mandate, view, MapSet.put(visited, ref))
-    end
-  end
-
-  defp restriction_parent_status(mandate, view, visited) do
-    case mandate.parent_ref do
-      nil ->
-        :ok
-
-      parent_ref ->
-        with {:ok, parent} <- mandate_by_ref(view, parent_ref) do
-          restriction_status_for(parent, view, visited, :ancestor)
-        end
-    end
-  end
-
-  defp mandate_by_ref(view, ref) do
-    case Map.fetch(view.mandates, ref) do
-      {:ok, %Mandate{} = mandate} -> {:ok, mandate}
-      {:ok, _invalid} -> {:error, {:invalid_mandate_ancestor, ref}}
-      :error -> {:error, {:mandate_ancestor_missing, ref}}
-    end
-  end
-
-  defp mandate_lineage(mandate, view, visited, lineage) do
-    ref = mandate.ref
-
-    cond do
-      MapSet.member?(visited, ref) ->
-        {:error, :mandate_ancestry_cycle}
-
-      is_nil(mandate.parent_ref) ->
-        {:ok, Enum.reverse([mandate | lineage])}
-
-      true ->
-        with {:ok, parent} <- mandate_by_ref(view, mandate.parent_ref) do
-          mandate_lineage(parent, view, MapSet.put(visited, ref), [mandate | lineage])
-        end
-    end
-  end
-
-  defp exact_mandate_in_view(mandate, view) do
-    case Map.fetch(view.mandates, mandate.ref) do
-      {:ok, ^mandate} -> :ok
-      {:ok, _other} -> {:error, :mandate_snapshot_not_pinned}
-      :error -> {:error, :mandate_not_in_authority_view}
-    end
-  end
-
-  defp mandate_sort_key(mandate), do: {mandate.ref, mandate.revision}
+  defp mandate_sort_key(%Effective{} = authority),
+    do: {Effective.ref(authority), Effective.revision(authority)}
 
   defp present?(nil), do: false
   defp present?(""), do: false

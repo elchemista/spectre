@@ -84,13 +84,8 @@ defmodule Spectre.Domain.Sequencer do
   def submit(server, context, candidate, opts \\ [])
 
   def submit(server, %SubmissionContext{} = context, candidate, opts)
-      when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(server, {:submit, context, candidate, opts}, call_timeout(opts))
-    else
-      {:error, :invalid_submission_options}
-    end
-  end
+      when is_list(opts),
+      do: call(server, {:submit, context, candidate, opts}, opts, :invalid_submission_options)
 
   def submit(_server, _context, _candidate, _opts),
     do: {:error, :invalid_submission_input}
@@ -113,15 +108,12 @@ defmodule Spectre.Domain.Sequencer do
         opts
       )
       when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(
-        server,
-        {:submit_scope_opening, parent_context, child_context, candidate, opts},
-        call_timeout(opts)
-      )
-    else
-      {:error, :invalid_governed_scope_opening_options}
-    end
+    call(
+      server,
+      {:submit_scope_opening, parent_context, child_context, candidate, opts},
+      opts,
+      :invalid_governed_scope_opening_options
+    )
   end
 
   def submit_scope_opening(_server, _parent_context, _child_context, _candidate, _opts),
@@ -132,13 +124,14 @@ defmodule Spectre.Domain.Sequencer do
           {:ok, SubmissionContext.t()} | {:error, term()}
   def authenticate(server, scope_ref, input, opts \\ [])
 
-  def authenticate(server, scope_ref, input, opts) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(server, {:authenticate, scope_ref, input, opts}, call_timeout(opts))
-    else
-      {:error, :invalid_authentication_options}
-    end
-  end
+  def authenticate(server, scope_ref, input, opts) when is_list(opts),
+    do:
+      call(
+        server,
+        {:authenticate, scope_ref, input, opts},
+        opts,
+        :invalid_authentication_options
+      )
 
   def authenticate(_server, _scope_ref, _input, _opts),
     do: {:error, :invalid_authentication_options}
@@ -148,11 +141,14 @@ defmodule Spectre.Domain.Sequencer do
           {:ok, Act.t(), Attempt.t(), CheckoutReceipt.t()} | {:error, term()}
   def consume_grant(server, grant, opts \\ [])
 
-  def consume_grant(server, %Grant{} = grant, opts) when is_list(opts) do
-    if Keyword.keyword?(opts),
-      do: GenServer.call(server, {:consume_grant, grant, opts}, call_timeout(opts)),
-      else: {:error, :invalid_grant_consumption_options}
-  end
+  def consume_grant(server, %Grant{} = grant, opts) when is_list(opts),
+    do:
+      call(
+        server,
+        {:consume_grant, grant, opts},
+        opts,
+        :invalid_grant_consumption_options
+      )
 
   def consume_grant(_server, _grant, _opts), do: {:error, :invalid_grant}
 
@@ -162,15 +158,12 @@ defmodule Spectre.Domain.Sequencer do
   def execution_route(server, act, opts \\ [])
 
   def execution_route(server, %Act{} = act, opts) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(
-        server,
-        {:execution_route, act.executor_ref, act.executor_contract_ref, opts},
-        call_timeout(opts)
-      )
-    else
-      {:error, :invalid_execution_route_options}
-    end
+    call(
+      server,
+      {:execution_route, act.executor_ref, act.executor_contract_ref, opts},
+      opts,
+      :invalid_execution_route_options
+    )
   end
 
   def execution_route(_server, _act, _opts), do: {:error, :invalid_execution_route}
@@ -180,13 +173,8 @@ defmodule Spectre.Domain.Sequencer do
           {:ok, Outcome.t()} | {:error, term()}
   def record_outcome(server, outcome, opts \\ [])
 
-  def record_outcome(server, outcome, opts) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(server, {:record_outcome, outcome, opts}, call_timeout(opts))
-    else
-      {:error, :invalid_outcome_options}
-    end
-  end
+  def record_outcome(server, outcome, opts) when is_list(opts),
+    do: call(server, {:record_outcome, outcome, opts}, opts, :invalid_outcome_options)
 
   def record_outcome(_server, _outcome, _opts), do: {:error, :invalid_outcome_options}
 
@@ -195,11 +183,14 @@ defmodule Spectre.Domain.Sequencer do
           {:ok, [Evidence.t()]} | {:error, term()}
   def observe(server, context, input, opts \\ [])
 
-  def observe(server, %SubmissionContext{} = context, input, opts) when is_list(opts) do
-    if Keyword.keyword?(opts),
-      do: GenServer.call(server, {:observe, context, input, opts}, call_timeout(opts)),
-      else: {:error, :invalid_observation_options}
-  end
+  def observe(server, %SubmissionContext{} = context, input, opts) when is_list(opts),
+    do:
+      call(
+        server,
+        {:observe, context, input, opts},
+        opts,
+        :invalid_observation_options
+      )
 
   def observe(_server, _context, _input, _opts), do: {:error, :invalid_observation_input}
 
@@ -221,15 +212,12 @@ defmodule Spectre.Domain.Sequencer do
         opts
       )
       when is_list(context_evidence_refs) and is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(
-        server,
-        {:begin_turn, context, input, context_evidence_refs, opts},
-        call_timeout(opts)
-      )
-    else
-      {:error, :invalid_turn_options}
-    end
+    call(
+      server,
+      {:begin_turn, context, input, context_evidence_refs, opts},
+      opts,
+      :invalid_turn_options
+    )
   end
 
   def begin_turn(_server, _context, _input, _context_refs, _opts),
@@ -253,15 +241,12 @@ defmodule Spectre.Domain.Sequencer do
         opts
       )
       when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(
-        server,
-        {:record_derivation, context, turn, evidence, opts},
-        call_timeout(opts)
-      )
-    else
-      {:error, :invalid_derivation_options}
-    end
+    call(
+      server,
+      {:record_derivation, context, turn, evidence, opts},
+      opts,
+      :invalid_derivation_options
+    )
   end
 
   def record_derivation(_server, _context, _turn, _evidence, _opts),
@@ -280,15 +265,12 @@ defmodule Spectre.Domain.Sequencer do
   def record_executor_evidence(server, act_ref, attempt_ref, evidence, opts)
       when is_binary(act_ref) and act_ref != "" and is_binary(attempt_ref) and attempt_ref != "" and
              is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(
-        server,
-        {:record_executor_evidence, act_ref, attempt_ref, evidence, opts},
-        call_timeout(opts)
-      )
-    else
-      {:error, :invalid_executor_evidence_options}
-    end
+    call(
+      server,
+      {:record_executor_evidence, act_ref, attempt_ref, evidence, opts},
+      opts,
+      :invalid_executor_evidence_options
+    )
   end
 
   def record_executor_evidence(_server, _act_ref, _attempt_ref, _evidence, _opts),
@@ -305,15 +287,12 @@ defmodule Spectre.Domain.Sequencer do
 
   def record_presentation(server, %SubmissionContext{} = context, presentation, opts)
       when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(
-        server,
-        {:record_presentation, context, presentation, opts},
-        call_timeout(opts)
-      )
-    else
-      {:error, :invalid_presentation_options}
-    end
+    call(
+      server,
+      {:record_presentation, context, presentation, opts},
+      opts,
+      :invalid_presentation_options
+    )
   end
 
   def record_presentation(_server, _context, _presentation, _opts),
@@ -328,13 +307,14 @@ defmodule Spectre.Domain.Sequencer do
         ) :: {:ok, Opening.t()} | {:error, term()}
   def open_scope(server, context, opening, opts \\ [])
 
-  def open_scope(server, %SubmissionContext{} = context, opening, opts) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      GenServer.call(server, {:open_scope, context, opening, opts}, call_timeout(opts))
-    else
-      {:error, :invalid_scope_opening_options}
-    end
-  end
+  def open_scope(server, %SubmissionContext{} = context, opening, opts) when is_list(opts),
+    do:
+      call(
+        server,
+        {:open_scope, context, opening, opts},
+        opts,
+        :invalid_scope_opening_options
+      )
 
   def open_scope(_server, _context, _opening, _opts),
     do: {:error, :authenticated_scope_context_required}
@@ -367,11 +347,8 @@ defmodule Spectre.Domain.Sequencer do
   @spec trusted_time(GenServer.server(), keyword()) :: {:ok, integer()} | {:error, term()}
   def trusted_time(server, opts \\ [])
 
-  def trusted_time(server, opts) when is_list(opts) do
-    if Keyword.keyword?(opts),
-      do: GenServer.call(server, {:trusted_time, opts}, call_timeout(opts)),
-      else: {:error, :invalid_trusted_time_options}
-  end
+  def trusted_time(server, opts) when is_list(opts),
+    do: call(server, {:trusted_time, opts}, opts, :invalid_trusted_time_options)
 
   def trusted_time(_server, _opts), do: {:error, :invalid_trusted_time_options}
 
@@ -379,18 +356,8 @@ defmodule Spectre.Domain.Sequencer do
   def init(opts) do
     with {:ok, config} <- Configuration.new(opts),
          {:ok, projection} <- Startup.load(config),
-         state =
-           config
-           |> Map.from_struct()
-           |> Map.put(:projection, projection)
-           |> then(&struct!(State, &1)),
-         {:ok, projection} <-
-           Transaction.repair_missing_duties(
-             state,
-             projection,
-             config.ledger_opts,
-             config.conflict_retries
-           ) do
+         state = State.new(config, projection),
+         {:ok, projection} <- Transaction.repair_missing_duties(state) do
       {:ok, schedule_reconciliation(%{state | projection: projection})}
     else
       {:error, reason} -> {:stop, reason}
@@ -422,7 +389,7 @@ defmodule Spectre.Domain.Sequencer do
       with {:ok, context} <- SubmissionContext.new(context),
            :ok <- Context.validate_ingress(state, context),
            :ok <- SubmissionContext.verify_seal(context, state.grant_secret),
-           true <- context.domain_ref == state.domain_ref,
+           true <- context.domain_ref == state.projection.domain_ref,
            true <- context.host_generation == state.generation,
            {:ok, opening} <- Projection.scope_context(state.projection, context) do
         {:ok, opening}
@@ -457,20 +424,18 @@ defmodule Spectre.Domain.Sequencer do
   def handle_call({:trusted_time, opts}, _from, %State{} = state) do
     reply =
       with :ok <- validate_known_options(opts, @sequencer_call_options, :trusted_time),
-           do: Transaction.trusted_recorded_at(state.clock, state.projection)
+           do: Transaction.trusted_recorded_at(state)
 
     {:reply, reply, state}
   end
 
   def handle_call({:submit, context, candidate, opts}, from, %State{} = state) do
-    case effective_ledger_opts(state, opts) do
-      {:ok, ledger_opts} ->
+    case validate_call_options(opts) do
+      :ok ->
         request = %{
           from: from,
           context: context,
-          candidate: candidate,
-          ledger_opts: ledger_opts,
-          kind: :candidate
+          candidate: candidate
         }
 
         state = enqueue_submission(state, request)
@@ -486,15 +451,13 @@ defmodule Spectre.Domain.Sequencer do
         from,
         %State{} = state
       ) do
-    case effective_ledger_opts(state, opts) do
-      {:ok, ledger_opts} ->
+    case validate_call_options(opts) do
+      :ok ->
         request = %{
           from: from,
           context: parent_context,
           child_context: child_context,
-          candidate: candidate,
-          ledger_opts: ledger_opts,
-          kind: :governed_scope_opening
+          candidate: candidate
         }
 
         {:noreply, enqueue_submission(state, request)}
@@ -505,9 +468,9 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   def handle_call({:consume_grant, grant, opts}, _from, %State{} = state) do
-    case effective_ledger_opts(state, opts) do
-      {:ok, ledger_opts} ->
-        consume_grant_reply(state, grant, ledger_opts)
+    case validate_call_options(opts) do
+      :ok ->
+        consume_grant_reply(state, grant)
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -515,9 +478,9 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   def handle_call({:record_outcome, input, opts}, _from, %State{} = state) do
-    case effective_ledger_opts(state, opts) do
-      {:ok, ledger_opts} ->
-        record_outcome_reply(state, input, ledger_opts)
+    case validate_call_options(opts) do
+      :ok ->
+        record_outcome_reply(state, input)
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -545,9 +508,9 @@ defmodule Spectre.Domain.Sequencer do
       do: executor_evidence_reply(state, act_ref, attempt_ref, evidence, opts)
 
   def handle_call({:open_scope, context, input, opts}, _from, %State{} = state) do
-    case effective_ledger_opts(state, opts) do
-      {:ok, ledger_opts} ->
-        open_scope_reply(state, context, input, ledger_opts)
+    case validate_call_options(opts) do
+      :ok ->
+        open_scope_reply(state, context, input)
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -555,19 +518,19 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   def handle_call({:record_presentation, context, input, opts}, _from, %State{} = state) do
-    case effective_ledger_opts(state, opts) do
-      {:ok, ledger_opts} ->
-        record_presentation_reply(state, context, input, ledger_opts)
+    case validate_call_options(opts) do
+      :ok ->
+        record_presentation_reply(state, context, input)
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
   end
 
-  defp consume_grant_reply(state, grant, ledger_opts) do
-    case preflight_duty_repair(state, ledger_opts) do
+  defp consume_grant_reply(state, grant) do
+    case preflight_duty_repair(state) do
       {:ok, current} ->
-        case ExecutionCommand.consume(current, grant, ledger_opts, current.conflict_retries) do
+        case ExecutionCommand.consume(current, grant) do
           {:ok, next_state, act, attempt, receipt} ->
             {:reply, {:ok, act, attempt, receipt}, schedule_reconciliation(next_state)}
 
@@ -580,10 +543,10 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp record_outcome_reply(state, input, ledger_opts) do
-    case preflight_duty_repair(state, ledger_opts) do
+  defp record_outcome_reply(state, input) do
+    case preflight_duty_repair(state) do
       {:ok, current} ->
-        case ObservationCommand.record(current, input, ledger_opts, current.conflict_retries) do
+        case ObservationCommand.record(current, input) do
           {:ok, next_state, outcome} ->
             {:reply, {:ok, outcome}, schedule_reconciliation(next_state)}
 
@@ -598,7 +561,7 @@ defmodule Spectre.Domain.Sequencer do
 
   defp ingress_observation_reply(state, context, input, opts) do
     with {:ok, ingress_opts} <- observation_options(opts) do
-      case preflight_duty_repair(state, state.ledger_opts) do
+      case preflight_duty_repair(state) do
         {:ok, current} ->
           case InputCommand.observe(current, context, input, ingress_opts) do
             {:ok, next_state, evidence, _observed_at} ->
@@ -621,7 +584,7 @@ defmodule Spectre.Domain.Sequencer do
          {:ok, ingress_opts} <- observation_options(opts),
          {:ok, context_evidence_refs} <-
            Portable.normalize_refs(context_evidence_refs, :context_evidence_refs) do
-      case preflight_duty_repair(state, state.ledger_opts) do
+      case preflight_duty_repair(state) do
         {:ok, current} ->
           begin_validated_turn(
             current,
@@ -659,11 +622,11 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp derivation_reply(state, context, turn, input, opts) do
-    with {:ok, ledger_opts} <- effective_ledger_opts(state, opts),
+    with :ok <- validate_call_options(opts),
          {:ok, evidence} <- Evidence.new(input) do
-      case preflight_duty_repair(state, ledger_opts) do
+      case preflight_duty_repair(state) do
         {:ok, current} ->
-          record_validated_derivation(current, context, turn, evidence, ledger_opts)
+          record_validated_derivation(current, context, turn, evidence)
 
         {:error, halted, reason} ->
           {:reply, {:error, reason}, halted}
@@ -673,8 +636,8 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp record_validated_derivation(state, context, turn, evidence, ledger_opts) do
-    case InputCommand.record_derivation(state, context, turn, evidence, ledger_opts) do
+  defp record_validated_derivation(state, context, turn, evidence) do
+    case InputCommand.record_derivation(state, context, turn, evidence) do
       {:ok, next_state, %Evidence{} = durable} ->
         {:reply, {:ok, durable}, schedule_reconciliation(next_state)}
 
@@ -684,7 +647,7 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp executor_evidence_reply(state, act_ref, attempt_ref, input, opts) do
-    with {:ok, ledger_opts} <- effective_ledger_opts(state, opts),
+    with :ok <- validate_call_options(opts),
          {:ok, evidence, _shape} <- EvidenceCommand.normalize(input),
          :ok <-
            InputCommand.validate_executor_evidence(
@@ -693,9 +656,9 @@ defmodule Spectre.Domain.Sequencer do
              attempt_ref,
              evidence
            ) do
-      case preflight_duty_repair(state, ledger_opts) do
+      case preflight_duty_repair(state) do
         {:ok, current} ->
-          commit_executor_evidence(current, act_ref, attempt_ref, evidence, ledger_opts)
+          commit_executor_evidence(current, act_ref, attempt_ref, evidence)
 
         {:error, halted, reason} ->
           {:reply, {:error, reason}, halted}
@@ -705,13 +668,12 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp commit_executor_evidence(state, act_ref, attempt_ref, evidence, ledger_opts) do
+  defp commit_executor_evidence(state, act_ref, attempt_ref, evidence) do
     case InputCommand.record_executor_evidence(
            state,
            act_ref,
            attempt_ref,
-           evidence,
-           ledger_opts
+           evidence
          ) do
       {:ok, next_state, durable} ->
         {:reply, {:ok, durable}, schedule_reconciliation(next_state)}
@@ -721,14 +683,8 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp open_scope_reply(state, context, input, ledger_opts) do
-    case ScopeCommand.open(
-           state,
-           context,
-           input,
-           ledger_opts,
-           state.conflict_retries
-         ) do
+  defp open_scope_reply(state, context, input) do
+    case ScopeCommand.open(state, context, input) do
       {:ok, next_state, opening} ->
         {:reply, {:ok, opening}, schedule_reconciliation(next_state)}
 
@@ -737,14 +693,8 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp record_presentation_reply(state, context, input, ledger_opts) do
-    case PresentationCommand.record(
-           state,
-           context,
-           input,
-           ledger_opts,
-           state.conflict_retries
-         ) do
+  defp record_presentation_reply(state, context, input) do
+    case PresentationCommand.record(state, context, input) do
       {:ok, next_state, presentation} ->
         {:reply, {:ok, presentation}, schedule_reconciliation(next_state)}
 
@@ -760,7 +710,7 @@ defmodule Spectre.Domain.Sequencer do
   def handle_info({:stop_halted, _stale_reason}, %State{} = state),
     do: {:noreply, state}
 
-  def handle_info({:flush, token}, %State{flush_token: token} = state) do
+  def handle_info({:flush, token}, %State{flush: {token, _timer}} = state) do
     batch_count = min(state.pending_count, state.batch_size)
     {batch, remaining} = :queue.split(batch_count, state.pending)
     requests = :queue.to_list(batch)
@@ -769,26 +719,20 @@ defmodule Spectre.Domain.Sequencer do
       state
       | pending: remaining,
         pending_count: state.pending_count - batch_count,
-        flush_token: nil,
-        flush_timer: nil
+        flush: nil
     }
 
-    state = process_submission_groups(state, requests)
+    state = process_submissions(state, requests)
     state = state |> schedule_remaining() |> schedule_reconciliation()
     {:noreply, state}
   end
 
   def handle_info({:flush, _stale_token}, %State{} = state), do: {:noreply, state}
 
-  def handle_info({:reconcile, token}, %State{reconciliation_token: token} = state) do
-    state = %{state | reconciliation_token: nil, reconciliation_timer: nil}
+  def handle_info({:reconcile, token}, %State{reconciliation: {token, _timer}} = state) do
+    state = %{state | reconciliation: nil}
 
-    case Transaction.repair_missing_duties(
-           state,
-           state.projection,
-           state.ledger_opts,
-           state.conflict_retries
-         ) do
+    case Transaction.repair_missing_duties(state) do
       {:ok, projection} ->
         {:noreply, schedule_reconciliation(%{state | projection: projection})}
 
@@ -799,6 +743,12 @@ defmodule Spectre.Domain.Sequencer do
 
   def handle_info({:reconcile, _stale_token}, %State{} = state), do: {:noreply, state}
 
+  defp call(server, request, opts, invalid_options) do
+    if Keyword.keyword?(opts),
+      do: GenServer.call(server, request, call_timeout(opts)),
+      else: {:error, invalid_options}
+  end
+
   defp call_timeout(opts), do: Keyword.get(opts, :timeout, :infinity)
 
   defp enqueue_submission(%State{} = state, request) do
@@ -807,24 +757,24 @@ defmodule Spectre.Domain.Sequencer do
     state = %{state | pending: pending, pending_count: pending_count}
 
     cond do
-      state.flush_token == nil -> schedule_flush(state, state.batch_wait_ms)
+      is_nil(state.flush) -> schedule_flush(state, state.batch_wait_ms)
       pending_count >= state.batch_size -> expedite_flush(state)
       true -> state
     end
   end
 
-  defp schedule_flush(%State{flush_token: nil} = state, delay) do
+  defp schedule_flush(%State{flush: nil} = state, delay) do
     token = make_ref()
     timer = Process.send_after(self(), {:flush, token}, delay)
-    %{state | flush_token: token, flush_timer: timer}
+    %{state | flush: {token, timer}}
   end
 
   defp schedule_flush(%State{} = state, _delay), do: state
 
-  defp expedite_flush(%State{flush_token: token, flush_timer: timer} = state) do
+  defp expedite_flush(%State{flush: {token, timer}} = state) do
     if timer, do: Process.cancel_timer(timer, async: true, info: false)
     send(self(), {:flush, token})
-    %{state | flush_timer: nil}
+    %{state | flush: {token, nil}}
   end
 
   defp schedule_remaining(%State{pending_count: 0} = state), do: state
@@ -847,22 +797,22 @@ defmodule Spectre.Domain.Sequencer do
     if state.halted_reason do
       state
     else
-      case Transaction.trusted_recorded_at(state.clock, state.projection) do
+      case Transaction.trusted_recorded_at(state) do
         {:ok, now} -> schedule_next_reconciliation(state, now)
         {:error, reason} -> Control.halt(state, reason)
       end
     end
   end
 
-  defp cancel_reconciliation_timer(%State{reconciliation_timer: nil} = state), do: state
+  defp cancel_reconciliation_timer(%State{reconciliation: nil} = state), do: state
 
-  defp cancel_reconciliation_timer(%State{} = state) do
-    Process.cancel_timer(state.reconciliation_timer, async: true, info: false)
-    %{state | reconciliation_token: nil, reconciliation_timer: nil}
+  defp cancel_reconciliation_timer(%State{reconciliation: {_token, timer}} = state) do
+    Process.cancel_timer(timer, async: true, info: false)
+    %{state | reconciliation: nil}
   end
 
   defp schedule_next_reconciliation(state, now) do
-    deadline = Reconciliation.next_deadline(state.projection, state.constitution, now)
+    deadline = Reconciliation.next_deadline(state.projection, now)
 
     case deadline do
       nil ->
@@ -872,45 +822,18 @@ defmodule Spectre.Domain.Sequencer do
         delay = deadline |> Kernel.-(now) |> max(0) |> min(@maximum_reconciliation_delay_ms)
         token = make_ref()
         timer = Process.send_after(self(), {:reconcile, token}, delay)
-        %{state | reconciliation_token: token, reconciliation_timer: timer}
+        %{state | reconciliation: {token, timer}}
     end
   end
 
-  defp process_submission_groups(%State{} = state, requests) do
-    requests
-    |> Enum.chunk_by(& &1.ledger_opts)
-    |> process_submission_group_list(state)
-  end
-
-  defp process_submission_group_list([], state), do: state
-
-  defp process_submission_group_list([group | remaining], state) do
-    {next_state, replies} = AdmissionCommand.run(state, group)
+  defp process_submissions(%State{} = state, requests) do
+    {next_state, replies} = AdmissionCommand.run(state, requests)
     Enum.each(replies, fn {from, reply} -> GenServer.reply(from, reply) end)
-
-    if next_state.halted_reason do
-      remaining
-      |> List.flatten()
-      |> Enum.each(fn request ->
-        GenServer.reply(
-          request.from,
-          {:error, {:sequencer_halted, next_state.halted_reason}}
-        )
-      end)
-
-      next_state
-    else
-      process_submission_group_list(remaining, next_state)
-    end
+    next_state
   end
 
-  defp preflight_duty_repair(state, ledger_opts) do
-    case Transaction.repair_missing_duties(
-           state,
-           state.projection,
-           ledger_opts,
-           state.conflict_retries
-         ) do
+  defp preflight_duty_repair(state) do
+    case Transaction.repair_missing_duties(state) do
       {:ok, projection} ->
         {:ok, %{state | projection: projection}}
 
@@ -920,10 +843,8 @@ defmodule Spectre.Domain.Sequencer do
     end
   end
 
-  defp effective_ledger_opts(state, call_opts) do
-    with :ok <- validate_known_options(call_opts, @sequencer_call_options, :sequencer),
-         do: {:ok, state.ledger_opts}
-  end
+  defp validate_call_options(call_opts),
+    do: validate_known_options(call_opts, @sequencer_call_options, :sequencer)
 
   defp observation_options(opts) do
     with :ok <- validate_known_options(opts, @observation_call_options, :observation) do

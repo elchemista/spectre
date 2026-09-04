@@ -9,8 +9,9 @@ defmodule Spectre.Execution.Router do
   begin only after the resulting Act receives and consumes a Grant.
   """
 
-  alias Spectre.{Candidate, Governance, Portable}
+  alias Spectre.{Candidate, Portable}
   alias Spectre.Execution.Boundary
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.State
 
   @type route :: %{
@@ -24,7 +25,7 @@ defmodule Spectre.Execution.Router do
   @doc "Checks that host wiring can support an executor-mediated Candidate."
   @spec validate_candidate(map(), State.t(), Candidate.t()) :: :ok | {:error, term()}
   def validate_candidate(config, %State{} = projection, %Candidate{} = candidate) do
-    case Governance.execution_mode(candidate) do
+    case GovernedExecution.mode(candidate) do
       {:ok, :ledger_internal} ->
         :ok
 
@@ -45,7 +46,7 @@ defmodule Spectre.Execution.Router do
   def fetch(config, executor_ref, contract_ref) do
     with :ok <- Portable.validate_ref(executor_ref, :executor_ref),
          :ok <- Portable.validate_ref(contract_ref, :executor_contract_ref),
-         {:ok, route} <- Map.fetch(config.execution_routes, {executor_ref, contract_ref}),
+         {:ok, route} <- Map.fetch(config.execution_boundary.routes, {executor_ref, contract_ref}),
          {:ok, broker} <- broker(config) do
       {:ok,
        %{
@@ -63,8 +64,8 @@ defmodule Spectre.Execution.Router do
 
   @doc "Returns the configured capability broker without invoking it."
   @spec broker(map()) :: {:ok, map()} | {:error, :broker_not_configured}
-  def broker(%{broker: nil}), do: {:error, :broker_not_configured}
-  def broker(%{broker: broker}), do: {:ok, broker}
+  def broker(%{execution_boundary: %{broker: nil}}), do: {:error, :broker_not_configured}
+  def broker(%{execution_boundary: %{broker: broker}}), do: {:ok, broker}
 
   @doc "Checks that a broker profile covers the HostProfile frozen by an Act."
   @spec broker_supports_act(State.t(), Spectre.Act.t(), map()) :: :ok | {:error, term()}
@@ -86,15 +87,15 @@ defmodule Spectre.Execution.Router do
     end
   end
 
-  defp candidate_profile(
-         %State{host_profile: %Spectre.HostProfile{} = profile},
-         %{profile: broker_profile}
-       ) do
-    if Boundary.profile_covers?(broker_profile, profile.mode),
-      do: :ok,
-      else: {:error, {:broker_profile_too_weak, broker_profile, profile.ref}}
-  end
+  defp candidate_profile(%State{} = projection, %{profile: broker_profile}) do
+    case State.host_profile(projection) do
+      %Spectre.HostProfile{} = profile ->
+        if Boundary.profile_covers?(broker_profile, profile.mode),
+          do: :ok,
+          else: {:error, {:broker_profile_too_weak, broker_profile, profile.ref}}
 
-  defp candidate_profile(%State{}, _descriptor),
-    do: {:error, :host_profile_not_initialized}
+      nil ->
+        {:error, :host_profile_not_initialized}
+    end
+  end
 end

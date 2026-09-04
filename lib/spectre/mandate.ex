@@ -175,34 +175,7 @@ defmodule Spectre.Mandate do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = mandate) do
-    %{
-      "schema_version" => mandate.schema_version,
-      "ref" => mandate.ref,
-      "revision" => mandate.revision,
-      "grantor_ref" => mandate.grantor_ref,
-      "holder_ref" => mandate.holder_ref,
-      "accountable_ref" => mandate.accountable_ref,
-      "executor_refs" => mandate.executor_refs,
-      "executor_contract_refs" => mandate.executor_contract_refs,
-      "scope_refs" => mandate.scope_refs,
-      "subject_refs" => mandate.subject_refs,
-      "target_refs" => mandate.target_refs,
-      "disclosable_labels" => Enum.map(mandate.disclosable_labels, &Label.canonical/1),
-      "classes" => mandate.classes,
-      "ceiling" => Row.canonical(mandate.ceiling),
-      "purpose_ref" => mandate.purpose_ref,
-      "purpose_params" => mandate.purpose_params,
-      "conditions" => Enum.map(mandate.conditions, &Condition.canonical/1),
-      "not_before" => mandate.not_before,
-      "expires_at" => mandate.expires_at,
-      "meters" => mandate.meters,
-      "delegation" => mandate.delegation,
-      "revocation" => mandate.revocation,
-      "parent_ref" => mandate.parent_ref,
-      "source_ref" => mandate.source_ref
-    }
-  end
+  def canonical(%__MODULE__{} = mandate), do: canonical_fields(mandate, @fields)
 
   @doc "Restores a mandate from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -359,33 +332,17 @@ defmodule Spectre.Mandate do
 
   defp content(%__MODULE__{} = mandate), do: mandate |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.fetch!(attrs, :schema_version),
-      "revision" => Map.fetch!(attrs, :revision),
-      "grantor_ref" => Map.get(attrs, :grantor_ref),
-      "holder_ref" => Map.get(attrs, :holder_ref),
-      "accountable_ref" => Map.get(attrs, :accountable_ref),
-      "executor_refs" => Map.fetch!(attrs, :executor_refs),
-      "executor_contract_refs" => Map.fetch!(attrs, :executor_contract_refs),
-      "scope_refs" => Map.fetch!(attrs, :scope_refs),
-      "subject_refs" => Map.fetch!(attrs, :subject_refs),
-      "target_refs" => Map.fetch!(attrs, :target_refs),
-      "disclosable_labels" =>
-        Enum.map(Map.fetch!(attrs, :disclosable_labels), &Label.canonical/1),
-      "classes" => Map.fetch!(attrs, :classes),
-      "ceiling" => Row.canonical(Map.fetch!(attrs, :ceiling)),
-      "purpose_ref" => Map.get(attrs, :purpose_ref),
-      "purpose_params" => Map.fetch!(attrs, :purpose_params),
-      "conditions" => Enum.map(Map.fetch!(attrs, :conditions), &Condition.canonical/1),
-      "not_before" => Map.get(attrs, :not_before),
-      "expires_at" => Map.get(attrs, :expires_at),
-      "meters" => Map.fetch!(attrs, :meters),
-      "delegation" => Map.fetch!(attrs, :delegation),
-      "revocation" => Map.fetch!(attrs, :revocation),
-      "parent_ref" => Map.fetch!(attrs, :parent_ref),
-      "source_ref" => Map.get(attrs, :source_ref)
-    }
+  defp content(attrs), do: canonical_fields(attrs, @fields -- [:ref])
+
+  defp canonical_fields(source, fields) do
+    source
+    |> Portable.canonical_fields(fields)
+    |> Map.update!("disclosable_labels", &Enum.map(&1, fn label -> Label.canonical(label) end))
+    |> Map.update!("ceiling", &Row.canonical/1)
+    |> Map.update!(
+      "conditions",
+      &Enum.map(&1, fn condition -> Condition.canonical(condition) end)
+    )
   end
 
   defp validate_record(%__MODULE__{} = mandate) do
@@ -472,7 +429,7 @@ defmodule Spectre.Mandate do
          :ok <- Portable.validate_refs(mandate.subject_refs, :subject_refs),
          :ok <- Portable.validate_refs(mandate.target_refs, :target_refs),
          :ok <- Portable.validate_ref(mandate.purpose_ref, :purpose_ref),
-         :ok <- validate_optional_ref(mandate.parent_ref, :parent_ref) do
+         :ok <- Portable.validate_optional_ref(mandate.parent_ref, :parent_ref) do
       Portable.validate_ref(mandate.source_ref, :source_ref)
     end
   end
@@ -512,7 +469,4 @@ defmodule Spectre.Mandate do
   end
 
   defp valid_revocation?(_revocation), do: false
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 end

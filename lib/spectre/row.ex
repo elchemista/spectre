@@ -98,9 +98,7 @@ defmodule Spectre.Row do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = row) do
-    Map.new(@fields, fn field -> {Atom.to_string(field), Map.fetch!(row, field)} end)
-  end
+  def canonical(%__MODULE__{} = row), do: Portable.canonical_fields(row, @fields)
 
   @doc "Restores a row from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}

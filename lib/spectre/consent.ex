@@ -102,7 +102,7 @@ defmodule Spectre.Consent do
   end
 
   defp canonical_attrs(attrs) do
-    Map.new(@fields, fn field -> {Atom.to_string(field), Map.fetch!(attrs, field)} end)
+    Portable.canonical_fields(attrs, @fields)
   end
 
   defp sha256_digest?(digest) when is_binary(digest) and byte_size(digest) == 64 do

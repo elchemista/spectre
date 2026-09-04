@@ -14,7 +14,7 @@ defmodule Spectre.GovernedAct.Integrity do
 
   alias Spectre.{Act, Constitution, Duty, Genesis, Mandate, Outcome}
   alias Spectre.Duty.Derive
-  alias Spectre.GovernedAct.{Fold, State}
+  alias Spectre.GovernedAct.{DispatchState, Fold, State}
   alias Spectre.Kernel.Meter
 
   @duty_causal_fields [
@@ -37,27 +37,26 @@ defmodule Spectre.GovernedAct.Integrity do
   ]
 
   @doc "Validates a complete folded prefix at trusted observation time."
-  @spec validate(State.t(), map(), non_neg_integer()) :: :ok | {:error, term()}
-  def validate(%State{} = state, constitution, observed_at)
-      when is_map(constitution) and not is_struct(constitution) and
-             is_integer(observed_at) and observed_at >= 0 do
+  @spec validate(State.t(), non_neg_integer()) :: :ok | {:error, term()}
+  def validate(%State{} = state, observed_at)
+      when is_integer(observed_at) and observed_at >= 0 do
     with :ok <- Fold.validate_complete(state),
-         :ok <- complete_foundation(state, constitution),
+         :ok <- complete_foundation(state),
          :ok <- complete_uncertain_outcomes(state),
          :ok <- complete_erasure_duties(state),
          :ok <- complete_dispatch_expirations(state, observed_at),
-         :ok <- complete_required_duties(state, constitution, observed_at) do
+         :ok <- complete_required_duties(state, observed_at) do
       meters_conserved(state)
     end
   end
 
-  def validate(_state, _constitution, _observed_at),
+  def validate(_state, _observed_at),
     do: {:error, :invalid_governed_integrity_input}
 
-  defp complete_foundation(%State{genesis: nil}, _constitution),
+  defp complete_foundation(%State{genesis: nil}),
     do: {:error, :genesis_missing}
 
-  defp complete_foundation(state, constitution) do
+  defp complete_foundation(state) do
     required_principals = MapSet.new(state.genesis.principal_refs)
     actual_principals = state.principals |> Map.keys() |> MapSet.new()
 
@@ -66,19 +65,21 @@ defmodule Spectre.GovernedAct.Integrity do
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
+    restricted_refs = state.mandate_successors |> Map.values() |> MapSet.new()
+
     actual_roots =
       state.mandates
       |> Enum.filter(fn {ref, mandate} ->
-        is_nil(mandate.parent_ref) and not Map.has_key?(state.mandate_predecessors, ref)
+        is_nil(mandate.parent_ref) and not MapSet.member?(restricted_refs, ref)
       end)
       |> Enum.map(&elem(&1, 0))
       |> MapSet.new()
 
     cond do
-      is_nil(state.host_profile) ->
+      is_nil(State.host_profile(state)) ->
         {:error, :host_profile_missing}
 
-      is_nil(state.surface) ->
+      is_nil(State.surface(state)) ->
         {:error, :surface_missing}
 
       not MapSet.subset?(required_principals, actual_principals) ->
@@ -88,17 +89,17 @@ defmodule Spectre.GovernedAct.Integrity do
         {:error, {:genesis_root_mandates_incomplete, MapSet.to_list(required_mandates)}}
 
       true ->
-        with :ok <- complete_constitution(state, constitution),
-             do: complete_emergency_mandate(state, constitution)
+        with :ok <- complete_constitution(state),
+             do: complete_emergency_mandate(state)
     end
   end
 
-  defp complete_constitution(state, constitution) do
+  defp complete_constitution(state) do
     known_authorities = Map.keys(state.principals) ++ Map.keys(state.mandates)
 
-    with {:ok, constitution_ref} <- Constitution.ref(constitution),
+    with {:ok, constitution_ref} <- Constitution.ref(state.constitution),
          true <- constitution_ref == state.genesis.constitution_ref,
-         :ok <- Constitution.validate_duty_routes(constitution, known_authorities) do
+         :ok <- Constitution.validate_duty_routes(state.constitution, known_authorities) do
       :ok
     else
       false -> {:error, :genesis_constitution_mismatch}
@@ -106,16 +107,13 @@ defmodule Spectre.GovernedAct.Integrity do
     end
   end
 
-  defp complete_emergency_mandate(
-         %State{genesis: %Genesis{emergency_mandate_ref: nil}},
-         _constitution
-       ),
-       do: :ok
+  defp complete_emergency_mandate(%State{genesis: %Genesis{emergency_mandate_ref: nil}}),
+    do: :ok
 
-  defp complete_emergency_mandate(state, constitution) do
+  defp complete_emergency_mandate(state) do
     with {:ok, mandate} <-
            fetch(state.mandates, state.genesis.emergency_mandate_ref, :emergency_mandate),
-         {:ok, maximum_duration} <- Constitution.emergency_max_duration(constitution) do
+         {:ok, maximum_duration} <- Constitution.emergency_max_duration(state.constitution) do
       forbidden =
         MapSet.new(
           ~w(mandate.delegate mandate.restrict surface.revise host_profile.revise definition.revise)
@@ -178,7 +176,8 @@ defmodule Spectre.GovernedAct.Integrity do
   end
 
   defp complete_dispatch_expirations(state, observed_at) do
-    state.dispatch_ready
+    state
+    |> DispatchState.pending_refs()
     |> Enum.sort()
     |> Enum.reduce_while(:ok, fn act_ref, :ok ->
       with {:ok, %Act{} = act} <- fetch(state.acts, act_ref, :act),
@@ -194,9 +193,9 @@ defmodule Spectre.GovernedAct.Integrity do
     end)
   end
 
-  defp complete_required_duties(state, constitution, observed_at) do
+  defp complete_required_duties(state, observed_at) do
     state
-    |> Derive.required_duties(constitution, observed_at)
+    |> Derive.required_duties(state.constitution, observed_at)
     |> Enum.reduce_while(:ok, fn cause, :ok ->
       case Map.fetch(state.duties, cause.cause_key) do
         {:ok, %Duty{} = actual} ->

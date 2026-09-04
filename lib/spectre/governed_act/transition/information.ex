@@ -15,7 +15,6 @@ defmodule Spectre.GovernedAct.Transition.Information do
     Disclosure,
     Erasure,
     Evidence,
-    Governance,
     Presentation,
     SubmissionContext
   }
@@ -26,6 +25,7 @@ defmodule Spectre.GovernedAct.Transition.Information do
   alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.{Index, State, View}
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Authority
 
   def apply(
@@ -44,8 +44,6 @@ defmodule Spectre.GovernedAct.Transition.Information do
        %{
          projection
          | declassifications: Map.put(projection.declassifications, identity, record),
-           declassifications_by_act:
-             Map.put(projection.declassifications_by_act, act.ref, identity),
            declassifications_by_evidence:
              Map.put(projection.declassifications_by_evidence, evidence.ref, identity)
        }}
@@ -93,12 +91,7 @@ defmodule Spectre.GovernedAct.Transition.Information do
          :ok <- unique_erasure_act(projection, erasure),
          {:ok, act} <- Index.fetch_act(projection, erasure.source_act_ref),
          :ok <- validate_erasure_request(projection, act, erasure) do
-      {:ok,
-       %{
-         projection
-         | erasures: Map.put(projection.erasures, identity, erasure),
-           erasures_by_act: Map.put(projection.erasures_by_act, act.ref, identity)
-       }}
+      {:ok, %{projection | erasures: Map.put(projection.erasures, identity, erasure)}}
     end
   end
 
@@ -106,11 +99,11 @@ defmodule Spectre.GovernedAct.Transition.Information do
     do: {:error, {:unsupported_information_event, type}}
 
   defp unique_declassification_act(projection, record) do
-    case Map.fetch(projection.declassifications_by_act, record.source_act_ref) do
-      :error ->
+    case record_for_source_act(projection.declassifications, record.source_act_ref) do
+      nil ->
         :ok
 
-      {:ok, existing_ref} ->
+      existing_ref ->
         {:error, {:act_already_has_declassification, record.source_act_ref, existing_ref}}
     end
   end
@@ -139,7 +132,7 @@ defmodule Spectre.GovernedAct.Transition.Information do
        when map_size(act.consequence) == 1 do
     with true <- Act.row?(act, [:write, :govern]),
          true <- not Act.reservations?(act),
-         true <- Governance.ledger_internal?(act),
+         true <- GovernedExecution.ledger_internal?(act),
          {:ok, decoded} <- Declassification.decode_draft(draft),
          true <- decoded.canonical == draft,
          :ok <- Declassification.validate_producer(decoded.evidence, act.proposer_ref),
@@ -173,13 +166,20 @@ defmodule Spectre.GovernedAct.Transition.Information do
     do: {:error, {:invalid_declassification_act, record.ref, act.ref}}
 
   defp unique_erasure_act(projection, erasure) do
-    case Map.fetch(projection.erasures_by_act, erasure.source_act_ref) do
-      :error ->
+    case record_for_source_act(projection.erasures, erasure.source_act_ref) do
+      nil ->
         :ok
 
-      {:ok, existing_ref} ->
+      existing_ref ->
         {:error, {:act_already_has_erasure_request, erasure.source_act_ref, existing_ref}}
     end
+  end
+
+  defp record_for_source_act(records, source_act_ref) do
+    Enum.find_value(records, fn
+      {ref, %{source_act_ref: ^source_act_ref}} -> ref
+      {_ref, _record} -> nil
+    end)
   end
 
   defp validate_erasure_request(projection, act, erasure) do

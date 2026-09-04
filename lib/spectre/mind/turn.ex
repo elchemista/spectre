@@ -2,9 +2,11 @@ defmodule Spectre.Mind.Turn do
   @moduledoc """
   Ephemeral, capability-free input to one deliberation.
 
-  A Turn contains authenticated routing identity and immutable Evidence, but no
-  authority view, Grant, executor or secret.  `context_labels` is the
-  conservative union of every Evidence label visible to the deliberation.
+  A Turn contains a sanitized authenticated context and immutable Evidence, but
+  no authority view, Grant, executor or secret. The context seal is removed
+  before the Turn crosses into application deliberation. Evidence references
+  and the conservative label union are derived from the records instead of
+  being stored a second time.
   """
 
   alias Spectre.Canonical.Value
@@ -15,30 +17,18 @@ defmodule Spectre.Mind.Turn do
 
   @enforce_keys [
     :ref,
-    :domain_ref,
-    :scope_ref,
     :mind_ref,
-    :submission_context_ref,
-    :authenticated_principal_ref,
-    :context_bindings,
+    :context,
     :evidence,
-    :evidence_refs,
-    :context_labels,
     :opened_at
   ]
   defstruct @enforce_keys ++ [seal: nil]
 
   @type t :: %__MODULE__{
           ref: String.t(),
-          domain_ref: String.t(),
-          scope_ref: String.t(),
           mind_ref: String.t(),
-          submission_context_ref: String.t(),
-          authenticated_principal_ref: String.t(),
-          context_bindings: map(),
+          context: SubmissionContext.t(),
           evidence: [Evidence.t()],
-          evidence_refs: [String.t()],
-          context_labels: [Label.t()],
           opened_at: integer(),
           seal: String.t() | nil
         }
@@ -52,21 +42,16 @@ defmodule Spectre.Mind.Turn do
   def new(%Scope{} = scope, ref, mind_ref, evidence, opened_at)
       when is_binary(ref) and ref != "" and is_binary(mind_ref) and mind_ref != "" and
              is_list(evidence) and is_integer(opened_at) do
-    with {:ok, evidence} <- normalize_evidence(evidence),
+    with {:ok, context} <- turn_context(scope),
+         {:ok, evidence} <- normalize_evidence(evidence),
          {:ok, labels} <- Derivation.inherited_labels(evidence),
          :ok <- Portable.validate(Enum.map(labels, &Label.canonical/1)) do
       {:ok,
        %__MODULE__{
          ref: ref,
-         domain_ref: scope.domain.ref,
-         scope_ref: scope.ref,
          mind_ref: mind_ref,
-         submission_context_ref: scope.context.ref,
-         authenticated_principal_ref: scope.context.authenticated_principal_ref,
-         context_bindings: SubmissionContext.evidence_bindings(scope.context),
+         context: %{context | seal: nil},
          evidence: evidence,
-         evidence_refs: evidence |> Enum.map(& &1.ref) |> Enum.sort(),
-         context_labels: labels,
          opened_at: opened_at,
          seal: nil
        }}
@@ -74,6 +59,19 @@ defmodule Spectre.Mind.Turn do
   end
 
   def new(_scope, _ref, _mind_ref, _evidence, _opened_at), do: {:error, :invalid_mind_turn}
+
+  @doc "Returns the canonical Evidence references visible to the Turn."
+  @spec evidence_refs(t()) :: [String.t()]
+  def evidence_refs(%__MODULE__{evidence: evidence}), do: Enum.map(evidence, & &1.ref)
+
+  @doc "Returns the conservative union of labels inherited from visible Evidence."
+  @spec labels(t()) :: {:ok, [Label.t()]} | {:error, term()}
+  def labels(%__MODULE__{evidence: evidence}), do: Derivation.inherited_labels(evidence)
+
+  @doc "Returns the trusted context fields suitable for Evidence bindings."
+  @spec context_bindings(t()) :: map()
+  def context_bindings(%__MODULE__{context: context}),
+    do: SubmissionContext.evidence_bindings(context)
 
   @doc false
   @spec seal(t(), binary()) :: {:ok, t()} | {:error, term()}
@@ -117,17 +115,22 @@ defmodule Spectre.Mind.Turn do
   defp seal_material(%__MODULE__{} = turn) do
     %{
       "ref" => turn.ref,
-      "domain_ref" => turn.domain_ref,
-      "scope_ref" => turn.scope_ref,
       "mind_ref" => turn.mind_ref,
-      "submission_context_ref" => turn.submission_context_ref,
-      "authenticated_principal_ref" => turn.authenticated_principal_ref,
-      "context_bindings" => turn.context_bindings,
+      "context" => SubmissionContext.canonical(turn.context),
       "evidence" => Enum.map(turn.evidence, &%{"ref" => &1.ref, "digest" => Evidence.digest(&1)}),
-      "evidence_refs" => turn.evidence_refs,
-      "context_labels" => Enum.map(turn.context_labels, &Label.canonical/1),
       "opened_at" => turn.opened_at
     }
+  end
+
+  defp turn_context(%Scope{} = scope) do
+    with {:ok, context} <- SubmissionContext.new(scope.context),
+         true <- context.domain_ref == Scope.domain_ref(scope),
+         true <- context.scope_ref == Scope.ref(scope) do
+      {:ok, context}
+    else
+      false -> {:error, :scope_context_mismatch}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp normalize_evidence(evidence) do

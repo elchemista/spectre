@@ -221,7 +221,7 @@ defmodule Spectre.Erasure do
         with :ok <- Portable.validate_ref(erasure.ref, :ref),
              :ok <- Portable.validate_ref(erasure.source_act_ref, :source_act_ref),
              :ok <- Portable.validate_ref(erasure.target_ref, :target_ref),
-             :ok <- validate_optional_ref(erasure.scope_ref, :scope_ref),
+             :ok <- Portable.validate_optional_ref(erasure.scope_ref, :scope_ref),
              :ok <- Portable.validate_refs(erasure.affected_refs, :affected_refs) do
           :ok
         end
@@ -233,7 +233,4 @@ defmodule Spectre.Erasure do
 
   defp target_digest_matches?("payload:" <> digest, digest), do: sha256?(digest)
   defp target_digest_matches?(_target_ref, _digest), do: false
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 end

@@ -48,18 +48,3 @@ defmodule Spectre.Id do
     |> Enum.all?(fn byte -> byte == ?- or byte in ?0..?9 or byte in ?a..?f end)
   end
 end
-
-defmodule Spectre.Id.Source do
-  @moduledoc "A replaceable source of operational UUIDv7 identifiers."
-
-  @callback generate() :: Spectre.Id.t()
-end
-
-defmodule Spectre.Id.UUIDv7 do
-  @moduledoc false
-
-  @behaviour Spectre.Id.Source
-
-  @impl true
-  def generate, do: UUIDv7.generate()
-end

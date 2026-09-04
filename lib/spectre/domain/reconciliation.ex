@@ -10,14 +10,13 @@ defmodule Spectre.Domain.Reconciliation do
 
   alias Spectre.Attempt.Reconciler
   alias Spectre.Domain.Projection
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{DispatchState, State}
   alias Spectre.Scope.Opening
 
   @doc "Returns the next trusted timestamp requiring reconciliation, or `nil`."
-  @spec next_deadline(Projection.t(), map(), non_neg_integer()) :: non_neg_integer() | nil
-  def next_deadline(%State{} = projection, constitution, now)
-      when is_map(constitution) and is_integer(now) and now >= 0 do
-    case Reconciler.missing_openings(projection, constitution, now) do
+  @spec next_deadline(Projection.t(), non_neg_integer()) :: non_neg_integer() | nil
+  def next_deadline(%State{} = projection, now) when is_integer(now) and now >= 0 do
+    case Reconciler.missing_openings(projection, now) do
       [] -> deadlines(projection, now) |> Enum.min(fn -> nil end)
       [_cause | _rest] -> now
     end
@@ -29,11 +28,11 @@ defmodule Spectre.Domain.Reconciliation do
   end
 
   defp dispatch_deadlines(projection, now) do
-    Enum.flat_map(projection.dispatch_ready, fn act_ref ->
+    Enum.flat_map(DispatchState.pending_refs(projection), fn act_ref ->
       with {:ok, act} <- Map.fetch(projection.acts, act_ref),
            {:ok, mandate} <- Map.fetch(projection.mandates, act.mandate_ref),
            true <- act.mandate_revision == mandate.revision,
-           false <- Map.has_key?(projection.attempts_by_act, act.ref) do
+           false <- DispatchState.attempted?(projection, act.ref) do
         [max(mandate.expires_at, now)]
       else
         _invalid -> [now]

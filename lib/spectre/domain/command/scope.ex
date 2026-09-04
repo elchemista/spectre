@@ -17,18 +17,20 @@ defmodule Spectre.Domain.Command.Scope do
   @spec open(
           State.t(),
           SubmissionContext.t() | term(),
-          Opening.t() | term(),
-          keyword(),
-          non_neg_integer()
+          Opening.t() | term()
         ) ::
           {:ok, State.t(), Opening.t()} | {:error, State.t(), term()}
 
-  def open(state, context, input, ledger_opts, conflicts_left) do
+  def open(state, context, input) do
+    open_with_retries(state, context, input, state.conflict_retries)
+  end
+
+  defp open_with_retries(state, context, input, conflicts_left) do
     with {:ok, context} <- SubmissionContext.new(context),
          :ok <- SubmissionContext.verify_seal(context, state.grant_secret),
          {:ok, opening} <- Opening.new(input),
          :ok <- validate_direct_scope_opening(opening),
-         {:ok, now} <- Transaction.trusted_recorded_at(state.clock, state.projection),
+         {:ok, now} <- Transaction.trusted_recorded_at(state),
          :ok <- validate_scope_opening_boundary(state, context, opening, now) do
       case existing_scope(state.projection, opening) do
         {:ok, durable} ->
@@ -39,7 +41,6 @@ defmodule Spectre.Domain.Command.Scope do
             state,
             context,
             opening,
-            ledger_opts,
             conflicts_left,
             now
           )
@@ -64,7 +65,8 @@ defmodule Spectre.Domain.Command.Scope do
 
   defp validate_scope_opening_boundary(state, context, opening, now) do
     cond do
-      context.domain_ref != state.domain_ref or opening.domain_ref != state.domain_ref ->
+      context.domain_ref != state.projection.domain_ref or
+          opening.domain_ref != state.projection.domain_ref ->
         {:error, :scope_opening_domain_mismatch}
 
       context.ingress_ref != state.ingress_ref or opening.ingress_ref != state.ingress_ref ->
@@ -100,7 +102,7 @@ defmodule Spectre.Domain.Command.Scope do
   defp existing_scope(projection, opening) do
     case Map.fetch(projection.scopes, opening.ref) do
       {:ok, existing} ->
-        if Opening.canonical(existing) == Opening.canonical(opening),
+        if existing == opening,
           do: {:ok, existing},
           else: {:error, {:scope_identity_conflict, opening.ref}}
 
@@ -113,50 +115,21 @@ defmodule Spectre.Domain.Command.Scope do
          state,
          context,
          opening,
-         ledger_opts,
          conflicts_left,
          recorded_at
        ) do
     with {:ok, payload} <- Event.scope_opened(opening),
-         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, [payload]),
-         {:ok, batch_id} <- Transaction.operational_id(state, "scope") do
-      append_result =
-        Transaction.append_exact(
-          state,
-          batch_id,
-          [payload],
-          state.projection.revision,
-          ledger_opts,
-          state.ambiguous_retries,
-          recorded_at
-        )
-
-      Commit.resolve(
+         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, [payload]) do
+      Commit.append(
         state,
-        append_result,
+        [payload],
+        recorded_at,
         conflicts_left,
         &recovered_scope(state, &1, opening),
-        &retry_scope_after_conflict(state, context, opening, ledger_opts, &1)
+        &open_with_retries(&1, context, opening, &2)
       )
     else
       {:error, reason} -> {:error, state, reason}
-    end
-  end
-
-  defp retry_scope_after_conflict(state, context, opening, ledger_opts, conflicts_left) do
-    case Transaction.recover_with_repair(state, ledger_opts) do
-      {:ok, projection} ->
-        open(
-          %{state | projection: projection},
-          context,
-          opening,
-          ledger_opts,
-          conflicts_left
-        )
-
-      {:error, reason} ->
-        halted = Control.halt(state, reason)
-        {:error, halted, {:durable_recovery_failed, reason}}
     end
   end
 

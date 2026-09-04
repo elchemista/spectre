@@ -16,14 +16,12 @@ defmodule Spectre.Presentation do
   """
 
   alias Spectre.{Act, Candidate, Consent, Disclosure, Evidence, Outcome, Portable, Row}
+  alias Spectre.GovernedAct.Class, as: GovernedClass
   alias Spectre.Presentation.Approval
 
   @schema_version 1
   @show_class "presentation.show"
-  @show_dimensions [:attempt, :disclose, :present]
-  @fields [
-    :schema_version,
-    :ref,
+  @material_fields [
     :candidate_binding_ref,
     :scope_ref,
     :recipient_refs,
@@ -35,13 +33,16 @@ defmodule Spectre.Presentation do
     :purpose_params,
     :risk,
     :reversibility,
-    :alternatives,
+    :alternatives
+  ]
+  @delivery_fields [
     :renderer_ref,
     :rendered_payload,
     :rendered_payload_ref,
     :prepared_at,
     :material_digest
   ]
+  @fields [:schema_version, :ref] ++ @material_fields ++ @delivery_fields
 
   @enforce_keys [
     :schema_version,
@@ -137,22 +138,7 @@ defmodule Spectre.Presentation do
 
   @doc "Returns the fields whose exact value is material to consent."
   @spec material(t()) :: map()
-  def material(%__MODULE__{} = presentation) do
-    %{
-      "candidate_binding_ref" => presentation.candidate_binding_ref,
-      "scope_ref" => presentation.scope_ref,
-      "recipient_refs" => presentation.recipient_refs,
-      "approval_source_refs" => presentation.approval_source_refs,
-      "disclosure" => Disclosure.canonical(presentation.disclosure),
-      "data" => presentation.data,
-      "cost" => presentation.cost,
-      "purpose_ref" => presentation.purpose_ref,
-      "purpose_params" => presentation.purpose_params,
-      "risk" => presentation.risk,
-      "reversibility" => presentation.reversibility,
-      "alternatives" => presentation.alternatives
-    }
-  end
+  def material(%__MODULE__{} = presentation), do: material_fields(presentation)
 
   @doc "Recalculates the closed consent material represented by this Presentation."
   @spec consent_material(t()) :: {:ok, Consent.t()} | {:error, term()}
@@ -207,7 +193,10 @@ defmodule Spectre.Presentation do
 
   @doc "Returns the exact Row dimensions of `presentation.show`."
   @spec show_dimensions() :: [Row.dimension()]
-  def show_dimensions, do: @show_dimensions
+  def show_dimensions do
+    {:ok, dimensions} = GovernedClass.dimensions(@show_class)
+    dimensions
+  end
 
   @doc "Returns the exact Row of `presentation.show`."
   @spec show_row() :: Row.t()
@@ -348,6 +337,9 @@ defmodule Spectre.Presentation do
               ),
               to: Approval
 
+  @doc false
+  defdelegate classify_responses(presentation, acts, outcomes, evidence, time), to: Approval
+
   @doc "Validates an approval and returns its exact Evidence basis."
   @spec validate_approval_with_basis(
           Evidence.t(),
@@ -406,15 +398,7 @@ defmodule Spectre.Presentation do
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = presentation) do
-    Map.merge(material(presentation), %{
-      "schema_version" => presentation.schema_version,
-      "ref" => presentation.ref,
-      "renderer_ref" => presentation.renderer_ref,
-      "rendered_payload" => presentation.rendered_payload,
-      "rendered_payload_ref" => presentation.rendered_payload_ref,
-      "prepared_at" => presentation.prepared_at,
-      "material_digest" => presentation.material_digest
-    })
+    canonical_fields(presentation, @fields)
   end
 
   @doc "Restores a presentation from its canonical map."
@@ -432,22 +416,7 @@ defmodule Spectre.Presentation do
   def content_ref(%__MODULE__{} = presentation),
     do: Portable.content_ref!(:presentation, content(presentation))
 
-  defp material_attrs(attrs) do
-    %{
-      "candidate_binding_ref" => Map.get(attrs, :candidate_binding_ref),
-      "scope_ref" => Map.get(attrs, :scope_ref),
-      "recipient_refs" => Map.fetch!(attrs, :recipient_refs),
-      "approval_source_refs" => Map.fetch!(attrs, :approval_source_refs),
-      "disclosure" => attrs |> Map.fetch!(:disclosure) |> Disclosure.canonical(),
-      "data" => Map.get(attrs, :data),
-      "cost" => Map.get(attrs, :cost),
-      "purpose_ref" => Map.get(attrs, :purpose_ref),
-      "purpose_params" => Map.fetch!(attrs, :purpose_params),
-      "risk" => Map.get(attrs, :risk),
-      "reversibility" => Map.get(attrs, :reversibility),
-      "alternatives" => Map.fetch!(attrs, :alternatives)
-    }
-  end
+  defp material_attrs(attrs), do: material_fields(attrs)
 
   defp defaults(attrs) do
     attrs
@@ -482,16 +451,14 @@ defmodule Spectre.Presentation do
 
   defp content(%__MODULE__{} = presentation), do: presentation |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    material_attrs(attrs)
-    |> Map.merge(%{
-      "schema_version" => Map.fetch!(attrs, :schema_version),
-      "renderer_ref" => Map.get(attrs, :renderer_ref),
-      "rendered_payload" => Map.fetch!(attrs, :rendered_payload),
-      "rendered_payload_ref" => Map.fetch!(attrs, :rendered_payload_ref),
-      "prepared_at" => Map.get(attrs, :prepared_at),
-      "material_digest" => Map.fetch!(attrs, :material_digest)
-    })
+  defp content(attrs), do: canonical_fields(attrs, @fields -- [:ref])
+
+  defp material_fields(source), do: canonical_fields(source, @material_fields)
+
+  defp canonical_fields(source, fields) do
+    source
+    |> Portable.canonical_fields(fields)
+    |> Map.update!("disclosure", &Disclosure.canonical/1)
   end
 
   defp validate_record(%__MODULE__{} = presentation) do
@@ -550,7 +517,7 @@ defmodule Spectre.Presentation do
     end
   end
 
-  defp exact_show_row?(%Row{} = row), do: Row.dimensions(row) == @show_dimensions
+  defp exact_show_row?(%Row{} = row), do: Row.dimensions(row) == show_dimensions()
   defp exact_show_row?(_row), do: false
 
   defp validate_optional_payload_ref(nil), do: :ok

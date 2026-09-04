@@ -8,8 +8,9 @@ defmodule Spectre.GovernedAct.View do
   same calculations without duplicating indexes or policy.
   """
 
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{MeterState, State}
   alias Spectre.Kernel.Authority.Facts
+  alias Spectre.Kernel.Meter
   alias Spectre.Scope.Opening
   alias Spectre.SubmissionContext
 
@@ -26,27 +27,14 @@ defmodule Spectre.GovernedAct.View do
   defdelegate blocked_effect_digests(state), to: Facts
 
   @doc "Returns physical Meter accounts for a logical Mandate revision."
-  @spec meter_accounts(State.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec meter_accounts(State.t(), String.t()) :: {:ok, Meter.accounts()} | {:error, term()}
   def meter_accounts(%State{} = state, mandate_ref)
       when is_binary(mandate_ref) and mandate_ref != "" do
-    with {:ok, owner_ref} <- Map.fetch(state.meter_owners, mandate_ref),
-         {:ok, accounts} <- Map.fetch(state.meters, owner_ref) do
-      {:ok, accounts}
-    else
-      :error -> {:error, {:meter_mandate_not_found, mandate_ref}}
-    end
+    MeterState.accounts(state, mandate_ref)
   end
 
   def meter_accounts(%State{}, mandate_ref),
     do: {:error, {:invalid_meter_mandate_ref, mandate_ref}}
-
-  @doc "Builds a logical Meter view without copying physical account state."
-  @spec meters(State.t()) :: map()
-  def meters(%State{} = state) do
-    Map.new(state.meter_owners, fn {mandate_ref, owner_ref} ->
-      {mandate_ref, Map.fetch!(state.meters, owner_ref)}
-    end)
-  end
 
   @doc "Fetches an Evidence set in caller order."
   @spec evidence_set(State.t(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
@@ -64,6 +52,58 @@ defmodule Spectre.GovernedAct.View do
   end
 
   def evidence_set(_state, _refs), do: {:error, :invalid_evidence_refs}
+
+  @doc "Looks up the durable Decision selected by a Candidate identity key."
+  @spec candidate_decision(State.t(), String.t()) ::
+          {:ok, Spectre.Decision.t()} | :not_found | {:error, term()}
+  def candidate_decision(%State{} = state, identity_key)
+      when is_binary(identity_key) and identity_key != "" do
+    case Map.fetch(state.admissions, identity_key) do
+      {:ok, %{decision_ref: decision_ref}} ->
+        case Map.fetch(state.decisions, decision_ref) do
+          {:ok, %Spectre.Decision{candidate_identity_key: ^identity_key} = decision} ->
+            {:ok, decision}
+
+          {:ok, _mismatch} ->
+            {:error, {:candidate_identity_index_mismatch, identity_key, decision_ref}}
+
+          :error ->
+            {:error, {:candidate_identity_decision_not_found, identity_key, decision_ref}}
+        end
+
+      :error ->
+        :not_found
+
+      {:ok, _invalid} ->
+        {:error, {:invalid_candidate_admission, identity_key}}
+    end
+  end
+
+  def candidate_decision(%State{}, _identity_key),
+    do: {:error, :invalid_candidate_identity_key}
+
+  @doc "Looks up the Act paired with a durable Decision."
+  @spec decision_act(State.t(), Spectre.Decision.t()) ::
+          {:ok, Spectre.Act.t() | nil} | {:error, term()}
+  def decision_act(%State{}, %Spectre.Decision{outcome: outcome}) when outcome != :admitted,
+    do: {:ok, nil}
+
+  def decision_act(
+        %State{} = state,
+        %Spectre.Decision{
+          outcome: :admitted,
+          ref: decision_ref,
+          candidate_identity_key: identity_key
+        }
+      ) do
+    with {:ok, %{decision_ref: ^decision_ref, act_ref: act_ref}} when is_binary(act_ref) <-
+           Map.fetch(state.admissions, identity_key),
+         {:ok, %Spectre.Act{decision_ref: ^decision_ref} = act} <- Map.fetch(state.acts, act_ref) do
+      {:ok, act}
+    else
+      _missing_or_invalid -> {:error, {:admitted_decision_missing_act, decision_ref}}
+    end
+  end
 
   @doc "Checks an authenticated context against its durable Scope opening."
   @spec scope_context(State.t(), SubmissionContext.t()) ::

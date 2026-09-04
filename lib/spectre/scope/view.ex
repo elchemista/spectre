@@ -10,12 +10,10 @@ defmodule Spectre.Scope.View do
 
   alias Spectre.Domain.Projection
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{DispatchState, State}
   alias Spectre.Scope.Opening
 
   @enforce_keys [
-    :domain_ref,
-    :scope_ref,
     :revision,
     :opening,
     :decisions,
@@ -33,8 +31,6 @@ defmodule Spectre.Scope.View do
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
-          domain_ref: String.t(),
-          scope_ref: String.t(),
           revision: non_neg_integer(),
           opening: Opening.t(),
           decisions: [Spectre.Decision.t()],
@@ -46,7 +42,14 @@ defmodule Spectre.Scope.View do
           declassifications: [Spectre.Declassification.t()],
           presentations: [Spectre.Presentation.t()],
           erasures: [Spectre.Erasure.t()],
-          dispatch_cancellations: [Projection.dispatch_cancellation()],
+          dispatch_cancellations: [
+            %{
+              required(:act_ref) => String.t(),
+              required(:cause_ref) => String.t(),
+              required(:reason) => atom(),
+              required(:cancelled_at) => non_neg_integer()
+            }
+          ],
           pending_act_refs: [String.t()]
         }
 
@@ -97,8 +100,6 @@ defmodule Spectre.Scope.View do
 
       {:ok,
        %__MODULE__{
-         domain_ref: projection.domain_ref,
-         scope_ref: scope_ref,
          revision: projection.revision,
          opening: opening,
          decisions: decisions,
@@ -272,17 +273,20 @@ defmodule Spectre.Scope.View do
   end
 
   defp pending_act_refs(projection, act_refs) do
-    projection.dispatch_ready
+    projection
+    |> DispatchState.pending_refs()
     |> MapSet.intersection(act_refs)
-    |> MapSet.difference(MapSet.new(Map.keys(projection.attempts_by_act)))
     |> MapSet.to_list()
     |> Enum.sort()
   end
 
   defp dispatch_cancellations(projection, act_refs) do
-    projection.dispatch_cancellations
+    projection
+    |> DispatchState.cancellations()
     |> Enum.flat_map(fn {act_ref, cancellation} ->
-      if MapSet.member?(act_refs, act_ref), do: [cancellation], else: []
+      if MapSet.member?(act_refs, act_ref),
+        do: [Map.put(cancellation, :act_ref, act_ref)],
+        else: []
     end)
     |> Enum.sort_by(& &1.act_ref)
   end

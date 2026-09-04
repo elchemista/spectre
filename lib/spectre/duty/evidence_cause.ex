@@ -69,7 +69,7 @@ defmodule Spectre.Duty.EvidenceCause do
   @doc "Returns the exact string-keyed value embedded in `Evidence.payload`."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = cause) do
-    Map.new(@fields, fn field -> {Atom.to_string(field), Map.fetch!(cause, field)} end)
+    Portable.canonical_fields(cause, @fields)
   end
 
   @doc "Restores a cause payload from its canonical representation."
@@ -130,7 +130,7 @@ defmodule Spectre.Duty.EvidenceCause do
 
       true ->
         with :ok <- Portable.validate_ref(cause.accountable_ref, :accountable_ref),
-             :ok <- validate_optional_ref(cause.mandate_ref, :mandate_ref) do
+             :ok <- Portable.validate_optional_ref(cause.mandate_ref, :mandate_ref) do
           :ok
         end
     end
@@ -156,16 +156,10 @@ defmodule Spectre.Duty.EvidenceCause do
     allowed =
       constitution
       |> Constitution.duty_rule(cause.class)
-      |> field(:cause_source_refs, [])
+      |> Constitution.rule_value(:cause_source_refs, [])
 
     if evidence.source_ref in allowed,
       do: :ok,
       else: {:error, {:duty_evidence_source_not_configured, cause.class, evidence.source_ref}}
   end
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
-
-  defp field(map, key, default) when is_map(map),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 end

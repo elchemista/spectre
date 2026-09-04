@@ -8,11 +8,13 @@ defmodule Spectre.Domain.Command.Execution do
   external capability itself; Zone X remains in `Spectre.Attempt.Runner`.
   """
 
-  alias Spectre.{Act, Attempt, Governance}
+  alias Spectre.{Act, Attempt}
   alias Spectre.Domain.{Event, Projection, Transaction}
   alias Spectre.Domain.Command.Commit
   alias Spectre.Domain.Sequencer.{Control, State}
   alias Spectre.Execution.Router
+  alias Spectre.GovernedAct.DispatchState
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.{Authority, Grant}
   alias Spectre.Mandate.Ancestry
   alias Spectre.Payload.Store, as: PayloadStore
@@ -24,7 +26,7 @@ defmodule Spectre.Domain.Command.Execution do
   def mint_grant(_state, nil), do: {:ok, nil}
 
   def mint_grant(state, %Act{} = act) do
-    case Governance.execution_mode(act) do
+    case GovernedExecution.mode(act) do
       {:ok, :ledger_internal} ->
         {:ok, nil}
 
@@ -38,18 +40,18 @@ defmodule Spectre.Domain.Command.Execution do
 
   defp mint_executor_grant(state, act) do
     cond do
-      Map.has_key?(state.projection.attempts_by_act, act.ref) ->
+      DispatchState.attempted?(state.projection, act.ref) ->
         {:ok, nil}
 
-      Map.has_key?(state.projection.dispatch_cancellations, act.ref) ->
+      DispatchState.cancelled?(state.projection, act.ref) ->
         {:ok, nil}
 
-      not MapSet.member?(state.projection.dispatch_ready, act.ref) ->
+      not DispatchState.pending?(state.projection, act.ref) ->
         {:error, {:act_not_dispatch_ready, act.ref}}
 
       true ->
-        with {:ok, now} <- Transaction.trusted_recorded_at(state.clock, state.projection),
-             :ok <- Transaction.duties_materialized(state.projection, state.constitution, now),
+        with {:ok, now} <- Transaction.trusted_recorded_at(state),
+             :ok <- Transaction.duties_materialized(state.projection, now),
              :ok <- mandate_still_active(state.projection, act, now),
              :ok <- verify_act_payloads(state, act),
              {:ok, route} <-
@@ -64,11 +66,11 @@ defmodule Spectre.Domain.Command.Execution do
                  act,
                  route.broker_descriptor
                ),
-             {:ok, nonce} <- Transaction.operational_id(state, "grant") do
+             {:ok, nonce} <- Transaction.operational_id(state) do
           Grant.mint(
             %{
               act_ref: act.ref,
-              domain_ref: state.domain_ref,
+              domain_ref: state.projection.domain_ref,
               executor_ref: act.executor_ref,
               issued_at: now,
               expires_at: now + state.grant_ttl_ms,
@@ -83,41 +85,32 @@ defmodule Spectre.Domain.Command.Execution do
   end
 
   @doc "Consumes a Grant into one durable Attempt and returns its checkout receipt."
-  @spec consume(State.t(), Grant.t(), keyword(), non_neg_integer()) ::
+  @spec consume(State.t(), Grant.t()) ::
           {:ok, State.t(), Act.t(), Attempt.t(), CheckoutReceipt.t()}
           | {:error, State.t(), term()}
-  def consume(state, grant, ledger_opts, conflicts_left) do
-    with {:ok, now} <- Transaction.trusted_recorded_at(state.clock, state.projection),
-         :ok <- Transaction.duties_materialized(state.projection, state.constitution, now),
+  def consume(state, grant) do
+    consume_with_retries(state, grant, state.conflict_retries)
+  end
+
+  defp consume_with_retries(state, grant, conflicts_left) do
+    with {:ok, now} <- Transaction.trusted_recorded_at(state),
+         :ok <- Transaction.duties_materialized(state.projection, now),
          {:ok, act} <- fetch_granted_act(state, grant, now),
          {:ok, broker} <- Router.broker(state),
          :ok <- Router.broker_supports_act(state.projection, act, broker),
          :ok <- verify_act_payloads(state, act),
          :ok <- attempt_available(state.projection, act, grant),
-         {:ok, attempt_ref} <- Transaction.operational_id(state, "attempt"),
+         {:ok, attempt_ref} <- Transaction.operational_id(state),
          {:ok, attempt} <- build_attempt(state, act, grant, attempt_ref, now),
          {:ok, payload} <- Event.record(:attempt, attempt),
-         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, [payload]),
-         {:ok, batch_id} <- Transaction.operational_id(state, "attempt-batch") do
-      expected_revision = state.projection.revision
-
-      append_result =
-        Transaction.append_exact(
-          state,
-          batch_id,
-          [payload],
-          expected_revision,
-          ledger_opts,
-          state.ambiguous_retries,
-          now
-        )
-
-      Commit.resolve(
+         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, [payload]) do
+      Commit.append(
         state,
-        append_result,
+        [payload],
+        now,
         conflicts_left,
         &recovered_attempt(state, &1, act.ref, attempt.ref),
-        &retry_consumption_after_conflict(state, grant, ledger_opts, &1)
+        &consume_with_retries(&1, grant, &2)
       )
     else
       {:error, reason} -> {:error, state, reason}
@@ -143,7 +136,7 @@ defmodule Spectre.Domain.Command.Execution do
              executor_ref: act.executor_ref,
              material_digest: act.material_digest,
              act_ref: act.ref,
-             domain_ref: state.domain_ref
+             domain_ref: state.projection.domain_ref
            }),
          :ok <- mandate_still_active(state.projection, act, now) do
       {:ok, act}
@@ -158,14 +151,14 @@ defmodule Spectre.Domain.Command.Execution do
     nonce_digest = nonce_digest(grant.nonce)
 
     cond do
-      not Governance.executor_mediated?(act) ->
+      not GovernedExecution.executor_mediated?(act) ->
         {:error, {:act_not_executor_mediated, act.ref}}
 
-      not MapSet.member?(projection.dispatch_ready, act.ref) ->
-        {:error, {:act_not_dispatch_ready, act.ref}}
-
-      Map.has_key?(projection.attempts_by_act, act.ref) ->
+      DispatchState.attempted?(projection, act.ref) ->
         {:error, {:act_already_attempted, act.ref}}
+
+      not DispatchState.pending?(projection, act.ref) ->
+        {:error, {:act_not_dispatch_ready, act.ref}}
 
       MapSet.member?(projection.consumed_nonces, nonce_digest) ->
         {:error, {:grant_nonce_already_consumed, nonce_digest}}
@@ -192,8 +185,8 @@ defmodule Spectre.Domain.Command.Execution do
 
     with {:ok, %Act{} = act} <- Map.fetch(projection.acts, act_ref),
          {:ok, %Attempt{} = attempt} <- Map.fetch(projection.attempts, attempt_ref),
-         true <- Map.get(projection.attempts_by_act, act_ref) == attempt_ref,
-         {:ok, now} <- Transaction.trusted_recorded_at(state.clock, projection),
+         true <- DispatchState.attempt_ref(projection, act_ref) == attempt_ref,
+         {:ok, now} <- Transaction.trusted_recorded_at(recovered_state),
          {:ok, broker} <- Router.broker(recovered_state),
          :ok <- mandate_still_active(projection, act, now),
          :ok <- Router.broker_supports_act(projection, act, broker),
@@ -215,26 +208,10 @@ defmodule Spectre.Domain.Command.Execution do
     end
   end
 
-  defp retry_consumption_after_conflict(state, grant, ledger_opts, conflicts_left) do
-    case Transaction.recover_with_repair(state, ledger_opts) do
-      {:ok, projection} ->
-        consume(
-          %{state | projection: projection},
-          grant,
-          ledger_opts,
-          conflicts_left
-        )
-
-      {:error, reason} ->
-        halted = Control.halt(state, reason)
-        {:error, halted, {:durable_recovery_failed, reason}}
-    end
-  end
-
   defp mint_checkout_receipt(state, act, attempt, broker, now) do
     CheckoutReceipt.mint(
       %{
-        domain_ref: state.domain_ref,
+        domain_ref: state.projection.domain_ref,
         act_ref: act.ref,
         attempt_ref: attempt.ref,
         executor_ref: act.executor_ref,

@@ -19,8 +19,6 @@ defmodule Spectre.Kernel do
     Candidate,
     Decision,
     Disclosure,
-    Evidence,
-    Governance,
     HostProfile,
     Presentation,
     Row,
@@ -30,7 +28,9 @@ defmodule Spectre.Kernel do
 
   alias Spectre.Domain.Projection
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.Admission.Binding
   alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Authority
   alias Spectre.Kernel.Decision, as: DecisionEngine
   alias Spectre.Kernel.Decision.Context, as: DecisionContext
@@ -91,7 +91,7 @@ defmodule Spectre.Kernel do
   defp evaluate_declared(candidate, context, projection, surface, declared_row, view, time) do
     if candidate.row == declared_row do
       with :ok <- Surface.validate_consequence(surface, candidate),
-           :ok <- Governance.execution_boundary(candidate),
+           :ok <- GovernedExecution.validate(candidate),
            :ok <- validate_presentation_requirement(surface, candidate),
            :ok <- validate_evidence_availability(candidate, projection),
            :ok <- validate_disclosure(candidate, projection),
@@ -100,9 +100,10 @@ defmodule Spectre.Kernel do
 
         # Evidence is deliberately not present in this call or in authority_view.
         resolution = Authority.resolve(candidate, context, authority_view, time)
+        view = with_meter_accounts(view, projection, resolution)
 
         {recognition, recognition_evidence_refs} =
-          recognize(candidate, resolution, projection, declared_row, time)
+          recognize(candidate, resolution, projection, time)
 
         decision_attrs =
           candidate
@@ -116,7 +117,7 @@ defmodule Spectre.Kernel do
           |> bind_submission_context(context, candidate)
 
         with {:ok, decision} <- Decision.new(decision_attrs),
-             {:ok, act} <- maybe_build_act(candidate, decision, time) do
+             {:ok, act} <- maybe_build_act(candidate, decision) do
           validate_transition(
             candidate,
             context,
@@ -219,14 +220,13 @@ defmodule Spectre.Kernel do
     with {:ok, decision} <- Decision.new(attrs), do: {:ok, decision, nil}
   end
 
-  defp recognize(candidate, {:ok, mandate}, projection, _declared_row, time) do
+  defp recognize(candidate, {:ok, mandate}, projection, time) do
     available_evidence =
       projection
       |> ErasureAnalysis.available_evidence()
       |> Map.values()
 
-    {_declared_evidence, missing_refs} =
-      resolve_evidence(candidate.evidence_refs, projection.evidence)
+    missing_refs = missing_evidence_refs(candidate.evidence_refs, projection.evidence)
 
     {recognized, basis_refs} =
       Recognition.check_with_basis(mandate.conditions, available_evidence, time)
@@ -245,17 +245,10 @@ defmodule Spectre.Kernel do
     }
   end
 
-  defp recognize(_candidate, _resolution, _projection, _declared_row, _time), do: {nil, []}
+  defp recognize(_candidate, _resolution, _projection, _time), do: {nil, []}
 
-  defp resolve_evidence(refs, evidence_index) do
-    Enum.reduce(refs, {[], []}, fn ref, {found, missing} ->
-      case Map.fetch(evidence_index, ref) do
-        {:ok, evidence} -> {[evidence | found], missing}
-        :error -> {found, [ref | missing]}
-      end
-    end)
-    |> then(fn {found, missing} -> {Enum.reverse(found), Enum.reverse(missing)} end)
-  end
+  defp missing_evidence_refs(refs, evidence_index),
+    do: Enum.reject(refs, &Map.has_key?(evidence_index, &1))
 
   defp include_missing_evidence(result, []), do: result
 
@@ -345,68 +338,27 @@ defmodule Spectre.Kernel do
   end
 
   defp recognize_presentation_approval(presentation, projection, evidence, time) do
-    matching = Enum.filter(evidence, &approval_for_presentation?(&1, presentation.ref))
-
-    current =
-      Enum.reduce(matching, [], fn approval, valid ->
-        case approval_basis(approval, presentation, projection, evidence, time) do
-          {:ok, basis_refs} -> [{approval, basis_refs} | valid]
-          :invalid -> valid
-        end
-      end)
+    {status, approval_refs, basis_refs} =
+      Presentation.classify_responses(
+        presentation,
+        projection.acts,
+        Map.values(projection.outcomes),
+        evidence,
+        time
+      )
 
     result =
-      cond do
-        Enum.any?(current, fn {approval, _refs} -> approval.stance == :contradicts end) ->
-          {:unsatisfied, [:presentation_approval_contradicted]}
-
-        Enum.any?(current, fn {approval, _refs} -> approval.stance == :supports end) ->
-          :satisfied
-
-        matching == [] ->
-          {:undecidable, [:presentation_approval_evidence_required]}
-
-        true ->
-          {:undecidable, [:presentation_approval_not_current_or_final]}
+      case status do
+        :contradicted -> {:unsatisfied, [:presentation_approval_contradicted]}
+        :supported -> :satisfied
+        :missing -> {:undecidable, [:presentation_approval_evidence_required]}
+        :unqualified -> {:undecidable, [:presentation_approval_not_current_or_final]}
       end
-
-    approval_refs = current |> Enum.map(fn {approval, _refs} -> approval.ref end) |> Enum.sort()
-
-    basis_refs =
-      current
-      |> Enum.flat_map(fn {_approval, refs} -> refs end)
-      |> normalize_evidence_refs()
 
     {result, approval_refs, basis_refs}
   end
 
-  defp approval_for_presentation?(%Evidence{} = evidence, presentation_ref) do
-    case Presentation.approval_refs(evidence) do
-      {:ok, ^presentation_ref, _show_act_ref} -> true
-      _other -> false
-    end
-  end
-
-  defp approval_basis(approval, presentation, projection, evidence, time) do
-    with {:ok, _presentation_ref, show_act_ref} <- Presentation.approval_refs(approval),
-         {:ok, show_act} <- Map.fetch(projection.acts, show_act_ref),
-         {:ok, basis_refs} <-
-           Presentation.validate_response_with_basis(
-             approval,
-             presentation,
-             show_act,
-             Map.values(projection.outcomes),
-             evidence,
-             time
-           ) do
-      {:ok, basis_refs}
-    else
-      _invalid -> :invalid
-    end
-  end
-
-  defp rebuild_presentation(%Presentation{} = presentation), do: Presentation.new(presentation)
-  defp rebuild_presentation(value) when is_map(value), do: Presentation.from_canonical(value)
+  defp rebuild_presentation(%Presentation{} = presentation), do: {:ok, presentation}
   defp rebuild_presentation(_value), do: {:error, :invalid_presentation_record}
 
   defp combine_recognition(:satisfied, :satisfied), do: :satisfied
@@ -429,50 +381,12 @@ defmodule Spectre.Kernel do
   defp combine_recognition(:satisfied, {:undecidable, reasons}),
     do: {:undecidable, List.wrap(reasons)}
 
-  defp maybe_build_act(_candidate, %Decision{outcome: outcome}, _time)
+  defp maybe_build_act(_candidate, %Decision{outcome: outcome})
        when outcome != :admitted,
        do: {:ok, nil}
 
-  defp maybe_build_act(candidate, %Decision{outcome: :admitted} = decision, time) do
-    Act.new(%{
-      decision_ref: decision.ref,
-      candidate_identity_key: candidate.identity_key,
-      candidate_digest: candidate.material_digest,
-      submission_context_ref: decision.submission_context_ref,
-      authenticated_principal_ref: decision.authenticated_principal_ref,
-      authentication_ref: decision.authentication_ref,
-      ingress_ref: decision.ingress_ref,
-      host_generation: decision.host_generation,
-      class: candidate.class,
-      row: candidate.row,
-      consequence: candidate.consequence,
-      consent: candidate.consent,
-      material_digest: candidate.material_digest,
-      requested_mandate_ref: candidate.requested_mandate_ref,
-      proposer_ref: decision.proposer_ref,
-      executor_ref: decision.executor_ref,
-      authorizer_ref: decision.authorizer_ref,
-      accountable_ref: decision.accountable_ref,
-      scope_ref: decision.scope_ref,
-      subject_refs: candidate.subject_refs,
-      target_refs: candidate.target_refs,
-      purpose_ref: candidate.purpose_ref,
-      purpose_params: candidate.purpose_params,
-      mandate_ref: decision.mandate_ref,
-      mandate_revision: decision.mandate_revision,
-      evidence_refs: candidate.evidence_refs,
-      disclosure: candidate.disclosure,
-      recognition_refs: decision.recognition_refs,
-      recognition_evidence_refs: decision.recognition_evidence_refs,
-      presentation_ref: candidate.presentation_ref,
-      reservations: decision.reservations,
-      host_profile_ref: decision.host_profile_ref,
-      surface_revision: decision.surface_revision,
-      executor_contract_ref: candidate.executor_contract_ref,
-      observation_window_ms: candidate.observation_window_ms,
-      committed_at: time
-    })
-  end
+  defp maybe_build_act(candidate, %Decision{outcome: :admitted} = decision),
+    do: Binding.act(candidate, decision)
 
   defp matching_domain(context, projection) do
     if context.domain_ref == projection.domain_ref,
@@ -493,29 +407,35 @@ defmodule Spectre.Kernel do
     end
   end
 
-  defp foundations(%State{
-         surface: %Surface{} = surface,
-         host_profile: %HostProfile{} = profile
-       }) do
-    with {:ok, surface} <- Surface.new(surface),
-         {:ok, profile} <- HostProfile.new(profile) do
-      {:ok, surface, profile}
+  defp foundations(%State{} = projection) do
+    case {State.surface(projection), State.host_profile(projection)} do
+      {%Surface{} = surface, %HostProfile{} = profile} -> {:ok, surface, profile}
+      {nil, _profile} -> {:error, :surface_not_initialized}
+      {_surface, nil} -> {:error, :host_profile_not_initialized}
+      _invalid -> {:error, :invalid_admission_foundations}
     end
   end
 
-  defp foundations(%State{surface: nil}), do: {:error, :surface_not_initialized}
-  defp foundations(%State{host_profile: nil}), do: {:error, :host_profile_not_initialized}
-  defp foundations(_projection), do: {:error, :invalid_admission_foundations}
-
   defp decision_view(projection, surface, profile) do
     %DecisionContext{
-      meter_accounts: Projection.meter_view(projection),
-      surface: surface,
+      meter_accounts: %{},
       host_profile_ref: profile.ref,
       surface_revision: surface.revision,
       authority_revision: projection.revision
     }
   end
+
+  defp with_meter_accounts(view, projection, {:ok, authority}) do
+    accounts =
+      case Projection.meter_accounts(projection, Authority.Effective.ref(authority)) do
+        {:ok, accounts} -> accounts
+        {:error, _reason} -> %{}
+      end
+
+    %{view | meter_accounts: accounts}
+  end
+
+  defp with_meter_accounts(view, _projection, _resolution), do: view
 
   defp bind_submission_context(attrs, context, candidate) do
     Map.merge(attrs, %{

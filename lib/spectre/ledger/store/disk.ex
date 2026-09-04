@@ -34,6 +34,7 @@ defmodule Spectre.Ledger.Store.Disk do
   alias Spectre.Canonical.Value
   alias Spectre.Ledger
   alias Spectre.Ledger.Entry
+  alias Spectre.Ledger.Store.Support
 
   @frame_magic "SPDL"
   @frame_version 1
@@ -42,7 +43,6 @@ defmodule Spectre.Ledger.Store.Disk do
   @frame_fields ~w(format format_version domain_ref batch_id identity_digest expected_revision entries)
   @default_max_frame_bytes 64 * 1_024 * 1_024
   @max_frame_bytes_ceiling 1_024 * 1_024 * 1_024
-  @digest_pattern ~r/\A[0-9a-f]{64}\z/
   @server_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after]
   @init_options [:path, :directory, :tail_policy, :max_frame_bytes]
   @start_options @server_options ++ @init_options
@@ -156,8 +156,8 @@ defmodule Spectre.Ledger.Store.Disk do
     {reply, state} =
       with {:ok, identity} <-
              Entry.batch_identity(domain_ref, batch_id, payloads, expected_revision),
-           {:ok, recorded_at} <- recorded_at(opts),
-           {:ok, fault} <- fault_phase(opts),
+           {:ok, recorded_at} <- Support.recorded_at(opts),
+           {:ok, fault} <- Support.fault_phase(opts),
            {:ok, domain, state} <- ensure_loaded_for_append(state, domain_ref) do
         append_batch(
           state,
@@ -179,7 +179,7 @@ defmodule Spectre.Ledger.Store.Disk do
 
   def handle_call({:load, domain_ref}, _from, state) do
     case load_domain_state(state, domain_ref) do
-      {:ok, domain, state} -> {:reply, {:ok, snapshot(domain_ref, domain)}, state}
+      {:ok, domain, state} -> {:reply, {:ok, Support.snapshot(domain_ref, domain)}, state}
       {:not_found, state} -> {:reply, :not_found, state}
       {:error, reason, state} -> {:reply, {:error, reason}, state}
     end
@@ -211,7 +211,7 @@ defmodule Spectre.Ledger.Store.Disk do
     case read_domain(state, domain_ref) do
       {:ok, domain} ->
         state = put_in(state, [:domains, domain_ref], domain)
-        reply = domain_ref |> snapshot(domain) |> Ledger.export_snapshot()
+        reply = domain_ref |> Support.snapshot(domain) |> Ledger.export_snapshot()
         {:reply, reply, state}
 
       :not_found ->
@@ -372,7 +372,7 @@ defmodule Spectre.Ledger.Store.Disk do
          fault
        ) do
     last = List.last(entries)
-    info = batch_info(batch_id, identity, expected_revision, entries, last)
+    info = Support.batch_info(batch_id, identity, expected_revision, entries, last)
 
     committed = %{
       domain
@@ -392,7 +392,7 @@ defmodule Spectre.Ledger.Store.Disk do
   defp ensure_loaded_for_append(state, domain_ref) do
     case load_domain_state(state, domain_ref) do
       {:ok, domain, state} -> {:ok, domain, state}
-      {:not_found, state} -> {:ok, empty_domain(), state}
+      {:not_found, state} -> {:ok, Support.empty_domain(), state}
       {:error, reason, _state} -> {:error, reason}
     end
   end
@@ -546,7 +546,7 @@ defmodule Spectre.Ledger.Store.Disk do
           scan_frames(
             io,
             domain_ref,
-            empty_domain(),
+            Support.empty_domain(),
             0,
             file_size,
             state.tail_policy,
@@ -661,7 +661,7 @@ defmodule Spectre.Ledger.Store.Disk do
          :ok <- validate_frame_header(data, domain_ref, offset),
          batch_id when is_binary(batch_id) and batch_id != "" <- Map.get(data, "batch_id"),
          identity when is_binary(identity) <- Map.get(data, "identity_digest"),
-         true <- valid_digest?(identity),
+         true <- Support.valid_digest?(identity),
          expected_revision when is_integer(expected_revision) and expected_revision >= 0 <-
            Map.get(data, "expected_revision"),
          true <- expected_revision == domain.revision,
@@ -679,7 +679,7 @@ defmodule Spectre.Ledger.Store.Disk do
            Entry.batch_identity(domain_ref, batch_id, payloads, expected_revision),
          true <- identity == expected_identity do
       last = List.last(verified.entries)
-      info = batch_info(batch_id, identity, expected_revision, verified.entries, last)
+      info = Support.batch_info(batch_id, identity, expected_revision, verified.entries, last)
 
       {:ok,
        %{
@@ -764,48 +764,6 @@ defmodule Spectre.Ledger.Store.Disk do
       _failure -> {:error, :ambiguous}
     end
   end
-
-  @spec batch_info(String.t(), Entry.digest(), non_neg_integer(), [Entry.t()], Entry.t()) ::
-          Ledger.batch_info()
-  defp batch_info(batch_id, identity, expected_revision, entries, last) do
-    %{
-      batch_id: batch_id,
-      identity_digest: identity,
-      expected_revision: expected_revision,
-      first_revision: expected_revision + 1,
-      last_revision: last.revision,
-      entry_count: length(entries),
-      head_digest: last.digest
-    }
-  end
-
-  @spec empty_domain() :: domain_state()
-  defp empty_domain do
-    %{
-      revision: 0,
-      head_digest: Entry.genesis_digest(),
-      entries_rev: [],
-      batches: %{},
-      recovery: nil
-    }
-  end
-
-  @spec snapshot(String.t(), domain_state()) :: Ledger.snapshot()
-  defp snapshot(domain_ref, domain) do
-    %{
-      domain_ref: domain_ref,
-      revision: domain.revision,
-      head_digest: domain.head_digest,
-      entries: Enum.reverse(domain.entries_rev),
-      recovery: domain.recovery
-    }
-  end
-
-  @spec valid_digest?(term()) :: boolean()
-  defp valid_digest?(value) when is_binary(value) and byte_size(value) == 64,
-    do: Regex.match?(@digest_pattern, value)
-
-  defp valid_digest?(_value), do: false
 
   @spec domain_path(String.t(), String.t()) :: String.t()
   defp domain_path(directory, domain_ref) do
@@ -972,36 +930,12 @@ defmodule Spectre.Ledger.Store.Disk do
   @spec timeout(keyword(), timeout()) :: timeout()
   defp timeout(opts, default), do: Keyword.get(opts, :timeout, default)
 
-  @spec fault_phase(keyword()) ::
-          {:ok, nil | :before_commit | :after_commit} | {:error, term()}
-  defp fault_phase(opts) do
-    value = Keyword.get(opts, :fault_injection, Keyword.get(opts, :fault))
-
-    if value in [nil, :before_commit, :after_commit],
-      do: {:ok, value},
-      else: {:error, {:invalid_ledger_fault_injection, value}}
+  defp validate_options(opts, allowed) do
+    Support.validate_options(
+      opts,
+      allowed,
+      :invalid_ledger_disk_options,
+      :unknown_ledger_disk_options
+    )
   end
-
-  defp recorded_at(opts) do
-    case Keyword.fetch(opts, :recorded_at) do
-      {:ok, value} when is_integer(value) and value >= 0 -> {:ok, value}
-      _missing_or_invalid -> {:error, :ledger_recorded_at_required}
-    end
-  end
-
-  defp validate_options(opts, allowed) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      case Keyword.keys(opts) -- allowed do
-        [] ->
-          :ok
-
-        unknown ->
-          {:error, {:unknown_ledger_disk_options, unknown |> Enum.uniq() |> Enum.sort()}}
-      end
-    else
-      {:error, :invalid_ledger_disk_options}
-    end
-  end
-
-  defp validate_options(_opts, _allowed), do: {:error, :invalid_ledger_disk_options}
 end

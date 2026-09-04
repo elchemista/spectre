@@ -33,7 +33,9 @@ defmodule Spectre.Domain.Startup do
   end
 
   defp bootstrap(config) do
-    with {:ok, prepared} <- Bootstrap.prepare(config.domain_ref, config.bootstrap_opts),
+    bootstrap_opts = Keyword.put(config.bootstrap_opts, :constitution, config.constitution)
+
+    with {:ok, prepared} <- Bootstrap.prepare(config.domain_ref, bootstrap_opts),
          {:ok, recorded_at} <- Transaction.trusted_now(config.clock) do
       case append_bootstrap(
              config,
@@ -129,7 +131,8 @@ defmodule Spectre.Domain.Startup do
   end
 
   defp verify_recovered(config, projection) do
-    with :ok <- Bootstrap.verify_projection(projection, config.bootstrap_opts),
+    with :ok <-
+           Bootstrap.verify_projection(projection, Configuration.verification_opts(config)),
          :ok <- PayloadStore.verify_live_references(config.payload_store, projection) do
       {:ok, projection}
     end

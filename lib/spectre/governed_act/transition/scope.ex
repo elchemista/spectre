@@ -8,10 +8,11 @@ defmodule Spectre.GovernedAct.Transition.Scope do
   Act before adding the restored opening to disposable state.
   """
 
-  alias Spectre.{Act, Governance, SubmissionContext}
+  alias Spectre.{Act, SubmissionContext}
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.{Index, State}
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Scope.Opening
 
   def apply(
@@ -56,7 +57,7 @@ defmodule Spectre.GovernedAct.Transition.Scope do
         Act.reservations?(act) ->
           {:error, {:scope_opening_act_has_reservations, opening.ref, act.ref}}
 
-        not Governance.ledger_internal?(act) ->
+        not GovernedExecution.ledger_internal?(act) ->
           {:error, {:scope_opening_act_not_ledger_internal, opening.ref, act.ref}}
 
         act.consequence != %{"scope_open" => draft} ->

@@ -140,6 +140,11 @@ defmodule Spectre.Portable do
   def validate_ref(value, _field) when is_binary(value) and byte_size(value) > 0, do: :ok
   def validate_ref(value, field), do: {:error, {:invalid_ref, field, shape(value)}}
 
+  @doc "Checks an optional opaque record reference."
+  @spec validate_optional_ref(term(), atom()) :: :ok | {:error, reason()}
+  def validate_optional_ref(nil, _field), do: :ok
+  def validate_optional_ref(value, field), do: validate_ref(value, field)
+
   @doc "Checks a `prefix:<lowercase sha256>` content-addressed reference."
   @spec validate_content_ref(term(), String.t() | atom(), atom()) ::
           :ok | {:error, reason()}
@@ -180,6 +185,12 @@ defmodule Spectre.Portable do
          {:ok, normalized} <- normalize_entries(entries, fields, record_name) do
       {:ok, normalized}
     end
+  end
+
+  @doc "Projects known atom fields into the strict string-keyed record representation."
+  @spec canonical_fields(map(), [atom()]) :: map()
+  def canonical_fields(source, fields) when is_map(source) and is_list(fields) do
+    Map.new(fields, fn field -> {Atom.to_string(field), Map.get(source, field)} end)
   end
 
   @doc false

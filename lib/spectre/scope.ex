@@ -9,12 +9,11 @@ defmodule Spectre.Scope do
   alias Spectre.Domain
   alias Spectre.SubmissionContext
 
-  @enforce_keys [:domain, :ref, :context]
+  @enforce_keys [:domain, :context]
   defstruct @enforce_keys
 
   @opaque t :: %__MODULE__{
             domain: Domain.t(),
-            ref: String.t(),
             context: SubmissionContext.t()
           }
 
@@ -25,9 +24,17 @@ defmodule Spectre.Scope do
     cond do
       context.domain_ref != domain_ref -> {:error, :scope_domain_mismatch}
       context.scope_ref != ref -> {:error, :scope_context_mismatch}
-      true -> {:ok, %__MODULE__{domain: domain, ref: ref, context: context}}
+      true -> {:ok, %__MODULE__{domain: domain, context: context}}
     end
   end
 
   def new(_domain, _ref, _context), do: {:error, :invalid_scope}
+
+  @doc "Returns the durable Scope reference bound by the authenticated context."
+  @spec ref(t()) :: String.t()
+  def ref(%__MODULE__{context: %SubmissionContext{scope_ref: ref}}), do: ref
+
+  @doc "Returns the Domain reference bound by both the handle and its context."
+  @spec domain_ref(t()) :: String.t()
+  def domain_ref(%__MODULE__{domain: %Domain{ref: ref}}), do: ref
 end

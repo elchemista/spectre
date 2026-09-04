@@ -126,8 +126,8 @@ defmodule Spectre.Act do
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = act) do
-    @fields
-    |> Map.new(fn field -> {Atom.to_string(field), Map.fetch!(act, field)} end)
+    act
+    |> Portable.canonical_fields(@fields)
     |> Map.put("row", Row.canonical(act.row))
     |> Map.put("disclosure", canonical_disclosure(act.disclosure))
   end
@@ -227,9 +227,8 @@ defmodule Spectre.Act do
   defp content(%__MODULE__{} = act), do: act |> canonical() |> Map.delete("ref")
 
   defp content(attrs) do
-    @fields
-    |> Enum.reject(&(&1 == :ref))
-    |> Map.new(fn field -> {Atom.to_string(field), Map.get(attrs, field)} end)
+    attrs
+    |> Portable.canonical_fields(@fields -- [:ref])
     |> Map.put("row", Row.canonical(Map.fetch!(attrs, :row)))
     |> Map.put("disclosure", canonical_disclosure(Map.get(attrs, :disclosure)))
   end
@@ -290,7 +289,7 @@ defmodule Spectre.Act do
            Portable.validate_non_empty_binary(act.candidate_identity_key, :candidate_identity_key),
          :ok <- Portable.validate_non_empty_binary(act.candidate_digest, :candidate_digest),
          :ok <- Portable.validate_non_empty_binary(act.material_digest, :material_digest),
-         :ok <- validate_optional_ref(act.requested_mandate_ref, :requested_mandate_ref),
+         :ok <- Portable.validate_optional_ref(act.requested_mandate_ref, :requested_mandate_ref),
          :ok <- Portable.validate_ref(act.submission_context_ref, :submission_context_ref),
          :ok <-
            Portable.validate_ref(
@@ -315,15 +314,12 @@ defmodule Spectre.Act do
              act.recognition_evidence_refs,
              :recognition_evidence_refs
            ),
-         :ok <- validate_optional_ref(act.presentation_ref, :presentation_ref),
+         :ok <- Portable.validate_optional_ref(act.presentation_ref, :presentation_ref),
          :ok <- Portable.validate_ref(act.host_profile_ref, :host_profile_ref),
          :ok <- Portable.validate_ref(act.executor_contract_ref, :executor_contract_ref) do
       :ok
     end
   end
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 
   defp validate_consent(%__MODULE__{consent: nil, presentation_ref: nil}), do: :ok
 

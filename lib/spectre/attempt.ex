@@ -55,7 +55,7 @@ defmodule Spectre.Attempt do
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = attempt) do
-    Map.new(@fields, fn field -> {Atom.to_string(field), Map.fetch!(attempt, field)} end)
+    Portable.canonical_fields(attempt, @fields)
   end
 
   @doc "Restores an attempt from its canonical map."

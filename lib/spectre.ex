@@ -414,7 +414,7 @@ defmodule Spectre do
          :ok <- validate_known_options(opts, @presentation_options, :presentation),
          {:ok, scope} <- refresh_scope(scope),
          {:ok, presentation} <- Presentation.new(presentation),
-         :ok <- presentation_scope(presentation, scope.ref),
+         :ok <- presentation_scope(presentation, Scope.ref(scope)),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
          {:ok, %Presentation{} = durable} <-
@@ -460,7 +460,7 @@ defmodule Spectre do
          {:ok, projection} <- fetch_projection(scope.domain),
          {:ok, %Presentation{} = presentation} <-
            fetch_presentation(projection, presentation_ref),
-         :ok <- presentation_scope(presentation, scope.ref),
+         :ok <- presentation_scope(presentation, Scope.ref(scope)),
          {:ok, candidate} <-
            presentation_show_candidate(scope, presentation, candidate_attrs) do
       propose(scope, candidate, opts)
@@ -484,7 +484,7 @@ defmodule Spectre do
          {:ok, outcome} <- Outcome.new(outcome),
          :ok <- late_outcome_has_evidence(outcome),
          {:ok, projection} <- fetch_projection(scope.domain),
-         :ok <- outcome_belongs_to_scope(projection, outcome, scope.ref),
+         :ok <- outcome_belongs_to_scope(projection, outcome, Scope.ref(scope)),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
          {:ok, %Outcome{} = durable} <-
@@ -521,7 +521,8 @@ defmodule Spectre do
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
          {:ok, projection} <- fetch_projection(scope.domain),
-         {:ok, act, attempt} <- late_observation_cause(projection, scope.ref, attempt_ref),
+         {:ok, act, attempt} <-
+           late_observation_cause(projection, Scope.ref(scope), attempt_ref),
          {:ok, observer} <-
            sequencer_result(
              fn -> Sequencer.late_observer(scope.domain.server) end,
@@ -659,7 +660,7 @@ defmodule Spectre do
   def view(%Scope{} = scope) do
     with {:ok, scope} <- refresh_scope(scope),
          {:ok, projection} <- fetch_projection(scope.domain) do
-      ScopeView.from_projection(projection, scope.ref)
+      ScopeView.from_projection(projection, Scope.ref(scope))
     end
   end
 
@@ -1085,7 +1086,7 @@ defmodule Spectre do
         proposer_ref: scope.context.authenticated_principal_ref,
         executor_ref: executor_ref,
         accountable_ref: accountable_ref,
-        scope_ref: scope.ref,
+        scope_ref: Scope.ref(scope),
         subject_refs: Map.get(attrs, :subject_refs, []),
         target_refs: presentation.recipient_refs,
         purpose_ref: presentation.purpose_ref,
@@ -1360,7 +1361,7 @@ defmodule Spectre do
              fn -> Sequencer.resume_scope(domain.server, context) end,
              :scope_validation_failed
            ),
-         {:ok, scope} <- Scope.new(domain, scope.ref, context) do
+         {:ok, scope} <- Scope.new(domain, Scope.ref(scope), context) do
       {:ok, scope}
     end
   end

@@ -63,14 +63,7 @@ defmodule Spectre.Label do
 
   @doc "Returns the plain, string-keyed representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = label) do
-    %{
-      "schema_version" => label.schema_version,
-      "ref" => label.ref,
-      "owner_ref" => label.owner_ref,
-      "value" => label.value
-    }
-  end
+  def canonical(%__MODULE__{} = label), do: Portable.canonical_fields(label, @fields)
 
   @doc "Restores a label and verifies its content reference."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -89,13 +82,7 @@ defmodule Spectre.Label do
 
   defp content(%__MODULE__{} = label), do: label |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.get(attrs, :schema_version, @schema_version),
-      "owner_ref" => Map.get(attrs, :owner_ref),
-      "value" => Map.get(attrs, :value)
-    }
-  end
+  defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate(%__MODULE__{} = label) do
     cond do

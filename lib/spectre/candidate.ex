@@ -18,11 +18,7 @@ defmodule Spectre.Candidate do
   alias Spectre.{Act, Consent, Disclosure, Portable, Row}
 
   @schema_version 1
-  @fields [
-    :schema_version,
-    :ref,
-    :identity_key,
-    :material_digest,
+  @material_fields [
     :class,
     :consequence,
     :row,
@@ -43,6 +39,8 @@ defmodule Spectre.Candidate do
     :executor_contract_ref,
     :observation_window_ms
   ]
+  @presentation_material_fields @material_fields -- [:presentation_ref]
+  @fields [:schema_version, :ref, :identity_key, :material_digest | @material_fields]
 
   @enforce_keys [
     :schema_version,
@@ -140,29 +138,7 @@ defmodule Spectre.Candidate do
 
   @doc "Returns exactly the fields bound by `material_digest`."
   @spec material(t()) :: map()
-  def material(%__MODULE__{} = candidate) do
-    %{
-      "class" => candidate.class,
-      "consequence" => candidate.consequence,
-      "row" => Row.canonical(candidate.row),
-      "requested_mandate_ref" => candidate.requested_mandate_ref,
-      "proposer_ref" => candidate.proposer_ref,
-      "executor_ref" => candidate.executor_ref,
-      "accountable_ref" => candidate.accountable_ref,
-      "scope_ref" => candidate.scope_ref,
-      "subject_refs" => candidate.subject_refs,
-      "target_refs" => candidate.target_refs,
-      "purpose_ref" => candidate.purpose_ref,
-      "purpose_params" => candidate.purpose_params,
-      "consent" => candidate.consent,
-      "evidence_refs" => candidate.evidence_refs,
-      "disclosure" => canonical_disclosure(candidate.disclosure),
-      "presentation_ref" => candidate.presentation_ref,
-      "meter_requests" => candidate.meter_requests,
-      "executor_contract_ref" => candidate.executor_contract_ref,
-      "observation_window_ms" => candidate.observation_window_ms
-    }
-  end
+  def material(%__MODULE__{} = candidate), do: canonical_fields(candidate, @material_fields)
 
   @doc "Returns the exact, acyclic candidate material bound by a Presentation."
   @spec presentation_binding(t(), [String.t()]) :: map()
@@ -170,29 +146,13 @@ defmodule Spectre.Candidate do
       when is_list(approval_evidence_refs) do
     approval_evidence_refs = MapSet.new(approval_evidence_refs)
 
-    %{
-      "schema_version" => candidate.schema_version,
-      "identity_key" => candidate.identity_key,
-      "class" => candidate.class,
-      "consequence" => candidate.consequence,
-      "row" => Row.canonical(candidate.row),
-      "requested_mandate_ref" => candidate.requested_mandate_ref,
-      "proposer_ref" => candidate.proposer_ref,
-      "executor_ref" => candidate.executor_ref,
-      "accountable_ref" => candidate.accountable_ref,
-      "scope_ref" => candidate.scope_ref,
-      "subject_refs" => candidate.subject_refs,
-      "target_refs" => candidate.target_refs,
-      "purpose_ref" => candidate.purpose_ref,
-      "purpose_params" => candidate.purpose_params,
-      "consent" => candidate.consent,
-      "evidence_refs" =>
-        Enum.reject(candidate.evidence_refs, &MapSet.member?(approval_evidence_refs, &1)),
-      "disclosure" => canonical_disclosure(candidate.disclosure),
-      "meter_requests" => candidate.meter_requests,
-      "executor_contract_ref" => candidate.executor_contract_ref,
-      "observation_window_ms" => candidate.observation_window_ms
-    }
+    candidate
+    |> canonical_fields(@presentation_material_fields)
+    |> Map.put("schema_version", candidate.schema_version)
+    |> Map.put("identity_key", candidate.identity_key)
+    |> Map.update!("evidence_refs", fn refs ->
+      Enum.reject(refs, &MapSet.member?(approval_evidence_refs, &1))
+    end)
   end
 
   @doc "Returns the content address of `presentation_binding/2`."
@@ -204,29 +164,7 @@ defmodule Spectre.Candidate do
         presentation_binding(candidate, approval_evidence_refs)
       )
 
-  defp material_attrs(attrs) do
-    %{
-      "class" => Map.get(attrs, :class),
-      "consequence" => Map.get(attrs, :consequence),
-      "row" => Row.canonical(Map.fetch!(attrs, :row)),
-      "requested_mandate_ref" => Map.get(attrs, :requested_mandate_ref),
-      "proposer_ref" => Map.get(attrs, :proposer_ref),
-      "executor_ref" => Map.get(attrs, :executor_ref),
-      "accountable_ref" => Map.get(attrs, :accountable_ref),
-      "scope_ref" => Map.get(attrs, :scope_ref),
-      "subject_refs" => Map.fetch!(attrs, :subject_refs),
-      "target_refs" => Map.fetch!(attrs, :target_refs),
-      "purpose_ref" => Map.get(attrs, :purpose_ref),
-      "purpose_params" => Map.fetch!(attrs, :purpose_params),
-      "consent" => Map.get(attrs, :consent),
-      "evidence_refs" => Map.fetch!(attrs, :evidence_refs),
-      "disclosure" => canonical_disclosure(Map.get(attrs, :disclosure)),
-      "presentation_ref" => Map.get(attrs, :presentation_ref),
-      "meter_requests" => Map.fetch!(attrs, :meter_requests),
-      "executor_contract_ref" => Map.get(attrs, :executor_contract_ref),
-      "observation_window_ms" => Map.fetch!(attrs, :observation_window_ms)
-    }
-  end
+  defp material_attrs(attrs), do: canonical_fields(attrs, @material_fields)
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
@@ -386,7 +324,11 @@ defmodule Spectre.Candidate do
     with :ok <- Portable.validate_ref(candidate.ref, :ref),
          :ok <- Portable.validate_non_empty_binary(candidate.identity_key, :identity_key),
          :ok <- Portable.validate_non_empty_binary(candidate.material_digest, :material_digest),
-         :ok <- validate_optional_ref(candidate.requested_mandate_ref, :requested_mandate_ref),
+         :ok <-
+           Portable.validate_optional_ref(
+             candidate.requested_mandate_ref,
+             :requested_mandate_ref
+           ),
          :ok <- Portable.validate_ref(candidate.proposer_ref, :proposer_ref),
          :ok <- Portable.validate_ref(candidate.executor_ref, :executor_ref),
          :ok <- Portable.validate_ref(candidate.accountable_ref, :accountable_ref),
@@ -395,7 +337,7 @@ defmodule Spectre.Candidate do
          :ok <- Portable.validate_refs(candidate.target_refs, :target_refs),
          :ok <- Portable.validate_ref(candidate.purpose_ref, :purpose_ref),
          :ok <- Portable.validate_refs(candidate.evidence_refs, :evidence_refs),
-         :ok <- validate_optional_ref(candidate.presentation_ref, :presentation_ref),
+         :ok <- Portable.validate_optional_ref(candidate.presentation_ref, :presentation_ref),
          :ok <- Portable.validate_ref(candidate.executor_contract_ref, :executor_contract_ref) do
       :ok
     end
@@ -409,9 +351,6 @@ defmodule Spectre.Candidate do
 
   defp valid_meter_requests?(_requests), do: false
 
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
-
   defp validate_consent(%__MODULE__{consent: nil, presentation_ref: nil}), do: :ok
 
   defp validate_consent(%__MODULE__{consent: nil}),
@@ -424,4 +363,11 @@ defmodule Spectre.Candidate do
   defp canonical_disclosure(nil), do: nil
   defp canonical_disclosure(%Disclosure{} = disclosure), do: Disclosure.canonical(disclosure)
   defp canonical_disclosure(value), do: value
+
+  defp canonical_fields(source, fields) do
+    source
+    |> Portable.canonical_fields(fields)
+    |> Map.update!("row", &Row.canonical/1)
+    |> Map.update!("disclosure", &canonical_disclosure/1)
+  end
 end

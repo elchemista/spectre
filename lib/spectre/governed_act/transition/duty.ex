@@ -12,10 +12,9 @@ defmodule Spectre.GovernedAct.Transition.Duty do
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.Duty.{Derive, Disposition}
-  alias Spectre.Duty.Authority, as: DutyAuthority
-  alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.{Index, MeterState, State}
-  alias Spectre.Kernel.Meter.Amounts
+  alias Spectre.GovernedAct.{Index, State}
+  alias Spectre.GovernedAct.Transition.Duty.Disposal
+  alias Spectre.GovernedAct.Transition.Duty.Meter, as: DutyMeter
   alias Spectre.Kernel.Recognition
   alias Spectre.Scope.Opening
 
@@ -39,7 +38,7 @@ defmodule Spectre.GovernedAct.Transition.Duty do
     do: {:error, {:unsupported_duty_event, type}}
 
   defp reduce("meter_duty_resolved", _identity, data, _revision, projection),
-    do: resolve_duty_meter(projection, data)
+    do: DutyMeter.resolve(projection, data)
 
   defp reduce("duty_opened", identity, data, _revision, projection) do
     with {:ok, duty} <- Record.decode(Spectre.Duty, data),
@@ -65,8 +64,8 @@ defmodule Spectre.GovernedAct.Transition.Duty do
          :ok <- Record.match_identity(identity, disposition_act_ref),
          {:ok, act} <- Index.fetch_act(projection, disposition_act_ref),
          {:ok, disposition} <- Disposition.from_consequence(act.consequence),
-         {:ok, _supporting} <- validate_duty_disposition(projection, act, duty, disposition),
-         :ok <- validate_duty_meter_disposed(projection, duty, disposition, act.ref),
+         {:ok, _supporting} <- Disposal.validate(projection, act, duty, disposition),
+         :ok <- DutyMeter.validate_disposed(projection, duty, disposition, act.ref),
          {:ok, updated} <-
            Spectre.Duty.new(%{
              duty
@@ -134,7 +133,7 @@ defmodule Spectre.GovernedAct.Transition.Duty do
     end
   end
 
-  defp match_duty_act(_projection, %{act_ref: nil}), do: :ok
+  defp match_duty_act(_projection, %Duty{act_ref: nil}), do: :ok
 
   defp match_duty_act(projection, duty) do
     with {:ok, act} <- Index.fetch_act(projection, duty.act_ref) do
@@ -159,7 +158,7 @@ defmodule Spectre.GovernedAct.Transition.Duty do
 
   defp validate_builtin_duty_cause(
          projection,
-         %{
+         %Duty{
            class: :ambiguous_outcome,
            cause_key: {:ambiguous_outcome, act_ref, attempt_ref}
          } = duty
@@ -193,7 +192,7 @@ defmodule Spectre.GovernedAct.Transition.Duty do
 
   defp validate_builtin_duty_cause(
          projection,
-         %{
+         %Duty{
            class: :contradicted_outcome,
            cause_key: {:contradicted_outcome, act_ref, attempt_ref, outcome_ref}
          } = duty
@@ -212,15 +211,15 @@ defmodule Spectre.GovernedAct.Transition.Duty do
     end
   end
 
-  defp validate_builtin_duty_cause(_projection, %{class: :ambiguous_outcome} = duty),
+  defp validate_builtin_duty_cause(_projection, %Duty{class: :ambiguous_outcome} = duty),
     do: {:error, {:invalid_ambiguous_duty_cause, duty.ref}}
 
-  defp validate_builtin_duty_cause(_projection, %{class: :contradicted_outcome} = duty),
+  defp validate_builtin_duty_cause(_projection, %Duty{class: :contradicted_outcome} = duty),
     do: {:error, {:invalid_contradicted_duty_cause, duty.ref}}
 
   defp validate_builtin_duty_cause(
          projection,
-         %{class: :disputed_evidence} = duty
+         %Duty{class: :disputed_evidence} = duty
        ) do
     cause =
       projection
@@ -244,7 +243,7 @@ defmodule Spectre.GovernedAct.Transition.Duty do
 
   defp validate_builtin_duty_cause(
          projection,
-         %{
+         %Duty{
            class: :scope_promise_overdue,
            cause_key: {:scope_promise_overdue, scope_ref}
          } = duty
@@ -278,7 +277,7 @@ defmodule Spectre.GovernedAct.Transition.Duty do
 
   defp validate_builtin_duty_cause(
          projection,
-         %{
+         %Duty{
            class: :erasure_reduces_verifiability,
            cause_key:
              {:erasure_reduces_verifiability, erasure_ref, act_ref, attempt_ref, outcome_ref}
@@ -305,26 +304,26 @@ defmodule Spectre.GovernedAct.Transition.Duty do
     end
   end
 
-  defp validate_builtin_duty_cause(_projection, %{class: :scope_promise_overdue} = duty),
+  defp validate_builtin_duty_cause(_projection, %Duty{class: :scope_promise_overdue} = duty),
     do: {:error, {:invalid_scope_promise_duty_cause, duty.ref}}
 
   defp validate_builtin_duty_cause(
          _projection,
-         %{class: :erasure_reduces_verifiability} = duty
+         %Duty{class: :erasure_reduces_verifiability} = duty
        ),
        do: {:error, {:invalid_erasure_verifiability_duty_cause, duty.ref}}
 
-  defp validate_builtin_duty_cause(_projection, %{class: class})
+  defp validate_builtin_duty_cause(_projection, %Duty{class: class})
        when is_binary(class),
        do: :ok
 
-  defp duty_conflicts_include_cause_roles?(duty, act) when is_map(act) do
+  defp duty_conflicts_include_cause_roles?(%Duty{} = duty, %Act{} = act) do
     duty.accountable
     |> Derive.conflict_refs([], act)
     |> Enum.all?(&(&1 in duty.conflict_refs))
   end
 
-  defp valid_builtin_duty_containment?(duty, act) do
+  defp valid_builtin_duty_containment?(%Duty{} = duty, %Act{} = act) do
     case duty.containment do
       %{
         "consequence_digest" => consequence_digest,
@@ -338,502 +337,6 @@ defmodule Spectre.GovernedAct.Transition.Duty do
       _invalid ->
         false
     end
-  end
-
-  defp validate_duty_disposition(projection, act, duty, disposition) do
-    with :ok <- validate_disposition_act(act, duty),
-         :ok <- validate_disposition_binding(duty, disposition),
-         {:ok, supporting} <- disposition_support(projection, disposition, act),
-         :ok <- validate_disposition_authority(projection, act, duty, disposition),
-         :ok <- validate_disposition_basis(projection, act, duty, disposition, supporting) do
-      {:ok, supporting}
-    end
-  end
-
-  defp validate_disposition_authority(_projection, _act, _duty, %{kind: :condition_met}),
-    do: :ok
-
-  defp validate_disposition_authority(projection, act, duty, disposition) do
-    if Disposition.discretionary?(disposition) do
-      DutyAuthority.validate(
-        duty,
-        act,
-        duty_cause_act(projection, duty),
-        projection.principals,
-        projection.mandates
-      )
-    else
-      :ok
-    end
-  end
-
-  defp duty_cause_act(projection, %{act_ref: act_ref}) when is_binary(act_ref),
-    do: Map.get(projection.acts, act_ref)
-
-  defp duty_cause_act(
-         projection,
-         %{class: :scope_promise_overdue, cause_key: {:scope_promise_overdue, scope_ref}}
-       ) do
-    case Map.get(projection.scopes, scope_ref) do
-      %Opening{source_act_ref: act_ref} -> Map.get(projection.acts, act_ref)
-      _missing -> nil
-    end
-  end
-
-  defp duty_cause_act(_projection, _duty), do: nil
-
-  defp validate_disposition_act(act, duty) do
-    cond do
-      act.class != "duty.dispose" ->
-        {:error, {:duty_disposition_act_class_mismatch, act.ref, act.class}}
-
-      not Act.row?(act, [:govern]) ->
-        {:error, {:duty_disposition_act_row_mismatch, act.ref}}
-
-      Act.reservations?(act) ->
-        {:error, {:duty_disposition_act_has_reservations, act.ref}}
-
-      not Act.targets?(act, [duty.ref]) ->
-        {:error, {:duty_disposition_target_missing, act.ref, duty.ref}}
-
-      act.ref == duty.act_ref ->
-        {:error, {:duty_cause_act_cannot_dispose, duty.ref, act.ref}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_disposition_binding(duty, disposition) do
-    cond do
-      disposition.duty_ref != duty.ref ->
-        {:error, {:duty_disposition_ref_mismatch, duty.ref, disposition.duty_ref}}
-
-      disposition.cause_key != duty.cause_key ->
-        {:error, {:duty_disposition_cause_mismatch, duty.ref}}
-
-      disposition.opening_digest != Spectre.Duty.digest(duty) ->
-        {:error, {:duty_disposition_opening_mismatch, duty.ref}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp disposition_support(projection, disposition, act) do
-    Enum.reduce_while(disposition.supporting_refs, {:ok, []}, fn ref, {:ok, records} ->
-      case supporting_record(projection, ref) do
-        {:ok, record} ->
-          with :ok <- support_frozen_and_available(projection, act, ref, record),
-               true <- support_available_at?(record, act.committed_at) do
-            {:cont, {:ok, [record | records]}}
-          else
-            false -> {:halt, {:error, {:duty_disposition_support_from_future, ref}}}
-            {:error, _reason} = error -> {:halt, error}
-          end
-
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, records} -> {:ok, Enum.reverse(records)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp support_frozen_and_available(projection, act, ref, {:evidence, _evidence}) do
-    if ref in act.evidence_refs,
-      do: ErasureAnalysis.validate_evidence_available(projection, [ref]),
-      else: {:error, {:duty_disposition_evidence_not_frozen, act.ref, ref}}
-  end
-
-  defp support_frozen_and_available(_projection, _act, _ref, {_kind, _record}), do: :ok
-
-  defp supporting_record(projection, ref) do
-    matches =
-      [
-        {:evidence, Map.get(projection.evidence, ref)},
-        {:outcome, Map.get(projection.outcomes, ref)},
-        {:act, Map.get(projection.acts, ref)}
-      ]
-      |> Enum.reject(fn {_kind, record} -> is_nil(record) end)
-
-    case matches do
-      [record] -> {:ok, record}
-      [] -> {:error, {:duty_disposition_support_not_found, ref}}
-      _collision -> {:error, {:duty_disposition_support_ambiguous, ref}}
-    end
-  end
-
-  defp support_available_at?({:evidence, evidence}, committed_at),
-    do: evidence.observed_at <= committed_at
-
-  defp support_available_at?({:outcome, outcome}, committed_at),
-    do: outcome.observed_at <= committed_at
-
-  defp support_available_at?({:act, act}, committed_at),
-    do: act.committed_at <= committed_at
-
-  defp validate_disposition_basis(
-         projection,
-         act,
-         duty,
-         %{kind: :condition_met},
-         supporting
-       ) do
-    if Enum.any?(
-         duty.closing_conditions,
-         &closing_condition_met?(projection, &1, supporting, act.committed_at)
-       ) do
-      :ok
-    else
-      {:error, {:duty_closing_condition_not_met, duty.ref}}
-    end
-  end
-
-  defp validate_disposition_basis(_projection, act, duty, disposition, _supporting) do
-    if Disposition.discretionary?(disposition),
-      do: :ok,
-      else: {:error, {:invalid_duty_disposition_kind, disposition.kind, act.ref, duty.ref}}
-  end
-
-  defp closing_condition_met?(
-         projection,
-         %{"kind" => :definitive_outcome, "attempt_ref" => attempt_ref} = condition,
-         supporting,
-         committed_at
-       )
-       when map_size(condition) == 2 do
-    Enum.any?(supporting, fn
-      {:outcome, outcome} ->
-        outcome.attempt_ref == attempt_ref and
-          outcome.status in [:succeeded, :failed, :definitive_no_effect] and
-          outcome.observed_at <= committed_at and
-          outcome_not_corrected_at?(projection, outcome, committed_at)
-
-      _other ->
-        false
-    end)
-  end
-
-  defp closing_condition_met?(projection, condition, supporting, committed_at) do
-    available_evidence = projection |> ErasureAnalysis.available_evidence() |> Map.values()
-    supporting_refs = for {:evidence, item} <- supporting, do: item.ref
-
-    with {:ok, condition} <- Condition.new(condition),
-         {:satisfied, basis_refs} <-
-           Recognition.check_with_basis([condition], available_evidence, committed_at) do
-      basis_refs -- supporting_refs == []
-    else
-      _not_satisfied_or_invalid -> false
-    end
-  end
-
-  defp resolve_duty_meter(projection, data) do
-    disposition_act_ref = data["disposition_act_ref"]
-    duty_ref = data["duty_ref"]
-    cause_act_ref = data["act_ref"]
-    mandate_ref = data["mandate_ref"]
-    operation = data["operation"]
-
-    with true <- operation in [:settle, :release],
-         {:ok, amounts} <- Amounts.normalize(data["amounts"]),
-         :ok <- duty_meter_resolution_absent(projection, disposition_act_ref),
-         {:ok, duty} <- Index.fetch_duty_by_ref(projection, duty_ref),
-         :ok <- duty_open(duty),
-         true <- duty.act_ref == cause_act_ref,
-         {:ok, disposition_act} <- Index.fetch_act(projection, disposition_act_ref),
-         {:ok, disposition} <- Disposition.from_consequence(disposition_act.consequence),
-         {:ok, supporting} <-
-           validate_duty_disposition(projection, disposition_act, duty, disposition),
-         true <- disposition.meter_resolution == operation,
-         {:ok, cause_act} <- Index.fetch_act(projection, cause_act_ref),
-         true <- cause_act.mandate_ref == mandate_ref,
-         true <- Act.reservations?(cause_act),
-         {:ok, :suspended, binding} <- MeterState.reservation(projection, cause_act.ref),
-         :ok <- match_duty_meter_binding(binding, cause_act, mandate_ref),
-         {:ok, expected_amounts, recontainment} <-
-           expected_duty_meter_amounts(projection, cause_act, duty),
-         true <- amounts == expected_amounts,
-         :ok <-
-           validate_duty_meter_resolution(
-             projection,
-             operation,
-             supporting,
-             cause_act,
-             duty,
-             disposition_act.committed_at
-           ),
-         {:ok, accounts} <- MeterState.accounts(projection, mandate_ref),
-         {:ok, accounts} <-
-           MeterState.transition_accounts(accounts, amounts, operation, :suspended),
-         {:ok, projection} <- MeterState.put_accounts(projection, mandate_ref, accounts) do
-      resolution = %{
-        act_ref: cause_act.ref,
-        disposition_act_ref: disposition_act.ref,
-        duty_ref: duty.ref,
-        mandate_ref: mandate_ref,
-        operation: operation,
-        amounts: amounts
-      }
-
-      projection =
-        projection
-        |> put_duty_meter_resolution(resolution)
-        |> put_resolved_recontainment(recontainment, disposition_act.ref)
-
-      {:ok,
-       %{
-         projection
-         | reservation_states:
-             Map.put(
-               projection.reservation_states,
-               cause_act.ref,
-               resolved_reservation_status(operation)
-             )
-       }}
-    else
-      false ->
-        {:error, {:invalid_duty_meter_resolution_event, disposition_act_ref}}
-
-      {:ok, status, _binding} ->
-        {:error, {:duty_meter_resolution_requires_suspension, cause_act_ref, status}}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp duty_meter_resolution_absent(projection, disposition_act_ref) do
-    if Map.has_key?(projection.duty_meter_resolutions, disposition_act_ref),
-      do: {:error, {:duplicate_duty_meter_resolution, disposition_act_ref}},
-      else: :ok
-  end
-
-  defp match_duty_meter_binding(binding, cause_act, mandate_ref) do
-    with true <- binding.act_ref == cause_act.ref,
-         true <- binding.mandate_ref == mandate_ref,
-         {:ok, declared} <- Amounts.normalize(cause_act.reservations),
-         true <- binding.amounts == declared do
-      :ok
-    else
-      false -> {:error, {:duty_meter_reservation_binding_mismatch, cause_act.ref}}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp expected_duty_meter_amounts(projection, cause_act, duty) do
-    case Map.get(projection.meter_recontainments, cause_act.ref) do
-      nil ->
-        with {:ok, binding} <- Map.fetch(projection.reservation_bindings, cause_act.ref) do
-          {:ok, binding.amounts, nil}
-        else
-          :error -> {:error, {:reservation_binding_not_found, cause_act.ref}}
-        end
-
-      %{status: :open, cause_key: cause_key, mandate_ref: mandate_ref} = record ->
-        cond do
-          cause_key != duty.cause_key ->
-            {:error, {:meter_recontainment_requires_causal_duty, cause_act.ref, cause_key}}
-
-          mandate_ref != cause_act.mandate_ref ->
-            {:error, {:meter_recontainment_mandate_mismatch, cause_act.ref}}
-
-          true ->
-            {:ok, record.recontained, record}
-        end
-
-      %{status: status} ->
-        {:error, {:invalid_meter_recontainment_state, cause_act.ref, status}}
-
-      _invalid ->
-        {:error, {:invalid_meter_recontainment, cause_act.ref}}
-    end
-  end
-
-  defp put_duty_meter_resolution(projection, resolution) do
-    %{
-      projection
-      | duty_meter_resolutions:
-          Map.put(
-            projection.duty_meter_resolutions,
-            resolution.disposition_act_ref,
-            resolution
-          )
-    }
-  end
-
-  defp put_resolved_recontainment(projection, nil, _disposition_act_ref), do: projection
-
-  defp put_resolved_recontainment(projection, record, disposition_act_ref) do
-    updated = %{record | status: :disposed, disposition_act_ref: disposition_act_ref}
-
-    %{
-      projection
-      | meter_recontainments: Map.put(projection.meter_recontainments, record.act_ref, updated)
-    }
-  end
-
-  defp validate_duty_meter_disposed(projection, %{act_ref: nil} = duty, disposition, act_ref) do
-    cond do
-      disposition.meter_resolution != :none ->
-        {:error, {:duty_has_no_meter_reservation, duty.ref}}
-
-      Map.has_key?(projection.duty_meter_resolutions, act_ref) ->
-        {:error, {:unexpected_duty_meter_resolution, act_ref}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_duty_meter_disposed(projection, duty, disposition, disposition_act_ref) do
-    with {:ok, cause_act} <- Index.fetch_act(projection, duty.act_ref) do
-      validate_duty_meter_disposed_for_act(
-        projection,
-        duty,
-        cause_act,
-        disposition,
-        disposition_act_ref
-      )
-    end
-  end
-
-  defp validate_duty_meter_disposed_for_act(
-         projection,
-         duty,
-         %{reservations: reservations} = cause_act,
-         disposition,
-         disposition_act_ref
-       )
-       when map_size(reservations) == 0 do
-    cond do
-      disposition.meter_resolution != :none ->
-        {:error, {:duty_has_no_meter_reservation, duty.ref}}
-
-      Map.has_key?(projection.reservation_states, cause_act.ref) ->
-        {:error, {:unexpected_duty_reservation_state, cause_act.ref}}
-
-      Map.has_key?(projection.duty_meter_resolutions, disposition_act_ref) ->
-        {:error, {:unexpected_duty_meter_resolution, disposition_act_ref}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_duty_meter_disposed_for_act(
-         projection,
-         duty,
-         cause_act,
-         %{meter_resolution: :none},
-         disposition_act_ref
-       ) do
-    recontainment = Map.get(projection.meter_recontainments, cause_act.ref)
-
-    cond do
-      Map.has_key?(projection.duty_meter_resolutions, disposition_act_ref) ->
-        {:error, {:unexpected_duty_meter_resolution, disposition_act_ref}}
-
-      Map.get(projection.reservation_states, cause_act.ref) == :suspended and
-        match?(%{status: :open}, recontainment) and
-          recontainment.cause_key != duty.cause_key ->
-        :ok
-
-      Map.get(projection.reservation_states, cause_act.ref) not in [:settled, :released] ->
-        {:error, {:duty_meter_not_resolved, cause_act.ref}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_duty_meter_disposed_for_act(
-         projection,
-         duty,
-         cause_act,
-         disposition,
-         disposition_act_ref
-       ) do
-    expected_status = resolved_reservation_status(disposition.meter_resolution)
-
-    with {:ok, resolution} <-
-           Map.fetch(projection.duty_meter_resolutions, disposition_act_ref),
-         true <- resolution.act_ref == cause_act.ref,
-         true <- resolution.duty_ref == duty.ref,
-         true <- resolution.mandate_ref == cause_act.mandate_ref,
-         true <- resolution.operation == disposition.meter_resolution,
-         true <- Map.get(projection.reservation_states, cause_act.ref) == expected_status,
-         :ok <-
-           validate_resolved_recontainment(
-             projection,
-             cause_act.ref,
-             duty.cause_key,
-             disposition_act_ref
-           ) do
-      :ok
-    else
-      :error -> {:error, {:duty_meter_resolution_missing, disposition_act_ref}}
-      false -> {:error, {:duty_meter_resolution_binding_mismatch, disposition_act_ref}}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_resolved_recontainment(projection, cause_act_ref, cause_key, disposition_act_ref) do
-    case Map.get(projection.meter_recontainments, cause_act_ref) do
-      nil ->
-        :ok
-
-      %{status: :disposed, cause_key: ^cause_key, disposition_act_ref: ^disposition_act_ref} ->
-        :ok
-
-      _invalid ->
-        {:error, {:meter_recontainment_not_resolved, cause_act_ref}}
-    end
-  end
-
-  defp resolved_reservation_status(:settle), do: :settled
-  defp resolved_reservation_status(:release), do: :released
-
-  defp validate_duty_meter_resolution(
-         _projection,
-         :settle,
-         _supporting,
-         _cause_act,
-         _duty,
-         _committed_at
-       ),
-       do: :ok
-
-  defp validate_duty_meter_resolution(
-         projection,
-         :release,
-         supporting,
-         cause_act,
-         duty,
-         committed_at
-       ) do
-    if Enum.any?(supporting, fn
-         {:outcome, %{status: :definitive_no_effect} = outcome} ->
-           outcome.act_ref == cause_act.ref and
-             (is_nil(duty.attempt_ref) or outcome.attempt_ref == duty.attempt_ref) and
-             outcome_not_corrected_at?(projection, outcome, committed_at)
-
-         _other ->
-           false
-       end) do
-      :ok
-    else
-      {:error, :duty_meter_release_not_proven}
-    end
-  end
-
-  defp outcome_not_corrected_at?(projection, outcome, committed_at) do
-    not Enum.any?(projection.outcomes, fn {_ref, candidate} ->
-      candidate.contradicts_outcome_ref == outcome.ref and
-        candidate.observed_at <= committed_at
-    end)
   end
 
   defp optional_act_exists(_projection, nil), do: :ok

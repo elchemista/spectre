@@ -62,11 +62,13 @@ defmodule Spectre.Mind do
     with true <- Keyword.keyword?(opts),
          {:ok, {^module, mind_ref}} <- resolve(module),
          true <- mind_ref == turn.mind_ref,
+         {:ok, context} <- turn_context(turn),
+         evidence_refs = Turn.evidence_refs(turn),
          {:ok, result} <- safe_deliberate(module, turn, opts),
          {:ok, candidates} <- normalize_result(result),
-         :ok <- scope_bound(candidates, turn.scope_ref),
-         :ok <- proposers_bound(candidates, turn.authenticated_principal_ref),
-         :ok <- evidence_bound(candidates, turn.evidence_refs),
+         :ok <- scope_bound(candidates, context.scope_ref),
+         :ok <- proposers_bound(candidates, context.authenticated_principal_ref),
+         :ok <- evidence_bound(candidates, evidence_refs),
          :ok <- disclosures_bound(candidates, turn) do
       {:ok, candidates}
     else
@@ -87,7 +89,7 @@ defmodule Spectre.Mind do
   @spec candidate(Turn.t(), Evidence.t() | [Evidence.t()], map() | keyword()) ::
           {:ok, Candidate.t()} | {:error, term()}
   def candidate(%Turn{} = turn, derivations, attrs) do
-    with {:ok, _context} <- turn_context(turn),
+    with {:ok, context} <- turn_context(turn),
          {:ok, derivations} <- normalize_turn_derivations(turn, derivations),
          available = turn.evidence ++ derivations,
          available_refs = Enum.map(available, & &1.ref),
@@ -95,8 +97,8 @@ defmodule Spectre.Mind do
          attrs = Map.put_new(attrs, :evidence_refs, available_refs),
          attrs =
            Map.merge(attrs, %{
-             proposer_ref: turn.authenticated_principal_ref,
-             scope_ref: turn.scope_ref
+             proposer_ref: context.authenticated_principal_ref,
+             scope_ref: context.scope_ref
            }),
          {:ok, candidate} <- Candidate.new(attrs),
          :ok <- evidence_bound([candidate], available_refs),
@@ -112,6 +114,7 @@ defmodule Spectre.Mind do
           {:ok, Evidence.t()} | {:error, term()}
   def evidence(%Turn{} = turn, observed_at, attrs) when is_integer(observed_at) do
     with {:ok, context} <- turn_context(turn),
+         evidence_refs = Turn.evidence_refs(turn),
          true <- observed_at >= turn.opened_at,
          {:ok, attrs} <- Portable.normalize_attrs(attrs, @evidence_fields, :mind_evidence),
          provenance = Map.get(attrs, :provenance, :generated),
@@ -127,7 +130,7 @@ defmodule Spectre.Mind do
       |> Map.put(:issuer_ref, turn.mind_ref)
       |> Map.put(:source_ref, turn.mind_ref)
       |> Map.put(:provenance, provenance)
-      |> Map.put(:parent_refs, turn.evidence_refs)
+      |> Map.put(:parent_refs, evidence_refs)
       |> Map.put(:observed_at, observed_at)
       |> Map.put(:bindings, bindings)
       |> Map.put(:labels, labels)
@@ -170,12 +173,8 @@ defmodule Spectre.Mind do
   end
 
   defp turn_context(%Turn{} = turn) do
-    with {:ok, context} <- SubmissionContext.from_evidence_bindings(turn.context_bindings),
-         true <- context.ref == turn.submission_context_ref,
-         true <- context.domain_ref == turn.domain_ref,
-         true <- context.scope_ref == turn.scope_ref,
-         true <-
-           context.authenticated_principal_ref == turn.authenticated_principal_ref do
+    with {:ok, context} <- SubmissionContext.new(turn.context),
+         true <- is_nil(context.seal) do
       {:ok, context}
     else
       false -> {:error, :mind_turn_context_mismatch}
@@ -267,18 +266,27 @@ defmodule Spectre.Mind do
     evidence_index = Map.new(turn.evidence ++ derivations, &{&1.ref, &1})
     derived_refs = MapSet.new(derivations, & &1.ref)
 
-    case Enum.find(
-           candidates,
-           &(not disclosure_bound?(&1, turn, evidence_index, derived_refs))
-         ) do
-      nil -> :ok
-      candidate -> {:error, {:mind_candidate_disclosure_mismatch, candidate.ref}}
+    with {:ok, context_labels} <- Turn.labels(turn) do
+      case Enum.find(
+             candidates,
+             &(not disclosure_bound?(
+                 &1,
+                 turn,
+                 context_labels,
+                 evidence_index,
+                 derived_refs
+               ))
+           ) do
+        nil -> :ok
+        candidate -> {:error, {:mind_candidate_disclosure_mismatch, candidate.ref}}
+      end
     end
   end
 
   defp disclosure_bound?(
          %Candidate{row: %{disclose: false}, disclosure: nil},
          _turn,
+         _context_labels,
          _evidence_index,
          _derived_refs
        ),
@@ -287,18 +295,26 @@ defmodule Spectre.Mind do
   defp disclosure_bound?(
          %Candidate{disclosure: %Disclosure{} = disclosure},
          turn,
+         context_labels,
          evidence_index,
          derived_refs
        ) do
     Disclosure.verify_sources(disclosure, evidence_index) == :ok and
-      labels_cover?(disclosure.labels, turn.context_labels) and
+      labels_cover?(disclosure.labels, context_labels) and
       disclosure_covers_turn?(disclosure.source_evidence_refs, turn, derived_refs)
   end
 
-  defp disclosure_bound?(_candidate, _turn, _evidence_index, _derived_refs), do: false
+  defp disclosure_bound?(
+         _candidate,
+         _turn,
+         _context_labels,
+         _evidence_index,
+         _derived_refs
+       ),
+       do: false
 
   defp disclosure_covers_turn?(source_refs, turn, derived_refs) do
-    source_refs == turn.evidence_refs or
+    source_refs == Turn.evidence_refs(turn) or
       Enum.any?(source_refs, &MapSet.member?(derived_refs, &1))
   end
 
@@ -316,8 +332,9 @@ defmodule Spectre.Mind do
   defp normalize_turn_derivations(turn, derivations) when is_list(derivations) do
     with {:ok, context} <- turn_context(turn) do
       derivations
-      |> Enum.reduce_while({:ok, [], MapSet.new(turn.evidence_refs)}, fn value,
-                                                                         {:ok, records, refs} ->
+      |> Enum.reduce_while({:ok, [], MapSet.new(Turn.evidence_refs(turn))}, fn value,
+                                                                               {:ok, records,
+                                                                                refs} ->
         with {:ok, evidence} <- Evidence.new(value),
              false <- MapSet.member?(refs, evidence.ref),
              :ok <- validate_turn_derivation(evidence, turn, context) do

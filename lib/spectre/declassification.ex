@@ -267,19 +267,7 @@ defmodule Spectre.Declassification do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = record) do
-    %{
-      "schema_version" => record.schema_version,
-      "ref" => record.ref,
-      "source_act_ref" => record.source_act_ref,
-      "evidence_ref" => record.evidence_ref,
-      "parent_refs" => record.parent_refs,
-      "removed_labels" => Enum.map(record.removed_labels, &Label.canonical/1),
-      "removed_label_refs" => record.removed_label_refs,
-      "removed_owner_refs" => record.removed_owner_refs,
-      "recorded_at" => record.recorded_at
-    }
-  end
+  def canonical(%__MODULE__{} = record), do: canonical_fields(record, @fields)
 
   @doc "Restores a declassification record and verifies its content reference."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -300,17 +288,12 @@ defmodule Spectre.Declassification do
 
   defp content(%__MODULE__{} = record), do: record |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.get(attrs, :schema_version, @schema_version),
-      "source_act_ref" => Map.get(attrs, :source_act_ref),
-      "evidence_ref" => Map.get(attrs, :evidence_ref),
-      "parent_refs" => Map.get(attrs, :parent_refs, []),
-      "removed_labels" => Enum.map(Map.get(attrs, :removed_labels, []), &Label.canonical/1),
-      "removed_label_refs" => Map.get(attrs, :removed_label_refs, []),
-      "removed_owner_refs" => Map.get(attrs, :removed_owner_refs, []),
-      "recorded_at" => Map.get(attrs, :recorded_at)
-    }
+  defp content(attrs), do: canonical_fields(attrs, @fields -- [:ref])
+
+  defp canonical_fields(source, fields) do
+    source
+    |> Portable.canonical_fields(fields)
+    |> Map.update!("removed_labels", &Enum.map(&1, fn label -> Label.canonical(label) end))
   end
 
   defp validate_record(%__MODULE__{} = record) do

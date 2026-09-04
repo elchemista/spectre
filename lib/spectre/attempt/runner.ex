@@ -1,26 +1,3 @@
-defmodule Spectre.Attempt.Runner.Result do
-  @moduledoc """
-  Ephemeral summary of one Zone X orchestration.
-
-  A result deliberately excludes the Grant and the checked-out capability. The
-  fields it does expose are either durable records or the exact Evidence
-  records acknowledged by the Domain sequencer.
-  """
-
-  alias Spectre.{Act, Attempt, Decision, Evidence, Outcome}
-
-  @enforce_keys [:decision, :act, :attempt, :evidence, :outcome]
-  defstruct @enforce_keys
-
-  @type t :: %__MODULE__{
-          decision: Decision.t(),
-          act: Act.t() | nil,
-          attempt: Attempt.t() | nil,
-          evidence: [Evidence.t()],
-          outcome: Outcome.t() | nil
-        }
-end
-
 defmodule Spectre.Attempt.Runner do
   @moduledoc """
   Orchestrates the executor-mediated half of a governed Act.
@@ -39,42 +16,23 @@ defmodule Spectre.Attempt.Runner do
   No capability, raw Grant, nonce, exception reason or arbitrary provider reply
   is copied into a durable record. Once an Attempt exists, a malformed reply or
   a broker/executor exception is conservatively recorded as `:ambiguous`. The
-  Runner never retries an executor.
+  Runner never retries an executor. `Runner.Observation` owns normalization at
+  the untrusted callback boundary; `Spectre.Attempt.Binding` owns only the
+  immutable Act-to-Attempt identity checked by recovery and replay.
   """
 
   alias Spectre.GovernedAct.State
 
-  alias Spectre.{Act, Adapter, Attempt, Decision, Evidence, Governance, Outcome, Portable}
-  alias Spectre.Attempt.Runner.Result
+  alias Spectre.{Act, Attempt, Decision, Evidence, Outcome}
+  alias Spectre.Attempt.Binding, as: AttemptBinding
+  alias Spectre.Attempt.Runner.{Observation, Recovery, Result}
   alias Spectre.Domain.Sequencer
   alias Spectre.Execution.Boundary
+  alias Spectre.GovernedAct.Admission.Binding, as: AdmissionBinding
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Grant
-  alias Spectre.Outcome.Attestation
   alias Spectre.Secret.CheckoutReceipt
 
-  @decision_act_fields [
-    :candidate_identity_key,
-    :candidate_digest,
-    :submission_context_ref,
-    :authenticated_principal_ref,
-    :authentication_ref,
-    :ingress_ref,
-    :host_generation,
-    :mandate_ref,
-    :mandate_revision,
-    :recognition_refs,
-    :recognition_evidence_refs,
-    :reservations,
-    :proposer_ref,
-    :executor_ref,
-    :authorizer_ref,
-    :accountable_ref,
-    :scope_ref,
-    :host_profile_ref,
-    :surface_revision
-  ]
-
-  @admission_keys [:decision, :act, :grant]
   @run_options [:sequencer_opts]
 
   @type admission ::
@@ -128,33 +86,8 @@ defmodule Spectre.Attempt.Runner do
           Attempt.t(),
           non_neg_integer()
         ) :: {:ok, map()} | {:error, term()}
-  def normalize_late_observation(status, metadata, act, attempt, observed_at)
-      when status in [:succeeded, :failed, :definitive_no_effect, :ambiguous] and
-             is_integer(observed_at) and observed_at >= 0 do
-    with {:ok, act} <- Act.new(act),
-         {:ok, attempt} <- Attempt.new(attempt),
-         true <- attempt.act_ref == act.ref,
-         true <- observed_at >= attempt.started_at,
-         {:ok, evidence, details_ref} <- validate_observation(metadata, act, attempt) do
-      {status, outcome_evidence, observed_at, details_ref} =
-        classify_outcome(status, evidence, act, attempt, observed_at, details_ref)
-
-      {:ok,
-       %{
-         status: status,
-         evidence: evidence,
-         outcome_evidence: outcome_evidence,
-         observed_at: observed_at,
-         details_ref: details_ref
-       }}
-    else
-      false -> {:error, :late_observation_cause_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def normalize_late_observation(_status, _metadata, _act, _attempt, _observed_at),
-    do: {:error, :invalid_late_observation}
+  def normalize_late_observation(status, metadata, act, attempt, observed_at),
+    do: Observation.normalize_late(status, metadata, act, attempt, observed_at)
 
   defp route(_sequencer, %Decision{outcome: outcome} = decision, nil, nil, _opts)
        when outcome != :admitted do
@@ -175,7 +108,7 @@ defmodule Spectre.Attempt.Runner do
        ) do
     with {:ok, act} <- Act.new(act),
          :ok <- decision_act_binding(decision, act) do
-      case Governance.execution_mode(act) do
+      case GovernedExecution.mode(act) do
         {:ok, :executor_mediated} -> run_attempt(sequencer, decision, act, grant, opts)
         {:ok, :ledger_internal} -> internal_result(decision, act, grant)
         {:error, _reason} = error -> error
@@ -251,7 +184,7 @@ defmodule Spectre.Attempt.Runner do
   defp durable_attempt_result(sequencer, decision, expected_act) do
     case safe_internal_call(fn -> Sequencer.projection(sequencer) end) do
       {:reply, %State{} = projection} ->
-        recover_from_projection(projection, decision, expected_act)
+        Recovery.from_projection(projection, decision, expected_act)
 
       {:reply, _invalid} ->
         {:error, :invalid_projection_response}
@@ -259,82 +192,6 @@ defmodule Spectre.Attempt.Runner do
       {:failure, kind} ->
         {:error, {:projection_boundary_failure, kind}}
     end
-  end
-
-  defp recover_from_projection(projection, decision, expected_act) do
-    with {:ok, act} <- Map.fetch(projection.acts, expected_act.ref),
-         true <- act == expected_act do
-      case Map.fetch(projection.attempts_by_act, act.ref) do
-        {:ok, attempt_ref} ->
-          recover_recorded_attempt(projection, decision, act, attempt_ref)
-
-        :error ->
-          recover_cancelled_dispatch(projection, decision, act)
-      end
-    else
-      :error -> {:error, {:admitted_act_not_found, expected_act.ref}}
-      false -> {:error, {:admitted_act_changed, expected_act.ref}}
-    end
-  end
-
-  defp recover_recorded_attempt(projection, decision, act, attempt_ref) do
-    with {:ok, attempt} <- Map.fetch(projection.attempts, attempt_ref),
-         {:ok, attempt} <- Attempt.new(attempt),
-         :ok <- recovered_attempt_binding(attempt, act) do
-      evidence = recovered_evidence(projection, act, attempt)
-      outcome = recovered_outcome(projection, act, attempt)
-      result(decision, act, attempt, evidence, outcome)
-    else
-      :error -> {:error, {:attempt_not_found, attempt_ref}}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp recover_cancelled_dispatch(projection, decision, act) do
-    cond do
-      Map.has_key?(projection.dispatch_cancellations, act.ref) and
-          not MapSet.member?(projection.dispatch_ready, act.ref) ->
-        result(decision, act, nil, [], nil)
-
-      MapSet.member?(projection.dispatch_ready, act.ref) ->
-        :dispatch_ready
-
-      true ->
-        {:error, {:invalid_dispatch_state, act.ref}}
-    end
-  end
-
-  defp recovered_attempt_binding(attempt, act) do
-    if attempt.act_ref == act.ref and attempt.executor_ref == act.executor_ref and
-         attempt.material_digest == act.material_digest,
-       do: :ok,
-       else: {:error, :recorded_attempt_binding_mismatch}
-  end
-
-  defp recovered_evidence(projection, act, attempt) do
-    expected_bindings = %{"act_ref" => act.ref, "attempt_ref" => attempt.ref}
-
-    projection.evidence
-    |> Map.values()
-    |> Enum.filter(&(&1.bindings == expected_bindings))
-    |> Enum.sort_by(&event_order(projection, "evidence_recorded", &1.ref))
-  end
-
-  defp recovered_outcome(projection, act, attempt) do
-    projection.outcomes
-    |> Map.values()
-    |> Enum.filter(&(&1.act_ref == act.ref and &1.attempt_ref == attempt.ref))
-    |> Enum.max_by(&event_order(projection, "outcome_recorded", &1.ref), fn -> nil end)
-  end
-
-  defp event_order(projection, type, ref) do
-    revision =
-      case Map.get(projection.event_metadata, {type, ref}) do
-        %{revision: revision} -> revision
-        nil -> 0
-      end
-
-    {revision, ref}
   end
 
   defp consume_grant(sequencer, grant, expected_act, config) do
@@ -363,9 +220,7 @@ defmodule Spectre.Attempt.Runner do
     with {:ok, consumed_act} <- Act.new(consumed_act),
          true <- consumed_act == expected_act,
          {:ok, attempt} <- Attempt.new(attempt),
-         true <- attempt.act_ref == consumed_act.ref,
-         true <- attempt.executor_ref == consumed_act.executor_ref,
-         true <- attempt.material_digest == consumed_act.material_digest,
+         :ok <- attempt_binding(attempt, consumed_act, :consumed_attempt_binding_mismatch),
          true <- attempt.generation == grant.generation,
          :ok <- checkout_receipt_binding(receipt, consumed_act, attempt, config) do
       {:ok, consumed_act, attempt, receipt}
@@ -392,142 +247,47 @@ defmodule Spectre.Attempt.Runner do
   end
 
   defp cross_boundary(config, receipt, act, attempt) do
-    case safe_boundary_call(:broker, fn ->
-           config.broker.checkout(receipt, act, attempt, config.broker_opts)
-         end) do
-      {:reply, {:ok, capability}} ->
+    case Boundary.invoke(config.broker, :checkout, [
+           receipt,
+           act,
+           attempt,
+           config.broker_opts
+         ]) do
+      {:ok, {:ok, capability}} ->
         execute_once(config, act, attempt, capability)
 
-      {:reply, {:error, status, metadata}}
+      {:ok, {:error, status, metadata}}
       when status == :ambiguous ->
-        normalize_observation(status, metadata, :broker, act, attempt)
+        Observation.normalize(status, metadata, :broker, act, attempt)
 
-      {:reply, _invalid} ->
-        boundary_observation(:broker, :invalid_reply)
+      {:ok, _invalid} ->
+        Observation.boundary_failure(:broker, :invalid_reply)
 
-      {:failure, :broker, kind} ->
-        boundary_observation(:broker, kind)
+      {:error, kind} ->
+        Observation.boundary_failure(:broker, kind)
     end
   end
 
   defp execute_once(config, act, attempt, capability) do
-    case safe_boundary_call(:executor, fn ->
-           config.executor.execute(act, attempt, capability, config.executor_opts)
-         end) do
-      {:reply, {:ok, metadata}} ->
-        normalize_observation(:succeeded, metadata, :executor, act, attempt)
+    case Boundary.invoke(config.executor, :execute, [
+           act,
+           attempt,
+           capability,
+           config.executor_opts
+         ]) do
+      {:ok, {:ok, metadata}} ->
+        Observation.normalize(:succeeded, metadata, :executor, act, attempt)
 
-      {:reply, {:error, status, metadata}}
+      {:ok, {:error, status, metadata}}
       when status in [:failed, :definitive_no_effect, :ambiguous] ->
-        normalize_observation(status, metadata, :executor, act, attempt)
+        Observation.normalize(status, metadata, :executor, act, attempt)
 
-      {:reply, _invalid} ->
-        boundary_observation(:executor, :invalid_reply)
+      {:ok, _invalid} ->
+        Observation.boundary_failure(:executor, :invalid_reply)
 
-      {:failure, :executor, kind} ->
-        boundary_observation(:executor, kind)
+      {:error, kind} ->
+        Observation.boundary_failure(:executor, kind)
     end
-  end
-
-  defp normalize_observation(status, metadata, boundary, act, attempt) do
-    with {:ok, evidence, details_ref} <- validate_observation(metadata, act, attempt) do
-      {:ok, status, evidence, details_ref}
-    else
-      {:error, _reason} -> boundary_observation(boundary, :invalid_metadata)
-    end
-  end
-
-  defp validate_observation(
-         %{evidence: evidence, details_ref: details_ref} = metadata,
-         act,
-         attempt
-       )
-       when not is_struct(metadata) do
-    with true <- Map.keys(metadata) |> Enum.sort() == [:details_ref, :evidence],
-         :ok <- Portable.validate_ref(details_ref, :details_ref),
-         {:ok, evidence} <- normalize_evidence(evidence),
-         :ok <- unique_evidence(evidence),
-         :ok <- validate_boundary_evidence(evidence, act, attempt) do
-      {:ok, evidence, details_ref}
-    else
-      false -> {:error, :invalid_observation_fields}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_observation(_metadata, _act, _attempt),
-    do: {:error, :invalid_observation_metadata}
-
-  defp normalize_evidence(%Evidence{} = evidence) do
-    with {:ok, evidence} <- Evidence.new(evidence), do: {:ok, [evidence]}
-  end
-
-  defp normalize_evidence(evidence) when is_list(evidence) do
-    Enum.reduce_while(evidence, {:ok, []}, fn
-      %Evidence{} = item, {:ok, normalized} ->
-        case Evidence.new(item) do
-          {:ok, item} -> {:cont, {:ok, [item | normalized]}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-
-      _invalid, _acc ->
-        {:halt, {:error, :invalid_observation_evidence}}
-    end)
-    |> case do
-      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp normalize_evidence(_evidence), do: {:error, :invalid_observation_evidence}
-
-  defp unique_evidence(evidence) do
-    refs = Enum.map(evidence, & &1.ref)
-    if length(refs) == MapSet.size(MapSet.new(refs)), do: :ok, else: {:error, :duplicate_evidence}
-  end
-
-  defp validate_boundary_evidence(evidence, act, attempt) do
-    Enum.reduce_while(evidence, :ok, fn item, :ok ->
-      with :ok <- exact_attempt_bindings(item, act, attempt),
-           :ok <- explicit_executor_lineage(item, act) do
-        {:cont, :ok}
-      else
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp exact_attempt_bindings(%Evidence{} = evidence, act, attempt) do
-    expected = %{"act_ref" => act.ref, "attempt_ref" => attempt.ref}
-
-    if evidence.bindings == expected,
-      do: :ok,
-      else: {:error, {:executor_evidence_binding_mismatch, evidence.ref}}
-  end
-
-  defp explicit_executor_lineage(%Evidence{provenance: :observed}, _act), do: :ok
-
-  defp explicit_executor_lineage(
-         %Evidence{provenance: provenance, parent_refs: [_first | _rest] = parents} = evidence,
-         act
-       )
-       when provenance in [:derived, :generated] do
-    if MapSet.subset?(MapSet.new(parents), MapSet.new(act.evidence_refs)),
-      do: :ok,
-      else: {:error, {:executor_evidence_parent_outside_act_inputs, evidence.ref}}
-  end
-
-  defp explicit_executor_lineage(%Evidence{} = evidence, _act),
-    do: {:error, {:invalid_executor_evidence_lineage, evidence.ref}}
-
-  defp boundary_observation(boundary, kind) do
-    {:ok, :ambiguous, [], boundary_details_ref(boundary, kind)}
-  end
-
-  defp boundary_details_ref(boundary, kind)
-       when boundary in [:broker, :executor] and
-              kind in [:exception, :exit, :throw, :invalid_reply, :invalid_metadata] do
-    "spectre:attempt-boundary:#{boundary}:#{kind}:v1"
   end
 
   defp finish_attempt(
@@ -543,7 +303,7 @@ defmodule Spectre.Attempt.Runner do
     {status, outcome_evidence, observed_at, details_ref} =
       case observation_time(sequencer, attempt, config.sequencer_opts) do
         {:ok, observed_at} ->
-          classify_outcome(
+          Observation.classify(
             reported_status,
             evidence,
             act,
@@ -586,38 +346,6 @@ defmodule Spectre.Attempt.Runner do
           config.sequencer_opts
         )
     end
-  end
-
-  defp classify_outcome(status, evidence, act, attempt, observed_at, details_ref) do
-    supporting = outcome_attestations(evidence, status, act, attempt, observed_at)
-    causal = causal_outcome_attestations(evidence, act, attempt, observed_at)
-
-    cond do
-      status == :ambiguous ->
-        {:ambiguous, causal, observed_at, details_ref}
-
-      supporting != [] and
-          not conflicting_outcome_attestation?(evidence, status, act, attempt, observed_at) ->
-        {status, supporting, observed_at, details_ref}
-
-      true ->
-        {:ambiguous, causal, observed_at, "spectre:attempt-boundary:unattested-outcome:v1"}
-    end
-  end
-
-  defp outcome_attestations(evidence, status, act, attempt, observed_at) do
-    Enum.filter(evidence, &Attestation.supports?(&1, status, act, attempt, observed_at))
-  end
-
-  defp causal_outcome_attestations(evidence, act, attempt, observed_at) do
-    Enum.filter(evidence, &Attestation.causal?(&1, act, attempt, observed_at))
-  end
-
-  defp conflicting_outcome_attestation?(evidence, status, act, attempt, observed_at) do
-    Enum.any?(evidence, fn item ->
-      Attestation.causal?(item, act, attempt, observed_at) and
-        not Attestation.supports?(item, status, act, attempt, observed_at)
-    end)
   end
 
   defp commit_attempt_outcome(
@@ -685,7 +413,7 @@ defmodule Spectre.Attempt.Runner do
   end
 
   defp validate_recorded_evidence(expected, recorded) do
-    with {:ok, recorded} <- normalize_evidence(recorded),
+    with {:ok, recorded} <- Observation.normalize_evidence(recorded),
          true <- evidence_identity(expected) == evidence_identity(recorded) do
       {:ok, recorded}
     else
@@ -735,7 +463,7 @@ defmodule Spectre.Attempt.Runner do
 
     with :ok <- validate_keyword(sequencer_opts, :sequencer_opts),
          {:ok, route} <- fetch_execution_route(sequencer, act, sequencer_opts),
-         :ok <- validate_execution_route(route) do
+         :ok <- Boundary.validate_runtime_route(route) do
       {:ok, Map.put(route, :sequencer_opts, sequencer_opts)}
     end
   end
@@ -748,43 +476,6 @@ defmodule Spectre.Attempt.Runner do
       {:failure, kind} -> {:error, {:execution_route_boundary_failure, kind}}
     end
   end
-
-  defp validate_execution_route(route) when is_map(route) and not is_struct(route) do
-    with true <-
-           Map.keys(route) |> Enum.sort() ==
-             [:broker, :broker_descriptor, :broker_opts, :executor, :executor_opts],
-         :ok <- callback(route.executor, :execute, 4, :executor),
-         :ok <- callback(route.broker, :checkout, 4, :broker),
-         :ok <- validate_keyword(route.broker_opts, :broker_opts),
-         :ok <- validate_keyword(route.executor_opts, :executor_opts),
-         :ok <- Boundary.validate_broker_descriptor(route.broker_descriptor) do
-      :ok
-    else
-      false -> {:error, :invalid_execution_route}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_execution_route(_route), do: {:error, :invalid_execution_route}
-
-  defp callback(module, function, arity, boundary)
-       when is_atom(module) and module not in [nil, true, false] do
-    case Adapter.validate(module, [{function, arity}]) do
-      :ok ->
-        :ok
-
-      {:error, {:adapter_module_not_loaded, _module}} ->
-        {:error, {boundary, :module_not_loaded}}
-
-      {:error, {:adapter_callback_missing, _module, _function, _arity}} ->
-        {:error, {boundary, :callback_missing}}
-
-      {:error, _reason} ->
-        {:error, {boundary, :invalid_module}}
-    end
-  end
-
-  defp callback(_module, _function, _arity, boundary), do: {:error, {boundary, :invalid_module}}
 
   defp validate_options(opts) do
     with :ok <- validate_keyword(opts, :runner_opts) do
@@ -802,22 +493,21 @@ defmodule Spectre.Attempt.Runner do
   defp validate_keyword(_value, field), do: {:error, {:invalid_keyword_options, field}}
 
   defp exact_admission_shape(admission) do
-    if Map.keys(admission) |> Enum.sort() == Enum.sort(@admission_keys),
+    if map_size(admission) == 3,
       do: :ok,
       else: {:error, :invalid_admission_response}
   end
 
   defp decision_act_binding(decision, act) do
-    mismatched =
-      Enum.find(@decision_act_fields, fn field ->
-        Map.fetch!(decision, field) != Map.fetch!(act, field)
-      end)
-
-    cond do
-      act.decision_ref != decision.ref -> {:error, :act_decision_ref_mismatch}
-      mismatched -> {:error, {:decision_act_field_mismatch, mismatched}}
-      true -> :ok
+    case AdmissionBinding.mismatch(decision, act) do
+      nil -> :ok
+      {:decision_ref, _expected, _actual} -> {:error, :act_decision_ref_mismatch}
+      {field, _expected, _actual} -> {:error, {:decision_act_field_mismatch, field}}
     end
+  end
+
+  defp attempt_binding(attempt, act, error) do
+    if is_nil(AttemptBinding.mismatch(attempt, act)), do: :ok, else: {:error, error}
   end
 
   defp grant_act_binding(grant, act) do
@@ -825,15 +515,6 @@ defmodule Spectre.Attempt.Runner do
          grant.material_digest == act.material_digest,
        do: :ok,
        else: {:error, :grant_act_binding_mismatch}
-  end
-
-  defp safe_boundary_call(boundary, function) do
-    {:reply, function.()}
-  rescue
-    _exception -> {:failure, boundary, :exception}
-  catch
-    :exit, _reason -> {:failure, boundary, :exit}
-    :throw, _reason -> {:failure, boundary, :throw}
   end
 
   defp safe_internal_call(function) do
@@ -846,13 +527,6 @@ defmodule Spectre.Attempt.Runner do
   end
 
   defp result(decision, act, attempt, evidence, outcome) do
-    {:ok,
-     %Result{
-       decision: decision,
-       act: act,
-       attempt: attempt,
-       evidence: evidence,
-       outcome: outcome
-     }}
+    Result.ok(decision, act, attempt, evidence, outcome)
   end
 end

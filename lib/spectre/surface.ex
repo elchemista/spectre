@@ -4,13 +4,16 @@ defmodule Spectre.Surface do
 
   Classification is a lookup, not an authority decision.  Missing classes are
   reported as `:unknown_class`; callers must never turn that result into an
-  executable empty row.
+  executable empty row. Application classes remain open and contract-driven;
+  `Spectre.GovernedAct.Class` fixes metadata only for the small set of runtime
+  transitions whose semantics must replay identically everywhere.
   """
 
   alias Spectre.{Candidate, Portable, Presentation, Row}
   alias Spectre.Consequence.Contract
   alias Spectre.Consequence.Validator
   alias Spectre.Fallback.Policy
+  alias Spectre.GovernedAct.Class, as: GovernedClass
 
   @schema_version 1
   @fields [
@@ -129,7 +132,7 @@ defmodule Spectre.Surface do
         )
 
       :error ->
-        if intrinsic_consequence_class?(candidate.class),
+        if GovernedClass.intrinsic?(candidate.class),
           do: :ok,
           else: {:error, {:consequence_contract_not_declared, candidate.class}}
     end
@@ -196,23 +199,7 @@ defmodule Spectre.Surface do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = surface) do
-    %{
-      "schema_version" => surface.schema_version,
-      "ref" => surface.ref,
-      "revision" => surface.revision,
-      "declarations" =>
-        Map.new(surface.declarations, fn {class, row} -> {class, Row.canonical(row)} end),
-      "consequence_contracts" =>
-        Map.new(surface.consequence_contracts, fn {class, contract} ->
-          {class, Contract.canonical(contract)}
-        end),
-      "consequence_validators" => surface.consequence_validators,
-      "presentation_required_classes" => surface.presentation_required_classes,
-      "fallbacks" =>
-        Map.new(surface.fallbacks, fn {class, policy} -> {class, Policy.canonical(policy)} end)
-    }
-  end
+  def canonical(%__MODULE__{} = surface), do: canonical_fields(surface, @fields)
 
   @doc "Restores a surface from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -274,7 +261,7 @@ defmodule Spectre.Surface do
     missing =
       declarations
       |> Map.keys()
-      |> Enum.reject(&intrinsic_consequence_class?/1)
+      |> Enum.reject(&GovernedClass.intrinsic?/1)
       |> Enum.reject(&Map.has_key?(contracts, &1))
       |> Enum.sort()
 
@@ -332,7 +319,7 @@ defmodule Spectre.Surface do
   defp validate_class_row(class, row) do
     dimensions = Row.dimensions(row)
 
-    case intrinsic_dimensions(class) do
+    case GovernedClass.dimensions(class) do
       {:ok, ^dimensions} ->
         :ok
 
@@ -386,25 +373,20 @@ defmodule Spectre.Surface do
 
   defp content(%__MODULE__{} = surface), do: surface |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.get(attrs, :schema_version, @schema_version),
-      "revision" => Map.get(attrs, :revision),
-      "declarations" =>
-        Map.new(Map.get(attrs, :declarations, %{}), fn {class, row} ->
-          {class, Row.canonical(row)}
-        end),
-      "consequence_contracts" =>
-        Map.new(Map.get(attrs, :consequence_contracts, %{}), fn {class, contract} ->
-          {class, Contract.canonical(contract)}
-        end),
-      "consequence_validators" => Map.get(attrs, :consequence_validators, %{}),
-      "presentation_required_classes" => Map.get(attrs, :presentation_required_classes, []),
-      "fallbacks" =>
-        Map.new(Map.get(attrs, :fallbacks, %{}), fn {class, policy} ->
-          {class, Policy.canonical(policy)}
-        end)
-    }
+  defp content(attrs), do: canonical_fields(attrs, @fields -- [:ref])
+
+  defp canonical_fields(source, fields) do
+    source
+    |> Portable.canonical_fields(fields)
+    |> Map.update!("declarations", fn declarations ->
+      Map.new(declarations, fn {class, row} -> {class, Row.canonical(row)} end)
+    end)
+    |> Map.update!("consequence_contracts", fn contracts ->
+      Map.new(contracts, fn {class, contract} -> {class, Contract.canonical(contract)} end)
+    end)
+    |> Map.update!("fallbacks", fn fallbacks ->
+      Map.new(fallbacks, fn {class, policy} -> {class, Policy.canonical(policy)} end)
+    end)
   end
 
   defp validate_record(%__MODULE__{} = surface) do
@@ -419,27 +401,6 @@ defmodule Spectre.Surface do
         Portable.validate_ref(surface.ref, :ref)
     end
   end
-
-  defp intrinsic_consequence_class?(class),
-    do: match?({:ok, _dimensions}, intrinsic_dimensions(class))
-
-  defp intrinsic_dimensions("scope.open"), do: {:ok, [:write, :govern]}
-  defp intrinsic_dimensions("principal.register"), do: {:ok, [:govern]}
-  defp intrinsic_dimensions("mandate.delegate"), do: {:ok, [:delegate, :govern]}
-  defp intrinsic_dimensions("mandate.devolve"), do: {:ok, [:delegate, :govern]}
-  defp intrinsic_dimensions("mandate.restrict"), do: {:ok, [:govern]}
-  defp intrinsic_dimensions("mandate.revoke"), do: {:ok, [:govern]}
-  defp intrinsic_dimensions("duty.dispose"), do: {:ok, [:govern]}
-  defp intrinsic_dimensions("surface.revise"), do: {:ok, [:govern]}
-  defp intrinsic_dimensions("host_profile.revise"), do: {:ok, [:govern]}
-  defp intrinsic_dimensions("definition.revise"), do: {:ok, [:govern]}
-  defp intrinsic_dimensions("data.declassify"), do: {:ok, [:write, :govern]}
-  defp intrinsic_dimensions("data.erase"), do: {:ok, [:attempt, :write, :govern]}
-
-  defp intrinsic_dimensions("presentation.show"),
-    do: {:ok, Presentation.show_dimensions()}
-
-  defp intrinsic_dimensions(_class), do: :application
 
   defp disclosure_destinations(%Candidate{disclosure: nil}), do: []
 

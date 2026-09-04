@@ -8,10 +8,10 @@ defmodule Spectre.Domain.Admission.Command do
   only after that recovery. It does not own a mailbox or choose batch timing.
   """
 
-  alias Spectre.{Act, Candidate, Decision}
+  alias Spectre.{Act, Candidate}
   alias Spectre.Domain.Admission.Planner, as: AdmissionPlanner
   alias Spectre.Domain.Command.Execution, as: ExecutionCommand
-  alias Spectre.Domain.{Transaction}
+  alias Spectre.Domain.{Projection, Transaction}
   alias Spectre.Domain.Sequencer.{Control, State}
   alias Spectre.Scope.Opening
 
@@ -19,11 +19,9 @@ defmodule Spectre.Domain.Admission.Command do
   @spec run(State.t(), [map()]) :: {State.t(), [{GenServer.from(), term()}]}
 
   def run(%State{} = state, requests) do
-    ledger_opts = hd(requests).ledger_opts
-
-    case preflight_duty_repair(state, ledger_opts) do
+    case preflight_duty_repair(state) do
       {:ok, current} ->
-        case admit(current, requests, ledger_opts, current.conflict_retries) do
+        case admit(current, requests, current.conflict_retries) do
           {:ok, next_state, plans} ->
             {next_state, finalize_admission(next_state, plans)}
 
@@ -44,17 +42,17 @@ defmodule Spectre.Domain.Admission.Command do
 
   defp admission_error_reply(plan, batch_reason) do
     reason = plan.error || batch_reason
-    {plan.request.from, {:error, reason}}
+    {plan.from, {:error, reason}}
   end
 
-  defp admit(state, requests, ledger_opts, conflicts_left) do
-    with {:ok, admitted_at} <- Transaction.trusted_recorded_at(state.clock, state.projection) do
+  defp admit(state, requests, conflicts_left) do
+    with {:ok, admitted_at} <- Transaction.trusted_recorded_at(state) do
       {plans, _provisional, payloads} = AdmissionPlanner.plan(state, requests, admitted_at)
 
       if payloads == [] do
         {:ok, state, plans}
       else
-        case Transaction.operational_id(state, "admission") do
+        case Transaction.operational_id(state) do
           {:ok, batch_id} ->
             commit_planned_admission(
               state,
@@ -62,7 +60,6 @@ defmodule Spectre.Domain.Admission.Command do
               plans,
               payloads,
               batch_id,
-              ledger_opts,
               conflicts_left,
               admitted_at
             )
@@ -82,7 +79,6 @@ defmodule Spectre.Domain.Admission.Command do
          plans,
          payloads,
          batch_id,
-         ledger_opts,
          conflicts_left,
          admitted_at
        ) do
@@ -90,16 +86,13 @@ defmodule Spectre.Domain.Admission.Command do
            state,
            batch_id,
            payloads,
-           state.projection.revision,
-           ledger_opts,
-           state.ambiguous_retries,
            admitted_at
          ) do
       {:ok, recovered} ->
         {:ok, %{state | projection: recovered}, plans}
 
       :conflict when conflicts_left > 0 ->
-        retry_admission_after_conflict(state, requests, ledger_opts, conflicts_left - 1)
+        retry_admission_after_conflict(state, requests, conflicts_left - 1)
 
       :conflict ->
         halted = Control.halt(state, :conflict_retries_exhausted)
@@ -118,10 +111,10 @@ defmodule Spectre.Domain.Admission.Command do
     end
   end
 
-  defp retry_admission_after_conflict(state, requests, ledger_opts, conflicts_left) do
-    case Transaction.recover_with_repair(state, ledger_opts) do
+  defp retry_admission_after_conflict(state, requests, conflicts_left) do
+    case Transaction.recover_with_repair(state) do
       {:ok, projection} ->
-        admit(%{state | projection: projection}, requests, ledger_opts, conflicts_left)
+        admit(%{state | projection: projection}, requests, conflicts_left)
 
       {:error, reason} ->
         plans = AdmissionPlanner.error_plans(requests)
@@ -139,11 +132,11 @@ defmodule Spectre.Domain.Admission.Command do
           admission_reply(state, plan)
         end
 
-      {plan.request.from, reply}
+      {plan.from, reply}
     end)
   end
 
-  defp admission_reply(state, %{request: %{kind: :governed_scope_opening}} = plan) do
+  defp admission_reply(state, %{candidate: %Candidate{class: "scope.open"}} = plan) do
     with {:ok, admission} <- admission_from_projection(state, plan.candidate),
          {:ok, opening} <- admitted_scope_opening(state.projection, admission, plan.candidate) do
       {:ok, Map.put(admission, :opening, opening)}
@@ -173,39 +166,21 @@ defmodule Spectre.Domain.Admission.Command do
     do: {:error, :invalid_governed_scope_admission}
 
   defp admission_from_projection(state, candidate) do
-    with {:ok, identity} <-
-           Map.fetch(state.projection.candidate_identities, candidate.identity_key),
-         true <- identity.digest == candidate.material_digest,
-         {:ok, decision} <- Map.fetch(state.projection.decisions, identity.decision_ref),
-         {:ok, act} <- act_for_decision(state.projection, decision),
+    with {:ok, decision} <-
+           Projection.candidate_decision(state.projection, candidate.identity_key),
+         true <- decision.candidate_digest == candidate.material_digest,
+         {:ok, act} <- Projection.decision_act(state.projection, decision),
          {:ok, grant} <- ExecutionCommand.mint_grant(state, act) do
       {:ok, %{decision: decision, act: act, grant: grant}}
     else
-      :error -> {:error, :admission_not_recovered}
+      :not_found -> {:error, :admission_not_recovered}
       false -> {:error, {:candidate_identity_conflict, candidate.identity_key}}
       {:error, _reason} = error -> error
     end
   end
 
-  defp act_for_decision(_projection, %Decision{outcome: outcome}) when outcome != :admitted,
-    do: {:ok, nil}
-
-  defp act_for_decision(projection, %Decision{outcome: :admitted, ref: decision_ref}) do
-    with {:ok, act_ref} <- Map.fetch(projection.acts_by_decision, decision_ref),
-         {:ok, act} <- Map.fetch(projection.acts, act_ref) do
-      {:ok, act}
-    else
-      :error -> {:error, {:admitted_decision_missing_act, decision_ref}}
-    end
-  end
-
-  defp preflight_duty_repair(state, ledger_opts) do
-    case Transaction.repair_missing_duties(
-           state,
-           state.projection,
-           ledger_opts,
-           state.conflict_retries
-         ) do
+  defp preflight_duty_repair(state) do
+    case Transaction.repair_missing_duties(state) do
       {:ok, projection} ->
         {:ok, %{state | projection: projection}}
 

@@ -4,27 +4,21 @@ defmodule Spectre.Attempt.Reconciler do
   alias Spectre.Domain.{Event, Projection}
   alias Spectre.Duty
   alias Spectre.Duty.Derive
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{DispatchState, State}
   alias Spectre.{Act, Mandate, Portable}
 
   @type plan :: %{
-          required(:causes) => [Derive.cause()],
           required(:payloads) => [map()],
           required(:batch_id) => String.t() | nil
         }
 
-  @spec required_duties(State.t(), map(), integer()) :: [Derive.cause()]
-  def required_duties(%State{} = state, constitution, time),
-    do: Derive.required_duties(state, constitution, time)
+  @spec missing_openings(State.t(), integer()) :: [Derive.cause()]
+  def missing_openings(%State{} = state, time),
+    do: Derive.missing_openings(state, state.constitution, time)
 
-  @spec missing_openings(State.t(), map(), integer()) :: [Derive.cause()]
-  def missing_openings(%State{} = state, constitution, time),
-    do: Derive.missing_openings(state, constitution, time)
-
-  @spec repair_plan(Projection.t(), map(), integer()) :: {:ok, plan()} | {:error, term()}
-  def repair_plan(%State{} = projection, constitution, time)
-      when is_map(constitution) and not is_struct(constitution) and is_integer(time) do
-    causes = missing_openings(projection, constitution, time)
+  @spec repair_plan(Projection.t(), integer()) :: {:ok, plan()} | {:error, term()}
+  def repair_plan(%State{} = projection, time) when is_integer(time) do
+    causes = missing_openings(projection, time)
 
     with {:ok, expirations} <- expired_dispatches(projection, time) do
       expired_refs = MapSet.new(expirations, fn {act, _mandate} -> act.ref end)
@@ -44,21 +38,15 @@ defmodule Spectre.Attempt.Reconciler do
                time
              ),
            {:ok, batch_id} <- batch_id(projection, payloads) do
-        {:ok, %{causes: causes, payloads: payloads, batch_id: batch_id}}
+        {:ok, %{payloads: payloads, batch_id: batch_id}}
       end
     end
   end
 
-  def repair_plan(%State{}, %{__struct__: _module}, _time),
-    do: {:error, :invalid_reconciliation_constitution}
-
-  def repair_plan(%State{}, constitution, _time) when not is_map(constitution),
-    do: {:error, :invalid_reconciliation_constitution}
-
-  def repair_plan(%State{}, _constitution, time),
+  def repair_plan(%State{}, time),
     do: {:error, {:invalid_reconciliation_time, time}}
 
-  def repair_plan(_projection, _constitution, _time),
+  def repair_plan(_projection, _time),
     do: {:error, :invalid_reconciliation_projection}
 
   defp repair_payloads(projection, expirations, disputes, causes, terminal_refs, time) do
@@ -74,13 +62,14 @@ defmodule Spectre.Attempt.Reconciler do
   end
 
   defp expired_dispatches(projection, time) do
-    projection.dispatch_ready
+    projection
+    |> DispatchState.pending_refs()
     |> Enum.sort()
     |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, expired} ->
       with {:ok, %Act{} = act} <- Map.fetch(projection.acts, act_ref),
            {:ok, %Mandate{} = mandate} <- Map.fetch(projection.mandates, act.mandate_ref),
            true <- act.mandate_revision == mandate.revision,
-           false <- Map.has_key?(projection.attempts_by_act, act.ref) do
+           false <- DispatchState.attempted?(projection, act.ref) do
         if mandate.expires_at <= time,
           do: {:cont, {:ok, [{act, mandate} | expired]}},
           else: {:cont, {:ok, expired}}
@@ -113,9 +102,9 @@ defmodule Spectre.Attempt.Reconciler do
       act_ref = cause_act_ref(cause)
 
       if cause.cause_class == :disputed_evidence and
-           MapSet.member?(projection.dispatch_ready, act_ref) and
+           DispatchState.pending?(projection, act_ref) and
            not MapSet.member?(seen_refs, act_ref) and
-           not Map.has_key?(projection.attempts_by_act, act_ref) do
+           not DispatchState.attempted?(projection, act_ref) do
         {[cause | selected], MapSet.put(seen_refs, act_ref)}
       else
         {selected, seen_refs}
@@ -169,7 +158,9 @@ defmodule Spectre.Attempt.Reconciler do
     |> Enum.uniq()
     |> Enum.sort()
     |> Enum.reject(&MapSet.member?(terminal_refs, &1))
-    |> Enum.filter(&(Map.get(projection.reservation_states, &1) == :reserved))
+    |> Enum.filter(
+      &(Spectre.GovernedAct.MeterState.reservation_status(projection, &1) == :reserved)
+    )
     |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, events} ->
       with {:ok, %Act{} = act} <- Map.fetch(projection.acts, act_ref),
            {:ok, event} <- Event.meter(:suspend, act) do
@@ -210,6 +201,8 @@ defmodule Spectre.Attempt.Reconciler do
   end
 
   defp cause_act_ref(cause) do
-    Map.get(cause, :act_ref) || get_in(cause, [:causal_refs, :act_ref])
+    cause
+    |> Map.get(:causal_refs, %{})
+    |> Map.get("act_ref")
   end
 end

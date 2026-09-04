@@ -8,7 +8,7 @@ defmodule Spectre.Domain.Event.Builder do
   """
 
   alias Spectre.Domain.Event
-  alias Spectre.Governance
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Meter.Amounts
 
   @spec record(atom(), struct()) :: {:ok, map()} | {:error, term()}
@@ -267,7 +267,7 @@ defmodule Spectre.Domain.Event.Builder do
       ) do
     with {:ok, act} <- Spectre.Act.new(act),
          {:ok, duty} <- Spectre.Duty.new(duty),
-         true <- Governance.executor_mediated?(act),
+         true <- GovernedExecution.executor_mediated?(act),
          true <- duty.status == :open,
          true <- duty.act_ref == act.ref,
          true <- is_nil(duty.attempt_ref),
@@ -293,7 +293,7 @@ defmodule Spectre.Domain.Event.Builder do
       ) do
     with {:ok, act} <- Spectre.Act.new(act),
          {:ok, mandate} <- Spectre.Mandate.new(mandate),
-         true <- Governance.executor_mediated?(act),
+         true <- GovernedExecution.executor_mediated?(act),
          true <- act.mandate_ref == mandate.ref,
          true <- act.mandate_revision == mandate.revision do
       {:ok,
@@ -314,13 +314,13 @@ defmodule Spectre.Domain.Event.Builder do
     do: {:error, :invalid_dispatch_cancellation_event}
 
   defp executor_mediated_dispatch(act) do
-    if Governance.executor_mediated?(act),
+    if GovernedExecution.executor_mediated?(act),
       do: :ok,
       else: {:error, :dispatch_cancellation_requires_executor_mediated_act}
   end
 
   defp ledger_internal_cause(act) do
-    if Governance.ledger_internal?(act),
+    if GovernedExecution.ledger_internal?(act),
       do: :ok,
       else: {:error, :dispatch_cancellation_cause_not_ledger_internal}
   end

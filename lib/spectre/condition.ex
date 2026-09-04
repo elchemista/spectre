@@ -82,20 +82,7 @@ defmodule Spectre.Condition do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = condition) do
-    %{
-      "schema_version" => condition.schema_version,
-      "ref" => condition.ref,
-      "proposition" => condition.proposition,
-      "coverage" => condition.coverage,
-      "bindings" => condition.bindings,
-      "cardinality" => condition.cardinality,
-      "accepted_provenance" => condition.accepted_provenance,
-      "freshness_ms" => condition.freshness_ms,
-      "allow_provisional" => condition.allow_provisional,
-      "parameters" => condition.parameters
-    }
-  end
+  def canonical(%__MODULE__{} = condition), do: Portable.canonical_fields(condition, @fields)
 
   @doc "Restores a condition from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -184,19 +171,7 @@ defmodule Spectre.Condition do
 
   defp content(%__MODULE__{} = condition), do: condition |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.fetch!(attrs, :schema_version),
-      "proposition" => Map.get(attrs, :proposition),
-      "coverage" => Map.fetch!(attrs, :coverage),
-      "bindings" => Map.fetch!(attrs, :bindings),
-      "cardinality" => Map.fetch!(attrs, :cardinality),
-      "accepted_provenance" => Map.fetch!(attrs, :accepted_provenance),
-      "freshness_ms" => Map.fetch!(attrs, :freshness_ms),
-      "allow_provisional" => Map.fetch!(attrs, :allow_provisional),
-      "parameters" => Map.fetch!(attrs, :parameters)
-    }
-  end
+  defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = condition) do
     min = Map.get(condition.cardinality, "min")

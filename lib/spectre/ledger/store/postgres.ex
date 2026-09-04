@@ -22,10 +22,9 @@ defmodule Spectre.Ledger.Store.Postgres do
   alias Spectre.Canonical.Value
   alias Spectre.Ledger
   alias Spectre.Ledger.Entry
+  alias Spectre.Ledger.Store.Support
 
   @identifier_pattern ~r/\A[a-z_][a-z0-9_]*\z/
-  @digest_pattern ~r/\A[0-9a-f]{64}\z/
-  @max_identifier_bytes 1_024
   @default_schema "public"
   @default_prefix "spectre_ledger"
   @namespace_options [:schema, :table_prefix]
@@ -45,8 +44,8 @@ defmodule Spectre.Ledger.Store.Postgres do
          :ok <- adapter_available(config),
          {:ok, identity} <-
            Entry.batch_identity(domain_ref, batch_id, payloads, expected_revision),
-         {:ok, recorded_at} <- recorded_at(opts),
-         {:ok, fault} <- fault_phase(opts) do
+         {:ok, recorded_at} <- Support.recorded_at(opts),
+         {:ok, fault} <- Support.fault_phase(opts) do
       append_transaction(
         config,
         domain_ref,
@@ -530,7 +529,7 @@ defmodule Spectre.Ledger.Store.Postgres do
     Enum.reduce_while(rows, {:ok, []}, fn
       [batch_id, identity, expected, first, last, count, head, encoded], {:ok, entries}
       when is_binary(encoded) ->
-        info = batch_info(batch_id, identity, expected, first, last, count, head)
+        info = Support.batch_info(batch_id, identity, expected, first, last, count, head)
 
         with :ok <- validate_batch_info(info, batch_id),
              {:ok, batch} <- decode_entry_batch(encoded),
@@ -574,7 +573,7 @@ defmodule Spectre.Ledger.Store.Postgres do
         :not_found
 
       [[identity, expected, first, last, count, head, encoded]] when is_binary(encoded) ->
-        info = batch_info(batch_id, identity, expected, first, last, count, head)
+        info = Support.batch_info(batch_id, identity, expected, first, last, count, head)
 
         with :ok <- validate_batch_info(info, batch_id),
              {:ok, entries} <- decode_entry_batch(encoded),
@@ -595,7 +594,7 @@ defmodule Spectre.Ledger.Store.Postgres do
          batch_id
        )
        when is_binary(encoded) do
-    info = batch_info(batch_id, identity, expected, first, last, count, head)
+    info = Support.batch_info(batch_id, identity, expected, first, last, count, head)
 
     with :ok <- validate_batch_info(info, batch_id),
          {:ok, entries} <- decode_entry_batch(encoded),
@@ -607,47 +606,19 @@ defmodule Spectre.Ledger.Store.Postgres do
   defp decode_existing_batch(_rows, _domain_ref, _batch_id),
     do: {:error, :invalid_ledger_postgres_batch_row}
 
-  defp batch_info(batch_id, identity, expected, first, last, count, head) do
-    %{
-      batch_id: batch_id,
-      identity_digest: identity,
-      expected_revision: expected,
-      first_revision: first,
-      last_revision: last,
-      entry_count: count,
-      head_digest: head
-    }
-  end
-
   defp validate_batch_info(info, expected_batch_id) do
-    cond do
-      info.batch_id != expected_batch_id or not valid_identifier?(info.batch_id) ->
-        {:error, :invalid_ledger_postgres_batch_id}
-
-      not valid_digest?(info.identity_digest) ->
-        {:error, :invalid_ledger_postgres_batch_identity}
-
-      not is_integer(info.expected_revision) or info.expected_revision < 0 ->
-        {:error, :invalid_ledger_postgres_batch_revision}
-
-      info.first_revision != info.expected_revision + 1 ->
-        {:error, :invalid_ledger_postgres_batch_range}
-
-      not is_integer(info.last_revision) or info.last_revision < info.first_revision ->
-        {:error, :invalid_ledger_postgres_batch_range}
-
-      not is_integer(info.entry_count) or info.entry_count <= 0 or
-        info.entry_count > Entry.max_batch_entries() or
-          info.entry_count != info.last_revision - info.first_revision + 1 ->
-        {:error, :invalid_ledger_postgres_batch_count}
-
-      not valid_digest?(info.head_digest) ->
-        {:error, :invalid_ledger_postgres_batch_head}
-
-      true ->
-        :ok
+    case Support.validate_batch_info(info, expected_batch_id) do
+      :ok -> :ok
+      {:error, field} -> {:error, batch_info_error(field)}
     end
   end
+
+  defp batch_info_error(:batch_id), do: :invalid_ledger_postgres_batch_id
+  defp batch_info_error(:identity), do: :invalid_ledger_postgres_batch_identity
+  defp batch_info_error(:revision), do: :invalid_ledger_postgres_batch_revision
+  defp batch_info_error(:range), do: :invalid_ledger_postgres_batch_range
+  defp batch_info_error(:count), do: :invalid_ledger_postgres_batch_count
+  defp batch_info_error(:head), do: :invalid_ledger_postgres_batch_head
 
   defp validate_decoded_batch(entries, domain_ref, info) do
     first = List.first(entries)
@@ -689,7 +660,7 @@ defmodule Spectre.Ledger.Store.Postgres do
   defp decode_head(_rows, _missing_policy), do: {:error, :invalid_ledger_postgres_head_row}
 
   defp validate_head(revision, digest) do
-    if is_integer(revision) and revision > 0 and valid_digest?(digest),
+    if is_integer(revision) and revision > 0 and Support.valid_digest?(digest),
       do: :ok,
       else: {:error, :invalid_ledger_postgres_head_row}
   end
@@ -813,47 +784,19 @@ defmodule Spectre.Ledger.Store.Postgres do
   defp sql_identifier(_value, field),
     do: {:error, {:invalid_ledger_postgres_option, field}}
 
-  defp valid_identifier?(value),
-    do: is_binary(value) and value != "" and byte_size(value) <= @max_identifier_bytes
-
-  defp valid_digest?(value) when is_binary(value) and byte_size(value) == 64,
-    do: Regex.match?(@digest_pattern, value)
-
-  defp valid_digest?(_value), do: false
-
   defp table(config, suffix) do
     ~s("#{config.schema}"."#{config.table_prefix}_#{suffix}")
   end
 
   defp qualified(config, identifier), do: ~s("#{config.schema}"."#{identifier}")
 
-  defp fault_phase(opts) do
-    value = Keyword.get(opts, :fault_injection, Keyword.get(opts, :fault))
-
-    if value in [nil, :before_commit, :after_commit],
-      do: {:ok, value},
-      else: {:error, {:invalid_ledger_fault_injection, value}}
-  end
-
-  defp recorded_at(opts) do
-    case Keyword.fetch(opts, :recorded_at) do
-      {:ok, value} when is_integer(value) and value >= 0 -> {:ok, value}
-      _missing_or_invalid -> {:error, :ledger_recorded_at_required}
-    end
-  end
-
-  defp validate_options(opts, allowed) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      case Keyword.keys(opts) -- allowed do
-        [] ->
-          :ok
-
-        unknown ->
-          {:error, {:unknown_ledger_postgres_options, unknown |> Enum.uniq() |> Enum.sort()}}
-      end
-    else
-      {:error, :invalid_ledger_postgres_options}
-    end
+  defp validate_options(opts, allowed) do
+    Support.validate_options(
+      opts,
+      allowed,
+      :invalid_ledger_postgres_options,
+      :unknown_ledger_postgres_options
+    )
   end
 
   defp error_kind(reason) when is_atom(reason), do: reason

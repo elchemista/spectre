@@ -55,12 +55,9 @@ defmodule Spectre.Disclosure do
   @doc "Returns the plain ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = disclosure) do
-    %{
-      "schema_version" => disclosure.schema_version,
-      "destination_refs" => disclosure.destination_refs,
-      "source_evidence_refs" => disclosure.source_evidence_refs,
-      "labels" => Enum.map(disclosure.labels, &Label.canonical/1)
-    }
+    disclosure
+    |> Portable.canonical_fields(@fields)
+    |> Map.update!("labels", &Enum.map(&1, fn label -> Label.canonical(label) end))
   end
 
   @doc "Restores a descriptor from its canonical representation."

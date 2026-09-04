@@ -49,8 +49,14 @@ defmodule Spectre.Kernel.Recognition do
   def check_with_basis(conditions, evidence, time)
       when is_list(conditions) and is_integer(time) do
     evidence = evidence_list(evidence)
-    results = Enum.map(conditions, &check_condition(&1, evidence, time))
-    {combined_result(results), evidence_basis_refs(conditions, evidence, time)}
+
+    {results, basis} =
+      Enum.map_reduce(conditions, MapSet.new(), fn condition, basis ->
+        {result, condition_basis} = evaluate(condition, evidence, time)
+        {result, MapSet.union(basis, condition_basis)}
+      end)
+
+    {combined_result(results), basis |> MapSet.to_list() |> Enum.sort()}
   end
 
   def check_with_basis(_conditions, _evidence, _time),
@@ -60,7 +66,8 @@ defmodule Spectre.Kernel.Recognition do
   @spec check_condition(Condition.t(), [Evidence.t()] | map(), integer()) ::
           :satisfied | {:unsatisfied, reason()} | {:undecidable, reason()}
   def check_condition(%Condition{} = condition, evidence, time) when is_integer(time) do
-    evaluate_condition(condition, evidence_list(evidence), time, cardinality_bounds(condition))
+    {result, _basis} = evaluate(condition, evidence_list(evidence), time)
+    result
   end
 
   def check_condition(condition, _evidence, _time),
@@ -70,7 +77,10 @@ defmodule Spectre.Kernel.Recognition do
   @spec qualified?(Evidence.t(), Condition.t(), [Evidence.t()] | map(), integer()) :: boolean()
   def qualified?(%Evidence{} = evidence, %Condition{} = condition, evidence_set, time)
       when is_integer(time) do
-    qualify(evidence, condition, evidence_list(evidence_set), time, MapSet.new()) == :ok
+    match?(
+      {:ok, %MapSet{}},
+      qualify(evidence, condition, evidence_list(evidence_set), time, MapSet.new())
+    )
   end
 
   def qualified?(_evidence, _condition, _evidence_set, _time), do: false
@@ -86,24 +96,39 @@ defmodule Spectre.Kernel.Recognition do
     end
   end
 
-  defp evaluate_condition(condition, all_evidence, time, bounds) do
+  defp evaluate(%Condition{} = condition, all_evidence, time) do
     relevant =
       all_evidence
       |> Enum.filter(&same_proposition?(&1, condition))
       |> Enum.uniq_by(& &1.ref)
 
-    {qualified, rejected} = qualify_all(relevant, condition, all_evidence, time)
+    {qualified, rejected, basis} = qualify_all(relevant, condition, all_evidence, time)
     supporting = Enum.filter(qualified, &(&1.stance == :supports))
     contradicting = Enum.filter(qualified, &(&1.stance == :contradicts))
 
-    classify(condition, supporting, contradicting, rejected, bounds)
+    result =
+      classify(
+        condition,
+        supporting,
+        contradicting,
+        rejected,
+        cardinality_bounds(condition)
+      )
+
+    {result, basis}
   end
 
+  defp evaluate(condition, _evidence, _time),
+    do: {{:undecidable, {:unknown_condition, condition_ref(condition)}}, MapSet.new()}
+
   defp qualify_all(relevant, condition, all_evidence, time) do
-    Enum.reduce(relevant, {[], []}, fn item, {accepted, rejected} ->
+    Enum.reduce(relevant, {[], [], MapSet.new()}, fn item, {accepted, rejected, basis} ->
       case qualify(item, condition, all_evidence, time, MapSet.new()) do
-        :ok -> {[item | accepted], rejected}
-        {:error, reason} -> {accepted, [{item.ref, reason} | rejected]}
+        {:ok, item_basis} ->
+          {[item | accepted], rejected, MapSet.union(basis, item_basis)}
+
+        {:error, reason} ->
+          {accepted, [{item.ref, reason} | rejected], basis}
       end
     end)
   end
@@ -147,8 +172,10 @@ defmodule Spectre.Kernel.Recognition do
          :ok <- valid_at(evidence, time),
          :ok <- fresh_enough(evidence, condition, time),
          :ok <- bindings_cover(evidence, condition),
-         :ok <- labels_cover(evidence, condition) do
-      assumptions_supported(evidence, condition, evidence_set, time, visited)
+         :ok <- labels_cover(evidence, condition),
+         {:ok, assumption_basis} <-
+           assumptions_supported(evidence, condition, evidence_set, time, visited) do
+      {:ok, MapSet.put(assumption_basis, evidence.ref)}
     else
       true -> {:error, :cyclic_evidence_assumptions}
       {:error, _reason} = error -> error
@@ -230,7 +257,7 @@ defmodule Spectre.Kernel.Recognition do
   defp assumptions_supported(evidence, condition, evidence_set, time, visited) do
     accepted = parameter(condition, "accepted_assumptions", [])
 
-    Enum.reduce_while(evidence.assumptions, :ok, fn assumption, :ok ->
+    Enum.reduce_while(evidence.assumptions, {:ok, MapSet.new()}, fn assumption, {:ok, basis} ->
       case assumption_status(
              assumption,
              assumption in accepted,
@@ -239,20 +266,38 @@ defmodule Spectre.Kernel.Recognition do
              time,
              visited
            ) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
+        {:ok, assumption_basis} ->
+          {:cont, {:ok, MapSet.union(basis, assumption_basis)}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
       end
     end)
   end
 
   defp assumption_status(assumption, accepted?, condition, evidence_set, time, visited) do
-    qualified =
-      evidence_set
-      |> Enum.filter(&(&1.proposition == assumption))
-      |> Enum.filter(&(qualify(&1, condition, evidence_set, time, visited) == :ok))
+    {supporting, contradicting, basis} =
+      Enum.reduce(evidence_set, {[], [], MapSet.new()}, fn candidate,
+                                                           {supporting, contradicting, basis} ->
+        if candidate.proposition == assumption do
+          case qualify(candidate, condition, evidence_set, time, visited) do
+            {:ok, candidate_basis} ->
+              {
+                if(candidate.stance == :supports, do: [candidate | supporting], else: supporting),
+                if(candidate.stance == :contradicts,
+                  do: [candidate | contradicting],
+                  else: contradicting
+                ),
+                MapSet.union(basis, candidate_basis)
+              }
 
-    supporting = Enum.filter(qualified, &(&1.stance == :supports))
-    contradicting = Enum.filter(qualified, &(&1.stance == :contradicts))
+            {:error, _reason} ->
+              {supporting, contradicting, basis}
+          end
+        else
+          {supporting, contradicting, basis}
+        end
+      end)
 
     cond do
       supporting != [] and contradicting != [] ->
@@ -264,56 +309,11 @@ defmodule Spectre.Kernel.Recognition do
         {:error, {:contradicted_evidence_assumption, assumption, evidence_refs(contradicting)}}
 
       supporting != [] or accepted? ->
-        :ok
+        {:ok, basis}
 
       true ->
         {:error, {:unresolved_evidence_assumption, assumption}}
     end
-  end
-
-  defp evidence_basis_refs(conditions, evidence, time) do
-    conditions
-    |> Enum.reduce(MapSet.new(), fn
-      %Condition{} = condition, refs ->
-        seeds = Enum.filter(evidence, &same_proposition?(&1, condition))
-        collect_evidence_basis(seeds, condition, evidence, time, refs, MapSet.new())
-
-      _invalid, refs ->
-        refs
-    end)
-    |> MapSet.to_list()
-    |> Enum.sort()
-  end
-
-  defp collect_evidence_basis(candidates, condition, evidence, time, refs, visited) do
-    Enum.reduce(candidates, refs, fn candidate, current_refs ->
-      identity = {:evidence, candidate.ref}
-
-      cond do
-        MapSet.member?(visited, identity) ->
-          current_refs
-
-        qualify(candidate, condition, evidence, time, MapSet.new()) != :ok ->
-          current_refs
-
-        true ->
-          visited = MapSet.put(visited, identity)
-          current_refs = MapSet.put(current_refs, candidate.ref)
-
-          Enum.reduce(candidate.assumptions, current_refs, fn assumption, assumption_refs ->
-            dependencies = Enum.filter(evidence, &(&1.proposition == assumption))
-
-            collect_evidence_basis(
-              dependencies,
-              condition,
-              evidence,
-              time,
-              assumption_refs,
-              visited
-            )
-          end)
-      end
-    end)
   end
 
   defp coverage_satisfied?(%Condition{coverage: required}, _evidence)

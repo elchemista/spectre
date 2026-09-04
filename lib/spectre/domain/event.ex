@@ -20,17 +20,16 @@ defmodule Spectre.Domain.Event do
     Trusted ledger position attached to a decoded Domain event.
 
     Record-specific metadata maps used to be repeated by projections and the
-    auditor. A single value indexed by `{event_type, identity}` keeps replay
-    ordering, batch adjacency and acquisition time in one consistent shape.
+    auditor. A single value indexed by the content-addressed record reference
+    keeps replay ordering, batch adjacency and acquisition time in one shape.
     """
 
-    @enforce_keys [:revision, :batch_id, :batch_index, :recorded_at]
-    defstruct [:revision, :batch_id, :batch_index, :recorded_at]
+    @enforce_keys [:revision, :batch_id, :recorded_at]
+    defstruct [:revision, :batch_id, :recorded_at]
 
     @type t :: %__MODULE__{
             revision: pos_integer(),
             batch_id: String.t(),
-            batch_index: non_neg_integer(),
             recorded_at: non_neg_integer()
           }
   end
@@ -52,6 +51,20 @@ defmodule Spectre.Domain.Event do
     scope: {"scope_opened", Spectre.Scope.Opening},
     erasure: {"erasure_requested", Spectre.Erasure}
   }
+
+  # Only records whose acquisition order participates in historical
+  # derivation need a secondary metadata entry in the disposable projection.
+  # Every other event remains in the append-only ledger and is represented by
+  # the state transition it produces.
+  @retained_metadata_types ~w(
+    act_committed
+    attempt_started
+    duty_opened
+    erasure_requested
+    evidence_recorded
+    outcome_recorded
+    presentation_recorded
+  )
 
   @manual_fields %{
     "principal_registered" => ~w(act_ref principal),
@@ -89,11 +102,9 @@ defmodule Spectre.Domain.Event do
           recorded_at: non_neg_integer() | nil
         }
 
-  @type key :: {String.t(), String.t()}
-
-  @doc "Returns the stable lookup key for an event identity within its class."
-  @spec key(t()) :: key()
-  def key(%__MODULE__{type: type, identity: identity}), do: {type, identity}
+  @doc false
+  @spec retain_metadata?(t()) :: boolean()
+  def retain_metadata?(%__MODULE__{type: type}), do: type in @retained_metadata_types
 
   @doc "Returns ledger metadata from an event decoded with `decode_entry/1`."
   @spec metadata(t()) :: {:ok, Metadata.t()} | {:error, :missing_event_metadata}
@@ -110,7 +121,6 @@ defmodule Spectre.Domain.Event do
      %Metadata{
        revision: revision,
        batch_id: batch_id,
-       batch_index: batch_index,
        recorded_at: recorded_at
      }}
   end

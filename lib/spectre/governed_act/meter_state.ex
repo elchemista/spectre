@@ -8,26 +8,21 @@ defmodule Spectre.GovernedAct.MeterState do
   state and performs no ledger append or external I/O.
   """
 
-  alias Spectre.{Act, Governance, Mandate, Outcome, Row}
-  alias Spectre.GovernedAct.{State, View}
+  alias Spectre.{Mandate, Outcome}
+  alias Spectre.GovernedAct.{Class, DispatchState, State}
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Meter
+  alias Spectre.Kernel.Meter.Account
   alias Spectre.Kernel.Meter.Amounts
   alias Spectre.Mandate.Ancestry
 
   @doc "Creates physical accounts for a root Mandate allocation."
-  @spec initialize(map(), Mandate.t()) :: map()
+  @spec initialize(%{optional(String.t()) => Meter.accounts()}, Mandate.t()) ::
+          %{optional(String.t()) => Meter.accounts()}
   def initialize(all_meters, %Mandate{} = mandate) when is_map(all_meters) do
     accounts =
       Map.new(mandate.meters, fn {meter_ref, ceiling} ->
-        {meter_ref,
-         %{
-           ceiling: ceiling,
-           available: ceiling,
-           reserved: 0,
-           suspended: 0,
-           spent: 0,
-           delegated: 0
-         }}
+        {meter_ref, Account.root(meter_ref, ceiling)}
       end)
 
     Map.put(all_meters, mandate.ref, accounts)
@@ -44,8 +39,7 @@ defmodule Spectre.GovernedAct.MeterState do
       {:ok,
        %{
          state
-         | reservation_states: Map.put(state.reservation_states, context.act_ref, :reserved),
-           reservation_bindings: Map.put(state.reservation_bindings, context.act_ref, context)
+         | meter_reservations: Map.put(state.meter_reservations, context.act_ref, :reserved)
        }}
     end
   end
@@ -56,18 +50,15 @@ defmodule Spectre.GovernedAct.MeterState do
   def transition(%State{} = state, data, operation)
       when is_map(data) and operation in [:settle, :release, :suspend] do
     with {:ok, context} <- reservation_context(state, data),
-         {:ok, status, binding} <- reservation(state, context.act_ref),
-         :ok <- match_reservation(binding, context),
+         {:ok, reservation} <- reservation(state, context.act_ref),
+         :ok <- match_reservation(reservation, context),
          :ok <- validate_disposition(state, context.act_ref, operation),
-         {:ok, next_status} <- next_status(status, operation, context.act_ref),
+         {:ok, next_status} <- next_status(reservation.status, operation, context.act_ref),
          {:ok, accounts} <- accounts(state, context.mandate_ref),
-         {:ok, accounts} <- transition_accounts(accounts, context.amounts, operation, status),
+         {:ok, accounts} <-
+           transition_accounts(accounts, context.amounts, operation, reservation.status),
          {:ok, state} <- put_accounts(state, context.mandate_ref, accounts) do
-      {:ok,
-       %{
-         state
-         | reservation_states: Map.put(state.reservation_states, context.act_ref, next_status)
-       }}
+      set_reservation_status(state, context.act_ref, next_status)
     end
   end
 
@@ -77,9 +68,9 @@ defmodule Spectre.GovernedAct.MeterState do
     outcome_ref = data["outcome_ref"]
 
     with {:ok, context} <- reservation_context(state, data),
-         {:ok, status, binding} <- reservation(state, context.act_ref),
-         :ok <- released_reservation(status, context.act_ref),
-         :ok <- match_reservation(binding, context),
+         {:ok, reservation} <- reservation(state, context.act_ref),
+         :ok <- released_reservation(reservation.status, context.act_ref),
+         :ok <- match_reservation(reservation, context),
          {:ok, %Outcome{} = outcome} <- Map.fetch(state.outcomes, outcome_ref),
          :ok <- validate_recontainment_cause(state, context, outcome),
          :ok <- recontainment_absent(state, context.act_ref),
@@ -97,24 +88,20 @@ defmodule Spectre.GovernedAct.MeterState do
              expected_recontained,
              expected_deficits
            ),
-         {:ok, state} <- put_accounts(state, context.mandate_ref, accounts) do
+         {:ok, state} <- put_accounts(state, context.mandate_ref, accounts),
+         {:ok, state} <- set_reservation_status(state, context.act_ref, :suspended) do
       record = %{
-        act_ref: context.act_ref,
-        mandate_ref: context.mandate_ref,
         outcome_ref: outcome.ref,
         cause_key: {:contradicted_outcome, context.act_ref, outcome.attempt_ref, outcome.ref},
-        amounts: context.amounts,
         recontained: recontained,
         deficits: deficits,
-        status: :open,
         disposition_act_ref: nil
       }
 
       {:ok,
        %{
          state
-         | reservation_states: Map.put(state.reservation_states, context.act_ref, :suspended),
-           meter_recontainments: Map.put(state.meter_recontainments, context.act_ref, record)
+         | meter_recontainments: Map.put(state.meter_recontainments, context.act_ref, record)
        }}
     else
       :error -> {:error, {:recontainment_outcome_not_found, outcome_ref}}
@@ -162,33 +149,80 @@ defmodule Spectre.GovernedAct.MeterState do
     end
   end
 
-  @doc "Fetches the current reservation status and immutable Act binding."
-  @spec reservation(State.t(), String.t()) :: {:ok, atom(), map()} | {:error, term()}
+  @doc "Fetches the current status and immutable binding for an Act reservation."
+  @spec reservation(State.t(), String.t()) ::
+          {:ok, State.meter_reservation()} | {:error, term()}
   def reservation(%State{} = state, act_ref) do
-    with {:ok, status} <- Map.fetch(state.reservation_states, act_ref),
-         {:ok, binding} <- Map.fetch(state.reservation_bindings, act_ref) do
-      {:ok, status, binding}
-    else
-      :error -> {:error, {:reservation_not_found, act_ref}}
+    case Map.fetch(state.meter_reservations, act_ref) do
+      {:ok, status} when status in [:reserved, :suspended, :settled, :released] ->
+        case Map.fetch(state.acts, act_ref) do
+          {:ok, act} ->
+            if Spectre.Act.reservations?(act) do
+              {:ok, %{status: status, mandate_ref: act.mandate_ref, amounts: act.reservations}}
+            else
+              {:error, {:invalid_reservation_act, act_ref}}
+            end
+
+          :error ->
+            {:error, {:reservation_act_not_found, act_ref}}
+        end
+
+      :error ->
+        {:error, {:reservation_not_found, act_ref}}
+
+      {:ok, _invalid} ->
+        {:error, {:invalid_reservation, act_ref}}
+    end
+  end
+
+  @doc "Returns the projected status for an Act reservation, or `nil` when absent."
+  @spec reservation_status(State.t(), String.t()) :: State.reservation_status() | nil
+  def reservation_status(%State{} = state, act_ref) do
+    case Map.get(state.meter_reservations, act_ref) do
+      status when status in [:reserved, :suspended, :settled, :released] -> status
+      _missing_or_invalid -> nil
+    end
+  end
+
+  @doc false
+  @spec set_reservation_status(State.t(), String.t(), State.reservation_status()) ::
+          {:ok, State.t()} | {:error, term()}
+  def set_reservation_status(%State{} = state, act_ref, status)
+      when status in [:reserved, :suspended, :settled, :released] do
+    with {:ok, _reservation} <- reservation(state, act_ref) do
+      {:ok, %{state | meter_reservations: Map.put(state.meter_reservations, act_ref, status)}}
     end
   end
 
   @doc "Fetches the physical accounts backing a logical Mandate revision."
-  @spec accounts(State.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def accounts(%State{} = state, mandate_ref),
-    do: View.meter_accounts(state, mandate_ref)
+  @spec accounts(State.t(), String.t()) :: {:ok, Meter.accounts()} | {:error, term()}
+  def accounts(%State{} = state, mandate_ref) do
+    with {:ok, owner_ref} <- owner(state, mandate_ref),
+         {:ok, accounts} <- Map.fetch(state.meters, owner_ref) do
+      {:ok, accounts}
+    else
+      :error -> {:error, {:meter_mandate_not_found, mandate_ref}}
+      {:error, _reason} = error -> error
+    end
+  end
 
   @doc "Fetches the physical owner for a logical Mandate revision."
   @spec owner(State.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def owner(%State{} = state, mandate_ref) do
-    case Map.fetch(state.meter_owners, mandate_ref) do
-      {:ok, owner_ref} -> {:ok, owner_ref}
-      :error -> {:error, {:meter_owner_not_found, mandate_ref}}
+    case Map.fetch(state.meter_owner_aliases, mandate_ref) do
+      {:ok, owner_ref} ->
+        {:ok, owner_ref}
+
+      :error ->
+        if Map.has_key?(state.meters, mandate_ref),
+          do: {:ok, mandate_ref},
+          else: {:error, {:meter_owner_not_found, mandate_ref}}
     end
   end
 
   @doc "Replaces physical accounts after a validated algebra transition."
-  @spec put_accounts(State.t(), String.t(), map()) :: {:ok, State.t()} | {:error, term()}
+  @spec put_accounts(State.t(), String.t(), Meter.accounts()) ::
+          {:ok, State.t()} | {:error, term()}
   def put_accounts(%State{} = state, mandate_ref, accounts) when is_map(accounts) do
     with {:ok, owner_ref} <- owner(state, mandate_ref) do
       {:ok, %{state | meters: Map.put(state.meters, owner_ref, accounts)}}
@@ -196,8 +230,8 @@ defmodule Spectre.GovernedAct.MeterState do
   end
 
   @doc "Applies one account operation to every amount as a single pure transition."
-  @spec transition_accounts(map(), Amounts.t(), atom(), atom()) ::
-          {:ok, map()} | {:error, term()}
+  @spec transition_accounts(Meter.accounts(), Amounts.t(), atom(), atom()) ::
+          {:ok, Meter.accounts()} | {:error, term()}
   def transition_accounts(accounts, amounts, operation, reservation_status)
       when is_map(accounts) and is_map(amounts) do
     Enum.reduce_while(amounts, {:ok, accounts}, fn {meter_ref, amount}, {:ok, current} ->
@@ -211,11 +245,20 @@ defmodule Spectre.GovernedAct.MeterState do
   end
 
   @doc "Fetches one physical Meter account."
-  @spec account(map(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec account(Meter.accounts(), String.t()) :: {:ok, Account.t()} | {:error, term()}
   def account(accounts, meter_ref) when is_map(accounts) do
     case Map.fetch(accounts, meter_ref) do
-      {:ok, account} -> {:ok, account}
-      :error -> {:error, {:meter_not_found, meter_ref}}
+      {:ok, %Account{meter_ref: ^meter_ref} = account} ->
+        {:ok, account}
+
+      {:ok, %Account{meter_ref: actual_ref}} ->
+        {:error, {:meter_account_ref_mismatch, meter_ref, actual_ref}}
+
+      {:ok, _invalid} ->
+        {:error, {:invalid_meter_account, meter_ref}}
+
+      :error ->
+        {:error, {:meter_not_found, meter_ref}}
     end
   end
 
@@ -235,22 +278,23 @@ defmodule Spectre.GovernedAct.MeterState do
   end
 
   defp reservation_absent(state, act_ref) do
-    case Map.fetch(state.reservation_states, act_ref) do
-      :error -> :ok
-      {:ok, status} -> {:error, {:reservation_already_exists, act_ref, status}}
+    case Map.fetch(state.meter_reservations, act_ref) do
+      :error ->
+        :ok
+
+      {:ok, reservation} ->
+        {:error, {:reservation_already_exists, act_ref, reservation}}
     end
   end
 
-  defp match_reservation(binding, context) do
-    if binding.act_ref == context.act_ref and binding.mandate_ref == context.mandate_ref and
-         binding.amounts == context.amounts,
+  defp match_reservation(reservation, context) do
+    if reservation.mandate_ref == context.mandate_ref and
+         reservation.amounts == context.amounts,
        do: :ok,
        else: {:error, {:reservation_identity_mismatch, context.act_ref}}
   end
 
   defp validate_disposition(state, act_ref, operation) do
-    outcomes = state.outcomes |> Map.values() |> Enum.filter(&(&1.act_ref == act_ref))
-
     allowed_statuses =
       case operation do
         :settle -> [:succeeded, :failed]
@@ -259,20 +303,35 @@ defmodule Spectre.GovernedAct.MeterState do
       end
 
     cond do
-      Enum.any?(outcomes, &(&1.status in allowed_statuses)) ->
-        :ok
-
       operation == :settle and internal_spend_act?(Map.get(state.acts, act_ref)) ->
         :ok
 
-      operation == :release and Map.has_key?(state.dispatch_cancellations, act_ref) ->
-        :ok
-
-      operation == :suspend and Map.has_key?(state.attempts_by_act, act_ref) and outcomes == [] ->
+      operation == :release and DispatchState.cancelled?(state, act_ref) ->
         :ok
 
       true ->
-        {:error, {:reservation_disposition_not_evidenced, act_ref, operation}}
+        validate_outcome_disposition(state, act_ref, operation, allowed_statuses)
+    end
+  end
+
+  defp validate_outcome_disposition(state, act_ref, operation, allowed_statuses) do
+    {outcome_present?, allowed_outcome?} =
+      Enum.reduce_while(state.outcomes, {false, false}, fn
+        {_ref, %Outcome{act_ref: ^act_ref, status: status}}, _acc ->
+          if status in allowed_statuses,
+            do: {:halt, {true, true}},
+            else: {:cont, {true, false}}
+
+        _other, acc ->
+          {:cont, acc}
+      end)
+
+    if allowed_outcome? or
+         (operation == :suspend and DispatchState.attempted?(state, act_ref) and
+            not outcome_present?) do
+      :ok
+    else
+      {:error, {:reservation_disposition_not_evidenced, act_ref, operation}}
     end
   end
 
@@ -369,7 +428,7 @@ defmodule Spectre.GovernedAct.MeterState do
       act.class != "mandate.devolve" ->
         {:error, {:meter_devolution_act_class_mismatch, act.ref, act.class}}
 
-      Row.dimensions(act.row) != [:delegate, :govern] ->
+      not Class.exact_row?("mandate.devolve", act.row) ->
         {:error, {:meter_devolution_act_row_mismatch, act.ref}}
 
       map_size(act.reservations) > 0 ->
@@ -388,14 +447,15 @@ defmodule Spectre.GovernedAct.MeterState do
 
   defp exact_available_devolution(child_ref, accounts, amounts) do
     available =
-      accounts
-      |> Enum.flat_map(fn {meter_ref, account} ->
-        case Map.get(account, :available) do
-          quantity when is_integer(quantity) and quantity > 0 -> [{meter_ref, quantity}]
-          _zero_or_invalid -> []
+      Enum.reduce(accounts, %{}, fn {meter_ref, account}, available ->
+        case account.available do
+          quantity when is_integer(quantity) and quantity > 0 ->
+            Map.put(available, meter_ref, quantity)
+
+          _zero_or_invalid ->
+            available
         end
       end)
-      |> Map.new()
 
     cond do
       map_size(available) == 0 ->
@@ -435,11 +495,7 @@ defmodule Spectre.GovernedAct.MeterState do
     end
   end
 
-  defp internal_spend_act?(%Act{row: %{spend: true}, reservations: reservations} = act)
-       when map_size(reservations) > 0,
-       do: Governance.ledger_internal?(act)
-
-  defp internal_spend_act?(_act), do: false
+  defp internal_spend_act?(act), do: GovernedExecution.metered_ledger_internal?(act)
 
   defp fetch(collection, key, kind) do
     case Map.fetch(collection, key) do

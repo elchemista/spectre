@@ -10,49 +10,20 @@ defmodule Spectre.Consequence.Validator do
   Ordinary application classes use `none/0`; their complete material shape is
   still enforced by `Spectre.Consequence.Contract`.  Validators in this module
   exist only for core transitions whose validity depends on the current
-  projection or trusted time.
+  projection or trusted time. Their immutable class binding comes from
+  `Spectre.GovernedAct.Class`, not from a callback named in ledger data.
   """
 
   alias Spectre.{Act, Candidate, Decision}
   alias Spectre.Domain.Projection
   alias Spectre.Erasure
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.Class, as: GovernedClass
   alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Commit
   alias Spectre.Mandate
 
   @none "spectre:consequence-validator:none:v1"
-  @scope_opening "spectre:consequence-validator:scope-opening:v1"
-  @principal_registration "spectre:consequence-validator:principal-registration:v1"
-  @mandate_delegation "spectre:consequence-validator:mandate-delegation:v1"
-  @mandate_devolution "spectre:consequence-validator:mandate-devolution:v1"
-  @mandate_restriction "spectre:consequence-validator:mandate-restriction:v1"
-  @erasure_request "spectre:consequence-validator:erasure-request:v1"
-  @mandate_revocation "spectre:consequence-validator:mandate-revocation:v1"
-  @duty_disposition "spectre:consequence-validator:duty-disposition:v1"
-  @surface_revision "spectre:consequence-validator:surface-revision:v1"
-  @host_profile_revision "spectre:consequence-validator:host-profile-revision:v1"
-  @definition_revision "spectre:consequence-validator:definition-revision:v1"
-  @evidence_declassification "spectre:consequence-validator:evidence-declassification:v1"
-  @presentation_show "spectre:consequence-validator:presentation-show:v1"
-
-  @class_defaults %{
-    "scope.open" => @scope_opening,
-    "principal.register" => @principal_registration,
-    "mandate.delegate" => @mandate_delegation,
-    "mandate.devolve" => @mandate_devolution,
-    "mandate.restrict" => @mandate_restriction,
-    "mandate.revoke" => @mandate_revocation,
-    "duty.dispose" => @duty_disposition,
-    "surface.revise" => @surface_revision,
-    "host_profile.revise" => @host_profile_revision,
-    "definition.revise" => @definition_revision,
-    "data.declassify" => @evidence_declassification,
-    "data.erase" => @erasure_request,
-    "presentation.show" => @presentation_show
-  }
-  @intrinsic_validators Map.values(@class_defaults)
-  @validators [@none | @intrinsic_validators]
 
   @type id :: String.t()
 
@@ -62,11 +33,23 @@ defmodule Spectre.Consequence.Validator do
 
   @doc "Returns the built-in default recorded for a class by a new Surface."
   @spec default_for_class(String.t()) :: id()
-  def default_for_class(class) when is_binary(class), do: Map.get(@class_defaults, class, @none)
+  def default_for_class(class) when is_binary(class) do
+    case GovernedClass.validator(class) do
+      {:ok, validator} -> validator
+      :application -> @none
+    end
+  end
 
   @doc "Validates that an identifier names a deterministic built-in rule."
   @spec validate_id(term()) :: :ok | {:error, term()}
-  def validate_id(id) when id in @validators, do: :ok
+  def validate_id(@none), do: :ok
+
+  def validate_id(id) when is_binary(id) do
+    if GovernedClass.validator_id?(id),
+      do: :ok,
+      else: {:error, {:unknown_consequence_validator, id}}
+  end
+
   def validate_id(id), do: {:error, {:unknown_consequence_validator, id}}
 
   @doc "Validates the immutable class-to-validator binding recorded by a Surface."
@@ -85,61 +68,49 @@ defmodule Spectre.Consequence.Validator do
   @doc "Applies the validator selected by the active Surface."
   @spec validate(id(), Candidate.t(), map(), integer()) :: :ok | {:error, term()}
   def validate(id, %Candidate{} = candidate, projection, time)
-      when id in @validators and is_map(projection) and is_integer(time) do
-    with :ok <- validate_binding(candidate.class, id) do
+      when is_map(projection) and is_integer(time) do
+    with :ok <- validate_id(id),
+         :ok <- validate_binding(candidate.class, id) do
       validate_facts(id, candidate, projection, time)
     end
   end
 
-  def validate(id, %Candidate{}, _projection, _time) when id in @validators,
-    do: {:error, :invalid_consequence_validator_input}
-
-  def validate(id, _candidate, _projection, _time),
-    do: {:error, {:unknown_consequence_validator, id}}
+  def validate(id, _candidate, _projection, _time) do
+    with :ok <- validate_id(id), do: {:error, :invalid_consequence_validator_input}
+  end
 
   @doc "Checks an admitted intrinsic transition against a provisional projection."
   @spec validate_transition(id(), Candidate.t(), Decision.t(), Act.t(), Projection.t()) ::
           :ok | {:error, term()}
-  def validate_transition(
-        @none,
-        %Candidate{} = candidate,
-        %Decision{outcome: :admitted} = decision,
-        %Act{} = act,
-        %State{} = projection
-      ) do
-    validate_committable_transition(@none, candidate, decision, act, projection)
-  end
-
   def validate_transition(
         id,
         %Candidate{} = candidate,
         %Decision{outcome: :admitted} = decision,
         %Act{} = act,
         %State{} = projection
-      )
-      when id in @intrinsic_validators do
-    validate_committable_transition(id, candidate, decision, act, projection)
+      ) do
+    with :ok <- validate_id(id) do
+      validate_committable_transition(id, candidate, decision, act, projection)
+    end
   end
 
-  def validate_transition(id, %Candidate{}, %Decision{}, %Act{}, %State{})
-      when id in @validators,
-      do: {:error, :invalid_consequence_transition}
+  def validate_transition(id, %Candidate{}, %Decision{}, %Act{}, %State{}) do
+    with :ok <- validate_id(id), do: {:error, :invalid_consequence_transition}
+  end
 
-  def validate_transition(id, _candidate, _decision, _act, _projection),
-    do: {:error, {:unknown_consequence_validator, id}}
+  def validate_transition(id, _candidate, _decision, _act, _projection) do
+    with :ok <- validate_id(id), do: {:error, :invalid_consequence_transition_input}
+  end
 
-  defp validate_facts(@none, %Candidate{}, _projection, _time), do: :ok
-
-  defp validate_facts(@erasure_request, %Candidate{} = candidate, projection, time) do
+  defp validate_facts(_id, %Candidate{class: "data.erase"} = candidate, projection, time) do
     validate_erasure_request(candidate, projection, time)
   end
 
-  defp validate_facts(@mandate_revocation, %Candidate{} = candidate, projection, time) do
+  defp validate_facts(_id, %Candidate{class: "mandate.revoke"} = candidate, projection, time) do
     validate_mandate_revocation(candidate, projection, time)
   end
 
-  defp validate_facts(id, %Candidate{}, _projection, _time) when id in @intrinsic_validators,
-    do: :ok
+  defp validate_facts(_id, %Candidate{}, _projection, _time), do: :ok
 
   defp validate_committable_transition(id, candidate, decision, act, projection) do
     with :ok <- validate_binding(candidate.class, id),

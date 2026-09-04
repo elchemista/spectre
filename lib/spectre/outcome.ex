@@ -91,7 +91,7 @@ defmodule Spectre.Outcome do
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = outcome) do
-    Map.new(@fields, fn field -> {Atom.to_string(field), Map.fetch!(outcome, field)} end)
+    Portable.canonical_fields(outcome, @fields)
   end
 
   @doc "Restores an outcome from its canonical map."
@@ -112,9 +112,7 @@ defmodule Spectre.Outcome do
   defp content(%__MODULE__{} = outcome), do: outcome |> canonical() |> Map.delete("ref")
 
   defp content(attrs) do
-    @fields
-    |> Enum.reject(&(&1 == :ref))
-    |> Map.new(fn field -> {Atom.to_string(field), Map.get(attrs, field)} end)
+    Portable.canonical_fields(attrs, @fields -- [:ref])
   end
 
   defp validate_record(%__MODULE__{} = outcome) do

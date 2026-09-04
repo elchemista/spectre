@@ -52,11 +52,11 @@ defmodule Spectre.Kernel.Meter.Amounts do
   @spec exact_partition(t(), t(), t()) :: :ok | {:error, :invalid_meter_partition}
   def exact_partition(total, left, right)
       when is_map(total) and is_map(left) and is_map(right) do
-    keys = Map.keys(left) ++ Map.keys(right)
-
     valid? =
-      length(keys) == MapSet.size(MapSet.new(keys)) and
-        Enum.all?(keys, &Map.has_key?(total, &1)) and
+      Enum.all?(left, fn {meter_ref, _quantity} ->
+        Map.has_key?(total, meter_ref) and not Map.has_key?(right, meter_ref)
+      end) and
+        Enum.all?(right, fn {meter_ref, _quantity} -> Map.has_key?(total, meter_ref) end) and
         Enum.all?(total, fn {meter_ref, quantity} ->
           Map.get(left, meter_ref, 0) + Map.get(right, meter_ref, 0) == quantity
         end)

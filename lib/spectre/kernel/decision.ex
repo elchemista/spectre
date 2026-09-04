@@ -21,7 +21,7 @@ defmodule Spectre.Kernel.Decision do
     * `:unknown_class` -- the governed Surface cannot classify it.
   """
 
-  alias Spectre.{Candidate, Mandate, Row, Surface}
+  alias Spectre.{Candidate, Mandate, Row}
   alias Spectre.Kernel.{Authority, Meter}
   alias Spectre.Kernel.Authority.Effective
   alias Spectre.Kernel.Decision.Context
@@ -70,24 +70,12 @@ defmodule Spectre.Kernel.Decision do
         time
       )
       when is_list(recognition_evidence_refs) and is_integer(time) do
-    case {unknown_class?(candidate, context), resolution} do
-      {true, _resolution} ->
-        build(
-          candidate,
-          nil,
-          context,
-          time,
-          :unknown_class,
-          [:candidate_class_not_declared],
-          %{},
-          []
-        )
-
-      {false, :none} ->
+    case resolution do
+      :none ->
         build(candidate, nil, context, time, :refused, [:mandate_absent], %{}, [])
 
-      {false, {:ambiguous, mandates}} when is_list(mandates) ->
-        refs = mandates |> Enum.map(& &1.ref) |> Enum.sort()
+      {:ambiguous, mandates} when is_list(mandates) ->
+        refs = mandates |> Enum.map(&Effective.ref/1) |> Enum.sort()
 
         build(
           candidate,
@@ -100,17 +88,23 @@ defmodule Spectre.Kernel.Decision do
           []
         )
 
-      {false, {:ok, %Effective{} = authority}} ->
-        decide_with_authority(
-          candidate,
-          authority,
-          recognition,
-          recognition_evidence_refs,
-          context,
-          time
-        )
+      {:ok, %Effective{} = authority} ->
+        case Effective.snapshot(authority, candidate) do
+          {:ok, snapshot} ->
+            decide_with_authority(
+              candidate,
+              snapshot,
+              recognition,
+              recognition_evidence_refs,
+              context,
+              time
+            )
 
-      {false, _invalid_resolution} ->
+          {:error, reason} ->
+            build(candidate, nil, context, time, :undecidable, [reason], %{}, [])
+        end
+
+      _invalid_resolution ->
         build(
           candidate,
           nil,
@@ -242,7 +236,7 @@ defmodule Spectre.Kernel.Decision do
   defp delegation_covered(%Candidate{class: "mandate.delegate"} = candidate, authority, time) do
     candidate
     |> delegated_mandate()
-    |> verify_delegation(authority.source, time)
+    |> verify_delegation(source_mandate(authority), time)
   end
 
   defp delegation_covered(%Candidate{class: "mandate.devolve"} = candidate, _authority, _time),
@@ -308,12 +302,11 @@ defmodule Spectre.Kernel.Decision do
 
   defp reservations(candidate, authority, context) do
     requests = candidate.meter_requests
-    accounts = Map.get(context.meter_accounts, authority.ref, %{})
 
     with :ok <- meter_row_consistent(candidate),
          :ok <- meters_authorized(requests, authority),
-         {:ok, reservations} <- Meter.plan_reservations(requests, accounts) do
-      {:ok, Map.new(reservations, &{&1.meter_ref, &1.quantity})}
+         {:ok, reservations} <- Meter.plan_reservations(requests, context.meter_accounts) do
+      {:ok, reservations}
     else
       {:error, {:insufficient_meter_quantity, ref}} ->
         {:refused, {:insufficient_meter_quantity, ref}}
@@ -377,22 +370,22 @@ defmodule Spectre.Kernel.Decision do
 
   defp authority_field(authority, field, default \\ nil)
 
-  defp authority_field(%Effective{} = authority, field, _default),
+  defp authority_field(authority, field, _default) when is_map(authority),
     do: Map.fetch!(authority, field)
 
   defp authority_field(nil, _field, default), do: default
 
   defp condition_refs(nil), do: []
-  defp condition_refs(%Effective{} = authority), do: Enum.map(authority.conditions, & &1.ref)
+
+  defp condition_refs(authority) when is_map(authority),
+    do: Enum.map(authority.conditions, & &1.ref)
+
+  defp source_mandate(%Mandate{} = mandate), do: mandate
 
   defp normalize_refs(refs) do
     refs
     |> Enum.filter(&(is_binary(&1) and &1 != ""))
     |> Enum.uniq()
     |> Enum.sort()
-  end
-
-  defp unknown_class?(candidate, context) do
-    match?({:error, :unknown_class}, Surface.classify(context.surface, candidate.class))
   end
 end

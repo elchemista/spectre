@@ -15,83 +15,59 @@ defmodule Spectre.Domain.Command.Observation do
   alias Spectre.Outcome
 
   @doc "Normalizes and durably records an Outcome."
-  @spec record(State.t(), Outcome.t() | map() | keyword(), keyword(), non_neg_integer()) ::
+  @spec record(State.t(), Outcome.t() | map() | keyword()) ::
           {:ok, State.t(), Outcome.t()} | {:error, State.t(), term()}
 
-  def record(state, input, ledger_opts, conflicts_left) do
+  def record(state, input) do
     case Outcome.new(input) do
       {:ok, outcome} ->
-        record_normalized_observation(state, outcome, ledger_opts, conflicts_left)
+        record_normalized_observation(state, outcome, state.conflict_retries)
 
       {:error, reason} ->
         {:error, state, reason}
     end
   end
 
-  defp record_normalized_observation(state, outcome, ledger_opts, conflicts_left) do
+  defp record_normalized_observation(state, outcome, conflicts_left) do
     case existing_outcome(state.projection, outcome) do
       {:ok, durable} ->
         {:ok, state, durable}
 
       :not_found ->
-        append_observation(state, outcome, ledger_opts, conflicts_left)
+        append_observation(state, outcome, conflicts_left)
 
       {:error, reason} ->
         {:error, state, reason}
     end
   end
 
-  defp append_observation(state, outcome, ledger_opts, conflicts_left) do
-    with {:ok, now} <- Transaction.trusted_recorded_at(state.clock, state.projection),
+  defp append_observation(state, outcome, conflicts_left) do
+    with {:ok, now} <- Transaction.trusted_recorded_at(state),
          {:ok, payloads} <-
-           Observation.payloads(state.projection, outcome, now, state.constitution),
-         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, payloads),
-         {:ok, batch_id} <- Transaction.operational_id(state, "outcome") do
-      expected_revision = state.projection.revision
-
-      append_result =
-        Transaction.append_exact(
-          state,
-          batch_id,
-          payloads,
-          expected_revision,
-          ledger_opts,
-          state.ambiguous_retries,
-          now
-        )
-
-      Commit.resolve(
+           Observation.payloads(
+             state.projection,
+             outcome,
+             now,
+             state.projection.constitution
+           ),
+         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, payloads) do
+      Commit.append(
         state,
-        append_result,
+        payloads,
+        now,
         conflicts_left,
         &recovered_outcome(state, &1, outcome),
-        &retry_observation_after_conflict(state, outcome, ledger_opts, &1)
+        &record_normalized_observation(&1, outcome, &2)
       )
     else
       {:error, reason} -> {:error, state, reason}
     end
   end
 
-  defp retry_observation_after_conflict(state, outcome, ledger_opts, conflicts_left) do
-    case Transaction.recover_with_repair(state, ledger_opts) do
-      {:ok, projection} ->
-        record(
-          %{state | projection: projection},
-          outcome,
-          ledger_opts,
-          conflicts_left
-        )
-
-      {:error, reason} ->
-        halted = Control.halt(state, reason)
-        {:error, halted, {:durable_recovery_failed, reason}}
-    end
-  end
-
   defp existing_outcome(projection, outcome) do
     case Map.fetch(projection.outcomes, outcome.ref) do
       {:ok, existing} ->
-        if Outcome.canonical(existing) == Outcome.canonical(outcome),
+        if existing == outcome,
           do: {:ok, existing},
           else: {:error, {:outcome_identity_conflict, outcome.ref}}
 

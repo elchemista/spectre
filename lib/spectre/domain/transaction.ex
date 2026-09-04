@@ -38,9 +38,6 @@ defmodule Spectre.Domain.Transaction do
           State.t(),
           String.t(),
           [map()],
-          non_neg_integer(),
-          keyword(),
-          non_neg_integer(),
           non_neg_integer()
         ) ::
           {:ok, GovernedState.t()} | :conflict | {:error, term()}
@@ -48,13 +45,11 @@ defmodule Spectre.Domain.Transaction do
         state,
         batch_id,
         payloads,
-        expected_revision,
-        ledger_opts,
-        retries_left,
         recorded_at
       )
       when is_integer(recorded_at) and recorded_at >= 0 do
     latest_recorded_at = latest_recorded_at(state.projection)
+    expected_revision = state.projection.revision
 
     if recorded_at >= latest_recorded_at do
       append_exact_at(
@@ -62,9 +57,8 @@ defmodule Spectre.Domain.Transaction do
         batch_id,
         payloads,
         expected_revision,
-        ledger_opts,
         recorded_at,
-        retries_left
+        state.ambiguous_retries
       )
     else
       {:error, {:ledger_time_regression, recorded_at, latest_recorded_at}}
@@ -75,9 +69,6 @@ defmodule Spectre.Domain.Transaction do
         _state,
         _batch_id,
         _payloads,
-        _expected_revision,
-        _ledger_opts,
-        _retries_left,
         recorded_at
       ),
       do: {:error, {:invalid_recorded_at, recorded_at}}
@@ -87,7 +78,6 @@ defmodule Spectre.Domain.Transaction do
          batch_id,
          payloads,
          expected_revision,
-         ledger_opts,
          recorded_at,
          retries_left
        ) do
@@ -95,16 +85,16 @@ defmodule Spectre.Domain.Transaction do
            verify_new_payload_references(state.payload_store, state.projection, payloads) do
       Writer.append(
         state.store,
-        state.domain_ref,
+        state.projection.domain_ref,
         batch_id,
         payloads,
         expected_revision,
-        Keyword.put(ledger_opts, :recorded_at, recorded_at)
+        Keyword.put(state.ledger_opts, :recorded_at, recorded_at)
       )
     end
     |> case do
       {:ok, _revision} ->
-        recover_after_append(state, ledger_opts)
+        recover_after_append(state)
 
       {:error, :conflict} ->
         :conflict
@@ -115,7 +105,6 @@ defmodule Spectre.Domain.Transaction do
           batch_id,
           payloads,
           expected_revision,
-          ledger_opts,
           recorded_at,
           retries_left
         )
@@ -130,20 +119,19 @@ defmodule Spectre.Domain.Transaction do
          batch_id,
          payloads,
          expected_revision,
-         ledger_opts,
          recorded_at,
          retries_left
        ) do
     case Recovery.classify_ambiguous(
            state.store,
-           state.domain_ref,
+           state.projection.domain_ref,
            batch_id,
            payloads,
            expected_revision,
-           ledger_opts
+           state.ledger_opts
          ) do
       {:ok, {:committed, _info}} ->
-        recover_after_append(state, ledger_opts)
+        recover_after_append(state)
 
       {:ok, :not_committed} when retries_left > 0 ->
         append_exact_at(
@@ -151,7 +139,6 @@ defmodule Spectre.Domain.Transaction do
           batch_id,
           payloads,
           expected_revision,
-          ledger_opts,
           recorded_at,
           retries_left - 1
         )
@@ -165,24 +152,28 @@ defmodule Spectre.Domain.Transaction do
   end
 
   @doc "Materializes every Duty required by the current prefix, retrying CAS conflicts."
-  @spec repair_missing_duties(State.t(), GovernedState.t(), keyword(), non_neg_integer()) ::
-          {:ok, GovernedState.t()} | {:error, term()}
-  def repair_missing_duties(state, projection, ledger_opts, conflicts_left) do
-    with {:ok, now} <- trusted_recorded_at(state.clock, projection),
-         {:ok, plan} <- Reconciler.repair_plan(projection, state.constitution, now) do
+  @spec repair_missing_duties(State.t()) :: {:ok, GovernedState.t()} | {:error, term()}
+  def repair_missing_duties(%State{} = state) do
+    repair_missing_duties(state, state.conflict_retries)
+  end
+
+  defp repair_missing_duties(state, conflicts_left) do
+    projection = state.projection
+
+    with {:ok, now} <- trusted_recorded_at(state),
+         {:ok, plan} <- Reconciler.repair_plan(projection, now) do
       if plan.payloads == [] do
         {:ok, projection}
       else
-        commit_duty_repair(state, projection, plan, ledger_opts, conflicts_left, now)
+        commit_duty_repair(state, projection, plan, conflicts_left, now)
       end
     end
   end
 
   @doc "Checks that no derived Duty is waiting to be durably materialized."
-  @spec duties_materialized(GovernedState.t(), map(), non_neg_integer()) ::
-          :ok | {:error, term()}
-  def duties_materialized(projection, constitution, now) do
-    with {:ok, plan} <- Reconciler.repair_plan(projection, constitution, now) do
+  @spec duties_materialized(GovernedState.t(), non_neg_integer()) :: :ok | {:error, term()}
+  def duties_materialized(projection, now) do
+    with {:ok, plan} <- Reconciler.repair_plan(projection, now) do
       if plan.payloads == [], do: :ok, else: {:error, :required_duties_pending}
     end
   end
@@ -191,7 +182,6 @@ defmodule Spectre.Domain.Transaction do
          state,
          projection,
          plan,
-         ledger_opts,
          conflicts_left,
          recorded_at
        ) do
@@ -202,9 +192,6 @@ defmodule Spectre.Domain.Transaction do
              repair_state,
              plan.batch_id,
              plan.payloads,
-             projection.revision,
-             ledger_opts,
-             state.ambiguous_retries,
              recorded_at
            ) do
         {:ok, recovered} ->
@@ -213,7 +200,6 @@ defmodule Spectre.Domain.Transaction do
         :conflict when conflicts_left > 0 ->
           retry_duty_repair_after_conflict(
             repair_state,
-            ledger_opts,
             conflicts_left - 1
           )
 
@@ -231,45 +217,43 @@ defmodule Spectre.Domain.Transaction do
     end
   end
 
-  defp retry_duty_repair_after_conflict(state, ledger_opts, conflicts_left) do
-    with {:ok, projection} <- recover_verified(state, ledger_opts) do
+  defp retry_duty_repair_after_conflict(state, conflicts_left) do
+    with {:ok, projection} <- recover_verified(state) do
       repair_missing_duties(
         %{state | projection: projection},
-        projection,
-        ledger_opts,
         conflicts_left
       )
     end
   end
 
-  defp recover_after_append(state, ledger_opts) do
-    case recover_with_repair(state, ledger_opts) do
+  defp recover_after_append(state) do
+    case recover_with_repair(state) do
       {:ok, projection} -> {:ok, projection}
       {:error, reason} -> {:error, {:durable_recovery_failed, reason}}
     end
   end
 
   @doc "Recovers verified state and completes any missing derived-Duty batch."
-  @spec recover_with_repair(State.t(), keyword()) ::
+  @spec recover_with_repair(State.t()) ::
           {:ok, GovernedState.t()} | {:error, term()}
-  def recover_with_repair(state, ledger_opts) do
-    with {:ok, projection} <- recover_verified(state, ledger_opts) do
-      repair_missing_duties(
-        %{state | projection: projection},
-        projection,
-        ledger_opts,
-        state.conflict_retries
-      )
+  def recover_with_repair(state) do
+    with {:ok, projection} <- recover_verified(state) do
+      repair_missing_duties(%{state | projection: projection})
     end
   end
 
   @doc "Recovers and verifies the durable projection without adding repair events."
-  @spec recover_verified(State.t(), keyword()) ::
+  @spec recover_verified(State.t()) ::
           {:ok, GovernedState.t()} | {:error, term()}
-  def recover_verified(state, ledger_opts) do
-    case Recovery.recover(state.store, state.domain_ref, state.constitution, ledger_opts) do
+  def recover_verified(state) do
+    case Recovery.recover(
+           state.store,
+           state.projection.domain_ref,
+           state.projection.constitution,
+           state.ledger_opts
+         ) do
       {:ok, projection} ->
-        with :ok <- Bootstrap.verify_projection(projection, state.bootstrap_opts),
+        with :ok <- Bootstrap.verify_projection(projection, State.verification_opts(state)),
              :ok <- PayloadStore.verify_live_references(state.payload_store, projection) do
           {:ok, projection}
         end
@@ -331,11 +315,10 @@ defmodule Spectre.Domain.Transaction do
   end
 
   @doc "Returns monotonic ledger time relative to the recovered prefix."
-  @spec trusted_recorded_at(module(), GovernedState.t()) ::
-          {:ok, non_neg_integer()} | {:error, term()}
-  def trusted_recorded_at(clock, %GovernedState{} = projection) do
-    with {:ok, now} <- trusted_now(clock) do
-      {:ok, max(now, latest_recorded_at(projection))}
+  @spec trusted_recorded_at(State.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def trusted_recorded_at(%State{} = state) do
+    with {:ok, now} <- trusted_now(state.clock) do
+      {:ok, max(now, latest_recorded_at(state.projection))}
     end
   end
 
@@ -344,8 +327,8 @@ defmodule Spectre.Domain.Transaction do
   end
 
   @doc "Obtains an opaque operational identifier from the configured source."
-  @spec operational_id(State.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def operational_id(state, _namespace) do
+  @spec operational_id(State.t()) :: {:ok, String.t()} | {:error, term()}
+  def operational_id(state) do
     {:ok, Id.generate(state.id_source)}
   rescue
     exception -> {:error, {:identifier_generation_failed, exception.__struct__}}

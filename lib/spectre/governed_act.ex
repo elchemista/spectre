@@ -30,6 +30,12 @@ defmodule Spectre.GovernedAct do
   cannot drift. `Spectre.Kernel` evaluates a Candidate from immutable views,
   while `Spectre.Domain.Sequencer` alone orders and appends the resulting batch.
 
+  Small shared invariants sit beside the fold rather than inside either
+  driver. `Class` is the closed metadata table for runtime-reserved classes;
+  `Execution` owns their completion boundary without resolving host routes;
+  `Admission.Binding` is the single Decision-to-Act field correspondence; and
+  `Spectre.Attempt.Binding` fixes the identity of the world-side Attempt.
+
   ## Transition families
 
     * `Transition.Foundation` establishes Genesis and revisable host facts.

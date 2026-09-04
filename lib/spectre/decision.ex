@@ -177,38 +177,7 @@ defmodule Spectre.Decision do
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = decision) do
-    %{
-      "schema_version" => decision.schema_version,
-      "ref" => decision.ref,
-      "outcome" => decision.outcome,
-      "reasons" => decision.reasons,
-      "candidate_identity_key" => decision.candidate_identity_key,
-      "candidate_digest" => decision.candidate_digest,
-      "candidate_class" => decision.candidate_class,
-      "consent" => decision.consent,
-      "submission_context_ref" => decision.submission_context_ref,
-      "domain_ref" => decision.domain_ref,
-      "channel_ref" => decision.channel_ref,
-      "session_ref" => decision.session_ref,
-      "authenticated_principal_ref" => decision.authenticated_principal_ref,
-      "authentication_ref" => decision.authentication_ref,
-      "ingress_ref" => decision.ingress_ref,
-      "host_generation" => decision.host_generation,
-      "mandate_ref" => decision.mandate_ref,
-      "mandate_revision" => decision.mandate_revision,
-      "recognition_refs" => decision.recognition_refs,
-      "recognition_evidence_refs" => decision.recognition_evidence_refs,
-      "reservations" => decision.reservations,
-      "proposer_ref" => decision.proposer_ref,
-      "executor_ref" => decision.executor_ref,
-      "authorizer_ref" => decision.authorizer_ref,
-      "accountable_ref" => decision.accountable_ref,
-      "scope_ref" => decision.scope_ref,
-      "host_profile_ref" => decision.host_profile_ref,
-      "surface_revision" => decision.surface_revision,
-      "authority_revision" => decision.authority_revision,
-      "decided_at" => decision.decided_at
-    }
+    Portable.canonical_fields(decision, @fields)
   end
 
   @doc "Restores a decision from its canonical map."
@@ -254,11 +223,7 @@ defmodule Spectre.Decision do
 
   defp content(%__MODULE__{} = decision), do: decision |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    @fields
-    |> Enum.reject(&(&1 == :ref))
-    |> Map.new(fn field -> {Atom.to_string(field), Map.get(attrs, field)} end)
-  end
+  defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = decision) do
     cond do
@@ -338,8 +303,8 @@ defmodule Spectre.Decision do
          :ok <- Portable.validate_non_empty_binary(decision.candidate_class, :candidate_class),
          :ok <- Portable.validate_ref(decision.submission_context_ref, :submission_context_ref),
          :ok <- Portable.validate_ref(decision.domain_ref, :domain_ref),
-         :ok <- validate_optional_ref(decision.channel_ref, :channel_ref),
-         :ok <- validate_optional_ref(decision.session_ref, :session_ref),
+         :ok <- Portable.validate_optional_ref(decision.channel_ref, :channel_ref),
+         :ok <- Portable.validate_optional_ref(decision.session_ref, :session_ref),
          :ok <-
            Portable.validate_ref(
              decision.authenticated_principal_ref,
@@ -347,7 +312,7 @@ defmodule Spectre.Decision do
            ),
          :ok <- Portable.validate_ref(decision.authentication_ref, :authentication_ref),
          :ok <- Portable.validate_ref(decision.ingress_ref, :ingress_ref),
-         :ok <- validate_optional_ref(decision.mandate_ref, :mandate_ref),
+         :ok <- Portable.validate_optional_ref(decision.mandate_ref, :mandate_ref),
          :ok <- Portable.validate_refs(decision.recognition_refs, :recognition_refs),
          :ok <-
            Portable.validate_refs(
@@ -355,17 +320,14 @@ defmodule Spectre.Decision do
              :recognition_evidence_refs
            ),
          :ok <- Portable.validate_ref(decision.proposer_ref, :proposer_ref),
-         :ok <- validate_optional_ref(decision.executor_ref, :executor_ref),
-         :ok <- validate_optional_ref(decision.authorizer_ref, :authorizer_ref),
-         :ok <- validate_optional_ref(decision.accountable_ref, :accountable_ref),
+         :ok <- Portable.validate_optional_ref(decision.executor_ref, :executor_ref),
+         :ok <- Portable.validate_optional_ref(decision.authorizer_ref, :authorizer_ref),
+         :ok <- Portable.validate_optional_ref(decision.accountable_ref, :accountable_ref),
          :ok <- Portable.validate_ref(decision.scope_ref, :scope_ref),
          :ok <- Portable.validate_ref(decision.host_profile_ref, :host_profile_ref) do
       :ok
     end
   end
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 
   defp normalize_reservations(attrs) do
     case Amounts.normalize(Map.fetch!(attrs, :reservations)) do

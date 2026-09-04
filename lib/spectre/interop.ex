@@ -266,7 +266,7 @@ defmodule Spectre.Interop do
   end
 
   defp exact_keys(envelope) do
-    if Map.keys(envelope) |> Enum.sort() == Enum.sort(@fields),
+    if map_size(envelope) == length(@fields) and Enum.all?(@fields, &Map.has_key?(envelope, &1)),
       do: :ok,
       else: {:error, :invalid_interop_envelope_fields}
   end

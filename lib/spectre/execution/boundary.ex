@@ -1,6 +1,7 @@
 defmodule Spectre.Execution.Boundary do
   @moduledoc """
-  Normalizes the host execution boundary shared by Domain boot and Doctor.
+  Normalizes and validates the host execution boundary shared by Domain boot,
+  the executor Runner and Doctor.
 
   Executor and broker callbacks expose stable identifiers only. Adapter options
   remain host-local and are deliberately omitted from `describe/1`, because
@@ -14,8 +15,6 @@ defmodule Spectre.Execution.Boundary do
 
   @type route_key :: {String.t(), String.t()}
   @type route :: %{
-          required(:executor_ref) => String.t(),
-          required(:contract_ref) => String.t(),
           required(:executor) => module(),
           required(:executor_opts) => keyword()
         }
@@ -30,6 +29,13 @@ defmodule Spectre.Execution.Boundary do
   @type t :: %{
           required(:routes) => %{optional(route_key()) => route()},
           required(:broker) => broker() | nil
+        }
+  @type runtime_route :: %{
+          required(:executor) => module(),
+          required(:executor_opts) => keyword(),
+          required(:broker) => module(),
+          required(:broker_opts) => keyword(),
+          required(:broker_descriptor) => map()
         }
 
   @doc "Normalizes the configured executor routes and credential broker."
@@ -46,11 +52,10 @@ defmodule Spectre.Execution.Boundary do
   def describe(%{routes: routes, broker: broker}) when is_map(routes) do
     executor_descriptors =
       routes
-      |> Map.values()
-      |> Enum.map(fn route ->
+      |> Enum.map(fn {{executor_ref, contract_ref}, route} ->
         %{
-          executor_ref: route.executor_ref,
-          contract_ref: route.contract_ref,
+          executor_ref: executor_ref,
+          contract_ref: contract_ref,
           module: route.executor
         }
       end)
@@ -81,10 +86,42 @@ defmodule Spectre.Execution.Boundary do
 
   def validate_broker_descriptor(_descriptor), do: {:error, :invalid_broker_descriptor}
 
+  @doc "Validates the exact host-only route passed across the Sequencer boundary."
+  @spec validate_runtime_route(term()) :: :ok | {:error, term()}
+  def validate_runtime_route(
+        %{
+          broker: broker,
+          broker_descriptor: broker_descriptor,
+          broker_opts: broker_opts,
+          executor: executor,
+          executor_opts: executor_opts
+        } = route
+      )
+      when map_size(route) == 5 do
+    with :ok <- callback(executor, :execute, 4, :executor),
+         :ok <- callback(broker, :checkout, 4, :broker),
+         :ok <- runtime_options(broker_opts, :broker_opts),
+         :ok <- runtime_options(executor_opts, :executor_opts) do
+      validate_broker_descriptor(broker_descriptor)
+    end
+  end
+
+  def validate_runtime_route(_route), do: {:error, :invalid_execution_route}
+
+  @doc "Invokes a validated executor or broker callback without exposing its failure payload."
+  @spec invoke(module(), atom(), [term()]) ::
+          {:ok, term()} | {:error, :exception | :exit | :throw}
+  def invoke(module, callback, arguments) do
+    case Adapter.invoke(module, callback, arguments) do
+      {:ok, reply} -> {:ok, reply}
+      {:error, {:adapter_callback_exception, _, _, _exception}} -> {:error, :exception}
+      {:error, {:adapter_callback_failure, _, _, kind}} -> {:error, kind}
+    end
+  end
+
   defp normalize_routes(entries) when is_list(entries) do
     Enum.reduce_while(entries, {:ok, %{}}, fn entry, {:ok, routes} ->
-      with {:ok, route} <- normalize_route(entry),
-           key = {route.executor_ref, route.contract_ref},
+      with {:ok, {key, route}} <- normalize_route(entry),
            false <- Map.has_key?(routes, key) do
         {:cont, {:ok, Map.put(routes, key, route)}}
       else
@@ -107,13 +144,7 @@ defmodule Spectre.Execution.Boundary do
          {:ok, contract_ref} <- static_value(module, :contract_ref, :executor),
          :ok <- Portable.validate_ref(executor_ref, :executor_ref),
          :ok <- Portable.validate_ref(contract_ref, :executor_contract_ref) do
-      {:ok,
-       %{
-         executor_ref: executor_ref,
-         contract_ref: contract_ref,
-         executor: module,
-         executor_opts: executor_opts
-       }}
+      {:ok, {{executor_ref, contract_ref}, %{executor: module, executor_opts: executor_opts}}}
     end
   end
 
@@ -148,6 +179,12 @@ defmodule Spectre.Execution.Boundary do
 
   defp normalize_opts(_value, boundary),
     do: {:error, {:invalid_execution_boundary_options, boundary}}
+
+  defp runtime_options(value, field) when is_list(value) do
+    if Keyword.keyword?(value), do: :ok, else: {:error, {:invalid_keyword_options, field}}
+  end
+
+  defp runtime_options(_value, field), do: {:error, {:invalid_keyword_options, field}}
 
   defp callback(module, function, arity, boundary)
        when is_atom(module) and module not in [nil, true, false] do

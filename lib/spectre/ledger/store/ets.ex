@@ -19,6 +19,7 @@ defmodule Spectre.Ledger.Store.ETS do
 
   alias Spectre.Ledger
   alias Spectre.Ledger.Entry
+  alias Spectre.Ledger.Store.Support
 
   @start_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after]
   @read_options [:server, :timeout]
@@ -95,8 +96,8 @@ defmodule Spectre.Ledger.Store.ETS do
     reply_and_state =
       with {:ok, identity} <-
              Entry.batch_identity(domain_ref, batch_id, payloads, expected_revision),
-           {:ok, recorded_at} <- recorded_at(opts),
-           {:ok, fault} <- fault_phase(opts) do
+           {:ok, recorded_at} <- Support.recorded_at(opts),
+           {:ok, fault} <- Support.fault_phase(opts) do
         domain = lookup_domain(state.table, domain_ref)
 
         append_batch(
@@ -121,7 +122,7 @@ defmodule Spectre.Ledger.Store.ETS do
   def handle_call({:load, domain_ref}, _from, state) do
     reply =
       case :ets.lookup(state.table, domain_ref) do
-        [{^domain_ref, domain}] -> {:ok, snapshot(domain_ref, domain)}
+        [{^domain_ref, domain}] -> {:ok, Support.snapshot(domain_ref, domain)}
         [] -> :not_found
       end
 
@@ -144,8 +145,11 @@ defmodule Spectre.Ledger.Store.ETS do
   def handle_call({:export, domain_ref}, _from, state) do
     reply =
       case :ets.lookup(state.table, domain_ref) do
-        [{^domain_ref, domain}] -> domain_ref |> snapshot(domain) |> Ledger.export_snapshot()
-        [] -> :not_found
+        [{^domain_ref, domain}] ->
+          domain_ref |> Support.snapshot(domain) |> Ledger.export_snapshot()
+
+        [] ->
+          :not_found
       end
 
     {:reply, reply, state}
@@ -233,7 +237,7 @@ defmodule Spectre.Ledger.Store.ETS do
          ) do
       {:ok, entries} ->
         last = List.last(entries)
-        info = batch_info(batch_id, identity, expected_revision, entries, last)
+        info = Support.batch_info(batch_id, identity, expected_revision, entries, last)
 
         committed = %{
           domain
@@ -252,42 +256,6 @@ defmodule Spectre.Ledger.Store.ETS do
     end
   end
 
-  @spec batch_info(String.t(), Entry.digest(), non_neg_integer(), [Entry.t()], Entry.t()) ::
-          Ledger.batch_info()
-  defp batch_info(batch_id, identity, expected_revision, entries, last) do
-    %{
-      batch_id: batch_id,
-      identity_digest: identity,
-      expected_revision: expected_revision,
-      first_revision: expected_revision + 1,
-      last_revision: last.revision,
-      entry_count: length(entries),
-      head_digest: last.digest
-    }
-  end
-
-  @spec empty_domain() :: domain_state()
-  defp empty_domain do
-    %{
-      revision: 0,
-      head_digest: Entry.genesis_digest(),
-      entries_rev: [],
-      batches: %{},
-      recovery: nil
-    }
-  end
-
-  @spec snapshot(String.t(), domain_state()) :: Ledger.snapshot()
-  defp snapshot(domain_ref, domain) do
-    %{
-      domain_ref: domain_ref,
-      revision: domain.revision,
-      head_digest: domain.head_digest,
-      entries: Enum.reverse(domain.entries_rev),
-      recovery: domain.recovery
-    }
-  end
-
   @spec server(keyword()) :: {:ok, GenServer.server()} | {:error, term()}
   defp server(opts) when is_list(opts) do
     case Keyword.fetch(opts, :server) do
@@ -299,40 +267,19 @@ defmodule Spectre.Ledger.Store.ETS do
   defp lookup_domain(table, domain_ref) do
     case :ets.lookup(table, domain_ref) do
       [{^domain_ref, domain}] -> domain
-      [] -> empty_domain()
+      [] -> Support.empty_domain()
     end
   end
 
   @spec timeout(keyword(), timeout()) :: timeout()
   defp timeout(opts, default), do: Keyword.get(opts, :timeout, default)
 
-  @spec fault_phase(keyword()) ::
-          {:ok, nil | :before_commit | :after_commit} | {:error, term()}
-  defp fault_phase(opts) do
-    value = Keyword.get(opts, :fault_injection, Keyword.get(opts, :fault))
-
-    if value in [nil, :before_commit, :after_commit],
-      do: {:ok, value},
-      else: {:error, {:invalid_ledger_fault_injection, value}}
+  defp validate_options(opts, allowed) do
+    Support.validate_options(
+      opts,
+      allowed,
+      :invalid_ledger_ets_options,
+      :unknown_ledger_ets_options
+    )
   end
-
-  defp recorded_at(opts) do
-    case Keyword.fetch(opts, :recorded_at) do
-      {:ok, value} when is_integer(value) and value >= 0 -> {:ok, value}
-      _missing_or_invalid -> {:error, :ledger_recorded_at_required}
-    end
-  end
-
-  defp validate_options(opts, allowed) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      case Keyword.keys(opts) -- allowed do
-        [] -> :ok
-        unknown -> {:error, {:unknown_ledger_ets_options, unknown |> Enum.uniq() |> Enum.sort()}}
-      end
-    else
-      {:error, :invalid_ledger_ets_options}
-    end
-  end
-
-  defp validate_options(_opts, _allowed), do: {:error, :invalid_ledger_ets_options}
 end

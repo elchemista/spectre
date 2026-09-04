@@ -98,6 +98,14 @@ defmodule Spectre.Mandate.Ancestry do
   def affected_by?(_mandates, _mandate_ref, _target_ref, _cascade?),
     do: {:error, :invalid_mandate_ancestry_input}
 
+  @doc "Returns the Mandate and each typed ancestor in leaf-to-root order."
+  @spec lineage(mandates(), Mandate.t()) :: {:ok, [Mandate.t()]} | {:error, term()}
+  def lineage(mandates, %Mandate{} = mandate) when is_map(mandates) do
+    collect_lineage(mandates, mandate, MapSet.new(), [])
+  end
+
+  def lineage(_mandates, _mandate), do: {:error, :invalid_mandate_ancestry_input}
+
   defp cascade_status(_mandates, _revocations, nil, _time, _visited), do: {:ok, :current}
 
   defp cascade_status(mandates, revocations, parent_ref, time, visited) do
@@ -161,6 +169,26 @@ defmodule Spectre.Mandate.Ancestry do
       {:ok, %Mandate{ref: ^ref} = parent} -> {:ok, parent}
       {:ok, _invalid} -> {:error, {:invalid_mandate_ancestor, ref}}
       :error -> {:error, {:mandate_ancestor_missing, ref}}
+    end
+  end
+
+  defp collect_lineage(mandates, %Mandate{} = mandate, visited, lineage) do
+    cond do
+      MapSet.member?(visited, mandate.ref) ->
+        {:error, {:mandate_ancestry_cycle, mandate.ref}}
+
+      is_nil(mandate.parent_ref) ->
+        {:ok, Enum.reverse([mandate | lineage])}
+
+      true ->
+        with {:ok, parent} <- fetch_parent(mandates, mandate.parent_ref) do
+          collect_lineage(
+            mandates,
+            parent,
+            MapSet.put(visited, mandate.ref),
+            [mandate | lineage]
+          )
+        end
     end
   end
 

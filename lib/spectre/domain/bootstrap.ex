@@ -38,20 +38,20 @@ defmodule Spectre.Domain.Bootstrap do
 
   @spec verify_projection(Projection.t(), keyword()) :: :ok | {:error, term()}
   def verify_projection(%State{} = projection, opts) when is_list(opts) do
-    case projection.surface do
+    case State.surface(projection) do
       %Surface{declarations: declarations} when map_size(declarations) == 0 ->
         with :ok <- verify_optional_genesis(projection, opts),
-             :ok <- verify_projection_constitution(projection, opts),
-             :ok <- verify_projection_duty_routes(projection, opts),
-             do: verify_projection_emergency(projection, opts)
+             :ok <- verify_projection_constitution(projection),
+             :ok <- verify_projection_duty_routes(projection),
+             do: verify_projection_emergency(projection)
 
       %Surface{} ->
         with %Genesis{} = genesis <- projection.genesis,
              :ok <- verify_projection_links(projection, genesis),
-             :ok <- verify_constitution(genesis, opts),
+             :ok <- verify_constitution(genesis, projection.constitution),
              :ok <- verify_attestation(genesis, opts),
-             :ok <- verify_projection_duty_routes(projection, opts),
-             :ok <- verify_projection_emergency(projection, opts) do
+             :ok <- verify_projection_duty_routes(projection),
+             :ok <- verify_projection_emergency(projection) do
           :ok
         else
           nil -> {:error, :genesis_required}
@@ -78,10 +78,13 @@ defmodule Spectre.Domain.Bootstrap do
 
   defp verify_optional_genesis(_projection, _opts), do: {:error, :invalid_domain_genesis}
 
-  defp verify_projection_constitution(%State{genesis: nil}, _opts), do: :ok
+  defp verify_projection_constitution(%State{genesis: nil}), do: :ok
 
-  defp verify_projection_constitution(%State{genesis: %Genesis{} = genesis}, opts),
-    do: verify_constitution(genesis, opts)
+  defp verify_projection_constitution(%State{
+         genesis: %Genesis{} = genesis,
+         constitution: constitution
+       }),
+       do: verify_constitution(genesis, constitution)
 
   defp verify_bundle(
          domain_ref,
@@ -168,20 +171,20 @@ defmodule Spectre.Domain.Bootstrap do
     end
   end
 
-  defp verify_projection_emergency(%State{genesis: nil}, _opts), do: :ok
+  defp verify_projection_emergency(%State{genesis: nil}), do: :ok
 
-  defp verify_projection_emergency(%State{genesis: %Genesis{} = genesis} = projection, opts) do
-    with {:ok, rules} <- constitution(opts) do
-      verify_emergency_mandate(genesis, Map.values(projection.mandates), rules)
-    end
-  end
+  defp verify_projection_emergency(
+         %State{genesis: %Genesis{} = genesis, constitution: rules} = projection
+       ),
+       do: verify_emergency_mandate(genesis, Map.values(projection.mandates), rules)
 
-  defp verify_projection_duty_routes(%State{genesis: nil}, _opts), do: :ok
+  defp verify_projection_duty_routes(%State{genesis: nil}), do: :ok
 
-  defp verify_projection_duty_routes(%State{} = projection, opts) do
+  defp verify_projection_duty_routes(%State{} = projection) do
     known_authorities = Map.keys(projection.principals) ++ Map.keys(projection.mandates)
+    rules = projection.constitution
 
-    with {:ok, rules} <- constitution(opts),
+    with :ok <- Constitution.validate(rules),
          :ok <- Constitution.validate_duty_routes(rules, known_authorities) do
       verify_projection_duty_conflicts(projection, rules)
     end
@@ -246,8 +249,8 @@ defmodule Spectre.Domain.Bootstrap do
     end
   end
 
-  defp verify_constitution(genesis, opts) do
-    with {:ok, rules} <- constitution(opts),
+  defp verify_constitution(genesis, rules) do
+    with :ok <- Constitution.validate(rules),
          {:ok, ref} <- Constitution.ref(rules) do
       if genesis.constitution_ref == ref,
         do: :ok,

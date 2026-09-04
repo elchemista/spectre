@@ -17,9 +17,8 @@ defmodule Spectre.Domain.Projection do
   @type t :: State.t()
   @type reservation_status :: State.reservation_status()
   @type dispatch_cancellation :: State.dispatch_cancellation()
-  @type reservation_binding :: State.reservation_binding()
+  @type meter_reservation :: State.meter_reservation()
   @type meter_recontainment :: State.meter_recontainment()
-  @type duty_meter_resolution :: State.duty_meter_resolution()
 
   @doc "Creates empty disposable state for a Domain."
   @spec new(String.t(), map()) :: t()
@@ -56,13 +55,19 @@ defmodule Spectre.Domain.Projection do
   @spec meter_accounts(t(), String.t()) :: {:ok, map()} | {:error, term()}
   defdelegate meter_accounts(projection, mandate_ref), to: View
 
-  @doc "Returns the logical Meter view without copying physical accounts."
-  @spec meter_view(t()) :: map()
-  defdelegate meter_view(projection), to: View, as: :meters
-
   @doc "Resolves an exact Evidence set from disposable state."
   @spec evidence_set(t(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
   defdelegate evidence_set(projection, refs), to: View
+
+  @doc "Looks up the durable Decision selected by a Candidate identity key."
+  @spec candidate_decision(t(), String.t()) ::
+          {:ok, Spectre.Decision.t()} | :not_found | {:error, term()}
+  defdelegate candidate_decision(projection, identity_key), to: View
+
+  @doc "Looks up the Act paired with a durable Decision."
+  @spec decision_act(t(), Spectre.Decision.t()) ::
+          {:ok, Spectre.Act.t() | nil} | {:error, term()}
+  defdelegate decision_act(projection, decision), to: View
 
   @doc "Checks an authenticated context against its durable Scope opening."
   @spec scope_context(t(), SubmissionContext.t()) ::

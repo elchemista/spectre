@@ -29,9 +29,7 @@ defmodule Spectre.GovernedAct.Fold do
   @type t :: State.t()
   @type reservation_status :: State.reservation_status()
   @type dispatch_cancellation :: State.dispatch_cancellation()
-  @type reservation_binding :: State.reservation_binding()
   @type meter_recontainment :: State.meter_recontainment()
-  @type duty_meter_resolution :: State.duty_meter_resolution()
 
   @spec new(String.t(), map()) :: t()
   def new(domain_ref, constitution \\ %{}), do: State.new(domain_ref, constitution)
@@ -142,9 +140,15 @@ defmodule Spectre.GovernedAct.Fold do
          | revision: entry.revision,
            head_digest: entry.digest,
            recorded_at: metadata.recorded_at,
-           event_metadata: Map.put(projection.event_metadata, Event.key(event), metadata)
+           event_metadata: retain_metadata(projection.event_metadata, event, metadata)
        }}
     end
+  end
+
+  defp retain_metadata(metadata, event, value) do
+    if Event.retain_metadata?(event),
+      do: Map.put(metadata, event.identity, value),
+      else: metadata
   end
 
   @doc "Applies one validated event to an in-memory provisional projection."

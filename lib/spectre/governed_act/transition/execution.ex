@@ -11,11 +11,13 @@ defmodule Spectre.GovernedAct.Transition.Execution do
   governed-act fold.
   """
 
-  alias Spectre.{Act, Governance, Outcome}
+  alias Spectre.{Act, Outcome}
+  alias Spectre.Attempt.Binding
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.{AuthorityChange, Index, State}
+  alias Spectre.GovernedAct.{AuthorityChange, DispatchState, Index, MeterState, State}
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.Transition.Admission
   alias Spectre.Outcome.Attestation
 
@@ -32,7 +34,7 @@ defmodule Spectre.GovernedAct.Transition.Execution do
 
     with {:ok, act} <- Index.fetch_act(state, act_ref),
          :ok <- validate_dispatch(state, act, data) do
-      {:ok, %{state | dispatch_ready: MapSet.put(state.dispatch_ready, act_ref)}}
+      {:ok, DispatchState.mark_pending(state, act_ref)}
     end
   end
 
@@ -47,19 +49,12 @@ defmodule Spectre.GovernedAct.Transition.Execution do
          {:ok, act} <- Index.fetch_act(state, act_ref),
          :ok <- validate_dispatch_cancellation(state, act, data) do
       cancellation = %{
-        act_ref: act.ref,
-        mandate_ref: act.mandate_ref,
         cause_ref: data["cause_ref"],
         reason: data["reason"],
         cancelled_at: data["cancelled_at"]
       }
 
-      {:ok,
-       %{
-         state
-         | dispatch_ready: MapSet.delete(state.dispatch_ready, act.ref),
-           dispatch_cancellations: Map.put(state.dispatch_cancellations, act.ref, cancellation)
-       }}
+      {:ok, DispatchState.mark_cancelled(state, act.ref, cancellation)}
     end
   end
 
@@ -78,14 +73,11 @@ defmodule Spectre.GovernedAct.Transition.Execution do
          :ok <- validate_attempt_authority(state, attempt, act) do
       act_ref = attempt.act_ref
 
+      state = %{state | attempts: Map.put(state.attempts, identity, attempt)}
+      state = DispatchState.mark_attempted(state, act_ref, identity)
+
       {:ok,
-       %{
-         state
-         | attempts: Map.put(state.attempts, identity, attempt),
-           attempts_by_act: Map.put(state.attempts_by_act, act_ref, identity),
-           dispatch_ready: MapSet.delete(state.dispatch_ready, act_ref),
-           consumed_nonces: MapSet.put(state.consumed_nonces, attempt.grant_nonce_digest)
-       }}
+       %{state | consumed_nonces: MapSet.put(state.consumed_nonces, attempt.grant_nonce_digest)}}
     end
   end
 
@@ -124,20 +116,21 @@ defmodule Spectre.GovernedAct.Transition.Execution do
 
   defp attempt_available(state, attempt, act) do
     cond do
-      not Governance.executor_mediated?(act) ->
+      not GovernedExecution.executor_mediated?(act) ->
         {:error, {:act_not_executor_mediated, act.ref}}
 
-      not MapSet.member?(state.dispatch_ready, act.ref) ->
+      DispatchState.attempted?(state, act.ref) ->
+        {:error,
+         {:act_already_attempted, attempt.act_ref, DispatchState.attempt_ref(state, act.ref)}}
+
+      not DispatchState.pending?(state, act.ref) ->
         {:error, {:act_not_dispatch_ready, act.ref}}
 
-      Act.reservations?(act) and Map.get(state.reservation_states, act.ref) != :reserved ->
+      Act.reservations?(act) and MeterState.reservation_status(state, act.ref) != :reserved ->
         {:error, {:act_reservation_not_attemptable, act.ref}}
 
       true ->
-        case Map.fetch(state.attempts_by_act, attempt.act_ref) do
-          :error -> :ok
-          {:ok, existing_ref} -> {:error, {:act_already_attempted, attempt.act_ref, existing_ref}}
-        end
+        :ok
     end
   end
 
@@ -148,18 +141,20 @@ defmodule Spectre.GovernedAct.Transition.Execution do
   end
 
   defp match_attempt_to_act(attempt, act) do
-    cond do
-      attempt.executor_ref != act.executor_ref ->
+    case Binding.mismatch(attempt, act) do
+      {:act_ref, _expected, _actual} ->
+        {:error, {:attempt_act_mismatch, attempt.ref, act.ref}}
+
+      {:executor_ref, _expected, _actual} ->
         {:error, {:attempt_executor_mismatch, attempt.ref, act.ref}}
 
-      attempt.material_digest != act.material_digest ->
+      {:material_digest, _expected, _actual} ->
         {:error, {:attempt_material_mismatch, attempt.ref, act.ref}}
 
-      attempt.started_at < act.committed_at ->
-        {:error, {:attempt_precedes_act, attempt.ref, act.ref}}
-
-      true ->
-        :ok
+      nil ->
+        if attempt.started_at < act.committed_at,
+          do: {:error, {:attempt_precedes_act, attempt.ref, act.ref}},
+          else: :ok
     end
   end
 
@@ -168,7 +163,7 @@ defmodule Spectre.GovernedAct.Transition.Execution do
       outcome.act_ref != attempt.act_ref ->
         {:error, {:outcome_act_mismatch, outcome.ref, attempt.ref}}
 
-      Map.get(state.attempts_by_act, outcome.act_ref) != attempt.ref ->
+      DispatchState.attempt_ref(state, outcome.act_ref) != attempt.ref ->
         {:error, {:outcome_attempt_index_mismatch, outcome.ref, attempt.ref}}
 
       true ->
@@ -229,7 +224,7 @@ defmodule Spectre.GovernedAct.Transition.Execution do
   end
 
   defp validate_attempt_authority(state, attempt, act) do
-    with {:ok, candidate} <- Admission.rebuild_candidate(state, act),
+    with {:ok, candidate} <- Spectre.GovernedAct.Admission.Binding.candidate(act),
          {:ok, mandate} <- Index.fetch_mandate(state, act.mandate_ref) do
       case Admission.authorize_candidate(state, candidate, act, mandate, attempt.started_at) do
         {:ok, _effective_mandate} -> :ok
@@ -240,7 +235,7 @@ defmodule Spectre.GovernedAct.Transition.Execution do
 
   defp validate_dispatch(state, act, data) do
     cond do
-      not Governance.executor_mediated?(act) ->
+      not GovernedExecution.executor_mediated?(act) ->
         {:error, {:act_not_executor_mediated, act.ref}}
 
       data["executor_ref"] != act.executor_ref ->
@@ -249,19 +244,19 @@ defmodule Spectre.GovernedAct.Transition.Execution do
       data["executor_contract_ref"] != act.executor_contract_ref ->
         {:error, {:dispatch_contract_mismatch, act.ref}}
 
-      MapSet.member?(state.dispatch_ready, act.ref) ->
+      DispatchState.pending?(state, act.ref) ->
         {:error, {:duplicate_dispatch_ready, act.ref}}
 
-      Map.has_key?(state.dispatch_cancellations, act.ref) ->
+      DispatchState.cancelled?(state, act.ref) ->
         {:error, {:dispatch_already_cancelled, act.ref}}
 
-      Map.has_key?(state.attempts_by_act, act.ref) ->
+      DispatchState.attempted?(state, act.ref) ->
         {:error, {:act_already_attempted, act.ref}}
 
       open_disputed_duty_for_act?(state, act.ref) ->
         {:error, {:act_dispatch_blocked_by_disputed_evidence, act.ref}}
 
-      Act.reservations?(act) and Map.get(state.reservation_states, act.ref) != :reserved ->
+      Act.reservations?(act) and MeterState.reservation_status(state, act.ref) != :reserved ->
         {:error, {:act_reservation_not_ready, act.ref}}
 
       true ->
@@ -271,22 +266,22 @@ defmodule Spectre.GovernedAct.Transition.Execution do
 
   defp validate_dispatch_cancellation(state, act, data) do
     cond do
-      not Governance.executor_mediated?(act) ->
+      not GovernedExecution.executor_mediated?(act) ->
         {:error, {:dispatch_cancellation_act_not_executor_mediated, act.ref}}
 
-      not MapSet.member?(state.dispatch_ready, act.ref) ->
-        {:error, {:dispatch_cancellation_not_pending, act.ref}}
-
-      Map.has_key?(state.attempts_by_act, act.ref) ->
+      DispatchState.attempted?(state, act.ref) ->
         {:error, {:dispatch_cancellation_after_attempt, act.ref}}
 
-      Map.has_key?(state.dispatch_cancellations, act.ref) ->
+      DispatchState.cancelled?(state, act.ref) ->
         {:error, {:duplicate_dispatch_cancellation, act.ref}}
+
+      not DispatchState.pending?(state, act.ref) ->
+        {:error, {:dispatch_cancellation_not_pending, act.ref}}
 
       data["mandate_ref"] != act.mandate_ref ->
         {:error, {:dispatch_cancellation_mandate_mismatch, act.ref}}
 
-      Act.reservations?(act) and Map.get(state.reservation_states, act.ref) != :reserved ->
+      Act.reservations?(act) and MeterState.reservation_status(state, act.ref) != :reserved ->
         {:error, {:dispatch_cancellation_reservation_not_pending, act.ref}}
 
       true ->

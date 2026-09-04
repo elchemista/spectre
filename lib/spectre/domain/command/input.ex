@@ -9,6 +9,7 @@ defmodule Spectre.Domain.Command.Input do
   """
 
   alias Spectre.{Act, Attempt, Domain, Evidence, Ingress, Scope, SubmissionContext}
+  alias Spectre.Attempt.Binding, as: AttemptBinding
   alias Spectre.Domain.{Context, Projection, Transaction}
   alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
   alias Spectre.Domain.Sequencer.{Control, State}
@@ -27,7 +28,7 @@ defmodule Spectre.Domain.Command.Input do
          {:ok, next_state, observed, opened_at} <-
            observe(state, context, input, ingress_opts),
          evidence <- merge_evidence(observed, context_evidence),
-         {:ok, turn_ref} <- Transaction.operational_id(next_state, "turn"),
+         {:ok, turn_ref} <- Transaction.operational_id(next_state),
          {:ok, turn} <- build_turn(next_state, context, turn_ref, evidence, opened_at) do
       {:ok, next_state, turn}
     else
@@ -41,16 +42,15 @@ defmodule Spectre.Domain.Command.Input do
           State.t(),
           SubmissionContext.t() | term(),
           Turn.t(),
-          Evidence.t(),
-          keyword()
+          Evidence.t()
         ) :: {:ok, State.t(), Evidence.t()} | {:error, State.t(), term()}
-  def record_derivation(state, context_input, turn, evidence, ledger_opts) do
+  def record_derivation(state, context_input, turn, evidence) do
     with {:ok, context, opening} <- context(state, context_input),
          :ok <- Turn.verify_seal(turn, state.grant_secret),
-         {:ok, now} <- Transaction.trusted_recorded_at(state.clock, state.projection),
+         {:ok, now} <- Transaction.trusted_recorded_at(state),
          {:ok, parents} <- validate_turn(state, context, opening, turn, now),
          :ok <- validate_derivation(evidence, context, turn, parents, now) do
-      EvidenceCommand.record(state, evidence, ledger_opts, state.conflict_retries, now)
+      EvidenceCommand.record(state, evidence, now)
     else
       {:error, reason} -> {:error, state, reason}
     end
@@ -61,12 +61,11 @@ defmodule Spectre.Domain.Command.Input do
           State.t(),
           String.t(),
           String.t(),
-          [Evidence.t()],
-          keyword()
+          [Evidence.t()]
         ) :: {:ok, State.t(), [Evidence.t()]} | {:error, State.t(), term()}
-  def record_executor_evidence(state, act_ref, attempt_ref, evidence, ledger_opts) do
+  def record_executor_evidence(state, act_ref, attempt_ref, evidence) do
     with :ok <- validate_executor_evidence(state.projection, act_ref, attempt_ref, evidence) do
-      case EvidenceCommand.record(state, evidence, ledger_opts, state.conflict_retries) do
+      case EvidenceCommand.record(state, evidence) do
         {:ok, next_state, durable} when is_list(durable) ->
           {:ok, next_state, durable}
 
@@ -87,14 +86,12 @@ defmodule Spectre.Domain.Command.Input do
           {:ok, State.t(), [Evidence.t()], non_neg_integer()} | {:error, State.t(), term()}
   def observe(state, context, input, ingress_opts) do
     with {:ok, context, _opening} <- context(state, context),
-         {:ok, observed_at} <- Transaction.trusted_recorded_at(state.clock, state.projection),
+         {:ok, observed_at} <- Transaction.trusted_recorded_at(state),
          {:ok, evidence} <-
            Ingress.observe(state.ingress, context, input, observed_at, ingress_opts) do
       case EvidenceCommand.record(
              state,
              evidence,
-             state.ledger_opts,
-             state.conflict_retries,
              observed_at
            ) do
         {:ok, next_state, durable} when is_list(durable) ->
@@ -119,7 +116,7 @@ defmodule Spectre.Domain.Command.Input do
     with {:ok, context} <- SubmissionContext.new(input),
          :ok <- Context.validate_ingress(state, context),
          :ok <- SubmissionContext.verify_seal(context, state.grant_secret),
-         true <- context.domain_ref == state.domain_ref,
+         true <- context.domain_ref == state.projection.domain_ref,
          true <- context.host_generation == state.generation,
          {:ok, opening} <- Projection.scope_context(state.projection, context) do
       {:ok, context, opening}
@@ -156,7 +153,7 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp build_turn(state, context, turn_ref, evidence, opened_at) do
-    domain = Domain.handle(self(), state.domain_ref)
+    domain = Domain.handle(self(), state.projection.domain_ref)
 
     with {:ok, scope} <- Scope.new(domain, context.scope_ref, context),
          {:ok, turn} <- Turn.new(scope, turn_ref, state.mind_ref, evidence, opened_at),
@@ -164,31 +161,18 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp validate_turn(state, context, opening, turn, now) do
-    cond do
-      turn.domain_ref != state.domain_ref ->
-        {:error, :turn_domain_mismatch}
+    expected_context = %{context | seal: nil}
 
-      turn.scope_ref != context.scope_ref ->
-        {:error, :turn_scope_mismatch}
+    cond do
+      turn.context != expected_context ->
+        {:error, :turn_context_mismatch}
 
       turn.mind_ref != state.mind_ref ->
         {:error, :turn_mind_mismatch}
 
-      turn.submission_context_ref != context.ref ->
-        {:error, :turn_submission_context_mismatch}
-
-      turn.authenticated_principal_ref != context.authenticated_principal_ref ->
-        {:error, :turn_principal_mismatch}
-
-      turn.context_bindings != SubmissionContext.evidence_bindings(context) ->
-        {:error, :turn_context_bindings_mismatch}
-
       not is_integer(turn.opened_at) or turn.opened_at < opening.opened_at or
           turn.opened_at > now ->
         {:error, :turn_time_invalid}
-
-      turn.evidence_refs != Enum.sort(Enum.uniq(turn.evidence_refs)) ->
-        {:error, :noncanonical_turn_evidence_refs}
 
       true ->
         validate_turn_evidence(state.projection, turn)
@@ -196,11 +180,14 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp validate_turn_evidence(projection, turn) do
-    with :ok <- ErasureAnalysis.validate_evidence_available(projection, turn.evidence_refs),
-         {:ok, durable} <- Projection.evidence_set(projection, turn.evidence_refs),
+    evidence_refs = Turn.evidence_refs(turn)
+
+    with :ok <- ErasureAnalysis.validate_evidence_available(projection, evidence_refs),
+         {:ok, durable} <- Projection.evidence_set(projection, evidence_refs),
          true <- evidence_identity(durable) == evidence_identity(turn.evidence),
          {:ok, labels} <- Derivation.inherited_labels(durable),
-         true <- labels == turn.context_labels do
+         {:ok, turn_labels} <- Turn.labels(turn),
+         true <- labels == turn_labels do
       {:ok, durable}
     else
       false -> {:error, :turn_evidence_mismatch}
@@ -209,11 +196,13 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp validate_derivation(evidence, context, turn, parents, now) do
+    evidence_refs = Turn.evidence_refs(turn)
+
     cond do
       evidence.provenance not in [:derived, :generated] ->
         {:error, {:invalid_derivation_provenance, evidence.provenance}}
 
-      evidence.parent_refs != turn.evidence_refs ->
+      evidence.parent_refs != evidence_refs ->
         {:error, {:evidence_turn_parent_mismatch, evidence.ref}}
 
       evidence.source_ref != turn.mind_ref ->
@@ -238,11 +227,11 @@ defmodule Spectre.Domain.Command.Input do
     with {:ok, %Act{} = act} <- fetch_projection_record(projection.acts, act_ref, :act),
          {:ok, %Attempt{} = attempt} <-
            fetch_projection_record(projection.attempts, attempt_ref, :attempt),
-         true <- attempt.act_ref == act.ref,
+         nil <- AttemptBinding.mismatch(attempt, act),
          :ok <- validate_executor_evidence_records(projection, act, attempt, evidence) do
       :ok
     else
-      false -> {:error, :executor_evidence_attempt_mismatch}
+      {_field, _expected, _actual} -> {:error, :executor_evidence_attempt_mismatch}
       {:error, _reason} = error -> error
     end
   end
@@ -257,7 +246,7 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp validate_executor_evidence_record(projection, act, attempt, evidence) do
-    expected_bindings = %{"act_ref" => act.ref, "attempt_ref" => attempt.ref}
+    expected_bindings = AttemptBinding.evidence_bindings(act, attempt)
 
     cond do
       evidence.bindings != expected_bindings ->

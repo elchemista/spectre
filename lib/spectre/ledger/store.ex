@@ -6,6 +6,11 @@ defmodule Spectre.Ledger.Store do
   `expected_revision`, and treat an uncertain append acknowledgement as
   `{:error, :ambiguous}`. A successful append may only be returned after the
   adapter's advertised durability boundary has acknowledged the batch.
+
+  `Spectre.Ledger.Store.Support` contains portable shape and option helpers for
+  adapter authors. It deliberately does not abstract transactions, locks,
+  encoding, recovery or durability: those guarantees stay visible in each
+  concrete store.
   """
 
   alias Spectre.Adapter

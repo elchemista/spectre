@@ -14,6 +14,7 @@ defmodule Spectre.Presentation.Approval do
   """
 
   alias Spectre.{Act, Evidence, Ingress, Outcome, Portable, Presentation, SubmissionContext}
+  alias Spectre.Presentation.Approval.Assumptions
 
   @contract_ref "spectre.presentation.approval.v1"
   @response_fields [
@@ -169,6 +170,85 @@ defmodule Spectre.Presentation.Approval do
       ),
       do: {:error, :invalid_presentation_response}
 
+  @doc false
+  @spec classify_responses(
+          Presentation.t(),
+          %{optional(String.t()) => Act.t()},
+          [Outcome.t()],
+          [Evidence.t()],
+          integer()
+        ) ::
+          {:supported | :contradicted | :missing | :unqualified, [String.t()], [String.t()]}
+  def classify_responses(
+        %Presentation{} = presentation,
+        acts,
+        outcomes,
+        evidence,
+        time
+      )
+      when is_map(acts) and not is_struct(acts) and is_list(outcomes) and is_list(evidence) and
+             is_integer(time) do
+    evidence_index = Assumptions.index(evidence)
+
+    {matching?, supporting?, contradicting?, response_refs, basis_refs} =
+      Enum.reduce(evidence, {false, false, false, [], MapSet.new()}, fn
+        response, {matching?, supporting?, contradicting?, response_refs, basis_refs} ->
+          case refs(response) do
+            {:ok, presentation_ref, show_act_ref} when presentation_ref == presentation.ref ->
+              result =
+                with {:ok, show_act} <- Map.fetch(acts, show_act_ref),
+                     {:ok, basis_refs} <-
+                       validate_indexed_evidence_with_basis(
+                         response,
+                         response.stance,
+                         presentation,
+                         show_act,
+                         outcomes,
+                         evidence_index,
+                         time
+                       ) do
+                  {:ok, basis_refs}
+                else
+                  _invalid -> :unqualified
+                end
+
+              case result do
+                {:ok, refs} ->
+                  {
+                    true,
+                    supporting? or response.stance == :supports,
+                    contradicting? or response.stance == :contradicts,
+                    [response.ref | response_refs],
+                    Enum.reduce(refs, basis_refs, &MapSet.put(&2, &1))
+                  }
+
+                :unqualified ->
+                  {true, supporting?, contradicting?, response_refs, basis_refs}
+              end
+
+            _not_this_presentation ->
+              {matching?, supporting?, contradicting?, response_refs, basis_refs}
+          end
+      end)
+
+    status =
+      cond do
+        contradicting? ->
+          :contradicted
+
+        supporting? ->
+          :supported
+
+        not matching? ->
+          :missing
+
+        true ->
+          :unqualified
+      end
+
+    {status, Enum.sort(response_refs), basis_refs |> MapSet.to_list() |> Enum.sort()}
+  end
+
   @doc "Validates a supporting approval and returns its complete Evidence basis."
   @spec validate_approval_with_basis(
           Evidence.t(),
@@ -263,24 +343,13 @@ defmodule Spectre.Presentation.Approval do
         time
       )
       when is_list(evidence) and is_integer(time) do
-    with true <- item.stance == :contradicts,
-         true <- valid_assumption_identity?(item, approval, presentation),
-         true <- current_assumption?(item, time, time),
-         {:ok, basis_refs} <-
-           qualified_evidence_basis(
-             item,
-             approval,
-             presentation,
-             evidence,
-             time,
-             MapSet.new([approval.ref, item.ref]),
-             time
-           ) do
-      {:ok, basis_refs}
-    else
-      false -> {:error, :presentation_assumption_evidence_not_current}
-      {:error, _reason} = error -> error
-    end
+    Assumptions.contradiction_basis(
+      item,
+      approval,
+      presentation,
+      Assumptions.index(evidence),
+      time
+    )
   end
 
   def validate_assumption_contradiction_with_basis(
@@ -301,6 +370,26 @@ defmodule Spectre.Presentation.Approval do
          evidence,
          time
        ) do
+    validate_indexed_evidence_with_basis(
+      approval,
+      stance,
+      presentation,
+      show_act,
+      outcomes,
+      Assumptions.index(evidence),
+      time
+    )
+  end
+
+  defp validate_indexed_evidence_with_basis(
+         approval,
+         stance,
+         presentation,
+         show_act,
+         outcomes,
+         evidence_index,
+         time
+       ) do
     with {:ok, presentation_ref, show_act_ref} <- refs(approval),
          true <- approval.stance == stance,
          true <- presentation_ref == presentation.ref,
@@ -309,7 +398,8 @@ defmodule Spectre.Presentation.Approval do
          :ok <- validate_identity(approval, presentation, show_act_ref),
          :ok <- current_observation(approval, time),
          :ok <- successful_show_precedes_approval(approval, show_act, outcomes),
-         {:ok, assumption_refs} <- recognized_assumptions(approval, presentation, evidence, time) do
+         {:ok, assumption_refs} <-
+           Assumptions.recognize(approval, presentation, evidence_index, time) do
       {:ok, normalize_basis_refs([approval.ref | assumption_refs])}
     else
       false -> {:error, :presentation_approval_stance_or_binding_mismatch}
@@ -411,154 +501,6 @@ defmodule Spectre.Presentation.Approval do
       true ->
         :ok
     end
-  end
-
-  defp recognized_assumptions(%Evidence{assumptions: []}, _presentation, _evidence, _time),
-    do: {:ok, []}
-
-  defp recognized_assumptions(approval, presentation, evidence, time) do
-    approval.assumptions
-    |> Enum.reduce_while({:ok, []}, fn assumption, {:ok, refs} ->
-      case assumption_basis(
-             assumption,
-             approval,
-             presentation,
-             evidence,
-             time,
-             MapSet.new([approval.ref]),
-             approval.observed_at
-           ) do
-        {:ok, assumption_refs} ->
-          {:cont, {:ok, [assumption_refs | refs]}}
-
-        {:error, _reason} ->
-          {:halt, {:error, {:unrecognized_presentation_approval_assumption, assumption}}}
-      end
-    end)
-    |> case do
-      {:ok, refs} -> {:ok, normalize_basis_refs(refs)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp assumption_basis(
-         assumption,
-         approval,
-         presentation,
-         evidence,
-         time,
-         visited,
-         observed_by
-       ) do
-    supporting =
-      assumption_evidence_bases(
-        assumption,
-        :supports,
-        approval,
-        presentation,
-        evidence,
-        time,
-        visited,
-        observed_by
-      )
-
-    contradicting =
-      assumption_evidence_bases(
-        assumption,
-        :contradicts,
-        approval,
-        presentation,
-        evidence,
-        time,
-        visited,
-        time
-      )
-
-    if supporting == [] or contradicting != [],
-      do: {:error, :assumption_not_supported},
-      else: {:ok, normalize_basis_refs(supporting)}
-  end
-
-  defp assumption_evidence_bases(
-         assumption,
-         stance,
-         approval,
-         presentation,
-         evidence,
-         time,
-         visited,
-         observed_by
-       ) do
-    evidence
-    |> Enum.filter(fn
-      %Evidence{} = item ->
-        item.proposition == assumption and item.stance == stance and item.ref != approval.ref and
-          not MapSet.member?(visited, item.ref) and
-          valid_assumption_identity?(item, approval, presentation) and
-          current_assumption?(item, time, observed_by)
-
-      _other ->
-        false
-    end)
-    |> Enum.sort_by(& &1.ref)
-    |> Enum.reduce([], fn item, bases ->
-      case qualified_evidence_basis(
-             item,
-             approval,
-             presentation,
-             evidence,
-             time,
-             MapSet.put(visited, item.ref),
-             observed_by
-           ) do
-        {:ok, refs} -> [refs | bases]
-        {:error, _reason} -> bases
-      end
-    end)
-  end
-
-  defp qualified_evidence_basis(
-         item,
-         approval,
-         presentation,
-         evidence,
-         time,
-         visited,
-         observed_by
-       ) do
-    item.assumptions
-    |> Enum.reduce_while({:ok, [[item.ref]]}, fn nested, {:ok, refs} ->
-      case assumption_basis(
-             nested,
-             approval,
-             presentation,
-             evidence,
-             time,
-             visited,
-             observed_by
-           ) do
-        {:ok, nested_refs} -> {:cont, {:ok, [nested_refs | refs]}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, refs} -> {:ok, normalize_basis_refs(refs)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp valid_assumption_identity?(item, approval, presentation) do
-    item.provenance == :observed and not item.provisional and item.parent_refs == [] and
-      item.source_ref in presentation.approval_source_refs and
-      item.issuer_ref == approval.issuer_ref and
-      Map.get(item.bindings, "authenticated_principal_ref") == approval.issuer_ref
-  end
-
-  defp current_assumption?(item, time, observed_by) do
-    item.observed_at <= observed_by and item.observed_at <= time and
-      (is_nil(item.valid_from) or item.valid_from <= time) and
-      (is_nil(item.valid_until) or time < item.valid_until) and
-      (is_nil(item.freshness_ms) or time - item.observed_at <= item.freshness_ms)
   end
 
   defp normalize_basis_refs(refs), do: refs |> List.flatten() |> Enum.uniq() |> Enum.sort()

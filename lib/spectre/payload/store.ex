@@ -8,8 +8,9 @@ defmodule Spectre.Payload.Store do
   reason a referenced payload may be absent; its ledger tombstone remains.
   """
 
-  alias Spectre.Adapter
+  alias Spectre.{Act, Adapter, Disclosure}
   alias Spectre.Erasure.Analysis
+  alias Spectre.GovernedAct.State
   alias Spectre.Presentation
 
   @type ref :: String.t()
@@ -45,13 +46,13 @@ defmodule Spectre.Payload.Store do
   end
 
   @doc "Verifies every payload which the durable projection still classifies as live."
-  @spec verify_live_references(config() | nil, map()) :: :ok | {:error, term()}
-  def verify_live_references(config, facts) when is_map(facts) do
-    facts
+  @spec verify_live_references(config() | nil, State.t()) :: :ok | {:error, term()}
+  def verify_live_references(config, %State{} = state) do
+    state
     |> referenced_payloads()
     |> Enum.reduce_while(:ok, fn ref, :ok ->
       result =
-        case Analysis.execution_state(facts, ref) do
+        case Analysis.execution_state(state, ref) do
           {:ok, :live} -> verify_live(config, ref)
           {:ok, state} when state in [:possibly_absent, :erased] -> :ok
           {:error, _reason} = error -> error
@@ -67,13 +68,13 @@ defmodule Spectre.Payload.Store do
   def verify_live_references(_config, _facts), do: {:error, :invalid_payload_projection}
 
   @doc "Verifies refs at their point of use and reports causal unavailability explicitly."
-  @spec verify_usable(config() | nil, map(), [ref()]) :: :ok | {:error, term()}
-  def verify_usable(config, facts, refs) when is_map(facts) and is_list(refs) do
+  @spec verify_usable(config() | nil, State.t(), [ref()]) :: :ok | {:error, term()}
+  def verify_usable(config, %State{} = state, refs) when is_list(refs) do
     refs
     |> Enum.uniq()
     |> Enum.reduce_while(:ok, fn ref, :ok ->
       result =
-        case Analysis.execution_state(facts, ref) do
+        case Analysis.execution_state(state, ref) do
           {:ok, :live} -> verify(config, ref)
           {:ok, :possibly_absent} -> {:error, {:payload_temporarily_unavailable, ref}}
           {:ok, :erased} -> {:error, {:payload_redacted, ref}}
@@ -90,13 +91,13 @@ defmodule Spectre.Payload.Store do
   def verify_usable(_config, _facts, _refs), do: {:error, :invalid_payload_use}
 
   @doc "Verifies a newly introduced ref and prevents resurrection after an erasure Attempt."
-  @spec verify_new_references(config() | nil, map(), [ref()]) :: :ok | {:error, term()}
-  def verify_new_references(config, facts, refs) when is_map(facts) and is_list(refs) do
+  @spec verify_new_references(config() | nil, State.t(), [ref()]) :: :ok | {:error, term()}
+  def verify_new_references(config, %State{} = state, refs) when is_list(refs) do
     refs
     |> Enum.uniq()
     |> Enum.reduce_while(:ok, fn ref, :ok ->
       result =
-        case Analysis.execution_state(facts, ref) do
+        case Analysis.execution_state(state, ref) do
           {:ok, :live} -> verify(config, ref)
           {:ok, state} -> {:error, {:payload_reference_retired, ref, state}}
           {:error, _reason} = error -> error
@@ -113,31 +114,27 @@ defmodule Spectre.Payload.Store do
     do: {:error, :invalid_new_payload_references}
 
   @doc "Returns external payload refs which must be usable before an Attempt is recorded."
-  @spec act_payload_refs(map(), map()) :: [ref()]
-  def act_payload_refs(facts, act) when is_map(facts) and is_map(act) do
-    act_evidence_refs =
-      act
-      |> field(:evidence_refs, [])
-      |> evidence_payload_refs(facts)
+  @spec act_payload_refs(State.t(), Act.t()) :: [ref()]
+  def act_payload_refs(%State{} = state, %Act{} = act) do
+    act_evidence_refs = evidence_payload_refs(act.evidence_refs, state)
 
     evidence_refs =
       act
-      |> field(:disclosure)
-      |> field(:source_evidence_refs, [])
-      |> evidence_payload_refs(facts)
+      |> disclosure_evidence_refs()
+      |> evidence_payload_refs(state)
 
     erasure_refs =
-      case field(act, :consequence) do
+      case act.consequence do
         %{"erasure_request" => %{"target_ref" => ref}} -> [ref]
         _other -> []
       end
 
     presentation_refs =
-      case Presentation.show_presentation_ref(field(act, :consequence)) do
+      case Presentation.show_presentation_ref(act.consequence) do
         {:ok, ref} ->
-          case Map.get(field(facts, :presentations, %{}), ref) do
+          case Map.get(state.presentations, ref) do
             nil -> []
-            presentation -> optional_ref(field(presentation, :rendered_payload_ref))
+            presentation -> optional_ref(presentation.rendered_payload_ref)
           end
 
         {:error, _reason} ->
@@ -152,9 +149,9 @@ defmodule Spectre.Payload.Store do
   def act_payload_refs(_facts, _act), do: []
 
   @doc "Returns payload refs still needed after an Attempt has made its target mutable."
-  @spec post_attempt_payload_refs(map(), map()) :: [ref()]
-  def post_attempt_payload_refs(facts, act) when is_map(facts) and is_map(act) do
-    facts
+  @spec post_attempt_payload_refs(State.t(), Act.t()) :: [ref()]
+  def post_attempt_payload_refs(%State{} = state, %Act{} = act) do
+    state
     |> act_payload_refs(act)
     |> Kernel.--(erasure_target_refs(act))
   end
@@ -162,16 +159,13 @@ defmodule Spectre.Payload.Store do
   def post_attempt_payload_refs(_facts, _act), do: []
 
   @doc false
-  @spec evidence_payload_refs([String.t()], map()) :: [ref()]
-  def evidence_payload_refs(evidence_refs, facts)
-      when is_list(evidence_refs) and is_map(facts) do
-    evidence = field(facts, :evidence, %{})
-
+  @spec evidence_payload_refs([String.t()], State.t()) :: [ref()]
+  def evidence_payload_refs(evidence_refs, %State{} = state) when is_list(evidence_refs) do
     evidence_refs
     |> Enum.flat_map(fn ref ->
-      case Map.get(evidence, ref) do
+      case Map.get(state.evidence, ref) do
         nil -> []
-        record -> optional_ref(field(record, :payload_ref))
+        evidence -> optional_ref(evidence.payload_ref)
       end
     end)
     |> Enum.uniq()
@@ -211,31 +205,30 @@ defmodule Spectre.Payload.Store do
     end
   end
 
-  defp referenced_payloads(facts) do
+  defp referenced_payloads(state) do
     evidence_refs =
-      facts
-      |> field(:evidence, %{})
-      |> collection()
-      |> Enum.flat_map(&optional_ref(field(&1, :payload_ref)))
+      state.evidence
+      |> Map.values()
+      |> Enum.flat_map(&optional_ref(&1.payload_ref))
 
     presentation_refs =
-      facts
-      |> field(:presentations, %{})
-      |> collection()
-      |> Enum.flat_map(&optional_ref(field(&1, :rendered_payload_ref)))
+      state.presentations
+      |> Map.values()
+      |> Enum.flat_map(&optional_ref(&1.rendered_payload_ref))
 
     (evidence_refs ++ presentation_refs) |> Enum.uniq() |> Enum.sort()
   end
 
-  defp collection(values) when is_map(values), do: Map.values(values)
-  defp collection(values) when is_list(values), do: values
-  defp collection(_values), do: []
-
   defp optional_ref(nil), do: []
   defp optional_ref(ref), do: [ref]
 
-  defp erasure_target_refs(act) do
-    case field(act, :consequence) do
+  defp disclosure_evidence_refs(%Act{disclosure: nil}), do: []
+
+  defp disclosure_evidence_refs(%Act{disclosure: %Disclosure{} = disclosure}),
+    do: disclosure.source_evidence_refs
+
+  defp erasure_target_refs(%Act{} = act) do
+    case act.consequence do
       %{"erasure_request" => %{"target_ref" => ref}} -> [ref]
       _other -> []
     end
@@ -248,11 +241,4 @@ defmodule Spectre.Payload.Store do
   end
 
   defp validate_ref(ref), do: {:error, {:invalid_payload_ref, ref}}
-
-  defp field(value, key, default \\ nil)
-
-  defp field(value, key, default) when is_map(value),
-    do: Map.get(value, key, Map.get(value, Atom.to_string(key), default))
-
-  defp field(_value, _key, default), do: default
 end

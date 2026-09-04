@@ -21,6 +21,15 @@ defmodule Spectre.Domain.Configuration do
   @default_ambiguous_retries 2
   @minimum_secret_bytes 32
 
+  @bootstrap_options [
+    :genesis,
+    :principals,
+    :host_profile,
+    :surface,
+    :root_mandates,
+    :genesis_verifier
+  ]
+
   @options [
     :name,
     :registry,
@@ -62,8 +71,7 @@ defmodule Spectre.Domain.Configuration do
     :late_observer,
     :mind,
     :mind_ref,
-    :execution_routes,
-    :broker,
+    :execution_boundary,
     :generation,
     :grant_secret,
     :checkout_receipt_secret,
@@ -89,8 +97,7 @@ defmodule Spectre.Domain.Configuration do
           late_observer: module() | nil,
           mind: module() | nil,
           mind_ref: String.t() | nil,
-          execution_routes: map(),
-          broker: map() | nil,
+          execution_boundary: Boundary.t(),
           generation: non_neg_integer(),
           grant_secret: binary(),
           checkout_receipt_secret: binary(),
@@ -145,8 +152,7 @@ defmodule Spectre.Domain.Configuration do
          late_observer: late_observer,
          mind: mind,
          mind_ref: mind_ref,
-         execution_routes: execution_boundary.routes,
-         broker: execution_boundary.broker,
+         execution_boundary: execution_boundary,
          generation: generation,
          grant_secret: grant_secret,
          checkout_receipt_secret: checkout_receipt_secret,
@@ -157,7 +163,7 @@ defmodule Spectre.Domain.Configuration do
          ambiguous_retries: ambiguous_retries,
          ledger_opts: ledger_opts,
          payload_store: payload_store,
-         bootstrap_opts: opts,
+         bootstrap_opts: Keyword.take(opts, @bootstrap_options),
          constitution: constitution
        }}
     else
@@ -167,6 +173,16 @@ defmodule Spectre.Domain.Configuration do
   end
 
   def new(_opts), do: {:error, :invalid_sequencer_options}
+
+  @doc false
+  @spec verification_opts(t()) :: keyword()
+  def verification_opts(%__MODULE__{bootstrap_opts: opts}),
+    do: Keyword.take(opts, [:genesis_verifier])
+
+  @doc false
+  @spec genesis_verifier(t()) :: term()
+  def genesis_verifier(%__MODULE__{bootstrap_opts: opts}),
+    do: Keyword.get(opts, :genesis_verifier)
 
   defp known_options(opts) do
     case Keyword.keys(opts) -- @options do

@@ -8,16 +8,25 @@ defmodule Spectre.Domain.Admission.Planner do
   so later Candidates in the same group observe the exact preceding prefix.
   """
 
-  alias Spectre.{Candidate, Governance, Row, SubmissionContext}
+  alias Spectre.{Candidate, Governance, SubmissionContext}
   alias Spectre.Domain.{Projection, Transaction}
   alias Spectre.Domain.Sequencer.State
   alias Spectre.Execution.Router
+  alias Spectre.GovernedAct.Class, as: GovernedClass
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel, as: GovernedKernel
   alias Spectre.Kernel.Commit
   alias Spectre.Scope.Opening
 
+  @type plan :: %{
+          required(:from) => GenServer.from(),
+          required(:candidate) => Candidate.t() | nil,
+          required(:error) => term() | nil
+        }
+
   @doc "Plans a submission group in queue order."
-  @spec plan(State.t(), [map()], non_neg_integer()) :: {[map()], map(), [map()]}
+  @spec plan(State.t(), [map()], non_neg_integer()) ::
+          {[plan()], Projection.t(), [map()]}
 
   def plan(state, requests, admitted_at) do
     Enum.reduce(requests, {[], state.projection, []}, fn request,
@@ -31,7 +40,7 @@ defmodule Spectre.Domain.Admission.Planner do
           }
 
         {:error, reason} ->
-          plan = %{request: request, candidate: nil, error: reason}
+          plan = error_plan(request, reason)
           {[plan | plans], provisional, reversed_payloads}
       end
     end)
@@ -45,24 +54,27 @@ defmodule Spectre.Domain.Admission.Planner do
          {:ok, context} <- SubmissionContext.new(request.context),
          :ok <- validate_submission_boundary(state, projection, candidate, context),
          :ok <- validate_submission_kind(state, request, candidate, context) do
-      case Map.fetch(projection.candidate_identities, candidate.identity_key) do
-        {:ok, %{digest: digest}} when digest == candidate.material_digest ->
+      case Projection.candidate_decision(projection, candidate.identity_key) do
+        {:ok, %{candidate_digest: digest}} when digest == candidate.material_digest ->
           {:ok, success_plan(request, candidate), projection, []}
 
         {:ok, _different} ->
           {:error, {:candidate_identity_conflict, candidate.identity_key}}
 
-        :error ->
+        :not_found ->
           with :ok <- Router.validate_candidate(state, projection, candidate) do
             evaluate_submission(state, request, candidate, context, projection, admitted_at)
           end
+
+        {:error, _reason} = error ->
+          error
       end
     end
   end
 
   defp validate_submission_kind(
          state,
-         %{kind: :governed_scope_opening, child_context: child_context},
+         %{child_context: child_context},
          candidate,
          parent_context
        ) do
@@ -75,18 +87,16 @@ defmodule Spectre.Domain.Admission.Planner do
     end
   end
 
-  defp validate_submission_kind(_state, %{kind: :candidate}, candidate, _context) do
+  defp validate_submission_kind(_state, request, candidate, _context)
+       when not is_map_key(request, :child_context) do
     if candidate.class == Governance.scope_open_class(),
       do: {:error, :governed_scope_context_required},
       else: :ok
   end
 
-  defp validate_submission_kind(_state, _request, _candidate, _context),
-    do: {:error, :invalid_submission_kind}
-
   defp validate_child_context_boundary(state, parent_context, child_context) do
     cond do
-      child_context.domain_ref != state.domain_ref or
+      child_context.domain_ref != state.projection.domain_ref or
           child_context.domain_ref != parent_context.domain_ref ->
         {:error, :child_scope_domain_mismatch}
 
@@ -145,11 +155,11 @@ defmodule Spectre.Domain.Admission.Planner do
         {field, _expected} = mismatch
         {:error, {:governed_scope_context_mismatch, field}}
 
-      Row.dimensions(candidate.row) != Governance.scope_open_dimensions() ->
+      not GovernedClass.exact_row?(Governance.scope_open_class(), candidate.row) ->
         {:error, :invalid_governed_scope_opening_row}
 
-      candidate.executor_ref != Governance.kernel_executor_ref() or
-          candidate.executor_contract_ref != Governance.kernel_contract_ref() ->
+      candidate.executor_ref != GovernedExecution.kernel_executor_ref() or
+          candidate.executor_contract_ref != GovernedExecution.kernel_contract_ref() ->
         {:error, :governed_scope_opening_not_ledger_internal}
 
       candidate.meter_requests != %{} or candidate.observation_window_ms != 0 ->
@@ -169,8 +179,8 @@ defmodule Spectre.Domain.Admission.Planner do
   defp validate_submission_boundary(state, projection, candidate, context) do
     with :ok <- SubmissionContext.verify_seal(context, state.grant_secret) do
       cond do
-        context.domain_ref != state.domain_ref ->
-          {:error, {:submission_domain_mismatch, context.domain_ref, state.domain_ref}}
+        context.domain_ref != state.projection.domain_ref ->
+          {:error, {:submission_domain_mismatch, context.domain_ref, state.projection.domain_ref}}
 
         context.ingress_ref != state.ingress_ref ->
           {:error, :submission_context_ingress_mismatch}
@@ -200,11 +210,14 @@ defmodule Spectre.Domain.Admission.Planner do
   end
 
   defp success_plan(request, candidate),
-    do: %{request: request, candidate: candidate, error: nil}
+    do: %{from: request.from, candidate: candidate, error: nil}
 
   @doc "Creates neutral error plans when Admission cannot start."
-  @spec error_plans([map()]) :: [map()]
+  @spec error_plans([map()]) :: [plan()]
   def error_plans(requests) do
-    Enum.map(requests, fn request -> %{request: request, candidate: nil, error: nil} end)
+    Enum.map(requests, &error_plan(&1, nil))
   end
+
+  defp error_plan(request, reason),
+    do: %{from: request.from, candidate: nil, error: reason}
 end

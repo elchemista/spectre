@@ -38,7 +38,7 @@ defmodule Spectre.Domain.Context do
 
   defp call_adapter(state, scope_ref, input, opts) do
     arguments = [
-      state.domain_ref,
+      state.projection.domain_ref,
       scope_ref,
       input,
       state.generation,
@@ -65,7 +65,7 @@ defmodule Spectre.Domain.Context do
 
   defp validate_binding(state, scope_ref, context) do
     cond do
-      context.domain_ref != state.domain_ref ->
+      context.domain_ref != state.projection.domain_ref ->
         {:error, :authenticated_context_domain_mismatch}
 
       context.scope_ref != scope_ref ->

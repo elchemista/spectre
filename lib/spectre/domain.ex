@@ -6,6 +6,12 @@ defmodule Spectre.Domain do
   Domain ledger; the pid merely serializes commands against that ledger. Each
   running Domain is wired to one validated `Spectre.Ingress` adapter, whose
   stable reference fences every authenticated submission context.
+
+  Public workflows enter through `Spectre`; `Domain.Sequencer` is the ordered
+  mailbox, and the modules below `Domain.Command` own the individual I/O
+  workflows. Governed semantics do not live in this handle or in callbacks:
+  they are evaluated by `Spectre.Kernel` and replayed by
+  `Spectre.GovernedAct.Fold`.
   """
 
   alias Spectre.Domain.Sequencer

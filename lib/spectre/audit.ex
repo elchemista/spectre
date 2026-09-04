@@ -35,8 +35,8 @@ defmodule Spectre.Audit do
          {:ok, verified} <- verify_ledger(snapshot),
          :ok <- audit_time_covers_ledger(verified, audited_at),
          {:ok, state} <- fold(verified, constitution),
-         :ok <- validate_integrity(state, constitution, audited_at),
-         {:ok, report} <- Report.build(state, verified, constitution, audited_at) do
+         :ok <- validate_integrity(state, audited_at),
+         {:ok, report} <- Report.build(state, audited_at) do
       {:ok, report}
     end
   end
@@ -73,8 +73,8 @@ defmodule Spectre.Audit do
     end
   end
 
-  defp validate_integrity(state, constitution, audited_at) do
-    case Integrity.validate(state, constitution, audited_at) do
+  defp validate_integrity(state, audited_at) do
+    case Integrity.validate(state, audited_at) do
       :ok -> :ok
       {:error, reason} -> {:error, {:semantic_audit_incomplete, reason}}
     end

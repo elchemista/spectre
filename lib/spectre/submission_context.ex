@@ -31,17 +31,18 @@ defmodule Spectre.SubmissionContext do
     :session_ref,
     :host_generation
   ]
-  @evidence_binding_fields [
-    :submission_context_ref,
-    :domain_ref,
-    :scope_ref,
-    :authenticated_principal_ref,
-    :authentication_ref,
-    :ingress_ref,
-    :channel_ref,
-    :session_ref,
-    :host_generation
+  @evidence_binding_matrix [
+    {:submission_context_ref, :ref},
+    {:domain_ref, :domain_ref},
+    {:scope_ref, :scope_ref},
+    {:authenticated_principal_ref, :authenticated_principal_ref},
+    {:authentication_ref, :authentication_ref},
+    {:ingress_ref, :ingress_ref},
+    {:channel_ref, :channel_ref},
+    {:session_ref, :session_ref},
+    {:host_generation, :host_generation}
   ]
+  @evidence_binding_fields Enum.map(@evidence_binding_matrix, &elem(&1, 0))
   @evidence_binding_keys Enum.map(@evidence_binding_fields, &Atom.to_string/1)
   @fields @canonical_fields ++ [:seal]
   @minimum_secret_bytes 32
@@ -92,6 +93,8 @@ defmodule Spectre.SubmissionContext do
          attrs =
            attrs
            |> Map.put_new(:schema_version, @schema_version)
+           |> Map.put_new(:channel_ref, nil)
+           |> Map.put_new(:session_ref, nil)
            |> Map.put_new(:seal, nil),
          {:ok, ref} <- resolve_ref(Map.get(attrs, :ref), attrs),
          context = struct(__MODULE__, Map.put(attrs, :ref, ref)),
@@ -103,20 +106,8 @@ defmodule Spectre.SubmissionContext do
 
   @doc "Returns the plain, string-keyed representation suitable for a decision record."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = context) do
-    %{
-      "schema_version" => context.schema_version,
-      "ref" => context.ref,
-      "domain_ref" => context.domain_ref,
-      "scope_ref" => context.scope_ref,
-      "authenticated_principal_ref" => context.authenticated_principal_ref,
-      "authentication_ref" => context.authentication_ref,
-      "ingress_ref" => context.ingress_ref,
-      "channel_ref" => context.channel_ref,
-      "session_ref" => context.session_ref,
-      "host_generation" => context.host_generation
-    }
-  end
+  def canonical(%__MODULE__{} = context),
+    do: Portable.canonical_fields(context, @canonical_fields)
 
   @doc "Restores a context from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -135,17 +126,9 @@ defmodule Spectre.SubmissionContext do
   @doc "Returns the exact trusted context fields embedded in scoped Evidence."
   @spec evidence_bindings(t()) :: map()
   def evidence_bindings(%__MODULE__{} = context) do
-    %{
-      "submission_context_ref" => context.ref,
-      "domain_ref" => context.domain_ref,
-      "scope_ref" => context.scope_ref,
-      "authenticated_principal_ref" => context.authenticated_principal_ref,
-      "authentication_ref" => context.authentication_ref,
-      "ingress_ref" => context.ingress_ref,
-      "channel_ref" => context.channel_ref,
-      "session_ref" => context.session_ref,
-      "host_generation" => context.host_generation
-    }
+    Map.new(@evidence_binding_matrix, fn {target, source} ->
+      {Atom.to_string(target), Map.fetch!(context, source)}
+    end)
   end
 
   @doc "Adds application bindings without permitting trusted context fields to be supplied."
@@ -165,30 +148,13 @@ defmodule Spectre.SubmissionContext do
   @doc "Restores and verifies a context from the trusted portion of Evidence bindings."
   @spec from_evidence_bindings(map()) :: {:ok, t()} | {:error, term()}
   def from_evidence_bindings(bindings) when is_map(bindings) and not is_struct(bindings) do
-    with :ok <- canonical_evidence_binding_keys(bindings),
-         {:ok, ref} <- Map.fetch(bindings, "submission_context_ref"),
-         {:ok, domain_ref} <- Map.fetch(bindings, "domain_ref"),
-         {:ok, scope_ref} <- Map.fetch(bindings, "scope_ref"),
-         {:ok, principal_ref} <- Map.fetch(bindings, "authenticated_principal_ref"),
-         {:ok, authentication_ref} <- Map.fetch(bindings, "authentication_ref"),
-         {:ok, ingress_ref} <- Map.fetch(bindings, "ingress_ref"),
-         {:ok, channel_ref} <- Map.fetch(bindings, "channel_ref"),
-         {:ok, session_ref} <- Map.fetch(bindings, "session_ref"),
-         {:ok, host_generation} <- Map.fetch(bindings, "host_generation") do
-      new(%{
-        ref: ref,
-        domain_ref: domain_ref,
-        scope_ref: scope_ref,
-        authenticated_principal_ref: principal_ref,
-        authentication_ref: authentication_ref,
-        ingress_ref: ingress_ref,
-        channel_ref: channel_ref,
-        session_ref: session_ref,
-        host_generation: host_generation
-      })
-    else
-      :error -> {:error, :incomplete_evidence_submission_context}
-      {:error, _reason} = error -> error
+    with :ok <- canonical_evidence_binding_keys(bindings) do
+      attrs =
+        Map.new(@evidence_binding_matrix, fn {source, target} ->
+          {target, Map.fetch!(bindings, Atom.to_string(source))}
+        end)
+
+      new(attrs)
     end
   end
 
@@ -266,12 +232,8 @@ defmodule Spectre.SubmissionContext do
 
   defp content(%__MODULE__{} = context), do: context |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    @canonical_fields
-    |> Enum.reject(&(&1 == :ref))
-    |> Map.new(fn field -> {Atom.to_string(field), Map.get(attrs, field)} end)
-    |> Map.put("schema_version", Map.get(attrs, :schema_version, @schema_version))
-  end
+  defp content(attrs),
+    do: Portable.canonical_fields(attrs, @canonical_fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = context) do
     cond do
@@ -295,15 +257,12 @@ defmodule Spectre.SubmissionContext do
                ),
              :ok <- Portable.validate_ref(context.authentication_ref, :authentication_ref),
              :ok <- Portable.validate_ref(context.ingress_ref, :ingress_ref),
-             :ok <- validate_optional_ref(context.channel_ref, :channel_ref),
-             :ok <- validate_optional_ref(context.session_ref, :session_ref) do
+             :ok <- Portable.validate_optional_ref(context.channel_ref, :channel_ref),
+             :ok <- Portable.validate_optional_ref(context.session_ref, :session_ref) do
           :ok
         end
     end
   end
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 
   defp validate_additional_evidence_bindings(bindings)
        when is_map(bindings) and not is_struct(bindings) do

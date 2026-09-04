@@ -84,7 +84,7 @@ defmodule Spectre.Secret.CheckoutReceipt do
     normalized = Map.take(claims, @claim_fields)
 
     cond do
-      Map.keys(normalized) |> Enum.sort() != Enum.sort(@claim_fields) ->
+      map_size(normalized) != length(@claim_fields) ->
         {:error, :incomplete_checkout_receipt}
 
       not Enum.all?(

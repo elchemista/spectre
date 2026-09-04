@@ -12,7 +12,7 @@ defmodule Spectre.Kernel.Observation do
   alias Spectre.Domain.{Event, Projection}
   alias Spectre.Duty.Derive
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{MeterState, State}
   alias Spectre.Kernel.Meter
   alias Spectre.Outcome.Attestation
   alias Spectre.{Act, Attempt, Duty, Evidence, Outcome}
@@ -126,7 +126,7 @@ defmodule Spectre.Kernel.Observation do
        do: {:ok, []}
 
   defp meter_events(projection, act, outcome) do
-    state = Map.get(projection.reservation_states, act.ref)
+    state = MeterState.reservation_status(projection, act.ref)
 
     operation =
       case {Outcome.correction?(outcome), outcome.status, state} do
@@ -166,11 +166,11 @@ defmodule Spectre.Kernel.Observation do
   end
 
   defp recontainment_event(projection, act, outcome) do
-    with {:ok, binding} <- Map.fetch(projection.reservation_bindings, act.ref),
-         true <- binding.mandate_ref == act.mandate_ref,
+    with {:ok, reservation} <- MeterState.reservation(projection, act.ref),
+         true <- reservation.mandate_ref == act.mandate_ref,
          {:ok, accounts} <- Projection.meter_accounts(projection, act.mandate_ref),
          {:ok, _accounts, recontained, deficits} <-
-           Meter.recontain_many(binding.amounts, accounts),
+           Meter.recontain_many(reservation.amounts, accounts),
          {:ok, event} <- Event.meter_recontained(act, outcome, recontained, deficits) do
       {:ok, [event]}
     else

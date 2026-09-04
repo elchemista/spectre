@@ -3,7 +3,7 @@ defmodule Spectre.Kernel.Grant do
 
   alias Spectre.Canonical.Value
 
-  @enforce_keys [
+  @claim_fields [
     :act_ref,
     :domain_ref,
     :executor_ref,
@@ -11,9 +11,9 @@ defmodule Spectre.Kernel.Grant do
     :expires_at,
     :generation,
     :material_digest,
-    :nonce,
-    :mac
+    :nonce
   ]
+  @enforce_keys @claim_fields ++ [:mac]
   defstruct @enforce_keys
 
   @typedoc false
@@ -74,21 +74,10 @@ defmodule Spectre.Kernel.Grant do
   end
 
   defp normalize_claims(claims) do
-    required = [
-      :act_ref,
-      :domain_ref,
-      :executor_ref,
-      :issued_at,
-      :expires_at,
-      :generation,
-      :material_digest,
-      :nonce
-    ]
-
-    normalized = Map.take(claims, required)
+    normalized = Map.take(claims, @claim_fields)
 
     cond do
-      Map.keys(normalized) |> Enum.sort() != Enum.sort(required) ->
+      map_size(normalized) != length(@claim_fields) ->
         {:error, :incomplete_grant_material}
 
       not Enum.all?([:act_ref, :domain_ref, :executor_ref, :material_digest, :nonce], fn key ->

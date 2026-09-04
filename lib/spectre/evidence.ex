@@ -110,28 +110,7 @@ defmodule Spectre.Evidence do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = evidence) do
-    %{
-      "schema_version" => evidence.schema_version,
-      "ref" => evidence.ref,
-      "proposition" => evidence.proposition,
-      "stance" => evidence.stance,
-      "issuer_ref" => evidence.issuer_ref,
-      "source_ref" => evidence.source_ref,
-      "provenance" => evidence.provenance,
-      "parent_refs" => evidence.parent_refs,
-      "observed_at" => evidence.observed_at,
-      "valid_from" => evidence.valid_from,
-      "valid_until" => evidence.valid_until,
-      "freshness_ms" => evidence.freshness_ms,
-      "bindings" => evidence.bindings,
-      "assumptions" => evidence.assumptions,
-      "labels" => Enum.map(evidence.labels, &Label.canonical/1),
-      "payload" => evidence.payload,
-      "payload_ref" => evidence.payload_ref,
-      "provisional" => evidence.provisional
-    }
-  end
+  def canonical(%__MODULE__{} = evidence), do: canonical_fields(evidence, @fields)
 
   @doc "Restores evidence from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -141,6 +120,18 @@ defmodule Spectre.Evidence do
   @doc "Returns the stable digest of the complete evidence record."
   @spec digest(t()) :: String.t()
   def digest(%__MODULE__{} = evidence), do: evidence |> canonical() |> Portable.digest!()
+
+  @doc "Returns whether two records assert opposite stances for the same proposition."
+  @spec opposes?(t(), t()) :: boolean()
+  def opposes?(%__MODULE__{} = left, %__MODULE__{} = right) do
+    left.proposition == right.proposition and
+      {left.stance, right.stance} in [
+        {:supports, :contradicts},
+        {:contradicts, :supports}
+      ]
+  end
+
+  def opposes?(_left, _right), do: false
 
   @doc "Returns the content-derived reference, independent of an assigned `ref`."
   @spec content_ref(t()) :: String.t()
@@ -177,9 +168,12 @@ defmodule Spectre.Evidence do
   defp content(%__MODULE__{} = evidence), do: evidence |> canonical() |> Map.delete("ref")
 
   defp content(attrs) do
-    @fields
-    |> Enum.reject(&(&1 == :ref))
-    |> Map.new(fn field -> {Atom.to_string(field), Map.get(attrs, field)} end)
+    canonical_fields(attrs, @fields -- [:ref])
+  end
+
+  defp canonical_fields(source, fields) do
+    source
+    |> Portable.canonical_fields(fields)
     |> Map.update!("labels", &Enum.map(&1, fn label -> Label.canonical(label) end))
   end
 

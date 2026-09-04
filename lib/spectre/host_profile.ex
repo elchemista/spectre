@@ -69,17 +69,7 @@ defmodule Spectre.HostProfile do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = profile) do
-    %{
-      "schema_version" => profile.schema_version,
-      "ref" => profile.ref,
-      "revision" => profile.revision,
-      "mode" => profile.mode,
-      "attestation_ref" => profile.attestation_ref,
-      "assumptions" => profile.assumptions,
-      "declared_at" => profile.declared_at
-    }
-  end
+  def canonical(%__MODULE__{} = profile), do: Portable.canonical_fields(profile, @fields)
 
   @doc "Restores a host profile from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -100,16 +90,7 @@ defmodule Spectre.HostProfile do
 
   defp content(%__MODULE__{} = profile), do: profile |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.get(attrs, :schema_version, @schema_version),
-      "revision" => Map.get(attrs, :revision, 1),
-      "mode" => Map.get(attrs, :mode),
-      "attestation_ref" => Map.get(attrs, :attestation_ref),
-      "assumptions" => Map.get(attrs, :assumptions, []),
-      "declared_at" => Map.get(attrs, :declared_at)
-    }
-  end
+  defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = profile) do
     cond do

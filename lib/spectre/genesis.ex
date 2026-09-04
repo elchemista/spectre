@@ -95,22 +95,7 @@ defmodule Spectre.Genesis do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = genesis) do
-    %{
-      "schema_version" => genesis.schema_version,
-      "ref" => genesis.ref,
-      "domain_ref" => genesis.domain_ref,
-      "principal_refs" => genesis.principal_refs,
-      "root_mandate_refs" => genesis.root_mandate_refs,
-      "constitution_ref" => genesis.constitution_ref,
-      "surface_ref" => genesis.surface_ref,
-      "surface_revision" => genesis.surface_revision,
-      "host_profile_ref" => genesis.host_profile_ref,
-      "emergency_mandate_ref" => genesis.emergency_mandate_ref,
-      "issued_at" => genesis.issued_at,
-      "attestation_ref" => genesis.attestation_ref
-    }
-  end
+  def canonical(%__MODULE__{} = genesis), do: Portable.canonical_fields(genesis, @fields)
 
   @doc "Restores genesis from its canonical map."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -159,13 +144,14 @@ defmodule Spectre.Genesis do
              :ok <- Portable.validate_ref(genesis.constitution_ref, :constitution_ref),
              :ok <- Portable.validate_ref(genesis.surface_ref, :surface_ref),
              :ok <- Portable.validate_ref(genesis.host_profile_ref, :host_profile_ref),
-             :ok <- validate_optional_ref(genesis.emergency_mandate_ref, :emergency_mandate_ref),
+             :ok <-
+               Portable.validate_optional_ref(
+                 genesis.emergency_mandate_ref,
+                 :emergency_mandate_ref
+               ),
              :ok <- Portable.validate_ref(genesis.attestation_ref, :attestation_ref) do
           :ok
         end
     end
   end
-
-  defp validate_optional_ref(nil, _field), do: :ok
-  defp validate_optional_ref(value, field), do: Portable.validate_ref(value, field)
 end

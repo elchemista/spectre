@@ -102,9 +102,7 @@ defmodule Spectre.Duty.Disposition do
 
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = disposition) do
-    Map.new(@fields, fn field ->
-      {Atom.to_string(field), Map.fetch!(disposition, field)}
-    end)
+    Portable.canonical_fields(disposition, @fields)
   end
 
   @spec discretionary?(t()) :: boolean()

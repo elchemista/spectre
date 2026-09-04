@@ -93,13 +93,7 @@ defmodule Spectre.Consequence.Contract do
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
-  def canonical(%__MODULE__{} = contract) do
-    %{
-      "schema_version" => contract.schema_version,
-      "ref" => contract.ref,
-      "shape" => contract.shape
-    }
-  end
+  def canonical(%__MODULE__{} = contract), do: Portable.canonical_fields(contract, @fields)
 
   @doc "Restores a consequence contract and verifies its content reference."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
@@ -456,12 +450,7 @@ defmodule Spectre.Consequence.Contract do
 
   defp content(%__MODULE__{} = contract), do: contract |> canonical() |> Map.delete("ref")
 
-  defp content(attrs) do
-    %{
-      "schema_version" => Map.get(attrs, :schema_version, @schema_version),
-      "shape" => Map.get(attrs, :shape)
-    }
-  end
+  defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = contract) do
     cond do
