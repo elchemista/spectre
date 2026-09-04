@@ -9,6 +9,7 @@ defmodule Spectre.GovernedAct.Transition.Admission.Presentation do
 
   alias Spectre.{Act, Candidate, Evidence, Presentation}
   alias Spectre.GovernedAct.State
+  alias Spectre.Kernel.Recognition
 
   @doc false
   @spec validate(State.t(), Candidate.t(), Act.t(), [Evidence.t()]) ::
@@ -56,7 +57,7 @@ defmodule Spectre.GovernedAct.Transition.Admission.Presentation do
              true <-
                presentation.candidate_binding_ref ==
                  Candidate.presentation_binding_ref(candidate, approval_refs),
-             :ok <- required_evidence_declared(basis_refs, candidate.evidence_refs) do
+             :ok <- Recognition.validate_declared_basis(basis_refs, candidate.evidence_refs) do
           {:ok, basis_refs}
         else
           false -> {:error, {:act_presentation_binding_mismatch, act.ref}}
@@ -90,13 +91,6 @@ defmodule Spectre.GovernedAct.Transition.Admission.Presentation do
 
       {:unqualified, _approval_refs, _basis_refs} ->
         {:error, {:act_presentation_approval_not_current_or_final, act_ref}}
-    end
-  end
-
-  defp required_evidence_declared(required_refs, declared_refs) do
-    case required_refs -- declared_refs do
-      [] -> :ok
-      missing -> {:error, {:recognition_basis_not_declared, missing}}
     end
   end
 end

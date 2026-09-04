@@ -16,6 +16,19 @@ defmodule Spectre.Domain.Command.Commit do
   @type command_result(value) ::
           {:ok, State.t(), value} | {:error, State.t(), term()}
 
+  @doc "Repairs derivable Duties before a command observes or changes Domain state."
+  @spec prepare(State.t()) :: {:ok, State.t()} | {:error, State.t(), term()}
+  def prepare(%State{} = state) do
+    case Transaction.repair_missing_duties(state) do
+      {:ok, projection} ->
+        {:ok, %{state | projection: projection}}
+
+      {:error, reason} ->
+        tagged = {:preflight_duty_repair_failed, reason}
+        {:error, Control.halt(state, tagged), tagged}
+    end
+  end
+
   @doc "Appends payloads and invokes command-specific recovery or re-planning callbacks."
   @spec append(
           State.t(),

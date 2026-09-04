@@ -59,6 +59,10 @@ defmodule Spectre.Domain.Projection do
   @spec evidence_set(t(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
   defdelegate evidence_set(projection, refs), to: View
 
+  @doc "Looks up one immutable governed Definition by exact reference."
+  @spec definition(t(), String.t()) :: {:ok, Spectre.Definition.t()} | {:error, term()}
+  defdelegate definition(projection, ref), to: View
+
   @doc "Looks up the durable Decision selected by a Candidate identity key."
   @spec candidate_decision(t(), String.t()) ::
           {:ok, Spectre.Decision.t()} | :not_found | {:error, term()}

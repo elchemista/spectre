@@ -60,6 +60,8 @@ defmodule Spectre.Domain.Configuration do
     :root_mandates,
     :genesis_verifier
   ]
+  @runtime_options [:name, :registry, :domain_ref, :store]
+  @host_options @options -- @runtime_options
 
   @enforce_keys [
     :domain_ref,
@@ -173,6 +175,22 @@ defmodule Spectre.Domain.Configuration do
   end
 
   def new(_opts), do: {:error, :invalid_sequencer_options}
+
+  @doc false
+  @spec validate_host_options(keyword()) :: :ok | {:error, term()}
+  def validate_host_options(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      case Keyword.keys(opts) -- @host_options do
+        [] -> :ok
+        unknown -> {:error, {:unknown_options, :domain, unknown}}
+      end
+    else
+      {:error, {:invalid_keyword_options, :domain_options}}
+    end
+  end
+
+  def validate_host_options(_opts),
+    do: {:error, {:invalid_keyword_options, :domain_options}}
 
   @doc false
   @spec verification_opts(t()) :: keyword()

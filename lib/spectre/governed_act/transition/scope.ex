@@ -8,7 +8,7 @@ defmodule Spectre.GovernedAct.Transition.Scope do
   Act before adding the restored opening to disposable state.
   """
 
-  alias Spectre.{Act, SubmissionContext}
+  alias Spectre.Act
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.{Index, State}
@@ -123,17 +123,7 @@ defmodule Spectre.GovernedAct.Transition.Scope do
   end
 
   defp validate_opening_submission_context(opening) do
-    SubmissionContext.new(%{
-      ref: opening.submission_context_ref,
-      domain_ref: opening.domain_ref,
-      scope_ref: opening.ref,
-      authenticated_principal_ref: opening.opened_by_ref,
-      authentication_ref: opening.authentication_ref,
-      ingress_ref: opening.ingress_ref,
-      channel_ref: opening.channel_ref,
-      session_ref: opening.session_ref,
-      host_generation: opening.host_generation
-    })
+    Opening.submission_context(opening)
     |> case do
       {:ok, _context} -> :ok
       {:error, reason} -> {:error, {:invalid_scope_submission_context, opening.ref, reason}}

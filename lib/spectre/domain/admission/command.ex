@@ -2,30 +2,31 @@ defmodule Spectre.Domain.Admission.Command do
   @moduledoc """
   Plans, appends and recovers one ordered group of Candidate submissions.
 
-  The command receives queue entries that already share ledger options. It
-  builds their provisional decisions in order, commits one atomic batch, then
+  The command receives queue entries whose ledger configuration is owned by
+  the Sequencer state. It builds their provisional decisions in order, commits one atomic batch, then
   reconstructs each response from durable state. Executor Grants are minted
   only after that recovery. It does not own a mailbox or choose batch timing.
   """
 
   alias Spectre.{Act, Candidate}
   alias Spectre.Domain.Admission.Planner, as: AdmissionPlanner
+  alias Spectre.Domain.Command.Commit
   alias Spectre.Domain.Command.Execution, as: ExecutionCommand
   alias Spectre.Domain.{Projection, Transaction}
-  alias Spectre.Domain.Sequencer.{Control, State}
+  alias Spectre.Domain.Sequencer.State
   alias Spectre.Scope.Opening
 
   @doc "Processes one non-empty, ledger-option-homogeneous submission group."
   @spec run(State.t(), [map()]) :: {State.t(), [{GenServer.from(), term()}]}
 
   def run(%State{} = state, requests) do
-    case preflight_duty_repair(state) do
+    case Commit.prepare(state) do
       {:ok, current} ->
         case admit(current, requests, current.conflict_retries) do
           {:ok, next_state, plans} ->
             {next_state, finalize_admission(next_state, plans)}
 
-          {:error, next_state, plans, reason} ->
+          {:error, next_state, {plans, reason}} ->
             replies =
               Enum.map(plans, fn plan ->
                 admission_error_reply(plan, reason)
@@ -52,74 +53,49 @@ defmodule Spectre.Domain.Admission.Command do
       if payloads == [] do
         {:ok, state, plans}
       else
-        case Transaction.operational_id(state) do
-          {:ok, batch_id} ->
-            commit_planned_admission(
-              state,
-              requests,
-              plans,
-              payloads,
-              batch_id,
-              conflicts_left,
-              admitted_at
-            )
-
-          {:error, reason} ->
-            {:error, state, plans, reason}
-        end
+        append_planned_admission(
+          state,
+          requests,
+          plans,
+          payloads,
+          conflicts_left,
+          admitted_at
+        )
       end
     else
-      {:error, reason} -> {:error, state, AdmissionPlanner.error_plans(requests), reason}
+      {:error, reason} ->
+        {:error, state, {AdmissionPlanner.error_plans(requests), reason}}
     end
   end
 
-  defp commit_planned_admission(
+  defp append_planned_admission(
          state,
          requests,
          plans,
          payloads,
-         batch_id,
          conflicts_left,
          admitted_at
        ) do
-    case Transaction.append_exact(
-           state,
-           batch_id,
-           payloads,
-           admitted_at
-         ) do
-      {:ok, recovered} ->
-        {:ok, %{state | projection: recovered}, plans}
+    result =
+      Commit.append(
+        state,
+        payloads,
+        admitted_at,
+        conflicts_left,
+        fn recovered -> {:ok, %{state | projection: recovered}, plans} end,
+        &admit(&1, requests, &2)
+      )
 
-      :conflict when conflicts_left > 0 ->
-        retry_admission_after_conflict(state, requests, conflicts_left - 1)
+    case result do
+      {:error, next_state, {failed_plans, _reason} = failure}
+      when is_list(failed_plans) ->
+        {:error, next_state, failure}
 
-      :conflict ->
-        halted = Control.halt(state, :conflict_retries_exhausted)
-        {:error, halted, plans, :conflict_retries_exhausted}
+      {:error, next_state, reason} ->
+        {:error, next_state, {plans, reason}}
 
-      {:error, {:durable_recovery_failed, reason}} ->
-        halted = Control.halt(state, reason)
-        {:error, halted, plans, {:durable_recovery_failed, reason}}
-
-      {:error, :ambiguous_commit_unresolved} ->
-        halted = Control.halt(state, :ambiguous_commit_unresolved)
-        {:error, halted, plans, :ambiguous_commit_unresolved}
-
-      {:error, reason} ->
-        {:error, state, plans, reason}
-    end
-  end
-
-  defp retry_admission_after_conflict(state, requests, conflicts_left) do
-    case Transaction.recover_with_repair(state) do
-      {:ok, projection} ->
-        admit(%{state | projection: projection}, requests, conflicts_left)
-
-      {:error, reason} ->
-        plans = AdmissionPlanner.error_plans(requests)
-        halted = Control.halt(state, reason)
-        {:error, halted, plans, {:durable_recovery_failed, reason}}
+      {:ok, _next_state, _plans} = success ->
+        success
     end
   end
 
@@ -176,17 +152,6 @@ defmodule Spectre.Domain.Admission.Command do
       :not_found -> {:error, :admission_not_recovered}
       false -> {:error, {:candidate_identity_conflict, candidate.identity_key}}
       {:error, _reason} = error -> error
-    end
-  end
-
-  defp preflight_duty_repair(state) do
-    case Transaction.repair_missing_duties(state) do
-      {:ok, projection} ->
-        {:ok, %{state | projection: projection}}
-
-      {:error, reason} ->
-        tagged = {:preflight_duty_repair_failed, reason}
-        {:error, Control.halt(state, tagged), tagged}
     end
   end
 end

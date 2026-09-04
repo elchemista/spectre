@@ -15,7 +15,6 @@ defmodule Spectre.Domain do
   """
 
   alias Spectre.Domain.Sequencer
-  alias Spectre.Ingress
 
   @enforce_keys [:ref, :server]
   defstruct @enforce_keys
@@ -24,16 +23,15 @@ defmodule Spectre.Domain do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
-    with domain_ref when is_binary(domain_ref) and domain_ref != "" <-
+    with true <- Keyword.keyword?(opts),
+         domain_ref when is_binary(domain_ref) and domain_ref != "" <-
            Keyword.get(opts, :domain_ref),
          registry when is_atom(registry) and not is_nil(registry) <-
-           Keyword.get(opts, :registry, Spectre.Domain.Registry),
-         {:ok, _binding} <- required_ingress(opts) do
+           Keyword.get(opts, :registry, Spectre.Domain.Registry) do
       opts
       |> Keyword.put(:name, via(registry, domain_ref))
       |> Sequencer.start_link()
     else
-      {:error, _reason} = error -> error
       _invalid -> {:error, :invalid_domain_options}
     end
   end
@@ -69,13 +67,5 @@ defmodule Spectre.Domain do
   end
 
   def whereis(_ref, _registry), do: nil
-
-  defp required_ingress(opts) do
-    case Keyword.fetch(opts, :ingress) do
-      {:ok, module} -> Ingress.resolve(module)
-      :error -> {:error, {:missing_domain_option, :ingress}}
-    end
-  end
-
   defp via(registry, domain_ref), do: {:via, Registry, {registry, domain_ref}}
 end

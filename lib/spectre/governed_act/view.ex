@@ -53,6 +53,19 @@ defmodule Spectre.GovernedAct.View do
 
   def evidence_set(_state, _refs), do: {:error, :invalid_evidence_refs}
 
+  @doc "Looks up one immutable governed Definition by its exact content reference."
+  @spec definition(State.t(), String.t()) ::
+          {:ok, Spectre.Definition.t()} | {:error, term()}
+  def definition(%State{} = state, ref) when is_binary(ref) and ref != "" do
+    case Map.fetch(state.definitions, ref) do
+      {:ok, %Spectre.Definition{ref: ^ref} = definition} -> {:ok, definition}
+      {:ok, _invalid} -> {:error, {:invalid_definition_record, ref}}
+      :error -> {:error, {:definition_not_found, ref}}
+    end
+  end
+
+  def definition(%State{}, ref), do: {:error, {:invalid_definition_ref, ref}}
+
   @doc "Looks up the durable Decision selected by a Candidate identity key."
   @spec candidate_decision(State.t(), String.t()) ::
           {:ok, Spectre.Decision.t()} | :not_found | {:error, term()}
@@ -110,29 +123,9 @@ defmodule Spectre.GovernedAct.View do
           {:ok, Opening.t()} | {:error, term()}
   def scope_context(%State{} = state, %SubmissionContext{} = context) do
     with {:ok, context} <- SubmissionContext.new(context),
-         {:ok, %Opening{} = opening} <- Map.fetch(state.scopes, context.scope_ref) do
-      cond do
-        context.domain_ref != state.domain_ref or opening.domain_ref != context.domain_ref ->
-          {:error, {:scope_context_domain_mismatch, context.scope_ref}}
-
-        context.authenticated_principal_ref != opening.opened_by_ref ->
-          {:error, {:scope_context_principal_mismatch, context.scope_ref}}
-
-        context.authentication_ref != opening.authentication_ref ->
-          {:error, {:scope_context_authentication_mismatch, context.scope_ref}}
-
-        context.ingress_ref != opening.ingress_ref ->
-          {:error, {:scope_context_ingress_mismatch, context.scope_ref}}
-
-        context.channel_ref != opening.channel_ref ->
-          {:error, {:scope_context_channel_mismatch, context.scope_ref}}
-
-        context.session_ref != opening.session_ref ->
-          {:error, {:scope_context_session_mismatch, context.scope_ref}}
-
-        true ->
-          {:ok, opening}
-      end
+         {:ok, %Opening{} = opening} <- Map.fetch(state.scopes, context.scope_ref),
+         :ok <- match_scope_context(state, opening, context) do
+      {:ok, opening}
     else
       :error -> {:error, {:scope_not_open, context.scope_ref}}
       {:error, _reason} = error -> error
@@ -141,6 +134,19 @@ defmodule Spectre.GovernedAct.View do
   end
 
   def scope_context(%State{}, _context), do: {:error, :invalid_scope_context}
+
+  defp match_scope_context(state, opening, context) do
+    cond do
+      context.domain_ref != state.domain_ref ->
+        {:error, {:scope_context_domain_mismatch, context.scope_ref}}
+
+      Opening.validate_context(opening, context) != :ok ->
+        {:error, {:scope_context_binding_mismatch, context.scope_ref}}
+
+      true ->
+        :ok
+    end
+  end
 
   @doc "Looks up a Duty by idempotent cause key or durable reference."
   @spec duty(State.t(), {:cause_key, term()} | {:ref, String.t()}) ::

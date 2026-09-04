@@ -22,11 +22,11 @@ defmodule Spectre.Domain.Command.Input do
   @spec begin_turn(State.t(), SubmissionContext.t() | term(), term(), [String.t()], keyword()) ::
           {:ok, State.t(), Turn.t()} | {:error, State.t(), term()}
   def begin_turn(state, context_input, input, context_evidence_refs, ingress_opts) do
-    with {:ok, context, _opening} <- context(state, context_input),
+    with {:ok, context, _opening} <- Context.validate_scope(state, context_input),
          {:ok, context_evidence} <-
            scoped_evidence(state.projection, context.scope_ref, context_evidence_refs),
          {:ok, next_state, observed, opened_at} <-
-           observe(state, context, input, ingress_opts),
+           observe_at(state, context, input, ingress_opts),
          evidence <- merge_evidence(observed, context_evidence),
          {:ok, turn_ref} <- Transaction.operational_id(next_state),
          {:ok, turn} <- build_turn(next_state, context, turn_ref, evidence, opened_at) do
@@ -45,7 +45,7 @@ defmodule Spectre.Domain.Command.Input do
           Evidence.t()
         ) :: {:ok, State.t(), Evidence.t()} | {:error, State.t(), term()}
   def record_derivation(state, context_input, turn, evidence) do
-    with {:ok, context, opening} <- context(state, context_input),
+    with {:ok, context, opening} <- Context.validate_scope(state, context_input),
          :ok <- Turn.verify_seal(turn, state.grant_secret),
          {:ok, now} <- Transaction.trusted_recorded_at(state),
          {:ok, parents} <- validate_turn(state, context, opening, turn, now),
@@ -83,9 +83,16 @@ defmodule Spectre.Domain.Command.Input do
 
   @doc "Observes opaque ingress input and returns only durable Evidence."
   @spec observe(State.t(), SubmissionContext.t() | term(), term(), keyword()) ::
-          {:ok, State.t(), [Evidence.t()], non_neg_integer()} | {:error, State.t(), term()}
+          {:ok, State.t(), [Evidence.t()]} | {:error, State.t(), term()}
   def observe(state, context, input, ingress_opts) do
-    with {:ok, context, _opening} <- context(state, context),
+    case observe_at(state, context, input, ingress_opts) do
+      {:ok, next_state, evidence, _observed_at} -> {:ok, next_state, evidence}
+      {:error, _state, _reason} = error -> error
+    end
+  end
+
+  defp observe_at(state, context, input, ingress_opts) do
+    with {:ok, context, _opening} <- Context.validate_scope(state, context),
          {:ok, observed_at} <- Transaction.trusted_recorded_at(state),
          {:ok, evidence} <-
            Ingress.observe(state.ingress, context, input, observed_at, ingress_opts) do
@@ -106,23 +113,6 @@ defmodule Spectre.Domain.Command.Input do
       end
     else
       {:error, reason} -> {:error, state, reason}
-    end
-  end
-
-  @doc "Validates a sealed context against the current durable Scope."
-  @spec context(State.t(), SubmissionContext.t() | term()) ::
-          {:ok, SubmissionContext.t(), Spectre.Scope.Opening.t()} | {:error, term()}
-  def context(state, input) do
-    with {:ok, context} <- SubmissionContext.new(input),
-         :ok <- Context.validate_ingress(state, context),
-         :ok <- SubmissionContext.verify_seal(context, state.grant_secret),
-         true <- context.domain_ref == state.projection.domain_ref,
-         true <- context.host_generation == state.generation,
-         {:ok, opening} <- Projection.scope_context(state.projection, context) do
-      {:ok, context, opening}
-    else
-      false -> {:error, :scope_context_not_current}
-      {:error, _reason} = error -> error
     end
   end
 
@@ -184,7 +174,7 @@ defmodule Spectre.Domain.Command.Input do
 
     with :ok <- ErasureAnalysis.validate_evidence_available(projection, evidence_refs),
          {:ok, durable} <- Projection.evidence_set(projection, evidence_refs),
-         true <- evidence_identity(durable) == evidence_identity(turn.evidence),
+         true <- Evidence.digest_index(durable) == Evidence.digest_index(turn.evidence),
          {:ok, labels} <- Derivation.inherited_labels(durable),
          {:ok, turn_labels} <- Turn.labels(turn),
          true <- labels == turn_labels do
@@ -220,10 +210,9 @@ defmodule Spectre.Domain.Command.Input do
     end
   end
 
-  @doc false
   @spec validate_executor_evidence(map(), String.t(), String.t(), [Evidence.t()]) ::
           :ok | {:error, term()}
-  def validate_executor_evidence(projection, act_ref, attempt_ref, evidence) do
+  defp validate_executor_evidence(projection, act_ref, attempt_ref, evidence) do
     with {:ok, %Act{} = act} <- fetch_projection_record(projection.acts, act_ref, :act),
          {:ok, %Attempt{} = attempt} <-
            fetch_projection_record(projection.attempts, attempt_ref, :attempt),
@@ -291,9 +280,5 @@ defmodule Spectre.Domain.Command.Input do
       {:ok, record} -> {:ok, record}
       :error -> {:error, {kind, :not_found, ref}}
     end
-  end
-
-  defp evidence_identity(evidence) do
-    Map.new(evidence, &{&1.ref, Evidence.digest(&1)})
   end
 end

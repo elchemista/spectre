@@ -147,7 +147,7 @@ defmodule Spectre.Attempt.Reconciler do
 
   defp materialize_duty(cause, time) do
     cause
-    |> Derive.materialization_attrs(required_at(cause, time))
+    |> Derive.materialization_attrs(time)
     |> Duty.new()
   end
 
@@ -192,13 +192,6 @@ defmodule Spectre.Attempt.Reconciler do
 
   defp reverse_result({:ok, events}), do: {:ok, Enum.reverse(events)}
   defp reverse_result({:error, _reason} = error), do: error
-
-  defp required_at(cause, fallback) do
-    case Map.get(cause, :required_at) do
-      value when is_integer(value) -> value
-      _missing -> fallback
-    end
-  end
 
   defp cause_act_ref(cause) do
     cause

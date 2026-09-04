@@ -438,17 +438,9 @@ defmodule Spectre.Kernel do
   defp with_meter_accounts(view, _projection, _resolution), do: view
 
   defp bind_submission_context(attrs, context, candidate) do
-    Map.merge(attrs, %{
-      candidate_class: candidate.class,
-      submission_context_ref: context.ref,
-      domain_ref: context.domain_ref,
-      channel_ref: context.channel_ref,
-      session_ref: context.session_ref,
-      authenticated_principal_ref: context.authenticated_principal_ref,
-      authentication_ref: context.authentication_ref,
-      ingress_ref: context.ingress_ref,
-      host_generation: context.host_generation
-    })
+    attrs
+    |> Map.put(:candidate_class, candidate.class)
+    |> Map.merge(SubmissionContext.decision_bindings(context))
   end
 
   defp normalize_evidence_refs(refs), do: refs |> Enum.uniq() |> Enum.sort()

@@ -3,7 +3,10 @@ defmodule Spectre.Condition do
   Portable evidence requirement attached to a mandate.
 
   Conditions describe what Recognition must establish.  They never select a
-  mandate and never produce authority or a grant.
+  mandate and never produce authority or a grant. Atom keys in opaque
+  application maps are converted recursively to strings at construction, so
+  attenuation and content identity never depend on which key spelling crossed
+  the boundary; colliding atom/string keys are rejected.
   """
 
   alias Spectre.Portable
@@ -22,6 +25,7 @@ defmodule Spectre.Condition do
     :parameters
   ]
   @provenance [:observed, :derived, :generated]
+  @semantic_fields [:proposition, :coverage, :bindings, :parameters]
 
   @enforce_keys [
     :schema_version,
@@ -65,6 +69,7 @@ defmodule Spectre.Condition do
   def new(attrs) do
     with {:ok, attrs} <- Portable.normalize_attrs(attrs, @fields, :condition),
          attrs <- defaults(attrs),
+         {:ok, attrs} <- normalize_semantic_keys(attrs),
          {:ok, cardinality} <- normalize_cardinality(Map.fetch!(attrs, :cardinality)),
          {:ok, provenance} <-
            normalize_provenance(Map.fetch!(attrs, :accepted_provenance)),
@@ -287,7 +292,7 @@ defmodule Spectre.Condition do
        when is_map(stronger) and is_map(weaker) and not is_struct(stronger) and
               not is_struct(weaker) do
     Enum.all?(weaker, fn {key, required} ->
-      case fetch_equivalent_key(stronger, key) do
+      case Map.fetch(stronger, key) do
         {:ok, actual} -> requirement_contains?(actual, required)
         :error -> false
       end
@@ -299,13 +304,49 @@ defmodule Spectre.Condition do
 
   defp requirement_contains?(stronger, weaker), do: stronger == weaker
 
-  defp fetch_equivalent_key(map, key) do
-    case Map.fetch(map, key) do
-      {:ok, value} -> {:ok, value}
-      :error when is_atom(key) -> Map.fetch(map, Atom.to_string(key))
-      :error -> :error
+  defp normalize_semantic_keys(attrs) do
+    Enum.reduce_while(@semantic_fields, {:ok, attrs}, fn field, {:ok, normalized} ->
+      case normalize_value_keys(Map.get(normalized, field)) do
+        {:ok, value} -> {:cont, {:ok, Map.put(normalized, field, value)}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp normalize_value_keys(value) when is_map(value) and not is_struct(value) do
+    Enum.reduce_while(value, {:ok, %{}}, fn {key, item}, {:ok, normalized} ->
+      key = normalize_map_key(key)
+
+      if Map.has_key?(normalized, key) do
+        {:halt, {:error, {:condition_key_collision, key}}}
+      else
+        case normalize_value_keys(item) do
+          {:ok, item} -> {:cont, {:ok, Map.put(normalized, key, item)}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end
+    end)
+  end
+
+  defp normalize_value_keys([]), do: {:ok, []}
+
+  defp normalize_value_keys([head | tail]) do
+    with {:ok, head} <- normalize_value_keys(head),
+         {:ok, tail} <- normalize_value_keys(tail) do
+      {:ok, [head | tail]}
     end
   end
+
+  defp normalize_value_keys(value) when is_tuple(value) do
+    with {:ok, values} <- value |> Tuple.to_list() |> normalize_value_keys() do
+      {:ok, List.to_tuple(values)}
+    end
+  end
+
+  defp normalize_value_keys(value), do: {:ok, value}
+
+  defp normalize_map_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_map_key(key), do: key
 
   defp stronger_cardinality(parent, child) do
     parent_min = Map.fetch!(parent, "min")

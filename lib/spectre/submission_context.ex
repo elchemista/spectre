@@ -31,7 +31,7 @@ defmodule Spectre.SubmissionContext do
     :session_ref,
     :host_generation
   ]
-  @evidence_binding_matrix [
+  @trusted_context_matrix [
     {:submission_context_ref, :ref},
     {:domain_ref, :domain_ref},
     {:scope_ref, :scope_ref},
@@ -42,7 +42,7 @@ defmodule Spectre.SubmissionContext do
     {:session_ref, :session_ref},
     {:host_generation, :host_generation}
   ]
-  @evidence_binding_fields Enum.map(@evidence_binding_matrix, &elem(&1, 0))
+  @evidence_binding_fields Enum.map(@trusted_context_matrix, &elem(&1, 0))
   @evidence_binding_keys Enum.map(@evidence_binding_fields, &Atom.to_string/1)
   @fields @canonical_fields ++ [:seal]
   @minimum_secret_bytes 32
@@ -126,10 +126,31 @@ defmodule Spectre.SubmissionContext do
   @doc "Returns the exact trusted context fields embedded in scoped Evidence."
   @spec evidence_bindings(t()) :: map()
   def evidence_bindings(%__MODULE__{} = context) do
-    Map.new(@evidence_binding_matrix, fn {target, source} ->
+    Map.new(@trusted_context_matrix, fn {target, source} ->
       {Atom.to_string(target), Map.fetch!(context, source)}
     end)
   end
+
+  @doc "Returns the trusted ingress fields frozen into a durable Decision."
+  @spec decision_bindings(t()) :: map()
+  def decision_bindings(%__MODULE__{} = context) do
+    Map.new(@trusted_context_matrix, fn {target, source} ->
+      {target, Map.fetch!(context, source)}
+    end)
+  end
+
+  @doc "Restores the trusted ingress context frozen in a durable Decision."
+  @spec from_decision(Spectre.Decision.t()) :: {:ok, t()} | {:error, term()}
+  def from_decision(%Spectre.Decision{} = decision) do
+    attrs =
+      Map.new(@trusted_context_matrix, fn {decision_field, context_field} ->
+        {context_field, Map.fetch!(decision, decision_field)}
+      end)
+
+    new(attrs)
+  end
+
+  def from_decision(_decision), do: {:error, :invalid_decision_submission_context}
 
   @doc "Adds application bindings without permitting trusted context fields to be supplied."
   @spec merge_evidence_bindings(t(), map()) :: {:ok, map()} | {:error, term()}
@@ -150,7 +171,7 @@ defmodule Spectre.SubmissionContext do
   def from_evidence_bindings(bindings) when is_map(bindings) and not is_struct(bindings) do
     with :ok <- canonical_evidence_binding_keys(bindings) do
       attrs =
-        Map.new(@evidence_binding_matrix, fn {source, target} ->
+        Map.new(@trusted_context_matrix, fn {source, target} ->
           {target, Map.fetch!(bindings, Atom.to_string(source))}
         end)
 

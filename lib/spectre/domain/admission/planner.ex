@@ -8,8 +8,8 @@ defmodule Spectre.Domain.Admission.Planner do
   so later Candidates in the same group observe the exact preceding prefix.
   """
 
-  alias Spectre.{Candidate, Governance, SubmissionContext}
-  alias Spectre.Domain.{Projection, Transaction}
+  alias Spectre.{Candidate, Governance}
+  alias Spectre.Domain.{Context, Projection, Transaction}
   alias Spectre.Domain.Sequencer.State
   alias Spectre.Execution.Router
   alias Spectre.GovernedAct.Class, as: GovernedClass
@@ -51,8 +51,8 @@ defmodule Spectre.Domain.Admission.Planner do
 
   defp plan_submission(state, request, projection, admitted_at) do
     with {:ok, candidate} <- Candidate.new(request.candidate),
-         {:ok, context} <- SubmissionContext.new(request.context),
-         :ok <- validate_submission_boundary(state, projection, candidate, context),
+         {:ok, context, _opening} <- Context.validate_scope(state, projection, request.context),
+         :ok <- validate_submission_boundary(projection, candidate, context),
          :ok <- validate_submission_kind(state, request, candidate, context) do
       case Projection.candidate_decision(projection, candidate.identity_key) do
         {:ok, %{candidate_digest: digest}} when digest == candidate.material_digest ->
@@ -63,7 +63,7 @@ defmodule Spectre.Domain.Admission.Planner do
 
         :not_found ->
           with :ok <- Router.validate_candidate(state, projection, candidate) do
-            evaluate_submission(state, request, candidate, context, projection, admitted_at)
+            evaluate_submission(request, candidate, context, projection, admitted_at)
           end
 
         {:error, _reason} = error ->
@@ -78,9 +78,8 @@ defmodule Spectre.Domain.Admission.Planner do
          candidate,
          parent_context
        ) do
-    with {:ok, child_context} <- SubmissionContext.new(child_context),
-         :ok <- SubmissionContext.verify_seal(child_context, state.grant_secret),
-         :ok <- validate_child_context_boundary(state, parent_context, child_context),
+    with {:ok, child_context} <- Context.validate_current(state, child_context),
+         :ok <- validate_child_context_boundary(parent_context, child_context),
          {:ok, draft} <- candidate_scope_opening_draft(candidate),
          :ok <- validate_scope_opening_candidate(candidate, draft, parent_context, child_context) do
       :ok
@@ -94,26 +93,10 @@ defmodule Spectre.Domain.Admission.Planner do
       else: :ok
   end
 
-  defp validate_child_context_boundary(state, parent_context, child_context) do
-    cond do
-      child_context.domain_ref != state.projection.domain_ref or
-          child_context.domain_ref != parent_context.domain_ref ->
-        {:error, :child_scope_domain_mismatch}
-
-      child_context.ingress_ref != state.ingress_ref or
-          child_context.ingress_ref != parent_context.ingress_ref ->
-        {:error, :child_scope_ingress_mismatch}
-
-      child_context.host_generation != state.generation or
-          child_context.host_generation != parent_context.host_generation ->
-        {:error, :child_scope_generation_mismatch}
-
-      child_context.scope_ref == parent_context.scope_ref ->
-        {:error, :child_scope_ref_must_differ_from_parent}
-
-      true ->
-        :ok
-    end
+  defp validate_child_context_boundary(parent_context, child_context) do
+    if child_context.scope_ref == parent_context.scope_ref,
+      do: {:error, :child_scope_ref_must_differ_from_parent},
+      else: :ok
   end
 
   defp candidate_scope_opening_draft(%Candidate{
@@ -134,26 +117,20 @@ defmodule Spectre.Domain.Admission.Planner do
     do: {:error, :invalid_governed_scope_opening_consequence}
 
   defp validate_scope_opening_candidate(candidate, draft, parent_context, child_context) do
-    context_fields = [
-      {"ref", child_context.scope_ref},
-      {"domain_ref", child_context.domain_ref},
-      {"parent_ref", parent_context.scope_ref},
-      {"opened_by_ref", child_context.authenticated_principal_ref},
-      {"submission_context_ref", child_context.ref},
-      {"authentication_ref", child_context.authentication_ref},
-      {"ingress_ref", child_context.ingress_ref},
-      {"channel_ref", child_context.channel_ref},
-      {"session_ref", child_context.session_ref},
-      {"host_generation", child_context.host_generation}
-    ]
+    context_fields =
+      child_context
+      |> Opening.context_bindings()
+      |> Map.put(:parent_ref, parent_context.scope_ref)
 
     mismatch =
-      Enum.find(context_fields, fn {field, expected} -> Map.get(draft, field) != expected end)
+      Enum.find(context_fields, fn {field, expected} ->
+        Map.get(draft, Atom.to_string(field)) != expected
+      end)
 
     cond do
       mismatch ->
         {field, _expected} = mismatch
-        {:error, {:governed_scope_context_mismatch, field}}
+        {:error, {:governed_scope_context_mismatch, Atom.to_string(field)}}
 
       not GovernedClass.exact_row?(Governance.scope_open_class(), candidate.row) ->
         {:error, :invalid_governed_scope_opening_row}
@@ -176,31 +153,23 @@ defmodule Spectre.Domain.Admission.Planner do
     end
   end
 
-  defp validate_submission_boundary(state, projection, candidate, context) do
-    with :ok <- SubmissionContext.verify_seal(context, state.grant_secret) do
-      cond do
-        context.domain_ref != state.projection.domain_ref ->
-          {:error, {:submission_domain_mismatch, context.domain_ref, state.projection.domain_ref}}
+  defp validate_submission_boundary(projection, candidate, context) do
+    cond do
+      context.domain_ref != projection.domain_ref ->
+        {:error, {:submission_domain_mismatch, context.domain_ref, projection.domain_ref}}
 
-        context.ingress_ref != state.ingress_ref ->
-          {:error, :submission_context_ingress_mismatch}
+      candidate.proposer_ref != context.authenticated_principal_ref ->
+        {:error, :proposer_context_mismatch}
 
-        context.host_generation != state.generation ->
-          {:error, :submission_generation_mismatch}
+      candidate.scope_ref != context.scope_ref ->
+        {:error, :scope_context_mismatch}
 
-        candidate.proposer_ref != context.authenticated_principal_ref ->
-          {:error, :proposer_context_mismatch}
-
-        candidate.scope_ref != context.scope_ref ->
-          {:error, :scope_context_mismatch}
-
-        true ->
-          with {:ok, _opening} <- Projection.scope_context(projection, context), do: :ok
-      end
+      true ->
+        :ok
     end
   end
 
-  defp evaluate_submission(_state, request, candidate, context, projection, admitted_at) do
+  defp evaluate_submission(request, candidate, context, projection, admitted_at) do
     with {:ok, decision, act} <-
            GovernedKernel.evaluate(candidate, context, projection, admitted_at),
          {:ok, payloads} <- Commit.payloads(projection, decision, act),

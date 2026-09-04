@@ -5,7 +5,7 @@ defmodule Spectre.Governance do
   These helpers only make proposals.  They bind proposer and Scope to the
   authenticated handle, force the exact governance Row and construct a
   canonical consequence; they never append, select a Mandate or mint a Grant.
-  The returned Candidate must cross normal `Spectre.propose/4` admission.
+  The returned Candidate must cross normal `Spectre.propose/3` admission.
   Ordinary application classes do not need a helper here and remain declared
   through their Surface contracts.
   """
@@ -20,6 +20,7 @@ defmodule Spectre.Governance do
   alias Spectre.GovernedAct.Class, as: GovernedClass
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Governance.Builder
+  alias Spectre.Kernel.Meter.Amounts
   alias Spectre.Mandate
   alias Spectre.Portable
   alias Spectre.Principal
@@ -152,7 +153,7 @@ defmodule Spectre.Governance do
   def devolve_mandate(%Scope{} = scope, child_mandate_ref, amounts, candidate_attrs)
       when is_binary(child_mandate_ref) and child_mandate_ref != "" and is_map(amounts) and
              not is_struct(amounts) do
-    with :ok <- positive_amounts(amounts) do
+    with {:ok, amounts} <- Amounts.non_empty(amounts) do
       Builder.internal(
         scope,
         "mandate.devolve",
@@ -206,9 +207,6 @@ defmodule Spectre.Governance do
     with {:ok, target} <- Mandate.new(target) do
       case target.revocation do
         %{"mode" => :retained_controller} ->
-          retained_revocation_candidate(scope, target, candidate_attrs)
-
-        %{"mode" => "retained_controller"} ->
           retained_revocation_candidate(scope, target, candidate_attrs)
 
         _ordinary ->
@@ -431,18 +429,8 @@ defmodule Spectre.Governance do
 
   defp governed_scope_draft(parent_scope, child_context, attrs) do
     attrs
-    |> Map.merge(%{
-      ref: child_context.scope_ref,
-      domain_ref: child_context.domain_ref,
-      parent_ref: Scope.ref(parent_scope),
-      opened_by_ref: child_context.authenticated_principal_ref,
-      submission_context_ref: child_context.ref,
-      authentication_ref: child_context.authentication_ref,
-      ingress_ref: child_context.ingress_ref,
-      channel_ref: child_context.channel_ref,
-      session_ref: child_context.session_ref,
-      host_generation: child_context.host_generation
-    })
+    |> Map.put(:parent_ref, Scope.ref(parent_scope))
+    |> Map.merge(Opening.context_bindings(child_context))
     |> Opening.governed_draft()
   end
 
@@ -459,17 +447,6 @@ defmodule Spectre.Governance do
 
       true ->
         :ok
-    end
-  end
-
-  defp positive_amounts(amounts) do
-    if map_size(amounts) > 0 and
-         Enum.all?(amounts, fn {ref, quantity} ->
-           is_binary(ref) and ref != "" and is_integer(quantity) and quantity > 0
-         end) do
-      :ok
-    else
-      {:error, :invalid_mandate_devolution_amounts}
     end
   end
 end

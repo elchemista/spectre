@@ -5,6 +5,18 @@ defmodule Spectre.Mind do
   A mind may route, plan, call application code and construct Candidates.  It
   receives no Grant, broker or ledger writer, and its result remains only a
   proposal until each Candidate independently crosses the kernel boundary.
+
+  `deliberate/2` is always required; `deliberate/3` is an optional, explicit
+  stateful variant. Stateful minds must define both arities separately. Do not
+  write `def deliberate(turn, state, opts \\ [])`: the generated `/2` would
+  receive stateless turn options as `state`. The two callbacks also have
+  intentionally different success shapes:
+
+      def deliberate(turn, opts), do: {:ok, candidates(turn, opts)}
+
+      def deliberate(turn, state, opts) do
+        {:ok, candidates(turn, opts), next_state(state)}
+      end
   """
 
   alias Spectre.Evidence.Derivation
@@ -51,6 +63,12 @@ defmodule Spectre.Mind do
   @callback deliberate(Turn.t(), keyword()) ::
               {:ok, Candidate.t() | map() | keyword() | [Candidate.t() | map() | keyword()]}
               | {:error, term()}
+  @callback deliberate(Turn.t(), term(), keyword()) ::
+              {:ok, Candidate.t() | map() | keyword() | [Candidate.t() | map() | keyword()],
+               term()}
+              | {:error, term()}
+
+  @optional_callbacks deliberate: 3
 
   @doc "Invokes a mind and normalizes its output to scope-bound Candidates."
   @spec deliberate(module(), Turn.t(), keyword()) ::
@@ -59,25 +77,39 @@ defmodule Spectre.Mind do
 
   def deliberate(module, %Turn{} = turn, opts)
       when is_atom(module) and not is_nil(module) and is_list(opts) do
-    with true <- Keyword.keyword?(opts),
-         {:ok, {^module, mind_ref}} <- resolve(module),
-         true <- mind_ref == turn.mind_ref,
-         {:ok, context} <- turn_context(turn),
-         evidence_refs = Turn.evidence_refs(turn),
+    with {:ok, context} <- prepare_deliberation(module, turn, opts),
          {:ok, result} <- safe_deliberate(module, turn, opts),
-         {:ok, candidates} <- normalize_result(result),
-         :ok <- scope_bound(candidates, context.scope_ref),
-         :ok <- proposers_bound(candidates, context.authenticated_principal_ref),
-         :ok <- evidence_bound(candidates, evidence_refs),
-         :ok <- disclosures_bound(candidates, turn) do
+         {:ok, candidates} <- validate_result(result, turn, context) do
       {:ok, candidates}
-    else
-      false -> {:error, {:mind_turn_binding_mismatch, module}}
-      {:error, _reason} = error -> error
     end
   end
 
   def deliberate(_module, _turn, _opts), do: {:error, :invalid_mind_deliberation}
+
+  @doc "Invokes an optional stateful Mind callback without making its state authoritative."
+  @spec deliberate(module(), Turn.t(), term(), keyword()) ::
+          {:ok, [Candidate.t()], term()} | {:error, term()}
+  def deliberate(module, turn, state, opts)
+
+  def deliberate(module, %Turn{} = turn, state, opts)
+      when is_atom(module) and not is_nil(module) and is_list(opts) do
+    with {:ok, context} <- prepare_deliberation(module, turn, opts) do
+      if function_exported?(module, :deliberate, 3) do
+        with {:ok, result, next_state} <- safe_deliberate(module, turn, state, opts),
+             {:ok, candidates} <- validate_result(result, turn, context) do
+          {:ok, candidates, next_state}
+        end
+      else
+        with {:ok, result} <- safe_deliberate(module, turn, opts),
+             {:ok, candidates} <- validate_result(result, turn, context) do
+          {:ok, candidates, state}
+        end
+      end
+    end
+  end
+
+  def deliberate(_module, _turn, _state, _opts),
+    do: {:error, :invalid_stateful_mind_deliberation}
 
   @doc "Builds a Candidate whose trusted proposer and Scope come from the sealed Turn."
   @spec candidate(Turn.t(), map() | keyword()) ::
@@ -203,6 +235,47 @@ defmodule Spectre.Mind do
 
       {:error, {:adapter_callback_failure, _, _, kind}} ->
         {:error, {:mind_failed, module, kind}}
+    end
+  end
+
+  defp safe_deliberate(module, turn, state, opts) do
+    case Adapter.invoke(module, :deliberate, [turn, state, opts]) do
+      {:ok, {:ok, result, next_state}} ->
+        {:ok, result, next_state}
+
+      {:ok, {:error, _reason} = error} ->
+        error
+
+      {:ok, _invalid} ->
+        {:error, {:invalid_stateful_mind_result, module}}
+
+      {:error, {:adapter_callback_exception, _, _, exception}} ->
+        {:error, {:mind_failed, module, exception}}
+
+      {:error, {:adapter_callback_failure, _, _, kind}} ->
+        {:error, {:mind_failed, module, kind}}
+    end
+  end
+
+  defp prepare_deliberation(module, turn, opts) do
+    with true <- Keyword.keyword?(opts),
+         {:ok, {^module, mind_ref}} <- resolve(module),
+         true <- mind_ref == turn.mind_ref,
+         {:ok, context} <- turn_context(turn) do
+      {:ok, context}
+    else
+      false -> {:error, {:mind_turn_binding_mismatch, module}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_result(result, turn, context) do
+    with {:ok, candidates} <- normalize_result(result),
+         :ok <- scope_bound(candidates, context.scope_ref),
+         :ok <- proposers_bound(candidates, context.authenticated_principal_ref),
+         :ok <- evidence_bound(candidates, Turn.evidence_refs(turn)),
+         :ok <- disclosures_bound(candidates, turn) do
+      {:ok, candidates}
     end
   end
 

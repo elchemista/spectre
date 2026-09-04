@@ -62,6 +62,19 @@ defmodule Spectre.Kernel.Recognition do
   def check_with_basis(_conditions, _evidence, _time),
     do: {{:undecidable, [:invalid_conditions]}, []}
 
+  @doc "Checks that every Evidence reference used by Recognition was declared by the Candidate."
+  @spec validate_declared_basis([String.t()], [String.t()]) :: :ok | {:error, term()}
+  def validate_declared_basis(required_refs, declared_refs)
+      when is_list(required_refs) and is_list(declared_refs) do
+    case required_refs -- declared_refs do
+      [] -> :ok
+      missing -> {:error, {:recognition_basis_not_declared, missing}}
+    end
+  end
+
+  def validate_declared_basis(_required_refs, _declared_refs),
+    do: {:error, :invalid_recognition_basis}
+
   @doc "Checks one Condition and returns a stable local explanation."
   @spec check_condition(Condition.t(), [Evidence.t()] | map(), integer()) ::
           :satisfied | {:unsatisfied, reason()} | {:undecidable, reason()}

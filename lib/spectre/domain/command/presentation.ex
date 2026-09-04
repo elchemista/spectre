@@ -8,9 +8,10 @@ defmodule Spectre.Domain.Command.Presentation do
   """
 
   alias Spectre.{Disclosure, Presentation, SubmissionContext}
-  alias Spectre.Domain.{Context, Event, Projection, Transaction}
+  alias Spectre.Domain.{Context, Event, Transaction}
   alias Spectre.Domain.Command.Commit
-  alias Spectre.Domain.Sequencer.{Control, State}
+  alias Spectre.Domain.Command.Record, as: CommandRecord
+  alias Spectre.Domain.Sequencer.State
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Payload.Store, as: PayloadStore
 
@@ -27,16 +28,15 @@ defmodule Spectre.Domain.Command.Presentation do
   end
 
   defp record_with_retries(state, context, input, conflicts_left) do
-    with {:ok, context} <- SubmissionContext.new(context),
-         :ok <- Context.validate_ingress(state, context),
-         :ok <- SubmissionContext.verify_seal(context, state.grant_secret),
-         true <- context.domain_ref == state.projection.domain_ref,
-         true <- context.host_generation == state.generation,
-         {:ok, opening} <- Projection.scope_context(state.projection, context),
+    with {:ok, context, opening} <- Context.validate_scope(state, context),
          {:ok, presentation} <- Presentation.new(input),
          {:ok, now} <- Transaction.trusted_recorded_at(state),
          :ok <- validate_presentation_boundary(context, opening, presentation, state, now) do
-      case existing_presentation(state.projection, presentation) do
+      case CommandRecord.lookup(
+             state.projection.presentations,
+             presentation,
+             :presentation_identity_conflict
+           ) do
         {:ok, durable} ->
           {:ok, state, durable}
 
@@ -53,7 +53,6 @@ defmodule Spectre.Domain.Command.Presentation do
           {:error, state, reason}
       end
     else
-      false -> {:error, state, :presentation_context_not_current}
       {:error, reason} -> {:error, state, reason}
     end
   end
@@ -88,18 +87,6 @@ defmodule Spectre.Domain.Command.Presentation do
     end
   end
 
-  defp existing_presentation(projection, presentation) do
-    case Map.fetch(projection.presentations, presentation.ref) do
-      {:ok, existing} ->
-        if existing == presentation,
-          do: {:ok, existing},
-          else: {:error, {:presentation_identity_conflict, presentation.ref}}
-
-      :error ->
-        :not_found
-    end
-  end
-
   defp append_presentation(
          state,
          context,
@@ -123,17 +110,13 @@ defmodule Spectre.Domain.Command.Presentation do
   end
 
   defp recovered_presentation(state, projection, presentation) do
-    case existing_presentation(projection, presentation) do
-      {:ok, durable} ->
-        {:ok, %{state | projection: projection}, durable}
-
-      :not_found ->
-        halted = Control.halt(state, :presentation_not_recovered)
-        {:error, halted, :presentation_not_recovered}
-
-      {:error, reason} ->
-        halted = Control.halt(state, reason)
-        {:error, halted, reason}
-    end
+    CommandRecord.recover(
+      state,
+      projection,
+      :presentations,
+      presentation,
+      :presentation_identity_conflict,
+      :presentation_not_recovered
+    )
   end
 end

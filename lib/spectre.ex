@@ -42,8 +42,10 @@ defmodule Spectre do
   alias Spectre.Authority.View, as: AuthorityView
   alias Spectre.Candidate
   alias Spectre.Domain
+  alias Spectre.Domain.Configuration
   alias Spectre.Domain.Sequencer
   alias Spectre.Domain.Supervisor, as: DomainSupervisor
+  alias Spectre.Definition
   alias Spectre.Evidence
   alias Spectre.Fallback
   alias Spectre.GovernedAct.State
@@ -66,32 +68,6 @@ defmodule Spectre do
   @version "0.4.0"
   @registry Spectre.Domain.Registry
   @reserved_domain_options [:domain_ref, :store, :name, :registry]
-  @domain_options [
-    :ingress,
-    :clock,
-    :id_source,
-    :late_observer,
-    :mind,
-    :generation,
-    :grant_secret,
-    :checkout_receipt_secret,
-    :grant_ttl_ms,
-    :batch_size,
-    :batch_wait_ms,
-    :conflict_retries,
-    :ambiguous_retries,
-    :ledger_opts,
-    :payload_store,
-    :executors,
-    :broker,
-    :constitution,
-    :genesis,
-    :principals,
-    :host_profile,
-    :surface,
-    :root_mandates,
-    :genesis_verifier
-  ]
   @authentication_options [:ingress_opts, :sequencer_opts]
   @observation_options [:ingress_opts, :sequencer_opts]
   @derivation_options [:sequencer_opts]
@@ -153,10 +129,9 @@ defmodule Spectre do
   def start_domain(domain_ref, store, opts)
       when is_binary(domain_ref) and domain_ref != "" and is_list(opts) do
     with :ok <- validate_keyword(opts, :domain_options),
-         :ok <- validate_known_options(opts, @domain_options, :domain),
          :ok <- reject_reserved_domain_options(opts),
-         {:ok, normalized_store} <- Store.normalize(store),
-         domain_opts <- domain_options(domain_ref, normalized_store, opts) do
+         :ok <- Configuration.validate_host_options(opts),
+         domain_opts <- domain_options(domain_ref, store, opts) do
       start_domain_child(domain_ref, domain_opts)
     end
   end
@@ -224,7 +199,6 @@ defmodule Spectre do
     with {:ok, domain} <- resolve_domain(domain_input),
          {:ok, context} <- SubmissionContext.new(context),
          :ok <- context_domain_binding(context, domain),
-         :ok <- current_generation(context, domain),
          {:ok, opening} <- scope_opening(context, opening_attrs),
          {:ok, %Opening{} = durable} <-
            sequencer_result(
@@ -272,10 +246,9 @@ defmodule Spectre do
       when is_list(opts) do
     with :ok <- validate_keyword(opts, :governed_scope_opening_options),
          [] <- Keyword.keys(opts) -- [:sequencer_opts],
-         {:ok, parent_scope} <- refresh_scope(parent_scope),
+         {:ok, parent_scope} <- rebind_scope(parent_scope),
          {:ok, child_context} <- SubmissionContext.new(child_context),
          :ok <- context_domain_binding(child_context, parent_scope.domain),
-         :ok <- current_generation(child_context, parent_scope.domain),
          {:ok, candidate} <-
            Governance.open_scope(
              parent_scope,
@@ -320,7 +293,6 @@ defmodule Spectre do
     with {:ok, domain} <- resolve_domain(domain_input),
          {:ok, context} <- SubmissionContext.new(context),
          :ok <- context_domain_binding(context, domain),
-         :ok <- current_generation(context, domain),
          {:ok, %Opening{}} <-
            sequencer_result(
              fn -> Sequencer.resume_scope(domain.server, context) end,
@@ -331,6 +303,22 @@ defmodule Spectre do
   end
 
   def resume_scope(_domain_input, _context), do: {:error, :authenticated_context_required}
+
+  @doc "Returns an exact governed Definition through a live authenticated Scope."
+  @spec definition(Scope.t(), String.t()) :: {:ok, Definition.t()} | {:error, term()}
+  def definition(%Scope{} = scope, ref) when is_binary(ref) and ref != "" do
+    with {:ok, scope} <- rebind_scope(scope),
+         {:ok, %Definition{} = definition} <-
+           sequencer_result(
+             fn -> Sequencer.definition(scope.domain.server, scope.context, ref) end,
+             :definition_lookup_failed
+           ) do
+      {:ok, definition}
+    end
+  end
+
+  def definition(%Scope{}, ref), do: {:error, {:invalid_definition_ref, ref}}
+  def definition(_scope, _ref), do: {:error, :invalid_scope}
 
   @doc """
   Records input through the Domain's declared ingress without invoking a mind.
@@ -346,7 +334,7 @@ defmodule Spectre do
     with :ok <- validate_keyword(opts, :observation_options),
          :ok <- validate_known_options(opts, @observation_options, :observation),
          :ok <- reject_ingress_override(opts),
-         {:ok, scope} <- refresh_scope(scope),
+         {:ok, scope} <- rebind_scope(scope),
          {:ok, ingress_opts} <- nested_keyword(opts, :ingress_opts),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
@@ -381,7 +369,7 @@ defmodule Spectre do
   def record_derivation(%Scope{} = scope, %Turn{} = turn, evidence, opts) when is_list(opts) do
     with :ok <- validate_keyword(opts, :derivation_options),
          :ok <- validate_known_options(opts, @derivation_options, :derivation),
-         {:ok, scope} <- refresh_scope(scope),
+         {:ok, scope} <- rebind_scope(scope),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
          {:ok, %Evidence{} = durable} <-
@@ -412,7 +400,7 @@ defmodule Spectre do
   def prepare_presentation(%Scope{} = scope, presentation, opts) when is_list(opts) do
     with :ok <- validate_keyword(opts, :presentation_options),
          :ok <- validate_known_options(opts, @presentation_options, :presentation),
-         {:ok, scope} <- refresh_scope(scope),
+         {:ok, scope} <- rebind_scope(scope),
          {:ok, presentation} <- Presentation.new(presentation),
          :ok <- presentation_scope(presentation, Scope.ref(scope)),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
@@ -456,8 +444,7 @@ defmodule Spectre do
         opts
       )
       when is_binary(presentation_ref) and presentation_ref != "" and is_list(opts) do
-    with {:ok, scope} <- refresh_scope(scope),
-         {:ok, projection} <- fetch_projection(scope.domain),
+    with {:ok, scope, projection} <- scoped_projection(scope),
          {:ok, %Presentation{} = presentation} <-
            fetch_presentation(projection, presentation_ref),
          :ok <- presentation_scope(presentation, Scope.ref(scope)),
@@ -480,10 +467,9 @@ defmodule Spectre do
   def record_outcome(%Scope{} = scope, outcome, opts) when is_list(opts) do
     with :ok <- validate_keyword(opts, :outcome_options),
          :ok <- validate_known_options(opts, @outcome_options, :outcome),
-         {:ok, scope} <- refresh_scope(scope),
+         {:ok, scope, projection} <- scoped_projection(scope),
          {:ok, outcome} <- Outcome.new(outcome),
          :ok <- late_outcome_has_evidence(outcome),
-         {:ok, projection} <- fetch_projection(scope.domain),
          :ok <- outcome_belongs_to_scope(projection, outcome, Scope.ref(scope)),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
@@ -516,11 +502,10 @@ defmodule Spectre do
       when is_binary(attempt_ref) and attempt_ref != "" and is_list(opts) do
     with :ok <- validate_keyword(opts, :late_observation_options),
          :ok <- validate_known_options(opts, @late_observation_options, :late_observation),
-         {:ok, scope} <- refresh_scope(scope),
+         {:ok, scope, projection} <- scoped_projection(scope),
          {:ok, observer_opts} <- nested_keyword(opts, :observer_opts),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
-         {:ok, projection} <- fetch_projection(scope.domain),
          {:ok, act, attempt} <-
            late_observation_cause(projection, Scope.ref(scope), attempt_ref),
          {:ok, observer} <-
@@ -591,39 +576,45 @@ defmodule Spectre do
   def turn(scope, input, opts \\ [])
 
   def turn(%Scope{} = scope, input, opts) when is_list(opts) do
-    with :ok <- validate_keyword(opts, :turn_options),
-         :ok <- validate_known_options(opts, @turn_options, :turn),
-         :ok <- reject_ingress_override(opts),
-         {:ok, scope} <- refresh_scope(scope),
-         {:ok, mind} <-
-           sequencer_result(
-             fn -> Sequencer.mind(scope.domain.server) end,
-             :mind_unavailable
-           ),
-         {:ok, ingress_opts} <- nested_keyword(opts, :ingress_opts),
-         {:ok, mind_opts} <- nested_keyword(opts, :mind_opts),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
-         {:ok, context_refs} <- context_evidence_refs(opts),
-         {:ok, %Turn{} = turn} <-
-           sequencer_result(
-             fn ->
-               Sequencer.begin_turn(
-                 scope.domain.server,
-                 scope.context,
-                 input,
-                 context_refs,
-                 Keyword.put(sequencer_opts, :ingress_opts, ingress_opts)
-               )
-             end,
-             :turn_open_failed
-           ),
+    with {:ok, mind, turn, mind_opts} <- prepare_turn(scope, input, opts),
          {:ok, candidates} <- Mind.deliberate(mind, turn, mind_opts) do
       {:ok, %{turn: turn, evidence: turn.evidence, candidates: candidates}}
     end
   end
 
   def turn(_scope, _input, _opts), do: {:error, :invalid_turn}
+
+  @doc """
+  Runs one Turn with explicit, non-authoritative application state.
+
+  This is the pure stateful counterpart of `turn/3`: the supplied value is
+  passed only to the optional `Spectre.Mind.deliberate/3` callback and its
+  successor is returned to the caller. Spectre neither persists that value nor
+  treats it as authority, Evidence or a durable execution fact. Minds without
+  the optional callback use `deliberate/2` and return the value unchanged.
+
+  A stateful Mind must define `deliberate/2` and `deliberate/3` as separate
+  functions. A default argument on `/3` would generate a misleading `/2` that
+  interprets ordinary Mind options as state; see `Spectre.Mind`.
+  """
+  @spec turn(Scope.t(), term(), term(), keyword()) ::
+          {:ok,
+           %{
+             turn: Turn.t(),
+             evidence: [Evidence.t()],
+             candidates: [Candidate.t()],
+             state: term()
+           }}
+          | {:error, term()}
+  def turn(%Scope{} = scope, input, state, opts) when is_list(opts) do
+    with {:ok, mind, turn, mind_opts} <- prepare_turn(scope, input, opts),
+         {:ok, candidates, next_state} <- Mind.deliberate(mind, turn, state, mind_opts) do
+      {:ok, %{turn: turn, evidence: turn.evidence, candidates: candidates, state: next_state}}
+    end
+  end
+
+  def turn(_scope, _input, _state, _opts),
+    do: {:error, :invalid_stateful_turn}
 
   @doc """
   Proposes a Candidate and completes its permitted execution path.
@@ -645,7 +636,7 @@ defmodule Spectre do
 
   def propose(%Scope{} = scope, candidate, opts) when is_list(opts) do
     with :ok <- validate_public_execution_options(opts),
-         {:ok, scope} <- refresh_scope(scope),
+         {:ok, scope} <- rebind_scope(scope),
          {:ok, candidate} <- Candidate.new(candidate),
          {:ok, primary} <- submit_and_run(scope, candidate, opts),
          {:ok, fallback} <- declared_fallback(scope, primary, opts) do
@@ -658,8 +649,7 @@ defmodule Spectre do
   @doc "Returns the read-only application projection for an authenticated Scope."
   @spec view(Scope.t()) :: {:ok, ScopeView.t()} | {:error, term()}
   def view(%Scope{} = scope) do
-    with {:ok, scope} <- refresh_scope(scope),
-         {:ok, projection} <- fetch_projection(scope.domain) do
+    with {:ok, scope, projection} <- scoped_projection(scope) do
       ScopeView.from_projection(projection, Scope.ref(scope))
     end
   end
@@ -678,8 +668,7 @@ defmodule Spectre do
 
   def authority(%Scope{} = scope, opts) when is_list(opts) do
     with :ok <- empty_query_options(opts, :authority),
-         {:ok, scope} <- refresh_scope(scope),
-         {:ok, projection} <- fetch_projection(scope.domain),
+         {:ok, scope, projection} <- scoped_projection(scope),
          {:ok, observed_at} <-
            sequencer_result(
              fn -> Sequencer.trusted_time(scope.domain.server) end,
@@ -783,8 +772,7 @@ defmodule Spectre do
 
   def revoke_mandate(%Scope{} = scope, mandate_ref, candidate_attrs, opts)
       when is_list(opts) do
-    with {:ok, scope} <- refresh_scope(scope),
-         {:ok, projection} <- fetch_projection(scope.domain),
+    with {:ok, scope, projection} <- scoped_projection(scope),
          {:ok, target} <- fetch_mandate(projection, mandate_ref),
          {:ok, candidate} <- Governance.revoke_mandate(scope, target, candidate_attrs),
          do: propose(scope, candidate, opts)
@@ -906,8 +894,7 @@ defmodule Spectre do
 
   def request_erasure(%Scope{} = scope, request_attrs, candidate_attrs, opts)
       when is_list(opts) do
-    with {:ok, scope} <- refresh_scope(scope),
-         {:ok, projection} <- fetch_projection(scope.domain),
+    with {:ok, scope, projection} <- scoped_projection(scope),
          {:ok, candidate} <-
            Governance.request_erasure(scope, projection, request_attrs, candidate_attrs),
          do: propose(scope, candidate, opts)
@@ -976,7 +963,7 @@ defmodule Spectre do
   defp scope_opening(context, %Opening{} = opening) do
     with {:ok, opening} <- Opening.new(opening),
          :ok <- direct_scope_kind(opening.kind),
-         :ok <- opening_context_binding(opening, context) do
+         :ok <- Opening.validate_context(opening, context) do
       {:ok, opening}
     end
   end
@@ -986,18 +973,8 @@ defmodule Spectre do
          :ok <- direct_scope_kind(Map.get(attrs, :kind, :session)),
          {:ok, opened_at} <- required_integer(attrs, :opened_at) do
       attrs
-      |> Map.merge(%{
-        ref: context.scope_ref,
-        domain_ref: context.domain_ref,
-        opened_by_ref: context.authenticated_principal_ref,
-        submission_context_ref: context.ref,
-        authentication_ref: context.authentication_ref,
-        ingress_ref: context.ingress_ref,
-        channel_ref: context.channel_ref,
-        session_ref: context.session_ref,
-        host_generation: context.host_generation,
-        opened_at: opened_at
-      })
+      |> Map.put(:opened_at, opened_at)
+      |> Map.merge(Opening.context_bindings(context))
       |> Opening.new()
     end
   end
@@ -1023,25 +1000,6 @@ defmodule Spectre do
 
   defp admitted_governed_scope(_admission),
     do: {:error, :invalid_governed_scope_opening_admission}
-
-  defp opening_context_binding(opening, context) do
-    fields = [
-      {:ref, context.scope_ref},
-      {:domain_ref, context.domain_ref},
-      {:opened_by_ref, context.authenticated_principal_ref},
-      {:submission_context_ref, context.ref},
-      {:authentication_ref, context.authentication_ref},
-      {:ingress_ref, context.ingress_ref},
-      {:channel_ref, context.channel_ref},
-      {:session_ref, context.session_ref},
-      {:host_generation, context.host_generation}
-    ]
-
-    case Enum.find(fields, fn {field, expected} -> Map.fetch!(opening, field) != expected end) do
-      nil -> :ok
-      {field, _expected} -> {:error, {:scope_opening_context_mismatch, field}}
-    end
-  end
 
   defp presentation_scope(%Presentation{scope_ref: scope_ref}, scope_ref), do: :ok
   defp presentation_scope(%Presentation{}, _scope_ref), do: {:error, :presentation_scope_mismatch}
@@ -1267,7 +1225,7 @@ defmodule Spectre do
              end,
              :late_evidence_commit_failed
            ),
-         true <- evidence_digests(recorded) == evidence_digests(evidence) do
+         true <- Evidence.digest_index(recorded) == Evidence.digest_index(evidence) do
       {:ok, recorded}
     else
       false -> {:error, :late_evidence_recovery_mismatch}
@@ -1285,10 +1243,6 @@ defmodule Spectre do
       details_ref: observation.details_ref,
       contradicts_outcome_ref: corrected_ref
     })
-  end
-
-  defp evidence_digests(evidence) when is_list(evidence) do
-    Map.new(evidence, fn item -> {item.ref, Evidence.digest(item)} end)
   end
 
   defp duty_status(opts) do
@@ -1341,6 +1295,33 @@ defmodule Spectre do
     |> Portable.normalize_refs(:context_evidence_refs)
   end
 
+  defp prepare_turn(scope, input, opts) do
+    with :ok <- validate_keyword(opts, :turn_options),
+         :ok <- validate_known_options(opts, @turn_options, :turn),
+         :ok <- reject_ingress_override(opts),
+         {:ok, scope} <- rebind_scope(scope),
+         {:ok, ingress_opts} <- nested_keyword(opts, :ingress_opts),
+         {:ok, mind_opts} <- nested_keyword(opts, :mind_opts),
+         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
+         :ok <- validate_sequencer_options(sequencer_opts),
+         {:ok, context_refs} <- context_evidence_refs(opts),
+         {:ok, {mind, %Turn{} = turn}} <-
+           sequencer_result(
+             fn ->
+               Sequencer.begin_turn(
+                 scope.domain.server,
+                 scope.context,
+                 input,
+                 context_refs,
+                 Keyword.put(sequencer_opts, :ingress_opts, ingress_opts)
+               )
+             end,
+             :turn_open_failed
+           ) do
+      {:ok, mind, turn, mind_opts}
+    end
+  end
+
   defp run_admission(sequencer, admission, opts) do
     case safe_call(
            fn -> Runner.run(sequencer, admission, opts) end,
@@ -1351,18 +1332,22 @@ defmodule Spectre do
     end
   end
 
-  defp refresh_scope(%Scope{} = scope) do
+  defp rebind_scope(%Scope{} = scope) do
     with {:ok, domain} <- resolve_domain(scope.domain),
          {:ok, context} <- SubmissionContext.new(scope.context),
-         :ok <- context_domain_binding(context, domain),
-         :ok <- current_generation(context, domain),
-         {:ok, %Opening{}} <-
+         :ok <- context_domain_binding(context, domain) do
+      Scope.new(domain, context.scope_ref, context)
+    end
+  end
+
+  defp scoped_projection(%Scope{} = scope) do
+    with {:ok, scope} <- rebind_scope(scope),
+         {:ok, %State{} = projection} <-
            sequencer_result(
-             fn -> Sequencer.resume_scope(domain.server, context) end,
+             fn -> Sequencer.scope_projection(scope.domain.server, scope.context) end,
              :scope_validation_failed
-           ),
-         {:ok, scope} <- Scope.new(domain, Scope.ref(scope), context) do
-      {:ok, scope}
+           ) do
+      {:ok, scope, projection}
     end
   end
 
@@ -1370,18 +1355,6 @@ defmodule Spectre do
        do: :ok
 
   defp context_domain_binding(_context, _domain), do: {:error, :context_domain_mismatch}
-
-  defp current_generation(context, domain) do
-    with {:ok, generation} <-
-           safe_call(
-             fn -> Sequencer.generation(domain.server) end,
-             :domain_generation_unavailable
-           ) do
-      if is_integer(generation) and context.host_generation == generation,
-        do: :ok,
-        else: {:error, :stale_submission_context}
-    end
-  end
 
   defp fetch_projection(domain_input) do
     with {:ok, domain} <- resolve_domain(domain_input),

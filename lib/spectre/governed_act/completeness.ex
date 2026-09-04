@@ -29,33 +29,49 @@ defmodule Spectre.GovernedAct.Completeness do
   def validate(_state), do: {:error, :invalid_governed_fold}
 
   defp complete_admissions(state) do
-    acts_by_decision = Enum.group_by(state.acts, fn {_ref, act} -> act.decision_ref end)
+    admitted_count =
+      Enum.count(state.decisions, fn {_ref, decision} -> decision.outcome == :admitted end)
 
-    if map_size(state.admissions) == map_size(state.decisions) do
-      Enum.reduce_while(state.decisions, :ok, fn {_ref, decision}, :ok ->
-        acts = Map.get(acts_by_decision, decision.ref, [])
-        admission = Map.get(state.admissions, decision.candidate_identity_key)
+    cond do
+      map_size(state.admissions) != map_size(state.decisions) ->
+        {:error, :admission_index_size_mismatch}
 
-        case {decision.outcome, acts, admission} do
-          {:admitted, [{act_ref, _act}], %{decision_ref: decision_ref, act_ref: act_ref}}
-          when decision_ref == decision.ref ->
-            {:cont, :ok}
+      map_size(state.acts) != admitted_count ->
+        {:error, :admission_act_size_mismatch}
 
-          {:admitted, _acts, _admission} ->
-            {:halt, {:error, {:incomplete_admitted_decision, decision.ref}}}
+      true ->
+        Enum.reduce_while(state.decisions, :ok, fn {_ref, decision}, :ok ->
+          admission = Map.get(state.admissions, decision.candidate_identity_key)
 
-          {_other, [], %{decision_ref: decision_ref, act_ref: nil}}
-          when decision_ref == decision.ref ->
-            {:cont, :ok}
-
-          {_other, _acts, _admission} ->
-            {:halt, {:error, {:non_admitted_decision_has_act, decision.ref}}}
-        end
-      end)
-    else
-      {:error, :admission_index_size_mismatch}
+          validate_admission(state, decision, admission)
+        end)
     end
   end
+
+  defp validate_admission(
+         state,
+         %{outcome: :admitted, ref: decision_ref},
+         %{decision_ref: decision_ref, act_ref: act_ref}
+       )
+       when is_binary(act_ref) do
+    case Map.get(state.acts, act_ref) do
+      %Act{ref: ^act_ref, decision_ref: ^decision_ref} -> {:cont, :ok}
+      _missing_or_mismatched -> {:halt, {:error, {:incomplete_admitted_decision, decision_ref}}}
+    end
+  end
+
+  defp validate_admission(_state, %{outcome: :admitted, ref: decision_ref}, _admission),
+    do: {:halt, {:error, {:incomplete_admitted_decision, decision_ref}}}
+
+  defp validate_admission(
+         _state,
+         %{ref: decision_ref},
+         %{decision_ref: decision_ref, act_ref: nil}
+       ),
+       do: {:cont, :ok}
+
+  defp validate_admission(_state, %{ref: decision_ref}, _admission),
+    do: {:halt, {:error, {:non_admitted_decision_has_act, decision_ref}}}
 
   defp complete_reservations(state) do
     with :ok <- complete_act_reservations(state) do
@@ -169,13 +185,11 @@ defmodule Spectre.GovernedAct.Completeness do
 
   defp complete_meter_recontainments(state) do
     with :ok <- validate_recontainment_records(state) do
-      state.outcomes
-      |> Map.values()
-      |> Enum.filter(&requires_recontainment?(state, &1))
-      |> Enum.reduce_while(:ok, fn outcome, :ok ->
-        if Map.has_key?(state.meter_recontainments, outcome.act_ref),
-          do: {:cont, :ok},
-          else: {:halt, {:error, {:missing_meter_recontainment, outcome.ref}}}
+      Enum.reduce_while(state.outcomes, :ok, fn {_ref, outcome}, :ok ->
+        if requires_recontainment?(state, outcome) and
+             not Map.has_key?(state.meter_recontainments, outcome.act_ref),
+           do: {:halt, {:error, {:missing_meter_recontainment, outcome.ref}}},
+           else: {:cont, :ok}
       end)
     end
   end

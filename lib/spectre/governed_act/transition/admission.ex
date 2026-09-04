@@ -139,17 +139,7 @@ defmodule Spectre.GovernedAct.Transition.Admission do
   end
 
   defp decision_submission_context(decision) do
-    SubmissionContext.new(%{
-      ref: decision.submission_context_ref,
-      domain_ref: decision.domain_ref,
-      scope_ref: decision.scope_ref,
-      authenticated_principal_ref: decision.authenticated_principal_ref,
-      authentication_ref: decision.authentication_ref,
-      ingress_ref: decision.ingress_ref,
-      channel_ref: decision.channel_ref,
-      session_ref: decision.session_ref,
-      host_generation: decision.host_generation
-    })
+    SubmissionContext.from_decision(decision)
     |> case do
       {:ok, context} -> {:ok, context}
       {:error, reason} -> {:error, {:invalid_decision_submission_context, decision.ref, reason}}
@@ -243,11 +233,11 @@ defmodule Spectre.GovernedAct.Transition.Admission do
   defp retained_revocation_decision?(decision, mandate) do
     decision.candidate_class == "mandate.revoke" and
       decision.mandate_ref == mandate.ref and
-      Map.get(mandate.revocation, "mode") in [:retained_controller, "retained_controller"]
+      mandate.revocation["mode"] == :retained_controller
   end
 
   defp validate_retained_revocation_decision(projection, decision, mandate) do
-    controllers = Map.get(mandate.revocation, "controller_refs", [])
+    controllers = mandate.revocation["controller_refs"]
 
     cond do
       decision.authenticated_principal_ref not in controllers ->
@@ -436,20 +426,13 @@ defmodule Spectre.GovernedAct.Transition.Admission do
 
     with true <- decision.recognition_refs == expected_refs,
          {:ok, _declared_evidence} <- View.evidence_set(projection, candidate.evidence_refs),
-         :ok <- required_evidence_declared(basis_refs, candidate.evidence_refs),
+         :ok <- Recognition.validate_declared_basis(basis_refs, candidate.evidence_refs),
          :satisfied <- recognition do
       {:ok, basis_refs}
     else
       false -> {:error, {:decision_recognition_refs_mismatch, decision.ref}}
       {:error, _reason} = error -> error
       result -> {:error, {:act_recognition_not_satisfied, candidate.ref, result}}
-    end
-  end
-
-  defp required_evidence_declared(required_refs, declared_refs) do
-    case required_refs -- declared_refs do
-      [] -> :ok
-      missing -> {:error, {:recognition_basis_not_declared, missing}}
     end
   end
 

@@ -40,6 +40,7 @@ defmodule Spectre.Domain.Sequencer do
   }
 
   alias Spectre.Domain.Admission.Command, as: AdmissionCommand
+  alias Spectre.Domain.Command.Commit, as: CommandCommit
   alias Spectre.Domain.Command.Execution, as: ExecutionCommand
   alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
   alias Spectre.Domain.Command.Input, as: InputCommand
@@ -201,7 +202,7 @@ defmodule Spectre.Domain.Sequencer do
           term(),
           [String.t()],
           keyword()
-        ) :: {:ok, Turn.t()} | {:error, term()}
+        ) :: {:ok, {module(), Turn.t()}} | {:error, term()}
   def begin_turn(server, context, input, context_evidence_refs, opts \\ [])
 
   def begin_turn(
@@ -332,16 +333,29 @@ defmodule Spectre.Domain.Sequencer do
   def projection(server), do: GenServer.call(server, :projection)
 
   @doc false
-  @spec generation(GenServer.server()) :: non_neg_integer()
-  def generation(server), do: GenServer.call(server, :generation)
+  @spec scope_projection(GenServer.server(), SubmissionContext.t()) ::
+          {:ok, Projection.t()} | {:error, term()}
+  def scope_projection(server, %SubmissionContext{} = context),
+    do: GenServer.call(server, {:scope_projection, context})
+
+  def scope_projection(_server, _context), do: {:error, :authenticated_scope_context_required}
+
+  @doc false
+  @spec definition(GenServer.server(), SubmissionContext.t(), String.t()) ::
+          {:ok, Spectre.Definition.t()} | {:error, term()}
+  def definition(server, %SubmissionContext{} = context, ref)
+      when is_binary(ref) and ref != "",
+      do: GenServer.call(server, {:definition, context, ref})
+
+  def definition(_server, %SubmissionContext{}, ref),
+    do: {:error, {:invalid_definition_ref, ref}}
+
+  def definition(_server, _context, _ref),
+    do: {:error, :authenticated_scope_context_required}
 
   @doc false
   @spec late_observer(GenServer.server()) :: {:ok, module()} | {:error, term()}
   def late_observer(server), do: GenServer.call(server, :late_observer)
-
-  @doc false
-  @spec mind(GenServer.server()) :: {:ok, module()} | {:error, term()}
-  def mind(server), do: GenServer.call(server, :mind)
 
   @doc false
   @spec trusted_time(GenServer.server(), keyword()) :: {:ok, integer()} | {:error, term()}
@@ -369,8 +383,21 @@ defmodule Spectre.Domain.Sequencer do
   def handle_call(:projection, _from, %State{} = state),
     do: {:reply, state.projection, state}
 
-  def handle_call(:generation, _from, %State{} = state),
-    do: {:reply, state.generation, state}
+  def handle_call({:scope_projection, context}, _from, %State{} = state) do
+    reply =
+      with {:ok, _context, _opening} <- Context.validate_scope(state, context),
+           do: {:ok, state.projection}
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:definition, context, ref}, _from, %State{} = state) do
+    reply =
+      with {:ok, _context, _opening} <- Context.validate_scope(state, context),
+           do: Projection.definition(state.projection, ref)
+
+    {:reply, reply, state}
+  end
 
   def handle_call(:late_observer, _from, %State{late_observer: nil} = state),
     do: {:reply, {:error, :late_observer_not_configured}, state}
@@ -378,24 +405,10 @@ defmodule Spectre.Domain.Sequencer do
   def handle_call(:late_observer, _from, %State{} = state),
     do: {:reply, {:ok, state.late_observer}, state}
 
-  def handle_call(:mind, _from, %State{mind: nil} = state),
-    do: {:reply, {:error, :mind_not_configured}, state}
-
-  def handle_call(:mind, _from, %State{} = state),
-    do: {:reply, {:ok, state.mind}, state}
-
   def handle_call({:resume_scope, context}, _from, %State{} = state) do
     reply =
-      with {:ok, context} <- SubmissionContext.new(context),
-           :ok <- Context.validate_ingress(state, context),
-           :ok <- SubmissionContext.verify_seal(context, state.grant_secret),
-           true <- context.domain_ref == state.projection.domain_ref,
-           true <- context.host_generation == state.generation,
-           {:ok, opening} <- Projection.scope_context(state.projection, context) do
+      with {:ok, _context, opening} <- Context.validate_scope(state, context) do
         {:ok, opening}
-      else
-        false -> {:error, :scope_resume_context_not_current}
-        {:error, _reason} = error -> error
       end
 
     {:reply, reply, state}
@@ -528,75 +541,41 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp consume_grant_reply(state, grant) do
-    case preflight_duty_repair(state) do
-      {:ok, current} ->
-        case ExecutionCommand.consume(current, grant) do
-          {:ok, next_state, act, attempt, receipt} ->
-            {:reply, {:ok, act, attempt, receipt}, schedule_reconciliation(next_state)}
-
-          {:error, next_state, reason} ->
-            {:reply, {:error, reason}, schedule_reconciliation(next_state)}
-        end
-
-      {:error, halted, reason} ->
-        {:reply, {:error, reason}, halted}
-    end
+    run_after_duty_repair(state, &ExecutionCommand.consume(&1, grant))
   end
 
   defp record_outcome_reply(state, input) do
-    case preflight_duty_repair(state) do
-      {:ok, current} ->
-        case ObservationCommand.record(current, input) do
-          {:ok, next_state, outcome} ->
-            {:reply, {:ok, outcome}, schedule_reconciliation(next_state)}
-
-          {:error, next_state, reason} ->
-            {:reply, {:error, reason}, schedule_reconciliation(next_state)}
-        end
-
-      {:error, halted, reason} ->
-        {:reply, {:error, reason}, halted}
-    end
+    run_after_duty_repair(state, &ObservationCommand.record(&1, input))
   end
 
   defp ingress_observation_reply(state, context, input, opts) do
     with {:ok, ingress_opts} <- observation_options(opts) do
-      case preflight_duty_repair(state) do
-        {:ok, current} ->
-          case InputCommand.observe(current, context, input, ingress_opts) do
-            {:ok, next_state, evidence, _observed_at} ->
-              {:reply, {:ok, evidence}, schedule_reconciliation(next_state)}
-
-            {:error, next_state, reason} ->
-              {:reply, {:error, reason}, schedule_reconciliation(next_state)}
-          end
-
-        {:error, halted, reason} ->
-          {:reply, {:error, reason}, halted}
-      end
+      run_after_duty_repair(state, &InputCommand.observe(&1, context, input, ingress_opts))
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
   defp begin_turn_reply(state, context, input, context_evidence_refs, opts) do
-    with {:ok, _mind} <- configured_mind(state),
+    with {:ok, mind} <- configured_mind(state),
          {:ok, ingress_opts} <- observation_options(opts),
          {:ok, context_evidence_refs} <-
            Portable.normalize_refs(context_evidence_refs, :context_evidence_refs) do
-      case preflight_duty_repair(state) do
-        {:ok, current} ->
-          begin_validated_turn(
-            current,
-            context,
-            input,
-            context_evidence_refs,
-            ingress_opts
-          )
-
-        {:error, halted, reason} ->
-          {:reply, {:error, reason}, halted}
-      end
+      run_after_duty_repair(
+        state,
+        fn current ->
+          case InputCommand.begin_turn(
+                 current,
+                 context,
+                 input,
+                 context_evidence_refs,
+                 ingress_opts
+               ) do
+            {:ok, next_state, turn} -> {:ok, next_state, {mind, turn}}
+            {:error, _state, _reason} = error -> error
+          end
+        end
+      )
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -605,102 +584,36 @@ defmodule Spectre.Domain.Sequencer do
   defp configured_mind(%State{mind: nil}), do: {:error, :mind_not_configured}
   defp configured_mind(%State{mind: mind}), do: {:ok, mind}
 
-  defp begin_validated_turn(state, context, input, context_evidence_refs, ingress_opts) do
-    case InputCommand.begin_turn(
-           state,
-           context,
-           input,
-           context_evidence_refs,
-           ingress_opts
-         ) do
-      {:ok, next_state, turn} ->
-        {:reply, {:ok, turn}, schedule_reconciliation(next_state)}
-
-      {:error, next_state, reason} ->
-        {:reply, {:error, reason}, schedule_reconciliation(next_state)}
-    end
-  end
-
   defp derivation_reply(state, context, turn, input, opts) do
     with :ok <- validate_call_options(opts),
          {:ok, evidence} <- Evidence.new(input) do
-      case preflight_duty_repair(state) do
-        {:ok, current} ->
-          record_validated_derivation(current, context, turn, evidence)
-
-        {:error, halted, reason} ->
-          {:reply, {:error, reason}, halted}
-      end
+      run_after_duty_repair(
+        state,
+        &InputCommand.record_derivation(&1, context, turn, evidence)
+      )
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
-
-  defp record_validated_derivation(state, context, turn, evidence) do
-    case InputCommand.record_derivation(state, context, turn, evidence) do
-      {:ok, next_state, %Evidence{} = durable} ->
-        {:reply, {:ok, durable}, schedule_reconciliation(next_state)}
-
-      {:error, next_state, reason} ->
-        {:reply, {:error, reason}, schedule_reconciliation(next_state)}
     end
   end
 
   defp executor_evidence_reply(state, act_ref, attempt_ref, input, opts) do
     with :ok <- validate_call_options(opts),
-         {:ok, evidence, _shape} <- EvidenceCommand.normalize(input),
-         :ok <-
-           InputCommand.validate_executor_evidence(
-             state.projection,
-             act_ref,
-             attempt_ref,
-             evidence
-           ) do
-      case preflight_duty_repair(state) do
-        {:ok, current} ->
-          commit_executor_evidence(current, act_ref, attempt_ref, evidence)
-
-        {:error, halted, reason} ->
-          {:reply, {:error, reason}, halted}
-      end
+         {:ok, evidence, _shape} <- EvidenceCommand.normalize(input) do
+      run_after_duty_repair(
+        state,
+        &InputCommand.record_executor_evidence(&1, act_ref, attempt_ref, evidence)
+      )
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  defp commit_executor_evidence(state, act_ref, attempt_ref, evidence) do
-    case InputCommand.record_executor_evidence(
-           state,
-           act_ref,
-           attempt_ref,
-           evidence
-         ) do
-      {:ok, next_state, durable} ->
-        {:reply, {:ok, durable}, schedule_reconciliation(next_state)}
-
-      {:error, next_state, reason} ->
-        {:reply, {:error, reason}, schedule_reconciliation(next_state)}
-    end
-  end
-
   defp open_scope_reply(state, context, input) do
-    case ScopeCommand.open(state, context, input) do
-      {:ok, next_state, opening} ->
-        {:reply, {:ok, opening}, schedule_reconciliation(next_state)}
-
-      {:error, next_state, reason} ->
-        {:reply, {:error, reason}, schedule_reconciliation(next_state)}
-    end
+    run_after_duty_repair(state, &ScopeCommand.open(&1, context, input))
   end
 
   defp record_presentation_reply(state, context, input) do
-    case PresentationCommand.record(state, context, input) do
-      {:ok, next_state, presentation} ->
-        {:reply, {:ok, presentation}, schedule_reconciliation(next_state)}
-
-      {:error, next_state, reason} ->
-        {:reply, {:error, reason}, schedule_reconciliation(next_state)}
-    end
+    run_after_duty_repair(state, &PresentationCommand.record(&1, context, input))
   end
 
   @impl GenServer
@@ -832,16 +745,21 @@ defmodule Spectre.Domain.Sequencer do
     next_state
   end
 
-  defp preflight_duty_repair(state) do
-    case Transaction.repair_missing_duties(state) do
-      {:ok, projection} ->
-        {:ok, %{state | projection: projection}}
-
-      {:error, reason} ->
-        tagged = {:preflight_duty_repair_failed, reason}
-        {:error, Control.halt(state, tagged), tagged}
+  defp run_after_duty_repair(%State{} = state, command) when is_function(command, 1) do
+    case CommandCommit.prepare(state) do
+      {:ok, current} -> current |> command.() |> command_reply()
+      {:error, halted, reason} -> {:reply, {:error, reason}, halted}
     end
   end
+
+  defp command_reply({:ok, %State{} = state, value}),
+    do: {:reply, {:ok, value}, schedule_reconciliation(state)}
+
+  defp command_reply({:ok, %State{} = state, act, attempt, receipt}),
+    do: {:reply, {:ok, act, attempt, receipt}, schedule_reconciliation(state)}
+
+  defp command_reply({:error, %State{} = state, reason}),
+    do: {:reply, {:error, reason}, schedule_reconciliation(state)}
 
   defp validate_call_options(call_opts),
     do: validate_known_options(call_opts, @sequencer_call_options, :sequencer)

@@ -133,18 +133,8 @@ defmodule Spectre.Attempt.Runner do
   end
 
   defp run_attempt(sequencer, decision, act, %Grant{} = grant, opts) do
-    with :ok <- grant_act_binding(grant, act) do
-      case durable_attempt_result(sequencer, decision, act) do
-        {:ok, %Result{}} = recovered ->
-          recovered
-
-        :dispatch_ready ->
-          run_new_attempt(sequencer, decision, act, grant, opts)
-
-        {:error, _reason} = error ->
-          error
-      end
-    end
+    with :ok <- grant_act_binding(grant, act),
+         do: run_new_attempt(sequencer, decision, act, grant, opts)
   end
 
   defp run_attempt(_sequencer, _decision, _act, _grant, _opts),
@@ -155,16 +145,14 @@ defmodule Spectre.Attempt.Runner do
       with {:ok, config} <- execution_config(sequencer, act, opts),
            {:ok, consumed_act, attempt, receipt} <-
              consume_grant(sequencer, grant, act, config),
-           {:ok, status, evidence, details_ref} <-
+           {:ok, observation} <-
              cross_boundary(config, receipt, consumed_act, attempt) do
         finish_attempt(
           sequencer,
           decision,
           consumed_act,
           attempt,
-          status,
-          evidence,
-          details_ref,
+          observation,
           config
         )
       end
@@ -295,54 +283,56 @@ defmodule Spectre.Attempt.Runner do
          decision,
          act,
          attempt,
-         reported_status,
-         evidence,
-         details_ref,
+         observation,
          config
        ) do
-    {status, outcome_evidence, observed_at, details_ref} =
+    classified =
       case observation_time(sequencer, attempt, config.sequencer_opts) do
         {:ok, observed_at} ->
-          Observation.classify(
-            reported_status,
-            evidence,
-            act,
-            attempt,
-            observed_at,
-            details_ref
-          )
+          Observation.classify(observation, act, attempt, observed_at)
 
         {:error, _reason} ->
-          {:ambiguous, [], attempt.started_at,
-           "spectre:attempt-boundary:clock:unusable-observation-time:v1"}
+          Map.merge(observation, %{
+            status: :ambiguous,
+            outcome_evidence: [],
+            observed_at: attempt.started_at,
+            details_ref: "spectre:attempt-boundary:clock:unusable-observation-time:v1"
+          })
       end
 
-    case record_evidence(sequencer, act, attempt, evidence, config.sequencer_opts) do
+    case record_evidence(
+           sequencer,
+           act,
+           attempt,
+           observation.evidence,
+           config.sequencer_opts
+         ) do
       {:ok, recorded_evidence} ->
         commit_attempt_outcome(
           sequencer,
           decision,
           act,
           attempt,
-          status,
-          outcome_evidence,
+          classified,
           recorded_evidence,
-          details_ref,
-          observed_at,
           config.sequencer_opts
         )
 
       {:error, _reason} ->
+        unacknowledged = %{
+          classified
+          | status: :ambiguous,
+            outcome_evidence: [],
+            details_ref: "spectre:attempt-boundary:ledger:evidence-unacknowledged:v1"
+        }
+
         commit_attempt_outcome(
           sequencer,
           decision,
           act,
           attempt,
-          :ambiguous,
+          unacknowledged,
           [],
-          [],
-          "spectre:attempt-boundary:ledger:evidence-unacknowledged:v1",
-          observed_at,
           config.sequencer_opts
         )
     end
@@ -353,35 +343,24 @@ defmodule Spectre.Attempt.Runner do
          decision,
          act,
          attempt,
-         status,
-         outcome_evidence,
+         observation,
          recorded_evidence,
-         details_ref,
-         observed_at,
          sequencer_opts
        ) do
-    with {:ok, outcome} <-
-           build_outcome(
-             act,
-             attempt,
-             status,
-             outcome_evidence,
-             details_ref,
-             observed_at
-           ),
+    with {:ok, outcome} <- build_outcome(act, attempt, observation),
          {:ok, outcome} <- record_outcome(sequencer, outcome, sequencer_opts) do
       result(decision, act, attempt, recorded_evidence, outcome)
     end
   end
 
-  defp build_outcome(act, attempt, status, evidence, details_ref, observed_at) do
+  defp build_outcome(act, attempt, observation) do
     Outcome.new(%{
       act_ref: act.ref,
       attempt_ref: attempt.ref,
-      status: status,
-      evidence_refs: Enum.map(evidence, & &1.ref),
-      observed_at: observed_at,
-      details_ref: details_ref,
+      status: observation.status,
+      evidence_refs: Enum.map(observation.outcome_evidence, & &1.ref),
+      observed_at: observation.observed_at,
+      details_ref: observation.details_ref,
       contradicts_outcome_ref: nil
     })
   end
@@ -414,16 +393,12 @@ defmodule Spectre.Attempt.Runner do
 
   defp validate_recorded_evidence(expected, recorded) do
     with {:ok, recorded} <- Observation.normalize_evidence(recorded),
-         true <- evidence_identity(expected) == evidence_identity(recorded) do
+         true <- Evidence.digest_index(expected) == Evidence.digest_index(recorded) do
       {:ok, recorded}
     else
       false -> {:error, :recorded_evidence_mismatch}
       {:error, _reason} -> {:error, :invalid_recorded_evidence}
     end
-  end
-
-  defp evidence_identity(evidence) do
-    Map.new(evidence, fn item -> {item.ref, Evidence.digest(item)} end)
   end
 
   defp record_outcome(sequencer, outcome, opts) do

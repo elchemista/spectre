@@ -70,7 +70,7 @@ defmodule Spectre.Attempt.Executor do
       |> Map.put(:issuer_ref, act.executor_ref)
       |> Map.put(:source_ref, act.executor_ref)
       |> Map.put(:observed_at, observed_at)
-      |> Map.put(:bindings, %{"act_ref" => act.ref, "attempt_ref" => attempt.ref})
+      |> Map.put(:bindings, Binding.evidence_bindings(act, attempt))
       |> Evidence.new()
     end
   end

@@ -121,6 +121,11 @@ defmodule Spectre.Evidence do
   @spec digest(t()) :: String.t()
   def digest(%__MODULE__{} = evidence), do: evidence |> canonical() |> Portable.digest!()
 
+  @doc false
+  @spec digest_index([t()]) :: %{optional(String.t()) => String.t()}
+  def digest_index(evidence) when is_list(evidence),
+    do: Map.new(evidence, &{&1.ref, digest(&1)})
+
   @doc "Returns whether two records assert opposite stances for the same proposition."
   @spec opposes?(t(), t()) :: boolean()
   def opposes?(%__MODULE__{} = left, %__MODULE__{} = right) do

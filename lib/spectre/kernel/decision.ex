@@ -25,6 +25,7 @@ defmodule Spectre.Kernel.Decision do
   alias Spectre.Kernel.{Authority, Meter}
   alias Spectre.Kernel.Authority.Effective
   alias Spectre.Kernel.Decision.Context
+  alias Spectre.Kernel.Meter.Amounts
 
   @pending_issue_source "spectre:pending-mandate-issue-act"
 
@@ -254,12 +255,10 @@ defmodule Spectre.Kernel.Decision do
       when map_size(consequence) == 1 and map_size(command) == 2 and
              is_binary(child_mandate_ref) and child_mandate_ref != "" and is_map(amounts) and
              not is_struct(amounts) and map_size(amounts) > 0 ->
-        if Enum.all?(amounts, fn
-             {meter_ref, quantity} ->
-               is_binary(meter_ref) and meter_ref != "" and is_integer(quantity) and quantity > 0
-           end),
-           do: :ok,
-           else: {:refused, :invalid_meter_devolution}
+        case Amounts.non_empty(amounts) do
+          {:ok, _amounts} -> :ok
+          {:error, _reason} -> {:refused, :invalid_meter_devolution}
+        end
 
       _invalid ->
         {:refused, :invalid_meter_devolution}

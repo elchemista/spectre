@@ -7,13 +7,26 @@ defmodule Spectre.Attempt.Runner.Observation do
 
   @statuses [:succeeded, :failed, :definitive_no_effect, :ambiguous]
 
+  @type raw :: %{
+          required(:status) => atom(),
+          required(:evidence) => [Evidence.t()],
+          required(:details_ref) => String.t()
+        }
+  @type t :: %{
+          required(:status) => atom(),
+          required(:evidence) => [Evidence.t()],
+          required(:outcome_evidence) => [Evidence.t()],
+          required(:observed_at) => non_neg_integer(),
+          required(:details_ref) => String.t()
+        }
+
   @spec normalize_late(
           atom(),
           map(),
           Act.t(),
           Attempt.t(),
           non_neg_integer()
-        ) :: {:ok, map()} | {:error, term()}
+        ) :: {:ok, t()} | {:error, term()}
   def normalize_late(status, metadata, act, attempt, observed_at)
       when status in @statuses and is_integer(observed_at) and observed_at >= 0 do
     with {:ok, act} <- Act.new(act),
@@ -21,17 +34,11 @@ defmodule Spectre.Attempt.Runner.Observation do
          nil <- Binding.mismatch(attempt, act),
          true <- observed_at >= attempt.started_at,
          {:ok, evidence, details_ref} <- validate(metadata, act, attempt) do
-      {status, outcome_evidence, observed_at, details_ref} =
-        classify(status, evidence, act, attempt, observed_at, details_ref)
+      observation =
+        %{status: status, evidence: evidence, details_ref: details_ref}
+        |> classify(act, attempt, observed_at)
 
-      {:ok,
-       %{
-         status: status,
-         evidence: evidence,
-         outcome_evidence: outcome_evidence,
-         observed_at: observed_at,
-         details_ref: details_ref
-       }}
+      {:ok, observation}
     else
       false -> {:error, :late_observation_cause_mismatch}
       {_field, _expected, _actual} -> {:error, :late_observation_cause_mismatch}
@@ -43,29 +50,44 @@ defmodule Spectre.Attempt.Runner.Observation do
     do: {:error, :invalid_late_observation}
 
   @spec normalize(atom(), term(), :broker | :executor, Act.t(), Attempt.t()) ::
-          {:ok, atom(), [Evidence.t()], String.t()} | {:error, term()}
+          {:ok, raw()} | {:error, term()}
   def normalize(status, metadata, boundary, %Act{} = act, %Attempt{} = attempt)
       when status in @statuses and boundary in [:broker, :executor] do
     case validate(metadata, act, attempt) do
-      {:ok, evidence, details_ref} -> {:ok, status, evidence, details_ref}
-      {:error, _reason} -> boundary_failure(boundary, :invalid_metadata)
+      {:ok, evidence, details_ref} ->
+        {:ok, %{status: status, evidence: evidence, details_ref: details_ref}}
+
+      {:error, _reason} ->
+        boundary_failure(boundary, :invalid_metadata)
     end
   end
 
   @spec classify(
-          atom(),
-          [Evidence.t()],
+          raw(),
           Act.t(),
           Attempt.t(),
-          non_neg_integer(),
-          String.t()
-        ) :: {atom(), [Evidence.t()], non_neg_integer(), String.t()}
-  def classify(:ambiguous, evidence, act, attempt, observed_at, details_ref) do
+          non_neg_integer()
+        ) :: t()
+  def classify(
+        %{status: :ambiguous, evidence: evidence} = observation,
+        act,
+        attempt,
+        observed_at
+      ) do
     causal = Enum.filter(evidence, &Attestation.causal?(&1, act, attempt, observed_at))
-    {:ambiguous, causal, observed_at, details_ref}
+
+    Map.merge(observation, %{
+      outcome_evidence: causal,
+      observed_at: observed_at
+    })
   end
 
-  def classify(status, evidence, act, attempt, observed_at, details_ref)
+  def classify(
+        %{status: status, evidence: evidence} = observation,
+        act,
+        attempt,
+        observed_at
+      )
       when status in [:succeeded, :failed, :definitive_no_effect] do
     {supporting, causal, conflicting?} =
       Enum.reduce(evidence, {[], [], false}, fn item, {supporting, causal, conflicting?} ->
@@ -80,10 +102,17 @@ defmodule Spectre.Attempt.Runner.Observation do
       end)
 
     if supporting != [] and not conflicting? do
-      {status, Enum.reverse(supporting), observed_at, details_ref}
+      Map.merge(observation, %{
+        outcome_evidence: Enum.reverse(supporting),
+        observed_at: observed_at
+      })
     else
-      {:ambiguous, Enum.reverse(causal), observed_at,
-       "spectre:attempt-boundary:unattested-outcome:v1"}
+      Map.merge(observation, %{
+        status: :ambiguous,
+        outcome_evidence: Enum.reverse(causal),
+        observed_at: observed_at,
+        details_ref: "spectre:attempt-boundary:unattested-outcome:v1"
+      })
     end
   end
 
@@ -115,9 +144,14 @@ defmodule Spectre.Attempt.Runner.Observation do
   def normalize_evidence(_evidence), do: {:error, :invalid_observation_evidence}
 
   @spec boundary_failure(:broker | :executor, atom()) ::
-          {:ok, :ambiguous, [], String.t()}
+          {:ok, raw()}
   def boundary_failure(boundary, kind) do
-    {:ok, :ambiguous, [], boundary_details_ref(boundary, kind)}
+    {:ok,
+     %{
+       status: :ambiguous,
+       evidence: [],
+       details_ref: boundary_details_ref(boundary, kind)
+     }}
   end
 
   defp validate(%{evidence: evidence, details_ref: details_ref} = metadata, act, attempt)

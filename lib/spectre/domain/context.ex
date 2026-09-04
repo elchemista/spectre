@@ -10,7 +10,10 @@ defmodule Spectre.Domain.Context do
   """
 
   alias Spectre.{Adapter, Portable, SubmissionContext}
+  alias Spectre.Domain.Projection
+  alias Spectre.GovernedAct.State, as: GovernedState
   alias Spectre.Domain.Sequencer.State
+  alias Spectre.Scope.Opening
 
   @authentication_options [:timeout, :ingress_opts]
 
@@ -28,12 +31,53 @@ defmodule Spectre.Domain.Context do
     end
   end
 
+  @doc "Normalizes and verifies a context against the current host generation."
+  @spec validate_current(State.t(), term()) ::
+          {:ok, SubmissionContext.t()} | {:error, term()}
+  def validate_current(%State{} = state, input) do
+    with {:ok, context} <- SubmissionContext.new(input),
+         :ok <- validate_ingress(state, context),
+         :ok <- SubmissionContext.verify_seal(context, state.grant_secret),
+         :ok <- validate_current_binding(state, context) do
+      {:ok, context}
+    end
+  end
+
+  @doc "Verifies a current context against its durable Scope opening."
+  @spec validate_scope(State.t(), term()) ::
+          {:ok, SubmissionContext.t(), Opening.t()} | {:error, term()}
+  def validate_scope(%State{} = state, input),
+    do: validate_scope(state, state.projection, input)
+
+  @doc "Verifies a current context against an explicit provisional projection."
+  @spec validate_scope(State.t(), GovernedState.t(), term()) ::
+          {:ok, SubmissionContext.t(), Opening.t()} | {:error, term()}
+  def validate_scope(%State{} = state, %GovernedState{} = projection, input) do
+    with {:ok, context} <- validate_current(state, input),
+         {:ok, opening} <- Projection.scope_context(projection, context) do
+      {:ok, context, opening}
+    end
+  end
+
   @doc "Checks that a context names the ingress fixed for the running Domain."
   @spec validate_ingress(State.t(), SubmissionContext.t()) :: :ok | {:error, term()}
   def validate_ingress(%State{} = state, %SubmissionContext{} = context) do
     if context.ingress_ref == state.ingress_ref,
       do: :ok,
       else: {:error, :submission_context_ingress_mismatch}
+  end
+
+  defp validate_current_binding(state, context) do
+    cond do
+      context.domain_ref != state.projection.domain_ref ->
+        {:error, :submission_context_domain_mismatch}
+
+      context.host_generation != state.generation ->
+        {:error, :submission_context_generation_mismatch}
+
+      true ->
+        :ok
+    end
   end
 
   defp call_adapter(state, scope_ref, input, opts) do

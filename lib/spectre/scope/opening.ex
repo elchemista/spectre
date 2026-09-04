@@ -8,8 +8,7 @@ defmodule Spectre.Scope.Opening do
   an independent disposition path so unfinished work can be derived as Duty.
   """
 
-  alias Spectre.Condition
-  alias Spectre.Portable
+  alias Spectre.{Condition, Portable, SubmissionContext}
 
   @schema_version 1
   @kinds [:session, :child, :work, :vigil]
@@ -34,6 +33,17 @@ defmodule Spectre.Scope.Opening do
     :due_at
   ]
   @governed_draft_fields @fields -- [:source_act_ref, :opened_at]
+  @context_binding_matrix [
+    {:ref, :scope_ref},
+    {:domain_ref, :domain_ref},
+    {:opened_by_ref, :authenticated_principal_ref},
+    {:submission_context_ref, :ref},
+    {:authentication_ref, :authentication_ref},
+    {:ingress_ref, :ingress_ref},
+    {:channel_ref, :channel_ref},
+    {:session_ref, :session_ref},
+    {:host_generation, :host_generation}
+  ]
   @pending_source_act_ref "spectre:scope:pending-source-act"
 
   @enforce_keys [
@@ -122,6 +132,36 @@ defmodule Spectre.Scope.Opening do
   @doc "Returns whether the opening must be authorized by a durable Act."
   @spec governed?(t()) :: boolean()
   def governed?(%__MODULE__{kind: kind}), do: kind in [:work, :vigil]
+
+  @doc "Reconstructs the exact ingress context committed by this opening."
+  @spec submission_context(t()) :: {:ok, SubmissionContext.t()} | {:error, term()}
+  def submission_context(%__MODULE__{} = opening) do
+    attrs =
+      Map.new(@context_binding_matrix, fn {opening_field, context_field} ->
+        {context_field, Map.fetch!(opening, opening_field)}
+      end)
+
+    SubmissionContext.new(attrs)
+  end
+
+  @doc "Returns the trusted opening fields forced by an authenticated context."
+  @spec context_bindings(SubmissionContext.t()) :: map()
+  def context_bindings(%SubmissionContext{} = context) do
+    Map.new(@context_binding_matrix, fn {opening_field, context_field} ->
+      {opening_field, Map.fetch!(context, context_field)}
+    end)
+  end
+
+  @doc "Checks every trusted opening field against an authenticated context."
+  @spec validate_context(t(), SubmissionContext.t()) :: :ok | {:error, term()}
+  def validate_context(%__MODULE__{} = opening, %SubmissionContext{} = context) do
+    case Enum.find(@context_binding_matrix, fn {opening_field, context_field} ->
+           Map.fetch!(opening, opening_field) != Map.fetch!(context, context_field)
+         end) do
+      nil -> :ok
+      {field, _context_field} -> {:error, {:scope_opening_context_mismatch, field}}
+    end
+  end
 
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()

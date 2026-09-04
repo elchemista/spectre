@@ -16,6 +16,7 @@ defmodule Spectre.Candidate do
   """
 
   alias Spectre.{Act, Consent, Disclosure, Portable, Row}
+  alias Spectre.Kernel.Meter.Amounts
 
   @schema_version 1
   @material_fields [
@@ -123,6 +124,7 @@ defmodule Spectre.Candidate do
          attrs <- defaults(attrs),
          {:ok, row} <- Row.new(Map.get(attrs, :row, %{})),
          {:ok, attrs} <- normalize_sets(Map.put(attrs, :row, row)),
+         {:ok, attrs} <- normalize_meter_requests(attrs),
          {:ok, attrs} <- normalize_disclosure(attrs),
          {:ok, attrs} <- normalize_consent(attrs),
          {:ok, expected_digest} <- Portable.digest(material_attrs(attrs)),
@@ -301,9 +303,6 @@ defmodule Spectre.Candidate do
       not is_map(candidate.purpose_params) or is_struct(candidate.purpose_params) ->
         {:error, {:invalid_candidate_purpose_params, Portable.shape(candidate.purpose_params)}}
 
-      not valid_meter_requests?(candidate.meter_requests) ->
-        {:error, {:invalid_candidate_meter_requests, candidate.meter_requests}}
-
       not (is_integer(candidate.observation_window_ms) and candidate.observation_window_ms >= 0) ->
         {:error, {:invalid_candidate_observation_window_ms, candidate.observation_window_ms}}
 
@@ -343,13 +342,14 @@ defmodule Spectre.Candidate do
     end
   end
 
-  defp valid_meter_requests?(requests) when is_map(requests) and not is_struct(requests) do
-    Enum.all?(requests, fn {ref, quantity} ->
-      is_binary(ref) and ref != "" and is_integer(quantity) and quantity > 0
-    end)
-  end
+  defp normalize_meter_requests(attrs) do
+    requests = Map.fetch!(attrs, :meter_requests)
 
-  defp valid_meter_requests?(_requests), do: false
+    case Amounts.normalize(requests) do
+      {:ok, requests} -> {:ok, Map.put(attrs, :meter_requests, requests)}
+      {:error, _reason} -> {:error, {:invalid_candidate_meter_requests, requests}}
+    end
+  end
 
   defp validate_consent(%__MODULE__{consent: nil, presentation_ref: nil}), do: :ok
 

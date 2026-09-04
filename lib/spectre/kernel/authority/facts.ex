@@ -63,17 +63,10 @@ defmodule Spectre.Kernel.Authority.Facts do
         end
       end)
 
-    state.mandates
-    |> Enum.reduce(MapSet.new(), fn {mandate_ref, _mandate}, blocked ->
-      case MeterState.owner(state, mandate_ref) do
-        {:ok, owner_ref} ->
-          if MapSet.member?(blocked_owners, owner_ref),
-            do: MapSet.put(blocked, mandate_ref),
-            else: blocked
-
-        _available_or_invalid ->
-          blocked
-      end
+    Enum.reduce(state.meter_owner_aliases, blocked_owners, fn {mandate_ref, owner_ref}, blocked ->
+      if MapSet.member?(blocked_owners, owner_ref),
+        do: MapSet.put(blocked, mandate_ref),
+        else: blocked
     end)
   end
 
