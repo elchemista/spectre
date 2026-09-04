@@ -224,33 +224,19 @@ defmodule Spectre.Kernel.Recognition do
     do: {:error, :provisional_evidence_not_accepted}
 
   defp valid_at(evidence, time) do
-    cond do
-      time < evidence.observed_at ->
-        {:error, :evidence_from_future}
-
-      not is_nil(evidence.valid_from) and time < evidence.valid_from ->
-        {:error, :evidence_not_yet_valid}
-
-      not is_nil(evidence.valid_until) and time >= evidence.valid_until ->
-        {:error, :evidence_expired}
-
-      true ->
-        :ok
+    case Evidence.temporal_status(evidence, time) do
+      :current -> :ok
+      :from_future -> {:error, :evidence_from_future}
+      :not_yet_valid -> {:error, :evidence_not_yet_valid}
+      :expired -> {:error, :evidence_expired}
     end
   end
 
   defp fresh_enough(evidence, condition, time) do
-    case strictest_freshness(condition.freshness_ms, evidence.freshness_ms) do
-      nil -> :ok
-      freshness when time - evidence.observed_at <= freshness -> :ok
-      _stale -> {:error, :stale_or_unverifiable_freshness}
-    end
+    if Evidence.current_at?(evidence, time, condition.freshness_ms),
+      do: :ok,
+      else: {:error, :stale_or_unverifiable_freshness}
   end
-
-  defp strictest_freshness(nil, nil), do: nil
-  defp strictest_freshness(value, nil), do: value
-  defp strictest_freshness(nil, value), do: value
-  defp strictest_freshness(left, right), do: min(left, right)
 
   defp bindings_cover(evidence, condition) do
     if subset_value?(condition.bindings, evidence.bindings),

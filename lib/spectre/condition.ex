@@ -9,7 +9,7 @@ defmodule Spectre.Condition do
   the boundary; colliding atom/string keys are rejected.
   """
 
-  alias Spectre.Portable
+  alias Spectre.{Evidence, Portable}
 
   @schema_version 1
   @fields [
@@ -24,7 +24,7 @@ defmodule Spectre.Condition do
     :allow_provisional,
     :parameters
   ]
-  @provenance [:observed, :derived, :generated]
+  @provenance Evidence.provenances()
   @semantic_fields [:proposition, :coverage, :bindings, :parameters]
 
   @enforce_keys [
@@ -306,47 +306,18 @@ defmodule Spectre.Condition do
 
   defp normalize_semantic_keys(attrs) do
     Enum.reduce_while(@semantic_fields, {:ok, attrs}, fn field, {:ok, normalized} ->
-      case normalize_value_keys(Map.get(normalized, field)) do
-        {:ok, value} -> {:cont, {:ok, Map.put(normalized, field, value)}}
-        {:error, _reason} = error -> {:halt, error}
+      case Portable.stringify_atom_keys(Map.get(normalized, field)) do
+        {:ok, value} ->
+          {:cont, {:ok, Map.put(normalized, field, value)}}
+
+        {:error, {:equivalent_map_keys, path}} ->
+          {:halt, {:error, {:condition_key_collision, List.last(path)}}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
       end
     end)
   end
-
-  defp normalize_value_keys(value) when is_map(value) and not is_struct(value) do
-    Enum.reduce_while(value, {:ok, %{}}, fn {key, item}, {:ok, normalized} ->
-      key = normalize_map_key(key)
-
-      if Map.has_key?(normalized, key) do
-        {:halt, {:error, {:condition_key_collision, key}}}
-      else
-        case normalize_value_keys(item) do
-          {:ok, item} -> {:cont, {:ok, Map.put(normalized, key, item)}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end
-    end)
-  end
-
-  defp normalize_value_keys([]), do: {:ok, []}
-
-  defp normalize_value_keys([head | tail]) do
-    with {:ok, head} <- normalize_value_keys(head),
-         {:ok, tail} <- normalize_value_keys(tail) do
-      {:ok, [head | tail]}
-    end
-  end
-
-  defp normalize_value_keys(value) when is_tuple(value) do
-    with {:ok, values} <- value |> Tuple.to_list() |> normalize_value_keys() do
-      {:ok, List.to_tuple(values)}
-    end
-  end
-
-  defp normalize_value_keys(value), do: {:ok, value}
-
-  defp normalize_map_key(key) when is_atom(key), do: Atom.to_string(key)
-  defp normalize_map_key(key), do: key
 
   defp stronger_cardinality(parent, child) do
     parent_min = Map.fetch!(parent, "min")

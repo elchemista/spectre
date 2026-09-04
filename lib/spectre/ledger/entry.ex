@@ -13,6 +13,7 @@ defmodule Spectre.Ledger.Entry do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Portable
 
   @schema_version 1
   @genesis_digest String.duplicate("0", 64)
@@ -20,7 +21,6 @@ defmodule Spectre.Ledger.Entry do
   @max_payload_bytes 16 * 1_024 * 1_024
   @max_batch_bytes 64 * 1_024 * 1_024
   @max_batch_entries 10_000
-  @digest_pattern ~r/\A[0-9a-f]{64}\z/
   @fields [
     :schema_version,
     :domain_ref,
@@ -71,6 +71,11 @@ defmodule Spectre.Ledger.Entry do
   @doc "Returns the maximum number of entries accepted in one atomic batch."
   @spec max_batch_entries() :: pos_integer()
   def max_batch_entries, do: @max_batch_entries
+
+  @doc false
+  @spec valid_identifier?(term()) :: boolean()
+  def valid_identifier?(value),
+    do: is_binary(value) and value != "" and byte_size(value) <= @max_identifier_bytes
 
   @doc "Builds and validates an Entry from its complete durable fields."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
@@ -412,11 +417,11 @@ defmodule Spectre.Ledger.Entry do
   defp validate_schema(value), do: {:error, {:unsupported_ledger_entry_schema, value}}
 
   @spec validate_identifier(term(), atom()) :: :ok | {:error, term()}
-  defp validate_identifier(value, _field)
-       when is_binary(value) and value != "" and byte_size(value) <= @max_identifier_bytes,
-       do: :ok
-
-  defp validate_identifier(_value, field), do: {:error, {:invalid_ledger_entry_field, field}}
+  defp validate_identifier(value, field) do
+    if valid_identifier?(value),
+      do: :ok,
+      else: {:error, {:invalid_ledger_entry_field, field}}
+  end
 
   @spec optional_identifier(term(), atom()) :: :ok | {:error, term()}
   defp optional_identifier(nil, _field), do: :ok
@@ -449,7 +454,7 @@ defmodule Spectre.Ledger.Entry do
   @spec validate_digest(term(), atom()) :: :ok | {:error, term()}
   defp validate_digest(value, _field)
        when is_binary(value) and byte_size(value) == 64 do
-    if Regex.match?(@digest_pattern, value),
+    if Portable.sha256_digest?(value),
       do: :ok,
       else: {:error, :invalid_ledger_entry_digest}
   end

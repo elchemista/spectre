@@ -138,11 +138,9 @@ defmodule Spectre.Duty.Disposition do
   defp validate_cause_key(nil), do: {:error, :missing_duty_disposition_cause_key}
   defp validate_cause_key(value), do: Portable.validate(value)
 
-  defp validate_digest(value) when is_binary(value) and byte_size(value) == 64 do
-    if String.match?(value, ~r/\A[0-9a-f]{64}\z/),
+  defp validate_digest(value) do
+    if Portable.sha256_digest?(value),
       do: :ok,
       else: {:error, {:invalid_duty_opening_digest, value}}
   end
-
-  defp validate_digest(value), do: {:error, {:invalid_duty_opening_digest, value}}
 end

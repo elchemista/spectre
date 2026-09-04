@@ -54,6 +54,15 @@ defmodule Spectre.GovernedAct.Index do
 
   def fetch_duty_by_ref(%State{}, duty_ref), do: {:error, {:invalid_duty_ref, duty_ref}}
 
+  @doc "Fetches a required value while preserving the caller's record kind."
+  @spec fetch_required(map(), term(), atom()) :: {:ok, term()} | {:error, term()}
+  def fetch_required(collection, key, kind) when is_map(collection) and is_atom(kind) do
+    case Map.fetch(collection, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> {:error, {kind, :not_found, key}}
+    end
+  end
+
   @doc "Rejects a duplicate identity in a governed-state collection."
   @spec unique(map(), term(), atom()) :: :ok | {:error, term()}
   def unique(collection, identity, kind) when is_map(collection) and is_atom(kind) do
@@ -72,21 +81,15 @@ defmodule Spectre.GovernedAct.Index do
     end
   end
 
-  @doc "Strictly decodes and inserts a record into a named State collection."
-  @spec put_decoded(State.t(), atom(), module(), String.t(), map()) ::
-          {:ok, State.t()} | {:error, term()}
-  def put_decoded(%State{} = state, field, module, identity, data)
-      when is_atom(field) and is_atom(module) and is_binary(identity) do
-    collection = Map.fetch!(state, field)
-
-    with true <- is_map(collection),
-         {:ok, record} <- Record.decode(module, data),
+  @doc "Restores one canonical record and rejects identity reuse in its target index."
+  @spec restore_unique(map(), module(), String.t(), term(), atom()) ::
+          {:ok, struct()} | {:error, term()}
+  def restore_unique(collection, module, identity, canonical, kind)
+      when is_map(collection) and is_atom(module) and is_binary(identity) and is_atom(kind) do
+    with {:ok, record} <- Record.decode(module, canonical),
          :ok <- Record.match_identity(identity, record),
-         :ok <- unique(collection, identity, field) do
-      {:ok, Map.put(state, field, Map.put(collection, identity, record))}
-    else
-      false -> {:error, {:invalid_projection_collection, field}}
-      {:error, _reason} = error -> error
+         :ok <- unique(collection, identity, kind) do
+      {:ok, record}
     end
   end
 

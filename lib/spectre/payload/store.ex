@@ -8,7 +8,7 @@ defmodule Spectre.Payload.Store do
   reason a referenced payload may be absent; its ledger tombstone remains.
   """
 
-  alias Spectre.{Act, Adapter, Disclosure}
+  alias Spectre.{Act, Adapter, Disclosure, Portable}
   alias Spectre.Erasure.Analysis
   alias Spectre.GovernedAct.State
   alias Spectre.Presentation
@@ -66,6 +66,26 @@ defmodule Spectre.Payload.Store do
   end
 
   def verify_live_references(_config, _facts), do: {:error, :invalid_payload_projection}
+
+  @doc false
+  @spec introduced_refs([map()]) :: [ref()]
+  def introduced_refs(payloads) when is_list(payloads) do
+    payloads
+    |> Enum.flat_map(&introduced_payload_refs/1)
+    |> Enum.uniq()
+  end
+
+  def introduced_refs(_payloads), do: []
+
+  defp introduced_payload_refs(%{"type" => "evidence_recorded", "data" => data})
+       when is_map(data),
+       do: optional_ref(Map.get(data, "payload_ref"))
+
+  defp introduced_payload_refs(%{"type" => "presentation_recorded", "data" => data})
+       when is_map(data),
+       do: optional_ref(Map.get(data, "rendered_payload_ref"))
+
+  defp introduced_payload_refs(_payload), do: []
 
   @doc "Verifies refs at their point of use and reports causal unavailability explicitly."
   @spec verify_usable(config() | nil, State.t(), [ref()]) :: :ok | {:error, term()}
@@ -235,7 +255,7 @@ defmodule Spectre.Payload.Store do
   end
 
   defp validate_ref(ref) when is_binary(ref) do
-    if String.match?(ref, ~r/\Apayload:[0-9a-f]{64}\z/),
+    if Portable.validate_content_ref(ref, :payload, :payload_ref) == :ok,
       do: :ok,
       else: {:error, {:invalid_payload_ref, ref}}
   end

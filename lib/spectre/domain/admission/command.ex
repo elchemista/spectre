@@ -3,9 +3,10 @@ defmodule Spectre.Domain.Admission.Command do
   Plans, appends and recovers one ordered group of Candidate submissions.
 
   The command receives queue entries whose ledger configuration is owned by
-  the Sequencer state. It builds their provisional decisions in order, commits one atomic batch, then
-  reconstructs each response from durable state. Executor Grants are minted
-  only after that recovery. It does not own a mailbox or choose batch timing.
+  the Sequencer state. It builds their provisional decisions in order, commits
+  one atomic batch, then reconstructs each response from durable state.
+  Executor Grants are minted only after that recovery. It does not own a
+  mailbox or choose batch timing.
   """
 
   alias Spectre.{Act, Candidate}
@@ -48,7 +49,7 @@ defmodule Spectre.Domain.Admission.Command do
 
   defp admit(state, requests, conflicts_left) do
     with {:ok, admitted_at} <- Transaction.trusted_recorded_at(state) do
-      {plans, _provisional, payloads} = AdmissionPlanner.plan(state, requests, admitted_at)
+      {plans, payloads} = AdmissionPlanner.plan(state, requests, admitted_at)
 
       if payloads == [] do
         {:ok, state, plans}

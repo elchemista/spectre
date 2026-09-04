@@ -28,16 +28,10 @@ defmodule Spectre.Domain.Reconciliation do
   end
 
   defp dispatch_deadlines(projection, now) do
-    Enum.flat_map(DispatchState.pending_refs(projection), fn act_ref ->
-      with {:ok, act} <- Map.fetch(projection.acts, act_ref),
-           {:ok, mandate} <- Map.fetch(projection.mandates, act.mandate_ref),
-           true <- act.mandate_revision == mandate.revision,
-           false <- DispatchState.attempted?(projection, act.ref) do
-        [max(mandate.expires_at, now)]
-      else
-        _invalid -> [now]
-      end
-    end)
+    case DispatchState.pending(projection) do
+      {:ok, pending} -> Enum.map(pending, fn {_act, mandate} -> max(mandate.expires_at, now) end)
+      {:error, _reason} -> [now]
+    end
   end
 
   defp attempt_deadlines(projection, now) do

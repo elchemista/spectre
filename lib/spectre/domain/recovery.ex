@@ -14,10 +14,8 @@ defmodule Spectre.Domain.Recovery do
   result alone.
   """
 
+  alias Spectre.{Ledger, Portable}
   alias Spectre.Domain.Projection
-  alias Spectre.Ledger
-
-  @digest_pattern ~r/\A[0-9a-f]{64}\z/
 
   @type append_classification :: {:committed, Ledger.batch_info()} | :not_committed
 
@@ -110,7 +108,7 @@ defmodule Spectre.Domain.Recovery do
   defp matching_batch_info?(info, expected) do
     is_map(info) and
       Enum.all?(Map.keys(expected), fn key -> Map.get(info, key) == Map.fetch!(expected, key) end) and
-      valid_digest?(Map.get(info, :head_digest))
+      Portable.sha256_digest?(Map.get(info, :head_digest))
   end
 
   @spec match_snapshot(Projection.t(), Ledger.snapshot()) :: :ok | {:error, term()}
@@ -121,10 +119,4 @@ defmodule Spectre.Domain.Recovery do
        do: :ok,
        else: {:error, :domain_recovery_snapshot_mismatch}
   end
-
-  @spec valid_digest?(term()) :: boolean()
-  defp valid_digest?(value) when is_binary(value) and byte_size(value) == 64,
-    do: Regex.match?(@digest_pattern, value)
-
-  defp valid_digest?(_value), do: false
 end

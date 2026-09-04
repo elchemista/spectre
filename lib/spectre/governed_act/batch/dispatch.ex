@@ -7,14 +7,13 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
   reserved Meter quantities.
   """
 
-  alias Spectre.{Act, Mandate}
+  alias Spectre.Act
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.AuthorityChange
   alias Spectre.GovernedAct.Batch.Events
-  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.{DispatchState, State}
-  alias Spectre.Kernel.Meter.Amounts
+  alias Spectre.GovernedAct.Materialization.{Authority, Dispatch}
 
   @doc false
   @spec validate_expirations(State.t(), [Event.t()]) :: :ok | {:error, term()}
@@ -26,7 +25,7 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
          true <-
            Enum.all?(events, &(&1.recorded_at == recorded_at)) and
              expiration_refs(events) == Enum.map(expired, fn {act, _mandate} -> act.ref end) and
-             Events.sequence?(events, expected_events, 0) do
+             Events.payload_sequence?(events, expected_events, 0) do
       :ok
     else
       false -> {:error, :dispatch_expiration_batch_mismatch}
@@ -77,8 +76,7 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
              duty.act_ref
            ) do
         with {:ok, act} <- fetch_act(projection, duty.act_ref),
-             true <- exact_disputed_cancellation?(events, event.batch_index + 1, act, duty),
-             true <- exact_release?(events, event.batch_index + 2, act) do
+             true <- exact_disputed_cancellation?(events, event.batch_index + 1, act, duty) do
           :ok
         else
           false -> {:error, {:disputed_dispatch_cancellation_batch_mismatch, duty.ref}}
@@ -114,7 +112,7 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
              target_mandate_ref,
              cascade?
            ),
-         {:ok, expected_events} <- cancellation_events(affected_acts, cause_act, reason),
+         {:ok, expected_events} <- Authority.cancellation_events(affected_acts, cause_act, reason),
          true <-
            exact_cancellation_sequence?(
              events,
@@ -158,41 +156,15 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
   end
 
   defp expired_pending(projection, recorded_at) do
-    projection
-    |> DispatchState.pending_refs()
-    |> Enum.sort()
-    |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, expired} ->
-      with {:ok, act} <- fetch_act(projection, act_ref),
-           {:ok, mandate} <- fetch_mandate(projection, act.mandate_ref),
-           true <- GovernedExecution.executor_mediated?(act),
-           true <- act.mandate_revision == mandate.revision,
-           false <- DispatchState.attempted?(projection, act.ref),
-           false <- DispatchState.cancelled?(projection, act.ref) do
-        if mandate.expires_at <= recorded_at,
-          do: {:cont, {:ok, [{act, mandate} | expired]}},
-          else: {:cont, {:ok, expired}}
-      else
-        false -> {:halt, {:error, {:invalid_pending_dispatch, act_ref}}}
-        true -> {:halt, {:error, {:terminal_pending_dispatch, act_ref}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> reverse_ok()
+    DispatchState.expired(projection, recorded_at)
   end
 
   defp expiration_events(expired) do
     Enum.reduce_while(expired, {:ok, []}, fn {act, mandate}, {:ok, reversed} ->
-      cancellation =
-        {"dispatch_cancelled", "dispatch_cancelled:" <> act.ref,
-         %{
-           "act_ref" => act.ref,
-           "mandate_ref" => mandate.ref,
-           "cause_ref" => mandate.ref,
-           "reason" => :mandate_expired,
-           "cancelled_at" => mandate.expires_at
-         }}
-
-      prepend_with_release(reversed, cancellation, act, mandate.ref)
+      case Dispatch.cancellation(act, mandate, :mandate_expired) do
+        {:ok, payloads} -> {:cont, {:ok, Enum.reverse(payloads, reversed)}}
+        {:error, _reason} = error -> {:halt, error}
+      end
     end)
     |> reverse_ok()
   end
@@ -205,36 +177,10 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
   end
 
   defp exact_disputed_cancellation?(events, index, act, duty) do
-    Events.manual_at?(
-      events,
-      index,
-      "dispatch_cancelled",
-      "dispatch_cancelled:" <> act.ref,
-      %{
-        "act_ref" => act.ref,
-        "mandate_ref" => act.mandate_ref,
-        "cause_ref" => duty.ref,
-        "reason" => :disputed_evidence,
-        "cancelled_at" => duty.opened_at
-      }
-    )
-  end
-
-  defp exact_release?(events, index, act) do
-    if Act.reservations?(act) do
-      with {:ok, amounts} <- Amounts.normalize(act.reservations) do
-        Events.manual_at?(
-          events,
-          index,
-          "meter_released",
-          "meter_released:" <> act.ref,
-          %{"act_ref" => act.ref, "mandate_ref" => act.mandate_ref, "amounts" => amounts}
-        )
-      else
-        {:error, _reason} -> false
-      end
+    with {:ok, payloads} <- Dispatch.cancellation(act, duty, :disputed_evidence) do
+      Events.payload_sequence?(events, payloads, index)
     else
-      true
+      {:error, _reason} -> false
     end
   end
 
@@ -282,41 +228,6 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
     end)
   end
 
-  defp cancellation_events(acts, cause_act, reason) do
-    Enum.reduce_while(acts, {:ok, []}, fn act, {:ok, reversed} ->
-      cancellation =
-        {"dispatch_cancelled", "dispatch_cancelled:" <> act.ref,
-         %{
-           "act_ref" => act.ref,
-           "mandate_ref" => act.mandate_ref,
-           "cause_ref" => cause_act.ref,
-           "reason" => reason,
-           "cancelled_at" => cause_act.committed_at
-         }}
-
-      prepend_with_release(reversed, cancellation, act, act.mandate_ref)
-    end)
-    |> reverse_ok()
-  end
-
-  defp prepend_with_release(reversed, cancellation, act, mandate_ref) do
-    if Act.reservations?(act) do
-      case Amounts.normalize(act.reservations) do
-        {:ok, amounts} ->
-          release =
-            {"meter_released", "meter_released:" <> act.ref,
-             %{"act_ref" => act.ref, "mandate_ref" => mandate_ref, "amounts" => amounts}}
-
-          {:cont, {:ok, [release, cancellation | reversed]}}
-
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    else
-      {:cont, {:ok, [cancellation | reversed]}}
-    end
-  end
-
   defp exact_cancellation_sequence?(
          events,
          cause_act,
@@ -333,7 +244,7 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
       |> Enum.map(& &1.data["act_ref"])
 
     actual_refs == Enum.map(affected_acts, & &1.ref) and
-      Events.sequence?(events, expected_events, first_index)
+      Events.payload_sequence?(events, expected_events, first_index)
   end
 
   defp fetch_act(state, act_ref) do
@@ -341,14 +252,6 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
       {:ok, %Act{} = act} -> {:ok, act}
       {:ok, _invalid} -> {:error, {:invalid_act, act_ref}}
       :error -> {:error, {:act_not_found, act_ref}}
-    end
-  end
-
-  defp fetch_mandate(state, mandate_ref) do
-    case Map.fetch(state.mandates, mandate_ref) do
-      {:ok, %Mandate{} = mandate} -> {:ok, mandate}
-      {:ok, _invalid} -> {:error, {:invalid_mandate, mandate_ref}}
-      :error -> {:error, {:mandate_not_found, mandate_ref}}
     end
   end
 

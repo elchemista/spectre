@@ -26,6 +26,8 @@ defmodule Spectre.GovernedAct.Fold do
 
   alias Spectre.GovernedAct.State
 
+  @provisional_batch_id "spectre:provisional-batch"
+
   @type t :: State.t()
   @type reservation_status :: State.reservation_status()
   @type dispatch_cancellation :: State.dispatch_cancellation()
@@ -35,12 +37,13 @@ defmodule Spectre.GovernedAct.Fold do
   def new(domain_ref, constitution \\ %{}), do: State.new(domain_ref, constitution)
 
   @doc """
-  Folds an already chain-verified sequence of Domain entries.
+  Folds an already ledger-verified sequence of Domain entries.
 
-  Structural snapshot verification belongs to the caller (`Domain.Projection`
-  or `Audit`). This function owns only canonical event decoding and governed
-  transition semantics, which keeps the two drivers independent at their I/O
-  boundaries while making semantic drift impossible.
+  Structural snapshot verification, including complete non-interleaved batch
+  topology, belongs to the caller (`Domain.Projection` or `Audit`). This
+  function owns only canonical event decoding and governed transition
+  semantics, which keeps the two drivers independent at their I/O boundaries
+  while making semantic drift impossible.
   """
   @spec replay_verified(String.t(), [Entry.t()], map()) :: {:ok, t()} | {:error, term()}
   def replay_verified(domain_ref, entries, constitution)
@@ -48,7 +51,7 @@ defmodule Spectre.GovernedAct.Fold do
              is_map(constitution) and not is_struct(constitution) do
     with :ok <- Constitution.validate(constitution) do
       entries
-      |> Enum.chunk_by(& &1.batch_id)
+      |> Stream.chunk_by(& &1.batch_id)
       |> Enum.reduce_while({:ok, new(domain_ref, constitution)}, fn batch, {:ok, projection} ->
         case replay_batch(projection, batch) do
           {:ok, projection} -> {:cont, {:ok, projection}}
@@ -69,49 +72,27 @@ defmodule Spectre.GovernedAct.Fold do
     do: {:error, :invalid_governed_history}
 
   defp replay_batch(projection, entries) do
-    with {:ok, decoded_entries} <- decode_batch_entries(entries),
-         {:ok, next} <- apply_batch_entries(projection, decoded_entries),
-         events = Enum.map(decoded_entries, &elem(&1, 1)),
-         :ok <- Batch.validate(projection, next, events) do
-      {:ok, next}
-    end
-  end
-
-  defp apply_batch_entries(projection, decoded_entries) do
-    Enum.reduce_while(decoded_entries, {:ok, projection}, fn {entry, event}, {:ok, current} ->
-      case apply_decoded_entry(current, entry, event) do
-        {:ok, next} -> {:cont, {:ok, next}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp decode_batch_entries(entries) do
-    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, decoded_entries} ->
-      case Event.decode_entry(entry) do
-        {:ok, event} -> {:cont, {:ok, [{entry, event} | decoded_entries]}}
+    entries
+    |> Enum.reduce_while({:ok, projection, []}, fn entry, {:ok, current, events} ->
+      with {:ok, event} <- Event.decode_entry(entry),
+           {:ok, next} <- apply_decoded_entry(current, entry, event) do
+        {:cont, {:ok, next, [event | events]}}
+      else
         {:error, _reason} = error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, decoded_entries} -> {:ok, Enum.reverse(decoded_entries)}
-      {:error, _reason} = error -> error
+      {:ok, next, events} ->
+        with :ok <- Batch.validate(projection, next, Enum.reverse(events)), do: {:ok, next}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   @doc "Validates whole-prefix relationships after all events have been folded."
   @spec validate_complete(t()) :: :ok | {:error, term()}
   def validate_complete(%State{} = state), do: Completeness.validate(state)
-
-  @spec apply_entry(t(), Entry.t()) :: {:ok, t()} | {:error, term()}
-  def apply_entry(%State{} = projection, %Entry{} = entry) do
-    with :ok <- validate_entry(projection, entry),
-         {:ok, event} <- Event.decode_entry(entry) do
-      apply_verified_entry(projection, entry, event)
-    end
-  end
-
-  def apply_entry(_projection, _entry), do: {:error, :invalid_projection_entry}
 
   defp apply_decoded_entry(%State{} = projection, %Entry{} = entry, %Event{} = event) do
     with :ok <- validate_entry(projection, entry) do
@@ -132,37 +113,82 @@ defmodule Spectre.GovernedAct.Fold do
   end
 
   defp apply_verified_entry(projection, entry, event) do
-    with {:ok, metadata} <- Event.metadata(event),
-         {:ok, projection} <- apply_decoded_event(projection, event, entry.revision) do
+    with {:ok, projection} <- advance(projection, event) do
+      {:ok, %{projection | head_digest: entry.digest}}
+    end
+  end
+
+  defp retain_metadata(metadata, event) do
+    if Event.retain_metadata?(event) do
+      with {:ok, value} <- Event.metadata(event),
+           do: {:ok, Map.put(metadata, event.identity, value)}
+    else
+      {:ok, metadata}
+    end
+  end
+
+  @doc "Applies and validates one timestamped payload batch to disposable governed state."
+  @spec apply_payloads(t(), [map()], non_neg_integer()) :: {:ok, t()} | {:error, term()}
+  def apply_payloads(
+        %State{} = projection,
+        [_payload | _rest] = payloads,
+        recorded_at
+      )
+      when is_integer(recorded_at) and recorded_at >= 0 do
+    with {:ok, next, events} <- fold_payload_batch(projection, payloads, recorded_at),
+         :ok <- Batch.validate(projection, next, events) do
+      {:ok, next}
+    end
+  end
+
+  # Idempotent command planners may discover that every requested record is
+  # already durable. Treat their empty suffix as a no-op; the ledger writer
+  # still rejects attempts to append an empty physical batch.
+  def apply_payloads(%State{} = projection, [], recorded_at)
+      when is_integer(recorded_at) and recorded_at >= 0,
+      do: {:ok, projection}
+
+  def apply_payloads(_projection, _payloads, _recorded_at),
+    do: {:error, :invalid_domain_payloads}
+
+  defp fold_payload_batch(projection, payloads, recorded_at) do
+    payloads
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, projection, []}, fn {payload, batch_index},
+                                                   {:ok, current, events} ->
+      with {:ok, event} <-
+             Event.decode_payload(
+               payload,
+               current.revision + 1,
+               @provisional_batch_id,
+               batch_index,
+               recorded_at
+             ),
+           {:ok, next} <- advance(current, event) do
+        {:cont, {:ok, next, [event | events]}}
+      else
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, next, events} -> {:ok, next, Enum.reverse(events)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp advance(projection, event) do
+    with {:ok, projection} <- apply_decoded_event(projection, event, event.revision),
+         {:ok, event_metadata} <- retain_metadata(projection.event_metadata, event) do
       {:ok,
        %{
          projection
-         | revision: entry.revision,
-           head_digest: entry.digest,
-           recorded_at: metadata.recorded_at,
-           event_metadata: retain_metadata(projection.event_metadata, event, metadata)
+         | revision: event.revision,
+           recorded_at: event.recorded_at,
+           event_metadata: event_metadata
        }}
     end
   end
-
-  defp retain_metadata(metadata, event, value) do
-    if Event.retain_metadata?(event),
-      do: Map.put(metadata, event.identity, value),
-      else: metadata
-  end
-
-  @doc "Applies one validated event to an in-memory provisional projection."
-  @spec apply_payload(t(), map(), non_neg_integer() | nil) :: {:ok, t()} | {:error, term()}
-  def apply_payload(projection, payload, revision \\ nil)
-
-  def apply_payload(%State{} = projection, payload, revision)
-      when is_map(payload) and not is_struct(payload) do
-    with {:ok, event} <- Event.decode(payload) do
-      apply_decoded_event(projection, event, revision)
-    end
-  end
-
-  def apply_payload(_projection, _payload, _revision), do: {:error, :invalid_domain_event}
 
   @foundation_event_types ~w(
     genesis_recorded

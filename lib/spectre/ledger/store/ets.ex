@@ -177,20 +177,14 @@ defmodule Spectre.Ledger.Store.ETS do
          identity,
          fault
        ) do
-    case Map.fetch(domain.batches, batch_id) do
-      {:ok, %{identity_digest: ^identity, expected_revision: ^expected_revision} = info} ->
-        {{:ok, info.last_revision}, state}
+    case Support.append_status(domain, batch_id, identity, expected_revision, fault) do
+      {:existing, revision} ->
+        {{:ok, revision}, state}
 
-      {:ok, _different} ->
-        {{:error, {:batch_identity_conflict, batch_id}}, state}
+      {:error, reason} ->
+        {{:error, reason}, state}
 
-      :error when expected_revision != domain.revision ->
-        {{:error, :conflict}, state}
-
-      :error when fault == :before_commit ->
-        {{:error, :ambiguous}, state}
-
-      :error ->
+      :new ->
         commit_batch(
           state,
           domain,
@@ -236,16 +230,8 @@ defmodule Spectre.Ledger.Store.ETS do
            domain.head_digest
          ) do
       {:ok, entries} ->
-        last = List.last(entries)
-        info = Support.batch_info(batch_id, identity, expected_revision, entries, last)
-
-        committed = %{
-          domain
-          | revision: last.revision,
-            head_digest: last.digest,
-            entries_rev: Enum.reverse(entries, domain.entries_rev),
-            batches: Map.put(domain.batches, batch_id, info)
-        }
+        {committed, last} =
+          Support.install_batch(domain, batch_id, identity, expected_revision, entries)
 
         true = :ets.insert(state.table, {domain_ref, committed})
         reply = if fault == :after_commit, do: {:error, :ambiguous}, else: {:ok, last.revision}

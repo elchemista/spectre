@@ -8,7 +8,7 @@ defmodule Spectre.Domain.Command.Execution do
   external capability itself; Zone X remains in `Spectre.Attempt.Runner`.
   """
 
-  alias Spectre.{Act, Attempt}
+  alias Spectre.{Act, Attempt, Mandate}
   alias Spectre.Domain.{Event, Projection, Transaction}
   alias Spectre.Domain.Command.Commit
   alias Spectre.Domain.Sequencer.{Control, State}
@@ -16,7 +16,6 @@ defmodule Spectre.Domain.Command.Execution do
   alias Spectre.GovernedAct.DispatchState
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.{Authority, Grant}
-  alias Spectre.Mandate.Ancestry
   alias Spectre.Payload.Store, as: PayloadStore
   alias Spectre.Secret.CheckoutReceipt
 
@@ -56,7 +55,7 @@ defmodule Spectre.Domain.Command.Execution do
              :ok <- verify_act_payloads(state, act),
              {:ok, route} <-
                Router.fetch(
-                 state,
+                 state.execution_boundary,
                  act.executor_ref,
                  act.executor_contract_ref
                ),
@@ -67,17 +66,19 @@ defmodule Spectre.Domain.Command.Execution do
                  route.broker_descriptor
                ),
              {:ok, nonce} <- Transaction.operational_id(state) do
-          Grant.mint(
-            %{
-              act_ref: act.ref,
+          claims =
+            act
+            |> Grant.act_binding()
+            |> Map.merge(%{
               domain_ref: state.projection.domain_ref,
-              executor_ref: act.executor_ref,
               issued_at: now,
               expires_at: now + state.grant_ttl_ms,
               generation: state.generation,
-              material_digest: act.material_digest,
               nonce: nonce
-            },
+            })
+
+          Grant.mint(
+            claims,
             state.grant_secret
           )
         end
@@ -96,14 +97,12 @@ defmodule Spectre.Domain.Command.Execution do
     with {:ok, now} <- Transaction.trusted_recorded_at(state),
          :ok <- Transaction.duties_materialized(state.projection, now),
          {:ok, act} <- fetch_granted_act(state, grant, now),
-         {:ok, broker} <- Router.broker(state),
+         {:ok, broker} <- Router.broker(state.execution_boundary),
          :ok <- Router.broker_supports_act(state.projection, act, broker),
          :ok <- verify_act_payloads(state, act),
-         :ok <- attempt_available(state.projection, act, grant),
          {:ok, attempt_ref} <- Transaction.operational_id(state),
          {:ok, attempt} <- build_attempt(state, act, grant, attempt_ref, now),
-         {:ok, payload} <- Event.record(:attempt, attempt),
-         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, [payload]) do
+         {:ok, payload} <- Event.record(:attempt, attempt) do
       Commit.append(
         state,
         [payload],
@@ -129,42 +128,21 @@ defmodule Spectre.Domain.Command.Execution do
 
   defp fetch_granted_act(state, grant, now) do
     with {:ok, %Act{} = act} <- Map.fetch(state.projection.acts, grant.act_ref),
-         :ok <-
-           Grant.verify(grant, state.grant_secret, %{
+         expected =
+           act
+           |> Grant.act_binding()
+           |> Map.merge(%{
              now: now,
              generation: state.generation,
-             executor_ref: act.executor_ref,
-             material_digest: act.material_digest,
-             act_ref: act.ref,
              domain_ref: state.projection.domain_ref
            }),
+         :ok <- Grant.verify(grant, state.grant_secret, expected),
          :ok <- mandate_still_active(state.projection, act, now) do
       {:ok, act}
     else
       :error -> {:error, {:act_not_found, grant.act_ref}}
       {:error, _reason} = error -> error
       _invalid -> {:error, :invalid_granted_act}
-    end
-  end
-
-  defp attempt_available(projection, act, grant) do
-    nonce_digest = nonce_digest(grant.nonce)
-
-    cond do
-      not GovernedExecution.executor_mediated?(act) ->
-        {:error, {:act_not_executor_mediated, act.ref}}
-
-      DispatchState.attempted?(projection, act.ref) ->
-        {:error, {:act_already_attempted, act.ref}}
-
-      not DispatchState.pending?(projection, act.ref) ->
-        {:error, {:act_not_dispatch_ready, act.ref}}
-
-      MapSet.member?(projection.consumed_nonces, nonce_digest) ->
-        {:error, {:grant_nonce_already_consumed, nonce_digest}}
-
-      true ->
-        :ok
     end
   end
 
@@ -187,7 +165,7 @@ defmodule Spectre.Domain.Command.Execution do
          {:ok, %Attempt{} = attempt} <- Map.fetch(projection.attempts, attempt_ref),
          true <- DispatchState.attempt_ref(projection, act_ref) == attempt_ref,
          {:ok, now} <- Transaction.trusted_recorded_at(recovered_state),
-         {:ok, broker} <- Router.broker(recovered_state),
+         {:ok, broker} <- Router.broker(recovered_state.execution_boundary),
          :ok <- mandate_still_active(projection, act, now),
          :ok <- Router.broker_supports_act(projection, act, broker),
          :ok <- verify_post_attempt_payloads(recovered_state, act),
@@ -209,20 +187,18 @@ defmodule Spectre.Domain.Command.Execution do
   end
 
   defp mint_checkout_receipt(state, act, attempt, broker, now) do
-    CheckoutReceipt.mint(
-      %{
+    claims =
+      act
+      |> CheckoutReceipt.binding(attempt, broker.descriptor.ref)
+      |> Map.merge(%{
         domain_ref: state.projection.domain_ref,
-        act_ref: act.ref,
-        attempt_ref: attempt.ref,
-        executor_ref: act.executor_ref,
-        material_digest: act.material_digest,
-        generation: attempt.generation,
-        grant_nonce_digest: attempt.grant_nonce_digest,
-        broker_ref: broker.descriptor.ref,
         ledger_revision: state.projection.revision,
         issued_at: now,
         expires_at: now + state.grant_ttl_ms
-      },
+      })
+
+    CheckoutReceipt.mint(
+      claims,
       state.checkout_receipt_secret
     )
   end
@@ -230,26 +206,12 @@ defmodule Spectre.Domain.Command.Execution do
   defp mandate_still_active(projection, act, now) do
     authority_view = Projection.authority_view(projection)
 
-    with :ok <- Authority.containment_status(act, authority_view),
-         {:ok, mandate} <- Map.fetch(projection.mandates, act.mandate_ref),
-         true <- mandate.revision == act.mandate_revision,
-         true <- now >= mandate.not_before and now < mandate.expires_at,
-         :ok <- Authority.restriction_status(mandate, authority_view),
-         :ok <- Authority.meter_debt_status(mandate, authority_view),
-         :ok <- mandate_not_revoked(projection, mandate, now) do
+    with {:ok, %Mandate{} = mandate} <- Map.fetch(projection.mandates, act.mandate_ref),
+         :ok <- Authority.dispatchable?(act, mandate, authority_view, now) do
       :ok
     else
       :error -> {:error, {:mandate_not_found, act.mandate_ref}}
-      false -> {:error, {:mandate_not_dispatchable, act.mandate_ref}}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp mandate_not_revoked(projection, mandate, now) do
-    case Ancestry.status(projection.mandates, projection.revocations, mandate, now) do
-      {:ok, :current} -> :ok
-      {:ok, {:revoked, :direct, ref}} -> {:error, {:mandate_revoked, ref}}
-      {:ok, {:revoked, :ancestor, ref}} -> {:error, {:mandate_ancestor_revoked, ref}}
+      {:ok, _invalid} -> {:error, {:invalid_mandate_record, act.mandate_ref}}
       {:error, _reason} = error -> error
     end
   end

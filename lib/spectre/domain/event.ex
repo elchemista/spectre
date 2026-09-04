@@ -86,7 +86,8 @@ defmodule Spectre.Domain.Event do
     "duty_disposed" => ~w(cause_key disposition_act_ref)
   }
 
-  @known_events Map.keys(@record_events) ++ Map.keys(@manual_fields)
+  @record_event_types for({_kind, {type, _module}} <- @record_events, do: type)
+  @known_events @record_event_types ++ Map.keys(@manual_fields)
   @envelope_fields ~w(type identity data schema_version)
 
   @enforce_keys [:type, :identity, :data]
@@ -169,19 +170,41 @@ defmodule Spectre.Domain.Event do
 
   def decode(_payload), do: {:error, :invalid_domain_event}
 
-  @doc "Decodes an Entry payload and binds its trusted ledger metadata."
-  @spec decode_entry(Entry.t()) :: {:ok, t()} | {:error, term()}
-  def decode_entry(%Entry{} = entry) do
-    with {:ok, event} <- decode(entry.payload),
-         :ok <- validate_acquisition_time(event, entry.recorded_at) do
+  @doc false
+  @spec decode_payload(map(), pos_integer(), String.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, t()} | {:error, term()}
+  def decode_payload(payload, revision, batch_id, batch_index, recorded_at)
+      when is_integer(revision) and revision > 0 and is_binary(batch_id) and batch_id != "" and
+             is_integer(batch_index) and batch_index >= 0 and is_integer(recorded_at) and
+             recorded_at >= 0 do
+    with {:ok, event} <- decode(payload),
+         :ok <- validate_acquisition_time(event, recorded_at) do
       {:ok,
        %{
          event
-         | revision: entry.revision,
-           batch_id: entry.batch_id,
-           batch_index: entry.batch_index,
-           recorded_at: entry.recorded_at
+         | revision: revision,
+           batch_id: batch_id,
+           batch_index: batch_index,
+           recorded_at: recorded_at
        }}
+    end
+  end
+
+  def decode_payload(_payload, _revision, _batch_id, _batch_index, _recorded_at),
+    do: {:error, :invalid_domain_event_metadata}
+
+  @doc "Decodes an Entry payload and binds its trusted ledger metadata."
+  @spec decode_entry(Entry.t()) :: {:ok, t()} | {:error, term()}
+  def decode_entry(%Entry{} = entry) do
+    with {:ok, event} <-
+           decode_payload(
+             entry.payload,
+             entry.revision,
+             entry.batch_id,
+             entry.batch_index,
+             entry.recorded_at
+           ) do
+      {:ok, event}
     end
   end
 
@@ -221,9 +244,9 @@ defmodule Spectre.Domain.Event do
           {:ok, map()} | {:error, term()}
   defdelegate host_profile_revised(act, previous_ref, profile), to: Builder
 
-  @spec definition_revised(Spectre.Act.t(), String.t() | nil, Spectre.Definition.t()) ::
+  @spec definition_revised(Spectre.Act.t(), Spectre.Definition.t()) ::
           {:ok, map()} | {:error, term()}
-  defdelegate definition_revised(act, previous_ref, definition), to: Builder
+  defdelegate definition_revised(act, definition), to: Builder
 
   @spec principal_registered(Spectre.Act.t(), Spectre.Principal.t()) ::
           {:ok, map()} | {:error, term()}
@@ -239,17 +262,15 @@ defmodule Spectre.Domain.Event do
         ) :: {:ok, map()} | {:error, term()}
   defdelegate dispatch_cancelled(act, cause, reason), to: Builder
 
-  @spec mandate_revoked(String.t(), String.t(), integer()) ::
-          map() | {:error, :invalid_mandate_revocation_event}
-  defdelegate mandate_revoked(identity, mandate_ref, effective_at), to: Builder
+  @spec mandate_revoked(Spectre.Act.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  defdelegate mandate_revoked(act, mandate_ref), to: Builder
 
   @spec mandate_restricted(Spectre.Act.t(), String.t(), Spectre.Mandate.t()) ::
           {:ok, map()} | {:error, term()}
   defdelegate mandate_restricted(act, predecessor_ref, successor), to: Builder
 
-  @spec duty_disposed(String.t(), term(), String.t()) ::
-          map() | {:error, :invalid_duty_disposition_event}
-  defdelegate duty_disposed(identity, cause_key, disposition_act_ref), to: Builder
+  @spec duty_disposed(Spectre.Act.t(), term()) :: {:ok, map()} | {:error, term()}
+  defdelegate duty_disposed(disposition_act, cause_key), to: Builder
 
   @spec scope_opened(Spectre.Scope.Opening.t()) :: {:ok, map()} | {:error, term()}
   defdelegate scope_opened(opening), to: Builder

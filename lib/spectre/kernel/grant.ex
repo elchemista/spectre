@@ -1,7 +1,9 @@
 defmodule Spectre.Kernel.Grant do
   @moduledoc false
 
-  alias Spectre.Canonical.Value
+  alias Spectre.{Act, Seal}
+
+  @seal_domain "spectre:grant:v1\0"
 
   @claim_fields [
     :act_ref,
@@ -40,12 +42,14 @@ defmodule Spectre.Kernel.Grant do
 
   @doc false
   @spec mint(map(), binary()) :: {:ok, t()} | {:error, term()}
-  def mint(claims, secret)
-      when is_map(claims) and is_binary(secret) and byte_size(secret) >= 32 do
-    with {:ok, normalized} <- normalize_claims(claims),
-         {:ok, encoded} <- Value.encode(normalized) do
-      mac = encoded |> sign(secret) |> Base.url_encode64(padding: false)
-      {:ok, struct!(__MODULE__, Map.put(normalized, :mac, mac))}
+  def mint(claims, secret) when is_map(claims) do
+    if Seal.valid_secret?(secret) do
+      with {:ok, normalized} <- normalize_claims(claims),
+           {:ok, mac} <- Seal.sign(normalized, secret, @seal_domain) do
+        {:ok, struct!(__MODULE__, Map.put(normalized, :mac, mac))}
+      end
+    else
+      {:error, :invalid_grant_material}
     end
   end
 
@@ -71,6 +75,26 @@ defmodule Spectre.Kernel.Grant do
     grant
     |> Map.from_struct()
     |> Map.delete(:mac)
+  end
+
+  @doc false
+  @spec act_binding(Act.t()) :: map()
+  def act_binding(%Act{} = act) do
+    %{
+      act_ref: act.ref,
+      executor_ref: act.executor_ref,
+      material_digest: act.material_digest
+    }
+  end
+
+  @doc false
+  @spec validate_act_binding(t(), Act.t()) :: :ok | {:error, :grant_act_binding_mismatch}
+  def validate_act_binding(%__MODULE__{} = grant, %Act{} = act) do
+    if Enum.all?(act_binding(act), fn {field, expected} ->
+         Map.fetch!(grant, field) == expected
+       end),
+       do: :ok,
+       else: {:error, :grant_act_binding_mismatch}
   end
 
   defp normalize_claims(claims) do
@@ -143,17 +167,9 @@ defmodule Spectre.Kernel.Grant do
   end
 
   defp authentic(grant, secret) do
-    with {:ok, supplied} <- Base.url_decode64(grant.mac, padding: false),
-         {:ok, encoded} <- Value.encode(claims(grant)) do
-      expected = sign(encoded, secret)
-
-      if byte_size(supplied) == byte_size(expected) and :crypto.hash_equals(supplied, expected),
-        do: :ok,
-        else: {:error, :grant_authentication_failed}
-    else
-      _error -> {:error, :grant_authentication_failed}
+    case Seal.verify(claims(grant), grant.mac, secret, @seal_domain) do
+      :ok -> :ok
+      :error -> {:error, :grant_authentication_failed}
     end
   end
-
-  defp sign(encoded, secret), do: :crypto.mac(:hmac, :sha256, secret, encoded)
 end

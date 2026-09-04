@@ -14,24 +14,18 @@ defmodule Spectre.Execution.Router do
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.State
 
-  @type route :: %{
-          required(:executor) => module(),
-          required(:executor_opts) => keyword(),
-          required(:broker) => module(),
-          required(:broker_opts) => keyword(),
-          required(:broker_descriptor) => map()
-        }
+  @type route :: Boundary.runtime_route()
 
   @doc "Checks that host wiring can support an executor-mediated Candidate."
-  @spec validate_candidate(map(), State.t(), Candidate.t()) :: :ok | {:error, term()}
-  def validate_candidate(config, %State{} = projection, %Candidate{} = candidate) do
+  @spec validate_candidate(Boundary.t(), State.t(), Candidate.t()) :: :ok | {:error, term()}
+  def validate_candidate(boundary, %State{} = projection, %Candidate{} = candidate) do
     case GovernedExecution.mode(candidate) do
       {:ok, :ledger_internal} ->
         :ok
 
       {:ok, :executor_mediated} ->
         with {:ok, route} <-
-               fetch(config, candidate.executor_ref, candidate.executor_contract_ref),
+               fetch(boundary, candidate.executor_ref, candidate.executor_contract_ref),
              :ok <- candidate_profile(projection, route.broker_descriptor) do
           :ok
         end
@@ -42,12 +36,12 @@ defmodule Spectre.Execution.Router do
   end
 
   @doc "Returns the exact executor/broker pair configured for a declared contract."
-  @spec fetch(map(), String.t(), String.t()) :: {:ok, route()} | {:error, term()}
-  def fetch(config, executor_ref, contract_ref) do
+  @spec fetch(Boundary.t(), String.t(), String.t()) :: {:ok, route()} | {:error, term()}
+  def fetch(%{routes: routes} = boundary, executor_ref, contract_ref) when is_map(routes) do
     with :ok <- Portable.validate_ref(executor_ref, :executor_ref),
          :ok <- Portable.validate_ref(contract_ref, :executor_contract_ref),
-         {:ok, route} <- Map.fetch(config.execution_boundary.routes, {executor_ref, contract_ref}),
-         {:ok, broker} <- broker(config) do
+         {:ok, route} <- Map.fetch(routes, {executor_ref, contract_ref}),
+         {:ok, broker} <- broker(boundary) do
       {:ok,
        %{
          executor: route.executor,
@@ -62,10 +56,14 @@ defmodule Spectre.Execution.Router do
     end
   end
 
+  def fetch(_boundary, _executor_ref, _contract_ref),
+    do: {:error, :invalid_execution_boundary}
+
   @doc "Returns the configured capability broker without invoking it."
-  @spec broker(map()) :: {:ok, map()} | {:error, :broker_not_configured}
-  def broker(%{execution_boundary: %{broker: nil}}), do: {:error, :broker_not_configured}
-  def broker(%{execution_boundary: %{broker: broker}}), do: {:ok, broker}
+  @spec broker(Boundary.t()) :: {:ok, map()} | {:error, term()}
+  def broker(%{broker: nil}), do: {:error, :broker_not_configured}
+  def broker(%{broker: broker}) when is_map(broker), do: {:ok, broker}
+  def broker(_boundary), do: {:error, :invalid_execution_boundary}
 
   @doc "Checks that a broker profile covers the HostProfile frozen by an Act."
   @spec broker_supports_act(State.t(), Spectre.Act.t(), map()) :: :ok | {:error, term()}

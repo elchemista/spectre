@@ -11,7 +11,9 @@ defmodule Spectre.Outcome do
 
   @schema_version 1
   @proposition_contract_ref "spectre.outcome.proposition.v1"
-  @statuses [:succeeded, :failed, :definitive_no_effect, :ambiguous]
+  @correction_statuses [:succeeded, :failed]
+  @definitive_statuses @correction_statuses ++ [:definitive_no_effect]
+  @statuses @definitive_statuses ++ [:ambiguous]
   @fields [
     :schema_version,
     :ref,
@@ -39,6 +41,26 @@ defmodule Spectre.Outcome do
           details_ref: String.t(),
           contradicts_outcome_ref: String.t() | nil
         }
+
+  @doc false
+  @spec statuses() :: [status()]
+  def statuses, do: @statuses
+
+  @doc false
+  @spec definitive_statuses() :: [status()]
+  def definitive_statuses, do: @definitive_statuses
+
+  @doc false
+  @spec correction_statuses() :: [status()]
+  def correction_statuses, do: @correction_statuses
+
+  @doc false
+  @spec definitive_status?(term()) :: boolean()
+  def definitive_status?(status), do: status in @definitive_statuses
+
+  @doc false
+  @spec correction_status?(term()) :: boolean()
+  def correction_status?(status), do: status in @correction_statuses
 
   @doc "Builds and validates an observed outcome."
   @spec new(map() | keyword() | t()) :: {:ok, t()} | {:error, term()}
@@ -127,7 +149,7 @@ defmodule Spectre.Outcome do
         {:error, {:missing_outcome_evidence, outcome.status}}
 
       not is_nil(outcome.contradicts_outcome_ref) and
-          outcome.status not in [:succeeded, :failed] ->
+          outcome.status not in @correction_statuses ->
         {:error, {:invalid_outcome_correction_status, outcome.status}}
 
       not is_integer(outcome.observed_at) ->

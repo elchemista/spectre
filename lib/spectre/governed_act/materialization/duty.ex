@@ -1,4 +1,4 @@
-defmodule Spectre.Kernel.Commit.Duty do
+defmodule Spectre.GovernedAct.Materialization.Duty do
   @moduledoc false
 
   alias Spectre.Act
@@ -13,8 +13,7 @@ defmodule Spectre.Kernel.Commit.Duty do
          {:ok, disposition} <- Disposition.from_consequence(disposition_act.consequence),
          {:ok, duty} <- fetch_open_duty(projection, disposition),
          {:ok, meter_events} <- meter_events(projection, duty, disposition, disposition_act),
-         disposed when is_map(disposed) <-
-           Event.duty_disposed(disposition_act.ref, disposition.cause_key, disposition_act.ref) do
+         {:ok, disposed} <- Event.duty_disposed(disposition_act, disposition.cause_key) do
       {:ok, meter_events ++ [disposed]}
     else
       false -> {:error, :invalid_duty_disposition}

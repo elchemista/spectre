@@ -24,13 +24,11 @@ defmodule Spectre.GovernedAct.Batch.Events do
   end
 
   @doc false
-  @spec sequence?([Event.t()], [{String.t(), String.t(), map()}], non_neg_integer()) :: boolean()
-  def sequence?(events, expected, first_index) do
-    expected
+  @spec payload_sequence?([Event.t()], [map()], non_neg_integer()) :: boolean()
+  def payload_sequence?(events, payloads, first_index) do
+    payloads
     |> Enum.with_index(first_index)
-    |> Enum.all?(fn {{type, identity, data}, index} ->
-      manual_at?(events, index, type, identity, data)
-    end)
+    |> Enum.all?(fn {payload, index} -> payload_at?(events, index, payload) end)
   end
 
   @doc false
@@ -90,4 +88,18 @@ defmodule Spectre.GovernedAct.Batch.Events do
         false
     end
   end
+
+  defp payload_at?(events, index, %{
+         "type" => type,
+         "identity" => identity,
+         "data" => data,
+         "schema_version" => 1
+       }) do
+    case at(events, index) do
+      %{type: ^type, identity: ^identity, data: ^data} -> true
+      _missing_or_different -> false
+    end
+  end
+
+  defp payload_at?(_events, _index, _payload), do: false
 end

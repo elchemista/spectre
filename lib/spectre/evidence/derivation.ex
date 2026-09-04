@@ -14,9 +14,7 @@ defmodule Spectre.Evidence.Derivation do
   @spec inherited_labels([Evidence.t()]) :: {:ok, [Label.t()]} | {:error, term()}
   def inherited_labels(evidence) when is_list(evidence) do
     with {:ok, evidence} <- normalize_evidence(evidence),
-         {:ok, labels} <- normalize_labels(Enum.flat_map(evidence, & &1.labels)) do
-      {:ok, labels}
-    end
+         do: inherited_normalized_labels(evidence)
   end
 
   def inherited_labels(_evidence), do: {:error, :invalid_derivation_evidence}
@@ -42,7 +40,7 @@ defmodule Spectre.Evidence.Derivation do
          {:ok, parents} <- normalize_evidence(parents),
          :ok <- derived_provenance(derived),
          :ok <- exact_parents(derived, parents),
-         {:ok, inherited} <- inherited_labels(parents) do
+         {:ok, inherited} <- inherited_normalized_labels(parents) do
       labels_cover?(derived.labels, inherited, derived.ref)
     end
   end
@@ -65,6 +63,12 @@ defmodule Spectre.Evidence.Derivation do
   defp normalize_labels(labels) do
     Evidence.normalize_labels(labels)
   end
+
+  # Callers above already restored every Evidence record. Keeping the label
+  # fold separate avoids rebuilding all parents a second time during
+  # derivation validation.
+  defp inherited_normalized_labels(evidence),
+    do: evidence |> Enum.flat_map(& &1.labels) |> normalize_labels()
 
   defp derived_provenance(%Evidence{provenance: provenance})
        when provenance in [:derived, :generated],

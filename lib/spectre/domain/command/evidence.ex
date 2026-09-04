@@ -29,8 +29,7 @@ defmodule Spectre.Domain.Command.Evidence do
          {:ok, current_time} <- Transaction.trusted_recorded_at(state),
          now = max(current_time, minimum_recorded_at),
          :ok <- evidence_not_future(evidence, now),
-         {:ok, payloads} <- evidence_payloads(state.projection, evidence),
-         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, payloads) do
+         {:ok, payloads} <- evidence_payloads(state.projection, evidence) do
       if payloads == [] do
         recovered_evidence(state, state.projection, evidence, shape)
       else

@@ -5,7 +5,8 @@ defmodule Spectre.Attempt.Reconciler do
   alias Spectre.Duty
   alias Spectre.Duty.Derive
   alias Spectre.GovernedAct.{DispatchState, State}
-  alias Spectre.{Act, Mandate, Portable}
+  alias Spectre.GovernedAct.Materialization.Dispatch
+  alias Spectre.{Act, Portable}
 
   @type plan :: %{
           required(:payloads) => [map()],
@@ -14,7 +15,7 @@ defmodule Spectre.Attempt.Reconciler do
 
   @spec missing_openings(State.t(), integer()) :: [Derive.cause()]
   def missing_openings(%State{} = state, time),
-    do: Derive.missing_openings(state, state.constitution, time)
+    do: Derive.missing_openings(state, time)
 
   @spec repair_plan(Projection.t(), integer()) :: {:ok, plan()} | {:error, term()}
   def repair_plan(%State{} = projection, time) when is_integer(time) do
@@ -62,33 +63,13 @@ defmodule Spectre.Attempt.Reconciler do
   end
 
   defp expired_dispatches(projection, time) do
-    projection
-    |> DispatchState.pending_refs()
-    |> Enum.sort()
-    |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, expired} ->
-      with {:ok, %Act{} = act} <- Map.fetch(projection.acts, act_ref),
-           {:ok, %Mandate{} = mandate} <- Map.fetch(projection.mandates, act.mandate_ref),
-           true <- act.mandate_revision == mandate.revision,
-           false <- DispatchState.attempted?(projection, act.ref) do
-        if mandate.expires_at <= time,
-          do: {:cont, {:ok, [{act, mandate} | expired]}},
-          else: {:cont, {:ok, expired}}
-      else
-        :error -> {:halt, {:error, {:dispatch_expiration_record_not_found, act_ref}}}
-        false -> {:halt, {:error, {:dispatch_expiration_mandate_mismatch, act_ref}}}
-        true -> {:halt, {:error, {:dispatch_expiration_after_attempt, act_ref}}}
-        _invalid -> {:halt, {:error, {:invalid_dispatch_expiration, act_ref}}}
-      end
-    end)
-    |> reverse_result()
+    DispatchState.expired(projection, time)
   end
 
   defp expiration_events(expirations) do
     Enum.reduce_while(expirations, {:ok, []}, fn {act, mandate}, {:ok, events} ->
-      with {:ok, expiration} <- Event.dispatch_cancelled(act, mandate, :mandate_expired),
-           {:ok, releases} <- release_events(act) do
-        {:cont, {:ok, Enum.reverse(releases, [expiration | events])}}
-      else
+      case Dispatch.cancellation(act, mandate, :mandate_expired) do
+        {:ok, payloads} -> {:cont, {:ok, Enum.reverse(payloads, events)}}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
@@ -120,9 +101,9 @@ defmodule Spectre.Attempt.Reconciler do
       with {:ok, %Act{} = act} <- Map.fetch(projection.acts, act_ref),
            {:ok, duty} <- materialize_duty(cause, time),
            {:ok, duty_event} <- Event.record(:duty, duty),
-           {:ok, cancellation} <- Event.dispatch_cancelled(act, duty, :disputed_evidence),
-           {:ok, releases} <- release_events(act) do
-        reversed = Enum.reverse(releases, [cancellation, duty_event | events])
+           {:ok, cancellation_payloads} <-
+             Dispatch.cancellation(act, duty, :disputed_evidence) do
+        reversed = Enum.reverse(cancellation_payloads, [duty_event | events])
         {:cont, {:ok, reversed}}
       else
         :error -> {:halt, {:error, {:reconciliation_act_not_found, act_ref}}}
@@ -172,13 +153,6 @@ defmodule Spectre.Attempt.Reconciler do
       end
     end)
     |> reverse_result()
-  end
-
-  defp release_events(%Act{reservations: reservations}) when map_size(reservations) == 0,
-    do: {:ok, []}
-
-  defp release_events(%Act{} = act) do
-    with {:ok, release} <- Event.meter(:release, act), do: {:ok, [release]}
   end
 
   defp batch_id(_projection, []), do: {:ok, nil}

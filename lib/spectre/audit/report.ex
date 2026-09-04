@@ -9,7 +9,7 @@ defmodule Spectre.Audit.Report do
 
   alias Spectre.{Constitution, Declassification, Definition, Duty, Erasure, Genesis}
   alias Spectre.{HostProfile, Mandate, Surface}
-  alias Spectre.GovernedAct.{DispatchState, MeterState, State}
+  alias Spectre.GovernedAct.{DispatchState, Index, MeterState, State}
   alias Spectre.Scope.Opening
 
   @format "spectre-semantic-audit"
@@ -31,6 +31,11 @@ defmodule Spectre.Audit.Report do
           required(:meter_recontainments) => [map()],
           required(:dispatch_cancellations) => [map()],
           required(:open_duties) => [map()],
+          required(:scopes) => [map()],
+          required(:definitions) => [map()],
+          required(:definition_heads) => [map()],
+          required(:declassifications) => [map()],
+          required(:erasures) => [map()],
           required(:counts) => map()
         }
 
@@ -96,12 +101,16 @@ defmodule Spectre.Audit.Report do
   end
 
   defp act_contexts(state) do
+    surfaces_by_revision =
+      Map.new(state.surfaces, fn {_ref, surface} -> {surface.revision, surface} end)
+
     state.acts
     |> Map.values()
     |> Enum.reduce_while({:ok, []}, fn act, {:ok, contexts} ->
       with {:ok, metadata} <- metadata(state, act.ref),
-           {:ok, host_profile} <- fetch(state.host_profiles, act.host_profile_ref, :host_profile),
-           {:ok, surface} <- surface_at(state, act.surface_revision) do
+           {:ok, host_profile} <-
+             Index.fetch_required(state.host_profiles, act.host_profile_ref, :host_profile),
+           {:ok, surface} <- surface_at(surfaces_by_revision, act.surface_revision) do
         context = %{
           act_ref: act.ref,
           decision_ref: act.decision_ref,
@@ -126,10 +135,10 @@ defmodule Spectre.Audit.Report do
     end
   end
 
-  defp surface_at(state, revision) do
-    case Enum.find(state.surfaces, fn {_ref, surface} -> surface.revision == revision end) do
-      {_ref, surface} -> {:ok, surface}
-      nil -> {:error, {:surface_revision_not_found, revision}}
+  defp surface_at(surfaces_by_revision, revision) do
+    case Map.fetch(surfaces_by_revision, revision) do
+      {:ok, surface} -> {:ok, surface}
+      :error -> {:error, {:surface_revision_not_found, revision}}
     end
   end
 
@@ -225,54 +234,57 @@ defmodule Spectre.Audit.Report do
   end
 
   defp erasure_reports(state) do
-    state.erasures
-    |> Map.values()
-    |> Enum.sort_by(& &1.ref)
-    |> Enum.reduce_while({:ok, []}, fn erasure, {:ok, reports} ->
-      case erasure_report(state, erasure) do
-        {:ok, report} -> {:cont, {:ok, [report | reports]}}
-        {:error, _reason} = error -> {:halt, error}
+    with {:ok, outcomes_by_act} <- outcomes_by_act(state) do
+      reports =
+        state.erasures
+        |> Map.values()
+        |> Enum.sort_by(& &1.ref)
+        |> Enum.map(&erasure_report(&1, outcomes_by_act))
+
+      {:ok, reports}
+    end
+  end
+
+  defp erasure_report(%Erasure{} = erasure, outcomes_by_act) do
+    outcomes = Map.get(outcomes_by_act, erasure.source_act_ref, [])
+
+    status =
+      case List.last(outcomes) do
+        nil -> :requested
+        outcome -> outcome.status
       end
-    end)
-    |> case do
-      {:ok, reports} -> {:ok, Enum.reverse(reports)}
-      {:error, _reason} = error -> error
-    end
+
+    %{
+      request: Erasure.canonical(erasure),
+      status: status,
+      outcome_refs: Enum.map(outcomes, & &1.ref)
+    }
   end
 
-  defp erasure_report(state, %Erasure{} = erasure) do
-    with {:ok, outcomes} <- outcomes_for_act(state, erasure.source_act_ref) do
-      status =
-        case List.last(outcomes) do
-          nil -> :requested
-          outcome -> outcome.status
-        end
-
-      {:ok,
-       %{
-         request: Erasure.canonical(erasure),
-         status: status,
-         outcome_refs: Enum.map(outcomes, & &1.ref)
-       }}
-    end
-  end
-
-  defp outcomes_for_act(state, act_ref) do
+  defp outcomes_by_act(state) do
     state.outcomes
     |> Map.values()
-    |> Enum.filter(&(&1.act_ref == act_ref))
-    |> Enum.reduce_while({:ok, []}, fn outcome, {:ok, outcomes} ->
+    |> Enum.reduce_while({:ok, %{}}, fn outcome, {:ok, by_act} ->
       case metadata(state, outcome.ref) do
-        {:ok, metadata} -> {:cont, {:ok, [{metadata.revision, outcome} | outcomes]}}
-        {:error, _reason} = error -> {:halt, error}
+        {:ok, metadata} ->
+          entry = {metadata.revision, outcome}
+          {:cont, {:ok, Map.update(by_act, outcome.act_ref, [entry], &[entry | &1])}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
       end
     end)
     |> case do
-      {:ok, outcomes} ->
+      {:ok, by_act} ->
         {:ok,
-         outcomes
-         |> Enum.sort_by(fn {revision, outcome} -> {revision, outcome.ref} end)
-         |> Enum.map(&elem(&1, 1))}
+         Map.new(by_act, fn {act_ref, outcomes} ->
+           ordered =
+             outcomes
+             |> Enum.sort_by(fn {revision, outcome} -> {revision, outcome.ref} end)
+             |> Enum.map(&elem(&1, 1))
+
+           {act_ref, ordered}
+         end)}
 
       {:error, _reason} = error ->
         error
@@ -316,13 +328,6 @@ defmodule Spectre.Audit.Report do
   end
 
   defp metadata(state, ref) do
-    fetch(state.event_metadata, ref, :event_metadata)
-  end
-
-  defp fetch(collection, key, kind) do
-    case Map.fetch(collection, key) do
-      {:ok, value} -> {:ok, value}
-      :error -> {:error, {kind, :not_found, key}}
-    end
+    Index.fetch_required(state.event_metadata, ref, :event_metadata)
   end
 end

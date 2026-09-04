@@ -9,7 +9,7 @@ defmodule Spectre.Domain.Admission.Planner do
   """
 
   alias Spectre.{Candidate, Governance}
-  alias Spectre.Domain.{Context, Projection, Transaction}
+  alias Spectre.Domain.{Context, Projection}
   alias Spectre.Domain.Sequencer.State
   alias Spectre.Execution.Router
   alias Spectre.GovernedAct.Class, as: GovernedClass
@@ -26,7 +26,7 @@ defmodule Spectre.Domain.Admission.Planner do
 
   @doc "Plans a submission group in queue order."
   @spec plan(State.t(), [map()], non_neg_integer()) ::
-          {[plan()], Projection.t(), [map()]}
+          {[plan()], [map()]}
 
   def plan(state, requests, admitted_at) do
     Enum.reduce(requests, {[], state.projection, []}, fn request,
@@ -44,15 +44,15 @@ defmodule Spectre.Domain.Admission.Planner do
           {[plan | plans], provisional, reversed_payloads}
       end
     end)
-    |> then(fn {plans, projection, reversed_payloads} ->
-      {Enum.reverse(plans), projection, Enum.reverse(reversed_payloads)}
+    |> then(fn {plans, _projection, reversed_payloads} ->
+      {Enum.reverse(plans), Enum.reverse(reversed_payloads)}
     end)
   end
 
   defp plan_submission(state, request, projection, admitted_at) do
     with {:ok, candidate} <- Candidate.new(request.candidate),
          {:ok, context, _opening} <- Context.validate_scope(state, projection, request.context),
-         :ok <- validate_submission_boundary(projection, candidate, context),
+         :ok <- validate_domain_route(projection, context),
          :ok <- validate_submission_kind(state, request, candidate, context) do
       case Projection.candidate_decision(projection, candidate.identity_key) do
         {:ok, %{candidate_digest: digest}} when digest == candidate.material_digest ->
@@ -62,7 +62,8 @@ defmodule Spectre.Domain.Admission.Planner do
           {:error, {:candidate_identity_conflict, candidate.identity_key}}
 
         :not_found ->
-          with :ok <- Router.validate_candidate(state, projection, candidate) do
+          with :ok <-
+                 Router.validate_candidate(state.execution_boundary, projection, candidate) do
             evaluate_submission(request, candidate, context, projection, admitted_at)
           end
 
@@ -153,27 +154,22 @@ defmodule Spectre.Domain.Admission.Planner do
     end
   end
 
-  defp validate_submission_boundary(projection, candidate, context) do
-    cond do
-      context.domain_ref != projection.domain_ref ->
-        {:error, {:submission_domain_mismatch, context.domain_ref, projection.domain_ref}}
-
-      candidate.proposer_ref != context.authenticated_principal_ref ->
-        {:error, :proposer_context_mismatch}
-
-      candidate.scope_ref != context.scope_ref ->
-        {:error, :scope_context_mismatch}
-
-      true ->
-        :ok
-    end
+  # A context routed to another Domain must never reach this ledger. Candidate
+  # identity and Scope fields, however, are untrusted claims: the kernel owns
+  # their comparison with the authenticated context and records mismatches as
+  # durable refused Decisions.
+  defp validate_domain_route(projection, context) do
+    if context.domain_ref == projection.domain_ref,
+      do: :ok,
+      else: {:error, {:submission_domain_mismatch, context.domain_ref, projection.domain_ref}}
   end
 
   defp evaluate_submission(request, candidate, context, projection, admitted_at) do
     with {:ok, decision, act} <-
            GovernedKernel.evaluate(candidate, context, projection, admitted_at),
          {:ok, payloads} <- Commit.payloads(projection, decision, act),
-         {:ok, next_projection} <- Transaction.apply_payloads(projection, payloads) do
+         {:ok, next_projection} <-
+           Projection.apply_payloads(projection, payloads, admitted_at) do
       {:ok, success_plan(request, candidate), next_projection, payloads}
     end
   end

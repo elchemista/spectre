@@ -2,10 +2,11 @@ defmodule Spectre.Kernel.Authority.Effective do
   @moduledoc """
   Immutable authority resolution for one admission decision.
 
-  This is a capability-free, non-durable value. The ordinary form points to
-  the already-validated Mandate instead of copying all of its fields. The
-  retained-controller form adds only the controller and the content-addressed
-  Candidate reference needed to prevent reuse for another proposal.
+  This is a capability-free, non-durable value. Both forms retain the exact
+  content-addressed Candidate reference checked by Authority, preventing a
+  successful resolution from being reused for another proposal. The ordinary
+  form otherwise points to the already-validated Mandate instead of copying
+  all of its fields; the retained-controller form adds only its controller.
 
   Keeping this distinct from `Spectre.Mandate` prevents an ephemeral narrowing
   from masquerading as a content-addressed durable Mandate with a stale ref.
@@ -16,21 +17,23 @@ defmodule Spectre.Kernel.Authority.Effective do
 
   @retained_revocation_class "mandate.revoke"
 
-  @enforce_keys [:mandate, :mode]
-  defstruct @enforce_keys ++ [candidate_ref: nil, controller_ref: nil]
+  @enforce_keys [:mandate, :mode, :candidate_ref]
+  defstruct @enforce_keys ++ [controller_ref: nil]
 
   @type t :: %__MODULE__{
           mandate: Mandate.t(),
           mode: :ordinary | :retained_revocation,
-          candidate_ref: String.t() | nil,
+          candidate_ref: String.t(),
           controller_ref: String.t() | nil
         }
 
   @type snapshot :: Mandate.t() | map()
 
   @doc "Projects an ordinary durable Mandate into the Decision boundary."
-  @spec from_mandate(Mandate.t()) :: t()
-  def from_mandate(%Mandate{} = mandate), do: %__MODULE__{mandate: mandate, mode: :ordinary}
+  @spec from_mandate(Mandate.t(), Candidate.t()) :: t()
+  def from_mandate(%Mandate{} = mandate, %Candidate{} = candidate) do
+    %__MODULE__{mandate: mandate, mode: :ordinary, candidate_ref: candidate.ref}
+  end
 
   @doc "Builds the one-operation authority retained by a revocation controller."
   @spec retained_revocation(Mandate.t(), Candidate.t(), String.t()) :: t()
@@ -57,11 +60,12 @@ defmodule Spectre.Kernel.Authority.Effective do
         %__MODULE__{
           mandate: %Mandate{} = mandate,
           mode: :ordinary,
-          candidate_ref: nil,
+          candidate_ref: candidate_ref,
           controller_ref: nil
         },
-        %Candidate{}
-      ),
+        %Candidate{ref: candidate_ref}
+      )
+      when is_binary(candidate_ref) and candidate_ref != "",
       do: {:ok, mandate}
 
   def snapshot(

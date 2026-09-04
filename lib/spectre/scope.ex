@@ -17,18 +17,14 @@ defmodule Spectre.Scope do
             context: SubmissionContext.t()
           }
 
-  @spec new(Domain.t(), String.t(), SubmissionContext.t()) ::
-          {:ok, t()} | {:error, term()}
-  def new(%Domain{ref: domain_ref} = domain, ref, %SubmissionContext{} = context)
-      when is_binary(ref) and ref != "" do
-    cond do
-      context.domain_ref != domain_ref -> {:error, :scope_domain_mismatch}
-      context.scope_ref != ref -> {:error, :scope_context_mismatch}
-      true -> {:ok, %__MODULE__{domain: domain, context: context}}
-    end
+  @spec new(Domain.t(), SubmissionContext.t()) :: {:ok, t()} | {:error, term()}
+  def new(%Domain{ref: domain_ref} = domain, %SubmissionContext{} = context) do
+    if context.domain_ref == domain_ref,
+      do: {:ok, %__MODULE__{domain: domain, context: context}},
+      else: {:error, :scope_domain_mismatch}
   end
 
-  def new(_domain, _ref, _context), do: {:error, :invalid_scope}
+  def new(_domain, _context), do: {:error, :invalid_scope}
 
   @doc "Returns the durable Scope reference bound by the authenticated context."
   @spec ref(t()) :: String.t()

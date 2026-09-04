@@ -9,11 +9,8 @@ defmodule Spectre.Mind.Turn do
   being stored a second time.
   """
 
-  alias Spectre.Canonical.Value
-  alias Spectre.{Evidence, Label, SubmissionContext}
+  alias Spectre.{Evidence, Label, Seal, SubmissionContext}
   alias Spectre.Evidence.Derivation
-  alias Spectre.Portable
-  alias Spectre.Scope
 
   @enforce_keys [
     :ref,
@@ -33,19 +30,16 @@ defmodule Spectre.Mind.Turn do
           seal: String.t() | nil
         }
 
-  @minimum_secret_bytes 32
   @seal_domain "spectre:mind-turn:v1\0"
 
-  @doc "Builds a Turn from a live Scope and the exact Evidence made visible to it."
-  @spec new(Scope.t(), String.t(), String.t(), [Evidence.t()], integer()) ::
+  @doc "Builds a Turn from an authenticated context and the exact visible Evidence."
+  @spec new(SubmissionContext.t(), String.t(), String.t(), [Evidence.t()], integer()) ::
           {:ok, t()} | {:error, term()}
-  def new(%Scope{} = scope, ref, mind_ref, evidence, opened_at)
+  def new(%SubmissionContext{} = context, ref, mind_ref, evidence, opened_at)
       when is_binary(ref) and ref != "" and is_binary(mind_ref) and mind_ref != "" and
              is_list(evidence) and is_integer(opened_at) do
-    with {:ok, context} <- turn_context(scope),
-         {:ok, evidence} <- normalize_evidence(evidence),
-         {:ok, labels} <- Derivation.inherited_labels(evidence),
-         :ok <- Portable.validate(Enum.map(labels, &Label.canonical/1)) do
+    with {:ok, context} <- SubmissionContext.new(context),
+         {:ok, evidence} <- normalize_evidence(evidence) do
       {:ok,
        %__MODULE__{
          ref: ref,
@@ -58,7 +52,7 @@ defmodule Spectre.Mind.Turn do
     end
   end
 
-  def new(_scope, _ref, _mind_ref, _evidence, _opened_at), do: {:error, :invalid_mind_turn}
+  def new(_context, _ref, _mind_ref, _evidence, _opened_at), do: {:error, :invalid_mind_turn}
 
   @doc "Returns the canonical Evidence references visible to the Turn."
   @spec evidence_refs(t()) :: [String.t()]
@@ -74,15 +68,25 @@ defmodule Spectre.Mind.Turn do
     do: SubmissionContext.evidence_bindings(context)
 
   @doc false
-  @spec seal(t(), binary()) :: {:ok, t()} | {:error, term()}
-  def seal(%__MODULE__{} = turn, secret)
-      when is_binary(secret) and byte_size(secret) >= @minimum_secret_bytes do
-    with {:ok, encoded} <- Value.encode(seal_material(turn)) do
-      seal =
-        :crypto.mac(:hmac, :sha256, secret, @seal_domain <> encoded)
-        |> Base.url_encode64(padding: false)
+  @spec context(t()) :: {:ok, SubmissionContext.t()} | {:error, term()}
+  def context(%__MODULE__{context: context}) do
+    with {:ok, context} <- SubmissionContext.new(context),
+         true <- is_nil(context.seal) do
+      {:ok, context}
+    else
+      false -> {:error, :mind_turn_context_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
 
-      {:ok, %{turn | seal: seal}}
+  @doc false
+  @spec seal(t(), binary()) :: {:ok, t()} | {:error, term()}
+  def seal(%__MODULE__{} = turn, secret) do
+    if Seal.valid_secret?(secret) do
+      with {:ok, seal} <- Seal.sign(seal_material(turn), secret, @seal_domain),
+           do: {:ok, %{turn | seal: seal}}
+    else
+      {:error, :invalid_turn_seal_material}
     end
   end
 
@@ -91,23 +95,11 @@ defmodule Spectre.Mind.Turn do
   @doc false
   @spec verify_seal(t(), binary()) :: :ok | {:error, term()}
   def verify_seal(%__MODULE__{seal: supplied} = turn, secret)
-      when is_binary(supplied) and supplied != "" and is_binary(secret) and
-             byte_size(secret) >= @minimum_secret_bytes do
-    with {:ok, supplied} <- Base.url_decode64(supplied, padding: false),
-         {:ok, encoded} <- Value.encode(seal_material(turn)) do
-      expected = :crypto.mac(:hmac, :sha256, secret, @seal_domain <> encoded)
-
-      if byte_size(supplied) == byte_size(expected) and :crypto.hash_equals(supplied, expected),
-        do: :ok,
-        else: {:error, :turn_authentication_failed}
-    else
+      when is_binary(supplied) and supplied != "" do
+    case Seal.verify(seal_material(turn), supplied, secret, @seal_domain) do
+      :ok -> :ok
       :error -> {:error, :turn_authentication_failed}
-      {:error, _reason} -> {:error, :turn_authentication_failed}
     end
-  rescue
-    _exception -> {:error, :turn_authentication_failed}
-  catch
-    _kind, _reason -> {:error, :turn_authentication_failed}
   end
 
   def verify_seal(_turn, _secret), do: {:error, :turn_authentication_failed}
@@ -120,17 +112,6 @@ defmodule Spectre.Mind.Turn do
       "evidence" => Enum.map(turn.evidence, &%{"ref" => &1.ref, "digest" => Evidence.digest(&1)}),
       "opened_at" => turn.opened_at
     }
-  end
-
-  defp turn_context(%Scope{} = scope) do
-    with {:ok, context} <- SubmissionContext.new(scope.context),
-         true <- context.domain_ref == Scope.domain_ref(scope),
-         true <- context.scope_ref == Scope.ref(scope) do
-      {:ok, context}
-    else
-      false -> {:error, :scope_context_mismatch}
-      {:error, _reason} = error -> error
-    end
   end
 
   defp normalize_evidence(evidence) do

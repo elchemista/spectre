@@ -68,6 +68,7 @@ defmodule Spectre.Evidence do
             provisional: false
 
   @type stance :: :supports | :contradicts
+  @type temporal_status :: :current | :from_future | :not_yet_valid | :expired
   @type t :: %__MODULE__{
           schema_version: 1,
           ref: String.t(),
@@ -88,6 +89,14 @@ defmodule Spectre.Evidence do
           payload_ref: String.t() | nil,
           provisional: boolean()
         }
+
+  @doc false
+  @spec stances() :: [stance()]
+  def stances, do: @stances
+
+  @doc false
+  @spec provenances() :: [:observed | :derived | :generated]
+  def provenances, do: @provenance
 
   @doc "Builds and validates evidence."
   @spec new(map() | keyword() | t()) :: {:ok, t()} | {:error, term()}
@@ -137,6 +146,27 @@ defmodule Spectre.Evidence do
   end
 
   def opposes?(_left, _right), do: false
+
+  @doc "Returns the Evidence time-window status at one trusted instant."
+  @spec temporal_status(t(), integer()) :: temporal_status()
+  def temporal_status(%__MODULE__{} = evidence, time) when is_integer(time) do
+    cond do
+      time < evidence.observed_at -> :from_future
+      not is_nil(evidence.valid_from) and time < evidence.valid_from -> :not_yet_valid
+      not is_nil(evidence.valid_until) and time >= evidence.valid_until -> :expired
+      true -> :current
+    end
+  end
+
+  @doc "Returns whether Evidence is current and fresh enough at one trusted instant."
+  @spec current_at?(t(), integer(), non_neg_integer() | nil) :: boolean()
+  def current_at?(%__MODULE__{} = evidence, time, maximum_age_ms \\ nil)
+      when is_integer(time) and
+             (is_nil(maximum_age_ms) or
+                (is_integer(maximum_age_ms) and maximum_age_ms >= 0)) do
+    temporal_status(evidence, time) == :current and
+      within_freshness?(evidence, time, maximum_age_ms)
+  end
 
   @doc "Returns the content-derived reference, independent of an assigned `ref`."
   @spec content_ref(t()) :: String.t()
@@ -288,6 +318,18 @@ defmodule Spectre.Evidence do
     do:
       is_integer(from) and is_integer(until) and until > observed_at and
         from < until
+
+  defp within_freshness?(evidence, time, maximum_age_ms) do
+    case strictest_freshness(evidence.freshness_ms, maximum_age_ms) do
+      nil -> true
+      freshness_ms -> time - evidence.observed_at <= freshness_ms
+    end
+  end
+
+  defp strictest_freshness(nil, nil), do: nil
+  defp strictest_freshness(value, nil), do: value
+  defp strictest_freshness(nil, value), do: value
+  defp strictest_freshness(left, right), do: min(left, right)
 
   defp validate_optional_payload_ref(nil), do: :ok
 

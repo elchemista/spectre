@@ -43,8 +43,10 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         %Event{type: "principal_recorded", identity: identity, data: data},
         _revision
       ) do
-    with :ok <- named_by_genesis(projection, :principal_refs, identity) do
-      Index.put_decoded(projection, :principals, Spectre.Principal, identity, data)
+    with :ok <- named_by_genesis(projection, :principal_refs, identity),
+         {:ok, principal} <-
+           Index.restore_unique(projection.principals, Principal, identity, data, :principal) do
+      {:ok, %{projection | principals: Map.put(projection.principals, identity, principal)}}
     end
   end
 
@@ -53,9 +55,14 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         %Event{type: "principal_registered", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, principal} <- Record.decode(Principal, data["principal"]),
-         :ok <- Record.match_identity(identity, principal),
-         :ok <- Index.unique(projection.principals, identity, :principal),
+    with {:ok, principal} <-
+           Index.restore_unique(
+             projection.principals,
+             Principal,
+             identity,
+             data["principal"],
+             :principal
+           ),
          {:ok, act} <- Index.fetch_act(projection, data["act_ref"]),
          :ok <- validate_principal_registration(act, principal, data) do
       {:ok, %{projection | principals: Map.put(projection.principals, identity, principal)}}
@@ -71,8 +78,14 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       {:error, :duplicate_host_profile}
     else
       with :ok <- named_by_genesis(projection, :host_profile_ref, identity),
-           {:ok, profile} <- Record.decode(HostProfile, data),
-           :ok <- Record.match_identity(identity, Record.ref(profile)),
+           {:ok, profile} <-
+             Index.restore_unique(
+               projection.host_profiles,
+               HostProfile,
+               identity,
+               data,
+               :host_profile
+             ),
            :ok <- initial_host_profile_revision(profile) do
         {:ok,
          %{
@@ -90,9 +103,14 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         _revision
       ) do
     with %HostProfile{} = current <- State.host_profile(projection),
-         {:ok, profile} <- Record.decode(HostProfile, data["host_profile"]),
-         :ok <- Record.match_identity(identity, profile.ref),
-         :ok <- Index.unique(projection.host_profiles, identity, :host_profile),
+         {:ok, profile} <-
+           Index.restore_unique(
+             projection.host_profiles,
+             HostProfile,
+             identity,
+             data["host_profile"],
+             :host_profile
+           ),
          {:ok, act} <- Index.fetch_act(projection, data["act_ref"]),
          :ok <- validate_host_profile_revision(act, current, profile, data) do
       {:ok,
@@ -112,9 +130,14 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         %Event{type: "definition_revised", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, definition} <- Record.decode(Definition, data["definition"]),
-         :ok <- Record.match_identity(identity, definition.ref),
-         :ok <- Index.unique(projection.definitions, identity, :definition),
+    with {:ok, definition} <-
+           Index.restore_unique(
+             projection.definitions,
+             Definition,
+             identity,
+             data["definition"],
+             :definition
+           ),
          {:ok, act} <- Index.fetch_act(projection, data["act_ref"]),
          :ok <- validate_definition_revision(projection, act, definition, data) do
       key = Definition.key(definition)
@@ -137,8 +160,8 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       {:error, :duplicate_surface}
     else
       with :ok <- named_by_genesis(projection, :surface_ref, identity),
-           {:ok, surface} <- Record.decode(Spectre.Surface, data),
-           :ok <- Record.match_identity(identity, Record.ref(surface)),
+           {:ok, surface} <-
+             Index.restore_unique(projection.surfaces, Surface, identity, data, :surface),
            :ok <- initial_surface_revision(projection.genesis, surface) do
         {:ok,
          %{
@@ -156,9 +179,14 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         _revision
       ) do
     with %Surface{} = current <- State.surface(projection),
-         {:ok, surface} <- Record.decode(Surface, data["surface"]),
-         :ok <- Record.match_identity(identity, surface.ref),
-         :ok <- Index.unique(projection.surfaces, identity, :surface),
+         {:ok, surface} <-
+           Index.restore_unique(
+             projection.surfaces,
+             Surface,
+             identity,
+             data["surface"],
+             :surface
+           ),
          {:ok, act} <- Index.fetch_act(projection, data["act_ref"]),
          :ok <- validate_surface_revision(act, current, surface, data) do
       {:ok,

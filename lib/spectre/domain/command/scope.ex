@@ -80,8 +80,7 @@ defmodule Spectre.Domain.Command.Scope do
          conflicts_left,
          recorded_at
        ) do
-    with {:ok, payload} <- Event.scope_opened(opening),
-         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, [payload]) do
+    with {:ok, payload} <- Event.scope_opened(opening) do
       Commit.append(
         state,
         [payload],

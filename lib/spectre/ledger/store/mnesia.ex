@@ -250,7 +250,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
          {:ok, encoded_entries} <- encode_entries(entries),
          :ok <- ensure_entry_slots_empty(config, domain_ref, encoded_entries) do
       last = List.last(entries)
-      info = Support.batch_info(batch_id, identity, expected_revision, entries, last)
+      info = Support.batch_info(batch_id, identity, expected_revision, last)
 
       Enum.each(encoded_entries, fn {revision, encoded} ->
         :mnesia.write(
@@ -496,7 +496,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
       end)
 
     with {:ok, entries} <- decode_entry_rows(rows, config, domain_ref),
-         {:ok, expected} <- batch_info_from_entries(domain_ref, entries),
+         {:ok, expected} <- derive_batch_info(domain_ref, entries),
          true <- expected == info do
       :ok
     else
@@ -539,7 +539,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
     entries
     |> Enum.chunk_by(& &1.batch_id)
     |> Enum.reduce_while({:ok, %{}}, fn batch, {:ok, batches} ->
-      with {:ok, info} <- batch_info_from_entries(domain_ref, batch),
+      with {:ok, info} <- derive_batch_info(domain_ref, batch),
            false <- Map.has_key?(batches, info.batch_id) do
         {:cont, {:ok, Map.put(batches, info.batch_id, info)}}
       else
@@ -549,43 +549,11 @@ defmodule Spectre.Ledger.Store.Mnesia do
     end)
   end
 
-  defp batch_info_from_entries(domain_ref, [%Entry{} = first | _rest] = entries) do
-    last = List.last(entries)
-    expected_revision = first.revision - 1
-
-    with true <- valid_batch_coordinates?(entries, domain_ref, first.batch_id),
-         {:ok, _verified} <-
-           Entry.verify_chain(entries,
-             domain_ref: domain_ref,
-             start_revision: expected_revision,
-             prev_digest: first.prev_digest
-           ),
-         {:ok, identity} <-
-           Entry.batch_identity(
-             domain_ref,
-             first.batch_id,
-             Enum.map(entries, & &1.payload),
-             expected_revision
-           ) do
-      {:ok, Support.batch_info(first.batch_id, identity, expected_revision, entries, last)}
-    else
-      false -> {:error, {:mismatched_mnesia_ledger_batch, first.batch_id}}
+  defp derive_batch_info(domain_ref, entries) do
+    case Support.derive_batch_info(domain_ref, entries) do
+      {:ok, info} -> {:ok, info}
       {:error, reason} -> {:error, {:invalid_mnesia_ledger_batch, reason}}
     end
-  end
-
-  defp batch_info_from_entries(_domain_ref, _entries),
-    do: {:error, :empty_mnesia_ledger_batch}
-
-  defp valid_batch_coordinates?(entries, domain_ref, batch_id) do
-    size = length(entries)
-
-    entries
-    |> Enum.with_index()
-    |> Enum.all?(fn {entry, index} ->
-      entry.domain_ref == domain_ref and entry.batch_id == batch_id and
-        entry.batch_size == size and entry.batch_index == index
-    end)
   end
 
   defp batch_record_id(

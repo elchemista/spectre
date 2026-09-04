@@ -8,7 +8,7 @@ defmodule Spectre.GovernedAct.Batch.Meter do
   paired with recontainment and a Duty.
   """
 
-  alias Spectre.Act
+  alias Spectre.{Act, Outcome}
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.Batch.Events
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
@@ -43,7 +43,7 @@ defmodule Spectre.GovernedAct.Batch.Meter do
             validate_reserve(events, event)
 
           "meter_settled" ->
-            validate_disposition(projection, events, event, [:succeeded, :failed])
+            validate_disposition(projection, events, event, Outcome.correction_statuses())
 
           "meter_released" ->
             validate_disposition(projection, events, event, [:definitive_no_effect])
@@ -136,7 +136,8 @@ defmodule Spectre.GovernedAct.Batch.Meter do
 
     valid_outcome? =
       outcome && outcome.type == "outcome_recorded" && outcome.identity == outcome_ref &&
-        outcome.data["act_ref"] == act_ref && outcome.data["status"] in [:succeeded, :failed] &&
+        outcome.data["act_ref"] == act_ref &&
+        Outcome.correction_status?(outcome.data["status"]) &&
         present_ref?(outcome.data["contradicts_outcome_ref"])
 
     attempt_ref = if outcome, do: outcome.data["attempt_ref"]

@@ -9,6 +9,8 @@ defmodule Spectre.GovernedAct.DispatchState do
   this module only reads and updates their disposable projection indexes.
   """
 
+  alias Spectre.{Act, Mandate}
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.State
 
   @type cancellation :: %{
@@ -58,6 +60,33 @@ defmodule Spectre.GovernedAct.DispatchState do
   @spec cancelled?(State.t(), String.t()) :: boolean()
   def cancelled?(%State{} = state, act_ref), do: not is_nil(cancellation(state, act_ref))
 
+  @doc "Returns pending executor Acts whose pinned Mandate has expired."
+  @spec expired(State.t(), integer()) ::
+          {:ok, [{Act.t(), Mandate.t()}]} | {:error, term()}
+  def expired(%State{} = state, time) when is_integer(time) do
+    with {:ok, pending} <- pending(state) do
+      {:ok, Enum.filter(pending, fn {_act, mandate} -> mandate.expires_at <= time end)}
+    end
+  end
+
+  @doc "Returns the validated Act and pinned Mandate behind each pending dispatch."
+  @spec pending(State.t()) :: {:ok, [{Act.t(), Mandate.t()}]} | {:error, term()}
+  def pending(%State{} = state) do
+    state
+    |> pending_refs()
+    |> Enum.sort()
+    |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, records} ->
+      with {:ok, act} <- fetch_pending_act(state, act_ref),
+           {:ok, mandate} <- fetch_pending_mandate(state, act),
+           :ok <- valid_pending_pair(state, act, mandate) do
+        {:cont, {:ok, [{act, mandate} | records]}}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> reverse_ok()
+  end
+
   @doc false
   @spec mark_pending(State.t(), String.t()) :: State.t()
   def mark_pending(%State{} = state, act_ref) do
@@ -93,4 +122,39 @@ defmodule Spectre.GovernedAct.DispatchState do
       {_act_ref, {:attempt, _attempt_ref}} -> []
     end)
   end
+
+  defp fetch_pending_act(state, act_ref) do
+    case Map.fetch(state.acts, act_ref) do
+      {:ok, %Act{} = act} -> {:ok, act}
+      {:ok, _invalid} -> {:error, {:invalid_pending_dispatch_act, act_ref}}
+      :error -> {:error, {:pending_dispatch_act_not_found, act_ref}}
+    end
+  end
+
+  defp fetch_pending_mandate(state, act) do
+    case Map.fetch(state.mandates, act.mandate_ref) do
+      {:ok, %Mandate{} = mandate} -> {:ok, mandate}
+      {:ok, _invalid} -> {:error, {:invalid_pending_dispatch_mandate, act.mandate_ref}}
+      :error -> {:error, {:pending_dispatch_mandate_not_found, act.mandate_ref}}
+    end
+  end
+
+  defp valid_pending_pair(state, act, mandate) do
+    cond do
+      not GovernedExecution.executor_mediated?(act) ->
+        {:error, {:pending_dispatch_not_executor_mediated, act.ref}}
+
+      act.mandate_revision != mandate.revision ->
+        {:error, {:pending_dispatch_mandate_mismatch, act.ref}}
+
+      not is_nil(terminal(state, act.ref)) ->
+        {:error, {:pending_dispatch_already_terminal, act.ref}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp reverse_ok({:ok, values}), do: {:ok, Enum.reverse(values)}
+  defp reverse_ok({:error, _reason} = error), do: error
 end

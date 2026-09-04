@@ -14,6 +14,9 @@ defmodule Spectre.Attempt.Executor do
 
   alias Spectre.{Act, Attempt, Evidence, Outcome, Portable}
   alias Spectre.Attempt.Binding
+  alias Spectre.Attempt.Evidence, as: AttemptEvidence
+
+  @outcome_statuses Outcome.statuses()
 
   @evidence_fields [
     :ref,
@@ -58,20 +61,21 @@ defmodule Spectre.Attempt.Executor do
       when is_integer(observed_at) do
     with {:ok, act} <- Act.new(act),
          {:ok, attempt} <- Attempt.new(attempt),
-         :ok <- validate_cause(act, attempt, observed_at),
          {:ok, attrs} <-
            Portable.normalize_attrs(attrs, @evidence_fields, :executor_evidence),
          attrs =
            attrs
            |> Map.put_new(:provenance, :observed)
            |> Map.put_new(:parent_refs, []),
-         :ok <- validate_parent_boundary(attrs.provenance, attrs.parent_refs, act) do
-      attrs
-      |> Map.put(:issuer_ref, act.executor_ref)
-      |> Map.put(:source_ref, act.executor_ref)
-      |> Map.put(:observed_at, observed_at)
-      |> Map.put(:bindings, Binding.evidence_bindings(act, attempt))
-      |> Evidence.new()
+         {:ok, evidence} <-
+           attrs
+           |> Map.put(:issuer_ref, act.executor_ref)
+           |> Map.put(:source_ref, act.executor_ref)
+           |> Map.put(:observed_at, observed_at)
+           |> Map.put(:bindings, Binding.evidence_bindings(act, attempt))
+           |> Evidence.new(),
+         :ok <- AttemptEvidence.validate(evidence, act, attempt) do
+      {:ok, evidence}
     end
   end
 
@@ -87,8 +91,7 @@ defmodule Spectre.Attempt.Executor do
           map() | keyword()
         ) :: {:ok, Evidence.t()} | {:error, term()}
   def outcome_evidence(%Act{} = act, %Attempt{} = attempt, status, observed_at, attrs)
-      when status in [:succeeded, :failed, :definitive_no_effect, :ambiguous] and
-             is_integer(observed_at) do
+      when status in @outcome_statuses and is_integer(observed_at) do
     with {:ok, act} <- Act.new(act),
          {:ok, attempt} <- Attempt.new(attempt),
          {:ok, attrs} <-
@@ -120,34 +123,4 @@ defmodule Spectre.Attempt.Executor do
   @callback contract_ref() :: String.t()
 
   @callback execute(Act.t(), Attempt.t(), term(), keyword()) :: result()
-
-  defp validate_cause(act, attempt, observed_at) do
-    case Binding.mismatch(attempt, act) do
-      {:act_ref, _expected, _actual} ->
-        {:error, :executor_evidence_act_mismatch}
-
-      {:executor_ref, _expected, _actual} ->
-        {:error, :executor_evidence_executor_mismatch}
-
-      {:material_digest, _expected, _actual} ->
-        {:error, :executor_evidence_material_mismatch}
-
-      nil ->
-        if observed_at < attempt.started_at,
-          do: {:error, :executor_evidence_precedes_attempt},
-          else: :ok
-    end
-  end
-
-  defp validate_parent_boundary(:observed, [], _act), do: :ok
-
-  defp validate_parent_boundary(provenance, [_first | _rest] = parents, act)
-       when provenance in [:derived, :generated] do
-    if MapSet.subset?(MapSet.new(parents), MapSet.new(act.evidence_refs)),
-      do: :ok,
-      else: {:error, :executor_evidence_parent_outside_act_inputs}
-  end
-
-  defp validate_parent_boundary(_provenance, _parents, _act),
-    do: {:error, :invalid_executor_evidence_lineage}
 end

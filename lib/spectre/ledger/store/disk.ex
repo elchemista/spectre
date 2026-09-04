@@ -244,20 +244,14 @@ defmodule Spectre.Ledger.Store.Disk do
          identity,
          fault
        ) do
-    case Map.fetch(domain.batches, batch_id) do
-      {:ok, %{identity_digest: ^identity, expected_revision: ^expected_revision} = info} ->
-        {{:ok, info.last_revision}, state}
+    case Support.append_status(domain, batch_id, identity, expected_revision, fault) do
+      {:existing, revision} ->
+        {{:ok, revision}, state}
 
-      {:ok, _different} ->
-        {{:error, {:batch_identity_conflict, batch_id}}, state}
+      {:error, reason} ->
+        {{:error, reason}, state}
 
-      :error when expected_revision != domain.revision ->
-        {{:error, :conflict}, state}
-
-      :error when fault == :before_commit ->
-        {{:error, :ambiguous}, state}
-
-      :error ->
+      :new ->
         persist_batch(
           state,
           domain,
@@ -371,16 +365,8 @@ defmodule Spectre.Ledger.Store.Disk do
          entries,
          fault
        ) do
-    last = List.last(entries)
-    info = Support.batch_info(batch_id, identity, expected_revision, entries, last)
-
-    committed = %{
-      domain
-      | revision: last.revision,
-        head_digest: last.digest,
-        entries_rev: Enum.reverse(entries, domain.entries_rev),
-        batches: Map.put(domain.batches, batch_id, info)
-    }
+    {committed, last} =
+      Support.install_batch(domain, batch_id, identity, expected_revision, entries)
 
     state = put_in(state, [:domains, domain_ref], committed)
     reply = if fault == :after_commit, do: {:error, :ambiguous}, else: {:ok, last.revision}
@@ -673,22 +659,21 @@ defmodule Spectre.Ledger.Store.Disk do
              start_revision: domain.revision,
              prev_digest: domain.head_digest
            ),
-         :ok <- verify_frame_batch(verified.entries, batch_id),
+         :ok <- Support.validate_batch_coordinates(verified.entries, domain_ref, batch_id),
          payloads <- Enum.map(verified.entries, & &1.payload),
          {:ok, expected_identity} <-
            Entry.batch_identity(domain_ref, batch_id, payloads, expected_revision),
          true <- identity == expected_identity do
-      last = List.last(verified.entries)
-      info = Support.batch_info(batch_id, identity, expected_revision, verified.entries, last)
+      {committed, _last} =
+        Support.install_batch(
+          domain,
+          batch_id,
+          identity,
+          expected_revision,
+          verified.entries
+        )
 
-      {:ok,
-       %{
-         domain
-         | revision: last.revision,
-           head_digest: last.digest,
-           entries_rev: Enum.reverse(verified.entries, domain.entries_rev),
-           batches: Map.put(domain.batches, batch_id, info)
-       }}
+      {:ok, committed}
     else
       false -> {:error, {:invalid_or_duplicate_ledger_frame, offset}}
       nil -> {:error, {:invalid_ledger_frame, offset}}
@@ -723,19 +708,6 @@ defmodule Spectre.Ledger.Store.Disk do
 
   defp validate_frame_header(_data, _domain_ref, offset),
     do: {:error, {:ledger_frame_binding_mismatch, offset}}
-
-  @spec verify_frame_batch([Entry.t()], String.t()) :: :ok | {:error, term()}
-  defp verify_frame_batch(entries, batch_id) do
-    size = length(entries)
-
-    entries
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {entry, index}, :ok ->
-      if entry.batch_id == batch_id and entry.batch_index == index and entry.batch_size == size,
-        do: {:cont, :ok},
-        else: {:halt, {:error, {:ledger_frame_batch_mismatch, batch_id}}}
-    end)
-  end
 
   @spec recover_incomplete_tail(
           :file.io_device(),

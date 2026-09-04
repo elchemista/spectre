@@ -48,10 +48,8 @@ defmodule Spectre.Domain.Command.Observation do
            Observation.payloads(
              state.projection,
              outcome,
-             now,
-             state.projection.constitution
-           ),
-         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, payloads) do
+             now
+           ) do
       Commit.append(
         state,
         payloads,

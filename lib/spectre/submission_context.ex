@@ -15,8 +15,7 @@ defmodule Spectre.SubmissionContext do
   eligibility; it never creates authority.
   """
 
-  alias Spectre.Canonical.Value
-  alias Spectre.Portable
+  alias Spectre.{Portable, Seal}
 
   @schema_version 1
   @canonical_fields [
@@ -45,7 +44,6 @@ defmodule Spectre.SubmissionContext do
   @evidence_binding_fields Enum.map(@trusted_context_matrix, &elem(&1, 0))
   @evidence_binding_keys Enum.map(@evidence_binding_fields, &Atom.to_string/1)
   @fields @canonical_fields ++ [:seal]
-  @minimum_secret_bytes 32
   @seal_domain "spectre:submission-context:v1\0"
 
   @enforce_keys [
@@ -213,15 +211,14 @@ defmodule Spectre.SubmissionContext do
 
   @doc false
   @spec seal(t(), binary()) :: {:ok, t()} | {:error, term()}
-  def seal(%__MODULE__{} = context, secret)
-      when is_binary(secret) and byte_size(secret) >= @minimum_secret_bytes do
-    with {:ok, context} <- new(%{context | seal: nil}),
-         {:ok, encoded} <- Value.encode(canonical(context)) do
-      seal =
-        :crypto.mac(:hmac, :sha256, secret, @seal_domain <> encoded)
-        |> Base.url_encode64(padding: false)
-
-      {:ok, %{context | seal: seal}}
+  def seal(%__MODULE__{} = context, secret) do
+    if Seal.valid_secret?(secret) do
+      with {:ok, context} <- new(%{context | seal: nil}),
+           {:ok, seal} <- Seal.sign(canonical(context), secret, @seal_domain) do
+        {:ok, %{context | seal: seal}}
+      end
+    else
+      {:error, :invalid_submission_context_seal_material}
     end
   end
 
@@ -230,18 +227,10 @@ defmodule Spectre.SubmissionContext do
   @doc false
   @spec verify_seal(t(), binary()) :: :ok | {:error, term()}
   def verify_seal(%__MODULE__{seal: supplied} = context, secret)
-      when is_binary(supplied) and supplied != "" and is_binary(secret) and
-             byte_size(secret) >= @minimum_secret_bytes do
-    with {:ok, supplied} <- Base.url_decode64(supplied, padding: false),
-         {:ok, encoded} <- Value.encode(canonical(context)) do
-      expected = :crypto.mac(:hmac, :sha256, secret, @seal_domain <> encoded)
-
-      if byte_size(supplied) == byte_size(expected) and :crypto.hash_equals(supplied, expected),
-        do: :ok,
-        else: {:error, :submission_context_authentication_failed}
-    else
+      when is_binary(supplied) and supplied != "" do
+    case Seal.verify(canonical(context), supplied, secret, @seal_domain) do
+      :ok -> :ok
       :error -> {:error, :submission_context_authentication_failed}
-      {:error, _reason} -> {:error, :submission_context_authentication_failed}
     end
   end
 

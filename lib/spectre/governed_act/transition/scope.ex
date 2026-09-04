@@ -9,7 +9,6 @@ defmodule Spectre.GovernedAct.Transition.Scope do
   """
 
   alias Spectre.Act
-  alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.{Index, State}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
@@ -20,9 +19,8 @@ defmodule Spectre.GovernedAct.Transition.Scope do
         %Event{type: "scope_opened", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, opening} <- Record.decode(Opening, data),
-         :ok <- Record.match_identity(identity, opening.ref),
-         :ok <- Index.unique(projection.scopes, identity, :scope),
+    with {:ok, opening} <-
+           Index.restore_unique(projection.scopes, Opening, identity, data, :scope),
          :ok <- validate_scope_opening(projection, opening) do
       {:ok, %{projection | scopes: Map.put(projection.scopes, identity, opening)}}
     end

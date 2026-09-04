@@ -5,46 +5,33 @@ defmodule Spectre.Domain.Bootstrap do
   alias Spectre.Domain.Event
   alias Spectre.Domain.Projection
   alias Spectre.Duty.Derive
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{Emergency, Fold, State}
   alias Spectre.{Constitution, Duty, Genesis, HostProfile, Mandate, Principal, Surface}
 
   @type prepared :: %{batch_id: String.t(), payloads: [map()]}
 
-  @spec prepare(String.t(), keyword()) :: {:ok, prepared()} | {:error, term()}
-  def prepare(domain_ref, opts) when is_binary(domain_ref) and is_list(opts) do
+  @spec prepare(String.t(), keyword(), non_neg_integer()) ::
+          {:ok, prepared()} | {:error, term()}
+  def prepare(domain_ref, opts, recorded_at)
+      when is_binary(domain_ref) and is_list(opts) and is_integer(recorded_at) and
+             recorded_at >= 0 do
     with {:ok, constitution} <- constitution(opts),
          {:ok, genesis} <- required_record(opts, :genesis, Genesis),
          {:ok, principals} <- record_list(opts, :principals, Principal),
          {:ok, host_profile} <- required_record(opts, :host_profile, HostProfile),
          {:ok, surface} <- required_record(opts, :surface, Surface),
          {:ok, mandates} <- record_list(opts, :root_mandates, Mandate),
-         :ok <-
-           verify_bundle(
-             domain_ref,
-             constitution,
-             genesis,
-             principals,
-             host_profile,
-             surface,
-             mandates
-           ),
-         :ok <- verify_attestation(genesis, opts),
-         {:ok, payloads} <- events(genesis, principals, host_profile, surface, mandates) do
+         {:ok, payloads} <- events(genesis, principals, host_profile, surface, mandates),
+         :ok <- preflight(domain_ref, constitution, payloads, recorded_at, opts) do
       {:ok, %{batch_id: "genesis:" <> genesis.ref, payloads: payloads}}
     end
   end
 
-  def prepare(_domain_ref, _opts), do: {:error, :invalid_domain_bootstrap}
+  def prepare(_domain_ref, _opts, _recorded_at), do: {:error, :invalid_domain_bootstrap}
 
   @spec verify_projection(Projection.t(), keyword()) :: :ok | {:error, term()}
   def verify_projection(%State{} = projection, opts) when is_list(opts) do
     case State.surface(projection) do
-      %Surface{declarations: declarations} when map_size(declarations) == 0 ->
-        with :ok <- verify_optional_genesis(projection, opts),
-             :ok <- verify_projection_constitution(projection),
-             :ok <- verify_projection_duty_routes(projection),
-             do: verify_projection_emergency(projection)
-
       %Surface{} ->
         with %Genesis{} = genesis <- projection.genesis,
              :ok <- verify_projection_links(projection, genesis),
@@ -69,116 +56,22 @@ defmodule Spectre.Domain.Bootstrap do
 
   def verify_projection(_projection, _opts), do: {:error, :invalid_domain_projection}
 
-  defp verify_optional_genesis(%State{genesis: nil}, _opts), do: :ok
+  # Bootstrap is checked through the same disposable reducer used by live
+  # command preflight and durable recovery. This prevents a hand-maintained
+  # bundle validator from accepting a Genesis batch that replay would reject.
+  defp preflight(domain_ref, constitution, payloads, recorded_at, opts) do
+    initial = Projection.new(domain_ref, constitution)
 
-  defp verify_optional_genesis(%State{genesis: %Genesis{} = genesis} = projection, opts) do
-    with :ok <- verify_projection_links(projection, genesis),
-         do: verify_attestation(genesis, opts)
-  end
-
-  defp verify_optional_genesis(_projection, _opts), do: {:error, :invalid_domain_genesis}
-
-  defp verify_projection_constitution(%State{genesis: nil}), do: :ok
-
-  defp verify_projection_constitution(%State{
-         genesis: %Genesis{} = genesis,
-         constitution: constitution
-       }),
-       do: verify_constitution(genesis, constitution)
-
-  defp verify_bundle(
-         domain_ref,
-         constitution,
-         genesis,
-         principals,
-         host_profile,
-         surface,
-         mandates
-       ) do
-    cond do
-      genesis.domain_ref != domain_ref ->
-        {:error, :genesis_domain_mismatch}
-
-      genesis.constitution_ref != Constitution.ref!(constitution) ->
-        {:error, :genesis_constitution_mismatch}
-
-      genesis.principal_refs != sorted_refs(principals) ->
-        {:error, :genesis_principal_refs_mismatch}
-
-      genesis.root_mandate_refs != sorted_refs(mandates) ->
-        {:error, :genesis_root_mandate_refs_mismatch}
-
-      genesis.host_profile_ref != host_profile.ref ->
-        {:error, :genesis_host_profile_mismatch}
-
-      genesis.surface_ref != surface.ref or genesis.surface_revision != surface.revision ->
-        {:error, :genesis_surface_mismatch}
-
-      Enum.any?(mandates, &(&1.parent_ref != nil or &1.source_ref != genesis.ref)) ->
-        {:error, :invalid_root_mandate_source}
-
-      true ->
-        known_authorities = sorted_refs(principals) ++ sorted_refs(mandates)
-
-        with :ok <- Constitution.validate_duty_routes(constitution, known_authorities),
-             do: verify_emergency_mandate(genesis, mandates, constitution)
+    with {:ok, projection} <- Projection.apply_payloads(initial, payloads, recorded_at),
+         :ok <- Fold.validate_complete(projection) do
+      verify_projection(projection, opts)
     end
   end
-
-  defp verify_emergency_mandate(%Genesis{emergency_mandate_ref: nil}, _mandates, _rules),
-    do: :ok
-
-  defp verify_emergency_mandate(genesis, mandates, rules) do
-    case Enum.find(mandates, &(&1.ref == genesis.emergency_mandate_ref)) do
-      nil ->
-        {:error, :genesis_emergency_mandate_missing}
-
-      %Mandate{} = mandate ->
-        with :ok <- emergency_cannot_delegate(mandate),
-             :ok <- emergency_cannot_rewrite_itself(mandate) do
-          emergency_duration_within_policy(mandate, rules)
-        end
-    end
-  end
-
-  defp emergency_cannot_delegate(%Mandate{
-         delegation: %{"allowed" => false, "max_depth" => 0}
-       }),
-       do: :ok
-
-  defp emergency_cannot_delegate(_mandate), do: {:error, :emergency_mandate_may_not_delegate}
-
-  defp emergency_cannot_rewrite_itself(%Mandate{classes: classes}) do
-    forbidden =
-      MapSet.new(
-        ~w(mandate.delegate mandate.restrict surface.revise host_profile.revise definition.revise)
-      )
-
-    if Enum.any?(classes, &MapSet.member?(forbidden, &1)),
-      do: {:error, :emergency_mandate_may_not_rewrite_exception},
-      else: :ok
-  end
-
-  defp emergency_duration_within_policy(mandate, rules) do
-    case Constitution.emergency_max_duration(rules) do
-      {:ok, maximum} ->
-        if mandate.expires_at - mandate.not_before <= maximum,
-          do: :ok,
-          else: {:error, :emergency_mandate_duration_exceeded}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp verify_projection_emergency(%State{genesis: nil}), do: :ok
 
   defp verify_projection_emergency(
          %State{genesis: %Genesis{} = genesis, constitution: rules} = projection
        ),
-       do: verify_emergency_mandate(genesis, Map.values(projection.mandates), rules)
-
-  defp verify_projection_duty_routes(%State{genesis: nil}), do: :ok
+       do: Emergency.validate(genesis, projection.mandates, rules)
 
   defp verify_projection_duty_routes(%State{} = projection) do
     known_authorities = Map.keys(projection.principals) ++ Map.keys(projection.mandates)
@@ -349,6 +242,4 @@ defmodule Spectre.Domain.Bootstrap do
       {:error, _reason} = error -> error
     end
   end
-
-  defp sorted_refs(records), do: records |> Enum.map(& &1.ref) |> Enum.sort()
 end

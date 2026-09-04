@@ -13,12 +13,11 @@ defmodule Spectre.Ledger do
 
   alias Spectre.Ledger.Entry
   alias Spectre.Ledger.Store
+  alias Spectre.Portable
 
   @export_format "spectre-domain-ledger"
   @export_version 1
   @export_fields ~w(format format_version domain_ref revision head_digest entries)
-  @max_identifier_bytes 1_024
-  @digest_pattern ~r/\A[0-9a-f]{64}\z/
 
   @type domain_ref :: String.t()
   @type batch_id :: String.t()
@@ -302,24 +301,20 @@ defmodule Spectre.Ledger do
   defp match_expected_domain(_domain_ref, _expected), do: {:error, :ledger_domain_mismatch}
 
   @spec validate_identifier(term(), atom()) :: :ok | {:error, term()}
-  defp validate_identifier(value, _field)
-       when is_binary(value) and value != "" and byte_size(value) <= @max_identifier_bytes,
-       do: :ok
-
-  defp validate_identifier(_value, field), do: {:error, {:invalid_ledger_identifier, field}}
+  defp validate_identifier(value, field) do
+    if Entry.valid_identifier?(value),
+      do: :ok,
+      else: {:error, {:invalid_ledger_identifier, field}}
+  end
 
   @spec validate_revision(term()) :: :ok | {:error, term()}
   defp validate_revision(value) when is_integer(value) and value >= 0, do: :ok
   defp validate_revision(_value), do: {:error, :invalid_ledger_revision}
 
   @spec validate_digest(term()) :: :ok | {:error, term()}
-  defp validate_digest(value) when is_binary(value) and byte_size(value) == 64 do
-    if Regex.match?(@digest_pattern, value),
-      do: :ok,
-      else: {:error, :invalid_ledger_digest}
+  defp validate_digest(value) do
+    if Portable.sha256_digest?(value), do: :ok, else: {:error, :invalid_ledger_digest}
   end
-
-  defp validate_digest(_value), do: {:error, :invalid_ledger_digest}
 
   @spec validate_recovery(term()) :: :ok | {:error, term()}
   defp validate_recovery(nil), do: :ok

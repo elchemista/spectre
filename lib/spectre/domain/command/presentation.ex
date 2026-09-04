@@ -94,8 +94,7 @@ defmodule Spectre.Domain.Command.Presentation do
          conflicts_left,
          recorded_at
        ) do
-    with {:ok, payload} <- Event.record(:presentation, presentation),
-         {:ok, _provisional} <- Transaction.apply_payloads(state.projection, [payload]) do
+    with {:ok, payload} <- Event.record(:presentation, presentation) do
       Commit.append(
         state,
         [payload],

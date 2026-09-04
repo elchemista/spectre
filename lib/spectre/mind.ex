@@ -19,9 +19,8 @@ defmodule Spectre.Mind do
       end
   """
 
-  alias Spectre.Evidence.Derivation
-  alias Spectre.{Adapter, Candidate, Disclosure, Evidence, Portable, SubmissionContext}
-  alias Spectre.Mind.Turn
+  alias Spectre.{Adapter, Candidate, Disclosure, Evidence, Portable}
+  alias Spectre.Mind.{Derivation, Turn}
 
   @candidate_fields [
     :identity_key,
@@ -43,22 +42,6 @@ defmodule Spectre.Mind do
     :executor_contract_ref,
     :observation_window_ms
   ]
-  @evidence_fields [
-    :ref,
-    :proposition,
-    :stance,
-    :provenance,
-    :valid_from,
-    :valid_until,
-    :freshness_ms,
-    :bindings,
-    :assumptions,
-    :labels,
-    :payload,
-    :payload_ref,
-    :provisional
-  ]
-
   @callback ref() :: String.t()
   @callback deliberate(Turn.t(), keyword()) ::
               {:ok, Candidate.t() | map() | keyword() | [Candidate.t() | map() | keyword()]}
@@ -121,8 +104,8 @@ defmodule Spectre.Mind do
   @spec candidate(Turn.t(), Evidence.t() | [Evidence.t()], map() | keyword()) ::
           {:ok, Candidate.t()} | {:error, term()}
   def candidate(%Turn{} = turn, derivations, attrs) do
-    with {:ok, context} <- turn_context(turn),
-         {:ok, derivations} <- normalize_turn_derivations(turn, derivations),
+    with {:ok, context} <- Turn.context(turn),
+         {:ok, derivations} <- Derivation.normalize(turn, derivations),
          available = turn.evidence ++ derivations,
          available_refs = Enum.map(available, & &1.ref),
          {:ok, attrs} <- Portable.normalize_attrs(attrs, @candidate_fields, :mind_candidate),
@@ -144,36 +127,7 @@ defmodule Spectre.Mind do
   @doc "Builds derived or generated Evidence bound to the exact sealed Turn context."
   @spec evidence(Turn.t(), integer(), map() | keyword()) ::
           {:ok, Evidence.t()} | {:error, term()}
-  def evidence(%Turn{} = turn, observed_at, attrs) when is_integer(observed_at) do
-    with {:ok, context} <- turn_context(turn),
-         evidence_refs = Turn.evidence_refs(turn),
-         true <- observed_at >= turn.opened_at,
-         {:ok, attrs} <- Portable.normalize_attrs(attrs, @evidence_fields, :mind_evidence),
-         provenance = Map.get(attrs, :provenance, :generated),
-         :ok <- derivation_provenance(provenance),
-         {:ok, labels} <-
-           Derivation.conservative_labels(turn.evidence, Map.get(attrs, :labels, [])),
-         {:ok, bindings} <-
-           SubmissionContext.merge_evidence_bindings(
-             context,
-             Map.get(attrs, :bindings, %{})
-           ) do
-      attrs
-      |> Map.put(:issuer_ref, turn.mind_ref)
-      |> Map.put(:source_ref, turn.mind_ref)
-      |> Map.put(:provenance, provenance)
-      |> Map.put(:parent_refs, evidence_refs)
-      |> Map.put(:observed_at, observed_at)
-      |> Map.put(:bindings, bindings)
-      |> Map.put(:labels, labels)
-      |> Evidence.new()
-    else
-      false -> {:error, :mind_evidence_precedes_turn}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def evidence(_turn, _observed_at, _attrs), do: {:error, :invalid_mind_evidence}
+  defdelegate evidence(turn, observed_at, attrs), to: Derivation, as: :build
 
   @doc false
   @spec resolve(module()) :: {:ok, {module(), String.t()}} | {:error, term()}
@@ -203,21 +157,6 @@ defmodule Spectre.Mind do
       {:error, _reason} -> {:error, {:mind_ref_failed, module}}
     end
   end
-
-  defp turn_context(%Turn{} = turn) do
-    with {:ok, context} <- SubmissionContext.new(turn.context),
-         true <- is_nil(context.seal) do
-      {:ok, context}
-    else
-      false -> {:error, :mind_turn_context_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp derivation_provenance(provenance) when provenance in [:derived, :generated], do: :ok
-
-  defp derivation_provenance(provenance),
-    do: {:error, {:invalid_mind_evidence_provenance, provenance}}
 
   defp safe_deliberate(module, turn, opts) do
     case Adapter.invoke(module, :deliberate, [turn, opts]) do
@@ -261,7 +200,7 @@ defmodule Spectre.Mind do
     with true <- Keyword.keyword?(opts),
          {:ok, {^module, mind_ref}} <- resolve(module),
          true <- mind_ref == turn.mind_ref,
-         {:ok, context} <- turn_context(turn) do
+         {:ok, context} <- Turn.context(turn) do
       {:ok, context}
     else
       false -> {:error, {:mind_turn_binding_mismatch, module}}
@@ -395,52 +334,5 @@ defmodule Spectre.Mind do
     actual_refs = MapSet.new(actual, & &1.ref)
     required_refs = MapSet.new(required, & &1.ref)
     MapSet.subset?(required_refs, actual_refs)
-  end
-
-  defp normalize_turn_derivations(_turn, []), do: {:ok, []}
-
-  defp normalize_turn_derivations(turn, %Evidence{} = evidence),
-    do: normalize_turn_derivations(turn, [evidence])
-
-  defp normalize_turn_derivations(turn, derivations) when is_list(derivations) do
-    with {:ok, context} <- turn_context(turn) do
-      derivations
-      |> Enum.reduce_while({:ok, [], MapSet.new(Turn.evidence_refs(turn))}, fn value,
-                                                                               {:ok, records,
-                                                                                refs} ->
-        with {:ok, evidence} <- Evidence.new(value),
-             false <- MapSet.member?(refs, evidence.ref),
-             :ok <- validate_turn_derivation(evidence, turn, context) do
-          {:cont, {:ok, [evidence | records], MapSet.put(refs, evidence.ref)}}
-        else
-          true -> {:halt, {:error, :duplicate_mind_derivation}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-      |> case do
-        {:ok, records, _refs} -> {:ok, Enum.reverse(records)}
-        {:error, _reason} = error -> error
-      end
-    end
-  end
-
-  defp normalize_turn_derivations(_turn, _derivations),
-    do: {:error, :invalid_mind_derivations}
-
-  defp validate_turn_derivation(evidence, turn, context) do
-    cond do
-      evidence.provenance not in [:derived, :generated] ->
-        {:error, {:invalid_derivation_provenance, evidence.provenance}}
-
-      evidence.issuer_ref != turn.mind_ref or evidence.source_ref != turn.mind_ref ->
-        {:error, {:mind_derivation_source_mismatch, evidence.ref}}
-
-      evidence.observed_at < turn.opened_at ->
-        {:error, {:mind_derivation_precedes_turn, evidence.ref}}
-
-      true ->
-        with :ok <- SubmissionContext.validate_evidence_bindings(context, evidence.bindings),
-             do: Derivation.validate(evidence, turn.evidence)
-    end
   end
 end

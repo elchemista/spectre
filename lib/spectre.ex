@@ -74,6 +74,8 @@ defmodule Spectre do
   @presentation_options [:sequencer_opts]
   @outcome_options [:sequencer_opts]
   @late_observation_options [:observer_opts, :sequencer_opts]
+  @outcome_statuses Outcome.statuses()
+  @correction_outcome_statuses Outcome.correction_statuses()
   @turn_options [:ingress_opts, :mind_opts, :sequencer_opts, :context_evidence_refs]
   @execution_options [:sequencer_opts]
   @scope_opening_fields [
@@ -206,7 +208,7 @@ defmodule Spectre do
              :scope_opening_failed
            ),
          true <- Opening.canonical(durable) == Opening.canonical(opening),
-         {:ok, scope} <- Scope.new(domain, context.scope_ref, context) do
+         {:ok, scope} <- Scope.new(domain, context) do
       {:ok, scope}
     else
       false -> {:error, :scope_opening_recovery_mismatch}
@@ -272,7 +274,7 @@ defmodule Spectre do
              :governed_scope_opening_failed
            ),
          {:ok, %Opening{} = _opening} <- admitted_governed_scope(admission),
-         {:ok, scope} <- Scope.new(parent_scope.domain, child_context.scope_ref, child_context) do
+         {:ok, scope} <- Scope.new(parent_scope.domain, child_context) do
       {:ok, scope}
     else
       [_unknown | _rest] = unknown ->
@@ -298,7 +300,7 @@ defmodule Spectre do
              fn -> Sequencer.resume_scope(domain.server, context) end,
              :scope_resume_failed
            ) do
-      Scope.new(domain, context.scope_ref, context)
+      Scope.new(domain, context)
     end
   end
 
@@ -538,7 +540,8 @@ defmodule Spectre do
              observation.evidence,
              sequencer_opts
            ),
-         {:ok, outcome} <- late_outcome(observation, act, attempt, corrected_ref),
+         {:ok, outcome} <-
+           Runner.Observation.outcome(observation, act, attempt, corrected_ref),
          {:ok, durable} <-
            sequencer_result(
              fn -> Sequencer.record_outcome(scope.domain.server, outcome, sequencer_opts) end,
@@ -564,7 +567,7 @@ defmodule Spectre do
   resulting Evidence binding and commits it before invoking the mind. An
   `:ingress` option is rejected, while `:ingress_opts` are passed to the fixed
   adapter. The mind receives no executor or authority view and returns only
-    Candidates. Callers may submit those Candidates separately with `propose/3`.
+  Candidates. Callers may submit those Candidates separately with `propose/3`.
 
   Optional `:context_evidence_refs` select additional already-durable Evidence
   for deliberation. Labels on the Turn are the conservative union of all
@@ -1178,7 +1181,7 @@ defmodule Spectre do
            :late_observation_unavailable
          ) do
       {:ok, {:ok, status, corrected_ref, metadata}}
-      when status in [:succeeded, :failed, :definitive_no_effect, :ambiguous] and
+      when status in @outcome_statuses and
              (is_nil(corrected_ref) or is_binary(corrected_ref)) and is_map(metadata) ->
         {:ok, status, corrected_ref, metadata}
 
@@ -1197,7 +1200,7 @@ defmodule Spectre do
 
   defp validate_late_correction(projection, observation, act, attempt, corrected_ref) do
     with :ok <- Portable.validate_ref(corrected_ref, :contradicts_outcome_ref),
-         true <- observation.status in [:succeeded, :failed],
+         true <- observation.status in @correction_outcome_statuses,
          {:ok, corrected} <- Map.fetch(projection.outcomes, corrected_ref),
          true <- corrected.status == :definitive_no_effect,
          true <- corrected.act_ref == act.ref and corrected.attempt_ref == attempt.ref do
@@ -1231,18 +1234,6 @@ defmodule Spectre do
       false -> {:error, :late_evidence_recovery_mismatch}
       {:error, _reason} = error -> error
     end
-  end
-
-  defp late_outcome(observation, act, attempt, corrected_ref) do
-    Outcome.new(%{
-      act_ref: act.ref,
-      attempt_ref: attempt.ref,
-      status: observation.status,
-      evidence_refs: Enum.map(observation.outcome_evidence, & &1.ref),
-      observed_at: observation.observed_at,
-      details_ref: observation.details_ref,
-      contradicts_outcome_ref: corrected_ref
-    })
   end
 
   defp duty_status(opts) do
@@ -1336,7 +1327,7 @@ defmodule Spectre do
     with {:ok, domain} <- resolve_domain(scope.domain),
          {:ok, context} <- SubmissionContext.new(scope.context),
          :ok <- context_domain_binding(context, domain) do
-      Scope.new(domain, context.scope_ref, context)
+      Scope.new(domain, context)
     end
   end
 

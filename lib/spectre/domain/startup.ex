@@ -15,12 +15,7 @@ defmodule Spectre.Domain.Startup do
   @spec load(Configuration.t()) :: {:ok, Spectre.Domain.Projection.t()} | {:error, term()}
 
   def load(config) do
-    case Recovery.recover(
-           config.store,
-           config.domain_ref,
-           config.constitution,
-           config.ledger_opts
-         ) do
+    case recover(config) do
       {:ok, projection} ->
         verify_recovered(config, projection)
 
@@ -35,8 +30,8 @@ defmodule Spectre.Domain.Startup do
   defp bootstrap(config) do
     bootstrap_opts = Keyword.put(config.bootstrap_opts, :constitution, config.constitution)
 
-    with {:ok, prepared} <- Bootstrap.prepare(config.domain_ref, bootstrap_opts),
-         {:ok, recorded_at} <- Transaction.trusted_now(config.clock) do
+    with {:ok, recorded_at} <- Transaction.trusted_now(config.clock),
+         {:ok, prepared} <- Bootstrap.prepare(config.domain_ref, bootstrap_opts, recorded_at) do
       case append_bootstrap(
              config,
              prepared.batch_id,
@@ -113,12 +108,7 @@ defmodule Spectre.Domain.Startup do
   end
 
   defp recover_bootstrapped(config) do
-    case Recovery.recover(
-           config.store,
-           config.domain_ref,
-           config.constitution,
-           config.ledger_opts
-         ) do
+    case recover(config) do
       {:ok, projection} ->
         verify_recovered(config, projection)
 
@@ -128,6 +118,15 @@ defmodule Spectre.Domain.Startup do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp recover(config) do
+    Recovery.recover(
+      config.store,
+      config.domain_ref,
+      config.constitution,
+      config.ledger_opts
+    )
   end
 
   defp verify_recovered(config, projection) do

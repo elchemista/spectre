@@ -15,9 +15,8 @@ defmodule Spectre.Authority.View do
 
   alias Spectre.Domain.Projection
   alias Spectre.GovernedAct.State
-  alias Spectre.Kernel.Authority
+  alias Spectre.Kernel.Authority.Status
   alias Spectre.Mandate
-  alias Spectre.Mandate.Ancestry
   alias Spectre.Scope
 
   @enforce_keys [
@@ -82,9 +81,11 @@ defmodule Spectre.Authority.View do
     with true <- projection.domain_ref == Scope.domain_ref(scope),
          %{ref: surface_ref, revision: surface_revision} <- State.surface(projection),
          %{ref: profile_ref, mode: profile_mode} <- State.host_profile(projection),
+         authority_view = Projection.authority_view(projection),
          {:ok, held_mandates} <-
-           held_mandates(projection, scope_ref, principal_ref, observed_at),
-         {:ok, controls} <- retained_controls(projection, principal_ref, observed_at) do
+           held_mandates(projection, authority_view, scope_ref, principal_ref, observed_at),
+         {:ok, controls} <-
+           retained_controls(projection, authority_view, principal_ref, observed_at) do
       {:ok,
        %__MODULE__{
          domain_ref: projection.domain_ref,
@@ -110,9 +111,7 @@ defmodule Spectre.Authority.View do
   def from_projection(_projection, _scope, _observed_at),
     do: {:error, :invalid_authority_view_input}
 
-  defp held_mandates(projection, scope_ref, principal_ref, observed_at) do
-    authority_view = Projection.authority_view(projection)
-
+  defp held_mandates(projection, authority_view, scope_ref, principal_ref, observed_at) do
     projection.mandates
     |> Map.values()
     |> Enum.filter(&(&1.holder_ref == principal_ref and scope_ref in &1.scope_refs))
@@ -127,20 +126,8 @@ defmodule Spectre.Authority.View do
   end
 
   defp held_mandate(projection, authority_view, %Mandate{} = mandate, observed_at) do
-    with {:ok, revocation_status} <-
-           Ancestry.status(
-             projection.mandates,
-             projection.revocations,
-             mandate,
-             observed_at
-           ),
-         {:ok, restriction_blockers} <- restriction_blockers(mandate, authority_view),
-         {:ok, debt_blockers} <- debt_blockers(mandate, authority_view),
+    with {:ok, blockers} <- authority_blockers(mandate, authority_view, observed_at),
          {:ok, meters} <- Projection.meter_accounts(projection, mandate.ref) do
-      blockers =
-        time_blockers(mandate, observed_at) ++
-          revocation_blockers(revocation_status) ++ restriction_blockers ++ debt_blockers
-
       {:ok,
        %{
          mandate: mandate,
@@ -150,35 +137,14 @@ defmodule Spectre.Authority.View do
     end
   end
 
-  defp time_blockers(%Mandate{} = mandate, observed_at) do
-    []
-    |> maybe_add(observed_at < mandate.not_before, :not_yet_valid)
-    |> maybe_add(observed_at >= mandate.expires_at, :expired)
-  end
-
-  defp revocation_blockers(:current), do: []
-  defp revocation_blockers({:revoked, :direct, _ref}), do: [:revoked]
-  defp revocation_blockers({:revoked, :ancestor, _ref}), do: [:ancestor_revoked]
-
-  defp restriction_blockers(mandate, authority_view) do
-    case Authority.restriction_status(mandate, authority_view) do
-      :ok -> {:ok, []}
-      {:error, :mandate_superseded} -> {:ok, [:superseded]}
-      {:error, :mandate_ancestor_superseded} -> {:ok, [:ancestor_superseded]}
-      {:error, reason} -> {:error, {:invalid_authority_restriction_state, mandate.ref, reason}}
+  defp authority_blockers(mandate, authority_view, observed_at) do
+    case Status.blockers(mandate, authority_view, observed_at) do
+      {:ok, blockers} -> {:ok, blockers}
+      {:error, reason} -> {:error, {:invalid_authority_status, mandate.ref, reason}}
     end
   end
 
-  defp debt_blockers(mandate, authority_view) do
-    case Authority.meter_debt_status(mandate, authority_view) do
-      :ok -> {:ok, []}
-      {:error, :mandate_meter_debt} -> {:ok, [:meter_debt]}
-      {:error, :mandate_ancestor_meter_debt} -> {:ok, [:ancestor_meter_debt]}
-      {:error, reason} -> {:error, {:invalid_authority_meter_state, mandate.ref, reason}}
-    end
-  end
-
-  defp retained_controls(projection, principal_ref, observed_at) do
+  defp retained_controls(projection, authority_view, principal_ref, observed_at) do
     projection.mandates
     |> Map.values()
     |> Enum.filter(fn mandate ->
@@ -187,14 +153,8 @@ defmodule Spectre.Authority.View do
     end)
     |> Enum.sort_by(& &1.ref)
     |> Enum.reduce_while({:ok, []}, fn mandate, {:ok, controls} ->
-      case Ancestry.directly_revoked?(projection.revocations, mandate, observed_at) do
-        {:ok, revoked?} ->
-          blockers =
-            []
-            |> maybe_add(observed_at < mandate.not_before, :not_yet_valid)
-            |> maybe_add(observed_at >= mandate.expires_at, :expired)
-            |> maybe_add(revoked?, :already_revoked)
-
+      case Status.direct_blockers(mandate, authority_view, observed_at) do
+        {:ok, blockers} ->
           control = %{
             mandate_ref: mandate.ref,
             accountable_ref: mandate.accountable_ref,
@@ -209,9 +169,6 @@ defmodule Spectre.Authority.View do
     end)
     |> reverse_ok()
   end
-
-  defp maybe_add(values, true, value), do: values ++ [value]
-  defp maybe_add(values, false, _value), do: values
 
   defp reverse_ok({:ok, values}), do: {:ok, Enum.reverse(values)}
   defp reverse_ok({:error, _reason} = error), do: error

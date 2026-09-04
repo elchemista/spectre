@@ -15,11 +15,10 @@ defmodule Spectre.Consequence.Validator do
   """
 
   alias Spectre.{Act, Candidate, Decision}
-  alias Spectre.Domain.Projection
   alias Spectre.Erasure
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.Class, as: GovernedClass
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{Fold, State}
   alias Spectre.Kernel.Commit
   alias Spectre.Mandate
 
@@ -80,7 +79,7 @@ defmodule Spectre.Consequence.Validator do
   end
 
   @doc "Checks an admitted intrinsic transition against a provisional projection."
-  @spec validate_transition(id(), Candidate.t(), Decision.t(), Act.t(), Projection.t()) ::
+  @spec validate_transition(id(), Candidate.t(), Decision.t(), Act.t(), State.t()) ::
           :ok | {:error, term()}
   def validate_transition(
         id,
@@ -116,7 +115,7 @@ defmodule Spectre.Consequence.Validator do
     with :ok <- validate_binding(candidate.class, id),
          true <- act.class == candidate.class,
          {:ok, payloads} <- Commit.payloads(projection, decision, act),
-         {:ok, _projection} <- apply_payloads(projection, payloads) do
+         {:ok, _projection} <- Fold.apply_payloads(projection, payloads, act.committed_at) do
       :ok
     else
       false -> {:error, :consequence_transition_class_mismatch}
@@ -169,15 +168,4 @@ defmodule Spectre.Consequence.Validator do
 
   defp validate_mandate_revocation(%Candidate{}, _projection, _time),
     do: {:error, :invalid_mandate_revocation}
-
-  defp apply_payloads(projection, payloads) do
-    Enum.reduce_while(payloads, {:ok, projection}, fn payload, {:ok, current} ->
-      revision = current.revision + 1
-
-      case Projection.apply_payload(current, payload, revision) do
-        {:ok, next} -> {:cont, {:ok, %{next | revision: revision}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
 end

@@ -12,29 +12,10 @@ defmodule Spectre.GovernedAct.Integrity do
   diagnostics without making either path trust a live runtime process.
   """
 
-  alias Spectre.{Act, Constitution, Duty, Genesis, Mandate, Outcome}
+  alias Spectre.{Constitution, Duty}
   alias Spectre.Duty.Derive
-  alias Spectre.GovernedAct.{DispatchState, Fold, State}
+  alias Spectre.GovernedAct.{DispatchState, Emergency, Fold, State}
   alias Spectre.Kernel.Meter
-
-  @duty_causal_fields [
-    :schema_version,
-    :ref,
-    :cause_key,
-    :class,
-    :act_ref,
-    :attempt_ref,
-    :mandate_ref,
-    :subjects,
-    :accountable,
-    :evidence_refs,
-    :missing,
-    :containment,
-    :closing_conditions,
-    :disposition_authority_refs,
-    :conflict_refs,
-    :opened_at
-  ]
 
   @doc "Validates a complete folded prefix at trusted observation time."
   @spec validate(State.t(), non_neg_integer()) :: :ok | {:error, term()}
@@ -42,8 +23,6 @@ defmodule Spectre.GovernedAct.Integrity do
       when is_integer(observed_at) and observed_at >= 0 do
     with :ok <- Fold.validate_complete(state),
          :ok <- complete_foundation(state),
-         :ok <- complete_uncertain_outcomes(state),
-         :ok <- complete_erasure_duties(state),
          :ok <- complete_dispatch_expirations(state, observed_at),
          :ok <- complete_required_duties(state, observed_at) do
       meters_conserved(state)
@@ -107,101 +86,26 @@ defmodule Spectre.GovernedAct.Integrity do
     end
   end
 
-  defp complete_emergency_mandate(%State{genesis: %Genesis{emergency_mandate_ref: nil}}),
-    do: :ok
-
-  defp complete_emergency_mandate(state) do
-    with {:ok, mandate} <-
-           fetch(state.mandates, state.genesis.emergency_mandate_ref, :emergency_mandate),
-         {:ok, maximum_duration} <- Constitution.emergency_max_duration(state.constitution) do
-      forbidden =
-        MapSet.new(
-          ~w(mandate.delegate mandate.restrict surface.revise host_profile.revise definition.revise)
-        )
-
-      cond do
-        mandate.delegation != %{"allowed" => false, "max_depth" => 0} ->
-          {:error, :emergency_mandate_may_not_delegate}
-
-        Enum.any?(mandate.classes, &MapSet.member?(forbidden, &1)) ->
-          {:error, :emergency_mandate_may_not_rewrite_exception}
-
-        mandate.expires_at - mandate.not_before > maximum_duration ->
-          {:error, :emergency_mandate_duration_exceeded}
-
-        true ->
-          :ok
-      end
-    end
-  end
-
-  defp complete_uncertain_outcomes(state) do
-    state.outcomes
-    |> Map.values()
-    |> Enum.filter(&(&1.status == :ambiguous or Outcome.correction?(&1)))
-    |> Enum.reduce_while(:ok, fn outcome, :ok ->
-      cause_key =
-        if Outcome.correction?(outcome),
-          do: {:contradicted_outcome, outcome.act_ref, outcome.attempt_ref, outcome.ref},
-          else: {:ambiguous_outcome, outcome.act_ref, outcome.attempt_ref}
-
-      if Map.has_key?(state.duties, cause_key),
-        do: {:cont, :ok},
-        else: {:halt, {:error, {:uncertain_outcome_without_duty, outcome.ref}}}
-    end)
-  end
-
-  defp complete_erasure_duties(state) do
-    state.erasures
-    |> Map.values()
-    |> Enum.filter(& &1.reduces_verifiability)
-    |> Enum.reduce_while(:ok, fn erasure, :ok ->
-      succeeded =
-        state.outcomes
-        |> Map.values()
-        |> Enum.find(&(&1.act_ref == erasure.source_act_ref and &1.status == :succeeded))
-
-      if is_nil(succeeded) do
-        {:cont, :ok}
-      else
-        cause_key =
-          {:erasure_reduces_verifiability, erasure.ref, erasure.source_act_ref,
-           succeeded.attempt_ref, succeeded.ref}
-
-        if Map.has_key?(state.duties, cause_key),
-          do: {:cont, :ok},
-          else: {:halt, {:error, {:erasure_outcome_without_verifiability_duty, erasure.ref}}}
-      end
-    end)
-  end
+  defp complete_emergency_mandate(state),
+    do: Emergency.validate(state.genesis, state.mandates, state.constitution)
 
   defp complete_dispatch_expirations(state, observed_at) do
-    state
-    |> DispatchState.pending_refs()
-    |> Enum.sort()
-    |> Enum.reduce_while(:ok, fn act_ref, :ok ->
-      with {:ok, %Act{} = act} <- fetch(state.acts, act_ref, :act),
-           {:ok, %Mandate{} = mandate} <- fetch(state.mandates, act.mandate_ref, :mandate),
-           true <- act.mandate_revision == mandate.revision do
-        if mandate.expires_at <= observed_at,
-          do: {:halt, {:error, {:dispatch_expiration_not_recorded, act.ref}}},
-          else: {:cont, :ok}
-      else
-        false -> {:halt, {:error, {:dispatch_expiration_mandate_mismatch, act_ref}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+    case DispatchState.expired(state, observed_at) do
+      {:ok, []} -> :ok
+      {:ok, [{act, _mandate} | _rest]} -> {:error, {:dispatch_expiration_not_recorded, act.ref}}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp complete_required_duties(state, observed_at) do
     state
-    |> Derive.required_duties(state.constitution, observed_at)
+    |> Derive.required_duties(observed_at)
     |> Enum.reduce_while(:ok, fn cause, :ok ->
       case Map.fetch(state.duties, cause.cause_key) do
         {:ok, %Duty{} = actual} ->
           case cause |> Derive.materialization_attrs(observed_at) |> Duty.new() do
             {:ok, expected} ->
-              if same_duty_cause?(actual, expected),
+              if Duty.same_cause?(actual, expected),
                 do: {:cont, :ok},
                 else: {:halt, {:error, {:duty_cause_materialization_mismatch, actual.ref}}}
 
@@ -213,11 +117,6 @@ defmodule Spectre.GovernedAct.Integrity do
           {:halt, {:error, {:required_duty_not_materialized, cause.cause_key}}}
       end
     end)
-  end
-
-  defp same_duty_cause?(actual, expected) do
-    Map.take(Map.from_struct(actual), @duty_causal_fields) ==
-      Map.take(Map.from_struct(expected), @duty_causal_fields)
   end
 
   defp meters_conserved(state) do
@@ -235,12 +134,5 @@ defmodule Spectre.GovernedAct.Integrity do
         {:error, _reason} = error -> {:halt, error}
       end
     end)
-  end
-
-  defp fetch(collection, key, kind) do
-    case Map.fetch(collection, key) do
-      {:ok, value} -> {:ok, value}
-      :error -> {:error, {kind, :not_found, key}}
-    end
   end
 end

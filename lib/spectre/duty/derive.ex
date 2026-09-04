@@ -37,11 +37,18 @@ defmodule Spectre.Duty.Derive do
   @doc """
   Returns every distinct Duty cause implied by replayed `state` at trusted
   `time`. Existing Duty records do not erase their cause, so the result remains
-  useful to an auditor. Use `missing_openings/3` for recovery materialization.
+  useful to an auditor. Use `missing_openings/2` for recovery materialization.
   """
+  @spec required_duties(State.t(), integer()) :: [cause()]
+  def required_duties(%State{} = state, time) when is_integer(time),
+    do: required_duties(state, state.constitution, time)
+
+  def required_duties(_state, _time), do: []
+
+  @doc false
   @spec required_duties(State.t(), map(), integer()) :: [cause()]
   def required_duties(%State{} = state, constitution, time)
-      when is_map(constitution) and is_integer(time) do
+      when is_map(constitution) and not is_struct(constitution) and is_integer(time) do
     state
     |> Facts.from_state()
     |> derive_required_duties(constitution, time)
@@ -55,18 +62,17 @@ defmodule Spectre.Duty.Derive do
   Both open and disposed records count as materialized. If an opening append was
   lost or ambiguous, its key is absent and the same cause is returned again.
   """
-  @spec missing_openings(State.t(), map(), integer()) :: [cause()]
-  def missing_openings(%State{} = state, constitution, time)
-      when is_map(constitution) and is_integer(time) do
+  @spec missing_openings(State.t(), integer()) :: [cause()]
+  def missing_openings(%State{} = state, time) when is_integer(time) do
     facts = Facts.from_state(state)
     existing = facts.duties |> Map.keys() |> MapSet.new()
 
     facts
-    |> derive_required_duties(constitution, time)
+    |> derive_required_duties(state.constitution, time)
     |> Enum.reject(&MapSet.member?(existing, &1.cause_key))
   end
 
-  def missing_openings(_state, _constitution, _time), do: []
+  def missing_openings(_state, _time), do: []
 
   @doc "Returns the stable identity of a derived cause."
   @spec cause_key(cause() | map()) :: term()

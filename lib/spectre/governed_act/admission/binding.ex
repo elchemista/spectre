@@ -16,7 +16,6 @@ defmodule Spectre.GovernedAct.Admission.Binding do
   @field_matrix [
     {:decision_ref, :ref, :decision_ref},
     {:candidate_identity_key, :candidate_identity_key, :candidate_identity_key},
-    {:candidate_digest, :candidate_digest, :candidate_digest},
     {:candidate_class, :candidate_class, :class},
     {:consent, :consent, :consent},
     {:submission_context_ref, :submission_context_ref, :submission_context_ref},
@@ -42,7 +41,6 @@ defmodule Spectre.GovernedAct.Admission.Binding do
 
   @candidate_to_act [
     {:candidate_identity_key, :identity_key},
-    {:candidate_digest, :material_digest},
     {:class, :class},
     {:row, :row},
     {:consequence, :consequence},

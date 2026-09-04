@@ -17,6 +17,7 @@ defmodule Spectre.Presentation.Approval do
   alias Spectre.Presentation.Approval.Assumptions
 
   @contract_ref "spectre.presentation.approval.v1"
+  @stances Evidence.stances()
   @response_fields [
     :ref,
     :valid_from,
@@ -57,7 +58,7 @@ defmodule Spectre.Presentation.Approval do
         observed_at,
         attrs
       )
-      when stance in [:supports, :contradicts] and is_integer(observed_at) do
+      when stance in @stances and is_integer(observed_at) do
     with {:ok, context} <- SubmissionContext.new(context),
          {:ok, presentation} <- Presentation.new(presentation),
          {:ok, show_act} <- Act.new(show_act),
@@ -147,7 +148,7 @@ defmodule Spectre.Presentation.Approval do
         evidence,
         time
       )
-      when stance in [:supports, :contradicts] and is_list(outcomes) and is_list(evidence) and
+      when stance in @stances and is_list(outcomes) and is_list(evidence) and
              is_integer(time) do
     validate_evidence_with_basis(
       response,
@@ -462,22 +463,18 @@ defmodule Spectre.Presentation.Approval do
   end
 
   defp current_observation(evidence, time) do
-    cond do
-      evidence.observed_at > time ->
-        {:error, :presentation_approval_from_future}
-
-      not is_nil(evidence.valid_from) and evidence.valid_from > time ->
-        {:error, :presentation_approval_not_yet_valid}
-
-      not is_nil(evidence.valid_until) and time >= evidence.valid_until ->
-        {:error, :presentation_approval_expired}
-
-      not is_nil(evidence.freshness_ms) and time - evidence.observed_at > evidence.freshness_ms ->
-        {:error, :presentation_approval_stale}
-
-      true ->
-        :ok
+    case Evidence.temporal_status(evidence, time) do
+      :from_future -> {:error, :presentation_approval_from_future}
+      :not_yet_valid -> {:error, :presentation_approval_not_yet_valid}
+      :expired -> {:error, :presentation_approval_expired}
+      :current -> current_freshness(evidence, time)
     end
+  end
+
+  defp current_freshness(evidence, time) do
+    if Evidence.current_at?(evidence, time),
+      do: :ok,
+      else: {:error, :presentation_approval_stale}
   end
 
   defp successful_show_precedes_approval(approval, show_act, outcomes) do

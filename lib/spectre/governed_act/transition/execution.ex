@@ -11,21 +11,15 @@ defmodule Spectre.GovernedAct.Transition.Execution do
   governed-act fold.
   """
 
-  alias Spectre.{Act, Outcome}
+  alias Spectre.Act
   alias Spectre.Attempt.Binding
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.{AuthorityChange, DispatchState, Index, MeterState, State}
+  alias Spectre.GovernedAct.{AuthorityChange, DispatchState, Index, MeterState, State, View}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
-  alias Spectre.GovernedAct.Transition.Admission
-  alias Spectre.Outcome.Attestation
-
-  @event_types ~w(dispatch_ready dispatch_cancelled attempt_started outcome_recorded)
-
-  @doc false
-  @spec event_types() :: [String.t()]
-  def event_types, do: @event_types
+  alias Spectre.Kernel.Authority
+  alias Spectre.GovernedAct.Transition.Outcome, as: OutcomeTransition
 
   @spec apply(State.t(), Event.t(), non_neg_integer() | nil) ::
           {:ok, State.t()} | {:error, term()}
@@ -63,9 +57,8 @@ defmodule Spectre.GovernedAct.Transition.Execution do
         %Event{type: "attempt_started", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, attempt} <- Record.decode(Spectre.Attempt, data),
-         :ok <- Record.match_identity(identity, Record.ref(attempt)),
-         :ok <- Index.unique(state.attempts, identity, :attempt),
+    with {:ok, attempt} <-
+           Index.restore_unique(state.attempts, Spectre.Attempt, identity, data, :attempt),
          {:ok, act} <- Index.fetch_act(state, attempt.act_ref),
          :ok <- attempt_available(state, attempt, act),
          :ok <- nonce_available(state, attempt.grant_nonce_digest),
@@ -86,16 +79,16 @@ defmodule Spectre.GovernedAct.Transition.Execution do
         %Event{type: "outcome_recorded", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, outcome} <- Record.decode(Spectre.Outcome, data),
-         :ok <- Record.match_identity(identity, Record.ref(outcome)),
-         :ok <- Index.unique(state.outcomes, identity, :outcome),
+    with {:ok, outcome} <-
+           Index.restore_unique(state.outcomes, Spectre.Outcome, identity, data, :outcome),
          {:ok, attempt} <- Index.fetch_attempt(state, outcome.attempt_ref),
          {:ok, act} <- Index.fetch_act(state, outcome.act_ref),
          :ok <- match_outcome_to_attempt(state, outcome, attempt),
-         :ok <- validate_erasure_outcome(act, outcome),
+         :ok <- OutcomeTransition.validate_for_act(act, outcome),
          :ok <- validate_outcome_time(outcome, attempt),
-         :ok <- validate_outcome_transition(state, outcome),
-         :ok <- validate_outcome_evidence(state, outcome, attempt, act) do
+         :ok <- OutcomeTransition.validate_history(state.outcomes, outcome),
+         :ok <- ErasureAnalysis.validate_evidence_available(state, outcome.evidence_refs),
+         :ok <- OutcomeTransition.validate_evidence(state.evidence, outcome, attempt, act) do
       {:ok, %{state | outcomes: Map.put(state.outcomes, identity, outcome)}}
     end
   end
@@ -108,11 +101,6 @@ defmodule Spectre.GovernedAct.Transition.Execution do
 
   defp exact_prefixed_identity(_identity, _prefix, _ref),
     do: {:error, :invalid_domain_event_identity_binding}
-
-  defp validate_erasure_outcome(%Act{class: "data.erase"}, %Outcome{status: :failed}),
-    do: {:error, :erasure_failure_must_be_definitive_or_ambiguous}
-
-  defp validate_erasure_outcome(_act, _outcome), do: :ok
 
   defp attempt_available(state, attempt, act) do
     cond do
@@ -177,59 +165,12 @@ defmodule Spectre.GovernedAct.Transition.Execution do
       else: {:error, {:outcome_precedes_attempt, outcome.ref, attempt.ref}}
   end
 
-  defp validate_outcome_transition(state, outcome) do
-    prior =
-      state.outcomes
-      |> Map.values()
-      |> Enum.filter(&(&1.attempt_ref == outcome.attempt_ref))
-
-    if Outcome.correction?(outcome) do
-      validate_outcome_correction(prior, outcome)
-    else
-      case Enum.find(prior, &(&1.status != :ambiguous)) do
-        nil ->
-          :ok
-
-        terminal ->
-          {:error,
-           {:attempt_already_has_definitive_outcome, outcome.attempt_ref, terminal.ref,
-            terminal.status}}
-      end
-    end
-  end
-
-  defp validate_outcome_correction(prior, outcome) do
-    target = Enum.find(prior, &(&1.ref == outcome.contradicts_outcome_ref))
-    existing = Enum.find(prior, &(&1.contradicts_outcome_ref == outcome.contradicts_outcome_ref))
-
-    cond do
-      is_nil(target) ->
-        {:error, {:corrected_outcome_not_found, outcome.contradicts_outcome_ref}}
-
-      target.status != :definitive_no_effect ->
-        {:error, {:corrected_outcome_not_no_effect, target.ref}}
-
-      target.act_ref != outcome.act_ref or target.attempt_ref != outcome.attempt_ref ->
-        {:error, {:outcome_correction_cause_mismatch, outcome.ref, target.ref}}
-
-      outcome.observed_at < target.observed_at ->
-        {:error, {:outcome_correction_precedes_target, outcome.ref, target.ref}}
-
-      not is_nil(existing) ->
-        {:error, {:outcome_already_corrected, target.ref, existing.ref}}
-
-      true ->
-        :ok
-    end
-  end
-
   defp validate_attempt_authority(state, attempt, act) do
-    with {:ok, candidate} <- Spectre.GovernedAct.Admission.Binding.candidate(act),
-         {:ok, mandate} <- Index.fetch_mandate(state, act.mandate_ref) do
-      case Admission.authorize_candidate(state, candidate, act, mandate, attempt.started_at) do
-        {:ok, _effective_mandate} -> :ok
-        {:error, _reason} = error -> error
-      end
+    with {:ok, mandate} <- Index.fetch_mandate(state, act.mandate_ref),
+         :ok <- Authority.dispatchable?(act, mandate, View.authority(state), attempt.started_at) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:act_without_current_authority, act.ref, reason}}
     end
   end
 
@@ -361,24 +302,5 @@ defmodule Spectre.GovernedAct.Transition.Execution do
       duty.class == :disputed_evidence and duty.status == :open and duty.act_ref == act_ref and
         is_nil(duty.attempt_ref)
     end)
-  end
-
-  defp validate_outcome_evidence(state, outcome, attempt, act) do
-    with :ok <- ErasureAnalysis.validate_evidence_available(state, outcome.evidence_refs),
-         :ok <-
-           Index.ensure_present(
-             state.evidence,
-             outcome.evidence_refs,
-             :outcome_evidence_not_found
-           ) do
-      Enum.reduce_while(outcome.evidence_refs, :ok, fn ref, :ok ->
-        evidence = Map.fetch!(state.evidence, ref)
-
-        case Attestation.validate(evidence, outcome, attempt, act) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-    end
   end
 end

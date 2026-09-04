@@ -3,7 +3,7 @@ defmodule Spectre.Outcome.Attestation do
 
   alias Spectre.{Act, Attempt, Evidence, Outcome}
 
-  @statuses [:succeeded, :failed, :definitive_no_effect, :ambiguous]
+  @statuses Outcome.statuses()
 
   @spec validate(Evidence.t(), Outcome.t(), Attempt.t(), Act.t()) ::
           :ok | {:error, term()}
@@ -65,7 +65,7 @@ defmodule Spectre.Outcome.Attestation do
       evidence.bindings != bindings(act, attempt) ->
         {:error, {:outcome_evidence_binding_mismatch, outcome.ref, evidence.ref}}
 
-      not current_at?(evidence, outcome.observed_at) ->
+      not Evidence.current_at?(evidence, outcome.observed_at) ->
         {:error, {:outcome_evidence_not_current, outcome.ref, evidence.ref}}
 
       true ->
@@ -103,7 +103,7 @@ defmodule Spectre.Outcome.Attestation do
       evidence.assumptions == [] and evidence.parent_refs == [] and
       evidence.source_ref == act.executor_ref and evidence.issuer_ref == act.executor_ref and
       evidence.bindings == bindings(act, attempt) and
-      evidence.observed_at >= attempt.started_at and current_at?(evidence, at)
+      evidence.observed_at >= attempt.started_at and Evidence.current_at?(evidence, at)
   end
 
   defp proposition(status, act, attempt) do
@@ -111,11 +111,4 @@ defmodule Spectre.Outcome.Attestation do
   end
 
   defp bindings(act, attempt), do: %{"act_ref" => act.ref, "attempt_ref" => attempt.ref}
-
-  defp current_at?(evidence, at) do
-    evidence.observed_at <= at and
-      (is_nil(evidence.valid_from) or evidence.valid_from <= at) and
-      (is_nil(evidence.valid_until) or at < evidence.valid_until) and
-      (is_nil(evidence.freshness_ms) or at - evidence.observed_at <= evidence.freshness_ms)
-  end
 end

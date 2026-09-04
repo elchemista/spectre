@@ -13,27 +13,7 @@ defmodule Spectre.Domain.Sequencer.State do
   alias Spectre.Domain.Configuration
   alias Spectre.GovernedAct.State, as: GovernedState
 
-  @configuration_fields [
-    :store,
-    :clock,
-    :id_source,
-    :late_observer,
-    :mind,
-    :mind_ref,
-    :ingress,
-    :ingress_ref,
-    :generation,
-    :grant_secret,
-    :checkout_receipt_secret,
-    :grant_ttl_ms,
-    :batch_size,
-    :batch_wait_ms,
-    :conflict_retries,
-    :ambiguous_retries,
-    :ledger_opts,
-    :payload_store,
-    :execution_boundary
-  ]
+  @configuration_fields Configuration.runtime_fields()
 
   @enforce_keys [:projection, :genesis_verifier | @configuration_fields]
 
@@ -53,8 +33,7 @@ defmodule Spectre.Domain.Sequencer.State do
   def new(%Configuration{} = config, %GovernedState{} = projection) do
     values =
       config
-      |> Map.from_struct()
-      |> Map.take(@configuration_fields)
+      |> Configuration.runtime_values()
       |> Map.put(:projection, projection)
       |> Map.put(:genesis_verifier, Configuration.genesis_verifier(config))
 

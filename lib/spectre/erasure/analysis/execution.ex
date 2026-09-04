@@ -9,8 +9,9 @@ defmodule Spectre.Erasure.Analysis.Execution do
   """
 
   alias Spectre.Erasure.Analysis.Facts
+  alias Spectre.Outcome
 
-  @terminal_outcomes [:succeeded, :failed, :definitive_no_effect]
+  @terminal_outcomes Outcome.definitive_statuses()
 
   @type payload_state :: :live | :possibly_absent | :erased
 

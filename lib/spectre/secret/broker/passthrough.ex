@@ -10,7 +10,7 @@ defmodule Spectre.Secret.Broker.Passthrough do
   use GenServer
   @behaviour Spectre.Secret.Broker
 
-  alias Spectre.{Adapter, Secret.CheckoutReceipt}
+  alias Spectre.{Adapter, Clock, Seal, Secret.CheckoutReceipt}
 
   @ref "spectre:secret-broker:passthrough:v1"
   @option_keys [:capability, :checkout_receipt_secret, :domain_ref, :clock, :timeout]
@@ -59,17 +59,12 @@ defmodule Spectre.Secret.Broker.Passthrough do
   end
 
   defp verify_receipt(receipt, act, attempt, domain_ref, secret, now) do
-    CheckoutReceipt.verify(receipt, secret, %{
-      domain_ref: domain_ref,
-      act_ref: act.ref,
-      attempt_ref: attempt.ref,
-      executor_ref: act.executor_ref,
-      material_digest: act.material_digest,
-      generation: attempt.generation,
-      grant_nonce_digest: attempt.grant_nonce_digest,
-      broker_ref: @ref,
-      now: now
-    })
+    expected =
+      act
+      |> CheckoutReceipt.binding(attempt, @ref)
+      |> Map.merge(%{domain_ref: domain_ref, now: now})
+
+    CheckoutReceipt.verify(receipt, secret, expected)
   end
 
   defp claim(receipt, now, opts) do
@@ -90,20 +85,22 @@ defmodule Spectre.Secret.Broker.Passthrough do
   end
 
   defp read_clock(clock) do
-    case clock.now() do
-      now when is_integer(now) and now >= 0 -> {:ok, now}
-      _invalid -> {:error, :invalid_checkout_time}
+    case Clock.read(clock) do
+      {:ok, now} -> {:ok, now}
+      {:error, :invalid_clock_value} -> {:error, :invalid_checkout_time}
+      {:error, _reason} -> {:error, :checkout_clock_unavailable}
     end
-  rescue
-    _exception -> {:error, :checkout_clock_unavailable}
-  catch
-    _kind, _reason -> {:error, :checkout_clock_unavailable}
   end
 
   defp required_secret(opts) do
     case Keyword.fetch(opts, :checkout_receipt_secret) do
-      {:ok, secret} when is_binary(secret) and byte_size(secret) >= 32 -> {:ok, secret}
-      _missing_or_invalid -> {:error, :checkout_receipt_secret_required}
+      {:ok, secret} ->
+        if Seal.valid_secret?(secret),
+          do: {:ok, secret},
+          else: {:error, :checkout_receipt_secret_required}
+
+      _missing_or_invalid ->
+        {:error, :checkout_receipt_secret_required}
     end
   end
 

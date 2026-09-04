@@ -15,10 +15,9 @@ defmodule Spectre.Kernel.Commit do
 
   alias Spectre.{Act, Decision}
   alias Spectre.Domain.{Event, Projection}
-  alias Spectre.GovernedAct.Admission.Binding
+  alias Spectre.GovernedAct.{Admission.Binding, Materialization}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.State
-  alias Spectre.Kernel.Commit.Materialization
 
   @type payload :: map()
 

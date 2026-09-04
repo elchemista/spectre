@@ -2,8 +2,8 @@ defmodule Spectre.Domain.Transaction do
   @moduledoc """
   Durable transaction boundary shared by Domain command workflows.
 
-  It validates provisional payloads, performs one exact append, classifies an
-  ambiguous result and rebuilds the disposable projection from the ledger.
+  It performs one exact append, classifies an ambiguous result and rebuilds the
+  disposable projection from the ledger.
   Conflict policy remains with the calling workflow; this module never replies
   to callers, schedules work or grants a capability.
 
@@ -11,27 +11,14 @@ defmodule Spectre.Domain.Transaction do
   every workflow observes an equivalent governed prefix.
   """
 
+  alias Spectre.{Adapter, Clock, Id, Portable}
   alias Spectre.Attempt.Reconciler
   alias Spectre.Domain.{Bootstrap, Projection, Recovery}
   alias Spectre.Domain.Sequencer.State
+  alias Spectre.GovernedAct.Fold
   alias Spectre.GovernedAct.State, as: GovernedState
-  alias Spectre.Id
   alias Spectre.Ledger.Writer
   alias Spectre.Payload.Store, as: PayloadStore
-
-  @doc "Applies a prospective batch to disposable state without advancing the ledger head."
-  @spec apply_payloads(GovernedState.t(), [map()]) ::
-          {:ok, GovernedState.t()} | {:error, term()}
-  def apply_payloads(projection, payloads) do
-    Enum.reduce_while(payloads, {:ok, projection}, fn payload, {:ok, current} ->
-      provisional_revision = current.revision + 1
-
-      case Projection.apply_payload(current, payload, provisional_revision) do
-        {:ok, next} -> {:cont, {:ok, %{next | revision: provisional_revision}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
 
   @doc "Appends one exact batch and returns the projection rebuilt from durable history."
   @spec append_exact(
@@ -52,14 +39,18 @@ defmodule Spectre.Domain.Transaction do
     expected_revision = state.projection.revision
 
     if recorded_at >= latest_recorded_at do
-      append_exact_at(
-        state,
-        batch_id,
-        payloads,
-        expected_revision,
-        recorded_at,
-        state.ambiguous_retries
-      )
+      with {:ok, provisional} <-
+             Projection.apply_payloads(state.projection, payloads, recorded_at),
+           :ok <- Fold.validate_complete(provisional) do
+        append_exact_at(
+          state,
+          batch_id,
+          payloads,
+          expected_revision,
+          recorded_at,
+          state.ambiguous_retries
+        )
+      end
     else
       {:error, {:ledger_time_regression, recorded_at, latest_recorded_at}}
     end
@@ -185,35 +176,31 @@ defmodule Spectre.Domain.Transaction do
          conflicts_left,
          recorded_at
        ) do
-    with {:ok, _provisional} <- apply_payloads(projection, plan.payloads) do
-      repair_state = %{state | projection: projection}
+    repair_state = %{state | projection: projection}
 
-      case append_exact(
-             repair_state,
-             plan.batch_id,
-             plan.payloads,
-             recorded_at
-           ) do
-        {:ok, recovered} ->
-          {:ok, recovered}
+    case append_exact(
+           repair_state,
+           plan.batch_id,
+           plan.payloads,
+           recorded_at
+         ) do
+      {:ok, recovered} ->
+        {:ok, recovered}
 
-        :conflict when conflicts_left > 0 ->
-          retry_duty_repair_after_conflict(
-            repair_state,
-            conflicts_left - 1
-          )
+      :conflict when conflicts_left > 0 ->
+        retry_duty_repair_after_conflict(
+          repair_state,
+          conflicts_left - 1
+        )
 
-        :conflict ->
-          {:error, :duty_repair_conflict_retries_exhausted}
+      :conflict ->
+        {:error, :duty_repair_conflict_retries_exhausted}
 
-        {:error, {:durable_recovery_failed, reason}} ->
-          {:error, reason}
+      {:error, {:durable_recovery_failed, reason}} ->
+        {:error, reason}
 
-        {:error, reason} ->
-          {:error, {:duty_repair_failed, reason}}
-      end
-    else
-      {:error, reason} -> {:error, {:duty_repair_failed, reason}}
+      {:error, reason} ->
+        {:error, {:duty_repair_failed, reason}}
     end
   end
 
@@ -270,8 +257,7 @@ defmodule Spectre.Domain.Transaction do
   @spec verify_payload_references(term(), [map()]) :: :ok | {:error, term()}
   def verify_payload_references(payload_store, payloads) do
     payloads
-    |> Enum.flat_map(&content_payload_refs/1)
-    |> Enum.uniq()
+    |> PayloadStore.introduced_refs()
     |> Enum.reduce_while(:ok, fn ref, :ok ->
       case PayloadStore.verify(payload_store, ref) do
         :ok -> {:cont, :ok}
@@ -281,37 +267,23 @@ defmodule Spectre.Domain.Transaction do
   end
 
   defp verify_new_payload_references(payload_store, projection, payloads) do
-    refs = payloads |> Enum.flat_map(&content_payload_refs/1) |> Enum.uniq()
+    refs = PayloadStore.introduced_refs(payloads)
     PayloadStore.verify_new_references(payload_store, projection, refs)
   end
 
-  defp content_payload_refs(payload) do
-    case {Map.get(payload, "type"), Map.get(payload, "data")} do
-      {"evidence_recorded", data} when is_map(data) ->
-        optional_payload_ref(Map.get(data, "payload_ref"))
-
-      {"presentation_recorded", data} when is_map(data) ->
-        optional_payload_ref(Map.get(data, "rendered_payload_ref"))
-
-      _other ->
-        []
-    end
-  end
-
-  defp optional_payload_ref(nil), do: []
-  defp optional_payload_ref(ref), do: [ref]
-
   @doc "Reads trusted host time while containing adapter failures."
-  @spec trusted_now(module()) :: {:ok, integer()} | {:error, term()}
+  @spec trusted_now(module()) :: {:ok, non_neg_integer()} | {:error, term()}
   def trusted_now(clock) do
-    case clock.now() do
-      value when is_integer(value) -> {:ok, value}
-      _invalid -> {:error, :invalid_trusted_time}
+    case Clock.read(clock) do
+      {:ok, now} ->
+        {:ok, now}
+
+      {:error, :invalid_clock_value} ->
+        {:error, :invalid_trusted_time}
+
+      {:error, reason} ->
+        {:error, {:trusted_clock_failed, reason}}
     end
-  rescue
-    exception -> {:error, {:trusted_clock_failed, exception.__struct__}}
-  catch
-    kind, _reason -> {:error, {:trusted_clock_failed, kind}}
   end
 
   @doc "Returns monotonic ledger time relative to the recovered prefix."
@@ -328,11 +300,15 @@ defmodule Spectre.Domain.Transaction do
 
   @doc "Obtains an opaque operational identifier from the configured source."
   @spec operational_id(State.t()) :: {:ok, String.t()} | {:error, term()}
-  def operational_id(state) do
-    {:ok, Id.generate(state.id_source)}
-  rescue
-    exception -> {:error, {:identifier_generation_failed, exception.__struct__}}
-  catch
-    kind, _reason -> {:error, {:identifier_generation_failed, kind}}
+  def operational_id(%State{} = state) do
+    case Adapter.invoke(state.id_source, :generate, []) do
+      {:ok, id} ->
+        if Id.valid?(id),
+          do: {:ok, id},
+          else: {:error, {:invalid_operational_identifier, Portable.shape(id)}}
+
+      {:error, reason} ->
+        {:error, {:identifier_generation_failed, reason}}
+    end
   end
 end

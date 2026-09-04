@@ -146,10 +146,7 @@ defmodule Spectre.Presentation.Approval.Assumptions do
   end
 
   defp current?(item, time, observed_by) do
-    item.observed_at <= observed_by and item.observed_at <= time and
-      (is_nil(item.valid_from) or item.valid_from <= time) and
-      (is_nil(item.valid_until) or time < item.valid_until) and
-      (is_nil(item.freshness_ms) or time - item.observed_at <= item.freshness_ms)
+    item.observed_at <= observed_by and Evidence.current_at?(item, time)
   end
 
   defp normalize_result({:ok, refs}), do: {:ok, normalize_refs(refs)}

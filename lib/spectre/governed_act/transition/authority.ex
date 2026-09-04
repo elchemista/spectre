@@ -9,7 +9,6 @@ defmodule Spectre.GovernedAct.Transition.Authority do
   """
 
   alias Spectre.{Act, Mandate}
-  alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.{Index, MeterState, State, View}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
@@ -23,9 +22,8 @@ defmodule Spectre.GovernedAct.Transition.Authority do
         %Event{type: "mandate_issued", identity: identity, data: data},
         _entry_revision
       ) do
-    with {:ok, mandate} <- Record.decode(Spectre.Mandate, data),
-         :ok <- Record.match_identity(identity, Record.ref(mandate)),
-         :ok <- Index.unique(projection.mandates, identity, :mandate),
+    with {:ok, mandate} <-
+           Index.restore_unique(projection.mandates, Mandate, identity, data, :mandate),
          :ok <- initial_mandate_revision(mandate),
          :ok <- validate_mandate_principals(projection, mandate),
          {:ok, meters} <- issue_mandate_meters(projection, mandate) do
@@ -48,10 +46,15 @@ defmodule Spectre.GovernedAct.Transition.Authority do
 
     with {:ok, predecessor} <- Index.fetch_mandate(projection, predecessor_ref),
          {:ok, act} <- Index.fetch_act(projection, act_ref),
-         {:ok, successor} <- Record.decode(Mandate, data["successor"]),
-         :ok <- Record.match_identity(identity, successor.ref),
+         {:ok, successor} <-
+           Index.restore_unique(
+             projection.mandates,
+             Mandate,
+             identity,
+             data["successor"],
+             :mandate
+           ),
          :ok <- canonical_restriction_event(successor, data),
-         :ok <- Index.unique(projection.mandates, successor.ref, :mandate),
          :ok <- validate_mandate_principals(projection, successor),
          :ok <- validate_restriction_contract(act, predecessor, successor, data),
          :ok <- restrictable_predecessor(projection, predecessor, act.committed_at),

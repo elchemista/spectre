@@ -11,10 +11,9 @@ defmodule Spectre.Secret.CheckoutReceipt do
   to the sequencer and its broker.
   """
 
-  alias Spectre.Canonical.Value
+  alias Spectre.{Act, Attempt, Seal}
 
   @domain "spectre:checkout-receipt:v1\0"
-  @minimum_secret_bytes 32
   @claim_fields [
     :domain_ref,
     :act_ref,
@@ -49,12 +48,14 @@ defmodule Spectre.Secret.CheckoutReceipt do
 
   @doc false
   @spec mint(map(), binary()) :: {:ok, t()} | {:error, term()}
-  def mint(claims, secret)
-      when is_map(claims) and is_binary(secret) and byte_size(secret) >= @minimum_secret_bytes do
-    with {:ok, claims} <- normalize_claims(claims),
-         {:ok, encoded} <- Value.encode(claims) do
-      mac = encoded |> sign(secret) |> Base.url_encode64(padding: false)
-      {:ok, struct!(__MODULE__, Map.put(claims, :mac, mac))}
+  def mint(claims, secret) when is_map(claims) do
+    if Seal.valid_secret?(secret) do
+      with {:ok, claims} <- normalize_claims(claims),
+           {:ok, mac} <- Seal.sign(claims, secret, @domain) do
+        {:ok, struct!(__MODULE__, Map.put(claims, :mac, mac))}
+      end
+    else
+      {:error, :invalid_checkout_receipt_material}
     end
   end
 
@@ -63,13 +64,16 @@ defmodule Spectre.Secret.CheckoutReceipt do
   @doc "Verifies authenticity, exact binding and the half-open validity window."
   @spec verify(t(), binary(), map()) :: :ok | {:error, term()}
   def verify(%__MODULE__{} = receipt, secret, expected)
-      when is_binary(secret) and byte_size(secret) >= @minimum_secret_bytes and
-             is_map(expected) do
-    with {:ok, _claims} <- normalize_claims(claims(receipt)),
-         :ok <- match_expected(receipt, expected),
-         :ok <- current(receipt, Map.get(expected, :now)),
-         :ok <- authentic(receipt, secret) do
-      :ok
+      when is_map(expected) do
+    if Seal.valid_secret?(secret) do
+      with {:ok, _claims} <- normalize_claims(claims(receipt)),
+           :ok <- match_expected(receipt, expected),
+           :ok <- current(receipt, Map.get(expected, :now)),
+           :ok <- authentic(receipt, secret) do
+        :ok
+      end
+    else
+      {:error, :invalid_checkout_receipt}
     end
   end
 
@@ -79,6 +83,26 @@ defmodule Spectre.Secret.CheckoutReceipt do
   @spec claims(t()) :: map()
   def claims(%__MODULE__{} = receipt),
     do: receipt |> Map.from_struct() |> Map.delete(:mac)
+
+  @doc false
+  @spec binding(Act.t(), Attempt.t(), String.t()) :: map()
+  def binding(%Act{} = act, %Attempt{} = attempt, broker_ref) do
+    %{
+      act_ref: act.ref,
+      attempt_ref: attempt.ref,
+      executor_ref: act.executor_ref,
+      material_digest: act.material_digest,
+      generation: attempt.generation,
+      grant_nonce_digest: attempt.grant_nonce_digest,
+      broker_ref: broker_ref
+    }
+  end
+
+  @doc false
+  @spec validate_binding(t(), Act.t(), Attempt.t(), String.t()) :: :ok | {:error, term()}
+  def validate_binding(%__MODULE__{} = receipt, %Act{} = act, %Attempt{} = attempt, broker_ref) do
+    match_expected(receipt, binding(act, attempt, broker_ref))
+  end
 
   defp normalize_claims(claims) do
     normalized = Map.take(claims, @claim_fields)
@@ -145,18 +169,11 @@ defmodule Spectre.Secret.CheckoutReceipt do
   end
 
   defp authentic(receipt, secret) do
-    with {:ok, supplied} <- Base.url_decode64(receipt.mac, padding: false),
-         {:ok, encoded} <- Value.encode(claims(receipt)) do
-      expected = sign(encoded, secret)
-
-      if byte_size(supplied) == byte_size(expected) and :crypto.hash_equals(supplied, expected),
-        do: :ok,
-        else: {:error, :checkout_receipt_authentication_failed}
-    else
-      _invalid -> {:error, :checkout_receipt_authentication_failed}
+    case Seal.verify(claims(receipt), receipt.mac, secret, @domain) do
+      :ok -> :ok
+      :error -> {:error, :checkout_receipt_authentication_failed}
     end
   end
 
-  defp sign(encoded, secret), do: :crypto.mac(:hmac, :sha256, secret, @domain <> encoded)
   defp non_empty_binary?(value), do: is_binary(value) and value != ""
 end

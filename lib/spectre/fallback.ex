@@ -16,16 +16,6 @@ defmodule Spectre.Fallback do
   alias Spectre.Fallback.Policy
   alias Spectre.SubmissionContext
 
-  @context_fields ~w(
-    domain_ref
-    scope_ref
-    authenticated_principal_ref
-    authentication_ref
-    ingress_ref
-    channel_ref
-    session_ref
-  )a
-
   @type result :: :silence | {:candidate_template | :governed_handoff, Candidate.t()}
 
   @doc "Materializes the one declared response to an explicitly refused Decision."
@@ -66,9 +56,12 @@ defmodule Spectre.Fallback do
   defp not_recursive(%Decision{}), do: :ok
 
   defp decision_context(decision, context) do
-    case Enum.find(@context_fields, &(Map.fetch!(decision, &1) != Map.fetch!(context, &1))) do
-      nil -> :ok
-      field -> {:error, {:fallback_context_mismatch, field}}
+    with {:ok, expected} <- SubmissionContext.from_decision(decision),
+         true <- SubmissionContext.canonical(expected) == SubmissionContext.canonical(context) do
+      :ok
+    else
+      false -> {:error, :fallback_context_mismatch}
+      {:error, _reason} = error -> error
     end
   end
 end

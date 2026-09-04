@@ -9,7 +9,7 @@ defmodule Spectre.Duty.Derive.Cause do
   transition.
   """
 
-  alias Spectre.{Act, Candidate, Constitution}
+  alias Spectre.{Act, Candidate, Constitution, Portable}
 
   @hard_containment_classes [:ambiguous_outcome, :contradicted_outcome, :disputed_evidence]
 
@@ -147,21 +147,13 @@ defmodule Spectre.Duty.Derive.Cause do
   defp ensure_plain_map(value) when is_map(value) and not is_struct(value), do: value
   defp ensure_plain_map(_value), do: %{}
 
-  defp canonical_string_keys(value) when is_map(value) and not is_struct(value) do
-    value
-    |> Enum.sort_by(fn {key, _value} ->
-      {if(is_binary(key), do: 1, else: 0), stable_sort_key(key)}
-    end)
-    |> Enum.reduce(%{}, fn {key, item}, normalized ->
-      key = if is_atom(key), do: Atom.to_string(key), else: key
-      Map.put(normalized, key, canonical_string_keys(item))
-    end)
+  # Constitution validation has already excluded equivalent atom/string keys,
+  # so containment can be projected to its durable string-keyed form without
+  # choosing silently between two meanings.
+  defp canonical_string_keys(value) do
+    {:ok, normalized} = Portable.stringify_atom_keys(value)
+    normalized
   end
-
-  defp canonical_string_keys(value) when is_list(value),
-    do: Enum.map(value, &canonical_string_keys/1)
-
-  defp canonical_string_keys(value), do: value
 
   defp listify(nil), do: []
   defp listify(value) when is_list(value), do: value

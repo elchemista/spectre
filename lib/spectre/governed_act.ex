@@ -22,7 +22,9 @@ defmodule Spectre.GovernedAct do
           |
           v
       Spectre.GovernedAct.State     disposable read model
-          |
+          |-- Index                 typed access to folded records
+          |-- DispatchState         live/terminal world-boundary queries
+          |-- MeterState            conserved-balance transitions
           `-- View                  read-only facts for kernel and host
 
   `Spectre.Domain.Projection` is the live replay driver. `Spectre.Audit` is an
@@ -32,7 +34,10 @@ defmodule Spectre.GovernedAct do
 
   Small shared invariants sit beside the fold rather than inside either
   driver. `Class` is the closed metadata table for runtime-reserved classes;
+  `Emergency` fixes the narrow exceptional-Mandate constraints;
   `Execution` owns their completion boundary without resolving host routes;
+  `Materialization` derives the canonical event suffix of an intrinsic Act for
+  both the commit path and batch validation;
   `Admission.Binding` is the single Decision-to-Act field correspondence; and
   `Spectre.Attempt.Binding` fixes the identity of the world-side Attempt.
 
@@ -43,10 +48,14 @@ defmodule Spectre.GovernedAct do
     * `Transition.Scope` binds authenticated contexts to durable Scopes.
     * `Transition.Information` handles Evidence, presentation, disclosure and
       erasure lineage.
-    * `Transition.Admission` independently revalidates Decision and Act records.
+    * `Transition.Admission` independently revalidates Decision and Act records;
+      its `Decision`, `Act` and `Presentation` proof modules keep each binding
+      explicit.
     * `Transition.Execution` covers dispatch, Attempt and Outcome boundaries.
-    * `Transition.Duty` materializes and disposes obligations, including their
-      Meter resolution.
+    * `Transition.Outcome` shares Outcome history and attestation rules with
+      live observation planning.
+    * `Transition.Duty` routes obligation events; `Opening`, `Disposal` and
+      `Meter` prove each causal phase independently.
 
   Host adapters remain outside this namespace. They may supply input, clocks,
   persistence or execution, but adapter callbacks never bypass Admission or

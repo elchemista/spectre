@@ -22,7 +22,6 @@ defmodule Spectre.Act do
     :ref,
     :decision_ref,
     :candidate_identity_key,
-    :candidate_digest,
     :submission_context_ref,
     :authenticated_principal_ref,
     :authentication_ref,
@@ -66,7 +65,6 @@ defmodule Spectre.Act do
           ref: String.t(),
           decision_ref: String.t(),
           candidate_identity_key: String.t(),
-          candidate_digest: String.t(),
           submission_context_ref: String.t(),
           authenticated_principal_ref: String.t(),
           authentication_ref: String.t(),
@@ -244,9 +242,6 @@ defmodule Spectre.Act do
       is_nil(act.consequence) ->
         {:error, :missing_act_consequence}
 
-      act.candidate_digest != act.material_digest ->
-        {:error, {:act_material_digest_mismatch, act.material_digest, act.candidate_digest}}
-
       not is_map(act.purpose_params) or is_struct(act.purpose_params) ->
         {:error, {:invalid_act_purpose_params, Portable.shape(act.purpose_params)}}
 
@@ -287,7 +282,6 @@ defmodule Spectre.Act do
          :ok <- Portable.validate_ref(act.decision_ref, :decision_ref),
          :ok <-
            Portable.validate_non_empty_binary(act.candidate_identity_key, :candidate_identity_key),
-         :ok <- Portable.validate_non_empty_binary(act.candidate_digest, :candidate_digest),
          :ok <- Portable.validate_non_empty_binary(act.material_digest, :material_digest),
          :ok <- Portable.validate_optional_ref(act.requested_mandate_ref, :requested_mandate_ref),
          :ok <- Portable.validate_ref(act.submission_context_ref, :submission_context_ref),

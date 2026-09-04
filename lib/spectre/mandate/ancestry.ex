@@ -33,22 +33,27 @@ defmodule Spectre.Mandate.Ancestry do
           {:ok, status()} | {:error, term()}
   def status(mandates, revocations, %Mandate{} = mandate, time)
       when is_map(mandates) and is_map(revocations) and is_integer(time) do
-    with {:ok, direct?} <- local_revoked?(Map.get(revocations, mandate.ref), mandate.ref, time) do
-      if direct? do
-        {:ok, {:revoked, :direct, mandate.ref}}
-      else
-        cascade_status(
-          mandates,
-          revocations,
-          mandate.parent_ref,
-          time,
-          MapSet.new([mandate.ref])
-        )
-      end
+    with {:ok, lineage} <- lineage(mandates, mandate) do
+      status_in_lineage(lineage, revocations, time)
     end
   end
 
   def status(_mandates, _revocations, _mandate, _time),
+    do: {:error, :invalid_mandate_ancestry_input}
+
+  @doc false
+  @spec status_in_lineage([Mandate.t(), ...], revocations(), integer()) ::
+          {:ok, status()} | {:error, term()}
+  def status_in_lineage([%Mandate{} = mandate | ancestors], revocations, time)
+      when is_map(revocations) and is_integer(time) do
+    with {:ok, direct?} <- local_revoked?(Map.get(revocations, mandate.ref), mandate.ref, time) do
+      if direct?,
+        do: {:ok, {:revoked, :direct, mandate.ref}},
+        else: cascade_status_in_lineage(ancestors, revocations, time)
+    end
+  end
+
+  def status_in_lineage(_lineage, _revocations, _time),
     do: {:error, :invalid_mandate_ancestry_input}
 
   @doc "Checks only the Mandate's own revocation record, excluding ancestors."
@@ -106,33 +111,19 @@ defmodule Spectre.Mandate.Ancestry do
 
   def lineage(_mandates, _mandate), do: {:error, :invalid_mandate_ancestry_input}
 
-  defp cascade_status(_mandates, _revocations, nil, _time, _visited), do: {:ok, :current}
+  defp cascade_status_in_lineage([], _revocations, _time), do: {:ok, :current}
 
-  defp cascade_status(mandates, revocations, parent_ref, time, visited) do
-    cond do
-      not present_ref?(parent_ref) ->
-        {:error, {:invalid_mandate_parent_ref, parent_ref}}
-
-      MapSet.member?(visited, parent_ref) ->
-        {:error, {:mandate_ancestry_cycle, parent_ref}}
-
-      true ->
-        with {:ok, parent} <- fetch_parent(mandates, parent_ref),
-             {:ok, revoked?} <- local_revoked?(Map.get(revocations, parent_ref), parent_ref, time) do
-          if revoked? and parent.revocation["mode"] == :cascade do
-            {:ok, {:revoked, :ancestor, parent_ref}}
-          else
-            cascade_status(
-              mandates,
-              revocations,
-              parent.parent_ref,
-              time,
-              MapSet.put(visited, parent_ref)
-            )
-          end
-        end
+  defp cascade_status_in_lineage([%Mandate{} = parent | ancestors], revocations, time) do
+    with {:ok, revoked?} <-
+           local_revoked?(Map.get(revocations, parent.ref), parent.ref, time) do
+      if revoked? and parent.revocation["mode"] == :cascade,
+        do: {:ok, {:revoked, :ancestor, parent.ref}},
+        else: cascade_status_in_lineage(ancestors, revocations, time)
     end
   end
+
+  defp cascade_status_in_lineage(_invalid, _revocations, _time),
+    do: {:error, :invalid_mandate_ancestry_input}
 
   defp descendant?(_mandates, target_ref, target_ref, _visited), do: {:ok, true}
 
@@ -179,6 +170,9 @@ defmodule Spectre.Mandate.Ancestry do
 
       is_nil(mandate.parent_ref) ->
         {:ok, Enum.reverse([mandate | lineage])}
+
+      not present_ref?(mandate.parent_ref) ->
+        {:error, {:invalid_mandate_parent_ref, mandate.parent_ref}}
 
       true ->
         with {:ok, parent} <- fetch_parent(mandates, mandate.parent_ref) do

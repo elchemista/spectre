@@ -22,7 +22,8 @@ defmodule Spectre.Constitution do
   @doc "Validates a rule map without granting it authority."
   @spec validate(term()) :: :ok | {:error, term()}
   def validate(rules) when is_map(rules) and not is_struct(rules) do
-    with :ok <- portable_rules(rules),
+    with :ok <- unique_semantic_keys(rules),
+         :ok <- portable_rules(rules),
          :ok <- validate_duty_rules(rules) do
       :ok
     end
@@ -159,6 +160,19 @@ defmodule Spectre.Constitution do
     case Portable.validate(rules) do
       :ok -> :ok
       {:error, reason} -> {:error, {:invalid_constitution, reason}}
+    end
+  end
+
+  defp unique_semantic_keys(rules) do
+    case Portable.stringify_atom_keys(rules) do
+      {:ok, _normalized} ->
+        :ok
+
+      {:error, {:equivalent_map_keys, path}} ->
+        {:error, {:constitution_key_collision, path}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

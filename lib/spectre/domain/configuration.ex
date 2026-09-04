@@ -9,7 +9,7 @@ defmodule Spectre.Domain.Configuration do
   `Spectre.Domain.Sequencer` during boot.
   """
 
-  alias Spectre.{Adapter, Ingress, Mind, Portable}
+  alias Spectre.{Adapter, Clock, Constitution, Ingress, Mind, Seal}
   alias Spectre.Execution.Boundary
   alias Spectre.Ledger.Store
   alias Spectre.Payload.Store, as: PayloadStore
@@ -19,7 +19,6 @@ defmodule Spectre.Domain.Configuration do
   @default_grant_ttl_ms 30_000
   @default_conflict_retries 8
   @default_ambiguous_retries 2
-  @minimum_secret_bytes 32
 
   @bootstrap_options [
     :genesis,
@@ -63,8 +62,7 @@ defmodule Spectre.Domain.Configuration do
   @runtime_options [:name, :registry, :domain_ref, :store]
   @host_options @options -- @runtime_options
 
-  @enforce_keys [
-    :domain_ref,
+  @runtime_fields [
     :store,
     :ingress,
     :ingress_ref,
@@ -83,10 +81,9 @@ defmodule Spectre.Domain.Configuration do
     :conflict_retries,
     :ambiguous_retries,
     :ledger_opts,
-    :payload_store,
-    :bootstrap_opts,
-    :constitution
+    :payload_store
   ]
+  @enforce_keys [:domain_ref, :bootstrap_opts, :constitution | @runtime_fields]
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
@@ -175,6 +172,14 @@ defmodule Spectre.Domain.Configuration do
   end
 
   def new(_opts), do: {:error, :invalid_sequencer_options}
+
+  @doc false
+  @spec runtime_fields() :: [atom()]
+  def runtime_fields, do: @runtime_fields
+
+  @doc false
+  @spec runtime_values(t()) :: map()
+  def runtime_values(%__MODULE__{} = config), do: Map.take(config, @runtime_fields)
 
   @doc false
   @spec validate_host_options(keyword()) :: :ok | {:error, term()}
@@ -283,14 +288,13 @@ defmodule Spectre.Domain.Configuration do
 
   defp secret_option(opts, key) do
     case Keyword.fetch(opts, key) do
-      {:ok, value} when is_binary(value) and byte_size(value) >= @minimum_secret_bytes ->
-        {:ok, value}
-
-      {:ok, _invalid} ->
-        {:error, {:invalid_sequencer_option, key}}
+      {:ok, value} ->
+        if Seal.valid_secret?(value),
+          do: {:ok, value},
+          else: {:error, {:invalid_sequencer_option, key}}
 
       :error ->
-        {:ok, :crypto.strong_rand_bytes(@minimum_secret_bytes)}
+        {:ok, Seal.generate_secret()}
     end
   end
 
@@ -323,9 +327,9 @@ defmodule Spectre.Domain.Configuration do
   defp constitution_option(opts) do
     case Keyword.get(opts, :constitution, %{}) do
       value when is_map(value) and not is_struct(value) ->
-        case Portable.validate(value) do
+        case Constitution.validate(value) do
           :ok -> {:ok, value}
-          {:error, reason} -> {:error, {:invalid_constitution, reason}}
+          {:error, _reason} = error -> error
         end
 
       _invalid ->
@@ -334,8 +338,8 @@ defmodule Spectre.Domain.Configuration do
   end
 
   defp usable_clock(clock) do
-    case Adapter.invoke(clock, :now, []) do
-      {:ok, now} when is_integer(now) and now >= 0 -> :ok
+    case Clock.read(clock) do
+      {:ok, _now} -> :ok
       _invalid -> {:error, :invalid_clock_value}
     end
   end

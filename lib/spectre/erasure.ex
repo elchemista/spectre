@@ -202,7 +202,7 @@ defmodule Spectre.Erasure do
       erasure.schema_version != @schema_version ->
         {:error, {:unsupported_erasure_schema_version, erasure.schema_version}}
 
-      not sha256?(erasure.target_digest) ->
+      not Portable.sha256_digest?(erasure.target_digest) ->
         {:error, {:invalid_erasure_target_digest, erasure.target_digest}}
 
       not target_digest_matches?(erasure.target_ref, erasure.target_digest) ->
@@ -228,9 +228,8 @@ defmodule Spectre.Erasure do
     end
   end
 
-  defp sha256?(value) when is_binary(value), do: String.match?(value, ~r/\A[0-9a-f]{64}\z/)
-  defp sha256?(_value), do: false
+  defp target_digest_matches?("payload:" <> digest, digest),
+    do: Portable.sha256_digest?(digest)
 
-  defp target_digest_matches?("payload:" <> digest, digest), do: sha256?(digest)
   defp target_digest_matches?(_target_ref, _digest), do: false
 end

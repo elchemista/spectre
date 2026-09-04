@@ -621,33 +621,12 @@ defmodule Spectre.Ledger.Store.Postgres do
   defp batch_info_error(:head), do: :invalid_ledger_postgres_batch_head
 
   defp validate_decoded_batch(entries, domain_ref, info) do
-    first = List.first(entries)
-    last = List.last(entries)
-
-    with true <- length(entries) == info.entry_count,
-         %Entry{} <- first,
-         %Entry{} <- last,
-         true <- first.domain_ref == domain_ref,
-         true <- first.batch_id == info.batch_id,
-         true <- first.revision == info.first_revision,
-         true <- last.revision == info.last_revision,
-         true <- last.digest == info.head_digest,
-         true <-
-           Enum.all?(entries, &(&1.domain_ref == domain_ref and &1.batch_id == info.batch_id)),
-         {:ok, identity} <-
-           Entry.batch_identity(
-             domain_ref,
-             info.batch_id,
-             Enum.map(entries, & &1.payload),
-             info.expected_revision
-           ),
-         true <- identity == info.identity_digest do
+    with {:ok, derived} <- Support.derive_batch_info(domain_ref, entries),
+         true <- derived == info do
       :ok
     else
       false -> {:error, {:ledger_postgres_batch_metadata_mismatch, info.batch_id}}
-      nil -> {:error, {:ledger_postgres_batch_metadata_mismatch, info.batch_id}}
       {:error, reason} -> {:error, {:invalid_postgres_ledger_batch, reason}}
-      _invalid -> {:error, {:ledger_postgres_batch_metadata_mismatch, info.batch_id}}
     end
   end
 

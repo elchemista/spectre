@@ -7,7 +7,7 @@ defmodule Spectre.Duty.Derive.Dispute.OutcomeAttestation do
   alias Spectre.Duty.Derive.{Cause, Facts}
   alias Spectre.Outcome.Attestation
 
-  @definitive_outcomes [:succeeded, :failed, :definitive_no_effect]
+  @definitive_outcomes Outcome.definitive_statuses()
 
   @doc false
   @spec causes(Facts.t(), map(), integer()) :: [map()]

@@ -61,8 +61,7 @@ defmodule Spectre.Kernel.Authority do
   def resolve(%Candidate{} = candidate, context, %Facts{} = view, time)
       when is_map(context) and is_integer(time) do
     eligible =
-      view.mandates
-      |> Map.values()
+      candidate_mandates(candidate, view)
       |> Enum.flat_map(fn mandate ->
         case authorize(candidate, context, mandate, view, time) do
           {:ok, effective_mandate} -> [effective_mandate]
@@ -128,8 +127,7 @@ defmodule Spectre.Kernel.Authority do
     do: {:error, :invalid_authority_input}
 
   defp ordinary_authority(candidate, context, mandate, view, time) do
-    with :ok <- Status.restriction(mandate, view),
-         :ok <- Status.meter_debt(mandate, view),
+    with :ok <- Status.standing(mandate, view),
          :ok <- containment_status(candidate, view),
          :ok <- Coverage.matching_principal(candidate, context, mandate),
          :ok <- Coverage.covered_executor(candidate, mandate),
@@ -145,7 +143,7 @@ defmodule Spectre.Kernel.Authority do
          :ok <- Coverage.covered_disclosure(candidate, mandate),
          :ok <- Coverage.covered_purpose(candidate, mandate),
          :ok <- Coverage.matching_accountable(candidate, mandate) do
-      {:ok, Effective.from_mandate(mandate)}
+      {:ok, Effective.from_mandate(mandate, candidate)}
     end
   end
 
@@ -178,6 +176,26 @@ defmodule Spectre.Kernel.Authority do
   end
 
   def containment_status(_candidate, _view), do: {:error, :invalid_authority_input}
+
+  @doc "Rechecks mutable authority facts before an admitted Act may start execution."
+  @spec dispatchable?(Act.t(), Mandate.t(), Facts.t(), integer()) :: :ok | {:error, term()}
+  def dispatchable?(%Act{} = act, %Mandate{} = mandate, %Facts{} = view, time)
+      when is_integer(time) do
+    with :ok <- Status.exact_snapshot(mandate, view),
+         true <- act.mandate_ref == mandate.ref and act.mandate_revision == mandate.revision,
+         :ok <- Status.standing(mandate, view),
+         :ok <- containment_status(act, view),
+         :ok <- Status.current_at(mandate, time),
+         :ok <- Status.not_revoked(mandate, view, time) do
+      :ok
+    else
+      false -> {:error, :act_mandate_snapshot_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def dispatchable?(_act, _mandate, _view, _time),
+    do: {:error, :invalid_authority_input}
 
   @doc """
   Verifies that a child Mandate is a subtractive restriction of its parent.
@@ -246,6 +264,16 @@ defmodule Spectre.Kernel.Authority do
 
   defp mandate_sort_key(%Effective{} = authority),
     do: {Effective.ref(authority), Effective.revision(authority)}
+
+  defp candidate_mandates(%Candidate{requested_mandate_ref: nil}, %Facts{} = view),
+    do: Map.values(view.mandates)
+
+  defp candidate_mandates(%Candidate{requested_mandate_ref: ref}, %Facts{} = view) do
+    case Map.fetch(view.mandates, ref) do
+      {:ok, %Mandate{} = mandate} -> [mandate]
+      _missing_or_invalid -> []
+    end
+  end
 
   defp present?(nil), do: false
   defp present?(""), do: false

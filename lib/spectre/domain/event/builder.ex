@@ -10,6 +10,9 @@ defmodule Spectre.Domain.Event.Builder do
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Meter.Amounts
+  alias Spectre.Outcome
+
+  @correction_statuses Outcome.correction_statuses()
 
   @spec record(atom(), struct()) :: {:ok, map()} | {:error, term()}
   def record(kind, record) do
@@ -51,14 +54,14 @@ defmodule Spectre.Domain.Event.Builder do
           {:ok, map()} | {:error, term()}
   def meter_recontained(
         %Spectre.Act{} = act,
-        %Spectre.Outcome{status: status, contradicts_outcome_ref: corrected_ref} = outcome,
+        %Outcome{status: status, contradicts_outcome_ref: corrected_ref} = outcome,
         recontained,
         deficits
       )
-      when status in [:succeeded, :failed] and is_binary(corrected_ref) and
+      when status in @correction_statuses and is_binary(corrected_ref) and
              corrected_ref != "" do
     with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, outcome} <- Spectre.Outcome.new(outcome),
+         {:ok, outcome} <- Outcome.new(outcome),
          true <- outcome.act_ref == act.ref,
          {:ok, amounts} <- reservation_amounts(act.reservations),
          {:ok, recontained} <- partial_amounts(recontained),
@@ -189,26 +192,21 @@ defmodule Spectre.Domain.Event.Builder do
   def host_profile_revised(_act, _previous_ref, _profile),
     do: {:error, :invalid_host_profile_revision_event}
 
-  @spec definition_revised(Spectre.Act.t(), String.t() | nil, Spectre.Definition.t()) ::
+  @spec definition_revised(Spectre.Act.t(), Spectre.Definition.t()) ::
           {:ok, map()} | {:error, term()}
-  def definition_revised(%Spectre.Act{} = act, previous_ref, %Spectre.Definition{} = definition)
-      when is_nil(previous_ref) or (is_binary(previous_ref) and previous_ref != "") do
+  def definition_revised(%Spectre.Act{} = act, %Spectre.Definition{} = definition) do
     with {:ok, act} <- Spectre.Act.new(act),
-         {:ok, definition} <- Spectre.Definition.new(definition),
-         true <- definition.previous_ref == previous_ref do
+         {:ok, definition} <- Spectre.Definition.new(definition) do
       {:ok,
        Event.envelope("definition_revised", definition.ref, %{
          "act_ref" => act.ref,
-         "previous_ref" => previous_ref,
+         "previous_ref" => definition.previous_ref,
          "definition" => Spectre.Definition.canonical(definition)
        })}
-    else
-      false -> {:error, :definition_previous_ref_mismatch}
-      {:error, _reason} = error -> error
     end
   end
 
-  def definition_revised(_act, _previous_ref, _definition),
+  def definition_revised(_act, _definition),
     do: {:error, :invalid_definition_revision_event}
 
   @spec principal_registered(Spectre.Act.t(), Spectre.Principal.t()) ::
@@ -325,18 +323,19 @@ defmodule Spectre.Domain.Event.Builder do
       else: {:error, :dispatch_cancellation_cause_not_ledger_internal}
   end
 
-  @spec mandate_revoked(String.t(), String.t(), integer()) ::
-          map() | {:error, :invalid_mandate_revocation_event}
-  def mandate_revoked(identity, mandate_ref, effective_at)
-      when is_binary(identity) and identity != "" and is_binary(mandate_ref) and
-             mandate_ref != "" and is_integer(effective_at) do
-    Event.envelope("mandate_revoked", identity, %{
-      "mandate_ref" => mandate_ref,
-      "effective_at" => effective_at
-    })
+  @spec mandate_revoked(Spectre.Act.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def mandate_revoked(%Spectre.Act{} = act, mandate_ref)
+      when is_binary(mandate_ref) and mandate_ref != "" do
+    with {:ok, act} <- Spectre.Act.new(act) do
+      {:ok,
+       Event.envelope("mandate_revoked", act.ref, %{
+         "mandate_ref" => mandate_ref,
+         "effective_at" => act.committed_at
+       })}
+    end
   end
 
-  def mandate_revoked(_identity, _mandate_ref, _effective_at),
+  def mandate_revoked(_act, _mandate_ref),
     do: {:error, :invalid_mandate_revocation_event}
 
   @spec mandate_restricted(Spectre.Act.t(), String.t(), Spectre.Mandate.t()) ::
@@ -361,18 +360,18 @@ defmodule Spectre.Domain.Event.Builder do
   def mandate_restricted(_act, _predecessor_ref, _successor),
     do: {:error, :invalid_mandate_restriction_event}
 
-  @spec duty_disposed(String.t(), term(), String.t()) ::
-          map() | {:error, :invalid_duty_disposition_event}
-  def duty_disposed(disposition_act_ref, cause_key, disposition_act_ref)
-      when is_binary(disposition_act_ref) and disposition_act_ref != "" and
-             not is_nil(cause_key) do
-    Event.envelope("duty_disposed", disposition_act_ref, %{
-      "cause_key" => cause_key,
-      "disposition_act_ref" => disposition_act_ref
-    })
+  @spec duty_disposed(Spectre.Act.t(), term()) :: {:ok, map()} | {:error, term()}
+  def duty_disposed(%Spectre.Act{} = disposition_act, cause_key) when not is_nil(cause_key) do
+    with {:ok, disposition_act} <- Spectre.Act.new(disposition_act) do
+      {:ok,
+       Event.envelope("duty_disposed", disposition_act.ref, %{
+         "cause_key" => cause_key,
+         "disposition_act_ref" => disposition_act.ref
+       })}
+    end
   end
 
-  def duty_disposed(_identity, _cause_key, _disposition_act_ref),
+  def duty_disposed(_disposition_act, _cause_key),
     do: {:error, :invalid_duty_disposition_event}
 
   @spec scope_opened(Spectre.Scope.Opening.t()) :: {:ok, map()} | {:error, term()}

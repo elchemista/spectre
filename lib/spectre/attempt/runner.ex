@@ -133,7 +133,7 @@ defmodule Spectre.Attempt.Runner do
   end
 
   defp run_attempt(sequencer, decision, act, %Grant{} = grant, opts) do
-    with :ok <- grant_act_binding(grant, act),
+    with :ok <- Grant.validate_act_binding(grant, act),
          do: run_new_attempt(sequencer, decision, act, grant, opts)
   end
 
@@ -219,19 +219,10 @@ defmodule Spectre.Attempt.Runner do
   end
 
   defp checkout_receipt_binding(receipt, act, attempt, config) do
-    expected = %{
-      act_ref: act.ref,
-      attempt_ref: attempt.ref,
-      executor_ref: act.executor_ref,
-      material_digest: act.material_digest,
-      generation: attempt.generation,
-      grant_nonce_digest: attempt.grant_nonce_digest,
-      broker_ref: config.broker_descriptor.ref
-    }
-
-    if Enum.any?(expected, fn {field, value} -> Map.fetch!(receipt, field) != value end),
-      do: {:error, :checkout_receipt_binding_mismatch},
-      else: :ok
+    case CheckoutReceipt.validate_binding(receipt, act, attempt, config.broker_descriptor.ref) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :checkout_receipt_binding_mismatch}
+    end
   end
 
   defp cross_boundary(config, receipt, act, attempt) do
@@ -347,22 +338,10 @@ defmodule Spectre.Attempt.Runner do
          recorded_evidence,
          sequencer_opts
        ) do
-    with {:ok, outcome} <- build_outcome(act, attempt, observation),
+    with {:ok, outcome} <- Observation.outcome(observation, act, attempt),
          {:ok, outcome} <- record_outcome(sequencer, outcome, sequencer_opts) do
       result(decision, act, attempt, recorded_evidence, outcome)
     end
-  end
-
-  defp build_outcome(act, attempt, observation) do
-    Outcome.new(%{
-      act_ref: act.ref,
-      attempt_ref: attempt.ref,
-      status: observation.status,
-      evidence_refs: Enum.map(observation.outcome_evidence, & &1.ref),
-      observed_at: observation.observed_at,
-      details_ref: observation.details_ref,
-      contradicts_outcome_ref: nil
-    })
   end
 
   defp record_evidence(_sequencer, _act, _attempt, [], _opts), do: {:ok, []}
@@ -483,13 +462,6 @@ defmodule Spectre.Attempt.Runner do
 
   defp attempt_binding(attempt, act, error) do
     if is_nil(AttemptBinding.mismatch(attempt, act)), do: :ok, else: {:error, error}
-  end
-
-  defp grant_act_binding(grant, act) do
-    if grant.act_ref == act.ref and grant.executor_ref == act.executor_ref and
-         grant.material_digest == act.material_digest,
-       do: :ok,
-       else: {:error, :grant_act_binding_mismatch}
   end
 
   defp safe_internal_call(function) do

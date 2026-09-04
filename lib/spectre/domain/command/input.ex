@@ -8,13 +8,15 @@ defmodule Spectre.Domain.Command.Input do
   never lets a transport adapter submit an Act or acquire a capability.
   """
 
-  alias Spectre.{Act, Attempt, Domain, Evidence, Ingress, Scope, SubmissionContext}
-  alias Spectre.Attempt.Binding, as: AttemptBinding
+  alias Spectre.{Act, Attempt, Evidence, Ingress, SubmissionContext}
+  alias Spectre.Attempt.Evidence, as: AttemptEvidence
   alias Spectre.Domain.{Context, Projection, Transaction}
   alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
   alias Spectre.Domain.Sequencer.{Control, State}
   alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.GovernedAct.Index
+  alias Spectre.Mind.Derivation, as: MindDerivation
   alias Spectre.Mind.Turn
   alias Spectre.Scope.View, as: ScopeView
 
@@ -26,7 +28,7 @@ defmodule Spectre.Domain.Command.Input do
          {:ok, context_evidence} <-
            scoped_evidence(state.projection, context.scope_ref, context_evidence_refs),
          {:ok, next_state, observed, opened_at} <-
-           observe_at(state, context, input, ingress_opts),
+           observe_current_at(state, context, input, ingress_opts),
          evidence <- merge_evidence(observed, context_evidence),
          {:ok, turn_ref} <- Transaction.operational_id(next_state),
          {:ok, turn} <- build_turn(next_state, context, turn_ref, evidence, opened_at) do
@@ -49,7 +51,7 @@ defmodule Spectre.Domain.Command.Input do
          :ok <- Turn.verify_seal(turn, state.grant_secret),
          {:ok, now} <- Transaction.trusted_recorded_at(state),
          {:ok, parents} <- validate_turn(state, context, opening, turn, now),
-         :ok <- validate_derivation(evidence, context, turn, parents, now) do
+         :ok <- validate_derivation(evidence, turn, parents, now) do
       EvidenceCommand.record(state, evidence, now)
     else
       {:error, reason} -> {:error, state, reason}
@@ -92,8 +94,18 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp observe_at(state, context, input, ingress_opts) do
-    with {:ok, context, _opening} <- Context.validate_scope(state, context),
-         {:ok, observed_at} <- Transaction.trusted_recorded_at(state),
+    with {:ok, context, _opening} <- Context.validate_scope(state, context) do
+      observe_current_at(state, context, input, ingress_opts)
+    else
+      {:error, reason} -> {:error, state, reason}
+    end
+  end
+
+  # `begin_turn/5` has already verified the Scope before selecting contextual
+  # Evidence. Keeping the post-validation path separate avoids verifying the
+  # same context seal and durable opening twice for one Turn.
+  defp observe_current_at(state, context, input, ingress_opts) do
+    with {:ok, observed_at} <- Transaction.trusted_recorded_at(state),
          {:ok, evidence} <-
            Ingress.observe(state.ingress, context, input, observed_at, ingress_opts) do
       case EvidenceCommand.record(
@@ -143,10 +155,7 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp build_turn(state, context, turn_ref, evidence, opened_at) do
-    domain = Domain.handle(self(), state.projection.domain_ref)
-
-    with {:ok, scope} <- Scope.new(domain, context.scope_ref, context),
-         {:ok, turn} <- Turn.new(scope, turn_ref, state.mind_ref, evidence, opened_at),
+    with {:ok, turn} <- Turn.new(context, turn_ref, state.mind_ref, evidence, opened_at),
          do: Turn.seal(turn, state.grant_secret)
   end
 
@@ -174,10 +183,7 @@ defmodule Spectre.Domain.Command.Input do
 
     with :ok <- ErasureAnalysis.validate_evidence_available(projection, evidence_refs),
          {:ok, durable} <- Projection.evidence_set(projection, evidence_refs),
-         true <- Evidence.digest_index(durable) == Evidence.digest_index(turn.evidence),
-         {:ok, labels} <- Derivation.inherited_labels(durable),
-         {:ok, turn_labels} <- Turn.labels(turn),
-         true <- labels == turn_labels do
+         true <- Evidence.digest_index(durable) == Evidence.digest_index(turn.evidence) do
       {:ok, durable}
     else
       false -> {:error, :turn_evidence_mismatch}
@@ -185,100 +191,38 @@ defmodule Spectre.Domain.Command.Input do
     end
   end
 
-  defp validate_derivation(evidence, context, turn, parents, now) do
-    evidence_refs = Turn.evidence_refs(turn)
-
-    cond do
-      evidence.provenance not in [:derived, :generated] ->
-        {:error, {:invalid_derivation_provenance, evidence.provenance}}
-
-      evidence.parent_refs != evidence_refs ->
-        {:error, {:evidence_turn_parent_mismatch, evidence.ref}}
-
-      evidence.source_ref != turn.mind_ref ->
-        {:error, {:derived_evidence_source_mismatch, evidence.ref}}
-
-      evidence.issuer_ref != turn.mind_ref ->
-        {:error, {:derived_evidence_issuer_mismatch, evidence.ref}}
-
-      evidence.observed_at < turn.opened_at or evidence.observed_at > now ->
-        {:error, {:derived_evidence_time_invalid, evidence.ref}}
-
-      true ->
-        with :ok <- SubmissionContext.validate_evidence_bindings(context, evidence.bindings),
-             do: Derivation.validate(evidence, parents)
-    end
-  end
+  defp validate_derivation(evidence, turn, parents, now),
+    do: MindDerivation.validate(evidence, turn, parents, now)
 
   @spec validate_executor_evidence(map(), String.t(), String.t(), [Evidence.t()]) ::
           :ok | {:error, term()}
   defp validate_executor_evidence(projection, act_ref, attempt_ref, evidence) do
-    with {:ok, %Act{} = act} <- fetch_projection_record(projection.acts, act_ref, :act),
+    with {:ok, %Act{} = act} <- Index.fetch_required(projection.acts, act_ref, :act),
          {:ok, %Attempt{} = attempt} <-
-           fetch_projection_record(projection.attempts, attempt_ref, :attempt),
-         nil <- AttemptBinding.mismatch(attempt, act),
+           Index.fetch_required(projection.attempts, attempt_ref, :attempt),
          :ok <- validate_executor_evidence_records(projection, act, attempt, evidence) do
       :ok
-    else
-      {_field, _expected, _actual} -> {:error, :executor_evidence_attempt_mismatch}
-      {:error, _reason} = error -> error
     end
   end
 
   defp validate_executor_evidence_records(projection, act, attempt, evidence) do
-    Enum.reduce_while(evidence, :ok, fn record, :ok ->
-      case validate_executor_evidence_record(projection, act, attempt, record) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp validate_executor_evidence_record(projection, act, attempt, evidence) do
-    expected_bindings = AttemptBinding.evidence_bindings(act, attempt)
-
-    cond do
-      evidence.bindings != expected_bindings ->
-        {:error, {:executor_evidence_binding_mismatch, evidence.ref}}
-
-      evidence.source_ref != act.executor_ref or evidence.issuer_ref != act.executor_ref ->
-        {:error, {:executor_evidence_source_mismatch, evidence.ref}}
-
-      evidence.observed_at < attempt.started_at ->
-        {:error, {:executor_evidence_before_attempt, evidence.ref}}
-
-      evidence.provenance == :observed and evidence.parent_refs != [] ->
-        {:error, {:observed_executor_evidence_has_parents, evidence.ref}}
-
-      evidence.provenance == :observed ->
-        :ok
-
-      evidence.provenance in [:derived, :generated] ->
-        validate_executor_derivation(projection, act, evidence)
-
-      true ->
-        {:error, {:invalid_executor_evidence_provenance, evidence.ref}}
+    with :ok <- AttemptEvidence.validate_all(evidence, act, attempt) do
+      Enum.reduce_while(evidence, :ok, fn record, :ok ->
+        if record.provenance in [:derived, :generated] do
+          case validate_executor_derivation(projection, record) do
+            :ok -> {:cont, :ok}
+            {:error, _reason} = error -> {:halt, error}
+          end
+        else
+          {:cont, :ok}
+        end
+      end)
     end
   end
 
-  defp validate_executor_derivation(projection, act, evidence) do
-    allowed = MapSet.new(act.evidence_refs)
-    parents = MapSet.new(evidence.parent_refs)
-
-    with true <- evidence.parent_refs != [],
-         true <- MapSet.subset?(parents, allowed),
-         {:ok, durable_parents} <- Projection.evidence_set(projection, evidence.parent_refs) do
+  defp validate_executor_derivation(projection, evidence) do
+    with {:ok, durable_parents} <- Projection.evidence_set(projection, evidence.parent_refs) do
       Derivation.validate(evidence, durable_parents)
-    else
-      false -> {:error, {:executor_evidence_parent_outside_act_inputs, evidence.ref}}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp fetch_projection_record(index, ref, kind) do
-    case Map.fetch(index, ref) do
-      {:ok, record} -> {:ok, record}
-      :error -> {:error, {kind, :not_found, ref}}
     end
   end
 end

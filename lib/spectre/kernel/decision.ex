@@ -21,7 +21,7 @@ defmodule Spectre.Kernel.Decision do
     * `:unknown_class` -- the governed Surface cannot classify it.
   """
 
-  alias Spectre.{Candidate, Mandate, Row}
+  alias Spectre.{Candidate, Mandate}
   alias Spectre.Kernel.{Authority, Meter}
   alias Spectre.Kernel.Authority.Effective
   alias Spectre.Kernel.Decision.Context
@@ -131,7 +131,7 @@ defmodule Spectre.Kernel.Decision do
   end
 
   defp decide_with_authority(candidate, authority, recognition, basis_refs, context, time) do
-    with :ok <- authority_covers(candidate, authority, time),
+    with :ok <- delegation_covered(candidate, authority, time),
          :ok <- recognition_satisfied(recognition, authority),
          {:ok, reservations} <- reservations(candidate, authority, context) do
       build(
@@ -157,79 +157,6 @@ defmodule Spectre.Kernel.Decision do
           basis_refs
         )
     end
-  end
-
-  # Authority performs the full resolution. These inexpensive checks bind the
-  # supplied Effective snapshot to this exact Candidate before it is recorded.
-  defp authority_covers(candidate, authority, time) do
-    with :ok <- current_at(authority, time),
-         :ok <- requested_mandate_matches(candidate, authority),
-         :ok <- proposer_matches(candidate, authority),
-         :ok <- member(authority.scope_refs, candidate.scope_ref, :scope_outside_mandate),
-         :ok <-
-           subset(candidate.subject_refs, authority.subject_refs, {:subjects, :outside_mandate}),
-         :ok <- subset(candidate.target_refs, authority.target_refs, {:targets, :outside_mandate}),
-         :ok <- member(authority.classes, candidate.class, :class_outside_mandate),
-         :ok <- row_covered(candidate, authority),
-         :ok <- purpose_covered(candidate, authority),
-         :ok <- accountable_matches(candidate, authority) do
-      delegation_covered(candidate, authority, time)
-    end
-  end
-
-  defp current_at(authority, time) do
-    cond do
-      time < authority.not_before -> {:refused, :mandate_not_yet_valid}
-      time >= authority.expires_at -> {:refused, :mandate_expired}
-      true -> :ok
-    end
-  end
-
-  defp requested_mandate_matches(candidate, authority) do
-    if is_nil(candidate.requested_mandate_ref) or
-         candidate.requested_mandate_ref == authority.ref,
-       do: :ok,
-       else: {:refused, :different_mandate_requested}
-  end
-
-  defp proposer_matches(candidate, authority) do
-    if candidate.proposer_ref == authority.holder_ref,
-      do: :ok,
-      else: {:refused, :proposer_not_mandate_holder}
-  end
-
-  defp member(allowed, value, reason) do
-    if value in allowed, do: :ok, else: {:refused, reason}
-  end
-
-  defp subset(values, allowed, reason) do
-    allowed = MapSet.new(allowed)
-    if Enum.all?(values, &MapSet.member?(allowed, &1)), do: :ok, else: {:refused, reason}
-  end
-
-  defp row_covered(candidate, authority) do
-    if Row.subset?(candidate.row, authority.ceiling),
-      do: :ok,
-      else: {:refused, :row_exceeds_mandate_ceiling}
-  end
-
-  defp purpose_covered(candidate, authority) do
-    cond do
-      candidate.purpose_ref != authority.purpose_ref ->
-        {:refused, :purpose_outside_mandate}
-
-      candidate.purpose_params != authority.purpose_params ->
-        {:refused, :purpose_parameters_outside_mandate}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp accountable_matches(candidate, authority) do
-    if candidate.accountable_ref == authority.accountable_ref,
-      do: :ok,
-      else: {:refused, :accountable_claim_mismatch}
   end
 
   defp delegation_covered(%Candidate{row: %{delegate: false}}, _authority, _time), do: :ok

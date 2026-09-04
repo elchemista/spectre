@@ -71,7 +71,7 @@ defmodule Spectre.Consent do
       attrs.recipient_refs == [] ->
         {:error, :missing_consent_recipients}
 
-      not sha256_digest?(attrs.data_digest) ->
+      not Portable.sha256_digest?(attrs.data_digest) ->
         {:error, {:invalid_consent_data_digest, attrs.data_digest}}
 
       is_nil(attrs.cost) ->
@@ -104,13 +104,4 @@ defmodule Spectre.Consent do
   defp canonical_attrs(attrs) do
     Portable.canonical_fields(attrs, @fields)
   end
-
-  defp sha256_digest?(digest) when is_binary(digest) and byte_size(digest) == 64 do
-    case Base.decode16(digest, case: :lower) do
-      {:ok, decoded} -> byte_size(decoded) == 32
-      :error -> false
-    end
-  end
-
-  defp sha256_digest?(_digest), do: false
 end

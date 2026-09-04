@@ -8,7 +8,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Disposal do
   not mutate the projection or move Meter balances.
   """
 
-  alias Spectre.{Act, Condition, Duty}
+  alias Spectre.{Act, Condition, Duty, Outcome}
   alias Spectre.Duty.{Authority, Disposition}
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.State
@@ -199,7 +199,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Disposal do
     Enum.any?(supporting, fn
       {:outcome, outcome} ->
         outcome.attempt_ref == attempt_ref and
-          outcome.status in [:succeeded, :failed, :definitive_no_effect] and
+          Outcome.definitive_status?(outcome.status) and
           outcome.observed_at <= committed_at and
           outcome_not_corrected_at?(projection, outcome, committed_at)
 

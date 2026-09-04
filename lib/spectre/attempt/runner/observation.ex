@@ -1,11 +1,13 @@
 defmodule Spectre.Attempt.Runner.Observation do
   @moduledoc false
 
-  alias Spectre.{Act, Attempt, Evidence, Portable}
+  alias Spectre.{Act, Attempt, Evidence, Outcome, Portable}
   alias Spectre.Attempt.Binding
+  alias Spectre.Attempt.Evidence, as: AttemptEvidence
   alias Spectre.Outcome.Attestation
 
-  @statuses [:succeeded, :failed, :definitive_no_effect, :ambiguous]
+  @statuses Outcome.statuses()
+  @definitive_statuses Outcome.definitive_statuses()
 
   @type raw :: %{
           required(:status) => atom(),
@@ -88,7 +90,7 @@ defmodule Spectre.Attempt.Runner.Observation do
         attempt,
         observed_at
       )
-      when status in [:succeeded, :failed, :definitive_no_effect] do
+      when status in @definitive_statuses do
     {supporting, causal, conflicting?} =
       Enum.reduce(evidence, {[], [], false}, fn item, {supporting, causal, conflicting?} ->
         supports? = Attestation.supports?(item, status, act, attempt, observed_at)
@@ -115,6 +117,37 @@ defmodule Spectre.Attempt.Runner.Observation do
       })
     end
   end
+
+  @doc false
+  @spec outcome(t(), Act.t(), Attempt.t(), String.t() | nil) ::
+          {:ok, Outcome.t()} | {:error, term()}
+  def outcome(observation, act, attempt, contradicts_outcome_ref \\ nil)
+
+  def outcome(
+        %{
+          status: status,
+          outcome_evidence: evidence,
+          observed_at: observed_at,
+          details_ref: details_ref
+        },
+        %Act{} = act,
+        %Attempt{} = attempt,
+        contradicts_outcome_ref
+      )
+      when is_list(evidence) do
+    Outcome.new(%{
+      act_ref: act.ref,
+      attempt_ref: attempt.ref,
+      status: status,
+      evidence_refs: Enum.map(evidence, & &1.ref),
+      observed_at: observed_at,
+      details_ref: details_ref,
+      contradicts_outcome_ref: contradicts_outcome_ref
+    })
+  end
+
+  def outcome(_observation, _act, _attempt, _contradicts_outcome_ref),
+    do: {:error, :invalid_attempt_observation}
 
   @doc false
   @spec normalize_evidence(Evidence.t() | [Evidence.t()]) ::
@@ -185,41 +218,8 @@ defmodule Spectre.Attempt.Runner.Observation do
   end
 
   defp validate_boundary_evidence(evidence, act, attempt) do
-    allowed_parent_refs = MapSet.new(act.evidence_refs)
-
-    Enum.reduce_while(evidence, :ok, fn item, :ok ->
-      with :ok <- exact_attempt_bindings(item, act, attempt),
-           :ok <- explicit_executor_lineage(item, allowed_parent_refs) do
-        {:cont, :ok}
-      else
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+    AttemptEvidence.validate_all(evidence, act, attempt)
   end
-
-  defp exact_attempt_bindings(%Evidence{} = evidence, act, attempt) do
-    expected = Binding.evidence_bindings(act, attempt)
-
-    if evidence.bindings == expected,
-      do: :ok,
-      else: {:error, {:executor_evidence_binding_mismatch, evidence.ref}}
-  end
-
-  defp explicit_executor_lineage(%Evidence{provenance: :observed}, _allowed_parent_refs),
-    do: :ok
-
-  defp explicit_executor_lineage(
-         %Evidence{provenance: provenance, parent_refs: [_first | _rest] = parents} = evidence,
-         allowed_parent_refs
-       )
-       when provenance in [:derived, :generated] do
-    if Enum.all?(parents, &MapSet.member?(allowed_parent_refs, &1)),
-      do: :ok,
-      else: {:error, {:executor_evidence_parent_outside_act_inputs, evidence.ref}}
-  end
-
-  defp explicit_executor_lineage(%Evidence{} = evidence, _allowed_parent_refs),
-    do: {:error, {:invalid_executor_evidence_lineage, evidence.ref}}
 
   defp boundary_details_ref(boundary, kind)
        when boundary in [:broker, :executor] and

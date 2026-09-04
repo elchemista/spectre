@@ -19,7 +19,6 @@ defmodule Spectre.GovernedAct.Transition.Information do
     SubmissionContext
   }
 
-  alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.Duty.EvidenceCause
   alias Spectre.Evidence.Derivation
@@ -33,9 +32,14 @@ defmodule Spectre.GovernedAct.Transition.Information do
         %Event{type: "declassification_recorded", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, record} <- Record.decode(Declassification, data),
-         :ok <- Record.match_identity(identity, record.ref),
-         :ok <- Index.unique(projection.declassifications, identity, :declassification),
+    with {:ok, record} <-
+           Index.restore_unique(
+             projection.declassifications,
+             Declassification,
+             identity,
+             data,
+             :declassification
+           ),
          :ok <- unique_declassification_act(projection, record),
          :ok <- unique_declassified_evidence(projection, record),
          {:ok, act} <- Index.fetch_act(projection, record.source_act_ref),
@@ -55,9 +59,8 @@ defmodule Spectre.GovernedAct.Transition.Information do
         %Event{type: "evidence_recorded", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, evidence} <- Record.decode(Evidence, data),
-         :ok <- Record.match_identity(identity, evidence.ref),
-         :ok <- Index.unique(projection.evidence, identity, :evidence),
+    with {:ok, evidence} <-
+           Index.restore_unique(projection.evidence, Evidence, identity, data, :evidence),
          :ok <- validate_evidence_scope_binding(projection, evidence),
          :ok <- validate_evidence_lineage(projection, evidence),
          :ok <- validate_presentation_approval_evidence(projection, evidence),
@@ -71,9 +74,14 @@ defmodule Spectre.GovernedAct.Transition.Information do
         %Event{type: "presentation_recorded", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, presentation} <- Record.decode(Presentation, data),
-         :ok <- Record.match_identity(identity, presentation.ref),
-         :ok <- Index.unique(projection.presentations, identity, :presentation),
+    with {:ok, presentation} <-
+           Index.restore_unique(
+             projection.presentations,
+             Presentation,
+             identity,
+             data,
+             :presentation
+           ),
          :ok <- validate_prepared_presentation(projection, presentation) do
       {:ok,
        %{projection | presentations: Map.put(projection.presentations, identity, presentation)}}
@@ -85,9 +93,8 @@ defmodule Spectre.GovernedAct.Transition.Information do
         %Event{type: "erasure_requested", identity: identity, data: data},
         _revision
       ) do
-    with {:ok, erasure} <- Record.decode(Erasure, data),
-         :ok <- Record.match_identity(identity, erasure.ref),
-         :ok <- Index.unique(projection.erasures, identity, :erasure),
+    with {:ok, erasure} <-
+           Index.restore_unique(projection.erasures, Erasure, identity, data, :erasure),
          :ok <- unique_erasure_act(projection, erasure),
          {:ok, act} <- Index.fetch_act(projection, erasure.source_act_ref),
          :ok <- validate_erasure_request(projection, act, erasure) do

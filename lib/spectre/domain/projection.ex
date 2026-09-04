@@ -11,7 +11,6 @@ defmodule Spectre.Domain.Projection do
   alias Spectre.GovernedAct.{Fold, State, View}
   alias Spectre.Kernel.Authority.Facts
   alias Spectre.Ledger
-  alias Spectre.Ledger.Entry
   alias Spectre.SubmissionContext
 
   @type t :: State.t()
@@ -38,14 +37,9 @@ defmodule Spectre.Domain.Projection do
 
   def replay(_snapshot, _constitution), do: {:error, :invalid_domain_snapshot}
 
-  @doc "Applies one verified entry while incrementally rebuilding a Domain."
-  @spec apply_entry(t(), Entry.t()) :: {:ok, t()} | {:error, term()}
-  defdelegate apply_entry(projection, entry), to: Fold
-
-  @doc "Applies one decoded payload to provisional state before group commit."
-  @spec apply_payload(t(), map(), non_neg_integer() | nil) :: {:ok, t()} | {:error, term()}
-  def apply_payload(projection, payload, revision \\ nil),
-    do: Fold.apply_payload(projection, payload, revision)
+  @doc "Applies one timestamped payload batch to disposable governed state."
+  @spec apply_payloads(t(), [map()], non_neg_integer()) :: {:ok, t()} | {:error, term()}
+  defdelegate apply_payloads(projection, payloads, recorded_at), to: Fold
 
   @doc "Returns the immutable authority facts consumed by the pure kernel."
   @spec authority_view(t()) :: Facts.t()

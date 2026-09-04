@@ -9,7 +9,7 @@ defmodule Spectre.GovernedAct.MeterState do
   """
 
   alias Spectre.{Mandate, Outcome}
-  alias Spectre.GovernedAct.{Class, DispatchState, State}
+  alias Spectre.GovernedAct.{Class, DispatchState, Index, State}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Meter
   alias Spectre.Kernel.Meter.Account
@@ -115,11 +115,12 @@ defmodule Spectre.GovernedAct.MeterState do
     act_ref = data["act_ref"]
     child_ref = data["child_mandate_ref"]
 
-    with {:ok, act} <- fetch(state.acts, act_ref, :act),
+    with {:ok, act} <- Index.fetch_required(state.acts, act_ref, :act),
          :ok <- devolution_absent(state, act_ref),
-         {:ok, child} <- fetch(state.mandates, child_ref, :mandate),
+         {:ok, child} <- Index.fetch_required(state.mandates, child_ref, :mandate),
          :ok <- child_mandate(child),
-         {:ok, parent} <- fetch(state.mandates, child.parent_ref, :mandate),
+         {:ok, parent} <-
+           Index.fetch_required(state.mandates, child.parent_ref, :mandate),
          {:ok, true} <- terminal?(state, child, act.committed_at),
          {:ok, amounts} <- devolution_amounts(data["amounts"]),
          :ok <- validate_devolution_act(act, child, amounts),
@@ -266,7 +267,7 @@ defmodule Spectre.GovernedAct.MeterState do
     act_ref = data["act_ref"]
     mandate_ref = data["mandate_ref"]
 
-    with {:ok, act} <- fetch(state.acts, act_ref, :act),
+    with {:ok, act} <- Index.fetch_required(state.acts, act_ref, :act),
          true <- act.mandate_ref == mandate_ref,
          {:ok, amounts} <- Amounts.normalize(data["amounts"]),
          true <- amounts == act.reservations do
@@ -297,7 +298,7 @@ defmodule Spectre.GovernedAct.MeterState do
   defp validate_disposition(state, act_ref, operation) do
     allowed_statuses =
       case operation do
-        :settle -> [:succeeded, :failed]
+        :settle -> Outcome.correction_statuses()
         :release -> [:definitive_no_effect]
         :suspend -> [:ambiguous]
       end
@@ -496,11 +497,4 @@ defmodule Spectre.GovernedAct.MeterState do
   end
 
   defp internal_spend_act?(act), do: GovernedExecution.metered_ledger_internal?(act)
-
-  defp fetch(collection, key, kind) do
-    case Map.fetch(collection, key) do
-      {:ok, value} -> {:ok, value}
-      :error -> {:error, {kind, :not_found, key}}
-    end
-  end
 end

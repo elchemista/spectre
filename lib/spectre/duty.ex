@@ -48,6 +48,7 @@ defmodule Spectre.Duty do
     :status,
     :disposition_act_ref
   ]
+  @cause_fields @fields -- [:status, :disposition_act_ref]
 
   @enforce_keys @fields
   defstruct @fields
@@ -120,6 +121,12 @@ defmodule Spectre.Duty do
   @spec content_ref(t()) :: String.t()
   def content_ref(%__MODULE__{cause_key: cause_key}),
     do: Portable.content_ref!(:duty, %{"cause_key" => cause_key})
+
+  @doc false
+  @spec same_cause?(t(), t()) :: boolean()
+  def same_cause?(%__MODULE__{} = left, %__MODULE__{} = right) do
+    Map.take(left, @cause_fields) == Map.take(right, @cause_fields)
+  end
 
   @doc false
   @spec normalize_class(term()) :: {:ok, class()} | {:error, term()}

@@ -12,11 +12,11 @@ defmodule Spectre.GovernedAct.AuthorityChange do
   alias Spectre.Mandate
   alias Spectre.Mandate.{Ancestry, Revocation}
 
-  @type resolution :: {String.t(), boolean()}
+  @type resolution :: {:ok, String.t(), boolean()} | {:error, term()}
 
   @doc "Resolves the target and cascade semantics of an already-folded authority change."
   @spec resolve(map(), Act.t(), :mandate_revoked | :mandate_restricted) ::
-          {:ok, String.t(), boolean()} | {:error, term()}
+          resolution()
   def resolve(
         state,
         %Act{

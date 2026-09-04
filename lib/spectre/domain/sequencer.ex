@@ -383,6 +383,13 @@ defmodule Spectre.Domain.Sequencer do
   def handle_call(:projection, _from, %State{} = state),
     do: {:reply, state.projection, state}
 
+  # Projection inspection is capability-free and remains available for crash
+  # recovery. Every scoped or operational request is fenced as soon as a fatal
+  # state has scheduled this process for termination.
+  def handle_call(_request, _from, %State{halted_reason: reason} = state)
+      when not is_nil(reason),
+      do: {:reply, {:error, {:sequencer_halted, reason}}, state}
+
   def handle_call({:scope_projection, context}, _from, %State{} = state) do
     reply =
       with {:ok, _context, _opening} <- Context.validate_scope(state, context),
@@ -414,10 +421,6 @@ defmodule Spectre.Domain.Sequencer do
     {:reply, reply, state}
   end
 
-  def handle_call(_request, _from, %State{halted_reason: reason} = state)
-      when not is_nil(reason),
-      do: {:reply, {:error, {:sequencer_halted, reason}}, state}
-
   def handle_call(
         {:execution_route, executor_ref, contract_ref, opts},
         _from,
@@ -425,7 +428,7 @@ defmodule Spectre.Domain.Sequencer do
       ) do
     reply =
       with :ok <- validate_known_options(opts, @sequencer_call_options, :execution_route),
-           do: Router.fetch(state, executor_ref, contract_ref)
+           do: Router.fetch(state.execution_boundary, executor_ref, contract_ref)
 
     {:reply, reply, state}
   end
@@ -481,23 +484,11 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   def handle_call({:consume_grant, grant, opts}, _from, %State{} = state) do
-    case validate_call_options(opts) do
-      :ok ->
-        consume_grant_reply(state, grant)
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+    validated_command_reply(state, opts, &ExecutionCommand.consume(&1, grant))
   end
 
   def handle_call({:record_outcome, input, opts}, _from, %State{} = state) do
-    case validate_call_options(opts) do
-      :ok ->
-        record_outcome_reply(state, input)
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+    validated_command_reply(state, opts, &ObservationCommand.record(&1, input))
   end
 
   def handle_call({:observe, context, input, opts}, _from, %State{} = state),
@@ -521,31 +512,11 @@ defmodule Spectre.Domain.Sequencer do
       do: executor_evidence_reply(state, act_ref, attempt_ref, evidence, opts)
 
   def handle_call({:open_scope, context, input, opts}, _from, %State{} = state) do
-    case validate_call_options(opts) do
-      :ok ->
-        open_scope_reply(state, context, input)
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+    validated_command_reply(state, opts, &ScopeCommand.open(&1, context, input))
   end
 
   def handle_call({:record_presentation, context, input, opts}, _from, %State{} = state) do
-    case validate_call_options(opts) do
-      :ok ->
-        record_presentation_reply(state, context, input)
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
-  end
-
-  defp consume_grant_reply(state, grant) do
-    run_after_duty_repair(state, &ExecutionCommand.consume(&1, grant))
-  end
-
-  defp record_outcome_reply(state, input) do
-    run_after_duty_repair(state, &ObservationCommand.record(&1, input))
+    validated_command_reply(state, opts, &PresentationCommand.record(&1, context, input))
   end
 
   defp ingress_observation_reply(state, context, input, opts) do
@@ -606,14 +577,6 @@ defmodule Spectre.Domain.Sequencer do
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
-  end
-
-  defp open_scope_reply(state, context, input) do
-    run_after_duty_repair(state, &ScopeCommand.open(&1, context, input))
-  end
-
-  defp record_presentation_reply(state, context, input) do
-    run_after_duty_repair(state, &PresentationCommand.record(&1, context, input))
   end
 
   @impl GenServer
@@ -749,6 +712,14 @@ defmodule Spectre.Domain.Sequencer do
     case CommandCommit.prepare(state) do
       {:ok, current} -> current |> command.() |> command_reply()
       {:error, halted, reason} -> {:reply, {:error, reason}, halted}
+    end
+  end
+
+  defp validated_command_reply(%State{} = state, opts, command)
+       when is_function(command, 1) do
+    case validate_call_options(opts) do
+      :ok -> run_after_duty_repair(state, command)
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 

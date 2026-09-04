@@ -11,8 +11,6 @@ defmodule Spectre.Erasure.Analysis do
   alias Spectre.Erasure.Analysis.{Closure, Execution, Facts}
   alias Spectre.GovernedAct.State
 
-  @payload_ref ~r/\Apayload:([0-9a-f]{64})\z/
-
   @type input :: State.t() | Facts.t()
   @type payload_state :: Execution.payload_state()
 
@@ -161,10 +159,11 @@ defmodule Spectre.Erasure.Analysis do
 
   @doc false
   @spec payload_digest(String.t()) :: {:ok, String.t()} | {:error, term()}
-  def payload_digest(target_ref) do
-    case Regex.run(@payload_ref, target_ref, capture: :all_but_first) do
-      [digest] -> {:ok, digest}
-      _invalid -> {:error, {:invalid_erasable_payload_ref, target_ref}}
-    end
+  def payload_digest("payload:" <> digest = target_ref) do
+    if Portable.sha256_digest?(digest),
+      do: {:ok, digest},
+      else: {:error, {:invalid_erasable_payload_ref, target_ref}}
   end
+
+  def payload_digest(target_ref), do: {:error, {:invalid_erasable_payload_ref, target_ref}}
 end

@@ -158,6 +158,14 @@ defmodule Spectre.Portable do
     end
   end
 
+  @doc false
+  @spec sha256_digest?(term()) :: boolean()
+  def sha256_digest?(digest) when is_binary(digest) and byte_size(digest) == 64 do
+    lowercase_hex?(digest)
+  end
+
+  def sha256_digest?(_digest), do: false
+
   @doc "Checks a list of opaque record references."
   @spec validate_refs(term(), atom()) :: :ok | {:error, reason()}
   def validate_refs(values, field), do: validate_ref_list(values, field, 0)
@@ -167,6 +175,17 @@ defmodule Spectre.Portable do
   def normalize_refs(values, field) do
     with :ok <- validate_refs(values, field), do: {:ok, values |> Enum.uniq() |> Enum.sort()}
   end
+
+  @doc """
+  Recursively converts atom map keys to strings without changing atom values.
+
+  This is intended for portable, host-authored semantic maps whose ergonomic
+  atom and transport string spellings mean the same thing. It rejects a map
+  containing both spellings instead of silently choosing one. Other portable
+  key types are preserved.
+  """
+  @spec stringify_atom_keys(term()) :: {:ok, term()} | {:error, reason()}
+  def stringify_atom_keys(value), do: stringify_atom_keys(value, [])
 
   @doc "Checks a required non-empty binary field."
   @spec validate_non_empty_binary(term(), atom()) :: :ok | {:error, reason()}
@@ -269,6 +288,57 @@ defmodule Spectre.Portable do
   defp validate_value(value, path),
     do: {:error, {:nonportable_value, Enum.reverse(path), shape(value)}}
 
+  defp stringify_atom_keys(value, path) when is_map(value) and not is_struct(value) do
+    Enum.reduce_while(value, {:ok, %{}}, fn {raw_key, item}, {:ok, normalized} ->
+      key = if is_atom(raw_key), do: Atom.to_string(raw_key), else: raw_key
+
+      if Map.has_key?(normalized, key) do
+        {:halt, {:error, {:equivalent_map_keys, Enum.reverse([key | path])}}}
+      else
+        case stringify_atom_keys(item, [key | path]) do
+          {:ok, item} -> {:cont, {:ok, Map.put(normalized, key, item)}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end
+    end)
+  end
+
+  defp stringify_atom_keys(value, path) when is_list(value),
+    do: stringify_atom_key_list(value, path, 0, [])
+
+  defp stringify_atom_keys(value, path) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, normalized} ->
+      case stringify_atom_keys(item, [index | path]) do
+        {:ok, item} -> {:cont, {:ok, [item | normalized]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, normalized |> Enum.reverse() |> List.to_tuple()}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp stringify_atom_keys(value, _path), do: {:ok, value}
+
+  defp stringify_atom_key_list([], _path, _index, normalized),
+    do: {:ok, Enum.reverse(normalized)}
+
+  defp stringify_atom_key_list([head | tail], path, index, normalized) do
+    with {:ok, head} <- stringify_atom_keys(head, [index | path]) do
+      stringify_atom_key_list(tail, path, index + 1, [head | normalized])
+    end
+  end
+
+  defp stringify_atom_key_list(tail, path, index, normalized) do
+    with {:ok, tail} <- stringify_atom_keys(tail, [{:tail, index} | path]) do
+      {:ok, Enum.reverse(normalized, tail)}
+    end
+  end
+
   defp validate_list(head, tail, path, index) do
     with :ok <- validate_value(head, [index | path]) do
       case tail do
@@ -343,7 +413,7 @@ defmodule Spectre.Portable do
 
     if byte_size(value) == byte_size(marker) + 64 and String.starts_with?(value, marker) do
       digest = binary_part(value, byte_size(marker), 64)
-      lowercase_sha256?(digest)
+      sha256_digest?(digest)
     else
       false
     end
@@ -351,11 +421,12 @@ defmodule Spectre.Portable do
 
   defp content_ref_shape?(_value, _prefix), do: false
 
-  defp lowercase_sha256?(digest) do
-    Enum.all?(:binary.bin_to_list(digest), fn byte ->
-      byte in ?0..?9 or byte in ?a..?f
-    end)
-  end
+  defp lowercase_hex?(<<>>), do: true
+
+  defp lowercase_hex?(<<byte, rest::binary>>) when byte in ?0..?9 or byte in ?a..?f,
+    do: lowercase_hex?(rest)
+
+  defp lowercase_hex?(_digest), do: false
 
   defp validate_ref_list([], _field, _index), do: :ok
 
