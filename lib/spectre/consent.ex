@@ -50,7 +50,7 @@ defmodule Spectre.Consent do
   @doc "Checks that the duplicated purpose is the Candidate's current purpose."
   @spec validate_purpose(t(), String.t(), map()) :: :ok | {:error, term()}
   def validate_purpose(consent, purpose_ref, purpose_params) when is_map(consent) do
-    if consent["purpose_ref"] == purpose_ref and consent["purpose_params"] == purpose_params,
+    if consent["purpose_ref"] == purpose_ref and consent["purpose_params"] === purpose_params,
       do: :ok,
       else: {:error, :consent_purpose_mismatch}
   end

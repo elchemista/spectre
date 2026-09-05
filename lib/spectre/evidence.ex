@@ -177,7 +177,7 @@ defmodule Spectre.Evidence do
   @doc "Returns whether two records assert opposite stances for the same proposition."
   @spec opposes?(t(), t()) :: boolean()
   def opposes?(%__MODULE__{} = left, %__MODULE__{} = right) do
-    left.proposition == right.proposition and
+    left.proposition === right.proposition and
       {left.stance, right.stance} in [
         {:supports, :contradicts},
         {:contradicts, :supports}

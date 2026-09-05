@@ -145,6 +145,89 @@ defmodule Spectre.Core.AgentAuthoringTest do
              Template.bind(template, class: "example")
   end
 
+  test "a new occurrence changes identity but not the same material proposal", %{
+    turn: turn,
+    attrs: attrs
+  } do
+    assert {:ok, first} = Assistant.candidate("direct/effect", turn, attrs)
+
+    assert {:ok, second} =
+             Assistant.candidate("direct/effect", turn, Map.put(attrs, :identity_key, "another"))
+
+    refute first.ref == second.ref
+    assert first.material_digest == second.material_digest
+    assert first.consequence == second.consequence
+  end
+
+  test "changing runtime material changes the digest even for the same template", %{
+    turn: turn,
+    attrs: attrs
+  } do
+    assert {:ok, first} = Assistant.candidate("direct/effect", turn, attrs)
+    changed = Map.update!(attrs, :consequence, &Map.put(&1, "sequence", 99))
+    assert {:ok, second} = Assistant.candidate("direct/effect", turn, changed)
+    assert first.identity_key == second.identity_key
+    refute first.material_digest == second.material_digest
+  end
+
+  test "a portable Skill cannot make unavailable Evidence part of a Turn", %{
+    turn: turn,
+    attrs: attrs
+  } do
+    definition = Assistant.definition()
+
+    body =
+      put_in(definition.body, ["candidates", "direct/effect", "evidence_refs"], [
+        "evidence:absent"
+      ])
+
+    assert {:ok, revised} = Definition.revise(definition, body, 1)
+    assert {:error, _} = Agent.candidate(revised, "direct/effect", turn, attrs)
+  end
+
+  test "tampering a stored Definition cannot silently change a generated Candidate", %{
+    turn: turn,
+    attrs: attrs,
+    fixture: f
+  } do
+    original = Assistant.definition()
+    tampered = put_in(original.body, ["candidates", "direct/effect", "class"], "admin")
+    before = Sequencer.projection(f.server)
+
+    assert {:error, _} =
+             Agent.candidate(%{original | body: tampered}, "direct/effect", turn, attrs)
+
+    assert Sequencer.projection(f.server) == before
+  end
+
+  test "partial templates still require complete Candidate validation at materialization", %{
+    turn: turn,
+    attrs: attrs
+  } do
+    assert {:ok, template} = Template.new(row: %{disclose: true})
+    assert {:ok, request} = Template.bind(template, Map.put(attrs, :class, "example.disclose"))
+    assert {:error, _} = Spectre.Mind.candidate(turn, request)
+  end
+
+  test "atom and string aliases cannot hide conflicting template fields" do
+    assert {:error, _} = Template.new(%{:class => "one", "class" => "two"})
+    assert {:error, _} = Template.new(class: "one", class: "two")
+    assert {:error, _} = Template.new(row: %{:read => true, "read" => false})
+    assert {:error, _} = Template.bind(%{"class" => "fixed"}, %{"class" => "override"})
+  end
+
+  test "template Row declarations reject unknown powers and non-boolean flags" do
+    for row <- [
+          %{admin: true},
+          %{read: 1},
+          %{read: nil},
+          %{schema_version: 1.0},
+          %{schema_version: 2}
+        ] do
+      assert {:error, _} = Template.new(row: row)
+    end
+  end
+
   test "duplicate names and occurrence identity in the DSL fail compilation" do
     assert_raise CompileError, ~r/duplicate_declaration/, fn ->
       Code.compile_quoted(

@@ -153,7 +153,7 @@ defmodule Spectre.Kernel.Authority.Coverage do
       candidate.purpose_ref != mandate.purpose_ref ->
         {:error, :purpose_outside_mandate}
 
-      candidate.purpose_params != mandate.purpose_params ->
+      candidate.purpose_params !== mandate.purpose_params ->
         {:error, :purpose_parameters_outside_mandate}
 
       true ->

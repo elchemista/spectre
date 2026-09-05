@@ -112,6 +112,11 @@ defmodule Spectre.Erasure.Analysis.Closure do
       acts
       |> Enum.map(&Map.fetch!(facts.acts, &1).decision_ref)
       |> existing_refs(facts.decisions)
+      # Refused and undecidable Decisions have no Act, but their recorded
+      # recognition basis still depends on the payload being erased.
+      |> MapSet.union(
+        refs_matching(facts.decisions, &intersects?(&1.recognition_evidence_refs, evidence))
+      )
       |> MapSet.union(current.decisions)
 
     attempts =

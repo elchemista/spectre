@@ -239,11 +239,21 @@ defmodule Spectre.Condition do
 
   defp validate_parameters_and_ref(condition) do
     if Portable.is_plain_map(condition.parameters) do
-      Portable.validate_ref(condition.ref, :ref)
+      with :ok <- validate_assumption_policy(condition.parameters) do
+        Portable.validate_ref(condition.ref, :ref)
+      end
     else
       {:error, {:invalid_condition_parameters, Portable.shape(condition.parameters)}}
     end
   end
+
+  # Application parameters remain opaque. This reserved key is interpreted by
+  # Recognition, so reject a non-list policy here rather than crashing during
+  # admission when Evidence happens to carry an assumption.
+  defp validate_assumption_policy(%{"accepted_assumptions" => value}) when not is_list(value),
+    do: {:error, {:invalid_condition_parameter, "accepted_assumptions", Portable.shape(value)}}
+
+  defp validate_assumption_policy(_parameters), do: :ok
 
   defp valid_provenance?([]), do: false
 
@@ -267,7 +277,7 @@ defmodule Spectre.Condition do
   end
 
   defp same_proposition(parent, child) do
-    if parent.proposition == child.proposition,
+    if parent.proposition === child.proposition,
       do: :ok,
       else: {:error, {:condition_weakened, :proposition}}
   end
@@ -304,7 +314,7 @@ defmodule Spectre.Condition do
   defp requirement_contains?(stronger, weaker) when is_list(stronger) and is_list(weaker),
     do: Enum.all?(weaker, &(&1 in stronger))
 
-  defp requirement_contains?(stronger, weaker), do: stronger == weaker
+  defp requirement_contains?(stronger, weaker), do: stronger === weaker
 
   defp normalize_semantic_keys(attrs) do
     Enum.reduce_while(@semantic_fields, {:ok, attrs}, fn field, {:ok, normalized} ->

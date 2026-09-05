@@ -158,7 +158,7 @@ defmodule Spectre.Kernel.Authority.Attenuation do
   end
 
   defp child_purpose_within(parent, child) do
-    if child.purpose_ref == parent.purpose_ref and child.purpose_params == parent.purpose_params,
+    if child.purpose_ref == parent.purpose_ref and child.purpose_params === parent.purpose_params,
       do: :ok,
       else: {:error, {:delegation_expanded, :purpose}}
   end

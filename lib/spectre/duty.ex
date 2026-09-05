@@ -127,7 +127,7 @@ defmodule Spectre.Duty do
   @doc false
   @spec same_cause?(t(), t()) :: boolean()
   def same_cause?(%__MODULE__{} = left, %__MODULE__{} = right) do
-    Map.take(left, @cause_fields) == Map.take(right, @cause_fields)
+    Map.take(left, @cause_fields) === Map.take(right, @cause_fields)
   end
 
   @doc false

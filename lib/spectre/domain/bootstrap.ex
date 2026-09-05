@@ -87,8 +87,14 @@ defmodule Spectre.Domain.Bootstrap do
           do: Constitution.conflict_refs(rules, duty.class),
           else: []
 
+      # An Evidence-born Duty may name a causal Mandate without a causal Act.
+      # Recovery must retain that authority in its frozen conflict set too.
       expected =
-        Derive.conflict_refs(duty.accountable, configured, duty_cause_act(projection, duty))
+        Derive.conflict_refs(
+          duty.accountable,
+          [duty.mandate_ref | configured],
+          duty_cause_act(projection, duty)
+        )
 
       if duty.conflict_refs == expected,
         do: {:cont, :ok},

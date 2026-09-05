@@ -176,7 +176,7 @@ defmodule Spectre.Presentation do
         candidate.scope_ref != presentation.scope_ref ->
           {:error, :presentation_scope_mismatch}
 
-        candidate_consent != presented_consent ->
+        candidate_consent !== presented_consent ->
           {:error, :presentation_consent_material_mismatch}
 
         true ->
@@ -264,7 +264,7 @@ defmodule Spectre.Presentation do
       not exact_show_row?(record.row) ->
         {:error, :presentation_show_row_mismatch}
 
-      record.consequence != show_consequence(presentation) ->
+      record.consequence !== show_consequence(presentation) ->
         {:error, :presentation_show_consequence_mismatch}
 
       not is_nil(record.presentation_ref) ->
@@ -287,7 +287,7 @@ defmodule Spectre.Presentation do
         {:error, :presentation_show_disclosure_mismatch}
 
       record.purpose_ref != presentation.purpose_ref or
-          record.purpose_params != presentation.purpose_params ->
+          record.purpose_params !== presentation.purpose_params ->
         {:error, :presentation_show_purpose_mismatch}
 
       true ->

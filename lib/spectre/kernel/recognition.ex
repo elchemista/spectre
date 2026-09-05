@@ -277,7 +277,7 @@ defmodule Spectre.Kernel.Recognition do
   defp assumption_status(assumption, accepted?, condition, evidence_set, time, visited) do
     {supporting, contradicting, basis} =
       Enum.reduce(evidence_set, {[], [], MapSet.new()}, fn candidate, accumulated ->
-        if candidate.proposition == assumption do
+        if candidate.proposition === assumption do
           qualification = qualify(candidate, condition, evidence_set, time, visited)
           collect_assumption(qualification, candidate, accumulated)
         else
@@ -328,27 +328,26 @@ defmodule Spectre.Kernel.Recognition do
   defp empty_coverage(required) when is_map(required), do: %{}
   defp empty_coverage(_required), do: []
 
-  defp merge_coverage(acc, nil), do: acc
-
-  defp merge_coverage(acc, value) when is_list(acc) do
-    (acc ++ List.wrap(value)) |> Enum.uniq()
-  end
+  # Aggregation is idempotent: another receipt asserting the same scalar must
+  # not turn it into a list. Nested objects retain their shape while their
+  # set-valued leaves are combined.
+  defp merge_coverage(value, value), do: value
 
   defp merge_coverage(acc, value) when is_map(acc) and is_map(value) do
-    Map.merge(acc, value, fn _key, left, right -> merge_coverage(List.wrap(left), right) end)
+    Map.merge(acc, value, fn _key, left, right -> merge_coverage(left, right) end)
   end
 
-  defp merge_coverage(acc, _value), do: acc
+  defp merge_coverage(acc, value), do: Enum.uniq(List.wrap(acc) ++ List.wrap(value))
 
   defp cardinality_bounds(%Condition{cardinality: cardinality}) do
     {Map.fetch!(cardinality, "min"), Map.fetch!(cardinality, "max")}
   end
 
-  defp same_proposition?(evidence, condition), do: evidence.proposition == condition.proposition
+  # Opaque facts are compared as canonical values, never with numeric coercion.
+  defp same_proposition?(evidence, condition), do: evidence.proposition === condition.proposition
 
   defp subset_value?(nil, _actual), do: true
   defp subset_value?([], _actual), do: true
-  defp subset_value?(_required, :any), do: true
 
   defp subset_value?(required, actual) when is_map(required) and is_map(actual) do
     Enum.all?(required, fn {key, value} ->
@@ -363,7 +362,9 @@ defmodule Spectre.Kernel.Recognition do
     MapSet.subset?(MapSet.new(required), MapSet.new(actual))
   end
 
-  defp subset_value?(required, actual), do: required == actual
+  # Open requirements belong to the Condition. An asserted :any is an ordinary
+  # fact, not a wildcard that can prove a required account, subject or object.
+  defp subset_value?(required, actual), do: required === actual
 
   defp constraint_covers?(%MapSet{} = allowed, actual), do: MapSet.member?(allowed, actual)
   defp constraint_covers?(allowed, actual) when is_list(allowed), do: actual in allowed

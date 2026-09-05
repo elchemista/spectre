@@ -132,10 +132,11 @@ defmodule Spectre.Mandate.Ancestry do
       {:error, {:mandate_ancestry_cycle, mandate_ref}}
     else
       case Map.fetch(mandates, mandate_ref) do
-        {:ok, %Mandate{parent_ref: nil}} ->
+        {:ok, %Mandate{ref: ^mandate_ref, parent_ref: nil}} ->
           {:ok, false}
 
-        {:ok, %Mandate{parent_ref: parent_ref}} when is_binary(parent_ref) and parent_ref != "" ->
+        {:ok, %Mandate{ref: ^mandate_ref, parent_ref: parent_ref}}
+        when is_binary(parent_ref) and parent_ref != "" ->
           descendant?(
             mandates,
             parent_ref,
@@ -143,7 +144,7 @@ defmodule Spectre.Mandate.Ancestry do
             MapSet.put(visited, mandate_ref)
           )
 
-        {:ok, %Mandate{parent_ref: invalid}} ->
+        {:ok, %Mandate{ref: ^mandate_ref, parent_ref: invalid}} ->
           {:error, {:invalid_mandate_parent_ref, invalid}}
 
         {:ok, _invalid} ->

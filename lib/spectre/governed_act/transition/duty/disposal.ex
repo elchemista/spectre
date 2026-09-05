@@ -100,7 +100,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Disposal do
       disposition.duty_ref != duty.ref ->
         {:error, {:duty_disposition_ref_mismatch, duty.ref, disposition.duty_ref}}
 
-      disposition.cause_key != duty.cause_key ->
+      disposition.cause_key !== duty.cause_key ->
         {:error, {:duty_disposition_cause_mismatch, duty.ref}}
 
       disposition.opening_digest != Duty.digest(duty) ->

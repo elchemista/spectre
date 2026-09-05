@@ -36,6 +36,7 @@ defmodule Spectre.Agent do
   alias Spectre.Definition
   alias Spectre.Mind
   alias Spectre.Mind.Turn
+  alias Spectre.Portable
 
   @callback definition() :: Definition.t()
 
@@ -94,8 +95,39 @@ defmodule Spectre.Agent do
             "components" => components
           } = body
       })
-      when map_size(body) == 3 and is_map(templates) and is_map(components),
-      do: {:ok, templates, components}
+      when map_size(body) == 3 and is_map(templates) and is_map(components) do
+    # Definition validates portable content, not the schema of this particular
+    # authoring format. Validate it here for both compilation and data ingress;
+    # a valid digest alone does not make a component or template well-formed.
+    with :ok <- validate_entries(templates, &validate_template/1),
+         :ok <- validate_entries(components, &Portable.validate_ref(&1, :component_ref)) do
+      {:ok, templates, components}
+    end
+  end
 
   def declarations(_definition), do: {:error, :not_an_agent_declaration}
+
+  defp validate_entries(entries, validate) do
+    Enum.reduce_while(entries, :ok, fn {name, value}, :ok ->
+      with :ok <- validate_path(name), :ok <- validate.(value) do
+        {:cont, :ok}
+      else
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_path(name) when is_binary(name) and name != "" do
+    if Enum.all?(:binary.split(name, "/", [:global]), &(&1 != "")),
+      do: :ok,
+      else: {:error, {:invalid_declaration_path, name}}
+  end
+
+  defp validate_path(name), do: {:error, {:invalid_declaration_path, name}}
+
+  defp validate_template(template) do
+    with {:ok, canonical} <- Template.new(template) do
+      if canonical === template, do: :ok, else: {:error, :noncanonical_candidate_template}
+    end
+  end
 end

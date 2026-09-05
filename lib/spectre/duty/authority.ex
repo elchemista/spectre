@@ -39,9 +39,9 @@ defmodule Spectre.Duty.Authority do
   defp exact_route(duty, act, principals, mandates) do
     matched? =
       Enum.any?(duty.disposition_authority_refs, fn ref ->
-        (match?(%Principal{}, Map.get(principals, ref)) and act.proposer_ref == ref and
+        (match?(%Principal{ref: ^ref}, Map.get(principals, ref)) and act.proposer_ref == ref and
            act.authenticated_principal_ref == ref) or
-          (match?(%Mandate{}, Map.get(mandates, ref)) and act.mandate_ref == ref)
+          (match?(%Mandate{ref: ^ref}, Map.get(mandates, ref)) and act.mandate_ref == ref)
       end)
 
     if matched?,
@@ -58,7 +58,7 @@ defmodule Spectre.Duty.Authority do
     end
   end
 
-  defp causal_mandates(%Duty{mandate_ref: nil}, nil), do: {:ok, MapSet.new()}
+  defp causal_mandates(%Duty{act_ref: nil, mandate_ref: nil}, nil), do: {:ok, MapSet.new()}
 
   defp causal_mandates(%Duty{act_ref: nil, mandate_ref: mandate_ref}, nil)
        when is_binary(mandate_ref),
@@ -136,7 +136,7 @@ defmodule Spectre.Duty.Authority do
 
   defp fetch_route_mandate(duty, mandates, mandate_ref) do
     case Map.fetch(mandates, mandate_ref) do
-      {:ok, %Mandate{} = mandate} -> {:ok, mandate}
+      {:ok, %Mandate{ref: ^mandate_ref} = mandate} -> {:ok, mandate}
       :error -> {:error, {:duty_disposition_mandate_not_found, duty.ref, mandate_ref}}
       {:ok, _invalid} -> {:error, {:invalid_duty_disposition_mandate, duty.ref, mandate_ref}}
     end

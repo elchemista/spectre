@@ -76,7 +76,7 @@ defmodule Spectre.Ledger do
     with :ok <- validate_identifier(domain_ref, :domain_ref) do
       case Store.export(store, domain_ref, opts) do
         {:ok, data} ->
-          verify_export(data)
+          verify_export(data, domain_ref)
 
         :not_found ->
           :not_found
@@ -87,9 +87,11 @@ defmodule Spectre.Ledger do
     end
   end
 
-  @spec verify_export(map()) :: {:ok, map()} | {:error, term()}
-  defp verify_export(data) do
-    with {:ok, _snapshot} <- verify(data), do: {:ok, data}
+  @spec verify_export(map(), domain_ref()) :: {:ok, map()} | {:error, term()}
+  defp verify_export(data, expected_domain) do
+    with {:ok, snapshot} <- verify(data),
+         :ok <- match_expected_domain(snapshot.domain_ref, expected_domain),
+         do: {:ok, data}
   end
 
   @doc "Exports a runtime snapshot without including store projections."

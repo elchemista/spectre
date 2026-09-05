@@ -135,6 +135,7 @@ defmodule Spectre.V04Test.Fixture do
 
     constitution =
       Keyword.get(opts, :constitution, default_constitution(refs, opts))
+      |> Map.merge(Keyword.get(opts, :constitution_overrides, %{}))
 
     row = record!(Spectre.Row.new(%{attempt: true, disclose: true, spend: true}))
     delegation_row = record!(Spectre.Row.new(%{delegate: true, govern: true}))
@@ -167,7 +168,13 @@ defmodule Spectre.V04Test.Fixture do
 
     governance_mandate =
       if governance_allowed?,
-        do: governance_mandate(refs, governance_row, now, opts),
+        do:
+          governance_mandate(
+            refs,
+            Keyword.get(opts, :governance_ceiling, governance_row),
+            now,
+            opts
+          ),
         else: nil
 
     refs =
@@ -176,7 +183,20 @@ defmodule Spectre.V04Test.Fixture do
         else: refs
 
     root_mandates = [mandate] ++ List.wrap(governance_mandate)
-    genesis = genesis(refs, principal_records, root_mandates, surface, profile, constitution, now)
+    emergency_ref = if Keyword.get(opts, :emergency_mandate, false), do: mandate.ref
+
+    genesis =
+      genesis(
+        refs,
+        principal_records,
+        root_mandates,
+        surface,
+        profile,
+        constitution,
+        now,
+        emergency_ref
+      )
+
     store = record!(ETS.start_link([]))
 
     mock =
@@ -216,7 +236,12 @@ defmodule Spectre.V04Test.Fixture do
         genesis_verifier: {Allowlist, attestation_refs: [refs.genesis_attestation]}
       ]
 
-    sequencer_opts = Keyword.merge(sequencer_opts, Keyword.take(opts, [:name, :mind]))
+    sequencer_opts =
+      Keyword.merge(
+        sequencer_opts,
+        Keyword.take(opts, [:name, :mind, :payload_store, :late_observer])
+      )
+
     server = record!(Sequencer.start_link(sequencer_opts))
 
     fixture = %{
@@ -480,6 +505,7 @@ defmodule Spectre.V04Test.Fixture do
         |> Map.put("mandate.revoke", governance_row)
         |> Map.put("duty.dispose", governance_row)
         |> Map.merge(Map.new(Keyword.get(opts, :governance_classes, []), &{&1, governance_row}))
+        |> Map.merge(Keyword.get(opts, :governance_declarations, %{}))
       else
         declarations
       end
@@ -567,7 +593,10 @@ defmodule Spectre.V04Test.Fixture do
             do: %{"allowed" => true, "max_depth" => 1},
             else: %{"allowed" => false, "max_depth" => 0}
           ),
-        revocation: %{"mode" => :cascade, "controller_refs" => [refs.grantor]},
+        revocation: %{
+          "mode" => Keyword.get(opts, :revocation_mode, :cascade),
+          "controller_refs" => [refs.grantor]
+        },
         source_ref: refs.genesis
       })
     )
@@ -600,7 +629,16 @@ defmodule Spectre.V04Test.Fixture do
     )
   end
 
-  defp genesis(refs, principals, root_mandates, surface, profile, constitution, now) do
+  defp genesis(
+         refs,
+         principals,
+         root_mandates,
+         surface,
+         profile,
+         constitution,
+         now,
+         emergency_ref
+       ) do
     record!(
       Spectre.Genesis.new(%{
         ref: refs.genesis,
@@ -611,19 +649,21 @@ defmodule Spectre.V04Test.Fixture do
         surface_ref: surface.ref,
         surface_revision: surface.revision,
         host_profile_ref: profile.ref,
+        emergency_mandate_ref: emergency_ref,
         issued_at: now,
         attestation_ref: refs.genesis_attestation
       })
     )
   end
 
-  defp default_constitution(refs, _opts) do
+  defp default_constitution(refs, opts) do
     %{
       "duty_rules" =>
         Map.new(
           ~w(ambiguous_outcome contradicted_outcome disputed_evidence scope_promise_overdue erasure_reduces_verifiability),
           &{&1, %{"disposition_authority_refs" => [refs.grantor]}}
         )
+        |> Map.merge(Keyword.get(opts, :duty_rules, %{}))
     }
   end
 
