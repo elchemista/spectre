@@ -23,9 +23,8 @@ defmodule Spectre.Duty.Authority do
       when (is_nil(cause_act) or is_struct(cause_act, Act)) and is_map(principals) and
              is_map(mandates) do
     with :ok <- route_named(duty),
-         :ok <- exact_route(duty, disposition_act, principals, mandates),
-         :ok <- independent_route(duty, disposition_act, cause_act, mandates) do
-      :ok
+         :ok <- exact_route(duty, disposition_act, principals, mandates) do
+      independent_route(duty, disposition_act, cause_act, mandates)
     end
   end
 
@@ -54,9 +53,8 @@ defmodule Spectre.Duty.Authority do
     with {:ok, causal_mandate_refs} <- causal_mandates(duty, cause_act),
          :ok <- causal_conflicts_frozen(duty, cause_act),
          :ok <- independent_act_roles(duty, disposition_act, causal_mandate_refs),
-         {:ok, route} <- mandate_route(duty, disposition_act.mandate_ref, mandates),
-         :ok <- independent_mandate_route(duty, route, causal_mandate_refs) do
-      :ok
+         {:ok, route} <- mandate_route(duty, disposition_act.mandate_ref, mandates) do
+      independent_mandate_route(duty, route, causal_mandate_refs)
     end
   end
 

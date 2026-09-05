@@ -29,9 +29,10 @@ defmodule Spectre.Kernel do
   alias Spectre.Domain.Projection
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.Admission.Binding
-  alias Spectre.GovernedAct.State
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Authority
+  alias Spectre.Kernel.Authority.Effective
   alias Spectre.Kernel.Decision, as: DecisionEngine
   alias Spectre.Kernel.Decision.Context, as: DecisionContext
   alias Spectre.Kernel.Recognition
@@ -58,11 +59,9 @@ defmodule Spectre.Kernel do
     with {:ok, candidate} <- Candidate.new(candidate),
          {:ok, context} <- SubmissionContext.new(context),
          :ok <- matching_domain(context, projection),
-         {:ok, surface, profile} <- foundations(projection),
-         decision_view = decision_view(projection, surface, profile),
-         {:ok, decision, act} <-
-           evaluate_candidate(candidate, context, projection, surface, decision_view, time) do
-      {:ok, decision, act}
+         {:ok, surface, profile} <- foundations(projection) do
+      decision_view = decision_view(projection, surface, profile)
+      evaluate_candidate(candidate, context, projection, surface, decision_view, time)
     end
   end
 
@@ -73,18 +72,20 @@ defmodule Spectre.Kernel do
     do: {:error, :invalid_admission_input}
 
   defp evaluate_candidate(candidate, context, projection, surface, view, time) do
-    with :ok <- authenticated_claims(candidate, context) do
-      case Surface.classify(surface, candidate.class) do
-        {:error, :unknown_class} ->
-          forced_decision(candidate, context, view, time, :unknown_class, [
-            {:unknown_class, candidate.class}
-          ])
+    case authenticated_claims(candidate, context) do
+      :ok ->
+        case Surface.classify(surface, candidate.class) do
+          {:error, :unknown_class} ->
+            forced_decision(candidate, context, view, time, :unknown_class, [
+              {:unknown_class, candidate.class}
+            ])
 
-        {:ok, declared_row} ->
-          evaluate_declared(candidate, context, projection, surface, declared_row, view, time)
-      end
-    else
-      {:error, reason} -> forced_decision(candidate, context, view, time, :refused, [reason])
+          {:ok, declared_row} ->
+            evaluate_declared(candidate, context, projection, surface, declared_row, view, time)
+        end
+
+      {:error, reason} ->
+        forced_decision(candidate, context, view, time, :refused, [reason])
     end
   end
 
@@ -96,39 +97,7 @@ defmodule Spectre.Kernel do
            :ok <- validate_evidence_availability(candidate, projection),
            :ok <- validate_disclosure(candidate, projection),
            :ok <- Surface.validate_facts(surface, candidate, projection, time) do
-        authority_view = Projection.authority_view(projection)
-
-        # Evidence is deliberately not present in this call or in authority_view.
-        resolution = Authority.resolve(candidate, context, authority_view, time)
-        view = with_meter_accounts(view, projection, resolution)
-
-        {recognition, recognition_evidence_refs} =
-          recognize(candidate, resolution, projection, time)
-
-        decision_attrs =
-          candidate
-          |> DecisionEngine.decide(
-            resolution,
-            recognition,
-            recognition_evidence_refs,
-            view,
-            time
-          )
-          |> bind_submission_context(context, candidate)
-
-        with {:ok, decision} <- Decision.new(decision_attrs),
-             {:ok, act} <- maybe_build_act(candidate, decision) do
-          validate_transition(
-            candidate,
-            context,
-            projection,
-            surface,
-            view,
-            decision,
-            act,
-            time
-          )
-        end
+        evaluate_authorized(candidate, context, projection, surface, view, time)
       else
         {:error, reason} -> forced_decision(candidate, context, view, time, :refused, [reason])
       end
@@ -140,6 +109,42 @@ defmodule Spectre.Kernel do
            declared: Row.dimensions(declared_row)
          }}
       ])
+    end
+  end
+
+  defp evaluate_authorized(candidate, context, projection, surface, view, time) do
+    authority_view = Projection.authority_view(projection)
+
+    # Evidence is deliberately not present in this call or in authority_view.
+    resolution = Authority.resolve(candidate, context, authority_view, time)
+    view = with_meter_accounts(view, projection, resolution)
+
+    {recognition, recognition_evidence_refs} =
+      recognize(candidate, resolution, projection, time)
+
+    decision_attrs =
+      candidate
+      |> DecisionEngine.decide(
+        resolution,
+        recognition,
+        recognition_evidence_refs,
+        view,
+        time
+      )
+      |> bind_submission_context(context, candidate)
+
+    with {:ok, decision} <- Decision.new(decision_attrs),
+         {:ok, act} <- maybe_build_act(candidate, decision) do
+      validate_transition(
+        candidate,
+        context,
+        projection,
+        surface,
+        view,
+        decision,
+        act,
+        time
+      )
     end
   end
 
@@ -220,7 +225,19 @@ defmodule Spectre.Kernel do
     with {:ok, decision} <- Decision.new(attrs), do: {:ok, decision, nil}
   end
 
-  defp recognize(candidate, {:ok, mandate}, projection, time) do
+  defp recognize(candidate, {:ok, %Effective{} = authority}, projection, time) do
+    # Recognition consumes the same candidate-bound snapshot as Decision and
+    # replay. A retained controller's revocation has its own empty conditions;
+    # reading the underlying Mandate would incorrectly reinstate its conditions.
+    case Effective.snapshot(authority, candidate) do
+      {:ok, mandate} -> recognize_with_authority(candidate, mandate, projection, time)
+      {:error, reason} -> {{:undecidable, [reason]}, []}
+    end
+  end
+
+  defp recognize(_candidate, _resolution, _projection, _time), do: {nil, []}
+
+  defp recognize_with_authority(candidate, mandate, projection, time) do
     available_evidence =
       projection
       |> ErasureAnalysis.available_evidence()
@@ -244,8 +261,6 @@ defmodule Spectre.Kernel do
       normalize_evidence_refs(basis_refs ++ presentation_basis_refs)
     }
   end
-
-  defp recognize(_candidate, _resolution, _projection, _time), do: {nil, []}
 
   defp missing_evidence_refs(refs, evidence_index),
     do: Enum.reject(refs, &Map.has_key?(evidence_index, &1))

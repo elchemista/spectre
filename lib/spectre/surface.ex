@@ -9,6 +9,8 @@ defmodule Spectre.Surface do
   transitions whose semantics must replay identically everywhere.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Candidate, Portable, Presentation, Row}
   alias Spectre.Consequence.Contract
   alias Spectre.Consequence.Validator
@@ -215,7 +217,7 @@ defmodule Spectre.Surface do
   def content_ref(%__MODULE__{} = surface),
     do: Portable.content_ref!(:surface, content(surface))
 
-  defp normalize_declarations(value) when is_map(value) and not is_struct(value) do
+  defp normalize_declarations(value) when Portable.is_plain_map(value) do
     Enum.reduce_while(value, {:ok, %{}}, fn {class, row}, {:ok, declarations} ->
       with :ok <- Portable.validate_non_empty_binary(class, :class),
            {:ok, row} <- Row.new(row),
@@ -233,7 +235,7 @@ defmodule Spectre.Surface do
     do: {:error, {:invalid_surface_declarations, Portable.shape(value)}}
 
   defp normalize_consequence_contracts(value, declarations)
-       when is_map(value) and not is_struct(value) do
+       when Portable.is_plain_map(value) do
     with {:ok, contracts} <- normalize_contract_entries(value, declarations),
          :ok <- complete_consequence_contracts(declarations, contracts) do
       {:ok, contracts}
@@ -261,8 +263,7 @@ defmodule Spectre.Surface do
     missing =
       declarations
       |> Map.keys()
-      |> Enum.reject(&GovernedClass.intrinsic?/1)
-      |> Enum.reject(&Map.has_key?(contracts, &1))
+      |> Enum.reject(&(GovernedClass.intrinsic?(&1) or Map.has_key?(contracts, &1)))
       |> Enum.sort()
 
     if missing == [],
@@ -271,7 +272,7 @@ defmodule Spectre.Surface do
   end
 
   defp normalize_consequence_validators(value, declarations)
-       when is_map(value) and not is_struct(value) do
+       when Portable.is_plain_map(value) do
     defaults =
       Map.new(declarations, fn {class, _row} ->
         {class, Validator.default_for_class(class)}
@@ -353,7 +354,7 @@ defmodule Spectre.Surface do
   end
 
   defp normalize_fallbacks(value, declarations)
-       when is_map(value) and not is_struct(value) do
+       when Portable.is_plain_map(value) do
     Enum.reduce_while(value, {:ok, %{}}, fn {class, policy}, {:ok, fallbacks} ->
       with :ok <- Portable.validate_non_empty_binary(class, :fallback_class),
            true <- Map.has_key?(declarations, class),
@@ -394,7 +395,7 @@ defmodule Spectre.Surface do
       surface.schema_version != @schema_version ->
         {:error, {:unsupported_surface_schema_version, surface.schema_version}}
 
-      not (is_integer(surface.revision) and surface.revision >= 0) ->
+      not Portable.is_non_negative_integer(surface.revision) ->
         {:error, {:invalid_surface_revision, surface.revision}}
 
       true ->

@@ -57,112 +57,115 @@ defmodule Spectre.Scope.View do
   @spec from_projection(Projection.t(), String.t()) :: {:ok, t()} | {:error, term()}
   def from_projection(%State{} = projection, scope_ref)
       when is_binary(scope_ref) and scope_ref != "" do
-    with {:ok, %Opening{} = opening} <- Map.fetch(projection.scopes, scope_ref) do
-      decisions = records_for_scope(projection.decisions, scope_ref)
-      acts = records_for_scope(projection.acts, scope_ref)
-      act_refs = ref_set(acts)
-      attempts = records_for_acts(projection.attempts, act_refs)
-      attempt_refs = ref_set(attempts)
-      outcomes = records_for_attempts(projection.outcomes, act_refs, attempt_refs)
+    with {:ok, opening} <- scope_opening(projection, scope_ref) do
+      {records, act_refs} = scope_records(projection, scope_ref)
 
-      duties =
-        records_for_duties(
-          projection.duties,
-          projection.evidence,
-          scope_ref,
-          act_refs
-        )
-
-      presentation_refs = acts |> Enum.map(& &1.presentation_ref) |> present_ref_set()
-
-      presentations =
-        projection.presentations
-        |> records_for_scope(scope_ref)
-        |> Kernel.++(records_by_refs(projection.presentations, presentation_refs))
-        |> Enum.uniq_by(& &1.ref)
-        |> stable_records()
-
-      declassifications = records_for_source_acts(projection.declassifications, act_refs)
-      erasures = records_for_scope(projection.erasures, scope_ref)
-
-      evidence =
-        records_for_evidence(
-          projection.evidence,
-          scope_ref,
-          acts,
-          outcomes,
-          duties,
-          presentations,
-          declassifications,
-          erasures
-        )
-        |> reject_unavailable_evidence(projection)
+      collections =
+        records
+        |> Map.put(:decisions, records_for_scope(projection.decisions, scope_ref))
+        |> Map.put(:evidence, Map.values(evidence_index(projection, scope_ref, records)))
+        |> Map.new(fn {field, values} -> {field, stable_records(values)} end)
 
       {:ok,
-       %__MODULE__{
-         revision: projection.revision,
-         opening: opening,
-         decisions: decisions,
-         acts: acts,
-         attempts: attempts,
-         outcomes: outcomes,
-         duties: duties,
-         evidence: evidence,
-         declassifications: declassifications,
-         presentations: presentations,
-         erasures: erasures,
-         dispatch_cancellations: dispatch_cancellations(projection, act_refs),
-         pending_act_refs: pending_act_refs(projection, act_refs)
-       }}
-    else
-      :error -> {:error, {:scope_not_open, scope_ref}}
-      _invalid -> {:error, {:invalid_scope_opening, scope_ref}}
+       struct!(
+         __MODULE__,
+         Map.merge(collections, %{
+           revision: projection.revision,
+           opening: opening,
+           dispatch_cancellations: dispatch_cancellations(projection, act_refs),
+           pending_act_refs: pending_act_refs(projection, act_refs)
+         })
+       )}
     end
   end
 
   def from_projection(%State{}, scope_ref), do: {:error, {:invalid_scope_ref, scope_ref}}
   def from_projection(_projection, _scope_ref), do: {:error, :invalid_domain_projection}
 
+  @doc false
+  @spec evidence(Projection.t(), String.t(), [String.t()]) ::
+          {:ok, [Spectre.Evidence.t()]} | {:error, term()}
+  def evidence(%State{} = projection, scope_ref, refs) when is_list(refs) do
+    with {:ok, _opening} <- scope_opening(projection, scope_ref) do
+      {records, _act_refs} = scope_records(projection, scope_ref)
+      available = evidence_index(projection, scope_ref, records)
+      select_evidence(available, refs)
+    end
+  end
+
+  defp select_evidence(available, refs) do
+    Enum.reduce_while(refs, {:ok, []}, fn ref, {:ok, selected} ->
+      case Map.fetch(available, ref) do
+        {:ok, evidence} -> {:cont, {:ok, [evidence | selected]}}
+        :error -> {:halt, {:error, {:evidence_outside_scope, ref}}}
+      end
+    end)
+    |> case do
+      {:ok, selected} -> {:ok, Enum.reverse(selected)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp scope_opening(projection, scope_ref) do
+    case Map.fetch(projection.scopes, scope_ref) do
+      {:ok, %Opening{} = opening} -> {:ok, opening}
+      :error -> {:error, {:scope_not_open, scope_ref}}
+      _invalid -> {:error, {:invalid_scope_opening, scope_ref}}
+    end
+  end
+
+  # Both the full application view and Turn input use these exact causal
+  # relations. Keep selection unordered; only the public view needs sorting.
+  # No new persistent index or independently maintained visibility rule exists.
+  defp scope_records(projection, scope_ref) do
+    acts = records_for_scope(projection.acts, scope_ref)
+    act_refs = ref_set(acts)
+    attempts = records_for_acts(projection.attempts, act_refs)
+    presentation_refs = acts |> Enum.map(& &1.presentation_ref) |> present_ref_set()
+
+    presentations =
+      select(projection.presentations, fn presentation ->
+        presentation.scope_ref == scope_ref or MapSet.member?(presentation_refs, presentation.ref)
+      end)
+
+    records = %{
+      acts: acts,
+      attempts: attempts,
+      outcomes: records_for_attempts(projection.outcomes, act_refs, ref_set(attempts)),
+      duties: records_for_duties(projection.duties, projection.evidence, scope_ref, act_refs),
+      presentations: presentations,
+      declassifications: records_for_source_acts(projection.declassifications, act_refs),
+      erasures: records_for_scope(projection.erasures, scope_ref)
+    }
+
+    {records, act_refs}
+  end
+
   defp records_for_scope(index, scope_ref) do
-    index
-    |> values()
-    |> Enum.filter(&(Map.get(&1, :scope_ref) == scope_ref))
-    |> stable_records()
+    select(index, &(&1.scope_ref == scope_ref))
   end
 
   defp records_for_acts(index, act_refs) do
-    index
-    |> values()
-    |> Enum.filter(&MapSet.member?(act_refs, Map.get(&1, :act_ref)))
-    |> stable_records()
+    select(index, &MapSet.member?(act_refs, &1.act_ref))
   end
 
   defp records_for_source_acts(index, act_refs) do
-    index
-    |> values()
-    |> Enum.filter(&MapSet.member?(act_refs, Map.get(&1, :source_act_ref)))
-    |> stable_records()
+    select(index, &MapSet.member?(act_refs, &1.source_act_ref))
   end
 
   defp records_for_attempts(index, act_refs, attempt_refs) do
-    index
-    |> values()
-    |> Enum.filter(fn outcome ->
+    select(index, fn outcome ->
       MapSet.member?(act_refs, outcome.act_ref) and
         MapSet.member?(attempt_refs, outcome.attempt_ref)
     end)
-    |> stable_records()
   end
 
   defp records_for_duties(index, evidence, scope_ref, act_refs) do
-    index
-    |> values()
-    |> Enum.filter(fn duty ->
+    select(index, fn duty ->
       MapSet.member?(act_refs, duty.act_ref) or
         scope_cause?(duty.cause_key, scope_ref) or
         duty_evidence_bound_to_scope?(duty, evidence, scope_ref)
     end)
-    |> stable_records()
   end
 
   defp duty_evidence_bound_to_scope?(duty, evidence, scope_ref) do
@@ -175,62 +178,44 @@ defmodule Spectre.Scope.View do
     end)
   end
 
-  defp records_for_evidence(
-         index,
-         scope_ref,
-         acts,
-         outcomes,
-         duties,
-         presentations,
-         declassifications,
-         erasures
-       ) do
-    direct = evidence_bound_to_scope(index, scope_ref)
+  defp evidence_index(projection, scope_ref, records) do
+    index = projection.evidence
 
     seeds =
-      direct
-      |> record_refs([:ref])
-      |> Kernel.++(record_refs(acts, [:evidence_refs, :target_refs]))
-      |> Kernel.++(record_refs(outcomes, [:evidence_refs]))
-      |> Kernel.++(record_refs(duties, [:evidence_refs]))
-      |> Kernel.++(record_refs(declassifications, [:evidence_ref, :parent_refs]))
-      |> Kernel.++(record_refs(erasures, [:target_ref, :affected_refs]))
-      |> Kernel.++(evidence_refs_for_presentations(index, presentations, acts))
+      Enum.concat([
+        bound_evidence_refs(index, scope_ref, records),
+        record_refs(records.acts, [:evidence_refs, :target_refs]),
+        record_refs(records.outcomes, [:evidence_refs]),
+        record_refs(records.duties, [:evidence_refs]),
+        record_refs(records.declassifications, [:evidence_ref, :parent_refs]),
+        record_refs(records.erasures, [:target_ref, :affected_refs])
+      ])
 
-    index
-    |> evidence_ref_closure(seeds)
-    |> then(&records_by_refs(index, &1))
-  end
+    refs =
+      index
+      |> evidence_ref_closure(seeds)
+      |> MapSet.difference(ErasureAnalysis.unavailable_evidence_refs(projection))
+      |> MapSet.to_list()
 
-  defp evidence_bound_to_scope(index, scope_ref) do
-    index
-    |> values()
-    |> Enum.filter(fn evidence ->
-      Map.get(evidence.bindings, "scope_ref") == scope_ref
-    end)
-  end
-
-  defp reject_unavailable_evidence(evidence, projection) do
-    unavailable = ErasureAnalysis.unavailable_evidence_refs(projection)
-    Enum.reject(evidence, &MapSet.member?(unavailable, &1.ref))
+    Map.take(index, refs)
   end
 
   # Approval Evidence points to a Presentation through its closed binding. The
   # Presentation deliberately does not own or interpret arbitrary application
   # data, so this is its only structural Evidence relation.
-  defp evidence_refs_for_presentations(index, presentations, acts) do
-    presentation_refs = ref_set(presentations)
-    act_refs = ref_set(acts)
+  defp bound_evidence_refs(index, scope_ref, records) do
+    presentation_refs = ref_set(records.presentations)
+    act_refs = ref_set(records.acts)
 
-    index
-    |> values()
-    |> Enum.filter(fn evidence ->
+    Enum.reduce(index, [], fn {_ref, evidence}, refs ->
       bindings = evidence.bindings
 
-      MapSet.member?(presentation_refs, Map.get(bindings, "presentation_ref")) or
-        MapSet.member?(act_refs, Map.get(bindings, "show_act_ref"))
+      if Map.get(bindings, "scope_ref") == scope_ref or
+           MapSet.member?(presentation_refs, Map.get(bindings, "presentation_ref")) or
+           MapSet.member?(act_refs, Map.get(bindings, "show_act_ref")),
+         do: [evidence.ref | refs],
+         else: refs
     end)
-    |> record_refs([:ref])
   end
 
   defp evidence_ref_closure(index, seeds) do
@@ -261,17 +246,6 @@ defmodule Spectre.Scope.View do
     end)
   end
 
-  defp records_by_refs(index, refs) do
-    refs
-    |> Enum.flat_map(fn ref ->
-      case Map.fetch(index, ref) do
-        {:ok, record} -> [record]
-        :error -> []
-      end
-    end)
-    |> stable_records()
-  end
-
   defp pending_act_refs(projection, act_refs) do
     projection
     |> DispatchState.pending_refs()
@@ -294,7 +268,7 @@ defmodule Spectre.Scope.View do
   defp scope_cause?({:scope_promise_overdue, scope_ref}, scope_ref), do: true
   defp scope_cause?(_cause_key, _scope_ref), do: false
 
-  defp ref_set(records), do: records |> Enum.map(& &1.ref) |> present_ref_set()
+  defp ref_set(records), do: MapSet.new(records, & &1.ref)
 
   defp present_ref_set(refs) do
     refs
@@ -302,8 +276,11 @@ defmodule Spectre.Scope.View do
     |> MapSet.new()
   end
 
-  defp values(index) when is_map(index), do: Map.values(index)
-  defp values(_index), do: []
+  defp select(index, predicate) do
+    Enum.reduce(index, [], fn {_ref, record}, selected ->
+      if predicate.(record), do: [record | selected], else: selected
+    end)
+  end
 
   defp stable_records(records), do: Enum.sort_by(records, & &1.ref)
 end

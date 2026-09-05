@@ -12,6 +12,8 @@ defmodule Spectre.Mind.Derivation do
   Mind state, options or callbacks part of governed state.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Evidence, Portable, SubmissionContext}
   alias Spectre.Evidence.Derivation, as: EvidenceDerivation
   alias Spectre.Mind.Turn
@@ -69,27 +71,30 @@ defmodule Spectre.Mind.Derivation do
 
   def normalize(%Turn{} = turn, derivations) when is_list(derivations) do
     with {:ok, context} <- Turn.context(turn) do
-      derivations
-      |> Enum.reduce_while({:ok, [], MapSet.new(Turn.evidence_refs(turn))}, fn value,
-                                                                               {:ok, records,
-                                                                                refs} ->
-        with {:ok, evidence} <- Evidence.new(value),
-             false <- MapSet.member?(refs, evidence.ref),
-             :ok <- validate_record(evidence, turn, context, turn.evidence, nil) do
-          {:cont, {:ok, [evidence | records], MapSet.put(refs, evidence.ref)}}
-        else
-          true -> {:halt, {:error, :duplicate_mind_derivation}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-      |> case do
-        {:ok, records, _refs} -> {:ok, Enum.reverse(records)}
-        {:error, _reason} = error -> error
-      end
+      normalize_records(turn, derivations, context)
     end
   end
 
   def normalize(_turn, _derivations), do: {:error, :invalid_mind_derivations}
+
+  defp normalize_records(turn, derivations, context) do
+    derivations
+    |> Enum.reduce_while({:ok, [], MapSet.new(Turn.evidence_refs(turn))}, fn value,
+                                                                             {:ok, records, refs} ->
+      with {:ok, evidence} <- Evidence.new(value),
+           false <- MapSet.member?(refs, evidence.ref),
+           :ok <- validate_record(evidence, turn, context, turn.evidence, nil) do
+        {:cont, {:ok, [evidence | records], MapSet.put(refs, evidence.ref)}}
+      else
+        true -> {:halt, {:error, :duplicate_mind_derivation}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, records, _refs} -> {:ok, Enum.reverse(records)}
+      {:error, _reason} = error -> error
+    end
+  end
 
   @doc false
   @spec validate(Evidence.t(), Turn.t(), [Evidence.t()], non_neg_integer() | nil) ::
@@ -99,7 +104,7 @@ defmodule Spectre.Mind.Derivation do
   def validate(%Evidence{} = evidence, %Turn{} = turn, parents, observed_through)
       when is_list(parents) and
              (is_nil(observed_through) or
-                (is_integer(observed_through) and observed_through >= 0)) do
+                Portable.is_non_negative_integer(observed_through)) do
     with {:ok, context} <- Turn.context(turn) do
       validate_record(evidence, turn, context, parents, observed_through)
     end

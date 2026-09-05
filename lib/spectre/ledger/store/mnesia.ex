@@ -52,9 +52,8 @@ defmodule Spectre.Ledger.Store.Mnesia do
          :ok <- ensure_mnesia_running(),
          :ok <- create_table(config.heads, @heads_attributes, config),
          :ok <- create_table(config.batches, @batches_attributes, config),
-         :ok <- create_table(config.entries, @entries_attributes, config),
-         :ok <- wait_for_tables(config) do
-      :ok
+         :ok <- create_table(config.entries, @entries_attributes, config) do
+      wait_for_tables(config)
     end
   end
 
@@ -183,8 +182,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
         append_new_locked(
           config,
           head_rows,
-          domain_ref,
-          batch_id,
+          {domain_ref, batch_id},
           payloads,
           revision,
           recorded_at,
@@ -197,8 +195,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
   defp append_new_locked(
          config,
          head_rows,
-         domain_ref,
-         batch_id,
+         {domain_ref, batch_id},
          payloads,
          expected_revision,
          recorded_at,
@@ -377,7 +374,6 @@ defmodule Spectre.Ledger.Store.Mnesia do
       {:atomic, {:error, _reason} = error} -> error
       {:atomic, _malformed} -> {:error, :invalid_ledger_mnesia_transaction_result}
       {:aborted, reason} -> {:error, {:ledger_mnesia_transaction_failed, reason}}
-      _malformed -> {:error, :invalid_ledger_mnesia_transaction_reply}
     end
   end
 
@@ -413,9 +409,6 @@ defmodule Spectre.Ledger.Store.Mnesia do
         error
     end
   end
-
-  defp decode_entry_rows(_rows, _config, _domain_ref),
-    do: {:error, :invalid_ledger_mnesia_entry_rows}
 
   defp decode_entry_row(
          {table, {domain_ref, revision}, encoded},
@@ -516,9 +509,6 @@ defmodule Spectre.Ledger.Store.Mnesia do
     end
   end
 
-  defp validate_batch_index(_config, _domain_ref, _rows, _entries),
-    do: {:error, :invalid_ledger_mnesia_batch_rows}
-
   defp decode_batch_records(config, domain_ref, rows) do
     Enum.reduce_while(rows, {:ok, %{}}, fn row, {:ok, batches} ->
       batch_id = batch_record_id(row)
@@ -599,9 +589,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
       config.storage not in @storage_types ->
         {:error, :invalid_ledger_mnesia_storage}
 
-      not is_list(config.nodes) or config.nodes == [] or
-        not Enum.all?(config.nodes, &(is_atom(&1) and not is_nil(&1))) or
-          length(config.nodes) != length(Enum.uniq(config.nodes)) ->
+      not valid_nodes?(config.nodes) ->
         {:error, :invalid_ledger_mnesia_nodes}
 
       not is_integer(config.wait_timeout) or config.wait_timeout < 0 ->
@@ -610,6 +598,12 @@ defmodule Spectre.Ledger.Store.Mnesia do
       true ->
         {:ok, config}
     end
+  end
+
+  defp valid_nodes?(nodes) do
+    is_list(nodes) and nodes != [] and
+      Enum.all?(nodes, &(is_atom(&1) and not is_nil(&1))) and
+      length(nodes) == length(Enum.uniq(nodes))
   end
 
   defp ensure_mnesia_running do
@@ -632,7 +626,6 @@ defmodule Spectre.Ledger.Store.Mnesia do
       {:atomic, :ok} -> :ok
       {:aborted, {:already_exists, ^table}} -> verify_table(table, attributes, config)
       {:aborted, reason} -> {:error, {:ledger_mnesia_table_create_failed, table, reason}}
-      _malformed -> {:error, {:invalid_ledger_mnesia_table_create_reply, table}}
     end
   end
 
@@ -659,7 +652,6 @@ defmodule Spectre.Ledger.Store.Mnesia do
       :ok -> :ok
       {:timeout, unavailable} -> {:error, {:ledger_mnesia_tables_unavailable, unavailable}}
       {:error, reason} -> {:error, {:ledger_mnesia_wait_failed, reason}}
-      _malformed -> {:error, :invalid_ledger_mnesia_wait_reply}
     end
   catch
     :exit, reason -> {:error, {:ledger_mnesia_wait_failed, reason}}

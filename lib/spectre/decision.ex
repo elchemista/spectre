@@ -9,6 +9,8 @@ defmodule Spectre.Decision do
   Evidence basis that actually reached the Recognition stage.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Consent, Portable}
   alias Spectre.Kernel.Meter.Amounts
 
@@ -239,25 +241,31 @@ defmodule Spectre.Decision do
       decision.outcome != :admitted and decision.reasons == [] ->
         {:error, {:missing_decision_reasons, decision.outcome}}
 
-      not is_map(decision.reservations) or is_struct(decision.reservations) ->
+      not Portable.is_plain_map(decision.reservations) ->
         {:error, {:invalid_decision_reservations, Portable.shape(decision.reservations)}}
 
-      not is_integer(decision.surface_revision) or decision.surface_revision < 0 ->
+      true ->
+        validate_coordinates(decision)
+    end
+  end
+
+  defp validate_coordinates(decision) do
+    cond do
+      not Portable.is_non_negative_integer(decision.surface_revision) ->
         {:error, {:invalid_decision_surface_revision, decision.surface_revision}}
 
-      not is_integer(decision.authority_revision) or decision.authority_revision < 0 ->
+      not Portable.is_non_negative_integer(decision.authority_revision) ->
         {:error, {:invalid_decision_authority_revision, decision.authority_revision}}
 
       not is_integer(decision.decided_at) ->
         {:error, {:invalid_decision_decided_at, decision.decided_at}}
 
-      not is_integer(decision.host_generation) or decision.host_generation < 0 ->
+      not Portable.is_non_negative_integer(decision.host_generation) ->
         {:error, {:invalid_decision_host_generation, decision.host_generation}}
 
       true ->
-        with :ok <- validate_admission(decision),
-             :ok <- validate_refs(decision) do
-          :ok
+        with :ok <- validate_admission(decision) do
+          validate_refs(decision)
         end
     end
   end
@@ -267,7 +275,7 @@ defmodule Spectre.Decision do
       is_nil(decision.mandate_ref) ->
         {:error, :admitted_decision_missing_mandate_ref}
 
-      not is_integer(decision.mandate_revision) or decision.mandate_revision <= 0 ->
+      not Portable.is_positive_integer(decision.mandate_revision) ->
         {:error, {:invalid_admitted_mandate_revision, decision.mandate_revision}}
 
       is_nil(decision.executor_ref) ->
@@ -323,9 +331,8 @@ defmodule Spectre.Decision do
          :ok <- Portable.validate_optional_ref(decision.executor_ref, :executor_ref),
          :ok <- Portable.validate_optional_ref(decision.authorizer_ref, :authorizer_ref),
          :ok <- Portable.validate_optional_ref(decision.accountable_ref, :accountable_ref),
-         :ok <- Portable.validate_ref(decision.scope_ref, :scope_ref),
-         :ok <- Portable.validate_ref(decision.host_profile_ref, :host_profile_ref) do
-      :ok
+         :ok <- Portable.validate_ref(decision.scope_ref, :scope_ref) do
+      Portable.validate_ref(decision.host_profile_ref, :host_profile_ref)
     end
   end
 

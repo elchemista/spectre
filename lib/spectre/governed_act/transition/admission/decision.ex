@@ -10,8 +10,8 @@ defmodule Spectre.GovernedAct.Transition.Admission.Decision do
 
   alias Spectre.{Decision, SubmissionContext}
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.{State, View}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.GovernedAct.{State, View}
   alias Spectre.Mandate.Revocation
 
   @doc false
@@ -58,29 +58,40 @@ defmodule Spectre.GovernedAct.Transition.Admission.Decision do
   defp validate_context(state, decision) do
     with {:ok, context} <- submission_context(decision),
          {:ok, _opening} <- View.scope_context(state, context) do
-      profile = State.host_profile(state)
-      surface = State.surface(state)
+      validate_context_bindings(state, decision)
+    end
+  end
 
-      cond do
-        decision.domain_ref != state.domain_ref ->
-          {:error, {:decision_domain_mismatch, decision.ref, decision.domain_ref}}
+  defp validate_context_bindings(state, decision) do
+    cond do
+      decision.domain_ref != state.domain_ref ->
+        {:error, {:decision_domain_mismatch, decision.ref, decision.domain_ref}}
 
-        not Map.has_key?(state.principals, decision.authenticated_principal_ref) ->
-          {:error, {:authenticated_principal_not_found, decision.authenticated_principal_ref}}
+      not Map.has_key?(state.principals, decision.authenticated_principal_ref) ->
+        {:error, {:authenticated_principal_not_found, decision.authenticated_principal_ref}}
 
-        is_nil(profile) or decision.host_profile_ref != profile.ref ->
-          {:error, {:decision_host_profile_mismatch, decision.ref}}
+      true ->
+        validate_foundation_binding(state, decision)
+    end
+  end
 
-        is_nil(surface) or decision.surface_revision != surface.revision ->
-          {:error, {:decision_surface_revision_mismatch, decision.ref}}
+  defp validate_foundation_binding(state, decision) do
+    profile = State.host_profile(state)
+    surface = State.surface(state)
 
-        decision.outcome == :admitted and
-            decision.proposer_ref != decision.authenticated_principal_ref ->
-          {:error, {:admitted_decision_principal_mismatch, decision.ref}}
+    cond do
+      is_nil(profile) or decision.host_profile_ref != profile.ref ->
+        {:error, {:decision_host_profile_mismatch, decision.ref}}
 
-        true ->
-          :ok
-      end
+      is_nil(surface) or decision.surface_revision != surface.revision ->
+        {:error, {:decision_surface_revision_mismatch, decision.ref}}
+
+      decision.outcome == :admitted and
+          decision.proposer_ref != decision.authenticated_principal_ref ->
+        {:error, {:admitted_decision_principal_mismatch, decision.ref}}
+
+      true ->
+        :ok
     end
   end
 
@@ -131,6 +142,13 @@ defmodule Spectre.GovernedAct.Transition.Admission.Decision do
       retained_revocation?(decision, mandate) ->
         validate_retained_revocation(state, decision, mandate)
 
+      true ->
+        validate_holder_authority(state, decision, mandate)
+    end
+  end
+
+  defp validate_holder_authority(state, decision, mandate) do
+    cond do
       decision.authenticated_principal_ref != mandate.holder_ref ->
         {:error, {:decision_mandate_holder_mismatch, decision.ref}}
 
@@ -143,14 +161,8 @@ defmodule Spectre.GovernedAct.Transition.Admission.Decision do
       decision.executor_ref not in mandate.executor_refs ->
         {:error, {:decision_executor_outside_mandate, decision.ref}}
 
-      decision.decided_at < mandate.not_before or decision.decided_at >= mandate.expires_at ->
-        {:error, {:decision_mandate_not_current, decision.ref}}
-
-      effective_revocation?(Map.get(state.revocations, mandate.ref), decision.decided_at) ->
-        {:error, {:decision_mandate_revoked, decision.ref}}
-
       true ->
-        :ok
+        validate_mandate_current(state, decision, mandate)
     end
   end
 
@@ -173,10 +185,21 @@ defmodule Spectre.GovernedAct.Transition.Admission.Decision do
       decision.executor_ref != GovernedExecution.kernel_executor_ref() ->
         {:error, {:decision_revocation_executor_mismatch, decision.ref}}
 
-      decision.recognition_refs != [] or decision.recognition_evidence_refs != [] or
-          Decision.reservations?(decision) ->
+      not narrow_revocation?(decision) ->
         {:error, {:decision_revocation_not_narrow, decision.ref}}
 
+      true ->
+        validate_mandate_current(state, decision, mandate)
+    end
+  end
+
+  defp narrow_revocation?(decision) do
+    decision.recognition_refs == [] and decision.recognition_evidence_refs == [] and
+      not Decision.reservations?(decision)
+  end
+
+  defp validate_mandate_current(state, decision, mandate) do
+    cond do
       decision.decided_at < mandate.not_before or decision.decided_at >= mandate.expires_at ->
         {:error, {:decision_mandate_not_current, decision.ref}}
 

@@ -21,10 +21,10 @@ defmodule Spectre.GovernedAct.Transition.Information do
 
   alias Spectre.Domain.Event
   alias Spectre.Duty.EvidenceCause
-  alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.{Index, State, View}
+  alias Spectre.Evidence.Derivation
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.GovernedAct.{Index, State, View}
   alias Spectre.Kernel.Authority
 
   def apply(
@@ -213,10 +213,14 @@ defmodule Spectre.GovernedAct.Transition.Information do
           {:error, {:erasure_request_from_future, erasure.ref}}
 
         true ->
-          with :ok <- ErasureAnalysis.requestable?(prefix, erasure.target_ref) do
-            ErasureAnalysis.validate_request(prefix, draft)
-          end
+          validate_erasure_target(prefix, erasure, draft)
       end
+    end
+  end
+
+  defp validate_erasure_target(prefix, erasure, draft) do
+    with :ok <- ErasureAnalysis.requestable?(prefix, erasure.target_ref) do
+      ErasureAnalysis.validate_request(prefix, draft)
     end
   end
 
@@ -344,11 +348,7 @@ defmodule Spectre.GovernedAct.Transition.Information do
          :ok <- parents_not_after_evidence(parents, evidence) do
       case Map.fetch(projection.declassifications_by_evidence, evidence.ref) do
         {:ok, declassification_ref} ->
-          with {:ok, record} <- Map.fetch(projection.declassifications, declassification_ref) do
-            Declassification.validate_transition(record, evidence, parents)
-          else
-            :error -> {:error, {:declassification_not_found, declassification_ref}}
-          end
+          validate_declassified_lineage(projection, declassification_ref, evidence, parents)
 
         :error ->
           Derivation.validate(evidence, parents)
@@ -364,6 +364,13 @@ defmodule Spectre.GovernedAct.Transition.Information do
 
   defp validate_evidence_lineage(_projection, %Evidence{} = evidence),
     do: {:error, {:invalid_evidence_lineage, evidence.ref, evidence.provenance}}
+
+  defp validate_declassified_lineage(projection, ref, evidence, parents) do
+    case Map.fetch(projection.declassifications, ref) do
+      {:ok, record} -> Declassification.validate_transition(record, evidence, parents)
+      :error -> {:error, {:declassification_not_found, ref}}
+    end
+  end
 
   defp parents_not_after_evidence(parents, evidence) do
     case Enum.find(parents, &(&1.observed_at > evidence.observed_at)) do

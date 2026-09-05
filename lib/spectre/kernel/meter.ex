@@ -60,25 +60,29 @@ defmodule Spectre.Kernel.Meter do
     with {:ok, requests} <- Amounts.normalize(requests),
          {:ok, accounts} <- account_index(accounts),
          :ok <- known_meters(requests, accounts) do
-      requests
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.reduce_while({:ok, accounts, %{}, %{}}, fn
-        {meter_ref, quantity}, {:ok, current, recontained, deficits} ->
-          account = Map.fetch!(current, meter_ref)
-          recovered = min(account.available, quantity)
-
-          case move_valid(account, :available, :suspended, recovered) do
-            {:ok, account} ->
-              {:cont,
-               {:ok, Map.put(current, meter_ref, account),
-                put_positive(recontained, meter_ref, recovered),
-                put_positive(deficits, meter_ref, quantity - recovered)}}
-
-            {:error, _reason} = error ->
-              {:halt, error}
-          end
-      end)
+      recontain_accounts(requests, accounts)
     end
+  end
+
+  defp recontain_accounts(requests, accounts) do
+    requests
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.reduce_while({:ok, accounts, %{}, %{}}, fn
+      {meter_ref, quantity}, {:ok, current, recontained, deficits} ->
+        account = Map.fetch!(current, meter_ref)
+        recovered = min(account.available, quantity)
+
+        case move_valid(account, :available, :suspended, recovered) do
+          {:ok, account} ->
+            {:cont,
+             {:ok, Map.put(current, meter_ref, account),
+              put_positive(recontained, meter_ref, recovered),
+              put_positive(deficits, meter_ref, quantity - recovered)}}
+
+          {:error, _reason} = error ->
+            {:halt, error}
+        end
+    end)
   end
 
   @doc """

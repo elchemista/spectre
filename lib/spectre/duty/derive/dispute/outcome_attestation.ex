@@ -3,8 +3,8 @@ defmodule Spectre.Duty.Derive.Dispute.OutcomeAttestation do
   Detects a later trusted executor attestation that reverses a definitive Outcome.
   """
 
-  alias Spectre.{Evidence, Outcome}
   alias Spectre.Duty.Derive.{Cause, Facts}
+  alias Spectre.{Evidence, Outcome}
   alias Spectre.Outcome.Attestation
 
   @definitive_outcomes Outcome.definitive_statuses()

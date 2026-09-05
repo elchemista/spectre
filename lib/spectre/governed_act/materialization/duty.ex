@@ -37,10 +37,12 @@ defmodule Spectre.GovernedAct.Materialization.Duty do
   end
 
   defp meter_events(projection, duty, disposition, disposition_act) do
-    with {:ok, cause_act} <- Map.fetch(projection.acts, duty.act_ref) do
-      derive_meter_events(projection, duty, cause_act, disposition, disposition_act)
-    else
-      :error -> {:error, {:duty_cause_act_not_found, duty.act_ref}}
+    case Map.fetch(projection.acts, duty.act_ref) do
+      {:ok, cause_act} ->
+        derive_meter_events(projection, duty, cause_act, disposition, disposition_act)
+
+      :error ->
+        {:error, {:duty_cause_act_not_found, duty.act_ref}}
     end
   end
 
@@ -86,6 +88,13 @@ defmodule Spectre.GovernedAct.Materialization.Duty do
           build_meter_event(cause_act, disposition_act, duty, operation, reservation.amounts)
         end
 
+      unmatched ->
+        invalid_meter_resolution(unmatched, duty, cause_act)
+    end
+  end
+
+  defp invalid_meter_resolution(state, duty, cause_act) do
+    case state do
       {:suspended, :none, _recontainment} ->
         {:error, {:duty_meter_resolution_required, cause_act.ref}}
 

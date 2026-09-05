@@ -38,22 +38,24 @@ defmodule Spectre do
   relationship to the ledger, kernel, projection and audit drivers.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Attempt.Runner
   alias Spectre.Authority.View, as: AuthorityView
   alias Spectre.Candidate
+  alias Spectre.Definition
   alias Spectre.Domain
   alias Spectre.Domain.Configuration
   alias Spectre.Domain.Sequencer
   alias Spectre.Domain.Supervisor, as: DomainSupervisor
-  alias Spectre.Definition
   alias Spectre.Evidence
   alias Spectre.Fallback
-  alias Spectre.GovernedAct.State
   alias Spectre.Governance
+  alias Spectre.GovernedAct.State
   alias Spectre.Ledger.Store
+  alias Spectre.Mandate
   alias Spectre.Mind
   alias Spectre.Mind.Turn
-  alias Spectre.Mandate
   alias Spectre.Outcome
   alias Spectre.Portable
   alias Spectre.Presentation
@@ -129,7 +131,7 @@ defmodule Spectre do
   def start_domain(domain_ref, store, opts \\ [])
 
   def start_domain(domain_ref, store, opts)
-      when is_binary(domain_ref) and domain_ref != "" and is_list(opts) do
+      when Portable.is_non_empty_binary(domain_ref) and is_list(opts) do
     with :ok <- validate_keyword(opts, :domain_options),
          :ok <- reject_reserved_domain_options(opts),
          :ok <- Configuration.validate_host_options(opts),
@@ -142,7 +144,7 @@ defmodule Spectre do
 
   @doc "Returns the locally supervised Domain handle for `domain_ref`."
   @spec lookup_domain(domain_ref()) :: {:ok, Domain.t()} | {:error, term()}
-  def lookup_domain(domain_ref) when is_binary(domain_ref) and domain_ref != "" do
+  def lookup_domain(domain_ref) when Portable.is_non_empty_binary(domain_ref) do
     case registered_domain(domain_ref) do
       {:ok, pid} -> {:ok, Domain.handle(pid, domain_ref)}
       {:error, _reason} = error -> error
@@ -163,20 +165,18 @@ defmodule Spectre do
          {:ok, domain} <- resolve_domain(domain_input),
          {:ok, ingress_opts} <- nested_keyword(opts, :ingress_opts),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
-         {:ok, context} <-
-           sequencer_result(
-             fn ->
-               Sequencer.authenticate(
-                 domain.server,
-                 scope_ref,
-                 input,
-                 Keyword.put(sequencer_opts, :ingress_opts, ingress_opts)
-               )
-             end,
-             :ingress_authentication_failed
-           ) do
-      {:ok, context}
+         :ok <- validate_sequencer_options(sequencer_opts) do
+      sequencer_result(
+        fn ->
+          Sequencer.authenticate(
+            domain.server,
+            scope_ref,
+            input,
+            Keyword.put(sequencer_opts, :ingress_opts, ingress_opts)
+          )
+        end,
+        :ingress_authentication_failed
+      )
     end
   end
 
@@ -308,7 +308,7 @@ defmodule Spectre do
 
   @doc "Returns an exact governed Definition through a live authenticated Scope."
   @spec definition(Scope.t(), String.t()) :: {:ok, Definition.t()} | {:error, term()}
-  def definition(%Scope{} = scope, ref) when is_binary(ref) and ref != "" do
+  def definition(%Scope{} = scope, ref) when Portable.is_non_empty_binary(ref) do
     with {:ok, scope} <- rebind_scope(scope),
          {:ok, %Definition{} = definition} <-
            sequencer_result(
@@ -339,20 +339,18 @@ defmodule Spectre do
          {:ok, scope} <- rebind_scope(scope),
          {:ok, ingress_opts} <- nested_keyword(opts, :ingress_opts),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
-         {:ok, evidence} <-
-           sequencer_result(
-             fn ->
-               Sequencer.observe(
-                 scope.domain.server,
-                 scope.context,
-                 input,
-                 Keyword.put(sequencer_opts, :ingress_opts, ingress_opts)
-               )
-             end,
-             :ingress_observation_failed
-           ) do
-      {:ok, evidence}
+         :ok <- validate_sequencer_options(sequencer_opts) do
+      sequencer_result(
+        fn ->
+          Sequencer.observe(
+            scope.domain.server,
+            scope.context,
+            input,
+            Keyword.put(sequencer_opts, :ingress_opts, ingress_opts)
+          )
+        end,
+        :ingress_observation_failed
+      )
     end
   end
 
@@ -445,7 +443,7 @@ defmodule Spectre do
         candidate_attrs,
         opts
       )
-      when is_binary(presentation_ref) and presentation_ref != "" and is_list(opts) do
+      when Portable.is_non_empty_binary(presentation_ref) and is_list(opts) do
     with {:ok, scope, projection} <- scoped_projection(scope),
          {:ok, %Presentation{} = presentation} <-
            fetch_presentation(projection, presentation_ref),
@@ -501,7 +499,7 @@ defmodule Spectre do
   def record_late_observation(scope, attempt_ref, input, opts \\ [])
 
   def record_late_observation(%Scope{} = scope, attempt_ref, input, opts)
-      when is_binary(attempt_ref) and attempt_ref != "" and is_list(opts) do
+      when Portable.is_non_empty_binary(attempt_ref) and is_list(opts) do
     with :ok <- validate_keyword(opts, :late_observation_options),
          :ok <- validate_known_options(opts, @late_observation_options, :late_observation),
          {:ok, scope, projection} <- scoped_projection(scope),
@@ -1016,7 +1014,7 @@ defmodule Spectre do
   end
 
   defp fetch_mandate(%State{} = projection, mandate_ref)
-       when is_binary(mandate_ref) and mandate_ref != "" do
+       when Portable.is_non_empty_binary(mandate_ref) do
     case Map.fetch(projection.mandates, mandate_ref) do
       {:ok, %Mandate{} = mandate} -> {:ok, mandate}
       {:ok, _invalid} -> {:error, {:invalid_mandate_record, mandate_ref}}
@@ -1066,7 +1064,7 @@ defmodule Spectre do
 
   defp show_required_ref(attrs, field) do
     case Map.get(attrs, field) do
-      value when is_binary(value) and value != "" -> {:ok, value}
+      value when Portable.is_non_empty_binary(value) -> {:ok, value}
       _missing -> {:error, {:missing_presentation_show_field, field}}
     end
   end
@@ -1420,9 +1418,8 @@ defmodule Spectre do
   defp validate_public_execution_options(opts) do
     with :ok <- validate_keyword(opts, :execution_options),
          :ok <- validate_known_options(opts, @execution_options, :execution),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts) do
-      :ok
+         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts) do
+      validate_sequencer_options(sequencer_opts)
     end
   end
 

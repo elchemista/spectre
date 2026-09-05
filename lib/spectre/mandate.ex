@@ -8,6 +8,8 @@ defmodule Spectre.Mandate do
   mandate reference is not an execution capability.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Condition, Evidence, Label, Portable, Row}
 
   @schema_version 1
@@ -212,7 +214,7 @@ defmodule Spectre.Mandate do
 
   @doc "Materializes an exact canonical issue draft under the Act that authorized it."
   @spec from_issue_draft(map(), String.t()) :: {:ok, t()} | {:error, term()}
-  def from_issue_draft(draft, source_ref) when is_map(draft) and not is_struct(draft) do
+  def from_issue_draft(draft, source_ref) when Portable.is_plain_map(draft) do
     with {:ok, normalized} <- issue_draft(draft),
          true <- draft == normalized,
          :ok <- Portable.validate_ref(source_ref, :source_ref) do
@@ -295,7 +297,7 @@ defmodule Spectre.Mandate do
     end
   end
 
-  defp normalize_delegation(value) when is_map(value) and not is_struct(value) do
+  defp normalize_delegation(value) when Portable.is_plain_map(value) do
     with {:ok, attrs} <- Portable.normalize_attrs(value, [:allowed, :max_depth], :delegation) do
       {:ok,
        %{
@@ -309,7 +311,7 @@ defmodule Spectre.Mandate do
     do: {:error, {:invalid_mandate_delegation, Portable.shape(value)}}
 
   defp normalize_revocation(value, grantor_ref)
-       when is_map(value) and not is_struct(value) do
+       when Portable.is_plain_map(value) do
     with {:ok, attrs} <-
            Portable.normalize_attrs(value, [:mode, :controller_refs], :revocation),
          {:ok, controllers} <-
@@ -360,7 +362,7 @@ defmodule Spectre.Mandate do
       mandate.schema_version != @schema_version ->
         {:error, {:unsupported_mandate_schema_version, mandate.schema_version}}
 
-      not (is_integer(mandate.revision) and mandate.revision > 0) ->
+      not Portable.is_positive_integer(mandate.revision) ->
         {:error, {:invalid_mandate_revision, mandate.revision}}
 
       not valid_classes?(mandate.classes) ->
@@ -379,7 +381,7 @@ defmodule Spectre.Mandate do
       mandate.executor_contract_refs == [] ->
         {:error, {:empty_mandate_constraint, :executor_contract_refs}}
 
-      not is_map(mandate.purpose_params) or is_struct(mandate.purpose_params) ->
+      not Portable.is_plain_map(mandate.purpose_params) ->
         {:error, {:invalid_mandate_purpose_params, Portable.shape(mandate.purpose_params)}}
 
       true ->
@@ -434,9 +436,9 @@ defmodule Spectre.Mandate do
     end
   end
 
-  defp valid_meters?(meters) when is_map(meters) and not is_struct(meters) do
+  defp valid_meters?(meters) when Portable.is_plain_map(meters) do
     Enum.all?(meters, fn {ref, ceiling} ->
-      is_binary(ref) and ref != "" and is_integer(ceiling) and ceiling >= 0
+      Portable.is_non_empty_binary(ref) and Portable.is_non_negative_integer(ceiling)
     end)
   end
 
@@ -444,20 +446,20 @@ defmodule Spectre.Mandate do
 
   defp valid_classes?([]), do: false
 
-  defp valid_classes?([class | rest]) when is_binary(class) and class != "",
+  defp valid_classes?([class | rest]) when Portable.is_non_empty_binary(class),
     do: valid_class_tail?(rest)
 
   defp valid_classes?(_classes), do: false
 
   defp valid_class_tail?([]), do: true
 
-  defp valid_class_tail?([class | rest]) when is_binary(class) and class != "",
+  defp valid_class_tail?([class | rest]) when Portable.is_non_empty_binary(class),
     do: valid_class_tail?(rest)
 
   defp valid_class_tail?(_classes), do: false
 
   defp valid_delegation?(%{"allowed" => allowed, "max_depth" => max_depth}) do
-    is_boolean(allowed) and is_integer(max_depth) and max_depth >= 0 and
+    is_boolean(allowed) and Portable.is_non_negative_integer(max_depth) and
       ((allowed and max_depth > 0) or (not allowed and max_depth == 0))
   end
 

@@ -16,6 +16,7 @@ defmodule Spectre.GovernedAct.Integrity do
   alias Spectre.Duty.Derive
   alias Spectre.GovernedAct.{DispatchState, Emergency, Fold, State}
   alias Spectre.Kernel.Meter
+  alias Spectre.Validation
 
   @doc "Validates a complete folded prefix at trusted observation time."
   @spec validate(State.t(), non_neg_integer()) :: :ok | {:error, term()}
@@ -100,39 +101,39 @@ defmodule Spectre.GovernedAct.Integrity do
   defp complete_required_duties(state, observed_at) do
     state
     |> Derive.required_duties(observed_at)
-    |> Enum.reduce_while(:ok, fn cause, :ok ->
+    |> Validation.all(fn cause ->
       case Map.fetch(state.duties, cause.cause_key) do
         {:ok, %Duty{} = actual} ->
-          case cause |> Derive.materialization_attrs(observed_at) |> Duty.new() do
-            {:ok, expected} ->
-              if Duty.same_cause?(actual, expected),
-                do: {:cont, :ok},
-                else: {:halt, {:error, {:duty_cause_materialization_mismatch, actual.ref}}}
-
-            {:error, reason} ->
-              {:halt, {:error, {:invalid_required_duty, cause.cause_key, reason}}}
-          end
+          validate_required_duty(cause, actual, observed_at)
 
         :error ->
-          {:halt, {:error, {:required_duty_not_materialized, cause.cause_key}}}
+          {:error, {:required_duty_not_materialized, cause.cause_key}}
       end
     end)
   end
 
-  defp meters_conserved(state) do
-    Enum.reduce_while(state.meters, :ok, fn {mandate_ref, accounts}, :ok ->
-      case Enum.reduce_while(accounts, :ok, fn {meter_ref, account}, :ok ->
-             case Meter.validate(account) do
-               :ok ->
-                 {:cont, :ok}
+  defp validate_required_duty(cause, actual, observed_at) do
+    case cause |> Derive.materialization_attrs(observed_at) |> Duty.new() do
+      {:ok, expected} ->
+        if Duty.same_cause?(actual, expected),
+          do: :ok,
+          else: {:error, {:duty_cause_materialization_mismatch, actual.ref}}
 
-               {:error, reason} ->
-                 {:halt, {:error, {:meter_invalid, mandate_ref, meter_ref, reason}}}
-             end
-           end) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
+      {:error, reason} ->
+        {:error, {:invalid_required_duty, cause.cause_key, reason}}
+    end
+  end
+
+  defp meters_conserved(state) do
+    Validation.all(state.meters, fn {mandate_ref, accounts} ->
+      Validation.all(accounts, &validate_meter_account(mandate_ref, &1))
     end)
+  end
+
+  defp validate_meter_account(mandate_ref, {meter_ref, account}) do
+    case Meter.validate(account) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:meter_invalid, mandate_ref, meter_ref, reason}}
+    end
   end
 end

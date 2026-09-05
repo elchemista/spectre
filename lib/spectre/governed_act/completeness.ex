@@ -9,8 +9,8 @@ defmodule Spectre.GovernedAct.Completeness do
   """
 
   alias Spectre.{Act, Attempt, Outcome}
-  alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.{DispatchState, MeterState, State}
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
 
   @doc "Validates relationships that cannot be closed over a single event."
   @spec validate(State.t()) :: :ok | {:error, term()}
@@ -75,13 +75,17 @@ defmodule Spectre.GovernedAct.Completeness do
 
   defp complete_reservations(state) do
     with :ok <- complete_act_reservations(state) do
-      Enum.reduce_while(state.meter_reservations, :ok, fn {act_ref, _status}, :ok ->
-        case MeterState.reservation(state, act_ref) do
-          {:ok, _reservation} -> {:cont, :ok}
-          {:error, _reason} -> {:halt, {:error, {:invalid_meter_reservation, act_ref}}}
-        end
-      end)
+      complete_reservation_index(state)
     end
+  end
+
+  defp complete_reservation_index(state) do
+    Enum.reduce_while(state.meter_reservations, :ok, fn {act_ref, _status}, :ok ->
+      case MeterState.reservation(state, act_ref) do
+        {:ok, _reservation} -> {:cont, :ok}
+        {:error, _reason} -> {:halt, {:error, {:invalid_meter_reservation, act_ref}}}
+      end
+    end)
   end
 
   defp complete_act_reservations(state) do
@@ -185,13 +189,17 @@ defmodule Spectre.GovernedAct.Completeness do
 
   defp complete_meter_recontainments(state) do
     with :ok <- validate_recontainment_records(state) do
-      Enum.reduce_while(state.outcomes, :ok, fn {_ref, outcome}, :ok ->
-        if requires_recontainment?(state, outcome) and
-             not Map.has_key?(state.meter_recontainments, outcome.act_ref),
-           do: {:halt, {:error, {:missing_meter_recontainment, outcome.ref}}},
-           else: {:cont, :ok}
-      end)
+      complete_outcome_recontainments(state)
     end
+  end
+
+  defp complete_outcome_recontainments(state) do
+    Enum.reduce_while(state.outcomes, :ok, fn {_ref, outcome}, :ok ->
+      if requires_recontainment?(state, outcome) and
+           not Map.has_key?(state.meter_recontainments, outcome.act_ref),
+         do: {:halt, {:error, {:missing_meter_recontainment, outcome.ref}}},
+         else: {:cont, :ok}
+    end)
   end
 
   defp validate_recontainment_records(state) do
@@ -372,13 +380,17 @@ defmodule Spectre.GovernedAct.Completeness do
   defp complete_declassifications(state) do
     with {:ok, records_by_act} <- index_declassifications_by_act(state.declassifications),
          :ok <- validate_declassification_indexes(state, records_by_act) do
-      Enum.reduce_while(state.acts, :ok, fn {_ref, act}, :ok ->
-        if act.class != "data.declassify" or
-             Map.has_key?(records_by_act, act.ref),
-           do: {:cont, :ok},
-           else: {:halt, {:error, {:declassification_act_incomplete, act.ref}}}
-      end)
+      complete_declassification_acts(state, records_by_act)
     end
+  end
+
+  defp complete_declassification_acts(state, records_by_act) do
+    Enum.reduce_while(state.acts, :ok, fn {_ref, act}, :ok ->
+      if act.class != "data.declassify" or
+           Map.has_key?(records_by_act, act.ref),
+         do: {:cont, :ok},
+         else: {:halt, {:error, {:declassification_act_incomplete, act.ref}}}
+    end)
   end
 
   defp index_declassifications_by_act(records) do

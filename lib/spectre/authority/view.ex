@@ -104,7 +104,6 @@ defmodule Spectre.Authority.View do
       false -> {:error, :authority_view_scope_mismatch}
       nil -> {:error, :authority_view_foundation_missing}
       {:error, _reason} = error -> error
-      _invalid -> {:error, :invalid_authority_view_foundation}
     end
   end
 

@@ -25,9 +25,8 @@ defmodule Spectre.Execution.Router do
 
       {:ok, :executor_mediated} ->
         with {:ok, route} <-
-               fetch(boundary, candidate.executor_ref, candidate.executor_contract_ref),
-             :ok <- candidate_profile(projection, route.broker_descriptor) do
-          :ok
+               fetch(boundary, candidate.executor_ref, candidate.executor_contract_ref) do
+          candidate_profile(projection, route.broker_descriptor)
         end
 
       {:error, _reason} = error ->

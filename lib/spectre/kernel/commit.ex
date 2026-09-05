@@ -27,9 +27,8 @@ defmodule Spectre.Kernel.Commit do
   def payloads(%State{} = projection, %Decision{} = decision, act)
       when is_nil(act) or is_struct(act, Act) do
     with {:ok, decision} <- Decision.new(decision),
-         {:ok, act} <- normalize_act(act),
-         {:ok, payloads} <- build_payloads(projection, decision, act) do
-      {:ok, payloads}
+         {:ok, act} <- normalize_act(act) do
+      build_payloads(projection, decision, act)
     end
   end
 

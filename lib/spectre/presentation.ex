@@ -15,9 +15,12 @@ defmodule Spectre.Presentation do
   its authenticated issuer must be one of the declared recipients.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Act, Candidate, Consent, Disclosure, Evidence, Outcome, Portable, Row}
   alias Spectre.GovernedAct.Class, as: GovernedClass
   alias Spectre.Presentation.Approval
+  alias Spectre.SubmissionContext
 
   @schema_version 1
   @show_class "presentation.show"
@@ -267,6 +270,13 @@ defmodule Spectre.Presentation do
       not is_nil(record.presentation_ref) ->
         {:error, :presentation_show_cannot_require_approval}
 
+      true ->
+        validate_show_binding(record, presentation)
+    end
+  end
+
+  defp validate_show_binding(record, presentation) do
+    cond do
       record.scope_ref != presentation.scope_ref ->
         {:error, :presentation_show_scope_mismatch}
 
@@ -475,7 +485,7 @@ defmodule Spectre.Presentation do
       presentation.disclosure.destination_refs != presentation.recipient_refs ->
         {:error, :presentation_disclosure_recipients_mismatch}
 
-      not is_map(presentation.purpose_params) or is_struct(presentation.purpose_params) ->
+      not Portable.is_plain_map(presentation.purpose_params) ->
         {:error,
          {:invalid_presentation_purpose_params, Portable.shape(presentation.purpose_params)}}
 
@@ -485,6 +495,13 @@ defmodule Spectre.Presentation do
       not is_integer(presentation.prepared_at) ->
         {:error, {:invalid_presentation_prepared_at, presentation.prepared_at}}
 
+      true ->
+        validate_rendering(presentation)
+    end
+  end
+
+  defp validate_rendering(presentation) do
+    cond do
       is_nil(presentation.rendered_payload) and is_nil(presentation.rendered_payload_ref) ->
         {:error, :missing_presentation_rendered_payload_or_ref}
 
@@ -509,10 +526,8 @@ defmodule Spectre.Presentation do
              :ok <- Portable.validate_ref(presentation.purpose_ref, :purpose_ref),
              :ok <- Portable.validate_ref(presentation.renderer_ref, :renderer_ref),
              :ok <- validate_optional_payload_ref(presentation.rendered_payload_ref),
-             {:ok, _consent} <- consent_material(presentation),
-             :ok <-
-               Portable.validate_non_empty_binary(presentation.material_digest, :material_digest) do
-          :ok
+             {:ok, _consent} <- consent_material(presentation) do
+          Portable.validate_non_empty_binary(presentation.material_digest, :material_digest)
         end
     end
   end

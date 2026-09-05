@@ -8,12 +8,12 @@ defmodule Spectre.GovernedAct.MeterState do
   state and performs no ledger append or external I/O.
   """
 
-  alias Spectre.{Mandate, Outcome}
   alias Spectre.GovernedAct.{Class, DispatchState, Index, State}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Meter
   alias Spectre.Kernel.Meter.Account
   alias Spectre.Kernel.Meter.Amounts
+  alias Spectre.{Mandate, Outcome}
   alias Spectre.Mandate.Ancestry
 
   @doc "Creates physical accounts for a root Mandate allocation."
@@ -156,23 +156,27 @@ defmodule Spectre.GovernedAct.MeterState do
   def reservation(%State{} = state, act_ref) do
     case Map.fetch(state.meter_reservations, act_ref) do
       {:ok, status} when status in [:reserved, :suspended, :settled, :released] ->
-        case Map.fetch(state.acts, act_ref) do
-          {:ok, act} ->
-            if Spectre.Act.reservations?(act) do
-              {:ok, %{status: status, mandate_ref: act.mandate_ref, amounts: act.reservations}}
-            else
-              {:error, {:invalid_reservation_act, act_ref}}
-            end
-
-          :error ->
-            {:error, {:reservation_act_not_found, act_ref}}
-        end
+        reservation_for_act(state, act_ref, status)
 
       :error ->
         {:error, {:reservation_not_found, act_ref}}
 
       {:ok, _invalid} ->
         {:error, {:invalid_reservation, act_ref}}
+    end
+  end
+
+  defp reservation_for_act(state, act_ref, status) do
+    case Map.fetch(state.acts, act_ref) do
+      {:ok, act} ->
+        if Spectre.Act.reservations?(act) do
+          {:ok, %{status: status, mandate_ref: act.mandate_ref, amounts: act.reservations}}
+        else
+          {:error, {:invalid_reservation_act, act_ref}}
+        end
+
+      :error ->
+        {:error, {:reservation_act_not_found, act_ref}}
     end
   end
 

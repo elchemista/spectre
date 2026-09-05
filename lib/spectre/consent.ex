@@ -9,6 +9,8 @@ defmodule Spectre.Consent do
   authoritative purpose fields.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -77,9 +79,16 @@ defmodule Spectre.Consent do
       is_nil(attrs.cost) ->
         {:error, :missing_consent_cost}
 
-      not is_map(attrs.purpose_params) or is_struct(attrs.purpose_params) ->
+      not Portable.is_plain_map(attrs.purpose_params) ->
         {:error, {:invalid_consent_purpose_params, Portable.shape(attrs.purpose_params)}}
 
+      true ->
+        validate_choices(attrs)
+    end
+  end
+
+  defp validate_choices(attrs) do
+    cond do
       is_nil(attrs.risk) ->
         {:error, :missing_consent_risk}
 
@@ -94,9 +103,8 @@ defmodule Spectre.Consent do
              :ok <- Portable.validate(attrs.cost),
              :ok <- Portable.validate(attrs.purpose_params),
              :ok <- Portable.validate(attrs.risk),
-             :ok <- Portable.validate(attrs.reversibility),
-             :ok <- Portable.validate(attrs.alternatives) do
-          :ok
+             :ok <- Portable.validate(attrs.reversibility) do
+          Portable.validate(attrs.alternatives)
         end
     end
   end

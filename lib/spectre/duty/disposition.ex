@@ -1,6 +1,8 @@
 defmodule Spectre.Duty.Disposition do
   @moduledoc false
 
+  require Spectre.Portable
+
   alias Spectre.{Duty, Portable}
 
   @schema_version 1
@@ -84,7 +86,7 @@ defmodule Spectre.Duty.Disposition do
 
   @spec from_consequence(term()) :: {:ok, t()} | {:error, term()}
   def from_consequence(%{"duty_disposition" => value} = consequence)
-      when map_size(consequence) == 1 and is_map(value) and not is_struct(value) do
+      when map_size(consequence) == 1 and Portable.is_plain_map(value) do
     with {:ok, disposition} <- from_canonical(value),
          true <- value == canonical(disposition) do
       {:ok, disposition}
@@ -128,9 +130,8 @@ defmodule Spectre.Duty.Disposition do
       true ->
         with :ok <- Portable.validate_ref(disposition.duty_ref, :duty_ref),
              :ok <- validate_digest(disposition.opening_digest),
-             :ok <- validate_cause_key(disposition.cause_key),
-             :ok <- Portable.validate_refs(disposition.supporting_refs, :supporting_refs) do
-          :ok
+             :ok <- validate_cause_key(disposition.cause_key) do
+          Portable.validate_refs(disposition.supporting_refs, :supporting_refs)
         end
     end
   end

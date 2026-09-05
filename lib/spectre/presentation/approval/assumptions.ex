@@ -101,20 +101,24 @@ defmodule Spectre.Presentation.Approval.Assumptions do
     context.index
     |> Map.get({assumption, stance}, [])
     |> Enum.reduce([], fn item, bases ->
-      if eligible?(item, context, visited, observed_by) do
-        case qualified_basis(
-               item,
-               context,
-               MapSet.put(visited, item.ref),
-               observed_by
-             ) do
-          {:ok, refs} -> [refs | bases]
-          {:error, _reason} -> bases
-        end
-      else
-        bases
-      end
+      collect_eligible_basis(item, context, visited, observed_by, bases)
     end)
+  end
+
+  defp collect_eligible_basis(item, context, visited, observed_by, bases) do
+    if eligible?(item, context, visited, observed_by) do
+      case qualified_basis(
+             item,
+             context,
+             MapSet.put(visited, item.ref),
+             observed_by
+           ) do
+        {:ok, refs} -> [refs | bases]
+        {:error, _reason} -> bases
+      end
+    else
+      bases
+    end
   end
 
   defp eligible?(item, context, visited, observed_by) do

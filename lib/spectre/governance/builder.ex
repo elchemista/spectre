@@ -8,6 +8,8 @@ defmodule Spectre.Governance.Builder do
   authority and performs no ledger write.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Candidate, Portable, Row, Scope}
   alias Spectre.GovernedAct.{Class, Execution}
 
@@ -105,7 +107,7 @@ defmodule Spectre.Governance.Builder do
   @spec required_ref(map(), atom()) :: {:ok, String.t()} | {:error, term()}
   def required_ref(attrs, key) do
     case Map.get(attrs, key) do
-      value when is_binary(value) and value != "" -> {:ok, value}
+      value when Portable.is_non_empty_binary(value) -> {:ok, value}
       _missing -> {:error, {:missing_governance_candidate_field, key}}
     end
   end

@@ -8,6 +8,8 @@ defmodule Spectre.Fallback.Policy do
   rather than being copied from the refused proposal.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Candidate
   alias Spectre.Portable
 
@@ -63,7 +65,7 @@ defmodule Spectre.Fallback.Policy do
 
   @doc "Restores a policy while rejecting noncanonical templates."
   @spec from_canonical(map()) :: {:ok, t()} | {:error, term()}
-  def from_canonical(value) when is_map(value) and not is_struct(value) do
+  def from_canonical(value) when Portable.is_plain_map(value) do
     with {:ok, policy} <- new(value),
          true <- value == canonical(policy) do
       {:ok, policy}

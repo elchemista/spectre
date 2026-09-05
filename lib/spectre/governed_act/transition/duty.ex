@@ -8,9 +8,9 @@ defmodule Spectre.GovernedAct.Transition.Duty do
   the obligation boundary explicit without coupling it to ledger I/O.
   """
 
-  alias Spectre.Duty
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
+  alias Spectre.Duty
   alias Spectre.Duty.Disposition
   alias Spectre.GovernedAct.{Index, State}
   alias Spectre.GovernedAct.Transition.Duty.Disposal

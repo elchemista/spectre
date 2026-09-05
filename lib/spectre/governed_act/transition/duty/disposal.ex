@@ -113,18 +113,13 @@ defmodule Spectre.GovernedAct.Transition.Duty.Disposal do
 
   defp supporting_records(projection, disposition, act) do
     Enum.reduce_while(disposition.supporting_refs, {:ok, []}, fn ref, {:ok, records} ->
-      case supporting_record(projection, ref) do
-        {:ok, record} ->
-          with :ok <- support_frozen_and_available(projection, act, ref, record),
-               true <- support_available_at?(record, act.committed_at) do
-            {:cont, {:ok, [record | records]}}
-          else
-            false -> {:halt, {:error, {:duty_disposition_support_from_future, ref}}}
-            {:error, _reason} = error -> {:halt, error}
-          end
-
-        {:error, _reason} = error ->
-          {:halt, error}
+      with {:ok, record} <- supporting_record(projection, ref),
+           :ok <- support_frozen_and_available(projection, act, ref, record),
+           true <- support_available_at?(record, act.committed_at) do
+        {:cont, {:ok, [record | records]}}
+      else
+        false -> {:halt, {:error, {:duty_disposition_support_from_future, ref}}}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
     |> case do

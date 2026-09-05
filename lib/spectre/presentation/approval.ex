@@ -13,6 +13,8 @@ defmodule Spectre.Presentation.Approval do
   requiring the returned Evidence basis under the selected Mandate.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Act, Evidence, Ingress, Outcome, Portable, Presentation, SubmissionContext}
   alias Spectre.Presentation.Approval.Assumptions
 
@@ -32,7 +34,7 @@ defmodule Spectre.Presentation.Approval do
   @doc "Returns the closed proposition for a response to one successful show Act."
   @spec proposition(String.t(), String.t()) :: map()
   def proposition(presentation_ref, show_act_ref)
-      when is_binary(presentation_ref) and presentation_ref != "" and is_binary(show_act_ref) and
+      when Portable.is_non_empty_binary(presentation_ref) and is_binary(show_act_ref) and
              show_act_ref != "" do
     %{
       "contract_ref" => @contract_ref,
@@ -187,68 +189,86 @@ defmodule Spectre.Presentation.Approval do
         evidence,
         time
       )
-      when is_map(acts) and not is_struct(acts) and is_list(outcomes) and is_list(evidence) and
+      when Portable.is_plain_map(acts) and is_list(outcomes) and is_list(evidence) and
              is_integer(time) do
     evidence_index = Assumptions.index(evidence)
 
     {matching?, supporting?, contradicting?, response_refs, basis_refs} =
       Enum.reduce(evidence, {false, false, false, [], MapSet.new()}, fn
-        response, {matching?, supporting?, contradicting?, response_refs, basis_refs} ->
-          case refs(response) do
-            {:ok, presentation_ref, show_act_ref} when presentation_ref == presentation.ref ->
-              result =
-                with {:ok, show_act} <- Map.fetch(acts, show_act_ref),
-                     {:ok, basis_refs} <-
-                       validate_indexed_evidence_with_basis(
-                         response,
-                         response.stance,
-                         presentation,
-                         show_act,
-                         outcomes,
-                         evidence_index,
-                         time
-                       ) do
-                  {:ok, basis_refs}
-                else
-                  _invalid -> :unqualified
-                end
-
-              case result do
-                {:ok, refs} ->
-                  {
-                    true,
-                    supporting? or response.stance == :supports,
-                    contradicting? or response.stance == :contradicts,
-                    [response.ref | response_refs],
-                    Enum.reduce(refs, basis_refs, &MapSet.put(&2, &1))
-                  }
-
-                :unqualified ->
-                  {true, supporting?, contradicting?, response_refs, basis_refs}
-              end
-
-            _not_this_presentation ->
-              {matching?, supporting?, contradicting?, response_refs, basis_refs}
-          end
+        response, accumulated ->
+          classify_response(
+            response,
+            accumulated,
+            presentation,
+            acts,
+            outcomes,
+            evidence_index,
+            time
+          )
       end)
 
     status =
       cond do
-        contradicting? ->
-          :contradicted
-
-        supporting? ->
-          :supported
-
-        not matching? ->
-          :missing
-
-        true ->
-          :unqualified
+        contradicting? -> :contradicted
+        supporting? -> :supported
+        not matching? -> :missing
+        true -> :unqualified
       end
 
     {status, Enum.sort(response_refs), basis_refs |> MapSet.to_list() |> Enum.sort()}
   end
+
+  defp classify_response(
+         response,
+         accumulated,
+         presentation,
+         acts,
+         outcomes,
+         evidence_index,
+         time
+       ) do
+    case refs(response) do
+      {:ok, presentation_ref, show_act_ref} when presentation_ref == presentation.ref ->
+        result =
+          with {:ok, show_act} <- Map.fetch(acts, show_act_ref),
+               {:ok, basis_refs} <-
+                 validate_indexed_evidence_with_basis(
+                   response,
+                   response.stance,
+                   presentation,
+                   show_act,
+                   outcomes,
+                   evidence_index,
+                   time
+                 ) do
+            {:ok, basis_refs}
+          else
+            _invalid -> :unqualified
+          end
+
+        collect_response(result, response, accumulated)
+
+      _not_this_presentation ->
+        accumulated
+    end
+  end
+
+  defp collect_response(
+         {:ok, refs},
+         response,
+         {_matching?, supporting?, contradicting?, response_refs, basis_refs}
+       ) do
+    {true, supporting? or response.stance == :supports,
+     contradicting? or response.stance == :contradicts, [response.ref | response_refs],
+     Enum.reduce(refs, basis_refs, &MapSet.put(&2, &1))}
+  end
+
+  defp collect_response(
+         :unqualified,
+         _response,
+         {_matching?, supporting?, contradicting?, response_refs, basis_refs}
+       ),
+       do: {true, supporting?, contradicting?, response_refs, basis_refs}
 
   @doc "Validates a supporting approval and returns its complete Evidence basis."
   @spec validate_approval_with_basis(
@@ -423,7 +443,26 @@ defmodule Spectre.Presentation.Approval do
       approval.source_ref not in presentation.approval_source_refs ->
         {:error, :presentation_approval_source_not_configured}
 
-      is_nil(approval.issuer_ref) or approval.issuer_ref != recipient_ref or
+      true ->
+        validate_recipient_binding(
+          approval,
+          presentation,
+          show_act_ref,
+          recipient_ref,
+          authenticated_ref
+        )
+    end
+  end
+
+  defp validate_recipient_binding(
+         approval,
+         presentation,
+         show_act_ref,
+         recipient_ref,
+         authenticated_ref
+       ) do
+    cond do
+      approval.issuer_ref != recipient_ref or
           approval.issuer_ref != authenticated_ref ->
         {:error, :presentation_approval_principal_mismatch}
 
@@ -501,5 +540,5 @@ defmodule Spectre.Presentation.Approval do
   end
 
   defp normalize_basis_refs(refs), do: refs |> List.flatten() |> Enum.uniq() |> Enum.sort()
-  defp valid_ref?(value), do: is_binary(value) and value != ""
+  defp valid_ref?(value), do: Portable.is_non_empty_binary(value)
 end

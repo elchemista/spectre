@@ -41,12 +41,7 @@ defmodule Spectre.Bench.P1.Ingress do
 
   @impl true
   def observe(context, input, observed_at, _opts) do
-    bindings = %{
-      "authenticated_principal_ref" => context.authenticated_principal_ref,
-      "authentication_ref" => context.authentication_ref,
-      "domain_ref" => context.domain_ref,
-      "scope_ref" => context.scope_ref
-    }
+    bindings = Spectre.SubmissionContext.evidence_bindings(context)
 
     Spectre.Evidence.new(%{
       proposition: Map.fetch!(input, :proposition),

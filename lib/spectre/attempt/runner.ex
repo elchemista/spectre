@@ -21,8 +21,6 @@ defmodule Spectre.Attempt.Runner do
   immutable Act-to-Attempt identity checked by recovery and replay.
   """
 
-  alias Spectre.GovernedAct.State
-
   alias Spectre.{Act, Attempt, Decision, Evidence, Outcome}
   alias Spectre.Attempt.Binding, as: AttemptBinding
   alias Spectre.Attempt.Runner.{Observation, Recovery, Result}
@@ -30,6 +28,7 @@ defmodule Spectre.Attempt.Runner do
   alias Spectre.Execution.Boundary
   alias Spectre.GovernedAct.Admission.Binding, as: AdmissionBinding
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Grant
   alias Spectre.Secret.CheckoutReceipt
 

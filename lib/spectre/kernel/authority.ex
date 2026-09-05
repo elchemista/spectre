@@ -40,7 +40,8 @@ defmodule Spectre.Kernel.Authority do
           required(:authenticated_principal_ref) => String.t(),
           required(:authentication_ref) => String.t(),
           required(:ingress_ref) => String.t(),
-          required(:host_generation) => non_neg_integer()
+          required(:host_generation) => non_neg_integer(),
+          optional(atom()) => term()
         }
 
   @type effective :: Effective.t()

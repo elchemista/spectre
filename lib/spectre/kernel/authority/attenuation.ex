@@ -70,9 +70,8 @@ defmodule Spectre.Kernel.Authority.Attenuation do
          :ok <- child_conditions_within(predecessor, successor),
          :ok <- child_time_within(predecessor, successor),
          :ok <- restriction_delegation_within(predecessor, successor),
-         :ok <- restriction_fixed_policy(predecessor, successor),
-         :ok <- strict_restriction(predecessor, successor) do
-      :ok
+         :ok <- restriction_fixed_policy(predecessor, successor) do
+      strict_restriction(predecessor, successor)
     end
   end
 

@@ -9,6 +9,8 @@ defmodule Spectre.Attempt do
   still-unattempted Act is safely resumed after a host restart.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Id, Portable}
 
   @schema_version 1
@@ -76,7 +78,7 @@ defmodule Spectre.Attempt do
       attempt.schema_version != @schema_version ->
         {:error, {:unsupported_attempt_schema_version, attempt.schema_version}}
 
-      not is_integer(attempt.generation) or attempt.generation < 0 ->
+      not Portable.is_non_negative_integer(attempt.generation) ->
         {:error, {:invalid_attempt_generation, attempt.generation}}
 
       not is_integer(attempt.started_at) ->
@@ -86,10 +88,8 @@ defmodule Spectre.Attempt do
         with :ok <- Portable.validate_ref(attempt.ref, :ref),
              :ok <- Portable.validate_ref(attempt.act_ref, :act_ref),
              :ok <- Portable.validate_ref(attempt.executor_ref, :executor_ref),
-             :ok <- Portable.validate_non_empty_binary(attempt.material_digest, :material_digest),
-             :ok <-
-               Portable.validate_non_empty_binary(attempt.grant_nonce_digest, :grant_nonce_digest) do
-          :ok
+             :ok <- Portable.validate_non_empty_binary(attempt.material_digest, :material_digest) do
+          Portable.validate_non_empty_binary(attempt.grant_nonce_digest, :grant_nonce_digest)
         end
     end
   end

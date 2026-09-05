@@ -15,6 +15,8 @@ defmodule Spectre.Duty do
   callback.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -164,7 +166,7 @@ defmodule Spectre.Duty do
   defp defaults(attrs) do
     default_conflicts =
       case Map.get(attrs, :accountable) do
-        accountable when is_binary(accountable) and accountable != "" -> [accountable]
+        accountable when Portable.is_non_empty_binary(accountable) -> [accountable]
         _missing_or_invalid -> []
       end
 
@@ -234,6 +236,13 @@ defmodule Spectre.Duty do
       duty.status == :disposed and is_nil(duty.disposition_act_ref) ->
         {:error, :disposed_duty_missing_disposition_act}
 
+      true ->
+        validate_obligation(duty)
+    end
+  end
+
+  defp validate_obligation(duty) do
+    cond do
       not is_list(duty.missing) ->
         {:error, {:invalid_duty_missing, Portable.shape(duty.missing)}}
 
@@ -268,10 +277,8 @@ defmodule Spectre.Duty do
              duty.disposition_authority_refs,
              :disposition_authority_refs
            ),
-         :ok <- Portable.validate_refs(duty.conflict_refs, :conflict_refs),
-         :ok <-
-           Portable.validate_optional_ref(duty.disposition_act_ref, :disposition_act_ref) do
-      :ok
+         :ok <- Portable.validate_refs(duty.conflict_refs, :conflict_refs) do
+      Portable.validate_optional_ref(duty.disposition_act_ref, :disposition_act_ref)
     end
   end
 

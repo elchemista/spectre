@@ -10,11 +10,11 @@ defmodule Spectre.Domain.Command.Input do
 
   alias Spectre.{Act, Attempt, Evidence, Ingress, SubmissionContext}
   alias Spectre.Attempt.Evidence, as: AttemptEvidence
-  alias Spectre.Domain.{Context, Projection, Transaction}
   alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
+  alias Spectre.Domain.{Context, Projection, Transaction}
   alias Spectre.Domain.Sequencer.{Control, State}
-  alias Spectre.Evidence.Derivation
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
+  alias Spectre.Evidence.Derivation
   alias Spectre.GovernedAct.Index
   alias Spectre.Mind.Derivation, as: MindDerivation
   alias Spectre.Mind.Turn
@@ -66,20 +66,22 @@ defmodule Spectre.Domain.Command.Input do
           [Evidence.t()]
         ) :: {:ok, State.t(), [Evidence.t()]} | {:error, State.t(), term()}
   def record_executor_evidence(state, act_ref, attempt_ref, evidence) do
-    with :ok <- validate_executor_evidence(state.projection, act_ref, attempt_ref, evidence) do
-      case EvidenceCommand.record(state, evidence) do
-        {:ok, next_state, durable} when is_list(durable) ->
-          {:ok, next_state, durable}
+    case validate_executor_evidence(state.projection, act_ref, attempt_ref, evidence) do
+      :ok ->
+        case EvidenceCommand.record(state, evidence) do
+          {:ok, next_state, durable} when is_list(durable) ->
+            {:ok, next_state, durable}
 
-        {:error, next_state, reason} ->
-          {:error, next_state, reason}
+          {:error, next_state, reason} ->
+            {:error, next_state, reason}
 
-        {:ok, next_state, _invalid} ->
-          {:error, Control.halt(next_state, :invalid_executor_evidence_result),
-           :invalid_executor_evidence_result}
-      end
-    else
-      {:error, reason} -> {:error, state, reason}
+          {:ok, next_state, _invalid} ->
+            {:error, Control.halt(next_state, :invalid_executor_evidence_result),
+             :invalid_executor_evidence_result}
+        end
+
+      {:error, reason} ->
+        {:error, state, reason}
     end
   end
 
@@ -94,10 +96,12 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp observe_at(state, context, input, ingress_opts) do
-    with {:ok, context, _opening} <- Context.validate_scope(state, context) do
-      observe_current_at(state, context, input, ingress_opts)
-    else
-      {:error, reason} -> {:error, state, reason}
+    case Context.validate_scope(state, context) do
+      {:ok, context, _opening} ->
+        observe_current_at(state, context, input, ingress_opts)
+
+      {:error, reason} ->
+        {:error, state, reason}
     end
   end
 
@@ -131,20 +135,7 @@ defmodule Spectre.Domain.Command.Input do
   defp scoped_evidence(_projection, _scope_ref, []), do: {:ok, []}
 
   defp scoped_evidence(projection, scope_ref, refs) do
-    with {:ok, %ScopeView{} = view} <- ScopeView.from_projection(projection, scope_ref) do
-      available = Map.new(view.evidence, &{&1.ref, &1})
-
-      Enum.reduce_while(refs, {:ok, []}, fn ref, {:ok, records} ->
-        case Map.fetch(available, ref) do
-          {:ok, evidence} -> {:cont, {:ok, [evidence | records]}}
-          :error -> {:halt, {:error, {:evidence_outside_scope, ref}}}
-        end
-      end)
-      |> case do
-        {:ok, records} -> {:ok, Enum.reverse(records)}
-        {:error, _reason} = error -> error
-      end
-    end
+    ScopeView.evidence(projection, scope_ref, refs)
   end
 
   defp merge_evidence(left, right) do
@@ -199,26 +190,28 @@ defmodule Spectre.Domain.Command.Input do
   defp validate_executor_evidence(projection, act_ref, attempt_ref, evidence) do
     with {:ok, %Act{} = act} <- Index.fetch_required(projection.acts, act_ref, :act),
          {:ok, %Attempt{} = attempt} <-
-           Index.fetch_required(projection.attempts, attempt_ref, :attempt),
-         :ok <- validate_executor_evidence_records(projection, act, attempt, evidence) do
-      :ok
+           Index.fetch_required(projection.attempts, attempt_ref, :attempt) do
+      validate_executor_evidence_records(projection, act, attempt, evidence)
     end
   end
 
   defp validate_executor_evidence_records(projection, act, attempt, evidence) do
     with :ok <- AttemptEvidence.validate_all(evidence, act, attempt) do
       Enum.reduce_while(evidence, :ok, fn record, :ok ->
-        if record.provenance in [:derived, :generated] do
-          case validate_executor_derivation(projection, record) do
-            :ok -> {:cont, :ok}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        else
-          {:cont, :ok}
-        end
+        executor_derivation_step(projection, record)
       end)
     end
   end
+
+  defp executor_derivation_step(projection, %{provenance: provenance} = record)
+       when provenance in [:derived, :generated] do
+    case validate_executor_derivation(projection, record) do
+      :ok -> {:cont, :ok}
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
+
+  defp executor_derivation_step(_projection, _record), do: {:cont, :ok}
 
   defp validate_executor_derivation(projection, evidence) do
     with {:ok, durable_parents} <- Projection.evidence_set(projection, evidence.parent_refs) do

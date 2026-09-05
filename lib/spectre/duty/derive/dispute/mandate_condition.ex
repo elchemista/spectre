@@ -11,79 +11,101 @@ defmodule Spectre.Duty.Derive.Dispute.MandateCondition do
   @spec causes(Facts.t(), map(), integer()) :: [map()]
   def causes(%Facts{} = facts, constitution, time) do
     Enum.flat_map(facts.acts, fn {_act_ref, %Act{} = act} ->
-      with {:ok, mandate} <- Map.fetch(facts.mandates, act.mandate_ref),
-           {:ok, act_metadata} <- Facts.metadata(facts, act.ref),
-           true <- act.recognition_evidence_refs != [] do
-        historical = Facts.evidence_through(facts, act_metadata.revision)
-
-        Enum.flat_map(mandate.conditions, fn condition ->
-          condition_disputes(
-            condition,
-            act,
-            act.recognition_evidence_refs,
-            historical,
-            facts,
-            constitution,
-            act.committed_at,
-            act_metadata.revision,
-            time
-          )
-        end)
-      else
-        _not_applicable -> []
-      end
+      act_disputes(act, facts, constitution, time)
     end)
+  end
+
+  defp act_disputes(act, facts, constitution, time) do
+    with {:ok, mandate} <- Map.fetch(facts.mandates, act.mandate_ref),
+         {:ok, act_metadata} <- Facts.metadata(facts, act.ref),
+         true <- act.recognition_evidence_refs != [] do
+      historical = Facts.evidence_through(facts, act_metadata.revision)
+
+      Enum.flat_map(mandate.conditions, fn condition ->
+        condition_disputes(
+          condition,
+          act,
+          historical,
+          facts,
+          constitution,
+          act_metadata.revision,
+          time
+        )
+      end)
+    else
+      _not_applicable -> []
+    end
   end
 
   defp condition_disputes(
          %Condition{} = condition,
          act,
-         recognition_evidence_refs,
          historical,
          facts,
          constitution,
-         committed_at,
          act_revision,
          time
        ) do
-    case Recognition.check_with_basis([condition], historical, committed_at) do
+    case Recognition.check_with_basis([condition], historical, act.committed_at) do
       {:satisfied, basis_refs} ->
-        recognized = MapSet.new(recognition_evidence_refs)
-        basis = MapSet.new(basis_refs)
-
-        used =
-          Enum.filter(historical, fn evidence ->
-            MapSet.member?(basis, evidence.ref) and MapSet.member?(recognized, evidence.ref)
-          end)
-
-        Enum.flat_map(facts.evidence, fn {_evidence_ref, evidence} ->
-          if evidence_dispute?(
-               evidence,
-               used,
-               recognized,
-               condition,
-               facts,
-               act_revision,
-               time
-             ) do
-            [
-              condition_cause(
-                act,
-                condition,
-                recognition_evidence_refs,
-                evidence,
-                facts,
-                constitution
-              )
-            ]
-          else
-            []
-          end
-        end)
+        disputes_against_basis(
+          condition,
+          act,
+          basis_refs,
+          historical,
+          facts,
+          constitution,
+          act_revision,
+          time
+        )
 
       _not_satisfied ->
         []
     end
+  end
+
+  defp disputes_against_basis(
+         condition,
+         act,
+         basis_refs,
+         historical,
+         facts,
+         constitution,
+         act_revision,
+         time
+       ) do
+    recognized = MapSet.new(act.recognition_evidence_refs)
+    basis = MapSet.new(basis_refs)
+
+    used =
+      Enum.filter(historical, fn evidence ->
+        MapSet.member?(basis, evidence.ref) and MapSet.member?(recognized, evidence.ref)
+      end)
+
+    Enum.flat_map(facts.evidence, fn {_evidence_ref, evidence} ->
+      if evidence_dispute?(
+           evidence,
+           used,
+           recognized,
+           condition,
+           facts,
+           act_revision,
+           time
+         ) do
+        [
+          condition_cause(
+            act,
+            condition,
+            act.recognition_evidence_refs,
+            evidence,
+            facts,
+            constitution
+          )
+        ]
+      else
+        []
+      end
+    end)
   end
 
   defp evidence_dispute?(

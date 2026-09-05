@@ -11,7 +11,9 @@ defmodule Spectre.Secret.CheckoutReceipt do
   to the sequencer and its broker.
   """
 
-  alias Spectre.{Act, Attempt, Seal}
+  require Spectre.Portable
+
+  alias Spectre.{Act, Attempt, Portable, Seal, Validation}
 
   @domain "spectre:checkout-receipt:v1\0"
   @claim_fields [
@@ -68,9 +70,8 @@ defmodule Spectre.Secret.CheckoutReceipt do
     if Seal.valid_secret?(secret) do
       with {:ok, _claims} <- normalize_claims(claims(receipt)),
            :ok <- match_expected(receipt, expected),
-           :ok <- current(receipt, Map.get(expected, :now)),
-           :ok <- authentic(receipt, secret) do
-        :ok
+           :ok <- current(receipt, Map.get(expected, :now)) do
+        authentic(receipt, secret)
       end
     else
       {:error, :invalid_checkout_receipt}
@@ -125,13 +126,13 @@ defmodule Spectre.Secret.CheckoutReceipt do
       ) ->
         {:error, :invalid_checkout_receipt_material}
 
-      not (is_integer(normalized.generation) and normalized.generation >= 0) ->
+      not Portable.is_non_negative_integer(normalized.generation) ->
         {:error, :invalid_checkout_receipt_generation}
 
-      not (is_integer(normalized.ledger_revision) and normalized.ledger_revision > 0) ->
+      not Portable.is_positive_integer(normalized.ledger_revision) ->
         {:error, :invalid_checkout_receipt_revision}
 
-      not (is_integer(normalized.issued_at) and normalized.issued_at >= 0 and
+      not (Portable.is_non_negative_integer(normalized.issued_at) and
              is_integer(normalized.expires_at) and
                normalized.expires_at > normalized.issued_at) ->
         {:error, :invalid_checkout_receipt_time_window}
@@ -144,15 +145,13 @@ defmodule Spectre.Secret.CheckoutReceipt do
   defp match_expected(receipt, expected) do
     @claim_fields
     |> Enum.reject(&(&1 in [:issued_at, :expires_at]))
-    |> Enum.reduce_while(:ok, fn field, :ok ->
-      case Map.fetch(expected, field) do
-        {:ok, value} ->
-          if value == Map.fetch!(receipt, field),
-            do: {:cont, :ok},
-            else: {:halt, {:error, {:checkout_receipt_mismatch, field}}}
+    |> Validation.all(fn field ->
+      actual = Map.fetch!(receipt, field)
 
-        :error ->
-          {:cont, :ok}
+      case Map.fetch(expected, field) do
+        {:ok, ^actual} -> :ok
+        {:ok, _different} -> {:error, {:checkout_receipt_mismatch, field}}
+        :error -> :ok
       end
     end)
   end

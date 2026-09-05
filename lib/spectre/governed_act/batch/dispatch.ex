@@ -75,16 +75,20 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
              pending_refs_before(before, events, event.batch_index),
              duty.act_ref
            ) do
-        with {:ok, act} <- fetch_act(projection, duty.act_ref),
-             true <- exact_disputed_cancellation?(events, event.batch_index + 1, act, duty) do
-          :ok
-        else
-          false -> {:error, {:disputed_dispatch_cancellation_batch_mismatch, duty.ref}}
-          {:error, _reason} = error -> error
-        end
+        validate_disputed_duty_cancellation(projection, events, event, duty)
       else
         :ok
       end
+    end
+  end
+
+  defp validate_disputed_duty_cancellation(projection, events, event, duty) do
+    with {:ok, act} <- fetch_act(projection, duty.act_ref),
+         true <- exact_disputed_cancellation?(events, event.batch_index + 1, act, duty) do
+      :ok
+    else
+      false -> {:error, {:disputed_dispatch_cancellation_batch_mismatch, duty.ref}}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -177,10 +181,12 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
   end
 
   defp exact_disputed_cancellation?(events, index, act, duty) do
-    with {:ok, payloads} <- Dispatch.cancellation(act, duty, :disputed_evidence) do
-      Events.payload_sequence?(events, payloads, index)
-    else
-      {:error, _reason} -> false
+    case Dispatch.cancellation(act, duty, :disputed_evidence) do
+      {:ok, payloads} ->
+        Events.payload_sequence?(events, payloads, index)
+
+      {:error, _reason} ->
+        false
     end
   end
 
@@ -204,15 +210,16 @@ defmodule Spectre.GovernedAct.Batch.Dispatch do
                target_mandate_ref,
                cascade?
              ) do
-        if affected?,
-          do: {:cont, {:ok, [act | affected]}},
-          else: {:cont, {:ok, affected}}
+        {:cont, {:ok, collect_affected(affected?, act, affected)}}
       else
         {:error, _reason} = error -> {:halt, error}
       end
     end)
     |> reverse_ok()
   end
+
+  defp collect_affected(true, act, affected), do: [act | affected]
+  defp collect_affected(false, _act, affected), do: affected
 
   defp pending_refs_before(before, events, before_index) do
     events

@@ -11,8 +11,8 @@ defmodule Spectre.Domain.Context do
 
   alias Spectre.{Adapter, Portable, SubmissionContext}
   alias Spectre.Domain.Projection
-  alias Spectre.GovernedAct.State, as: GovernedState
   alias Spectre.Domain.Sequencer.State
+  alias Spectre.GovernedAct.State, as: GovernedState
   alias Spectre.Scope.Opening
 
   @authentication_options [:timeout, :ingress_opts]
@@ -25,9 +25,8 @@ defmodule Spectre.Domain.Context do
          :ok <- Portable.validate_ref(scope_ref, :scope_ref),
          {:ok, context} <- call_adapter(state, scope_ref, input, opts),
          {:ok, context} <- SubmissionContext.new(context),
-         :ok <- validate_binding(state, scope_ref, context),
-         {:ok, sealed} <- SubmissionContext.seal(context, state.grant_secret) do
-      {:ok, sealed}
+         :ok <- validate_binding(state, scope_ref, context) do
+      SubmissionContext.seal(context, state.grant_secret)
     end
   end
 
@@ -135,16 +134,16 @@ defmodule Spectre.Domain.Context do
   defp validate_options(_opts), do: {:error, :invalid_authentication_options}
 
   defp validate_keyword_options(opts) do
-    with [] <- Keyword.keys(opts) -- @authentication_options do
-      case Keyword.get(opts, :ingress_opts, []) do
-        value when is_list(value) ->
-          if Keyword.keyword?(value), do: :ok, else: {:error, :invalid_ingress_options}
+    case Keyword.keys(opts) -- @authentication_options do
+      [] ->
+        validate_ingress_options(Keyword.get(opts, :ingress_opts, []))
 
-        _invalid ->
-          {:error, :invalid_ingress_options}
-      end
-    else
-      unknown -> {:error, {:unknown_options, :authentication, unknown}}
+      unknown ->
+        {:error, {:unknown_options, :authentication, unknown}}
     end
+  end
+
+  defp validate_ingress_options(value) do
+    if Portable.keyword?(value), do: :ok, else: {:error, :invalid_ingress_options}
   end
 end

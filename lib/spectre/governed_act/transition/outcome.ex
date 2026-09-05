@@ -8,8 +8,8 @@ defmodule Spectre.GovernedAct.Transition.Outcome do
   on the other—without maintaining two versions of what an Outcome means.
   """
 
-  alias Spectre.Outcome.Attestation
   alias Spectre.{Act, Attempt, Evidence, Outcome}
+  alias Spectre.Outcome.Attestation
 
   @doc "Checks class-specific restrictions on an observed result."
   @spec validate_for_act(Act.t(), Outcome.t()) :: :ok | {:error, term()}
@@ -41,19 +41,16 @@ defmodule Spectre.GovernedAct.Transition.Outcome do
         ) :: :ok | {:error, term()}
   def validate_evidence(evidence_index, %Outcome{} = outcome, %Attempt{} = attempt, %Act{} = act)
       when is_map(evidence_index) do
-    Enum.reduce_while(outcome.evidence_refs, :ok, fn ref, :ok ->
+    Spectre.Validation.all(outcome.evidence_refs, fn ref ->
       case Map.fetch(evidence_index, ref) do
         {:ok, %Evidence{} = evidence} ->
-          case Attestation.validate(evidence, outcome, attempt, act) do
-            :ok -> {:cont, :ok}
-            {:error, _reason} = error -> {:halt, error}
-          end
+          Attestation.validate(evidence, outcome, attempt, act)
 
         :error ->
-          {:halt, {:error, {:outcome_evidence_not_found, ref}}}
+          {:error, {:outcome_evidence_not_found, ref}}
 
         {:ok, _invalid} ->
-          {:halt, {:error, {:invalid_outcome_evidence, ref}}}
+          {:error, {:invalid_outcome_evidence, ref}}
       end
     end)
   end

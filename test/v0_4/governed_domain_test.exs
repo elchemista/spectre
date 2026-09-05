@@ -5,6 +5,7 @@ defmodule Spectre.V04Test.GovernedDomainTest do
 
   alias Spectre.Domain.Sequencer
   alias Spectre.Kernel.Grant
+  alias Spectre.Ledger.Store.Mock
   alias Spectre.V04Test.{Fixture, Runtime}
 
   setup do
@@ -15,7 +16,7 @@ defmodule Spectre.V04Test.GovernedDomainTest do
   test "GAM refund: Mandate and payment Evidence precede the exact Act and successful Outcome" do
     fixture = start_domain(namespace: "gam-refund")
     payment = Fixture.paid_evidence(fixture)
-    assert {:ok, ^payment} = Sequencer.record_evidence(fixture.server, payment)
+    assert {:ok, ^payment} = Fixture.observe_payment(fixture, payment)
 
     candidate = Fixture.refund_candidate(fixture, 5_000)
 
@@ -40,13 +41,13 @@ defmodule Spectre.V04Test.GovernedDomainTest do
     assert %{available: 5_000, reserved: 5_000, suspended: 0, spent: 0} =
              meter_account(fixture)
 
-    assert {:ok, ^act, attempt} = Sequencer.consume_grant(fixture.server, grant)
+    assert {:ok, ^act, attempt, _receipt} = Sequencer.consume_grant(fixture.server, grant)
     assert attempt.act_ref == act.ref
     assert attempt.executor_ref == act.executor_ref
     assert attempt.material_digest == act.material_digest
 
     receipt = Fixture.receipt_evidence(fixture, act.ref)
-    assert {:ok, ^receipt} = Sequencer.record_evidence(fixture.server, receipt)
+    assert {:ok, ^receipt} = Fixture.record_receipt(fixture, receipt)
 
     outcome = Fixture.outcome(fixture, act, attempt, :succeeded, [receipt.ref])
     assert {:ok, ^outcome} = Sequencer.record_outcome(fixture.server, outcome)
@@ -56,7 +57,7 @@ defmodule Spectre.V04Test.GovernedDomainTest do
     assert %{available: 5_000, reserved: 0, suspended: 0, spent: 5_000} =
              meter_account(fixture)
 
-    assert projection.attempts_by_act[act.ref] == attempt.ref
+    assert projection.attempts[attempt.ref].act_ref == act.ref
     assert projection.outcomes[outcome.ref] == outcome
     assert projection.duties == %{}
 
@@ -102,7 +103,7 @@ defmodule Spectre.V04Test.GovernedDomainTest do
     refute inspect(Enum.map(admission_entries, & &1.payload)) =~ grant.nonce
 
     before_attempt = admission_snapshot.revision
-    assert {:ok, ^act, attempt} = Sequencer.consume_grant(fixture.server, grant)
+    assert {:ok, ^act, attempt, _receipt} = Sequencer.consume_grant(fixture.server, grant)
 
     attempt_snapshot = Fixture.snapshot(fixture)
 
@@ -119,13 +120,8 @@ defmodule Spectre.V04Test.GovernedDomainTest do
     fixture = start_domain(namespace: "generation", generation: 41)
     payment = record_payment(fixture)
     candidate = Fixture.refund_candidate(fixture, 1_000, evidence_refs: [payment.ref])
-    stale_context = Fixture.context(fixture, host_generation: 40)
+    stale_context = Fixture.context(fixture)
     revision = Fixture.snapshot(fixture).revision
-
-    assert {:error, :submission_generation_mismatch} =
-             Sequencer.submit(fixture.server, stale_context, candidate)
-
-    assert Fixture.snapshot(fixture).revision == revision
 
     assert {:ok, %{act: original_act, grant: old_grant}} =
              Sequencer.submit(fixture.server, Fixture.context(fixture), candidate)
@@ -133,15 +129,25 @@ defmodule Spectre.V04Test.GovernedDomainTest do
     Fixture.stop_process(fixture.server)
     restarted = Fixture.restart_domain(fixture, generation: 42)
 
+    assert {:error, :submission_context_generation_mismatch} =
+             Sequencer.submit(restarted.server, stale_context, candidate)
+
+    assert Fixture.snapshot(restarted).revision == revision + 4
+
     assert {:error, :grant_generation_mismatch} =
              Sequencer.consume_grant(restarted.server, old_grant)
 
     assert restarted.server |> Sequencer.projection() |> Map.fetch!(:attempts) == %{}
 
     current_context = Fixture.context(restarted, host_generation: 42)
+    # Reauthentication cannot silently rebind an immutable Scope opening.
+    scope_ref = fixture.refs.scope
 
-    assert {:ok, %{act: ^original_act, grant: %Grant{generation: 42}}} =
+    assert {:error, {:scope_context_binding_mismatch, ^scope_ref}} =
              Sequencer.submit(restarted.server, current_context, candidate)
+
+    assert Sequencer.projection(restarted.server).acts[original_act.ref] == original_act
+    assert Sequencer.projection(restarted.server).attempts == %{}
 
     Fixture.stop_process(restarted.server)
   end
@@ -175,32 +181,34 @@ defmodule Spectre.V04Test.GovernedDomainTest do
   end
 
   test "after-commit ambiguity is reconciled by batch identity without duplicate facts" do
-    fixture = start_domain(namespace: "after-commit")
+    fixture = start_domain(namespace: "after-commit", mock_store: true)
     payment = Fixture.paid_evidence(fixture)
+    # Faults belong to the host adapter, never to untrusted submission options.
+    assert :ok =
+             Mock.push(fixture.mock, List.duplicate({:append, :after, {:error, :ambiguous}}, 5))
 
     assert {:ok, ^payment} =
-             Sequencer.record_evidence(fixture.server, payment, fault_injection: :after_commit)
+             Fixture.observe_payment(fixture, payment)
 
     assert {:ok, %{decision: decision, act: act, grant: grant}} =
              Sequencer.submit(
                fixture.server,
                Fixture.context(fixture),
-               Fixture.refund_candidate(fixture, 2_000, evidence_refs: [payment.ref]),
-               fault_injection: :after_commit
+               Fixture.refund_candidate(fixture, 2_000, evidence_refs: [payment.ref])
              )
 
-    assert {:ok, ^act, attempt} =
-             Sequencer.consume_grant(fixture.server, grant, fault_injection: :after_commit)
+    assert {:ok, ^act, attempt, _receipt} =
+             Sequencer.consume_grant(fixture.server, grant)
 
     receipt = Fixture.receipt_evidence(fixture, act.ref)
 
     assert {:ok, ^receipt} =
-             Sequencer.record_evidence(fixture.server, receipt, fault_injection: :after_commit)
+             Fixture.record_receipt(fixture, receipt)
 
     outcome = Fixture.outcome(fixture, act, attempt, :succeeded, [receipt.ref])
 
     assert {:ok, ^outcome} =
-             Sequencer.record_outcome(fixture.server, outcome, fault_injection: :after_commit)
+             Sequencer.record_outcome(fixture.server, outcome)
 
     projection = Sequencer.projection(fixture.server)
     assert map_size(projection.decisions) == 1
@@ -225,12 +233,12 @@ defmodule Spectre.V04Test.GovernedDomainTest do
     assert {:ok, %{decision: decision, act: act, grant: grant}} =
              Sequencer.submit(fixture.server, context, candidate)
 
-    assert {:ok, ^act, attempt} = Sequencer.consume_grant(fixture.server, grant)
+    assert {:ok, ^act, attempt, _receipt} = Sequencer.consume_grant(fixture.server, grant)
     ambiguous = Fixture.outcome(fixture, act, attempt, :ambiguous)
     assert {:ok, ^ambiguous} = Sequencer.record_outcome(fixture.server, ambiguous)
 
     projection = Sequencer.projection(fixture.server)
-    assert projection.reservation_states[act.ref] == :suspended
+    assert projection.meter_reservations[act.ref] == :suspended
 
     assert %{available: 6_000, reserved: 0, suspended: 4_000, spent: 0} =
              meter_account(fixture)
@@ -245,9 +253,7 @@ defmodule Spectre.V04Test.GovernedDomainTest do
     assert duty.status == :open
     assert duty.containment["retry"] == :forbidden
 
-    act_ref = act.ref
-
-    assert {:error, {:act_not_dispatch_ready, ^act_ref}} =
+    assert {:error, :consequence_retry_contained} =
              Sequencer.consume_grant(fixture.server, grant)
 
     revision = Fixture.snapshot(fixture).revision
@@ -279,9 +285,9 @@ defmodule Spectre.V04Test.GovernedDomainTest do
                )
              )
 
-    assert {:ok, ^act, attempt} = Sequencer.consume_grant(fixture.server, grant)
+    assert {:ok, ^act, attempt, _receipt} = Sequencer.consume_grant(fixture.server, grant)
     before_restart = Sequencer.projection(fixture.server)
-    assert before_restart.reservation_states[act.ref] == :reserved
+    assert before_restart.meter_reservations[act.ref] == :reserved
     assert before_restart.duties == %{}
 
     Fixture.stop_process(fixture.server)
@@ -289,7 +295,7 @@ defmodule Spectre.V04Test.GovernedDomainTest do
     restarted = Fixture.restart_domain(fixture)
     repaired = Sequencer.projection(restarted.server)
 
-    assert repaired.reservation_states[act.ref] == :suspended
+    assert repaired.meter_reservations[act.ref] == :suspended
 
     assert %{available: 6_000, reserved: 0, suspended: 4_000, spent: 0} =
              repaired.meters[fixture.mandate.ref][fixture.refs.meter]
@@ -383,7 +389,7 @@ defmodule Spectre.V04Test.GovernedDomainTest do
 
   defp record_payment(fixture) do
     payment = Fixture.paid_evidence(fixture)
-    assert {:ok, ^payment} = Sequencer.record_evidence(fixture.server, payment)
+    assert {:ok, ^payment} = Fixture.observe_payment(fixture, payment)
     payment
   end
 

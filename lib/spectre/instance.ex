@@ -27,8 +27,8 @@ defmodule Spectre.Instance do
 
   use GenServer
 
-  alias Spectre.Instance.State
   alias Spectre.{Candidate, Definition, Domain, Portable, Scope}
+  alias Spectre.Instance.State
 
   @options [:scope, :definition_ref, :state, :name]
   @reserved_mind_options [:definition_ref, :state_revision]
@@ -206,28 +206,24 @@ defmodule Spectre.Instance do
   defp monitor_domain(_scope), do: {:error, :invalid_instance_domain}
 
   defp bind_mind_options(opts, state) do
-    case Keyword.get(opts, :mind_opts, []) do
-      mind_opts when is_list(mind_opts) ->
-        if Keyword.keyword?(mind_opts) do
-          case Enum.find(@reserved_mind_options, &Keyword.has_key?(mind_opts, &1)) do
-            nil ->
-              bound =
-                Keyword.merge(mind_opts,
-                  definition_ref: state.definition_ref,
-                  state_revision: state.revision
-                )
+    mind_opts = Keyword.get(opts, :mind_opts, [])
 
-              {:ok, Keyword.put(opts, :mind_opts, bound)}
+    if Portable.keyword?(mind_opts) do
+      case Enum.find(@reserved_mind_options, &Keyword.has_key?(mind_opts, &1)) do
+        nil ->
+          bound =
+            Keyword.merge(mind_opts,
+              definition_ref: state.definition_ref,
+              state_revision: state.revision
+            )
 
-            option ->
-              {:error, {:reserved_instance_mind_option, option}}
-          end
-        else
-          {:error, :invalid_mind_options}
-        end
+          {:ok, Keyword.put(opts, :mind_opts, bound)}
 
-      _invalid ->
-        {:error, :invalid_mind_options}
+        option ->
+          {:error, {:reserved_instance_mind_option, option}}
+      end
+    else
+      {:error, :invalid_mind_options}
     end
   end
 

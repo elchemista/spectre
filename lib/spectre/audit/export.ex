@@ -8,6 +8,8 @@ defmodule Spectre.Audit.Export do
   identifier or store configuration.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Audit
   alias Spectre.Canonical.Value
   alias Spectre.Constitution
@@ -26,8 +28,8 @@ defmodule Spectre.Audit.Export do
   @doc "Builds and validates a self-contained audit export."
   @spec new(map(), map(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
   def new(ledger, constitution, exported_at)
-      when is_map(ledger) and not is_struct(ledger) and is_map(constitution) and
-             not is_struct(constitution) and is_integer(exported_at) and exported_at >= 0 do
+      when Portable.is_plain_map(ledger) and is_map(constitution) and
+             not is_struct(constitution) and Portable.is_non_negative_integer(exported_at) do
     with {:ok, snapshot} <- Ledger.verify(ledger),
          :ok <- Constitution.validate(constitution),
          {:ok, constitution_ref} <- Constitution.ref(constitution),
@@ -53,7 +55,7 @@ defmodule Spectre.Audit.Export do
 
   @doc "Validates an already decoded audit export."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(data) when is_map(data) and not is_struct(data) do
+  def from_data(data) when Portable.is_plain_map(data) do
     with :ok <- exact_keys(data),
          @format <- Map.get(data, "format"),
          @format_version <- Map.get(data, "format_version"),
@@ -147,7 +149,7 @@ defmodule Spectre.Audit.Export do
 
   defp audit_time(export, nil), do: {:ok, export["exported_at"]}
 
-  defp audit_time(_export, value) when is_integer(value) and value >= 0,
+  defp audit_time(_export, value) when Portable.is_non_negative_integer(value),
     do: {:ok, value}
 
   defp audit_time(_export, value), do: {:error, {:invalid_audit_time, value}}

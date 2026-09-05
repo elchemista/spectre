@@ -38,9 +38,11 @@ defmodule Spectre.Duty.Derive.Dispute do
       identity = {cause.causal_refs["act_ref"], cause.causal_refs["evidence_ref"]}
 
       Map.update(unique, identity, cause, fn existing ->
-        Map.update!(existing, :known_evidence_refs, fn refs ->
-          Cause.normalize_refs(refs ++ cause.known_evidence_refs)
-        end)
+        %{
+          existing
+          | known_evidence_refs:
+              Cause.normalize_refs(existing.known_evidence_refs ++ cause.known_evidence_refs)
+        }
       end)
     end)
     |> Map.values()

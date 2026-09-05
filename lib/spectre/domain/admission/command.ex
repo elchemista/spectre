@@ -23,23 +23,18 @@ defmodule Spectre.Domain.Admission.Command do
   def run(%State{} = state, requests) do
     case Commit.prepare(state) do
       {:ok, current} ->
-        case admit(current, requests, current.conflict_retries) do
-          {:ok, next_state, plans} ->
-            {next_state, finalize_admission(next_state, plans)}
-
-          {:error, next_state, {plans, reason}} ->
-            replies =
-              Enum.map(plans, fn plan ->
-                admission_error_reply(plan, reason)
-              end)
-
-            {next_state, replies}
-        end
+        current |> admit(requests, current.conflict_retries) |> admission_reply()
 
       {:error, halted, reason} ->
         replies = Enum.map(requests, &{&1.from, {:error, reason}})
         {halted, replies}
     end
+  end
+
+  defp admission_reply({:ok, state, plans}), do: {state, finalize_admission(state, plans)}
+
+  defp admission_reply({:error, state, {plans, reason}}) do
+    {state, Enum.map(plans, &admission_error_reply(&1, reason))}
   end
 
   defp admission_error_reply(plan, batch_reason) do
@@ -48,22 +43,23 @@ defmodule Spectre.Domain.Admission.Command do
   end
 
   defp admit(state, requests, conflicts_left) do
-    with {:ok, admitted_at} <- Transaction.trusted_recorded_at(state) do
-      {plans, payloads} = AdmissionPlanner.plan(state, requests, admitted_at)
+    case Transaction.trusted_recorded_at(state) do
+      {:ok, admitted_at} ->
+        {plans, payloads} = AdmissionPlanner.plan(state, requests, admitted_at)
 
-      if payloads == [] do
-        {:ok, state, plans}
-      else
-        append_planned_admission(
-          state,
-          requests,
-          plans,
-          payloads,
-          conflicts_left,
-          admitted_at
-        )
-      end
-    else
+        if payloads == [] do
+          {:ok, state, plans}
+        else
+          append_planned_admission(
+            state,
+            requests,
+            plans,
+            payloads,
+            conflicts_left,
+            admitted_at
+          )
+        end
+
       {:error, reason} ->
         {:error, state, {AdmissionPlanner.error_plans(requests), reason}}
     end

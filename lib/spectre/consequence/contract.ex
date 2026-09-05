@@ -17,6 +17,8 @@ defmodule Spectre.Consequence.Contract do
   reference and is therefore independently replayable.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -75,9 +77,8 @@ defmodule Spectre.Consequence.Contract do
            Portable.normalize_refs(bindings.destination_refs, :bound_destination_refs),
          :ok <- exact_bindings(:subject, bound_subjects, declared_subjects),
          :ok <- exact_bindings(:target, bound_targets, declared_targets),
-         :ok <- exact_bindings(:destination, bound_destinations, declared_destinations),
-         :ok <- exact_meter_requests(bindings.meter_requests, boundary) do
-      :ok
+         :ok <- exact_bindings(:destination, bound_destinations, declared_destinations) do
+      exact_meter_requests(bindings.meter_requests, boundary)
     end
   end
 
@@ -107,7 +108,7 @@ defmodule Spectre.Consequence.Contract do
 
   defp validate_shape(type, _path) when type in @scalar_types, do: :ok
 
-  defp validate_shape(spec, path) when is_map(spec) and not is_struct(spec) do
+  defp validate_shape(spec, path) when Portable.is_plain_map(spec) do
     case wrapper(spec) do
       {:ok, "$const", value} ->
         Portable.validate(value)
@@ -129,17 +130,14 @@ defmodule Spectre.Consequence.Contract do
   defp validate_object_shape(spec, path) do
     Enum.reduce_while(spec, :ok, fn {key, nested}, :ok ->
       cond do
-        not (is_binary(key) and key != "") ->
+        not Portable.is_non_empty_binary(key) ->
           {:halt, {:error, {:invalid_consequence_shape_key, Enum.reverse(path), key}}}
 
         key in @wrappers ->
           {:halt, {:error, {:reserved_consequence_shape_key, Enum.reverse([key | path])}}}
 
         true ->
-          case validate_shape(nested, [key | path]) do
-            :ok -> {:cont, :ok}
-            {:error, _reason} = error -> {:halt, error}
-          end
+          nested |> validate_shape([key | path]) |> continue_validation()
       end
     end)
   end
@@ -200,7 +198,7 @@ defmodule Spectre.Consequence.Contract do
   end
 
   defp validate_value(spec, value, path, bindings)
-       when is_map(spec) and not is_struct(spec) do
+       when Portable.is_plain_map(spec) do
     case wrapper(spec) do
       {:ok, "$const", expected} ->
         if value == expected, do: {:ok, bindings}, else: shape_error(path, spec, value)
@@ -225,7 +223,7 @@ defmodule Spectre.Consequence.Contract do
   defp validate_value(spec, value, path, _bindings), do: shape_error(path, spec, value)
 
   defp validate_object(spec, value, path, bindings)
-       when is_map(value) and not is_struct(value) do
+       when Portable.is_plain_map(value) do
     required_keys =
       spec
       |> Enum.reject(fn {_key, nested} -> optional?(nested) end)
@@ -249,22 +247,30 @@ defmodule Spectre.Consequence.Contract do
         {:error, {:consequence_shape_unknown_keys, Enum.reverse(path), unknown}}
 
       true ->
-        Enum.reduce_while(spec, {:ok, bindings}, fn {key, nested}, {:ok, current} ->
-          case Map.fetch(value, key) do
-            {:ok, item} ->
-              case validate_value(unwrap_optional(nested), item, [key | path], current) do
-                {:ok, next} -> {:cont, {:ok, next}}
-                {:error, _reason} = error -> {:halt, error}
-              end
-
-            :error ->
-              {:cont, {:ok, current}}
-          end
-        end)
+        validate_object_fields(spec, value, path, bindings)
     end
   end
 
   defp validate_object(spec, value, path, _bindings), do: shape_error(path, spec, value)
+
+  defp validate_object_fields(spec, value, path, bindings) do
+    Enum.reduce_while(spec, {:ok, bindings}, fn {key, nested}, {:ok, current} ->
+      case Map.fetch(value, key) do
+        {:ok, item} ->
+          nested
+          |> unwrap_optional()
+          |> validate_value(item, [key | path], current)
+          |> continue_validation()
+
+        :error ->
+          {:cont, {:ok, current}}
+      end
+    end)
+  end
+
+  defp continue_validation(:ok), do: {:cont, :ok}
+  defp continue_validation({:ok, _value} = result), do: {:cont, result}
+  defp continue_validation({:error, _reason} = error), do: {:halt, error}
 
   defp validate_list(nested, value, path, bindings) when is_list(value) do
     value
@@ -350,8 +356,8 @@ defmodule Spectre.Consequence.Contract do
   defp scalar?("binary", value), do: is_binary(value)
   defp scalar?("string", value), do: is_binary(value)
   defp scalar?("integer", value), do: is_integer(value)
-  defp scalar?("non_negative_integer", value), do: is_integer(value) and value >= 0
-  defp scalar?("positive_integer", value), do: is_integer(value) and value > 0
+  defp scalar?("non_negative_integer", value), do: Portable.is_non_negative_integer(value)
+  defp scalar?("positive_integer", value), do: Portable.is_positive_integer(value)
   defp scalar?("float", value), do: is_float(value)
   defp scalar?("number", value), do: is_integer(value) or is_float(value)
   defp scalar?("boolean", value), do: is_boolean(value)
@@ -365,9 +371,9 @@ defmodule Spectre.Consequence.Contract do
 
   defp scalar?(_type, _value), do: false
 
-  defp valid_meter_requests?(value) when is_map(value) and not is_struct(value) do
+  defp valid_meter_requests?(value) when Portable.is_plain_map(value) do
     Enum.all?(value, fn {ref, quantity} ->
-      is_binary(ref) and ref != "" and is_integer(quantity) and quantity > 0
+      Portable.is_non_empty_binary(ref) and Portable.is_positive_integer(quantity)
     end)
   end
 
@@ -453,12 +459,10 @@ defmodule Spectre.Consequence.Contract do
   defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = contract) do
-    cond do
-      contract.schema_version != @schema_version ->
-        {:error, {:unsupported_consequence_contract_schema_version, contract.schema_version}}
-
-      true ->
-        Portable.validate_content_ref(contract.ref, :consequence_contract, :ref)
+    if contract.schema_version != @schema_version do
+      {:error, {:unsupported_consequence_contract_schema_version, contract.schema_version}}
+    else
+      Portable.validate_content_ref(contract.ref, :consequence_contract, :ref)
     end
   end
 end

@@ -13,9 +13,8 @@ defmodule Spectre.Outcome.Attestation do
         %Attempt{} = attempt,
         %Act{} = act
       ) do
-    with :ok <- validate_boundary(evidence, outcome, attempt, act),
-         :ok <- validate_claim(evidence, outcome, attempt, act) do
-      :ok
+    with :ok <- validate_boundary(evidence, outcome, attempt, act) do
+      validate_claim(evidence, outcome, attempt, act)
     end
   end
 
@@ -56,6 +55,13 @@ defmodule Spectre.Outcome.Attestation do
       evidence.observed_at < attempt.started_at ->
         {:error, {:outcome_evidence_precedes_attempt, outcome.ref, evidence.ref}}
 
+      true ->
+        validate_executor_binding(evidence, outcome, attempt, act)
+    end
+  end
+
+  defp validate_executor_binding(evidence, outcome, attempt, act) do
+    cond do
       evidence.source_ref != act.executor_ref ->
         {:error, {:outcome_evidence_source_mismatch, outcome.ref, evidence.ref}}
 

@@ -104,10 +104,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
           duty.opened_at >= attempt.started_at + act.observation_window_ms
 
         cause_observed? =
-          Enum.any?(state.outcomes, fn {_ref, outcome} ->
-            outcome.act_ref == act_ref and outcome.attempt_ref == attempt_ref and
-              outcome.status == :ambiguous and outcome.observed_at <= duty.opened_at
-          end)
+          ambiguous_outcome_observed?(state, act_ref, attempt_ref, duty.opened_at)
 
         if duty.act_ref == act_ref and duty.attempt_ref == attempt_ref and
              (deadline_reached? or cause_observed?) and valid_containment?(duty, act),
@@ -156,11 +153,8 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
     act = if expected, do: Map.get(state.acts, expected.act_ref)
 
     valid? =
-      is_map(expected) and not is_nil(act) and duty.act_ref == expected.act_ref and
-        duty.attempt_ref == expected.attempt_ref and duty.mandate_ref == expected.mandate_ref and
-        duty.subjects == expected.subjects and duty.accountable == expected.accountable and
-        duty.evidence_refs == expected.evidence_refs and duty.missing == expected.missing and
-        duty.opened_at == expected.opened_at and valid_containment?(duty, act)
+      is_map(expected) and not is_nil(act) and disputed_binding?(duty, expected) and
+        valid_containment?(duty, act)
 
     if valid?,
       do: :ok,
@@ -182,13 +176,8 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
 
         valid? =
           opening.kind in [:work, :vigil] and duty.act_ref == opening.source_act_ref and
-            duty.attempt_ref == nil and not is_nil(source_act) and
-            duty.mandate_ref == source_act.mandate_ref and
-            duty.subjects == source_act.subject_refs and
-            duty.accountable == opening.accountable_ref and
-            duty.disposition_authority_refs == opening.disposition_authority_refs and
-            conflicts_include_cause_roles?(duty, source_act) and
-            duty.closing_conditions == [Condition.canonical(condition)] and
+            scope_source_binding?(duty, source_act) and
+            scope_promise_binding?(duty, opening, source_act) and
             duty.opened_at >= opening.due_at and
             Recognition.check([condition], timely_evidence, opening.due_at) != :satisfied
 
@@ -240,6 +229,42 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
        do: {:error, {:invalid_erasure_verifiability_duty_cause, duty.ref}}
 
   defp validate_builtin_cause(_state, %Duty{class: class}) when is_binary(class), do: :ok
+
+  defp ambiguous_outcome_observed?(state, act_ref, attempt_ref, time) do
+    Enum.any?(state.outcomes, fn {_ref, outcome} ->
+      outcome.act_ref == act_ref and outcome.attempt_ref == attempt_ref and
+        outcome.status == :ambiguous and outcome.observed_at <= time
+    end)
+  end
+
+  defp disputed_binding?(duty, expected) do
+    fields = [
+      :act_ref,
+      :attempt_ref,
+      :mandate_ref,
+      :subjects,
+      :accountable,
+      :evidence_refs,
+      :missing,
+      :opened_at
+    ]
+
+    Map.take(duty, fields) == Map.take(expected, fields)
+  end
+
+  defp scope_source_binding?(_duty, nil), do: false
+
+  defp scope_source_binding?(duty, source_act) do
+    is_nil(duty.attempt_ref) and duty.mandate_ref == source_act.mandate_ref and
+      duty.subjects == source_act.subject_refs
+  end
+
+  defp scope_promise_binding?(duty, opening, source_act) do
+    duty.accountable == opening.accountable_ref and
+      duty.disposition_authority_refs == opening.disposition_authority_refs and
+      conflicts_include_cause_roles?(duty, source_act) and
+      duty.closing_conditions == [Condition.canonical(opening.promise_condition)]
+  end
 
   defp conflicts_include_cause_roles?(%Duty{} = duty, %Act{} = act) do
     duty.accountable

@@ -15,16 +15,16 @@ defmodule Spectre.GovernedAct.Fold do
   alias Spectre.Constitution
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.{Batch, Completeness, MeterState}
-  alias Spectre.Ledger.Entry
+  alias Spectre.GovernedAct.State
   alias Spectre.GovernedAct.Transition.Admission
+  alias Spectre.GovernedAct.Transition.Authority, as: AuthorityTransition
   alias Spectre.GovernedAct.Transition.Duty, as: DutyTransition
   alias Spectre.GovernedAct.Transition.Execution
   alias Spectre.GovernedAct.Transition.Foundation
-  alias Spectre.GovernedAct.Transition.Authority, as: AuthorityTransition
   alias Spectre.GovernedAct.Transition.Information
   alias Spectre.GovernedAct.Transition.Scope, as: ScopeTransition
-
-  alias Spectre.GovernedAct.State
+  alias Spectre.Ledger.Entry
+  alias Spectre.Ledger.Store.Support
 
   @provisional_batch_id "spectre:provisional-batch"
 
@@ -50,26 +50,54 @@ defmodule Spectre.GovernedAct.Fold do
       when is_binary(domain_ref) and domain_ref != "" and is_list(entries) and
              is_map(constitution) and not is_struct(constitution) do
     with :ok <- Constitution.validate(constitution) do
-      entries
-      |> Stream.chunk_by(& &1.batch_id)
-      |> Enum.reduce_while({:ok, new(domain_ref, constitution)}, fn batch, {:ok, projection} ->
-        case replay_batch(projection, batch) do
-          {:ok, projection} -> {:cont, {:ok, projection}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-      |> case do
-        {:ok, projection} ->
-          with :ok <- validate_complete(projection), do: {:ok, projection}
-
-        {:error, _reason} = error ->
-          error
-      end
+      replay_batches(entries, new(domain_ref, constitution))
     end
   end
 
   def replay_verified(_domain_ref, _entries, _constitution),
     do: {:error, :invalid_governed_history}
+
+  defp replay_batches(entries, initial) do
+    entries
+    |> Stream.chunk_by(& &1.batch_id)
+    |> Enum.reduce_while({:ok, initial}, fn batch, {:ok, projection} ->
+      case replay_batch(projection, batch) do
+        {:ok, projection} -> {:cont, {:ok, projection}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> complete_replay()
+  end
+
+  defp complete_replay({:ok, projection}) do
+    with :ok <- validate_complete(projection), do: {:ok, projection}
+  end
+
+  defp complete_replay({:error, _reason} = error), do: error
+
+  @doc """
+  Applies one complete committed batch to an already verified prefix.
+
+  This is the same transition path as replay, not a second live semantics.
+  The caller must establish durability first. The fold checks the exact Domain,
+  predecessor digest, revisions, acquisition time and atomic batch coordinates;
+  an in-memory result alone is never authority to release a capability.
+  """
+  @spec append_batch(t(), [Entry.t()]) :: {:ok, t()} | {:error, term()}
+  def append_batch(%State{} = projection, [%Entry{} = first | _] = entries) do
+    with :ok <- Support.validate_batch_coordinates(entries, projection.domain_ref, first.batch_id),
+         true <- first.recorded_at >= projection.recorded_at,
+         {:ok, next} <- replay_batch(projection, entries),
+         :ok <- validate_complete(next) do
+      {:ok, next}
+    else
+      false -> {:error, {:ledger_time_regression, first.recorded_at, projection.recorded_at}}
+      {:error, _} = error -> error
+    end
+  end
+
+  def append_batch(%State{}, []), do: {:error, :empty_ledger_batch}
+  def append_batch(_projection, _entries), do: {:error, :invalid_governed_batch}
 
   defp replay_batch(projection, entries) do
     entries

@@ -162,8 +162,7 @@ defmodule Spectre.Ledger.Store.Disk do
         append_batch(
           state,
           domain,
-          domain_ref,
-          batch_id,
+          {domain_ref, batch_id},
           payloads,
           expected_revision,
           recorded_at,
@@ -225,8 +224,7 @@ defmodule Spectre.Ledger.Store.Disk do
   @spec append_batch(
           state(),
           domain_state(),
-          String.t(),
-          String.t(),
+          {String.t(), String.t()},
           [map()],
           non_neg_integer(),
           non_neg_integer(),
@@ -236,8 +234,7 @@ defmodule Spectre.Ledger.Store.Disk do
   defp append_batch(
          state,
          domain,
-         domain_ref,
-         batch_id,
+         {domain_ref, batch_id},
          payloads,
          expected_revision,
          recorded_at,
@@ -255,8 +252,7 @@ defmodule Spectre.Ledger.Store.Disk do
         persist_batch(
           state,
           domain,
-          domain_ref,
-          batch_id,
+          {domain_ref, batch_id},
           payloads,
           expected_revision,
           recorded_at,
@@ -269,8 +265,7 @@ defmodule Spectre.Ledger.Store.Disk do
   @spec persist_batch(
           state(),
           domain_state(),
-          String.t(),
-          String.t(),
+          {String.t(), String.t()},
           [map()],
           non_neg_integer(),
           non_neg_integer(),
@@ -280,8 +275,7 @@ defmodule Spectre.Ledger.Store.Disk do
   defp persist_batch(
          state,
          domain,
-         domain_ref,
-         batch_id,
+         {domain_ref, batch_id},
          payloads,
          expected_revision,
          recorded_at,
@@ -462,19 +456,7 @@ defmodule Spectre.Ledger.Store.Disk do
           result = write_and_sync(io, frame)
           close_result = :file.close(io)
 
-          case {result, close_result, directory_sync_required?} do
-            {:ok, :ok, false} ->
-              :ok
-
-            {:ok, :ok, true} ->
-              case sync_directory(state.directory) do
-                :ok -> :ok
-                {:error, _reason} -> {:error, :ambiguous}
-              end
-
-            _uncertain ->
-              {:error, :ambiguous}
-          end
+          confirm_frame_sync(result, close_result, directory_sync_required?, state.directory)
 
         {:error, reason} ->
           {:error, {:ledger_disk_open_failed, reason}}
@@ -482,14 +464,21 @@ defmodule Spectre.Ledger.Store.Disk do
     end
   end
 
+  defp confirm_frame_sync(:ok, :ok, false, _directory), do: :ok
+
+  defp confirm_frame_sync(:ok, :ok, true, directory) do
+    case sync_directory(directory) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :ambiguous}
+    end
+  end
+
+  defp confirm_frame_sync(_write, _close, _required, _directory), do: {:error, :ambiguous}
+
   @spec write_and_sync(:file.io_device(), binary()) :: :ok | {:error, term()}
   defp write_and_sync(io, frame) do
-    with :ok <- :file.write(io, frame),
-         :ok <- :file.sync(io) do
-      :ok
-    else
-      {:error, _reason} = error -> error
-      _reply -> {:error, :invalid_disk_write_reply}
+    with :ok <- :file.write(io, frame) do
+      :file.sync(io)
     end
   end
 
@@ -819,9 +808,8 @@ defmodule Spectre.Ledger.Store.Disk do
 
   @spec durability_barrier(String.t(), String.t()) :: :ok | {:error, term()}
   defp durability_barrier(path, directory) do
-    with :ok <- sync_file(path),
-         :ok <- sync_directory(directory) do
-      :ok
+    with :ok <- sync_file(path) do
+      sync_directory(directory)
     end
   end
 

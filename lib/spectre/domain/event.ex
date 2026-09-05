@@ -196,16 +196,13 @@ defmodule Spectre.Domain.Event do
   @doc "Decodes an Entry payload and binds its trusted ledger metadata."
   @spec decode_entry(Entry.t()) :: {:ok, t()} | {:error, term()}
   def decode_entry(%Entry{} = entry) do
-    with {:ok, event} <-
-           decode_payload(
-             entry.payload,
-             entry.revision,
-             entry.batch_id,
-             entry.batch_index,
-             entry.recorded_at
-           ) do
-      {:ok, event}
-    end
+    decode_payload(
+      entry.payload,
+      entry.revision,
+      entry.batch_id,
+      entry.batch_index,
+      entry.recorded_at
+    )
   end
 
   def decode_entry(_entry), do: {:error, :invalid_domain_event_entry}
@@ -297,9 +294,8 @@ defmodule Spectre.Domain.Event do
         :ok
 
       {:ok, fields} ->
-        with :ok <- exact_keys(data, fields, type),
-             :ok <- validate_manual_identity(type, identity, data) do
-          :ok
+        with :ok <- exact_keys(data, fields, type) do
+          validate_manual_identity(type, identity, data)
         end
     end
   end
@@ -347,66 +343,50 @@ defmodule Spectre.Domain.Event do
   defp prefixed_identity(_identity, _prefix, ref),
     do: {:error, {:invalid_domain_event_act_ref, ref}}
 
+  # Closed acquisition policies: exact times are issued by the committing
+  # runtime; observed/prepared facts may be older but never from the future.
+  @acquisition_rules %{
+    "genesis_recorded" => {:not_future, "issued_at", nil},
+    "host_profile_recorded" => {:not_future, "declared_at", nil},
+    "host_profile_revised" => {:not_future, "declared_at", "host_profile"},
+    "definition_revised" => {:not_future, "declared_at", "definition"},
+    "declassification_recorded" => {:exact, "recorded_at", nil},
+    "evidence_recorded" => {:not_future, "observed_at", nil},
+    "presentation_recorded" => {:not_future, "prepared_at", nil},
+    "decision_recorded" => {:exact, "decided_at", nil},
+    "act_committed" => {:exact, "committed_at", nil},
+    "attempt_started" => {:exact, "started_at", nil},
+    "outcome_recorded" => {:not_future, "observed_at", nil},
+    "duty_opened" => {:not_future, "opened_at", nil},
+    "mandate_revoked" => {:exact, "effective_at", nil},
+    "dispatch_cancelled" => {:not_future, "cancelled_at", nil},
+    "erasure_requested" => {:not_future, "requested_at", nil}
+  }
+
+  defp validate_acquisition_time(%__MODULE__{type: "scope_opened"} = event, recorded_at)
+       when is_integer(recorded_at) and recorded_at >= 0,
+       do: scope_acquisition_time(event.type, event.data, recorded_at)
+
   defp validate_acquisition_time(%__MODULE__{} = event, recorded_at)
        when is_integer(recorded_at) and recorded_at >= 0 do
-    data = event.data
-
-    case event.type do
-      "genesis_recorded" ->
-        not_future_time(event.type, "issued_at", data, recorded_at)
-
-      "host_profile_recorded" ->
-        not_future_time(event.type, "declared_at", data, recorded_at)
-
-      "host_profile_revised" ->
-        not_future_time(event.type, "declared_at", data["host_profile"], recorded_at)
-
-      "definition_revised" ->
-        not_future_time(event.type, "declared_at", data["definition"], recorded_at)
-
-      "declassification_recorded" ->
-        exact_event_time(event.type, "recorded_at", data, recorded_at)
-
-      "evidence_recorded" ->
-        not_future_time(event.type, "observed_at", data, recorded_at)
-
-      "presentation_recorded" ->
-        not_future_time(event.type, "prepared_at", data, recorded_at)
-
-      "decision_recorded" ->
-        exact_event_time(event.type, "decided_at", data, recorded_at)
-
-      "act_committed" ->
-        exact_event_time(event.type, "committed_at", data, recorded_at)
-
-      "attempt_started" ->
-        exact_event_time(event.type, "started_at", data, recorded_at)
-
-      "outcome_recorded" ->
-        not_future_time(event.type, "observed_at", data, recorded_at)
-
-      "duty_opened" ->
-        not_future_time(event.type, "opened_at", data, recorded_at)
-
-      "mandate_revoked" ->
-        exact_event_time(event.type, "effective_at", data, recorded_at)
-
-      "dispatch_cancelled" ->
-        not_future_time(event.type, "cancelled_at", data, recorded_at)
-
-      "scope_opened" ->
-        scope_acquisition_time(event.type, data, recorded_at)
-
-      "erasure_requested" ->
-        not_future_time(event.type, "requested_at", data, recorded_at)
-
-      _other ->
+    case Map.get(@acquisition_rules, event.type) do
+      nil ->
         :ok
+
+      {rule, field, nested} ->
+        data = if is_nil(nested), do: event.data, else: event.data[nested]
+        check_acquisition_time(rule, event.type, field, data, recorded_at)
     end
   end
 
   defp validate_acquisition_time(_event, _recorded_at),
     do: {:error, :invalid_event_acquisition_time}
+
+  defp check_acquisition_time(:exact, type, field, data, recorded_at),
+    do: exact_event_time(type, field, data, recorded_at)
+
+  defp check_acquisition_time(:not_future, type, field, data, recorded_at),
+    do: not_future_time(type, field, data, recorded_at)
 
   defp scope_acquisition_time(type, data, recorded_at) do
     if is_nil(data["source_act_ref"]),

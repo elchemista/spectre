@@ -7,6 +7,8 @@ defmodule Spectre.Ledger.Store.Support do
   each adapter, where their guarantees can be audited without indirection.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Ledger, Portable}
   alias Spectre.Ledger.Entry
 
@@ -51,7 +53,7 @@ defmodule Spectre.Ledger.Store.Support do
   @spec derive_batch_info(String.t(), [Entry.t()]) ::
           {:ok, Ledger.batch_info()} | {:error, term()}
   def derive_batch_info(domain_ref, [%Entry{revision: revision} = first | _rest] = entries)
-      when is_binary(domain_ref) and is_integer(revision) and revision > 0 do
+      when is_binary(domain_ref) and Portable.is_positive_integer(revision) do
     expected_revision = revision - 1
 
     with {:ok, verified} <-
@@ -117,7 +119,14 @@ defmodule Spectre.Ledger.Store.Support do
       not valid_digest?(info.identity_digest) ->
         {:error, :identity}
 
-      not is_integer(info.expected_revision) or info.expected_revision < 0 ->
+      true ->
+        validate_batch_range(info)
+    end
+  end
+
+  defp validate_batch_range(info) do
+    cond do
+      not Portable.is_non_negative_integer(info.expected_revision) ->
         {:error, :revision}
 
       info.first_revision != info.expected_revision + 1 ->
@@ -126,7 +135,14 @@ defmodule Spectre.Ledger.Store.Support do
       not is_integer(info.last_revision) or info.last_revision < info.first_revision ->
         {:error, :range}
 
-      not is_integer(info.entry_count) or info.entry_count <= 0 or
+      true ->
+        validate_batch_count_and_head(info)
+    end
+  end
+
+  defp validate_batch_count_and_head(info) do
+    cond do
+      not Portable.is_positive_integer(info.entry_count) or
         info.entry_count > Entry.max_batch_entries() or
           info.entry_count != info.last_revision - info.first_revision + 1 ->
         {:error, :count}
@@ -219,7 +235,7 @@ defmodule Spectre.Ledger.Store.Support do
   @spec recorded_at(keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def recorded_at(opts) when is_list(opts) do
     case Keyword.fetch(opts, :recorded_at) do
-      {:ok, value} when is_integer(value) and value >= 0 -> {:ok, value}
+      {:ok, value} when Portable.is_non_negative_integer(value) -> {:ok, value}
       _missing_or_invalid -> {:error, :ledger_recorded_at_required}
     end
   end

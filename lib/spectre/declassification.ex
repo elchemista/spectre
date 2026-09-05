@@ -9,6 +9,8 @@ defmodule Spectre.Declassification do
   label without imposing a universal label taxonomy on applications.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Evidence, Label, Portable}
 
   @schema_version 1
@@ -133,7 +135,7 @@ defmodule Spectre.Declassification do
   @doc "Attributes the relabelled Evidence to the authenticated declassification proposer."
   @spec bind_producer(Evidence.t() | map() | keyword(), String.t()) ::
           {:ok, Evidence.t()} | {:error, term()}
-  def bind_producer(evidence, producer_ref) when is_binary(producer_ref) and producer_ref != "" do
+  def bind_producer(evidence, producer_ref) when Portable.is_non_empty_binary(producer_ref) do
     with {:ok, evidence} <- Evidence.new(evidence),
          :ok <- Portable.validate_ref(producer_ref, :declassification_producer_ref) do
       evidence
@@ -150,7 +152,7 @@ defmodule Spectre.Declassification do
   @doc "Verifies who attested the newly declassified Evidence."
   @spec validate_producer(Evidence.t(), String.t()) :: :ok | {:error, term()}
   def validate_producer(%Evidence{} = evidence, producer_ref)
-      when is_binary(producer_ref) and producer_ref != "" do
+      when Portable.is_non_empty_binary(producer_ref) do
     if evidence.issuer_ref == producer_ref and evidence.source_ref == producer_ref,
       do: :ok,
       else: {:error, {:declassification_producer_mismatch, evidence.ref, producer_ref}}
@@ -194,7 +196,7 @@ defmodule Spectre.Declassification do
   @doc "Materializes the post-admission record without adding an Act reference to Evidence."
   @spec from_draft(map(), String.t(), integer()) :: {:ok, t()} | {:error, term()}
   def from_draft(draft, source_act_ref, recorded_at)
-      when is_map(draft) and not is_struct(draft) and is_binary(source_act_ref) and
+      when Portable.is_plain_map(draft) and is_binary(source_act_ref) and
              source_act_ref != "" and is_integer(recorded_at) do
     with {:ok, decoded} <- decode_draft(draft) do
       new(%{

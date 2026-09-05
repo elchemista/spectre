@@ -39,22 +39,24 @@ defmodule Spectre.GovernedAct.Batch.Effect do
   end
 
   defp exact_duty_disposition?(events, act, act_index) do
-    with {:ok, disposition} <- Disposition.from_consequence(act.consequence) do
-      case disposition.meter_resolution do
-        :none ->
-          exact_duty_disposal_at?(events, act_index + 1, act, disposition)
+    case Disposition.from_consequence(act.consequence) do
+      {:ok, disposition} ->
+        case disposition.meter_resolution do
+          :none ->
+            exact_duty_disposal_at?(events, act_index + 1, act, disposition)
 
-        operation when operation in [:settle, :release] ->
-          exact_duty_meter_resolution_at?(
-            events,
-            act_index + 1,
-            act,
-            disposition,
-            operation
-          ) and exact_duty_disposal_at?(events, act_index + 2, act, disposition)
-      end
-    else
-      {:error, _reason} -> false
+          operation when operation in [:settle, :release] ->
+            exact_duty_meter_resolution_at?(
+              events,
+              act_index + 1,
+              act,
+              disposition,
+              operation
+            ) and exact_duty_disposal_at?(events, act_index + 2, act, disposition)
+        end
+
+      {:error, _reason} ->
+        false
     end
   end
 

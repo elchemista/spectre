@@ -48,8 +48,8 @@ defmodule Spectre.Duty.Derive.ErasureVerifiability do
     |> Enum.sort_by(fn {_outcome_ref, outcome} -> Cause.stable_sort_key(outcome) end)
     |> Enum.find_value(:not_found, fn {_outcome_ref, %Outcome{} = outcome} ->
       case Map.get(facts.attempts, outcome.attempt_ref) do
-        nil -> nil
-        attempt -> if attempt.act_ref == act_ref, do: {:ok, attempt, outcome}
+        %{act_ref: ^act_ref} = attempt -> {:ok, attempt, outcome}
+        _missing_or_different -> nil
       end
     end)
   end

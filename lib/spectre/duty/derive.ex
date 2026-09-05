@@ -14,7 +14,6 @@ defmodule Spectre.Duty.Derive do
   """
 
   alias Spectre.{Act, Attempt, Evidence, Outcome}
-  alias Spectre.GovernedAct.State
 
   alias Spectre.Duty.Derive.{
     Cause,
@@ -26,6 +25,7 @@ defmodule Spectre.Duty.Derive do
   }
 
   alias Spectre.Duty.Derive.Outcome, as: OutcomeCause
+  alias Spectre.GovernedAct.State
 
   @type cause :: %{
           required(:cause_key) => term(),

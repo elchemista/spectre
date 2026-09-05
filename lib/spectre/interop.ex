@@ -13,6 +13,8 @@ defmodule Spectre.Interop do
   destination binding and a self-contained Evidence lineage.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Candidate, Evidence, Portable}
 
   @schema_version 1
@@ -59,7 +61,7 @@ defmodule Spectre.Interop do
   @doc "Validates an inbound envelope for the exact destination Domain."
   @spec inbound(envelope(), String.t()) :: {:ok, contents()} | {:error, term()}
   def inbound(envelope, expected_destination_domain_ref)
-      when is_map(envelope) and not is_struct(envelope) do
+      when Portable.is_plain_map(envelope) do
     with :ok <- exact_keys(envelope),
          true <- envelope["schema_version"] == @schema_version,
          :ok <- Portable.validate_ref(envelope["source_domain_ref"], :source_domain_ref),
@@ -108,18 +110,9 @@ defmodule Spectre.Interop do
   end
 
   defp normalize_evidence(evidence) do
-    evidence
-    |> Enum.reduce_while({:ok, %{}}, fn value, {:ok, records} ->
-      with {:ok, record} <- Evidence.new(value),
-           false <- Map.has_key?(records, record.ref) do
-        {:cont, {:ok, Map.put(records, record.ref, record)}}
-      else
-        true -> {:halt, {:error, :duplicate_interop_evidence}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, records} -> {:ok, records |> Map.values() |> Enum.sort_by(& &1.ref)}
+    case Evidence.normalize_unique(evidence) do
+      {:ok, records} -> {:ok, Enum.sort_by(records, & &1.ref)}
+      {:error, {:duplicate_evidence, _ref}} -> {:error, :duplicate_interop_evidence}
       {:error, _reason} = error -> error
     end
   end
@@ -191,18 +184,22 @@ defmodule Spectre.Interop do
 
   defp validate_evidence_lineage(evidence, evidence_by_ref) do
     with :ok <- acyclic_evidence(evidence, evidence_by_ref) do
-      Enum.reduce_while(evidence, :ok, fn record, :ok ->
-        parents = Enum.map(record.parent_refs, &Map.fetch!(evidence_by_ref, &1))
-
-        case Enum.find(parents, &(&1.observed_at > record.observed_at)) do
-          nil ->
-            {:cont, :ok}
-
-          parent ->
-            {:halt, {:error, {:interop_evidence_parent_from_future, record.ref, parent.ref}}}
-        end
-      end)
+      validate_parent_times(evidence, evidence_by_ref)
     end
+  end
+
+  defp validate_parent_times(evidence, evidence_by_ref) do
+    Enum.reduce_while(evidence, :ok, fn record, :ok ->
+      parents = Enum.map(record.parent_refs, &Map.fetch!(evidence_by_ref, &1))
+
+      case Enum.find(parents, &(&1.observed_at > record.observed_at)) do
+        nil ->
+          {:cont, :ok}
+
+        parent ->
+          {:halt, {:error, {:interop_evidence_parent_from_future, record.ref, parent.ref}}}
+      end
+    end)
   end
 
   defp acyclic_evidence(evidence, evidence_by_ref) do
@@ -227,21 +224,23 @@ defmodule Spectre.Interop do
         {:error, {:interop_evidence_cycle, ref}}
 
       true ->
-        visiting = MapSet.put(visiting, ref)
+        visit_parents(ref, evidence_by_ref, MapSet.put(visiting, ref), complete)
+    end
+  end
 
-        evidence_by_ref
-        |> Map.fetch!(ref)
-        |> Map.fetch!(:parent_refs)
-        |> Enum.reduce_while({:ok, complete}, fn parent_ref, {:ok, accumulated} ->
-          case visit_evidence(parent_ref, evidence_by_ref, visiting, accumulated) do
-            {:ok, accumulated} -> {:cont, {:ok, accumulated}}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
-        |> case do
-          {:ok, accumulated} -> {:ok, MapSet.put(accumulated, ref)}
-          {:error, _reason} = error -> error
-        end
+  defp visit_parents(ref, evidence_by_ref, visiting, complete) do
+    evidence_by_ref
+    |> Map.fetch!(ref)
+    |> Map.fetch!(:parent_refs)
+    |> Enum.reduce_while({:ok, complete}, fn parent_ref, {:ok, accumulated} ->
+      case visit_evidence(parent_ref, evidence_by_ref, visiting, accumulated) do
+        {:ok, accumulated} -> {:cont, {:ok, accumulated}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, accumulated} -> {:ok, MapSet.put(accumulated, ref)}
+      {:error, _reason} = error -> error
     end
   end
 

@@ -88,9 +88,8 @@ defmodule Spectre.Erasure.Analysis do
           {:ok, MapSet.t(String.t())} | {:error, term()}
   def affected_evidence_refs(input, target_ref) when is_binary(target_ref) do
     with {:ok, facts} <- Facts.coerce(input),
-         {:ok, _digest} <- payload_digest(target_ref),
-         {:ok, refs} <- Closure.affected_evidence_refs(facts, target_ref) do
-      {:ok, refs}
+         {:ok, _digest} <- payload_digest(target_ref) do
+      Closure.affected_evidence_refs(facts, target_ref)
     end
   end
 
@@ -133,11 +132,13 @@ defmodule Spectre.Erasure.Analysis do
   @doc "Returns the Evidence records that remain valid inputs after erasure."
   @spec available_evidence(input()) :: %{optional(String.t()) => Spectre.Evidence.t()}
   def available_evidence(input) do
-    with {:ok, facts} <- Facts.coerce(input) do
-      unavailable = Closure.unavailable_evidence_refs(facts)
-      Map.reject(facts.evidence, fn {ref, _evidence} -> MapSet.member?(unavailable, ref) end)
-    else
-      {:error, :invalid_erasure_facts} -> %{}
+    case Facts.coerce(input) do
+      {:ok, facts} ->
+        unavailable = Closure.unavailable_evidence_refs(facts)
+        Map.reject(facts.evidence, fn {ref, _evidence} -> MapSet.member?(unavailable, ref) end)
+
+      {:error, :invalid_erasure_facts} ->
+        %{}
     end
   end
 

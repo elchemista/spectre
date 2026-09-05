@@ -15,6 +15,7 @@ defmodule Spectre.Duty.Derive.Facts do
   """
 
   alias Spectre.Domain.Event
+  alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Erasure.Analysis.Facts, as: ErasureFacts
   alias Spectre.GovernedAct.State
 
@@ -143,7 +144,7 @@ defmodule Spectre.Duty.Derive.Facts do
       erasures: facts.erasures |> records_available_at(facts, time) |> index_by_ref()
     }
 
-    Spectre.Erasure.Analysis.unavailable_evidence_refs(prefix)
+    ErasureAnalysis.unavailable_evidence_refs(prefix)
   end
 
   defp records_available_at(records, facts, time) do

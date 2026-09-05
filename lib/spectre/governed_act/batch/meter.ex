@@ -13,6 +13,7 @@ defmodule Spectre.GovernedAct.Batch.Meter do
   alias Spectre.GovernedAct.Batch.Events
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.{MeterState, State}
+  alias Spectre.Validation
 
   @doc false
   @spec validate(State.t(), State.t(), [Event.t()]) :: :ok | {:error, term()}
@@ -36,34 +37,28 @@ defmodule Spectre.GovernedAct.Batch.Meter do
   end
 
   defp validate_events(before, projection, events) do
-    Enum.reduce_while(events, :ok, fn event, :ok ->
-      result =
-        case event.type do
-          "meter_reserved" ->
-            validate_reserve(events, event)
+    Validation.all(events, fn event ->
+      case event.type do
+        "meter_reserved" ->
+          validate_reserve(events, event)
 
-          "meter_settled" ->
-            validate_disposition(projection, events, event, Outcome.correction_statuses())
+        "meter_settled" ->
+          validate_disposition(projection, events, event, Outcome.correction_statuses())
 
-          "meter_released" ->
-            validate_disposition(projection, events, event, [:definitive_no_effect])
+        "meter_released" ->
+          validate_disposition(projection, events, event, [:definitive_no_effect])
 
-          "meter_suspended" ->
-            validate_suspension(before, projection, events, event)
+        "meter_suspended" ->
+          validate_suspension(before, projection, events, event)
 
-          "meter_recontained" ->
-            validate_recontainment(events, event)
+        "meter_recontained" ->
+          validate_recontainment(events, event)
 
-          "meter_duty_resolved" ->
-            validate_duty_resolution(events, event)
+        "meter_duty_resolved" ->
+          validate_duty_resolution(events, event)
 
-          _other ->
-            :ok
-        end
-
-      case result do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
+        _other ->
+          :ok
       end
     end)
   end
@@ -85,19 +80,8 @@ defmodule Spectre.GovernedAct.Batch.Meter do
           candidate.data["status"] in allowed_statuses
       end)
 
-    cancellation_release? =
-      event.type == "meter_released" and
-        case event_at(events, event.batch_index - 1) do
-          %{type: "dispatch_cancelled", data: data} -> data["act_ref"] == act_ref
-          _other -> false
-        end
-
-    internal_settlement? =
-      event.type == "meter_settled" and
-        case Map.get(projection.acts, act_ref) do
-          %Act{} = act -> internal_settlement_at?(events, act, event.batch_index - 2)
-          nil -> false
-        end
+    cancellation_release? = cancellation_release?(events, event, act_ref)
+    internal_settlement? = internal_settlement?(projection, events, event, act_ref)
 
     if outcome_disposition? or cancellation_release? or internal_settlement? do
       :ok
@@ -105,6 +89,24 @@ defmodule Spectre.GovernedAct.Batch.Meter do
       {:error, {:meter_disposition_outside_outcome_batch, act_ref, event.type}}
     end
   end
+
+  defp cancellation_release?(events, %{type: "meter_released"} = event, act_ref) do
+    case event_at(events, event.batch_index - 1) do
+      %{type: "dispatch_cancelled", data: data} -> data["act_ref"] == act_ref
+      _other -> false
+    end
+  end
+
+  defp cancellation_release?(_events, _event, _act_ref), do: false
+
+  defp internal_settlement?(projection, events, %{type: "meter_settled"} = event, act_ref) do
+    case Map.get(projection.acts, act_ref) do
+      %Act{} = act -> internal_settlement_at?(events, act, event.batch_index - 2)
+      nil -> false
+    end
+  end
+
+  defp internal_settlement?(_projection, _events, _event, _act_ref), do: false
 
   defp validate_suspension(before, projection, events, event) do
     act_ref = event.data["act_ref"]
@@ -134,11 +136,7 @@ defmodule Spectre.GovernedAct.Batch.Meter do
     outcome = event_at(events, event.batch_index - 1)
     duty = event_at(events, event.batch_index + 1)
 
-    valid_outcome? =
-      outcome && outcome.type == "outcome_recorded" && outcome.identity == outcome_ref &&
-        outcome.data["act_ref"] == act_ref &&
-        Outcome.correction_status?(outcome.data["status"]) &&
-        present_ref?(outcome.data["contradicts_outcome_ref"])
+    valid_outcome? = correction_outcome?(outcome, act_ref, outcome_ref)
 
     attempt_ref = if outcome, do: outcome.data["attempt_ref"]
     cause_key = {:contradicted_outcome, act_ref, attempt_ref, outcome_ref}
@@ -150,6 +148,13 @@ defmodule Spectre.GovernedAct.Batch.Meter do
       do: :ok,
       else: {:error, {:meter_recontainment_batch_incomplete, act_ref, outcome_ref}}
   end
+
+  defp correction_outcome?(%{type: "outcome_recorded", identity: ref, data: data}, act_ref, ref) do
+    data["act_ref"] == act_ref and Outcome.correction_status?(data["status"]) and
+      present_ref?(data["contradicts_outcome_ref"])
+  end
+
+  defp correction_outcome?(_outcome, _act_ref, _ref), do: false
 
   defp validate_duty_resolution(events, event) do
     disposition_act_ref = event.data["disposition_act_ref"]

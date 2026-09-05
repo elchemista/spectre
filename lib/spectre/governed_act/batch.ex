@@ -13,7 +13,6 @@ defmodule Spectre.GovernedAct.Batch do
   """
 
   alias Spectre.Act
-
   alias Spectre.Domain.Event
   alias Spectre.GovernedAct.Batch.Dispatch
   alias Spectre.GovernedAct.Batch.Effect
@@ -21,6 +20,21 @@ defmodule Spectre.GovernedAct.Batch do
   alias Spectre.GovernedAct.Batch.Meter, as: MeterBatch
   alias Spectre.GovernedAct.Batch.World
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.Validation
+
+  @governance_act_fields %{
+    "principal_registered" => "act_ref",
+    "mandate_restricted" => "act_ref",
+    "meter_devolved" => "act_ref",
+    "surface_revised" => "act_ref",
+    "host_profile_revised" => "act_ref",
+    "definition_revised" => "act_ref",
+    "declassification_recorded" => "source_act_ref",
+    "erasure_requested" => "source_act_ref",
+    "scope_opened" => "source_act_ref",
+    "meter_duty_resolved" => "disposition_act_ref",
+    "duty_disposed" => "disposition_act_ref"
+  }
 
   @doc "Validates the cross-event grammar of one atomic governed transaction."
   @spec validate(map(), map(), [Event.t()]) :: :ok | {:error, term()}
@@ -86,11 +100,16 @@ defmodule Spectre.GovernedAct.Batch do
     act = Map.fetch!(projection.acts, event.identity)
     previous = Events.at(events, event.batch_index - 1)
 
-    cond do
-      is_nil(previous) or previous.type != "decision_recorded" or
-          previous.identity != act.decision_ref ->
-        {:error, {:act_outside_admission_batch, act.ref}}
+    if is_nil(previous) or previous.type != "decision_recorded" or
+         previous.identity != act.decision_ref do
+      {:error, {:act_outside_admission_batch, act.ref}}
+    else
+      validate_act_effects(before, projection, events, event, act)
+    end
+  end
 
+  defp validate_act_effects(before, projection, events, event, act) do
+    cond do
       Act.reservations?(act) and
           not batch_event?(
             events,
@@ -158,35 +177,29 @@ defmodule Spectre.GovernedAct.Batch do
   end
 
   defp validate_governance_batch(events) do
-    Enum.reduce_while(events, :ok, fn event, :ok ->
-      required_act_ref =
-        case event.type do
-          "mandate_revoked" -> event.identity
-          "principal_registered" -> event.data["act_ref"]
-          "mandate_restricted" -> event.data["act_ref"]
-          "meter_devolved" -> event.data["act_ref"]
-          "surface_revised" -> event.data["act_ref"]
-          "host_profile_revised" -> event.data["act_ref"]
-          "definition_revised" -> event.data["act_ref"]
-          "declassification_recorded" -> event.data["source_act_ref"]
-          "erasure_requested" -> event.data["source_act_ref"]
-          "scope_opened" -> event.data["source_act_ref"]
-          "meter_duty_resolved" -> event.data["disposition_act_ref"]
-          "duty_disposed" -> event.data["disposition_act_ref"]
-          _other -> nil
-        end
+    Validation.all(events, fn event ->
+      required_act_ref = required_act_ref(event)
 
       cond do
         is_nil(required_act_ref) ->
-          {:cont, :ok}
+          :ok
 
         batch_event?(events, "act_committed", required_act_ref, -1) ->
-          {:cont, :ok}
+          :ok
 
         true ->
-          {:halt, {:error, {:governance_event_outside_act_batch, event.type, required_act_ref}}}
+          {:error, {:governance_event_outside_act_batch, event.type, required_act_ref}}
       end
     end)
+  end
+
+  defp required_act_ref(%Event{type: "mandate_revoked", identity: identity}), do: identity
+
+  defp required_act_ref(event) do
+    case Map.fetch(@governance_act_fields, event.type) do
+      {:ok, field} -> event.data[field]
+      :error -> nil
+    end
   end
 
   defp batch_event?(events, type, identity, after_index) do

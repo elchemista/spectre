@@ -11,6 +11,8 @@ defmodule Spectre.Genesis do
   the exact document.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -130,7 +132,7 @@ defmodule Spectre.Genesis do
       genesis.schema_version != @schema_version ->
         {:error, {:unsupported_genesis_schema_version, genesis.schema_version}}
 
-      not (is_integer(genesis.surface_revision) and genesis.surface_revision >= 0) ->
+      not Portable.is_non_negative_integer(genesis.surface_revision) ->
         {:error, {:invalid_genesis_surface_revision, genesis.surface_revision}}
 
       not is_integer(genesis.issued_at) ->
@@ -148,9 +150,8 @@ defmodule Spectre.Genesis do
                Portable.validate_optional_ref(
                  genesis.emergency_mandate_ref,
                  :emergency_mandate_ref
-               ),
-             :ok <- Portable.validate_ref(genesis.attestation_ref, :attestation_ref) do
-          :ok
+               ) do
+          Portable.validate_ref(genesis.attestation_ref, :attestation_ref)
         end
     end
   end

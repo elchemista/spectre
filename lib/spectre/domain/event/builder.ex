@@ -8,6 +8,7 @@ defmodule Spectre.Domain.Event.Builder do
   """
 
   alias Spectre.Domain.Event
+  alias Spectre.Duty.Disposition, as: DutyDisposition
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Meter.Amounts
   alias Spectre.Outcome
@@ -104,7 +105,7 @@ defmodule Spectre.Domain.Event.Builder do
          {:ok, disposition_act} <- Spectre.Act.new(disposition_act),
          {:ok, duty} <- Spectre.Duty.new(duty),
          {:ok, disposition} <-
-           Spectre.Duty.Disposition.from_consequence(disposition_act.consequence),
+           DutyDisposition.from_consequence(disposition_act.consequence),
          true <- duty.status == :open,
          true <- duty.act_ref == cause_act.ref,
          true <- disposition.duty_ref == duty.ref,

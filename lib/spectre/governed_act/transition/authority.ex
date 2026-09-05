@@ -10,8 +10,8 @@ defmodule Spectre.GovernedAct.Transition.Authority do
 
   alias Spectre.{Act, Mandate}
   alias Spectre.Domain.Event
-  alias Spectre.GovernedAct.{Index, MeterState, State, View}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.GovernedAct.{Index, MeterState, State, View}
   alias Spectre.GovernedAct.Transition.Foundation
   alias Spectre.Kernel.{Authority, Meter}
   alias Spectre.Kernel.Meter.Account
@@ -221,6 +221,13 @@ defmodule Spectre.GovernedAct.Transition.Authority do
       not Act.targets?(act, [predecessor.ref]) ->
         {:error, {:mandate_restriction_act_target_missing, act.ref, predecessor.ref}}
 
+      true ->
+        validate_restriction_binding(act, predecessor, successor, data, expected_consequence)
+    end
+  end
+
+  defp validate_restriction_binding(act, predecessor, successor, data, expected_consequence) do
+    cond do
       data["act_ref"] != act.ref ->
         {:error, {:mandate_restriction_event_act_mismatch, successor.ref, act.ref}}
 

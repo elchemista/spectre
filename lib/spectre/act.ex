@@ -13,6 +13,8 @@ defmodule Spectre.Act do
   separate in `recognition_refs` and `recognition_evidence_refs`.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Consent, Disclosure, Portable, Row}
   alias Spectre.Kernel.Meter.Amounts
 
@@ -236,31 +238,38 @@ defmodule Spectre.Act do
       act.schema_version != @schema_version ->
         {:error, {:unsupported_act_schema_version, act.schema_version}}
 
-      not is_binary(act.class) or act.class == "" ->
+      not Portable.is_non_empty_binary(act.class) ->
         {:error, {:invalid_act_class, act.class}}
 
       is_nil(act.consequence) ->
         {:error, :missing_act_consequence}
 
-      not is_map(act.purpose_params) or is_struct(act.purpose_params) ->
+      not Portable.is_plain_map(act.purpose_params) ->
         {:error, {:invalid_act_purpose_params, Portable.shape(act.purpose_params)}}
 
-      not is_map(act.reservations) or is_struct(act.reservations) ->
+      not Portable.is_plain_map(act.reservations) ->
         {:error, {:invalid_act_reservations, Portable.shape(act.reservations)}}
 
-      not is_integer(act.mandate_revision) or act.mandate_revision <= 0 ->
+      true ->
+        validate_coordinates(act)
+    end
+  end
+
+  defp validate_coordinates(act) do
+    cond do
+      not Portable.is_positive_integer(act.mandate_revision) ->
         {:error, {:invalid_act_mandate_revision, act.mandate_revision}}
 
-      not is_integer(act.surface_revision) or act.surface_revision < 0 ->
+      not Portable.is_non_negative_integer(act.surface_revision) ->
         {:error, {:invalid_act_surface_revision, act.surface_revision}}
 
-      not is_integer(act.observation_window_ms) or act.observation_window_ms < 0 ->
+      not Portable.is_non_negative_integer(act.observation_window_ms) ->
         {:error, {:invalid_act_observation_window_ms, act.observation_window_ms}}
 
       not is_integer(act.committed_at) ->
         {:error, {:invalid_act_committed_at, act.committed_at}}
 
-      not is_integer(act.host_generation) or act.host_generation < 0 ->
+      not Portable.is_non_negative_integer(act.host_generation) ->
         {:error, {:invalid_act_host_generation, act.host_generation}}
 
       true ->
@@ -309,9 +318,8 @@ defmodule Spectre.Act do
              :recognition_evidence_refs
            ),
          :ok <- Portable.validate_optional_ref(act.presentation_ref, :presentation_ref),
-         :ok <- Portable.validate_ref(act.host_profile_ref, :host_profile_ref),
-         :ok <- Portable.validate_ref(act.executor_contract_ref, :executor_contract_ref) do
-      :ok
+         :ok <- Portable.validate_ref(act.host_profile_ref, :host_profile_ref) do
+      Portable.validate_ref(act.executor_contract_ref, :executor_contract_ref)
     end
   end
 

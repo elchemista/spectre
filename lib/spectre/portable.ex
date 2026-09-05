@@ -17,6 +17,22 @@ defmodule Spectre.Portable do
 
   alias Spectre.Canonical.Value
 
+  @doc "Guard for a canonical object container, excluding runtime structs."
+  defguard is_plain_map(value) when is_map(value) and not is_struct(value)
+
+  @doc "Guard shared by revisions, generations and elapsed millisecond windows."
+  defguard is_non_negative_integer(value) when is_integer(value) and value >= 0
+
+  @doc "Guard for strictly positive revisions and quantities."
+  defguard is_positive_integer(value) when is_integer(value) and value > 0
+
+  @doc "Guard for opaque non-empty binary identifiers, without claiming content validity."
+  defguard is_non_empty_binary(value) when is_binary(value) and value != ""
+
+  @doc "Checks host keyword options without raising on non-list input."
+  @spec keyword?(term()) :: boolean()
+  def keyword?(value), do: is_list(value) and Keyword.keyword?(value)
+
   @float_exponent_mask 0x7FF0000000000000
 
   @type path :: [term()]
@@ -200,9 +216,8 @@ defmodule Spectre.Portable do
   @spec normalize_attrs(term(), [atom()], atom()) :: {:ok, map()} | {:error, reason()}
   def normalize_attrs(attrs, fields, record_name)
       when is_list(fields) and is_atom(record_name) do
-    with {:ok, entries} <- attribute_entries(attrs, record_name),
-         {:ok, normalized} <- normalize_entries(entries, fields, record_name) do
-      {:ok, normalized}
+    with {:ok, entries} <- attribute_entries(attrs, record_name) do
+      normalize_entries(entries, fields, record_name)
     end
   end
 
@@ -291,15 +306,7 @@ defmodule Spectre.Portable do
   defp stringify_atom_keys(value, path) when is_map(value) and not is_struct(value) do
     Enum.reduce_while(value, {:ok, %{}}, fn {raw_key, item}, {:ok, normalized} ->
       key = if is_atom(raw_key), do: Atom.to_string(raw_key), else: raw_key
-
-      if Map.has_key?(normalized, key) do
-        {:halt, {:error, {:equivalent_map_keys, Enum.reverse([key | path])}}}
-      else
-        case stringify_atom_keys(item, [key | path]) do
-          {:ok, item} -> {:cont, {:ok, Map.put(normalized, key, item)}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end
+      stringify_map_entry(key, item, normalized, path)
     end)
   end
 
@@ -323,6 +330,17 @@ defmodule Spectre.Portable do
   end
 
   defp stringify_atom_keys(value, _path), do: {:ok, value}
+
+  defp stringify_map_entry(key, item, normalized, path) do
+    if Map.has_key?(normalized, key) do
+      {:halt, {:error, {:equivalent_map_keys, Enum.reverse([key | path])}}}
+    else
+      case stringify_atom_keys(item, [key | path]) do
+        {:ok, item} -> {:cont, {:ok, Map.put(normalized, key, item)}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end
+  end
 
   defp stringify_atom_key_list([], _path, _index, normalized),
     do: {:ok, Enum.reverse(normalized)}
@@ -373,16 +391,18 @@ defmodule Spectre.Portable do
     Enum.reduce_while(entries, {:ok, %{}}, fn {raw_key, value}, {:ok, normalized} ->
       case normalize_key(raw_key, fields, names) do
         {:ok, key} ->
-          if Map.has_key?(normalized, key) do
-            {:halt, {:error, {:duplicate_attribute, record_name, key}}}
-          else
-            {:cont, {:ok, Map.put(normalized, key, value)}}
-          end
+          put_unique_attribute(normalized, key, value, record_name)
 
         :error ->
           {:halt, {:error, {:unknown_attribute, record_name, raw_key}}}
       end
     end)
+  end
+
+  defp put_unique_attribute(normalized, key, value, record_name) do
+    if Map.has_key?(normalized, key),
+      do: {:halt, {:error, {:duplicate_attribute, record_name, key}}},
+      else: {:cont, {:ok, Map.put(normalized, key, value)}}
   end
 
   defp normalize_key(key, fields, _names) when is_atom(key) do

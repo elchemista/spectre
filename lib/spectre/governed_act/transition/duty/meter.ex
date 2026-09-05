@@ -268,15 +268,18 @@ defmodule Spectre.GovernedAct.Transition.Duty.Meter do
     do: :ok
 
   defp validate_resolution(projection, :release, supporting, cause_act, duty, committed_at) do
-    if Enum.any?(supporting, fn
-         {:outcome, %{status: :definitive_no_effect} = outcome} ->
-           outcome.act_ref == cause_act.ref and
-             (is_nil(duty.attempt_ref) or outcome.attempt_ref == duty.attempt_ref) and
-             Disposal.outcome_not_corrected_at?(projection, outcome, committed_at)
+    proven? =
+      Enum.any?(supporting, fn
+        {:outcome, %{status: :definitive_no_effect} = outcome} ->
+          outcome.act_ref == cause_act.ref and
+            (is_nil(duty.attempt_ref) or outcome.attempt_ref == duty.attempt_ref) and
+            Disposal.outcome_not_corrected_at?(projection, outcome, committed_at)
 
-         _other ->
-           false
-       end) do
+        _other ->
+          false
+      end)
+
+    if proven? do
       :ok
     else
       {:error, :duty_meter_release_not_proven}

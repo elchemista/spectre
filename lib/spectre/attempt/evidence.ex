@@ -28,20 +28,24 @@ defmodule Spectre.Attempt.Evidence do
     with :ok <- validate_attempt(act, attempt) do
       allowed_parents = MapSet.new(act.evidence_refs)
 
-      Enum.reduce_while(evidence, :ok, fn
-        %Evidence{} = record, :ok ->
-          case validate_record(record, act, attempt, allowed_parents) do
-            :ok -> {:cont, :ok}
-            {:error, _reason} = error -> {:halt, error}
-          end
-
-        _invalid, :ok ->
-          {:halt, {:error, :invalid_executor_evidence}}
-      end)
+      validate_records(evidence, act, attempt, allowed_parents)
     end
   end
 
   def validate_all(_evidence, _act, _attempt), do: {:error, :invalid_executor_evidence}
+
+  defp validate_records(evidence, act, attempt, allowed_parents) do
+    Enum.reduce_while(evidence, :ok, fn
+      %Evidence{} = record, :ok ->
+        case validate_record(record, act, attempt, allowed_parents) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+
+      _invalid, :ok ->
+        {:halt, {:error, :invalid_executor_evidence}}
+    end)
+  end
 
   @doc false
   @spec validate_attempt(Act.t(), Attempt.t()) :: :ok | {:error, term()}
@@ -67,24 +71,37 @@ defmodule Spectre.Attempt.Evidence do
       evidence.observed_at < attempt.started_at ->
         {:error, {:executor_evidence_before_attempt, evidence.ref}}
 
+      true ->
+        validate_lineage(evidence, allowed_parents)
+    end
+  end
+
+  defp validate_lineage(evidence, allowed_parents) do
+    cond do
       evidence.provenance == :observed and evidence.parent_refs != [] ->
         {:error, {:observed_executor_evidence_has_parents, evidence.ref}}
 
       evidence.provenance == :observed ->
         :ok
 
-      evidence.provenance in [:derived, :generated] and evidence.parent_refs == [] ->
-        {:error, {:invalid_executor_evidence_lineage, evidence.ref}}
-
-      evidence.provenance in [:derived, :generated] and
-          not Enum.all?(evidence.parent_refs, &MapSet.member?(allowed_parents, &1)) ->
-        {:error, {:executor_evidence_parent_outside_act_inputs, evidence.ref}}
-
       evidence.provenance in [:derived, :generated] ->
-        :ok
+        validate_derived_parents(evidence, allowed_parents)
 
       true ->
         {:error, {:invalid_executor_evidence_provenance, evidence.ref}}
+    end
+  end
+
+  defp validate_derived_parents(evidence, allowed_parents) do
+    cond do
+      evidence.parent_refs == [] ->
+        {:error, {:invalid_executor_evidence_lineage, evidence.ref}}
+
+      not Enum.all?(evidence.parent_refs, &MapSet.member?(allowed_parents, &1)) ->
+        {:error, {:executor_evidence_parent_outside_act_inputs, evidence.ref}}
+
+      true ->
+        :ok
     end
   end
 end

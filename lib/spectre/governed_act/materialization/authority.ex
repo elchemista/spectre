@@ -12,23 +12,27 @@ defmodule Spectre.GovernedAct.Materialization.Authority do
       reason == :mandate_restricted or AuthorityChange.cascades?(projection, mandate_ref)
 
     with {:ok, pending} <- DispatchState.pending(projection) do
-      pending
-      |> Enum.reduce_while({:ok, []}, fn {pending_act, _mandate}, {:ok, reversed} ->
-        with {:ok, affected?} <-
-               AuthorityChange.affects?(
-                 projection,
-                 pending_act.mandate_ref,
-                 mandate_ref,
-                 cascade?
-               ),
-             {:ok, events} <- events_for_pending(pending_act, cause_act, reason, affected?) do
-          {:cont, {:ok, Enum.reverse(events, reversed)}}
-        else
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-      |> reverse_ok()
+      cancellations_for_pending(projection, pending, cause_act, mandate_ref, reason, cascade?)
     end
+  end
+
+  defp cancellations_for_pending(projection, pending, cause_act, mandate_ref, reason, cascade?) do
+    pending
+    |> Enum.reduce_while({:ok, []}, fn {pending_act, _mandate}, {:ok, reversed} ->
+      with {:ok, affected?} <-
+             AuthorityChange.affects?(
+               projection,
+               pending_act.mandate_ref,
+               mandate_ref,
+               cascade?
+             ),
+           {:ok, events} <- events_for_pending(pending_act, cause_act, reason, affected?) do
+        {:cont, {:ok, Enum.reverse(events, reversed)}}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> reverse_ok()
   end
 
   @doc false

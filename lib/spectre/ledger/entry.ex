@@ -12,6 +12,8 @@ defmodule Spectre.Ledger.Entry do
   by `to_data/1` is a plain map with string keys.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Canonical.Value
   alias Spectre.Portable
 
@@ -75,7 +77,7 @@ defmodule Spectre.Ledger.Entry do
   @doc false
   @spec valid_identifier?(term()) :: boolean()
   def valid_identifier?(value),
-    do: is_binary(value) and value != "" and byte_size(value) <= @max_identifier_bytes
+    do: Portable.is_non_empty_binary(value) and byte_size(value) <= @max_identifier_bytes
 
   @doc "Builds and validates an Entry from its complete durable fields."
   @spec new(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
@@ -87,7 +89,7 @@ defmodule Spectre.Ledger.Entry do
       else: {:error, :invalid_ledger_entry_attributes}
   end
 
-  def new(attrs) when is_map(attrs) and not is_struct(attrs) do
+  def new(attrs) when Portable.is_plain_map(attrs) do
     with :ok <- validate_keys(attrs),
          {:ok, values} <- normalize_fields(attrs),
          :ok <- validate_fields(values),
@@ -153,12 +155,9 @@ defmodule Spectre.Ledger.Entry do
          :ok <- validate_digest(prev_digest, :prev_digest) do
       build_batch_entries(
         payloads,
-        domain_ref,
-        batch_id,
+        {domain_ref, batch_id, length(payloads), recorded_at},
         expected_revision,
-        length(payloads),
         0,
-        recorded_at,
         prev_digest,
         []
       )
@@ -167,10 +166,7 @@ defmodule Spectre.Ledger.Entry do
 
   @spec build_batch_entries(
           [map()],
-          String.t(),
-          String.t(),
-          non_neg_integer(),
-          pos_integer(),
+          {String.t(), String.t(), pos_integer(), non_neg_integer()},
           non_neg_integer(),
           non_neg_integer(),
           digest(),
@@ -178,12 +174,9 @@ defmodule Spectre.Ledger.Entry do
         ) :: {:ok, [t()]} | {:error, term()}
   defp build_batch_entries(
          [],
-         _domain,
-         _batch,
+         _batch_context,
          _revision,
-         _size,
          _index,
-         _recorded_at,
          _previous,
          entries
        ),
@@ -191,12 +184,9 @@ defmodule Spectre.Ledger.Entry do
 
   defp build_batch_entries(
          [payload | rest],
-         domain_ref,
-         batch_id,
+         {domain_ref, batch_id, batch_size, recorded_at} = batch_context,
          expected_revision,
-         batch_size,
          index,
-         recorded_at,
          previous,
          entries
        ) do
@@ -215,12 +205,9 @@ defmodule Spectre.Ledger.Entry do
            ) do
       build_batch_entries(
         rest,
-        domain_ref,
-        batch_id,
+        batch_context,
         expected_revision,
-        batch_size,
         index + 1,
-        recorded_at,
         entry.digest,
         [entry | entries]
       )
@@ -341,7 +328,7 @@ defmodule Spectre.Ledger.Entry do
 
   @doc "Restores and verifies an Entry from its plain-map durable form."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(data) when is_map(data) and not is_struct(data) do
+  def from_data(data) when Portable.is_plain_map(data) do
     with {:ok, entry} <- new(data),
          true <- to_data(entry) == data do
       {:ok, entry}
@@ -428,17 +415,17 @@ defmodule Spectre.Ledger.Entry do
   defp optional_identifier(value, field), do: validate_identifier(value, field)
 
   @spec validate_positive(term(), atom()) :: :ok | {:error, term()}
-  defp validate_positive(value, _field) when is_integer(value) and value > 0, do: :ok
+  defp validate_positive(value, _field) when Portable.is_positive_integer(value), do: :ok
   defp validate_positive(_value, field), do: {:error, {:invalid_ledger_entry_field, field}}
 
   @spec validate_non_negative(term(), atom()) :: :ok | {:error, term()}
-  defp validate_non_negative(value, _field) when is_integer(value) and value >= 0, do: :ok
+  defp validate_non_negative(value, _field) when Portable.is_non_negative_integer(value), do: :ok
 
   defp validate_non_negative(_value, field),
     do: {:error, {:invalid_ledger_entry_field, field}}
 
   @spec validate_expected_revision(term()) :: :ok | {:error, term()}
-  defp validate_expected_revision(value) when is_integer(value) and value >= 0, do: :ok
+  defp validate_expected_revision(value) when Portable.is_non_negative_integer(value), do: :ok
   defp validate_expected_revision(_value), do: {:error, :invalid_expected_revision}
 
   @spec validate_batch_coordinates(map()) :: :ok | {:error, term()}
@@ -446,9 +433,10 @@ defmodule Spectre.Ledger.Entry do
     index = Map.get(values, :batch_index)
     size = Map.get(values, :batch_size)
 
-    if is_integer(index) and index >= 0 and is_integer(size) and size > 0 and index < size,
-      do: :ok,
-      else: {:error, :invalid_ledger_entry_batch_coordinates}
+    if Portable.is_non_negative_integer(index) and Portable.is_positive_integer(size) and
+         index < size,
+       do: :ok,
+       else: {:error, :invalid_ledger_entry_batch_coordinates}
   end
 
   @spec validate_digest(term(), atom()) :: :ok | {:error, term()}
@@ -462,7 +450,7 @@ defmodule Spectre.Ledger.Entry do
   defp validate_digest(_value, field), do: {:error, {:invalid_ledger_entry_field, field}}
 
   @spec validate_payload(term()) :: :ok | {:error, term()}
-  defp validate_payload(payload) when is_map(payload) and not is_struct(payload) do
+  defp validate_payload(payload) when Portable.is_plain_map(payload) do
     case Value.validate(payload, max_bytes: @max_payload_bytes) do
       :ok -> :ok
       {:error, reason} -> {:error, {:nonportable_ledger_payload, reason}}

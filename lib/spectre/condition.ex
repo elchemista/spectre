@@ -9,6 +9,8 @@ defmodule Spectre.Condition do
   the boundary; colliding atom/string keys are rejected.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Evidence, Portable}
 
   @schema_version 1
@@ -147,10 +149,10 @@ defmodule Spectre.Condition do
     |> Map.put_new(:parameters, %{})
   end
 
-  defp normalize_cardinality(value) when is_integer(value) and value >= 0,
+  defp normalize_cardinality(value) when Portable.is_non_negative_integer(value),
     do: {:ok, %{"min" => value, "max" => value}}
 
-  defp normalize_cardinality(value) when is_map(value) and not is_struct(value) do
+  defp normalize_cardinality(value) when Portable.is_plain_map(value) do
     allowed = [:min, :max]
 
     with {:ok, attrs} <- Portable.normalize_attrs(value, allowed, :condition_cardinality) do
@@ -197,7 +199,7 @@ defmodule Spectre.Condition do
       is_nil(condition.proposition) ->
         {:error, :missing_condition_proposition}
 
-      not is_map(condition.bindings) or is_struct(condition.bindings) ->
+      not Portable.is_plain_map(condition.bindings) ->
         {:error, {:invalid_condition_bindings, Portable.shape(condition.bindings)}}
 
       true ->
@@ -207,7 +209,7 @@ defmodule Spectre.Condition do
 
   defp validate_cardinality(min, max) do
     cond do
-      not (is_integer(min) and min >= 0) ->
+      not Portable.is_non_negative_integer(min) ->
         {:error, {:invalid_condition_cardinality_min, min}}
 
       not (is_nil(max) or (is_integer(max) and max >= min)) ->
@@ -224,7 +226,7 @@ defmodule Spectre.Condition do
         {:error, {:invalid_condition_provenance, condition.accepted_provenance}}
 
       not (is_nil(condition.freshness_ms) or
-               (is_integer(condition.freshness_ms) and condition.freshness_ms >= 0)) ->
+               Portable.is_non_negative_integer(condition.freshness_ms)) ->
         {:error, {:invalid_condition_freshness_ms, condition.freshness_ms}}
 
       not is_boolean(condition.allow_provisional) ->
@@ -236,7 +238,7 @@ defmodule Spectre.Condition do
   end
 
   defp validate_parameters_and_ref(condition) do
-    if is_map(condition.parameters) and not is_struct(condition.parameters) do
+    if Portable.is_plain_map(condition.parameters) do
       Portable.validate_ref(condition.ref, :ref)
     else
       {:error, {:invalid_condition_parameters, Portable.shape(condition.parameters)}}

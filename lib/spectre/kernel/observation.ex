@@ -9,13 +9,13 @@ defmodule Spectre.Kernel.Observation do
   but it never silently disposes the historical Duty.
   """
 
+  alias Spectre.{Act, Attempt, Duty, Outcome}
   alias Spectre.Domain.{Event, Projection}
   alias Spectre.Duty.Derive
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.{MeterState, State}
-  alias Spectre.Kernel.Meter
   alias Spectre.GovernedAct.Transition.Outcome, as: OutcomeTransition
-  alias Spectre.{Act, Attempt, Duty, Outcome}
+  alias Spectre.Kernel.Meter
 
   @correction_statuses Outcome.correction_statuses()
 
@@ -78,40 +78,38 @@ defmodule Spectre.Kernel.Observation do
   defp meter_events(projection, act, outcome) do
     state = MeterState.reservation_status(projection, act.ref)
 
-    operation =
-      case {Outcome.correction?(outcome), outcome.status, state} do
-        {true, _status, :released} ->
-          :recontain
-
-        {true, _status, _other} ->
-          :invalid_correction_state
-
-        {false, status, current}
-        when status in @correction_statuses and current in [:reserved, :suspended] ->
-          :settle
-
-        {false, :definitive_no_effect, current} when current in [:reserved, :suspended] ->
-          :release
-
-        {false, :ambiguous, :reserved} ->
-          :suspend
-
-        {false, :ambiguous, :suspended} ->
-          nil
-
-        {false, _status, nil} ->
-          :missing
-
-        {false, _status, _terminal} ->
-          nil
-      end
-
-    case operation do
+    case meter_operation(outcome, state) do
       nil -> {:ok, []}
       :missing -> {:error, {:reservation_state_missing, act.ref}}
       :invalid_correction_state -> {:error, {:invalid_correction_meter_state, act.ref, state}}
       :recontain -> recontainment_event(projection, act, outcome)
       operation -> with {:ok, event} <- Event.meter(operation, act), do: {:ok, [event]}
+    end
+  end
+
+  defp meter_operation(outcome, state) do
+    case {Outcome.correction?(outcome), outcome.status, state} do
+      {true, _status, :released} ->
+        :recontain
+
+      {true, _status, _other} ->
+        :invalid_correction_state
+
+      {false, status, current}
+      when status in @correction_statuses and current in [:reserved, :suspended] ->
+        :settle
+
+      {false, :definitive_no_effect, current} when current in [:reserved, :suspended] ->
+        :release
+
+      {false, :ambiguous, :reserved} ->
+        :suspend
+
+      {false, _status, nil} ->
+        :missing
+
+      {false, _status, _terminal} ->
+        nil
     end
   end
 
@@ -139,18 +137,21 @@ defmodule Spectre.Kernel.Observation do
                projection.constitution,
                time
              ) do
-        if Map.has_key?(projection.duties, cause.cause_key) do
-          {:ok, []}
-        else
-          with attrs <- Derive.materialization_attrs(cause, time),
-               {:ok, duty} <- Duty.new(attrs),
-               {:ok, event} <- Event.record(:duty, duty) do
-            {:ok, [event]}
-          end
-        end
+        materialize_new_duty(projection, cause, time)
       end
     else
       {:ok, []}
+    end
+  end
+
+  defp materialize_new_duty(projection, cause, time) do
+    if Map.has_key?(projection.duties, cause.cause_key) do
+      {:ok, []}
+    else
+      with {:ok, duty} <- Duty.new(Derive.materialization_attrs(cause, time)),
+           {:ok, event} <- Event.record(:duty, duty) do
+        {:ok, [event]}
+      end
     end
   end
 end

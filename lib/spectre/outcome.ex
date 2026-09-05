@@ -7,6 +7,8 @@ defmodule Spectre.Outcome do
   reservation; a timeout or missing response must remain `:ambiguous`.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -92,7 +94,7 @@ defmodule Spectre.Outcome do
   @doc "Returns true for a concrete late observation correcting a prior no-effect claim."
   @spec correction?(t()) :: boolean()
   def correction?(%__MODULE__{contradicts_outcome_ref: ref}),
-    do: is_binary(ref) and ref != ""
+    do: Portable.is_non_empty_binary(ref)
 
   @doc "Returns the exact, versioned proposition that Evidence for an Outcome must carry."
   @spec proposition(status(), String.t(), String.t(), String.t()) :: map()
@@ -160,9 +162,8 @@ defmodule Spectre.Outcome do
              :ok <- Portable.validate_ref(outcome.act_ref, :act_ref),
              :ok <- Portable.validate_ref(outcome.attempt_ref, :attempt_ref),
              :ok <- Portable.validate_refs(outcome.evidence_refs, :evidence_refs),
-             :ok <- Portable.validate_ref(outcome.details_ref, :details_ref),
-             :ok <- optional_ref(outcome.contradicts_outcome_ref, :contradicts_outcome_ref) do
-          :ok
+             :ok <- Portable.validate_ref(outcome.details_ref, :details_ref) do
+          optional_ref(outcome.contradicts_outcome_ref, :contradicts_outcome_ref)
         end
     end
   end

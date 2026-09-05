@@ -9,6 +9,8 @@ defmodule Spectre.Duty.Derive.Cause do
   transition.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Act, Candidate, Constitution, Portable}
 
   @hard_containment_classes [:ambiguous_outcome, :contradicted_outcome, :disputed_evidence]
@@ -144,7 +146,7 @@ defmodule Spectre.Duty.Derive.Cause do
     })
   end
 
-  defp ensure_plain_map(value) when is_map(value) and not is_struct(value), do: value
+  defp ensure_plain_map(value) when Portable.is_plain_map(value), do: value
   defp ensure_plain_map(_value), do: %{}
 
   # Constitution validation has already excluded equivalent atom/string keys,

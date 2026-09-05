@@ -15,6 +15,8 @@ defmodule Spectre.SubmissionContext do
   eligibility; it never creates authority.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Portable, Seal}
 
   @schema_version 1
@@ -166,7 +168,7 @@ defmodule Spectre.SubmissionContext do
 
   @doc "Restores and verifies a context from the trusted portion of Evidence bindings."
   @spec from_evidence_bindings(map()) :: {:ok, t()} | {:error, term()}
-  def from_evidence_bindings(bindings) when is_map(bindings) and not is_struct(bindings) do
+  def from_evidence_bindings(bindings) when Portable.is_plain_map(bindings) do
     with :ok <- canonical_evidence_binding_keys(bindings) do
       attrs =
         Map.new(@trusted_context_matrix, fn {source, target} ->
@@ -182,7 +184,7 @@ defmodule Spectre.SubmissionContext do
 
   @doc "Returns the complete scoped context in Evidence bindings, or `nil` when unscoped."
   @spec extract_evidence_context(map()) :: {:ok, t() | nil} | {:error, term()}
-  def extract_evidence_context(bindings) when is_map(bindings) and not is_struct(bindings) do
+  def extract_evidence_context(bindings) when Portable.is_plain_map(bindings) do
     if Enum.any?(@evidence_binding_fields, &evidence_binding_present?(bindings, &1)) do
       from_evidence_bindings(bindings)
     else
@@ -227,7 +229,7 @@ defmodule Spectre.SubmissionContext do
   @doc false
   @spec verify_seal(t(), binary()) :: :ok | {:error, term()}
   def verify_seal(%__MODULE__{seal: supplied} = context, secret)
-      when is_binary(supplied) and supplied != "" do
+      when Portable.is_non_empty_binary(supplied) do
     case Seal.verify(canonical(context), supplied, secret, @seal_domain) do
       :ok -> :ok
       :error -> {:error, :submission_context_authentication_failed}
@@ -250,10 +252,10 @@ defmodule Spectre.SubmissionContext do
       context.schema_version != @schema_version ->
         {:error, {:unsupported_submission_context_schema_version, context.schema_version}}
 
-      not (is_integer(context.host_generation) and context.host_generation >= 0) ->
+      not Portable.is_non_negative_integer(context.host_generation) ->
         {:error, {:invalid_host_generation, context.host_generation}}
 
-      not is_nil(context.seal) and (not is_binary(context.seal) or context.seal == "") ->
+      not is_nil(context.seal) and not Portable.is_non_empty_binary(context.seal) ->
         {:error, {:invalid_submission_context_seal, Portable.shape(context.seal)}}
 
       true ->
@@ -267,26 +269,23 @@ defmodule Spectre.SubmissionContext do
                ),
              :ok <- Portable.validate_ref(context.authentication_ref, :authentication_ref),
              :ok <- Portable.validate_ref(context.ingress_ref, :ingress_ref),
-             :ok <- Portable.validate_optional_ref(context.channel_ref, :channel_ref),
-             :ok <- Portable.validate_optional_ref(context.session_ref, :session_ref) do
-          :ok
+             :ok <- Portable.validate_optional_ref(context.channel_ref, :channel_ref) do
+          Portable.validate_optional_ref(context.session_ref, :session_ref)
         end
     end
   end
 
   defp validate_additional_evidence_bindings(bindings)
-       when is_map(bindings) and not is_struct(bindings) do
+       when Portable.is_plain_map(bindings) do
     collision =
       Enum.find(@evidence_binding_fields, fn field ->
         Map.has_key?(bindings, field) or Map.has_key?(bindings, Atom.to_string(field))
       end)
 
-    cond do
-      not is_nil(collision) ->
-        {:error, {:reserved_evidence_binding, collision}}
-
-      true ->
-        Portable.validate(bindings)
+    if is_nil(collision) do
+      Portable.validate(bindings)
+    else
+      {:error, {:reserved_evidence_binding, collision}}
     end
   end
 

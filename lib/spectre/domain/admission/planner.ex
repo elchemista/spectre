@@ -54,22 +54,26 @@ defmodule Spectre.Domain.Admission.Planner do
          {:ok, context, _opening} <- Context.validate_scope(state, projection, request.context),
          :ok <- validate_domain_route(projection, context),
          :ok <- validate_submission_kind(state, request, candidate, context) do
-      case Projection.candidate_decision(projection, candidate.identity_key) do
-        {:ok, %{candidate_digest: digest}} when digest == candidate.material_digest ->
-          {:ok, success_plan(request, candidate), projection, []}
+      plan_candidate(state, request, candidate, context, projection, admitted_at)
+    end
+  end
 
-        {:ok, _different} ->
-          {:error, {:candidate_identity_conflict, candidate.identity_key}}
+  defp plan_candidate(state, request, candidate, context, projection, admitted_at) do
+    case Projection.candidate_decision(projection, candidate.identity_key) do
+      {:ok, %{candidate_digest: digest}} when digest == candidate.material_digest ->
+        {:ok, success_plan(request, candidate), projection, []}
 
-        :not_found ->
-          with :ok <-
-                 Router.validate_candidate(state.execution_boundary, projection, candidate) do
-            evaluate_submission(request, candidate, context, projection, admitted_at)
-          end
+      {:ok, _different} ->
+        {:error, {:candidate_identity_conflict, candidate.identity_key}}
 
-        {:error, _reason} = error ->
-          error
-      end
+      :not_found ->
+        with :ok <-
+               Router.validate_candidate(state.execution_boundary, projection, candidate) do
+          evaluate_submission(request, candidate, context, projection, admitted_at)
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -81,9 +85,8 @@ defmodule Spectre.Domain.Admission.Planner do
        ) do
     with {:ok, child_context} <- Context.validate_current(state, child_context),
          :ok <- validate_child_context_boundary(parent_context, child_context),
-         {:ok, draft} <- candidate_scope_opening_draft(candidate),
-         :ok <- validate_scope_opening_candidate(candidate, draft, parent_context, child_context) do
-      :ok
+         {:ok, draft} <- candidate_scope_opening_draft(candidate) do
+      validate_scope_opening_candidate(candidate, draft, parent_context, child_context)
     end
   end
 
@@ -128,11 +131,17 @@ defmodule Spectre.Domain.Admission.Planner do
         Map.get(draft, Atom.to_string(field)) != expected
       end)
 
-    cond do
-      mismatch ->
-        {field, _expected} = mismatch
+    case mismatch do
+      {field, _expected} ->
         {:error, {:governed_scope_context_mismatch, Atom.to_string(field)}}
 
+      nil ->
+        validate_scope_opening_execution(candidate, draft, child_context)
+    end
+  end
+
+  defp validate_scope_opening_execution(candidate, draft, child_context) do
+    cond do
       not GovernedClass.exact_row?(Governance.scope_open_class(), candidate.row) ->
         {:error, :invalid_governed_scope_opening_row}
 

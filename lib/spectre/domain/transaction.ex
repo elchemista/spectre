@@ -2,14 +2,21 @@ defmodule Spectre.Domain.Transaction do
   @moduledoc """
   Durable transaction boundary shared by Domain command workflows.
 
-  It performs one exact append, classifies an ambiguous result and rebuilds the
-  disposable projection from the ledger.
+  It performs one exact append, classifies an ambiguous result and advances the
+  disposable projection only from a confirmed durable batch. Full replay remains
+  the startup, conflict and unconfirmed-index recovery path.
   Conflict policy remains with the calling workflow; this module never replies
   to callers, schedules work or grants a capability.
 
   Missing derived Duties are repaired through the same append/recovery path so
   every workflow observes an equivalent governed prefix.
+
+  A physical batch is not a new authority boundary. This workflow changes only
+  the supplied logical Domain; sharing a Store or supervisor never merges the
+  identities, Mandates or obligations of independently governed participants.
   """
+
+  require Spectre.Portable
 
   alias Spectre.{Adapter, Clock, Id, Portable}
   alias Spectre.Attempt.Reconciler
@@ -20,7 +27,7 @@ defmodule Spectre.Domain.Transaction do
   alias Spectre.Ledger.Writer
   alias Spectre.Payload.Store, as: PayloadStore
 
-  @doc "Appends one exact batch and returns the projection rebuilt from durable history."
+  @doc "Appends one exact batch and returns its confirmed governed projection."
   @spec append_exact(
           State.t(),
           String.t(),
@@ -34,7 +41,7 @@ defmodule Spectre.Domain.Transaction do
         payloads,
         recorded_at
       )
-      when is_integer(recorded_at) and recorded_at >= 0 do
+      when Portable.is_non_negative_integer(recorded_at) do
     latest_recorded_at = latest_recorded_at(state.projection)
     expected_revision = state.projection.revision
 
@@ -84,8 +91,10 @@ defmodule Spectre.Domain.Transaction do
       )
     end
     |> case do
-      {:ok, _revision} ->
-        recover_after_append(state)
+      {:ok, revision} ->
+        if revision == expected_revision + length(payloads),
+          do: recover_after_append(state, batch_id, payloads, recorded_at),
+          else: {:error, {:durable_recovery_failed, {:unexpected_append_revision, revision}}}
 
       {:error, :conflict} ->
         :conflict
@@ -122,7 +131,7 @@ defmodule Spectre.Domain.Transaction do
            state.ledger_opts
          ) do
       {:ok, {:committed, _info}} ->
-        recover_after_append(state)
+        recover_after_append(state, batch_id, payloads, recorded_at)
 
       {:ok, :not_committed} when retries_left > 0 ->
         append_exact_at(
@@ -156,7 +165,7 @@ defmodule Spectre.Domain.Transaction do
       if plan.payloads == [] do
         {:ok, projection}
       else
-        commit_duty_repair(state, projection, plan, conflicts_left, now)
+        commit_duty_repair(state, plan, conflicts_left, now)
       end
     end
   end
@@ -171,15 +180,12 @@ defmodule Spectre.Domain.Transaction do
 
   defp commit_duty_repair(
          state,
-         projection,
          plan,
          conflicts_left,
          recorded_at
        ) do
-    repair_state = %{state | projection: projection}
-
     case append_exact(
-           repair_state,
+           state,
            plan.batch_id,
            plan.payloads,
            recorded_at
@@ -189,7 +195,7 @@ defmodule Spectre.Domain.Transaction do
 
       :conflict when conflicts_left > 0 ->
         retry_duty_repair_after_conflict(
-          repair_state,
+          state,
           conflicts_left - 1
         )
 
@@ -213,8 +219,22 @@ defmodule Spectre.Domain.Transaction do
     end
   end
 
-  defp recover_after_append(state) do
-    case recover_with_repair(state) do
+  defp recover_after_append(state, batch_id, payloads, recorded_at) do
+    result =
+      with {:ok, projection} <-
+             Recovery.confirm_append(
+               state.store,
+               state.projection,
+               batch_id,
+               payloads,
+               recorded_at,
+               state.ledger_opts
+             ),
+           :ok <- verify_projection(state, projection) do
+        repair_missing_duties(%{state | projection: projection})
+      end
+
+    case result do
       {:ok, projection} -> {:ok, projection}
       {:error, reason} -> {:error, {:durable_recovery_failed, reason}}
     end
@@ -240,8 +260,7 @@ defmodule Spectre.Domain.Transaction do
            state.ledger_opts
          ) do
       {:ok, projection} ->
-        with :ok <- Bootstrap.verify_projection(projection, State.verification_opts(state)),
-             :ok <- PayloadStore.verify_live_references(state.payload_store, projection) do
+        with :ok <- verify_projection(state, projection) do
           {:ok, projection}
         end
 
@@ -251,6 +270,11 @@ defmodule Spectre.Domain.Transaction do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp verify_projection(state, projection) do
+    with :ok <- Bootstrap.verify_projection(projection, State.verification_opts(state)),
+         do: PayloadStore.verify_live_references(state.payload_store, projection)
   end
 
   @doc "Checks content references carried by a list of canonical event envelopes."

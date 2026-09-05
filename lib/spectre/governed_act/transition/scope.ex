@@ -10,8 +10,8 @@ defmodule Spectre.GovernedAct.Transition.Scope do
 
   alias Spectre.Act
   alias Spectre.Domain.Event
-  alias Spectre.GovernedAct.{Index, State}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.GovernedAct.{Index, State}
   alias Spectre.Scope.Opening
 
   def apply(
@@ -34,9 +34,8 @@ defmodule Spectre.GovernedAct.Transition.Scope do
          :ok <- scope_parent_exists(projection, opening),
          :ok <- scope_principals_exist(projection, opening),
          :ok <- scope_disposition_authorities_exist(projection, opening),
-         :ok <- validate_opening_submission_context(opening),
-         :ok <- validate_scope_opening_source(projection, opening) do
-      :ok
+         :ok <- validate_opening_submission_context(opening) do
+      validate_scope_opening_source(projection, opening)
     end
   end
 
@@ -61,27 +60,34 @@ defmodule Spectre.GovernedAct.Transition.Scope do
         act.consequence != %{"scope_open" => draft} ->
           {:error, {:scope_opening_consequence_mismatch, opening.ref, act.ref}}
 
-        act.scope_ref != opening.parent_ref ->
-          {:error, {:scope_opening_parent_act_mismatch, opening.ref, act.ref}}
-
-        act.accountable_ref != opening.accountable_ref ->
-          {:error, {:scope_opening_accountable_act_mismatch, opening.ref, act.ref}}
-
-        opening.ref not in act.target_refs ->
-          {:error, {:scope_opening_target_missing, opening.ref, act.ref}}
-
-        opening.opened_at != act.committed_at ->
-          {:error, {:scope_opening_commit_time_mismatch, opening.ref, act.ref}}
-
-        opening.host_generation != act.host_generation ->
-          {:error, {:scope_opening_generation_act_mismatch, opening.ref, act.ref}}
-
-        opening.ingress_ref != act.ingress_ref ->
-          {:error, {:scope_opening_ingress_act_mismatch, opening.ref, act.ref}}
-
         true ->
-          :ok
+          validate_scope_act_binding(opening, act)
       end
+    end
+  end
+
+  defp validate_scope_act_binding(opening, act) do
+    cond do
+      act.scope_ref != opening.parent_ref ->
+        {:error, {:scope_opening_parent_act_mismatch, opening.ref, act.ref}}
+
+      act.accountable_ref != opening.accountable_ref ->
+        {:error, {:scope_opening_accountable_act_mismatch, opening.ref, act.ref}}
+
+      opening.ref not in act.target_refs ->
+        {:error, {:scope_opening_target_missing, opening.ref, act.ref}}
+
+      opening.opened_at != act.committed_at ->
+        {:error, {:scope_opening_commit_time_mismatch, opening.ref, act.ref}}
+
+      opening.host_generation != act.host_generation ->
+        {:error, {:scope_opening_generation_act_mismatch, opening.ref, act.ref}}
+
+      opening.ingress_ref != act.ingress_ref ->
+        {:error, {:scope_opening_ingress_act_mismatch, opening.ref, act.ref}}
+
+      true ->
+        :ok
     end
   end
 

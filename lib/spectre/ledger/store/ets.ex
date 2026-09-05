@@ -8,6 +8,14 @@ defmodule Spectre.Ledger.Store.ETS do
   intended for development, tests, and ephemeral Domains; it makes no
   durability claim across owner-process failure.
 
+  Cursors, Entries and batch identities occupy separate rows. Appending or
+  looking up an identity never copies prior history onto the owner's heap;
+  only load/export reconstruct a complete snapshot. One ETS insert publishes
+  the new Entries, cursor and batch identity together.
+
+  `:compressed` (default `false`) trades per-row encoding/decoding work for a
+  smaller table. It does not change batch visibility or durability guarantees.
+
   `:fault_injection` (or `:fault`) may be set to `:before_commit` or
   `:after_commit`. Both return `{:error, :ambiguous}`; the latter installs the
   batch first, allowing recovery code to exercise identity lookup.
@@ -21,16 +29,14 @@ defmodule Spectre.Ledger.Store.ETS do
   alias Spectre.Ledger.Entry
   alias Spectre.Ledger.Store.Support
 
-  @start_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after]
+  @start_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after, :compressed]
   @read_options [:server, :timeout]
   @append_options @read_options ++ [:recorded_at, :fault_injection, :fault]
 
-  @type domain_state :: %{
+  @type append_context :: %{
           revision: non_neg_integer(),
           head_digest: Entry.digest(),
-          entries_rev: [Entry.t()],
-          batches: %{optional(String.t()) => Ledger.batch_info()},
-          recovery: nil
+          batches: %{optional(String.t()) => Ledger.batch_info()}
         }
 
   @doc "Starts an empty volatile ledger Store."
@@ -38,8 +44,12 @@ defmodule Spectre.Ledger.Store.ETS do
   def start_link(opts \\ [])
 
   def start_link(opts) when is_list(opts) do
-    with :ok <- validate_options(opts, @start_options) do
-      GenServer.start_link(__MODULE__, :ok, opts)
+    with :ok <- validate_options(opts, @start_options),
+         compressed when is_boolean(compressed) <- Keyword.get(opts, :compressed, false) do
+      GenServer.start_link(__MODULE__, compressed, Keyword.delete(opts, :compressed))
+    else
+      {:error, _} = error -> error
+      _invalid -> {:error, :invalid_ledger_ets_compressed}
     end
   end
 
@@ -75,15 +85,19 @@ defmodule Spectre.Ledger.Store.ETS do
 
   @impl Spectre.Ledger.Store
   def export(domain_ref, opts) do
-    with :ok <- validate_options(opts, @read_options),
-         {:ok, server} <- server(opts) do
-      GenServer.call(server, {:export, domain_ref}, timeout(opts, 30_000))
+    # Capture one coherent snapshot under the owner's serialization, then hash
+    # and encode in the caller. A host can use a short-lived Task for exports;
+    # neither its temporary heap nor verification work belongs in the writer.
+    with {:ok, snapshot} <- load(domain_ref, opts) do
+      Ledger.export_snapshot(snapshot)
     end
   end
 
   @impl GenServer
-  def init(:ok) do
-    table = :ets.new(__MODULE__, [:set, :protected, read_concurrency: true])
+  def init(compressed) do
+    # Only this owner reads/writes the table; read_concurrency adds no benefit.
+    options = if compressed, do: [:compressed, :set, :protected], else: [:set, :protected]
+    table = :ets.new(__MODULE__, options)
     {:ok, %{table: table}}
   end
 
@@ -98,13 +112,12 @@ defmodule Spectre.Ledger.Store.ETS do
              Entry.batch_identity(domain_ref, batch_id, payloads, expected_revision),
            {:ok, recorded_at} <- Support.recorded_at(opts),
            {:ok, fault} <- Support.fault_phase(opts) do
-        domain = lookup_domain(state.table, domain_ref)
+        domain = append_context(state.table, domain_ref, batch_id)
 
         append_batch(
           state,
           domain,
-          domain_ref,
-          batch_id,
+          {domain_ref, batch_id},
           payloads,
           expected_revision,
           recorded_at,
@@ -120,46 +133,17 @@ defmodule Spectre.Ledger.Store.ETS do
   end
 
   def handle_call({:load, domain_ref}, _from, state) do
-    reply =
-      case :ets.lookup(state.table, domain_ref) do
-        [{^domain_ref, domain}] -> {:ok, Support.snapshot(domain_ref, domain)}
-        [] -> :not_found
-      end
-
-    {:reply, reply, state}
+    {:reply, load_snapshot(state.table, domain_ref), state}
   end
 
   def handle_call({:lookup_batch, domain_ref, batch_id}, _from, state) do
-    reply =
-      with [{^domain_ref, domain}] <- :ets.lookup(state.table, domain_ref),
-           {:ok, info} <- Map.fetch(domain.batches, batch_id) do
-        {:ok, info}
-      else
-        [] -> :not_found
-        :error -> :not_found
-      end
-
-    {:reply, reply, state}
-  end
-
-  def handle_call({:export, domain_ref}, _from, state) do
-    reply =
-      case :ets.lookup(state.table, domain_ref) do
-        [{^domain_ref, domain}] ->
-          domain_ref |> Support.snapshot(domain) |> Ledger.export_snapshot()
-
-        [] ->
-          :not_found
-      end
-
-    {:reply, reply, state}
+    {:reply, lookup(state.table, {:batch, domain_ref, batch_id}), state}
   end
 
   @spec append_batch(
           map(),
-          domain_state(),
-          String.t(),
-          String.t(),
+          append_context(),
+          {String.t(), String.t()},
           [map()],
           non_neg_integer(),
           non_neg_integer(),
@@ -169,8 +153,7 @@ defmodule Spectre.Ledger.Store.ETS do
   defp append_batch(
          state,
          domain,
-         domain_ref,
-         batch_id,
+         {domain_ref, batch_id},
          payloads,
          expected_revision,
          recorded_at,
@@ -188,8 +171,7 @@ defmodule Spectre.Ledger.Store.ETS do
         commit_batch(
           state,
           domain,
-          domain_ref,
-          batch_id,
+          {domain_ref, batch_id},
           payloads,
           expected_revision,
           recorded_at,
@@ -201,9 +183,8 @@ defmodule Spectre.Ledger.Store.ETS do
 
   @spec commit_batch(
           map(),
-          domain_state(),
-          String.t(),
-          String.t(),
+          append_context(),
+          {String.t(), String.t()},
           [map()],
           non_neg_integer(),
           non_neg_integer(),
@@ -213,8 +194,7 @@ defmodule Spectre.Ledger.Store.ETS do
   defp commit_batch(
          state,
          domain,
-         domain_ref,
-         batch_id,
+         {domain_ref, batch_id},
          payloads,
          expected_revision,
          recorded_at,
@@ -230,10 +210,17 @@ defmodule Spectre.Ledger.Store.ETS do
            domain.head_digest
          ) do
       {:ok, entries} ->
-        {committed, last} =
-          Support.install_batch(domain, batch_id, identity, expected_revision, entries)
+        last = List.last(entries)
+        cursor = %{revision: last.revision, head_digest: last.digest}
+        info = Support.batch_info(batch_id, identity, expected_revision, last)
 
-        true = :ets.insert(state.table, {domain_ref, committed})
+        rows = [
+          {{:domain, domain_ref}, cursor},
+          {{:batch, domain_ref, batch_id}, info}
+          | Enum.map(entries, &{{:entry, domain_ref, &1.revision}, &1})
+        ]
+
+        true = :ets.insert(state.table, rows)
         reply = if fault == :after_commit, do: {:error, :ambiguous}, else: {:ok, last.revision}
         {reply, state}
 
@@ -250,10 +237,43 @@ defmodule Spectre.Ledger.Store.ETS do
     end
   end
 
-  defp lookup_domain(table, domain_ref) do
-    case :ets.lookup(table, domain_ref) do
-      [{^domain_ref, domain}] -> domain
-      [] -> Support.empty_domain()
+  # The shared append classifier only needs the current cursor and the requested
+  # identity. No historical entries or other batch identities enter this context.
+  defp append_context(table, domain_ref, batch_id) do
+    cursor =
+      case lookup(table, {:domain, domain_ref}) do
+        {:ok, cursor} -> cursor
+        :not_found -> %{revision: 0, head_digest: Entry.genesis_digest()}
+      end
+
+    batches =
+      case lookup(table, {:batch, domain_ref, batch_id}) do
+        {:ok, info} -> %{batch_id => info}
+        :not_found -> %{}
+      end
+
+    Map.put(cursor, :batches, batches)
+  end
+
+  defp load_snapshot(table, domain_ref) do
+    case lookup(table, {:domain, domain_ref}) do
+      {:ok, cursor} ->
+        entries =
+          Enum.map(1..cursor.revision, fn revision ->
+            :ets.lookup_element(table, {:entry, domain_ref, revision}, 2)
+          end)
+
+        {:ok, Map.merge(cursor, %{domain_ref: domain_ref, entries: entries, recovery: nil})}
+
+      :not_found ->
+        :not_found
+    end
+  end
+
+  defp lookup(table, key) do
+    case :ets.lookup(table, key) do
+      [{^key, value}] -> {:ok, value}
+      [] -> :not_found
     end
   end
 

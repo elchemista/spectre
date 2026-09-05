@@ -8,6 +8,8 @@ defmodule Spectre.Evidence do
   promotes them to observed facts.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Label, Portable}
 
   @schema_version 1
@@ -117,6 +119,32 @@ defmodule Spectre.Evidence do
     end
   end
 
+  @doc false
+  @spec normalize_unique([t() | map() | keyword()]) :: {:ok, [t()]} | {:error, term()}
+  def normalize_unique(values) when is_list(values) do
+    # Preserve input order and reject every repeated identity, even an exact
+    # copy. Idempotent ledger insertion has a different duplicate policy.
+    Enum.reduce_while(values, {:ok, [], MapSet.new()}, &normalize_next/2)
+    |> case do
+      {:ok, records, _refs} -> {:ok, Enum.reverse(records)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def normalize_unique(_values), do: {:error, :invalid_evidence_list}
+
+  defp normalize_next(value, {:ok, records, refs}) do
+    case new(value) do
+      {:ok, record} ->
+        if MapSet.member?(refs, record.ref),
+          do: {:halt, {:error, {:duplicate_evidence, record.ref}}},
+          else: {:cont, {:ok, [record | records], MapSet.put(refs, record.ref)}}
+
+      {:error, _reason} = error ->
+        {:halt, error}
+    end
+  end
+
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = evidence), do: canonical_fields(evidence, @fields)
@@ -163,7 +191,7 @@ defmodule Spectre.Evidence do
   def current_at?(%__MODULE__{} = evidence, time, maximum_age_ms \\ nil)
       when is_integer(time) and
              (is_nil(maximum_age_ms) or
-                (is_integer(maximum_age_ms) and maximum_age_ms >= 0)) do
+                Portable.is_non_negative_integer(maximum_age_ms)) do
     temporal_status(evidence, time) == :current and
       within_freshness?(evidence, time, maximum_age_ms)
   end
@@ -262,7 +290,7 @@ defmodule Spectre.Evidence do
         {:error, {:invalid_evidence_time_window, evidence.valid_from, evidence.valid_until}}
 
       not (is_nil(evidence.freshness_ms) or
-               (is_integer(evidence.freshness_ms) and evidence.freshness_ms >= 0)) ->
+               Portable.is_non_negative_integer(evidence.freshness_ms)) ->
         {:error, {:invalid_evidence_freshness_ms, evidence.freshness_ms}}
 
       evidence.provisional and is_nil(evidence.valid_until) and
@@ -276,7 +304,7 @@ defmodule Spectre.Evidence do
 
   defp validate_body(evidence) do
     cond do
-      not is_map(evidence.bindings) or is_struct(evidence.bindings) ->
+      not Portable.is_plain_map(evidence.bindings) ->
         {:error, {:invalid_evidence_bindings, Portable.shape(evidence.bindings)}}
 
       not is_list(evidence.assumptions) ->
@@ -285,6 +313,13 @@ defmodule Spectre.Evidence do
       not is_list(evidence.labels) ->
         {:error, {:invalid_evidence_labels, Portable.shape(evidence.labels)}}
 
+      true ->
+        validate_payload(evidence)
+    end
+  end
+
+  defp validate_payload(evidence) do
+    cond do
       is_nil(evidence.payload) and is_nil(evidence.payload_ref) ->
         {:error, :missing_evidence_payload_or_ref}
 

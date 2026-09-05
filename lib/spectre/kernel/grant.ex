@@ -1,7 +1,9 @@
 defmodule Spectre.Kernel.Grant do
   @moduledoc false
 
-  alias Spectre.{Act, Seal}
+  require Spectre.Portable
+
+  alias Spectre.{Act, Portable, Seal, Validation}
 
   @seal_domain "spectre:grant:v1\0"
 
@@ -61,9 +63,8 @@ defmodule Spectre.Kernel.Grant do
       when is_binary(secret) and is_map(expected) do
     with :ok <- valid_shape(grant),
          :ok <- matches(grant, expected),
-         :ok <- not_expired(grant, expected),
-         :ok <- authentic(grant, secret) do
-      :ok
+         :ok <- not_expired(grant, expected) do
+      authentic(grant, secret)
     end
   end
 
@@ -105,15 +106,15 @@ defmodule Spectre.Kernel.Grant do
         {:error, :incomplete_grant_material}
 
       not Enum.all?([:act_ref, :domain_ref, :executor_ref, :material_digest, :nonce], fn key ->
-        is_binary(Map.fetch!(normalized, key)) and Map.fetch!(normalized, key) != ""
+        Portable.is_non_empty_binary(Map.fetch!(normalized, key))
       end) ->
         {:error, :invalid_grant_material}
 
-      not is_integer(normalized.issued_at) or not is_integer(normalized.expires_at) or
-        normalized.issued_at < 0 or normalized.expires_at <= normalized.issued_at ->
+      not Portable.is_non_negative_integer(normalized.issued_at) or
+        not is_integer(normalized.expires_at) or normalized.expires_at <= normalized.issued_at ->
         {:error, :invalid_grant_time_window}
 
-      not (is_integer(normalized.generation) and normalized.generation >= 0) ->
+      not Portable.is_non_negative_integer(normalized.generation) ->
         {:error, :invalid_grant_generation}
 
       true ->
@@ -137,15 +138,13 @@ defmodule Spectre.Kernel.Grant do
       {:domain_ref, :invalid_grant}
     ]
 
-    Enum.reduce_while(checks, :ok, fn {field, reason}, :ok ->
-      case Map.fetch(expected, field) do
-        {:ok, value} ->
-          if value == Map.fetch!(grant, field),
-            do: {:cont, :ok},
-            else: {:halt, {:error, reason}}
+    Validation.all(checks, fn {field, reason} ->
+      actual = Map.fetch!(grant, field)
 
-        :error ->
-          {:cont, :ok}
+      case Map.fetch(expected, field) do
+        {:ok, ^actual} -> :ok
+        {:ok, _different} -> {:error, reason}
+        :error -> :ok
       end
     end)
   end

@@ -1,6 +1,8 @@
 defmodule Spectre.Attempt.Runner.Observation do
   @moduledoc false
 
+  require Spectre.Portable
+
   alias Spectre.{Act, Attempt, Evidence, Outcome, Portable}
   alias Spectre.Attempt.Binding
   alias Spectre.Attempt.Evidence, as: AttemptEvidence
@@ -30,7 +32,7 @@ defmodule Spectre.Attempt.Runner.Observation do
           non_neg_integer()
         ) :: {:ok, t()} | {:error, term()}
   def normalize_late(status, metadata, act, attempt, observed_at)
-      when status in @statuses and is_integer(observed_at) and observed_at >= 0 do
+      when status in @statuses and Portable.is_non_negative_integer(observed_at) do
     with {:ok, act} <- Act.new(act),
          {:ok, attempt} <- Attempt.new(attempt),
          nil <- Binding.mismatch(attempt, act),

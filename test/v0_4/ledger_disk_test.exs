@@ -2,6 +2,7 @@ defmodule Spectre.V04Test.LedgerDiskTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Ledger
+  alias Spectre.Ledger.Store, as: LedgerStore
   alias Spectre.Ledger.Store.Disk
 
   @frame_header_size 45
@@ -25,13 +26,13 @@ defmodule Spectre.V04Test.LedgerDiskTest do
 
     {store, child_id} = start_disk(directory)
 
-    assert {:ok, 2} = Ledger.append(store, domain_ref, "batch:first", first_batch, 0)
+    assert {:ok, 2} = append(store, domain_ref, "batch:first", first_batch, 0)
     assert {:ok, first_info} = Ledger.lookup_batch(store, domain_ref, "batch:first")
     path = domain_path(directory, domain_ref)
     first_batch_bytes = File.read!(path)
 
     assert {:error, :conflict} =
-             Ledger.append(
+             append(
                store,
                domain_ref,
                "batch:stale-cas",
@@ -52,11 +53,11 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     assert snapshot.recovery == nil
     assert Enum.map(snapshot.entries, & &1.payload) == first_batch
     assert {:ok, ^first_info} = Ledger.lookup_batch(restarted, domain_ref, "batch:first")
-    assert {:ok, 2} = Ledger.append(restarted, domain_ref, "batch:first", first_batch, 0)
+    assert {:ok, 2} = append(restarted, domain_ref, "batch:first", first_batch, 0)
     assert File.read!(path) == first_batch_bytes
 
     assert {:ok, 3} =
-             Ledger.append(restarted, domain_ref, "batch:second", [%{"event" => "three"}], 2)
+             append(restarted, domain_ref, "batch:second", [%{"event" => "three"}], 2)
 
     assert {:ok, exported} = Ledger.export(restarted, domain_ref)
     assert {:ok, %{revision: 3, recovery: nil}} = Ledger.verify(exported)
@@ -69,8 +70,8 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     {store, child_id} = start_disk(directory)
 
     tasks = [
-      Task.async(fn -> Ledger.append(store, domain_ref, "batch:left", left, 0) end),
-      Task.async(fn -> Ledger.append(store, domain_ref, "batch:right", right, 0) end)
+      Task.async(fn -> append(store, domain_ref, "batch:left", left, 0) end),
+      Task.async(fn -> append(store, domain_ref, "batch:right", right, 0) end)
     ]
 
     replies = Enum.map(tasks, &Task.await(&1, 5_000))
@@ -97,7 +98,7 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     {store, child_id} = start_disk(directory)
 
     assert {:ok, 1} =
-             Ledger.append(store, domain_ref, "batch:complete", [%{"event" => "complete"}], 0)
+             append(store, domain_ref, "batch:complete", [%{"event" => "complete"}], 0)
 
     path = domain_path(directory, domain_ref)
     complete_size = File.stat!(path).size
@@ -140,14 +141,14 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     {store, child_id} = start_disk(directory)
 
     assert {:ok, 1} =
-             Ledger.append(store, domain_ref, "batch:prefix", [%{"event" => "prefix"}], 0)
+             append(store, domain_ref, "batch:prefix", [%{"event" => "prefix"}], 0)
 
     path = domain_path(directory, domain_ref)
     prefix_bytes = File.read!(path)
     prefix_size = byte_size(prefix_bytes)
 
     assert {:ok, 2} =
-             Ledger.append(store, domain_ref, "batch:partial", [%{"event" => "partial"}], 1)
+             append(store, domain_ref, "batch:partial", [%{"event" => "partial"}], 1)
 
     complete_bytes = File.read!(path)
     partial_tail_size = @frame_header_size + 1
@@ -192,13 +193,13 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     {store, child_id} = start_disk(directory, tail_policy: :truncate)
 
     assert {:ok, 1} =
-             Ledger.append(store, domain_ref, "batch:first", [%{"event" => "first"}], 0)
+             append(store, domain_ref, "batch:first", [%{"event" => "first"}], 0)
 
     path = domain_path(directory, domain_ref)
     first_frame_size = File.stat!(path).size
 
     assert {:ok, 2} =
-             Ledger.append(store, domain_ref, "batch:second", [%{"event" => "second"}], 1)
+             append(store, domain_ref, "batch:second", [%{"event" => "second"}], 1)
 
     complete_size = File.stat!(path).size
     assert {:ok, %{revision: 2}} = Ledger.load(store, domain_ref)
@@ -232,16 +233,16 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     {store, child_id} = start_disk(directory)
 
     assert {:error, :ambiguous} =
-             Ledger.append(store, domain_ref, before_id, before_payloads, 0,
+             append(store, domain_ref, before_id, before_payloads, 0,
                fault_injection: :before_commit
              )
 
     assert :not_found = Ledger.load(store, domain_ref)
     assert :not_found = Ledger.lookup_batch(store, domain_ref, before_id)
-    assert {:ok, 1} = Ledger.append(store, domain_ref, before_id, before_payloads, 0)
+    assert {:ok, 1} = append(store, domain_ref, before_id, before_payloads, 0)
 
     assert {:error, :ambiguous} =
-             Ledger.append(store, domain_ref, after_id, after_payloads, 1,
+             append(store, domain_ref, after_id, after_payloads, 1,
                fault_injection: :after_commit
              )
 
@@ -251,7 +252,7 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     stop_disk(child_id)
     {restarted, _child_id} = start_disk(directory)
 
-    assert {:ok, 2} = Ledger.append(restarted, domain_ref, after_id, after_payloads, 1)
+    assert {:ok, 2} = append(restarted, domain_ref, after_id, after_payloads, 1)
 
     assert {:ok, snapshot} = Ledger.load(restarted, domain_ref)
     assert snapshot.revision == 2
@@ -259,7 +260,7 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     assert Enum.map(snapshot.entries, & &1.payload) == before_payloads ++ after_payloads
 
     assert {:error, {:batch_identity_conflict, ^after_id}} =
-             Ledger.append(restarted, domain_ref, after_id, [%{"event" => "different"}], 1)
+             append(restarted, domain_ref, after_id, [%{"event" => "different"}], 1)
   end
 
   defp start_disk(directory, opts \\ []) do
@@ -307,5 +308,17 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     else
       raise "refusing to remove unexpected test directory: #{inspect(expanded)}"
     end
+  end
+
+  # The adapter receives explicit trusted acquisition time; Ledger is read-only.
+  defp append(store, domain, batch, payloads, revision, opts \\ []) do
+    LedgerStore.append(
+      store,
+      domain,
+      batch,
+      payloads,
+      revision,
+      Keyword.put_new(opts, :recorded_at, revision + 1)
+    )
   end
 end

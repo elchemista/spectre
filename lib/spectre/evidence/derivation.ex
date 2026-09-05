@@ -25,9 +25,8 @@ defmodule Spectre.Evidence.Derivation do
   def conservative_labels(evidence, additional_labels \\ [])
 
   def conservative_labels(evidence, additional_labels) when is_list(additional_labels) do
-    with {:ok, inherited} <- inherited_labels(evidence),
-         {:ok, labels} <- normalize_labels(inherited ++ additional_labels) do
-      {:ok, labels}
+    with {:ok, inherited} <- inherited_labels(evidence) do
+      normalize_labels(inherited ++ additional_labels)
     end
   end
 

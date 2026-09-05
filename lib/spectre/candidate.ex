@@ -15,6 +15,8 @@ defmodule Spectre.Candidate do
   covers the Presentation and every Evidence ref.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Act, Consent, Disclosure, Portable, Row}
   alias Spectre.Kernel.Meter.Amounts
 
@@ -206,7 +208,7 @@ defmodule Spectre.Candidate do
            Portable.normalize_refs(record.subject_refs, :subject_refs),
          {:ok, target_refs} <-
            Portable.normalize_refs(record.target_refs, :target_refs),
-         class when is_binary(class) and class != "" <- record.class,
+         class when Portable.is_non_empty_binary(class) <- record.class,
          consequence when not is_nil(consequence) <- record.consequence do
       Portable.digest(%{
         "class" => class,
@@ -294,16 +296,16 @@ defmodule Spectre.Candidate do
       candidate.schema_version != @schema_version ->
         {:error, {:unsupported_candidate_schema_version, candidate.schema_version}}
 
-      not is_binary(candidate.class) or candidate.class == "" ->
+      not Portable.is_non_empty_binary(candidate.class) ->
         {:error, {:invalid_candidate_class, candidate.class}}
 
       is_nil(candidate.consequence) ->
         {:error, :missing_candidate_consequence}
 
-      not is_map(candidate.purpose_params) or is_struct(candidate.purpose_params) ->
+      not Portable.is_plain_map(candidate.purpose_params) ->
         {:error, {:invalid_candidate_purpose_params, Portable.shape(candidate.purpose_params)}}
 
-      not (is_integer(candidate.observation_window_ms) and candidate.observation_window_ms >= 0) ->
+      not Portable.is_non_negative_integer(candidate.observation_window_ms) ->
         {:error, {:invalid_candidate_observation_window_ms, candidate.observation_window_ms}}
 
       true ->
@@ -336,9 +338,8 @@ defmodule Spectre.Candidate do
          :ok <- Portable.validate_refs(candidate.target_refs, :target_refs),
          :ok <- Portable.validate_ref(candidate.purpose_ref, :purpose_ref),
          :ok <- Portable.validate_refs(candidate.evidence_refs, :evidence_refs),
-         :ok <- Portable.validate_optional_ref(candidate.presentation_ref, :presentation_ref),
-         :ok <- Portable.validate_ref(candidate.executor_contract_ref, :executor_contract_ref) do
-      :ok
+         :ok <- Portable.validate_optional_ref(candidate.presentation_ref, :presentation_ref) do
+      Portable.validate_ref(candidate.executor_contract_ref, :executor_contract_ref)
     end
   end
 

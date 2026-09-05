@@ -115,17 +115,9 @@ defmodule Spectre.Mind.Turn do
   end
 
   defp normalize_evidence(evidence) do
-    Enum.reduce_while(evidence, {:ok, [], MapSet.new()}, fn value, {:ok, records, refs} ->
-      with {:ok, record} <- Evidence.new(value),
-           false <- MapSet.member?(refs, record.ref) do
-        {:cont, {:ok, [record | records], MapSet.put(refs, record.ref)}}
-      else
-        true -> {:halt, {:error, :duplicate_turn_evidence}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, records, _refs} -> {:ok, Enum.sort_by(records, & &1.ref)}
+    case Evidence.normalize_unique(evidence) do
+      {:ok, records} -> {:ok, Enum.sort_by(records, & &1.ref)}
+      {:error, {:duplicate_evidence, _ref}} -> {:error, :duplicate_turn_evidence}
       {:error, _reason} = error -> error
     end
   end

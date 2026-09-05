@@ -1,0 +1,218 @@
+defmodule Spectre.CoreTest.PostgresAdapterTest do
+  use ExUnit.Case, async: true
+
+  alias Spectre.Canonical.Value
+  alias Spectre.Ledger.Entry
+  alias Spectre.Ledger.Store.Postgres
+
+  # Exercises the host Repo/SQL contract without adding database dependencies.
+  # These scripts prove call ordering and validation, not PostgreSQL durability.
+  defmodule Repo do
+    import ExUnit.Assertions
+
+    def script(steps), do: Process.put({__MODULE__, :steps}, steps)
+    def remaining, do: Process.get({__MODULE__, :steps}, [])
+
+    def transaction(operation, opts) do
+      send(self(), {:transaction, opts})
+      {:ok, operation.()}
+    catch
+      {:rollback, reason} -> {:error, reason}
+    end
+
+    def rollback(reason), do: throw({:rollback, reason})
+
+    def query(__MODULE__, sql, params, opts) do
+      [{fragment, reply} | rest] = remaining()
+      assert String.contains?(sql, fragment)
+      Process.put({__MODULE__, :steps}, rest)
+      send(self(), {:query, fragment, params, opts})
+      reply
+    end
+  end
+
+  @opts [repo: Repo, query_module: Repo, recorded_at: 100]
+  @read_opts [repo: Repo, query_module: Repo]
+  @payloads [%{"event" => "first"}, %{"event" => "second"}]
+
+  test "namespace validation prevents SQL identifier injection" do
+    assert {:ok, %{schema: "public", table_prefix: "spectre_ledger"}} = Postgres.namespace()
+    assert {:ok, _} = Postgres.namespace(schema: "tenant_1", table_prefix: "audit")
+
+    for value <- ["public; DROP TABLE x", "public.other", "\"quoted\"", "", 42] do
+      assert {:error, _} = Postgres.namespace(schema: value)
+    end
+
+    assert {:error, _} = Postgres.namespace(unknown: true)
+    assert {:error, _} = Postgres.namespace(:invalid)
+  end
+
+  test "migration DDL guards batch mutation and enforces CAS/idempotency coordinates" do
+    assert {:ok, %{up: up, down: down}} =
+             Postgres.migration_sql(schema: "audit", table_prefix: "gam")
+
+    sql = Enum.join(up, "\n")
+    assert sql =~ ~s(CREATE TABLE "audit"."gam_batches")
+    assert sql =~ "PRIMARY KEY (domain_ref, batch_id)"
+    assert sql =~ "UNIQUE (domain_ref, first_revision)"
+    assert sql =~ "CHECK (first_revision = expected_revision + 1)"
+    assert sql =~ "BEFORE UPDATE OR DELETE OR TRUNCATE"
+    assert sql =~ "ON UPDATE RESTRICT ON DELETE RESTRICT"
+    assert List.last(down) == ~s(DROP TABLE "audit"."gam_heads")
+  end
+
+  test "new append sets synchronous commit and locks before writing one canonical batch" do
+    Repo.script(new_batch_script())
+    assert {:ok, 2} = Postgres.append("domain", "batch", @payloads, 0, @opts)
+    assert Repo.remaining() == []
+    assert_receive {:transaction, []}
+    assert_receive {:query, "SET LOCAL synchronous_commit = on", [], []}
+    assert_receive {:query, "pg_advisory_xact_lock", ["domain"], []}
+    assert_receive {:query, ~s(INSERT INTO "public"."spectre_ledger_batches"), params, []}
+    ["domain", "batch", identity, 0, 1, 2, 2, head, encoded] = params
+    assert {:ok, ^identity} = Entry.batch_identity("domain", "batch", @payloads, 0)
+    assert {:ok, records} = Value.decode(encoded)
+    assert length(records) == 2
+    assert Enum.map(records, & &1["payload"]) == @payloads
+    assert Enum.map(records, & &1["recorded_at"]) == [100, 100]
+    assert List.last(records)["digest"] == head
+  end
+
+  test "CAS conflict and pre-commit ambiguity perform no writes" do
+    Repo.script(Enum.take(new_batch_script(), 4))
+    assert {:error, :conflict} = Postgres.append("domain", "batch", @payloads, 1, @opts)
+    assert Repo.remaining() == []
+    Repo.script(Enum.take(new_batch_script(), 4))
+
+    assert {:error, :ambiguous} =
+             Postgres.append(
+               "domain",
+               "batch",
+               @payloads,
+               0,
+               Keyword.put(@opts, :fault, :before_commit)
+             )
+
+    assert Repo.remaining() == []
+    refute_received {:query, ~s(INSERT INTO "public"."spectre_ledger_heads"), _, _}
+  end
+
+  test "lost acknowledgement after commit remains ambiguous to the caller" do
+    Repo.script(new_batch_script())
+
+    assert {:error, :ambiguous} =
+             Postgres.append(
+               "domain",
+               "batch",
+               @payloads,
+               0,
+               Keyword.put(@opts, :fault, :after_commit)
+             )
+
+    assert Repo.remaining() == []
+  end
+
+  test "existing identical batch is verified against durable head and never rewritten" do
+    batch = stored_batch()
+
+    Repo.script([
+      {"SET LOCAL", rows([])},
+      {"pg_advisory_xact_lock", rows([[nil]])},
+      {"SELECT identity_digest", rows([tl(batch.row)])}
+      | load_script(batch)
+    ])
+
+    assert {:ok, 2} =
+             Postgres.append(
+               "domain",
+               "batch",
+               @payloads,
+               0,
+               Keyword.put(@opts, :recorded_at, 999)
+             )
+
+    assert Repo.remaining() == []
+    refute_received {:query, ~s(INSERT INTO "public"."spectre_ledger_heads"), _, _}
+  end
+
+  test "batch identity conflict is rejected before reading or changing the head" do
+    batch = stored_batch()
+
+    Repo.script([
+      {"SET LOCAL", rows([])},
+      {"pg_advisory_xact_lock", rows([[nil]])},
+      {"SELECT identity_digest", rows([tl(batch.row)])}
+    ])
+
+    assert {:error, {:batch_identity_conflict, "batch"}} =
+             Postgres.append("domain", "batch", [%{"event" => "changed"}], 0, @opts)
+
+    assert Repo.remaining() == []
+  end
+
+  test "load and lookup decode and verify canonical bytes against stored metadata" do
+    batch = stored_batch()
+    Repo.script(load_script(batch))
+    assert {:ok, snapshot} = Postgres.load("domain", @read_opts)
+    assert snapshot.entries == batch.entries
+    assert snapshot.revision == 2
+    Repo.script([{"SELECT identity_digest", rows([tl(batch.row)])} | load_script(batch)])
+    assert {:ok, info} = Postgres.lookup_batch("domain", "batch", @read_opts)
+    assert info.head_digest == batch.head
+    assert info.entry_count == 2
+    assert Repo.remaining() == []
+  end
+
+  test "missing ledger and malformed query replies fail without invented data" do
+    Repo.script([{"FOR SHARE", rows([])}])
+    assert :not_found = Postgres.load("domain", @read_opts)
+    Repo.script([{"FOR SHARE", {:ok, %{rows: :invalid}}}])
+    assert {:error, :invalid_ledger_postgres_query_result} = Postgres.load("domain", @read_opts)
+    Repo.script([{"FOR SHARE", :invalid}])
+    assert {:error, :invalid_ledger_postgres_query_reply} = Postgres.load("domain", @read_opts)
+    Repo.script([{"FOR SHARE", {:error, :disconnected}}])
+
+    assert {:error, {:ledger_postgres_query_failed, :disconnected}} =
+             Postgres.load("domain", @read_opts)
+  end
+
+  test "corrupted canonical bytes and changed head are rejected on read" do
+    batch = stored_batch()
+    bad_row = List.replace_at(batch.row, 7, "not-canonical")
+    Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([bad_row])}])
+    assert {:error, {:invalid_postgres_ledger_batch, _}} = Postgres.load("domain", @read_opts)
+
+    Repo.script([
+      {"FOR SHARE", rows([[2, String.duplicate("0", 64)]])},
+      {"ORDER BY", rows([batch.row])}
+    ])
+
+    assert {:error, _} = Postgres.load("domain", @read_opts)
+  end
+
+  defp new_batch_script do
+    [
+      {"SET LOCAL synchronous_commit = on", rows([])},
+      {"pg_advisory_xact_lock", rows([[nil]])},
+      {"SELECT identity_digest", rows([])},
+      {"FOR UPDATE", rows([])},
+      {~s(INSERT INTO "public"."spectre_ledger_heads"), {:ok, %{num_rows: 1}}},
+      {~s(INSERT INTO "public"."spectre_ledger_batches"), {:ok, %{num_rows: 1}}}
+    ]
+  end
+
+  defp stored_batch do
+    {:ok, entries} =
+      Entry.build_batch("domain", "batch", @payloads, 0, 100, Entry.genesis_digest())
+
+    {:ok, identity} = Entry.batch_identity("domain", "batch", @payloads, 0)
+    {:ok, encoded} = Value.encode(Enum.map(entries, &Entry.to_data/1))
+    head = List.last(entries).digest
+    %{entries: entries, head: head, row: ["batch", identity, 0, 1, 2, 2, head, encoded]}
+  end
+
+  defp load_script(batch),
+    do: [{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([batch.row])}]
+
+  defp rows(values), do: {:ok, %{rows: values}}
+end

@@ -8,6 +8,8 @@ defmodule Spectre.Erasure do
   causal description remain even when the referenced payload is gone.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -108,7 +110,7 @@ defmodule Spectre.Erasure do
   @doc "Materializes an immutable erasure record after the authorizing Act exists."
   @spec from_request_draft(map(), String.t()) :: {:ok, t()} | {:error, term()}
   def from_request_draft(draft, source_act_ref)
-      when is_map(draft) and not is_struct(draft) and is_binary(source_act_ref) and
+      when Portable.is_plain_map(draft) and is_binary(source_act_ref) and
              source_act_ref != "" do
     with {:ok, normalized} <- request_draft(draft) do
       normalized
@@ -208,7 +210,7 @@ defmodule Spectre.Erasure do
       not target_digest_matches?(erasure.target_ref, erasure.target_digest) ->
         {:error, {:erasure_target_digest_mismatch, erasure.target_ref, erasure.target_digest}}
 
-      not is_binary(erasure.reason) or erasure.reason == "" ->
+      not Portable.is_non_empty_binary(erasure.reason) ->
         {:error, {:invalid_erasure_reason, erasure.reason}}
 
       not is_boolean(erasure.reduces_verifiability) ->
@@ -221,9 +223,8 @@ defmodule Spectre.Erasure do
         with :ok <- Portable.validate_ref(erasure.ref, :ref),
              :ok <- Portable.validate_ref(erasure.source_act_ref, :source_act_ref),
              :ok <- Portable.validate_ref(erasure.target_ref, :target_ref),
-             :ok <- Portable.validate_optional_ref(erasure.scope_ref, :scope_ref),
-             :ok <- Portable.validate_refs(erasure.affected_refs, :affected_refs) do
-          :ok
+             :ok <- Portable.validate_optional_ref(erasure.scope_ref, :scope_ref) do
+          Portable.validate_refs(erasure.affected_refs, :affected_refs)
         end
     end
   end

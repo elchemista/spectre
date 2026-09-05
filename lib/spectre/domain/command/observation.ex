@@ -8,10 +8,10 @@ defmodule Spectre.Domain.Command.Observation do
   failures stop the owning Sequencer.
   """
 
-  alias Spectre.Domain.Transaction
   alias Spectre.Domain.Command.Commit
   alias Spectre.Domain.Command.Record, as: CommandRecord
   alias Spectre.Domain.Sequencer.State
+  alias Spectre.Domain.Transaction
   alias Spectre.Kernel.Observation
   alias Spectre.Outcome
 

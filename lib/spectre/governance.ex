@@ -10,16 +10,18 @@ defmodule Spectre.Governance do
   through their Surface contracts.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Act, Candidate}
   alias Spectre.Declassification
   alias Spectre.Definition
   alias Spectre.Duty.Disposition
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Evidence
-  alias Spectre.HostProfile
+  alias Spectre.Governance.Builder
   alias Spectre.GovernedAct.Class, as: GovernedClass
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
-  alias Spectre.Governance.Builder
+  alias Spectre.HostProfile
   alias Spectre.Kernel.Meter.Amounts
   alias Spectre.Mandate
   alias Spectre.Portable
@@ -132,7 +134,7 @@ defmodule Spectre.Governance do
           {:ok, Candidate.t()} | {:error, term()}
   def delegate_mandate(%Scope{} = scope, mandate, candidate_attrs) do
     with {:ok, draft} <- Mandate.issue_draft(mandate),
-         parent_ref when is_binary(parent_ref) and parent_ref != "" <-
+         parent_ref when Portable.is_non_empty_binary(parent_ref) <-
            Map.get(draft, "parent_ref") do
       Builder.internal(
         scope,
@@ -151,7 +153,7 @@ defmodule Spectre.Governance do
   @spec devolve_mandate(Scope.t(), String.t(), map(), map() | keyword()) ::
           {:ok, Candidate.t()} | {:error, term()}
   def devolve_mandate(%Scope{} = scope, child_mandate_ref, amounts, candidate_attrs)
-      when is_binary(child_mandate_ref) and child_mandate_ref != "" and is_map(amounts) and
+      when Portable.is_non_empty_binary(child_mandate_ref) and is_map(amounts) and
              not is_struct(amounts) do
     with {:ok, amounts} <- Amounts.non_empty(amounts) do
       Builder.internal(
@@ -180,7 +182,7 @@ defmodule Spectre.Governance do
           map() | keyword()
         ) :: {:ok, Candidate.t()} | {:error, term()}
   def restrict_mandate(%Scope{} = scope, predecessor_ref, successor, candidate_attrs)
-      when is_binary(predecessor_ref) and predecessor_ref != "" do
+      when Portable.is_non_empty_binary(predecessor_ref) do
     with {:ok, draft} <- Mandate.issue_draft(successor) do
       Builder.internal(
         scope,
@@ -216,7 +218,7 @@ defmodule Spectre.Governance do
   end
 
   def revoke_mandate(%Scope{} = scope, mandate_ref, candidate_attrs)
-      when is_binary(mandate_ref) and mandate_ref != "" do
+      when Portable.is_non_empty_binary(mandate_ref) do
     Builder.internal(
       scope,
       "mandate.revoke",
@@ -280,7 +282,7 @@ defmodule Spectre.Governance do
   @spec revise_surface(Scope.t(), String.t(), Surface.t() | map() | keyword(), map() | keyword()) ::
           {:ok, Candidate.t()} | {:error, term()}
   def revise_surface(%Scope{} = scope, previous_ref, surface, candidate_attrs)
-      when is_binary(previous_ref) and previous_ref != "" do
+      when Portable.is_non_empty_binary(previous_ref) do
     with {:ok, surface} <- Surface.new(surface) do
       Builder.internal(
         scope,
@@ -308,7 +310,7 @@ defmodule Spectre.Governance do
           map() | keyword()
         ) :: {:ok, Candidate.t()} | {:error, term()}
   def revise_host_profile(%Scope{} = scope, previous_ref, profile, candidate_attrs)
-      when is_binary(previous_ref) and previous_ref != "" do
+      when Portable.is_non_empty_binary(previous_ref) do
     with {:ok, profile} <- HostProfile.new(profile) do
       Builder.internal(
         scope,

@@ -6,6 +6,8 @@ defmodule Spectre.Principal do
   authority.  Authority is carried exclusively by mandates.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -81,7 +83,7 @@ defmodule Spectre.Principal do
       not (is_nil(principal.display_name) or is_binary(principal.display_name)) ->
         {:error, {:invalid_principal_display_name, Portable.shape(principal.display_name)}}
 
-      not is_map(principal.attributes) or is_struct(principal.attributes) ->
+      not Portable.is_plain_map(principal.attributes) ->
         {:error, {:invalid_principal_attributes, Portable.shape(principal.attributes)}}
 
       true ->

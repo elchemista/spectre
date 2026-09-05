@@ -18,6 +18,8 @@ defmodule Spectre.Domain.Sequencer do
 
   use GenServer
 
+  require Spectre.Portable
+
   alias Spectre.{
     Act,
     Attempt,
@@ -30,6 +32,15 @@ defmodule Spectre.Domain.Sequencer do
     SubmissionContext
   }
 
+  alias Spectre.Domain.Admission.Command, as: AdmissionCommand
+  alias Spectre.Domain.Command.Commit, as: CommandCommit
+  alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
+  alias Spectre.Domain.Command.Execution, as: ExecutionCommand
+  alias Spectre.Domain.Command.Input, as: InputCommand
+  alias Spectre.Domain.Command.Observation, as: ObservationCommand
+  alias Spectre.Domain.Command.Presentation, as: PresentationCommand
+  alias Spectre.Domain.Command.Scope, as: ScopeCommand
+
   alias Spectre.Domain.{
     Configuration,
     Context,
@@ -39,22 +50,13 @@ defmodule Spectre.Domain.Sequencer do
     Transaction
   }
 
-  alias Spectre.Domain.Admission.Command, as: AdmissionCommand
-  alias Spectre.Domain.Command.Commit, as: CommandCommit
-  alias Spectre.Domain.Command.Execution, as: ExecutionCommand
-  alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
-  alias Spectre.Domain.Command.Input, as: InputCommand
-  alias Spectre.Domain.Command.Observation, as: ObservationCommand
-  alias Spectre.Domain.Command.Presentation, as: PresentationCommand
-  alias Spectre.Domain.Command.Scope, as: ScopeCommand
-
+  alias Spectre.Domain.Sequencer.Control
+  alias Spectre.Domain.Sequencer.State
   alias Spectre.Execution.Router
   alias Spectre.Kernel.Grant
   alias Spectre.Mind.Turn
   alias Spectre.Scope.Opening
   alias Spectre.Secret.CheckoutReceipt
-  alias Spectre.Domain.Sequencer.Control
-  alias Spectre.Domain.Sequencer.State
 
   @maximum_reconciliation_delay_ms 86_400_000
   @sequencer_call_options [:timeout]
@@ -264,7 +266,7 @@ defmodule Spectre.Domain.Sequencer do
   def record_executor_evidence(server, act_ref, attempt_ref, evidence, opts \\ [])
 
   def record_executor_evidence(server, act_ref, attempt_ref, evidence, opts)
-      when is_binary(act_ref) and act_ref != "" and is_binary(attempt_ref) and attempt_ref != "" and
+      when Portable.is_non_empty_binary(act_ref) and Portable.is_non_empty_binary(attempt_ref) and
              is_list(opts) do
     call(
       server,
@@ -344,7 +346,7 @@ defmodule Spectre.Domain.Sequencer do
   @spec definition(GenServer.server(), SubmissionContext.t(), String.t()) ::
           {:ok, Spectre.Definition.t()} | {:error, term()}
   def definition(server, %SubmissionContext{} = context, ref)
-      when is_binary(ref) and ref != "",
+      when Portable.is_non_empty_binary(ref),
       do: GenServer.call(server, {:definition, context, ref})
 
   def definition(_server, %SubmissionContext{}, ref),
@@ -375,7 +377,6 @@ defmodule Spectre.Domain.Sequencer do
       {:ok, schedule_reconciliation(%{state | projection: projection})}
     else
       {:error, reason} -> {:stop, reason}
-      :not_found -> {:stop, :domain_bootstrap_not_durable}
     end
   end
 
@@ -520,10 +521,12 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp ingress_observation_reply(state, context, input, opts) do
-    with {:ok, ingress_opts} <- observation_options(opts) do
-      run_after_duty_repair(state, &InputCommand.observe(&1, context, input, ingress_opts))
-    else
-      {:error, reason} -> {:reply, {:error, reason}, state}
+    case observation_options(opts) do
+      {:ok, ingress_opts} ->
+        run_after_duty_repair(state, &InputCommand.observe(&1, context, input, ingress_opts))
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -535,22 +538,23 @@ defmodule Spectre.Domain.Sequencer do
       run_after_duty_repair(
         state,
         fn current ->
-          case InputCommand.begin_turn(
-                 current,
-                 context,
-                 input,
-                 context_evidence_refs,
-                 ingress_opts
-               ) do
-            {:ok, next_state, turn} -> {:ok, next_state, {mind, turn}}
-            {:error, _state, _reason} = error -> error
-          end
+          InputCommand.begin_turn(
+            current,
+            context,
+            input,
+            context_evidence_refs,
+            ingress_opts
+          )
+          |> attach_mind(mind)
         end
       )
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  defp attach_mind({:ok, state, turn}, mind), do: {:ok, state, {mind, turn}}
+  defp attach_mind({:error, _state, _reason} = error, _mind), do: error
 
   defp configured_mind(%State{mind: nil}), do: {:error, :mind_not_configured}
   defp configured_mind(%State{mind: mind}), do: {:ok, mind}
@@ -737,13 +741,8 @@ defmodule Spectre.Domain.Sequencer do
 
   defp observation_options(opts) do
     with :ok <- validate_known_options(opts, @observation_call_options, :observation) do
-      case Keyword.get(opts, :ingress_opts, []) do
-        value when is_list(value) ->
-          if Keyword.keyword?(value), do: {:ok, value}, else: {:error, :invalid_ingress_options}
-
-        _invalid ->
-          {:error, :invalid_ingress_options}
-      end
+      value = Keyword.get(opts, :ingress_opts, [])
+      if Portable.keyword?(value), do: {:ok, value}, else: {:error, :invalid_ingress_options}
     end
   end
 

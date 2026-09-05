@@ -276,25 +276,12 @@ defmodule Spectre.Kernel.Recognition do
 
   defp assumption_status(assumption, accepted?, condition, evidence_set, time, visited) do
     {supporting, contradicting, basis} =
-      Enum.reduce(evidence_set, {[], [], MapSet.new()}, fn candidate,
-                                                           {supporting, contradicting, basis} ->
+      Enum.reduce(evidence_set, {[], [], MapSet.new()}, fn candidate, accumulated ->
         if candidate.proposition == assumption do
-          case qualify(candidate, condition, evidence_set, time, visited) do
-            {:ok, candidate_basis} ->
-              {
-                if(candidate.stance == :supports, do: [candidate | supporting], else: supporting),
-                if(candidate.stance == :contradicts,
-                  do: [candidate | contradicting],
-                  else: contradicting
-                ),
-                MapSet.union(basis, candidate_basis)
-              }
-
-            {:error, _reason} ->
-              {supporting, contradicting, basis}
-          end
+          qualification = qualify(candidate, condition, evidence_set, time, visited)
+          collect_assumption(qualification, candidate, accumulated)
         else
-          {supporting, contradicting, basis}
+          accumulated
         end
       end)
 
@@ -314,6 +301,16 @@ defmodule Spectre.Kernel.Recognition do
         {:error, {:unresolved_evidence_assumption, assumption}}
     end
   end
+
+  defp collect_assumption({:ok, candidate_basis}, candidate, {supporting, contradicting, basis}) do
+    {
+      if(candidate.stance == :supports, do: [candidate | supporting], else: supporting),
+      if(candidate.stance == :contradicts, do: [candidate | contradicting], else: contradicting),
+      MapSet.union(basis, candidate_basis)
+    }
+  end
+
+  defp collect_assumption({:error, _reason}, _candidate, accumulated), do: accumulated
 
   defp coverage_satisfied?(%Condition{coverage: required}, _evidence)
        when required in [nil, :any, :all],

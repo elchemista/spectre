@@ -20,9 +20,9 @@ defmodule Spectre.GovernedAct.Materialization do
 
   alias Spectre.Domain.Event
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.State
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.Materialization.{Authority, Duty}
+  alias Spectre.GovernedAct.State
   alias Spectre.Scope.Opening
 
   @spec events(State.t(), Act.t()) :: {:ok, [map()]} | {:error, term()}

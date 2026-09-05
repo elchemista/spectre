@@ -8,6 +8,8 @@ defmodule Spectre.Definition do
   governance Act recorded by the Domain.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -105,7 +107,7 @@ defmodule Spectre.Definition do
       definition.schema_version != @schema_version ->
         {:error, {:unsupported_definition_schema_version, definition.schema_version}}
 
-      not (is_integer(definition.revision) and definition.revision > 0) ->
+      not Portable.is_positive_integer(definition.revision) ->
         {:error, {:invalid_definition_revision, definition.revision}}
 
       definition.revision == 1 and not is_nil(definition.previous_ref) ->
@@ -114,7 +116,14 @@ defmodule Spectre.Definition do
       definition.revision > 1 and is_nil(definition.previous_ref) ->
         {:error, :revised_definition_missing_previous_ref}
 
-      not is_map(definition.body) or is_struct(definition.body) ->
+      true ->
+        validate_body(definition)
+    end
+  end
+
+  defp validate_body(definition) do
+    cond do
+      not Portable.is_plain_map(definition.body) ->
         {:error, {:invalid_definition_body, Portable.shape(definition.body)}}
 
       not is_integer(definition.declared_at) ->
@@ -123,9 +132,8 @@ defmodule Spectre.Definition do
       true ->
         with :ok <- Portable.validate_ref(definition.ref, :ref),
              :ok <- Portable.validate_non_empty_binary(definition.namespace, :namespace),
-             :ok <- Portable.validate_non_empty_binary(definition.name, :name),
-             :ok <- Portable.validate_optional_ref(definition.previous_ref, :previous_ref) do
-          :ok
+             :ok <- Portable.validate_non_empty_binary(definition.name, :name) do
+          Portable.validate_optional_ref(definition.previous_ref, :previous_ref)
         end
     end
   end

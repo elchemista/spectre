@@ -8,6 +8,8 @@ defmodule Spectre.Constitution do
   rules under the same Domain history.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Duty, Portable}
 
   @schema_version 1
@@ -21,11 +23,10 @@ defmodule Spectre.Constitution do
 
   @doc "Validates a rule map without granting it authority."
   @spec validate(term()) :: :ok | {:error, term()}
-  def validate(rules) when is_map(rules) and not is_struct(rules) do
+  def validate(rules) when Portable.is_plain_map(rules) do
     with :ok <- unique_semantic_keys(rules),
-         :ok <- portable_rules(rules),
-         :ok <- validate_duty_rules(rules) do
-      :ok
+         :ok <- portable_rules(rules) do
+      validate_duty_rules(rules)
     end
   end
 
@@ -33,7 +34,7 @@ defmodule Spectre.Constitution do
 
   @doc "Returns the exact plain value whose digest identifies these rules."
   @spec canonical(map()) :: map()
-  def canonical(rules) when is_map(rules) and not is_struct(rules) do
+  def canonical(rules) when Portable.is_plain_map(rules) do
     %{"schema_version" => @schema_version, "rules" => rules}
   end
 
@@ -54,10 +55,10 @@ defmodule Spectre.Constitution do
 
   @doc false
   @spec duty_rule(map(), atom() | String.t()) :: map()
-  def duty_rule(rules, class) when is_map(rules) and not is_struct(rules) do
+  def duty_rule(rules, class) when Portable.is_plain_map(rules) do
     duty_rules = rule_value(rules, :duty_rules, %{})
 
-    if is_map(duty_rules) and not is_struct(duty_rules) do
+    if Portable.is_plain_map(duty_rules) do
       Map.get(duty_rules, class) || Map.get(duty_rules, to_string(class)) || %{}
     else
       %{}
@@ -78,7 +79,7 @@ defmodule Spectre.Constitution do
   def rule_value(rule, key, default \\ nil)
 
   def rule_value(rule, key, default)
-      when is_map(rule) and not is_struct(rule) and is_atom(key) do
+      when Portable.is_plain_map(rule) and is_atom(key) do
     Map.get(rule, key, Map.get(rule, Atom.to_string(key), default))
   end
 
@@ -110,9 +111,9 @@ defmodule Spectre.Constitution do
 
   @doc false
   @spec emergency_max_duration(map()) :: {:ok, pos_integer()} | {:error, term()}
-  def emergency_max_duration(rules) when is_map(rules) and not is_struct(rules) do
+  def emergency_max_duration(rules) when Portable.is_plain_map(rules) do
     case rule_value(rules, :emergency_max_duration_ms, nil) do
-      duration when is_integer(duration) and duration > 0 -> {:ok, duration}
+      duration when Portable.is_positive_integer(duration) -> {:ok, duration}
       nil -> {:error, :emergency_max_duration_required}
       _invalid -> {:error, :invalid_emergency_max_duration_ms}
     end
@@ -178,18 +179,9 @@ defmodule Spectre.Constitution do
 
   defp validate_duty_rules(rules) do
     case rule_value(rules, :duty_rules, %{}) do
-      duty_rules when is_map(duty_rules) and not is_struct(duty_rules) ->
+      duty_rules when Portable.is_plain_map(duty_rules) ->
         duty_rules
-        |> Enum.reduce_while({:ok, MapSet.new()}, fn {class, rule}, {:ok, seen} ->
-          with {:ok, normalized_class} <- configurable_duty_class(class),
-               false <- MapSet.member?(seen, normalized_class),
-               :ok <- validate_duty_rule(normalized_class, rule) do
-            {:cont, {:ok, MapSet.put(seen, normalized_class)}}
-          else
-            true -> {:halt, {:error, {:duplicate_constitution_duty_rule, class}}}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
+        |> Enum.reduce_while({:ok, MapSet.new()}, &validate_unique_duty_rule/2)
         |> case do
           {:ok, _seen} -> :ok
           {:error, _reason} = error -> error
@@ -200,8 +192,19 @@ defmodule Spectre.Constitution do
     end
   end
 
+  defp validate_unique_duty_rule({class, rule}, {:ok, seen}) do
+    with {:ok, normalized_class} <- configurable_duty_class(class),
+         false <- MapSet.member?(seen, normalized_class),
+         :ok <- validate_duty_rule(normalized_class, rule) do
+      {:cont, {:ok, MapSet.put(seen, normalized_class)}}
+    else
+      true -> {:halt, {:error, {:duplicate_constitution_duty_rule, class}}}
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
+
   defp validate_duty_rule(class, rule) do
-    if is_map(rule) and not is_struct(rule) do
+    if Portable.is_plain_map(rule) do
       validate_duty_rule_fields(class, rule)
     else
       {:error, {:invalid_constitution_duty_rule, class}}
@@ -216,30 +219,31 @@ defmodule Spectre.Constitution do
     containment = rule_value(rule, :containment, %{})
 
     cond do
-      not is_list(authorities) or
-          not Enum.all?(authorities, &(is_binary(&1) and &1 != "")) ->
+      not reference_list?(authorities) ->
         {:error, {:invalid_duty_disposition_authorities, class}}
 
-      not is_list(cause_sources) or
-          not Enum.all?(cause_sources, &(is_binary(&1) and &1 != "")) ->
+      not reference_list?(cause_sources) ->
         {:error, {:invalid_duty_cause_sources, class}}
 
       is_binary(class) and cause_sources == [] ->
         {:error, {:application_duty_cause_source_required, class}}
 
-      not is_list(conflicts) or
-          not Enum.all?(conflicts, &(is_binary(&1) and &1 != "")) ->
+      not reference_list?(conflicts) ->
         {:error, {:invalid_duty_conflict_refs, class}}
 
       not is_list(closing) ->
         {:error, {:invalid_duty_closing_conditions, class}}
 
-      not is_map(containment) or is_struct(containment) ->
+      not Portable.is_plain_map(containment) ->
         {:error, {:invalid_duty_containment, class}}
 
       true ->
         :ok
     end
+  end
+
+  defp reference_list?(values) do
+    is_list(values) and Enum.all?(values, &Portable.is_non_empty_binary(&1))
   end
 
   defp configurable_duty_class(class) do

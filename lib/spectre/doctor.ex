@@ -98,11 +98,20 @@ defmodule Spectre.Doctor do
 
       {:ok, MapSet.new(imports ++ behaviours)}
     else
-      false -> {:error, {:doctor_module_unavailable, module}}
-      :non_existing -> {:error, {:doctor_module_unavailable, module}}
-      :preloaded -> {:ok, MapSet.new()}
-      {:error, reason} -> {:error, {:doctor_beam_unreadable, module, compact_reason(reason)}}
-      _invalid -> {:error, {:doctor_module_unavailable, module}}
+      false ->
+        {:error, {:doctor_module_unavailable, module}}
+
+      :non_existing ->
+        {:error, {:doctor_module_unavailable, module}}
+
+      :preloaded ->
+        {:ok, MapSet.new()}
+
+      {:error, :beam_lib, reason} ->
+        {:error, {:doctor_beam_unreadable, module, compact_reason(reason)}}
+
+      _invalid ->
+        {:error, {:doctor_module_unavailable, module}}
     end
   end
 
@@ -114,28 +123,30 @@ defmodule Spectre.Doctor do
     if invalid == [] do
       forbidden = MapSet.new(executor_modules ++ @kernel_boundary_modules)
 
-      Enum.reduce(mind_modules, {:ok, []}, fn module, {status, findings} ->
-        case dependencies(module) do
-          {:ok, dependencies} ->
-            violations =
-              dependencies
-              |> MapSet.intersection(forbidden)
-              |> MapSet.delete(module)
-              |> MapSet.to_list()
-              |> Enum.sort()
-
-            case violations do
-              [] -> {status, findings}
-              _ -> {:error, [{:zone_m_references_boundary, module, violations} | findings]}
-            end
-
-          {:error, reason} ->
-            {:error, [reason | findings]}
-        end
-      end)
+      Enum.reduce(mind_modules, {:ok, []}, &check_zone_dependencies(&1, forbidden, &2))
       |> normalize_findings()
     else
       {:error, {:invalid_zone_modules, invalid}}
+    end
+  end
+
+  defp check_zone_dependencies(module, forbidden, {status, findings}) do
+    case dependencies(module) do
+      {:ok, dependencies} ->
+        violations =
+          dependencies
+          |> MapSet.intersection(forbidden)
+          |> MapSet.delete(module)
+          |> MapSet.to_list()
+          |> Enum.sort()
+
+        case violations do
+          [] -> {status, findings}
+          _ -> {:error, [{:zone_m_references_boundary, module, violations} | findings]}
+        end
+
+      {:error, reason} ->
+        {:error, [reason | findings]}
     end
   end
 

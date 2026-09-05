@@ -8,6 +8,8 @@ defmodule Spectre.Scope.Opening do
   an independent disposition path so unfinished work can be derived as Duty.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Condition, Portable, SubmissionContext}
 
   @schema_version 1
@@ -208,7 +210,7 @@ defmodule Spectre.Scope.Opening do
   @doc "Materializes a canonical governed draft under its authorizing Act."
   @spec from_governed_draft(map(), String.t(), integer()) :: {:ok, t()} | {:error, term()}
   def from_governed_draft(draft, source_act_ref, opened_at)
-      when is_map(draft) and not is_struct(draft) and is_integer(opened_at) do
+      when Portable.is_plain_map(draft) and is_integer(opened_at) do
     with {:ok, normalized} <- governed_draft(draft),
          true <- draft == normalized,
          :ok <- Portable.validate_ref(source_act_ref, :source_act_ref) do
@@ -267,21 +269,40 @@ defmodule Spectre.Scope.Opening do
       opening.kind != :session and is_nil(opening.parent_ref) ->
         {:error, {:scope_parent_required, opening.kind}}
 
+      true ->
+        validate_governance(opening)
+    end
+  end
+
+  defp validate_governance(opening) do
+    cond do
       opening.kind in [:work, :vigil] and not promised?(opening) ->
         {:error, {:scope_promise_required, opening.kind}}
 
       opening.kind in [:session, :child] and promised?(opening) ->
         {:error, {:scope_promise_not_allowed, opening.kind}}
 
+      true ->
+        validate_source_act(opening)
+    end
+  end
+
+  defp validate_source_act(opening) do
+    cond do
       governed?(opening) and is_nil(opening.source_act_ref) ->
         {:error, {:scope_source_act_required, opening.kind}}
 
       not governed?(opening) and not is_nil(opening.source_act_ref) ->
         {:error, {:scope_source_act_not_allowed, opening.kind}}
 
-      not promised?(opening) and
-          (not is_nil(opening.accountable_ref) or
-             opening.disposition_authority_refs != [] or not is_nil(opening.due_at)) ->
+      true ->
+        validate_promise(opening)
+    end
+  end
+
+  defp validate_promise(opening) do
+    cond do
+      not promised?(opening) and promise_fields_present?(opening) ->
         {:error, :scope_promise_fields_without_condition}
 
       promised?(opening) and not valid_promise?(opening) ->
@@ -290,10 +311,22 @@ defmodule Spectre.Scope.Opening do
       promised?(opening) and not promise_bound_to_scope?(opening) ->
         {:error, :scope_promise_condition_not_bound_to_scope}
 
+      true ->
+        validate_coordinates(opening)
+    end
+  end
+
+  defp promise_fields_present?(opening) do
+    not is_nil(opening.accountable_ref) or opening.disposition_authority_refs != [] or
+      not is_nil(opening.due_at)
+  end
+
+  defp validate_coordinates(opening) do
+    cond do
       not is_integer(opening.opened_at) ->
         {:error, {:invalid_scope_opened_at, opening.opened_at}}
 
-      not (is_integer(opening.host_generation) and opening.host_generation >= 0) ->
+      not Portable.is_non_negative_integer(opening.host_generation) ->
         {:error, {:invalid_scope_host_generation, opening.host_generation}}
 
       true ->
@@ -327,13 +360,11 @@ defmodule Spectre.Scope.Opening do
          :ok <- Portable.validate_optional_ref(opening.channel_ref, :channel_ref),
          :ok <- Portable.validate_optional_ref(opening.session_ref, :session_ref),
          :ok <- Portable.validate_optional_ref(opening.accountable_ref, :accountable_ref),
-         :ok <- Portable.validate_optional_ref(opening.source_act_ref, :source_act_ref),
-         :ok <-
-           Portable.validate_refs(
-             opening.disposition_authority_refs,
-             :disposition_authority_refs
-           ) do
-      :ok
+         :ok <- Portable.validate_optional_ref(opening.source_act_ref, :source_act_ref) do
+      Portable.validate_refs(
+        opening.disposition_authority_refs,
+        :disposition_authority_refs
+      )
     end
   end
 end

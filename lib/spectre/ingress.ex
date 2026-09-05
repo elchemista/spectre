@@ -112,13 +112,15 @@ defmodule Spectre.Ingress do
   end
 
   defp resolve_ref(module) do
-    with {:ok, ref} <- Adapter.invoke(module, :ref, []) do
-      case Portable.validate_ref(ref, :ingress_ref) do
-        :ok -> {:ok, {module, ref}}
-        {:error, _reason} -> {:error, {:invalid_ingress_ref, module, Portable.shape(ref)}}
-      end
-    else
-      {:error, _reason} -> {:error, {:ingress_ref_unavailable, module}}
+    case Adapter.invoke(module, :ref, []) do
+      {:ok, ref} ->
+        case Portable.validate_ref(ref, :ingress_ref) do
+          :ok -> {:ok, {module, ref}}
+          {:error, _reason} -> {:error, {:invalid_ingress_ref, module, Portable.shape(ref)}}
+        end
+
+      {:error, _reason} ->
+        {:error, {:ingress_ref_unavailable, module}}
     end
   end
 
@@ -149,18 +151,9 @@ defmodule Spectre.Ingress do
         {:error, :empty_ingress_observation}
 
       values ->
-        Enum.reduce_while(values, {:ok, [], MapSet.new()}, fn value, {:ok, records, refs} ->
-          with {:ok, record} <- Evidence.new(value),
-               false <- MapSet.member?(refs, record.ref) do
-            {:cont, {:ok, [record | records], MapSet.put(refs, record.ref)}}
-          else
-            true -> {:halt, {:error, :duplicate_ingress_evidence}}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
-        |> case do
-          {:ok, records, _refs} -> {:ok, Enum.reverse(records)}
-          {:error, _reason} = error -> error
+        case Evidence.normalize_unique(values) do
+          {:error, {:duplicate_evidence, _ref}} -> {:error, :duplicate_ingress_evidence}
+          result -> result
         end
     end
   end

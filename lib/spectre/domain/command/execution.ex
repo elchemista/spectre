@@ -9,8 +9,8 @@ defmodule Spectre.Domain.Command.Execution do
   """
 
   alias Spectre.{Act, Attempt, Mandate}
-  alias Spectre.Domain.{Event, Projection, Transaction}
   alias Spectre.Domain.Command.Commit
+  alias Spectre.Domain.{Event, Projection, Transaction}
   alias Spectre.Domain.Sequencer.{Control, State}
   alias Spectre.Execution.Router
   alias Spectre.GovernedAct.DispatchState

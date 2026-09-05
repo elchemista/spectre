@@ -12,8 +12,8 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
   alias Spectre.Canonical.Record
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.Admission.Binding
-  alias Spectre.GovernedAct.{Index, MeterState, State, View}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.GovernedAct.{Index, MeterState, State, View}
   alias Spectre.GovernedAct.Transition.Admission.Decision, as: DecisionProof
   alias Spectre.GovernedAct.Transition.Admission.Presentation, as: PresentationProof
   alias Spectre.Kernel.{Authority, Meter, Recognition}
@@ -32,8 +32,6 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
 
   defp match_act_to_decision(state, act, decision) do
     mismatch = Binding.mismatch(decision, act)
-    admission = Map.get(state.admissions, act.candidate_identity_key)
-    mandate = Map.get(state.mandates, act.mandate_ref)
 
     cond do
       decision.outcome != :admitted ->
@@ -55,6 +53,16 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
         {field, _expected, _actual} = mismatch
         {:error, {:decision_act_mismatch, field, decision.ref, act.ref}}
 
+      true ->
+        validate_act_authority_binding(state, act, decision)
+    end
+  end
+
+  defp validate_act_authority_binding(state, act, decision) do
+    admission = Map.get(state.admissions, act.candidate_identity_key)
+    mandate = Map.get(state.mandates, act.mandate_ref)
+
+    cond do
       not executor_contract_authorized?(act, decision, mandate) ->
         {:error, {:act_executor_contract_outside_mandate, act.ref}}
 
@@ -125,15 +133,12 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
   defp validate_surface(%Surface{} = surface, candidate, act) do
     case Surface.classify(surface, candidate.class) do
       {:ok, row} when row == candidate.row ->
-        with :ok <- Surface.validate_consequence(surface, candidate) do
-          if Surface.presentation_required?(surface, candidate.class) and
-               is_nil(candidate.presentation_ref) do
-            {:error, {:act_missing_required_presentation, act.ref, candidate.class}}
-          else
-            :ok
-          end
-        else
-          {:error, reason} -> {:error, {:act_consequence_contract_mismatch, act.ref, reason}}
+        case Surface.validate_consequence(surface, candidate) do
+          :ok ->
+            validate_required_presentation(surface, candidate, act)
+
+          {:error, reason} ->
+            {:error, {:act_consequence_contract_mismatch, act.ref, reason}}
         end
 
       {:ok, _different} ->
@@ -141,6 +146,15 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
 
       {:error, :unknown_class} ->
         {:error, {:act_unknown_surface_class, act.ref, candidate.class}}
+    end
+  end
+
+  defp validate_required_presentation(surface, candidate, act) do
+    if Surface.presentation_required?(surface, candidate.class) and
+         is_nil(candidate.presentation_ref) do
+      {:error, {:act_missing_required_presentation, act.ref, candidate.class}}
+    else
+      :ok
     end
   end
 

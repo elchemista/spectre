@@ -7,8 +7,8 @@ defmodule Spectre.Domain.Command.Evidence do
   always comes from the recovered ledger projection, never from caller input.
   """
 
-  alias Spectre.Domain.{Event, Transaction}
   alias Spectre.Domain.Command.Commit
+  alias Spectre.Domain.{Event, Transaction}
   alias Spectre.Domain.Sequencer.{Control, State}
   alias Spectre.Evidence
 

@@ -17,23 +17,25 @@ defmodule Spectre.V04Test.AuditTest do
     {act, attempt} = admit_and_attempt(fixture, 500)
 
     receipt = Fixture.receipt_evidence(fixture, act.ref)
-    assert {:ok, ^receipt} = Sequencer.record_evidence(fixture.server, receipt)
+    assert {:ok, ^receipt} = Fixture.record_receipt(fixture, receipt)
 
     outcome = Fixture.outcome(fixture, act, attempt, :succeeded, [receipt.ref])
     assert {:ok, ^outcome} = Sequencer.record_outcome(fixture.server, outcome)
 
-    assert {:ok, report} = Spectre.Audit.verify(Fixture.snapshot(fixture))
+    assert {:ok, report} =
+             Spectre.Audit.verify(Fixture.snapshot(fixture), fixture.constitution, Runtime.now())
 
     assert report.format == "spectre-semantic-audit"
 
-    assert report.counts == %{
-             mandates: 1,
-             decisions: 1,
-             acts: 1,
-             attempts: 1,
-             outcomes: 1,
-             duties: 0
-           }
+    assert Map.take(report.counts, [:mandates, :decisions, :acts, :attempts, :outcomes, :duties]) ==
+             %{
+               mandates: 1,
+               decisions: 1,
+               acts: 1,
+               attempts: 1,
+               outcomes: 1,
+               duties: 0
+             }
 
     act_ref = act.ref
     host_profile_ref = fixture.refs.host_profile
@@ -60,7 +62,9 @@ defmodule Spectre.V04Test.AuditTest do
     outcome = Fixture.outcome(fixture, act, attempt, :ambiguous, [])
     assert {:ok, ^outcome} = Sequencer.record_outcome(fixture.server, outcome)
 
-    assert {:ok, report} = Spectre.Audit.verify(Fixture.snapshot(fixture))
+    assert {:ok, report} =
+             Spectre.Audit.verify(Fixture.snapshot(fixture), fixture.constitution, Runtime.now())
+
     assert report.counts.duties == 1
     assert [%{"status" => :open, "act_ref" => act_ref}] = report.open_duties
     assert act_ref == act.ref
@@ -90,10 +94,10 @@ defmodule Spectre.V04Test.AuditTest do
     assert {:error,
             {:semantic_violation,
              %{
-               reason: {:meter_disposition_without_same_batch_evidence, ^act_ref, :release}
-             }}} = Spectre.Audit.verify(forged_release)
+               reason: {:reservation_disposition_not_evidenced, ^act_ref, :release}
+             }}} = Spectre.Audit.verify(forged_release, fixture.constitution, Runtime.now())
 
-    assert {:ok, ^act, _attempt} = Sequencer.consume_grant(fixture.server, grant)
+    assert {:ok, ^act, _attempt, _receipt} = Sequencer.consume_grant(fixture.server, grant)
 
     fused =
       fixture
@@ -103,7 +107,7 @@ defmodule Spectre.V04Test.AuditTest do
     assert {:error,
             {:semantic_violation,
              %{reason: {:attempt_without_prior_durable_dispatch, _attempt_ref, ^act_ref}}}} =
-             Spectre.Audit.verify(fused)
+             Spectre.Audit.verify(fused, fixture.constitution, Runtime.now())
   end
 
   defp start_domain(namespace) do
@@ -122,13 +126,13 @@ defmodule Spectre.V04Test.AuditTest do
                Fixture.refund_candidate(fixture, amount, evidence_refs: [payment.ref])
              )
 
-    assert {:ok, ^act, attempt} = Sequencer.consume_grant(fixture.server, grant)
+    assert {:ok, ^act, attempt, _receipt} = Sequencer.consume_grant(fixture.server, grant)
     {act, attempt}
   end
 
   defp record_payment(fixture) do
     payment = Fixture.paid_evidence(fixture)
-    assert {:ok, ^payment} = Sequencer.record_evidence(fixture.server, payment)
+    assert {:ok, ^payment} = Fixture.observe_payment(fixture, payment)
     payment
   end
 
@@ -139,6 +143,7 @@ defmodule Spectre.V04Test.AuditTest do
         batch_id,
         payloads,
         snapshot.revision,
+        Runtime.now(),
         snapshot.head_digest
       )
 
@@ -175,7 +180,14 @@ defmodule Spectre.V04Test.AuditTest do
         payloads = Enum.map(group, & &1.payload)
 
         {:ok, rebuilt} =
-          Entry.build_batch(domain_ref, hd(group).batch_id, payloads, revision, head)
+          Entry.build_batch(
+            domain_ref,
+            hd(group).batch_id,
+            payloads,
+            revision,
+            hd(group).recorded_at,
+            head
+          )
 
         {all ++ rebuilt, revision + length(rebuilt), List.last(rebuilt).digest}
       end)

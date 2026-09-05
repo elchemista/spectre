@@ -41,16 +41,18 @@ defmodule Spectre.Domain.Reconciliation do
     projection.attempts
     |> Map.values()
     |> Enum.reject(&MapSet.member?(attempts_with_outcome, &1.ref))
-    |> Enum.flat_map(fn attempt ->
-      case Map.fetch(projection.acts, attempt.act_ref) do
-        {:ok, act} ->
-          deadline = attempt.started_at + act.observation_window_ms
-          if deadline > now, do: [deadline], else: []
+    |> Enum.flat_map(&attempt_deadline(projection.acts, &1, now))
+  end
 
-        :error ->
-          []
-      end
-    end)
+  defp attempt_deadline(acts, attempt, now) do
+    case Map.fetch(acts, attempt.act_ref) do
+      {:ok, act} ->
+        deadline = attempt.started_at + act.observation_window_ms
+        if deadline > now, do: [deadline], else: []
+
+      :error ->
+        []
+    end
   end
 
   defp scope_deadlines(projection, now) do

@@ -35,9 +35,8 @@ defmodule Spectre.Audit do
          {:ok, verified} <- verify_ledger(snapshot),
          :ok <- audit_time_covers_ledger(verified, audited_at),
          {:ok, state} <- fold(verified, constitution),
-         :ok <- validate_integrity(state, audited_at),
-         {:ok, report} <- Report.build(state, audited_at) do
-      {:ok, report}
+         :ok <- validate_integrity(state, audited_at) do
+      Report.build(state, audited_at)
     end
   end
 

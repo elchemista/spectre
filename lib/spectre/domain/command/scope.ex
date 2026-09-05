@@ -7,9 +7,9 @@ defmodule Spectre.Domain.Command.Scope do
   ingress, generation and acquisition-time bindings are checked before append.
   """
 
-  alias Spectre.Domain.{Context, Event, Transaction}
   alias Spectre.Domain.Command.Commit
   alias Spectre.Domain.Command.Record, as: CommandRecord
+  alias Spectre.Domain.{Context, Event, Transaction}
   alias Spectre.Domain.Sequencer.State
   alias Spectre.Scope.Opening
   alias Spectre.SubmissionContext
@@ -64,12 +64,10 @@ defmodule Spectre.Domain.Command.Scope do
     do: {:error, :invalid_direct_scope_opening}
 
   defp validate_scope_opening_boundary(context, opening, now) do
-    cond do
-      opening.opened_at > now ->
-        {:error, {:scope_opening_from_future, opening.ref}}
-
-      true ->
-        Opening.validate_context(opening, context)
+    if opening.opened_at > now do
+      {:error, {:scope_opening_from_future, opening.ref}}
+    else
+      Opening.validate_context(opening, context)
     end
   end
 
@@ -80,17 +78,19 @@ defmodule Spectre.Domain.Command.Scope do
          conflicts_left,
          recorded_at
        ) do
-    with {:ok, payload} <- Event.scope_opened(opening) do
-      Commit.append(
-        state,
-        [payload],
-        recorded_at,
-        conflicts_left,
-        &recovered_scope(state, &1, opening),
-        &open_with_retries(&1, context, opening, &2)
-      )
-    else
-      {:error, reason} -> {:error, state, reason}
+    case Event.scope_opened(opening) do
+      {:ok, payload} ->
+        Commit.append(
+          state,
+          [payload],
+          recorded_at,
+          conflicts_left,
+          &recovered_scope(state, &1, opening),
+          &open_with_retries(&1, context, opening, &2)
+        )
+
+      {:error, reason} ->
+        {:error, state, reason}
     end
   end
 

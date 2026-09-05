@@ -1,12 +1,13 @@
 defmodule Spectre.Attempt.Reconciler do
   @moduledoc false
 
+  alias Spectre.{Act, Portable}
   alias Spectre.Domain.{Event, Projection}
   alias Spectre.Duty
   alias Spectre.Duty.Derive
   alias Spectre.GovernedAct.{DispatchState, State}
   alias Spectre.GovernedAct.Materialization.Dispatch
-  alias Spectre.{Act, Portable}
+  alias Spectre.GovernedAct.MeterState, as: MeterState
 
   @type plan :: %{
           required(:payloads) => [map()],
@@ -139,9 +140,7 @@ defmodule Spectre.Attempt.Reconciler do
     |> Enum.uniq()
     |> Enum.sort()
     |> Enum.reject(&MapSet.member?(terminal_refs, &1))
-    |> Enum.filter(
-      &(Spectre.GovernedAct.MeterState.reservation_status(projection, &1) == :reserved)
-    )
+    |> Enum.filter(&(MeterState.reservation_status(projection, &1) == :reserved))
     |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, events} ->
       with {:ok, %Act{} = act} <- Map.fetch(projection.acts, act_ref),
            {:ok, event} <- Event.meter(:suspend, act) do

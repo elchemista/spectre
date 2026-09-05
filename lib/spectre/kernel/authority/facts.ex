@@ -11,8 +11,8 @@ defmodule Spectre.Kernel.Authority.Facts do
   resolver never performs atom/string fallback or decodes ledger records.
   """
 
-  alias Spectre.GovernedAct.State
   alias Spectre.GovernedAct.MeterState
+  alias Spectre.GovernedAct.State
   alias Spectre.Mandate
   alias Spectre.Mandate.Revocation
 
@@ -52,12 +52,7 @@ defmodule Spectre.Kernel.Authority.Facts do
       state.meter_recontainments
       |> Enum.reduce(MapSet.new(), fn {act_ref, recontainment}, blocked ->
         if is_nil(recontainment.disposition_act_ref) and map_size(recontainment.deficits) > 0 do
-          with {:ok, %{mandate_ref: mandate_ref}} <- MeterState.reservation(state, act_ref),
-               {:ok, owner_ref} <- MeterState.owner(state, mandate_ref) do
-            MapSet.put(blocked, owner_ref)
-          else
-            _missing_or_invalid -> blocked
-          end
+          block_reservation_owner(state, act_ref, blocked)
         else
           blocked
         end
@@ -68,6 +63,15 @@ defmodule Spectre.Kernel.Authority.Facts do
         do: MapSet.put(blocked, mandate_ref),
         else: blocked
     end)
+  end
+
+  defp block_reservation_owner(state, act_ref, blocked) do
+    with {:ok, %{mandate_ref: mandate_ref}} <- MeterState.reservation(state, act_ref),
+         {:ok, owner_ref} <- MeterState.owner(state, mandate_ref) do
+      MapSet.put(blocked, owner_ref)
+    else
+      _missing_or_invalid -> blocked
+    end
   end
 
   @doc "Returns consequence digests held by unresolved containment Duties."

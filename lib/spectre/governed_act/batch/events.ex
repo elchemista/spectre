@@ -7,7 +7,6 @@ defmodule Spectre.GovernedAct.Batch.Events do
   reimplementing record decoding and event matching.
   """
 
-  alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
 
   @doc false
@@ -29,52 +28,6 @@ defmodule Spectre.GovernedAct.Batch.Events do
     payloads
     |> Enum.with_index(first_index)
     |> Enum.all?(fn {payload, index} -> payload_at?(events, index, payload) end)
-  end
-
-  @doc false
-  @spec record_at?([Event.t()], integer(), String.t(), module(), struct()) :: boolean()
-  def record_at?(events, index, type, module, expected) do
-    case at(events, index) do
-      %{type: ^type, identity: identity, data: data} ->
-        identity == Record.ref(expected) and Record.decode(module, data) == {:ok, expected}
-
-      _missing_or_different ->
-        false
-    end
-  end
-
-  @doc false
-  @spec embedded_at?(
-          [Event.t()],
-          integer(),
-          String.t(),
-          String.t(),
-          String.t(),
-          String.t(),
-          String.t(),
-          module(),
-          struct()
-        ) :: boolean()
-  def embedded_at?(
-        events,
-        index,
-        type,
-        act_ref,
-        relation_ref,
-        relation_key,
-        record_key,
-        module,
-        expected
-      ) do
-    case at(events, index) do
-      %{type: ^type, identity: identity, data: data} ->
-        identity == Record.ref(expected) and data["act_ref"] == act_ref and
-          data[relation_key] == relation_ref and
-          Record.decode(module, data[record_key]) == {:ok, expected}
-
-      _missing_or_different ->
-        false
-    end
   end
 
   @doc false

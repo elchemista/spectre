@@ -4,11 +4,39 @@ defmodule Spectre.V04Test.GovernanceDelegationTest do
   use ExUnit.Case, async: false
 
   alias Spectre.Domain.Sequencer
+  alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.Kernel.Authority.Coverage
   alias Spectre.V04Test.{Fixture, Runtime}
 
   setup do
     Runtime.reset(Fixture.default_now())
     :ok
+  end
+
+  test "the implicit parent target is confined to delegation, never an arbitrary destination" do
+    fixture = start_domain("delegation-targets")
+    payment = record_payment(fixture)
+
+    {:ok, candidate} =
+      fixture
+      |> delegation_candidate(issue_draft(fixture, 100), "targets", payment.ref)
+      |> Spectre.Candidate.new()
+
+    assert :ok = Coverage.covered_values(:targets, candidate, fixture.mandate)
+
+    assert {:error, {:targets, :outside_mandate}} =
+             Coverage.covered_values(
+               :targets,
+               %{candidate | target_refs: ["unrelated:target"]},
+               fixture.mandate
+             )
+
+    assert {:error, {:targets, :outside_mandate}} =
+             Coverage.covered_values(
+               :targets,
+               %{candidate | class: "refund.issue"},
+               fixture.mandate
+             )
   end
 
   test "a delegation Act and its content-addressed child Mandate commit atomically" do
@@ -24,7 +52,7 @@ defmodule Spectre.V04Test.GovernanceDelegationTest do
                delegation_candidate(fixture, draft, "delegate-3k", payment.ref)
              )
 
-    assert decision.outcome == :admitted
+    assert decision.outcome == :admitted, inspect(decision.reasons)
     assert act.row.delegate
     assert act.row.govern
     assert act.consequence == %{"mandate_issue" => draft}
@@ -83,7 +111,7 @@ defmodule Spectre.V04Test.GovernanceDelegationTest do
 
   defp record_payment(fixture) do
     evidence = Fixture.paid_evidence(fixture)
-    assert {:ok, ^evidence} = Sequencer.record_evidence(fixture.server, evidence)
+    assert {:ok, ^evidence} = Fixture.observe_payment(fixture, evidence)
     evidence
   end
 
@@ -123,16 +151,16 @@ defmodule Spectre.V04Test.GovernanceDelegationTest do
       row: fixture.delegation_row,
       requested_mandate_ref: fixture.mandate.ref,
       proposer_ref: fixture.refs.proposer,
-      executor_ref: fixture.refs.executor,
+      executor_ref: GovernedExecution.kernel_executor_ref(),
       accountable_ref: fixture.refs.accountable,
       scope_ref: fixture.refs.scope,
       subject_refs: [fixture.refs.customer],
-      target_refs: [fixture.refs.payment_target],
+      target_refs: Enum.sort([fixture.mandate.ref, fixture.refs.payment_target]),
       purpose_ref: fixture.refs.purpose,
       purpose_params: %{"currency" => "EUR"},
       evidence_refs: [evidence_ref],
       meter_requests: %{},
-      executor_contract_ref: fixture.refs.executor_contract,
+      executor_contract_ref: GovernedExecution.kernel_contract_ref(),
       observation_window_ms: 0
     }
   end

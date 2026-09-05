@@ -66,6 +66,13 @@ defmodule Spectre.Kernel.Authority.Coverage do
   @doc false
   @spec covered_values(:subjects | :targets, Candidate.t(), Mandate.t()) ::
           :ok | {:error, term()}
+  def covered_values(:targets, %Candidate{class: "mandate.delegate"} = candidate, mandate) do
+    # The authority being subdivided is not an external effect destination.
+    # A content-addressed Mandate cannot include its own reference in its body.
+    # Only this exact parent is implicit; all other targets stay explicitly bounded.
+    covered_refs(candidate.target_refs, [mandate.ref | mandate.target_refs], :targets)
+  end
+
   def covered_values(kind, %Candidate{} = candidate, %Mandate{} = mandate)
       when kind in [:subjects, :targets] do
     {requested, allowed} =
@@ -74,6 +81,10 @@ defmodule Spectre.Kernel.Authority.Coverage do
         :targets -> {candidate.target_refs, mandate.target_refs}
       end
 
+    covered_refs(requested, allowed, kind)
+  end
+
+  defp covered_refs(requested, allowed, kind) do
     allowed = MapSet.new(allowed)
 
     if Enum.all?(requested, &MapSet.member?(allowed, &1)),

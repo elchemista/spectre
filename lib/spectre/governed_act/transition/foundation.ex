@@ -11,8 +11,8 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
   alias Spectre.{Act, Definition, HostProfile, Principal, Surface}
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
-  alias Spectre.GovernedAct.{Index, State}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
+  alias Spectre.GovernedAct.{Index, State}
 
   def apply(
         %State{} = projection,
@@ -246,28 +246,41 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       act.consequence != expected_consequence ->
         {:error, {:definition_revision_consequence_mismatch, act.ref}}
 
-      is_nil(current) and (definition.revision != 1 or not is_nil(definition.previous_ref)) ->
-        {:error, {:invalid_initial_definition_revision, definition.ref, definition.revision}}
+      true ->
+        validate_definition_lineage(current, definition, act.committed_at)
+    end
+  end
 
-      not is_nil(current) and definition.previous_ref != current.ref ->
+  defp validate_definition_lineage(nil, definition, committed_at) do
+    if definition.revision != 1 or not is_nil(definition.previous_ref),
+      do: {:error, {:invalid_initial_definition_revision, definition.ref, definition.revision}},
+      else: validate_definition_time(definition, committed_at)
+  end
+
+  defp validate_definition_lineage(current, definition, committed_at) do
+    cond do
+      definition.previous_ref != current.ref ->
         {:error,
          {:definition_revision_not_based_on_current, definition.ref, definition.previous_ref,
           current.ref}}
 
-      not is_nil(current) and definition.revision != current.revision + 1 ->
+      definition.revision != current.revision + 1 ->
         {:error,
          {:definition_revision_not_sequential, definition.ref, current.revision,
           definition.revision}}
 
-      not is_nil(current) and definition.declared_at < current.declared_at ->
+      definition.declared_at < current.declared_at ->
         {:error, {:definition_revision_time_regressed, definition.ref}}
 
-      definition.declared_at > act.committed_at ->
-        {:error, {:definition_revision_from_future, definition.ref}}
-
       true ->
-        :ok
+        validate_definition_time(definition, committed_at)
     end
+  end
+
+  defp validate_definition_time(definition, committed_at) do
+    if definition.declared_at > committed_at,
+      do: {:error, {:definition_revision_from_future, definition.ref}},
+      else: :ok
   end
 
   defp validate_principal_registration(act, principal, data) do
@@ -321,6 +334,13 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       data["previous_ref"] != current.ref ->
         {:error, {:host_profile_revision_previous_ref_mismatch, profile.ref}}
 
+      true ->
+        validate_host_profile_lineage(act, current, profile, expected_consequence)
+    end
+  end
+
+  defp validate_host_profile_lineage(act, current, profile, expected_consequence) do
+    cond do
       profile.revision != current.revision + 1 ->
         {:error,
          {:host_profile_revision_not_sequential, profile.ref, current.revision, profile.revision}}

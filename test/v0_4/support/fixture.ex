@@ -25,7 +25,7 @@ defmodule Spectre.V04Test.Runtime do
 
   def next_id do
     sequence = :ets.update_counter(@table, :id, 1)
-    suffix = sequence |> Integer.to_string(16) |> String.pad_leading(12, "0")
+    suffix = sequence |> Integer.to_string(16) |> String.downcase() |> String.pad_leading(12, "0")
     @uuid_prefix <> suffix
   end
 end
@@ -50,13 +50,66 @@ defmodule Spectre.V04Test.IdSource do
   def generate, do: Runtime.next_id()
 end
 
+defmodule Spectre.V04Test.Ingress do
+  @moduledoc false
+  @behaviour Spectre.Ingress
+
+  @impl true
+  def ref, do: "spectre:test:ingress"
+
+  @impl true
+  def authenticate(domain, scope, input, generation, _opts) do
+    Spectre.SubmissionContext.new(%{
+      domain_ref: domain,
+      scope_ref: scope,
+      authenticated_principal_ref: input.principal_ref,
+      authentication_ref: input.authentication_ref,
+      ingress_ref: ref(),
+      channel_ref: "spectre:test:channel",
+      session_ref: input.session_ref,
+      host_generation: generation
+    })
+  end
+
+  @impl true
+  def observe(context, attrs, now, _opts) do
+    attrs
+    |> Map.put(:source_ref, ref())
+    |> Map.put(:observed_at, now)
+    |> Map.update!(
+      :bindings,
+      &Map.merge(&1, Spectre.SubmissionContext.evidence_bindings(context))
+    )
+    |> Spectre.Evidence.new()
+  end
+end
+
+defmodule Spectre.V04Test.Executor do
+  @moduledoc false
+  @behaviour Spectre.Attempt.Executor
+
+  {:ok, principal} = Spectre.Principal.new(%{kind: :service, attributes: %{"test" => "refund"}})
+  @principal principal
+
+  def principal, do: @principal
+  @impl true
+  def executor_ref, do: @principal.ref
+  @impl true
+  def contract_ref, do: "spectre:test:refund-contract"
+  @impl true
+  def execute(_act, _attempt, _capability, _opts), do: {:error, :ambiguous, %{evidence: []}}
+end
+
 defmodule Spectre.V04Test.Fixture do
   @moduledoc false
 
+  alias Spectre.Consequence.Contract
   alias Spectre.Domain.Sequencer
   alias Spectre.Genesis.Verifier.Allowlist
-  alias Spectre.Ledger.Store.ETS
-  alias Spectre.V04Test.{Clock, IdSource}
+  alias Spectre.GovernedAct.Execution
+  alias Spectre.Ledger.Store.{ETS, Mock}
+  alias Spectre.Scope.Opening
+  alias Spectre.V04Test.{Clock, Executor, IdSource, Ingress}
 
   @default_now 1_000_000
   @default_generation 7
@@ -101,7 +154,7 @@ defmodule Spectre.V04Test.Fixture do
               govern: true
             })
           ),
-        else: row
+        else: if(Keyword.get(opts, :consent, false), do: %{row | present: true}, else: row)
 
     condition = payment_condition(refs)
     refs = Map.put(refs, :condition, condition.ref)
@@ -114,7 +167,7 @@ defmodule Spectre.V04Test.Fixture do
 
     governance_mandate =
       if governance_allowed?,
-        do: governance_mandate(refs, governance_row, now),
+        do: governance_mandate(refs, governance_row, now, opts),
         else: nil
 
     refs =
@@ -124,16 +177,27 @@ defmodule Spectre.V04Test.Fixture do
 
     root_mandates = [mandate] ++ List.wrap(governance_mandate)
     genesis = genesis(refs, principal_records, root_mandates, surface, profile, constitution, now)
-    payment_evidence = record!(Spectre.Evidence.new(paid_evidence_attrs(refs, now)))
-    refs = Map.put(refs, :payment_evidence, payment_evidence.ref)
-
     store = record!(ETS.start_link([]))
-    store_config = {ETS, server: store}
+
+    mock =
+      if Keyword.get(opts, :mock_store, false),
+        do: record!(Mock.start_link(store: {ETS, server: store}))
+
+    store_config = if mock, do: {Mock, server: mock}, else: {ETS, server: store}
 
     sequencer_opts =
       [
         domain_ref: refs.domain,
         store: store_config,
+        ingress: Ingress,
+        executors: Keyword.get(opts, :executors, [Executor]),
+        checkout_receipt_secret: @grant_secret,
+        broker:
+          {Spectre.Secret.Broker.Passthrough,
+           capability: Keyword.get(opts, :capability, :test_only),
+           domain_ref: refs.domain,
+           clock: Clock,
+           checkout_receipt_secret: @grant_secret},
         clock: Clock,
         id_source: IdSource,
         generation: Keyword.get(opts, :generation, @default_generation),
@@ -152,11 +216,13 @@ defmodule Spectre.V04Test.Fixture do
         genesis_verifier: {Allowlist, attestation_refs: [refs.genesis_attestation]}
       ]
 
+    sequencer_opts = Keyword.merge(sequencer_opts, Keyword.take(opts, [:name, :mind]))
     server = record!(Sequencer.start_link(sequencer_opts))
 
-    %{
+    fixture = %{
       server: server,
       store: store,
+      mock: mock,
       store_config: store_config,
       sequencer_opts: sequencer_opts,
       refs: refs,
@@ -171,6 +237,14 @@ defmodule Spectre.V04Test.Fixture do
       observation_window_ms:
         Keyword.get(opts, :observation_window_ms, @default_observation_window)
     }
+
+    open_session(fixture, context(fixture))
+
+    if governance_allowed?,
+      do: open_session(fixture, context(fixture, authenticated_principal_ref: refs.grantor))
+
+    payment = paid_evidence(fixture)
+    %{fixture | refs: Map.put(fixture.refs, :payment_evidence, payment.ref)}
   end
 
   def restart_domain(fixture, overrides \\ []) do
@@ -181,6 +255,7 @@ defmodule Spectre.V04Test.Fixture do
 
   def stop_domain(fixture) do
     stop_process(fixture.server)
+    if fixture.mock, do: stop_process(fixture.mock)
     stop_process(fixture.store)
     :ok
   end
@@ -191,36 +266,68 @@ defmodule Spectre.V04Test.Fixture do
   end
 
   def context(fixture, overrides \\ %{}) do
-    attrs = %{
-      domain_ref: fixture.refs.domain,
-      scope_ref: fixture.refs.scope,
-      authenticated_principal_ref: fixture.refs.proposer,
-      authentication_ref: fixture.refs.authentication,
-      ingress_ref: fixture.refs.ingress,
-      channel_ref: fixture.refs.channel,
-      session_ref: fixture.refs.session,
-      host_generation: generation(fixture)
-    }
+    overrides = Map.new(overrides)
+    principal = Map.get(overrides, :authenticated_principal_ref, fixture.refs.proposer)
 
-    record!(Spectre.SubmissionContext.new(Map.merge(attrs, Map.new(overrides))))
+    scope =
+      if principal == fixture.refs.grantor,
+        do: fixture.refs.governance_scope,
+        else: fixture.refs.scope
+
+    context =
+      record!(
+        Sequencer.authenticate(fixture.server, scope, %{
+          principal_ref: principal,
+          authentication_ref: fixture.refs.authentication,
+          session_ref: fixture.refs.session
+        })
+      )
+
+    struct!(context, Map.drop(overrides, [:authenticated_principal_ref]))
   end
 
   def paid_evidence(fixture, overrides \\ %{}) do
     attrs = paid_evidence_attrs(fixture.refs, Clock.now())
 
-    record!(Spectre.Evidence.new(Map.merge(attrs, Map.new(overrides))))
+    record!(
+      Ingress.observe(context(fixture), Map.merge(attrs, Map.new(overrides)), Clock.now(), [])
+    )
+  end
+
+  def observe_payment(fixture, evidence, opts \\ []) do
+    attrs = evidence |> Map.from_struct() |> Map.drop([:ref])
+
+    with {:ok, [recorded]} <- Sequencer.observe(fixture.server, context(fixture), attrs, opts),
+         do: {:ok, recorded}
+  end
+
+  def record_receipt(fixture, evidence, opts \\ []) do
+    with {:ok, [recorded]} <-
+           Sequencer.record_executor_evidence(
+             fixture.server,
+             evidence.bindings["act_ref"],
+             evidence.bindings["attempt_ref"],
+             evidence,
+             opts
+           ),
+         do: {:ok, recorded}
   end
 
   def receipt_evidence(fixture, act_ref, overrides \\ %{}) do
+    projection = Sequencer.projection(fixture.server)
+    act = Map.fetch!(projection.acts, act_ref)
+    attempt = Enum.find(Map.values(projection.attempts), &(&1.act_ref == act_ref))
+
     attrs = %{
-      proposition: "refund_settled",
-      issuer_ref: fixture.refs.payment_provider,
-      source_ref: fixture.refs.payment_provider,
+      proposition:
+        Spectre.Outcome.proposition(:succeeded, act_ref, attempt.ref, act.executor_contract_ref),
+      issuer_ref: act.executor_ref,
+      source_ref: act.executor_ref,
       provenance: :observed,
       observed_at: Clock.now(),
-      bindings: %{"act_ref" => act_ref},
-      labels: ["financial"],
-      payload_ref: fixture.refs.receipt_payload,
+      bindings: %{"act_ref" => act_ref, "attempt_ref" => attempt.ref},
+      labels: [],
+      payload: %{"receipt" => fixture.refs.receipt_payload},
       provisional: false
     }
 
@@ -238,7 +345,9 @@ defmodule Spectre.V04Test.Fixture do
         "amount_cents" => amount,
         "currency" => "EUR",
         "customer_ref" => fixture.refs.customer,
-        "order_ref" => fixture.refs.order
+        "order_ref" => fixture.refs.order,
+        "destination_ref" => fixture.refs.payment_target,
+        "meter_requests" => %{fixture.refs.meter => amount}
       },
       row: fixture.row,
       requested_mandate_ref: fixture.mandate.ref,
@@ -251,6 +360,11 @@ defmodule Spectre.V04Test.Fixture do
       purpose_ref: fixture.refs.purpose,
       purpose_params: %{"currency" => "EUR"},
       evidence_refs: evidence_refs,
+      disclosure: %{
+        destination_refs: [fixture.refs.payment_target],
+        source_evidence_refs: evidence_refs,
+        labels: []
+      },
       meter_requests: %{fixture.refs.meter => amount},
       executor_contract_ref: fixture.refs.executor_contract,
       observation_window_ms:
@@ -297,8 +411,9 @@ defmodule Spectre.V04Test.Fixture do
       executor: prefix <> "principal:payment-executor",
       accountable: prefix <> "principal:merchant",
       payment_provider: prefix <> "payment-provider",
-      executor_contract: prefix <> "executor-contract:refund-v1",
+      executor_contract: Executor.contract_ref(),
       scope: prefix <> "scope:refunds",
+      governance_scope: prefix <> "scope:governance",
       customer: prefix <> "customer:42",
       order: prefix <> "order:paid-42",
       payment_target: prefix <> "payment-account:42",
@@ -319,7 +434,7 @@ defmodule Spectre.V04Test.Fixture do
     [
       principal(:human, refs.grantor),
       principal(:agent, refs.proposer),
-      principal(:service, refs.executor),
+      Executor.principal(),
       principal(:organization, refs.accountable)
     ]
   end
@@ -350,6 +465,11 @@ defmodule Spectre.V04Test.Fixture do
     declarations = %{"refund.issue" => row}
 
     declarations =
+      if Keyword.get(opts, :consent, false),
+        do: Map.put(declarations, "presentation.show", Spectre.Presentation.show_row()),
+        else: declarations
+
+    declarations =
       if Keyword.get(opts, :delegation_allowed, false),
         do: Map.put(declarations, "mandate.delegate", delegation_row),
         else: declarations
@@ -359,6 +479,7 @@ defmodule Spectre.V04Test.Fixture do
         declarations
         |> Map.put("mandate.revoke", governance_row)
         |> Map.put("duty.dispose", governance_row)
+        |> Map.merge(Map.new(Keyword.get(opts, :governance_classes, []), &{&1, governance_row}))
       else
         declarations
       end
@@ -366,7 +487,24 @@ defmodule Spectre.V04Test.Fixture do
     record!(
       Spectre.Surface.new(%{
         revision: 1,
-        declarations: declarations
+        declarations: declarations,
+        presentation_required_classes:
+          if(Keyword.get(opts, :consent, false), do: ["refund.issue"], else: []),
+        consequence_contracts: %{
+          "refund.issue" =>
+            record!(
+              Contract.new(%{
+                shape: %{
+                  "amount_cents" => "positive_integer",
+                  "currency" => %{"$const" => "EUR"},
+                  "customer_ref" => "subject_ref",
+                  "order_ref" => "ref",
+                  "destination_ref" => "destination_ref",
+                  "meter_requests" => "meter_requests"
+                }
+              })
+            )
+        }
       })
     )
   end
@@ -391,15 +529,31 @@ defmodule Spectre.V04Test.Fixture do
         grantor_ref: refs.grantor,
         holder_ref: refs.proposer,
         accountable_ref: refs.accountable,
-        executor_refs: [refs.executor],
-        executor_contract_refs: [refs.executor_contract],
+        executor_refs:
+          if(delegation_allowed?,
+            do: [refs.executor, Execution.kernel_executor_ref()],
+            else: [refs.executor]
+          ),
+        executor_contract_refs:
+          if(delegation_allowed?,
+            do: [refs.executor_contract, Execution.kernel_contract_ref()],
+            else: [refs.executor_contract]
+          ),
         scope_refs: [refs.scope],
         subject_refs: [refs.customer],
-        target_refs: [refs.payment_target],
+        target_refs:
+          if(Keyword.get(opts, :consent, false),
+            do: [refs.payment_target, refs.proposer],
+            else: [refs.payment_target]
+          ),
         classes:
           if(delegation_allowed?,
             do: ["mandate.delegate", "refund.issue"],
-            else: ["refund.issue"]
+            else:
+              if(Keyword.get(opts, :consent, false),
+                do: ["refund.issue", "presentation.show"],
+                else: ["refund.issue"]
+              )
           ),
         ceiling: ceiling,
         purpose_ref: refs.purpose,
@@ -419,19 +573,19 @@ defmodule Spectre.V04Test.Fixture do
     )
   end
 
-  defp governance_mandate(refs, ceiling, now) do
+  defp governance_mandate(refs, ceiling, now, opts) do
     record!(
       Spectre.Mandate.new(%{
         revision: 1,
         grantor_ref: refs.grantor,
         holder_ref: refs.grantor,
         accountable_ref: refs.accountable,
-        executor_refs: [refs.executor],
-        executor_contract_refs: [refs.executor_contract],
-        scope_refs: [refs.scope],
+        executor_refs: [Execution.kernel_executor_ref()],
+        executor_contract_refs: [Execution.kernel_contract_ref()],
+        scope_refs: [refs.governance_scope],
         subject_refs: [],
-        target_refs: [],
-        classes: ["duty.dispose", "mandate.revoke"],
+        target_refs: [refs.mandate | Keyword.get(opts, :governance_targets, [])],
+        classes: ["duty.dispose", "mandate.revoke" | Keyword.get(opts, :governance_classes, [])],
         ceiling: ceiling,
         purpose_ref: refs.purpose,
         purpose_params: %{"currency" => "EUR"},
@@ -463,19 +617,13 @@ defmodule Spectre.V04Test.Fixture do
     )
   end
 
-  defp default_constitution(refs, opts) do
-    authority_refs =
-      if Keyword.get(opts, :governance_allowed, false), do: [refs.grantor], else: []
-
+  defp default_constitution(refs, _opts) do
     %{
-      "duty_rules" => %{
-        "ambiguous_outcome" => %{
-          "disposition_authority_refs" => authority_refs
-        },
-        "contradicted_outcome" => %{
-          "disposition_authority_refs" => authority_refs
-        }
-      }
+      "duty_rules" =>
+        Map.new(
+          ~w(ambiguous_outcome contradicted_outcome disputed_evidence scope_promise_overdue erasure_reduces_verifiability),
+          &{&1, %{"disposition_authority_refs" => [refs.grantor]}}
+        )
     }
   end
 
@@ -483,14 +631,36 @@ defmodule Spectre.V04Test.Fixture do
     %{
       proposition: "order_paid",
       issuer_ref: refs.payment_provider,
-      source_ref: refs.payment_provider,
+      source_ref: Ingress.ref(),
       provenance: :observed,
       observed_at: now,
       bindings: %{"order_ref" => refs.order},
-      labels: ["financial"],
-      payload_ref: refs.payment_payload,
+      labels: [],
+      payload: %{"payment" => refs.payment_payload},
       provisional: false
     }
+  end
+
+  defp open_session(fixture, context) do
+    opening =
+      record!(
+        Opening.new(%{
+          ref: context.scope_ref,
+          domain_ref: context.domain_ref,
+          kind: :session,
+          opened_by_ref: context.authenticated_principal_ref,
+          submission_context_ref: context.ref,
+          authentication_ref: context.authentication_ref,
+          ingress_ref: context.ingress_ref,
+          channel_ref: context.channel_ref,
+          session_ref: context.session_ref,
+          host_generation: context.host_generation,
+          disposition_authority_refs: [],
+          opened_at: Clock.now()
+        })
+      )
+
+    record!(Sequencer.open_scope(fixture.server, context, opening))
   end
 
   defp record!({:ok, record}), do: record

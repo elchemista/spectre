@@ -18,8 +18,8 @@ defmodule Spectre.GovernedAct.Transition.Execution do
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.{AuthorityChange, DispatchState, Index, MeterState, State, View}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
-  alias Spectre.Kernel.Authority
   alias Spectre.GovernedAct.Transition.Outcome, as: OutcomeTransition
+  alias Spectre.Kernel.Authority
 
   @spec apply(State.t(), Event.t(), non_neg_integer() | nil) ::
           {:ok, State.t()} | {:error, term()}
@@ -185,6 +185,13 @@ defmodule Spectre.GovernedAct.Transition.Execution do
       data["executor_contract_ref"] != act.executor_contract_ref ->
         {:error, {:dispatch_contract_mismatch, act.ref}}
 
+      true ->
+        validate_dispatch_state(state, act)
+    end
+  end
+
+  defp validate_dispatch_state(state, act) do
+    cond do
       DispatchState.pending?(state, act.ref) ->
         {:error, {:duplicate_dispatch_ready, act.ref}}
 

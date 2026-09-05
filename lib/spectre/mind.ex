@@ -19,6 +19,8 @@ defmodule Spectre.Mind do
       end
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Adapter, Candidate, Disclosure, Evidence, Portable}
   alias Spectre.Mind.{Derivation, Turn}
 
@@ -61,9 +63,8 @@ defmodule Spectre.Mind do
   def deliberate(module, %Turn{} = turn, opts)
       when is_atom(module) and not is_nil(module) and is_list(opts) do
     with {:ok, context} <- prepare_deliberation(module, turn, opts),
-         {:ok, result} <- safe_deliberate(module, turn, opts),
-         {:ok, candidates} <- validate_result(result, turn, context) do
-      {:ok, candidates}
+         {:ok, result} <- safe_deliberate(module, turn, opts) do
+      validate_result(result, turn, context)
     end
   end
 
@@ -77,22 +78,26 @@ defmodule Spectre.Mind do
   def deliberate(module, %Turn{} = turn, state, opts)
       when is_atom(module) and not is_nil(module) and is_list(opts) do
     with {:ok, context} <- prepare_deliberation(module, turn, opts) do
-      if function_exported?(module, :deliberate, 3) do
-        with {:ok, result, next_state} <- safe_deliberate(module, turn, state, opts),
-             {:ok, candidates} <- validate_result(result, turn, context) do
-          {:ok, candidates, next_state}
-        end
-      else
-        with {:ok, result} <- safe_deliberate(module, turn, opts),
-             {:ok, candidates} <- validate_result(result, turn, context) do
-          {:ok, candidates, state}
-        end
-      end
+      deliberate_with_state(module, turn, state, opts, context)
     end
   end
 
   def deliberate(_module, _turn, _state, _opts),
     do: {:error, :invalid_stateful_mind_deliberation}
+
+  defp deliberate_with_state(module, turn, state, opts, context) do
+    if function_exported?(module, :deliberate, 3) do
+      with {:ok, result, next_state} <- safe_deliberate(module, turn, state, opts),
+           {:ok, candidates} <- validate_result(result, turn, context) do
+        {:ok, candidates, next_state}
+      end
+    else
+      with {:ok, result} <- safe_deliberate(module, turn, opts),
+           {:ok, candidates} <- validate_result(result, turn, context) do
+        {:ok, candidates, state}
+      end
+    end
+  end
 
   @doc "Builds a Candidate whose trusted proposer and Scope come from the sealed Turn."
   @spec candidate(Turn.t(), map() | keyword()) ::
@@ -152,7 +157,7 @@ defmodule Spectre.Mind do
 
   defp safe_ref(module) do
     case Adapter.invoke(module, :ref, []) do
-      {:ok, ref} when is_binary(ref) and ref != "" -> {:ok, ref}
+      {:ok, ref} when Portable.is_non_empty_binary(ref) -> {:ok, ref}
       {:ok, _invalid} -> {:error, {:invalid_mind_ref, module}}
       {:error, _reason} -> {:error, {:mind_ref_failed, module}}
     end
@@ -218,6 +223,8 @@ defmodule Spectre.Mind do
     end
   end
 
+  defp normalize_result([]), do: {:ok, []}
+
   defp normalize_result(result) when is_list(result) do
     if Keyword.keyword?(result), do: normalize_one(result), else: normalize_many(result)
   end
@@ -225,19 +232,15 @@ defmodule Spectre.Mind do
   defp normalize_result(result), do: normalize_one(result)
 
   defp normalize_many(result) do
-    if result == [] do
-      {:ok, []}
-    else
-      Enum.reduce_while(result, {:ok, []}, fn value, {:ok, candidates} ->
-        case Candidate.new(value) do
-          {:ok, candidate} -> {:cont, {:ok, [candidate | candidates]}}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-      |> case do
-        {:ok, candidates} -> {:ok, Enum.reverse(candidates)}
-        {:error, _reason} = error -> error
+    Enum.reduce_while(result, {:ok, []}, fn value, {:ok, candidates} ->
+      case Candidate.new(value) do
+        {:ok, candidate} -> {:cont, {:ok, [candidate | candidates]}}
+        {:error, _reason} = error -> {:halt, error}
       end
+    end)
+    |> case do
+      {:ok, candidates} -> {:ok, Enum.reverse(candidates)}
+      {:error, _reason} = error -> error
     end
   end
 

@@ -2,11 +2,11 @@ defmodule Spectre.Domain.Bootstrap do
   @moduledoc false
 
   alias Spectre.Adapter
+  alias Spectre.{Constitution, Duty, Genesis, HostProfile, Mandate, Principal, Surface}
   alias Spectre.Domain.Event
   alias Spectre.Domain.Projection
   alias Spectre.Duty.Derive
   alias Spectre.GovernedAct.{Emergency, Fold, State}
-  alias Spectre.{Constitution, Duty, Genesis, HostProfile, Mandate, Principal, Surface}
 
   @type prepared :: %{batch_id: String.t(), payloads: [map()]}
 
@@ -48,9 +48,6 @@ defmodule Spectre.Domain.Bootstrap do
 
       nil ->
         {:error, :governed_surface_required}
-
-      _invalid ->
-        {:error, :invalid_governed_surface}
     end
   end
 

@@ -11,6 +11,8 @@ defmodule Spectre.Ledger do
   runtime projections, cached authority, or a store-specific index.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Ledger.Entry
   alias Spectre.Ledger.Store
   alias Spectre.Portable
@@ -113,7 +115,7 @@ defmodule Spectre.Ledger do
   previous-digest chain, Domain binding, batch contiguity, and export summary.
   """
   @spec verify(map()) :: {:ok, snapshot()} | {:error, term()}
-  def verify(data) when is_map(data) and not is_struct(data) do
+  def verify(data) when Portable.is_plain_map(data) do
     with :ok <- validate_export_keys(data),
          :ok <- validate_export_header(data),
          domain_ref <- Map.get(data, "domain_ref"),
@@ -154,7 +156,7 @@ defmodule Spectre.Ledger do
   def verify_snapshot(snapshot, expected_domain \\ nil)
 
   def verify_snapshot(snapshot, expected_domain)
-      when is_map(snapshot) and not is_struct(snapshot) do
+      when Portable.is_plain_map(snapshot) do
     domain_ref = Map.get(snapshot, :domain_ref)
     revision = Map.get(snapshot, :revision)
     head_digest = Map.get(snapshot, :head_digest)
@@ -308,7 +310,7 @@ defmodule Spectre.Ledger do
   end
 
   @spec validate_revision(term()) :: :ok | {:error, term()}
-  defp validate_revision(value) when is_integer(value) and value >= 0, do: :ok
+  defp validate_revision(value) when Portable.is_non_negative_integer(value), do: :ok
   defp validate_revision(_value), do: {:error, :invalid_ledger_revision}
 
   @spec validate_digest(term()) :: :ok | {:error, term()}
@@ -318,6 +320,6 @@ defmodule Spectre.Ledger do
 
   @spec validate_recovery(term()) :: :ok | {:error, term()}
   defp validate_recovery(nil), do: :ok
-  defp validate_recovery(value) when is_map(value) and not is_struct(value), do: :ok
+  defp validate_recovery(value) when Portable.is_plain_map(value), do: :ok
   defp validate_recovery(_value), do: {:error, :invalid_ledger_recovery_metadata}
 end

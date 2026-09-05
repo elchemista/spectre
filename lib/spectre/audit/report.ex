@@ -8,8 +8,8 @@ defmodule Spectre.Audit.Report do
   """
 
   alias Spectre.{Constitution, Declassification, Definition, Duty, Erasure, Genesis}
-  alias Spectre.{HostProfile, Mandate, Surface}
   alias Spectre.GovernedAct.{DispatchState, Index, MeterState, State}
+  alias Spectre.{HostProfile, Mandate, Surface}
   alias Spectre.Scope.Opening
 
   @format "spectre-semantic-audit"

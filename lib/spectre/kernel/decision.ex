@@ -21,7 +21,9 @@ defmodule Spectre.Kernel.Decision do
     * `:unknown_class` -- the governed Surface cannot classify it.
   """
 
-  alias Spectre.{Candidate, Mandate}
+  require Spectre.Portable
+
+  alias Spectre.{Candidate, Mandate, Portable}
   alias Spectre.Kernel.{Authority, Meter}
   alias Spectre.Kernel.Authority.Effective
   alias Spectre.Kernel.Decision.Context
@@ -180,8 +182,8 @@ defmodule Spectre.Kernel.Decision do
           %{"child_mandate_ref" => child_mandate_ref, "amounts" => amounts} = command
       } = consequence
       when map_size(consequence) == 1 and map_size(command) == 2 and
-             is_binary(child_mandate_ref) and child_mandate_ref != "" and is_map(amounts) and
-             not is_struct(amounts) and map_size(amounts) > 0 ->
+             Portable.is_non_empty_binary(child_mandate_ref) and Portable.is_plain_map(amounts) and
+             map_size(amounts) > 0 ->
         case Amounts.non_empty(amounts) do
           {:ok, _amounts} -> :ok
           {:error, _reason} -> {:refused, :invalid_meter_devolution}
@@ -262,11 +264,9 @@ defmodule Spectre.Kernel.Decision do
   end
 
   defp meters_authorized(requests, authority) do
-    authorized = authority.meters |> Map.keys() |> MapSet.new()
-
-    case Enum.find(Map.keys(requests), &(not MapSet.member?(authorized, &1))) do
+    case Enum.find(requests, fn {ref, _amount} -> not Map.has_key?(authority.meters, ref) end) do
       nil -> :ok
-      ref -> {:refused, {:meter_outside_mandate, ref}}
+      {ref, _amount} -> {:refused, {:meter_outside_mandate, ref}}
     end
   end
 

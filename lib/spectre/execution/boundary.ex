@@ -9,6 +9,8 @@ defmodule Spectre.Execution.Boundary do
   enter a diagnostic report or the ledger.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Adapter, Portable}
 
   @profiles [:development, :mediated, :isolated]
@@ -210,7 +212,7 @@ defmodule Spectre.Execution.Boundary do
     case Adapter.invoke(module, function, []) do
       {:ok, value} ->
         case value do
-          value when is_binary(value) and value != "" ->
+          value when Portable.is_non_empty_binary(value) ->
             {:ok, value}
 
           value when function == :profile and value in @profiles ->

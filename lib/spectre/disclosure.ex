@@ -113,11 +113,13 @@ defmodule Spectre.Disclosure do
   @doc "Returns true when every disclosed label is explicitly covered by a Mandate."
   @spec labels_covered?(t(), [Label.t()]) :: boolean()
   def labels_covered?(%__MODULE__{} = disclosure, allowed_labels) when is_list(allowed_labels) do
-    with {:ok, allowed_labels} <- Label.normalize_many(allowed_labels) do
-      allowed = MapSet.new(allowed_labels, & &1.ref)
-      Enum.all?(disclosure.labels, &MapSet.member?(allowed, &1.ref))
-    else
-      {:error, _reason} -> false
+    case Label.normalize_many(allowed_labels) do
+      {:ok, allowed_labels} ->
+        allowed = MapSet.new(allowed_labels, & &1.ref)
+        Enum.all?(disclosure.labels, &MapSet.member?(allowed, &1.ref))
+
+      {:error, _reason} ->
+        false
     end
   end
 

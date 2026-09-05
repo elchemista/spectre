@@ -10,11 +10,14 @@ defmodule Spectre.Domain.Command.Commit do
   truth.
   """
 
-  alias Spectre.Domain.Transaction
   alias Spectre.Domain.Sequencer.{Control, State}
+  alias Spectre.Domain.Transaction
 
   @type command_result(value) ::
-          {:ok, State.t(), value} | {:error, State.t(), term()}
+          {:ok, State.t(), value}
+          | {:ok, State.t(), Spectre.Act.t(), Spectre.Attempt.t(),
+             Spectre.Secret.CheckoutReceipt.t()}
+          | {:error, State.t(), term()}
 
   @doc "Repairs derivable Duties before a command observes or changes Domain state."
   @spec prepare(State.t()) :: {:ok, State.t()} | {:error, State.t(), term()}
@@ -49,12 +52,14 @@ defmodule Spectre.Domain.Command.Commit do
       when is_list(payloads) and is_integer(recorded_at) and recorded_at >= 0 and
              is_integer(conflicts_left) and conflicts_left >= 0 and is_function(on_success, 1) and
              is_function(on_conflict, 2) do
-    with {:ok, batch_id} <- Transaction.operational_id(state) do
-      state
-      |> Transaction.append_exact(batch_id, payloads, recorded_at)
-      |> resolve(state, conflicts_left, on_success, on_conflict)
-    else
-      {:error, reason} -> {:error, state, reason}
+    case Transaction.operational_id(state) do
+      {:ok, batch_id} ->
+        state
+        |> Transaction.append_exact(batch_id, payloads, recorded_at)
+        |> resolve(state, conflicts_left, on_success, on_conflict)
+
+      {:error, reason} ->
+        {:error, state, reason}
     end
   end
 

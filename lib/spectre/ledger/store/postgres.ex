@@ -188,8 +188,7 @@ defmodule Spectre.Ledger.Store.Postgres do
              append_or_reuse(
                config,
                existing,
-               domain_ref,
-               batch_id,
+               {domain_ref, batch_id},
                payloads,
                revision,
                recorded_at,
@@ -233,8 +232,7 @@ defmodule Spectre.Ledger.Store.Postgres do
   defp append_or_reuse(
          config,
          %{identity_digest: identity, expected_revision: revision, last_revision: last},
-         domain_ref,
-         _batch_id,
+         {domain_ref, _batch_id},
          _payloads,
          revision,
          _recorded_at,
@@ -254,8 +252,7 @@ defmodule Spectre.Ledger.Store.Postgres do
   defp append_or_reuse(
          _config,
          %{},
-         _domain_ref,
-         batch_id,
+         {_domain_ref, batch_id},
          _payloads,
          _revision,
          _recorded_at,
@@ -267,8 +264,7 @@ defmodule Spectre.Ledger.Store.Postgres do
   defp append_or_reuse(
          config,
          nil,
-         domain_ref,
-         batch_id,
+         {domain_ref, batch_id},
          payloads,
          expected_revision,
          recorded_at,
@@ -474,18 +470,22 @@ defmodule Spectre.Ledger.Store.Postgres do
           :not_found
 
         {:ok, info} ->
-          with {:ok, snapshot} <- load_locked(config, domain_ref),
-               true <- snapshot.revision >= info.last_revision do
-            {:ok, info}
-          else
-            false -> {:error, :ledger_postgres_batch_not_in_head}
-            :not_found -> {:error, :ledger_postgres_batch_without_head}
-            {:error, _reason} = error -> error
-          end
+          verify_batch_in_head(config, domain_ref, info)
 
         {:error, _reason} = error ->
           error
       end
+    end
+  end
+
+  defp verify_batch_in_head(config, domain_ref, info) do
+    with {:ok, snapshot} <- load_locked(config, domain_ref),
+         true <- snapshot.revision >= info.last_revision do
+      {:ok, info}
+    else
+      false -> {:error, :ledger_postgres_batch_not_in_head}
+      :not_found -> {:error, :ledger_postgres_batch_without_head}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -501,18 +501,18 @@ defmodule Spectre.Ledger.Store.Postgres do
   end
 
   defp transaction(config, operation) do
-    apply(config.repo, :transaction, [operation, config.transaction_opts])
+    config.repo.transaction(operation, config.transaction_opts)
   end
 
-  defp rollback(config, reason), do: apply(config.repo, :rollback, [reason])
+  defp rollback(config, reason), do: config.repo.rollback(reason)
 
   defp query(config, statement, parameters) do
-    case apply(config.query_module, :query, [
+    case config.query_module.query(
            config.repo,
            statement,
            parameters,
            config.query_opts
-         ]) do
+         ) do
       {:ok, result} -> {:ok, result}
       {:error, reason} -> {:error, {:ledger_postgres_query_failed, error_kind(reason)}}
       _malformed -> {:error, :invalid_ledger_postgres_query_reply}
@@ -551,19 +551,23 @@ defmodule Spectre.Ledger.Store.Postgres do
   defp decode_entry_batch(encoded) do
     with {:ok, values} <- Value.decode(encoded),
          true <- is_list(values) and values != [] do
-      Enum.reduce_while(values, {:ok, []}, fn value, {:ok, entries} ->
-        case Entry.from_data(value) do
-          {:ok, entry} -> {:cont, {:ok, [entry | entries]}}
-          {:error, reason} -> {:halt, {:error, {:invalid_postgres_ledger_entry, reason}}}
-        end
-      end)
-      |> case do
-        {:ok, entries} -> {:ok, Enum.reverse(entries)}
-        {:error, _reason} = error -> error
-      end
+      decode_entries(values)
     else
       false -> {:error, :empty_postgres_ledger_batch}
       {:error, reason} -> {:error, {:invalid_postgres_ledger_batch, reason}}
+    end
+  end
+
+  defp decode_entries(values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, entries} ->
+      case Entry.from_data(value) do
+        {:ok, entry} -> {:cont, {:ok, [entry | entries]}}
+        {:error, reason} -> {:halt, {:error, {:invalid_postgres_ledger_entry, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, entries} -> {:ok, Enum.reverse(entries)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -720,9 +724,8 @@ defmodule Spectre.Ledger.Store.Postgres do
   end
 
   defp adapter_available(config) do
-    with :ok <- postgres_repo_available(config.repo),
-         :ok <- postgres_query_available(config.query_module) do
-      :ok
+    with :ok <- postgres_repo_available(config.repo) do
+      postgres_query_available(config.query_module)
     end
   end
 

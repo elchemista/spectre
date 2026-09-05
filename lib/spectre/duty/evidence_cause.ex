@@ -7,6 +7,8 @@ defmodule Spectre.Duty.EvidenceCause do
   are deliberately absent, so Evidence can never grant itself power.
   """
 
+  require Spectre.Portable
+
   alias Spectre.{Constitution, Duty, Evidence, Portable}
 
   @schema_version 1
@@ -84,7 +86,7 @@ defmodule Spectre.Duty.EvidenceCause do
       do: :not_cause
 
   def extract(%Evidence{} = evidence, constitution)
-      when is_map(constitution) and not is_struct(constitution) do
+      when Portable.is_plain_map(constitution) do
     with :ok <- valid_evidence_envelope(evidence),
          {:ok, cause} <- from_canonical(evidence.payload),
          :ok <- configured_source(cause, evidence, constitution) do
@@ -129,9 +131,8 @@ defmodule Spectre.Duty.EvidenceCause do
         {:error, {:invalid_duty_evidence_cause_missing, Portable.shape(cause.missing)}}
 
       true ->
-        with :ok <- Portable.validate_ref(cause.accountable_ref, :accountable_ref),
-             :ok <- Portable.validate_optional_ref(cause.mandate_ref, :mandate_ref) do
-          :ok
+        with :ok <- Portable.validate_ref(cause.accountable_ref, :accountable_ref) do
+          Portable.validate_optional_ref(cause.mandate_ref, :mandate_ref)
         end
     end
   end
@@ -144,7 +145,7 @@ defmodule Spectre.Duty.EvidenceCause do
       evidence.provisional ->
         {:error, {:provisional_duty_evidence_cause, evidence.ref}}
 
-      not is_map(evidence.payload) or is_struct(evidence.payload) ->
+      not Portable.is_plain_map(evidence.payload) ->
         {:error, {:invalid_duty_evidence_cause_payload, evidence.ref}}
 
       true ->

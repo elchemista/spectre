@@ -62,37 +62,41 @@ defmodule Spectre.Duty.Derive.Outcome do
 
   defp ambiguous_attempt_causes(facts, outcomes_by_attempt, constitution, time) do
     Enum.flat_map(facts.attempts, fn {_attempt_ref, %Attempt{} = attempt} ->
-      act = Map.get(facts.acts, attempt.act_ref)
       outcomes = Map.get(outcomes_by_attempt, attempt.ref, [])
-
-      with %Act{} = act <- act,
-           {:ok, deadline} <- observation_deadline(attempt, act),
-           ambiguous_outcome = first_outcome(facts, outcomes, :ambiguous, min(time, deadline)),
-           ambiguous_at = outcome_time_value(facts, ambiguous_outcome),
-           {:ok, required_at} <- ambiguity_required_at(ambiguous_at, deadline, time),
-           false <- is_nil(ambiguous_at) and definitive_outcome_by?(facts, outcomes, deadline) do
-        case ambiguous_outcome do
-          nil ->
-            timely_outcomes = Enum.filter(outcomes, &observed_by?(facts, &1, deadline))
-
-            [ambiguous_timeout_cause(act, attempt, timely_outcomes, required_at, constitution)]
-
-          outcome ->
-            case Facts.metadata(facts, outcome.ref) do
-              {:ok, metadata} ->
-                case cause(act, attempt, outcome, constitution, metadata.recorded_at) do
-                  {:ok, cause} -> [Map.put(cause, :required_at, required_at)]
-                  {:error, _reason} -> []
-                end
-
-              {:error, :missing_event_metadata} ->
-                []
-            end
-        end
-      else
-        _other -> []
-      end
+      ambiguous_attempt(facts, attempt, outcomes, constitution, time)
     end)
+  end
+
+  defp ambiguous_attempt(facts, attempt, outcomes, constitution, time) do
+    act = Map.get(facts.acts, attempt.act_ref)
+
+    with %Act{} = act <- act,
+         {:ok, deadline} <- observation_deadline(attempt, act),
+         ambiguous_outcome = first_outcome(facts, outcomes, :ambiguous, min(time, deadline)),
+         ambiguous_at = outcome_time_value(facts, ambiguous_outcome),
+         {:ok, required_at} <- ambiguity_required_at(ambiguous_at, deadline, time),
+         false <- is_nil(ambiguous_at) and definitive_outcome_by?(facts, outcomes, deadline) do
+      case ambiguous_outcome do
+        nil ->
+          timely_outcomes = Enum.filter(outcomes, &observed_by?(facts, &1, deadline))
+
+          [ambiguous_timeout_cause(act, attempt, timely_outcomes, required_at, constitution)]
+
+        outcome ->
+          observed_ambiguity(facts, act, attempt, outcome, constitution, required_at)
+      end
+    else
+      _other -> []
+    end
+  end
+
+  defp observed_ambiguity(facts, act, attempt, outcome, constitution, required_at) do
+    with {:ok, metadata} <- Facts.metadata(facts, outcome.ref),
+         {:ok, cause} <- cause(act, attempt, outcome, constitution, metadata.recorded_at) do
+      [Map.put(cause, :required_at, required_at)]
+    else
+      {:error, _reason} -> []
+    end
   end
 
   defp contradicted_outcome_causes(facts, constitution, time) do

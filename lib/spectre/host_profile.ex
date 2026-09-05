@@ -7,6 +7,8 @@ defmodule Spectre.HostProfile do
   not prove that the physical isolation is real.
   """
 
+  require Spectre.Portable
+
   alias Spectre.Portable
 
   @schema_version 1
@@ -97,7 +99,7 @@ defmodule Spectre.HostProfile do
       profile.schema_version != @schema_version ->
         {:error, {:unsupported_host_profile_schema_version, profile.schema_version}}
 
-      not is_integer(profile.revision) or profile.revision <= 0 ->
+      not Portable.is_positive_integer(profile.revision) ->
         {:error, {:invalid_host_profile_revision, profile.revision}}
 
       profile.mode not in @modes ->
@@ -110,9 +112,8 @@ defmodule Spectre.HostProfile do
         {:error, {:invalid_host_profile_declared_at, Portable.shape(profile.declared_at)}}
 
       true ->
-        with :ok <- Portable.validate_ref(profile.ref, :ref),
-             :ok <- Portable.validate_ref(profile.attestation_ref, :attestation_ref) do
-          :ok
+        with :ok <- Portable.validate_ref(profile.ref, :ref) do
+          Portable.validate_ref(profile.attestation_ref, :attestation_ref)
         end
     end
   end

@@ -8,9 +8,9 @@ defmodule Spectre.Domain.Command.Presentation do
   """
 
   alias Spectre.{Disclosure, Presentation, SubmissionContext}
-  alias Spectre.Domain.{Context, Event, Transaction}
   alias Spectre.Domain.Command.Commit
   alias Spectre.Domain.Command.Record, as: CommandRecord
+  alias Spectre.Domain.{Context, Event, Transaction}
   alias Spectre.Domain.Sequencer.State
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Payload.Store, as: PayloadStore
@@ -94,17 +94,19 @@ defmodule Spectre.Domain.Command.Presentation do
          conflicts_left,
          recorded_at
        ) do
-    with {:ok, payload} <- Event.record(:presentation, presentation) do
-      Commit.append(
-        state,
-        [payload],
-        recorded_at,
-        conflicts_left,
-        &recovered_presentation(state, &1, presentation),
-        &record_with_retries(&1, context, presentation, &2)
-      )
-    else
-      {:error, reason} -> {:error, state, reason}
+    case Event.record(:presentation, presentation) do
+      {:ok, payload} ->
+        Commit.append(
+          state,
+          [payload],
+          recorded_at,
+          conflicts_left,
+          &recovered_presentation(state, &1, presentation),
+          &record_with_retries(&1, context, presentation, &2)
+        )
+
+      {:error, reason} ->
+        {:error, state, reason}
     end
   end
 
