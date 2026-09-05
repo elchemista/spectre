@@ -96,7 +96,7 @@ defmodule Spectre.HostProfile do
 
   defp validate_record(%__MODULE__{} = profile) do
     cond do
-      profile.schema_version != @schema_version ->
+      profile.schema_version !== @schema_version ->
         {:error, {:unsupported_host_profile_schema_version, profile.schema_version}}
 
       not Portable.is_positive_integer(profile.revision) ->

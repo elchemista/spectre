@@ -1135,7 +1135,7 @@ defmodule Spectre do
 
   defp historical_surface(projection, revision) do
     matches =
-      projection.surfaces
+      projection.catalog.surfaces
       |> Map.values()
       |> Enum.filter(&(&1.revision == revision))
 
@@ -1382,7 +1382,12 @@ defmodule Spectre do
       else: {:error, :domain_registry_unavailable}
   end
 
-  defp normalize_registration(pid) when is_pid(pid), do: {:ok, pid}
+  defp normalize_registration(pid) when is_pid(pid) do
+    # Registry cleanup is asynchronous: a terminated local Domain may still
+    # have an entry until its partition processes the monitor notification.
+    if Process.alive?(pid), do: {:ok, pid}, else: {:error, :domain_not_found}
+  end
+
   defp normalize_registration(nil), do: {:error, :domain_not_found}
   defp normalize_registration(_invalid), do: {:error, :invalid_domain_registration}
 

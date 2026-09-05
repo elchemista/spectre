@@ -24,26 +24,7 @@ defmodule Spectre.Mind do
   alias Spectre.{Adapter, Candidate, Disclosure, Evidence, Portable}
   alias Spectre.Mind.{Derivation, Turn}
 
-  @candidate_fields [
-    :identity_key,
-    :class,
-    :consequence,
-    :row,
-    :requested_mandate_ref,
-    :executor_ref,
-    :accountable_ref,
-    :subject_refs,
-    :target_refs,
-    :purpose_ref,
-    :purpose_params,
-    :consent,
-    :evidence_refs,
-    :disclosure,
-    :presentation_ref,
-    :meter_requests,
-    :executor_contract_ref,
-    :observation_window_ms
-  ]
+  @candidate_fields Candidate.request_fields()
   @callback ref() :: String.t()
   @callback deliberate(Turn.t(), keyword()) ::
               {:ok, Candidate.t() | map() | keyword() | [Candidate.t() | map() | keyword()]}

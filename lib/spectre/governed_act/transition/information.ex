@@ -241,7 +241,7 @@ defmodule Spectre.GovernedAct.Transition.Information do
   end
 
   defp validate_prepared_presentation(projection, presentation) do
-    case Map.fetch(projection.scopes, presentation.scope_ref) do
+    case Map.fetch(projection.catalog.scopes, presentation.scope_ref) do
       {:ok, opening} when presentation.prepared_at >= opening.opened_at ->
         with :ok <-
                ErasureAnalysis.validate_evidence_available(
@@ -303,7 +303,7 @@ defmodule Spectre.GovernedAct.Transition.Information do
         :ok
 
       {:ok, cause} ->
-        with true <- Map.has_key?(projection.principals, cause.accountable_ref),
+        with true <- Map.has_key?(projection.catalog.principals, cause.accountable_ref),
              :ok <- optional_mandate_exists(projection, cause.mandate_ref),
              :ok <-
                ErasureAnalysis.validate_evidence_available(

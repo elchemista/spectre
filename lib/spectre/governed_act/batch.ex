@@ -165,7 +165,7 @@ defmodule Spectre.GovernedAct.Batch do
 
       valid? =
         if is_nil(mandate.parent_ref) do
-          batch_event?(events, "genesis_recorded", projection.genesis.ref, -1)
+          batch_event?(events, "genesis_recorded", projection.catalog.genesis.ref, -1)
         else
           batch_event?(events, "act_committed", mandate.source_ref, -1)
         end

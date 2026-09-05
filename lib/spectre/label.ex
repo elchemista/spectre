@@ -43,12 +43,7 @@ defmodule Spectre.Label do
   @doc "Normalizes, de-duplicates and orders labels by stable reference."
   @spec normalize_many(term()) :: {:ok, [t()]} | {:error, term()}
   def normalize_many(labels) when is_list(labels) do
-    Enum.reduce_while(labels, {:ok, []}, fn value, {:ok, normalized} ->
-      case new(value) do
-        {:ok, label} -> {:cont, {:ok, [label | normalized]}}
-        {:error, reason} -> {:halt, {:error, {:invalid_label, reason}}}
-      end
-    end)
+    normalize_list(labels, [])
     |> case do
       {:ok, labels} ->
         labels = labels |> Enum.uniq_by(& &1.ref) |> Enum.sort_by(& &1.ref)
@@ -60,6 +55,17 @@ defmodule Spectre.Label do
   end
 
   def normalize_many(_labels), do: {:error, :invalid_labels}
+
+  defp normalize_list([], normalized), do: {:ok, normalized}
+
+  defp normalize_list([value | rest], normalized) do
+    case new(value) do
+      {:ok, label} -> normalize_list(rest, [label | normalized])
+      {:error, reason} -> {:error, {:invalid_label, reason}}
+    end
+  end
+
+  defp normalize_list(_improper, _normalized), do: {:error, :invalid_labels}
 
   @doc "Returns the plain, string-keyed representation."
   @spec canonical(t()) :: map()
@@ -86,7 +92,7 @@ defmodule Spectre.Label do
 
   defp validate(%__MODULE__{} = label) do
     cond do
-      label.schema_version != @schema_version ->
+      label.schema_version !== @schema_version ->
         {:error, {:unsupported_label_schema_version, label.schema_version}}
 
       is_nil(label.value) ->

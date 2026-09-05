@@ -359,7 +359,7 @@ defmodule Spectre.Mandate do
 
   defp validate_header(mandate) do
     cond do
-      mandate.schema_version != @schema_version ->
+      mandate.schema_version !== @schema_version ->
         {:error, {:unsupported_mandate_schema_version, mandate.schema_version}}
 
       not Portable.is_positive_integer(mandate.revision) ->

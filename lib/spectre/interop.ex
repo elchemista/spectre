@@ -63,7 +63,8 @@ defmodule Spectre.Interop do
   def inbound(envelope, expected_destination_domain_ref)
       when Portable.is_plain_map(envelope) do
     with :ok <- exact_keys(envelope),
-         true <- envelope["schema_version"] == @schema_version,
+         :ok <- Portable.validate(envelope),
+         true <- envelope["schema_version"] === @schema_version,
          :ok <- Portable.validate_ref(envelope["source_domain_ref"], :source_domain_ref),
          :ok <- Portable.validate_ref(envelope["destination_domain_ref"], :destination_domain_ref),
          :ok <- Portable.validate_ref(expected_destination_domain_ref, :destination_domain_ref),
@@ -79,8 +80,7 @@ defmodule Spectre.Interop do
              evidence
            ),
          {:ok, expected_ref} <- Portable.content_ref(:interop, content),
-         true <- envelope["ref"] == expected_ref,
-         :ok <- Portable.validate(envelope) do
+         true <- envelope["ref"] == expected_ref do
       {:ok,
        %{
          ref: expected_ref,

@@ -124,7 +124,7 @@ defmodule Spectre.Duty.EvidenceCause do
 
   defp validate(%__MODULE__{} = cause) do
     cond do
-      cause.schema_version != @schema_version ->
+      cause.schema_version !== @schema_version ->
         {:error, {:unsupported_duty_evidence_cause_schema_version, cause.schema_version}}
 
       not is_list(cause.missing) or cause.missing == [] ->

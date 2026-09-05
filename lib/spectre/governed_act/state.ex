@@ -7,6 +7,10 @@ defmodule Spectre.GovernedAct.State do
   Keeping the container separate from the reducer lets transition modules share
   one explicit shape without turning the fold itself into a mutable domain
   object.
+
+  Governed declarations live together in `Spectre.GovernedAct.Catalog`;
+  execution, information lineage and accounting stay on this state. Both
+  containers have fixed, compact shapes and share their immutable records.
   """
 
   alias Spectre.{
@@ -14,25 +18,22 @@ defmodule Spectre.GovernedAct.State do
     Attempt,
     Decision,
     Declassification,
-    Definition,
     Duty,
     Erasure,
     Evidence,
-    Genesis,
     HostProfile,
     Mandate,
     Outcome,
     Presentation,
-    Principal,
     Surface
   }
 
   alias Spectre.Domain.Event
+  alias Spectre.GovernedAct.Catalog
   alias Spectre.GovernedAct.DispatchState
   alias Spectre.Kernel.Meter
   alias Spectre.Ledger.Entry
   alias Spectre.Mandate.Revocation
-  alias Spectre.Scope.Opening
 
   @enforce_keys [:domain_ref]
   defstruct domain_ref: nil,
@@ -43,14 +44,9 @@ defmodule Spectre.GovernedAct.State do
             head_digest: Entry.genesis_digest(),
             recorded_at: 0,
             event_metadata: %{},
-            # Foundation history plus an O(1) pointer to each current revision.
-            genesis: nil,
-            host_profile_ref: nil,
-            host_profiles: %{},
-            surface_ref: nil,
-            surfaces: %{},
+            # Governed declarations plus O(1) pointers to current revisions.
+            catalog: %Catalog{},
             # Authority history and subtractive-lineage indexes.
-            principals: %{},
             mandates: %{},
             mandate_successors: %{},
             revocations: %{},
@@ -79,11 +75,7 @@ defmodule Spectre.GovernedAct.State do
             meter_devolutions: MapSet.new(),
             # Causal obligations and stable ref lookup.
             duties: %{},
-            duty_refs: %{},
-            # Governed application/runtime declarations.
-            scopes: %{},
-            definitions: %{},
-            definition_heads: %{}
+            duty_refs: %{}
 
   @type t :: %__MODULE__{
           domain_ref: String.t(),
@@ -92,12 +84,7 @@ defmodule Spectre.GovernedAct.State do
           head_digest: String.t(),
           recorded_at: non_neg_integer(),
           event_metadata: %{optional(String.t()) => Event.Metadata.t()},
-          genesis: Genesis.t() | nil,
-          host_profile_ref: String.t() | nil,
-          host_profiles: %{optional(String.t()) => HostProfile.t()},
-          surface_ref: String.t() | nil,
-          surfaces: %{optional(String.t()) => Surface.t()},
-          principals: %{optional(String.t()) => Principal.t()},
+          catalog: Catalog.t(),
           mandates: %{optional(String.t()) => Mandate.t()},
           mandate_successors: %{optional(String.t()) => String.t()},
           revocations: %{optional(String.t()) => Revocation.t()},
@@ -121,9 +108,6 @@ defmodule Spectre.GovernedAct.State do
           consumed_nonces: MapSet.t(String.t()),
           duties: %{optional(term()) => Duty.t()},
           duty_refs: %{optional(String.t()) => term()},
-          scopes: %{optional(String.t()) => Opening.t()},
-          definitions: %{optional(String.t()) => Definition.t()},
-          definition_heads: %{optional({String.t(), String.t()}) => String.t()},
           erasures: %{optional(String.t()) => Erasure.t()}
         }
 
@@ -159,11 +143,13 @@ defmodule Spectre.GovernedAct.State do
 
   @doc "Returns the current HostProfile from its single historical collection."
   @spec host_profile(t()) :: HostProfile.t() | nil
-  def host_profile(%__MODULE__{host_profile_ref: ref, host_profiles: profiles}),
-    do: Map.get(profiles, ref)
+  def host_profile(%__MODULE__{
+        catalog: %Catalog{host_profile_ref: ref, host_profiles: profiles}
+      }),
+      do: Map.get(profiles, ref)
 
   @doc "Returns the current Surface from its single historical collection."
   @spec surface(t()) :: Surface.t() | nil
-  def surface(%__MODULE__{surface_ref: ref, surfaces: surfaces}),
+  def surface(%__MODULE__{catalog: %Catalog{surface_ref: ref, surfaces: surfaces}}),
     do: Map.get(surfaces, ref)
 end

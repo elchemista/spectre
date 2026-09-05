@@ -75,7 +75,7 @@ defmodule Spectre.Attempt do
 
   defp validate_record(%__MODULE__{} = attempt) do
     cond do
-      attempt.schema_version != @schema_version ->
+      attempt.schema_version !== @schema_version ->
         {:error, {:unsupported_attempt_schema_version, attempt.schema_version}}
 
       not Portable.is_non_negative_integer(attempt.generation) ->

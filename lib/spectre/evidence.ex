@@ -124,7 +124,7 @@ defmodule Spectre.Evidence do
   def normalize_unique(values) when is_list(values) do
     # Preserve input order and reject every repeated identity, even an exact
     # copy. Idempotent ledger insertion has a different duplicate policy.
-    Enum.reduce_while(values, {:ok, [], MapSet.new()}, &normalize_next/2)
+    normalize_records(values, {:ok, [], MapSet.new()})
     |> case do
       {:ok, records, _refs} -> {:ok, Enum.reverse(records)}
       {:error, _reason} = error -> error
@@ -132,6 +132,17 @@ defmodule Spectre.Evidence do
   end
 
   def normalize_unique(_values), do: {:error, :invalid_evidence_list}
+
+  defp normalize_records([], result), do: result
+
+  defp normalize_records([value | rest], result) do
+    case normalize_next(value, result) do
+      {:cont, result} -> normalize_records(rest, result)
+      {:halt, error} -> error
+    end
+  end
+
+  defp normalize_records(_improper, _result), do: {:error, :invalid_evidence_list}
 
   defp normalize_next(value, {:ok, records, refs}) do
     case new(value) do
@@ -250,7 +261,7 @@ defmodule Spectre.Evidence do
   end
 
   defp validate_schema(evidence) do
-    if evidence.schema_version == @schema_version,
+    if evidence.schema_version === @schema_version,
       do: :ok,
       else: {:error, {:unsupported_evidence_schema_version, evidence.schema_version}}
   end

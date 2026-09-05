@@ -115,7 +115,7 @@ defmodule Spectre.Duty.Disposition do
 
   defp validate(%__MODULE__{} = disposition) do
     cond do
-      disposition.schema_version != @schema_version ->
+      disposition.schema_version !== @schema_version ->
         {:error, {:unsupported_duty_disposition_schema_version, disposition.schema_version}}
 
       disposition.kind not in @kinds ->

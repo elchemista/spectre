@@ -72,6 +72,34 @@ defmodule Spectre.Definition do
     end
   end
 
+  @doc """
+  Prepares the next immutable revision without activating it.
+
+  This is the data operation behind Morph: the application supplies a new body
+  (from a DSL, transformation function or planner) and an explicit declaration
+  time. Identity, predecessor and revision are derived from the exact current
+  record, not chosen by the transformation. Submit the result through
+  `Spectre.revise_definition/4`; a stale predecessor is rejected by governance.
+  No process state, Mandate, open Duty or active code changes here.
+  """
+  @spec revise(t(), map(), integer()) :: {:ok, t()} | {:error, term()}
+  def revise(%__MODULE__{} = current, body, declared_at) do
+    with {:ok, current} <- new(current) do
+      current
+      |> Map.from_struct()
+      |> Map.delete(:ref)
+      |> Map.merge(%{
+        revision: current.revision + 1,
+        previous_ref: current.ref,
+        body: body,
+        declared_at: declared_at
+      })
+      |> new()
+    end
+  end
+
+  def revise(_current, _body, _declared_at), do: {:error, :invalid_definition_revision}
+
   @doc "Returns the stable logical key shared by all revisions."
   @spec key(t()) :: {String.t(), String.t()}
   def key(%__MODULE__{} = definition), do: {definition.namespace, definition.name}
@@ -104,7 +132,7 @@ defmodule Spectre.Definition do
 
   defp validate_record(%__MODULE__{} = definition) do
     cond do
-      definition.schema_version != @schema_version ->
+      definition.schema_version !== @schema_version ->
         {:error, {:unsupported_definition_schema_version, definition.schema_version}}
 
       not Portable.is_positive_integer(definition.revision) ->

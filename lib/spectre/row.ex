@@ -111,7 +111,7 @@ defmodule Spectre.Row do
 
   defp validate_record(%__MODULE__{} = row) do
     cond do
-      row.schema_version != @schema_version ->
+      row.schema_version !== @schema_version ->
         {:error, {:unsupported_row_schema_version, row.schema_version}}
 
       invalid = Enum.find(@dimensions, &(not is_boolean(Map.fetch!(row, &1)))) ->

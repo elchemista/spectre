@@ -459,7 +459,7 @@ defmodule Spectre.Consequence.Contract do
   defp content(attrs), do: Portable.canonical_fields(attrs, @fields -- [:ref])
 
   defp validate_record(%__MODULE__{} = contract) do
-    if contract.schema_version != @schema_version do
+    if contract.schema_version !== @schema_version do
       {:error, {:unsupported_consequence_contract_schema_version, contract.schema_version}}
     else
       Portable.validate_content_ref(contract.ref, :consequence_contract, :ref)

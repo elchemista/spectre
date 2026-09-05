@@ -116,6 +116,57 @@ defmodule Spectre.V04Test.ConsentDagTest do
     assert report.counts.acts == 2
   end
 
+  test "valid approval cannot be recycled after changing any consent material", ctx do
+    {show, _outcome} = show!(ctx)
+    approval = response!(ctx, show, :supports)
+    assert {:ok, ^approval} = Fixture.observe_payment(ctx.fixture, approval)
+    candidate = final_candidate(ctx, [approval.ref])
+    assert {:ok, %{outcome: :admitted}, _act} = evaluate(ctx, candidate)
+    before = Sequencer.projection(ctx.fixture.server)
+
+    for {field, value} <- [
+          {"recipient_refs", [ctx.fixture.refs.executor]},
+          {"data_digest", Consent.data_digest(%{"refund_cents" => 5_000}) |> ok!()},
+          {"cost", 5_000},
+          {"risk", "no risk"},
+          {"reversibility", true},
+          {"alternatives", []}
+        ] do
+      assert {:ok, forged} =
+               candidate
+               |> Map.from_struct()
+               |> Map.drop([:ref, :material_digest])
+               |> Map.update!(:consent, &Map.put(&1, field, value))
+               |> Candidate.new()
+
+      # Recompute canonical identity: rejection must be semantic, not a stale
+      # digest. The original, genuinely observed approval remains in Evidence.
+      assert forged.material_digest != candidate.material_digest
+      assert approval.ref in forged.evidence_refs
+      assert {:ok, decision, nil} = evaluate(ctx, forged)
+      # The changed proposal lacks applicable approval. That is undecidable,
+      # not a claim that the newly proposed consequence is itself forbidden.
+      assert decision.outcome == :undecidable, inspect({field, decision.reasons})
+
+      assert {:evidence_condition_undecidable,
+              {:invalid_presentation, :presentation_consent_material_mismatch}} in decision.reasons
+
+      assert Sequencer.projection(ctx.fixture.server) == before
+    end
+
+    for {field, value} <- [
+          {"purpose_ref", "another-purpose"},
+          {"purpose_params", %{"currency" => "USD"}}
+        ] do
+      assert {:error, :consent_purpose_mismatch} =
+               candidate
+               |> Map.from_struct()
+               |> Map.drop([:ref, :material_digest])
+               |> Map.update!(:consent, &Map.put(&1, field, value))
+               |> Candidate.new()
+    end
+  end
+
   test "prepared material alone is not evidence that it was shown", ctx do
     assert {:ok, decision, nil} = evaluate(ctx, final_candidate(ctx, []))
     assert decision.outcome == :undecidable

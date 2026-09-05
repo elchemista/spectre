@@ -249,7 +249,7 @@ defmodule Spectre.SubmissionContext do
 
   defp validate_record(%__MODULE__{} = context) do
     cond do
-      context.schema_version != @schema_version ->
+      context.schema_version !== @schema_version ->
         {:error, {:unsupported_submission_context_schema_version, context.schema_version}}
 
       not Portable.is_non_negative_integer(context.host_generation) ->

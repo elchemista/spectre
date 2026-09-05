@@ -75,7 +75,7 @@ defmodule Spectre.Execution.Router do
   def profile_supports_act(%State{} = projection, act, descriptor) do
     broker_profile = descriptor.profile
 
-    with {:ok, host_profile} <- Map.fetch(projection.host_profiles, act.host_profile_ref),
+    with {:ok, host_profile} <- Map.fetch(projection.catalog.host_profiles, act.host_profile_ref),
          true <- Boundary.profile_covers?(broker_profile, host_profile.mode) do
       :ok
     else

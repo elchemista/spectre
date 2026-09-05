@@ -32,7 +32,11 @@ defmodule Spectre.Domain.Command.Scope do
          :ok <- validate_direct_scope_opening(opening),
          {:ok, now} <- Transaction.trusted_recorded_at(state),
          :ok <- validate_scope_opening_boundary(context, opening, now) do
-      case CommandRecord.lookup(state.projection.scopes, opening, :scope_identity_conflict) do
+      case CommandRecord.lookup(
+             state.projection.catalog.scopes,
+             opening,
+             :scope_identity_conflict
+           ) do
         {:ok, durable} ->
           {:ok, state, durable}
 
@@ -98,7 +102,7 @@ defmodule Spectre.Domain.Command.Scope do
     CommandRecord.recover(
       state,
       projection,
-      :scopes,
+      projection.catalog.scopes,
       opening,
       :scope_identity_conflict,
       :scope_opening_not_recovered

@@ -168,7 +168,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
            cause_key: {:scope_promise_overdue, scope_ref}
          } = duty
        ) do
-    case Map.fetch(state.scopes, scope_ref) do
+    case Map.fetch(state.catalog.scopes, scope_ref) do
       {:ok, %ScopeOpening{} = opening} ->
         condition = opening.promise_condition
         source_act = Map.get(state.acts, opening.source_act_ref)

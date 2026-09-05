@@ -3,7 +3,7 @@ Code.require_file("support/fixture.ex", __DIR__)
 defmodule Spectre.V04Test.GovernanceDelegationTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.Domain.Sequencer
+  alias Spectre.Domain.{Projection, Sequencer}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Authority.Coverage
   alias Spectre.V04Test.{Fixture, Runtime}
@@ -101,6 +101,87 @@ defmodule Spectre.V04Test.GovernanceDelegationTest do
     assert map_size(projection.mandates) == 1
     assert projection.meters[fixture.mandate.ref][fixture.refs.meter].available == 10_000
     assert Fixture.snapshot(fixture).revision == revision + 1
+  end
+
+  test "delegation cannot remove Conditions, widen time, change purpose or evade revocation" do
+    fixture = start_domain("delegation-policy-attacks")
+    payment = record_payment(fixture)
+    original = Sequencer.projection(fixture.server)
+    [condition] = fixture.mandate.conditions
+
+    attacks = [
+      {"conditions", [], {:delegation_expanded, :conditions, condition.ref}},
+      {"expires_at", fixture.mandate.expires_at + 1, {:delegation_expanded, :time_window}},
+      {"not_before", fixture.mandate.not_before - 1, {:delegation_expanded, :time_window}},
+      {"purpose_ref", "unauthorized-purpose", {:delegation_expanded, :purpose}},
+      {"scope_refs", ["unauthorized-scope"], {:delegation_expanded, :scope_refs}},
+      {"classes", ["refund.issue", "secret.read"], {:delegation_expanded, :classes}},
+      {"revocation", %{"mode" => :cascade, "controller_refs" => [fixture.refs.executor]},
+       {:delegation_expanded, :revocation}}
+    ]
+
+    for {field, value, reason} <- attacks do
+      draft = Map.put(issue_draft(fixture, 100), field, value)
+
+      assert {:ok, %{decision: decision, act: nil, grant: nil}} =
+               Sequencer.submit(
+                 fixture.server,
+                 Fixture.context(fixture),
+                 delegation_candidate(fixture, draft, "attack-" <> field, payment.ref)
+               )
+
+      assert decision.outcome == :refused
+      assert reason in decision.reasons, inspect({field, decision.reasons})
+      projection = Sequencer.projection(fixture.server)
+      assert projection.mandates == original.mandates
+      assert projection.meters == original.meters
+      assert projection.acts == original.acts
+    end
+  end
+
+  test "two otherwise valid children cannot allocate the same parent budget twice" do
+    fixture = start_domain("delegation-double-spend")
+    payment = record_payment(fixture)
+    first = issue_draft(fixture, 6_000)
+    second = Map.put(first, "expires_at", first["expires_at"] - 1)
+    assert first != second
+
+    tasks =
+      for {draft, identity} <- [{first, "child-a"}, {second, "child-b"}] do
+        Task.async(fn ->
+          Sequencer.submit(
+            fixture.server,
+            Fixture.context(fixture),
+            delegation_candidate(fixture, draft, identity, payment.ref)
+          )
+        end)
+      end
+
+    results = Task.await_many(tasks)
+    assert Enum.count(results, &match?({:ok, %{decision: %{outcome: :admitted}}}, &1)) == 1
+
+    assert Enum.count(results, &match?({:ok, %{decision: %{outcome: :refused}, act: nil}}, &1)) ==
+             1
+
+    projection = Sequencer.projection(fixture.server)
+    assert map_size(projection.mandates) == 2
+    assert map_size(projection.acts) == 1
+
+    assert %{available: 4_000, delegated: 6_000} =
+             projection.meters[fixture.mandate.ref][fixture.refs.meter]
+
+    total_available =
+      Enum.reduce(projection.meters, 0, fn {_mandate, accounts}, total ->
+        total + accounts[fixture.refs.meter].available
+      end)
+
+    assert total_available == 10_000
+
+    assert {:ok, ^projection} =
+             Projection.replay(Fixture.snapshot(fixture), fixture.constitution)
+
+    assert {:ok, _report} =
+             Spectre.Audit.verify(Fixture.snapshot(fixture), fixture.constitution, Runtime.now())
   end
 
   defp start_domain(namespace) do

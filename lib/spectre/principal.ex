@@ -74,7 +74,7 @@ defmodule Spectre.Principal do
 
   defp validate_record(%__MODULE__{} = principal) do
     cond do
-      principal.schema_version != @schema_version ->
+      principal.schema_version !== @schema_version ->
         {:error, {:unsupported_principal_schema_version, principal.schema_version}}
 
       principal.kind not in @kinds ->

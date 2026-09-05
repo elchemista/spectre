@@ -33,15 +33,15 @@ defmodule Spectre.GovernedAct.Integrity do
   def validate(_state, _observed_at),
     do: {:error, :invalid_governed_integrity_input}
 
-  defp complete_foundation(%State{genesis: nil}),
+  defp complete_foundation(%State{catalog: %{genesis: nil}}),
     do: {:error, :genesis_missing}
 
   defp complete_foundation(state) do
-    required_principals = MapSet.new(state.genesis.principal_refs)
-    actual_principals = state.principals |> Map.keys() |> MapSet.new()
+    required_principals = MapSet.new(state.catalog.genesis.principal_refs)
+    actual_principals = state.catalog.principals |> Map.keys() |> MapSet.new()
 
     required_mandates =
-      [state.genesis.emergency_mandate_ref | state.genesis.root_mandate_refs]
+      [state.catalog.genesis.emergency_mandate_ref | state.catalog.genesis.root_mandate_refs]
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
@@ -75,10 +75,10 @@ defmodule Spectre.GovernedAct.Integrity do
   end
 
   defp complete_constitution(state) do
-    known_authorities = Map.keys(state.principals) ++ Map.keys(state.mandates)
+    known_authorities = Map.keys(state.catalog.principals) ++ Map.keys(state.mandates)
 
     with {:ok, constitution_ref} <- Constitution.ref(state.constitution),
-         true <- constitution_ref == state.genesis.constitution_ref,
+         true <- constitution_ref == state.catalog.genesis.constitution_ref,
          :ok <- Constitution.validate_duty_routes(state.constitution, known_authorities) do
       :ok
     else
@@ -88,7 +88,7 @@ defmodule Spectre.GovernedAct.Integrity do
   end
 
   defp complete_emergency_mandate(state),
-    do: Emergency.validate(state.genesis, state.mandates, state.constitution)
+    do: Emergency.validate(state.catalog.genesis, state.mandates, state.constitution)
 
   defp complete_dispatch_expirations(state, observed_at) do
     case DispatchState.expired(state, observed_at) do

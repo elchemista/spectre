@@ -20,9 +20,9 @@ defmodule Spectre.GovernedAct.Transition.Scope do
         _revision
       ) do
     with {:ok, opening} <-
-           Index.restore_unique(projection.scopes, Opening, identity, data, :scope),
+           Index.restore_unique(projection.catalog.scopes, Opening, identity, data, :scope),
          :ok <- validate_scope_opening(projection, opening) do
-      {:ok, %{projection | scopes: Map.put(projection.scopes, identity, opening)}}
+      {:ok, put_in(projection.catalog.scopes[identity], opening)}
     end
   end
 
@@ -100,7 +100,7 @@ defmodule Spectre.GovernedAct.Transition.Scope do
   defp scope_parent_exists(_projection, %Opening{parent_ref: nil}), do: :ok
 
   defp scope_parent_exists(projection, %Opening{} = opening) do
-    if Map.has_key?(projection.scopes, opening.parent_ref),
+    if Map.has_key?(projection.catalog.scopes, opening.parent_ref),
       do: :ok,
       else: {:error, {:scope_parent_not_found, opening.ref, opening.parent_ref}}
   end
@@ -110,7 +110,7 @@ defmodule Spectre.GovernedAct.Transition.Scope do
       [opening.opened_by_ref, opening.accountable_ref]
       |> Enum.reject(&is_nil/1)
 
-    case Enum.find(refs, &(not Map.has_key?(projection.principals, &1))) do
+    case Enum.find(refs, &(not Map.has_key?(projection.catalog.principals, &1))) do
       nil -> :ok
       ref -> {:error, {:scope_principal_not_found, opening.ref, ref}}
     end
@@ -118,7 +118,7 @@ defmodule Spectre.GovernedAct.Transition.Scope do
 
   defp scope_disposition_authorities_exist(projection, opening) do
     case Enum.find(opening.disposition_authority_refs, fn ref ->
-           not Map.has_key?(projection.principals, ref) and
+           not Map.has_key?(projection.catalog.principals, ref) and
              not Map.has_key?(projection.mandates, ref)
          end) do
       nil -> :ok

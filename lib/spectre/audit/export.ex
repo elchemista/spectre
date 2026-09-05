@@ -44,7 +44,10 @@ defmodule Spectre.Audit.Export do
         "ledger" => ledger
       }
 
-      with :ok <- Portable.validate(data), do: {:ok, data}
+      # Entries and Constitution were validated individually above. The export
+      # is an aggregate, not a single record: its byte budget belongs to the
+      # caller of encode/decode, not Portable's per-record default.
+      {:ok, data}
     else
       false -> {:error, :audit_export_constitution_mismatch}
       {:error, _reason} = error -> error

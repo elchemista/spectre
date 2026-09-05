@@ -473,7 +473,7 @@ defmodule Spectre.Presentation do
 
   defp validate_record(%__MODULE__{} = presentation) do
     cond do
-      presentation.schema_version != @schema_version ->
+      presentation.schema_version !== @schema_version ->
         {:error, {:unsupported_presentation_schema_version, presentation.schema_version}}
 
       presentation.recipient_refs == [] ->

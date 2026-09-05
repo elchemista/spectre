@@ -56,7 +56,7 @@ defmodule Spectre.Domain.Reconciliation do
   end
 
   defp scope_deadlines(projection, now) do
-    projection.scopes
+    projection.catalog.scopes
     |> Map.values()
     |> Enum.flat_map(fn
       %Opening{kind: kind, due_at: due_at} when kind in [:work, :vigil] and due_at > now ->

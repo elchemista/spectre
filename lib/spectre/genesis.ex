@@ -129,7 +129,7 @@ defmodule Spectre.Genesis do
 
   defp validate_record(%__MODULE__{} = genesis) do
     cond do
-      genesis.schema_version != @schema_version ->
+      genesis.schema_version !== @schema_version ->
         {:error, {:unsupported_genesis_schema_version, genesis.schema_version}}
 
       not Portable.is_non_negative_integer(genesis.surface_revision) ->

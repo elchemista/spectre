@@ -229,7 +229,7 @@ defmodule Spectre.Decision do
 
   defp validate_record(%__MODULE__{} = decision) do
     cond do
-      decision.schema_version != @schema_version ->
+      decision.schema_version !== @schema_version ->
         {:error, {:unsupported_decision_schema_version, decision.schema_version}}
 
       decision.outcome not in @outcomes ->

@@ -1,7 +1,7 @@
 defmodule Spectre.Core.EvidenceAndConditionTest do
   use ExUnit.Case, async: true
 
-  alias Spectre.{Condition, Evidence}
+  alias Spectre.{Condition, Disclosure, Evidence, Label}
   alias Spectre.Kernel.Recognition
 
   test "canonical key spelling cannot change condition identity or attenuation" do
@@ -106,6 +106,38 @@ defmodule Spectre.Core.EvidenceAndConditionTest do
     assert {:error, _} = Evidence.new(%{first | proposition: "forged"})
     assert {:error, :invalid_evidence_list} = Evidence.normalize_unique(%{})
     assert {:ok, []} = Evidence.normalize_unique([])
+  end
+
+  test "an improper evidence batch is rejected without raising after a valid first record" do
+    assert {:error, :invalid_evidence_list} = Evidence.normalize_unique([evidence() | :broken])
+  end
+
+  test "malformed label tails cannot bypass information-flow validation by crashing it" do
+    assert {:ok, label} = Label.new(owner_ref: "owner", value: "private")
+    malformed = [label | :broken]
+
+    assert {:error, :invalid_labels} = Label.normalize_many(malformed)
+    assert {:error, _} = Evidence.new(%{evidence() | ref: nil, labels: malformed})
+
+    assert {:error, _} =
+             Disclosure.new(destination_refs: ["destination"], labels: malformed)
+
+    assert {:ok, [^label]} = Label.normalize_many([label, Label.canonical(label)])
+  end
+
+  test "schema versions are integer tags, not numerically equivalent floats" do
+    for {module, attrs} <- [
+          {Label, %{owner_ref: "owner", value: "private"}},
+          {Condition, %{proposition: "paid"}},
+          {Spectre.Row, %{attempt: true}},
+          {Evidence, evidence() |> Map.from_struct() |> Map.delete(:ref)}
+        ] do
+      assert {:ok, _record} = module.new(attrs)
+
+      for version <- [1.0, "1", nil, true, 0, 2] do
+        assert {:error, _reason} = module.new(Map.put(attrs, :schema_version, version))
+      end
+    end
   end
 
   defp evidence(overrides \\ []) do

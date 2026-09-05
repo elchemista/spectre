@@ -141,7 +141,7 @@ defmodule Spectre.Outcome do
 
   defp validate_record(%__MODULE__{} = outcome) do
     cond do
-      outcome.schema_version != @schema_version ->
+      outcome.schema_version !== @schema_version ->
         {:error, {:unsupported_outcome_schema_version, outcome.schema_version}}
 
       outcome.status not in @statuses ->

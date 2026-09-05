@@ -77,39 +77,43 @@ defmodule Spectre.Audit.Report do
 
   defp foundation(state) do
     %{
-      genesis: Genesis.canonical(state.genesis),
+      genesis: Genesis.canonical(state.catalog.genesis),
       principals:
-        state.principals
+        state.catalog.principals
         |> Map.values()
         |> Enum.sort_by(& &1.ref)
         |> Enum.map(&Spectre.Principal.canonical/1),
       host_profile: state |> State.host_profile() |> HostProfile.canonical(),
       host_profile_history:
-        state.host_profiles
+        state.catalog.host_profiles
         |> Map.values()
         |> Enum.sort_by(& &1.revision)
         |> Enum.map(&HostProfile.canonical/1),
       surface: state |> State.surface() |> Surface.canonical(),
       surface_history:
-        state.surfaces
+        state.catalog.surfaces
         |> Map.values()
         |> Enum.sort_by(& &1.revision)
         |> Enum.map(&Surface.canonical/1),
-      principal_refs: Enum.sort(Map.keys(state.principals)),
-      root_mandate_refs: Enum.sort(state.genesis.root_mandate_refs)
+      principal_refs: Enum.sort(Map.keys(state.catalog.principals)),
+      root_mandate_refs: Enum.sort(state.catalog.genesis.root_mandate_refs)
     }
   end
 
   defp act_contexts(state) do
     surfaces_by_revision =
-      Map.new(state.surfaces, fn {_ref, surface} -> {surface.revision, surface} end)
+      Map.new(state.catalog.surfaces, fn {_ref, surface} -> {surface.revision, surface} end)
 
     state.acts
     |> Map.values()
     |> Enum.reduce_while({:ok, []}, fn act, {:ok, contexts} ->
       with {:ok, metadata} <- metadata(state, act.ref),
            {:ok, host_profile} <-
-             Index.fetch_required(state.host_profiles, act.host_profile_ref, :host_profile),
+             Index.fetch_required(
+               state.catalog.host_profiles,
+               act.host_profile_ref,
+               :host_profile
+             ),
            {:ok, surface} <- surface_at(surfaces_by_revision, act.surface_revision) do
         context = %{
           act_ref: act.ref,
@@ -205,21 +209,21 @@ defmodule Spectre.Audit.Report do
   end
 
   defp canonical_scopes(state) do
-    state.scopes
+    state.catalog.scopes
     |> Map.values()
     |> Enum.sort_by(& &1.ref)
     |> Enum.map(&Opening.canonical/1)
   end
 
   defp canonical_definitions(state) do
-    state.definitions
+    state.catalog.definitions
     |> Map.values()
     |> Enum.sort_by(&{&1.namespace, &1.name, &1.revision})
     |> Enum.map(&Definition.canonical/1)
   end
 
   defp definition_heads(state) do
-    state.definition_heads
+    state.catalog.definition_heads
     |> Enum.map(fn {{namespace, name}, ref} ->
       %{namespace: namespace, name: name, ref: ref}
     end)
@@ -305,7 +309,7 @@ defmodule Spectre.Audit.Report do
 
   defp counts(state) do
     %{
-      principals: map_size(state.principals),
+      principals: map_size(state.catalog.principals),
       mandates: map_size(state.mandates),
       mandate_restrictions: map_size(state.mandate_successors),
       revocations: map_size(state.revocations),
@@ -317,8 +321,8 @@ defmodule Spectre.Audit.Report do
       attempts: map_size(state.attempts),
       outcomes: map_size(state.outcomes),
       duties: map_size(state.duties),
-      scopes: map_size(state.scopes),
-      definitions: map_size(state.definitions),
+      scopes: map_size(state.catalog.scopes),
+      definitions: map_size(state.catalog.definitions),
       erasures: map_size(state.erasures),
       meter_owners: map_size(state.mandates),
       meter_recontainments: map_size(state.meter_recontainments),

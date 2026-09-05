@@ -175,8 +175,7 @@ defmodule Spectre.Domain.Recovery do
 
   @spec matching_batch_info?(map(), map()) :: boolean()
   defp matching_batch_info?(info, expected) do
-    is_map(info) and
-      Enum.all?(expected, fn {key, value} -> Map.get(info, key) == value end) and
+    Enum.all?(expected, fn {key, value} -> Map.get(info, key) == value end) and
       Portable.sha256_digest?(Map.get(info, :head_digest))
   end
 

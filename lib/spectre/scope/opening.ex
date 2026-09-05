@@ -257,7 +257,7 @@ defmodule Spectre.Scope.Opening do
 
   defp validate_record(%__MODULE__{} = opening) do
     cond do
-      opening.schema_version != @schema_version ->
+      opening.schema_version !== @schema_version ->
         {:error, {:unsupported_scope_opening_schema_version, opening.schema_version}}
 
       opening.kind not in @kinds ->

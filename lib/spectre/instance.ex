@@ -194,7 +194,6 @@ defmodule Spectre.Instance do
     case Spectre.resume_scope(scope.domain, scope.context) do
       {:ok, %Scope{} = current} -> {:ok, current}
       {:error, _reason} = error -> error
-      _invalid -> {:error, :invalid_instance_scope_response}
     end
   end
 

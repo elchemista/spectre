@@ -128,7 +128,7 @@ defmodule Spectre.Domain.Admission.Command do
          %{decision: %{outcome: :admitted}, act: %Act{ref: act_ref}},
          %Candidate{consequence: %{"scope_open" => %{"ref" => scope_ref}}}
        ) do
-    case Map.fetch(projection.scopes, scope_ref) do
+    case Map.fetch(projection.catalog.scopes, scope_ref) do
       {:ok, %Opening{source_act_ref: ^act_ref} = opening} -> {:ok, opening}
       {:ok, %Opening{}} -> {:error, {:scope_opening_source_mismatch, scope_ref, act_ref}}
       :error -> {:error, {:governed_scope_opening_not_recovered, scope_ref}}

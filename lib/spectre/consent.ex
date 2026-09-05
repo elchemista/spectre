@@ -67,7 +67,7 @@ defmodule Spectre.Consent do
 
   defp validate(attrs) do
     cond do
-      attrs.schema_version != @schema_version ->
+      attrs.schema_version !== @schema_version ->
         {:error, {:unsupported_consent_schema_version, attrs.schema_version}}
 
       attrs.recipient_refs == [] ->

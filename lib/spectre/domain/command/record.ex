@@ -28,18 +28,18 @@ defmodule Spectre.Domain.Command.Record do
   end
 
   @doc "Returns an exact recovered record or halts state on a contradiction."
-  @spec recover(State.t(), GovernedState.t(), atom(), struct(), atom(), atom()) ::
+  @spec recover(State.t(), GovernedState.t(), map(), struct(), atom(), atom()) ::
           {:ok, State.t(), struct()} | {:error, State.t(), term()}
   def recover(
         %State{} = state,
         %GovernedState{} = projection,
-        collection,
+        index,
         expected,
         conflict,
         missing
       )
-      when is_atom(collection) and is_atom(conflict) and is_atom(missing) do
-    case lookup(Map.fetch!(projection, collection), expected, conflict) do
+      when is_map(index) and is_atom(conflict) and is_atom(missing) do
+    case lookup(index, expected, conflict) do
       {:ok, durable} ->
         {:ok, %{state | projection: projection}, durable}
 

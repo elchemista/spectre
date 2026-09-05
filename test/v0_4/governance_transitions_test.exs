@@ -4,8 +4,10 @@ defmodule Spectre.V04Test.GovernanceTransitionsTest do
   use ExUnit.Case, async: false
 
   alias Spectre.Domain.Projection
+  alias Spectre.Domain.Recovery
   alias Spectre.Domain.Sequencer
   alias Spectre.Duty.Disposition
+  alias Spectre.GovernedAct.Catalog
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel, as: AdmissionKernel
   alias Spectre.Kernel.Commit
@@ -95,6 +97,78 @@ defmodule Spectre.V04Test.GovernanceTransitionsTest do
     assert Sequencer.projection(fixture.server).acts[historical_act.ref] == historical_act
   end
 
+  test "revocation and a late receipt cannot erase an ambiguous Duty or authorize another attempt" do
+    fixture = start_domain("revoked-late-receipt")
+    payment = record_payment(fixture)
+
+    assert {:ok, %{act: act, grant: grant}} =
+             Sequencer.submit(
+               fixture.server,
+               Fixture.context(fixture),
+               Fixture.refund_candidate(fixture, 2_000, evidence_refs: [payment.ref])
+             )
+
+    assert {:ok, ^act, attempt, _receipt} = Sequencer.consume_grant(fixture.server, grant)
+    ambiguous = Fixture.outcome(fixture, act, attempt, :ambiguous)
+    assert {:ok, ^ambiguous} = Sequencer.record_outcome(fixture.server, ambiguous)
+    before_revocation = Sequencer.projection(fixture.server)
+    [duty] = Map.values(before_revocation.duties)
+
+    revoke =
+      governance_candidate(
+        fixture,
+        "mandate.revoke",
+        %{"mandate_revoke" => %{"mandate_ref" => fixture.mandate.ref}},
+        "revoke-after-ambiguous-attempt"
+      )
+
+    assert {:ok, %{decision: %{outcome: :admitted}, act: revocation}} =
+             Sequencer.submit(fixture.server, governance_context(fixture), revoke)
+
+    revoked = Sequencer.projection(fixture.server)
+    assert revoked.duties == before_revocation.duties
+    assert revoked.meters == before_revocation.meters
+    assert revoked.meter_reservations[act.ref] == :suspended
+    assert {:error, :consequence_retry_contained} = Sequencer.consume_grant(fixture.server, grant)
+
+    # Revocation fences future authority, not the recording of past reality.
+    receipt = Fixture.receipt_evidence(fixture, act.ref)
+    assert {:ok, ^receipt} = Fixture.record_receipt(fixture, receipt)
+    succeeded = Fixture.outcome(fixture, act, attempt, :succeeded, [receipt.ref])
+    assert {:ok, ^succeeded} = Sequencer.record_outcome(fixture.server, succeeded)
+    observed = Sequencer.projection(fixture.server)
+
+    assert observed.acts[act.ref] == act
+    assert observed.acts[revocation.ref] == revocation
+    assert observed.outcomes[ambiguous.ref] == ambiguous
+    assert observed.outcomes[succeeded.ref] == succeeded
+    assert observed.duties[duty.cause_key] == duty
+    assert duty.status == :open
+    assert observed.meter_reservations[act.ref] == :settled
+
+    assert %{available: 8_000, spent: 2_000, suspended: 0} =
+             observed.meters[fixture.mandate.ref][fixture.refs.meter]
+
+    # Recovery cannot reinterpret a late success as permission to retry or as
+    # an independently authorized disposition of the historical Duty.
+    assert {:ok, ^observed} =
+             Recovery.recover(
+               fixture.store_config,
+               fixture.refs.domain,
+               fixture.constitution,
+               []
+             )
+
+    assert {:ok, report} =
+             Spectre.Audit.verify(Fixture.snapshot(fixture), fixture.constitution, Runtime.now())
+
+    assert report.counts.attempts == 1
+    assert [%{"ref" => duty_ref, "status" => :open}] = report.open_duties
+    assert duty_ref == duty.ref
+    assert {:error, :consequence_retry_contained} = Sequencer.consume_grant(fixture.server, grant)
+    assert Sequencer.projection(fixture.server) == observed
+  end
+
   test "a Duty closes atomically only with an exact independently authorized disposition" do
     fixture = start_domain("governed-duty-disposition")
     payment = record_payment(fixture)
@@ -159,7 +233,7 @@ defmodule Spectre.V04Test.GovernanceTransitionsTest do
 
     projection = %{
       projection
-      | principals: Map.put(projection.principals, reviewer.ref, reviewer),
+      | catalog: Catalog.put_principal(projection.catalog, reviewer),
         mandates: Map.put(projection.mandates, review_mandate.ref, review_mandate),
         meters: Map.put(projection.meters, review_mandate.ref, %{}),
         meter_owner_aliases:
@@ -175,15 +249,12 @@ defmodule Spectre.V04Test.GovernanceTransitionsTest do
       |> Spectre.SubmissionContext.new()
 
     {:ok, review_scope} =
-      projection.scopes[review_context.scope_ref]
+      projection.catalog.scopes[review_context.scope_ref]
       |> Map.from_struct()
       |> Map.merge(Opening.context_bindings(review_context))
       |> Opening.new()
 
-    projection = %{
-      projection
-      | scopes: Map.put(projection.scopes, review_scope.ref, review_scope)
-    }
+    projection = put_in(projection.catalog.scopes[review_scope.ref], review_scope)
 
     {:ok, disposition} = Disposition.for_duty(review_duty, :accept_loss, [ambiguous.ref], :settle)
 

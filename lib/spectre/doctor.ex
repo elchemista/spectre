@@ -259,6 +259,5 @@ defmodule Spectre.Doctor do
   end
 
   defp compact_reason({module, reason}) when is_atom(module), do: {module, compact_reason(reason)}
-  defp compact_reason(reason) when is_atom(reason), do: reason
   defp compact_reason(_reason), do: :unknown
 end

@@ -392,7 +392,7 @@ defmodule Spectre.Surface do
 
   defp validate_record(%__MODULE__{} = surface) do
     cond do
-      surface.schema_version != @schema_version ->
+      surface.schema_version !== @schema_version ->
         {:error, {:unsupported_surface_schema_version, surface.schema_version}}
 
       not Portable.is_non_negative_integer(surface.revision) ->

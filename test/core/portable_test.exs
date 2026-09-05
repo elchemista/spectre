@@ -24,4 +24,15 @@ defmodule Spectre.Core.PortableTest do
     assert Portable.keyword?([])
     assert Portable.keyword?(key: :value)
   end
+
+  test "strict restoration does not confuse integer and float canonical representations" do
+    builder = fn data -> {:ok, %{"quantity" => trunc(data["quantity"])}} end
+    canonicalizer = fn record -> record end
+
+    assert {:ok, %{"quantity" => 1}} =
+             Portable.restore_canonical(%{"quantity" => 1}, builder, canonicalizer, :example)
+
+    assert {:error, {:noncanonical_record, :example}} =
+             Portable.restore_canonical(%{"quantity" => 1.0}, builder, canonicalizer, :example)
+  end
 end

@@ -45,6 +45,10 @@ defmodule Spectre.Candidate do
   @presentation_material_fields @material_fields -- [:presentation_ref]
   @fields [:schema_version, :ref, :identity_key, :material_digest | @material_fields]
 
+  @doc "Fields a proposer may supply before the Turn binds proposer and Scope."
+  @spec request_fields() :: [atom()]
+  def request_fields, do: [:identity_key | @material_fields -- [:proposer_ref, :scope_ref]]
+
   @enforce_keys [
     :schema_version,
     :ref,
@@ -293,7 +297,7 @@ defmodule Spectre.Candidate do
 
   defp validate_record(%__MODULE__{} = candidate) do
     cond do
-      candidate.schema_version != @schema_version ->
+      candidate.schema_version !== @schema_version ->
         {:error, {:unsupported_candidate_schema_version, candidate.schema_version}}
 
       not Portable.is_non_empty_binary(candidate.class) ->

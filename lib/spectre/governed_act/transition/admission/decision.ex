@@ -67,7 +67,7 @@ defmodule Spectre.GovernedAct.Transition.Admission.Decision do
       decision.domain_ref != state.domain_ref ->
         {:error, {:decision_domain_mismatch, decision.ref, decision.domain_ref}}
 
-      not Map.has_key?(state.principals, decision.authenticated_principal_ref) ->
+      not Map.has_key?(state.catalog.principals, decision.authenticated_principal_ref) ->
         {:error, {:authenticated_principal_not_found, decision.authenticated_principal_ref}}
 
       true ->

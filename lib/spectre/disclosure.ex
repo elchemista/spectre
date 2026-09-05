@@ -127,7 +127,7 @@ defmodule Spectre.Disclosure do
 
   defp validate(%__MODULE__{} = disclosure) do
     cond do
-      disclosure.schema_version != @schema_version ->
+      disclosure.schema_version !== @schema_version ->
         {:error, {:unsupported_disclosure_schema_version, disclosure.schema_version}}
 
       disclosure.destination_refs == [] ->

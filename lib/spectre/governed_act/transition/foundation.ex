@@ -11,6 +11,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
   alias Spectre.{Act, Definition, HostProfile, Principal, Surface}
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
+  alias Spectre.GovernedAct.Catalog
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.{Index, State}
 
@@ -20,7 +21,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         _revision
       ) do
     cond do
-      projection.genesis ->
+      projection.catalog.genesis ->
         {:error, :duplicate_genesis}
 
       projection.revision != 0 ->
@@ -30,7 +31,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
         with {:ok, genesis} <- Record.decode(Spectre.Genesis, data),
              :ok <- Record.match_identity(identity, genesis),
              true <- Map.get(genesis, :domain_ref) == projection.domain_ref do
-          {:ok, %{projection | genesis: genesis}}
+          {:ok, put_in(projection.catalog.genesis, genesis)}
         else
           false -> {:error, :genesis_domain_mismatch}
           {:error, _reason} = error -> error
@@ -45,8 +46,14 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       ) do
     with :ok <- named_by_genesis(projection, :principal_refs, identity),
          {:ok, principal} <-
-           Index.restore_unique(projection.principals, Principal, identity, data, :principal) do
-      {:ok, %{projection | principals: Map.put(projection.principals, identity, principal)}}
+           Index.restore_unique(
+             projection.catalog.principals,
+             Principal,
+             identity,
+             data,
+             :principal
+           ) do
+      {:ok, %{projection | catalog: Catalog.put_principal(projection.catalog, principal)}}
     end
   end
 
@@ -57,7 +64,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       ) do
     with {:ok, principal} <-
            Index.restore_unique(
-             projection.principals,
+             projection.catalog.principals,
              Principal,
              identity,
              data["principal"],
@@ -65,7 +72,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
            ),
          {:ok, act} <- Index.fetch_act(projection, data["act_ref"]),
          :ok <- validate_principal_registration(act, principal, data) do
-      {:ok, %{projection | principals: Map.put(projection.principals, identity, principal)}}
+      {:ok, %{projection | catalog: Catalog.put_principal(projection.catalog, principal)}}
     end
   end
 
@@ -80,19 +87,14 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       with :ok <- named_by_genesis(projection, :host_profile_ref, identity),
            {:ok, profile} <-
              Index.restore_unique(
-               projection.host_profiles,
+               projection.catalog.host_profiles,
                HostProfile,
                identity,
                data,
                :host_profile
              ),
            :ok <- initial_host_profile_revision(profile) do
-        {:ok,
-         %{
-           projection
-           | host_profile_ref: identity,
-             host_profiles: Map.put(projection.host_profiles, identity, profile)
-         }}
+        {:ok, %{projection | catalog: Catalog.put_host_profile(projection.catalog, profile)}}
       end
     end
   end
@@ -105,7 +107,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
     with %HostProfile{} = current <- State.host_profile(projection),
          {:ok, profile} <-
            Index.restore_unique(
-             projection.host_profiles,
+             projection.catalog.host_profiles,
              HostProfile,
              identity,
              data["host_profile"],
@@ -113,12 +115,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
            ),
          {:ok, act} <- Index.fetch_act(projection, data["act_ref"]),
          :ok <- validate_host_profile_revision(act, current, profile, data) do
-      {:ok,
-       %{
-         projection
-         | host_profile_ref: identity,
-           host_profiles: Map.put(projection.host_profiles, identity, profile)
-       }}
+      {:ok, %{projection | catalog: Catalog.put_host_profile(projection.catalog, profile)}}
     else
       nil -> {:error, :host_profile_not_initialized}
       {:error, _reason} = error -> error
@@ -132,7 +129,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
       ) do
     with {:ok, definition} <-
            Index.restore_unique(
-             projection.definitions,
+             projection.catalog.definitions,
              Definition,
              identity,
              data["definition"],
@@ -140,14 +137,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
            ),
          {:ok, act} <- Index.fetch_act(projection, data["act_ref"]),
          :ok <- validate_definition_revision(projection, act, definition, data) do
-      key = Definition.key(definition)
-
-      {:ok,
-       %{
-         projection
-         | definitions: Map.put(projection.definitions, identity, definition),
-           definition_heads: Map.put(projection.definition_heads, key, identity)
-       }}
+      {:ok, %{projection | catalog: Catalog.put_definition(projection.catalog, definition)}}
     end
   end
 
@@ -161,14 +151,9 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
     else
       with :ok <- named_by_genesis(projection, :surface_ref, identity),
            {:ok, surface} <-
-             Index.restore_unique(projection.surfaces, Surface, identity, data, :surface),
-           :ok <- initial_surface_revision(projection.genesis, surface) do
-        {:ok,
-         %{
-           projection
-           | surface_ref: identity,
-             surfaces: Map.put(projection.surfaces, identity, surface)
-         }}
+             Index.restore_unique(projection.catalog.surfaces, Surface, identity, data, :surface),
+           :ok <- initial_surface_revision(projection.catalog.genesis, surface) do
+        {:ok, %{projection | catalog: Catalog.put_surface(projection.catalog, surface)}}
       end
     end
   end
@@ -181,7 +166,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
     with %Surface{} = current <- State.surface(projection),
          {:ok, surface} <-
            Index.restore_unique(
-             projection.surfaces,
+             projection.catalog.surfaces,
              Surface,
              identity,
              data["surface"],
@@ -189,12 +174,7 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
            ),
          {:ok, act} <- Index.fetch_act(projection, data["act_ref"]),
          :ok <- validate_surface_revision(act, current, surface, data) do
-      {:ok,
-       %{
-         projection
-         | surface_ref: identity,
-           surfaces: Map.put(projection.surfaces, identity, surface)
-       }}
+      {:ok, %{projection | catalog: Catalog.put_surface(projection.catalog, surface)}}
     else
       nil -> {:error, :surface_not_initialized}
       {:error, _reason} = error -> error
@@ -217,8 +197,8 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
 
   defp validate_definition_revision(projection, act, definition, data) do
     key = Definition.key(definition)
-    current_ref = Map.get(projection.definition_heads, key)
-    current = if current_ref, do: Map.get(projection.definitions, current_ref)
+    current_ref = Map.get(projection.catalog.definition_heads, key)
+    current = if current_ref, do: Map.get(projection.catalog.definitions, current_ref)
 
     expected_consequence = %{
       "definition_revision" => %{
@@ -397,9 +377,10 @@ defmodule Spectre.GovernedAct.Transition.Foundation do
 
   @doc "Checks that Genesis names a foundation record before it is materialized."
   @spec named_by_genesis(State.t(), atom(), String.t()) :: :ok | {:error, term()}
-  def named_by_genesis(%{genesis: nil}, _field, _ref), do: {:error, :genesis_required}
+  def named_by_genesis(%State{catalog: %Catalog{genesis: nil}}, _field, _ref),
+    do: {:error, :genesis_required}
 
-  def named_by_genesis(%{genesis: genesis}, field_name, ref) do
+  def named_by_genesis(%State{catalog: %Catalog{genesis: genesis}}, field_name, ref) do
     case Map.fetch!(genesis, field_name) do
       refs when is_list(refs) ->
         if ref in refs,

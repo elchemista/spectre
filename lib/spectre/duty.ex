@@ -224,7 +224,7 @@ defmodule Spectre.Duty do
 
   defp validate_record(%__MODULE__{} = duty) do
     cond do
-      duty.schema_version != @schema_version ->
+      duty.schema_version !== @schema_version ->
         {:error, {:unsupported_duty_schema_version, duty.schema_version}}
 
       duty.status not in @statuses ->

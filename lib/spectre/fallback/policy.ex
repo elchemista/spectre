@@ -16,25 +16,7 @@ defmodule Spectre.Fallback.Policy do
   @schema_version 1
   @modes [:silence, :candidate_template, :governed_handoff]
   @fields [:schema_version, :mode, :template]
-  @template_fields [
-    :class,
-    :consequence,
-    :row,
-    :requested_mandate_ref,
-    :executor_ref,
-    :accountable_ref,
-    :subject_refs,
-    :target_refs,
-    :purpose_ref,
-    :purpose_params,
-    :consent,
-    :evidence_refs,
-    :disclosure,
-    :presentation_ref,
-    :meter_requests,
-    :executor_contract_ref,
-    :observation_window_ms
-  ]
+  @template_fields Candidate.request_fields() -- [:identity_key]
 
   @enforce_keys [:schema_version, :mode, :template]
   defstruct @enforce_keys
@@ -114,7 +96,7 @@ defmodule Spectre.Fallback.Policy do
 
   defp validate(%__MODULE__{} = policy) do
     cond do
-      policy.schema_version != @schema_version ->
+      policy.schema_version !== @schema_version ->
         {:error, {:unsupported_fallback_policy_schema_version, policy.schema_version}}
 
       policy.mode not in @modes ->

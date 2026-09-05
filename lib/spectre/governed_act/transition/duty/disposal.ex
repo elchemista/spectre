@@ -50,7 +50,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Disposal do
         duty,
         act,
         cause_act(projection, duty),
-        projection.principals,
+        projection.catalog.principals,
         projection.mandates
       )
     else
@@ -65,7 +65,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Disposal do
          projection,
          %Duty{class: :scope_promise_overdue, cause_key: {:scope_promise_overdue, scope_ref}}
        ) do
-    case Map.get(projection.scopes, scope_ref) do
+    case Map.get(projection.catalog.scopes, scope_ref) do
       %Opening{source_act_ref: act_ref} -> Map.get(projection.acts, act_ref)
       _missing -> nil
     end

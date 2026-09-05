@@ -57,7 +57,7 @@ defmodule Spectre.GovernedAct.View do
   @spec definition(State.t(), String.t()) ::
           {:ok, Spectre.Definition.t()} | {:error, term()}
   def definition(%State{} = state, ref) when is_binary(ref) and ref != "" do
-    case Map.fetch(state.definitions, ref) do
+    case Map.fetch(state.catalog.definitions, ref) do
       {:ok, %Spectre.Definition{ref: ^ref} = definition} -> {:ok, definition}
       {:ok, _invalid} -> {:error, {:invalid_definition_record, ref}}
       :error -> {:error, {:definition_not_found, ref}}
@@ -123,7 +123,7 @@ defmodule Spectre.GovernedAct.View do
           {:ok, Opening.t()} | {:error, term()}
   def scope_context(%State{} = state, %SubmissionContext{} = context) do
     with {:ok, context} <- SubmissionContext.new(context),
-         {:ok, %Opening{} = opening} <- Map.fetch(state.scopes, context.scope_ref),
+         {:ok, %Opening{} = opening} <- Map.fetch(state.catalog.scopes, context.scope_ref),
          :ok <- match_scope_context(state, opening, context) do
       {:ok, opening}
     else

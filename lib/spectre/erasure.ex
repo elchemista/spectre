@@ -201,7 +201,7 @@ defmodule Spectre.Erasure do
 
   defp validate_record(%__MODULE__{} = erasure) do
     cond do
-      erasure.schema_version != @schema_version ->
+      erasure.schema_version !== @schema_version ->
         {:error, {:unsupported_erasure_schema_version, erasure.schema_version}}
 
       not Portable.sha256_digest?(erasure.target_digest) ->

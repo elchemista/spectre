@@ -193,7 +193,7 @@ defmodule Spectre.Condition do
 
   defp validate_header(condition) do
     cond do
-      condition.schema_version != @schema_version ->
+      condition.schema_version !== @schema_version ->
         {:error, {:unsupported_condition_schema_version, condition.schema_version}}
 
       is_nil(condition.proposition) ->

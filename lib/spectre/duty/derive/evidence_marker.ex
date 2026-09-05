@@ -38,6 +38,6 @@ defmodule Spectre.Duty.Derive.EvidenceMarker do
   end
 
   defp known_by?(recorded_at, %Evidence{} = evidence, time) do
-    is_integer(recorded_at) and recorded_at <= time and evidence.observed_at <= time
+    recorded_at <= time and evidence.observed_at <= time
   end
 end

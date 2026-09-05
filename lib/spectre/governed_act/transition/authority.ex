@@ -110,7 +110,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
       [mandate.grantor_ref, mandate.holder_ref, mandate.accountable_ref] ++
         Map.fetch!(mandate.revocation, "controller_refs")
 
-    case Enum.find(refs, &(not Map.has_key?(projection.principals, &1))) do
+    case Enum.find(refs, &(not Map.has_key?(projection.catalog.principals, &1))) do
       nil -> :ok
       ref -> {:error, {:mandate_principal_not_found, mandate.ref, ref}}
     end
@@ -118,7 +118,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
 
   defp issue_mandate_meters(projection, %Mandate{parent_ref: nil} = mandate) do
     with :ok <- Foundation.named_by_genesis(projection, :root_mandate_refs, mandate.ref),
-         true <- mandate.source_ref == projection.genesis.ref do
+         true <- mandate.source_ref == projection.catalog.genesis.ref do
       {:ok, MeterState.initialize(projection.meters, mandate)}
     else
       false -> {:error, {:invalid_root_mandate_source, mandate.ref}}

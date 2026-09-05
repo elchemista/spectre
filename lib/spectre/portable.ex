@@ -13,8 +13,6 @@ defmodule Spectre.Portable do
   for immutable content, not proof that the content is authoritative.
   """
 
-  import Bitwise
-
   alias Spectre.Canonical.Value
 
   @doc "Guard for a canonical object container, excluding runtime structs."
@@ -33,19 +31,17 @@ defmodule Spectre.Portable do
   @spec keyword?(term()) :: boolean()
   def keyword?(value), do: is_list(value) and Keyword.keyword?(value)
 
-  @float_exponent_mask 0x7FF0000000000000
-
   @type path :: [term()]
   @type reason :: term()
 
-  @doc "Validates a plain value suitable for durable governed-act records."
+  @doc "Validates a plain record value within the canonical codec's default resource limits."
   @spec validate(term()) :: :ok | {:error, reason()}
-  def validate(value), do: validate_value(value, [])
+  def validate(value), do: Value.validate(value)
 
   @doc "Returns the deterministic, versioned canonical bytes for a portable value."
   @spec canonical_value(term()) :: {:ok, binary()} | {:error, reason()}
   def canonical_value(value) do
-    with :ok <- validate(value), do: Value.encode(value)
+    Value.encode(value)
   end
 
   @doc "Alias for `canonical_value/1`, useful at generic record boundaries."
@@ -88,7 +84,7 @@ defmodule Spectre.Portable do
              is_function(canonicalizer, 1) and is_atom(record_name) do
     with {:ok, record} <- builder.(value),
          canonical when is_map(canonical) and not is_struct(canonical) <- canonicalizer.(record),
-         true <- canonical == value do
+         true <- canonical === value do
       {:ok, record}
     else
       false -> {:error, {:noncanonical_record, record_name}}
@@ -103,7 +99,7 @@ defmodule Spectre.Portable do
   @doc "Returns the lowercase SHA-256 digest of a portable value."
   @spec digest(term()) :: {:ok, String.t()} | {:error, reason()}
   def digest(value) do
-    with :ok <- validate(value), do: Value.digest(value)
+    Value.digest(value)
   end
 
   @doc "Returns a digest or raises when `value` is not portable."
@@ -201,7 +197,11 @@ defmodule Spectre.Portable do
   key types are preserved.
   """
   @spec stringify_atom_keys(term()) :: {:ok, term()} | {:error, reason()}
-  def stringify_atom_keys(value), do: stringify_atom_keys(value, [])
+  def stringify_atom_keys(value) do
+    # Check the bounded wire grammar before expanding shared structures into
+    # fresh maps/lists. The codec already rejects nonportable runtime values.
+    with :ok <- Value.validate(value), do: stringify_atom_keys(value, [])
+  end
 
   @doc "Checks a required non-empty binary field."
   @spec validate_non_empty_binary(term(), atom()) :: :ok | {:error, reason()}
@@ -242,66 +242,6 @@ defmodule Spectre.Portable do
   def shape(value) when is_reference(value), do: :reference
   def shape(value) when is_function(value), do: :function
   def shape(value) when is_bitstring(value), do: :bitstring
-
-  defp validate_value(value, path)
-       when is_pid(value) or is_port(value) or is_reference(value) or is_function(value) do
-    {:error, {:nonportable_value, Enum.reverse(path), shape(value)}}
-  end
-
-  defp validate_value(%{__struct__: module}, path) do
-    {:error, {:nonportable_value, Enum.reverse(path), {:struct, module}}}
-  end
-
-  defp validate_value(value, path) when is_map(value) do
-    value
-    |> Map.to_list()
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {{key, item}, index}, :ok ->
-      with :ok <- validate_value(key, [{:map_key, index} | path]),
-           :ok <- validate_value(item, [{:map_value, key_label(key)} | path]) do
-        {:cont, :ok}
-      else
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp validate_value([], _path), do: :ok
-
-  defp validate_value([head | tail], path) do
-    validate_list(head, tail, path, 0)
-  end
-
-  defp validate_value(value, path) when is_tuple(value) do
-    value
-    |> Tuple.to_list()
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
-      case validate_value(item, [index | path]) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp validate_value(value, path) when is_float(value) do
-    <<bits::unsigned-big-64>> = <<value::float-big-64>>
-
-    if (bits &&& @float_exponent_mask) == @float_exponent_mask,
-      do: {:error, {:nonportable_value, Enum.reverse(path), :nonfinite_float}},
-      else: :ok
-  end
-
-  defp validate_value(value, path) when is_bitstring(value) and not is_binary(value),
-    do: {:error, {:nonportable_value, Enum.reverse(path), :bitstring}}
-
-  defp validate_value(value, _path)
-       when is_nil(value) or is_boolean(value) or is_integer(value) or is_binary(value) or
-              is_atom(value),
-       do: :ok
-
-  defp validate_value(value, path),
-    do: {:error, {:nonportable_value, Enum.reverse(path), shape(value)}}
 
   defp stringify_atom_keys(value, path) when is_map(value) and not is_struct(value) do
     Enum.reduce_while(value, {:ok, %{}}, fn {raw_key, item}, {:ok, normalized} ->
@@ -354,22 +294,6 @@ defmodule Spectre.Portable do
   defp stringify_atom_key_list(tail, path, index, normalized) do
     with {:ok, tail} <- stringify_atom_keys(tail, [{:tail, index} | path]) do
       {:ok, Enum.reverse(normalized, tail)}
-    end
-  end
-
-  defp validate_list(head, tail, path, index) do
-    with :ok <- validate_value(head, [index | path]) do
-      case tail do
-        [] ->
-          :ok
-
-        [next | rest] ->
-          validate_list(next, rest, path, index + 1)
-
-        _improper ->
-          {:error,
-           {:nonportable_value, Enum.reverse([{:tail, index + 1} | path]), :improper_list}}
-      end
     end
   end
 
@@ -459,7 +383,4 @@ defmodule Spectre.Portable do
 
   defp validate_ref_list(value, field, _index),
     do: {:error, {:invalid_ref_list, field, shape(value)}}
-
-  defp key_label(key) when is_atom(key) or is_binary(key) or is_integer(key), do: key
-  defp key_label(_key), do: :complex_key
 end

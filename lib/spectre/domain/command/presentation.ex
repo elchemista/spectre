@@ -114,7 +114,7 @@ defmodule Spectre.Domain.Command.Presentation do
     CommandRecord.recover(
       state,
       projection,
-      :presentations,
+      projection.presentations,
       presentation,
       :presentation_identity_conflict,
       :presentation_not_recovered

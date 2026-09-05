@@ -33,7 +33,7 @@ defmodule Spectre.Domain.Bootstrap do
   def verify_projection(%State{} = projection, opts) when is_list(opts) do
     case State.surface(projection) do
       %Surface{} ->
-        with %Genesis{} = genesis <- projection.genesis,
+        with %Genesis{} = genesis <- projection.catalog.genesis,
              :ok <- verify_projection_links(projection, genesis),
              :ok <- verify_constitution(genesis, projection.constitution),
              :ok <- verify_attestation(genesis, opts),
@@ -66,12 +66,12 @@ defmodule Spectre.Domain.Bootstrap do
   end
 
   defp verify_projection_emergency(
-         %State{genesis: %Genesis{} = genesis, constitution: rules} = projection
+         %State{catalog: %{genesis: %Genesis{} = genesis}, constitution: rules} = projection
        ),
        do: Emergency.validate(genesis, projection.mandates, rules)
 
   defp verify_projection_duty_routes(%State{} = projection) do
-    known_authorities = Map.keys(projection.principals) ++ Map.keys(projection.mandates)
+    known_authorities = Map.keys(projection.catalog.principals) ++ Map.keys(projection.mandates)
     rules = projection.constitution
 
     with :ok <- Constitution.validate(rules),
@@ -103,7 +103,7 @@ defmodule Spectre.Domain.Bootstrap do
          projection,
          %Duty{class: :scope_promise_overdue, cause_key: {:scope_promise_overdue, scope_ref}}
        ) do
-    case Map.get(projection.scopes, scope_ref) do
+    case Map.get(projection.catalog.scopes, scope_ref) do
       nil -> nil
       opening -> Map.get(projection.acts, opening.source_act_ref)
     end
@@ -112,10 +112,10 @@ defmodule Spectre.Domain.Bootstrap do
   defp duty_cause_act(_projection, _duty), do: nil
 
   defp verify_projection_links(projection, genesis) do
-    principals = projection.principals |> Map.keys() |> Enum.sort()
+    principals = projection.catalog.principals |> Map.keys() |> Enum.sort()
     mandates = projection.mandates |> Map.keys() |> Enum.sort()
-    initial_host_profile = Map.get(projection.host_profiles, genesis.host_profile_ref)
-    initial_surface = Map.get(projection.surfaces, genesis.surface_ref)
+    initial_host_profile = Map.get(projection.catalog.host_profiles, genesis.host_profile_ref)
+    initial_surface = Map.get(projection.catalog.surfaces, genesis.surface_ref)
 
     cond do
       genesis.domain_ref != projection.domain_ref ->

@@ -33,7 +33,7 @@ defmodule Spectre.CoreTest.PublicRuntimeTest do
   setup do
     Runtime.reset(Fixture.default_now())
     first = definition(1)
-    second = definition(2, first.ref)
+    assert {:ok, second} = Definition.revise(first, %{"revision" => 2}, Fixture.default_now())
     namespace = "public-runtime"
     domain_ref = "v0.4:#{namespace}:domain"
 
@@ -106,7 +106,7 @@ defmodule Spectre.CoreTest.PublicRuntimeTest do
     assert {:ok, ^first} = Spectre.definition(scope, first.ref)
     assert {:ok, ^second} = Spectre.definition(scope, second.ref)
     projection = Sequencer.projection(fixture.server)
-    assert projection.definition_heads[Definition.key(first)] == second.ref
+    assert projection.catalog.definition_heads[Definition.key(first)] == second.ref
     assert {:ok, snapshot} = Ledger.load(fixture.store_config, fixture.refs.domain)
     assert {:ok, _report} = Audit.verify(snapshot, fixture.constitution, Runtime.now())
   end
@@ -210,13 +210,40 @@ defmodule Spectre.CoreTest.PublicRuntimeTest do
     assert {:error, :domain_not_found} = Spectre.definition(context.scope, context.first.ref)
   end
 
-  defp definition(revision, previous_ref \\ nil) do
+  test "lookup rejects a dead Domain even while Registry cleanup is delayed" do
+    parent = self()
+    ref = "dead-domain-#{System.unique_integer([:positive])}"
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        {:ok, owner} = Registry.register(Spectre.Domain.Registry, ref, nil)
+        send(parent, {:registered, self(), owner})
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    assert_receive {:registered, ^pid, owner}
+    :ok = :sys.suspend(owner)
+
+    try do
+      send(pid, :stop)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}
+      assert [{^pid, nil}] = Registry.lookup(Spectre.Domain.Registry, ref)
+      assert {:error, :domain_not_found} = Spectre.lookup_domain(ref)
+    after
+      :sys.resume(owner)
+      if Process.alive?(pid), do: Process.exit(pid, :kill)
+    end
+  end
+
+  defp definition(revision) do
     record!(
       Definition.new(
         namespace: "test",
         name: "assistant",
         revision: revision,
-        previous_ref: previous_ref,
         declared_at: Fixture.default_now(),
         body: %{"revision" => revision}
       )

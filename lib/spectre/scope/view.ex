@@ -107,7 +107,7 @@ defmodule Spectre.Scope.View do
   end
 
   defp scope_opening(projection, scope_ref) do
-    case Map.fetch(projection.scopes, scope_ref) do
+    case Map.fetch(projection.catalog.scopes, scope_ref) do
       {:ok, %Opening{} = opening} -> {:ok, opening}
       :error -> {:error, {:scope_not_open, scope_ref}}
       _invalid -> {:error, {:invalid_scope_opening, scope_ref}}

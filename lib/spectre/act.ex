@@ -235,7 +235,7 @@ defmodule Spectre.Act do
 
   defp validate_record(%__MODULE__{} = act) do
     cond do
-      act.schema_version != @schema_version ->
+      act.schema_version !== @schema_version ->
         {:error, {:unsupported_act_schema_version, act.schema_version}}
 
       not Portable.is_non_empty_binary(act.class) ->

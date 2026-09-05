@@ -59,7 +59,7 @@ defmodule Spectre.Duty.Derive.Facts do
       mandates: state.mandates,
       outcomes: state.outcomes,
       presentations: state.presentations,
-      scopes: state.scopes
+      scopes: state.catalog.scopes
     }
   end
 

@@ -67,7 +67,7 @@ defmodule Spectre.Domain.Command.Observation do
     CommandRecord.recover(
       state,
       projection,
-      :outcomes,
+      projection.outcomes,
       outcome,
       :outcome_identity_conflict,
       :outcome_not_recovered
