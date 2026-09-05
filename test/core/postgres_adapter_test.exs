@@ -15,7 +15,11 @@ defmodule Spectre.CoreTest.PostgresAdapterTest do
 
     def transaction(operation, opts) do
       send(self(), {:transaction, opts})
-      {:ok, operation.()}
+
+      case Keyword.fetch(opts, :test_result) do
+        {:ok, result} -> result
+        :error -> {:ok, operation.()}
+      end
     catch
       {:rollback, reason} -> {:error, reason}
     end
@@ -188,6 +192,215 @@ defmodule Spectre.CoreTest.PostgresAdapterTest do
     ])
 
     assert {:error, _} = Postgres.load("domain", @read_opts)
+  end
+
+  for {field, index, value, error} <- [
+        {:batch_id, 0, "", :invalid_ledger_postgres_batch_id},
+        {:identity, 1, "short", :invalid_ledger_postgres_batch_identity},
+        {:expected_revision, 2, -1, :invalid_ledger_postgres_batch_revision},
+        {:first_revision, 3, 2, :invalid_ledger_postgres_batch_range},
+        {:last_revision, 4, 0, :invalid_ledger_postgres_batch_range},
+        {:entry_count, 5, 3, :invalid_ledger_postgres_batch_count},
+        {:head_digest, 6, "short", :invalid_ledger_postgres_batch_head}
+      ] do
+    test "load rejects invalid SQL #{field} before trusting the encoded batch" do
+      batch = stored_batch()
+      row = List.replace_at(batch.row, unquote(index), unquote(value))
+      Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([row])}])
+      assert {:error, unquote(error)} = Postgres.load("domain", @read_opts)
+      assert Repo.remaining() == []
+    end
+  end
+
+  test "SQL batch coordinates cannot silently accept a float first revision" do
+    batch = stored_batch()
+    row = List.replace_at(batch.row, 3, 1.0)
+    Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([row])}])
+    assert {:error, :invalid_ledger_postgres_batch_range} = Postgres.load("domain", @read_opts)
+  end
+
+  test "a well-shaped but different batch identity must match decoded content" do
+    batch = stored_batch()
+    row = List.replace_at(batch.row, 1, String.duplicate("a", 64))
+    Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([row])}])
+
+    assert {:error, {:ledger_postgres_batch_metadata_mismatch, "batch"}} =
+             Postgres.load("domain", @read_opts)
+  end
+
+  test "a well-shaped but different per-batch head is rejected" do
+    batch = stored_batch()
+    row = List.replace_at(batch.row, 6, String.duplicate("b", 64))
+    Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([row])}])
+
+    assert {:error, {:ledger_postgres_batch_metadata_mismatch, "batch"}} =
+             Postgres.load("domain", @read_opts)
+  end
+
+  test "empty canonical bytes cannot represent a non-empty SQL batch" do
+    batch = stored_batch()
+    {:ok, encoded} = Value.encode([])
+    row = List.replace_at(batch.row, 7, encoded)
+    Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([row])}])
+    assert {:error, :empty_postgres_ledger_batch} = Postgres.load("domain", @read_opts)
+  end
+
+  test "canonical values that are not entries cannot be restored as history" do
+    batch = stored_batch()
+    {:ok, encoded} = Value.encode([%{"not" => "an entry"}])
+    row = List.replace_at(batch.row, 7, encoded)
+    Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([row])}])
+    assert {:error, {:invalid_postgres_ledger_entry, _}} = Postgres.load("domain", @read_opts)
+  end
+
+  test "a truncated canonical batch cannot hide behind complete SQL metadata" do
+    batch = stored_batch()
+    {:ok, encoded} = Value.encode([Entry.to_data(hd(batch.entries))])
+    row = List.replace_at(batch.row, 7, encoded)
+    Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([row])}])
+
+    assert {:error, {:invalid_postgres_ledger_batch, :ledger_batch_coordinates_mismatch}} =
+             Postgres.load("domain", @read_opts)
+  end
+
+  test "reordered canonical entries are rejected independently of their individual digests" do
+    batch = stored_batch()
+    {:ok, encoded} = Value.encode(Enum.map(Enum.reverse(batch.entries), &Entry.to_data/1))
+    row = List.replace_at(batch.row, 7, encoded)
+    Repo.script([{"FOR SHARE", rows([[2, batch.head]])}, {"ORDER BY", rows([row])}])
+    assert {:error, {:invalid_postgres_ledger_batch, _}} = Postgres.load("domain", @read_opts)
+  end
+
+  test "a SQL row for this Domain cannot carry another Domain's valid canonical history" do
+    batch = stored_batch()
+    Repo.script(load_script(batch))
+
+    assert {:error, {:invalid_postgres_ledger_batch, _}} =
+             Postgres.load("other-domain", @read_opts)
+  end
+
+  test "duplicated returned batches do not create a second copy of the history" do
+    batch = stored_batch()
+
+    Repo.script([
+      {"FOR SHARE", rows([[2, batch.head]])},
+      {"ORDER BY", rows([batch.row, batch.row])}
+    ])
+
+    assert {:error, _} = Postgres.load("domain", @read_opts)
+  end
+
+  test "multiple head rows are rejected rather than selecting an arbitrary revision" do
+    batch = stored_batch()
+    Repo.script([{"FOR SHARE", rows([[2, batch.head], [2, batch.head]])}])
+    assert {:error, :invalid_ledger_postgres_head_row} = Postgres.load("domain", @read_opts)
+  end
+
+  test "an existing batch without a Domain head cannot acknowledge a retry" do
+    batch = stored_batch()
+
+    Repo.script([
+      {"SET LOCAL", rows([])},
+      {"pg_advisory_xact_lock", rows([[nil]])},
+      {"SELECT identity_digest", rows([tl(batch.row)])},
+      {"FOR SHARE", rows([])}
+    ])
+
+    assert {:error, :ledger_postgres_batch_without_head} =
+             Postgres.append("domain", "batch", @payloads, 0, @opts)
+
+    assert Repo.remaining() == []
+  end
+
+  test "lookup rejects a stored batch whose head has disappeared" do
+    batch = stored_batch()
+    Repo.script([{"SELECT identity_digest", rows([tl(batch.row)])}, {"FOR SHARE", rows([])}])
+
+    assert {:error, :ledger_postgres_batch_without_head} =
+             Postgres.lookup_batch("domain", "batch", @read_opts)
+  end
+
+  test "lookup does not accept ambiguous duplicate SQL batch rows" do
+    batch = stored_batch()
+    Repo.script([{"SELECT identity_digest", rows([tl(batch.row), tl(batch.row)])}])
+
+    assert {:error, :invalid_ledger_postgres_batch_row} =
+             Postgres.lookup_batch("domain", "batch", @read_opts)
+  end
+
+  test "SQL failure before locking prevents subsequent reads and writes" do
+    Repo.script([{"SET LOCAL", {:error, :read_only_transaction}}])
+
+    assert {:error, {:ledger_postgres_query_failed, :read_only_transaction}} =
+             Postgres.append("domain", "batch", @payloads, 0, @opts)
+
+    assert Repo.remaining() == []
+    refute_received {:query, "pg_advisory_xact_lock", _, _}
+  end
+
+  test "provider exception structs are reduced to their type, without private details" do
+    Repo.script([{"FOR SHARE", {:error, RuntimeError.exception("private SQL credentials")}}])
+
+    assert {:error, {:ledger_postgres_query_failed, RuntimeError}} =
+             Postgres.load("domain", @read_opts)
+  end
+
+  test "opaque provider errors do not leak their nested private contents" do
+    Repo.script([{"FOR SHARE", {:error, {:connection, "private SQL credentials"}}}])
+
+    assert {:error, {:ledger_postgres_query_failed, :unknown}} =
+             Postgres.load("domain", @read_opts)
+  end
+
+  test "unknown write transaction failure is ambiguous, never a definite rollback claim" do
+    opts = Keyword.put(@opts, :transaction_opts, test_result: {:error, :connection_lost})
+    assert {:error, :ambiguous} = Postgres.append("domain", "batch", @payloads, 0, opts)
+  end
+
+  test "malformed successful write transaction result is ambiguous" do
+    opts = Keyword.put(@opts, :transaction_opts, test_result: {:ok, :saved})
+    assert {:error, :ambiguous} = Postgres.append("domain", "batch", @payloads, 0, opts)
+  end
+
+  test "a read transaction failure remains distinct from an absent Domain" do
+    opts = Keyword.put(@read_opts, :transaction_opts, test_result: {:error, :connection_lost})
+
+    assert {:error, {:ledger_postgres_transaction_failed, :connection_lost}} =
+             Postgres.load("domain", opts)
+  end
+
+  test "malformed read transaction success cannot return an unverified snapshot" do
+    opts = Keyword.put(@read_opts, :transaction_opts, test_result: {:ok, :saved})
+    assert {:error, :invalid_ledger_postgres_transaction_result} = Postgres.load("domain", opts)
+  end
+
+  test "query and transaction options reach only their matching host boundary" do
+    Repo.script([{"FOR SHARE", rows([])}])
+    opts = Keyword.merge(@read_opts, query_opts: [timeout: 100], transaction_opts: [timeout: 200])
+    assert :not_found = Postgres.load("domain", opts)
+    assert_receive {:transaction, [timeout: 200]}
+    assert_receive {:query, "FOR SHARE", ["domain"], [timeout: 100]}
+  end
+
+  test "a failed head CAS prevents batch insertion" do
+    script =
+      new_batch_script()
+      |> Enum.take(5)
+      |> List.update_at(4, fn {sql, _} -> {sql, {:ok, %{num_rows: 0}}} end)
+
+    Repo.script(script)
+    assert {:error, :conflict} = Postgres.append("domain", "batch", @payloads, 0, @opts)
+    refute_received {:query, ~s(INSERT INTO "public"."spectre_ledger_batches"), _, _}
+  end
+
+  test "writing multiple rows for a single batch is rejected" do
+    script =
+      List.update_at(new_batch_script(), 5, fn {sql, _} -> {sql, {:ok, %{num_rows: 2}}} end)
+
+    Repo.script(script)
+
+    assert {:error, {:invalid_ledger_postgres_affected_rows, 2}} =
+             Postgres.append("domain", "batch", @payloads, 0, @opts)
   end
 
   defp new_batch_script do
