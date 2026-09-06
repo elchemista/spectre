@@ -7,12 +7,29 @@ before they can cause governed effects.
 
 This checkout targets **0.4.0, unreleased**. It replaces the 0.3 runtime; it is
 not a drop-in upgrade. Functional validation, adversarial tests and performance
-qualification remain release work. In particular, the current P1 baseline is a
-performance **no-go**, not a production throughput claim.
+qualification remain release work. Historical P1 measurements were a performance
+**no-go**; subsequent indexed-path improvements are not a production throughput
+or bounded-memory claim.
 
 Start with [Governed surface and trust assumptions](GOVERNED_SURFACE.md).
 The [Governed Act Model](GOVERNED_ACT_MODEL.md) defines the intended semantics;
 the surface document explains what this implementation can actually promise.
+
+## Documentation map
+
+| Question | Guide |
+| --- | --- |
+| Where are GAM laws implemented, and who owns state? | [Architecture](docs/architecture.md) |
+| What must my app provision before using an agent? | [Host setup](docs/host-setup.md) |
+| What do the DSL, Skills, Instance, router and Morph do? | [Agent authoring](docs/agents-and-dsl.md) |
+| Who handles intake, streaming, voice, steering and cancel? | [Input and control](docs/integration-and-streaming.md) |
+| Which store do I implement? What happens after corruption or erasure? | [Storage and recovery](docs/storage-and-recovery.md) |
+| What exists, what is host-owned, and what is still missing? | [Capability inventory](docs/capabilities.md) |
+| How do I verify a complete agent and a release? | [Testing and release](docs/testing-and-release.md) |
+
+These guides describe the current 0.4 implementation. They explicitly distinguish
+working APIs from proposed conveniences such as `ask`. Package wiring stays
+explicit through `extend`, `ports/0`, Mix and OTP, not a Stack resolver.
 
 ## The core
 
@@ -89,7 +106,9 @@ store = {Spectre.Ledger.Store.ETS, server: store_pid}
 {:ok, scope} = Spectre.open_scope(domain, context, opened_at: now)
 
 {:ok, %{candidates: candidates}} = Spectre.turn(scope, input)
-results = Enum.map(candidates, &Spectre.propose(scope, &1))
+# Application policy selects a proposal; the list may contain alternatives.
+candidate = MyApp.select_proposal(candidates)
+{:ok, result} = Spectre.propose(scope, candidate)
 ```
 
 ETS is volatile: use it for tests or ephemeral Domains, not durable promises.
@@ -116,6 +135,9 @@ security. Use `Spectre.Ingress.evidence/3` to bind observations to authenticated
 context; use `Spectre.Mind.candidate/2` to bind proposals to a Turn. A remote
 model call or audio transmission is governed only if included in the declared
 Surface and routed through the executor boundary.
+The [streaming guide](docs/integration-and-streaming.md) explains why transport
+chunks are not automatically admission units and why local cancel is not an
+Outcome or Duty disposition.
 
 ## Agent DSL, Skills and local state
 
@@ -142,9 +164,17 @@ end
 The host supplies the remaining exact consequence, Mandate, executor and
 contract fields. Installing a Skill neither grants authority nor reserves money.
 
+Named `flow` blocks can select independent routers and ordered `pipe_through`
+plans prepared by the host. An ordinary Mind handler interprets the result and
+may compose a bounded `Spectre.Prompt`; no-match and ambiguity remain explicit
+application decisions. Prompt text is not a Candidate template or permission
+to call a provider. See [flows and handlers](docs/agents-and-dsl.md#flows-and-ordinary-mind-handlers).
+
 A Mind implements `deliberate/2`; an optional `deliberate/3` supports local
-application state. Define the two callbacks explicitly, without default
-arguments that could interpret options as state.
+application state. `use Spectre.Mind, ref: "mind:support", stateful: true`
+generates the stateless bridge so you implement `/3`. With a plain behaviour,
+define the two callbacks separately, without default arguments that could
+interpret options as state. Neither form selects a router or runs proposals.
 
 Routing is a reusable Zone M component. Declare `route "lookup", to: "order",
 match: [regex: ~r/^find order$/u, string_bag: ["lookup order"]]` in a Skill,
@@ -248,9 +278,11 @@ checkout. Rebuild integrations against the behaviours above; reconcile legacy
 effects and unresolved obligations explicitly. Importing records as Evidence
 does not turn legacy effects into authorized Acts or settle their debt.
 
-The remaining release work includes targeted adversarial testing and removal of
-repeated whole-history work from the runtime hot path. Passing static checks or
-reaching a test-count target does not close those gates.
+The remaining release work includes granular current-state persistence and
+bounded lifetime memory, lifecycle/overload consolidation, package wiring checks and
+performance qualification. Existing incremental indexes and batch paging do not
+close those gates. Consult the [inventory](docs/capabilities.md), not historical
+API names, to determine what is available.
 
 From this checkout:
 

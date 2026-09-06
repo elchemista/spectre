@@ -12,7 +12,10 @@ defmodule Spectre.Skill do
   An Agent installs these declarations with `install MyApp.LookupSkill,
   as: "lookup"` and materializes `"lookup/order"`. Routes, assets, extension
   contributions and host ports compose under the same namespace; the root
-  Agent explicitly chooses the routing methods with `router via: [...]`.
+  Agent explicitly chooses the root routing methods with `router via: [...]`.
+  Named flows preserve their own routing methods and named host pipeline
+  requirements, all mounted under the installation namespace. They create no
+  process and do not silently inherit the root router's policy.
   Installation does not grant
   the Skill a Mandate, create a child Scope or allocate budget. Deliberative
   skill code is an ordinary function or a `Spectre.Mind` adapter, not another

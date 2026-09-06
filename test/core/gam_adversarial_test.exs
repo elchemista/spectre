@@ -7,6 +7,7 @@ defmodule Spectre.Core.GAMAdversarialTest do
   alias Spectre.Bench.P1.Fixture
   alias Spectre.Domain.{Projection, Sequencer}
   alias Spectre.Ledger.Entry
+  alias Spectre.Test.DutyFrontierAssertions
 
   setup do
     namespace = "gam-adversarial-#{System.unique_integer([:positive])}"
@@ -395,6 +396,7 @@ defmodule Spectre.Core.GAMAdversarialTest do
   defp assert_replay(f, projection) do
     assert {:ok, snapshot} = Ledger.load(f.store_config, f.refs.domain)
     assert {:ok, ^projection} = Projection.replay(snapshot, projection.constitution)
+    DutyFrontierAssertions.assert_prefixes(snapshot, projection.constitution)
 
     assert {:ok, _report} =
              Audit.verify(snapshot, projection.constitution, projection.recorded_at)

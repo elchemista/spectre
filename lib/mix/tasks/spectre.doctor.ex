@@ -10,13 +10,17 @@ defmodule Mix.Tasks.Spectre.Doctor do
         mind_modules: [MyApp.AgentMind],
         executor_modules: [MyApp.PaymentExecutor],
         ingress: MyApp.Ingress,
+        port_wiring: %{MyApp.SupportAgent => wired_ports},
         store: {Spectre.Ledger.Store.Postgres, repo: MyApp.Repo},
         genesis: genesis,
         host_profile: host_profile,
         surface: surface
 
   The static result is evidence about ordinary compiled dependencies, not proof
-  of process or machine isolation.
+  of process or machine isolation. `wired_ports` is the named adapter map the
+  application explicitly wires, not automatically a copy of `ports/0`.
+  Doctor reports missing/undeclared port names; it never resolves dependencies
+  or starts adapters. Each configured boundary still validates its behaviour.
   """
 
   use Mix.Task

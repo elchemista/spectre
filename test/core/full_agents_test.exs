@@ -85,9 +85,7 @@ defmodule Spectre.Core.FullAgentsTest do
   end
 
   defmodule StatelessMind do
-    @behaviour Spectre.Mind
-    @impl true
-    def ref, do: "mind:full-agent:stateless"
+    use Spectre.Mind, ref: "mind:full-agent:stateless"
     @impl true
     defdelegate deliberate(turn, opts), to: Deliberation, as: :run
   end
@@ -243,7 +241,7 @@ defmodule Spectre.Core.FullAgentsTest do
   test "an Agent with a Skill exposes its exact Definition and advances local Mind state", c do
     assert {:ok, %{candidates: [candidate], turn: turn}} = turn(c, "refund")
     assert_receive {:deliberation, pid, ^turn, opts}
-    assert pid == c.instance
+    refute pid == c.instance
     refute pid == c.fixture.server
     assert opts[:definition_ref] == c.definition.ref
     assert opts[:state_revision] == 0
@@ -821,7 +819,9 @@ defmodule Spectre.Core.FullAgentsTest do
 
       configured = %{c | instance: updated, definition: c.successor, template: "updated/refund"}
       assert {:ok, %{candidates: [candidate], turn: turn}} = turn(configured, "refund")
-      assert_receive {:deliberation, ^updated, ^turn, opts}
+      assert_receive {:deliberation, worker, ^turn, opts}
+      refute worker == updated
+      refute worker == c.fixture.server
       assert opts[:definition_ref] == c.successor.ref
       assert opts[:state_revision] == 0
       assert Instance.state(updated) == %{revision: 1, value: 21}

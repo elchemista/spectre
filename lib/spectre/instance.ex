@@ -10,8 +10,8 @@ defmodule Spectre.Instance do
   head. Every Candidate is still evaluated independently by the kernel.
 
   An Instance may retain an opaque application value, but it owns no authority,
-  Grant, credential or durable execution fact. Those remain exclusively in the
-  Domain ledger.
+  Grant, credential or durable execution fact. Durable facts live in the Domain
+  ledger; ephemeral capabilities remain within the trusted execution boundary.
 
   Stateful minds may additionally implement `Spectre.Mind.deliberate/3`. The
   callback receives the current application value and may return its successor
@@ -26,15 +26,34 @@ defmodule Spectre.Instance do
   loads application state only. `checkpoint/4` explicitly saves it through a
   host-configured `Spectre.Store`; it is never an execution checkpoint or a way
   to restore a Scope. Checkpointing is not automatic after external effects.
+
+  Slow mutations run in one linked, monitored temporary worker at a time.
+  Local reads remain responsive and return the last completed state, not a
+  partial deliberation. At most `max_pending_operations` requests wait in FIFO
+  order (default 32; zero rejects concurrent mutations with `:instance_busy`).
+  This bounds accepted requests, not arbitrary BEAM mailbox traffic or bytes.
+
+  `state/2`, `info/2` and `scope/2` accept a timeout in milliseconds or
+  `:infinity`, defaulting to 5,000 ms. `definition/2` also accepts that timeout
+  for its small Instance read, then verifies the Definition through the Domain.
+
+  A caller timeout or death does not cancel accepted work. Worker failure is
+  reported without retry; a failed proposal may already have a durable Attempt
+  and external effects. Domain loss stops the Instance and its worker, but
+  cannot undo such effects. Use ordinary late-observation/reconciliation paths.
+  This lifecycle is not a provider streaming, steering or cancellation API.
+
+  Detected Domain/Scope loss replies to active and queued callers with an error
+  before shutdown. An unhandled process kill still has ordinary OTP call-exit
+  semantics. Neither kind of failure certifies that no external effect occurred.
   """
 
   use GenServer
 
   alias Spectre.{Candidate, Definition, Domain, Portable, Scope}
-  alias Spectre.Instance.{Checkpoint, State}
+  alias Spectre.Instance.{Checkpoint, Operation, State}
 
-  @options [:scope, :definition_ref, :state, :checkpoint, :name]
-  @reserved_mind_options [:definition_ref, :state_revision]
+  @options [:scope, :definition_ref, :state, :checkpoint, :name, :max_pending_operations]
   @scope_fence_errors [
     :context_domain_mismatch,
     :definition_lookup_failed,
@@ -110,21 +129,42 @@ defmodule Spectre.Instance do
   def propose(_server, _candidate, _opts),
     do: {:error, :invalid_instance_proposal_options}
 
-  @doc "Returns the exact immutable Definition revision selected by this Instance."
-  @spec definition(server()) :: {:ok, Definition.t()} | {:error, term()}
-  def definition(server), do: GenServer.call(server, :definition)
+  @doc """
+  Returns the selected immutable Definition through the live Scope fence.
+
+  Only the small binding is read from the Instance; the facade/Domain lookup
+  runs in the caller, so it cannot block local state readers. `timeout` bounds
+  the Instance binding lookup, not the separate Domain verification. A fenced
+  result also notifies that exact Instance process to shut down.
+  """
+  @spec definition(server(), timeout()) :: {:ok, Definition.t()} | {:error, term()}
+  def definition(server, timeout \\ 5_000) do
+    {owner, scope, definition_ref} = GenServer.call(server, :definition_binding, timeout)
+    result = Spectre.definition(scope, definition_ref)
+
+    case result do
+      {:error, reason} ->
+        if scope_fence_error?(reason), do: GenServer.cast(owner, {:scope_fenced, scope, reason})
+
+      {:ok, _definition} ->
+        :ok
+    end
+
+    result
+  end
 
   @doc "Returns the authenticated Scope owned by this Instance."
-  @spec scope(server()) :: Scope.t()
-  def scope(server), do: GenServer.call(server, :scope)
+  @spec scope(server(), timeout()) :: Scope.t()
+  def scope(server, timeout \\ 5_000), do: GenServer.call(server, :scope, timeout)
 
   @doc "Returns non-authoritative Instance identity and local state revision."
-  @spec info(server()) :: info()
-  def info(server), do: GenServer.call(server, :info)
+  @spec info(server(), timeout()) :: info()
+  def info(server, timeout \\ 5_000), do: GenServer.call(server, :info, timeout)
 
   @doc "Returns the opaque, process-local application state and its revision."
-  @spec state(server()) :: %{required(:revision) => non_neg_integer(), required(:value) => term()}
-  def state(server), do: GenServer.call(server, :state)
+  @spec state(server(), timeout()) ::
+          %{required(:revision) => non_neg_integer(), required(:value) => term()}
+  def state(server, timeout \\ 5_000), do: GenServer.call(server, :state, timeout)
 
   @doc "Saves portable Mind state, fencing concurrent writers with the store's revision."
   @spec checkpoint(server(), Spectre.Store.config(), String.t(), non_neg_integer()) ::
@@ -134,13 +174,23 @@ defmodule Spectre.Instance do
 
   @impl GenServer
   def init(config) do
-    with {:ok, scope} <- current_scope(Map.fetch!(config, :scope)),
+    # Linked tasks die with an abnormal owner exit; trapped task exits are
+    # handled via their monitors instead of crashing this state owner.
+    Process.flag(:trap_exit, true)
+
+    with {:ok, scope} <- Operation.current_scope(Map.fetch!(config, :scope)),
          definition_ref = Map.fetch!(config, :definition_ref),
          {:ok, domain_monitor} <- monitor_domain(scope),
-         {:ok, %Definition{}} <- fetch_definition(scope, definition_ref),
+         {:ok, %Definition{}} <- Spectre.definition(scope, definition_ref),
          {:ok, application_state} <- initial_state(config, scope) do
       state = State.new(scope, definition_ref, application_state.value, domain_monitor)
-      {:ok, %{state | revision: application_state.revision}}
+
+      {:ok,
+       %{
+         state
+         | revision: application_state.revision,
+           max_pending_operations: Map.get(config, :max_pending_operations, 32)
+       }}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -156,63 +206,130 @@ defmodule Spectre.Instance do
   def handle_call(:state, _from, %State{} = state),
     do: {:reply, %{revision: state.revision, value: state.value}, state}
 
-  def handle_call({:checkpoint, store, key, expected}, _from, %State{} = state) do
-    case current_scope(state.scope) do
-      {:ok, _scope} ->
-        reply =
-          Checkpoint.save(
-            store,
-            key,
-            expected,
-            Scope.domain_ref(state.scope),
-            state.definition_ref,
-            %{revision: state.revision, value: state.value}
-          )
+  def handle_call(:definition_binding, _from, %State{} = state),
+    do: {:reply, {self(), state.scope, state.definition_ref}, state}
 
-        {:reply, reply, state}
+  def handle_call({:turn, _input, _opts} = request, from, %State{} = state),
+    do: enqueue(request, from, state)
 
-      {:error, _} = error ->
-        reply_or_stop(error, state)
-    end
+  def handle_call({:propose, _candidate, _opts} = request, from, %State{} = state),
+    do: enqueue(request, from, state)
+
+  def handle_call({:checkpoint, _store, _key, _expected} = request, from, %State{} = state),
+    do: enqueue(request, from, state)
+
+  @impl GenServer
+  def handle_cast({:scope_fenced, scope, reason}, %State{scope: scope} = state) do
+    if scope_fence_error?(reason),
+      do: shutdown({:scope_fenced, reason}, state),
+      else: {:noreply, state}
   end
 
-  def handle_call(:definition, _from, %State{} = state) do
-    state.scope
-    |> fetch_definition(state.definition_ref)
-    |> reply_or_stop(state)
-  end
-
-  def handle_call({:turn, input, opts}, _from, %State{} = state) do
-    with {:ok, opts} <- bind_mind_options(opts, state),
-         {:ok, result} <- Spectre.turn(state.scope, input, state.value, opts) do
-      {next_value, result} = Map.pop!(result, :state)
-      {:reply, {:ok, result}, State.advance(state, next_value)}
-    else
-      {:error, _reason} = error -> reply_or_stop(error, state)
-    end
-  end
-
-  def handle_call({:propose, candidate, opts}, _from, %State{} = state) do
-    state.scope
-    |> Spectre.propose(candidate, opts)
-    |> reply_or_stop(state)
-  end
+  def handle_cast(_message, state), do: {:noreply, state}
 
   @impl GenServer
   def handle_info(
         {:DOWN, monitor, :process, _domain, reason},
         %State{domain_monitor: monitor} = state
       ) do
-    {:stop, {:shutdown, {:domain_down, reason}}, state}
+    shutdown({:domain_down, reason}, state)
+  end
+
+  def handle_info({ref, result}, %State{job: %{task: %Task{ref: ref}} = job} = state) do
+    Process.demonitor(ref, [:flush])
+    state = %{state | job: nil}
+
+    case result do
+      {:advance, reply, value} -> complete(reply, job.from, State.advance(state, value))
+      {:reply, reply} -> complete(reply, job.from, state)
+    end
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _worker, _reason},
+        %State{job: %{task: %Task{ref: ref}} = job} = state
+      ) do
+    complete({:error, {:instance_operation_stopped, job.operation}}, job.from, %{state | job: nil})
   end
 
   def handle_info(_message, %State{} = state), do: {:noreply, state}
+
+  @impl GenServer
+  def terminate(_reason, %State{job: %{task: task}}) do
+    Process.exit(task.pid, :kill)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
+
+  defp enqueue(request, from, %State{job: nil} = state),
+    do: {:noreply, start_job(request, from, state)}
+
+  defp enqueue(request, from, %State{pending_count: count, max_pending_operations: max} = state)
+       when count < max do
+    {:noreply,
+     %{state | pending: :queue.in({request, from}, state.pending), pending_count: count + 1}}
+  end
+
+  defp enqueue(_request, _from, state), do: {:reply, {:error, :instance_busy}, state}
+
+  defp start_job(request, from, state) do
+    # Proposing never uses Mind state: do not copy a potentially large local
+    # value into a worker waiting on an external executor.
+    fields =
+      if elem(request, 0) == :propose,
+        do: [:scope],
+        else: [:scope, :definition_ref, :revision, :value]
+
+    snapshot = Map.take(state, fields)
+    task = Task.async(fn -> Operation.run(request, snapshot) end)
+    %{state | job: %{task: task, from: from, operation: elem(request, 0)}}
+  end
+
+  defp complete(reply, from, state) do
+    GenServer.reply(from, reply)
+
+    case reply do
+      {:error, reason} ->
+        if scope_fence_error?(reason),
+          do: shutdown({:scope_fenced, reason}, state),
+          else: next_job(state)
+
+      {:ok, _} ->
+        next_job(state)
+    end
+  end
+
+  defp shutdown(reason, state) do
+    # Reply before stopping: otherwise a Domain failure races the worker's
+    # error reply and turns a handled admission failure into a caller exit.
+    # This says nothing about whether an in-flight world effect occurred.
+    if state.job, do: GenServer.reply(state.job.from, {:error, reason})
+
+    Enum.each(:queue.to_list(state.pending), fn {_request, from} ->
+      GenServer.reply(from, {:error, reason})
+    end)
+
+    {:stop, {:shutdown, reason}, state}
+  end
+
+  defp next_job(state) do
+    case :queue.out(state.pending) do
+      {{:value, {request, from}}, pending} ->
+        state = %{state | pending: pending, pending_count: state.pending_count - 1}
+        {:noreply, start_job(request, from, state)}
+
+      {:empty, _pending} ->
+        {:noreply, state}
+    end
+  end
 
   defp configuration(opts) do
     with {:ok, config} <- Portable.normalize_attrs(opts, @options, :instance),
          {:ok, %Scope{}} <- Map.fetch(config, :scope),
          {:ok, definition_ref} <- Map.fetch(config, :definition_ref),
-         :ok <- Portable.validate_ref(definition_ref, :definition_ref) do
+         :ok <- Portable.validate_ref(definition_ref, :definition_ref),
+         :ok <- validate_pending_limit(Map.get(config, :max_pending_operations, 32)) do
       {:ok, config}
     else
       :error -> {:error, :missing_instance_options}
@@ -221,12 +338,8 @@ defmodule Spectre.Instance do
     end
   end
 
-  defp current_scope(%Scope{} = scope) do
-    case Spectre.resume_scope(scope.domain, scope.context) do
-      {:ok, %Scope{} = current} -> {:ok, current}
-      {:error, _reason} = error -> error
-    end
-  end
+  defp validate_pending_limit(limit) when is_integer(limit) and limit >= 0, do: :ok
+  defp validate_pending_limit(_limit), do: {:error, :invalid_instance_pending_limit}
 
   defp initial_state(%{checkpoint: _checkpoint, state: _state}, _scope),
     do: {:error, :instance_state_checkpoint_collision}
@@ -239,44 +352,10 @@ defmodule Spectre.Instance do
   defp initial_state(config, _scope),
     do: {:ok, %{revision: 0, value: Map.get(config, :state, %{})}}
 
-  defp fetch_definition(scope, definition_ref), do: Spectre.definition(scope, definition_ref)
-
   defp monitor_domain(%Scope{domain: %Domain{server: server}}) when is_pid(server),
     do: {:ok, Process.monitor(server)}
 
   defp monitor_domain(_scope), do: {:error, :invalid_instance_domain}
-
-  defp bind_mind_options(opts, state) do
-    mind_opts = Keyword.get(opts, :mind_opts, [])
-
-    if Portable.keyword?(mind_opts) do
-      case Enum.find(@reserved_mind_options, &Keyword.has_key?(mind_opts, &1)) do
-        nil ->
-          bound =
-            Keyword.merge(mind_opts,
-              definition_ref: state.definition_ref,
-              state_revision: state.revision
-            )
-
-          {:ok, Keyword.put(opts, :mind_opts, bound)}
-
-        option ->
-          {:error, {:reserved_instance_mind_option, option}}
-      end
-    else
-      {:error, :invalid_mind_options}
-    end
-  end
-
-  defp reply_or_stop({:error, reason} = error, state) do
-    if scope_fence_error?(reason) do
-      {:stop, {:shutdown, {:scope_fenced, reason}}, error, state}
-    else
-      {:reply, error, state}
-    end
-  end
-
-  defp reply_or_stop({:ok, _value} = result, state), do: {:reply, result, state}
 
   defp scope_fence_error?(reason) when reason in @scope_fence_errors, do: true
   defp scope_fence_error?({:scope_not_open, _scope_ref}), do: true

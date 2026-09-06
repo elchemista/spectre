@@ -21,8 +21,13 @@ defmodule Spectre.Agent do
   time, not loaded from a mutable registry during a turn.
 
   `route/2` and `router/1` declare proposal routing through `Spectre.Router`.
+  `flow/2` groups an independent router and explicitly named host pipelines;
+  `pipe_through/1` selects their order. `flows/0` exposes the portable declarations
+  and `flow/2` on the compiled agent prepares one reusable host plan. Nesting and
+  Skill installation namespace flow names, not authority or inherited policies.
   `extend/2` installs package contributions and exposes named host ports.
-  Prompting and planning run in `Spectre.Mind`. This module creates no process, authority, default Mandate or
+  Prompting and planning run in `Spectre.Mind`; `Spectre.Prompt` composes text
+  without performing inference. This module creates no process, authority, default Mandate or
   executor. A Definition is not activated by compiling it: use the existing
   governed revision API when activation is required. These templates are not a
   second policy boundary; every resulting Candidate still needs normal admission.
@@ -31,7 +36,7 @@ defmodule Spectre.Agent do
   As with all same-BEAM Elixir modules, compilation is not a sandbox for host code.
   """
 
-  alias Spectre.Agent.{Compiler, Declaration}
+  alias Spectre.Agent.{Compiler, Declaration, Flow}
   alias Spectre.Candidate
   alias Spectre.Candidate.Template
   alias Spectre.Definition
@@ -46,7 +51,16 @@ defmodule Spectre.Agent do
     quote do
       @behaviour Spectre.Agent
       import Spectre.Agent,
-        only: [candidate: 2, install: 2, route: 2, router: 1, extend: 2, asset: 2]
+        only: [
+          candidate: 2,
+          install: 2,
+          route: 2,
+          router: 1,
+          extend: 2,
+          asset: 2,
+          flow: 2,
+          pipe_through: 1
+        ]
 
       Module.register_attribute(__MODULE__, :spectre_definition_attrs, [])
       Module.register_attribute(__MODULE__, :spectre_templates, [])
@@ -58,6 +72,8 @@ defmodule Spectre.Agent do
       @spectre_router nil
       @spectre_assets %{}
       @spectre_ports %{}
+      @spectre_flows %{}
+      @spectre_flow_stack []
       @before_compile Spectre.Agent.Compiler
     end
   end
@@ -86,6 +102,20 @@ defmodule Spectre.Agent do
     quote do: Compiler.router!(__MODULE__, unquote(opts), __ENV__)
   end
 
+  @doc "Groups routing and named host pipelines without creating a process or inheriting policy."
+  defmacro flow(name, do: block) do
+    quote do
+      Compiler.begin_flow!(__MODULE__, unquote(name), __ENV__)
+      unquote(block)
+      Compiler.end_flow!(__MODULE__)
+    end
+  end
+
+  @doc "Selects, in order, host-supplied Input.Pipeline plans for the current flow."
+  defmacro pipe_through(names) do
+    quote do: Compiler.pipe_through!(__MODULE__, unquote(names), __ENV__)
+  end
+
   @doc "Installs an extension's pinned data and separately namespaced host ports."
   defmacro extend(module, opts) do
     quote do: Compiler.extend!(__MODULE__, unquote(module), unquote(opts), __ENV__)
@@ -108,6 +138,22 @@ defmodule Spectre.Agent do
       )
     end
   end
+
+  @doc "Prepares one exact flow with explicit host pipelines and routing adapters."
+  @spec flow(Definition.t(), String.t(), keyword() | map()) ::
+          {:ok, Flow.t()} | {:error, term()}
+  def flow(%Definition{} = definition, name, opts) do
+    with {:ok, definition} <- Definition.new(definition),
+         {:ok, declaration} <- Declaration.read(definition),
+         {:ok, data} <- Map.fetch(declaration.flows, name) do
+      Flow.new(definition.ref, name, data, opts)
+    else
+      :error -> {:error, {:unknown_agent_flow, name}}
+      {:error, _} = error -> error
+    end
+  end
+
+  def flow(_definition, _name, _opts), do: {:error, :invalid_agent_flow}
 
   @doc "Builds a Turn-bound proposal from an exact, portable Agent/Skill Definition."
   @spec candidate(Definition.t(), String.t(), Turn.t(), map() | keyword()) ::

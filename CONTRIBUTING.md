@@ -12,11 +12,11 @@ mix deps.get
 mix test
 ```
 
-Spectre requires Elixir `~> 1.19`. Vettore is a normal runtime dependency.
-ExFastembed is optional; the committed strategy fixture keeps the default test
-suite offline and deterministic. The dedicated real-model profile in
-[Testing](docs/TESTING.md) must pass for changes to embedding persistence,
-semantic search, or the ExFastembed adapter.
+Spectre requires Elixir `~> 1.19`. The current 0.4 runtime dependency is UUIDv7;
+Benchee is development-only. Provider, embedding and database-driver libraries
+are not bundled runtime dependencies. Start with [Architecture](docs/architecture.md)
+and [Testing and release](docs/testing-and-release.md). Base changes on the
+current GAM runtime, not removed 0.3 APIs.
 
 ## Before opening a pull request
 
@@ -28,6 +28,8 @@ mix compile --warnings-as-errors
 mix test --cover
 mix credo --strict
 mix dialyzer
+mix docs --warnings-as-errors
+mix hex.build
 git diff --check
 ```
 
@@ -37,6 +39,11 @@ persistence, policy matching, providers, or side effects should assert callback
 order and cardinality, forbidden calls, state on both sides of a commit, and
 restart or replay behavior. Coverage and large case counts are supporting
 signals; they are not substitutes for those invariant assertions.
+
+Update the public guides and [capability inventory](docs/capabilities.md) with API
+changes. Keep host-owned integration policy distinct from kernel guarantees.
+Self-contained marked guide examples are executed by the release-artifact tests;
+wiring fragments must identify the host-provisioned values they require.
 
 ## Compatibility
 
@@ -49,7 +56,8 @@ For a breaking public change:
 1. explain the migration in the pull request;
 2. update the relevant guide and module documentation;
 3. add an entry under `Unreleased` in `CHANGELOG.md`;
-4. prefer a deprecation cycle when a safe compatibility shim is possible.
+4. do not preserve the removed 0.3 runtime through compatibility shims; for later
+   public changes, discuss whether a safe deprecation path is appropriate.
 
 ## Security reports
 

@@ -6,8 +6,23 @@ defmodule Spectre.Mind do
   receives no Grant, broker or ledger writer, and its result remains only a
   proposal until each Candidate independently crosses the kernel boundary.
 
-  `deliberate/2` is always required; `deliberate/3` is an optional, explicit
-  stateful variant. Stateful minds must define both arities separately. Do not
+  `use Spectre.Mind, ref: "mind:my-app:v1"` declares the behaviour and an
+  overridable `ref/0`. Implement `deliberate/2` yourself. When this stateless
+  implementation is used by an Instance, the existing runtime bridge preserves
+  its local state unchanged.
+
+  For a stateful implementation, opt into `stateful: true` and implement
+  `deliberate/3`. The generated, overridable `deliberate/2` calls it with `nil`
+  state and discards the returned state. A stateless call therefore starts
+  without local state; it never substitutes the options for that state. Your
+  callback must handle `nil` or you must override `deliberate/2` explicitly.
+
+  This helper does not choose an Agent, flow, router, pipeline or fallback,
+  record derived Evidence, or submit Candidates. Those remain application
+  decisions. Plain `@behaviour Spectre.Mind` implementations remain supported.
+
+  Without the helper, `deliberate/2` is always required; `deliberate/3` is an
+  optional, explicit stateful variant. Define both arities separately. Do not
   write `def deliberate(turn, state, opts \\ [])`: the generated `/2` would
   receive stateless turn options as `state`. The two callbacks also have
   intentionally different success shapes:
@@ -35,6 +50,54 @@ defmodule Spectre.Mind do
               | {:error, term()}
 
   @optional_callbacks deliberate: 3
+
+  defmacro __using__(opts) do
+    quote bind_quoted: [opts: opts] do
+      @behaviour Spectre.Mind
+      @on_definition {Spectre.Mind, :__on_definition__}
+      opts = Spectre.Adapter.use_options!(opts, [:ref], stateful: false)
+      @spectre_mind_ref Keyword.fetch!(opts, :ref)
+
+      unless is_boolean(Keyword.fetch!(opts, :stateful)) do
+        raise ArgumentError, "stateful must be a boolean"
+      end
+
+      @impl true
+      def ref, do: @spectre_mind_ref
+
+      defoverridable ref: 0
+
+      if Keyword.fetch!(opts, :stateful) do
+        @impl true
+        def deliberate(turn, opts) do
+          Spectre.Mind.stateless_result(deliberate(turn, nil, opts), __MODULE__)
+        end
+
+        defoverridable deliberate: 2
+      end
+    end
+  end
+
+  @doc false
+  def __on_definition__(env, :def, :deliberate, args, _guards, _body)
+      when length(args) == 3 do
+    if Enum.any?(args, &match?({:\\, _, _}, &1)) do
+      raise CompileError,
+        file: env.file,
+        line: env.line,
+        description:
+          "deliberate/3 must not have default arguments; use stateful: true or define deliberate/2 separately"
+    end
+  end
+
+  def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok
+
+  @doc false
+  def stateless_result({:ok, candidates, _state}, _module), do: {:ok, candidates}
+  def stateless_result({:error, _reason} = error, _module), do: error
+
+  def stateless_result(_invalid, module),
+    do: {:error, {:invalid_stateful_mind_result, module}}
 
   @doc "Invokes a mind and normalizes its output to scope-bound Candidates."
   @spec deliberate(module(), Turn.t(), keyword()) ::

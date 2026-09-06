@@ -22,7 +22,6 @@ defmodule Spectre.Domain.Sequencer.State do
                 pending: :queue.new(),
                 pending_count: 0,
                 ingress_jobs: %{},
-                ingress_supervisor: nil,
                 flush: nil,
                 reconciliation: nil,
                 halted_reason: nil

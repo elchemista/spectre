@@ -50,9 +50,12 @@ not detected by a hash chain alone. Spectre does not provide ledger signatures,
 external witnessing or proof that an export is the latest complete history.
 Protect ledger writers, exports, backups and independently trusted anchors.
 
-Host time is trusted. Nondecreasing ledger timestamps do not prove correct
-wall-clock time; the runtime clamp can mask a backward clock. Monitor clock
-health independently.
+Host time is trusted. The clock guard compares wall time to monotonic elapsed
+time from boot, rejecting drift beyond `clock_tolerance_ms` (60 seconds by
+default). Small accepted regressions are clamped; `:infinity` disables the guard.
+Neither the initial reading nor independent restarts are authenticated by that
+comparison. Monitor clock health independently; nondecreasing ledger timestamps
+alone do not prove correct time. See [operations](docs/storage-and-recovery.md).
 
 Observed Evidence is only as reliable as its issuer and acquisition path.
 Authenticate receipts, preserve causal references and source labels, and do

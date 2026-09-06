@@ -9,10 +9,12 @@ defmodule Spectre.GovernedAct.ReadIndex do
   """
 
   alias Spectre.Erasure.{Analysis, Index}
+  alias Spectre.GovernedAct.AuthorityIndex
   alias Spectre.Presentation
 
   defstruct duties: %Spectre.Duty.Frontier{},
             erasure: %Index{},
+            authority: %AuthorityIndex{},
             batches: MapSet.new(),
             evidence_by_proposition: %{},
             evidence_by_attempt: %{},
@@ -29,7 +31,7 @@ defmodule Spectre.GovernedAct.ReadIndex do
 
   @doc false
   def record(state, event) do
-    state |> record_indexes(event) |> Index.record(event)
+    state |> record_indexes(event) |> Index.record(event) |> AuthorityIndex.record(event)
   end
 
   defp record_indexes(state, %{type: "evidence_recorded", identity: ref, revision: revision}) do

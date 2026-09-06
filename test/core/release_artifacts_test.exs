@@ -2,6 +2,14 @@ defmodule Spectre.CoreTest.ReleaseArtifactsTest do
   use ExUnit.Case, async: false
 
   @root Path.expand("../..", __DIR__)
+  @guide_modules [
+    Guide.OrderSkill,
+    Guide.SupportAgent,
+    Guide.BinaryMatcher,
+    Guide.RejectEmpty,
+    Guide.StatefulMind,
+    Guide.FlowAgent
+  ]
 
   test "package and HexDocs declarations reference files present in this checkout" do
     project = Mix.Project.config()
@@ -24,16 +32,45 @@ defmodule Spectre.CoreTest.ReleaseArtifactsTest do
   test "current release guides do not link to deleted local documentation" do
     package_files = Mix.Project.config()[:package][:files]
 
-    for source <- ~w(README.md GOVERNED_SURFACE.md SECURITY.md) do
+    for source <- Mix.Project.config()[:docs][:extras] do
       links = Regex.scan(~r/\[[^\]]*\]\(([^)]+)\)/, File.read!(Path.join(@root, source)))
 
       for [_match, target] <- links,
           not String.starts_with?(target, ["https://", "http://", "#"]) do
-        path = target |> String.split("#", parts: 2) |> hd()
+        path =
+          target
+          |> String.split("#", parts: 2)
+          |> hd()
+          |> Path.expand(Path.dirname(Path.join(@root, source)))
+          |> Path.relative_to(@root)
+
         assert path in package_files, "#{source} links outside package: #{path}"
         assert File.regular?(Path.join(@root, path)), "#{source} has a broken link: #{target}"
       end
     end
+  end
+
+  test "published self-contained guide examples execute against the current public API" do
+    on_exit(fn ->
+      for module <- @guide_modules do
+        :code.purge(module)
+        :code.delete(module)
+      end
+    end)
+
+    examples =
+      for source <- Mix.Project.config()[:docs][:extras],
+          [_match, name, code] <-
+            Regex.scan(
+              ~r/<!-- spectre:example (\w+) -->\n```elixir\n(.*?)\n```/s,
+              File.read!(Path.join(@root, source))
+            ) do
+        Code.eval_string(code, [], file: source)
+        name
+      end
+
+    assert Enum.sort(examples) ===
+             ~w(application_store authoring custom_router flows input_pipeline mind_adapter)
   end
 
   test "the actual README Agent and Skill example compiles into pinned declarations" do

@@ -16,10 +16,11 @@ defmodule Spectre.GovernedAct.Transition.Execution do
   alias Spectre.Canonical.Record
   alias Spectre.Domain.Event
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
-  alias Spectre.GovernedAct.{AuthorityChange, DispatchState, Index, MeterState, State, View}
+  alias Spectre.GovernedAct.{AuthorityChange, DispatchState, Index, MeterState, State}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.GovernedAct.Transition.Outcome, as: OutcomeTransition
   alias Spectre.Kernel.Authority
+  alias Spectre.Kernel.Authority.Facts
 
   @spec apply(State.t(), Event.t(), non_neg_integer() | nil) ::
           {:ok, State.t()} | {:error, term()}
@@ -167,7 +168,8 @@ defmodule Spectre.GovernedAct.Transition.Execution do
 
   defp validate_attempt_authority(state, attempt, act) do
     with {:ok, mandate} <- Index.fetch_mandate(state, act.mandate_ref),
-         :ok <- Authority.dispatchable?(act, mandate, View.authority(state), attempt.started_at) do
+         :ok <-
+           Authority.dispatchable?(act, mandate, Facts.for_act(state, act), attempt.started_at) do
       :ok
     else
       {:error, reason} -> {:error, {:act_without_current_authority, act.ref, reason}}

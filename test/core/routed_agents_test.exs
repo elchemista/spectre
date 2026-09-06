@@ -171,9 +171,15 @@ defmodule Spectre.Core.RoutedAgentsTest do
       send(opts[:observer], {:executed, act, attempt, capability, snapshot})
 
       case Keyword.fetch!(opts, :status) do
-        :crash -> raise "provider failed after receiving capability"
-        :paused -> await_completion(act, attempt)
-        status -> outcome(act, attempt, status)
+        :crash ->
+          raise "provider failed after receiving capability"
+
+        :paused ->
+          send(opts[:observer], {:execution_worker, self()})
+          await_completion(act, attempt)
+
+        status ->
+          outcome(act, attempt, status)
       end
     end
 
@@ -324,7 +330,8 @@ defmodule Spectre.Core.RoutedAgentsTest do
 
     {result, _route, candidate} = prepare(c, envelope, input_pipeline: pipeline)
     assert_receive {:transcript_input, ^envelope, pid}
-    assert pid == c.instance and pid != c.fixture.server
+    refute pid == c.instance
+    refute pid == c.fixture.server
     message = Enum.find(result.evidence, &(&1.proposition == "chat.message"))
     assert message.payload["text"] === envelope
     assert message.issuer_ref == c.fixture.refs.proposer
@@ -947,6 +954,12 @@ defmodule Spectre.Core.RoutedAgentsTest do
     # The provider blocks after checkout. This is a deterministic interleaving,
     # not a sleep hoping that two calls happen to race in the right window.
     assert_receive {:executed, act, attempt, capability, snapshot}
+    assert_receive {:execution_worker, worker}
+    refute worker == c.instance
+    assert Instance.state(c.instance, 1_000) == %{revision: 1, value: 1}
+    assert Instance.info(c.instance, 1_000).definition_ref == c.definition.ref
+    assert {:ok, definition} = Instance.definition(c.instance, 1_000)
+    assert definition == c.definition
     assert capability == c.capability
     assert event_revision(snapshot, "attempt_started", attempt.ref) > 0
     assert {:ok, pending} = Instance.propose(other, candidate)
@@ -958,12 +971,41 @@ defmodule Spectre.Core.RoutedAgentsTest do
     assert view.attempts == [attempt] and view.outcomes == []
     assert_history(c)
 
-    send(c.instance, :complete_execution)
+    send(worker, :complete_execution)
     assert {:ok, completed} = Task.await(first, 5_000)
     assert completed.primary.outcome.status == :succeeded
     assert {:ok, ^completed} = Instance.propose(other, candidate)
     assert executions(c) == 1
     assert account(c).reserved == 0 and account(c).spent == 23
+    assert_history(c)
+  end
+
+  @tag status: :paused
+  test "killing an Instance worker after checkout retains the Attempt and never retries the effect",
+       c do
+    {_result, _, candidate} = prepare(c, "refund 23")
+    caller = Task.async(fn -> Instance.propose(c.instance, candidate) end)
+    assert_receive {:executed, act, attempt, _capability, _snapshot}
+    assert_receive {:execution_worker, worker}
+    assert executions(c) == 1
+
+    Process.exit(worker, :kill)
+    assert {:error, {:instance_operation_stopped, :propose}} = Task.await(caller)
+    assert Process.alive?(c.instance)
+    assert Instance.state(c.instance) == %{revision: 1, value: 1}
+    assert account(c).reserved == 23
+    assert account(c).spent == 0
+
+    # Re-submitting the same occurrence reads the durable Attempt. Losing its
+    # worker did not produce a no-effect receipt, release money or mint again.
+    assert {:ok, pending} = Instance.propose(c.instance, candidate)
+    assert pending.primary.act == act
+    assert pending.primary.attempt == attempt
+    assert pending.primary.outcome == nil
+    assert executions(c) == 1
+    assert {:ok, view} = Spectre.view(c.scope)
+    assert view.attempts == [attempt]
+    assert view.outcomes == []
     assert_history(c)
   end
 
@@ -1257,7 +1299,7 @@ defmodule Spectre.Core.RoutedAgentsTest do
   defp prepare(c, text, opts \\ []) do
     assert {:ok, %{candidates: [candidate]} = result} = turn(c, text, opts)
     assert_receive {:routed, pid, turn_ref, definition_ref, route}
-    assert pid == c.instance
+    refute pid == c.instance
     refute pid == c.fixture.server
     assert turn_ref == result.turn.ref
     assert definition_ref == Instance.info(c.instance).definition_ref

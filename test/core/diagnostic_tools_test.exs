@@ -10,6 +10,19 @@ defmodule Spectre.Core.DiagnosticToolsTest do
 
   @moduletag :tmp_dir
 
+  defmodule PortAgent do
+    def ports do
+      %{
+        "payments/http_client" => {Spectre.Router.Matchers, []},
+        "payments/store" => {Spectre.Store.Memory, []}
+      }
+    end
+  end
+
+  defmodule BrokenPortAgent do
+    def ports, do: raise("private-configuration-details")
+  end
+
   setup do
     Runtime.reset(Fixture.default_now())
     fixture = Fixture.start_domain(namespace: "diagnostics")
@@ -45,7 +58,14 @@ defmodule Spectre.Core.DiagnosticToolsTest do
     report = Doctor.check(c.config)
     assert report.ok?
     assert report.errors == []
-    assert report.checks == [:zone_dependencies, :ledger_store, :ingress, :boundary_declaration]
+
+    assert report.checks == [
+             :zone_dependencies,
+             :ledger_store,
+             :ingress,
+             :extension_ports,
+             :boundary_declaration
+           ]
 
     assert %{
              check: :boundary_declaration,
@@ -60,8 +80,66 @@ defmodule Spectre.Core.DiagnosticToolsTest do
     refute report.ok?
     assert report.errors == [%{check: :ingress, reason: :domain_ingress_required}]
     assert %{check: :ledger_store, reason: :ledger_store_not_checked} in report.warnings
+    assert %{check: :extension_ports, reason: :extension_ports_not_checked} in report.warnings
 
     assert %{check: :boundary_declaration, reason: :boundary_declaration_not_checked} in report.warnings
+  end
+
+  test "port checks report every missing connection and reject misspelled names", c do
+    wiring = %{PortAgent => %{"payments/http_clinet" => Spectre.Router.Matchers}}
+    report = Doctor.check(Keyword.put(c.config, :port_wiring, wiring))
+    refute report.ok?
+
+    assert Enum.map(report.errors, & &1.reason) == [
+             {:unwired_extension_port, PortAgent, "payments/http_client"},
+             {:unwired_extension_port, PortAgent, "payments/store"},
+             {:undeclared_extension_port, PortAgent, "payments/http_clinet"}
+           ]
+  end
+
+  test "port coverage checks do not start services or write governance records", c do
+    before = Fixture.snapshot(c.fixture)
+    # The supplied pool is not running: this is configuration coverage, not a
+    # false claim that a socket is connected or a service was started.
+    wiring = %{
+      PortAgent => %{
+        "payments/http_client" => {Spectre.Router.Matchers, pool: :not_started},
+        "payments/store" => Spectre.Store.Memory
+      }
+    }
+
+    report = Doctor.check(Keyword.put(c.config, :port_wiring, wiring))
+    assert report.ok?
+    assert report.errors == []
+    assert Process.whereis(:not_started) == nil
+    assert Fixture.snapshot(c.fixture) === before
+  end
+
+  test "malformed declarations and wiring fail diagnostically, without leaking exceptions", c do
+    for wiring <- [
+          nil,
+          [],
+          %{PortAgent => nil},
+          %{PortAgent => %{"payments/http_client" => {String, [:bad]}}},
+          %{PortAgent => %{"payments/http_client" => Spectre.UnavailablePort}},
+          %{BrokenPortAgent => %{}},
+          %{Spectre.NotAnAgent => %{}}
+        ] do
+      report = Doctor.check(Keyword.put(c.config, :port_wiring, wiring))
+      refute report.ok?
+      assert Enum.any?(report.errors, &(&1.check == :extension_ports))
+      refute inspect(report.errors) =~ "private-configuration-details"
+    end
+  end
+
+  test "Doctor CLI identifies an agent's unwired port without resolving it", c do
+    config = Keyword.put(c.config, :port_wiring, %{PortAgent => %{}})
+    Application.put_env(:spectre, :doctor, config)
+    assert_raise Mix.Error, ~r/doctor found 2 error/, fn -> DoctorTask.run([]) end
+    assert_received {:mix_shell, :error, [message]}
+    assert message =~ "unwired_extension_port"
+    assert message =~ "payments/http_client"
+    assert Application.fetch_env!(:spectre, :doctor) == config
   end
 
   test "a compiled executor presented as Mind has its direct boundary dependencies detected", c do
@@ -173,6 +251,8 @@ defmodule Spectre.Core.DiagnosticToolsTest do
   test "Doctor CLI emits warnings on success and raises on a missing ingress", c do
     Application.put_env(:spectre, :doctor, c.config)
     DoctorTask.run([])
+    assert_receive {:mix_shell, :info, [port_warning]}
+    assert port_warning =~ "extension_ports_not_checked"
     assert_receive {:mix_shell, :info, [warning]}
     assert warning =~ "development_profile_is_not_gam_conformance"
     assert_receive {:mix_shell, :info, [success]}

@@ -7,6 +7,11 @@ defmodule Spectre.Domain.IngressWork do
   sequencer at completion, not at callback start. No completion can survive a
   Domain generation change. The worker limit bounds admitted callback work;
   it is not transport-level backpressure against arbitrary BEAM messages.
+
+  Tasks are linked directly to their trapping owner, not to an unsupervised
+  supervisor created inside it. A worker failure is handled through its monitor;
+  an abnormal owner exit also terminates its workers. Normal shutdown explicitly
+  stops outstanding tasks. Accepted ingress is never retried automatically.
   """
 
   alias Spectre.Domain.Command.Input
@@ -44,7 +49,7 @@ defmodule Spectre.Domain.IngressWork do
     if map_size(state.ingress_jobs) >= state.ingress_max_concurrency do
       {:reply, {:error, :ingress_busy}, state}
     else
-      task = Task.Supervisor.async_nolink(state.ingress_supervisor, callback)
+      task = Task.async(callback)
       timer = Process.send_after(self(), {:ingress_timeout, task.ref}, state.ingress_timeout)
       job = %{task: task, timer: timer, from: from, operation: operation}
       {:noreply, %{state | ingress_jobs: Map.put(state.ingress_jobs, task.ref, job)}}

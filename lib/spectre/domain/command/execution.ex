@@ -10,12 +10,13 @@ defmodule Spectre.Domain.Command.Execution do
 
   alias Spectre.{Act, Attempt, Mandate}
   alias Spectre.Domain.Command.Durability
-  alias Spectre.Domain.{Event, Projection, Transaction}
+  alias Spectre.Domain.{Event, Transaction}
   alias Spectre.Domain.Sequencer.{Control, State}
   alias Spectre.Execution.Router
   alias Spectre.GovernedAct.DispatchState
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.{Authority, Grant}
+  alias Spectre.Kernel.Authority.Facts
   alias Spectre.Payload.Store, as: PayloadStore
   alias Spectre.Secret.CheckoutReceipt
 
@@ -204,7 +205,7 @@ defmodule Spectre.Domain.Command.Execution do
   end
 
   defp mandate_still_active(projection, act, now) do
-    authority_view = Projection.authority_view(projection)
+    authority_view = Facts.for_act(projection, act)
 
     with {:ok, %Mandate{} = mandate} <- Map.fetch(projection.mandates, act.mandate_ref),
          :ok <- Authority.dispatchable?(act, mandate, authority_view, now) do

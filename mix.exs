@@ -4,6 +4,9 @@ defmodule Spectre.MixProject do
   @version "0.4.0"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
+  @guides ~w(docs/architecture.md docs/host-setup.md docs/agents-and-dsl.md
+             docs/integration-and-streaming.md docs/storage-and-recovery.md
+             docs/capabilities.md docs/testing-and-release.md)
 
   def project do
     [
@@ -46,8 +49,8 @@ defmodule Spectre.MixProject do
     [
       name: "spectre",
       maintainers: ["elchemista"],
-      files: ~w(lib mix.exs README.md CHANGELOG.md SECURITY.md LICENSE
-           GOVERNED_ACT_MODEL.md GOVERNED_SURFACE.md),
+      files: ~w(lib mix.exs README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md LICENSE
+           GOVERNED_ACT_MODEL.md GOVERNED_SURFACE.md) ++ @guides,
       licenses: ["Apache-2.0"],
       links: %{
         "Website" => @homepage_url,
@@ -61,12 +64,55 @@ defmodule Spectre.MixProject do
     [
       main: "readme",
       source_ref: "v#{@version}",
-      extras: [
-        "README.md",
-        "GOVERNED_ACT_MODEL.md",
-        "GOVERNED_SURFACE.md",
-        "CHANGELOG.md",
-        "SECURITY.md"
+      extras:
+        ["README.md"] ++
+          @guides ++
+          [
+            "GOVERNED_ACT_MODEL.md",
+            "GOVERNED_SURFACE.md",
+            "CHANGELOG.md",
+            "SECURITY.md",
+            "CONTRIBUTING.md"
+          ],
+      groups_for_extras: [
+        Guides: ~r/^docs\//,
+        "Model and trust": ["GOVERNED_ACT_MODEL.md", "GOVERNED_SURFACE.md"]
+      ],
+      groups_for_modules: [
+        "Application API": [Spectre, Spectre.Domain, Spectre.Scope, Spectre.Instance],
+        "Authoring and integration":
+          ~r/^Spectre\.(Agent|Skill|Definition|Extension|Morph|Mind|Prompt|Router|Input|Ingress|Proposal|Fallback)(\.|$)/,
+        "GAM records": [
+          Spectre.Act,
+          Spectre.Attempt,
+          Spectre.Candidate,
+          Spectre.Condition,
+          Spectre.Constitution,
+          Spectre.Consent,
+          Spectre.Decision,
+          Spectre.Declassification,
+          Spectre.Disclosure,
+          Spectre.Duty,
+          Spectre.Erasure,
+          Spectre.Evidence,
+          Spectre.Genesis,
+          Spectre.HostProfile,
+          Spectre.Label,
+          Spectre.Mandate,
+          Spectre.Outcome,
+          Spectre.Presentation,
+          Spectre.Principal,
+          Spectre.Row,
+          Spectre.SubmissionContext,
+          Spectre.Surface
+        ],
+        "Admission and authority":
+          ~r/^Spectre\.(Kernel|Mandate|Authority|Consequence|Governance)(\.|$)/,
+        "Pure semantics and indexes":
+          ~r/^Spectre\.(GovernedAct|Duty|Erasure|Presentation|Evidence|Outcome)(\.|$)/,
+        "Execution boundary": ~r/^Spectre\.(Attempt|Execution|Secret)(\.|$)/,
+        "Persistence and audit": ~r/^Spectre\.(Ledger|Store|Payload|Audit|Canonical)(\.|$)/,
+        "Runtime and support": ~r/^Spectre\./
       ]
     ]
   end

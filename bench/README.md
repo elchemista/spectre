@@ -103,3 +103,23 @@ historical memory is bounded or that 100 users can run for months.
 
 Older focused tools remain available: `bench/p1.exs`, `bench/history_growth.exs`
 and `bench/ledger_ets.exs`. The P1 fixture defaults are preserved.
+
+## Authority reads independent of terminal history
+
+```sh
+mix run bench/authority_reads.exs
+```
+
+This pure microbenchmark compares exhaustive authority facts + resolution with
+the operation-specific indexed path at 0, 1000 and 10000 closed Duties or
+foreign-held Mandates. It checks identical results before measuring with
+Benchee (latency, allocation and reductions in the calling process). `--quick`
+only smoke-tests the jobs on smaller inputs.
+
+Inputs are generated typed records, not authenticated ledger histories. Setup
+exercises index updates but does not benchmark admission, durable I/O, authorized
+Duty disposition, recovery or an entire agent. Flattened term sizes printed
+before measurement are **not** exclusive heap ownership; shared subterms count
+repeatedly. The historical State is still retained, and the holder index adds
+references as Mandates accumulate. Constant query cost is not bounded Domain
+memory. Use the long-lived growth suite above for whole-process measurements.

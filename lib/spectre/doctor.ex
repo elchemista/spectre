@@ -7,9 +7,15 @@ defmodule Spectre.Doctor do
   sandbox: dynamic dispatch, ports, host configuration and arbitrary code on a
   shared BEAM node remain deployment assumptions unless the executor is
   physically isolated.
+
+  Supply `port_wiring: %{MyApp.Agent => wired_ports}` to compare each agent's
+  declared `ports/0` with the actual named adapter map used by host wiring.
+  Missing and undeclared names are errors; absent configuration is unchecked.
+  This checks configuration, not whether application code consumes it or a
+  service is reachable. No adapter is started, selected or installed here.
   """
 
-  alias Spectre.Genesis
+  alias Spectre.{Adapter, Extension, Genesis}
   alias Spectre.HostProfile
   alias Spectre.Ingress
   alias Spectre.Ledger.Store
@@ -64,6 +70,7 @@ defmodule Spectre.Doctor do
         |> run_check(:zone_dependencies, fn -> zone_dependencies(mind, executor) end)
         |> run_check(:ledger_store, fn -> configured_store(opts) end)
         |> run_check(:ingress, fn -> configured_ingress(opts) end)
+        |> run_check(:extension_ports, fn -> configured_ports(opts) end)
         |> run_check(:boundary_declaration, fn -> boundary_declaration(opts) end)
 
       %Report{
@@ -215,6 +222,35 @@ defmodule Spectre.Doctor do
       end
     else
       {:warning, :boundary_declaration_not_checked}
+    end
+  end
+
+  defp configured_ports(opts) do
+    case Keyword.fetch(opts, :port_wiring) do
+      :error ->
+        {:warning, :extension_ports_not_checked}
+
+      {:ok, wiring} when is_map(wiring) and not is_struct(wiring) ->
+        errors = wiring |> Enum.sort() |> Enum.flat_map(&port_findings/1)
+        if errors == [], do: :ok, else: {:error, errors}
+
+      {:ok, _invalid} ->
+        {:error, :invalid_port_wiring}
+    end
+  end
+
+  defp port_findings({agent, wired}) do
+    with :ok <- Adapter.validate(agent, ports: 0),
+         {:ok, declared} <- Adapter.invoke(agent, :ports, []),
+         {:ok, declared} <- Extension.validate_ports(declared),
+         {:ok, wired} <- Extension.validate_ports(wired) do
+      missing = Map.keys(declared) -- Map.keys(wired)
+      extra = Map.keys(wired) -- Map.keys(declared)
+
+      Enum.map(Enum.sort(missing), &{:unwired_extension_port, agent, &1}) ++
+        Enum.map(Enum.sort(extra), &{:undeclared_extension_port, agent, &1})
+    else
+      {:error, reason} -> [{:invalid_agent_port_wiring, agent, reason}]
     end
   end
 

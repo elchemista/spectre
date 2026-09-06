@@ -21,6 +21,21 @@ defmodule Spectre.Adapter do
           {:adapter_callback_exception, module(), atom(), module()}
           | {:adapter_callback_failure, module(), atom(), :exit | :throw}
 
+  @doc false
+  @spec use_options!(keyword(), [atom()], keyword()) :: keyword()
+  def use_options!(opts, required_refs, defaults \\ []) do
+    opts = Keyword.validate!(opts, required_refs ++ defaults)
+
+    for key <- required_refs do
+      case Spectre.Portable.validate_ref(Keyword.fetch!(opts, key), key) do
+        :ok -> :ok
+        {:error, _reason} -> raise ArgumentError, "#{key} must be a non-empty reference"
+      end
+    end
+
+    opts
+  end
+
   @doc "Validates that a loaded module implements every required callback."
   @spec validate(term(), [callback_spec()]) :: :ok | {:error, validation_error()}
   def validate(module, callbacks)

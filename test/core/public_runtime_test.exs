@@ -179,7 +179,9 @@ defmodule Spectre.CoreTest.PublicRuntimeTest do
     assert {:ok, result} =
              Instance.turn(instance, input(context.fixture), mind_opts: [observer: self()])
 
-    assert_receive {:deliberated, ^instance, turn, opts}
+    assert_receive {:deliberated, worker, turn, opts}
+    refute worker == instance
+    refute worker == context.fixture.server
     assert result.turn == turn
     assert opts[:definition_ref] == context.first.ref
     assert opts[:state_revision] == 0

@@ -134,6 +134,47 @@ defmodule Spectre.Core.IngressIsolationTest do
     assert Task.await(task)
   end
 
+  for reason <- [:normal, :shutdown] do
+    test "a #{reason} Domain stop terminates ingress without materializing its input", c do
+      before = Fixture.snapshot(c.f)
+
+      task =
+        Task.async(fn ->
+          catch_exit(Sequencer.observe(c.f.server, Fixture.context(c.f), input(c.f), c.wait_opts))
+        end)
+
+      assert_receive {:ingress_started, worker}
+      monitor = Process.monitor(worker)
+      Process.unlink(c.f.server)
+      :ok = GenServer.stop(c.f.server, unquote(reason))
+      assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 1_000
+      assert Task.await(task)
+      assert Fixture.snapshot(c.f) === before
+    end
+  end
+
+  test "stale worker signals cannot release a newer job's slot or append its input", c do
+    task = observation(c)
+    assert_receive {:ingress_started, worker}
+    [{ref, _job}] = Map.to_list(:sys.get_state(c.f.server).ingress_jobs)
+    Process.exit(worker, :kill)
+    assert {:error, {:ingress_worker_failed, :killed}} = Task.await(task)
+
+    next = observation(c)
+    assert_receive {:ingress_started, next_worker}
+    before = Fixture.snapshot(c.f)
+    send(c.f.server, {:EXIT, worker, :normal})
+    send(c.f.server, {:DOWN, ref, :process, worker, :killed})
+    send(c.f.server, {:ingress_timeout, ref})
+    send(c.f.server, {ref, {:ok, []}})
+
+    assert map_size(:sys.get_state(c.f.server).ingress_jobs) == 1
+    assert Fixture.snapshot(c.f) === before
+    send(next_worker, :continue)
+    assert {:ok, [_]} = Task.await(next)
+    assert map_size(:sys.get_state(c.f.server).ingress_jobs) == 0
+  end
+
   test "the accepted submission queue is bounded without persisting refused work", c do
     payment = Fixture.paid_evidence(c.f)
     assert {:ok, ^payment} = Fixture.observe_payment(c.f, payment)

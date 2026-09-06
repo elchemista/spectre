@@ -12,6 +12,18 @@ defmodule Spectre.Domain do
   workflows. Governed semantics do not live in this handle or in callbacks:
   they are evaluated by `Spectre.Kernel` and replayed by
   `Spectre.GovernedAct.Fold`.
+
+  For a static application topology, put `{Spectre.Domain, opts}` after its
+  store in the host supervisor. `opts` includes `:domain_ref`, `:store` and the
+  same foundation/boundary options accepted by `Spectre.start_domain/3`.
+  `:rest_for_one` restarts the Domain after an earlier store child fails; the
+  store's own durability determines what survives. Resolve the registered
+  handle with `Spectre.lookup_domain/1` after startup. The default Registry is
+  provided by the Spectre application.
+
+  Use `Spectre.start_domain/3` for dynamically provisioned Domains under
+  Spectre's supervisor instead. Do not start the same Domain in both trees.
+  Neither form authenticates a Scope or creates an Instance automatically.
   """
 
   alias Spectre.Domain.Sequencer
@@ -38,6 +50,7 @@ defmodule Spectre.Domain do
 
   def start_link(_opts), do: {:error, :invalid_domain_options}
 
+  @doc "Declares one Domain as a permanent, uniquely identified child of a host supervisor."
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     domain_ref = Keyword.fetch!(opts, :domain_ref)

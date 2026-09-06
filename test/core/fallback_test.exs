@@ -6,6 +6,7 @@ defmodule Spectre.CoreTest.FallbackTest do
   alias Spectre.{Candidate, Fallback, Kernel}
   alias Spectre.Domain.{Projection, Sequencer}
   alias Spectre.Fallback.Policy
+  alias Spectre.Proposal.Result
   alias Spectre.V04Test.{Fixture, Runtime}
 
   setup do
@@ -104,6 +105,13 @@ defmodule Spectre.CoreTest.FallbackTest do
     assert %{mode: :candidate_template, result: fallback} = result.fallback
     assert fallback.decision.outcome == :refused
     assert fallback.act == nil
+    refused = %{admission: :refused, act_committed?: false, attempted?: false, outcome: nil}
+
+    assert Result.status(result) == %{
+             primary: refused,
+             fallback: %{mode: :candidate_template, result: refused}
+           }
+
     projection = Sequencer.projection(fixture.server)
     assert map_size(projection.decisions) == 2
     assert projection.acts == %{}

@@ -436,11 +436,30 @@ defmodule Spectre.Bench.P1.Fixture do
   end
 
   defp stop_process(pid) when is_pid(pid) do
-    # A linked process can finish between alive?/1 and stop/1 during teardown.
-    # Ignore only an already-gone PID, not failures from a running server.
-    GenServer.stop(pid)
-  catch
-    :exit, {:noproc, {GenServer, :stop, [^pid | _args]}} -> :ok
+    # ExUnit shuts down the linked owner before on_exit. A trapping GenServer
+    # can still be finishing that shutdown when this second stop arrives.
+    # Confirm its exit; never swallow a live server failure or unexpected crash.
+    monitor = Process.monitor(pid)
+
+    try do
+      GenServer.stop(pid)
+    catch
+      :exit, reason -> await_stopped(pid, monitor, reason, __STACKTRACE__)
+    after
+      Process.demonitor(monitor, [:flush])
+    end
+  end
+
+  defp await_stopped(pid, monitor, reason, stacktrace) do
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, status} when status in [:normal, :shutdown, :noproc] ->
+        :ok
+
+      {:DOWN, ^monitor, :process, ^pid, _unexpected} ->
+        :erlang.raise(:exit, reason, stacktrace)
+    after
+      1_000 -> :erlang.raise(:exit, reason, stacktrace)
+    end
   end
 
   defp ok!({:ok, value}), do: value

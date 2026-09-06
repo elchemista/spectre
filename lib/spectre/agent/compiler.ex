@@ -7,6 +7,8 @@ defmodule Spectre.Agent.Compiler do
   alias Spectre.Router.Rule
 
   def candidate!(module, name, attrs, env) do
+    root_only!(module, :candidate, env)
+
     case local_name(name) do
       :ok -> put_template!(module, name, attrs, env)
       {:error, reason} -> fail!(env, reason)
@@ -14,6 +16,8 @@ defmodule Spectre.Agent.Compiler do
   end
 
   def install!(module, component, opts, env) do
+    root_only!(module, :install, env)
+
     with {:ok, %{as: prefix}} <- Portable.normalize_attrs(opts, [:as], :skill_install),
          :ok <- local_name(prefix),
          {:ok, definition} <- component_definition(component),
@@ -26,6 +30,8 @@ defmodule Spectre.Agent.Compiler do
   end
 
   def extend!(module, extension, opts, env) do
+    root_only!(module, :extend, env)
+
     with {:ok, %{as: prefix} = opts} <-
            Portable.normalize_attrs(opts, [:as, :options], :extension_install),
          :ok <- local_name(prefix),
@@ -40,23 +46,65 @@ defmodule Spectre.Agent.Compiler do
 
   def route!(module, name, attrs, env) do
     with :ok <- local_name(name), {:ok, rule} <- Rule.new(name, attrs) do
-      put_unique!(module, :spectre_routes, name, Rule.canonical(rule), env)
+      update_routing!(module, &put_route!(&1, name, rule, env))
     else
       {:error, reason} -> fail!(env, reason)
     end
   end
 
   def router!(module, opts, env) do
-    if Module.get_attribute(module, :spectre_router) != nil,
-      do: fail!(env, :duplicate_router_configuration)
-
     case Router.configuration(opts) do
-      {:ok, config} -> Module.put_attribute(module, :spectre_router, config)
-      {:error, reason} -> fail!(env, reason)
+      {:ok, config} ->
+        update_routing!(module, &put_router!(&1, config, env))
+
+      {:error, reason} ->
+        fail!(env, reason)
     end
   end
 
+  def begin_flow!(module, name, env) do
+    case local_name(name) do
+      :ok -> :ok
+      {:error, reason} -> fail!(env, reason)
+    end
+
+    stack = Module.get_attribute(module, :spectre_flow_stack)
+
+    path =
+      case stack do
+        [] -> name
+        [parent | _] -> parent <> "/" <> name
+      end
+
+    put_unique!(module, :spectre_flows, path, %{routes: %{}, router: nil, pipelines: nil}, env)
+    Module.put_attribute(module, :spectre_flow_stack, [path | stack])
+  end
+
+  def end_flow!(module) do
+    [_current | rest] = Module.get_attribute(module, :spectre_flow_stack)
+    Module.put_attribute(module, :spectre_flow_stack, rest)
+  end
+
+  def pipe_through!(module, names, env) do
+    if Module.get_attribute(module, :spectre_flow_stack) == [],
+      do: fail!(env, :pipe_through_requires_flow)
+
+    names = if is_binary(names), do: [names], else: names
+
+    case Declaration.pipeline_names(names) do
+      :ok -> :ok
+      {:error, reason} -> fail!(env, reason)
+    end
+
+    update_routing!(module, fn current ->
+      if current.pipelines != nil, do: fail!(env, :duplicate_flow_pipeline_configuration)
+      %{current | pipelines: names}
+    end)
+  end
+
   def asset!(module, name, value, env) do
+    root_only!(module, :asset, env)
+
     with :ok <- local_name(name), :ok <- Portable.validate(value) do
       put_unique!(module, :spectre_assets, name, value, env)
     else
@@ -72,6 +120,13 @@ defmodule Spectre.Agent.Compiler do
         put_namespaced!(module, :spectre_templates, declaration.templates, prefix, env)
         put_namespaced!(module, :spectre_assets, declaration.assets, prefix, env)
         put_namespaced!(module, :spectre_ports, ports, prefix, env)
+
+        flows =
+          Map.new(declaration.flows, fn {name, flow} ->
+            {name, Declaration.mount_flow(flow, prefix)}
+          end)
+
+        put_namespaced!(module, :spectre_flows, flows, prefix, env)
 
         routes =
           Map.new(declaration.routes, fn {name, rule} ->
@@ -102,7 +157,8 @@ defmodule Spectre.Agent.Compiler do
         components,
         Module.get_attribute(env.module, :spectre_routes),
         Module.get_attribute(env.module, :spectre_router),
-        Module.get_attribute(env.module, :spectre_assets)
+        Module.get_attribute(env.module, :spectre_assets),
+        Module.get_attribute(env.module, :spectre_flows)
       )
 
     definition = build_definition!(attrs, body, env)
@@ -118,6 +174,12 @@ defmodule Spectre.Agent.Compiler do
 
       @doc "Compiles the declared routes with explicit host adapter implementations."
       def router(opts \\ []), do: Spectre.Agent.router(definition(), opts)
+
+      @doc "Returns data-only named flow declarations for inspection."
+      def flows, do: unquote(Macro.escape(body |> Map.get("flows", %{})))
+
+      @doc "Prepares a flow using explicitly wired host pipelines and adapters."
+      def flow(name, opts \\ []), do: Spectre.Agent.flow(definition(), name, opts)
 
       @doc "Materializes one declared template without submitting or executing it."
       @spec candidate(String.t(), Spectre.Mind.Turn.t(), map() | keyword()) ::
@@ -161,6 +223,39 @@ defmodule Spectre.Agent.Compiler do
     if function_exported?(module, :ports, 0),
       do: Extension.validate_ports(module.ports()),
       else: {:ok, %{}}
+  end
+
+  defp update_routing!(module, update) do
+    case Module.get_attribute(module, :spectre_flow_stack) do
+      [] ->
+        current = %{
+          routes: Module.get_attribute(module, :spectre_routes),
+          router: Module.get_attribute(module, :spectre_router)
+        }
+
+        updated = update.(current)
+        Module.put_attribute(module, :spectre_routes, updated.routes)
+        Module.put_attribute(module, :spectre_router, updated.router)
+
+      [name | _] ->
+        flows = Module.get_attribute(module, :spectre_flows)
+        Module.put_attribute(module, :spectre_flows, Map.update!(flows, name, update))
+    end
+  end
+
+  defp put_route!(current, name, rule, env) do
+    if Map.has_key?(current.routes, name), do: fail!(env, {:duplicate_declaration, name})
+    %{current | routes: Map.put(current.routes, name, Rule.canonical(rule))}
+  end
+
+  defp put_router!(current, config, env) do
+    if current.router != nil, do: fail!(env, :duplicate_router_configuration)
+    %{current | router: config}
+  end
+
+  defp root_only!(module, declaration, env) do
+    if Module.get_attribute(module, :spectre_flow_stack) != [],
+      do: fail!(env, {:declaration_requires_agent_root, declaration})
   end
 
   defp local_name(name) when is_binary(name) and name != "" do

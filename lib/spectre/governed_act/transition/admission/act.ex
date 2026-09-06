@@ -17,7 +17,7 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
   alias Spectre.GovernedAct.Transition.Admission.Decision, as: DecisionProof
   alias Spectre.GovernedAct.Transition.Admission.Presentation, as: PresentationProof
   alias Spectre.Kernel.{Authority, Meter, Recognition}
-  alias Spectre.Kernel.Authority.Effective
+  alias Spectre.Kernel.Authority.{Effective, Facts}
   alias Spectre.Kernel.Meter.Amounts
 
   @doc false
@@ -161,7 +161,7 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
   end
 
   defp authorize_candidate(state, candidate, act, decision, mandate) do
-    view = View.authority(state)
+    view = Facts.for_act(state, act)
 
     with {:ok, context} <- SubmissionContext.from_decision(decision),
          {:ok, effective} <-

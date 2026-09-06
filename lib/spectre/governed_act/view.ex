@@ -16,7 +16,7 @@ defmodule Spectre.GovernedAct.View do
 
   @doc "Returns the authority-only facts consumed by resolution."
   @spec authority(State.t()) :: Facts.t()
-  def authority(%State{} = state), do: Facts.from_state(state)
+  def authority(%State{} = state), do: Facts.current(state)
 
   @doc "Returns Mandates blocked by unresolved Meter recontainment deficits."
   @spec blocked_mandate_refs(State.t()) :: MapSet.t(String.t())

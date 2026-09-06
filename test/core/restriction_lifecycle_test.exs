@@ -5,6 +5,7 @@ defmodule Spectre.Core.RestrictionLifecycleTest do
   alias Spectre.Domain.{Event, Projection, Sequencer}
   alias Spectre.GovernedAct.{AuthorityChange, MeterState}
   alias Spectre.GovernedAct.Transition.Authority
+  alias Spectre.Test.DutyFrontierAssertions
   alias Spectre.V04Test.{Fixture, Runtime}
 
   setup do
@@ -183,6 +184,7 @@ defmodule Spectre.Core.RestrictionLifecycleTest do
     {:ok, snapshot} = Ledger.load(c.f.store_config, c.f.refs.domain)
     assert {:ok, rebuilt} = Projection.replay(snapshot, c.f.constitution)
     assert rebuilt == Sequencer.projection(c.f.server)
+    DutyFrontierAssertions.assert_prefixes(snapshot, c.f.constitution)
     assert {:ok, _} = Audit.verify(snapshot, c.f.constitution, Runtime.now())
   end
 end

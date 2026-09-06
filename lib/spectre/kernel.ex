@@ -33,6 +33,7 @@ defmodule Spectre.Kernel do
   alias Spectre.GovernedAct.{ReadIndex, State}
   alias Spectre.Kernel.Authority
   alias Spectre.Kernel.Authority.Effective
+  alias Spectre.Kernel.Authority.Facts
   alias Spectre.Kernel.Decision, as: DecisionEngine
   alias Spectre.Kernel.Decision.Context, as: DecisionContext
   alias Spectre.Kernel.Recognition
@@ -113,7 +114,7 @@ defmodule Spectre.Kernel do
   end
 
   defp evaluate_authorized(candidate, context, projection, surface, view, time) do
-    authority_view = Projection.authority_view(projection)
+    authority_view = Facts.for_candidate(projection, candidate)
 
     # Evidence is deliberately not present in this call or in authority_view.
     resolution = Authority.resolve(candidate, context, authority_view, time)

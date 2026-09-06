@@ -7,6 +7,7 @@ defmodule Spectre.Core.ErasureHotPathTest do
 
   alias Spectre.Bench.Workload
   alias Spectre.Erasure.Analysis.{Closure, Execution}
+  alias Spectre.Kernel.Authority.Facts
 
   test "ordinary cycles after a real deletion do not rescan closure or erasure execution history" do
     fixture =
@@ -23,7 +24,13 @@ defmodule Spectre.Core.ErasureHotPathTest do
       )
 
     on_exit(fn -> Workload.stop(fixture) end)
-    probes = [{Closure, :derive, 2}, {Execution, :state, 2}]
+
+    probes = [
+      {Closure, :derive, 2},
+      {Execution, :state, 2},
+      {Facts, :blocked_effect_digests, 1},
+      {Facts, :blocked_mandate_refs, 1}
+    ]
 
     try do
       for probe <- probes,
@@ -33,7 +40,7 @@ defmodule Spectre.Core.ErasureHotPathTest do
 
       for probe <- probes do
         assert :erlang.trace_info(probe, :call_count) === {:call_count, 0},
-               "unrelated work traversed historical erasure facts: #{inspect(probe)}"
+               "unrelated work traversed historical erasure or authority facts: #{inspect(probe)}"
       end
     after
       for probe <- probes, do: :erlang.trace_pattern(probe, false, [:local, :call_count])

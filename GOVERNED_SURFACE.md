@@ -275,11 +275,15 @@ is provided. Legacy evidence and unresolved effects require explicit host-led
 reconciliation; copying data does not create retroactive authority or dispose
 of old obligations.
 
-The P1 baseline recorded severe history-dependent latency (including roughly
-1.4 complete cycles/s at 100 proponents for ETS). Its own result is a no-go for
-release performance. This is not repaired by declaring a throughput limit:
-incremental Duty derivation and renewed performance qualification remain work.
-There is no general projection snapshot/compaction or bounded-history guarantee.
+The historical P1 baseline recorded severe history-dependent latency (including
+roughly 1.4 complete cycles/s at 100 proponents for ETS) and was a no-go for that
+revision. Incremental Duty/erasure/authority indexes, delta payload verification
+and prepared-commit reuse now remove several repeated scans. Renewed performance
+qualification still remains; old measurements are not current throughput claims.
+Native batch paging bounds ledger input buffers, not the accumulated projection.
+There is no general durable projection checkpoint/compaction or bounded-history
+guarantee. See the [capability inventory](docs/capabilities.md) and
+[operations guide](docs/storage-and-recovery.md).
 
 Coverage and adversarial validation are incomplete. Neither a green static
 analysis nor a count of 1,000 tests is proof of the four laws. Do not present this

@@ -5,7 +5,9 @@ defmodule Spectre.Test.DutyFrontierAssertions do
   alias Spectre.Duty.{Derive, Frontier}
   alias Spectre.Erasure.Analysis.{Closure, Execution, Facts}
   alias Spectre.Erasure.Index
-  alias Spectre.GovernedAct.Fold
+  alias Spectre.GovernedAct.{AuthorityIndex, Fold}
+  alias Spectre.Kernel.Authority
+  alias Spectre.Kernel.Authority.Facts, as: AuthorityFacts
 
   def assert_prefixes(snapshot, constitution) do
     snapshot.entries
@@ -13,6 +15,13 @@ defmodule Spectre.Test.DutyFrontierAssertions do
     |> Enum.reduce(Fold.new(snapshot.domain_ref, constitution), fn batch, state ->
       assert {:ok, state} = Fold.append_batch(state, batch)
       assert_erasure_index(state)
+      assert AuthorityIndex.complete?(state.read_index.authority, state)
+
+      assert AuthorityFacts.current(state) === AuthorityFacts.from_state(state),
+             "incremental authority differs at revision #{state.revision}"
+
+      assert_dispatch_facts(state)
+
       times = [state.recorded_at | deadlines(state)]
       times = times |> Enum.uniq() |> Enum.filter(&(&1 >= state.recorded_at))
 
@@ -39,6 +48,19 @@ defmodule Spectre.Test.DutyFrontierAssertions do
     for {target, status} <- index.states do
       assert status === Execution.state(facts, target),
              "erasure execution differs for #{target} at revision #{state.revision}"
+    end
+  end
+
+  defp assert_dispatch_facts(state) do
+    exhaustive = AuthorityFacts.from_state(state)
+
+    for {_ref, act} <- state.acts do
+      mandate = Map.fetch!(state.mandates, act.mandate_ref)
+      selected = AuthorityFacts.for_act(state, act)
+
+      assert Authority.dispatchable?(act, mandate, selected, state.recorded_at) ===
+               Authority.dispatchable?(act, mandate, exhaustive, state.recorded_at),
+             "targeted dispatch differs for #{act.ref} at revision #{state.revision}"
     end
   end
 

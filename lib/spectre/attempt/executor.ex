@@ -10,6 +10,11 @@ defmodule Spectre.Attempt.Executor do
   validated `Spectre.Evidence` and an opaque, non-empty `details_ref`. Raw
   provider replies, exceptions, credentials and reusable bearer material are
   not valid result metadata. Evidence may be empty only for an ambiguous result.
+
+  `use Spectre.Attempt.Executor, executor_ref: "executor:payments",
+  contract_ref: "contract:payments:v1"` declares the behaviour and overridable
+  identity callbacks. Both references are explicit. It supplies no `execute/4`
+  implementation, credentials, retry policy or Outcome classification.
   """
 
   alias Spectre.{Act, Attempt, Evidence, Outcome, Portable}
@@ -123,4 +128,21 @@ defmodule Spectre.Attempt.Executor do
   @callback contract_ref() :: String.t()
 
   @callback execute(Act.t(), Attempt.t(), term(), keyword()) :: result()
+
+  defmacro __using__(opts) do
+    quote bind_quoted: [opts: opts] do
+      @behaviour Spectre.Attempt.Executor
+      opts = Spectre.Adapter.use_options!(opts, [:executor_ref, :contract_ref])
+      @spectre_executor_ref Keyword.fetch!(opts, :executor_ref)
+      @spectre_executor_contract_ref Keyword.fetch!(opts, :contract_ref)
+
+      @impl true
+      def executor_ref, do: @spectre_executor_ref
+
+      @impl true
+      def contract_ref, do: @spectre_executor_contract_ref
+
+      defoverridable executor_ref: 0, contract_ref: 0
+    end
+  end
 end

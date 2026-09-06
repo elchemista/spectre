@@ -111,6 +111,38 @@ defmodule Spectre.Mandate.Ancestry do
 
   def lineage(_mandates, _mandate), do: {:error, :invalid_mandate_ancestry_input}
 
+  @doc """
+  Selects named Mandates and their complete ancestry without unrelated branches.
+
+  Selection does not validate or repair the graph. Cycles and malformed records
+  remain visible to `lineage/2`; a missing parent remains missing. This prevents
+  a narrowed read from accidentally turning invalid ancestry into a new root.
+  """
+  @spec select(mandates(), [String.t()]) :: mandates()
+  def select(mandates, refs) when is_map(mandates) and is_list(refs),
+    do: select(mandates, refs, MapSet.new(), %{})
+
+  defp select(_mandates, [], _seen, selected), do: selected
+
+  defp select(mandates, [ref | rest], seen, selected) do
+    if MapSet.member?(seen, ref) do
+      select(mandates, rest, seen, selected)
+    else
+      seen = MapSet.put(seen, ref)
+
+      case Map.fetch(mandates, ref) do
+        {:ok, %Mandate{parent_ref: parent} = mandate} ->
+          select(mandates, List.wrap(parent) ++ rest, seen, Map.put(selected, ref, mandate))
+
+        {:ok, invalid} ->
+          select(mandates, rest, seen, Map.put(selected, ref, invalid))
+
+        :error ->
+          select(mandates, rest, seen, selected)
+      end
+    end
+  end
+
   defp cascade_status_in_lineage([], _revocations, _time), do: {:ok, :current}
 
   defp cascade_status_in_lineage([%Mandate{} = parent | ancestors], revocations, time) do

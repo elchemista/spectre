@@ -22,6 +22,12 @@ It is not yet performance-qualified or declared stable.
   adapters; PostgreSQL migration generation without an Ecto dependency.
 - Authenticated ingress, capability-free Mind, executor and secret-broker
   behaviours; late observations remain separate from authority admission.
+- Optional `use` helpers for those four behaviours, with explicit identities
+  and an opt-in stateful Mind bridge. Operational callbacks stay host code;
+  a compile-time guard rejects ambiguous default arguments on `deliberate/3`.
+- Doctor checks named Extension port wiring for missing/undeclared ports,
+  without installing, resolving or starting services. Static Domain child-spec
+  supervision and dynamic provisioning are documented separately.
 - Subtractive delegation, restriction, revocation and devolution, independent
   Duty disposition, governed Definition/Surface/HostProfile revisions, Scope
   promises, material presentation/consent, declassification and erasure records.
@@ -32,11 +38,20 @@ It is not yet performance-qualified or declared stable.
   CAS application stores/checkpoints, and atomic Morph changesets/diff/rollback.
 - Reusable local input plugs with a UTF-8 normalizer and bounded portable
   intermediate values. No media format, transport or remote provider is imposed.
+- Named flows with independent routers and ordered, explicitly wired input
+  pipelines, including namespaced Skill installation. Mind handlers decide
+  matches, ambiguity and misses; a flow creates no process or authority.
+- Pure Prompt composition from pinned assets and Turn Evidence, with byte/part
+  budgets, conservative labels and optional text-free provenance records.
+  `Proposal.Result.status/1` keeps admission, execution and fallback distinct.
 - Canonical audit exports and CLI. Later observation reports distinguish pending
   Duty causes and expired dispatches from records present at capture; omissions
   already required at capture remain errors.
 - Governed surface and trust-assumption documentation, including same-BEAM,
   clock, host-storage and unsigned-history limitations.
+- Public guides for architecture, host setup, the complete current DSL,
+  input/streaming ownership, storage/recovery, capabilities and release checks.
+  Self-contained guide examples execute in the release-artifact tests.
 
 ### Changed
 
@@ -59,12 +74,21 @@ It is not yet performance-qualified or declared stable.
   diffs applicable within the changeset operation budget.
 - Diagnose malformed Doctor module lists without crashing, and inspect original
   BEAM dependencies when coverage instrumentation is active.
+- Keep Instance state reads responsive during slow turns, proposals and
+  checkpoints by serializing mutations in one temporary worker with a bounded
+  waiting FIFO. Callbacks no longer execute in the Instance owner process.
+  Read APIs accept optional timeouts; Scope/Domain fences stop workers and
+  reject pending requests without retrying uncertain external effects.
+- Own ingress tasks directly through Domain links and monitors instead of an
+  unsupervised nested Task.Supervisor. Normal shutdown and abnormal exits stop
+  outstanding callbacks; stale completions cannot mutate a later job.
 
 ### Known release gates
 
 - Targeted adversarial validation and the configured coverage gate remain open.
-- The P1 performance baseline is a no-go; whole-history hot-path work needs
-  reduction and the benchmark must be repeated before claiming stability.
+- Historical P1 measurements were a no-go. Incremental indexes, delta payload
+  checks and prepared-commit reuse remove several repeated scans, but lifetime
+  memory remains history-dependent and performance must be requalified.
 - No ledger signatures, external head witnessing, turnkey isolation or automatic
   legacy migration are supplied. See GOVERNED_SURFACE.md for the actual boundary.
 

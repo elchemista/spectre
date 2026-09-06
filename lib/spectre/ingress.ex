@@ -8,6 +8,11 @@ defmodule Spectre.Ingress do
   ordinary call options are intentionally absent from authentication. They
   cannot select the authenticated principal or replace the Domain's adapter.
 
+  `use Spectre.Ingress, ref: "ingress:my-app:v1"` declares the behaviour and
+  an overridable `ref/0`. The reference is explicit and stays stable across
+  module renames. Implement `authenticate/5` and `observe/4` yourself; no
+  authentication, observation or permissive defaults are generated.
+
   This contract describes the mediated same-BEAM boundary. It does not turn a
   shared VM into a sandbox; stronger deployments isolate the ingress and make
   its authentication mechanism independently verifiable.
@@ -43,6 +48,18 @@ defmodule Spectre.Ingress do
 
   @callback observe(SubmissionContext.t(), term(), integer(), keyword()) ::
               {:ok, Evidence.t() | [Evidence.t()]} | {:error, term()}
+
+  defmacro __using__(opts) do
+    quote bind_quoted: [opts: opts] do
+      @behaviour Spectre.Ingress
+      @spectre_ingress_ref Spectre.Adapter.use_options!(opts, [:ref])[:ref]
+
+      @impl true
+      def ref, do: @spectre_ingress_ref
+
+      defoverridable ref: 0
+    end
+  end
 
   @doc "Builds observed Evidence with every trusted ingress binding forced by the context."
   @spec evidence(SubmissionContext.t(), integer(), map() | keyword()) ::

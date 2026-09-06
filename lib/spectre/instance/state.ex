@@ -6,20 +6,33 @@ defmodule Spectre.Instance.State do
   governed Domain. `domain_monitor` is process-local lifecycle state. `value`
   is deliberately opaque and non-canonical: losing or replacing it cannot
   authorize an Act, prove an Attempt or dispose a Duty. Only successful
-  stateful Mind deliberations advance `revision`.
+  Mind deliberations that change the value advance `revision`. One temporary
+  `job` owns in-flight work; the bounded FIFO holds requests, never a second
+  authoritative copy of the application value.
   """
 
   alias Spectre.Scope
 
   @enforce_keys [:scope, :definition_ref, :value, :domain_monitor]
-  defstruct @enforce_keys ++ [revision: 0]
+  defstruct @enforce_keys ++
+              [
+                revision: 0,
+                job: nil,
+                pending: {[], []},
+                pending_count: 0,
+                max_pending_operations: 32
+              ]
 
   @type t :: %__MODULE__{
           scope: Scope.t(),
           definition_ref: String.t(),
           value: term(),
           domain_monitor: reference(),
-          revision: non_neg_integer()
+          revision: non_neg_integer(),
+          job: %{task: Task.t(), from: GenServer.from(), operation: atom()} | nil,
+          pending: :queue.queue({tuple(), GenServer.from()}),
+          pending_count: non_neg_integer(),
+          max_pending_operations: non_neg_integer()
         }
 
   @doc false

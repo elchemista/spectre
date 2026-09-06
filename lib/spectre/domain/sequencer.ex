@@ -385,17 +385,16 @@ defmodule Spectre.Domain.Sequencer do
 
   @impl GenServer
   def init(opts) do
+    # Own bounded ingress tasks directly. Their monitors report failures while
+    # the links prevent work surviving an abnormal Domain exit. OTP still
+    # handles a supervisor-parent exit; terminate/2 stops tasks on normal exits.
+    Process.flag(:trap_exit, true)
+
     with {:ok, config} <- Configuration.new(opts),
          {:ok, projection} <- Startup.load(config),
          state = State.new(config, projection),
-         {:ok, projection} <- Transaction.repair_missing_duties(state),
-         {:ok, ingress_supervisor} <- Task.Supervisor.start_link() do
-      {:ok,
-       schedule_reconciliation(%{
-         state
-         | projection: projection,
-           ingress_supervisor: ingress_supervisor
-       })}
+         {:ok, projection} <- Transaction.repair_missing_duties(state) do
+      {:ok, schedule_reconciliation(%{state | projection: projection})}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -633,6 +632,10 @@ defmodule Spectre.Domain.Sequencer do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %State{} = state) do
     fail_ingress(state, ref, {:ingress_worker_failed, reason})
   end
+
+  # A linked task also sends EXIT, potentially after its result or DOWN was
+  # consumed. Only the monitor/result removes a job or answers its caller.
+  def handle_info({:EXIT, _pid, _reason}, %State{} = state), do: {:noreply, state}
 
   def handle_info({:ingress_timeout, ref}, %State{} = state),
     do: fail_ingress(state, ref, :ingress_timeout)

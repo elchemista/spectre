@@ -19,6 +19,7 @@ defmodule Spectre do
       {:ok, domain} =
         Spectre.start_domain("domain:payments", store,
           ingress: MyApp.Ingress,
+          constitution: constitution,
           genesis: genesis,
           principals: principals,
           host_profile: host_profile,
@@ -38,6 +39,10 @@ defmodule Spectre do
 
   See `Spectre.GovernedAct` for a map of the pure model implementation and its
   relationship to the ledger, kernel, projection and audit drivers.
+  The HexDocs guides cover host setup, the Agent/Skill DSL, input and streaming,
+  storage/recovery and current capability limits. In particular, `turn/3`
+  records input and proposes; `propose/3` crosses the governed effect boundary.
+  Neither is a built-in media loop or a general `ask`/stream/cancel engine.
   """
 
   require Spectre.Portable
@@ -123,8 +128,9 @@ defmodule Spectre do
   `:store`, `:name` and `:registry` are reserved so callers cannot silently
   replace the identity or uniqueness boundary.
 
-  All Domains run below the application Domain supervisor coupled to the
-  unique Domain registry.
+  This function starts Domains below Spectre's Domain supervisor coupled to the
+  unique Domain registry. For static host supervision, use the existing
+  `Spectre.Domain.child_spec/1` instead; do not start the same Domain in both trees.
 
   `:recovery_policy` optionally supplies `{module, options}` implementing
   `Spectre.Domain.Recovery.Policy`: an external witness check after verified
@@ -600,11 +606,13 @@ defmodule Spectre do
   @doc """
   Runs one Turn with explicit, non-authoritative application state.
 
-  This is the pure stateful counterpart of `turn/3`: the supplied value is
+  This is the explicit-state counterpart of `turn/3`: the supplied value is
   passed only to the optional `Spectre.Mind.deliberate/3` callback and its
   successor is returned to the caller. Spectre neither persists that value nor
   treats it as authority, Evidence or a durable execution fact. Minds without
   the optional callback use `deliberate/2` and return the value unchanged.
+  Like `turn/3`, this call records ingress Evidence before deliberation; it is
+  not a pure function and Mind failure does not roll back those observations.
 
   A stateful Mind must define `deliberate/2` and `deliberate/3` as separate
   functions. A default argument on `/3` would generate a misleading `/2` that
