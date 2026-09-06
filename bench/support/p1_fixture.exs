@@ -50,7 +50,8 @@ defmodule Spectre.Bench.P1.Ingress do
       provenance: :observed,
       observed_at: observed_at,
       bindings: bindings,
-      payload: Map.fetch!(input, :payload),
+      payload: Map.get(input, :payload),
+      payload_ref: Map.get(input, :payload_ref),
       provisional: false
     })
   end
@@ -99,7 +100,7 @@ defmodule Spectre.Bench.P1.Fixture do
   @grant_secret :binary.copy(<<0x47>>, 32)
   @checkout_secret :binary.copy(<<0x43>>, 32)
 
-  def start(store_kind, namespace, capacity, batch_size, batch_wait_ms) do
+  def start(store_kind, namespace, capacity, batch_size, batch_wait_ms, opts \\ []) do
     now = System.system_time(:millisecond)
     refs = refs(namespace)
     executor = Executor.principal()
@@ -109,6 +110,13 @@ defmodule Spectre.Bench.P1.Fixture do
     principals = [grantor, proposer, executor, accountable]
 
     row = ok!(Spectre.Row.new(%{attempt: true, spend: true}))
+    erasure_target = Keyword.get(opts, :erasure_target)
+    erasure_row = %Spectre.Row{attempt: true, write: true, govern: true}
+    ceiling = if erasure_target, do: %{row | write: true, govern: true}, else: row
+    declarations = %{"bench.effect" => row}
+
+    declarations =
+      if erasure_target, do: Map.put(declarations, "data.erase", erasure_row), else: declarations
 
     contract =
       ok!(
@@ -137,7 +145,7 @@ defmodule Spectre.Bench.P1.Fixture do
       ok!(
         Spectre.Surface.new(%{
           revision: 1,
-          declarations: %{"bench.effect" => row},
+          declarations: declarations,
           consequence_contracts: %{"bench.effect" => contract}
         })
       )
@@ -163,9 +171,9 @@ defmodule Spectre.Bench.P1.Fixture do
           executor_contract_refs: [Executor.contract_ref()],
           scope_refs: [refs.scope],
           subject_refs: [],
-          target_refs: [refs.target],
-          classes: ["bench.effect"],
-          ceiling: row,
+          target_refs: [refs.target | List.wrap(erasure_target)],
+          classes: if(erasure_target, do: ["bench.effect", "data.erase"], else: ["bench.effect"]),
+          ceiling: ceiling,
           purpose_ref: refs.purpose,
           purpose_params: %{},
           conditions: [condition],
@@ -240,6 +248,7 @@ defmodule Spectre.Bench.P1.Fixture do
          clock: Spectre.Clock.System}
     ]
 
+    sequencer_opts = Keyword.merge(sequencer_opts, Keyword.take(opts, [:payload_store]))
     server = ok!(Sequencer.start_link(sequencer_opts))
     context = authenticate!(server, refs, proposer.ref)
     opening = session_opening!(context, now)
@@ -376,19 +385,19 @@ defmodule Spectre.Bench.P1.Fixture do
     )
   end
 
-  defp start_store(:ets, _namespace) do
-    store = ok!(ETS.start_link([]))
+  defp start_store(kind, _namespace) when kind in [:ets, :ets_compressed] do
+    store = ok!(ETS.start_link(compressed: kind == :ets_compressed))
     {store, {ETS, server: store}, fn -> :ok end}
   end
 
-  defp start_store(:disk, namespace) do
+  defp start_store(kind, namespace) when kind in [:disk, :disk_compressed] do
     root =
       Path.join(
         System.tmp_dir!(),
         "spectre-p1-bench-#{namespace}-#{System.unique_integer([:positive])}"
       )
 
-    store = ok!(Disk.start_link(path: root))
+    store = ok!(Disk.start_link(path: root, compressed: kind == :disk_compressed))
 
     cleanup = fn ->
       case File.rm_rf(root) do

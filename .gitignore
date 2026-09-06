@@ -31,6 +31,7 @@ SKILL.md
 PLAN.md
 piano*.md
 IMPLEMENTATION_STATUS_0.4.0.md
+bench/results/local/
 
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
