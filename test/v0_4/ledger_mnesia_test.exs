@@ -1,7 +1,9 @@
 defmodule Spectre.V04Test.LedgerMnesiaTest do
   use ExUnit.Case, async: false
 
+  alias Spectre.Domain.Admission.Planner
   alias Spectre.Domain.{Configuration, Recovery, Sequencer, Startup}
+  alias Spectre.GovernedAct.Commit
   alias Spectre.Ledger
   alias Spectre.Ledger.{Entry, Reader}
   alias Spectre.Ledger.Store, as: LedgerStore
@@ -304,6 +306,142 @@ defmodule Spectre.V04Test.LedgerMnesiaTest do
       assert :ok = :mnesia.dirty_write(@entries, original)
       assert {:ok, ^expected} = Startup.load(config)
     end
+  end
+
+  for compressed <- [false, true] do
+    @tag prepared_compressed: compressed
+    test "prepared admission survives lost acknowledgement and Mnesia restart (compressed: #{compressed})",
+         ctx do
+      {Mnesia, opts} = ctx.store
+      store = {Mnesia, Keyword.put(opts, :compressed, ctx.prepared_compressed)}
+      {fixture, prefix, prepared} = prepared_admission(store)
+
+      assert {:error, :ambiguous} =
+               LedgerStore.append(
+                 store,
+                 prefix.domain_ref,
+                 "prepared-admission",
+                 prepared.payloads,
+                 prefix.revision,
+                 recorded_at: prefix.recorded_at,
+                 fault_injection: :after_commit
+               )
+
+      assert :ok = Application.stop(:mnesia)
+      assert {:ok, _} = Application.ensure_all_started(:mnesia)
+      assert :ok = :mnesia.wait_for_tables([@heads, @batches, @entries], 5_000)
+      assert {:ok, receipt} = Ledger.lookup_batch(store, prefix.domain_ref, "prepared-admission")
+      assert Commit.confirmed?(prepared, receipt)
+      assert {:ok, confirmed} = Recovery.confirm_prepared(store, prefix, prepared, [])
+      assert confirmed === prepared.state
+      assert map_size(confirmed.acts) === 2
+      assert map_size(confirmed.attempts) === 0
+      assert MapSet.size(confirmed.pending_dispatches) === 2
+      account = confirmed.meters[fixture.mandate.ref][fixture.refs.meter]
+      assert {account.ceiling, account.available, account.reserved} === {2, 0, 2}
+
+      assert {:ok, revision} =
+               LedgerStore.append(
+                 store,
+                 prefix.domain_ref,
+                 "prepared-admission",
+                 prepared.payloads,
+                 prefix.revision,
+                 recorded_at: prefix.recorded_at
+               )
+
+      assert revision === prefix.revision + 8
+
+      assert {:ok, ^confirmed} =
+               Recovery.recover(store, prefix.domain_ref, prefix.constitution, [])
+
+      assert {:ok, export} = Ledger.export(store, prefix.domain_ref)
+      assert {:ok, report} = Spectre.Audit.verify(export, prefix.constitution, prefix.recorded_at)
+      assert report.counts.acts === 2
+      assert report.head_digest === confirmed.head_digest
+    end
+
+    @tag prepared_compressed: compressed
+    test "Mnesia cannot confirm a rehashed incomplete admission (compressed: #{compressed})",
+         ctx do
+      {Mnesia, opts} = ctx.store
+      store = {Mnesia, Keyword.put(opts, :compressed, ctx.prepared_compressed)}
+      {_fixture, prefix, prepared} = prepared_admission(store)
+      assert List.last(prepared.payloads)["type"] === "dispatch_ready"
+      damaged = Enum.drop(prepared.payloads, -1)
+
+      assert {:ok, _} =
+               LedgerStore.append(
+                 store,
+                 prefix.domain_ref,
+                 "prepared-admission",
+                 damaged,
+                 prefix.revision,
+                 recorded_at: prefix.recorded_at
+               )
+
+      assert {:ok, snapshot} = Ledger.load(store, prefix.domain_ref)
+      assert {:ok, ^snapshot} = Ledger.verify_snapshot(snapshot)
+
+      assert {:error, {:committed_batch_identity_mismatch, "prepared-admission"}} =
+               Recovery.confirm_prepared(store, prefix, prepared, [])
+
+      assert {:error, {:act_dispatch_missing_from_admission_batch, act_ref}} =
+               Recovery.recover(store, prefix.domain_ref, prefix.constitution, [])
+
+      assert Map.has_key?(prepared.state.acts, act_ref)
+
+      assert {:error, {:act_dispatch_missing_from_admission_batch, ^act_ref}} =
+               Recovery.resume(store, prefix)
+    end
+  end
+
+  defp prepared_admission(store) do
+    Runtime.reset(Fixture.default_now())
+    fixture = Fixture.start_domain(namespace: "mnesia-prepared", meter_ceiling: 2)
+    on_exit(fn -> Fixture.stop_domain(fixture) end)
+    evidence = Fixture.paid_evidence(fixture)
+    assert {:ok, ^evidence} = Fixture.observe_payment(fixture, evidence)
+    context = Fixture.context(fixture)
+    state = :sys.get_state(fixture.server)
+    prefix = state.projection
+
+    requests =
+      for id <- ["first", "second"] do
+        %{
+          from: {self(), make_ref()},
+          context: context,
+          candidate: Fixture.refund_candidate(fixture, 1, identity_key: id)
+        }
+      end
+
+    {plans, payloads} = Planner.plan(state, requests, prefix.recorded_at)
+    assert Enum.all?(plans, &is_nil(&1.error))
+
+    assert {:ok, prepared} =
+             Commit.prepare(prefix, "prepared-admission", payloads, prefix.recorded_at)
+
+    assert map_size(prepared.state.acts) === 2
+
+    # The prefix is copied byte-for-byte in canonical batch order, not rebuilt
+    # from guessed fixture fields. Both backends must acknowledge the same head.
+    for batch <- Enum.chunk_by(Fixture.snapshot(fixture).entries, & &1.batch_id) do
+      first = hd(batch)
+
+      assert {:ok, _} =
+               LedgerStore.append(
+                 store,
+                 prefix.domain_ref,
+                 first.batch_id,
+                 Enum.map(batch, & &1.payload),
+                 first.revision - 1,
+                 recorded_at: first.recorded_at
+               )
+    end
+
+    Fixture.stop_process(fixture.server)
+    assert {:ok, ^prefix} = Recovery.recover(store, prefix.domain_ref, prefix.constitution, [])
+    {fixture, prefix, prepared}
   end
 
   defp corrupt_first_revision(store) do
