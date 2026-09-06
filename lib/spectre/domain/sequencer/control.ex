@@ -7,12 +7,25 @@ defmodule Spectre.Domain.Sequencer.Control do
   is never left alive while permanently refusing work.
   """
 
+  alias Spectre.Domain.Recovery.Policy
   alias Spectre.Domain.Sequencer.State
 
   @doc "Marks the first fatal reason and schedules termination of the owning Sequencer."
   @spec halt(State.t(), term()) :: State.t()
   def halt(%State{halted_reason: nil} = state, reason) do
     send(self(), {:stop_halted, reason})
+
+    Policy.failed(
+      state.recovery_policy,
+      %{
+        domain_ref: state.projection.domain_ref,
+        phase: :runtime,
+        reason: reason,
+        last_verified: Map.take(state.projection, [:revision, :head_digest])
+      },
+      state.recovery_timeout
+    )
+
     %{state | halted_reason: reason}
   end
 

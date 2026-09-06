@@ -107,7 +107,7 @@ The main extension points are ordinary behaviours:
 | `Spectre.Secret.Broker` | Release an Act/Attempt-scoped execution capability |
 | `Spectre.Genesis.Verifier` | Check the externally recognized foundation |
 | `Spectre.Ledger.Store` | Atomic append, CAS, identity lookup and recovery |
-| `Spectre.Payload.Store` | Retrieve and erase external payload bytes |
+| `Spectre.Payload.Store` | Verify presence and digest of external payload bytes; deletion belongs to the governed executor |
 | `Spectre.Clock` | Supply trusted host time |
 
 Text, audio, TTS and VoIP require no new kernel-specific pipeline. The application

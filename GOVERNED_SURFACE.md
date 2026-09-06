@@ -91,6 +91,13 @@ recognition comes from outside Spectre through `Spectre.Genesis.Verifier`.
 The supplied Allowlist verifier checks a configured attestation reference; it
 does not verify a digital signature or establish a real-world identity.
 
+In 0.4 the Constitution is an immutable Domain foundation, pinned by the
+Genesis digest. There is no `constitution.revise` Act. Changing those rules
+requires a new Domain and an explicitly governed application migration; changing
+process options cannot revise the existing ledger's authority or Duty rules.
+This differs from the supported in-Domain revisions of Surface, HostProfile and
+Definition and is a limit of the current implementation surface.
+
 Delegation cannot enlarge the parent's authority and moves delegated Meter
 quantity out of the parent's available balance. Copies and Instances do not
 create new authority. Recorded roles and causal conflicts remain relevant after
@@ -145,6 +152,23 @@ Deployments needing those guarantees must separately retain/authenticate trusted
 heads or exports and establish an external verification protocol. No such
 protocol is supplied or certified here.
 
+`recovery_policy: {module, options}` is an optional host integration point, not
+an external witness implementation. Its `check/2` runs after core recovery
+checks and can reject the recovered head against independently retained facts.
+It also sees a nil head before first bootstrap, so a host can reject a missing
+ledger for an already known Domain. Optional `failed/2` receives startup and
+fatal runtime incidents; its result never overrides the error. Each callback
+runs in an isolated process bounded by `recovery_timeout` (default 5 seconds).
+Notifications are best effort, not durable, and can repeat during restarts.
+The host owns repair/quarantine and must restart through verification afterward.
+Do not repair an ambiguous external effect by blindly executing it again.
+
+Incremental recovery trusts its already verified in-memory prefix and checks
+the newly read suffix. It does not continuously re-read old storage bytes.
+Detecting subsequent changes to old rows requires a fresh full verification or
+independent monitoring; detecting a coherent rewrite additionally requires an
+external anchor. A checksum or an untrusted projection checkpoint is not one.
+
 The adapter guarantees are different:
 
 - ETS is volatile and loses its ledger when its owner dies. Compression is an
@@ -164,13 +188,22 @@ The adapter guarantees are different:
 ## Time and audit horizons
 
 Host time is a trust assumption, not signed or independently measured time.
-The default clock uses system milliseconds. Runtime ledger acquisition time is
-clamped to `max(host_now, last_recorded_at)` to preserve a nondecreasing prefix.
-A backward host clock can therefore freeze advancement until it catches up;
-the clamp does not emit an automatic Duty or establish correct wall-clock
-expiry. Hosts must monitor clock health and stop accepting time-sensitive work
-when the time source cannot support the declared promise. That operational
-control is not implemented by the clamp.
+The default clock uses system milliseconds. `clock_tolerance_ms` defaults to
+60,000: each reading is checked against the initial wall reading plus elapsed
+BEAM monotonic time. Excessive forward/backward drift is rejected before it can
+enter a new commit; the anchor is not moved by rejected readings. Legitimate
+idle time is elapsed time, not a clock jump. A prefix more than that tolerance
+ahead of current host time is also rejected rather than clamped indefinitely.
+Within tolerance, ledger acquisition time remains `max(host_now, last_recorded_at)`.
+Clock failures do not fabricate a normative Duty; fatal runtime handling fences
+the Domain and uses the optional recovery failure notification.
+
+The initial reading, cross-restart time and monotonic clock are still host trust
+assumptions, not external attestations. A bad first reading cannot be discovered
+from a local anchor alone. Hosts must monitor clock health and choose tolerance
+for their deployment. Explicit `clock_tolerance_ms: :infinity` disables these
+plausibility fences (useful for virtual test clocks) and restores unbounded
+clamping; it must not be mistaken for clock validation.
 
 An audit export carries a trusted capture time. Export validation checks its
 shape and relation to entry times; it does not independently authenticate it.
@@ -202,6 +235,22 @@ verifiability. External payload stores must actually delete the intended bytes;
 backups, provider copies, logs and replicas are not erased by a ledger tombstone.
 Do not put secrets or personal payloads in the append-only ledger when their
 content must later be removed. Digests and references can themselves be sensitive.
+
+The technical erasure path is `data.erase` admission, durable Attempt, host
+executor deletion, receipt and Outcome, and any resulting verification Duty.
+`Payload.Store.verify/2` checks presence/digest; it is not a deletion callback.
+A failed or ambiguous deletion is not reported as successful erasure and is
+never automatically retried. Restoring the same retired content-addressed bytes
+does not make them usable again. Shared payload consumers remain affected.
+
+The filesystem lifecycle tests exercise these mechanisms, not legal compliance
+of a deployment. Identity checks, applicable exceptions/holds, recipients,
+backups, logs, derived copies and sensitive metadata need application policy.
+GDPR erasure and recipient obligations have qualifications; see the official
+[Regulation, Articles 17 and 19](https://eur-lex.europa.eu/eli/reg/2016/679/oj).
+Inline personal data already written to this append-only ledger is not removed
+by deleting a different external payload. Compression is not anonymization or
+deletion. No automatic ledger rewrite or global erasure certificate is provided.
 
 An Attempt does not prove the external effect happened, and an Outcome depends
 on the supplied Evidence. There is no cross-system exactly-once transaction,

@@ -10,6 +10,8 @@ defmodule Spectre.Domain.Configuration do
   """
 
   alias Spectre.{Adapter, Clock, Constitution, Ingress, Mind, Seal}
+  alias Spectre.Clock.Guard, as: ClockGuard
+  alias Spectre.Domain.Recovery.Policy, as: RecoveryPolicy
   alias Spectre.Execution.Boundary
   alias Spectre.Ledger.Store
   alias Spectre.Mind.Context, as: MindContext
@@ -37,8 +39,11 @@ defmodule Spectre.Domain.Configuration do
     :store,
     :ingress,
     :clock,
+    :clock_tolerance_ms,
     :id_source,
     :late_observer,
+    :recovery_policy,
+    :recovery_timeout,
     :mind,
     :context,
     :ingress_max_concurrency,
@@ -72,8 +77,11 @@ defmodule Spectre.Domain.Configuration do
     :ingress,
     :ingress_ref,
     :clock,
+    :clock_guard,
     :id_source,
     :late_observer,
+    :recovery_policy,
+    :recovery_timeout,
     :mind,
     :mind_ref,
     :context_limits,
@@ -101,8 +109,11 @@ defmodule Spectre.Domain.Configuration do
           ingress: module(),
           ingress_ref: String.t(),
           clock: module(),
+          clock_guard: ClockGuard.t() | nil,
           id_source: module(),
           late_observer: module() | nil,
+          recovery_policy: RecoveryPolicy.config(),
+          recovery_timeout: pos_integer(),
           mind: module() | nil,
           mind_ref: String.t() | nil,
           context_limits: MindContext.limits() | nil,
@@ -136,6 +147,8 @@ defmodule Spectre.Domain.Configuration do
          {:ok, clock} <- module_option(opts, :clock, Spectre.Clock.System, now: 0),
          {:ok, id_source} <- module_option(opts, :id_source, Spectre.Id.UUIDv7, generate: 0),
          {:ok, late_observer} <- late_observer_option(opts),
+         {:ok, recovery_policy} <- RecoveryPolicy.normalize(Keyword.get(opts, :recovery_policy)),
+         {:ok, recovery_timeout} <- positive_option(opts, :recovery_timeout, 5_000),
          {:ok, {mind, mind_ref}} <- mind_option(opts),
          {:ok, context_limits} <- MindContext.normalize(Keyword.get(opts, :context)),
          {:ok, ingress_max_concurrency} <- positive_option(opts, :ingress_max_concurrency, 32),
@@ -156,7 +169,8 @@ defmodule Spectre.Domain.Configuration do
            non_negative_option(opts, :ambiguous_retries, @default_ambiguous_retries),
          {:ok, ledger_opts} <- keyword_option(opts, :ledger_opts, []),
          {:ok, constitution} <- constitution_option(opts),
-         :ok <- usable_clock(clock) do
+         {:ok, now} <- usable_clock(clock),
+         {:ok, clock_guard} <- ClockGuard.new(now, Keyword.get(opts, :clock_tolerance_ms, 60_000)) do
       {:ok,
        %__MODULE__{
          domain_ref: domain_ref,
@@ -164,8 +178,11 @@ defmodule Spectre.Domain.Configuration do
          ingress: ingress,
          ingress_ref: ingress_ref,
          clock: clock,
+         clock_guard: clock_guard,
          id_source: id_source,
          late_observer: late_observer,
+         recovery_policy: recovery_policy,
+         recovery_timeout: recovery_timeout,
          mind: mind,
          mind_ref: mind_ref,
          context_limits: context_limits,
@@ -360,7 +377,7 @@ defmodule Spectre.Domain.Configuration do
 
   defp usable_clock(clock) do
     case Clock.read(clock) do
-      {:ok, _now} -> :ok
+      {:ok, now} -> {:ok, now}
       _invalid -> {:error, :invalid_clock_value}
     end
   end

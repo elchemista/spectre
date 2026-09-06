@@ -7,12 +7,17 @@ defmodule Spectre.Domain.Query do
   supply executable selectors or callbacks to the trusted process.
   """
 
+  alias Spectre.Attempt.Runner.Recovery
   alias Spectre.Authority.View, as: AuthorityView
   alias Spectre.Domain.{Context, Transaction}
   alias Spectre.Scope.View, as: ScopeView
 
   @doc false
   def head(state), do: Map.take(state.projection, [:domain_ref, :revision, :head_digest])
+
+  @doc false
+  def attempt_result(state, decision, act),
+    do: Recovery.from_projection(state.projection, decision, act)
 
   @doc false
   def scoped(state, scope, query) do

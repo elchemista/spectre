@@ -20,12 +20,18 @@ defmodule Spectre.Domain.Transaction do
 
   alias Spectre.{Adapter, Clock, Id, Portable}
   alias Spectre.Attempt.Reconciler
+  alias Spectre.Clock.Guard, as: ClockGuard
   alias Spectre.Domain.{Bootstrap, Recovery}
   alias Spectre.Domain.Sequencer.State
-  alias Spectre.GovernedAct.Fold
+  alias Spectre.GovernedAct.Commit, as: PreparedCommit
   alias Spectre.GovernedAct.State, as: GovernedState
   alias Spectre.Ledger.Writer
   alias Spectre.Payload.Store, as: PayloadStore
+
+  # A repair should converge in one batch at a fixed trusted time. Keep a
+  # bounded allowance for causal follow-ups; a derivation bug must not produce
+  # an unbounded stream of durable "repair" events.
+  @max_duty_repair_rounds 8
 
   @doc "Appends one exact batch and returns its confirmed governed projection."
   @spec append_exact(
@@ -40,42 +46,50 @@ defmodule Spectre.Domain.Transaction do
         batch_id,
         payloads,
         recorded_at
-      )
-      when Portable.is_non_negative_integer(recorded_at) do
+      ) do
+    case append_verified(state, batch_id, payloads, recorded_at) do
+      {:ok, projection} ->
+        case repair_missing_duties(%{state | projection: projection}) do
+          {:ok, projection} -> {:ok, projection}
+          {:error, reason} -> {:error, {:durable_recovery_failed, reason}}
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp append_verified(
+         state,
+         batch_id,
+         payloads,
+         recorded_at
+       )
+       when Portable.is_non_negative_integer(recorded_at) do
     latest_recorded_at = latest_recorded_at(state.projection)
-    expected_revision = state.projection.revision
 
     if recorded_at >= latest_recorded_at do
-      with {:ok, _provisional} <-
-             Fold.prepare_batch(state.projection, payloads, recorded_at) do
-        append_exact_at(
-          state,
-          batch_id,
-          payloads,
-          expected_revision,
-          recorded_at,
-          state.ambiguous_retries
-        )
+      with {:ok, prepared} <-
+             PreparedCommit.prepare(state.projection, batch_id, payloads, recorded_at) do
+        append_exact_at(state, prepared, state.ambiguous_retries)
       end
     else
       {:error, {:ledger_time_regression, recorded_at, latest_recorded_at}}
     end
   end
 
-  def append_exact(
-        _state,
-        _batch_id,
-        _payloads,
-        recorded_at
-      ),
-      do: {:error, {:invalid_recorded_at, recorded_at}}
+  defp append_verified(
+         _state,
+         _batch_id,
+         _payloads,
+         recorded_at
+       ),
+       do: {:error, {:invalid_recorded_at, recorded_at}}
 
   defp append_exact_at(
          state,
-         batch_id,
-         payloads,
-         expected_revision,
-         recorded_at,
+         %PreparedCommit{payloads: payloads, recorded_at: recorded_at, receipt: receipt} =
+           prepared,
          retries_left
        ) do
     with :ok <-
@@ -83,30 +97,23 @@ defmodule Spectre.Domain.Transaction do
       Writer.append(
         state.store,
         state.projection.domain_ref,
-        batch_id,
+        receipt.batch_id,
         payloads,
-        expected_revision,
+        receipt.expected_revision,
         Keyword.put(state.ledger_opts, :recorded_at, recorded_at)
       )
     end
     |> case do
       {:ok, revision} ->
-        if revision == expected_revision + length(payloads),
-          do: recover_after_append(state, batch_id, payloads, recorded_at),
+        if revision === receipt.last_revision,
+          do: recover_after_append(state, prepared),
           else: {:error, {:durable_recovery_failed, {:unexpected_append_revision, revision}}}
 
       {:error, :conflict} ->
         :conflict
 
       {:error, :ambiguous} ->
-        classify_append_ambiguity(
-          state,
-          batch_id,
-          payloads,
-          expected_revision,
-          recorded_at,
-          retries_left
-        )
+        classify_append_ambiguity(state, prepared, retries_left)
 
       {:error, _reason} = error ->
         error
@@ -115,32 +122,22 @@ defmodule Spectre.Domain.Transaction do
 
   defp classify_append_ambiguity(
          state,
-         batch_id,
-         payloads,
-         expected_revision,
-         recorded_at,
+         %PreparedCommit{payloads: payloads, receipt: receipt} = prepared,
          retries_left
        ) do
     case Recovery.classify_ambiguous(
            state.store,
            state.projection.domain_ref,
-           batch_id,
+           receipt.batch_id,
            payloads,
-           expected_revision,
+           receipt.expected_revision,
            state.ledger_opts
          ) do
       {:ok, {:committed, _info}} ->
-        recover_after_append(state, batch_id, payloads, recorded_at)
+        recover_after_append(state, prepared)
 
       {:ok, :not_committed} when retries_left > 0 ->
-        append_exact_at(
-          state,
-          batch_id,
-          payloads,
-          expected_revision,
-          recorded_at,
-          retries_left - 1
-        )
+        append_exact_at(state, prepared, retries_left - 1)
 
       {:ok, :not_committed} ->
         {:error, :ambiguous_commit_unresolved}
@@ -153,18 +150,30 @@ defmodule Spectre.Domain.Transaction do
   @doc "Materializes every Duty required by the current prefix, retrying CAS conflicts."
   @spec repair_missing_duties(State.t()) :: {:ok, GovernedState.t()} | {:error, term()}
   def repair_missing_duties(%State{} = state) do
-    repair_missing_duties(state, state.conflict_retries)
+    with {:ok, now} <- trusted_recorded_at(state) do
+      repair_missing_duties(state, now, state.conflict_retries, @max_duty_repair_rounds)
+    end
   end
 
-  defp repair_missing_duties(state, conflicts_left) do
+  defp repair_missing_duties(state, now, conflicts_left, rounds_left) do
     projection = state.projection
 
-    with {:ok, now} <- trusted_recorded_at(state),
-         {:ok, plan} <- Reconciler.repair_plan(projection, now) do
-      if plan.payloads == [] do
-        {:ok, projection}
-      else
-        commit_duty_repair(%{state | projection: projection}, plan, conflicts_left, now)
+    with {:ok, plan} <- Reconciler.repair_plan(projection, now) do
+      cond do
+        plan.payloads == [] ->
+          {:ok, projection}
+
+        rounds_left == 0 ->
+          {:error, :duty_repair_rounds_exhausted}
+
+        true ->
+          commit_duty_repair(
+            %{state | projection: projection},
+            plan,
+            conflicts_left,
+            now,
+            rounds_left
+          )
       end
     end
   end
@@ -181,21 +190,29 @@ defmodule Spectre.Domain.Transaction do
          state,
          plan,
          conflicts_left,
-         recorded_at
+         recorded_at,
+         rounds_left
        ) do
-    case append_exact(
+    case append_verified(
            state,
            plan.batch_id,
            plan.payloads,
            recorded_at
          ) do
       {:ok, recovered} ->
-        {:ok, recovered}
+        repair_missing_duties(
+          %{state | projection: recovered},
+          max(recorded_at, recovered.recorded_at),
+          conflicts_left,
+          rounds_left - 1
+        )
 
       :conflict when conflicts_left > 0 ->
         retry_duty_repair_after_conflict(
           state,
-          conflicts_left - 1
+          conflicts_left - 1,
+          recorded_at,
+          rounds_left
         )
 
       :conflict ->
@@ -209,28 +226,29 @@ defmodule Spectre.Domain.Transaction do
     end
   end
 
-  defp retry_duty_repair_after_conflict(state, conflicts_left) do
+  defp retry_duty_repair_after_conflict(state, conflicts_left, now, rounds_left) do
     with {:ok, projection} <- recover_verified(state) do
       repair_missing_duties(
         %{state | projection: projection},
-        conflicts_left
+        max(now, projection.recorded_at),
+        conflicts_left,
+        rounds_left
       )
     end
   end
 
-  defp recover_after_append(state, batch_id, payloads, recorded_at) do
+  defp recover_after_append(state, prepared) do
     result =
       with {:ok, projection} <-
-             Recovery.confirm_append(
+             Recovery.confirm_prepared(
                state.store,
                state.projection,
-               batch_id,
-               payloads,
-               recorded_at,
-               state.ledger_opts
+               prepared,
+               state.ledger_opts,
+               &verify_recovered_payloads(state.payload_store, &1, &2)
              ),
            :ok <- verify_projection(state, projection) do
-        repair_missing_duties(%{state | projection: projection})
+        {:ok, projection}
       end
 
     case result do
@@ -255,7 +273,8 @@ defmodule Spectre.Domain.Transaction do
     case Recovery.resume(
            state.store,
            state.projection,
-           state.ledger_opts
+           state.ledger_opts,
+           &verify_recovered_payloads(state.payload_store, &1, &2)
          ) do
       {:ok, projection} ->
         with :ok <- verify_projection(state, projection) do
@@ -271,8 +290,11 @@ defmodule Spectre.Domain.Transaction do
   end
 
   defp verify_projection(state, projection) do
-    with :ok <- Bootstrap.verify_projection(projection, State.verification_opts(state)),
-         do: PayloadStore.verify_live_references(state.payload_store, projection)
+    Bootstrap.verify_extension(state.projection, projection, State.verification_opts(state))
+  end
+
+  defp verify_recovered_payloads(store, projection, refs) do
+    PayloadStore.verify_references(store, projection, refs)
   end
 
   @doc "Checks content references carried by a list of canonical event envelopes."
@@ -311,9 +333,19 @@ defmodule Spectre.Domain.Transaction do
   @doc "Returns monotonic ledger time relative to the recovered prefix."
   @spec trusted_recorded_at(State.t()) :: {:ok, non_neg_integer()} | {:error, term()}
   def trusted_recorded_at(%State{} = state) do
-    with {:ok, now} <- trusted_now(state.clock) do
+    with {:ok, now} <- trusted_now(state.clock),
+         :ok <- ClockGuard.validate(state.clock_guard, now),
+         :ok <- clock_matches_prefix(state.clock_guard, now, latest_recorded_at(state.projection)) do
       {:ok, max(now, latest_recorded_at(state.projection))}
     end
+  end
+
+  defp clock_matches_prefix(nil, _now, _recorded_at), do: :ok
+
+  defp clock_matches_prefix(guard, now, recorded_at) do
+    if recorded_at - now <= guard.tolerance_ms,
+      do: :ok,
+      else: {:error, {:ledger_clock_ahead, recorded_at, now}}
   end
 
   defp latest_recorded_at(%GovernedState{} = projection) do

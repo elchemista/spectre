@@ -23,12 +23,11 @@ defmodule Spectre.Attempt.Runner do
 
   alias Spectre.{Act, Attempt, Decision, Evidence, Outcome}
   alias Spectre.Attempt.Binding, as: AttemptBinding
-  alias Spectre.Attempt.Runner.{Observation, Recovery, Result}
+  alias Spectre.Attempt.Runner.{Observation, Result}
   alias Spectre.Domain.Sequencer
   alias Spectre.Execution.Boundary
   alias Spectre.GovernedAct.Admission.Binding, as: AdmissionBinding
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
-  alias Spectre.GovernedAct.State
   alias Spectre.Kernel.Grant
   alias Spectre.Secret.CheckoutReceipt
 
@@ -169,15 +168,21 @@ defmodule Spectre.Attempt.Runner do
   defp recover_after_failed_start(result, _sequencer, _decision, _act), do: result
 
   defp durable_attempt_result(sequencer, decision, expected_act) do
-    case safe_internal_call(fn -> Sequencer.projection(sequencer) end) do
-      {:reply, %State{} = projection} ->
-        Recovery.from_projection(projection, decision, expected_act)
+    case safe_internal_call(fn -> Sequencer.attempt_result(sequencer, decision, expected_act) end) do
+      {:reply, {:ok, %Result{}} = result} ->
+        result
+
+      {:reply, :dispatch_ready} ->
+        :dispatch_ready
+
+      {:reply, {:error, _reason} = error} ->
+        error
 
       {:reply, _invalid} ->
-        {:error, :invalid_projection_response}
+        {:error, :invalid_attempt_result_response}
 
       {:failure, kind} ->
-        {:error, {:projection_boundary_failure, kind}}
+        {:error, {:attempt_result_boundary_failure, kind}}
     end
   end
 

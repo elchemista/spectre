@@ -53,6 +53,29 @@ defmodule Spectre.Domain.Bootstrap do
 
   def verify_projection(_projection, _opts), do: {:error, :invalid_domain_projection}
 
+  @doc """
+  Rechecks the host attestation after extending an already verified prefix.
+
+  The caller must have applied the extension through the canonical fold. That
+  fold preserves immutable records and checks each new Duty against its exact
+  derived cause, including frozen conflicts. Rechecking every historical Duty
+  and rebuilding the initial authority sets adds no proof at this boundary.
+
+  Genesis and Constitution cannot change within this Domain. The external
+  verifier still runs: its host policy may have changed since the prior append.
+  Cold recovery of an untrusted store must use `verify_projection/2` instead.
+  """
+  @spec verify_extension(Projection.t(), Projection.t(), keyword()) :: :ok | {:error, term()}
+  def verify_extension(%State{} = prefix, %State{} = projection, opts) do
+    if projection.domain_ref === prefix.domain_ref and
+         projection.catalog.genesis === prefix.catalog.genesis and
+         projection.constitution === prefix.constitution do
+      verify_attestation(projection.catalog.genesis, opts)
+    else
+      {:error, :verified_domain_foundation_changed}
+    end
+  end
+
   # Bootstrap is checked through the same disposable reducer used by live
   # command preflight and durable recovery. This prevents a hand-maintained
   # bundle validator from accepting a Genesis batch that replay would reject.
@@ -118,8 +141,6 @@ defmodule Spectre.Domain.Bootstrap do
   defp duty_cause_act(_projection, _duty), do: nil
 
   defp verify_projection_links(projection, genesis) do
-    principals = projection.catalog.principals |> Map.keys() |> Enum.sort()
-    mandates = projection.mandates |> Map.keys() |> Enum.sort()
     initial_host_profile = Map.get(projection.catalog.host_profiles, genesis.host_profile_ref)
     initial_surface = Map.get(projection.catalog.surfaces, genesis.surface_ref)
 
@@ -127,10 +148,10 @@ defmodule Spectre.Domain.Bootstrap do
       genesis.domain_ref != projection.domain_ref ->
         {:error, :genesis_domain_mismatch}
 
-      not MapSet.subset?(MapSet.new(genesis.principal_refs), MapSet.new(principals)) ->
+      not Enum.all?(genesis.principal_refs, &Map.has_key?(projection.catalog.principals, &1)) ->
         {:error, :genesis_principal_refs_mismatch}
 
-      not MapSet.subset?(MapSet.new(genesis.root_mandate_refs), MapSet.new(mandates)) ->
+      not Enum.all?(genesis.root_mandate_refs, &Map.has_key?(projection.mandates, &1)) ->
         {:error, :genesis_root_mandate_refs_missing}
 
       not match?(%HostProfile{}, initial_host_profile) ->

@@ -3,8 +3,11 @@ defmodule Spectre.Payload.Store do
   Host boundary for content-addressed payloads kept outside the Domain ledger.
 
   A configured adapter must verify both presence and digest correspondence for
-  the supplied `payload:<sha256>` reference. Spectre verifies live references
-  during recovery and again before use. A durable erasure Attempt is the only
+  the supplied `payload:<sha256>` reference. Spectre verifies all live references
+  during cold recovery, the introduced references during incremental recovery,
+  and the pertinent references again before use. Historical payloads are not
+  polled on unrelated writes; hosts should independently monitor storage health.
+  A durable erasure Attempt is the only
   reason a referenced payload may be absent; its ledger tombstone remains.
   """
 
@@ -48,8 +51,16 @@ defmodule Spectre.Payload.Store do
   @doc "Verifies every payload which the durable projection still classifies as live."
   @spec verify_live_references(config() | nil, State.t()) :: :ok | {:error, term()}
   def verify_live_references(config, %State{} = state) do
-    state
-    |> referenced_payloads()
+    verify_references(config, state, referenced_payloads(state))
+  end
+
+  def verify_live_references(_config, _facts), do: {:error, :invalid_payload_projection}
+
+  @doc false
+  @spec verify_references(config() | nil, State.t(), [ref()]) :: :ok | {:error, term()}
+  def verify_references(config, %State{} = state, refs) when is_list(refs) do
+    refs
+    |> Enum.uniq()
     |> Enum.reduce_while(:ok, fn ref, :ok ->
       result =
         case Analysis.execution_state(state, ref) do
@@ -65,8 +76,6 @@ defmodule Spectre.Payload.Store do
     end)
   end
 
-  def verify_live_references(_config, _facts), do: {:error, :invalid_payload_projection}
-
   @doc false
   @spec introduced_refs([map()]) :: [ref()]
   def introduced_refs(payloads) when is_list(payloads) do
@@ -76,6 +85,32 @@ defmodule Spectre.Payload.Store do
   end
 
   def introduced_refs(_payloads), do: []
+
+  @doc false
+  @spec recovered_refs(State.t(), [map()]) :: [ref()]
+  def recovered_refs(%State{} = state, payloads) do
+    # A no-effect erasure Outcome makes its old target live again. The delta
+    # must recheck that target even when no new Evidence mentions it.
+    affected = Enum.flat_map(payloads, &execution_target_refs(state, &1))
+    Enum.uniq(introduced_refs(payloads) ++ affected)
+  end
+
+  defp execution_target_refs(state, %{"type" => "act_committed", "identity" => act_ref}) do
+    case Map.get(state.acts, act_ref) do
+      %Act{} = act -> act_payload_refs(state, act)
+      _missing -> []
+    end
+  end
+
+  defp execution_target_refs(state, %{"type" => type, "data" => %{"act_ref" => act_ref}})
+       when type in ["attempt_started", "outcome_recorded"] do
+    case Map.get(state.acts, act_ref) do
+      %Act{class: "data.erase"} = act -> erasure_target_refs(act)
+      _other -> []
+    end
+  end
+
+  defp execution_target_refs(_state, _payload), do: []
 
   defp introduced_payload_refs(%{"type" => "evidence_recorded", "data" => data})
        when is_map(data),

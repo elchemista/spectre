@@ -16,11 +16,21 @@ defmodule Spectre.Test.DutyFrontierAssertions do
       for time <- times do
         assert Frontier.missing(state, time) === Derive.missing_openings(state, time),
                "frontier differs at revision #{state.revision}, trusted time #{time}"
+
+        assert_targeted_causes(state, time)
       end
 
       assert :ok = Fold.validate_complete(state)
       state
     end)
+  end
+
+  defp assert_targeted_causes(state, time) do
+    for constitution <- [state.constitution, %{}],
+        cause <- Derive.required_duties(state, constitution, time) do
+      assert Derive.required_cause(state, constitution, cause.cause_key, time) === cause,
+             "targeted cause differs at revision #{state.revision}: #{inspect(cause.cause_key)}"
+    end
   end
 
   defp deadlines(state) do

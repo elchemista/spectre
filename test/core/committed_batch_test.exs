@@ -16,7 +16,7 @@ defmodule Spectre.Core.CommittedBatchTest do
   alias Spectre.Bench.P1.Fixture
   alias Spectre.Domain.{Event, Projection, Recovery, Sequencer, Transaction}
   alias Spectre.{Evidence, Ledger}
-  alias Spectre.GovernedAct.Fold
+  alias Spectre.GovernedAct.{Commit, Fold}
   alias Spectre.Ledger.{Entry, Store}
   alias Spectre.Ledger.Store.Mock
 
@@ -49,6 +49,75 @@ defmodule Spectre.Core.CommittedBatchTest do
     assert next.evidence[ctx.evidence.ref] == ctx.evidence
     assert operations(ctx.mock) == [:append, :lookup_batch]
     assert_replay(ctx.fixture, next)
+  end
+
+  test "preparation does not commit and binds real batch metadata before publication", ctx do
+    prefix = ctx.state.projection
+    assert {:ok, snapshot} = Ledger.load(ctx.fixture.store_config, ctx.fixture.refs.domain)
+    assert {:ok, prepared} = Commit.prepare(prefix, "prepared", ctx.payloads, prefix.recorded_at)
+    assert prepared.state.evidence[ctx.evidence.ref] === ctx.evidence
+    assert prepared.state.event_metadata[ctx.evidence.ref].batch_id === "prepared"
+    assert prepared.prefix === Map.take(prefix, [:revision, :head_digest])
+    assert prepared.receipt.head_digest === prepared.state.head_digest
+    assert {:ok, ^snapshot} = Ledger.load(ctx.fixture.store_config, ctx.fixture.refs.domain)
+
+    assert :not_found =
+             Ledger.lookup_batch(ctx.fixture.store_config, ctx.fixture.refs.domain, "prepared")
+
+    assert {:ok, _revision} =
+             Store.append(
+               ctx.fixture.store_config,
+               prefix.domain_ref,
+               "prepared",
+               ctx.payloads,
+               prefix.revision,
+               recorded_at: prefix.recorded_at
+             )
+
+    assert {:ok, receipt} =
+             Ledger.lookup_batch(ctx.fixture.store_config, prefix.domain_ref, "prepared")
+
+    assert Commit.confirmed?(prepared, receipt)
+
+    assert {:ok, confirmed} =
+             Recovery.confirm_prepared(ctx.fixture.store_config, prefix, prepared, [])
+
+    assert confirmed === prepared.state
+    assert_replay(ctx.fixture, confirmed)
+  end
+
+  test "a prepared commit cannot be promoted onto another verified prefix", ctx do
+    prefix = ctx.state.projection
+    assert {:ok, prepared} = Commit.prepare(prefix, "prepared", ctx.payloads, prefix.recorded_at)
+
+    for different <- [
+          %{prefix | domain_ref: "different-domain"},
+          %{prefix | head_digest: String.duplicate("f", 64)},
+          %{prefix | revision: prefix.revision + 1}
+        ] do
+      assert {:error, :prepared_commit_prefix_mismatch} =
+               Recovery.confirm_prepared(ctx.state.store, different, prepared, [])
+    end
+
+    assert operations(ctx.mock) === []
+  end
+
+  test "commit receipts require the exact complete identity, including integer coordinates",
+       ctx do
+    prefix = ctx.state.projection
+    {:ok, prepared} = Commit.prepare(prefix, "prepared", ctx.payloads, prefix.recorded_at)
+    assert Commit.confirmed?(prepared, prepared.receipt)
+
+    for field <- Map.keys(prepared.receipt) do
+      refute Commit.confirmed?(prepared, Map.delete(prepared.receipt, field))
+    end
+
+    for field <- [:expected_revision, :first_revision, :last_revision, :entry_count] do
+      refute Commit.confirmed?(prepared, Map.update!(prepared.receipt, field, &(&1 / 1)))
+    end
+
+    refute Commit.confirmed?(prepared, :ok)
+    refute Commit.confirmed?(prepared, Map.put(prepared.receipt, :unrecognized, true))
   end
 
   test "uncertainty before or after commit cannot duplicate the batch", ctx do

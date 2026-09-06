@@ -17,13 +17,14 @@ defmodule Spectre.Domain.Recovery do
   require Spectre.Portable
 
   alias Spectre.Domain.Projection
-  alias Spectre.GovernedAct.Fold
+  alias Spectre.GovernedAct.{Commit, Fold}
   alias Spectre.GovernedAct.State
   alias Spectre.{Ledger, Portable}
-  alias Spectre.Ledger.Entry
   alias Spectre.Ledger.Store.Support
+  alias Spectre.Payload.Store, as: PayloadStore
 
   @type append_classification :: {:committed, Ledger.batch_info()} | :not_committed
+  @type payload_check :: (Projection.t(), [String.t()] -> :ok | {:error, term()}) | nil
 
   @doc "Loads, verifies, and replays one Domain ledger without producing capabilities."
   @spec recover(Ledger.Store.config(), Ledger.domain_ref(), keyword()) ::
@@ -58,42 +59,51 @@ defmodule Spectre.Domain.Recovery do
 
   A changed predecessor or a head behind the cursor is an error, never a reason
   to silently replace the trusted prefix. Cold startup still uses `recover/4`.
+
+  An optional payload check receives the final verified projection and the
+  distinct payload references introduced or affected by the recovered suffix. It cannot
+  replace the projection. Checking at the final head matters when that suffix
+  also contains a legitimate erasure of one of those payloads.
   """
-  @spec resume(Ledger.Store.config(), Projection.t(), keyword()) ::
+  @spec resume(Ledger.Store.config(), Projection.t(), keyword(), payload_check()) ::
           :not_found | {:ok, Projection.t()} | {:error, term()}
-  def resume(store, %State{} = prefix, opts \\ []) do
+  def resume(store, %State{} = prefix, opts \\ [], check \\ nil) do
     if Ledger.Store.batch_reads?(store) do
-      recover_batches(store, prefix, opts)
+      recover_batches(store, prefix, opts, check)
     else
       with {:ok, suffix} <- Ledger.load_from(store, prefix.domain_ref, cursor(prefix), opts) do
-        recover_suffix(prefix, suffix)
+        recover_suffix(prefix, suffix, check)
       end
     end
   end
 
-  defp recover_batches(store, prefix, opts) do
-    Ledger.Reader.reduce(
-      store,
-      prefix.domain_ref,
-      cursor(prefix),
-      prefix,
-      fn entries, current -> Fold.append_batch(current, entries) end,
-      opts
-    )
+  defp recover_batches(store, prefix, opts, check \\ nil) do
+    with {:ok, {projection, refs}} <-
+           Ledger.Reader.reduce(
+             store,
+             prefix.domain_ref,
+             cursor(prefix),
+             {prefix, initial_refs(check)},
+             &fold_delta/2,
+             opts
+           ) do
+      check_recovered(projection, refs, check)
+    end
   end
 
-  defp recover_suffix(prefix, suffix) do
+  defp recover_suffix(prefix, suffix, check) do
     suffix.entries
     |> Stream.chunk_by(& &1.batch_id)
-    |> Enum.reduce_while({:ok, prefix}, fn batch, {:ok, current} ->
-      case Fold.append_batch(current, batch) do
+    |> Enum.reduce_while({:ok, {prefix, initial_refs(check)}}, fn batch, {:ok, current} ->
+      case fold_delta(batch, current) do
         {:ok, next} -> {:cont, {:ok, next}}
         {:error, _} = error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, projection} ->
-        with :ok <- match_snapshot(projection, suffix), do: {:ok, projection}
+      {:ok, {projection, refs}} ->
+        with :ok <- match_snapshot(projection, suffix),
+             do: check_recovered(projection, refs, check)
 
       {:error, _} = error ->
         error
@@ -119,30 +129,59 @@ defmodule Spectre.Domain.Recovery do
           String.t(),
           [map()],
           non_neg_integer(),
-          keyword()
+          keyword(),
+          payload_check()
         ) :: {:ok, Projection.t()} | {:error, term()}
-  def confirm_append(store, %State{} = prefix, batch_id, payloads, recorded_at, opts) do
-    with {:ok, entries} <-
-           Entry.build_batch(
-             prefix.domain_ref,
-             batch_id,
-             payloads,
-             prefix.revision,
-             recorded_at,
-             prefix.head_digest
-           ),
-         {:ok, identity} <-
-           Entry.batch_identity(prefix.domain_ref, batch_id, payloads, prefix.revision) do
-      expected = Support.batch_info(batch_id, identity, prefix.revision, List.last(entries))
+  def confirm_append(
+        store,
+        %State{} = prefix,
+        batch_id,
+        payloads,
+        recorded_at,
+        opts,
+        check \\ nil
+      ) do
+    with {:ok, prepared} <- Commit.prepare(prefix, batch_id, payloads, recorded_at),
+         do: confirm_prepared(store, prefix, prepared, opts, check)
+  end
 
-      case Ledger.lookup_batch(store, prefix.domain_ref, batch_id, opts) do
-        {:ok, ^expected} -> Fold.append_batch(prefix, entries)
-        _unconfirmed -> recover_committed_batch(store, prefix, expected, opts)
-      end
+  @doc false
+  @spec confirm_prepared(
+          Ledger.Store.config(),
+          Projection.t(),
+          Commit.t(),
+          keyword(),
+          payload_check()
+        ) ::
+          {:ok, Projection.t()} | {:error, term()}
+  def confirm_prepared(store, %State{} = prefix, %Commit{} = prepared, opts, check \\ nil) do
+    # The prepared value is local to this command, never loaded from storage.
+    # Its exact predecessor must still be the caller's verified prefix.
+    if prepared.prefix === cursor(prefix) and prepared.state.domain_ref === prefix.domain_ref do
+      confirm_prepared_at_prefix(store, prefix, prepared, opts, check)
+    else
+      {:error, :prepared_commit_prefix_mismatch}
     end
   end
 
-  defp recover_committed_batch(store, prefix, expected, opts) do
+  defp confirm_prepared_at_prefix(store, prefix, prepared, opts, check) do
+    case Ledger.lookup_batch(store, prefix.domain_ref, prepared.receipt.batch_id, opts) do
+      {:ok, receipt} when receipt === prepared.receipt ->
+        check_prepared(prepared, check)
+
+      _unconfirmed ->
+        recover_committed_batch(store, prefix, prepared.receipt, opts, check)
+    end
+  end
+
+  defp check_prepared(prepared, nil), do: {:ok, prepared.state}
+
+  defp check_prepared(prepared, check) do
+    refs = PayloadStore.recovered_refs(prepared.state, prepared.payloads)
+    with :ok <- check.(prepared.state, refs), do: {:ok, prepared.state}
+  end
+
+  defp recover_committed_batch(store, prefix, expected, opts, check) do
     if Ledger.Store.batch_reads?(store) do
       with {:ok, snapshot} <-
              Ledger.Store.read_batch(store, prefix.domain_ref, prefix.revision + 1, opts),
@@ -150,24 +189,24 @@ defmodule Spectre.Domain.Recovery do
            {:ok, actual} <- Support.derive_batch_info(prefix.domain_ref, snapshot.entries),
            :ok <- match_predecessor(prefix, snapshot.entries),
            true <- matching_batch_info?(actual, Map.delete(expected, :head_digest)) do
-        resume(store, prefix, opts)
+        resume(store, prefix, opts, check)
       else
         :not_found -> {:error, :domain_ledger_disappeared}
         false -> {:error, {:committed_batch_identity_mismatch, expected.batch_id}}
         {:error, _} = error -> error
       end
     else
-      recover_committed_suffix(store, prefix, expected, opts)
+      recover_committed_suffix(store, prefix, expected, opts, check)
     end
   end
 
-  defp recover_committed_suffix(store, prefix, expected, opts) do
+  defp recover_committed_suffix(store, prefix, expected, opts, check) do
     with {:ok, snapshot} <- Ledger.load_from(store, prefix.domain_ref, cursor(prefix), opts),
          entries = Enum.take(snapshot.entries, expected.entry_count),
          {:ok, actual} <- Support.derive_batch_info(prefix.domain_ref, entries),
          :ok <- match_predecessor(prefix, entries),
          true <- matching_batch_info?(actual, Map.delete(expected, :head_digest)) do
-      recover_suffix(prefix, snapshot)
+      recover_suffix(prefix, snapshot, check)
     else
       :not_found -> {:error, :domain_ledger_disappeared}
       false -> {:error, {:committed_batch_identity_mismatch, expected.batch_id}}
@@ -182,6 +221,27 @@ defmodule Spectre.Domain.Recovery do
   end
 
   defp cursor(prefix), do: %{revision: prefix.revision, head_digest: prefix.head_digest}
+
+  defp fold_delta(entries, {prefix, refs}) do
+    with {:ok, projection} <- Fold.append_batch(prefix, entries) do
+      {:ok, {projection, collect_refs(refs, projection, entries)}}
+    end
+  end
+
+  defp initial_refs(nil), do: nil
+  defp initial_refs(_check), do: MapSet.new()
+  defp collect_refs(nil, _projection, _entries), do: nil
+
+  defp collect_refs(refs, projection, entries) do
+    introduced = PayloadStore.recovered_refs(projection, Enum.map(entries, & &1.payload))
+    Enum.reduce(introduced, refs, &MapSet.put(&2, &1))
+  end
+
+  defp check_recovered(projection, _refs, nil), do: {:ok, projection}
+
+  defp check_recovered(projection, refs, check) do
+    with :ok <- check.(projection, Enum.sort(refs)), do: {:ok, projection}
+  end
 
   @doc """
   Classifies an ambiguous append using its stable batch identity.

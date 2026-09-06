@@ -25,7 +25,7 @@ defmodule Spectre.Duty.Derive do
   }
 
   alias Spectre.Duty.Derive.Outcome, as: OutcomeCause
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{ReadIndex, State}
 
   @type cause :: %{
           required(:cause_key) => term(),
@@ -55,6 +55,36 @@ defmodule Spectre.Duty.Derive do
   end
 
   def required_duties(_state, _constitution, _time), do: []
+
+  @doc """
+  Rechecks one cause against the complete verified prefix.
+
+  Only the causal sources are selected; proof, counterproof and historical
+  dependencies remain available to the same constructors used by the exhaustive
+  derivation. Existing Duties and the pending frontier are not proof of a cause.
+  In particular, dispute lanes must run together: they merge evidence and choose
+  one canonical cause per Act and counterproof.
+  """
+  @spec required_cause(State.t(), term(), integer()) :: cause() | nil
+  def required_cause(%State{} = state, key, time),
+    do: required_cause(state, state.constitution, key, time)
+
+  def required_cause(_state, _key, _time), do: nil
+
+  @doc false
+  @spec required_cause(State.t(), map(), term(), integer()) :: cause() | nil
+  def required_cause(%State{} = state, constitution, key, time)
+      when is_map(constitution) and not is_struct(constitution) and is_integer(time) do
+    {family, sources} = cause_sources(state, key)
+
+    state
+    |> Facts.from_state()
+    |> Facts.select(sources)
+    |> selected_causes(family, constitution, time)
+    |> Enum.find(&(&1.cause_key === key))
+  end
+
+  def required_cause(_state, _constitution, _key, _time), do: nil
 
   @doc """
   Returns derived causes which have no durable Duty record yet.
@@ -138,6 +168,49 @@ defmodule Spectre.Duty.Derive do
   @doc false
   @spec conflict_refs(String.t() | nil, term(), Act.t() | nil) :: [String.t()]
   defdelegate conflict_refs(accountable_ref, configured_refs, act), to: Cause
+
+  defp cause_sources(state, {:ambiguous_outcome, _act, attempt}) do
+    {OutcomeCause, %{attempts: [attempt], outcomes: outcome_refs(state, :attempt, attempt)}}
+  end
+
+  defp cause_sources(_state, {:contradicted_outcome, _act, _attempt, outcome}),
+    do: {OutcomeCause, %{attempts: [], outcomes: [outcome]}}
+
+  defp cause_sources(state, {:disputed_evidence, act, _lane, evidence}) do
+    {Dispute,
+     %{acts: [act], outcomes: outcome_refs(state, :act, act), counter_evidence: [evidence]}}
+  end
+
+  defp cause_sources(_state, {:scope_promise_overdue, scope}),
+    do: {ScopePromise, %{scopes: [scope]}}
+
+  defp cause_sources(
+         _state,
+         {:erasure_reduces_verifiability, erasure, _act, _attempt, _outcome}
+       ),
+       do: {ErasureVerifiability, %{erasures: [erasure]}}
+
+  defp cause_sources(_state, {:evidence_gap, _class, evidence}),
+    do: {EvidenceMarker, %{evidence: [evidence]}}
+
+  defp cause_sources(_state, _key), do: {nil, %{}}
+
+  defp outcome_refs(state, kind, ref) do
+    field = if kind == :act, do: :act_ref, else: :attempt_ref
+
+    # Pure callers may supply a State without derived indexes. The fallback
+    # still selects every related Outcome, never only the one named by a claim.
+    state
+    |> ReadIndex.outcomes_for(kind, ref)
+    |> Enum.reduce([], fn {outcome_ref, outcome}, refs ->
+      if Map.fetch!(outcome, field) === ref, do: [outcome_ref | refs], else: refs
+    end)
+  end
+
+  defp selected_causes(_facts, nil, _constitution, _time), do: []
+
+  defp selected_causes(facts, family, constitution, time),
+    do: family.causes(facts, constitution, time)
 
   defp derive_required_duties(%Facts{} = facts, constitution, time) do
     (OutcomeCause.causes(facts, constitution, time) ++

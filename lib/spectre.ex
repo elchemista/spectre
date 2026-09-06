@@ -127,6 +127,16 @@ defmodule Spectre do
 
   All Domains run below the application Domain supervisor coupled to the
   unique Domain registry.
+
+  `:recovery_policy` optionally supplies `{module, options}` implementing
+  `Spectre.Domain.Recovery.Policy`: an external witness check after verified
+  recovery, and an optional failure notification for application-owned repair.
+  `:recovery_timeout` bounds each callback (default 5 seconds). No policy can
+  bypass ledger or governed-act validation.
+
+  `:clock_tolerance_ms` bounds wall-clock drift from a boot-local monotonic
+  anchor (default 60,000 ms). `:infinity` explicitly disables the fence for
+  host-managed/virtual clocks. It cannot verify a bad initial clock reading.
   """
   @spec start_domain(domain_ref(), Store.config(), keyword()) ::
           {:ok, Domain.t()} | {:error, term()}

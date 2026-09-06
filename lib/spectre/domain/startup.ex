@@ -7,7 +7,9 @@ defmodule Spectre.Domain.Startup do
   outcomes, then returns only a projection recovered from durable ledger state.
   """
 
+  alias Spectre.Clock.Guard, as: ClockGuard
   alias Spectre.Domain.{Bootstrap, Configuration, Recovery, Transaction}
+  alias Spectre.Domain.Recovery.Policy
   alias Spectre.Ledger.Writer
   alias Spectre.Payload.Store, as: PayloadStore
 
@@ -15,12 +17,28 @@ defmodule Spectre.Domain.Startup do
   @spec load(Configuration.t()) :: {:ok, Spectre.Domain.Projection.t()} | {:error, term()}
 
   def load(config) do
+    case load_verified(config) do
+      {:ok, _projection} = success ->
+        success
+
+      {:error, reason} = error ->
+        Policy.failed(
+          config.recovery_policy,
+          %{domain_ref: config.domain_ref, phase: :startup, reason: reason, last_verified: nil},
+          config.recovery_timeout
+        )
+
+        error
+    end
+  end
+
+  defp load_verified(config) do
     case recover(config) do
       {:ok, projection} ->
         verify_recovered(config, projection)
 
       :not_found ->
-        bootstrap(config)
+        with :ok <- check_policy(config, nil), do: bootstrap(config)
 
       {:error, _reason} = error ->
         error
@@ -31,6 +49,7 @@ defmodule Spectre.Domain.Startup do
     bootstrap_opts = Keyword.put(config.bootstrap_opts, :constitution, config.constitution)
 
     with {:ok, recorded_at} <- Transaction.trusted_now(config.clock),
+         :ok <- ClockGuard.validate(config.clock_guard, recorded_at),
          {:ok, prepared} <- Bootstrap.prepare(config.domain_ref, bootstrap_opts, recorded_at) do
       case append_bootstrap(
              config,
@@ -132,8 +151,12 @@ defmodule Spectre.Domain.Startup do
   defp verify_recovered(config, projection) do
     with :ok <-
            Bootstrap.verify_projection(projection, Configuration.verification_opts(config)),
-         :ok <- PayloadStore.verify_live_references(config.payload_store, projection) do
+         :ok <- PayloadStore.verify_live_references(config.payload_store, projection),
+         :ok <- check_policy(config, Map.take(projection, [:revision, :head_digest])) do
       {:ok, projection}
     end
   end
+
+  defp check_policy(config, head),
+    do: Policy.check(config.recovery_policy, config.domain_ref, head, config.recovery_timeout)
 end

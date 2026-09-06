@@ -10,7 +10,7 @@ defmodule Spectre.Attempt.Runner.Recovery do
   alias Spectre.{Act, Attempt, Decision}
   alias Spectre.Attempt.Binding
   alias Spectre.Attempt.Runner.Result
-  alias Spectre.GovernedAct.{DispatchState, State}
+  alias Spectre.GovernedAct.{DispatchState, ReadIndex, State}
 
   @type result :: {:ok, Result.t()} | :dispatch_ready | {:error, term()}
 
@@ -67,13 +67,15 @@ defmodule Spectre.Attempt.Runner.Recovery do
     expected_bindings = Binding.evidence_bindings(act, attempt)
 
     projection.evidence
-    |> Map.values()
-    |> Enum.filter(&(&1.bindings == expected_bindings))
+    |> Enum.reduce([], fn {_ref, evidence}, found ->
+      if evidence.bindings === expected_bindings, do: [evidence | found], else: found
+    end)
     |> Enum.sort_by(&event_order(projection, &1.ref))
   end
 
   defp recovered_outcome(projection, act, attempt) do
-    projection.outcomes
+    projection
+    |> ReadIndex.outcomes_for(:attempt, attempt.ref)
     |> Map.values()
     |> Enum.filter(&(&1.act_ref == act.ref and &1.attempt_ref == attempt.ref))
     |> Enum.max_by(&event_order(projection, &1.ref), fn -> nil end)

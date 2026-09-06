@@ -365,6 +365,12 @@ defmodule Spectre.Domain.Sequencer do
     do: {:error, :authenticated_scope_context_required}
 
   @doc false
+  @spec attempt_result(GenServer.server(), Decision.t(), Act.t()) ::
+          Spectre.Attempt.Runner.Recovery.result()
+  def attempt_result(server, %Decision{} = decision, %Act{} = act),
+    do: GenServer.call(server, {:attempt_result, decision, act})
+
+  @doc false
   @spec late_observer(GenServer.server()) :: {:ok, module()} | {:error, term()}
   def late_observer(server), do: GenServer.call(server, :late_observer)
 
@@ -401,6 +407,9 @@ defmodule Spectre.Domain.Sequencer do
 
   def handle_call(:head, _from, %State{} = state),
     do: {:reply, {:ok, Query.head(state)}, state}
+
+  def handle_call({:attempt_result, %Decision{} = decision, %Act{} = act}, _from, state),
+    do: {:reply, Query.attempt_result(state, decision, act), state}
 
   # Projection inspection is capability-free and remains available for crash
   # recovery. Every scoped or operational request is fenced as soon as a fatal

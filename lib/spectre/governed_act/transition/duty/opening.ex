@@ -2,7 +2,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
   @moduledoc """
   Validates the causal proof carried by a `duty_opened` event.
 
-  The general derivation pass proves that the exact Duty is required by the
+  Targeted causal derivation proves that the exact Duty is required by the
   prefix and its Constitution. Built-in classes receive an additional closed
   check for the safety invariant Spectre itself owns, such as blocked retry or
   an overdue Scope promise. Application-defined classes remain governed by
@@ -45,10 +45,11 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
   end
 
   defp required_at_prefix(state, duty) do
-    cause =
-      state
-      |> Derive.required_duties(duty.opened_at)
-      |> Enum.find(&(&1.cause_key === duty.cause_key))
+    # A late receipt can establish an earlier causal obligation. Recheck the
+    # proof at the acquired prefix, not a historical time before that receipt
+    # existed in the ledger. The constructor still fixes opened_at exactly:
+    # acquisition delay must not move the normative cause time forward.
+    cause = Derive.required_cause(state, duty.cause_key, max(state.recorded_at, duty.opened_at))
 
     case cause do
       nil ->
@@ -144,10 +145,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
     do: {:error, {:invalid_contradicted_duty_cause, duty.ref}}
 
   defp validate_builtin_cause(state, %Duty{class: :disputed_evidence} = duty) do
-    cause =
-      state
-      |> Derive.required_duties(%{}, duty.opened_at)
-      |> Enum.find(&(&1.cause_key == duty.cause_key))
+    cause = Derive.required_cause(state, %{}, duty.cause_key, duty.opened_at)
 
     expected = if cause, do: Derive.materialization_attrs(cause, duty.opened_at)
     act = if expected, do: Map.get(state.acts, expected.act_ref)

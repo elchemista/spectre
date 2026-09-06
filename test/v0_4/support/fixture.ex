@@ -219,6 +219,7 @@ defmodule Spectre.V04Test.Fixture do
            clock: Clock,
            checkout_receipt_secret: @grant_secret},
         clock: Clock,
+        clock_tolerance_ms: Keyword.get(opts, :clock_tolerance_ms, :infinity),
         id_source: IdSource,
         generation: Keyword.get(opts, :generation, @default_generation),
         grant_secret: Keyword.get(opts, :grant_secret, @grant_secret),

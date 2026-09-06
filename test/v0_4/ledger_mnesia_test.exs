@@ -1,10 +1,12 @@
 defmodule Spectre.V04Test.LedgerMnesiaTest do
   use ExUnit.Case, async: false
 
+  alias Spectre.Domain.{Configuration, Recovery, Sequencer, Startup}
   alias Spectre.Ledger
   alias Spectre.Ledger.{Entry, Reader}
   alias Spectre.Ledger.Store, as: LedgerStore
   alias Spectre.Ledger.Store.Mnesia
+  alias Spectre.V04Test.{Fixture, Runtime}
 
   @heads :spectre_test_ledger_heads
   @batches :spectre_test_ledger_batches
@@ -247,6 +249,61 @@ defmodule Spectre.V04Test.LedgerMnesiaTest do
     assert {:ok, %{revision: 2}} = Ledger.load(store, "entry-boundary")
     :ok = :mnesia.dirty_delete(@batches, {"entry-boundary", "batch"})
     assert {:error, _} = Ledger.load(store, "entry-boundary")
+  end
+
+  test "a Domain cannot recover from manually altered database rows after a database restart", %{
+    store: store
+  } do
+    Runtime.reset(Fixture.default_now())
+    fixture = Fixture.start_domain(namespace: "mnesia-recovery-tampering")
+    on_exit(fn -> Fixture.stop_domain(fixture) end)
+    evidence = Fixture.paid_evidence(fixture)
+    assert {:ok, ^evidence} = Fixture.observe_payment(fixture, evidence)
+    snapshot = Fixture.snapshot(fixture)
+    expected = Sequencer.projection(fixture.server)
+    Fixture.stop_process(fixture.server)
+
+    for batch <- Enum.chunk_by(snapshot.entries, & &1.batch_id) do
+      first = hd(batch)
+
+      assert {:ok, _} =
+               LedgerStore.append(
+                 store,
+                 snapshot.domain_ref,
+                 first.batch_id,
+                 Enum.map(batch, & &1.payload),
+                 first.revision - 1,
+                 recorded_at: first.recorded_at
+               )
+    end
+
+    opts = Keyword.put(fixture.sequencer_opts, :store, store)
+    assert {:ok, config} = Configuration.new(opts)
+    assert {:ok, ^expected} = Startup.load(config)
+    key = {snapshot.domain_ref, snapshot.revision}
+    [original] = :mnesia.dirty_read(@entries, key)
+    entry = List.last(snapshot.entries)
+    assert {:ok, altered} = Entry.encode(%{entry | payload: %{"manually_changed" => true}})
+
+    for modification <- [:replace, :delete] do
+      case modification do
+        :replace -> :mnesia.dirty_write(@entries, put_elem(original, 2, altered))
+        :delete -> :mnesia.dirty_delete(@entries, key)
+      end
+
+      # Exercise persisted damage, not only a mocked read response or the
+      # application's in-memory projection.
+      assert :ok = Application.stop(:mnesia)
+      assert {:ok, _} = Application.ensure_all_started(:mnesia)
+      assert :ok = :mnesia.wait_for_tables([@heads, @batches, @entries], 5_000)
+      assert {:error, _} = Recovery.recover(store, snapshot.domain_ref, fixture.constitution, [])
+      assert {:error, _} = Startup.load(config)
+
+      # Host restores the exact original row. A fresh verification, rather
+      # than an "ignore corruption" flag, is the only route back to service.
+      assert :ok = :mnesia.dirty_write(@entries, original)
+      assert {:ok, ^expected} = Startup.load(config)
+    end
   end
 
   defp corrupt_first_revision(store) do
