@@ -153,6 +153,73 @@ defmodule Spectre.V04Test.LedgerMnesiaTest do
     assert {:ok, %{revision: 2, entries: [_, _]}} = Ledger.load(store, "corrupt-range")
   end
 
+  for {index, value, error} <- [
+        {2, "not-a-digest", :invalid_ledger_mnesia_batch_identity},
+        {3, 0.0, :invalid_ledger_mnesia_batch_revision},
+        {5, 2.0, :invalid_ledger_mnesia_batch_range},
+        {6, 2.0, :invalid_ledger_mnesia_batch_count},
+        {7, "not-a-digest", :invalid_ledger_mnesia_batch_head}
+      ] do
+    test "corrupt batch coordinate #{index} cannot be trusted by load, lookup or retry", %{
+      store: store
+    } do
+      payloads = [%{"first" => 1}, %{"second" => 2}]
+      assert {:ok, 2} = append(store, "coordinates", "batch", payloads, 0)
+      [row] = :mnesia.dirty_read(@batches, {"coordinates", "batch"})
+      :ok = :mnesia.dirty_write(@batches, put_elem(row, unquote(index), unquote(value)))
+      assert {:error, unquote(error)} = Ledger.lookup_batch(store, "coordinates", "batch")
+      assert {:error, unquote(error)} = Ledger.load(store, "coordinates")
+      assert {:error, unquote(error)} = append(store, "coordinates", "batch", payloads, 0)
+      :ok = :mnesia.dirty_write(@batches, row)
+      assert {:ok, %{revision: 2}} = Ledger.load(store, "coordinates")
+    end
+  end
+
+  test "a batch needs a matching head and exact metadata derived from actual entries", %{
+    store: store
+  } do
+    assert {:ok, 1} = append(store, "head-boundary", "batch", [%{"x" => 1}], 0)
+    [head] = :mnesia.dirty_read(@heads, "head-boundary")
+    :ok = :mnesia.dirty_delete(@heads, "head-boundary")
+
+    assert {:error, :ledger_mnesia_batch_without_head} =
+             Ledger.lookup_batch(store, "head-boundary", "batch")
+
+    :ok = :mnesia.dirty_write(@heads, put_elem(head, 2, 0))
+    assert {:error, _} = Ledger.lookup_batch(store, "head-boundary", "batch")
+    :ok = :mnesia.dirty_write(@heads, head)
+    [batch] = :mnesia.dirty_read(@batches, {"head-boundary", "batch"})
+    :ok = :mnesia.dirty_write(@batches, put_elem(batch, 2, String.duplicate("a", 64)))
+
+    assert {:error, {:ledger_mnesia_batch_metadata_mismatch, "batch"}} =
+             Ledger.lookup_batch(store, "head-boundary", "batch")
+
+    :ok = :mnesia.dirty_write(@batches, batch)
+    assert {:ok, _} = Ledger.lookup_batch(store, "head-boundary", "batch")
+    assert :not_found = Ledger.lookup_batch(store, "head-boundary", "absent")
+  end
+
+  test "corrupt, miskeyed and absent entry bytes cannot be restored through a valid head", %{
+    store: store
+  } do
+    assert {:ok, 2} = append(store, "entry-boundary", "batch", [%{"x" => 1}, %{"x" => 2}], 0)
+    [first] = :mnesia.dirty_read(@entries, {"entry-boundary", 1})
+    [second] = :mnesia.dirty_read(@entries, {"entry-boundary", 2})
+
+    for encoded <- ["invalid-codec", 42, elem(second, 2)] do
+      :ok = :mnesia.dirty_write(@entries, put_elem(first, 2, encoded))
+      assert {:error, _} = Ledger.load(store, "entry-boundary")
+      assert {:error, _} = Ledger.lookup_batch(store, "entry-boundary", "batch")
+    end
+
+    :ok = :mnesia.dirty_delete(@entries, {"entry-boundary", 1})
+    assert {:error, _} = Ledger.load(store, "entry-boundary")
+    :ok = :mnesia.dirty_write(@entries, first)
+    assert {:ok, %{revision: 2}} = Ledger.load(store, "entry-boundary")
+    :ok = :mnesia.dirty_delete(@batches, {"entry-boundary", "batch"})
+    assert {:error, _} = Ledger.load(store, "entry-boundary")
+  end
+
   defp corrupt_first_revision(store) do
     payloads = [%{"event" => "first"}, %{"event" => "second"}]
     assert {:ok, 2} = append(store, "corrupt-range", "batch", payloads, 0)

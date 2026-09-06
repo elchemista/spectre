@@ -623,8 +623,10 @@ defmodule Spectre.V04Test.Fixture do
         grantor_ref: refs.grantor,
         holder_ref: refs.grantor,
         accountable_ref: refs.accountable,
-        executor_refs: [Execution.kernel_executor_ref()],
-        executor_contract_refs: [Execution.kernel_contract_ref()],
+        executor_refs:
+          Keyword.get(opts, :governance_executor_refs, [Execution.kernel_executor_ref()]),
+        executor_contract_refs:
+          Keyword.get(opts, :governance_executor_contract_refs, [Execution.kernel_contract_ref()]),
         scope_refs: [refs.governance_scope],
         subject_refs: [],
         target_refs: [refs.mandate | Keyword.get(opts, :governance_targets, [])],

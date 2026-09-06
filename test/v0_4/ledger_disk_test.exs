@@ -263,6 +263,107 @@ defmodule Spectre.V04Test.LedgerDiskTest do
              append(restarted, domain_ref, after_id, [%{"event" => "different"}], 1)
   end
 
+  for {field, value, tag} <- [
+        {"format", "another-format", :ledger_frame_binding_mismatch},
+        {"format_version", 2, :ledger_frame_binding_mismatch},
+        {"domain_ref", "another-domain", :ledger_frame_binding_mismatch},
+        {"batch_id", nil, :invalid_ledger_frame},
+        {"batch_id", 42, :invalid_ledger_frame},
+        {"identity_digest", "bad", :invalid_or_duplicate_ledger_frame},
+        {"expected_revision", 1.0, :invalid_ledger_frame},
+        {"expected_revision", 99, :invalid_or_duplicate_ledger_frame},
+        {"entries", [], :invalid_ledger_frame},
+        {"entries", [%{}], :invalid_ledger_frame}
+      ] do
+    test "a checksummed frame with corrupted #{field} is rejected without truncation", %{
+      directory: directory
+    } do
+      {store, child} = start_disk(directory)
+      domain = "frame-boundary"
+      assert {:ok, 1} = append(store, domain, "batch", [%{"x" => 1}], 0)
+      path = domain_path(directory, domain)
+      stop_disk(child)
+
+      <<"SPDL", 1, _size::unsigned-big-64, _digest::binary-size(32), encoded::binary>> =
+        File.read!(path)
+
+      {:ok, frame} = Spectre.Canonical.Value.decode(encoded)
+
+      encoded =
+        Spectre.Canonical.Value.encode!(
+          Map.put(frame, unquote(field), unquote(Macro.escape(value)))
+        )
+
+      bytes = disk_frame(encoded)
+      File.write!(path, bytes)
+      {restarted, _child} = start_disk(directory, tail_policy: :truncate)
+      assert {:error, reason} = Ledger.load(restarted, domain)
+      assert elem(reason, 0) == unquote(tag)
+      assert {:error, _} = Ledger.export(restarted, domain)
+      assert {:error, _} = Ledger.lookup_batch(restarted, domain, "batch")
+      assert File.read!(path) == bytes
+    end
+  end
+
+  test "invalid headers, encodings and non-map frames are never mistaken for incomplete tails", %{
+    directory: directory
+  } do
+    domain = "invalid-frame"
+    path = domain_path(directory, domain)
+
+    for bytes <- [
+          <<"NOPE", 1, 1::unsigned-big-64, 0::256, 0>>,
+          <<"SPDL", 2, 1::unsigned-big-64, 0::256, 0>>,
+          <<"SPDL", 1, 0::unsigned-big-64, 0::256>>,
+          disk_frame("unknown-encoding"),
+          disk_frame(Spectre.Canonical.Value.encode!([1, 2])),
+          disk_frame(Spectre.Canonical.Value.encode!(%{"extra" => true}))
+        ] do
+      File.write!(path, bytes)
+      {store, child} = start_disk(directory, tail_policy: :truncate)
+      assert {:error, _} = Ledger.load(store, domain)
+      assert File.read!(path) == bytes
+      stop_disk(child)
+    end
+  end
+
+  test "empty files are absent Domains and file-type confusion fails closed", %{
+    directory: directory
+  } do
+    domain = "file-boundary"
+    path = domain_path(directory, domain)
+    File.write!(path, "")
+    {store, child} = start_disk(directory)
+    assert :not_found = Ledger.load(store, domain)
+    assert :not_found = Ledger.export(store, domain)
+    assert :not_found = Ledger.lookup_batch(store, domain, "batch")
+    stop_disk(child)
+    File.rm!(path)
+    File.mkdir!(path)
+    {store, _child} = start_disk(directory)
+    assert {:error, _} = Ledger.load(store, domain)
+    assert {:error, _} = append(store, domain, "batch", [%{"x" => 1}], 0)
+  end
+
+  test "invalid disk startup options fail before spawning a store" do
+    for opts <- [
+          nil,
+          %{},
+          [:invalid],
+          [path: nil],
+          [path: "", tail_policy: :ignore],
+          [path: "/unused", tail_policy: :ignore],
+          [path: "/unused", max_frame_bytes: 0]
+        ] do
+      assert {:error, _} = Disk.start_link(opts)
+    end
+  end
+
+  defp disk_frame(encoded),
+    do:
+      <<"SPDL", 1, byte_size(encoded)::unsigned-big-64, :crypto.hash(:sha256, encoded)::binary,
+        encoded::binary>>
+
   defp start_disk(directory, opts \\ []) do
     child_id = {Disk, make_ref()}
     disk_opts = Keyword.put(opts, :path, directory)

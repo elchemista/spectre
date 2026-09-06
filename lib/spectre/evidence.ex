@@ -304,7 +304,7 @@ defmodule Spectre.Evidence do
                Portable.is_non_negative_integer(evidence.freshness_ms)) ->
         {:error, {:invalid_evidence_freshness_ms, evidence.freshness_ms}}
 
-      evidence.provisional and is_nil(evidence.valid_until) and
+      evidence.provisional === true and is_nil(evidence.valid_until) and
           is_nil(evidence.freshness_ms) ->
         {:error, :provisional_evidence_requires_finite_lifetime}
 

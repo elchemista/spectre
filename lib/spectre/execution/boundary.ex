@@ -121,19 +121,22 @@ defmodule Spectre.Execution.Boundary do
     end
   end
 
-  defp normalize_routes(entries) when is_list(entries) do
-    Enum.reduce_while(entries, {:ok, %{}}, fn entry, {:ok, routes} ->
-      with {:ok, {key, route}} <- normalize_route(entry),
-           false <- Map.has_key?(routes, key) do
-        {:cont, {:ok, Map.put(routes, key, route)}}
-      else
-        true -> {:halt, {:error, {:duplicate_executor_route, route_identity(entry)}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+  defp normalize_routes(entries), do: normalize_routes(entries, %{})
+
+  defp normalize_routes([], routes), do: {:ok, routes}
+
+  defp normalize_routes([entry | rest], routes) do
+    with {:ok, {key, route}} <- normalize_route(entry),
+         false <- Map.has_key?(routes, key) do
+      normalize_routes(rest, Map.put(routes, key, route))
+    else
+      true -> {:error, {:duplicate_executor_route, route_identity(entry)}}
+      {:error, _reason} = error -> error
+    end
   end
 
-  defp normalize_routes(_entries), do: {:error, {:invalid_execution_boundary, :executors}}
+  defp normalize_routes(_entries, _routes),
+    do: {:error, {:invalid_execution_boundary, :executors}}
 
   defp normalize_route(module) when is_atom(module), do: normalize_route({module, []})
 

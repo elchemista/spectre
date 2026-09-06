@@ -264,7 +264,7 @@ defmodule Spectre.GovernedAct.Transition.Execution do
              true <- duty.act_ref == act.ref,
              true <- is_nil(duty.attempt_ref),
              true <- duty.mandate_ref == act.mandate_ref,
-             true <- data["cancelled_at"] == duty.opened_at,
+             true <- data["cancelled_at"] === duty.opened_at,
              true <- act.committed_at <= duty.opened_at do
           :ok
         else
@@ -276,7 +276,7 @@ defmodule Spectre.GovernedAct.Transition.Execution do
         with {:ok, mandate} <- Index.fetch_mandate(state, act.mandate_ref),
              true <- data["cause_ref"] == mandate.ref,
              true <- act.mandate_revision == mandate.revision,
-             true <- data["cancelled_at"] == mandate.expires_at do
+             true <- data["cancelled_at"] === mandate.expires_at do
           :ok
         else
           false -> {:error, {:invalid_dispatch_expiration, act.ref}}
@@ -293,7 +293,7 @@ defmodule Spectre.GovernedAct.Transition.Execution do
       data["cause_ref"] != cause_act.ref ->
         {:error, {:dispatch_cancellation_cause_mismatch, act.ref}}
 
-      data["cancelled_at"] != cause_act.committed_at ->
+      data["cancelled_at"] !== cause_act.committed_at ->
         {:error, {:dispatch_cancellation_time_mismatch, act.ref}}
 
       act.committed_at > cause_act.committed_at ->

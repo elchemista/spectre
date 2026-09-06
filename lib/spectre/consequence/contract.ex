@@ -201,7 +201,7 @@ defmodule Spectre.Consequence.Contract do
        when Portable.is_plain_map(spec) do
     case wrapper(spec) do
       {:ok, "$const", expected} ->
-        if value == expected, do: {:ok, bindings}, else: shape_error(path, spec, value)
+        if value === expected, do: {:ok, bindings}, else: shape_error(path, spec, value)
 
       {:ok, "$nullable", nested} ->
         if is_nil(value), do: {:ok, bindings}, else: validate_value(nested, value, path, bindings)
@@ -273,18 +273,22 @@ defmodule Spectre.Consequence.Contract do
   defp continue_validation({:error, _reason} = error), do: {:halt, error}
 
   defp validate_list(nested, value, path, bindings) when is_list(value) do
-    value
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, bindings}, fn {item, index}, {:ok, current} ->
-      case validate_value(nested, item, [index | path], current) do
-        {:ok, next} -> {:cont, {:ok, next}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+    validate_list_items(nested, value, path, bindings, 0)
   end
 
   defp validate_list(nested, value, path, _bindings),
     do: shape_error(path, %{"$list" => nested}, value)
+
+  defp validate_list_items(_nested, [], _path, bindings, _index), do: {:ok, bindings}
+
+  defp validate_list_items(nested, [item | rest], path, bindings, index) do
+    with {:ok, next} <- validate_value(nested, item, [index | path], bindings) do
+      validate_list_items(nested, rest, path, next, index + 1)
+    end
+  end
+
+  defp validate_list_items(nested, tail, path, _bindings, _index),
+    do: shape_error(path, %{"$list" => nested}, tail)
 
   defp bind_one(field, value, path, bindings) do
     case Portable.validate_ref(value, field) do
@@ -399,7 +403,7 @@ defmodule Spectre.Consequence.Contract do
   defp exact_meter_requests(bound, boundary) do
     declared = Map.get(boundary, :meter_requests, %{})
 
-    if bound == declared,
+    if bound === declared,
       do: :ok,
       else: {:error, {:consequence_meter_binding_mismatch, bound, declared}}
   end

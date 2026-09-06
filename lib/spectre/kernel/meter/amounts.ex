@@ -23,15 +23,7 @@ defmodule Spectre.Kernel.Meter.Amounts do
   end
 
   def normalize(reservations) when is_list(reservations) do
-    Enum.reduce_while(reservations, {:ok, %{}}, fn reservation, {:ok, normalized} ->
-      with {:ok, meter_ref, quantity} <- reservation_pair(reservation),
-           false <- Map.has_key?(normalized, meter_ref) do
-        {:cont, {:ok, Map.put(normalized, meter_ref, quantity)}}
-      else
-        true -> {:halt, {:error, {:duplicate_meter_reservation, reservation_ref(reservation)}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+    normalize_reservations(reservations, %{})
   end
 
   def normalize(_amounts), do: {:error, :invalid_meter_amounts}
@@ -52,19 +44,30 @@ defmodule Spectre.Kernel.Meter.Amounts do
   @spec exact_partition(t(), t(), t()) :: :ok | {:error, :invalid_meter_partition}
   def exact_partition(total, left, right)
       when is_map(total) and is_map(left) and is_map(right) do
-    valid? =
-      Enum.all?(left, fn {meter_ref, _quantity} ->
-        Map.has_key?(total, meter_ref) and not Map.has_key?(right, meter_ref)
-      end) and
-        Enum.all?(right, fn {meter_ref, _quantity} -> Map.has_key?(total, meter_ref) end) and
-        Enum.all?(total, fn {meter_ref, quantity} ->
-          Map.get(left, meter_ref, 0) + Map.get(right, meter_ref, 0) == quantity
-        end)
-
-    if valid?, do: :ok, else: {:error, :invalid_meter_partition}
+    with {:ok, _total} <- normalize(total),
+         true <- map_size(left) + map_size(right) == map_size(total),
+         true <- Map.merge(left, right) === total do
+      :ok
+    else
+      _invalid -> {:error, :invalid_meter_partition}
+    end
   end
 
   def exact_partition(_total, _left, _right), do: {:error, :invalid_meter_partition}
+
+  defp normalize_reservations([], normalized), do: {:ok, normalized}
+
+  defp normalize_reservations([reservation | rest], normalized) do
+    with {:ok, meter_ref, quantity} <- reservation_pair(reservation),
+         false <- Map.has_key?(normalized, meter_ref) do
+      normalize_reservations(rest, Map.put(normalized, meter_ref, quantity))
+    else
+      true -> {:error, {:duplicate_meter_reservation, reservation_ref(reservation)}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp normalize_reservations(_improper_tail, _normalized), do: {:error, :invalid_meter_amounts}
 
   defp reservation_pair(%{meter_ref: meter_ref, quantity: quantity}),
     do: checked_pair(meter_ref, quantity)
