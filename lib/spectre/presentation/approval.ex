@@ -473,8 +473,10 @@ defmodule Spectre.Presentation.Approval do
           Map.get(approval.bindings, "show_act_ref") != show_act_ref ->
         {:error, :presentation_approval_binding_mismatch}
 
-      not valid_ref?(Map.get(approval.bindings, "scope_ref")) or
-          not valid_ref?(Map.get(approval.bindings, "authentication_ref")) ->
+      Map.get(approval.bindings, "scope_ref") != presentation.scope_ref ->
+        {:error, :presentation_approval_scope_mismatch}
+
+      not valid_ref?(Map.get(approval.bindings, "authentication_ref")) ->
         {:error, :presentation_approval_authentication_missing}
 
       true ->

@@ -197,13 +197,13 @@ defmodule Spectre.V04Test.Fixture do
         emergency_ref
       )
 
-    store = record!(ETS.start_link([]))
+    {store, underlying_store} = ledger_store(opts)
 
     mock =
       if Keyword.get(opts, :mock_store, false),
-        do: record!(Mock.start_link(store: {ETS, server: store}))
+        do: record!(Mock.start_link(store: underlying_store))
 
-    store_config = if mock, do: {Mock, server: mock}, else: {ETS, server: store}
+    store_config = if mock, do: {Mock, server: mock}, else: underlying_store
 
     sequencer_opts =
       [
@@ -278,6 +278,17 @@ defmodule Spectre.V04Test.Fixture do
     %{fixture | server: server, sequencer_opts: sequencer_opts}
   end
 
+  defp ledger_store(opts) do
+    case Keyword.fetch(opts, :store) do
+      {:ok, {_adapter, store_opts} = configured} ->
+        {Keyword.fetch!(store_opts, :server), configured}
+
+      :error ->
+        server = record!(ETS.start_link([]))
+        {server, {ETS, server: server}}
+    end
+  end
+
   def stop_domain(fixture) do
     stop_process(fixture.server)
     if fixture.mock, do: stop_process(fixture.mock)
@@ -286,8 +297,10 @@ defmodule Spectre.V04Test.Fixture do
   end
 
   def stop_process(pid) when is_pid(pid) do
-    if Process.alive?(pid), do: GenServer.stop(pid)
-    :ok
+    # Teardown may race with a linked process finishing after its owner exits.
+    GenServer.stop(pid)
+  catch
+    :exit, {:noproc, {GenServer, :stop, [^pid | _args]}} -> :ok
   end
 
   def context(fixture, overrides \\ %{}) do
@@ -514,6 +527,7 @@ defmodule Spectre.V04Test.Fixture do
       Spectre.Surface.new(%{
         revision: 1,
         declarations: declarations,
+        fallbacks: Keyword.get(opts, :fallbacks, %{}),
         presentation_required_classes:
           if(Keyword.get(opts, :consent, false), do: ["refund.issue"], else: []),
         consequence_contracts: %{
@@ -565,7 +579,7 @@ defmodule Spectre.V04Test.Fixture do
             do: [refs.executor_contract, Execution.kernel_contract_ref()],
             else: [refs.executor_contract]
           ),
-        scope_refs: [refs.scope],
+        scope_refs: Keyword.get(opts, :scope_refs, [refs.scope]),
         subject_refs: [refs.customer],
         target_refs:
           if(Keyword.get(opts, :consent, false),

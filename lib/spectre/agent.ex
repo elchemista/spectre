@@ -20,8 +20,9 @@ defmodule Spectre.Agent do
   Their templates are expanded and pinned in the parent's Definition at compile
   time, not loaded from a mutable registry during a turn.
 
-  Routing, prompting and planning remain ordinary application code implementing
-  `Spectre.Mind`. This module creates no process, authority, default Mandate or
+  `route/2` and `router/1` declare proposal routing through `Spectre.Router`.
+  `extend/2` installs package contributions and exposes named host ports.
+  Prompting and planning run in `Spectre.Mind`. This module creates no process, authority, default Mandate or
   executor. A Definition is not activated by compiling it: use the existing
   governed revision API when activation is required. These templates are not a
   second policy boundary; every resulting Candidate still needs normal admission.
@@ -30,26 +31,33 @@ defmodule Spectre.Agent do
   As with all same-BEAM Elixir modules, compilation is not a sandbox for host code.
   """
 
-  alias Spectre.Agent.Compiler
+  alias Spectre.Agent.{Compiler, Declaration}
   alias Spectre.Candidate
   alias Spectre.Candidate.Template
   alias Spectre.Definition
   alias Spectre.Mind
   alias Spectre.Mind.Turn
   alias Spectre.Portable
+  alias Spectre.Router
 
   @callback definition() :: Definition.t()
 
   defmacro __using__(opts) do
     quote do
       @behaviour Spectre.Agent
-      import Spectre.Agent, only: [candidate: 2, install: 2]
+      import Spectre.Agent,
+        only: [candidate: 2, install: 2, route: 2, router: 1, extend: 2, asset: 2]
+
       Module.register_attribute(__MODULE__, :spectre_definition_attrs, [])
       Module.register_attribute(__MODULE__, :spectre_templates, [])
       Module.register_attribute(__MODULE__, :spectre_components, [])
       @spectre_definition_attrs unquote(opts)
       @spectre_templates %{}
       @spectre_components %{}
+      @spectre_routes %{}
+      @spectre_router nil
+      @spectre_assets %{}
+      @spectre_ports %{}
       @before_compile Spectre.Agent.Compiler
     end
   end
@@ -65,6 +73,39 @@ defmodule Spectre.Agent do
   defmacro install(module, opts) do
     quote do
       Compiler.install!(__MODULE__, unquote(module), unquote(opts), __ENV__)
+    end
+  end
+
+  @doc "Declares a named proposal route to a Candidate template."
+  defmacro route(name, attrs) do
+    quote do: Compiler.route!(__MODULE__, unquote(name), unquote(attrs), __ENV__)
+  end
+
+  @doc "Declares the ordered routing methods and their acceptance thresholds."
+  defmacro router(opts) do
+    quote do: Compiler.router!(__MODULE__, unquote(opts), __ENV__)
+  end
+
+  @doc "Installs an extension's pinned data and separately namespaced host ports."
+  defmacro extend(module, opts) do
+    quote do: Compiler.extend!(__MODULE__, unquote(module), unquote(opts), __ENV__)
+  end
+
+  @doc "Declares portable package data, such as a prompt, model profile or input schema."
+  defmacro asset(name, value) do
+    quote do: Compiler.asset!(__MODULE__, unquote(name), unquote(value), __ENV__)
+  end
+
+  @doc "Compiles routing for an exact Definition; only the adapter registry is host-supplied."
+  @spec router(Definition.t(), keyword() | map()) :: {:ok, Router.t()} | {:error, term()}
+  def router(%Definition{} = definition, opts) do
+    with {:ok, definition} <- Definition.new(definition),
+         {:ok, declarations} <- Declaration.read(definition),
+         {:ok, opts} <- Portable.normalize_attrs(opts, [:adapters], :agent_router) do
+      Router.new(
+        declarations.routes,
+        Map.put(declarations.router, "adapters", Map.get(opts, :adapters, []))
+      )
     end
   end
 
@@ -87,47 +128,9 @@ defmodule Spectre.Agent do
 
   @doc false
   @spec declarations(Definition.t()) :: {:ok, map(), map()} | {:error, term()}
-  def declarations(%Definition{
-        body:
-          %{
-            "format" => "spectre-agent-declaration-v1",
-            "candidates" => templates,
-            "components" => components
-          } = body
-      })
-      when map_size(body) == 3 and is_map(templates) and is_map(components) do
-    # Definition validates portable content, not the schema of this particular
-    # authoring format. Validate it here for both compilation and data ingress;
-    # a valid digest alone does not make a component or template well-formed.
-    with :ok <- validate_entries(templates, &validate_template/1),
-         :ok <- validate_entries(components, &Portable.validate_ref(&1, :component_ref)) do
-      {:ok, templates, components}
-    end
-  end
-
-  def declarations(_definition), do: {:error, :not_an_agent_declaration}
-
-  defp validate_entries(entries, validate) do
-    Enum.reduce_while(entries, :ok, fn {name, value}, :ok ->
-      with :ok <- validate_path(name), :ok <- validate.(value) do
-        {:cont, :ok}
-      else
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp validate_path(name) when is_binary(name) and name != "" do
-    if Enum.all?(:binary.split(name, "/", [:global]), &(&1 != "")),
-      do: :ok,
-      else: {:error, {:invalid_declaration_path, name}}
-  end
-
-  defp validate_path(name), do: {:error, {:invalid_declaration_path, name}}
-
-  defp validate_template(template) do
-    with {:ok, canonical} <- Template.new(template) do
-      if canonical === template, do: :ok, else: {:error, :noncanonical_candidate_template}
+  def declarations(definition) do
+    with {:ok, declaration} <- Declaration.read(definition) do
+      {:ok, declaration.templates, declaration.components}
     end
   end
 end

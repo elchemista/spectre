@@ -17,9 +17,10 @@ defmodule Spectre.Core.FullAgentsTest do
   }
 
   alias Spectre.Attempt.Executor, as: ExecutorAPI
-  alias Spectre.Domain.{Projection, Sequencer}
+  alias Spectre.Domain.{Event, Projection, Sequencer}
   alias Spectre.Duty.EvidenceCause
   alias Spectre.Erasure.Analysis
+  alias Spectre.Ledger.Entry
   alias Spectre.Mind.Turn
   alias Spectre.V04Test.{Fixture, Ingress, Runtime}
 
@@ -284,6 +285,20 @@ defmodule Spectre.Core.FullAgentsTest do
     assert {:ok, %{candidates: []}} = turn(c, "unrecognized")
     assert Instance.state(c.instance) == %{revision: 1, value: 1}
     assert projection(c).acts == before.acts
+    refute_received {:execution, _}
+    assert_replay(c)
+  end
+
+  test "an application identity beginning with fallback is still entitled to its declared refusal policy",
+       c do
+    assert {:ok, %{candidates: [candidate]}} =
+             turn(c, "refund", identity: "fallback:customer-request", amount: 10_001)
+
+    assert {:ok, result} = Instance.propose(c.instance, candidate)
+    assert result.primary.decision.outcome == :refused
+    assert result.fallback == :silence
+    assert result.primary.act == nil
+    assert balance(c).spent == 0
     refute_received {:execution, _}
     assert_replay(c)
   end
@@ -1149,6 +1164,80 @@ defmodule Spectre.Core.FullAgentsTest do
       assert_replay(c)
     end
 
+    test "approval arriving in another authenticated Scope cannot approve this Scope's presentation",
+         c do
+      show = show_consent(c)
+
+      assert {:ok, context} =
+               Spectre.authenticate(c.scope.domain, "other-consent-session", %{
+                 principal_ref: c.fixture.refs.proposer,
+                 authentication_ref: "other-session-authentication",
+                 session_ref: "other-session"
+               })
+
+      assert {:ok, other_scope} =
+               Spectre.open_scope(c.scope.domain, context, opened_at: Runtime.now())
+
+      # The host helper refuses this binding. Bypassing the helper with plain
+      # observed data must not make the same response valid at the ledger edge.
+      assert {:error, :presentation_response_scope_mismatch} =
+               Presentation.response_evidence(
+                 context,
+                 c.presentation,
+                 show,
+                 :supports,
+                 Runtime.now(),
+                 []
+               )
+
+      attrs = consent_response(c, show, :supports) |> Map.from_struct() |> Map.delete(:ref)
+      before = projection(c)
+
+      assert {:error,
+              {:invalid_presentation_approval_evidence, _, :presentation_approval_scope_mismatch}} =
+               Spectre.observe(other_scope, attrs)
+
+      assert projection(c) === before
+
+      # Also try a fully rehashed entry, so hash-chain rejection cannot hide a
+      # missing semantic check. The other Scope is genuinely open in this prefix.
+      assert {:ok, foreign} = Ingress.observe(context, attrs, Runtime.now(), [])
+      assert {:ok, payload} = Event.record(:evidence, foreign)
+      snapshot = Fixture.snapshot(c.fixture)
+
+      assert {:ok, [entry]} =
+               Entry.build_batch(
+                 snapshot.domain_ref,
+                 "foreign-approval",
+                 [payload],
+                 snapshot.revision,
+                 Runtime.now(),
+                 snapshot.head_digest
+               )
+
+      forged = %{
+        snapshot
+        | entries: snapshot.entries ++ [entry],
+          revision: entry.revision,
+          head_digest: entry.digest
+      }
+
+      assert {:ok, _verified} = Ledger.verify_snapshot(forged)
+
+      reason =
+        {:invalid_presentation_approval_evidence, foreign.ref,
+         :presentation_approval_scope_mismatch}
+
+      assert {:error, ^reason} =
+               Projection.replay(forged, c.fixture.constitution)
+
+      assert {:error, {:semantic_violation, %{reason: ^reason}}} =
+               Audit.verify(forged, c.fixture.constitution, Runtime.now())
+
+      refute_received {:execution, _}
+      assert_replay(c)
+    end
+
     test "the full agent executes only after authenticated approval of the delivered prompt", c do
       show = show_consent(c)
       approval = approve_consent(c, show)
@@ -1158,6 +1247,61 @@ defmodule Spectre.Core.FullAgentsTest do
       assert_success(c, result)
       assert balance(c).spent == 100
       assert map_size(projection(c).attempts) == 2
+    end
+
+    test "nested consent assumptions are frozen in the Act and their later dispute creates durable debt",
+         c do
+      [shared, fee, risk] = consent_premises(c)
+      c = bind_consent_premises(c, [shared, fee, risk])
+      show = show_consent(c)
+      approval = approve_with_assumptions(c, show, [fee.proposition, risk.proposition])
+      basis = [shared.ref, fee.ref, risk.ref, approval.ref]
+
+      assert {:ok, result} = Instance.propose(c.instance, consent_candidate(c, [approval.ref]))
+
+      assert result.primary.decision.outcome == :admitted,
+             inspect(result.primary.decision.reasons)
+
+      assert_success(c, result)
+      assert Enum.all?(basis, &(&1 in result.primary.act.recognition_evidence_refs))
+      before = projection(c)
+      assert before.duties == %{}
+      Runtime.set_time(Runtime.now() + 1)
+      dispute = observe_consent_premise(c, shared.proposition, stance: :contradicts)
+
+      after_dispute = projection(c)
+      assert [duty] = Map.values(after_dispute.duties)
+      assert duty.class == :disputed_evidence
+      assert duty.act_ref == result.primary.act.ref
+      assert duty.status == :open
+      assert duty.opened_at == Runtime.now()
+      assert dispute.ref in duty.evidence_refs
+      assert Enum.all?(basis, &(&1 in duty.evidence_refs))
+      assert duty.containment["retry"] == :forbidden
+      assert after_dispute.acts === before.acts
+      assert after_dispute.outcomes === before.outcomes
+      assert balance(c).spent == 100
+      refute_received {:execution, _}
+      assert_replay(c)
+    end
+
+    test "an approval cannot hide a missing nested premise from Candidate recognition", c do
+      [shared, fee, risk] = consent_premises(c)
+      c = bind_consent_premises(c, [fee, risk])
+      show = show_consent(c)
+      approval = approve_with_assumptions(c, show, [fee.proposition, risk.proposition])
+
+      assert {:ok, result} =
+               Instance.propose(c.instance, consent_candidate(c, [approval.ref]))
+
+      assert result.primary.decision.outcome == :undecidable,
+             inspect(result.primary.decision.reasons)
+
+      assert result.primary.act == nil
+      assert balance(c).spent == 0
+      assert Map.has_key?(projection(c).evidence, shared.ref)
+      refute_received {:execution, _}
+      assert_replay(c)
     end
 
     test "an explicit rejection leaves the agent unable to execute", c do
@@ -1266,6 +1410,65 @@ defmodule Spectre.Core.FullAgentsTest do
       )
 
     approval
+  end
+
+  defp consent_premises(c) do
+    shared = observe_consent_premise(c, "terms-known")
+    fee = observe_consent_premise(c, "fee-known", assumptions: [shared.proposition])
+    risk = observe_consent_premise(c, "risk-known", assumptions: [shared.proposition])
+    [shared, fee, risk]
+  end
+
+  defp bind_consent_premises(c, premises) do
+    assert {:ok, draft} =
+             c.draft
+             |> Map.from_struct()
+             |> Map.drop([:ref, :material_digest])
+             |> Map.update!(:evidence_refs, &(&1 ++ Enum.map(premises, fn item -> item.ref end)))
+             |> Candidate.new()
+
+    attrs =
+      c.presentation
+      |> Map.from_struct()
+      |> Map.drop([:ref, :material_digest])
+      |> Map.put(:candidate_binding_ref, Candidate.presentation_binding_ref(draft))
+
+    assert {:ok, presentation} = Spectre.prepare_presentation(c.scope, attrs)
+    %{c | draft: draft, presentation: presentation}
+  end
+
+  defp observe_consent_premise(c, proposition, attrs \\ []) do
+    attrs =
+      Map.merge(
+        %{
+          proposition: proposition,
+          issuer_ref: c.fixture.refs.proposer,
+          payload: "user observation"
+        },
+        Map.new(attrs)
+      )
+
+    assert {:ok, evidence} =
+             Spectre.Ingress.evidence(c.scope.context, Runtime.now(), attrs)
+
+    assert {:ok, [recorded]} = Spectre.observe(c.scope, evidence)
+    recorded
+  end
+
+  defp approve_with_assumptions(c, show, assumptions) do
+    assert {:ok, evidence} =
+             Presentation.response_evidence(
+               c.scope.context,
+               c.presentation,
+               show,
+               :supports,
+               Runtime.now(),
+               assumptions: assumptions,
+               payload: "conditional approval"
+             )
+
+    assert {:ok, [recorded]} = Spectre.observe(c.scope, evidence)
+    recorded
   end
 
   defp consent_candidate(c, approvals) do

@@ -13,6 +13,7 @@ defmodule Spectre.Doctor do
   alias Spectre.HostProfile
   alias Spectre.Ingress
   alias Spectre.Ledger.Store
+  alias Spectre.Portable
   alias Spectre.Surface
 
   defmodule Report do
@@ -79,12 +80,18 @@ defmodule Spectre.Doctor do
 
   def check(_opts), do: invalid_report(:invalid_doctor_options)
 
-  @doc "Returns the direct statically linked module dependencies of a compiled module."
+  @doc """
+  Returns the direct statically linked dependencies of a compiled module.
+
+  For a coverage-instrumented module, reads the original BEAM on the code path,
+  not the instrumentation. This remains a static artifact check, not an audit
+  of arbitrary dynamically replaced code in a running VM.
+  """
   @spec dependencies(module()) :: {:ok, MapSet.t(module())} | {:error, term()}
   def dependencies(module) when is_atom(module) and not is_nil(module) do
     with true <- Code.ensure_loaded?(module),
-         path when is_list(path) or is_binary(path) <- :code.which(module),
-         {:ok, {_module, chunks}} <- :beam_lib.chunks(path, [:imports, :attributes]) do
+         source when is_list(source) or is_binary(source) <- beam_source(module),
+         {:ok, {^module, chunks}} <- :beam_lib.chunks(source, [:imports, :attributes]) do
       imports =
         chunks
         |> Keyword.fetch!(:imports)
@@ -116,6 +123,19 @@ defmodule Spectre.Doctor do
   end
 
   def dependencies(module), do: {:error, {:invalid_doctor_module, module}}
+
+  defp beam_source(module) do
+    case :code.which(module) do
+      :cover_compiled ->
+        case :code.get_object_code(module) do
+          {^module, bytes, _path} -> bytes
+          :error -> :non_existing
+        end
+
+      source ->
+        source
+    end
+  end
 
   defp zone_dependencies(mind_modules, executor_modules) do
     invalid = Enum.reject(mind_modules ++ executor_modules, &(is_atom(&1) and not is_nil(&1)))
@@ -224,8 +244,16 @@ defmodule Spectre.Doctor do
 
   defp modules_option(opts, key, defaults) do
     case Keyword.get(opts, key, []) do
-      modules when is_list(modules) -> Enum.uniq(defaults ++ modules)
-      invalid -> defaults ++ [invalid]
+      modules when is_list(modules) ->
+        # is_list/1 also accepts improper lists. Diagnose malformed host
+        # configuration without traversing it with partial Enum functions.
+        case Portable.validate(modules) do
+          :ok -> Enum.uniq(defaults ++ modules)
+          {:error, _reason} -> defaults ++ [modules]
+        end
+
+      invalid ->
+        defaults ++ [invalid]
     end
   end
 

@@ -129,7 +129,8 @@ defmodule Spectre.Ledger.Store.Support do
       not Portable.is_non_negative_integer(info.expected_revision) ->
         {:error, :revision}
 
-      info.first_revision != info.expected_revision + 1 ->
+      not Portable.is_positive_integer(info.first_revision) or
+          info.first_revision !== info.expected_revision + 1 ->
         {:error, :range}
 
       not is_integer(info.last_revision) or info.last_revision < info.first_revision ->

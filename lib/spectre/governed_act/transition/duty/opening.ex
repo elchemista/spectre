@@ -48,7 +48,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
     cause =
       state
       |> Derive.required_duties(duty.opened_at)
-      |> Enum.find(&(&1.cause_key == duty.cause_key))
+      |> Enum.find(&(&1.cause_key === duty.cause_key))
 
     case cause do
       nil ->
@@ -59,7 +59,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
                cause
                |> Derive.materialization_attrs(duty.opened_at)
                |> Duty.new(),
-             true <- expected == duty do
+             true <- expected === duty do
           :ok
         else
           false -> {:error, {:duty_cause_materialization_mismatch, duty.ref}}
@@ -249,7 +249,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
       :opened_at
     ]
 
-    Map.take(duty, fields) == Map.take(expected, fields)
+    Map.take(duty, fields) === Map.take(expected, fields)
   end
 
   defp scope_source_binding?(_duty, nil), do: false
@@ -263,7 +263,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
     duty.accountable == opening.accountable_ref and
       duty.disposition_authority_refs == opening.disposition_authority_refs and
       conflicts_include_cause_roles?(duty, source_act) and
-      duty.closing_conditions == [Condition.canonical(opening.promise_condition)]
+      duty.closing_conditions === [Condition.canonical(opening.promise_condition)]
   end
 
   defp conflicts_include_cause_roles?(%Duty{} = duty, %Act{} = act) do
@@ -280,7 +280,7 @@ defmodule Spectre.GovernedAct.Transition.Duty.Opening do
         "dispatch" => :blocked,
         "retry" => :forbidden
       } ->
-        reservations == act.reservations and
+        reservations === act.reservations and
           Candidate.effect_digest(act) == {:ok, consequence_digest}
 
       _invalid ->

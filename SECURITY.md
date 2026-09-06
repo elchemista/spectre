@@ -1,89 +1,70 @@
-# Security Policy
+# Security policy
 
-Spectre is a runtime boundary, not an authorization system. Applications must
-still authenticate users, authorize business operations, protect credentials,
-and validate data inside their action and provider adapters.
+Spectre 0.4 is a governed-act kernel, not a sandbox for arbitrary host code.
+It enforces authority and causal accounting on the declared, mediated paths.
+The application still authenticates real identities, protects credentials,
+establishes Genesis and supplies trustworthy observations.
 
-## Supported versions
-
-Security fixes are released for the latest supported `0.x` minor version.
-Users should upgrade to the newest patch before reporting a problem already
-addressed in the changelog.
+Read [Governed surface and trust assumptions](GOVERNED_SURFACE.md) before making
+a deployment security claim. The 0.4.0 checkout is unreleased and not yet declared
+stable. Historical 0.3 APIs and security mechanisms must not be assumed to exist
+in the new runtime.
 
 ## Reporting a vulnerability
 
 Please report vulnerabilities privately through GitHub Security Advisories for
 `elchemista/spectre`. Include:
 
-- the affected Spectre version and Elixir/OTP versions;
-- a minimal reproduction;
-- the expected and observed security boundary;
-- whether untrusted input, a model/provider reply, or persisted state is
-  required to trigger it;
+- the affected version or commit and Elixir/OTP versions;
+- a minimal reproduction and the expected versus observed boundary;
+- the HostProfile, adapter types and attacker access required;
+- whether the issue involves input, provider results, ledger corruption,
+  replay, authority amplification, information disclosure or Duty disposal;
 - any known mitigation.
 
-Do not include real prompts, user conversations, credentials, or production
-state in a report.
+Use synthetic identities and payloads. Do not include credentials, production
+exports, personal data or real conversations.
 
-## Boundary model
+## Trust boundaries
 
-Spectre enforces deterministic lifecycle and policy transitions, isolates
-provider callbacks, validates persisted state, and keeps side-effect execution
-explicit. It does not claim that an LLM is immune to prompt injection. Dynamic
-content is marked as data at the prompt-plan boundary, but downstream model
-behavior remains probabilistic.
+Mind and routing output is untrusted proposal data, not permission. Ingress
+authenticates identities and binds observed Evidence; the kernel recognizes
+authority separately. Prompt injection must not gain an execution credential
+simply by changing a proposal.
 
-### Prompt assets and untrusted data
+Broker and executor integrations are privileged host code. Scope their
+capabilities to the exact committed Act and Attempt. Never expose reusable
+credentials through Candidates, Evidence, callbacks into a Mind or logs.
+A sealed runtime value is not isolation against its own host process or node
+administrator. Internal Elixir functions remain callable regardless of
+`@doc false`.
 
-Canonical prompt fragments use a closed placeholder grammar and typed renderer
-references; runtime data cannot select executable code. Legacy `.text.heex`
-assets remain compiled application code. Interpolate `@input`, `@recent_chat`
-and `@memory` only through `Spectre.Prompt.data/1`, and treat an unsafe finding
-from `mix spectre.doctor --strict` as a release blocker. The audit is a bounded
-static check, not proof that arbitrary EEx is safe.
+The external world and the ledger are not one atomic transaction. Treat missing
+or conflicting receipts as uncertainty, not authorization to retry. Preserve
+Duty and Meter containment until an authorized, evidenced resolution.
 
-Completed Action and Effect outputs are untrusted prompt data even when their
-transport was authenticated. Preserve their origin across assigns or memory
-with `Spectre.Effect.prompt_result/1`; canonical materialization unwraps the
-value for rendering and retains its trust, provenance and authenticity on the
-typed fragment. Passing only `effect.result` intentionally loses that lineage
-and never upgrades the value to instruction trust.
+## Storage, clocks and evidence
 
-### Model-selected Action arguments
+Store reads are validated, but an internally consistent rewritten history is
+not detected by a hash chain alone. Spectre does not provide ledger signatures,
+external witnessing or proof that an export is the latest complete history.
+Protect ledger writers, exports, backups and independently trusted anchors.
 
-When an Action schema declares a JSON-Schema validation keyword, Spectre
-validates the schema and arguments at both planning and provider execution.
-Unsupported constraints fail closed instead of being ignored. The supported
-subset is deliberately bounded by depth, schema size, property/branch count
-and regular-expression limits. Application adapters must still authorize
-business objects and enforce tenant ownership; schema validity is not
-authorization. JSON Schema intentionally permits undeclared keys when
-`additionalProperties` is omitted; `mix spectre.doctor --strict` warns when a
-planner-visible action is unconstrained or does not explicitly close that
-surface with `additionalProperties: false`.
+Host time is trusted. Nondecreasing ledger timestamps do not prove correct
+wall-clock time; the runtime clamp can mask a backward clock. Monitor clock
+health independently.
 
-### Streaming capabilities
+Observed Evidence is only as reliable as its issuer and acquisition path.
+Authenticate receipts, preserve causal references and source labels, and do
+not promote model output into observed fact without the required host evidence.
 
-An inference stream handle is a live bearer capability. Its custom inspection
-hides the consumer token, but applications must not serialize, persist, log,
-publish or return the handle to an untrusted client. Raw deltas are provisional
-and may precede complete-response policy and sanitization. Only the terminal
-`:result` event is a committed Agent result.
+Keep confidential content in an appropriately protected payload store rather
+than the append-only ledger. Erasure metadata does not delete provider copies,
+backups or logs, and hashes/references can still reveal sensitive information.
 
-The data lane is single-consumer and revision/epoch fenced. Push adapters must
-bound their transport before the session mailbox. Provider request ids, resume
-cursors, raw failures and credentials stay in confidential runtime/recovery
-state and must not enter observer events or public receipt payloads.
+## Validation limits
 
-### Boundary receipts
-
-Receipt envelopes are validated portable evidence, not automatically safe log
-records. Confidential payloads require encryption, tenant isolation, access
-control and retention enforcement in the configured sink. Required receipt
-mode also depends on a durable checkpoint store and idempotent payload-capable
-sink; the in-memory adapters are for tests and development only.
-
-See [Architecture](docs/ARCHITECTURE.md), [Provider Resilience](docs/PROVIDERS.md),
-[Streaming inference](docs/STREAMING_INFERENCE.md),
-[Boundary receipts](docs/RECEIPTS.md), and
-[Production Operations](docs/PRODUCTION.md) for the complete trust model.
+Tests, offline audit, Credo, Dialyzer and Doctor address different properties.
+None proves physical isolation, truthful Evidence or absence of alternate
+effect paths. Coverage and performance qualification remain open release gates.
+Report a violated supported invariant even if the static checks pass.

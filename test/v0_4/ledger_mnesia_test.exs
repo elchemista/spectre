@@ -124,6 +124,44 @@ defmodule Spectre.V04Test.LedgerMnesiaTest do
     assert {:ok, %{revision: 1, entries: [_entry]}} = Ledger.load(store, domain)
   end
 
+  test "corrupt float first revision is rejected before lookup constructs a Range", %{
+    store: store
+  } do
+    corrupt_first_revision(store)
+
+    assert {:error, :invalid_ledger_mnesia_batch_range} =
+             Ledger.lookup_batch(store, "corrupt-range", "batch")
+  end
+
+  test "load rejects numerically equal but noncanonical batch coordinates", %{store: store} do
+    corrupt_first_revision(store)
+
+    assert {:error, :invalid_ledger_mnesia_batch_range} = Ledger.load(store, "corrupt-range")
+    assert {:error, :invalid_ledger_mnesia_batch_range} = Ledger.export(store, "corrupt-range")
+  end
+
+  test "idempotent retry cannot acknowledge a corrupt batch index", %{store: store} do
+    {original, payloads} = corrupt_first_revision(store)
+
+    assert {:error, :invalid_ledger_mnesia_batch_range} =
+             append(store, "corrupt-range", "batch", payloads, 0)
+
+    # Repair only the deliberately corrupted test index. The rejected retry
+    # must not have appended entries or changed the durable identity.
+    :ok = :mnesia.dirty_write(@batches, original)
+    assert {:ok, 2} = append(store, "corrupt-range", "batch", payloads, 0)
+    assert {:ok, %{revision: 2, entries: [_, _]}} = Ledger.load(store, "corrupt-range")
+  end
+
+  defp corrupt_first_revision(store) do
+    payloads = [%{"event" => "first"}, %{"event" => "second"}]
+    assert {:ok, 2} = append(store, "corrupt-range", "batch", payloads, 0)
+    [original] = :mnesia.dirty_read(@batches, {"corrupt-range", "batch"})
+    assert elem(original, 4) === 1
+    :ok = :mnesia.dirty_write(@batches, put_elem(original, 4, 1.0))
+    {original, payloads}
+  end
+
   defp delete_tables do
     Enum.each([@entries, @batches, @heads], fn table ->
       case :mnesia.delete_table(table) do

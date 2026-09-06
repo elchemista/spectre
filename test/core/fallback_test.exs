@@ -4,7 +4,7 @@ defmodule Spectre.CoreTest.FallbackTest do
   use ExUnit.Case, async: false
 
   alias Spectre.{Candidate, Fallback, Kernel}
-  alias Spectre.Domain.Sequencer
+  alias Spectre.Domain.{Projection, Sequencer}
   alias Spectre.Fallback.Policy
   alias Spectre.V04Test.{Fixture, Runtime}
 
@@ -80,18 +80,43 @@ defmodule Spectre.CoreTest.FallbackTest do
              Fallback.materialize(:silence, data.decision, other)
   end
 
-  test "a refused fallback cannot recursively create more fallbacks", data do
+  test "the real proposal driver stops after one refused fallback without guessing its origin",
+       data do
     template = Map.put(template(data.fixture), :requested_mandate_ref, "missing-mandate")
     assert {:ok, policy} = Policy.new(mode: :candidate_template, template: template)
 
-    assert {:ok, {:candidate_template, candidate}} =
-             Fallback.materialize(policy, data.decision, data.context)
+    domain_ref = "v0.4:fallback-bounded:domain"
 
-    assert {:ok, %{outcome: :refused} = decision, nil} =
-             Kernel.evaluate(candidate, data.context, data.projection, Runtime.now())
+    fixture =
+      Fixture.start_domain(
+        namespace: "fallback-bounded",
+        name: {:via, Registry, {Spectre.Domain.Registry, domain_ref}},
+        fallbacks: %{"refund.issue" => policy}
+      )
 
-    assert {:error, :recursive_fallback_forbidden} =
-             Fallback.materialize(policy, decision, data.context)
+    on_exit(fn -> Fixture.stop_domain(fixture) end)
+    assert {:ok, domain} = Spectre.lookup_domain(domain_ref)
+    assert {:ok, scope} = Spectre.resume_scope(domain, Fixture.context(fixture))
+    attrs = Map.put(Fixture.refund_candidate(fixture, 100), :requested_mandate_ref, "absent")
+
+    assert {:ok, result} = Spectre.propose(scope, attrs)
+    assert result.primary.decision.outcome == :refused
+    assert %{mode: :candidate_template, result: fallback} = result.fallback
+    assert fallback.decision.outcome == :refused
+    assert fallback.act == nil
+    projection = Sequencer.projection(fixture.server)
+    assert map_size(projection.decisions) == 2
+    assert projection.acts == %{}
+    assert projection.attempts == %{}
+
+    assert {:ok, ^result} = Spectre.propose(scope, attrs)
+    assert Sequencer.projection(fixture.server) === projection
+
+    assert {:ok, ^projection} =
+             Projection.replay(
+               Fixture.snapshot(fixture),
+               fixture.constitution
+             )
   end
 
   test "undecidable and unknown classes remain distinct from refusal", data do

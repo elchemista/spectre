@@ -427,8 +427,11 @@ defmodule Spectre.Bench.P1.Fixture do
   end
 
   defp stop_process(pid) when is_pid(pid) do
-    if Process.alive?(pid), do: GenServer.stop(pid)
-    :ok
+    # A linked process can finish between alive?/1 and stop/1 during teardown.
+    # Ignore only an already-gone PID, not failures from a running server.
+    GenServer.stop(pid)
+  catch
+    :exit, {:noproc, {GenServer, :stop, [^pid | _args]}} -> :ok
   end
 
   defp ok!({:ok, value}), do: value

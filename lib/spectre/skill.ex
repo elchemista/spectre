@@ -10,7 +10,10 @@ defmodule Spectre.Skill do
       end
 
   An Agent installs these declarations with `install MyApp.LookupSkill,
-  as: "lookup"` and materializes `"lookup/order"`. Installation does not grant
+  as: "lookup"` and materializes `"lookup/order"`. Routes, assets, extension
+  contributions and host ports compose under the same namespace; the root
+  Agent explicitly chooses the routing methods with `router via: [...]`.
+  Installation does not grant
   the Skill a Mandate, create a child Scope or allocate budget. Deliberative
   skill code is an ordinary function or a `Spectre.Mind` adapter, not another
   runtime. Code that calls a governed remote model belongs behind an executor.

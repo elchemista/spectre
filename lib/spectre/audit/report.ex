@@ -5,9 +5,16 @@ defmodule Spectre.Audit.Report do
   Reports are derived only after `Spectre.GovernedAct.Integrity` succeeds. The
   renderer never validates or repairs history and never reads runtime state;
   its input is the disposable result of replaying the exported ledger.
+
+  Recorded `open_duties` are kept separate from `pending_duty_causes` derived
+  after capture. Likewise, `expired_dispatches` describe pending deliveries
+  that expire by observation time, not cancellations that were committed.
+  Counts and Meter accounts always describe the captured ledger, not a
+  simulated repair. These distinctions preserve an export's causal history.
   """
 
   alias Spectre.{Constitution, Declassification, Definition, Duty, Erasure, Genesis}
+  alias Spectre.Duty.Derive
   alias Spectre.GovernedAct.{DispatchState, Index, MeterState, State}
   alias Spectre.{HostProfile, Mandate, Surface}
   alias Spectre.Scope.Opening
@@ -23,6 +30,7 @@ defmodule Spectre.Audit.Report do
           required(:head_digest) => String.t(),
           required(:constitution_ref) => String.t(),
           required(:audited_at) => non_neg_integer(),
+          required(:captured_at) => non_neg_integer(),
           required(:foundation) => map(),
           required(:act_contexts) => [map()],
           required(:meters) => map(),
@@ -31,6 +39,8 @@ defmodule Spectre.Audit.Report do
           required(:meter_recontainments) => [map()],
           required(:dispatch_cancellations) => [map()],
           required(:open_duties) => [map()],
+          required(:pending_duty_causes) => [Derive.cause()],
+          required(:expired_dispatches) => [map()],
           required(:scopes) => [map()],
           required(:definitions) => [map()],
           required(:definition_heads) => [map()],
@@ -41,9 +51,17 @@ defmodule Spectre.Audit.Report do
 
   @doc "Builds the portable semantic audit report from verified folded state."
   @spec build(State.t(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
-  def build(%State{} = state, audited_at) when is_integer(audited_at) do
+  def build(state, audited_at), do: build(state, audited_at, audited_at)
+
+  @doc "Builds an observation report without mutating the verified captured state."
+  @spec build(State.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, t()} | {:error, term()}
+  def build(%State{} = state, captured_at, audited_at)
+      when is_integer(captured_at) and captured_at >= 0 and
+             is_integer(audited_at) and audited_at >= captured_at do
     with {:ok, act_contexts} <- act_contexts(state),
          {:ok, erasures} <- erasure_reports(state),
+         {:ok, expired} <- DispatchState.expired(state, audited_at),
          {:ok, constitution_ref} <- Constitution.ref(state.constitution) do
       {:ok,
        %{
@@ -54,6 +72,7 @@ defmodule Spectre.Audit.Report do
          head_digest: state.head_digest,
          constitution_ref: constitution_ref,
          audited_at: audited_at,
+         captured_at: captured_at,
          foundation: foundation(state),
          act_contexts: act_contexts,
          mandate_restrictions: mandate_restrictions(state),
@@ -62,6 +81,11 @@ defmodule Spectre.Audit.Report do
          meter_recontainments: meter_recontainments(state),
          dispatch_cancellations: dispatch_cancellations(state),
          open_duties: open_duties(state),
+         pending_duty_causes: Derive.missing_openings(state, audited_at),
+         expired_dispatches:
+           Enum.map(expired, fn {act, mandate} ->
+             %{act_ref: act.ref, mandate_ref: mandate.ref, expired_at: mandate.expires_at}
+           end),
          scopes: canonical_scopes(state),
          definitions: canonical_definitions(state),
          definition_heads: definition_heads(state),
@@ -72,7 +96,7 @@ defmodule Spectre.Audit.Report do
     end
   end
 
-  def build(_state, _audited_at),
+  def build(_state, _captured_at, _audited_at),
     do: {:error, :invalid_audit_report_input}
 
   defp foundation(state) do

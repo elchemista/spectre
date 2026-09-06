@@ -6,7 +6,9 @@ defmodule Spectre do
   ledger Store into a supervised Domain, an authenticated ingress adapter
   supplies a `Spectre.SubmissionContext`, and callers durably open a Scope
   before proposing a Candidate. `propose/3` keeps Admission and execution in
-  one call so the internal Grant can never escape to application code.
+  one call without returning the internal Grant through this facade. Internal
+  modules are callable on the same BEAM; `@doc false` is not access control.
+  Deployment isolation and credential protection remain host responsibilities.
 
   Administrative helpers only construct Candidates and submit them through the
   same kernel. This module exposes no direct ledger append, raw Grant, arbitrary
@@ -288,7 +290,13 @@ defmodule Spectre do
   def open_scope(_parent_scope, _child_context, _opening_attrs, _candidate_attrs, _opts),
     do: {:error, :invalid_governed_scope_opening}
 
-  @doc "Rebinds a current authenticated context to an existing Scope after restart."
+  @doc """
+  Rebinds a current authenticated context to its exact durable Scope opening.
+
+  Authentication and host generation must still match the immutable opening.
+  A changed generation or authentication requires a new Scope, not an implicit
+  rewrite of the old session or its authority.
+  """
   @spec resume_scope(domain_input(), SubmissionContext.t()) ::
           {:ok, Scope.t()} | {:error, term()}
   def resume_scope(domain_input, %SubmissionContext{} = context) do
@@ -1128,6 +1136,8 @@ defmodule Spectre do
 
   defp execute_fallback(scope, {mode, candidate}, opts)
        when mode in [:candidate_template, :governed_handoff] do
+    # This is deliberately not propose/3: a refused fallback ends this path.
+    # Recursion is bounded by control flow, not by guessing an identity prefix.
     with {:ok, result} <- submit_and_run(scope, candidate, opts) do
       {:ok, %{mode: mode, result: result}}
     end

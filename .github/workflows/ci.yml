@@ -70,7 +70,7 @@ jobs:
         run: mix test ${{ matrix.test_args }}
 
       - name: Run Credo
-        run: mix credo
+        run: mix credo --strict
 
   dialyzer:
     name: Dialyzer

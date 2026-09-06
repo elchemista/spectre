@@ -4,7 +4,9 @@ defmodule Spectre.Audit do
 
   The driver verifies the exported hash chain itself and never consumes a live
   Domain projection. It then invokes the same pure Governed Act fold used by
-  recovery, followed by whole-history checks at the caller-supplied audit time.
+  recovery, followed by whole-history checks at the trusted capture time.
+  A later observation time may expose additional obligations, but cannot make
+  an immutable export acquire new Duty or dispatch-cancellation records.
   Sharing the pure semantics prevents runtime/auditor drift without sharing
   runtime state or trusting the sequencer.
 
@@ -22,26 +24,50 @@ defmodule Spectre.Audit do
   @doc """
   Verifies a complete ledger snapshot against its pinned Constitution.
 
-  `audited_at` is trusted audit time and cannot precede the newest durable
+  This strict form treats `audited_at` as both capture and observation time:
+  every obligation required by then must be materialized. Use `verify/4` for
+  an export captured earlier. Neither time can precede the newest durable
   acquisition time. Structural, transition and whole-history failures remain
   distinct in the returned error so callers can diagnose the failed boundary.
   """
   @spec verify(Ledger.snapshot() | map(), map(), non_neg_integer()) ::
           {:ok, report()} | {:error, term()}
-  def verify(snapshot, constitution, audited_at)
+  def verify(snapshot, constitution, audited_at),
+    do: verify(snapshot, constitution, audited_at, audited_at)
+
+  @doc """
+  Verifies completeness at `captured_at` and observes that prefix at `audited_at`.
+
+  Both times are supplied by a trusted host; `audited_at >= captured_at`.
+  Missing Duties or cancellations already required at capture remain errors.
+  Later obligations are reported separately as `pending_duty_causes` and
+  `expired_dispatches`, never inserted into the ledger or counted as recorded
+  open Duties. The report says nothing about events outside this prefix.
+  """
+  @spec verify(Ledger.snapshot() | map(), map(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, report()} | {:error, term()}
+  def verify(snapshot, constitution, captured_at, audited_at)
       when is_map(constitution) and not is_struct(constitution) and
+             is_integer(captured_at) and captured_at >= 0 and
              is_integer(audited_at) and audited_at >= 0 do
     with :ok <- Constitution.validate(constitution),
          {:ok, verified} <- verify_ledger(snapshot),
-         :ok <- audit_time_covers_ledger(verified, audited_at),
+         :ok <- audit_time_covers_ledger(verified, captured_at),
+         :ok <- observation_covers_capture(captured_at, audited_at),
          {:ok, state} <- fold(verified, constitution),
-         :ok <- validate_integrity(state, audited_at) do
-      Report.build(state, audited_at)
+         :ok <- validate_integrity(state, captured_at) do
+      Report.build(state, captured_at, audited_at)
     end
   end
 
-  def verify(_snapshot, _constitution, _audited_at),
+  def verify(_snapshot, _constitution, _captured_at, _audited_at),
     do: {:error, :invalid_semantic_audit_input}
+
+  defp observation_covers_capture(captured_at, audited_at) do
+    if audited_at >= captured_at,
+      do: :ok,
+      else: {:error, {:audit_time_precedes_capture, audited_at, captured_at}}
+  end
 
   defp verify_ledger(snapshot) do
     verification =

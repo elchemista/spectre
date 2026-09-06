@@ -6,9 +6,10 @@ defmodule Spectre.Fallback do
   template. It applies only to `:refused`: `:undecidable` and `:unknown_class`
   remain distinct queryable outcomes. It never reuses the refused Candidate's
   Evidence, Presentation or resolved Mandate. The returned Candidate still
-  crosses normal admission and receives no special authority. A Decision
-  produced for a fallback is not eligible for another fallback, preventing
-  recursive chains.
+  crosses normal admission and receives no special authority. The public
+  proposal driver executes at most one fallback and returns its result without
+  applying this policy again. This pure builder does not infer execution origin
+  from an application-controlled identity key.
   """
 
   alias Spectre.Candidate
@@ -26,7 +27,6 @@ defmodule Spectre.Fallback do
          {:ok, decision} <- Decision.new(decision),
          {:ok, context} <- SubmissionContext.new(context),
          :ok <- refused(decision),
-         :ok <- not_recursive(decision),
          :ok <- decision_context(decision, context) do
       materialize_policy(policy, decision, context)
     end
@@ -49,11 +49,6 @@ defmodule Spectre.Fallback do
 
   defp refused(%Decision{outcome: :refused}), do: :ok
   defp refused(%Decision{outcome: outcome}), do: {:error, {:fallback_not_applicable, outcome}}
-
-  defp not_recursive(%Decision{candidate_identity_key: "fallback:" <> _suffix}),
-    do: {:error, :recursive_fallback_forbidden}
-
-  defp not_recursive(%Decision{}), do: :ok
 
   defp decision_context(decision, context) do
     with {:ok, expected} <- SubmissionContext.from_decision(decision),

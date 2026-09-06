@@ -1,5 +1,14 @@
 defmodule Spectre.Kernel.Grant do
-  @moduledoc false
+  @moduledoc """
+  Internal, ephemeral permission to consume one committed Act into an Attempt.
+
+  This type is documented so runtime orchestration signatures are inspectable;
+  it is not part of the application-facing proposal API. Grants are minted only
+  after commit, bound to a Domain generation and exact Act material, and checked
+  again at consumption. They are not ledger records, externally verifiable
+  signatures or reusable provider credentials. Applications should submit via
+  `Spectre.propose/3`, which does not return this internal value.
+  """
 
   require Spectre.Portable
 
@@ -20,7 +29,7 @@ defmodule Spectre.Kernel.Grant do
   @enforce_keys @claim_fields ++ [:mac]
   defstruct @enforce_keys
 
-  @typedoc false
+  @typedoc "Internal sealed claims; never persist or expose this value to a Mind."
   @type t :: %__MODULE__{
           act_ref: String.t(),
           domain_ref: String.t(),

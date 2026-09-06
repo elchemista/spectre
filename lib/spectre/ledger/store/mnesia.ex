@@ -490,7 +490,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
 
     with {:ok, entries} <- decode_entry_rows(rows, config, domain_ref),
          {:ok, expected} <- derive_batch_info(domain_ref, entries),
-         true <- expected == info do
+         true <- expected === info do
       :ok
     else
       false -> {:error, {:ledger_mnesia_batch_metadata_mismatch, info.batch_id}}
@@ -501,7 +501,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
   defp validate_batch_index(config, domain_ref, rows, entries) when is_list(rows) do
     with {:ok, stored} <- decode_batch_records(config, domain_ref, rows),
          {:ok, expected} <- expected_batch_index(domain_ref, entries),
-         true <- stored == expected do
+         true <- stored === expected do
       :ok
     else
       false -> {:error, :ledger_mnesia_batch_index_mismatch}

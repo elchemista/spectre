@@ -60,7 +60,14 @@ defmodule Spectre.Domain.Admission.Planner do
 
   defp plan_candidate(state, request, candidate, context, projection, admitted_at) do
     case Projection.candidate_decision(projection, candidate.identity_key) do
-      {:ok, %{candidate_digest: digest}} when digest == candidate.material_digest ->
+      # Idempotency recovers an earlier result; it does not authorize another
+      # authenticated caller to retrieve it or trigger its pending dispatch.
+      # Compare the Decision's trusted context, not the Candidate's claims:
+      # a refused Candidate can legitimately contain mismatched claims.
+      {:ok, %{submission_context_ref: ref}} when ref !== context.ref ->
+        {:error, :candidate_retry_context_mismatch}
+
+      {:ok, %{candidate_digest: digest}} when digest === candidate.material_digest ->
         {:ok, success_plan(request, candidate), projection, []}
 
       {:ok, _different} ->

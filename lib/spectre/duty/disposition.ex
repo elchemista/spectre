@@ -1,5 +1,15 @@
 defmodule Spectre.Duty.Disposition do
-  @moduledoc false
+  @moduledoc """
+  Data-only proposal for disposing of one exact Duty opening.
+
+  `for_duty/4` pins the cause and opening digest and names supporting Evidence
+  and any requested Meter resolution. Construction neither closes the Duty nor
+  authorizes that resolution. Submit through `Spectre.dispose_duty/4`; the
+  kernel validates the disposition route, independence where required, and
+  mechanical closing conditions before committing an Act.
+
+  Ratification, repudiation or accepting loss never rewrites the original cause.
+  """
 
   require Spectre.Portable
 

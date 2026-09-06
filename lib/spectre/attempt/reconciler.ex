@@ -1,5 +1,12 @@
 defmodule Spectre.Attempt.Reconciler do
-  @moduledoc false
+  @moduledoc """
+  Internal pure planner for missing Duty and dispatch-expiration records.
+
+  Plans derive from the verified prefix and trusted time. They contain payloads,
+  not executed repairs: the Domain must commit and recover the planned batch
+  before relying on it. The planner never retries an external executor, treats
+  timeout as proof of no effect, or independently disposes of an open Duty.
+  """
 
   alias Spectre.{Act, Portable}
   alias Spectre.Domain.{Event, Projection}

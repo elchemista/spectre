@@ -1,252 +1,270 @@
 # Spectre
 
 [![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
-[![Hex](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
-[![HexDocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/spectre/0.3.4)
 
-**An OTP-native Elixir runtime for building agents whose routing, state,
-policies, and side effects stay explicit.**
+An Elixir library for agents whose proposals cross an explicit authority boundary
+before they can cause governed effects.
 
-Spectre treats an agent the way OTP treats a system: a supervised set of
-processes with one canonical owner for every piece of state, explicit messages
-at every boundary, and recovery designed in from the start. If you know
-GenServer, supervision trees, and "let it crash", you already have the mental
-model - Spectre applies it to conversations, model calls, and tool execution.
+This checkout targets **0.4.0, unreleased**. It replaces the 0.3 runtime; it is
+not a drop-in upgrade. Functional validation, adversarial tests and performance
+qualification remain release work. In particular, the current P1 baseline is a
+performance **no-go**, not a production throughput claim.
 
-A Spectre agent should read like a map, not a magic trick.
+Start with [Governed surface and trust assumptions](GOVERNED_SURFACE.md).
+The [Governed Act Model](GOVERNED_ACT_MODEL.md) defines the intended semantics;
+the surface document explains what this implementation can actually promise.
 
-New to the project? This overview is step one. Continue with
-[Installation](docs/INSTALLATION.md), or open [Start Here](docs/START_HERE.md)
-for the complete four-step path before choosing an extension or durable
-subsystem.
+## The core
 
-## Philosophy
+A Mind proposes; it does not create authority. Four records keep different
+questions separate:
 
-Three ideas define Spectre. Everything else in the library is a consequence of
-them.
+| Record | What it means |
+| --- | --- |
+| Mandate | Who may propose which consequences, for whom, within which limits |
+| Evidence | What supports a proposition, with provenance and assumptions |
+| Act | The exact exercise of authority committed before capability release |
+| Duty | Unresolved causal debt and the conditions for disposing of it |
 
-### 1. The model proposes. It never executes.
-
-Every side effect crosses a fixed safety boundary:
-
-- models and routes may **propose** work;
-- protected work must pass a **deterministic policy**;
-- **approval changes state** - it does not run anything;
-- **execution happens only through an explicit host call**;
-- every outcome is returned as plain data.
-
-No model output can skip a policy, invent a route, or trigger a side effect on
-its own. Your application keeps owning business rules, permissions, storage,
-and the actual operations. The whole lifecycle at a glance:
+A governed execution follows this order:
 
 ```text
-input
-  -> normalize
-  -> restore state and memory
-  -> resolve an open policy, or route the turn
-  -> run handler
-       -> reply / no response
-       -> stage effect
-            -> unprotected: pending -> execute -> completed / failed
-            -> protected: waiting_policy
-                 -> accepted -> approved -> execute -> completed / failed
-                 -> rejected / attempts exceeded -> cancelled
+authenticated input → Evidence → Mind → Candidate
+    → kernel Decision → ledger commit of Act
+    → internal Grant → durable Attempt → broker / executor
+    → Evidence and Outcome → settlement or retained Duty
 ```
 
-### 2. Routing is a dial, not a dogma.
+Not every Decision admits an Act. Refusal, inability to decide and unknown class
+remain distinct. An ambiguous external result is not permission to retry.
+A late receipt does not need the old Mandate to become active again.
 
-The lifecycle around a decision is always deterministic. How the agent
-*decides* - which route handles this input - is exactly as deterministic as
-you configure it to be:
+One Domain owns one logical ledger order and shared authority accounting.
+Projection and offline audit use the same pure governed-act semantics, with
+separate input drivers. Agent processes never own a second authoritative budget.
+
+## Use the development checkout
+
+Requires Elixir 1.19 or later within the supported 1.x line. CI exercises
+Elixir 1.19 / OTP 28 and Elixir 1.20 / OTP 29.
+
+Before 0.4.0 is published, use a local checkout in the host application's deps:
 
 ```elixir
-router(via: [:regex])                                # fully deterministic
-router(via: [:regex, :embedding, :classifier])       # hybrid: patterns win, semantics cover paraphrases
-router(via: [:regex, :embedding, :classifier,
-             :semantic_cache, :llm_classifier])      # model-in-the-loop
+{:spectre, path: "../spectre"}
 ```
 
-With `:llm_classifier` in the chain, routing is genuinely model-driven - but
-only between routes the agent declares, only after cheaper evidence was not
-decisive, and always inside the same deterministic lifecycle. A refunds bot can
-run pure regex; an open-ended assistant can lean on the LLM; both get the same
-guarantees. See [Routing](docs/ROUTING.md).
+Spectre starts its Domain supervision infrastructure as an OTP application.
+The host chooses and supervises storage and its own optional agent Instances.
 
-### 3. Everything durable is data - and data never becomes code.
+There is no automatic credential discovery, model provider, default business
+authority or transport server.
 
-Agents compile to canonical, content-addressed **Definitions**. Runtime-authored
-behavior (skills, work programs, change proposals) is portable data that can
-only reference operations the host already registered - never callbacks, never
-executable templates. An agent can even propose changes to *itself*, but only
-through the same governance every change passes: evaluation, review, explicit
-approval, activation, and rollback. See [Governance](docs/GOVERNANCE.md) and
-the [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md).
+## Host integration
 
-## Installation
+The following is a wiring outline, **not a self-contained payment application**.
+The host must first construct valid Genesis, Principal, HostProfile, Surface
+and root Mandate records and supply the adapters named here.
 
 ```elixir
-def deps do
-  [
-    {:spectre, "~> 0.3.4"}
-  ]
-end
-```
+{:ok, store_pid} = Spectre.Ledger.Store.ETS.start_link()
+store = {Spectre.Ledger.Store.ETS, server: store_pid}
 
-See [Installation](docs/INSTALLATION.md) for release verification, snapshot
-pinning, and the optional SpectreKinetic and ExFastembed integrations. The
-complete API reference is published on [HexDocs](https://hexdocs.pm/spectre/0.3.4).
-Spectre is `0.x`: documented APIs may still evolve in minor releases; the
-normative compatibility surface is the [public API manifest](docs/PUBLIC_API.md).
-
-Instance-owned model calls can also cross a durable inference Invocation and,
-when the provider package supplies a bounded transport adapter, expose a
-pull-driven Enumerable. Run ownership, budgets, cancellation, steering and the
-terminal Result remain in Spectre core; provider HTTP/SDK code remains outside
-it. See [Streaming inference](docs/STREAMING_INFERENCE.md). Optional
-[boundary receipts](docs/RECEIPTS.md) record nondeterministic edges and
-canonical state roots without adding a second History runtime.
-
-## A Small Agent
-
-One readable module declares the stable shape of the agent. The DSL covers the
-repetitive structure; normal Elixir modules still own the business logic.
-
-```elixir
-defmodule MyApp.SupportAgent do
-  use Spectre.Agent, prompt_root: "priv/agents/support/prompts"
-
-  model(MyApp.LLM, purpose: :smart)
-
-  router(via: [:regex, :embedding, :classifier])
-
-  actions MyApp.SupportActions do
-    protect(:delete_account, with: :delete_account_confirmation)
-  end
-
-  policy :delete_account_confirmation do
-    request(:confirm_delete_account)
-    accept(:confirmed_delete, regex: ~r/^yes, delete it$/i)
-    reject(:cancel_delete, regex: ~r/^(no|cancel)$/i)
-    otherwise(ask: :confirm_delete_account_retry)
-    attempts(3, then: :cancel_pending)
-  end
-
-  interrupt :HELP, regex: ~r/^(help|menu)$/i do
-    reply(:help)
-  end
-
-  flow :support do
-    on :PRICING,
-      regex: ~r/\b(price|pricing|cost)\b/i,
-      embedding: ["how much does it cost?", "pricing plans"] do
-      reply(:pricing)
-    end
-
-    on :DELETE_ACCOUNT, regex: ~r/\bdelete my account\b/i do
-      action(:delete_account)
-    end
-  end
-end
-```
-
-`Spectre.turn/3` is the host boundary. Every turn returns one decision as data:
-
-```elixir
-{:ok, turn} =
-  Spectre.turn(MyApp.SupportAgent, "How much does it cost?",
-    conversation_id: "chat-123"
+{:ok, domain} =
+  Spectre.start_domain("domain:payments", store,
+    constitution: constitution,
+    genesis: genesis,
+    principals: principals,
+    host_profile: host_profile,
+    surface: surface,
+    root_mandates: root_mandates,
+    genesis_verifier: MyApp.GenesisVerifier,
+    ingress: MyApp.Ingress,
+    mind: MyApp.PaymentMind,
+    executors: [MyApp.PaymentExecutor],
+    broker: MyApp.CredentialBroker
   )
 
-case turn.decision do
-  {:reply, result} -> deliver(result.reply_text)
-  {:awaiting, awaitable, result} -> present_policy(awaitable, result)
-  {:needs, effect, result} -> enqueue_or_execute(effect, result)
-  {:completed, completion, result} -> deliver_completion(completion, result)
-  {:no_response, _result} -> :ok
+{:ok, context} = Spectre.authenticate(domain, scope_ref, authenticated_request)
+{:ok, scope} = Spectre.open_scope(domain, context, opened_at: now)
+
+{:ok, %{candidates: candidates}} = Spectre.turn(scope, input)
+results = Enum.map(candidates, &Spectre.propose(scope, &1))
+```
+
+ETS is volatile: use it for tests or ephemeral Domains, not durable promises.
+In an application supervision tree, supervise the Store instead of starting it
+from a short-lived request process. Inspect each proposal's Decision and Outcome;
+an `{:ok, result}` is not synonymous with an admitted or successful effect.
+
+The main extension points are ordinary behaviours:
+
+| Host implements | Responsibility |
+| --- | --- |
+| `Spectre.Ingress` | Authenticate principals and turn input into observed Evidence |
+| `Spectre.Mind` | Route, plan and return capability-free Candidates |
+| `Spectre.Attempt.Executor` | Attempt the committed consequence and report observations |
+| `Spectre.Secret.Broker` | Release an Act/Attempt-scoped execution capability |
+| `Spectre.Genesis.Verifier` | Check the externally recognized foundation |
+| `Spectre.Ledger.Store` | Atomic append, CAS, identity lookup and recovery |
+| `Spectre.Payload.Store` | Retrieve and erase external payload bytes |
+| `Spectre.Clock` | Supply trusted host time |
+
+Text, audio, TTS and VoIP require no new kernel-specific pipeline. The application
+owns codecs, sessions, routing, authentication, rate limits and transport
+security. Use `Spectre.Ingress.evidence/3` to bind observations to authenticated
+context; use `Spectre.Mind.candidate/2` to bind proposals to a Turn. A remote
+model call or audio transmission is governed only if included in the declared
+Surface and routed through the executor boundary.
+
+## Agent DSL, Skills and local state
+
+The DSL creates immutable data, not another runtime or policy engine:
+
+```elixir
+defmodule MyApp.LookupSkill do
+  use Spectre.Skill,
+    namespace: "my_app", name: "lookup", revision: 1, declared_at: 0
+
+  candidate "order", class: "orders.lookup", row: %{read: true}
+end
+
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent,
+    namespace: "my_app", name: "support", revision: 1, declared_at: 0
+
+  install MyApp.LookupSkill, as: "lookup"
 end
 ```
 
-The safety boundary in action - starting a protected action never executes it:
+`MyApp.SupportAgent.definition/0` returns a Definition. Its
+`candidate("lookup/order", turn, attrs)` fills an occurrence from a template.
+The host supplies the remaining exact consequence, Mandate, executor and
+contract fields. Installing a Skill neither grants authority nor reserves money.
 
-```elixir
-# The model/route proposes; the effect waits for the policy.
-{:ok, awaiting} = Spectre.turn(MyApp.SupportAgent, "delete my account")
-{:awaiting, %Spectre.Awaitable{status: :open}, result} = awaiting.decision
+A Mind implements `deliberate/2`; an optional `deliberate/3` supports local
+application state. Define the two callbacks explicitly, without default
+arguments that could interpret options as state.
 
-# Approval changes state - still nothing has run.
-{:ok, approved} =
-  Spectre.turn(MyApp.SupportAgent, "yes, delete it", state: result.state)
-{:needs, %Spectre.Effect{status: :approved}, approved_result} = approved.decision
+Routing is a reusable Zone M component. Declare `route "lookup", to: "order",
+match: [regex: ~r/^find order$/u, string_bag: ["lookup order"]]` in a Skill,
+and choose `router via: [:regex, :string_bag]` in its Agent. Compile once with
+`MyApp.SupportAgent.router/0`, then call `Spectre.Router.route/2` and materialize
+the selected template. Regex, string-bag (`bag_distance` is also accepted) and
+Jaro are built in. Custom methods implement `Spectre.Router.Adapter` and are
+wired with `adapters: [binary: MyMatcher]` for `via: [:binary]`. A route is not
+a GAM Decision; ties and callback errors are explicit. Optional provenance can
+be built with `Spectre.Router.Selection.evidence/4` and recorded as a derivation.
 
-# Only the host executes, explicitly.
-{:ok, executed} =
-  Spectre.execute(approved_result.state, %{
-    agent: MyApp.SupportAgent,
-    input: approved_result.input,
-    state: approved_result.state,
-    opts: [user_id: user.id]
-  })
+`Spectre.Input.Pipeline.new/2` prepares reusable local input plugs; `run/2`
+validates each intermediate value and distinguishes completion, halt and error.
+Use the built-in `Spectre.Input.Plugs.NormalizeText` or implement
+`Spectre.Input.Plug` for application-specific envelopes. No text/audio/VoIP schema
+is imposed. Run it in host code or the Mind, preserve relevant raw observations,
+and record interpretations with `Spectre.Mind.evidence/3`. Normalization does not
+authenticate input, grant authority or implicitly call remote providers.
+
+`extend MyPackage, as: "package", options: [...]` composes an extension's
+Definition through the same namespace/pinning mechanism as Skills. The
+`Spectre.Extension` contract separates portable templates/routes/assets from
+host adapter ports exposed through `ports/0`. The application explicitly wires
+ports to their boundaries; installing a package cannot grant authority.
+
+The legacy telemetry API is not yet ported. Read-only Scope views, ledger heads
+and audit exports provide the current governed observability surface.
+
+`Spectre.Instance` is optional: one GenServer serializes one authenticated
+Scope's deliberation and holds opaque application state. The host supervises
+it. Domain loss stops the Instance; the host must re-authenticate before creating
+a replacement. Scope openings bind their original authentication and host
+generation: changing either requires a new Scope, already covered by the needed
+Mandate. Local state is not a ledger checkpoint. `Instance.checkpoint/4` saves
+portable Mind state through an explicit application-store CAS; start with
+`checkpoint: {store, key}` and a currently authenticated Scope to restore it.
+Restoration never replays an executor or resets governed Meter/Duty state.
+
+`Spectre.Store` supplies a generic canonical-value/CAS adapter contract and a
+compressed ETS `Spectre.Store.Memory` implementation. `Definition.Store` adds
+immutable publication with verified readback. Application persistence is
+separate from the append-only ledger; durable application adapters implement
+the same small contract. No additional database dependency is imposed.
+
+Work and Vigil are durable Scope promises, not extra worker runtimes. Their
+Duty obligations survive the agent process. The host supplies scheduling and
+work execution.
+
+Morph is a Definition revision: `Spectre.Morph` prepares atomic `put`/`delete`/
+`test` changesets, deterministic diffs, forward-only rollback and host-selected
+transformation adapters. `Spectre.revise_definition/4` submits the resulting
+Definition through governance. It does not hot-load
+code, migrate process state or enlarge a Mandate. An Instance's pinned Definition
+is configuration, not proof that every Candidate originated from its templates.
+
+## Business constraints
+
+Consequence contracts define closed shapes, constants and exact boundary
+bindings. They are **not a general predicate or JSON Schema engine**: there are
+no arbitrary comparisons, numeric ranges or callback predicates in the ledger.
+
+For a refund budget, represent the authoritative amount in Meter requests and
+bind those requests in the consequence contract. A duplicate amount field is
+not automatically proven equal to the charged Meter amount. Per-operation
+business conditions such as “this order was paid” or a separate amount limit
+need an explicitly recognized Evidence proposition or a suitable authority
+model. The host owns the truth and authentication of that observation.
+
+## Persistence and audit
+
+Available ledger adapters: ETS (volatile), Disk, Mnesia, PostgreSQL and Mock.
+PostgreSQL uses the **host application's Repo**; Spectre adds no Ecto or driver
+dependency. Generate, review and run the migration in the host application:
+
+```sh
+mix spectre.gen.postgres_ledger_migration
 ```
 
-A full walkthrough - approval, rejection, retries, sessions, persistence - is
-in [Getting Started](docs/GETTING_STARTED.md).
+`Spectre.Audit.Export` encodes a canonical ledger, pinned Constitution and
+trusted capture time. It can be verified without the live Domain:
 
-## Core Concepts
+```sh
+mix spectre.audit domain.spectre
+mix spectre.audit domain.spectre --at 1735689600000
+```
 
-| Concept | In one sentence | Docs |
-| --- | --- | --- |
-| **Agent** | One module declaring routes, policies, actions, and prompts. | [DSL](docs/DSL.md) |
-| **Route** | How one input is matched to one handler - via the routing dial. | [Routing](docs/ROUTING.md) |
-| **Effect** | A described side effect with an explicit lifecycle; it never runs implicitly. | [Actions](docs/ACTIONS.md) |
-| **Policy** | A deterministic confirmation gate in front of protected actions. | [Actions](docs/ACTIONS.md) |
-| **Skill** | Reusable scoped behavior (flows, prompts, policies) an Agent mounts. | [Skills](docs/SKILLS.md) |
-| **Subject / Instance** | Durable identity: one supervised owner per agent-and-subject pair. | [Instances](docs/INSTANCES.md) |
-| **State / Run / Turn** | The conversation state machine, its checkpointable continuation, and the public projection of one step. | [Runs](docs/RUNS.md) |
-| **Work / Vigil** | Precise terminating procedures and durable observation loops. | [Operations](docs/OPERATIONS.md) |
-| **Stack** | Installable packages with immutable manifests; activation is not authorization. | [Stack](docs/STACK.md) |
-| **Definition** | The canonical, content-addressed form of an agent. | [Canonical Definitions](docs/CANONICAL_DEFINITIONS.md) |
-| **Governance** | How Definitions change: closed ChangeSets, review, approval, activation, rollback. | [Governance](docs/GOVERNANCE.md) |
-| **Reflection / Forge** | The agent examining itself and proposing changes - under the same governance. | [Reflective Runtime](docs/REFLECTIVE_RUNTIME.md) |
+The second form requires an observation time at or after capture. Missing Duties
+already required at capture are errors. Causes becoming due afterwards appear
+as `pending_duty_causes`, separately from recorded `open_duties`; later dispatch
+expirations appear as `expired_dispatches`. Auditing never repairs the export.
 
-## Spectre Ecosystem
+Hash-chain integrity is **not externally anchored authenticity**. This version
+does not sign ledger entries or publish witnessed heads. See the surface
+document before using an export as third-party evidence.
 
-Spectre core stays focused on Agent definitions, routing, policy, state,
-durability, and execution lifecycle. Optional repositories add one bounded
-capability each; they depend on Spectre's public contracts, while Spectre does
-not depend on or discover them. Each package is versioned independently, so
-verify its manifest and compatibility tests before combining releases.
+## Migration and readiness
 
-| Repository | Responsibility |
-| --- | --- |
-| [`spectre_mnemonic`](https://github.com/elchemista/spectre_mnemonic) | Active and durable memory, recall, search, consolidation, and provenance; it is not canonical Agent state or the application database. |
-| [`spectre_pulse`](https://github.com/elchemista/spectre_pulse) | Transport-independent Agent-to-Agent envelopes, discovery, routing, and delivery receipts; coordination policy and shared workflow state stay outside it. |
-| [`spectre_beam`](https://github.com/elchemista/spectre_beam) | External-channel normalization and idempotent delivery; identity, consent, policy, and Effect execution remain host/core concerns. |
-| [`spectre_directive`](https://github.com/elchemista/spectre_directive) | A resumable mission and evolving-plan loop; it does not replace core Work scheduling or Instance ownership. |
-| [`spectre_ledger`](https://github.com/elchemista/spectre_ledger) | An append-only ledger for checkpoints persisted through the existing Checkpoint Store boundary; it does not claim every runtime revision or deterministic side-effect replay. |
-| [`spectre_lab`](https://github.com/elchemista/spectre_lab) | Verified offline playback and isolated testing tools for Ledger checkpoint bundles; it adds no runtime owner, scheduler, or storage backend to core. |
-| [`spectre_kinetic`](https://github.com/elchemista/spectre_kinetic) | Tool retrieval and validated Action planning from Action Language; authorization and execution remain explicit core/host boundaries. |
-| [`spectre_prism`](https://github.com/elchemista/spectre_prism) | Constraint-aware model and profile selection by capability, privacy, cost, and latency; provider credentials and runtime ownership stay with the host/core. |
-| [`spectre_lens`](https://github.com/elchemista/spectre_lens) | Backend-neutral browser perception and browser Actions; browser authorization, Effect lifecycle, and canonical persistence remain outside it. |
+0.3 checkpoints, Stack.Runtime, flow/policy/effect declarations and old provider
+APIs are incompatible. There is no automatic 0.3 checkpoint importer in this
+checkout. Rebuild integrations against the behaviours above; reconcile legacy
+effects and unresolved obligations explicitly. Importing records as Evidence
+does not turn legacy effects into authorized Acts or settle their debt.
 
-[`spectre_ecosystem`](https://github.com/elchemista/spectre_ecosystem) is
-separate compatibility tooling, not a library or runtime dependency. It
-dispatches repository-owned GitHub test workflows and aggregates their results;
-it does not publish packages or add ecosystem knowledge to Spectre core.
+The remaining release work includes targeted adversarial testing and removal of
+repeated whole-history work from the runtime hot path. Passing static checks or
+reaching a test-count target does not close those gates.
 
-## Documentation
+From this checkout:
 
-For a first visit, read the [Overview](README.md),
-[Installation](docs/INSTALLATION.md), [Getting Started](docs/GETTING_STARTED.md),
-and [Architecture](docs/ARCHITECTURE.md) in that order. The
-[Start Here](docs/START_HERE.md) landing page keeps that path and routes each
-next goal without requiring you to understand the whole system first.
+```sh
+mix compile --warnings-as-errors
+mix format --check-formatted
+mix test
+mix test --cover
+mix credo --strict
+mix dialyzer
+mix docs --warnings-as-errors
+mix hex.build
+```
 
-The generated documentation then separates tutorials, core concepts, runtime
-and durability, production operations, extensions, reference material, and
-migration history. The [Public API Manifest](docs/PUBLIC_API.md) is the
-normative compatibility surface. The [guide for LLMs and coding
-agents](LLMS.md) is intentionally separate from the human learning path.
-
-## License
-
-Spectre is released under the [Apache License 2.0](LICENSE).
+Coverage retains its configured 95% gate; do not lower it to claim readiness.
+Generate API docs locally with `mix docs`. See [Changelog](CHANGELOG.md) for the
+breaking release and [Security policy](SECURITY.md) for reporting vulnerabilities.

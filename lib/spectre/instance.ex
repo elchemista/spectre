@@ -22,15 +22,18 @@ defmodule Spectre.Instance do
   one monitors the Domain process that authenticated its Scope and shuts down
   when that process or the Scope fence becomes invalid, allowing the host to
   re-authenticate and create a fresh Instance. No global Instance registry or
-  second persistence system is created here.
+  second persistence system is created here. Optional `checkpoint: {store, key}`
+  loads application state only. `checkpoint/4` explicitly saves it through a
+  host-configured `Spectre.Store`; it is never an execution checkpoint or a way
+  to restore a Scope. Checkpointing is not automatic after external effects.
   """
 
   use GenServer
 
   alias Spectre.{Candidate, Definition, Domain, Portable, Scope}
-  alias Spectre.Instance.State
+  alias Spectre.Instance.{Checkpoint, State}
 
-  @options [:scope, :definition_ref, :state, :name]
+  @options [:scope, :definition_ref, :state, :checkpoint, :name]
   @reserved_mind_options [:definition_ref, :state_revision]
   @scope_fence_errors [
     :context_domain_mismatch,
@@ -123,13 +126,21 @@ defmodule Spectre.Instance do
   @spec state(server()) :: %{required(:revision) => non_neg_integer(), required(:value) => term()}
   def state(server), do: GenServer.call(server, :state)
 
+  @doc "Saves portable Mind state, fencing concurrent writers with the store's revision."
+  @spec checkpoint(server(), Spectre.Store.config(), String.t(), non_neg_integer()) ::
+          {:ok, pos_integer()} | {:error, term()}
+  def checkpoint(server, store, key, expected_revision),
+    do: GenServer.call(server, {:checkpoint, store, key, expected_revision}, :infinity)
+
   @impl GenServer
   def init(config) do
     with {:ok, scope} <- current_scope(Map.fetch!(config, :scope)),
          definition_ref = Map.fetch!(config, :definition_ref),
          {:ok, domain_monitor} <- monitor_domain(scope),
-         {:ok, %Definition{}} <- fetch_definition(scope, definition_ref) do
-      {:ok, State.new(scope, definition_ref, Map.get(config, :state, %{}), domain_monitor)}
+         {:ok, %Definition{}} <- fetch_definition(scope, definition_ref),
+         {:ok, application_state} <- initial_state(config, scope) do
+      state = State.new(scope, definition_ref, application_state.value, domain_monitor)
+      {:ok, %{state | revision: application_state.revision}}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -144,6 +155,26 @@ defmodule Spectre.Instance do
 
   def handle_call(:state, _from, %State{} = state),
     do: {:reply, %{revision: state.revision, value: state.value}, state}
+
+  def handle_call({:checkpoint, store, key, expected}, _from, %State{} = state) do
+    case current_scope(state.scope) do
+      {:ok, _scope} ->
+        reply =
+          Checkpoint.save(
+            store,
+            key,
+            expected,
+            Scope.domain_ref(state.scope),
+            state.definition_ref,
+            %{revision: state.revision, value: state.value}
+          )
+
+        {:reply, reply, state}
+
+      {:error, _} = error ->
+        reply_or_stop(error, state)
+    end
+  end
 
   def handle_call(:definition, _from, %State{} = state) do
     state.scope
@@ -196,6 +227,17 @@ defmodule Spectre.Instance do
       {:error, _reason} = error -> error
     end
   end
+
+  defp initial_state(%{checkpoint: _checkpoint, state: _state}, _scope),
+    do: {:error, :instance_state_checkpoint_collision}
+
+  defp initial_state(%{checkpoint: {store, key}, definition_ref: ref}, scope),
+    do: Checkpoint.load(store, key, Scope.domain_ref(scope), ref)
+
+  defp initial_state(%{checkpoint: _invalid}, _scope), do: {:error, :invalid_instance_checkpoint}
+
+  defp initial_state(config, _scope),
+    do: {:ok, %{revision: 0, value: Map.get(config, :state, %{})}}
 
   defp fetch_definition(scope, definition_ref), do: Spectre.definition(scope, definition_ref)
 

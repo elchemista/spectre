@@ -2,8 +2,8 @@ defmodule Spectre.Attempt.Runner do
   @moduledoc """
   Orchestrates the executor-mediated half of a governed Act.
 
-  The Runner consumes only the internal, acknowledged response returned by
-  `Spectre.Domain.Sequencer.submit/3`. Refused or undecidable Decisions and
+  The Runner consumes only the internal, acknowledged Sequencer submission
+  response. Refused or undecidable Decisions and
   ledger-internal Acts return immediately. For an executor-mediated Act the
   ordering is strict:
 

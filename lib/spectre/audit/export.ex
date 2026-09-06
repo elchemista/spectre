@@ -106,7 +106,7 @@ defmodule Spectre.Audit.Export do
   def verify(export, audited_at, _codec_opts) when is_map(export) do
     with {:ok, export} <- from_data(export),
          {:ok, audited_at} <- audit_time(export, audited_at) do
-      Audit.verify(export["ledger"], export["constitution"], audited_at)
+      Audit.verify(export["ledger"], export["constitution"], export["exported_at"], audited_at)
     end
   end
 

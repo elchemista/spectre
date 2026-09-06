@@ -8,7 +8,9 @@ defmodule Mix.Tasks.Spectre.Audit do
 
   By default the semantic state is checked at the trusted capture time stored
   in the export. A later trusted time can be supplied to expose Duties that
-  became due after capture:
+  became due after capture. These causes are reported separately from recorded
+  open Duties; missing materializations already required at capture still fail
+  the audit. This does not query the live Domain or predict later world events:
 
       mix spectre.audit path/to/domain.spectre --at 1735689600000
 
@@ -69,8 +71,12 @@ defmodule Mix.Tasks.Spectre.Audit do
     Mix.shell().info("domain: #{report.domain_ref}")
     Mix.shell().info("revision: #{report.ledger_revision}")
     Mix.shell().info("head: #{report.head_digest}")
+    Mix.shell().info("captured at: #{report.captured_at}")
+    Mix.shell().info("audited at: #{report.audited_at}")
     Mix.shell().info("acts: #{report.counts.acts}")
     Mix.shell().info("attempts: #{report.counts.attempts}")
     Mix.shell().info("open duties: #{length(report.open_duties)}")
+    Mix.shell().info("pending duty causes: #{length(report.pending_duty_causes)}")
+    Mix.shell().info("expired dispatches: #{length(report.expired_dispatches)}")
   end
 end

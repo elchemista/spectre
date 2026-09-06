@@ -626,7 +626,7 @@ defmodule Spectre.Ledger.Store.Postgres do
 
   defp validate_decoded_batch(entries, domain_ref, info) do
     with {:ok, derived} <- Support.derive_batch_info(domain_ref, entries),
-         true <- derived == info do
+         true <- derived === info do
       :ok
     else
       false -> {:error, {:ledger_postgres_batch_metadata_mismatch, info.batch_id}}

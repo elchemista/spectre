@@ -7,6 +7,67 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
+## 0.4.0 — Unreleased
+
+This is a breaking replacement of the runtime, not an incremental 0.3 upgrade.
+It is not yet performance-qualified or declared stable.
+
+### Added
+
+- Governed-act core: Genesis, Principal, Mandate, Evidence, Candidate, Decision,
+  Act, Attempt, Outcome, Duty and conserved Meter accounting.
+- One logical append-only ledger per Domain, CAS and idempotent batch identity,
+  canonical replay, and separate projection/offline-audit drivers sharing pure
+  semantics. ETS, Disk, Mnesia, host-Repo PostgreSQL and fault-injection Mock
+  adapters; PostgreSQL migration generation without an Ecto dependency.
+- Authenticated ingress, capability-free Mind, executor and secret-broker
+  behaviours; late observations remain separate from authority admission.
+- Subtractive delegation, restriction, revocation and devolution, independent
+  Duty disposition, governed Definition/Surface/HostProfile revisions, Scope
+  promises, material presentation/consent, declassification and erasure records.
+- Data-only Agent/Skill declarations, explicit Definition revisions (Morph),
+  and optional per-Scope OTP Instances for opaque application state.
+- Composable routing with regex, string-bag, Jaro and custom `via` adapters;
+  namespaced extensions and host ports, immutable Definition publication,
+  CAS application stores/checkpoints, and atomic Morph changesets/diff/rollback.
+- Reusable local input plugs with a UTF-8 normalizer and bounded portable
+  intermediate values. No media format, transport or remote provider is imposed.
+- Canonical audit exports and CLI. Later observation reports distinguish pending
+  Duty causes and expired dispatches from records present at capture; omissions
+  already required at capture remain errors.
+- Governed surface and trust-assumption documentation, including same-BEAM,
+  clock, host-storage and unsigned-history limitations.
+
+### Changed
+
+- Replaced Stack.Runtime and the 0.3 flow/policy/effect execution model. Every
+  supported governed execution now crosses Candidate → Decision → committed
+  Act → Attempt, with capability release only after the durable boundary.
+- Skills do not own authority or another runtime. Work/Vigil are durable Scope
+  promises; Morph revises declarative data, not executable code or process state.
+- Rewrote the README and security boundary for 0.4. No automatic 0.3 checkpoint
+  importer or old-runtime compatibility is provided. Host integrations and
+  unresolved legacy effects require explicit migration and reconciliation.
+
+### Fixed during development
+
+- Reject non-integer batch first revisions before Mnesia range construction;
+  compare PostgreSQL/Mnesia derived metadata using exact term equality.
+- Preserve capture-time integrity checks when auditing an export at a later
+  time, rather than requiring the frozen export to contain future records.
+- Keep routing provenance as complete derived Evidence, and make large Morph
+  diffs applicable within the changeset operation budget.
+- Diagnose malformed Doctor module lists without crashing, and inspect original
+  BEAM dependencies when coverage instrumentation is active.
+
+### Known release gates
+
+- Targeted adversarial validation and the configured coverage gate remain open.
+- The P1 performance baseline is a no-go; whole-history hot-path work needs
+  reduction and the benchmark must be repeated before claiming stability.
+- No ledger signatures, external head witnessing, turnkey isolation or automatic
+  legacy migration are supplied. See GOVERNED_SURFACE.md for the actual boundary.
+
 ## 0.3.4 — 2026-08-30
 
 ### Added
@@ -76,7 +137,7 @@ migration called out explicitly below.
   distributed profiles for portable leases, Ref binding, fencing floors,
   monotonic supersession, cross-Ref isolation, and concurrent claims.
 - Added fenced offline configured-data erasure through
-  `Spectre.erase_instance/3`. Erasure requires exact stable-key confirmation,
+  [`Spectre.erase_instance/3`](https://hexdocs.pm/spectre/0.3.3/Spectre.html#erase_instance/3). Erasure requires exact stable-key confirmation,
   refuses a live local Instance, uses a non-preemptive maintenance claim,
   orders configured Journal records, pending receipt payloads, and stable plus
   legacy checkpoint keys, verifies marker read-back, and returns a
@@ -162,7 +223,7 @@ migration called out explicitly below.
   now commit model selection and dispatch intent, execute one-shot attempts
   outside the mailbox, and accept only generation/Run/invocation/dispatch-
   fenced terminal receipts before post-processing the Run.
-- Added Instance-owned streaming through `Spectre.stream/3`. The public handle
+- Added Instance-owned streaming through [`Spectre.stream/3`](https://hexdocs.pm/spectre/0.3.2/Spectre.html#stream/3). The public handle
   is a one-shot pull Enumerable backed by a supervised `:gen_statem`, with
   bounded transport/event buffering, correlated cancellation, restart-based
   steering, aggregate and per-attempt budgets, liveness deadlines, terminal
@@ -276,7 +337,7 @@ migration called out explicitly below.
   consumers that matched the unsafe 0.3.0 payload shape must read identifiers
   and reason classes from metadata instead of relying on raw terms or
   non-numeric measurements.
-- Made `Spectre.Instance.info/1` and `Spectre.checkpoint_status/1` passive
+- Made `Spectre.Instance.info/1` and [`Spectre.checkpoint_status/1`](https://hexdocs.pm/spectre/0.3.1/Spectre.html#checkpoint_status/1) passive
   monitoring reads. Checkpoint status now exposes a redacted error class and
   reconciliation projection instead of raw adapter reasons; Monitor logs also
   classify failures and digest caller identifiers. Code that matched a raw
@@ -407,7 +468,7 @@ migration called out explicitly below.
   Human Report projection, separate review and approval commits, and risk-based
   human approval.
 - Added governed activation/recovery verification and ancestor-only
-  `Spectre.rollback/3` through the existing owner fence and activation-generation
+  [`Spectre.rollback/3`](https://hexdocs.pm/spectre/0.2.9/Spectre.html#rollback/3) through the existing owner fence and activation-generation
   CAS.
 - Added conservative administered GC plans that retain by default, verify a
   complete ancestry-closed inventory, and leave deletion to a revalidated
@@ -477,7 +538,7 @@ migration called out explicitly below.
   route, continuation, plan, receipt, and budget lineage before execution.
 - Added effective `Spectre.Prompt.Receipt` evidence and safe scalar-only
   `Spectre.Prompt.Materializer` rendering for inference nodes.
-- Added `Spectre.start_execution/3` and Instance integration on the existing
+- Added [`Spectre.start_execution/3`](https://hexdocs.pm/spectre/0.2.8/Spectre.html#start_execution/3) and Instance integration on the existing
   fenced operation runtime, including normal pause/amend/resume/stop, query,
   checkpoint, retry, and recovery behavior.
 - Added typed Flow ↔ Work and Work → Work handoffs, pure registered state
@@ -800,7 +861,7 @@ migration called out explicitly below.
 - Added typed `Spectre.Definition.Canonical` envelopes,
   `Spectre.Definition.Component`, and content-addressed
   `Spectre.Definition.Ref` values. Compiled Agents and mounted Skills lower into
-  one IR through `Spectre.Definition.canonical/2`.
+  one IR through [`Spectre.Definition.canonical/2`](https://hexdocs.pm/spectre/0.2.1/Spectre.Definition.html#canonical/2).
 - Compiled prompt assets now lower into governed canonical fragments carrying
   closed placeholder schemas, provenance, visibility, trust, priority, budget,
   token cap, condition Ref, and digest metadata.
@@ -913,9 +974,9 @@ migration called out explicitly below.
 - `Spectre.Journal.Record.to_json_map/1` renders a journal record as a
   JSON-safe, string-keyed map (atoms→strings, tuples→lists, calendar types→
   ISO-8601, fallback `inspect/2`) for direct persistence by store adapters.
-- `Spectre.ensure_instance/4` starts or reuses an Instance and always returns
+- [`Spectre.ensure_instance/4`](https://hexdocs.pm/spectre/0.2.0/Spectre.html#ensure_instance/4) starts or reuses an Instance and always returns
   `{:ok, pid}` or `{:error, reason}`, normalizing the supervisor's richer
-  start shapes. `Spectre.Instance.trace_id/1` exposes the per-generation
+  start shapes. [`Spectre.Instance.trace_id/1`](https://hexdocs.pm/spectre/0.2.0/Spectre.Instance.html#trace_id/1) exposes the per-generation
   trace identifier without reaching into `info/1`.
 
 - `Spectre.Turn.Dispatcher` drives a `%Spectre.Turn{}` decision to a delivered
@@ -943,7 +1004,8 @@ migration called out explicitly below.
   declarations plus flow options are inherited by nested flows.
   `state.current_flow` now prioritizes by membership in `flow_path`, so
   setting a parent flow prioritizes its whole subtree. String flows passed to
-  `Spectre.Router.evaluate/3` resolve nested flow names as well.
+  [`Spectre.Router.evaluate/3`](https://hexdocs.pm/spectre/0.2.0/Spectre.Router.html#evaluate/3)
+  resolve nested flow names as well.
 - The default LLM fallback classifier prompt groups visible labels by flow
   taxonomy (indented, one `flow/` header per group) instead of a flat list.
   Each label carries up to two example phrases from its `embedding:`/`bag:`/
@@ -1149,7 +1211,7 @@ migration called out explicitly below.
   `Spectre.Subject.Registry` for explicit Agent-scoped identity resolution,
   bounded one-time challenges, optional source confirmation, conflict
   rejection, revocation, and privacy-safe Journal commits.
-- Public `Spectre.instance/4`, `lookup_instance/3`, and `resume/4` APIs.
+- Public [`Spectre.instance/4`](https://hexdocs.pm/spectre/0.1.4/Spectre.html#instance/4), `lookup_instance/3`, and `resume/4` APIs.
   `Spectre.summon/1,3` select the Instance runtime when an explicit `:subject`
   is supplied.
 
