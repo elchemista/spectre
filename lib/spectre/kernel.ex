@@ -30,7 +30,7 @@ defmodule Spectre.Kernel do
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.Admission.Binding
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{ReadIndex, State}
   alias Spectre.Kernel.Authority
   alias Spectre.Kernel.Authority.Effective
   alias Spectre.Kernel.Decision, as: DecisionEngine
@@ -239,9 +239,11 @@ defmodule Spectre.Kernel do
 
   defp recognize_with_authority(candidate, mandate, projection, time) do
     available_evidence =
-      projection
-      |> ErasureAnalysis.available_evidence()
-      |> Map.values()
+      if is_nil(candidate.presentation_ref) do
+        ReadIndex.evidence_for(projection, mandate.conditions)
+      else
+        projection |> ErasureAnalysis.available_evidence() |> Map.values()
+      end
 
     missing_refs = missing_evidence_refs(candidate.evidence_refs, projection.evidence)
 

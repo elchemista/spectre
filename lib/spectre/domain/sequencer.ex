@@ -44,7 +44,9 @@ defmodule Spectre.Domain.Sequencer do
   alias Spectre.Domain.{
     Configuration,
     Context,
+    IngressWork,
     Projection,
+    Query,
     Reconciliation,
     Startup,
     Transaction
@@ -335,6 +337,13 @@ defmodule Spectre.Domain.Sequencer do
   def projection(server), do: GenServer.call(server, :projection)
 
   @doc false
+  def head(server), do: GenServer.call(server, :head)
+
+  @doc false
+  def query(server, %Spectre.Scope{} = scope, query),
+    do: GenServer.call(server, {:query, scope, query})
+
+  @doc false
   @spec scope_projection(GenServer.server(), SubmissionContext.t()) ::
           {:ok, Projection.t()} | {:error, term()}
   def scope_projection(server, %SubmissionContext{} = context),
@@ -373,8 +382,14 @@ defmodule Spectre.Domain.Sequencer do
     with {:ok, config} <- Configuration.new(opts),
          {:ok, projection} <- Startup.load(config),
          state = State.new(config, projection),
-         {:ok, projection} <- Transaction.repair_missing_duties(state) do
-      {:ok, schedule_reconciliation(%{state | projection: projection})}
+         {:ok, projection} <- Transaction.repair_missing_duties(state),
+         {:ok, ingress_supervisor} <- Task.Supervisor.start_link() do
+      {:ok,
+       schedule_reconciliation(%{
+         state
+         | projection: projection,
+           ingress_supervisor: ingress_supervisor
+       })}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -383,6 +398,9 @@ defmodule Spectre.Domain.Sequencer do
   @impl GenServer
   def handle_call(:projection, _from, %State{} = state),
     do: {:reply, state.projection, state}
+
+  def handle_call(:head, _from, %State{} = state),
+    do: {:reply, {:ok, Query.head(state)}, state}
 
   # Projection inspection is capability-free and remains available for crash
   # recovery. Every scoped or operational request is fenced as soon as a fatal
@@ -398,6 +416,9 @@ defmodule Spectre.Domain.Sequencer do
 
     {:reply, reply, state}
   end
+
+  def handle_call({:query, scope, query}, _from, %State{} = state),
+    do: {:reply, Query.scoped(state, scope, query), state}
 
   def handle_call({:definition, context, ref}, _from, %State{} = state) do
     reply =
@@ -434,9 +455,8 @@ defmodule Spectre.Domain.Sequencer do
     {:reply, reply, state}
   end
 
-  def handle_call({:authenticate, scope_ref, input, opts}, _from, %State{} = state) do
-    {:reply, Context.authenticate(state, scope_ref, input, opts), state}
-  end
+  def handle_call({:authenticate, scope_ref, input, opts}, from, %State{} = state),
+    do: IngressWork.authenticate(state, from, scope_ref, input, opts)
 
   def handle_call({:trusted_time, opts}, _from, %State{} = state) do
     reply =
@@ -445,6 +465,15 @@ defmodule Spectre.Domain.Sequencer do
 
     {:reply, reply, state}
   end
+
+  def handle_call(
+        request,
+        _from,
+        %State{pending_count: count, max_pending_submissions: limit} = state
+      )
+      when is_tuple(request) and elem(request, 0) in [:submit, :submit_scope_opening] and
+             count >= limit,
+      do: {:reply, {:error, :submission_queue_full}, state}
 
   def handle_call({:submit, context, candidate, opts}, from, %State{} = state) do
     case validate_call_options(opts) do
@@ -492,15 +521,15 @@ defmodule Spectre.Domain.Sequencer do
     validated_command_reply(state, opts, &ObservationCommand.record(&1, input))
   end
 
-  def handle_call({:observe, context, input, opts}, _from, %State{} = state),
-    do: ingress_observation_reply(state, context, input, opts)
+  def handle_call({:observe, context, input, opts}, from, %State{} = state),
+    do: ingress_observation_reply(state, from, context, input, opts)
 
   def handle_call(
         {:begin_turn, context, input, context_evidence_refs, opts},
-        _from,
+        from,
         %State{} = state
       ),
-      do: begin_turn_reply(state, context, input, context_evidence_refs, opts)
+      do: begin_turn_reply(state, from, context, input, context_evidence_refs, opts)
 
   def handle_call({:record_derivation, context, turn, evidence, opts}, _from, %State{} = state),
     do: derivation_reply(state, context, turn, evidence, opts)
@@ -520,33 +549,29 @@ defmodule Spectre.Domain.Sequencer do
     validated_command_reply(state, opts, &PresentationCommand.record(&1, context, input))
   end
 
-  defp ingress_observation_reply(state, context, input, opts) do
+  defp ingress_observation_reply(state, from, context, input, opts) do
     case observation_options(opts) do
       {:ok, ingress_opts} ->
-        run_after_duty_repair(state, &InputCommand.observe(&1, context, input, ingress_opts))
+        IngressWork.observe(state, from, context, input, ingress_opts, :observe)
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
   end
 
-  defp begin_turn_reply(state, context, input, context_evidence_refs, opts) do
+  defp begin_turn_reply(state, from, context, input, context_evidence_refs, opts) do
     with {:ok, mind} <- configured_mind(state),
          {:ok, ingress_opts} <- observation_options(opts),
          {:ok, context_evidence_refs} <-
            Portable.normalize_refs(context_evidence_refs, :context_evidence_refs) do
-      run_after_duty_repair(
+      IngressWork.observe(
         state,
-        fn current ->
-          InputCommand.begin_turn(
-            current,
-            context,
-            input,
-            context_evidence_refs,
-            ingress_opts
-          )
-          |> attach_mind(mind)
-        end
+        from,
+        context,
+        input,
+        ingress_opts,
+        {:turn, mind},
+        context_evidence_refs
       )
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -584,6 +609,25 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   @impl GenServer
+  def handle_info({ref, result}, %State{} = state) when is_reference(ref) do
+    case IngressWork.take(state, ref) do
+      {:ok, job, state} ->
+        {:reply, reply, state} = finish_ingress(state, job.operation, result)
+        GenServer.reply(job.from, reply)
+        {:noreply, state}
+
+      :not_found ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %State{} = state) do
+    fail_ingress(state, ref, {:ingress_worker_failed, reason})
+  end
+
+  def handle_info({:ingress_timeout, ref}, %State{} = state),
+    do: fail_ingress(state, ref, :ingress_timeout)
+
   def handle_info({:stop_halted, reason}, %State{halted_reason: reason} = state),
     do: {:stop, {:shutdown, {:sequencer_halted, reason}}, state}
 
@@ -623,6 +667,40 @@ defmodule Spectre.Domain.Sequencer do
 
   def handle_info({:reconcile, _stale_token}, %State{} = state), do: {:noreply, state}
 
+  @impl GenServer
+  def terminate(_reason, state), do: IngressWork.stop_all(state)
+
+  defp finish_ingress(%State{halted_reason: reason} = state, _operation, _result)
+       when not is_nil(reason),
+       do: {:reply, {:error, {:sequencer_halted, reason}}, state}
+
+  defp finish_ingress(state, _operation, {:error, reason}),
+    do: {:reply, {:error, reason}, state}
+
+  defp finish_ingress(state, {:authenticate, scope_ref}, {:ok, context}),
+    do: {:reply, Context.finish_authentication(state, scope_ref, context), state}
+
+  defp finish_ingress(state, {:observe, context, _refs}, {:ok, evidence}),
+    do: run_after_duty_repair(state, &InputCommand.finish_observation(&1, context, evidence))
+
+  defp finish_ingress(state, {{:turn, mind}, context, refs}, {:ok, evidence}) do
+    run_after_duty_repair(state, fn current ->
+      current |> InputCommand.finish_turn(context, evidence, refs) |> attach_mind(mind)
+    end)
+  end
+
+  defp fail_ingress(state, ref, reason) do
+    case IngressWork.take(state, ref) do
+      {:ok, job, state} ->
+        IngressWork.stop(job)
+        GenServer.reply(job.from, {:error, reason})
+        {:noreply, state}
+
+      :not_found ->
+        {:noreply, state}
+    end
+  end
+
   defp call(server, request, opts, invalid_options) do
     if Keyword.keyword?(opts),
       do: GenServer.call(server, request, call_timeout(opts)),
@@ -650,6 +728,8 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp schedule_flush(%State{} = state, _delay), do: state
+
+  defp expedite_flush(%State{flush: {_token, nil}} = state), do: state
 
   defp expedite_flush(%State{flush: {token, timer}} = state) do
     if timer, do: Process.cancel_timer(timer, async: true, info: false)

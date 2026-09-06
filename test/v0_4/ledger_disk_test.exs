@@ -1,11 +1,73 @@
 defmodule Spectre.V04Test.LedgerDiskTest do
   use ExUnit.Case, async: true
 
+  alias Spectre.Canonical.Value
   alias Spectre.Ledger
   alias Spectre.Ledger.Store, as: LedgerStore
   alias Spectre.Ledger.Store.Disk
 
   @frame_header_size 45
+
+  test "failed first appends do not retain empty Domain indexes", %{directory: directory} do
+    {store, _child} = start_disk(directory)
+
+    for n <- 1..20 do
+      assert {:error, :ambiguous} =
+               LedgerStore.append(store, "absent-#{n}", "first", [%{"n" => n}], 0,
+                 recorded_at: 1,
+                 fault: :before_commit
+               )
+    end
+
+    {Disk, opts} = store
+    assert :sys.get_state(opts[:server]).domains === %{}
+  end
+
+  test "truncating an incomplete first batch leaves no committed head", %{directory: directory} do
+    domain = "incomplete-genesis"
+    File.write!(domain_path(directory, domain), "SPDL")
+    {store, _child} = start_disk(directory, tail_policy: :truncate)
+    assert :not_found = LedgerStore.head(store, domain)
+    assert :not_found = Ledger.load(store, domain)
+    assert {:ok, 1} = append(store, domain, "first", [%{"new" => true}], 0)
+    assert {:ok, %{revision: 1}} = LedgerStore.head(store, domain)
+  end
+
+  test "the disk owner retains offsets, not historical payload bodies", %{directory: directory} do
+    {store, _child} = start_disk(directory, compressed: true)
+    payload = %{"body" => String.duplicate("historical bytes", 20_000)}
+
+    for n <- 1..12 do
+      assert {:ok, ^n} = append(store, "memory", "batch-#{n}", [payload], n - 1)
+    end
+
+    {Disk, opts} = store
+    state = :sys.get_state(opts[:server])
+    domain = state.domains["memory"]
+    refute Map.has_key?(domain, :entries_rev)
+    refute Map.has_key?(domain, :batches)
+    assert :erlang.external_size(state) < 8_192
+    assert is_reference(domain.index)
+    assert {:ok, %{entries: [entry], revision: 6}} = LedgerStore.read_batch(store, "memory", 6)
+    assert entry.payload === payload
+    assert {:ok, %{revision: 12}} = LedgerStore.head(store, "memory")
+  end
+
+  test "compressed batches survive restart and a change of write policy", %{directory: directory} do
+    payloads = [%{"body" => String.duplicate("retained content", 5_000)}]
+    {store, child} = start_disk(directory, compressed: true)
+    assert {:ok, 1} = append(store, "compressed", "first", payloads, 0)
+    assert {:ok, original} = Ledger.export(store, "compressed")
+    assert File.stat!(domain_path(directory, "compressed")).size < 5_000
+    stop_disk(child)
+
+    {store, _child} = start_disk(directory, compressed: false)
+    assert {:ok, ^original} = Ledger.export(store, "compressed")
+    assert {:ok, 1} = append(store, "compressed", "first", payloads, 0)
+    assert {:ok, 2} = append(store, "compressed", "second", [%{"body" => "new"}], 1)
+    assert {:ok, snapshot} = Ledger.load(store, "compressed")
+    assert Enum.map(snapshot.entries, & &1.payload) === payloads ++ [%{"body" => "new"}]
+  end
 
   setup do
     temporary_root = Path.expand(System.tmp_dir!())
@@ -208,7 +270,10 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     corrupt_bytes = File.read!(path)
     assert File.stat!(path).size == complete_size
 
-    assert {:ok, %{revision: 2}} = Ledger.load(store, domain_ref)
+    # The warm cache now holds offsets only, not a second copy of the entries.
+    # Ordinary reads therefore detect changed bytes too, before an audit.
+    assert {:error, {:ledger_frame_checksum_mismatch, ^first_frame_size}} =
+             Ledger.load(store, domain_ref)
 
     assert {:error, {:ledger_frame_checksum_mismatch, ^first_frame_size}} =
              Ledger.export(store, domain_ref)
@@ -273,11 +338,12 @@ defmodule Spectre.V04Test.LedgerDiskTest do
         {"expected_revision", 1.0, :invalid_ledger_frame},
         {"expected_revision", 99, :invalid_or_duplicate_ledger_frame},
         {"entries", [], :invalid_ledger_frame},
-        {"entries", [%{}], :invalid_ledger_frame}
+        {"entries", [%{}], :missing_ledger_entry_field}
       ] do
-    test "a checksummed frame with corrupted #{field} is rejected without truncation", %{
-      directory: directory
-    } do
+    test "a checksummed frame with corrupted #{field}=#{inspect(value)} is rejected without truncation",
+         %{
+           directory: directory
+         } do
       {store, child} = start_disk(directory)
       domain = "frame-boundary"
       assert {:ok, 1} = append(store, domain, "batch", [%{"x" => 1}], 0)
@@ -287,12 +353,10 @@ defmodule Spectre.V04Test.LedgerDiskTest do
       <<"SPDL", 1, _size::unsigned-big-64, _digest::binary-size(32), encoded::binary>> =
         File.read!(path)
 
-      {:ok, frame} = Spectre.Canonical.Value.decode(encoded)
+      {:ok, frame} = Value.decode(encoded)
 
       encoded =
-        Spectre.Canonical.Value.encode!(
-          Map.put(frame, unquote(field), unquote(Macro.escape(value)))
-        )
+        Value.encode!(Map.put(frame, unquote(field), unquote(Macro.escape(value))))
 
       bytes = disk_frame(encoded)
       File.write!(path, bytes)
@@ -316,8 +380,8 @@ defmodule Spectre.V04Test.LedgerDiskTest do
           <<"SPDL", 2, 1::unsigned-big-64, 0::256, 0>>,
           <<"SPDL", 1, 0::unsigned-big-64, 0::256>>,
           disk_frame("unknown-encoding"),
-          disk_frame(Spectre.Canonical.Value.encode!([1, 2])),
-          disk_frame(Spectre.Canonical.Value.encode!(%{"extra" => true}))
+          disk_frame(Value.encode!([1, 2])),
+          disk_frame(Value.encode!(%{"extra" => true}))
         ] do
       File.write!(path, bytes)
       {store, child} = start_disk(directory, tail_policy: :truncate)
@@ -357,6 +421,21 @@ defmodule Spectre.V04Test.LedgerDiskTest do
         ] do
       assert {:error, _} = Disk.start_link(opts)
     end
+  end
+
+  test "directory ownership and filesystem failures return errors to untrapped callers", %{
+    directory: directory
+  } do
+    {store, _child} = start_disk(directory)
+
+    assert {:error, {:ledger_disk_directory_in_use, ^directory}} =
+             Disk.start_link(path: directory)
+
+    file = Path.join(directory, "not-a-directory")
+    File.write!(file, "preserve")
+    assert {:error, {:ledger_disk_directory_failed, _}} = Disk.start_link(path: file)
+    assert File.read!(file) == "preserve"
+    assert {:ok, 1} = append(store, "still-alive", "batch", [%{"x" => 1}], 0)
   end
 
   defp disk_frame(encoded),

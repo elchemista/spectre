@@ -20,7 +20,7 @@ defmodule Spectre.Ledger.Store.Mock do
 
   alias Spectre.Ledger.Store
 
-  @operations [:append, :load, :lookup_batch, :export]
+  @operations [:append, :load, :load_from, :lookup_batch, :export]
   @phases [:before, :after]
 
   @type action :: {atom(), :before | :after, term()}
@@ -51,6 +51,9 @@ defmodule Spectre.Ledger.Store.Mock do
 
   @impl Spectre.Ledger.Store
   def load(domain_ref, opts), do: invoke(opts, :load, [domain_ref])
+
+  @impl Spectre.Ledger.Store
+  def load_from(domain_ref, revision, opts), do: invoke(opts, :load_from, [domain_ref, revision])
 
   @impl Spectre.Ledger.Store
   def lookup_batch(domain_ref, batch_id, opts),
@@ -131,6 +134,9 @@ defmodule Spectre.Ledger.Store.Mock do
 
   defp delegate(store, :load, [domain_ref], opts),
     do: Store.load(store, domain_ref, opts)
+
+  defp delegate(store, :load_from, [domain_ref, revision], opts),
+    do: Store.load_from(store, domain_ref, revision, opts)
 
   defp delegate(store, :lookup_batch, [domain_ref, batch_id], opts),
     do: Store.lookup_batch(store, domain_ref, batch_id, opts)

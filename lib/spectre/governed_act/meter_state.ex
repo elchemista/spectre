@@ -8,7 +8,7 @@ defmodule Spectre.GovernedAct.MeterState do
   state and performs no ledger append or external I/O.
   """
 
-  alias Spectre.GovernedAct.{Class, DispatchState, Index, State}
+  alias Spectre.GovernedAct.{Class, DispatchState, Index, ReadIndex, State}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
   alias Spectre.Kernel.Meter
   alias Spectre.Kernel.Meter.Account
@@ -321,15 +321,19 @@ defmodule Spectre.GovernedAct.MeterState do
 
   defp validate_outcome_disposition(state, act_ref, operation, allowed_statuses) do
     {outcome_present?, allowed_outcome?} =
-      Enum.reduce_while(state.outcomes, {false, false}, fn
-        {_ref, %Outcome{act_ref: ^act_ref, status: status}}, _acc ->
-          if status in allowed_statuses,
-            do: {:halt, {true, true}},
-            else: {:cont, {true, false}}
+      Enum.reduce_while(
+        ReadIndex.outcomes_for(state, :act, act_ref),
+        {false, false},
+        fn
+          {_ref, %Outcome{act_ref: ^act_ref, status: status}}, _acc ->
+            if status in allowed_statuses,
+              do: {:halt, {true, true}},
+              else: {:cont, {true, false}}
 
-        _other, acc ->
-          {:cont, acc}
-      end)
+          _other, acc ->
+            {:cont, acc}
+        end
+      )
 
     if allowed_outcome? or
          (operation == :suspend and DispatchState.attempted?(state, act_ref) and

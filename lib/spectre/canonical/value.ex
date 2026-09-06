@@ -82,12 +82,9 @@ defmodule Spectre.Canonical.Value do
     with {:ok, context} <- context(opts),
          :ok <- encoded_size(encoded, context),
          {:ok, payload} <- header(encoded),
-         {:ok, value, ""} <- decode_term(payload, context, [], 0),
-         {:ok, canonical} <- encode(value, opts),
-         true <- canonical == encoded do
+         {:ok, value, ""} <- decode_term(payload, context, [], 0) do
       {:ok, value}
     else
-      false -> {:error, :noncanonical_value_encoding}
       {:ok, _value, trailing} -> {:error, {:trailing_canonical_bytes, byte_size(trailing)}}
       {:error, _reason} = error -> error
     end
@@ -398,6 +395,7 @@ defmodule Spectre.Canonical.Value do
 
   defp decode_term(<<@tag_atom, rest::binary>>, _context, path, _depth) do
     with {:ok, value, rest} <- take_sized(rest, :atom),
+         :ok <- canonical_atom_tag(value),
          {:ok, atom} <- existing_atom(value, path) do
       {:ok, atom, rest}
     end
@@ -418,7 +416,13 @@ defmodule Spectre.Canonical.Value do
 
   defp decode_term(<<@tag_map, count::unsigned-big-32, rest::binary>>, context, path, depth) do
     with :ok <- collection_size(count, context, path),
-         do: decode_map(rest, count, context, path, depth + 1, 0, nil, %{})
+         {:ok, decoded, rest} <- decode_map(rest, count, context, path, depth + 1, 0, nil, %{}),
+         false <- is_struct(decoded) do
+      {:ok, decoded, rest}
+    else
+      true -> {:error, :noncanonical_value_encoding}
+      {:error, _} = error -> error
+    end
   end
 
   defp decode_term(<<@tag_struct, rest::binary>>, context, path, depth) do
@@ -438,6 +442,14 @@ defmodule Spectre.Canonical.Value do
 
   defp decode_term(<<>>, _context, path, _depth),
     do: {:error, {:truncated_canonical_value, Enum.reverse(path)}}
+
+  # These values have dedicated tags. Along with rejecting a struct disguised
+  # as a map, this closes the aliases that previously required re-encoding the
+  # entire decoded tree. Every remaining tag is checked canonically in place.
+  defp canonical_atom_tag(value) when value in ["nil", "true", "false"],
+    do: {:error, :noncanonical_value_encoding}
+
+  defp canonical_atom_tag(_value), do: :ok
 
   @spec decode_sequence(
           binary(),

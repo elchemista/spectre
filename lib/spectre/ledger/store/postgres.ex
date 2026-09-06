@@ -14,6 +14,11 @@ defmodule Spectre.Ledger.Store.Postgres do
   `synchronous_commit` on; the host remains responsible for keeping PostgreSQL
   `fsync` enabled. Schema creation belongs to an application migration generated
   by Spectre; this adapter never runs DDL.
+
+  `compressed: true` optionally compresses each new canonical batch before
+  storage. Readers accept compressed and plain batches independently of that
+  setting. Indexed `head/2` and `read_batch/3` support bounded recovery input;
+  full load/export remain explicit historical operations.
   """
 
   @behaviour Spectre.Ledger.Store
@@ -22,6 +27,7 @@ defmodule Spectre.Ledger.Store.Postgres do
   alias Spectre.Canonical.Value
   alias Spectre.Ledger
   alias Spectre.Ledger.Entry
+  alias Spectre.Ledger.Store.Compression
   alias Spectre.Ledger.Store.Support
 
   @identifier_pattern ~r/\A[a-z_][a-z0-9_]*\z/
@@ -34,7 +40,8 @@ defmodule Spectre.Ledger.Store.Postgres do
     :schema,
     :table_prefix,
     :query_opts,
-    :transaction_opts
+    :transaction_opts,
+    :compressed
   ]
   @append_options @configuration_options ++ [:recorded_at, :fault_injection, :fault]
 
@@ -66,6 +73,36 @@ defmodule Spectre.Ledger.Store.Postgres do
       read_transaction(config, fn -> load_locked(config, domain_ref) end)
     end
   end
+
+  @impl Spectre.Ledger.Store
+  def load_from(domain_ref, revision, opts)
+      when is_integer(revision) and revision >= 0 do
+    with {:ok, config} <- configuration(opts, @configuration_options),
+         :ok <- adapter_available(config) do
+      read_transaction(config, fn -> load_locked(config, domain_ref, revision) end)
+    end
+  end
+
+  def load_from(_domain_ref, _revision, _opts), do: {:error, :invalid_ledger_cursor}
+
+  @impl Spectre.Ledger.Store
+  def head(domain_ref, opts) do
+    with {:ok, config} <- configuration(opts, @configuration_options),
+         :ok <- adapter_available(config) do
+      read_transaction(config, fn -> head_locked(config, domain_ref) end)
+    end
+  end
+
+  @impl Spectre.Ledger.Store
+  def read_batch(domain_ref, first_revision, opts)
+      when is_integer(first_revision) and first_revision > 0 do
+    with {:ok, config} <- configuration(opts, @configuration_options),
+         :ok <- adapter_available(config) do
+      read_transaction(config, fn -> read_batch_locked(config, domain_ref, first_revision) end)
+    end
+  end
+
+  def read_batch(_domain_ref, _revision, _opts), do: {:error, :invalid_ledger_cursor}
 
   @impl Spectre.Ledger.Store
   def lookup_batch(domain_ref, batch_id, opts) do
@@ -231,7 +268,7 @@ defmodule Spectre.Ledger.Store.Postgres do
 
   defp append_or_reuse(
          config,
-         %{identity_digest: identity, expected_revision: revision, last_revision: last},
+         %{identity_digest: identity, expected_revision: revision, last_revision: last} = info,
          {domain_ref, _batch_id},
          _payloads,
          revision,
@@ -239,14 +276,8 @@ defmodule Spectre.Ledger.Store.Postgres do
          identity,
          _fault
        ) do
-    with {:ok, snapshot} <- load_locked(config, domain_ref),
-         true <- snapshot.revision >= last do
-      {:ok, {:existing, last}}
-    else
-      false -> {:error, :ledger_postgres_batch_not_in_head}
-      :not_found -> {:error, :ledger_postgres_batch_without_head}
-      {:error, _reason} = error -> error
-    end
+    with {:ok, _verified} <- verify_batch_in_head(config, domain_ref, info),
+         do: {:ok, {:existing, last}}
   end
 
   defp append_or_reuse(
@@ -284,6 +315,7 @@ defmodule Spectre.Ledger.Store.Postgres do
              head_digest
            ),
          {:ok, encoded} <- encode_entries(entries),
+         encoded = Compression.pack(encoded, config.compressed),
          last = List.last(entries),
          :ok <- write_head(config, domain_ref, current_revision, last),
          :ok <- write_batch(config, domain_ref, batch_id, identity, entries, last, encoded) do
@@ -400,7 +432,7 @@ defmodule Spectre.Ledger.Store.Postgres do
     end
   end
 
-  defp load_locked(config, domain_ref) do
+  defp load_locked(config, domain_ref, after_revision \\ nil) do
     with {:ok, head_result} <-
            query(
              config,
@@ -413,13 +445,86 @@ defmodule Spectre.Ledger.Store.Postgres do
              [domain_ref]
            ),
          {:ok, head_rows} <- result_rows(head_result) do
-      load_batches(config, domain_ref, head_rows)
+      load_batches(config, domain_ref, head_rows, after_revision)
     end
   end
 
-  defp load_batches(_config, _domain_ref, []), do: :not_found
+  defp head_locked(config, domain_ref) do
+    with {:ok, result} <-
+           query(
+             config,
+             """
+             SELECT revision, head_digest
+             FROM #{table(config, "heads")}
+             WHERE domain_ref = $1
+             FOR SHARE
+             """,
+             [domain_ref]
+           ),
+         {:ok, rows} <- result_rows(result) do
+      decode_head_cursor(rows)
+    end
+  end
 
-  defp load_batches(config, domain_ref, [[revision, head_digest]]) do
+  defp decode_head_cursor([]), do: :not_found
+
+  defp decode_head_cursor(rows) do
+    with {:ok, revision, digest} <- decode_head(rows, :reject_missing),
+         do: {:ok, %{revision: revision, head_digest: digest}}
+  end
+
+  defp read_batch_locked(config, domain_ref, first_revision) do
+    # The UNIQUE(domain_ref, first_revision) index makes this a point read.
+    # No query includes the encoded bodies of unrelated historical batches.
+    with {:ok, result} <-
+           query(
+             config,
+             """
+             SELECT batch_id, identity_digest, expected_revision,
+                    first_revision, last_revision, entry_count,
+                    head_digest, encoded_entries
+             FROM #{table(config, "batches")}
+             WHERE domain_ref = $1 AND first_revision = $2
+             """,
+             [domain_ref, first_revision]
+           ),
+         {:ok, rows} <- result_rows(result) do
+      decode_batch_page(rows, domain_ref, first_revision)
+    end
+  end
+
+  defp decode_batch_page([], _domain_ref, _revision), do: :not_found
+
+  defp decode_batch_page([_row] = rows, domain_ref, first_revision) do
+    with {:ok, entries} <- decode_batches(rows, domain_ref),
+         true <- hd(entries).revision === first_revision do
+      last = List.last(entries)
+
+      {:ok,
+       %{
+         domain_ref: domain_ref,
+         revision: last.revision,
+         head_digest: last.digest,
+         entries: entries,
+         recovery: nil
+       }}
+    else
+      false -> {:error, :ledger_cursor_inside_batch}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp decode_batch_page(_rows, _domain_ref, _revision),
+    do: {:error, :invalid_ledger_postgres_batch_row}
+
+  defp load_batches(_config, _domain_ref, [], _after_revision), do: :not_found
+
+  defp load_batches(config, domain_ref, [[revision, head_digest]], after_revision) do
+    # Include a batch crossing the requested boundary so the facade rejects an
+    # interior cursor instead of silently skipping the remainder of that batch.
+    predicate = if is_nil(after_revision), do: "", else: " AND last_revision > $2"
+    params = if is_nil(after_revision), do: [domain_ref], else: [domain_ref, after_revision]
+
     with :ok <- validate_head(revision, head_digest),
          {:ok, batches_result} <-
            query(
@@ -429,27 +534,28 @@ defmodule Spectre.Ledger.Store.Postgres do
                     first_revision, last_revision, entry_count,
                     head_digest, encoded_entries
              FROM #{table(config, "batches")}
-             WHERE domain_ref = $1
+             WHERE domain_ref = $1#{predicate}
              ORDER BY first_revision ASC
              """,
-             [domain_ref]
+             params
            ),
          {:ok, batch_rows} <- result_rows(batches_result),
          {:ok, entries} <- decode_batches(batch_rows, domain_ref) do
-      Ledger.verify_snapshot(
-        %{
-          domain_ref: domain_ref,
-          revision: revision,
-          head_digest: head_digest,
-          entries: entries,
-          recovery: nil
-        },
-        domain_ref
-      )
+      snapshot = %{
+        domain_ref: domain_ref,
+        revision: revision,
+        head_digest: head_digest,
+        entries: entries,
+        recovery: nil
+      }
+
+      if is_nil(after_revision),
+        do: Ledger.verify_snapshot(snapshot, domain_ref),
+        else: {:ok, snapshot}
     end
   end
 
-  defp load_batches(_config, _domain_ref, _invalid),
+  defp load_batches(_config, _domain_ref, _invalid, _after_revision),
     do: {:error, :invalid_ledger_postgres_head_row}
 
   defp lookup_batch_locked(config, domain_ref, batch_id) do
@@ -479,8 +585,14 @@ defmodule Spectre.Ledger.Store.Postgres do
   end
 
   defp verify_batch_in_head(config, domain_ref, info) do
-    with {:ok, snapshot} <- load_locked(config, domain_ref),
-         true <- snapshot.revision >= info.last_revision do
+    # The requested batch was independently decoded and checked above. Do not
+    # re-read every unrelated batch to acknowledge an identity lookup. Complete
+    # chain verification belongs to recovery/audit, not this local index read.
+    with {:ok, snapshot} <- head_locked(config, domain_ref),
+         true <- snapshot.revision >= info.last_revision,
+         true <-
+           snapshot.revision > info.last_revision or
+             snapshot.head_digest === info.head_digest do
       {:ok, info}
     else
       false -> {:error, :ledger_postgres_batch_not_in_head}
@@ -549,7 +661,8 @@ defmodule Spectre.Ledger.Store.Postgres do
   end
 
   defp decode_entry_batch(encoded) do
-    with {:ok, values} <- Value.decode(encoded),
+    with {:ok, bytes} <- Compression.unpack(encoded, 16 * 1_024 * 1_024),
+         {:ok, values} <- Value.decode(bytes),
          true <- is_list(values) and values != [] do
       decode_entries(values)
     else
@@ -671,7 +784,8 @@ defmodule Spectre.Ledger.Store.Postgres do
          {:ok, query_module} <- query_module(opts),
          {:ok, namespace} <- namespace_from_options(opts),
          {:ok, query_opts} <- keyword_option(opts, :query_opts, []),
-         {:ok, transaction_opts} <- keyword_option(opts, :transaction_opts, []) do
+         {:ok, transaction_opts} <- keyword_option(opts, :transaction_opts, []),
+         :ok <- validate_compression(opts) do
       {:ok,
        %{
          repo: repo,
@@ -679,12 +793,19 @@ defmodule Spectre.Ledger.Store.Postgres do
          schema: namespace.schema,
          table_prefix: namespace.table_prefix,
          query_opts: query_opts,
-         transaction_opts: transaction_opts
+         transaction_opts: transaction_opts,
+         compressed: Keyword.get(opts, :compressed, false)
        }}
     end
   end
 
   defp configuration(_opts, _allowed), do: {:error, :invalid_ledger_postgres_options}
+
+  defp validate_compression(opts) do
+    if is_boolean(Keyword.get(opts, :compressed, false)),
+      do: :ok,
+      else: {:error, :invalid_ledger_postgres_compressed}
+  end
 
   defp namespace_from_options(opts) do
     with {:ok, schema} <-

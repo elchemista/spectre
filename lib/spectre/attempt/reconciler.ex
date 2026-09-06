@@ -12,6 +12,7 @@ defmodule Spectre.Attempt.Reconciler do
   alias Spectre.Domain.{Event, Projection}
   alias Spectre.Duty
   alias Spectre.Duty.Derive
+  alias Spectre.Duty.Frontier
   alias Spectre.GovernedAct.{DispatchState, State}
   alias Spectre.GovernedAct.Materialization.Dispatch
   alias Spectre.GovernedAct.MeterState, as: MeterState
@@ -23,7 +24,7 @@ defmodule Spectre.Attempt.Reconciler do
 
   @spec missing_openings(State.t(), integer()) :: [Derive.cause()]
   def missing_openings(%State{} = state, time),
-    do: Derive.missing_openings(state, time)
+    do: Frontier.missing(state, time)
 
   @spec repair_plan(Projection.t(), integer()) :: {:ok, plan()} | {:error, term()}
   def repair_plan(%State{} = projection, time) when is_integer(time) do

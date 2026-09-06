@@ -19,7 +19,7 @@ defmodule Spectre.Mind.Turn do
     :evidence,
     :opened_at
   ]
-  defstruct @enforce_keys ++ [seal: nil]
+  defstruct @enforce_keys ++ [seal: nil, context_window: nil]
 
   @type t :: %__MODULE__{
           ref: String.t(),
@@ -27,6 +27,7 @@ defmodule Spectre.Mind.Turn do
           context: SubmissionContext.t(),
           evidence: [Evidence.t()],
           opened_at: integer(),
+          context_window: map() | nil,
           seal: String.t() | nil
         }
 
@@ -110,7 +111,8 @@ defmodule Spectre.Mind.Turn do
       "mind_ref" => turn.mind_ref,
       "context" => SubmissionContext.canonical(turn.context),
       "evidence" => Enum.map(turn.evidence, &%{"ref" => &1.ref, "digest" => Evidence.digest(&1)}),
-      "opened_at" => turn.opened_at
+      "opened_at" => turn.opened_at,
+      "context_window" => turn.context_window
     }
   end
 

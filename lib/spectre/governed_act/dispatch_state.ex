@@ -11,7 +11,7 @@ defmodule Spectre.GovernedAct.DispatchState do
 
   alias Spectre.{Act, Mandate}
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{ReadIndex, State}
 
   @type cancellation :: %{
           required(:cause_ref) => String.t(),
@@ -64,7 +64,12 @@ defmodule Spectre.GovernedAct.DispatchState do
   @spec expired(State.t(), integer()) ::
           {:ok, [{Act.t(), Mandate.t()}]} | {:error, term()}
   def expired(%State{} = state, time) when is_integer(time) do
-    with {:ok, pending} <- pending(state) do
+    refs =
+      if ReadIndex.dispatch_indexed?(state),
+        do: ReadIndex.expired_dispatch_refs(state, time),
+        else: state |> pending_refs() |> Enum.sort()
+
+    with {:ok, pending} <- pending_records(state, refs) do
       {:ok, Enum.filter(pending, fn {_act, mandate} -> mandate.expires_at <= time end)}
     end
   end
@@ -72,10 +77,11 @@ defmodule Spectre.GovernedAct.DispatchState do
   @doc "Returns the validated Act and pinned Mandate behind each pending dispatch."
   @spec pending(State.t()) :: {:ok, [{Act.t(), Mandate.t()}]} | {:error, term()}
   def pending(%State{} = state) do
-    state
-    |> pending_refs()
-    |> Enum.sort()
-    |> Enum.reduce_while({:ok, []}, fn act_ref, {:ok, records} ->
+    pending_records(state, state |> pending_refs() |> Enum.sort())
+  end
+
+  defp pending_records(state, refs) do
+    Enum.reduce_while(refs, {:ok, []}, fn act_ref, {:ok, records} ->
       with {:ok, act} <- fetch_pending_act(state, act_ref),
            {:ok, mandate} <- fetch_pending_mandate(state, act),
            :ok <- valid_pending_pair(state, act, mandate) do

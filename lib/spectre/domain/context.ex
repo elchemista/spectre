@@ -17,14 +17,25 @@ defmodule Spectre.Domain.Context do
 
   @authentication_options [:timeout, :ingress_opts]
 
-  @doc "Authenticates opaque ingress input and seals the resulting context."
-  @spec authenticate(State.t(), String.t(), term(), keyword()) ::
-          {:ok, SubmissionContext.t()} | {:error, term()}
-  def authenticate(%State{} = state, scope_ref, input, opts) do
+  @doc false
+  def authentication_request(%State{} = state, scope_ref, input, opts) do
     with :ok <- validate_options(opts),
-         :ok <- Portable.validate_ref(scope_ref, :scope_ref),
-         {:ok, context} <- call_adapter(state, scope_ref, input, opts),
-         {:ok, context} <- SubmissionContext.new(context),
+         :ok <- Portable.validate_ref(scope_ref, :scope_ref) do
+      {:ok,
+       {state.ingress,
+        [
+          state.projection.domain_ref,
+          scope_ref,
+          input,
+          state.generation,
+          Keyword.get(opts, :ingress_opts, [])
+        ]}}
+    end
+  end
+
+  @doc false
+  def finish_authentication(%State{} = state, scope_ref, input) do
+    with {:ok, context} <- SubmissionContext.new(input),
          :ok <- validate_binding(state, scope_ref, context) do
       SubmissionContext.seal(context, state.grant_secret)
     end
@@ -79,16 +90,9 @@ defmodule Spectre.Domain.Context do
     end
   end
 
-  defp call_adapter(state, scope_ref, input, opts) do
-    arguments = [
-      state.projection.domain_ref,
-      scope_ref,
-      input,
-      state.generation,
-      Keyword.get(opts, :ingress_opts, [])
-    ]
-
-    case Adapter.invoke(state.ingress, :authenticate, arguments) do
+  @doc false
+  def run_authentication({module, arguments}) do
+    case Adapter.invoke(module, :authenticate, arguments) do
       {:ok, {:ok, context}} ->
         {:ok, context}
 

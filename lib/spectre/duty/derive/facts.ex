@@ -31,7 +31,7 @@ defmodule Spectre.Duty.Derive.Facts do
     :presentations,
     :scopes
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [sources: %{}]
 
   @type t :: %__MODULE__{
           acts: %{optional(String.t()) => Spectre.Act.t()},
@@ -43,7 +43,8 @@ defmodule Spectre.Duty.Derive.Facts do
           mandates: %{optional(String.t()) => Spectre.Mandate.t()},
           outcomes: %{optional(String.t()) => Spectre.Outcome.t()},
           presentations: %{optional(String.t()) => Spectre.Presentation.t()},
-          scopes: %{optional(String.t()) => Spectre.Scope.Opening.t()}
+          scopes: %{optional(String.t()) => Spectre.Scope.Opening.t()},
+          sources: %{optional(atom()) => [term()]}
         }
 
   @doc "Builds the minimal indexed view used by the Duty algebra."
@@ -61,6 +62,21 @@ defmodule Spectre.Duty.Derive.Facts do
       presentations: state.presentations,
       scopes: state.catalog.scopes
     }
+  end
+
+  @doc false
+  @spec select(t(), map()) :: t()
+  def select(%__MODULE__{} = facts, sources), do: %{facts | sources: sources}
+
+  @doc false
+  @spec sources(t(), atom()) :: map()
+  def sources(%__MODULE__{} = facts, key) do
+    records = Map.fetch!(facts, if(key == :counter_evidence, do: :evidence, else: key))
+
+    case Map.fetch(facts.sources, key) do
+      {:ok, refs} -> Map.take(records, refs)
+      :error -> records
+    end
   end
 
   @doc "Looks up trusted ledger metadata for a typed record identity."
@@ -132,6 +148,9 @@ defmodule Spectre.Duty.Derive.Facts do
       {:error, :missing_event_metadata} -> false
     end
   end
+
+  defp unavailable_evidence_at(%__MODULE__{erasures: erasures}, _time)
+       when map_size(erasures) == 0, do: MapSet.new()
 
   defp unavailable_evidence_at(facts, time) do
     prefix = %ErasureFacts{

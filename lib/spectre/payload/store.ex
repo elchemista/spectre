@@ -10,7 +10,7 @@ defmodule Spectre.Payload.Store do
 
   alias Spectre.{Act, Adapter, Disclosure, Portable}
   alias Spectre.Erasure.Analysis
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{ReadIndex, State}
   alias Spectre.Presentation
 
   @type ref :: String.t()
@@ -226,6 +226,14 @@ defmodule Spectre.Payload.Store do
   end
 
   defp referenced_payloads(state) do
+    if ReadIndex.complete?(state) do
+      state.read_index.payload_refs |> Enum.sort()
+    else
+      unindexed_payloads(state)
+    end
+  end
+
+  defp unindexed_payloads(state) do
     evidence_refs =
       state.evidence
       |> Map.values()

@@ -37,10 +37,66 @@ defmodule Spectre.Domain.Recovery do
           :not_found | {:ok, Projection.t()} | {:error, term()}
   def recover(store, domain_ref, constitution, opts)
       when Portable.is_plain_map(constitution) and is_list(opts) do
-    case Ledger.load(store, domain_ref, opts) do
-      {:ok, snapshot} -> recover_snapshot(snapshot, domain_ref, constitution)
-      :not_found -> :not_found
-      {:error, _reason} = error -> error
+    if Ledger.Store.batch_reads?(store) do
+      with :ok <- Spectre.Constitution.validate(constitution),
+           initial = Fold.new(domain_ref, constitution),
+           {:ok, projection} <- recover_batches(store, initial, opts),
+           :ok <- Fold.validate_complete(projection) do
+        {:ok, projection}
+      end
+    else
+      case Ledger.load(store, domain_ref, opts) do
+        {:ok, snapshot} -> recover_snapshot(snapshot, domain_ref, constitution)
+        :not_found -> :not_found
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  @doc """
+  Resumes an in-memory verified prefix using only the newly committed batches.
+
+  A changed predecessor or a head behind the cursor is an error, never a reason
+  to silently replace the trusted prefix. Cold startup still uses `recover/4`.
+  """
+  @spec resume(Ledger.Store.config(), Projection.t(), keyword()) ::
+          :not_found | {:ok, Projection.t()} | {:error, term()}
+  def resume(store, %State{} = prefix, opts \\ []) do
+    if Ledger.Store.batch_reads?(store) do
+      recover_batches(store, prefix, opts)
+    else
+      with {:ok, suffix} <- Ledger.load_from(store, prefix.domain_ref, cursor(prefix), opts) do
+        recover_suffix(prefix, suffix)
+      end
+    end
+  end
+
+  defp recover_batches(store, prefix, opts) do
+    Ledger.Reader.reduce(
+      store,
+      prefix.domain_ref,
+      cursor(prefix),
+      prefix,
+      fn entries, current -> Fold.append_batch(current, entries) end,
+      opts
+    )
+  end
+
+  defp recover_suffix(prefix, suffix) do
+    suffix.entries
+    |> Stream.chunk_by(& &1.batch_id)
+    |> Enum.reduce_while({:ok, prefix}, fn batch, {:ok, current} ->
+      case Fold.append_batch(current, batch) do
+        {:ok, next} -> {:cont, {:ok, next}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, projection} ->
+        with :ok <- match_snapshot(projection, suffix), do: {:ok, projection}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -87,12 +143,31 @@ defmodule Spectre.Domain.Recovery do
   end
 
   defp recover_committed_batch(store, prefix, expected, opts) do
-    with {:ok, snapshot} <- Ledger.load(store, prefix.domain_ref, opts),
-         entries = Enum.slice(snapshot.entries, expected.expected_revision, expected.entry_count),
+    if Ledger.Store.batch_reads?(store) do
+      with {:ok, snapshot} <-
+             Ledger.Store.read_batch(store, prefix.domain_ref, prefix.revision + 1, opts),
+           {:ok, snapshot} <- Ledger.verify_suffix(snapshot, prefix.domain_ref, cursor(prefix)),
+           {:ok, actual} <- Support.derive_batch_info(prefix.domain_ref, snapshot.entries),
+           :ok <- match_predecessor(prefix, snapshot.entries),
+           true <- matching_batch_info?(actual, Map.delete(expected, :head_digest)) do
+        resume(store, prefix, opts)
+      else
+        :not_found -> {:error, :domain_ledger_disappeared}
+        false -> {:error, {:committed_batch_identity_mismatch, expected.batch_id}}
+        {:error, _} = error -> error
+      end
+    else
+      recover_committed_suffix(store, prefix, expected, opts)
+    end
+  end
+
+  defp recover_committed_suffix(store, prefix, expected, opts) do
+    with {:ok, snapshot} <- Ledger.load_from(store, prefix.domain_ref, cursor(prefix), opts),
+         entries = Enum.take(snapshot.entries, expected.entry_count),
          {:ok, actual} <- Support.derive_batch_info(prefix.domain_ref, entries),
          :ok <- match_predecessor(prefix, entries),
          true <- matching_batch_info?(actual, Map.delete(expected, :head_digest)) do
-      recover_snapshot(snapshot, prefix.domain_ref, prefix.constitution)
+      recover_suffix(prefix, snapshot)
     else
       :not_found -> {:error, :domain_ledger_disappeared}
       false -> {:error, {:committed_batch_identity_mismatch, expected.batch_id}}
@@ -105,6 +180,8 @@ defmodule Spectre.Domain.Recovery do
       do: :ok,
       else: {:error, {:committed_batch_predecessor_mismatch, first.batch_id}}
   end
+
+  defp cursor(prefix), do: %{revision: prefix.revision, head_digest: prefix.head_digest}
 
   @doc """
   Classifies an ambiguous append using its stable batch identity.
@@ -175,7 +252,7 @@ defmodule Spectre.Domain.Recovery do
 
   @spec matching_batch_info?(map(), map()) :: boolean()
   defp matching_batch_info?(info, expected) do
-    Enum.all?(expected, fn {key, value} -> Map.get(info, key) == value end) and
+    Enum.all?(expected, fn {key, value} -> Map.get(info, key) === value end) and
       Portable.sha256_digest?(Map.get(info, :head_digest))
   end
 

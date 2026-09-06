@@ -239,7 +239,17 @@ defmodule Spectre.V04Test.Fixture do
     sequencer_opts =
       Keyword.merge(
         sequencer_opts,
-        Keyword.take(opts, [:name, :mind, :payload_store, :late_observer])
+        Keyword.take(opts, [
+          :name,
+          :mind,
+          :context,
+          :payload_store,
+          :late_observer,
+          :ingress,
+          :ingress_max_concurrency,
+          :ingress_timeout,
+          :max_pending_submissions
+        ])
       )
 
     server = record!(Sequencer.start_link(sequencer_opts))

@@ -86,7 +86,7 @@ defmodule Spectre.GovernedAct.Transition.Execution do
          :ok <- match_outcome_to_attempt(state, outcome, attempt),
          :ok <- OutcomeTransition.validate_for_act(act, outcome),
          :ok <- validate_outcome_time(outcome, attempt),
-         :ok <- OutcomeTransition.validate_history(state.outcomes, outcome),
+         :ok <- OutcomeTransition.validate_state_history(state, outcome),
          :ok <- ErasureAnalysis.validate_evidence_available(state, outcome.evidence_refs),
          :ok <- OutcomeTransition.validate_evidence(state.evidence, outcome, attempt, act) do
       {:ok, %{state | outcomes: Map.put(state.outcomes, identity, outcome)}}

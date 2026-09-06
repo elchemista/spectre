@@ -21,6 +21,28 @@ defmodule Spectre.Core.GovernedRuntimeTest do
     %{fixture: fixture}
   end
 
+  test "local collection reads do not build unrelated historical views", %{fixture: f} do
+    assert {:ok, %{act: act}} = submit(f, 1)
+    projection = Sequencer.projection(f.server)
+    assert {:ok, full} = View.from_projection(projection, act.scope_ref)
+
+    for key <- [:acts, :duties, :erasures, :declassifications] do
+      assert View.records(projection, act.scope_ref, key) === {:ok, Map.fetch!(full, key)}
+    end
+
+    # Poison unrelated inputs to catch accidental reconstruction of the full
+    # view. Reading Acts needs neither Evidence closure nor outcome history.
+    narrow = %{
+      projection
+      | evidence: :not_loaded,
+        outcomes: :not_loaded,
+        presentations: :not_loaded
+    }
+
+    assert {:ok, [^act]} = View.records(narrow, act.scope_ref, :acts)
+    assert {:error, {:scope_not_open, "missing"}} = View.records(projection, "missing", :acts)
+  end
+
   test "pure admission is deterministic and cannot append or mint a Grant", %{fixture: f} do
     projection = Sequencer.projection(f.server)
     {:ok, candidate} = Candidate.new(Fixture.candidate(f, 1))

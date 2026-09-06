@@ -76,6 +76,36 @@ defmodule Spectre.Ledger.Store.ETS do
   end
 
   @impl Spectre.Ledger.Store
+  def load_from(domain_ref, revision, opts)
+      when is_integer(revision) and revision >= 0 do
+    with :ok <- validate_options(opts, @read_options),
+         {:ok, server} <- server(opts) do
+      GenServer.call(server, {:load_from, domain_ref, revision}, timeout(opts, 30_000))
+    end
+  end
+
+  def load_from(_domain_ref, _revision, _opts), do: {:error, :invalid_ledger_cursor}
+
+  @impl Spectre.Ledger.Store
+  def head(domain_ref, opts) do
+    with :ok <- validate_options(opts, @read_options),
+         {:ok, server} <- server(opts) do
+      GenServer.call(server, {:head, domain_ref}, timeout(opts, 30_000))
+    end
+  end
+
+  @impl Spectre.Ledger.Store
+  def read_batch(domain_ref, first_revision, opts)
+      when is_integer(first_revision) and first_revision > 0 do
+    with :ok <- validate_options(opts, @read_options),
+         {:ok, server} <- server(opts) do
+      GenServer.call(server, {:read_batch, domain_ref, first_revision}, timeout(opts, 30_000))
+    end
+  end
+
+  def read_batch(_domain_ref, _revision, _opts), do: {:error, :invalid_ledger_cursor}
+
+  @impl Spectre.Ledger.Store
   def lookup_batch(domain_ref, batch_id, opts) do
     with :ok <- validate_options(opts, @read_options),
          {:ok, server} <- server(opts) do
@@ -134,6 +164,42 @@ defmodule Spectre.Ledger.Store.ETS do
 
   def handle_call({:load, domain_ref}, _from, state) do
     {:reply, load_snapshot(state.table, domain_ref), state}
+  end
+
+  def handle_call({:load_from, domain_ref, revision}, _from, state) do
+    {:reply, load_snapshot(state.table, domain_ref, revision), state}
+  end
+
+  def handle_call({:head, domain_ref}, _from, state) do
+    {:reply, lookup(state.table, {:domain, domain_ref}), state}
+  end
+
+  def handle_call({:read_batch, domain_ref, first_revision}, _from, state) do
+    reply =
+      with {:ok, first} <- lookup(state.table, {:entry, domain_ref, first_revision}),
+           :ok <- Entry.verify(first),
+           true <- first.batch_index === 0 do
+        last_revision = first_revision + first.batch_size - 1
+
+        entries =
+          Enum.map(first_revision..last_revision, fn revision ->
+            :ets.lookup_element(state.table, {:entry, domain_ref, revision}, 2)
+          end)
+
+        {:ok,
+         %{
+           domain_ref: domain_ref,
+           revision: last_revision,
+           head_digest: List.last(entries).digest,
+           entries: entries,
+           recovery: nil
+         }}
+      else
+        false -> {:error, :ledger_cursor_inside_batch}
+        other -> other
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call({:lookup_batch, domain_ref, batch_id}, _from, state) do
@@ -255,11 +321,11 @@ defmodule Spectre.Ledger.Store.ETS do
     Map.put(cursor, :batches, batches)
   end
 
-  defp load_snapshot(table, domain_ref) do
+  defp load_snapshot(table, domain_ref, after_revision \\ 0) do
     case lookup(table, {:domain, domain_ref}) do
       {:ok, cursor} ->
         entries =
-          Enum.map(1..cursor.revision, fn revision ->
+          Enum.map((after_revision + 1)..cursor.revision//1, fn revision ->
             :ets.lookup_element(table, {:entry, domain_ref, revision}, 2)
           end)
 

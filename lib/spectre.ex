@@ -658,9 +658,7 @@ defmodule Spectre do
   @doc "Returns the read-only application projection for an authenticated Scope."
   @spec view(Scope.t()) :: {:ok, ScopeView.t()} | {:error, term()}
   def view(%Scope{} = scope) do
-    with {:ok, scope, projection} <- scoped_projection(scope) do
-      ScopeView.from_projection(projection, Scope.ref(scope))
-    end
+    scoped_query(scope, :view)
   end
 
   def view(_scope), do: {:error, :invalid_scope}
@@ -677,14 +675,7 @@ defmodule Spectre do
 
   def authority(%Scope{} = scope, opts) when is_list(opts) do
     with :ok <- empty_query_options(opts, :authority),
-         {:ok, scope, projection} <- scoped_projection(scope),
-         {:ok, observed_at} <-
-           sequencer_result(
-             fn -> Sequencer.trusted_time(scope.domain.server) end,
-             :trusted_time_unavailable
-           ) do
-      AuthorityView.from_projection(projection, scope, observed_at)
-    end
+         do: scoped_query(scope, :authority)
   end
 
   def authority(_scope, _opts), do: {:error, :authenticated_scope_required}
@@ -915,13 +906,17 @@ defmodule Spectre do
   @doc "Returns the verified ledger head represented by the live Domain projection."
   @spec head(domain_input()) :: {:ok, domain_head()} | {:error, term()}
   def head(domain_input) do
-    with {:ok, projection} <- fetch_projection(domain_input) do
-      {:ok,
-       %{
-         domain_ref: projection.domain_ref,
-         revision: projection.revision,
-         head_digest: projection.head_digest
-       }}
+    with {:ok, domain} <- resolve_domain(domain_input),
+         {:ok, head} <-
+           sequencer_result(
+             fn -> Sequencer.head(domain.server) end,
+             :domain_projection_unavailable
+           ),
+         true <- head.domain_ref == domain.ref do
+      {:ok, head}
+    else
+      false -> {:error, :domain_projection_mismatch}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -930,10 +925,7 @@ defmodule Spectre do
   def acts(scope, opts \\ [])
 
   def acts(%Scope{} = scope, opts) when is_list(opts) do
-    with :ok <- empty_query_options(opts, :acts),
-         {:ok, %ScopeView{} = view} <- view(scope) do
-      {:ok, view.acts}
-    end
+    with :ok <- empty_query_options(opts, :acts), do: scoped_query(scope, {:records, :acts})
   end
 
   def acts(_scope, _opts), do: {:error, :authenticated_scope_required}
@@ -944,8 +936,8 @@ defmodule Spectre do
 
   def duties(%Scope{} = scope, opts) when is_list(opts) do
     with {:ok, status} <- duty_status(opts),
-         {:ok, %ScopeView{} = view} <- view(scope) do
-      {:ok, filter_duty_status(view.duties, status)}
+         {:ok, duties} <- scoped_query(scope, {:records, :duties}) do
+      {:ok, filter_duty_status(duties, status)}
     end
   end
 
@@ -955,7 +947,7 @@ defmodule Spectre do
   @spec declassifications(Scope.t()) ::
           {:ok, [Spectre.Declassification.t()]} | {:error, term()}
   def declassifications(%Scope{} = scope) do
-    with {:ok, %ScopeView{} = view} <- view(scope), do: {:ok, view.declassifications}
+    scoped_query(scope, {:records, :declassifications})
   end
 
   def declassifications(_scope), do: {:error, :authenticated_scope_required}
@@ -964,7 +956,7 @@ defmodule Spectre do
   @spec erasures(Scope.t()) ::
           {:ok, [Spectre.Erasure.t()]} | {:error, term()}
   def erasures(%Scope{} = scope) do
-    with {:ok, %ScopeView{} = view} <- view(scope), do: {:ok, view.erasures}
+    scoped_query(scope, {:records, :erasures})
   end
 
   def erasures(_scope), do: {:error, :authenticated_scope_required}
@@ -1121,8 +1113,7 @@ defmodule Spectre do
          %Runner.Result{decision: %{outcome: :refused} = decision},
          opts
        ) do
-    with {:ok, projection} <- fetch_projection(scope.domain),
-         {:ok, surface} <- historical_surface(projection, decision.surface_revision),
+    with {:ok, surface} <- scoped_query(scope, {:surface, decision.surface_revision}),
          {:ok, policy} <- Surface.fallback(surface, decision.candidate_class),
          {:ok, fallback} <- Fallback.materialize(policy, decision, scope.context) do
       execute_fallback(scope, fallback, opts)
@@ -1140,19 +1131,6 @@ defmodule Spectre do
     # Recursion is bounded by control flow, not by guessing an identity prefix.
     with {:ok, result} <- submit_and_run(scope, candidate, opts) do
       {:ok, %{mode: mode, result: result}}
-    end
-  end
-
-  defp historical_surface(projection, revision) do
-    matches =
-      projection.catalog.surfaces
-      |> Map.values()
-      |> Enum.filter(&(&1.revision == revision))
-
-    case matches do
-      [surface] -> {:ok, surface}
-      [] -> {:error, {:historical_surface_not_found, revision}}
-      _many -> {:error, {:ambiguous_surface_revision, revision}}
     end
   end
 
@@ -1350,26 +1328,19 @@ defmodule Spectre do
     end
   end
 
+  defp scoped_query(%Scope{} = scope, query) do
+    with {:ok, scope} <- rebind_scope(scope),
+         do:
+           sequencer_result(
+             fn -> Sequencer.query(scope.domain.server, scope, query) end,
+             :scope_validation_failed
+           )
+  end
+
   defp context_domain_binding(%SubmissionContext{domain_ref: domain_ref}, %Domain{ref: domain_ref}),
        do: :ok
 
   defp context_domain_binding(_context, _domain), do: {:error, :context_domain_mismatch}
-
-  defp fetch_projection(domain_input) do
-    with {:ok, domain} <- resolve_domain(domain_input),
-         {:ok, %State{} = projection} <-
-           safe_call(
-             fn -> Sequencer.projection(domain.server) end,
-             :domain_projection_unavailable
-           ),
-         true <- projection.domain_ref == domain.ref do
-      {:ok, projection}
-    else
-      false -> {:error, :domain_projection_mismatch}
-      {:ok, _invalid} -> {:error, :invalid_domain_projection}
-      {:error, _reason} = error -> error
-    end
-  end
 
   defp resolve_domain(%Domain{ref: domain_ref}), do: lookup_domain(domain_ref)
   defp resolve_domain(domain_ref) when is_binary(domain_ref), do: lookup_domain(domain_ref)

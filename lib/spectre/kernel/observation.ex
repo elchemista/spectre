@@ -27,7 +27,7 @@ defmodule Spectre.Kernel.Observation do
          :ok <- outcome_not_future(outcome, time),
          :ok <- unique_outcome(projection, outcome),
          {:ok, attempt, act} <- causal_records(projection, outcome),
-         :ok <- OutcomeTransition.validate_history(projection.outcomes, outcome),
+         :ok <- OutcomeTransition.validate_state_history(projection, outcome),
          :ok <- OutcomeTransition.validate_for_act(act, outcome),
          :ok <-
            ErasureAnalysis.validate_evidence_available(projection, outcome.evidence_refs),

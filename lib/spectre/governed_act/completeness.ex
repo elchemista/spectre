@@ -28,6 +28,79 @@ defmodule Spectre.GovernedAct.Completeness do
 
   def validate(_state), do: {:error, :invalid_governed_fold}
 
+  @local_events ~w(evidence_recorded decision_recorded act_committed dispatch_ready
+    attempt_started outcome_recorded meter_reserved meter_settled meter_released
+    meter_suspended duty_opened)
+
+  @doc """
+  Checks a batch applied by the fold to an already verified prefix.
+
+  Ordinary execution only changes relationships belonging to the touched Acts.
+  Validate those with the same predicates as full replay. Governance changes
+  still take the exhaustive path because they can change global ownership and
+  lineage. This is not a validator for an arbitrary caller-supplied State.
+  """
+  def validate_batch(%State{} = state, events) do
+    if Enum.all?(events, &local_event?(state, &1)) do
+      local = execution_slice(state, events)
+
+      with :ok <- complete_admissions(local),
+           :ok <- complete_reservations(local),
+           :ok <- complete_dispatches(local),
+           :ok <- complete_suspensions(local),
+           do: complete_meter_recontainments(local)
+    else
+      validate(state)
+    end
+  end
+
+  defp local_event?(state, %{type: "act_committed", identity: ref}),
+    do: GovernedExecution.executor_mediated?(Map.fetch!(state.acts, ref))
+
+  defp local_event?(_state, event), do: event.type in @local_events
+
+  defp execution_slice(state, events) do
+    act_refs =
+      events
+      |> Enum.map(fn event ->
+        if event.type == "act_committed", do: event.identity, else: event.data["act_ref"]
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    acts = Map.take(state.acts, act_refs)
+
+    decision_refs =
+      Enum.map(acts, fn {_ref, act} -> act.decision_ref end) ++
+        for(%{type: "decision_recorded", identity: ref} <- events, do: ref)
+
+    decisions = Map.take(state.decisions, decision_refs)
+    identities = Enum.map(decisions, fn {_ref, decision} -> decision.candidate_identity_key end)
+
+    attempts =
+      act_refs |> Enum.map(&DispatchState.attempt_ref(state, &1)) |> Enum.reject(&is_nil/1)
+
+    outcomes = indexed_refs(state.read_index.duties.outcomes_by_act, act_refs)
+    duties = indexed_refs(state.read_index.duties.duties_by_act, act_refs)
+
+    %{
+      state
+      | acts: acts,
+        decisions: decisions,
+        admissions: Map.take(state.admissions, identities),
+        attempts: Map.take(state.attempts, attempts),
+        outcomes: Map.take(state.outcomes, outcomes),
+        duties: Map.take(state.duties, duties),
+        meter_reservations: Map.take(state.meter_reservations, act_refs),
+        meter_recontainments: Map.take(state.meter_recontainments, act_refs),
+        pending_dispatches: MapSet.new(Enum.filter(act_refs, &DispatchState.pending?(state, &1))),
+        terminal_dispatches: Map.take(state.terminal_dispatches, act_refs)
+    }
+  end
+
+  defp indexed_refs(index, refs),
+    do: Enum.flat_map(refs, &(index |> Map.get(&1, MapSet.new()) |> MapSet.to_list()))
+
   defp complete_admissions(state) do
     admitted_count =
       Enum.count(state.decisions, fn {_ref, decision} -> decision.outcome == :admitted end)

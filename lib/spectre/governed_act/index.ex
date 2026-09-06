@@ -44,7 +44,7 @@ defmodule Spectre.GovernedAct.Index do
   @spec fetch_duty_by_ref(State.t(), term()) :: {:ok, Spectre.Duty.t()} | {:error, term()}
   def fetch_duty_by_ref(%State{} = state, duty_ref)
       when is_binary(duty_ref) and duty_ref != "" do
-    with {:ok, cause_key} <- Map.fetch(state.duty_refs, duty_ref),
+    with {:ok, cause_key} <- Map.fetch(state.read_index.duties.by_ref, duty_ref),
          {:ok, duty} <- Map.fetch(state.duties, cause_key) do
       {:ok, duty}
     else

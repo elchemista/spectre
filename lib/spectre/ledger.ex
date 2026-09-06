@@ -39,6 +39,61 @@ defmodule Spectre.Ledger do
           required(:entry_count) => pos_integer(),
           required(:head_digest) => Entry.digest()
         }
+  @type cursor :: %{revision: non_neg_integer(), head_digest: Entry.digest()}
+
+  @doc """
+  Reads and verifies only the entries after an already verified prefix.
+
+  The cursor must identify a complete batch boundary held by the caller. This
+  is not an independent audit or a way to trust an arbitrary persisted cache:
+  only the suffix is checked against that predecessor. Revisions, digests,
+  Domain binding, complete batches and the captured head are still verified.
+  """
+  @spec load_from(Store.config(), domain_ref(), cursor(), keyword()) ::
+          :not_found | {:ok, snapshot()} | {:error, term()}
+  def load_from(store, domain_ref, cursor, opts \\ []) do
+    with :ok <- validate_identifier(domain_ref, :domain_ref),
+         :ok <- validate_cursor(cursor),
+         {:ok, snapshot} <- Store.load_from(store, domain_ref, cursor.revision, opts) do
+      verify_suffix(snapshot, domain_ref, cursor)
+    end
+  end
+
+  @doc false
+  def verify_suffix(snapshot, domain_ref, cursor) when Portable.is_plain_map(snapshot) do
+    with :ok <- validate_cursor(cursor),
+         :ok <- match_expected_domain(Map.get(snapshot, :domain_ref), domain_ref),
+         :ok <- validate_revision(Map.get(snapshot, :revision)),
+         :ok <- validate_digest(Map.get(snapshot, :head_digest)),
+         true <- snapshot.revision >= cursor.revision,
+         entries when is_list(entries) <- Map.get(snapshot, :entries),
+         {:ok, rebuilt} <-
+           Entry.verify_chain(entries,
+             domain_ref: domain_ref,
+             start_revision: cursor.revision,
+             prev_digest: cursor.head_digest
+           ),
+         :ok <- verify_batch_topology(rebuilt.entries),
+         :ok <- verify_recorded_at_order(rebuilt.entries),
+         :ok <- match_export_summary(rebuilt, snapshot.revision, snapshot.head_digest),
+         :ok <- validate_recovery(Map.get(snapshot, :recovery)) do
+      {:ok, Map.put(rebuilt, :recovery, Map.get(snapshot, :recovery))}
+    else
+      false -> {:error, :ledger_cursor_ahead_of_head}
+      {:error, _} = error -> error
+      _invalid -> {:error, :invalid_ledger_snapshot_entries}
+    end
+  end
+
+  def verify_suffix(_snapshot, _domain_ref, _cursor),
+    do: {:error, :invalid_ledger_snapshot}
+
+  defp validate_cursor(%{revision: revision, head_digest: digest})
+       when is_integer(revision) and revision >= 0 do
+    if Portable.sha256_digest?(digest), do: :ok, else: {:error, :invalid_ledger_cursor}
+  end
+
+  defp validate_cursor(_cursor), do: {:error, :invalid_ledger_cursor}
 
   @doc "Returns a verified snapshot of a Domain ledger."
   @spec load(Store.config(), domain_ref(), keyword()) ::

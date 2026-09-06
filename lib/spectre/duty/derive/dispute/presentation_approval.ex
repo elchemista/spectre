@@ -9,7 +9,7 @@ defmodule Spectre.Duty.Derive.Dispute.PresentationApproval do
   @doc false
   @spec causes(Facts.t(), map(), integer()) :: [map()]
   def causes(%Facts{} = facts, constitution, time) do
-    Enum.flat_map(facts.acts, fn {_act_ref, %Act{} = act} ->
+    Enum.flat_map(Facts.sources(facts, :acts), fn {_act_ref, %Act{} = act} ->
       with presentation_ref when is_binary(presentation_ref) <- act.presentation_ref,
            true <- act.recognition_evidence_refs != [],
            {:ok, act_metadata} <- Facts.metadata(facts, act.ref),
@@ -115,7 +115,8 @@ defmodule Spectre.Duty.Derive.Dispute.PresentationApproval do
 
     recognized = MapSet.new(recognition_evidence_refs)
 
-    Enum.flat_map(facts.evidence, fn {_evidence_ref, %Evidence{} = evidence} ->
+    Enum.flat_map(Facts.sources(facts, :counter_evidence), fn {_evidence_ref,
+                                                               %Evidence{} = evidence} ->
       with {:ok, metadata} <- Facts.later_evidence(facts, evidence, act_revision, time),
            false <- MapSet.member?(recognized, evidence.ref),
            %Evidence{} = prior <- Enum.find(ordered_basis, &Evidence.opposes?(&1, evidence)),

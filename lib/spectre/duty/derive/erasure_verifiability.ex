@@ -10,7 +10,7 @@ defmodule Spectre.Duty.Derive.ErasureVerifiability do
   @doc false
   @spec causes(Facts.t(), map(), integer()) :: [map()]
   def causes(%Facts{} = facts, constitution, time) do
-    Enum.flat_map(facts.erasures, fn {_erasure_ref, %Erasure{} = erasure} ->
+    Enum.flat_map(Facts.sources(facts, :erasures), fn {_erasure_ref, %Erasure{} = erasure} ->
       with true <- erasure.reduces_verifiability,
            %Act{} = act <- Map.get(facts.acts, erasure.source_act_ref),
            {:ok, attempt, outcome} <- succeeded_outcome(facts, erasure.source_act_ref, time) do

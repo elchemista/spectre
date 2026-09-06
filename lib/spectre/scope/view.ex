@@ -82,6 +82,37 @@ defmodule Spectre.Scope.View do
   def from_projection(%State{}, scope_ref), do: {:error, {:invalid_scope_ref, scope_ref}}
   def from_projection(_projection, _scope_ref), do: {:error, :invalid_domain_projection}
 
+  @doc """
+  Selects one public collection without building the entire Scope view.
+
+  Visibility uses the same selectors as `from_projection/2`. In particular,
+  reading Acts or erasures does not materialize unrelated Evidence, outcomes
+  or the erasure closure. This is still an explicit full collection read, not
+  a bounded page or a second authority projection.
+  """
+  @spec records(Projection.t(), String.t(), atom()) :: {:ok, [struct()]} | {:error, term()}
+  def records(%State{} = projection, scope_ref, key)
+      when key in [:acts, :duties, :erasures, :declassifications] do
+    with {:ok, _opening} <- scope_opening(projection, scope_ref) do
+      {:ok, projection |> select_collection(scope_ref, key) |> stable_records()}
+    end
+  end
+
+  def records(_projection, _scope_ref, _key), do: {:error, :invalid_scope_collection}
+
+  defp select_collection(projection, scope_ref, key) when key in [:acts, :erasures],
+    do: records_for_scope(Map.fetch!(projection, key), scope_ref)
+
+  defp select_collection(projection, scope_ref, :declassifications) do
+    act_refs = projection.acts |> records_for_scope(scope_ref) |> ref_set()
+    records_for_source_acts(projection.declassifications, act_refs)
+  end
+
+  defp select_collection(projection, scope_ref, :duties) do
+    act_refs = projection.acts |> records_for_scope(scope_ref) |> ref_set()
+    records_for_duties(projection.duties, projection.evidence, scope_ref, act_refs)
+  end
+
   @doc false
   @spec evidence(Projection.t(), String.t(), [String.t()]) ::
           {:ok, [Spectre.Evidence.t()]} | {:error, term()}

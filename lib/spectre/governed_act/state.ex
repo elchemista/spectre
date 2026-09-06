@@ -75,7 +75,8 @@ defmodule Spectre.GovernedAct.State do
             meter_devolutions: MapSet.new(),
             # Causal obligations and stable ref lookup.
             duties: %{},
-            duty_refs: %{}
+            # Rebuildable operational indexes, never canonical authority.
+            read_index: %Spectre.GovernedAct.ReadIndex{}
 
   @type t :: %__MODULE__{
           domain_ref: String.t(),
@@ -107,7 +108,7 @@ defmodule Spectre.GovernedAct.State do
           terminal_dispatches: %{optional(String.t()) => DispatchState.terminal()},
           consumed_nonces: MapSet.t(String.t()),
           duties: %{optional(term()) => Duty.t()},
-          duty_refs: %{optional(String.t()) => term()},
+          read_index: Spectre.GovernedAct.ReadIndex.t(),
           erasures: %{optional(String.t()) => Erasure.t()}
         }
 

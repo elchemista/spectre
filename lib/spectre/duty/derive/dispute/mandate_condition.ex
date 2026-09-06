@@ -10,7 +10,7 @@ defmodule Spectre.Duty.Derive.Dispute.MandateCondition do
   @doc false
   @spec causes(Facts.t(), map(), integer()) :: [map()]
   def causes(%Facts{} = facts, constitution, time) do
-    Enum.flat_map(facts.acts, fn {_act_ref, %Act{} = act} ->
+    Enum.flat_map(Facts.sources(facts, :acts), fn {_act_ref, %Act{} = act} ->
       act_disputes(act, facts, constitution, time)
     end)
   end
@@ -82,7 +82,7 @@ defmodule Spectre.Duty.Derive.Dispute.MandateCondition do
         MapSet.member?(basis, evidence.ref) and MapSet.member?(recognized, evidence.ref)
       end)
 
-    Enum.flat_map(facts.evidence, fn {_evidence_ref, evidence} ->
+    Enum.flat_map(Facts.sources(facts, :counter_evidence), fn {_evidence_ref, evidence} ->
       if evidence_dispute?(
            evidence,
            used,

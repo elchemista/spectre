@@ -8,7 +8,7 @@ defmodule Spectre.Domain.Command.Input do
   never lets a transport adapter submit an Act or acquire a capability.
   """
 
-  alias Spectre.{Act, Attempt, Evidence, Ingress, SubmissionContext}
+  alias Spectre.{Act, Attempt, Evidence, SubmissionContext}
   alias Spectre.Attempt.Evidence, as: AttemptEvidence
   alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
   alias Spectre.Domain.{Context, Projection, Transaction}
@@ -16,25 +16,49 @@ defmodule Spectre.Domain.Command.Input do
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Evidence.Derivation
   alias Spectre.GovernedAct.Index
+  alias Spectre.Mind.Context, as: MindContext
   alias Spectre.Mind.Derivation, as: MindDerivation
   alias Spectre.Mind.Turn
   alias Spectre.Scope.View, as: ScopeView
 
-  @doc "Builds a sealed Mind Turn from ingress and optional durable Scope Evidence."
-  @spec begin_turn(State.t(), SubmissionContext.t() | term(), term(), [String.t()], keyword()) ::
-          {:ok, State.t(), Turn.t()} | {:error, State.t(), term()}
-  def begin_turn(state, context_input, input, context_evidence_refs, ingress_opts) do
-    with {:ok, context, _opening} <- Context.validate_scope(state, context_input),
+  @doc false
+  def prepare_observation(state, context, context_refs) do
+    with {:ok, context, _opening} <- Context.validate_scope(state, context),
+         {:ok, _evidence} <- scoped_evidence(state.projection, context.scope_ref, context_refs),
+         {:ok, now} <- Transaction.trusted_recorded_at(state) do
+      {:ok, context, now}
+    end
+  end
+
+  @doc false
+  def finish_observation(state, context, evidence) do
+    case Context.validate_scope(state, context) do
+      {:ok, _context, _opening} -> EvidenceCommand.record(state, evidence)
+      {:error, reason} -> {:error, state, reason}
+    end
+  end
+
+  @doc false
+  def finish_turn(state, context, observed, context_refs) do
+    with {:ok, context, _opening} <- Context.validate_scope(state, context),
          {:ok, context_evidence} <-
-           scoped_evidence(state.projection, context.scope_ref, context_evidence_refs),
-         {:ok, next_state, observed, opened_at} <-
-           observe_current_at(state, context, input, ingress_opts),
-         evidence <- merge_evidence(observed, context_evidence),
-         {:ok, turn_ref} <- Transaction.operational_id(next_state),
-         {:ok, turn} <- build_turn(next_state, context, turn_ref, evidence, opened_at) do
-      {:ok, next_state, turn}
+           scoped_evidence(state.projection, context.scope_ref, context_refs),
+         {:ok, opened_at} <- Transaction.trusted_recorded_at(state),
+         {:ok, next, durable} <- EvidenceCommand.record(state, observed, opened_at) do
+      seal_recorded_turn(next, context, merge_evidence(durable, context_evidence), opened_at)
     else
-      {:error, %State{} = next_state, reason} -> {:error, next_state, reason}
+      {:error, %State{}, _reason} = error -> error
+      {:error, reason} -> {:error, state, reason}
+    end
+  end
+
+  defp seal_recorded_turn(state, context, evidence, opened_at) do
+    with {:ok, turn_ref} <- Transaction.operational_id(state),
+         {:ok, turn} <- build_turn(state, context, turn_ref, evidence, opened_at) do
+      {:ok, state, turn}
+    else
+      # Evidence is already committed. Keep its confirmed prefix even when
+      # constructing the ephemeral Turn fails; never roll back the read model.
       {:error, reason} -> {:error, state, reason}
     end
   end
@@ -85,53 +109,6 @@ defmodule Spectre.Domain.Command.Input do
     end
   end
 
-  @doc "Observes opaque ingress input and returns only durable Evidence."
-  @spec observe(State.t(), SubmissionContext.t() | term(), term(), keyword()) ::
-          {:ok, State.t(), [Evidence.t()]} | {:error, State.t(), term()}
-  def observe(state, context, input, ingress_opts) do
-    case observe_at(state, context, input, ingress_opts) do
-      {:ok, next_state, evidence, _observed_at} -> {:ok, next_state, evidence}
-      {:error, _state, _reason} = error -> error
-    end
-  end
-
-  defp observe_at(state, context, input, ingress_opts) do
-    case Context.validate_scope(state, context) do
-      {:ok, context, _opening} ->
-        observe_current_at(state, context, input, ingress_opts)
-
-      {:error, reason} ->
-        {:error, state, reason}
-    end
-  end
-
-  # `begin_turn/5` has already verified the Scope before selecting contextual
-  # Evidence. Keeping the post-validation path separate avoids verifying the
-  # same context seal and durable opening twice for one Turn.
-  defp observe_current_at(state, context, input, ingress_opts) do
-    with {:ok, observed_at} <- Transaction.trusted_recorded_at(state),
-         {:ok, evidence} <-
-           Ingress.observe(state.ingress, context, input, observed_at, ingress_opts) do
-      case EvidenceCommand.record(
-             state,
-             evidence,
-             observed_at
-           ) do
-        {:ok, next_state, durable} when is_list(durable) ->
-          {:ok, next_state, durable, observed_at}
-
-        {:ok, next_state, _invalid} ->
-          {:error, Control.halt(next_state, :invalid_ingress_evidence_result),
-           :invalid_ingress_evidence_result}
-
-        {:error, next_state, reason} ->
-          {:error, next_state, reason}
-      end
-    else
-      {:error, reason} -> {:error, state, reason}
-    end
-  end
-
   defp scoped_evidence(_projection, _scope_ref, []), do: {:ok, []}
 
   defp scoped_evidence(projection, scope_ref, refs) do
@@ -146,8 +123,16 @@ defmodule Spectre.Domain.Command.Input do
   end
 
   defp build_turn(state, context, turn_ref, evidence, opened_at) do
+    {evidence, window} =
+      MindContext.select(
+        state.projection,
+        context.scope_ref,
+        evidence,
+        state.context_limits
+      )
+
     with {:ok, turn} <- Turn.new(context, turn_ref, state.mind_ref, evidence, opened_at),
-         do: Turn.seal(turn, state.grant_secret)
+         do: Turn.seal(%{turn | context_window: window}, state.grant_secret)
   end
 
   defp validate_turn(state, context, opening, turn, now) do

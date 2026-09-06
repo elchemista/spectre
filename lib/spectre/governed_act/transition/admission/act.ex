@@ -13,7 +13,7 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.GovernedAct.Admission.Binding
   alias Spectre.GovernedAct.Execution, as: GovernedExecution
-  alias Spectre.GovernedAct.{Index, MeterState, State, View}
+  alias Spectre.GovernedAct.{Index, MeterState, ReadIndex, State, View}
   alias Spectre.GovernedAct.Transition.Admission.Decision, as: DecisionProof
   alias Spectre.GovernedAct.Transition.Admission.Presentation, as: PresentationProof
   alias Spectre.Kernel.{Authority, Meter, Recognition}
@@ -97,14 +97,13 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
   end
 
   defp validate_candidate(state, candidate, act, decision) do
-    available_evidence = state |> ErasureAnalysis.available_evidence() |> Map.values()
-
     with {:ok, mandate} <- Index.fetch_mandate(state, act.mandate_ref),
          :ok <- validate_surface_binding(state, candidate, act),
          :ok <- ErasureAnalysis.validate_evidence_available(state, candidate.evidence_refs),
          :ok <- validate_disclosure(state, candidate),
          {:ok, effective_mandate} <-
            authorize_candidate(state, candidate, act, decision, mandate),
+         available_evidence = recognition_evidence(state, candidate, effective_mandate),
          {:ok, mandate_basis_refs} <-
            validate_recognition(state, candidate, decision, effective_mandate, available_evidence),
          {:ok, presentation_basis_refs} <-
@@ -117,6 +116,12 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
       validate_reservation_contract(state, candidate, act, decision, effective_mandate)
     end
   end
+
+  defp recognition_evidence(state, %{presentation_ref: nil}, mandate),
+    do: ReadIndex.evidence_for(state, mandate.conditions)
+
+  defp recognition_evidence(state, _candidate, _mandate),
+    do: state |> ErasureAnalysis.available_evidence() |> Map.values()
 
   defp validate_disclosure(_state, %Candidate{disclosure: nil}), do: :ok
 

@@ -9,6 +9,7 @@ defmodule Spectre.GovernedAct.Transition.Outcome do
   """
 
   alias Spectre.{Act, Attempt, Evidence, Outcome}
+  alias Spectre.GovernedAct.ReadIndex
   alias Spectre.Outcome.Attestation
 
   @doc "Checks class-specific restrictions on an observed result."
@@ -31,6 +32,15 @@ defmodule Spectre.GovernedAct.Transition.Outcome do
   end
 
   def validate_history(_outcomes, _outcome), do: {:error, :invalid_outcome_history}
+
+  @doc false
+  def validate_state_history(%Spectre.GovernedAct.State{} = state, %Outcome{} = outcome) do
+    history = ReadIndex.outcomes_for(state, :attempt, outcome.attempt_ref)
+    # Keep even a foreign correction target: the validator must still reject
+    # its causal mismatch, rather than hide it through the local index.
+    target = Map.take(state.outcomes, [outcome.contradicts_outcome_ref])
+    validate_history(Map.merge(history, target), outcome)
+  end
 
   @doc "Validates every Evidence reference attesting an Outcome."
   @spec validate_evidence(

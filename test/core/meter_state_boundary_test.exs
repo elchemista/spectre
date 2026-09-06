@@ -1,11 +1,11 @@
 defmodule Spectre.Core.MeterStateBoundaryTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.{Mandate, Outcome, Row}
   alias Spectre.Domain.Sequencer
   alias Spectre.GovernedAct.MeterState
   alias Spectre.Kernel.Meter
   alias Spectre.Kernel.Meter.Account
+  alias Spectre.{Mandate, Outcome, Row}
   alias Spectre.V04Test.{Fixture, Runtime}
 
   setup do

@@ -10,7 +10,7 @@ defmodule Spectre.Duty.Derive.EvidenceMarker do
   @doc false
   @spec causes(Facts.t(), map(), integer()) :: [map()]
   def causes(%Facts{} = facts, constitution, time) do
-    Enum.flat_map(facts.evidence, fn {_evidence_ref, %Evidence{} = evidence} ->
+    Enum.flat_map(Facts.sources(facts, :evidence), fn {_evidence_ref, %Evidence{} = evidence} ->
       with {:ok, metadata} <- Facts.metadata(facts, evidence.ref),
            true <- known_by?(metadata.recorded_at, evidence, time),
            {:ok, marker} <- EvidenceCause.extract(evidence, constitution) do

@@ -293,7 +293,7 @@ defmodule Spectre.GovernedAct.Transition.Authority do
       act.proposer_ref not in controllers ->
         {:error, {:revocation_controller_not_authorized, act.proposer_ref, mandate.ref}}
 
-      effective_at != act.committed_at ->
+      effective_at !== act.committed_at ->
         {:error, {:invalid_revocation_effective_at, mandate.ref, effective_at}}
 
       act.consequence != consequence ->

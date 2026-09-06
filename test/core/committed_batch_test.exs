@@ -68,14 +68,14 @@ defmodule Spectre.Core.CommittedBatchTest do
   test "missing index acknowledgement falls back to the canonical ledger", ctx do
     assert :ok = Mock.push(ctx.mock, {:lookup_batch, :before, :not_found})
     assert {:ok, next} = append(ctx)
-    assert operations(ctx.mock) == [:append, :lookup_batch, :load]
+    assert operations(ctx.mock) == [:append, :lookup_batch, :load_from]
     assert_replay(ctx.fixture, next)
   end
 
   test "an index for another batch cannot replace verification of the committed history", ctx do
     assert :ok = Mock.push(ctx.mock, {:lookup_batch, :before, {:ok, %{batch_id: "foreign"}}})
     assert {:ok, next} = append(ctx)
-    assert :load in operations(ctx.mock)
+    assert :load_from in operations(ctx.mock)
     assert_replay(ctx.fixture, next)
   end
 
@@ -96,7 +96,7 @@ defmodule Spectre.Core.CommittedBatchTest do
              Transaction.append_exact(ctx.state, "batch", ctx.payloads, prefix.recorded_at + 1)
 
     assert next.recorded_at == prefix.recorded_at
-    assert :load in operations(ctx.mock)
+    assert :load_from in operations(ctx.mock)
     assert_replay(ctx.fixture, next)
   end
 
@@ -104,26 +104,28 @@ defmodule Spectre.Core.CommittedBatchTest do
     assert :ok =
              Mock.push(ctx.mock, [
                {:lookup_batch, :before, :not_found},
-               {:load, :before, :not_found}
+               {:load_from, :before, :not_found}
              ])
 
     assert {:error, {:durable_recovery_failed, :domain_ledger_disappeared}} = append(ctx)
     assert Sequencer.projection(ctx.fixture.server) == ctx.state.projection
   end
 
-  test "fallback still verifies all ledger hashes before confirming an append", ctx do
+  test "fallback verifies every suffix hash before confirming an append", ctx do
     assert {:ok, _} = append(ctx)
     assert {:ok, snapshot} = Ledger.load(ctx.fixture.store_config, ctx.fixture.refs.domain)
-    [first | rest] = snapshot.entries
+    [first | rest] = Enum.drop(snapshot.entries, ctx.state.projection.revision)
+    revision = first.revision
     corrupt = %{snapshot | entries: [%{first | digest: String.duplicate("f", 64)} | rest]}
 
     assert :ok =
              Mock.push(ctx.mock, [
                {:lookup_batch, :before, :not_found},
-               {:load, :before, {:ok, corrupt}}
+               {:load_from, :before, {:ok, corrupt}}
              ])
 
-    assert {:error, {:durable_recovery_failed, {:ledger_entry_digest_mismatch, 1}}} = append(ctx)
+    assert {:error, {:durable_recovery_failed, {:ledger_entry_digest_mismatch, ^revision}}} =
+             append(ctx)
   end
 
   test "a different committed batch cannot satisfy confirmation of the requested batch", ctx do
@@ -167,7 +169,7 @@ defmodule Spectre.Core.CommittedBatchTest do
     assert :ok =
              Mock.push(ctx.mock, [
                {:lookup_batch, :before, :not_found},
-               {:load, :before, :not_found}
+               {:load_from, :before, :not_found}
              ])
 
     assert {:error, {:durable_recovery_failed, :domain_ledger_disappeared}} =
@@ -224,11 +226,71 @@ defmodule Spectre.Core.CommittedBatchTest do
     assert Sequencer.projection(ctx.fixture.server) == prefix
   end
 
+  test "suffix replay rejects reuse of a batch identity from the verified prefix", ctx do
+    prefix = ctx.state.projection
+    [batch_id | _] = MapSet.to_list(prefix.read_index.batches)
+
+    assert {:ok, entries} =
+             Entry.build_batch(
+               prefix.domain_ref,
+               batch_id,
+               ctx.payloads,
+               prefix.revision,
+               prefix.recorded_at,
+               prefix.head_digest
+             )
+
+    assert {:error, {:duplicate_ledger_batch, ^batch_id}} = Fold.append_batch(prefix, entries)
+  end
+
+  test "resume does not need to reread the verified prefix after a concurrent append", ctx do
+    assert {:ok, expected} = append(ctx)
+    assert :ok = Mock.push(ctx.mock, {:load, :before, {:error, :unexpected_full_load}})
+    assert {:ok, ^expected} = Recovery.resume({Mock, server: ctx.mock}, ctx.state.projection)
+    assert List.last(operations(ctx.mock)) == :load_from
+    refute :load in operations(ctx.mock)
+    assert_replay(ctx.fixture, expected)
+  end
+
+  test "suffix recovery checks time against the cached prefix, not just suffix neighbours", ctx do
+    prefix = ctx.state.projection
+    recorded_at = prefix.recorded_at - 1
+
+    assert {:ok, entries} =
+             Entry.build_batch(
+               prefix.domain_ref,
+               "regressed-suffix",
+               ctx.payloads,
+               prefix.revision,
+               recorded_at,
+               prefix.head_digest
+             )
+
+    assert {:ok, snapshot} = Ledger.load(ctx.fixture.store_config, prefix.domain_ref)
+    last = List.last(entries)
+    suffix = %{snapshot | entries: entries, revision: last.revision, head_digest: last.digest}
+    store = {Mock, server: ctx.mock}
+    assert :ok = Mock.push(ctx.mock, {:load_from, :before, {:ok, suffix}})
+
+    # The suffix is correctly hashed and internally monotone. Only its
+    # relationship to the already verified prefix exposes the regressed time.
+    assert {:ok, ^suffix} = Ledger.load_from(store, prefix.domain_ref, prefix)
+    assert :ok = Mock.push(ctx.mock, {:load_from, :before, {:ok, suffix}})
+    previous_time = prefix.recorded_at
+
+    assert {:error, {:ledger_time_regression, ^recorded_at, ^previous_time}} =
+             Recovery.resume(store, prefix)
+
+    assert Sequencer.projection(ctx.fixture.server) === prefix
+  end
+
   test "a valid full ledger cannot silently replace the cached predecessor", ctx do
     assert {:ok, _} = append(ctx)
     prefix = %{ctx.state.projection | head_digest: String.duplicate("1", 64)}
 
-    assert {:error, {:committed_batch_predecessor_mismatch, "batch"}} =
+    revision = prefix.revision + 1
+
+    assert {:error, {:ledger_chain_mismatch, ^revision}} =
              Recovery.confirm_append(
                ctx.fixture.store_config,
                prefix,

@@ -3,8 +3,8 @@ defmodule Spectre.Domain.Transaction do
   Durable transaction boundary shared by Domain command workflows.
 
   It performs one exact append, classifies an ambiguous result and advances the
-  disposable projection only from a confirmed durable batch. Full replay remains
-  the startup, conflict and unconfirmed-index recovery path.
+  disposable projection only from a confirmed durable batch. Conflicts resume
+  from the verified prefix; full replay remains the cold-start recovery path.
   Conflict policy remains with the calling workflow; this module never replies
   to callers, schedules work or grants a capability.
 
@@ -20,7 +20,7 @@ defmodule Spectre.Domain.Transaction do
 
   alias Spectre.{Adapter, Clock, Id, Portable}
   alias Spectre.Attempt.Reconciler
-  alias Spectre.Domain.{Bootstrap, Projection, Recovery}
+  alias Spectre.Domain.{Bootstrap, Recovery}
   alias Spectre.Domain.Sequencer.State
   alias Spectre.GovernedAct.Fold
   alias Spectre.GovernedAct.State, as: GovernedState
@@ -46,9 +46,8 @@ defmodule Spectre.Domain.Transaction do
     expected_revision = state.projection.revision
 
     if recorded_at >= latest_recorded_at do
-      with {:ok, provisional} <-
-             Projection.apply_payloads(state.projection, payloads, recorded_at),
-           :ok <- Fold.validate_complete(provisional) do
+      with {:ok, _provisional} <-
+             Fold.prepare_batch(state.projection, payloads, recorded_at) do
         append_exact_at(
           state,
           batch_id,
@@ -165,7 +164,7 @@ defmodule Spectre.Domain.Transaction do
       if plan.payloads == [] do
         {:ok, projection}
       else
-        commit_duty_repair(state, plan, conflicts_left, now)
+        commit_duty_repair(%{state | projection: projection}, plan, conflicts_left, now)
       end
     end
   end
@@ -253,10 +252,9 @@ defmodule Spectre.Domain.Transaction do
   @spec recover_verified(State.t()) ::
           {:ok, GovernedState.t()} | {:error, term()}
   def recover_verified(state) do
-    case Recovery.recover(
+    case Recovery.resume(
            state.store,
-           state.projection.domain_ref,
-           state.projection.constitution,
+           state.projection,
            state.ledger_opts
          ) do
       {:ok, projection} ->

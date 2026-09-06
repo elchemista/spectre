@@ -48,13 +48,14 @@ defmodule Spectre.GovernedAct.Transition.Duty do
 
   defp reduce("duty_opened", identity, data, _revision, projection) do
     with {:ok, duty} <-
-           Index.restore_unique(projection.duty_refs, Duty, identity, data, :duty),
+           Index.restore_unique(projection.read_index.duties.by_ref, Duty, identity, data, :duty),
          :ok <- Opening.validate(projection, duty) do
+      projection = put_in(projection.read_index.duties.by_ref[duty.ref], duty.cause_key)
+
       {:ok,
        %{
          projection
-         | duties: Map.put(projection.duties, duty.cause_key, duty),
-           duty_refs: Map.put(projection.duty_refs, duty.ref, duty.cause_key)
+         | duties: Map.put(projection.duties, duty.cause_key, duty)
        }}
     end
   end

@@ -3,6 +3,7 @@ defmodule Spectre.Core.PromisedAgentsTest do
 
   alias Spectre.{Audit, Condition, Instance, Ledger}
   alias Spectre.Domain.{Projection, Sequencer}
+  alias Spectre.Test.DutyFrontierAssertions
   alias Spectre.V04Test.{Fixture, Runtime}
 
   defmodule Worker do
@@ -348,5 +349,6 @@ defmodule Spectre.Core.PromisedAgentsTest do
     assert replayed == projection(c)
     assert {:ok, export} = Ledger.export(c.fixture.store_config, c.fixture.refs.domain)
     assert {:ok, _} = Audit.verify(export, c.fixture.constitution, Runtime.now())
+    DutyFrontierAssertions.assert_prefixes(snapshot, c.fixture.constitution)
   end
 end

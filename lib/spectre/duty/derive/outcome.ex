@@ -13,7 +13,11 @@ defmodule Spectre.Duty.Derive.Outcome do
   @spec causes(Facts.t(), map(), integer()) :: [map()]
   def causes(%Facts{} = facts, constitution, time) do
     outcomes_by_attempt =
-      Enum.group_by(facts.outcomes, fn {_ref, outcome} -> outcome.attempt_ref end, &elem(&1, 1))
+      Enum.group_by(
+        Facts.sources(facts, :outcomes),
+        fn {_ref, outcome} -> outcome.attempt_ref end,
+        &elem(&1, 1)
+      )
 
     ambiguous_attempt_causes(facts, outcomes_by_attempt, constitution, time) ++
       contradicted_outcome_causes(facts, constitution, time)
@@ -61,7 +65,7 @@ defmodule Spectre.Duty.Derive.Outcome do
   end
 
   defp ambiguous_attempt_causes(facts, outcomes_by_attempt, constitution, time) do
-    Enum.flat_map(facts.attempts, fn {_attempt_ref, %Attempt{} = attempt} ->
+    Enum.flat_map(Facts.sources(facts, :attempts), fn {_attempt_ref, %Attempt{} = attempt} ->
       outcomes = Map.get(outcomes_by_attempt, attempt.ref, [])
       ambiguous_attempt(facts, attempt, outcomes, constitution, time)
     end)
@@ -100,7 +104,7 @@ defmodule Spectre.Duty.Derive.Outcome do
   end
 
   defp contradicted_outcome_causes(facts, constitution, time) do
-    Enum.flat_map(facts.outcomes, fn {_outcome_ref, %OutcomeRecord{} = outcome} ->
+    Enum.flat_map(Facts.sources(facts, :outcomes), fn {_outcome_ref, %OutcomeRecord{} = outcome} ->
       with true <- present?(outcome.contradicts_outcome_ref),
            true <- observed_by?(facts, outcome, time),
            %Act{} = act <- Map.get(facts.acts, outcome.act_ref),

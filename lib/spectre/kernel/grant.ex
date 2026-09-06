@@ -153,7 +153,7 @@ defmodule Spectre.Kernel.Grant do
       case Map.fetch(expected, field) do
         {:ok, ^actual} -> :ok
         {:ok, _different} -> {:error, reason}
-        :error -> :ok
+        :error -> {:error, :invalid_grant}
       end
     end)
   end

@@ -31,6 +31,52 @@ defmodule Spectre.Core.CanonicalCodecTest do
     assert Task.await(Task.async(fn -> Value.encode(right) end)) == {:ok, encoded}
   end
 
+  test "dedicated scalar tags cannot be aliased through the atom tag, even in a collection" do
+    for atom <- ["nil", "true", "false"] do
+      payload = <<0x13, byte_size(atom)::32, atom::binary>>
+      assert {:error, :noncanonical_value_encoding} = Value.decode(<<"SPCV", 1, payload::binary>>)
+
+      assert {:error, :noncanonical_value_encoding} =
+               Value.decode(<<"SPCV", 1, 0x20, 1::32, payload::binary>>)
+    end
+  end
+
+  test "an allowlisted struct cannot masquerade as a canonical map" do
+    fields = [{:__struct__, Record}, {:id, "x"}, {:metadata, %{}}]
+
+    body =
+      fields
+      |> Enum.map(fn {k, v} -> {payload!(k), payload!(v)} end)
+      |> Enum.sort()
+      |> Enum.map(fn {k, v} -> [k, v] end)
+
+    encoded = IO.iodata_to_binary([<<"SPCV", 1, 0x22, 3::32>>, body])
+
+    assert {:error, :noncanonical_value_encoding} =
+             Value.decode(encoded, allowed_structs: [Record])
+
+    assert {:error, :noncanonical_value_encoding} = Value.decode(encoded)
+  end
+
+  property "accepted mutated encodings still have exactly one canonical representation" do
+    check all(
+            value <- portable_value(),
+            offset <- non_negative_integer(),
+            byte <- integer(0..255),
+            max_runs: 350
+          ) do
+      encoded = Value.encode!(value)
+      position = rem(offset, byte_size(encoded))
+      <<before::binary-size(^position), _old, after_bytes::binary>> = encoded
+      mutated = <<before::binary, byte, after_bytes::binary>>
+
+      case Value.decode(mutated) do
+        {:ok, decoded} -> assert Value.encode!(decoded) === mutated
+        {:error, _} -> :ok
+      end
+    end
+  end
+
   test "a struct allowlist is required independently at encode and decode" do
     record = %Record{id: "portable", metadata: %{role: :operator}}
     assert {:error, {:disallowed_canonical_struct, [], Record}} = Value.encode(record)

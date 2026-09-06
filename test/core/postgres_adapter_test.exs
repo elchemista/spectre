@@ -39,6 +39,43 @@ defmodule Spectre.CoreTest.PostgresAdapterTest do
   @read_opts [repo: Repo, query_module: Repo]
   @payloads [%{"event" => "first"}, %{"event" => "second"}]
 
+  test "batch paging uses the revision index without loading unrelated encoded rows" do
+    batch = stored_batch()
+
+    Repo.script([
+      {"FOR SHARE", rows([[2, batch.head]])},
+      {"AND first_revision = $2", rows([batch.row])}
+    ])
+
+    assert {:ok, %{revision: 2}} = Postgres.head("domain", @read_opts)
+    assert {:ok, %{entries: entries, revision: 2}} = Postgres.read_batch("domain", 1, @read_opts)
+    assert Enum.map(entries, & &1.payload) === @payloads
+    assert Repo.remaining() == []
+    assert_received {:query, "AND first_revision = $2", ["domain", 1], []}
+  end
+
+  test "optional compression is physical and reads do not depend on the write setting" do
+    payloads = [%{"body" => String.duplicate("payload", 5_000)}]
+    Repo.script(new_batch_script())
+
+    assert {:ok, 1} =
+             Postgres.append(
+               "domain",
+               "compressed",
+               payloads,
+               0,
+               Keyword.put(@opts, :compressed, true)
+             )
+
+    assert_receive {:query, ~s(INSERT INTO "public"."spectre_ledger_batches"), params, []}
+    ["domain", "compressed", identity, 0, 1, 1, 1, head, encoded] = params
+    assert <<"SPZB", 1, _::binary>> = encoded
+    row = ["compressed", identity, 0, 1, 1, 1, head, encoded]
+    Repo.script([{"AND first_revision = $2", rows([row])}])
+    assert {:ok, %{entries: [entry]}} = Postgres.read_batch("domain", 1, @read_opts)
+    assert entry.payload === hd(payloads)
+  end
+
   test "namespace validation prevents SQL identifier injection" do
     assert {:ok, %{schema: "public", table_prefix: "spectre_ledger"}} = Postgres.namespace()
     assert {:ok, _} = Postgres.namespace(schema: "tenant_1", table_prefix: "audit")
@@ -123,7 +160,7 @@ defmodule Spectre.CoreTest.PostgresAdapterTest do
       {"SET LOCAL", rows([])},
       {"pg_advisory_xact_lock", rows([[nil]])},
       {"SELECT identity_digest", rows([tl(batch.row)])}
-      | load_script(batch)
+      | [{"FOR SHARE", rows([[2, batch.head]])}]
     ])
 
     assert {:ok, 2} =
@@ -160,7 +197,12 @@ defmodule Spectre.CoreTest.PostgresAdapterTest do
     assert {:ok, snapshot} = Postgres.load("domain", @read_opts)
     assert snapshot.entries == batch.entries
     assert snapshot.revision == 2
-    Repo.script([{"SELECT identity_digest", rows([tl(batch.row)])} | load_script(batch)])
+
+    Repo.script([
+      {"SELECT identity_digest", rows([tl(batch.row)])},
+      {"FOR SHARE", rows([[2, batch.head]])}
+    ])
+
     assert {:ok, info} = Postgres.lookup_batch("domain", "batch", @read_opts)
     assert info.head_digest == batch.head
     assert info.entry_count == 2
@@ -412,6 +454,38 @@ defmodule Spectre.CoreTest.PostgresAdapterTest do
       {~s(INSERT INTO "public"."spectre_ledger_heads"), {:ok, %{num_rows: 1}}},
       {~s(INSERT INTO "public"."spectre_ledger_batches"), {:ok, %{num_rows: 1}}}
     ]
+  end
+
+  test "suffix query keeps the head lock and binds its lower bound as a parameter" do
+    batch = stored_batch()
+
+    Repo.script([
+      {"FOR SHARE", rows([[2, batch.head]])},
+      {"AND last_revision > $2", rows([batch.row])}
+    ])
+
+    cursor = %{revision: 0, head_digest: Entry.genesis_digest()}
+
+    assert {:ok, %{revision: 2, entries: entries}} =
+             Spectre.Ledger.load_from({Postgres, @read_opts}, "domain", cursor)
+
+    assert entries === batch.entries
+    assert_receive {:query, "AND last_revision > $2", ["domain", 0], _}
+    assert Repo.remaining() == []
+  end
+
+  test "suffix refuses a SQL batch crossing the requested boundary" do
+    batch = stored_batch()
+
+    Repo.script([
+      {"FOR SHARE", rows([[2, batch.head]])},
+      {"AND last_revision > $2", rows([batch.row])}
+    ])
+
+    cursor = %{revision: 1, head_digest: hd(batch.entries).digest}
+
+    assert {:error, {:ledger_revision_gap, 2, 1}} =
+             Spectre.Ledger.load_from({Postgres, @read_opts}, "domain", cursor)
   end
 
   defp stored_batch do

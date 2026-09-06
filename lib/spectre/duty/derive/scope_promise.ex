@@ -11,7 +11,7 @@ defmodule Spectre.Duty.Derive.ScopePromise do
   @doc false
   @spec causes(Facts.t(), map(), integer()) :: [map()]
   def causes(%Facts{} = facts, constitution, time) do
-    Enum.flat_map(facts.scopes, fn {_scope_ref, %Opening{} = opening} ->
+    Enum.flat_map(Facts.sources(facts, :scopes), fn {_scope_ref, %Opening{} = opening} ->
       eligible? =
         opening.kind in [:work, :vigil] and is_integer(opening.due_at) and
           time >= opening.due_at and match?(%Condition{}, opening.promise_condition)

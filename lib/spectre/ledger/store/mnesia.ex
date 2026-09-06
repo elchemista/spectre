@@ -12,12 +12,17 @@ defmodule Spectre.Ledger.Store.Mnesia do
 
   The adapter stores canonical `Spectre.Ledger.Entry` bytes rather than native
   structs. Table names and replica type are explicit deployment configuration.
+  `compressed: true` stores entries in a bounded, lossless compression envelope;
+  it does not require changing the Mnesia schema or rewrite existing rows.
+  `:disc_copies` still holds table data in RAM; use `:disc_only_copies` when
+  that deployment tradeoff is desired. Native batch reads use revision keys.
   """
 
   @behaviour Spectre.Ledger.Store
 
   alias Spectre.Ledger
   alias Spectre.Ledger.Entry
+  alias Spectre.Ledger.Store.Compression
   alias Spectre.Ledger.Store.Support
 
   @default_heads :spectre_ledger_heads
@@ -41,7 +46,8 @@ defmodule Spectre.Ledger.Store.Mnesia do
     :entries_table,
     :storage,
     :nodes,
-    :wait_timeout
+    :wait_timeout,
+    :compressed
   ]
   @append_options @configuration_options ++ [:recorded_at, :fault_injection, :fault]
 
@@ -85,6 +91,36 @@ defmodule Spectre.Ledger.Store.Mnesia do
       read_transaction(fn -> load_locked(config, domain_ref) end)
     end
   end
+
+  @impl Spectre.Ledger.Store
+  def load_from(domain_ref, revision, opts)
+      when is_integer(revision) and revision >= 0 do
+    with {:ok, config} <- configuration(opts, @configuration_options),
+         :ok <- tables_available(config) do
+      read_transaction(fn -> load_suffix_locked(config, domain_ref, revision) end)
+    end
+  end
+
+  def load_from(_domain_ref, _revision, _opts), do: {:error, :invalid_ledger_cursor}
+
+  @impl Spectre.Ledger.Store
+  def head(domain_ref, opts) do
+    with {:ok, config} <- configuration(opts, @configuration_options),
+         :ok <- tables_available(config) do
+      read_transaction(fn -> head_locked(config, domain_ref) end)
+    end
+  end
+
+  @impl Spectre.Ledger.Store
+  def read_batch(domain_ref, first_revision, opts)
+      when is_integer(first_revision) and first_revision > 0 do
+    with {:ok, config} <- configuration(opts, @configuration_options),
+         :ok <- tables_available(config) do
+      read_transaction(fn -> read_batch_locked(config, domain_ref, first_revision) end)
+    end
+  end
+
+  def read_batch(_domain_ref, _revision, _opts), do: {:error, :invalid_ledger_cursor}
 
   @impl Spectre.Ledger.Store
   def lookup_batch(domain_ref, batch_id, opts) do
@@ -165,10 +201,10 @@ defmodule Spectre.Ledger.Store.Mnesia do
     batch_rows = :mnesia.read(config.batches, batch_key, :write)
 
     case existing_batch(config, domain_ref, batch_rows, identity, revision, batch_id) do
-      {:ok, committed_revision} ->
-        with {:ok, snapshot} <- load_locked(config, domain_ref),
-             true <- snapshot.revision >= committed_revision do
-          {:ok, committed_revision, :existing}
+      {:ok, info} ->
+        with {:ok, snapshot} <- head_locked(config, domain_ref),
+             true <- batch_in_head?(info, snapshot) do
+          {:ok, info.last_revision, :existing}
         else
           false -> {:error, :ledger_mnesia_batch_not_in_head}
           :not_found -> {:error, :ledger_mnesia_batch_without_head}
@@ -252,7 +288,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
       Enum.each(encoded_entries, fn {revision, encoded} ->
         :mnesia.write(
           config.entries,
-          {config.entries, {domain_ref, revision}, encoded},
+          {config.entries, {domain_ref, revision}, Compression.pack(encoded, config.compressed)},
           :write
         )
       end)
@@ -285,7 +321,7 @@ defmodule Spectre.Ledger.Store.Mnesia do
     with {:ok, info} <- decode_batch_record(config, domain_ref, batch_id, row),
          :ok <- validate_stored_batch(config, domain_ref, info) do
       if info.identity_digest == identity and info.expected_revision == revision,
-        do: {:ok, info.last_revision},
+        do: {:ok, info},
         else: {:error, {:batch_identity_conflict, batch_id}}
     end
   end
@@ -353,8 +389,8 @@ defmodule Spectre.Ledger.Store.Mnesia do
       [row] ->
         with {:ok, info} <- decode_batch_record(config, domain_ref, batch_id, row),
              :ok <- validate_stored_batch(config, domain_ref, info),
-             {:ok, snapshot} <- load_locked(config, domain_ref),
-             true <- snapshot.revision >= info.last_revision do
+             {:ok, snapshot} <- head_locked(config, domain_ref),
+             true <- batch_in_head?(info, snapshot) do
           {:ok, info}
         else
           false -> {:error, :ledger_mnesia_batch_not_in_head}
@@ -365,6 +401,96 @@ defmodule Spectre.Ledger.Store.Mnesia do
       _rows ->
         {:error, :invalid_ledger_mnesia_batch_row}
     end
+  end
+
+  defp batch_in_head?(info, head) do
+    head.revision > info.last_revision or
+      (head.revision === info.last_revision and head.head_digest === info.head_digest)
+  end
+
+  defp head_locked(config, domain_ref) do
+    case :mnesia.read(config.heads, domain_ref, :read) do
+      [] ->
+        :not_found
+
+      rows ->
+        with {:ok, revision, digest} <- current_head(config, domain_ref, rows),
+             do: {:ok, %{revision: revision, head_digest: digest}}
+    end
+  end
+
+  defp read_batch_locked(config, domain_ref, first_revision) do
+    case :mnesia.read(config.entries, {domain_ref, first_revision}, :read) do
+      [] ->
+        :not_found
+
+      [row] ->
+        with {:ok, ^first_revision, first} <- decode_entry_row(row, config, domain_ref),
+             true <- first.batch_index === 0,
+             {:ok, info} <- lookup_batch_locked(config, domain_ref, first.batch_id),
+             true <- info.first_revision === first_revision,
+             {:ok, entries} <-
+               decode_entry_rows(
+                 suffix_rows(config, domain_ref, first_revision - 1, info.last_revision),
+                 config,
+                 domain_ref
+               ) do
+          {:ok,
+           %{
+             domain_ref: domain_ref,
+             revision: info.last_revision,
+             head_digest: info.head_digest,
+             entries: entries,
+             recovery: nil
+           }}
+        else
+          false -> {:error, :ledger_cursor_inside_batch}
+          :not_found -> {:error, :ledger_mnesia_entry_without_batch}
+          {:error, _} = error -> error
+        end
+
+      _invalid ->
+        {:error, :invalid_ledger_mnesia_entry_row}
+    end
+  end
+
+  defp load_suffix_locked(config, domain_ref, after_revision) do
+    case :mnesia.read(config.heads, domain_ref, :read) do
+      [] ->
+        :not_found
+
+      head_rows ->
+        with {:ok, revision, head_digest} <- current_head(config, domain_ref, head_rows),
+             rows = suffix_rows(config, domain_ref, after_revision, revision),
+             {:ok, entries} <- decode_entry_rows(rows, config, domain_ref),
+             :ok <- validate_suffix_batches(config, domain_ref, entries) do
+          {:ok,
+           %{
+             domain_ref: domain_ref,
+             revision: revision,
+             head_digest: head_digest,
+             entries: entries,
+             recovery: nil
+           }}
+        end
+    end
+  end
+
+  defp suffix_rows(config, domain_ref, after_revision, revision),
+    do:
+      Enum.flat_map(
+        (after_revision + 1)..revision//1,
+        &:mnesia.read(config.entries, {domain_ref, &1}, :read)
+      )
+
+  defp validate_suffix_batches(config, domain_ref, entries) do
+    rows =
+      entries
+      |> Enum.map(& &1.batch_id)
+      |> Enum.uniq()
+      |> Enum.flat_map(&:mnesia.read(config.batches, {domain_ref, &1}, :read))
+
+    validate_batch_index(config, domain_ref, rows, entries)
   end
 
   defp read_transaction(fun) do
@@ -417,7 +543,11 @@ defmodule Spectre.Ledger.Store.Mnesia do
        )
        when table == config.entries and is_integer(revision) and revision > 0 and
               is_binary(encoded) do
-    case Entry.decode(encoded) do
+    result =
+      with {:ok, bytes} <- Compression.unpack(encoded, 16 * 1_024 * 1_024),
+           do: Entry.decode(bytes)
+
+    case result do
       {:ok, %Entry{domain_ref: ^domain_ref, revision: ^revision} = entry} ->
         {:ok, revision, entry}
 
@@ -567,10 +697,13 @@ defmodule Spectre.Ledger.Store.Mnesia do
         entries: Keyword.get(opts, :entries_table, @default_entries),
         storage: Keyword.get(opts, :storage, :disc_copies),
         nodes: Keyword.get(opts, :nodes, [node()]),
-        wait_timeout: Keyword.get(opts, :wait_timeout, 30_000)
+        wait_timeout: Keyword.get(opts, :wait_timeout, 30_000),
+        compressed: Keyword.get(opts, :compressed, false)
       }
 
-      validate_configuration(config)
+      if is_boolean(config.compressed),
+        do: validate_configuration(config),
+        else: {:error, :invalid_ledger_mnesia_compressed}
     end
   end
 

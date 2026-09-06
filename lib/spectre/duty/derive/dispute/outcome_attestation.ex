@@ -12,7 +12,7 @@ defmodule Spectre.Duty.Derive.Dispute.OutcomeAttestation do
   @doc false
   @spec causes(Facts.t(), map(), integer()) :: [map()]
   def causes(%Facts{} = facts, constitution, time) do
-    Enum.flat_map(facts.outcomes, fn {_outcome_ref, %Outcome{} = outcome} ->
+    Enum.flat_map(Facts.sources(facts, :outcomes), fn {_outcome_ref, %Outcome{} = outcome} ->
       with true <- outcome.status in @definitive_outcomes,
            {:ok, outcome_metadata} <- Facts.metadata(facts, outcome.ref),
            true <- outcome_metadata.recorded_at <= time,
@@ -57,7 +57,7 @@ defmodule Spectre.Duty.Derive.Dispute.OutcomeAttestation do
        ) do
     recognized = MapSet.new(outcome.evidence_refs)
 
-    Enum.flat_map(facts.evidence, fn {_evidence_ref, evidence} ->
+    Enum.flat_map(Facts.sources(facts, :counter_evidence), fn {_evidence_ref, evidence} ->
       with {:ok, metadata} <- Facts.later_evidence(facts, evidence, outcome_revision, time),
            false <- MapSet.member?(recognized, evidence.ref),
            true <- trusted_counter?(evidence, used_evidence, act, attempt, metadata.recorded_at) do

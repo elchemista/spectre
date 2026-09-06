@@ -131,6 +131,9 @@ defmodule Spectre.Erasure.Analysis do
 
   @doc "Returns the Evidence records that remain valid inputs after erasure."
   @spec available_evidence(input()) :: %{optional(String.t()) => Spectre.Evidence.t()}
+  def available_evidence(%State{erasures: erasures, evidence: evidence})
+      when map_size(erasures) == 0, do: evidence
+
   def available_evidence(input) do
     case Facts.coerce(input) do
       {:ok, facts} ->

@@ -10,8 +10,8 @@ defmodule Spectre.Domain.Reconciliation do
 
   alias Spectre.Attempt.Reconciler
   alias Spectre.Domain.Projection
-  alias Spectre.GovernedAct.{DispatchState, State}
-  alias Spectre.Scope.Opening
+  alias Spectre.Duty.Frontier
+  alias Spectre.GovernedAct.{DispatchState, ReadIndex, State}
 
   @doc "Returns the next trusted timestamp requiring reconciliation, or `nil`."
   @spec next_deadline(Projection.t(), non_neg_integer()) :: non_neg_integer() | nil
@@ -24,46 +24,21 @@ defmodule Spectre.Domain.Reconciliation do
 
   defp deadlines(projection, now) do
     dispatch_deadlines(projection, now) ++
-      attempt_deadlines(projection, now) ++ scope_deadlines(projection, now)
+      List.wrap(Frontier.next_deadline(projection))
   end
 
   defp dispatch_deadlines(projection, now) do
+    if ReadIndex.dispatch_indexed?(projection) do
+      projection |> ReadIndex.next_dispatch_deadline() |> List.wrap()
+    else
+      legacy_dispatch_deadlines(projection, now)
+    end
+  end
+
+  defp legacy_dispatch_deadlines(projection, now) do
     case DispatchState.pending(projection) do
       {:ok, pending} -> Enum.map(pending, fn {_act, mandate} -> max(mandate.expires_at, now) end)
       {:error, _reason} -> [now]
     end
-  end
-
-  defp attempt_deadlines(projection, now) do
-    attempts_with_outcome =
-      MapSet.new(projection.outcomes, fn {_ref, outcome} -> outcome.attempt_ref end)
-
-    projection.attempts
-    |> Map.values()
-    |> Enum.reject(&MapSet.member?(attempts_with_outcome, &1.ref))
-    |> Enum.flat_map(&attempt_deadline(projection.acts, &1, now))
-  end
-
-  defp attempt_deadline(acts, attempt, now) do
-    case Map.fetch(acts, attempt.act_ref) do
-      {:ok, act} ->
-        deadline = attempt.started_at + act.observation_window_ms
-        if deadline > now, do: [deadline], else: []
-
-      :error ->
-        []
-    end
-  end
-
-  defp scope_deadlines(projection, now) do
-    projection.catalog.scopes
-    |> Map.values()
-    |> Enum.flat_map(fn
-      %Opening{kind: kind, due_at: due_at} when kind in [:work, :vigil] and due_at > now ->
-        [due_at]
-
-      _other ->
-        []
-    end)
   end
 end

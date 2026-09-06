@@ -2,12 +2,41 @@ defmodule Spectre.V04Test.LedgerMnesiaTest do
   use ExUnit.Case, async: false
 
   alias Spectre.Ledger
+  alias Spectre.Ledger.{Entry, Reader}
   alias Spectre.Ledger.Store, as: LedgerStore
   alias Spectre.Ledger.Store.Mnesia
 
   @heads :spectre_test_ledger_heads
   @batches :spectre_test_ledger_batches
   @entries :spectre_test_ledger_entries
+
+  test "compressed records and indexed batch reads preserve the canonical ledger", %{
+    store: {Mnesia, opts}
+  } do
+    store = {Mnesia, Keyword.put(opts, :compressed, true)}
+    payloads = [%{"body" => String.duplicate("kept outside process heap", 1_000)}]
+    assert {:ok, 1} = append(store, "compressed", "first", payloads, 0)
+    assert {:ok, 2} = append(store, "compressed", "second", [%{"n" => 2}], 1)
+
+    [{@entries, {"compressed", 1}, stored}] = :mnesia.dirty_read(@entries, {"compressed", 1})
+    assert <<"SPZB", 1, _::binary>> = stored
+    assert byte_size(stored) < 2_000
+    assert {:ok, %{revision: 2}} = LedgerStore.head(store, "compressed")
+
+    assert {:ok, %{entries: [entry], revision: 1}} =
+             LedgerStore.read_batch(store, "compressed", 1)
+
+    assert entry.payload === hd(payloads)
+    assert {:ok, full} = Ledger.load({Mnesia, opts}, "compressed")
+    zero = %{revision: 0, head_digest: Entry.genesis_digest()}
+
+    assert {:ok, actual} =
+             Reader.reduce(store, "compressed", zero, [], fn batch, acc ->
+               {:ok, acc ++ batch}
+             end)
+
+    assert actual === full.entries
+  end
 
   setup_all do
     # Mnesia configuration is node-global: this module is synchronous and owns
@@ -240,6 +269,23 @@ defmodule Spectre.V04Test.LedgerMnesiaTest do
   end
 
   # The adapter receives explicit trusted acquisition time; Ledger is read-only.
+  test "suffix reads verify only the selected complete batches", %{store: store} do
+    assert {:ok, 1} = append(store, "suffix", "a", [%{"n" => 1}], 0)
+    assert {:ok, prefix} = Ledger.load(store, "suffix")
+    assert {:ok, 3} = append(store, "suffix", "b", [%{"n" => 2}, %{"n" => 3}], 1)
+    assert {:ok, suffix} = Ledger.load_from(store, "suffix", prefix)
+    assert Enum.map(suffix.entries, & &1.revision) == [2, 3]
+    assert {:ok, %{entries: []}} = Ledger.load_from(store, "suffix", suffix)
+
+    [first | _] = suffix.entries
+
+    assert {:error, _} =
+             Ledger.load_from(store, "suffix", %{revision: 2, head_digest: first.digest})
+
+    :mnesia.dirty_delete(@entries, {"suffix", 3})
+    assert {:error, _} = Ledger.load_from(store, "suffix", prefix)
+  end
+
   defp append(store, domain, batch, payloads, revision, opts \\ []) do
     LedgerStore.append(
       store,

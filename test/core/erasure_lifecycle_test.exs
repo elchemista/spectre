@@ -1,11 +1,13 @@
 defmodule Spectre.Core.ErasureLifecycleTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.{Audit, Governance, Ledger, Portable, Row}
   alias Spectre.Attempt.Executor, as: ExecutorAPI
+  alias Spectre.{Audit, Governance, Ledger, Portable, Row}
   alias Spectre.Domain.{Event, Projection, Sequencer}
   alias Spectre.Erasure.Analysis
   alias Spectre.GovernedAct.Transition.Information
+  alias Spectre.Payload.Retention
+  alias Spectre.Test.DutyFrontierAssertions
   alias Spectre.V04Test.{Fixture, Runtime}
 
   defmodule Payloads do
@@ -112,6 +114,28 @@ defmodule Spectre.Core.ErasureLifecycleTest do
     refute_received {:delete_requested, _, _}
   end
 
+  test "retention planning crosses the same governed erasure path and preserves causal records",
+       c do
+    before = Sequencer.projection(c.f.server)
+    last_use = %{recorded_at: before.recorded_at, revision: before.revision}
+    assert :retain = Retention.request(c.payload_ref, last_use, last_use, after_ms: 1)
+    refute_received {:delete_requested, _, _}
+
+    assert {:ok, request} = Retention.request(c.payload_ref, last_use, last_use, after_events: 0)
+    assert {:ok, result} = Spectre.request_erasure(c.scope, request, attrs(c, "retention"))
+    assert result.primary.decision.outcome === :admitted
+    assert result.primary.outcome.status === :succeeded
+    assert_receive {:delete_requested, _, _}
+    after_state = Sequencer.projection(c.f.server)
+    assert after_state.evidence[c.evidence.ref] === c.evidence
+
+    assert Enum.any?(after_state.duties, fn {_, duty} ->
+             duty.class === :erasure_reduces_verifiability
+           end)
+
+    assert_replay(c)
+  end
+
   test "building a request derives the closure but does not perform deletion", c do
     before = Sequencer.projection(c.f.server)
 
@@ -196,5 +220,6 @@ defmodule Spectre.Core.ErasureLifecycleTest do
     assert {:ok, rebuilt} = Projection.replay(snapshot, c.f.constitution)
     assert rebuilt == Sequencer.projection(c.f.server)
     assert {:ok, _} = Audit.verify(snapshot, c.f.constitution, Runtime.now())
+    DutyFrontierAssertions.assert_prefixes(snapshot, c.f.constitution)
   end
 end

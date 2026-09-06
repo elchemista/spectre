@@ -12,6 +12,7 @@ defmodule Spectre.Domain.Configuration do
   alias Spectre.{Adapter, Clock, Constitution, Ingress, Mind, Seal}
   alias Spectre.Execution.Boundary
   alias Spectre.Ledger.Store
+  alias Spectre.Mind.Context, as: MindContext
   alias Spectre.Payload.Store, as: PayloadStore
 
   @default_batch_size 64
@@ -39,6 +40,10 @@ defmodule Spectre.Domain.Configuration do
     :id_source,
     :late_observer,
     :mind,
+    :context,
+    :ingress_max_concurrency,
+    :ingress_timeout,
+    :max_pending_submissions,
     :generation,
     :grant_secret,
     :checkout_receipt_secret,
@@ -71,6 +76,10 @@ defmodule Spectre.Domain.Configuration do
     :late_observer,
     :mind,
     :mind_ref,
+    :context_limits,
+    :ingress_max_concurrency,
+    :ingress_timeout,
+    :max_pending_submissions,
     :execution_boundary,
     :generation,
     :grant_secret,
@@ -96,6 +105,10 @@ defmodule Spectre.Domain.Configuration do
           late_observer: module() | nil,
           mind: module() | nil,
           mind_ref: String.t() | nil,
+          context_limits: MindContext.limits() | nil,
+          ingress_max_concurrency: pos_integer(),
+          ingress_timeout: pos_integer(),
+          max_pending_submissions: pos_integer(),
           execution_boundary: Boundary.t(),
           generation: non_neg_integer(),
           grant_secret: binary(),
@@ -124,6 +137,10 @@ defmodule Spectre.Domain.Configuration do
          {:ok, id_source} <- module_option(opts, :id_source, Spectre.Id.UUIDv7, generate: 0),
          {:ok, late_observer} <- late_observer_option(opts),
          {:ok, {mind, mind_ref}} <- mind_option(opts),
+         {:ok, context_limits} <- MindContext.normalize(Keyword.get(opts, :context)),
+         {:ok, ingress_max_concurrency} <- positive_option(opts, :ingress_max_concurrency, 32),
+         {:ok, ingress_timeout} <- positive_option(opts, :ingress_timeout, 30_000),
+         {:ok, max_pending_submissions} <- positive_option(opts, :max_pending_submissions, 1_024),
          {:ok, execution_boundary} <-
            Boundary.normalize(Keyword.get(opts, :executors, []), Keyword.get(opts, :broker)),
          {:ok, generation} <- generation_option(opts),
@@ -151,6 +168,10 @@ defmodule Spectre.Domain.Configuration do
          late_observer: late_observer,
          mind: mind,
          mind_ref: mind_ref,
+         context_limits: context_limits,
+         ingress_max_concurrency: ingress_max_concurrency,
+         ingress_timeout: ingress_timeout,
+         max_pending_submissions: max_pending_submissions,
          execution_boundary: execution_boundary,
          generation: generation,
          grant_secret: grant_secret,

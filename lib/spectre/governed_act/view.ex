@@ -159,7 +159,7 @@ defmodule Spectre.GovernedAct.View do
   end
 
   def duty(%State{} = state, {:ref, ref}) when is_binary(ref) and ref != "" do
-    with {:ok, cause_key} <- Map.fetch(state.duty_refs, ref),
+    with {:ok, cause_key} <- Map.fetch(state.read_index.duties.by_ref, ref),
          {:ok, duty} <- Map.fetch(state.duties, cause_key) do
       {:ok, duty}
     else

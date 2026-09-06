@@ -14,7 +14,8 @@ defmodule Spectre.GovernedAct.Fold do
 
   alias Spectre.Constitution
   alias Spectre.Domain.Event
-  alias Spectre.GovernedAct.{Batch, Completeness, MeterState}
+  alias Spectre.Duty.Frontier
+  alias Spectre.GovernedAct.{Batch, Completeness, MeterState, ReadIndex}
   alias Spectre.GovernedAct.State
   alias Spectre.GovernedAct.Transition.Admission
   alias Spectre.GovernedAct.Transition.Authority, as: AuthorityTransition
@@ -87,8 +88,7 @@ defmodule Spectre.GovernedAct.Fold do
   def append_batch(%State{} = projection, [%Entry{} = first | _] = entries) do
     with :ok <- Support.validate_batch_coordinates(entries, projection.domain_ref, first.batch_id),
          true <- first.recorded_at >= projection.recorded_at,
-         {:ok, next} <- replay_batch(projection, entries),
-         :ok <- validate_complete(next) do
+         {:ok, next} <- replay_batch(projection, entries) do
       {:ok, next}
     else
       false -> {:error, {:ledger_time_regression, first.recorded_at, projection.recorded_at}}
@@ -99,7 +99,15 @@ defmodule Spectre.GovernedAct.Fold do
   def append_batch(%State{}, []), do: {:error, :empty_ledger_batch}
   def append_batch(_projection, _entries), do: {:error, :invalid_governed_batch}
 
-  defp replay_batch(projection, entries) do
+  defp replay_batch(projection, [%Entry{batch_id: batch_id} | _] = entries) do
+    if MapSet.member?(projection.read_index.batches, batch_id) do
+      {:error, {:duplicate_ledger_batch, batch_id}}
+    else
+      fold_committed_batch(projection, entries, batch_id)
+    end
+  end
+
+  defp fold_committed_batch(projection, entries, batch_id) do
     entries
     |> Enum.reduce_while({:ok, projection, []}, fn entry, {:ok, current, events} ->
       with {:ok, event} <- Event.decode_entry(entry),
@@ -111,7 +119,11 @@ defmodule Spectre.GovernedAct.Fold do
     end)
     |> case do
       {:ok, next, events} ->
-        with :ok <- Batch.validate(projection, next, Enum.reverse(events)), do: {:ok, next}
+        with :ok <- Batch.validate(projection, next, Enum.reverse(events)),
+             :ok <- Completeness.validate_batch(next, events) do
+          next = put_in(next.read_index.batches, MapSet.put(next.read_index.batches, batch_id))
+          {:ok, Frontier.advance(next, next.recorded_at)}
+        end
 
       {:error, _reason} = error ->
         error
@@ -163,10 +175,7 @@ defmodule Spectre.GovernedAct.Fold do
         recorded_at
       )
       when is_integer(recorded_at) and recorded_at >= 0 do
-    with {:ok, next, events} <- fold_payload_batch(projection, payloads, recorded_at),
-         :ok <- Batch.validate(projection, next, events) do
-      {:ok, next}
-    end
+    apply_payload_batch(projection, payloads, recorded_at, false)
   end
 
   # Idempotent command planners may discover that every requested record is
@@ -178,6 +187,18 @@ defmodule Spectre.GovernedAct.Fold do
 
   def apply_payloads(_projection, _payloads, _recorded_at),
     do: {:error, :invalid_domain_payloads}
+
+  @doc "Validates a complete proposed batch against an already verified prefix."
+  def prepare_batch(%State{} = projection, payloads, recorded_at),
+    do: apply_payload_batch(projection, payloads, recorded_at, true)
+
+  defp apply_payload_batch(projection, payloads, recorded_at, complete?) do
+    with {:ok, next, events} <- fold_payload_batch(projection, payloads, recorded_at),
+         :ok <- Batch.validate(projection, next, events),
+         :ok <- if(complete?, do: Completeness.validate_batch(next, events), else: :ok) do
+      {:ok, Frontier.advance(next, recorded_at)}
+    end
+  end
 
   defp fold_payload_batch(projection, payloads, recorded_at) do
     payloads
@@ -208,13 +229,15 @@ defmodule Spectre.GovernedAct.Fold do
   defp advance(projection, event) do
     with {:ok, projection} <- apply_decoded_event(projection, event, event.revision),
          {:ok, event_metadata} <- retain_metadata(projection.event_metadata, event) do
-      {:ok,
-       %{
-         projection
-         | revision: event.revision,
-           recorded_at: event.recorded_at,
-           event_metadata: event_metadata
-       }}
+      next = %{
+        projection
+        | revision: event.revision,
+          recorded_at: event.recorded_at,
+          event_metadata: event_metadata
+      }
+
+      next = ReadIndex.record(next, event)
+      {:ok, Frontier.record(next, event)}
     end
   end
 

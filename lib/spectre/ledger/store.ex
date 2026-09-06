@@ -28,6 +28,85 @@ defmodule Spectre.Ledger.Store do
   @callback load(domain_ref(), keyword()) ::
               :not_found | {:ok, Spectre.Ledger.snapshot()} | {:error, term()}
 
+  @callback load_from(domain_ref(), non_neg_integer(), keyword()) ::
+              :not_found | {:ok, Spectre.Ledger.snapshot()} | {:error, term()}
+
+  @optional_callbacks load_from: 3
+
+  @doc "Captures the committed head without loading historical entries."
+  @callback head(domain_ref(), keyword()) ::
+              :not_found | {:ok, Spectre.Ledger.cursor()} | {:error, term()}
+
+  @doc """
+  Reads exactly one complete batch beginning at `first_revision`.
+
+  This is the paging unit: a batch is already bounded by Entry's admission
+  limits and must never be split across semantic folds. Implementations must
+  use indexed reads, not load the entire ledger and slice it. The returned
+  snapshot describes the batch end, not the current Domain head. Its chain
+  must still be verified against the caller's trusted predecessor.
+  """
+  @callback read_batch(domain_ref(), pos_integer(), keyword()) ::
+              :not_found | {:ok, Spectre.Ledger.snapshot()} | {:error, term()}
+
+  @optional_callbacks head: 2, read_batch: 3
+
+  @doc "Whether an adapter implements native batch paging and a lightweight head read."
+  @spec batch_reads?(config()) :: boolean()
+  def batch_reads?(store) do
+    with {:ok, {module, _opts}} <- normalize(store),
+         :ok <- Adapter.validate(module, head: 2, read_batch: 3) do
+      true
+    else
+      _unsupported -> false
+    end
+  end
+
+  @doc "Reads the advertised head; it does not authenticate a projection checkpoint."
+  @spec head(config(), domain_ref(), keyword()) ::
+          :not_found | {:ok, Spectre.Ledger.cursor()} | {:error, term()}
+  def head(store, domain_ref, opts \\ []) do
+    with {:ok, {module, adapter_opts}} <- normalize(store),
+         :ok <- validate_options(opts),
+         :ok <- ensure_callback(module, :head, 2) do
+      invoke_read(module, :head, [domain_ref, Keyword.merge(adapter_opts, opts)])
+      |> normalize_head()
+    end
+  end
+
+  defp normalize_head({:ok, %{revision: revision, head_digest: digest} = cursor})
+       when is_integer(revision) and revision > 0 do
+    if Spectre.Portable.sha256_digest?(digest),
+      do: {:ok, Map.take(cursor, [:revision, :head_digest])},
+      else: {:error, :invalid_ledger_head}
+  end
+
+  defp normalize_head(:not_found), do: :not_found
+  defp normalize_head({:error, _} = error), do: error
+  defp normalize_head(_), do: {:error, :invalid_ledger_head}
+
+  @doc "Reads one indexed batch; unsupported adapters return an explicit error."
+  @spec read_batch(config(), domain_ref(), pos_integer(), keyword()) ::
+          :not_found | {:ok, Spectre.Ledger.snapshot()} | {:error, term()}
+  def read_batch(store, domain_ref, first_revision, opts \\ [])
+
+  def read_batch(store, domain_ref, first_revision, opts)
+      when is_integer(first_revision) and first_revision > 0 do
+    with {:ok, {module, adapter_opts}} <- normalize(store),
+         :ok <- validate_options(opts),
+         :ok <- ensure_callback(module, :read_batch, 3) do
+      invoke_read(module, :read_batch, [
+        domain_ref,
+        first_revision,
+        Keyword.merge(adapter_opts, opts)
+      ])
+      |> normalize_load(module)
+    end
+  end
+
+  def read_batch(_store, _domain_ref, _revision, _opts),
+    do: {:error, :invalid_ledger_cursor}
+
   @callback lookup_batch(domain_ref(), batch_id(), keyword()) ::
               :not_found | {:ok, Spectre.Ledger.batch_info()} | {:error, term()}
 
@@ -72,6 +151,37 @@ defmodule Spectre.Ledger.Store do
          :ok <- ensure_callback(module, :load, 2) do
       invoke_read(module, :load, [domain_ref, Keyword.merge(adapter_opts, opts)])
       |> normalize_load(module)
+    end
+  end
+
+  @doc """
+  Reads a coherent suffix after a revision, with the captured ledger head.
+
+  Native adapters can use their revision index. Adapters without this optional
+  callback fall back to a verified full read. The caller must verify the suffix
+  against its trusted predecessor; use `Spectre.Ledger.load_from/4` for that.
+  """
+  @spec load_from(config(), domain_ref(), non_neg_integer(), keyword()) ::
+          :not_found | {:ok, Spectre.Ledger.snapshot()} | {:error, term()}
+  def load_from(store, domain_ref, revision, opts)
+      when is_integer(revision) and revision >= 0 do
+    with {:ok, {module, adapter_opts}} <- normalize(store),
+         :ok <- validate_options(opts),
+         :ok <- ensure_callback(module, :load, 2) do
+      read_suffix(module, domain_ref, revision, Keyword.merge(adapter_opts, opts))
+    end
+  end
+
+  def load_from(_store, _domain_ref, _revision, _opts),
+    do: {:error, :invalid_ledger_cursor}
+
+  defp read_suffix(module, domain_ref, revision, opts) do
+    if function_exported?(module, :load_from, 3) do
+      invoke_read(module, :load_from, [domain_ref, revision, opts]) |> normalize_load(module)
+    else
+      with {:ok, snapshot} <- Spectre.Ledger.load(module, domain_ref, opts) do
+        {:ok, %{snapshot | entries: Enum.drop(snapshot.entries, revision)}}
+      end
     end
   end
 
