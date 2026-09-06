@@ -8,11 +8,17 @@ defmodule Spectre.GovernedAct.ReadIndex do
   including during independent replay.
   """
 
-  alias Spectre.Erasure.Analysis
+  alias Spectre.Erasure.{Analysis, Index}
+  alias Spectre.Presentation
 
   defstruct duties: %Spectre.Duty.Frontier{},
+            erasure: %Index{},
             batches: MapSet.new(),
             evidence_by_proposition: %{},
+            evidence_by_attempt: %{},
+            approval_propositions: %{},
+            show_acts: %{},
+            act_count: 0,
             evidence_by_revision: :gb_trees.empty(),
             payload_refs: MapSet.new(),
             presentation_count: 0,
@@ -22,7 +28,11 @@ defmodule Spectre.GovernedAct.ReadIndex do
   @type t :: %__MODULE__{}
 
   @doc false
-  def record(state, %{type: "evidence_recorded", identity: ref, revision: revision}) do
+  def record(state, event) do
+    state |> record_indexes(event) |> Index.record(event)
+  end
+
+  defp record_indexes(state, %{type: "evidence_recorded", identity: ref, revision: revision}) do
     evidence = Map.fetch!(state.evidence, ref)
     index = state.read_index
 
@@ -41,10 +51,45 @@ defmodule Spectre.GovernedAct.ReadIndex do
         payload_refs: put_payload(index.payload_refs, evidence.payload_ref)
     }
 
+    index =
+      case evidence.bindings do
+        %{"act_ref" => act, "attempt_ref" => attempt} ->
+          %{index | evidence_by_attempt: put_ref(index.evidence_by_attempt, {act, attempt}, ref)}
+
+        _other ->
+          index
+      end
+
+    index =
+      case Presentation.approval_refs(evidence) do
+        {:ok, presentation, _show} ->
+          %{
+            index
+            | approval_propositions:
+                put_ref(index.approval_propositions, presentation, evidence.proposition)
+          }
+
+        _not_approval ->
+          index
+      end
+
     %{state | read_index: index}
   end
 
-  def record(state, %{type: "presentation_recorded", identity: ref}) do
+  defp record_indexes(state, %{type: "act_committed", identity: ref}) do
+    act = Map.fetch!(state.acts, ref)
+    index = state.read_index
+
+    shows =
+      case Presentation.show_presentation_ref(act.consequence) do
+        {:ok, presentation} -> put_ref(index.show_acts, presentation, ref)
+        _not_show -> index.show_acts
+      end
+
+    %{state | read_index: %{index | show_acts: shows, act_count: map_size(state.acts)}}
+  end
+
+  defp record_indexes(state, %{type: "presentation_recorded", identity: ref}) do
     presentation = Map.fetch!(state.presentations, ref)
     index = state.read_index
 
@@ -58,7 +103,7 @@ defmodule Spectre.GovernedAct.ReadIndex do
     }
   end
 
-  def record(state, %{type: "dispatch_ready", data: %{"act_ref" => ref}}) do
+  defp record_indexes(state, %{type: "dispatch_ready", data: %{"act_ref" => ref}}) do
     key = dispatch_key(state, ref)
     index = state.read_index
 
@@ -71,16 +116,48 @@ defmodule Spectre.GovernedAct.ReadIndex do
     }
   end
 
-  def record(state, %{type: "outcome_recorded"}),
-    do: %{state | read_index: %{state.read_index | outcome_count: map_size(state.outcomes)}}
+  defp record_indexes(state, %{type: "outcome_recorded", identity: ref}) do
+    outcome = Map.fetch!(state.outcomes, ref)
+    frontier = state.read_index.duties
 
-  def record(state, %{type: "dispatch_cancelled", data: %{"act_ref" => ref}}),
+    frontier = %{
+      frontier
+      | outcomes_by_act: put_ref(frontier.outcomes_by_act, outcome.act_ref, ref),
+        outcomes_by_attempt: put_ref(frontier.outcomes_by_attempt, outcome.attempt_ref, ref)
+    }
+
+    %{
+      state
+      | read_index: %{
+          state.read_index
+          | duties: frontier,
+            outcome_count: map_size(state.outcomes)
+        }
+    }
+  end
+
+  defp record_indexes(state, %{type: "erasure_requested", identity: ref}) do
+    erasure = Map.fetch!(state.erasures, ref)
+    frontier = state.read_index.duties
+
+    frontier = %{
+      frontier
+      | erasures_by_act: put_ref(frontier.erasures_by_act, erasure.source_act_ref, ref)
+    }
+
+    %{state | read_index: %{state.read_index | duties: frontier}}
+  end
+
+  defp record_indexes(state, %{type: "dispatch_cancelled", data: %{"act_ref" => ref}}),
     do: remove_dispatch(state, ref)
 
-  def record(state, %{type: "attempt_started", identity: ref}),
+  defp record_indexes(state, %{type: "attempt_started", identity: ref}),
     do: remove_dispatch(state, Map.fetch!(state.attempts, ref).act_ref)
 
-  def record(state, _event), do: state
+  defp record_indexes(state, _event), do: state
+
+  defp put_ref(index, key, ref),
+    do: Map.update(index, key, MapSet.new([ref]), &MapSet.put(&1, ref))
 
   @doc false
   def dispatch_indexed?(state),
@@ -129,8 +206,10 @@ defmodule Spectre.GovernedAct.ReadIndex do
   end
 
   @doc "Selects all potentially relevant proof and counterproof, including recursive assumptions."
-  def evidence_for(state, conditions) do
+  def evidence_for(state, conditions, presentation_ref \\ nil) do
     propositions = Enum.map(conditions || [], & &1.proposition)
+    responses = Map.get(state.read_index.approval_propositions, presentation_ref, MapSet.new())
+    propositions = propositions ++ MapSet.to_list(responses)
 
     if complete?(state) do
       selected = collect(propositions, state, MapSet.new(), MapSet.new())
@@ -144,6 +223,28 @@ defmodule Spectre.GovernedAct.ReadIndex do
       # Pure callers can assemble a State without running a ledger fold.
       # An absent index must never hide a counterproof in that input.
       state |> Analysis.available_evidence() |> Map.values()
+    end
+  end
+
+  @doc "Selects the shows and all their Outcomes, including failed and contradictory receipts."
+  def presentation_history(state, ref) do
+    if state.read_index.act_count === map_size(state.acts) and
+         state.read_index.outcome_count === map_size(state.outcomes) do
+      refs = Map.get(state.read_index.show_acts, ref, MapSet.new()) |> MapSet.to_list()
+      outcomes = Enum.reduce(refs, %{}, &Map.merge(&2, outcomes_for(state, :act, &1)))
+      {Map.take(state.acts, refs), Map.values(outcomes)}
+    else
+      {state.acts, Map.values(state.outcomes)}
+    end
+  end
+
+  @doc false
+  def evidence_for_attempt(state, act_ref, attempt_ref) do
+    if complete?(state) do
+      refs = Map.get(state.read_index.evidence_by_attempt, {act_ref, attempt_ref}, MapSet.new())
+      Map.take(state.evidence, MapSet.to_list(refs))
+    else
+      state.evidence
     end
   end
 

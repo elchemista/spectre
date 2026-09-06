@@ -160,6 +160,8 @@ ledger for an already known Domain. Optional `failed/2` receives startup and
 fatal runtime incidents; its result never overrides the error. Each callback
 runs in an isolated process bounded by `recovery_timeout` (default 5 seconds).
 Notifications are best effort, not durable, and can repeat during restarts.
+Runtime failure notifications run independently of the stopping Domain: a slow
+host callback cannot hold its mailbox open until the notification timeout.
 The host owns repair/quarantine and must restart through verification afterward.
 Do not repair an ambiguous external effect by blindly executing it again.
 
@@ -168,6 +170,16 @@ the newly read suffix. It does not continuously re-read old storage bytes.
 Detecting subsequent changes to old rows requires a fresh full verification or
 independent monitoring; detecting a coherent rewrite additionally requires an
 external anchor. A checksum or an untrusted projection checkpoint is not one.
+
+### Recovery-time budget
+
+Cold startup verifies every live external payload reference before serving
+commands. With 100,000 live objects on a remote payload store this can require
+100,000 verification requests, in addition to ledger recovery. Plan recovery
+time and provider quotas for that work; the incremental commit path does not
+remove it. There is no sampling or deferred-verification option that declares
+an unchecked payload valid. Hosts may implement a trustworthy local manifest
+or cache behind their payload adapter, but own its freshness and integrity.
 
 The adapter guarantees are different:
 

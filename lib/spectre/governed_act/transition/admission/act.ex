@@ -117,11 +117,8 @@ defmodule Spectre.GovernedAct.Transition.Admission.Act do
     end
   end
 
-  defp recognition_evidence(state, %{presentation_ref: nil}, mandate),
-    do: ReadIndex.evidence_for(state, mandate.conditions)
-
-  defp recognition_evidence(state, _candidate, _mandate),
-    do: state |> ErasureAnalysis.available_evidence() |> Map.values()
+  defp recognition_evidence(state, candidate, mandate),
+    do: ReadIndex.evidence_for(state, mandate.conditions, candidate.presentation_ref)
 
   defp validate_disclosure(_state, %Candidate{disclosure: nil}), do: :ok
 

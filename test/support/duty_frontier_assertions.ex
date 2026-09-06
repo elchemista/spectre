@@ -3,6 +3,8 @@ defmodule Spectre.Test.DutyFrontierAssertions do
   import ExUnit.Assertions
 
   alias Spectre.Duty.{Derive, Frontier}
+  alias Spectre.Erasure.Analysis.{Closure, Execution, Facts}
+  alias Spectre.Erasure.Index
   alias Spectre.GovernedAct.Fold
 
   def assert_prefixes(snapshot, constitution) do
@@ -10,6 +12,7 @@ defmodule Spectre.Test.DutyFrontierAssertions do
     |> Enum.chunk_by(& &1.batch_id)
     |> Enum.reduce(Fold.new(snapshot.domain_ref, constitution), fn batch, state ->
       assert {:ok, state} = Fold.append_batch(state, batch)
+      assert_erasure_index(state)
       times = [state.recorded_at | deadlines(state)]
       times = times |> Enum.uniq() |> Enum.filter(&(&1 >= state.recorded_at))
 
@@ -23,6 +26,20 @@ defmodule Spectre.Test.DutyFrontierAssertions do
       assert :ok = Fold.validate_complete(state)
       state
     end)
+  end
+
+  defp assert_erasure_index(state) do
+    index = state.read_index.erasure
+    facts = Facts.from_state(state)
+    assert Index.complete?(index, state)
+
+    assert index.unavailable === Closure.unavailable_evidence_refs(facts),
+           "incremental erasure differs at revision #{state.revision}"
+
+    for {target, status} <- index.states do
+      assert status === Execution.state(facts, target),
+             "erasure execution differs for #{target} at revision #{state.revision}"
+    end
   end
 
   defp assert_targeted_causes(state, time) do

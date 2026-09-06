@@ -206,6 +206,70 @@ defmodule Spectre.Core.RecoveryPolicyTest do
     end
   end
 
+  @tag capture_log: true
+  test "a blocked runtime incident callback cannot delay the failure reply or Domain termination",
+       c do
+    context = Fixture.context(c.f)
+    owner = self()
+
+    callback = fn ->
+      send(owner, {:incident_worker, self()})
+
+      receive do
+        :release -> :ok
+      end
+    end
+
+    policy = {HostPolicy, owner: owner, check: fn _ -> :ok end, failed: callback}
+    :sys.replace_state(c.f.server, &%{&1 | recovery_policy: policy, recovery_timeout: 5_000})
+    Process.unlink(c.f.server)
+    monitor = Process.monitor(c.f.server)
+    assert :ok = Mock.push(c.f.mock, List.duplicate({:append, :before, {:error, :ambiguous}}, 3))
+
+    task =
+      Task.async(fn ->
+        Sequencer.submit(c.f.server, context, Fixture.refund_candidate(c.f, 10))
+      end)
+
+    assert_receive {:incident_worker, worker}, 1_000
+
+    try do
+      assert {:ok, {:error, :ambiguous_commit_unresolved}} = Task.yield(task, 1_000)
+      assert_receive {:DOWN, ^monitor, :process, _, _}, 1_000
+      assert Process.alive?(worker)
+      assert Fixture.snapshot(c.f) === c.snapshot
+    after
+      send(worker, :release)
+    end
+  end
+
+  test "detached incident workers still have a bounded lifetime", c do
+    owner = self()
+
+    callback = fn ->
+      send(owner, {:incident_worker, self()})
+
+      receive do
+        :never -> :ok
+      end
+    end
+
+    policy = {HostPolicy, owner: owner, failed: callback}
+
+    incident = %{
+      domain_ref: c.f.refs.domain,
+      phase: :runtime,
+      reason: :broken,
+      last_verified: c.head
+    }
+
+    assert :ok = Policy.notify_failed(policy, incident, 100)
+    assert_receive {:incident_worker, worker}, 1_000
+    monitor = Process.monitor(worker)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 1_000
+    refute Process.alive?(worker)
+  end
+
   test "broken incident handlers cannot replace the original startup error", c do
     Fixture.stop_process(c.f.server)
 

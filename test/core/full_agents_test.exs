@@ -253,6 +253,57 @@ defmodule Spectre.Core.FullAgentsTest do
     assert_success(c, result)
   end
 
+  test "public scoped operations ask narrow questions without requesting the full projection",
+       c do
+    server = c.fixture.server
+    assert 1 = :erlang.trace(server, true, [:receive])
+
+    try do
+      assert {:error, {:presentation_not_found, "missing"}} =
+               Spectre.show_presentation(c.scope, "missing", %{})
+
+      assert {:error, {:mandate_not_found, "missing"}} =
+               Spectre.revoke_mandate(c.scope, "missing", %{})
+
+      assert {:error, {:late_observation_attempt_not_found, "missing"}} =
+               Spectre.record_late_observation(c.scope, "missing", %{})
+
+      assert {:error, {:outcome_act_not_found, "missing"}} =
+               Spectre.record_outcome(c.scope, %{
+                 act_ref: "missing",
+                 attempt_ref: "missing",
+                 status: :succeeded,
+                 evidence_refs: ["receipt"],
+                 observed_at: Runtime.now(),
+                 details_ref: "late"
+               })
+
+      target = Portable.content_ref!(:payload, "not recorded")
+
+      assert {:error, {:erasable_payload_not_referenced, ^target}} =
+               Spectre.request_erasure(
+                 c.scope,
+                 %{target_ref: target, reason: "delete", requested_at: Runtime.now()},
+                 %{}
+               )
+
+      barrier = :erlang.trace_delivered(server)
+      assert_receive {:trace_delivered, ^server, ^barrier}, 1_000
+      refute_received {:trace, ^server, :receive, {:"$gen_call", _, {:scope_projection, _}}}
+      refute_received {:trace, ^server, :receive, {:"$gen_call", _, :projection}}
+
+      for kind <- [:presentation, :mandate, :late_observation, :outcome_scope] do
+        assert_received {:trace, ^server, :receive,
+                         {:"$gen_call", _, {:query, _, {^kind, "missing"}}}}
+      end
+
+      assert_received {:trace, ^server, :receive,
+                       {:"$gen_call", _, {:query, _, {:erasure_candidate, _, _}}}}
+    after
+      :erlang.trace(server, false, [:receive])
+    end
+  end
+
   @tag authoring: MultiSkillAgent
   test "two Skills with the same local name are independently routable through namespaces", c do
     assert {:ok, %{candidates: [automatic]}} = turn(c, "refund", identity: "automatic")

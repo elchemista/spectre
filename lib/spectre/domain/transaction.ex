@@ -23,7 +23,7 @@ defmodule Spectre.Domain.Transaction do
   alias Spectre.Clock.Guard, as: ClockGuard
   alias Spectre.Domain.{Bootstrap, Recovery}
   alias Spectre.Domain.Sequencer.State
-  alias Spectre.GovernedAct.Commit, as: PreparedCommit
+  alias Spectre.GovernedAct.Commit
   alias Spectre.GovernedAct.State, as: GovernedState
   alias Spectre.Ledger.Writer
   alias Spectre.Payload.Store, as: PayloadStore
@@ -70,7 +70,7 @@ defmodule Spectre.Domain.Transaction do
 
     if recorded_at >= latest_recorded_at do
       with {:ok, prepared} <-
-             PreparedCommit.prepare(state.projection, batch_id, payloads, recorded_at) do
+             Commit.prepare(state.projection, batch_id, payloads, recorded_at) do
         append_exact_at(state, prepared, state.ambiguous_retries)
       end
     else
@@ -88,7 +88,7 @@ defmodule Spectre.Domain.Transaction do
 
   defp append_exact_at(
          state,
-         %PreparedCommit{payloads: payloads, recorded_at: recorded_at, receipt: receipt} =
+         %Commit{payloads: payloads, recorded_at: recorded_at, receipt: receipt} =
            prepared,
          retries_left
        ) do
@@ -122,7 +122,7 @@ defmodule Spectre.Domain.Transaction do
 
   defp classify_append_ambiguity(
          state,
-         %PreparedCommit{payloads: payloads, receipt: receipt} = prepared,
+         %Commit{payloads: payloads, receipt: receipt} = prepared,
          retries_left
        ) do
     case Recovery.classify_ambiguous(

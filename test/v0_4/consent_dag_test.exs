@@ -5,6 +5,8 @@ defmodule Spectre.V04Test.ConsentDagTest do
 
   alias Spectre.{Candidate, Consent, Evidence, Presentation}
   alias Spectre.Domain.Sequencer
+  alias Spectre.Erasure.Analysis
+  alias Spectre.GovernedAct.ReadIndex
   alias Spectre.Kernel, as: AdmissionKernel
   alias Spectre.V04Test.{Fixture, Ingress, Runtime}
 
@@ -186,6 +188,110 @@ defmodule Spectre.V04Test.ConsentDagTest do
     assert {:evidence_condition_unsatisfied, :presentation_approval_contradicted} in decision.reasons
   end
 
+  for stance <- [:supports, :contradicts] do
+    test "indexed consent keeps nested assumptions and #{stance} counterproofs", ctx do
+      nested =
+        Fixture.paid_evidence(ctx.fixture, %{
+          proposition: "nested",
+          issuer_ref: ctx.fixture.refs.proposer
+        })
+
+      basis =
+        Fixture.paid_evidence(ctx.fixture, %{
+          proposition: "basis",
+          issuer_ref: ctx.fixture.refs.proposer,
+          assumptions: ["nested"]
+        })
+
+      # Assumption Evidence is part of the material shown, unlike approval
+      # responses. Adding it only after the show must fail the consent binding.
+      for item <- [nested, basis] do
+        assert {:ok, ^item} = Fixture.observe_payment(ctx.fixture, item)
+      end
+
+      ctx = with_consent_basis(ctx, [nested.ref, basis.ref])
+      {show, _outcome} = show!(ctx)
+      response = response!(ctx, show, :supports)
+      attrs = response |> Map.from_struct() |> Map.drop([:ref])
+      approval = Evidence.new(Map.put(attrs, :assumptions, ["basis"])) |> ok!()
+      opposing = response!(ctx, show, unquote(stance))
+
+      for item <- [approval, opposing] do
+        assert {:ok, ^item} = Fixture.observe_payment(ctx.fixture, item)
+      end
+
+      for n <- 1..30 do
+        evidence =
+          Evidence.new(Map.merge(attrs, %{proposition: "noise-#{n}", assumptions: []})) |> ok!()
+
+        assert {:ok, ^evidence} = Fixture.observe_payment(ctx.fixture, evidence)
+      end
+
+      projection = Sequencer.projection(ctx.fixture.server)
+      all = projection |> Analysis.available_evidence() |> Map.values()
+
+      selected =
+        ReadIndex.evidence_for(projection, ctx.fixture.mandate.conditions, ctx.presentation.ref)
+
+      {acts, outcomes} = ReadIndex.presentation_history(projection, ctx.presentation.ref)
+
+      indexed =
+        Presentation.classify_responses(ctx.presentation, acts, outcomes, selected, Runtime.now())
+
+      exhaustive =
+        Presentation.classify_responses(
+          ctx.presentation,
+          projection.acts,
+          Map.values(projection.outcomes),
+          all,
+          Runtime.now()
+        )
+
+      assert indexed === exhaustive
+
+      assert elem(indexed, 0) ===
+               if(unquote(stance) === :supports, do: :supported, else: :contradicted)
+
+      selected_refs = MapSet.new(selected, & &1.ref)
+
+      assert MapSet.subset?(
+               MapSet.new([nested.ref, basis.ref, approval.ref, opposing.ref]),
+               selected_refs
+             )
+
+      assert length(selected) < map_size(projection.evidence) - 20
+      assert Map.keys(acts) === [show.ref]
+
+      candidate = final_candidate(ctx, elem(indexed, 1))
+      context = Fixture.context(ctx.fixture)
+      result = AdmissionKernel.evaluate(candidate, context, projection, Runtime.now())
+      assert {:ok, decision, _act} = result
+
+      assert decision.outcome === if(unquote(stance) === :supports, do: :admitted, else: :refused),
+             inspect(decision.reasons)
+
+      assert result ===
+               AdmissionKernel.evaluate(
+                 candidate,
+                 context,
+                 %{projection | read_index: %ReadIndex{}},
+                 Runtime.now()
+               )
+
+      assert {:ok, %{decision: committed}} =
+               Sequencer.submit(ctx.fixture.server, context, candidate)
+
+      assert committed.outcome === decision.outcome
+
+      assert {:ok, _report} =
+               Spectre.Audit.verify(
+                 Fixture.snapshot(ctx.fixture),
+                 ctx.fixture.constitution,
+                 Runtime.now()
+               )
+    end
+  end
+
   test "premature and wrong-show responses cannot establish consent", ctx do
     {show, outcome} = show!(ctx)
     response = response!(ctx, show, :supports)
@@ -258,6 +364,28 @@ defmodule Spectre.V04Test.ConsentDagTest do
     assert {:ok, ^outcome} = Sequencer.record_outcome(fixture.server, outcome)
     Runtime.set_time(Runtime.now() + 1)
     {act, outcome}
+  end
+
+  defp with_consent_basis(ctx, refs) do
+    attrs = Map.update!(ctx.attrs, :evidence_refs, &(&1 ++ refs))
+    draft = attrs |> Candidate.new() |> ok!()
+
+    presentation =
+      ctx.presentation
+      |> Map.from_struct()
+      |> Map.drop([:ref, :material_digest])
+      |> Map.put(:candidate_binding_ref, Candidate.presentation_binding_ref(draft))
+      |> Presentation.new()
+      |> ok!()
+
+    assert {:ok, ^presentation} =
+             Sequencer.record_presentation(
+               ctx.fixture.server,
+               Fixture.context(ctx.fixture),
+               presentation
+             )
+
+    %{ctx | attrs: attrs, draft: draft, presentation: presentation}
   end
 
   defp response!(ctx, show, stance) do

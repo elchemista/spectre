@@ -1,4 +1,4 @@
-defmodule Spectre.Domain.Command.Commit do
+defmodule Spectre.Domain.Command.Durability do
   @moduledoc """
   Shared append and completion policy for a durable Domain command.
 
@@ -20,8 +20,8 @@ defmodule Spectre.Domain.Command.Commit do
           | {:error, State.t(), term()}
 
   @doc "Repairs derivable Duties before a command observes or changes Domain state."
-  @spec prepare(State.t()) :: {:ok, State.t()} | {:error, State.t(), term()}
-  def prepare(%State{} = state) do
+  @spec preflight(State.t()) :: {:ok, State.t()} | {:error, State.t(), term()}
+  def preflight(%State{} = state) do
     case Transaction.repair_missing_duties(state) do
       {:ok, projection} ->
         {:ok, %{state | projection: projection}}

@@ -7,7 +7,7 @@ defmodule Spectre.Domain.Command.Evidence do
   always comes from the recovered ledger projection, never from caller input.
   """
 
-  alias Spectre.Domain.Command.Commit
+  alias Spectre.Domain.Command.Durability
   alias Spectre.Domain.{Event, Transaction}
   alias Spectre.Domain.Sequencer.{Control, State}
   alias Spectre.Evidence
@@ -129,7 +129,7 @@ defmodule Spectre.Domain.Command.Evidence do
        ) do
     input = shaped(evidence, shape)
 
-    Commit.append(
+    Durability.append(
       state,
       payloads,
       recorded_at,

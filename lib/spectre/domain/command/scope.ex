@@ -7,7 +7,7 @@ defmodule Spectre.Domain.Command.Scope do
   ingress, generation and acquisition-time bindings are checked before append.
   """
 
-  alias Spectre.Domain.Command.Commit
+  alias Spectre.Domain.Command.Durability
   alias Spectre.Domain.Command.Record, as: CommandRecord
   alias Spectre.Domain.{Context, Event, Transaction}
   alias Spectre.Domain.Sequencer.State
@@ -84,7 +84,7 @@ defmodule Spectre.Domain.Command.Scope do
        ) do
     case Event.scope_opened(opening) do
       {:ok, payload} ->
-        Commit.append(
+        Durability.append(
           state,
           [payload],
           recorded_at,

@@ -53,9 +53,7 @@ defmodule Spectre do
   alias Spectre.Evidence
   alias Spectre.Fallback
   alias Spectre.Governance
-  alias Spectre.GovernedAct.State
   alias Spectre.Ledger.Store
-  alias Spectre.Mandate
   alias Spectre.Mind
   alias Spectre.Mind.Turn
   alias Spectre.Outcome
@@ -462,9 +460,8 @@ defmodule Spectre do
         opts
       )
       when Portable.is_non_empty_binary(presentation_ref) and is_list(opts) do
-    with {:ok, scope, projection} <- scoped_projection(scope),
-         {:ok, %Presentation{} = presentation} <-
-           fetch_presentation(projection, presentation_ref),
+    with {:ok, scope, %Presentation{} = presentation} <-
+           scoped_read(scope, {:presentation, presentation_ref}),
          :ok <- presentation_scope(presentation, Scope.ref(scope)),
          {:ok, candidate} <-
            presentation_show_candidate(scope, presentation, candidate_attrs) do
@@ -485,10 +482,9 @@ defmodule Spectre do
   def record_outcome(%Scope{} = scope, outcome, opts) when is_list(opts) do
     with :ok <- validate_keyword(opts, :outcome_options),
          :ok <- validate_known_options(opts, @outcome_options, :outcome),
-         {:ok, scope, projection} <- scoped_projection(scope),
          {:ok, outcome} <- Outcome.new(outcome),
          :ok <- late_outcome_has_evidence(outcome),
-         :ok <- outcome_belongs_to_scope(projection, outcome, Scope.ref(scope)),
+         {:ok, scope, :ok} <- scoped_read(scope, {:outcome_scope, outcome.act_ref}),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
          {:ok, %Outcome{} = durable} <-
@@ -520,12 +516,10 @@ defmodule Spectre do
       when Portable.is_non_empty_binary(attempt_ref) and is_list(opts) do
     with :ok <- validate_keyword(opts, :late_observation_options),
          :ok <- validate_known_options(opts, @late_observation_options, :late_observation),
-         {:ok, scope, projection} <- scoped_projection(scope),
+         {:ok, scope, {act, attempt}} <- scoped_read(scope, {:late_observation, attempt_ref}),
          {:ok, observer_opts} <- nested_keyword(opts, :observer_opts),
          {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
          :ok <- validate_sequencer_options(sequencer_opts),
-         {:ok, act, attempt} <-
-           late_observation_cause(projection, Scope.ref(scope), attempt_ref),
          {:ok, observer} <-
            sequencer_result(
              fn -> Sequencer.late_observer(scope.domain.server) end,
@@ -547,7 +541,7 @@ defmodule Spectre do
              observed_at
            ),
          :ok <-
-           validate_late_correction(projection, observation, act, attempt, corrected_ref),
+           validate_late_correction(scope, observation, act, attempt, corrected_ref),
          {:ok, recorded_evidence} <-
            record_late_evidence(
              scope.domain.server,
@@ -782,8 +776,7 @@ defmodule Spectre do
 
   def revoke_mandate(%Scope{} = scope, mandate_ref, candidate_attrs, opts)
       when is_list(opts) do
-    with {:ok, scope, projection} <- scoped_projection(scope),
-         {:ok, target} <- fetch_mandate(projection, mandate_ref),
+    with {:ok, scope, target} <- scoped_read(scope, {:mandate, mandate_ref}),
          {:ok, candidate} <- Governance.revoke_mandate(scope, target, candidate_attrs),
          do: propose(scope, candidate, opts)
   end
@@ -904,9 +897,8 @@ defmodule Spectre do
 
   def request_erasure(%Scope{} = scope, request_attrs, candidate_attrs, opts)
       when is_list(opts) do
-    with {:ok, scope, projection} <- scoped_projection(scope),
-         {:ok, candidate} <-
-           Governance.request_erasure(scope, projection, request_attrs, candidate_attrs),
+    with {:ok, scope, candidate} <-
+           scoped_read(scope, {:erasure_candidate, request_attrs, candidate_attrs}),
          do: propose(scope, candidate, opts)
   end
 
@@ -1014,25 +1006,6 @@ defmodule Spectre do
 
   defp presentation_scope(%Presentation{scope_ref: scope_ref}, scope_ref), do: :ok
   defp presentation_scope(%Presentation{}, _scope_ref), do: {:error, :presentation_scope_mismatch}
-
-  defp fetch_presentation(%State{} = projection, presentation_ref) do
-    case Map.fetch(projection.presentations, presentation_ref) do
-      {:ok, %Presentation{} = presentation} -> {:ok, presentation}
-      {:ok, _invalid} -> {:error, {:invalid_presentation_record, presentation_ref}}
-      :error -> {:error, {:presentation_not_found, presentation_ref}}
-    end
-  end
-
-  defp fetch_mandate(%State{} = projection, mandate_ref)
-       when Portable.is_non_empty_binary(mandate_ref) do
-    case Map.fetch(projection.mandates, mandate_ref) do
-      {:ok, %Mandate{} = mandate} -> {:ok, mandate}
-      {:ok, _invalid} -> {:error, {:invalid_mandate_record, mandate_ref}}
-      :error -> {:error, {:mandate_not_found, mandate_ref}}
-    end
-  end
-
-  defp fetch_mandate(%State{}, _mandate_ref), do: {:error, :invalid_mandate_ref}
 
   defp presentation_show_candidate(scope, presentation, candidate_attrs) do
     with {:ok, attrs} <-
@@ -1144,32 +1117,11 @@ defmodule Spectre do
     end
   end
 
-  defp outcome_belongs_to_scope(projection, outcome, scope_ref) do
-    case Map.fetch(projection.acts, outcome.act_ref) do
-      {:ok, %{scope_ref: ^scope_ref}} -> :ok
-      {:ok, _act} -> {:error, :outcome_scope_mismatch}
-      :error -> {:error, {:outcome_act_not_found, outcome.act_ref}}
-    end
-  end
-
   defp late_outcome_has_evidence(%Outcome{status: :ambiguous}),
     do: {:error, :public_ambiguous_outcome_forbidden}
 
   defp late_outcome_has_evidence(%Outcome{evidence_refs: [_first | _rest]}), do: :ok
   defp late_outcome_has_evidence(%Outcome{}), do: {:error, :late_outcome_evidence_required}
-
-  defp late_observation_cause(projection, scope_ref, attempt_ref) do
-    with {:ok, attempt} <- Map.fetch(projection.attempts, attempt_ref),
-         {:ok, act} <- Map.fetch(projection.acts, attempt.act_ref),
-         true <- act.scope_ref == scope_ref,
-         true <- attempt.executor_ref == act.executor_ref,
-         true <- attempt.material_digest == act.material_digest do
-      {:ok, act, attempt}
-    else
-      :error -> {:error, {:late_observation_attempt_not_found, attempt_ref}}
-      false -> {:error, :late_observation_cause_mismatch}
-    end
-  end
 
   defp invoke_late_observer(observer, act, attempt, input, opts) do
     case safe_call(
@@ -1192,17 +1144,16 @@ defmodule Spectre do
     end
   end
 
-  defp validate_late_correction(_projection, _observation, _act, _attempt, nil), do: :ok
+  defp validate_late_correction(_scope, _observation, _act, _attempt, nil), do: :ok
 
-  defp validate_late_correction(projection, observation, act, attempt, corrected_ref) do
+  defp validate_late_correction(scope, observation, act, attempt, corrected_ref) do
     with :ok <- Portable.validate_ref(corrected_ref, :contradicts_outcome_ref),
          true <- observation.status in @correction_outcome_statuses,
-         {:ok, corrected} <- Map.fetch(projection.outcomes, corrected_ref),
+         {:ok, corrected} <- scoped_query(scope, {:outcome, corrected_ref}),
          true <- corrected.status == :definitive_no_effect,
          true <- corrected.act_ref == act.ref and corrected.attempt_ref == attempt.ref do
       :ok
     else
-      :error -> {:error, {:corrected_outcome_not_found, corrected_ref}}
       false -> {:error, :invalid_late_outcome_correction}
       {:error, _reason} = error -> error
     end
@@ -1327,24 +1278,19 @@ defmodule Spectre do
     end
   end
 
-  defp scoped_projection(%Scope{} = scope) do
+  defp scoped_read(%Scope{} = scope, query) do
     with {:ok, scope} <- rebind_scope(scope),
-         {:ok, %State{} = projection} <-
+         {:ok, result} <-
            sequencer_result(
-             fn -> Sequencer.scope_projection(scope.domain.server, scope.context) end,
+             fn -> Sequencer.query(scope.domain.server, scope, query) end,
              :scope_validation_failed
            ) do
-      {:ok, scope, projection}
+      {:ok, scope, result}
     end
   end
 
   defp scoped_query(%Scope{} = scope, query) do
-    with {:ok, scope} <- rebind_scope(scope),
-         do:
-           sequencer_result(
-             fn -> Sequencer.query(scope.domain.server, scope, query) end,
-             :scope_validation_failed
-           )
+    with {:ok, _scope, result} <- scoped_read(scope, query), do: {:ok, result}
   end
 
   defp context_domain_binding(%SubmissionContext{domain_ref: domain_ref}, %Domain{ref: domain_ref}),

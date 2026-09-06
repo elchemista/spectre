@@ -239,11 +239,7 @@ defmodule Spectre.Kernel do
 
   defp recognize_with_authority(candidate, mandate, projection, time) do
     available_evidence =
-      if is_nil(candidate.presentation_ref) do
-        ReadIndex.evidence_for(projection, mandate.conditions)
-      else
-        projection |> ErasureAnalysis.available_evidence() |> Map.values()
-      end
+      ReadIndex.evidence_for(projection, mandate.conditions, candidate.presentation_ref)
 
     missing_refs = missing_evidence_refs(candidate.evidence_refs, projection.evidence)
 
@@ -355,11 +351,13 @@ defmodule Spectre.Kernel do
   end
 
   defp recognize_presentation_approval(presentation, projection, evidence, time) do
+    {acts, outcomes} = ReadIndex.presentation_history(projection, presentation.ref)
+
     {status, approval_refs, basis_refs} =
       Presentation.classify_responses(
         presentation,
-        projection.acts,
-        Map.values(projection.outcomes),
+        acts,
+        outcomes,
         evidence,
         time
       )

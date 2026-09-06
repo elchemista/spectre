@@ -8,7 +8,7 @@ defmodule Spectre.Erasure.Analysis.Facts do
   string keys, structs or lists on every access.
   """
 
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{DispatchState, ReadIndex, State}
 
   defstruct evidence: %{},
             presentations: %{},
@@ -19,7 +19,8 @@ defmodule Spectre.Erasure.Analysis.Facts do
             duties: %{},
             declassifications: %{},
             erasures: %{},
-            terminal_dispatches: %{}
+            terminal_dispatches: %{},
+            availability_index: nil
 
   @type t :: %__MODULE__{
           evidence: %{optional(String.t()) => Spectre.Evidence.t()},
@@ -31,7 +32,8 @@ defmodule Spectre.Erasure.Analysis.Facts do
           duties: %{optional(term()) => Spectre.Duty.t()},
           declassifications: %{optional(String.t()) => Spectre.Declassification.t()},
           erasures: %{optional(String.t()) => Spectre.Erasure.t()},
-          terminal_dispatches: map()
+          terminal_dispatches: map(),
+          availability_index: Spectre.Erasure.Index.t() | nil
         }
 
   @doc "Builds the erasure view of a complete folded Domain state."
@@ -47,7 +49,25 @@ defmodule Spectre.Erasure.Analysis.Facts do
       duties: state.duties,
       declassifications: state.declassifications,
       erasures: state.erasures,
-      terminal_dispatches: state.terminal_dispatches
+      terminal_dispatches: state.terminal_dispatches,
+      availability_index: state.read_index.erasure
+    }
+  end
+
+  @doc false
+  def execution_subset(state, erasure_refs) do
+    erasures = Map.take(state.erasures, erasure_refs)
+    act_refs = Enum.map(erasures, fn {_, erasure} -> erasure.source_act_ref end)
+    attempt_refs = Enum.flat_map(act_refs, &List.wrap(DispatchState.attempt_ref(state, &1)))
+
+    outcomes =
+      Enum.reduce(attempt_refs, %{}, &Map.merge(&2, ReadIndex.outcomes_for(state, :attempt, &1)))
+
+    %__MODULE__{
+      erasures: erasures,
+      attempts: Map.take(state.attempts, attempt_refs),
+      outcomes: outcomes,
+      terminal_dispatches: Map.take(state.terminal_dispatches, act_refs)
     }
   end
 

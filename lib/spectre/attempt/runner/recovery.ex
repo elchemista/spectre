@@ -66,7 +66,8 @@ defmodule Spectre.Attempt.Runner.Recovery do
   defp recovered_evidence(projection, act, attempt) do
     expected_bindings = Binding.evidence_bindings(act, attempt)
 
-    projection.evidence
+    projection
+    |> ReadIndex.evidence_for_attempt(act.ref, attempt.ref)
     |> Enum.reduce([], fn {_ref, evidence}, found ->
       if evidence.bindings === expected_bindings, do: [evidence | found], else: found
     end)

@@ -11,7 +11,7 @@ defmodule Spectre.Domain.Admission.Command do
 
   alias Spectre.{Act, Candidate}
   alias Spectre.Domain.Admission.Planner, as: AdmissionPlanner
-  alias Spectre.Domain.Command.Commit
+  alias Spectre.Domain.Command.Durability
   alias Spectre.Domain.Command.Execution, as: ExecutionCommand
   alias Spectre.Domain.{Projection, Transaction}
   alias Spectre.Domain.Sequencer.State
@@ -21,7 +21,7 @@ defmodule Spectre.Domain.Admission.Command do
   @spec run(State.t(), [map()]) :: {State.t(), [{GenServer.from(), term()}]}
 
   def run(%State{} = state, requests) do
-    case Commit.prepare(state) do
+    case Durability.preflight(state) do
       {:ok, current} ->
         current |> admit(requests, current.conflict_retries) |> admission_reply()
 
@@ -74,7 +74,7 @@ defmodule Spectre.Domain.Admission.Command do
          admitted_at
        ) do
     result =
-      Commit.append(
+      Durability.append(
         state,
         payloads,
         admitted_at,

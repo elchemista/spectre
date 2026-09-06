@@ -86,6 +86,18 @@ defmodule Spectre.Domain.Recovery.Policy do
     :ok
   end
 
+  @doc "Dispatches a bounded incident notification without delaying a failing Domain."
+  @spec notify_failed(config(), incident(), pos_integer()) :: :ok
+  def notify_failed(nil, _incident, _timeout), do: :ok
+
+  def notify_failed(policy, incident, timeout) do
+    # The short-lived guardian owns the callback monitor and timeout. It is
+    # intentionally not linked to the Domain that is about to stop; only this
+    # small incident crosses the process boundary, never the projection.
+    spawn(fn -> failed(policy, incident, timeout) end)
+    :ok
+  end
+
   defp invoke({module, opts}, callback, context, timeout) do
     {pid, monitor} =
       spawn_monitor(fn ->

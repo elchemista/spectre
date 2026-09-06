@@ -17,6 +17,7 @@ defmodule Spectre.Duty.Derive.Facts do
   alias Spectre.Domain.Event
   alias Spectre.Erasure.Analysis, as: ErasureAnalysis
   alias Spectre.Erasure.Analysis.Facts, as: ErasureFacts
+  alias Spectre.Erasure.Index
   alias Spectre.GovernedAct.State
 
   @enforce_keys [
@@ -31,7 +32,7 @@ defmodule Spectre.Duty.Derive.Facts do
     :presentations,
     :scopes
   ]
-  defstruct @enforce_keys ++ [sources: %{}]
+  defstruct @enforce_keys ++ [sources: %{}, availability: nil]
 
   @type t :: %__MODULE__{
           acts: %{optional(String.t()) => Spectre.Act.t()},
@@ -44,7 +45,8 @@ defmodule Spectre.Duty.Derive.Facts do
           outcomes: %{optional(String.t()) => Spectre.Outcome.t()},
           presentations: %{optional(String.t()) => Spectre.Presentation.t()},
           scopes: %{optional(String.t()) => Spectre.Scope.Opening.t()},
-          sources: %{optional(atom()) => [term()]}
+          sources: %{optional(atom()) => [term()]},
+          availability: {non_neg_integer(), MapSet.t(String.t())} | nil
         }
 
   @doc "Builds the minimal indexed view used by the Duty algebra."
@@ -60,8 +62,15 @@ defmodule Spectre.Duty.Derive.Facts do
       mandates: state.mandates,
       outcomes: state.outcomes,
       presentations: state.presentations,
-      scopes: state.catalog.scopes
+      scopes: state.catalog.scopes,
+      availability: current_availability(state)
     }
+  end
+
+  defp current_availability(state) do
+    if Index.complete?(state.read_index.erasure, state),
+      do: {state.recorded_at, state.read_index.erasure.unavailable},
+      else: nil
   end
 
   @doc false
@@ -151,6 +160,9 @@ defmodule Spectre.Duty.Derive.Facts do
 
   defp unavailable_evidence_at(%__MODULE__{erasures: erasures}, _time)
        when map_size(erasures) == 0, do: MapSet.new()
+
+  defp unavailable_evidence_at(%__MODULE__{availability: {recorded_at, refs}}, time)
+       when time >= recorded_at, do: refs
 
   defp unavailable_evidence_at(facts, time) do
     prefix = %ErasureFacts{

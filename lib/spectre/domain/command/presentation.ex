@@ -8,7 +8,7 @@ defmodule Spectre.Domain.Command.Presentation do
   """
 
   alias Spectre.{Disclosure, Presentation, SubmissionContext}
-  alias Spectre.Domain.Command.Commit
+  alias Spectre.Domain.Command.Durability
   alias Spectre.Domain.Command.Record, as: CommandRecord
   alias Spectre.Domain.{Context, Event, Transaction}
   alias Spectre.Domain.Sequencer.State
@@ -96,7 +96,7 @@ defmodule Spectre.Domain.Command.Presentation do
        ) do
     case Event.record(:presentation, presentation) do
       {:ok, payload} ->
-        Commit.append(
+        Durability.append(
           state,
           [payload],
           recorded_at,

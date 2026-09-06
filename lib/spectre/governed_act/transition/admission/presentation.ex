@@ -8,7 +8,7 @@ defmodule Spectre.GovernedAct.Transition.Admission.Presentation do
   """
 
   alias Spectre.{Act, Candidate, Evidence, Presentation}
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{ReadIndex, State}
   alias Spectre.Kernel.Recognition
 
   @doc false
@@ -70,11 +70,13 @@ defmodule Spectre.GovernedAct.Transition.Admission.Presentation do
   end
 
   defp validate_approval(projection, presentation, evidence, time, act_ref) do
+    {acts, outcomes} = ReadIndex.presentation_history(projection, presentation.ref)
+
     classification =
       Presentation.classify_responses(
         presentation,
-        projection.acts,
-        Map.values(projection.outcomes),
+        acts,
+        outcomes,
         evidence,
         time
       )

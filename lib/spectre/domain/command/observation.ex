@@ -8,7 +8,7 @@ defmodule Spectre.Domain.Command.Observation do
   failures stop the owning Sequencer.
   """
 
-  alias Spectre.Domain.Command.Commit
+  alias Spectre.Domain.Command.Durability
   alias Spectre.Domain.Command.Record, as: CommandRecord
   alias Spectre.Domain.Sequencer.State
   alias Spectre.Domain.Transaction
@@ -50,7 +50,7 @@ defmodule Spectre.Domain.Command.Observation do
              outcome,
              now
            ) do
-      Commit.append(
+      Durability.append(
         state,
         payloads,
         now,

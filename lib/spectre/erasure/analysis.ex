@@ -9,6 +9,7 @@ defmodule Spectre.Erasure.Analysis do
 
   alias Spectre.{Erasure, Portable}
   alias Spectre.Erasure.Analysis.{Closure, Execution, Facts}
+  alias Spectre.Erasure.Index
   alias Spectre.GovernedAct.State
 
   @type input :: State.t() | Facts.t()
@@ -101,7 +102,9 @@ defmodule Spectre.Erasure.Analysis do
   def execution_state(input, target_ref) when is_binary(target_ref) do
     with {:ok, facts} <- Facts.coerce(input),
          {:ok, _digest} <- payload_digest(target_ref) do
-      {:ok, Execution.state(facts, target_ref)}
+      if indexed?(facts),
+        do: {:ok, Map.get(facts.availability_index.states, target_ref, :live)},
+        else: {:ok, Execution.state(facts, target_ref)}
     end
   end
 
@@ -124,7 +127,7 @@ defmodule Spectre.Erasure.Analysis do
   @spec unavailable_evidence_refs(input()) :: MapSet.t(String.t())
   def unavailable_evidence_refs(input) do
     case Facts.coerce(input) do
-      {:ok, facts} -> Closure.unavailable_evidence_refs(facts)
+      {:ok, facts} -> unavailable(facts)
       {:error, :invalid_erasure_facts} -> MapSet.new()
     end
   end
@@ -137,7 +140,7 @@ defmodule Spectre.Erasure.Analysis do
   def available_evidence(input) do
     case Facts.coerce(input) do
       {:ok, facts} ->
-        unavailable = Closure.unavailable_evidence_refs(facts)
+        unavailable = unavailable(facts)
         Map.reject(facts.evidence, fn {ref, _evidence} -> MapSet.member?(unavailable, ref) end)
 
       {:error, :invalid_erasure_facts} ->
@@ -149,7 +152,7 @@ defmodule Spectre.Erasure.Analysis do
   @spec validate_evidence_available(input(), [String.t()]) :: :ok | {:error, term()}
   def validate_evidence_available(input, refs) when is_list(refs) do
     with {:ok, facts} <- Facts.coerce(input) do
-      unavailable = Closure.unavailable_evidence_refs(facts)
+      unavailable = unavailable(facts)
 
       case Enum.find(refs, &MapSet.member?(unavailable, &1)) do
         nil -> :ok
@@ -160,6 +163,15 @@ defmodule Spectre.Erasure.Analysis do
 
   def validate_evidence_available(_input, _refs),
     do: {:error, :invalid_evidence_availability_check}
+
+  defp indexed?(%Facts{availability_index: nil}), do: false
+  defp indexed?(facts), do: Index.complete?(facts.availability_index, facts)
+
+  defp unavailable(facts) do
+    if indexed?(facts),
+      do: facts.availability_index.unavailable,
+      else: Closure.unavailable_evidence_refs(facts)
+  end
 
   @doc false
   @spec payload_digest(String.t()) :: {:ok, String.t()} | {:error, term()}

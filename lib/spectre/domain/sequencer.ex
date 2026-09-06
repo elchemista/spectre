@@ -33,7 +33,7 @@ defmodule Spectre.Domain.Sequencer do
   }
 
   alias Spectre.Domain.Admission.Command, as: AdmissionCommand
-  alias Spectre.Domain.Command.Commit, as: CommandCommit
+  alias Spectre.Domain.Command.Durability
   alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
   alias Spectre.Domain.Command.Execution, as: ExecutionCommand
   alias Spectre.Domain.Command.Input, as: InputCommand
@@ -802,7 +802,7 @@ defmodule Spectre.Domain.Sequencer do
   end
 
   defp run_after_duty_repair(%State{} = state, command) when is_function(command, 1) do
-    case CommandCommit.prepare(state) do
+    case Durability.preflight(state) do
       {:ok, current} -> current |> command.() |> command_reply()
       {:error, halted, reason} -> {:reply, {:error, reason}, halted}
     end

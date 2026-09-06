@@ -9,7 +9,7 @@ defmodule Spectre.Domain.Command.Execution do
   """
 
   alias Spectre.{Act, Attempt, Mandate}
-  alias Spectre.Domain.Command.Commit
+  alias Spectre.Domain.Command.Durability
   alias Spectre.Domain.{Event, Projection, Transaction}
   alias Spectre.Domain.Sequencer.{Control, State}
   alias Spectre.Execution.Router
@@ -103,7 +103,7 @@ defmodule Spectre.Domain.Command.Execution do
          {:ok, attempt_ref} <- Transaction.operational_id(state),
          {:ok, attempt} <- build_attempt(state, act, grant, attempt_ref, now),
          {:ok, payload} <- Event.record(:attempt, attempt) do
-      Commit.append(
+      Durability.append(
         state,
         [payload],
         now,

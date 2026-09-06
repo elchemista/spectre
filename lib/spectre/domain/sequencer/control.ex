@@ -15,7 +15,7 @@ defmodule Spectre.Domain.Sequencer.Control do
   def halt(%State{halted_reason: nil} = state, reason) do
     send(self(), {:stop_halted, reason})
 
-    Policy.failed(
+    Policy.notify_failed(
       state.recovery_policy,
       %{
         domain_ref: state.projection.domain_ref,

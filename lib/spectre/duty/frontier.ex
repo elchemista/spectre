@@ -51,13 +51,6 @@ defmodule Spectre.Duty.Frontier do
     outcome = Map.fetch!(state.outcomes, ref)
     frontier = state.read_index.duties
 
-    frontier = %{
-      frontier
-      | outcomes_by_attempt: put_ref(frontier.outcomes_by_attempt, outcome.attempt_ref, ref),
-        outcomes_by_act: put_ref(frontier.outcomes_by_act, outcome.act_ref, ref)
-    }
-
-    state = put(state, frontier)
     state = subscribe(state, outcome.act_ref, outcome.evidence_refs)
     state = derive_attempt(state, outcome.attempt_ref, state.recorded_at)
 
@@ -76,18 +69,6 @@ defmodule Spectre.Duty.Frontier do
     else
       state |> derive_evidence(ref, state.recorded_at) |> derive_scope_boundary()
     end
-  end
-
-  def record(state, %{type: "erasure_requested", identity: ref}) do
-    erasure = Map.fetch!(state.erasures, ref)
-    frontier = state.read_index.duties
-
-    frontier = %{
-      frontier
-      | erasures_by_act: put_ref(frontier.erasures_by_act, erasure.source_act_ref, ref)
-    }
-
-    put(state, frontier)
   end
 
   def record(state, %{type: "scope_opened", identity: ref}) do
