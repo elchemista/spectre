@@ -65,6 +65,25 @@ defmodule Spectre.Core.InputPipelineTest do
              Pipeline.run(pipeline, %{"transcript" => "  HELLO  ", "media_ref" => "audio:123"})
   end
 
+  test "binding a prepared handle does not repeat initialization or invoke its plugs" do
+    assert {:ok, pipeline} = Pipeline.new([probe("prepared")])
+    assert_receive {:initialized, "prepared"}
+
+    assert {:ok, ^pipeline} = Pipeline.fetch(pipeline)
+    assert {:ok, ^pipeline} = Pipeline.fetch(pipeline)
+    refute_receive {:initialized, _}
+    refute_receive {:called, _, _, _}
+
+    assert {:ok, "message"} = Pipeline.run(pipeline, "message")
+    assert_receive {:called, "prepared", "message", _}
+  end
+
+  test "binding rejects declarations and plain data instead of treating them as prepared handles" do
+    for invalid <- [nil, [], NormalizeText, [NormalizeText], %{steps: [], limits: []}] do
+      assert {:error, :invalid_input_pipeline} = Pipeline.fetch(invalid)
+    end
+  end
+
   test "empty pipelines preserve exact values including distinct numeric representations" do
     assert {:ok, pipeline} = Pipeline.new([])
 

@@ -189,7 +189,7 @@ jobs:
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store_test.exs.eex"
           test -f "$RUNNER_TEMP/hex-package/docs/examples/routing-eval.jsonl"
           test ! -e "$RUNNER_TEMP/hex-package/docs/adr"
-          test ! -e "$RUNNER_TEMP/hex-package/lib/spectre/instance/README.md"
+          test ! -e "$RUNNER_TEMP/hex-package/lib/spectre/agents/instance/README.md"
           test ! -e "$RUNNER_TEMP/hex-package/test"
           test ! -e "$RUNNER_TEMP/hex-package/scripts"
           test ! -e "$RUNNER_TEMP/hex-package/.github"

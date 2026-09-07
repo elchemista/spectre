@@ -116,6 +116,14 @@ In an application supervision tree, supervise the Store instead of starting it
 from a short-lived request process. Inspect each proposal's Decision and Outcome;
 an `{:ok, result}` is not synonymous with an admitted or successful effect.
 
+`Spectre.Foundation.new/2` can assemble Genesis links from explicitly supplied
+records without choosing policy or replacing the external verifier. See
+[foundation assembly](docs/host-setup.md#assemble-the-links-without-choosing-policy).
+Before deployment, `Spectre.Surface.verify_definition/2` can check fixed Agent
+declarations and report occurrence fields still required; this is
+[an authoring diagnostic](docs/agents-and-dsl.md#check-fixed-declarations-against-a-surface),
+not permission to execute.
+
 The main extension points are ordinary behaviours:
 
 | Host implements | Responsibility |

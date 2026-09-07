@@ -102,7 +102,7 @@ defmodule Spectre.Core.MemoryPressureTest do
   test "an imposed heap kill during ingress cannot publish partial Evidence or invent an Act" do
     namespace = "memory-pressure-#{System.unique_integer([:positive])}"
     fixture = Fixture.start(:ets, namespace, 3, 8, 1)
-    on_exit(fn -> Fixture.stop(fixture) end)
+    on_exit(:fixture, fn -> Fixture.stop(fixture) end)
     before = Sequencer.projection(fixture.server)
     assert {:ok, snapshot} = Ledger.load(fixture.store_config, fixture.refs.domain)
     Process.unlink(fixture.server)
@@ -130,7 +130,7 @@ defmodule Spectre.Core.MemoryPressureTest do
     assert_receive {:DOWN, ^monitor, :process, _, :killed}, @timeout
     assert {:ok, ^snapshot} = Ledger.load(fixture.store_config, fixture.refs.domain)
     restarted = Fixture.restart(fixture)
-    on_exit(fn -> if Process.alive?(restarted), do: GenServer.stop(restarted) end)
+    on_exit(:fixture, fn -> Fixture.stop(fixture, restarted) end)
     assert Sequencer.projection(restarted) == before
 
     assert {:ok, %{decision: %{outcome: :admitted}, act: act}} =

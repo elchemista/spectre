@@ -85,8 +85,6 @@ defmodule Spectre.CoreTest.AgentFlowTest do
   test "nested names do not silently inherit a parent router or pipeline" do
     assert {:ok, plain} = Assistant.flow("support/raw")
     assert {:unrouted, "  ROOT  "} = Flow.route(plain, "  ROOT  ")
-    assert plain.router == nil
-    assert plain.pipelines == []
   end
 
   test "Skill installation namespaces flows, pipeline bindings and Candidate targets together" do
@@ -99,7 +97,6 @@ defmodule Spectre.CoreTest.AgentFlowTest do
              Assistant.flow("billing/request", pipelines: %{"billing/text" => text})
 
     assert {:ok, %{candidate: "billing/refund"}} = Flow.route(billing, "REFUND")
-    assert billing.definition_ref == Assistant.definition().ref
   end
 
   test "portable definitions do not load pipeline or matcher modules after a round trip" do

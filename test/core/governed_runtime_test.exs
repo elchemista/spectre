@@ -5,7 +5,7 @@ Code.require_file("../../bench/support/p1_fixture.exs", __DIR__)
 defmodule Spectre.Core.GovernedRuntimeTest do
   use ExUnit.Case, async: true
 
-  alias Spectre.{Audit, Candidate, Kernel, Ledger, Outcome}
+  alias Spectre.{Audit, Candidate, Evidence, Interop, Kernel, Ledger, Outcome}
   alias Spectre.Audit.Report
   alias Spectre.Bench.P1.Fixture
   alias Spectre.Domain.Event, as: Event
@@ -17,7 +17,7 @@ defmodule Spectre.Core.GovernedRuntimeTest do
   setup do
     namespace = "core-#{System.unique_integer([:positive])}"
     fixture = Fixture.start(:ets, namespace, 3, 8, 1)
-    on_exit(fn -> Fixture.stop(fixture) end)
+    on_exit(:fixture, fn -> Fixture.stop(fixture) end)
     %{fixture: fixture}
   end
 
@@ -216,7 +216,9 @@ defmodule Spectre.Core.GovernedRuntimeTest do
     assert_replay_and_audit(f, projection)
 
     restarted = Fixture.restart(f)
-    on_exit(fn -> if Process.alive?(restarted), do: GenServer.stop(restarted) end)
+    # Replace the original cleanup with the recovered owner. Fixture.stop/2
+    # monitors concurrent owner shutdown instead of a racy alive?/stop pair.
+    on_exit(:fixture, fn -> Fixture.stop(f, restarted) end)
     assert Sequencer.projection(restarted) == projection
     assert {:error, _} = Sequencer.consume_grant(restarted, grant)
     assert map_size(Sequencer.projection(restarted).attempts) == 1
@@ -334,6 +336,51 @@ defmodule Spectre.Core.GovernedRuntimeTest do
     assert after_refusal.mandates == before.mandates
     assert after_refusal.duties == before.duties
     assert after_refusal.acts == before.acts
+  end
+
+  test "interop preserves a shared Evidence ancestor without importing unrelated records", %{
+    fixture: f
+  } do
+    parent = f.evidence
+
+    [left, right, unrelated] =
+      Enum.map(["left", "right", "unrelated"], fn proposition ->
+        attrs =
+          parent
+          |> Map.from_struct()
+          |> Map.merge(%{
+            ref: nil,
+            proposition: proposition,
+            provenance: :derived,
+            parent_refs: [parent.ref]
+          })
+
+        {:ok, record} = Evidence.new(attrs)
+        record
+      end)
+
+    candidate = %{Fixture.candidate(f, 1) | evidence_refs: [left.ref, right.ref]}
+    records = [left, right, parent]
+    before = Sequencer.projection(f.server)
+
+    assert {:ok, envelope} = Interop.outbound("foreign", f.refs.domain, candidate, records)
+
+    assert {:ok, ^envelope} =
+             Interop.outbound("foreign", f.refs.domain, candidate, Enum.reverse(records))
+
+    assert {:ok, received} = Interop.inbound(envelope, f.refs.domain)
+    assert received.evidence === Enum.sort_by(records, & &1.ref)
+
+    assert {:error, {:interop_evidence_parents_missing, [parent_ref]}} =
+             Interop.outbound("foreign", f.refs.domain, candidate, [left, right])
+
+    assert parent_ref === parent.ref
+
+    assert {:error, {:interop_unrelated_evidence, [unrelated_ref]}} =
+             Interop.outbound("foreign", f.refs.domain, candidate, [unrelated | records])
+
+    assert unrelated_ref === unrelated.ref
+    assert Sequencer.projection(f.server) === before
   end
 
   defp submit(f, n), do: Sequencer.submit(f.server, f.context, Fixture.candidate(f, n))

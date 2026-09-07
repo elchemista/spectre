@@ -308,10 +308,30 @@ defmodule Spectre.V04Test.Fixture do
   end
 
   def stop_process(pid) when is_pid(pid) do
-    # Teardown may race with a linked process finishing after its owner exits.
-    GenServer.stop(pid)
-  catch
-    :exit, {:noproc, {GenServer, :stop, [^pid | _args]}} -> :ok
+    # A trapping server can still be finishing its owner's shutdown when
+    # ExUnit runs on_exit. Confirm that exit instead of guessing from the
+    # wrapper of the failed stop call; unexpected crashes must still fail.
+    monitor = Process.monitor(pid)
+
+    try do
+      GenServer.stop(pid)
+    catch
+      :exit, reason -> await_stopped(pid, monitor, reason, __STACKTRACE__)
+    after
+      Process.demonitor(monitor, [:flush])
+    end
+  end
+
+  defp await_stopped(pid, monitor, reason, stacktrace) do
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, status} when status in [:normal, :shutdown, :noproc] ->
+        :ok
+
+      {:DOWN, ^monitor, :process, ^pid, _unexpected} ->
+        :erlang.raise(:exit, reason, stacktrace)
+    after
+      1_000 -> :erlang.raise(:exit, reason, stacktrace)
+    end
   end
 
   def context(fixture, overrides \\ %{}) do

@@ -78,6 +78,48 @@ and implement its host executor. The built-in governance classes have explicit
 runtime semantics. `Spectre.Consequence.Validator` resolves a closed registry;
 ledger data cannot name arbitrary executable validation code.
 
+### Following the commit boundary in code
+
+`Spectre.Kernel.Commit.payloads/3` turns an evaluation into proposed event data.
+It does not persist it. `Spectre.GovernedAct.Commit.prepare/4` builds the exact
+entry batch and folds it against the current prefix. Its resulting State is
+still provisional. `Spectre.Domain.Transaction.append_exact/4` owns the write;
+`Spectre.Domain.Recovery` confirms its receipt or reads back the actual durable
+records. An exact receipt match permits reuse of the prepared fold, not a
+second interpretation of the same events. A failed confirmation is not proof
+that nothing was written.
+
+Only then may `Spectre.Domain.Command.Execution` mint a Grant. Consumption
+checks current authority again and records an Attempt before issuing the
+checkout receipt. This is why neither a valid template, a kernel result nor a
+prepared transaction can substitute for the durable execution boundary.
+
+On the return path, the classifier in `lib/spectre/attempt/runner/observation.ex`
+interprets the executor's report; `lib/spectre/outcome/attestation.ex` supplies
+the shared causal binding checks used by classification and replay. Relevant contradictory
+Evidence may support an ambiguous Outcome; it cannot establish success.
+These checks establish recorded consistency, not a cryptographic signature
+or independently authenticated provider identity.
+
+### Public workflows and storage internals
+
+`Spectre` keeps the documented application API. Its internal workflows are
+ordinary function calls in the caller's process, not additional Domain owners:
+
+| Source | Responsibility |
+| --- | --- |
+| `lib/spectre/facade/access.ex` | Resolve live Domain addresses, validate host options and issue narrow authenticated queries; rebinding does not renew a Scope's authority or generation |
+| `lib/spectre/facade/proposal.ex` | Admission, execution orchestration and at most one declared refusal fallback; never retry an uncertain effect |
+| `lib/spectre/facade/observation.ex` | Record supported late Evidence before its Outcome, without re-executing the original Act |
+
+The disk adapter has a separate physical boundary. In
+`lib/spectre/ledger/store/disk.ex`, one owner serializes writes, checks prefix
+continuity and maintains its indexes. `disk/frame.ex` checks the bounded
+canonical storage envelope and batch identity; `disk/file_io.ex` performs file
+reads, writes and durability barriers. A valid frame alone is neither a durable
+commit nor a GAM authorization. Corrupt frames are rejected; only the owner's
+explicit incomplete-tail policy permits truncation.
+
 ## What owns state?
 
 | Owner | Contains | Is not |
@@ -111,6 +153,12 @@ compression do not remove the live projection's heap cost. See
 Genesis pins the initial Principals, root Mandates, Surface, HostProfile and
 Constitution. The host supplies the external recognition of that foundation;
 constructing a valid record is not such recognition.
+
+`Spectre.Foundation.new/2` is optional assembly assistance: it derives those
+links from explicit records and uses the same pure bootstrap fold. It returns
+ordinary host options, chooses no authority policy and never calls a verifier.
+Actual bootstrap and recovery still require external recognition through the
+configured Genesis verifier.
 
 Root authority is introduced only at Genesis. At runtime,
 `Spectre.delegate_mandate/4` can create a narrower child; the historical

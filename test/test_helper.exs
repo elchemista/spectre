@@ -2,6 +2,8 @@ ExUnit.start()
 
 Code.require_file("v0_4/support/fixture.ex", __DIR__)
 Code.require_file("support/duty_frontier_assertions.ex", __DIR__)
+Code.require_file("support/full_agent_case.ex", __DIR__)
+Code.require_file("support/routed_agent_case.ex", __DIR__)
 
 # Keep the shared fake clock alive until Domain on_exit cleanup has finished.
 # An ETS table owned by a test process disappears before its on_exit callbacks;

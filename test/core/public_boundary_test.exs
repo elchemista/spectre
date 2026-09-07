@@ -1,7 +1,7 @@
 defmodule Spectre.Core.PublicBoundaryTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.{Domain, Outcome}
+  alias Spectre.{Domain, Outcome, SubmissionContext}
   alias Spectre.Domain.Sequencer
   alias Spectre.V04Test.{Fixture, Runtime}
 
@@ -75,6 +75,29 @@ defmodule Spectre.Core.PublicBoundaryTest do
 
     assert {:error, {:presentation_not_found, "missing"}} =
              Spectre.show_presentation(c.scope, "missing", %{})
+  end
+
+  test "editing public Scope data cannot replace its seal, principal or generation", c do
+    before = Sequencer.projection(c.f.server)
+    context = c.scope.context
+
+    for forged_context <- [
+          %{context | seal: nil},
+          %{context | authenticated_principal_ref: c.f.refs.grantor},
+          %{context | host_generation: context.host_generation + 1}
+        ] do
+      # Public content references are reproducible; the host's seal is not.
+      {:ok, forged_context} = SubmissionContext.new(%{forged_context | ref: nil})
+      forged_scope = %{c.scope | context: forged_context}
+
+      assert {:error, :submission_context_authentication_failed} = Spectre.view(forged_scope)
+
+      assert {:error, :submission_context_authentication_failed} =
+               Spectre.propose(forged_scope, Fixture.refund_candidate(c.f, 1))
+    end
+
+    assert Sequencer.projection(c.f.server) === before
+    assert {:ok, _view} = Spectre.view(c.scope)
   end
 
   test "late outcomes require an existing Act in the caller's Scope and actual evidence", c do

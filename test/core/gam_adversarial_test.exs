@@ -7,6 +7,7 @@ defmodule Spectre.Core.GAMAdversarialTest do
   alias Spectre.Bench.P1.Fixture
   alias Spectre.Domain.{Projection, Sequencer}
   alias Spectre.Ledger.Entry
+  alias Spectre.Outcome.Attestation
   alias Spectre.Test.DutyFrontierAssertions
 
   setup do
@@ -270,6 +271,63 @@ defmodule Spectre.Core.GAMAdversarialTest do
     assert before.meter_reservations[act.ref] == :reserved
     assert before.outcomes == %{}
     assert_replay(f, before)
+  end
+
+  test "receipt validation and Runner predicates enforce the same causal boundary", %{fixture: f} do
+    assert {:ok, %{act: act, grant: grant}} = submit(f, 1)
+    assert {:ok, ^act, attempt, _} = Sequencer.consume_grant(f.server, grant)
+    receipt = Fixture.outcome_evidence(f, act, attempt)
+    outcome = Fixture.outcome(act, attempt, receipt)
+    at = outcome.observed_at
+    assert :ok = Attestation.validate(receipt, outcome, attempt, act)
+    assert Attestation.supports?(receipt, :succeeded, act, attempt, at)
+    assert Attestation.causal?(receipt, act, attempt, at)
+
+    # These deliberate mutations isolate semantic binding from content-ref
+    # validation. Neither path may accept a claim across a broken boundary.
+    for {changes, reason} <- [
+          {%{provenance: :derived}, :outcome_evidence_not_observed},
+          {%{provisional: true}, :outcome_evidence_provisional},
+          {%{assumptions: ["assumption"]}, :outcome_evidence_has_assumptions},
+          {%{parent_refs: ["parent"]}, :outcome_evidence_has_parents},
+          {%{observed_at: attempt.started_at - 1}, :outcome_evidence_precedes_attempt},
+          {%{source_ref: "impostor"}, :outcome_evidence_source_mismatch},
+          {%{issuer_ref: "impostor"}, :outcome_evidence_issuer_mismatch},
+          {%{bindings: %{"act_ref" => act.ref}}, :outcome_evidence_binding_mismatch},
+          {%{observed_at: at + 1}, :outcome_evidence_not_current},
+          {%{valid_until: at}, :outcome_evidence_not_current}
+        ] do
+      changed = struct!(receipt, changes)
+
+      assert Attestation.validate(changed, outcome, attempt, act) ==
+               {:error, {reason, outcome.ref, receipt.ref}}
+
+      refute Attestation.supports?(changed, :succeeded, act, attempt, at)
+      refute Attestation.causal?(changed, act, attempt, at)
+    end
+  end
+
+  test "causally relevant dissent supports ambiguity but never a definitive success", %{
+    fixture: f
+  } do
+    assert {:ok, %{act: act, grant: grant}} = submit(f, 1)
+    assert {:ok, ^act, attempt, _} = Sequencer.consume_grant(f.server, grant)
+    receipt = Fixture.outcome_evidence(f, act, attempt)
+
+    assert {:ok, dissent} =
+             receipt
+             |> Map.from_struct()
+             |> Map.merge(%{ref: nil, stance: :contradicts})
+             |> Evidence.new()
+
+    success = Fixture.outcome(act, attempt, dissent)
+    assert {:ok, ambiguous} = Outcome.new(%{success | ref: nil, status: :ambiguous})
+    assert Attestation.causal?(dissent, act, attempt, success.observed_at)
+    refute Attestation.supports?(dissent, :succeeded, act, attempt, success.observed_at)
+    assert :ok = Attestation.validate(dissent, ambiguous, attempt, act)
+
+    assert {:error, {:outcome_evidence_stance_mismatch, _, _, :supports, :contradicts}} =
+             Attestation.validate(dissent, success, attempt, act)
   end
 
   test "a corrected no-effect claim cannot hide a deficit after the released budget was reused",

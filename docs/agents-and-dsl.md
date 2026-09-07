@@ -81,6 +81,53 @@ references are pinned in the parent Definition. Select the router policy in the
 root Agent for root routes; each named flow retains its own explicit policy.
 Installing a Skill does not silently replace the root policy.
 
+## Check fixed declarations against a Surface
+
+`Spectre.Surface.verify_definition/2` is an optional pure authoring check. It
+accepts an Agent or Skill Definition, including installed templates, and pins
+its report to the exact Definition and Surface refs. It does not activate either
+record or require a running Domain:
+
+<!-- spectre:example definition_check -->
+```elixir
+defmodule Guide.VerifiedAgent do
+  use Spectre.Agent,
+    namespace: "guide", name: "verified", revision: 1, declared_at: 0
+
+  candidate "lookup", class: "orders.lookup", row: %{read: true}
+end
+
+{:ok, contract} = Spectre.Consequence.Contract.new(
+  shape: %{"order" => "target_ref"}
+)
+{:ok, surface} = Spectre.Surface.new(
+  revision: 1,
+  declarations: %{"orders.lookup" => %{read: true}},
+  consequence_contracts: %{"orders.lookup" => contract}
+)
+{:ok, report} = Spectre.Surface.verify_definition(surface, Guide.VerifiedAgent.definition())
+[:class, :row] = report.templates["lookup"].checked
+true = :consequence in report.templates["lookup"].deferred
+true = :target_refs in report.templates["lookup"].deferred
+```
+
+Each template has `checked`, `deferred` and `errors`. The check covers a fixed
+class and row, a fixed consequence's complete closed schema, and any supplied
+subject/target/disclosure destinations and Meter requests. Missing occurrence
+fields are deferred, never filled from guesses. Intrinsic consequences without
+a contract are deferred; their state-dependent facts always remain runtime work.
+Errors across templates are collected in
+`{:error, {:definition_surface_mismatch, report}}`. `checked` lists the fields
+submitted to checks, not a claim that those checks passed.
+
+Even a clean report with no deferred static fields is not a complete Candidate
+validation or permission to act. Consent, authenticated bindings, current
+authority, live Evidence, resources and executor wiring still need their normal
+runtime checks. Supply the remaining occurrence attributes when materializing
+the template; the core revalidates every actual proposal against the Surface
+in force at admission. Re-run the authoring check explicitly when comparing
+another Definition or Surface revision.
+
 ## Flows and ordinary Mind handlers
 
 Prepare the plans once in host configuration, then reuse them. A flow names

@@ -2,6 +2,7 @@ defmodule Spectre.Core.EvidenceAndConditionTest do
   use ExUnit.Case, async: true
 
   alias Spectre.{Condition, Disclosure, Evidence, Label}
+  alias Spectre.GovernedAct.{ReadIndex, State}
   alias Spectre.Kernel.Recognition
 
   test "canonical key spelling cannot change condition identity or attenuation" do
@@ -83,6 +84,54 @@ defmodule Spectre.Core.EvidenceAndConditionTest do
              Recognition.check_with_basis([condition], [contrary, support], 100)
   end
 
+  test "indexed selection preserves shared assumptions without mistaking a diamond for a cycle" do
+    {:ok, condition} = Condition.new(proposition: "paid")
+    proof = evidence(assumptions: ["left", "right"])
+    left = evidence(proposition: "left", assumptions: ["shared"])
+    right = evidence(proposition: "right", assumptions: ["shared"])
+    shared = evidence(proposition: "shared")
+    noise = evidence(proposition: "unrelated")
+    records = [proof, left, right, shared]
+
+    for order <- [records ++ [noise], [noise | Enum.reverse(records)]] do
+      state = indexed_evidence(order)
+      selected = ReadIndex.evidence_for(state, [condition, condition])
+
+      assert selected === Enum.sort_by(records, & &1.ref)
+
+      assert Recognition.check_with_basis([condition], selected, 100) ===
+               {:satisfied, Enum.sort(Enum.map(records, & &1.ref))}
+    end
+  end
+
+  test "indexed selection terminates on assumption cycles but does not turn them into proof" do
+    {:ok, condition} = Condition.new(proposition: "paid")
+    proof = evidence(assumptions: ["network"])
+    network = evidence(proposition: "network", assumptions: ["paid"])
+    state = indexed_evidence([proof, network, evidence(proposition: "noise")])
+
+    selected = ReadIndex.evidence_for(state, [condition])
+    assert selected === Enum.sort_by([proof, network], & &1.ref)
+    assert {:undecidable, _} = Recognition.check([condition], selected, 100)
+  end
+
+  test "visited propositions keep integer and float identities distinct" do
+    {:ok, condition} = Condition.new(proposition: "paid")
+    proof = evidence(assumptions: [1, 1.0])
+    integer = evidence(proposition: 1)
+    float_counterproof = evidence(proposition: 1.0, stance: :contradicts)
+    records = [proof, integer, float_counterproof]
+    selected = records |> indexed_evidence() |> ReadIndex.evidence_for([condition])
+
+    assert selected === Enum.sort_by(records, & &1.ref)
+    assert {:undecidable, _} = Recognition.check([condition], selected, 100)
+
+    {:ok, integer_condition} = Condition.new(proposition: 1)
+
+    assert [integer] ===
+             records |> indexed_evidence() |> ReadIndex.evidence_for([integer_condition])
+  end
+
   test "time boundaries and freshness cannot silently extend factual validity" do
     value = evidence(valid_from: 110, valid_until: 120)
     assert Evidence.temporal_status(value, 99) == :from_future
@@ -138,6 +187,21 @@ defmodule Spectre.Core.EvidenceAndConditionTest do
         assert {:error, _reason} = module.new(Map.put(attrs, :schema_version, version))
       end
     end
+  end
+
+  # This exercises the disposable selection index with valid typed records.
+  # Live ledger and independent replay equivalence are covered by the GAM suite.
+  defp indexed_evidence(records) do
+    Enum.reduce(records, State.new("domain:evidence-selection"), fn record, state ->
+      revision = state.revision + 1
+      state = %{state | evidence: Map.put(state.evidence, record.ref, record), revision: revision}
+
+      ReadIndex.record(state, %{
+        type: "evidence_recorded",
+        identity: record.ref,
+        revision: revision
+      })
+    end)
   end
 
   defp evidence(overrides \\ []) do

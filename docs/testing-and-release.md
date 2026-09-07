@@ -61,6 +61,21 @@ content is not delivered before admission, new input does not rewrite an old
 Act's evidence basis, interrupted provider work stays uncertain when appropriate,
 and local cancel is not a successful Outcome or Duty disposal.
 
+The complete-agent suites are organized by scenario rather than one growing
+file. Shared `ExUnit.CaseTemplate` fixtures live in `test/support/`; they start
+isolated state for each test, not a shared Domain for the whole suite.
+
+| Scenario | Test source under `test/core/` |
+| --- | --- |
+| Basic agents, Skills and Instance lifecycle | `full_agents_test.exs` |
+| Information lineage, governance, Duties, consent and external payloads | `agents_information_test.exs`, `agents_governance_test.exs`, `agents_duty_test.exs`, `agents_consent_test.exs`, `agents_payload_test.exs` |
+| Regex, string-bag, custom matching and input pipelines | `routed_agents_test.exs` |
+| Routed checkpoints/Morph, provenance/isolation and durable recovery | `routed_agents_lifecycle_test.exs`, `routed_agents_provenance_test.exs`, `routed_agents_recovery_test.exs` |
+
+Use `test/support/full_agent_case.ex` and `test/support/routed_agent_case.ex`
+for common host wiring and ledger/accounting assertions. Keep scenario-specific
+assertions alongside their tests, so the property under examination stays visible.
+
 ## Faults and differential checks
 
 Inject failure before commit, after durable commit but before acknowledgement,

@@ -6,7 +6,7 @@ defmodule Spectre.CoreTest.ApprovalAssumptionsTest do
   alias Spectre.Presentation.Approval.Assumptions
 
   # These tests exercise the pure graph contract with validated records. Live
-  # ingestion, show/approval ordering and replay are covered in FullAgentsTest.
+  # ingestion, show/approval ordering and replay are covered in AgentsConsentTest.
   setup do
     assert {:ok, presentation} =
              Presentation.new(%{

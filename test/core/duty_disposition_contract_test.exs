@@ -141,7 +141,23 @@ defmodule Spectre.Core.DutyDispositionContractTest do
   test "canonical decoding does not silently deduplicate malformed support", c do
     canonical = Disposition.canonical(c.disposition)
     repeated = Map.put(canonical, "supporting_refs", ["proof", "proof"])
-    assert {:error, _} = Disposition.from_canonical(repeated)
+    expected = {:error, {:noncanonical_record, :duty_disposition}}
+    assert Disposition.from_canonical(repeated) == expected
+    assert Disposition.from_consequence(%{"duty_disposition" => repeated}) == expected
+  end
+
+  test "consequence decoding preserves the canonical decoder's exact scalar and key checks", c do
+    canonical = Disposition.canonical(c.disposition)
+
+    for malformed <- [
+          Map.put(canonical, "schema_version", 1.0),
+          Map.put(canonical, :kind, :ratify),
+          Map.delete(canonical, "meter_resolution"),
+          Map.put(canonical, "supporting_refs", ["z", "a"])
+        ] do
+      assert {:error, _} = expected = Disposition.from_canonical(malformed)
+      assert Disposition.from_consequence(%{"duty_disposition" => malformed}) === expected
+    end
   end
 
   test "closed schema rejects hidden authority fields", c do

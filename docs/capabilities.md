@@ -21,6 +21,8 @@ defines what the implementation actually guarantees.
 | Independent named flows | `flow`, `pipe_through`, `Spectre.Agent.Flow` | Reusable host-prepared plans; no inherited routing, hidden handler policy or process per flow |
 | Bounded prompt composition | `Spectre.Prompt` | Ordered sources and conservative labels, no code evaluation or implicit inference |
 | Structured proposal status | `Spectre.Proposal.Result.status/1` | Admission, Attempt and Outcome remain separate; absence is not failure |
+| Static authoring diagnostics | `Spectre.Surface.verify_definition/2`, `Spectre.Error.message/1` | Deferred fields remain explicit; no preauthorization or sensitive error serialization |
+| Pure foundation assembly | `Spectre.Foundation.new/2` | Derives Genesis links and reuses bootstrap checks; no authority defaults, verifier callback or I/O |
 | Input normalization and Evidence builders | `Spectre.Input.Pipeline`, Ingress/Mind/Executor builders | No prescribed audio/VoIP schema or media engine |
 | Behaviour authoring helpers | `use Spectre.Mind`, `Ingress`, `Attempt.Executor`, `Secret.Broker` | Explicit identities and opt-in Mind bridge; no authentication, execution or routing policy generated |
 | Pure Morph changesets, diff and forward rollback | `Spectre.Morph`, `Spectre.revise_definition/4` | Governed activation is separate; no hot code/state migration |
@@ -57,7 +59,6 @@ integrations cannot gain power through ordinary proposal data.
 | Durable projection checkpoints | Ledger suffix/paging exists, but no trusted persistent projection checkpoint | Validate prefix binding/version, refuse corruption and preserve independent audit |
 | Public query/control load | No general revision-fenced pagination or uniform bounded queues/timeouts | Bounded work with explicit uncertainty behavior, not silent truncation |
 | Higher-level authoring | No public `ask`, `stream`, `steer` or `cancel` API | Only add reusable blocks whose exact GAM semantics and host ownership are established |
-| Authoring diagnostics and foundation helpers | No static Definition/Surface compatibility report or pure foundation wiring helper | Diagnose missing inputs without inventing authority, expiry or occurrence data |
 | Skill planning | Templates, assets and flows compose; no dedicated applicability/state/budget helper | Reusable planning conventions without another runtime or a second authoritative Meter |
 | Work/Vigil drivers | Governed Scope promises exist; reusable operational drivers remain open | Explicit host scheduling, with real pause/resume/failure and Duty tests |
 | Advanced Morph | Changesets/diff/rollback and governed revision exist; no review/reflection/Forge workflow | Proposal-only review with governed activation, not arbitrary hot code or state replacement |

@@ -2,6 +2,13 @@ defmodule Spectre do
   @moduledoc """
   Public 0.4 boundary for governed Acts.
 
+  Source organization keeps two concerns separate without changing module names:
+  `lib/spectre/core/` owns GAM records, kernel, durable runtime, persistence and
+  boundary contracts; `lib/spectre/agents/` owns the Agent/Skill DSL, proposal
+  routing, prompts, extensions and Instance state. This module remains the
+  public facade over the governed runtime. Agent authoring is optional: callers
+  can construct core records and use this facade without adopting the DSL.
+
   The public surface is intentionally small. Host code wires one explicit
   ledger Store into a supervised Domain, an authenticated ingress adapter
   supplies a `Spectre.SubmissionContext`, and callers durably open a Scope
@@ -47,7 +54,6 @@ defmodule Spectre do
 
   require Spectre.Portable
 
-  alias Spectre.Attempt.Runner
   alias Spectre.Authority.View, as: AuthorityView
   alias Spectre.Candidate
   alias Spectre.Definition
@@ -56,7 +62,7 @@ defmodule Spectre do
   alias Spectre.Domain.Sequencer
   alias Spectre.Domain.Supervisor, as: DomainSupervisor
   alias Spectre.Evidence
-  alias Spectre.Fallback
+  alias Spectre.Facade.{Access, Observation, Proposal}
   alias Spectre.Governance
   alias Spectre.Ledger.Store
   alias Spectre.Mind
@@ -79,12 +85,7 @@ defmodule Spectre do
   @observation_options [:ingress_opts, :sequencer_opts]
   @derivation_options [:sequencer_opts]
   @presentation_options [:sequencer_opts]
-  @outcome_options [:sequencer_opts]
-  @late_observation_options [:observer_opts, :sequencer_opts]
-  @outcome_statuses Outcome.statuses()
-  @correction_outcome_statuses Outcome.correction_statuses()
   @turn_options [:ingress_opts, :mind_opts, :sequencer_opts, :context_evidence_refs]
-  @execution_options [:sequencer_opts]
   @scope_opening_fields [
     :parent_ref,
     :kind,
@@ -148,7 +149,7 @@ defmodule Spectre do
 
   def start_domain(domain_ref, store, opts)
       when Portable.is_non_empty_binary(domain_ref) and is_list(opts) do
-    with :ok <- validate_keyword(opts, :domain_options),
+    with :ok <- Access.validate_keyword(opts, :domain_options),
          :ok <- reject_reserved_domain_options(opts),
          :ok <- Configuration.validate_host_options(opts),
          domain_opts <- domain_options(domain_ref, store, opts) do
@@ -160,14 +161,7 @@ defmodule Spectre do
 
   @doc "Returns the locally supervised Domain handle for `domain_ref`."
   @spec lookup_domain(domain_ref()) :: {:ok, Domain.t()} | {:error, term()}
-  def lookup_domain(domain_ref) when Portable.is_non_empty_binary(domain_ref) do
-    case registered_domain(domain_ref) do
-      {:ok, pid} -> {:ok, Domain.handle(pid, domain_ref)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def lookup_domain(_domain_ref), do: {:error, :invalid_domain_ref}
+  defdelegate lookup_domain(domain_ref), to: Access
 
   @doc "Authenticates through the Domain's fixed ingress and returns a generation-bound context."
   @spec authenticate(domain_input(), String.t(), term(), keyword()) ::
@@ -175,14 +169,14 @@ defmodule Spectre do
   def authenticate(domain_input, scope_ref, input, opts \\ [])
 
   def authenticate(domain_input, scope_ref, input, opts) when is_list(opts) do
-    with :ok <- validate_keyword(opts, :authentication_options),
-         :ok <- validate_known_options(opts, @authentication_options, :authentication),
+    with :ok <- Access.validate_keyword(opts, :authentication_options),
+         :ok <- Access.validate_known_options(opts, @authentication_options, :authentication),
          :ok <- reject_ingress_override(opts),
-         {:ok, domain} <- resolve_domain(domain_input),
-         {:ok, ingress_opts} <- nested_keyword(opts, :ingress_opts),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts) do
-      sequencer_result(
+         {:ok, domain} <- Access.resolve_domain(domain_input),
+         {:ok, ingress_opts} <- Access.nested_keyword(opts, :ingress_opts),
+         {:ok, sequencer_opts} <- Access.nested_keyword(opts, :sequencer_opts),
+         :ok <- Access.validate_sequencer_options(sequencer_opts) do
+      Access.sequencer_result(
         fn ->
           Sequencer.authenticate(
             domain.server,
@@ -214,12 +208,12 @@ defmodule Spectre do
   def open_scope(domain_input, context, opening_attrs \\ [])
 
   def open_scope(domain_input, %SubmissionContext{} = context, opening_attrs) do
-    with {:ok, domain} <- resolve_domain(domain_input),
+    with {:ok, domain} <- Access.resolve_domain(domain_input),
          {:ok, context} <- SubmissionContext.new(context),
-         :ok <- context_domain_binding(context, domain),
+         :ok <- Access.context_domain_binding(context, domain),
          {:ok, opening} <- scope_opening(context, opening_attrs),
          {:ok, %Opening{} = durable} <-
-           sequencer_result(
+           Access.sequencer_result(
              fn -> Sequencer.open_scope(domain.server, context, opening) end,
              :scope_opening_failed
            ),
@@ -262,11 +256,11 @@ defmodule Spectre do
         opts
       )
       when is_list(opts) do
-    with :ok <- validate_keyword(opts, :governed_scope_opening_options),
+    with :ok <- Access.validate_keyword(opts, :governed_scope_opening_options),
          [] <- Keyword.keys(opts) -- [:sequencer_opts],
-         {:ok, parent_scope} <- rebind_scope(parent_scope),
+         {:ok, parent_scope} <- Access.rebind_scope(parent_scope),
          {:ok, child_context} <- SubmissionContext.new(child_context),
-         :ok <- context_domain_binding(child_context, parent_scope.domain),
+         :ok <- Access.context_domain_binding(child_context, parent_scope.domain),
          {:ok, candidate} <-
            Governance.open_scope(
              parent_scope,
@@ -274,10 +268,10 @@ defmodule Spectre do
              opening_attrs,
              candidate_attrs
            ),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
+         {:ok, sequencer_opts} <- Access.nested_keyword(opts, :sequencer_opts),
+         :ok <- Access.validate_sequencer_options(sequencer_opts),
          {:ok, admission} <-
-           sequencer_result(
+           Access.sequencer_result(
              fn ->
                Sequencer.submit_scope_opening(
                  parent_scope.domain.server,
@@ -314,11 +308,11 @@ defmodule Spectre do
   @spec resume_scope(domain_input(), SubmissionContext.t()) ::
           {:ok, Scope.t()} | {:error, term()}
   def resume_scope(domain_input, %SubmissionContext{} = context) do
-    with {:ok, domain} <- resolve_domain(domain_input),
+    with {:ok, domain} <- Access.resolve_domain(domain_input),
          {:ok, context} <- SubmissionContext.new(context),
-         :ok <- context_domain_binding(context, domain),
+         :ok <- Access.context_domain_binding(context, domain),
          {:ok, %Opening{}} <-
-           sequencer_result(
+           Access.sequencer_result(
              fn -> Sequencer.resume_scope(domain.server, context) end,
              :scope_resume_failed
            ) do
@@ -331,9 +325,9 @@ defmodule Spectre do
   @doc "Returns an exact governed Definition through a live authenticated Scope."
   @spec definition(Scope.t(), String.t()) :: {:ok, Definition.t()} | {:error, term()}
   def definition(%Scope{} = scope, ref) when Portable.is_non_empty_binary(ref) do
-    with {:ok, scope} <- rebind_scope(scope),
+    with {:ok, scope} <- Access.rebind_scope(scope),
          {:ok, %Definition{} = definition} <-
-           sequencer_result(
+           Access.sequencer_result(
              fn -> Sequencer.definition(scope.domain.server, scope.context, ref) end,
              :definition_lookup_failed
            ) do
@@ -355,14 +349,14 @@ defmodule Spectre do
   def observe(scope, input, opts \\ [])
 
   def observe(%Scope{} = scope, input, opts) when is_list(opts) do
-    with :ok <- validate_keyword(opts, :observation_options),
-         :ok <- validate_known_options(opts, @observation_options, :observation),
+    with :ok <- Access.validate_keyword(opts, :observation_options),
+         :ok <- Access.validate_known_options(opts, @observation_options, :observation),
          :ok <- reject_ingress_override(opts),
-         {:ok, scope} <- rebind_scope(scope),
-         {:ok, ingress_opts} <- nested_keyword(opts, :ingress_opts),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts) do
-      sequencer_result(
+         {:ok, scope} <- Access.rebind_scope(scope),
+         {:ok, ingress_opts} <- Access.nested_keyword(opts, :ingress_opts),
+         {:ok, sequencer_opts} <- Access.nested_keyword(opts, :sequencer_opts),
+         :ok <- Access.validate_sequencer_options(sequencer_opts) do
+      Access.sequencer_result(
         fn ->
           Sequencer.observe(
             scope.domain.server,
@@ -389,13 +383,13 @@ defmodule Spectre do
   def record_derivation(scope, turn, evidence, opts \\ [])
 
   def record_derivation(%Scope{} = scope, %Turn{} = turn, evidence, opts) when is_list(opts) do
-    with :ok <- validate_keyword(opts, :derivation_options),
-         :ok <- validate_known_options(opts, @derivation_options, :derivation),
-         {:ok, scope} <- rebind_scope(scope),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
+    with :ok <- Access.validate_keyword(opts, :derivation_options),
+         :ok <- Access.validate_known_options(opts, @derivation_options, :derivation),
+         {:ok, scope} <- Access.rebind_scope(scope),
+         {:ok, sequencer_opts} <- Access.nested_keyword(opts, :sequencer_opts),
+         :ok <- Access.validate_sequencer_options(sequencer_opts),
          {:ok, %Evidence{} = durable} <-
-           sequencer_result(
+           Access.sequencer_result(
              fn ->
                Sequencer.record_derivation(
                  scope.domain.server,
@@ -420,15 +414,15 @@ defmodule Spectre do
   def prepare_presentation(scope, presentation, opts \\ [])
 
   def prepare_presentation(%Scope{} = scope, presentation, opts) when is_list(opts) do
-    with :ok <- validate_keyword(opts, :presentation_options),
-         :ok <- validate_known_options(opts, @presentation_options, :presentation),
-         {:ok, scope} <- rebind_scope(scope),
+    with :ok <- Access.validate_keyword(opts, :presentation_options),
+         :ok <- Access.validate_known_options(opts, @presentation_options, :presentation),
+         {:ok, scope} <- Access.rebind_scope(scope),
          {:ok, presentation} <- Presentation.new(presentation),
          :ok <- presentation_scope(presentation, Scope.ref(scope)),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
+         {:ok, sequencer_opts} <- Access.nested_keyword(opts, :sequencer_opts),
+         :ok <- Access.validate_sequencer_options(sequencer_opts),
          {:ok, %Presentation{} = durable} <-
-           sequencer_result(
+           Access.sequencer_result(
              fn ->
                Sequencer.record_presentation(
                  scope.domain.server,
@@ -467,7 +461,7 @@ defmodule Spectre do
       )
       when Portable.is_non_empty_binary(presentation_ref) and is_list(opts) do
     with {:ok, scope, %Presentation{} = presentation} <-
-           scoped_read(scope, {:presentation, presentation_ref}),
+           Access.scoped_read(scope, {:presentation, presentation_ref}),
          :ok <- presentation_scope(presentation, Scope.ref(scope)),
          {:ok, candidate} <-
            presentation_show_candidate(scope, presentation, candidate_attrs) do
@@ -483,30 +477,7 @@ defmodule Spectre do
   @doc "Records a late or independently obtained world Outcome for an Act in this Scope."
   @spec record_outcome(Scope.t(), Outcome.t() | map() | keyword(), keyword()) ::
           {:ok, Outcome.t()} | {:error, term()}
-  def record_outcome(scope, outcome, opts \\ [])
-
-  def record_outcome(%Scope{} = scope, outcome, opts) when is_list(opts) do
-    with :ok <- validate_keyword(opts, :outcome_options),
-         :ok <- validate_known_options(opts, @outcome_options, :outcome),
-         {:ok, outcome} <- Outcome.new(outcome),
-         :ok <- late_outcome_has_evidence(outcome),
-         {:ok, scope, :ok} <- scoped_read(scope, {:outcome_scope, outcome.act_ref}),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
-         {:ok, %Outcome{} = durable} <-
-           sequencer_result(
-             fn -> Sequencer.record_outcome(scope.domain.server, outcome, sequencer_opts) end,
-             :outcome_commit_failed
-           ),
-         true <- Outcome.canonical(durable) == Outcome.canonical(outcome) do
-      {:ok, durable}
-    else
-      false -> {:error, :outcome_recovery_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def record_outcome(_scope, _outcome, _opts), do: {:error, :invalid_outcome}
+  defdelegate record_outcome(scope, outcome, opts \\ []), to: Observation, as: :record
 
   @doc """
   Obtains and records a late world observation through the Domain's fixed observer.
@@ -516,63 +487,9 @@ defmodule Spectre do
   """
   @spec record_late_observation(Scope.t(), String.t(), term(), keyword()) ::
           {:ok, %{evidence: [Evidence.t()], outcome: Outcome.t()}} | {:error, term()}
-  def record_late_observation(scope, attempt_ref, input, opts \\ [])
-
-  def record_late_observation(%Scope{} = scope, attempt_ref, input, opts)
-      when Portable.is_non_empty_binary(attempt_ref) and is_list(opts) do
-    with :ok <- validate_keyword(opts, :late_observation_options),
-         :ok <- validate_known_options(opts, @late_observation_options, :late_observation),
-         {:ok, scope, {act, attempt}} <- scoped_read(scope, {:late_observation, attempt_ref}),
-         {:ok, observer_opts} <- nested_keyword(opts, :observer_opts),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
-         {:ok, observer} <-
-           sequencer_result(
-             fn -> Sequencer.late_observer(scope.domain.server) end,
-             :late_observer_unavailable
-           ),
-         {:ok, reported_status, corrected_ref, metadata} <-
-           invoke_late_observer(observer, act, attempt, input, observer_opts),
-         {:ok, observed_at} <-
-           sequencer_result(
-             fn -> Sequencer.trusted_time(scope.domain.server, sequencer_opts) end,
-             :late_observation_time_unavailable
-           ),
-         {:ok, observation} <-
-           Runner.normalize_late_observation(
-             reported_status,
-             metadata,
-             act,
-             attempt,
-             observed_at
-           ),
-         :ok <-
-           validate_late_correction(scope, observation, act, attempt, corrected_ref),
-         {:ok, recorded_evidence} <-
-           record_late_evidence(
-             scope.domain.server,
-             act,
-             attempt,
-             observation.evidence,
-             sequencer_opts
-           ),
-         {:ok, outcome} <-
-           Runner.Observation.outcome(observation, act, attempt, corrected_ref),
-         {:ok, durable} <-
-           sequencer_result(
-             fn -> Sequencer.record_outcome(scope.domain.server, outcome, sequencer_opts) end,
-             :late_outcome_commit_failed
-           ),
-         true <- Outcome.canonical(durable) == Outcome.canonical(outcome) do
-      {:ok, %{evidence: recorded_evidence, outcome: durable}}
-    else
-      false -> {:error, :late_outcome_recovery_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  def record_late_observation(_scope, _attempt_ref, _input, _opts),
-    do: {:error, :invalid_late_observation}
+  defdelegate record_late_observation(scope, attempt_ref, input, opts \\ []),
+    to: Observation,
+    as: :record_late
 
   @doc """
   Turns authenticated input into durable Evidence and capability-free proposals.
@@ -653,24 +570,12 @@ defmodule Spectre do
   """
   @spec propose(Scope.t(), Candidate.t() | map() | keyword(), keyword()) ::
           {:ok, ProposalResult.t()} | {:error, term()}
-  def propose(scope, candidate, opts \\ [])
-
-  def propose(%Scope{} = scope, candidate, opts) when is_list(opts) do
-    with :ok <- validate_public_execution_options(opts),
-         {:ok, scope} <- rebind_scope(scope),
-         {:ok, candidate} <- Candidate.new(candidate),
-         {:ok, primary} <- submit_and_run(scope, candidate, opts),
-         {:ok, fallback} <- declared_fallback(scope, primary, opts) do
-      {:ok, %ProposalResult{primary: primary, fallback: fallback}}
-    end
-  end
-
-  def propose(_scope, _candidate, _opts), do: {:error, :invalid_proposal}
+  defdelegate propose(scope, candidate, opts \\ []), to: Proposal, as: :run
 
   @doc "Returns the read-only application projection for an authenticated Scope."
   @spec view(Scope.t()) :: {:ok, ScopeView.t()} | {:error, term()}
   def view(%Scope{} = scope) do
-    scoped_query(scope, :view)
+    Access.scoped_query(scope, :view)
   end
 
   def view(_scope), do: {:error, :invalid_scope}
@@ -687,7 +592,7 @@ defmodule Spectre do
 
   def authority(%Scope{} = scope, opts) when is_list(opts) do
     with :ok <- empty_query_options(opts, :authority),
-         do: scoped_query(scope, :authority)
+         do: Access.scoped_query(scope, :authority)
   end
 
   def authority(_scope, _opts), do: {:error, :authenticated_scope_required}
@@ -784,7 +689,7 @@ defmodule Spectre do
 
   def revoke_mandate(%Scope{} = scope, mandate_ref, candidate_attrs, opts)
       when is_list(opts) do
-    with {:ok, scope, target} <- scoped_read(scope, {:mandate, mandate_ref}),
+    with {:ok, scope, target} <- Access.scoped_read(scope, {:mandate, mandate_ref}),
          {:ok, candidate} <- Governance.revoke_mandate(scope, target, candidate_attrs),
          do: propose(scope, candidate, opts)
   end
@@ -906,7 +811,7 @@ defmodule Spectre do
   def request_erasure(%Scope{} = scope, request_attrs, candidate_attrs, opts)
       when is_list(opts) do
     with {:ok, scope, candidate} <-
-           scoped_read(scope, {:erasure_candidate, request_attrs, candidate_attrs}),
+           Access.scoped_read(scope, {:erasure_candidate, request_attrs, candidate_attrs}),
          do: propose(scope, candidate, opts)
   end
 
@@ -916,9 +821,9 @@ defmodule Spectre do
   @doc "Returns the verified ledger head represented by the live Domain projection."
   @spec head(domain_input()) :: {:ok, domain_head()} | {:error, term()}
   def head(domain_input) do
-    with {:ok, domain} <- resolve_domain(domain_input),
+    with {:ok, domain} <- Access.resolve_domain(domain_input),
          {:ok, head} <-
-           sequencer_result(
+           Access.sequencer_result(
              fn -> Sequencer.head(domain.server) end,
              :domain_projection_unavailable
            ),
@@ -935,7 +840,8 @@ defmodule Spectre do
   def acts(scope, opts \\ [])
 
   def acts(%Scope{} = scope, opts) when is_list(opts) do
-    with :ok <- empty_query_options(opts, :acts), do: scoped_query(scope, {:records, :acts})
+    with :ok <- empty_query_options(opts, :acts),
+         do: Access.scoped_query(scope, {:records, :acts})
   end
 
   def acts(_scope, _opts), do: {:error, :authenticated_scope_required}
@@ -946,7 +852,7 @@ defmodule Spectre do
 
   def duties(%Scope{} = scope, opts) when is_list(opts) do
     with {:ok, status} <- duty_status(opts),
-         {:ok, duties} <- scoped_query(scope, {:records, :duties}) do
+         {:ok, duties} <- Access.scoped_query(scope, {:records, :duties}) do
       {:ok, filter_duty_status(duties, status)}
     end
   end
@@ -957,7 +863,7 @@ defmodule Spectre do
   @spec declassifications(Scope.t()) ::
           {:ok, [Spectre.Declassification.t()]} | {:error, term()}
   def declassifications(%Scope{} = scope) do
-    scoped_query(scope, {:records, :declassifications})
+    Access.scoped_query(scope, {:records, :declassifications})
   end
 
   def declassifications(_scope), do: {:error, :authenticated_scope_required}
@@ -966,7 +872,7 @@ defmodule Spectre do
   @spec erasures(Scope.t()) ::
           {:ok, [Spectre.Erasure.t()]} | {:error, term()}
   def erasures(%Scope{} = scope) do
-    scoped_query(scope, {:records, :erasures})
+    Access.scoped_query(scope, {:records, :erasures})
   end
 
   def erasures(_scope), do: {:error, :authenticated_scope_required}
@@ -1060,139 +966,8 @@ defmodule Spectre do
     end
   end
 
-  defp submit_and_run(scope, candidate, opts) do
-    with {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         {:ok, admission} <-
-           sequencer_result(
-             fn ->
-               Sequencer.submit(
-                 scope.domain.server,
-                 scope.context,
-                 candidate,
-                 sequencer_opts
-               )
-             end,
-             :domain_submission_failed
-           ) do
-      run_admission(scope.domain.server, {:ok, admission}, opts)
-    end
-  end
-
-  defp declared_fallback(
-         _scope,
-         %Runner.Result{decision: %{outcome: :admitted}},
-         _opts
-       ),
-       do: {:ok, :not_applicable}
-
-  defp declared_fallback(
-         _scope,
-         %Runner.Result{decision: %{outcome: :undecidable}},
-         _opts
-       ),
-       do: {:ok, :not_applicable}
-
-  defp declared_fallback(
-         _scope,
-         %Runner.Result{decision: %{outcome: :unknown_class}},
-         _opts
-       ),
-       do: {:ok, :silence}
-
-  defp declared_fallback(
-         scope,
-         %Runner.Result{decision: %{outcome: :refused} = decision},
-         opts
-       ) do
-    with {:ok, surface} <- scoped_query(scope, {:surface, decision.surface_revision}),
-         {:ok, policy} <- Surface.fallback(surface, decision.candidate_class),
-         {:ok, fallback} <- Fallback.materialize(policy, decision, scope.context) do
-      execute_fallback(scope, fallback, opts)
-    end
-  end
-
-  defp declared_fallback(_scope, %Runner.Result{}, _opts),
-    do: {:error, :invalid_primary_decision_outcome}
-
-  defp execute_fallback(_scope, :silence, _opts), do: {:ok, :silence}
-
-  defp execute_fallback(scope, {mode, candidate}, opts)
-       when mode in [:candidate_template, :governed_handoff] do
-    # This is deliberately not propose/3: a refused fallback ends this path.
-    # Recursion is bounded by control flow, not by guessing an identity prefix.
-    with {:ok, result} <- submit_and_run(scope, candidate, opts) do
-      {:ok, %{mode: mode, result: result}}
-    end
-  end
-
-  defp late_outcome_has_evidence(%Outcome{status: :ambiguous}),
-    do: {:error, :public_ambiguous_outcome_forbidden}
-
-  defp late_outcome_has_evidence(%Outcome{evidence_refs: [_first | _rest]}), do: :ok
-  defp late_outcome_has_evidence(%Outcome{}), do: {:error, :late_outcome_evidence_required}
-
-  defp invoke_late_observer(observer, act, attempt, input, opts) do
-    case safe_call(
-           fn -> observer.observe(act, attempt, input, opts) end,
-           :late_observation_unavailable
-         ) do
-      {:ok, {:ok, status, corrected_ref, metadata}}
-      when status in @outcome_statuses and
-             (is_nil(corrected_ref) or is_binary(corrected_ref)) and is_map(metadata) ->
-        {:ok, status, corrected_ref, metadata}
-
-      {:ok, {:error, _reason}} ->
-        {:error, :late_observation_unavailable}
-
-      {:ok, _invalid} ->
-        {:error, :invalid_late_observer_response}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp validate_late_correction(_scope, _observation, _act, _attempt, nil), do: :ok
-
-  defp validate_late_correction(scope, observation, act, attempt, corrected_ref) do
-    with :ok <- Portable.validate_ref(corrected_ref, :contradicts_outcome_ref),
-         true <- observation.status in @correction_outcome_statuses,
-         {:ok, corrected} <- scoped_query(scope, {:outcome, corrected_ref}),
-         true <- corrected.status == :definitive_no_effect,
-         true <- corrected.act_ref == act.ref and corrected.attempt_ref == attempt.ref do
-      :ok
-    else
-      false -> {:error, :invalid_late_outcome_correction}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp record_late_evidence(_sequencer, _act, _attempt, [], _opts), do: {:ok, []}
-
-  defp record_late_evidence(sequencer, act, attempt, evidence, opts) do
-    with {:ok, recorded} <-
-           sequencer_result(
-             fn ->
-               Sequencer.record_executor_evidence(
-                 sequencer,
-                 act.ref,
-                 attempt.ref,
-                 evidence,
-                 opts
-               )
-             end,
-             :late_evidence_commit_failed
-           ),
-         true <- Evidence.digest_index(recorded) == Evidence.digest_index(evidence) do
-      {:ok, recorded}
-    else
-      false -> {:error, :late_evidence_recovery_mismatch}
-      {:error, _reason} = error -> error
-    end
-  end
-
   defp duty_status(opts) do
-    with :ok <- validate_keyword(opts, :duty_query_options),
+    with :ok <- Access.validate_keyword(opts, :duty_query_options),
          [] <- Keyword.keys(opts) -- [:status] do
       case Keyword.get(opts, :status, :all) do
         status when status in [:all, :open, :disposed] -> {:ok, status}
@@ -1208,7 +983,7 @@ defmodule Spectre do
   defp filter_duty_status(duties, status), do: Enum.filter(duties, &(&1.status == status))
 
   defp empty_query_options(opts, query) do
-    with :ok <- validate_keyword(opts, :query_options) do
+    with :ok <- Access.validate_keyword(opts, :query_options) do
       if opts == [], do: :ok, else: {:error, {:unknown_query_options, query, Keyword.keys(opts)}}
     end
   end
@@ -1217,15 +992,6 @@ defmodule Spectre do
     case Map.get(attrs, field) do
       value when is_integer(value) -> {:ok, value}
       _missing -> {:error, {:missing_scope_opening_field, field}}
-    end
-  end
-
-  defp sequencer_result(function, failure) do
-    case safe_call(function, failure) do
-      {:ok, {:ok, value}} -> {:ok, value}
-      {:ok, {:error, _reason} = error} -> error
-      {:ok, _invalid} -> {:error, {:invalid_sequencer_response, failure}}
-      {:error, _reason} = error -> error
     end
   end
 
@@ -1242,17 +1008,17 @@ defmodule Spectre do
   end
 
   defp prepare_turn(scope, input, opts) do
-    with :ok <- validate_keyword(opts, :turn_options),
-         :ok <- validate_known_options(opts, @turn_options, :turn),
+    with :ok <- Access.validate_keyword(opts, :turn_options),
+         :ok <- Access.validate_known_options(opts, @turn_options, :turn),
          :ok <- reject_ingress_override(opts),
-         {:ok, scope} <- rebind_scope(scope),
-         {:ok, ingress_opts} <- nested_keyword(opts, :ingress_opts),
-         {:ok, mind_opts} <- nested_keyword(opts, :mind_opts),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts),
-         :ok <- validate_sequencer_options(sequencer_opts),
+         {:ok, scope} <- Access.rebind_scope(scope),
+         {:ok, ingress_opts} <- Access.nested_keyword(opts, :ingress_opts),
+         {:ok, mind_opts} <- Access.nested_keyword(opts, :mind_opts),
+         {:ok, sequencer_opts} <- Access.nested_keyword(opts, :sequencer_opts),
+         :ok <- Access.validate_sequencer_options(sequencer_opts),
          {:ok, context_refs} <- context_evidence_refs(opts),
          {:ok, {mind, %Turn{} = turn}} <-
-           sequencer_result(
+           Access.sequencer_result(
              fn ->
                Sequencer.begin_turn(
                  scope.domain.server,
@@ -1268,76 +1034,8 @@ defmodule Spectre do
     end
   end
 
-  defp run_admission(sequencer, admission, opts) do
-    case safe_call(
-           fn -> Runner.run(sequencer, admission, opts) end,
-           :execution_orchestration_failed
-         ) do
-      {:ok, result} -> result
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp rebind_scope(%Scope{} = scope) do
-    with {:ok, domain} <- resolve_domain(scope.domain),
-         {:ok, context} <- SubmissionContext.new(scope.context),
-         :ok <- context_domain_binding(context, domain) do
-      Scope.new(domain, context)
-    end
-  end
-
-  defp scoped_read(%Scope{} = scope, query) do
-    with {:ok, scope} <- rebind_scope(scope),
-         {:ok, result} <-
-           sequencer_result(
-             fn -> Sequencer.query(scope.domain.server, scope, query) end,
-             :scope_validation_failed
-           ) do
-      {:ok, scope, result}
-    end
-  end
-
-  defp scoped_query(%Scope{} = scope, query) do
-    with {:ok, _scope, result} <- scoped_read(scope, query), do: {:ok, result}
-  end
-
-  defp context_domain_binding(%SubmissionContext{domain_ref: domain_ref}, %Domain{ref: domain_ref}),
-       do: :ok
-
-  defp context_domain_binding(_context, _domain), do: {:error, :context_domain_mismatch}
-
-  defp resolve_domain(%Domain{ref: domain_ref}), do: lookup_domain(domain_ref)
-  defp resolve_domain(domain_ref) when is_binary(domain_ref), do: lookup_domain(domain_ref)
-  defp resolve_domain(_domain), do: {:error, :invalid_domain}
-
-  defp registered_domain(domain_ref) do
-    with :ok <- registry_available(),
-         {:ok, registered} <-
-           safe_call(
-             fn -> Domain.whereis(domain_ref, @registry) end,
-             :domain_registry_unavailable
-           ) do
-      normalize_registration(registered)
-    end
-  end
-
-  defp registry_available do
-    if Process.whereis(@registry),
-      do: :ok,
-      else: {:error, :domain_registry_unavailable}
-  end
-
-  defp normalize_registration(pid) when is_pid(pid) do
-    # Registry cleanup is asynchronous: a terminated local Domain may still
-    # have an entry until its partition processes the monitor notification.
-    if Process.alive?(pid), do: {:ok, pid}, else: {:error, :domain_not_found}
-  end
-
-  defp normalize_registration(nil), do: {:error, :domain_not_found}
-  defp normalize_registration(_invalid), do: {:error, :invalid_domain_registration}
-
   defp start_domain_child(domain_ref, domain_opts) do
-    case safe_call(
+    case Access.safe_call(
            fn -> DomainSupervisor.start_domain(domain_opts) end,
            :domain_supervisor_unavailable
          ) do
@@ -1363,53 +1061,5 @@ defmodule Spectre do
       nil -> :ok
       option -> {:error, {:reserved_domain_option, option}}
     end
-  end
-
-  defp validate_public_execution_options(opts) do
-    with :ok <- validate_keyword(opts, :execution_options),
-         :ok <- validate_known_options(opts, @execution_options, :execution),
-         {:ok, sequencer_opts} <- nested_keyword(opts, :sequencer_opts) do
-      validate_sequencer_options(sequencer_opts)
-    end
-  end
-
-  defp nested_keyword(opts, key) do
-    value = Keyword.get(opts, key, [])
-
-    case validate_keyword(value, key) do
-      :ok -> {:ok, value}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp validate_sequencer_options(opts) do
-    case Keyword.keys(opts) -- [:timeout] do
-      [] -> :ok
-      unknown -> {:error, {:unknown_sequencer_options, unknown}}
-    end
-  end
-
-  defp validate_known_options(opts, allowed, context) do
-    case Keyword.keys(opts) -- allowed do
-      [] -> :ok
-      unknown -> {:error, {:unknown_options, context, unknown}}
-    end
-  end
-
-  defp validate_keyword(value, field) when is_list(value) do
-    if Keyword.keyword?(value),
-      do: :ok,
-      else: {:error, {:invalid_keyword_options, field}}
-  end
-
-  defp validate_keyword(_value, field), do: {:error, {:invalid_keyword_options, field}}
-
-  defp safe_call(function, failure) do
-    {:ok, function.()}
-  rescue
-    _exception -> {:error, failure}
-  catch
-    :exit, _reason -> {:error, failure}
-    :throw, _reason -> {:error, failure}
   end
 end

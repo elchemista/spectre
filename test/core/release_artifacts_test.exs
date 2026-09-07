@@ -8,7 +8,8 @@ defmodule Spectre.CoreTest.ReleaseArtifactsTest do
     Guide.BinaryMatcher,
     Guide.RejectEmpty,
     Guide.StatefulMind,
-    Guide.FlowAgent
+    Guide.FlowAgent,
+    Guide.VerifiedAgent
   ]
 
   test "package and HexDocs declarations reference files present in this checkout" do
@@ -70,7 +71,7 @@ defmodule Spectre.CoreTest.ReleaseArtifactsTest do
       end
 
     assert Enum.sort(examples) ===
-             ~w(application_store authoring custom_router flows input_pipeline mind_adapter)
+             ~w(application_store authoring custom_router definition_check flows input_pipeline mind_adapter)
   end
 
   test "the actual README Agent and Skill example compiles into pinned declarations" do

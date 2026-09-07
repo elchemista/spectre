@@ -20,7 +20,7 @@ defmodule Spectre.MixProject do
       test_coverage: [summary: [threshold: 95]],
       description: "A durable governed-act kernel for Elixir.",
       package: package(),
-      dialyzer: [plt_add_apps: [:mix], flags: [:no_opaque]],
+      dialyzer: [plt_add_apps: [:mix]],
       docs: docs(),
       source_url: @source_url,
       homepage_url: @homepage_url
@@ -37,6 +37,7 @@ defmodule Spectre.MixProject do
   defp deps do
     [
       {:uuid_v7, "~> 0.6.0"},
+      {:vettore, "~> 0.3.5"},
       {:benchee, "~> 1.5", only: :dev, runtime: false},
       {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -79,7 +80,14 @@ defmodule Spectre.MixProject do
         "Model and trust": ["GOVERNED_ACT_MODEL.md", "GOVERNED_SURFACE.md"]
       ],
       groups_for_modules: [
-        "Application API": [Spectre, Spectre.Domain, Spectre.Scope, Spectre.Instance],
+        "Application API": [
+          Spectre,
+          Spectre.Domain,
+          Spectre.Scope,
+          Spectre.Instance,
+          Spectre.Foundation,
+          Spectre.Error
+        ],
         "Authoring and integration":
           ~r/^Spectre\.(Agent|Skill|Definition|Extension|Morph|Mind|Prompt|Router|Input|Ingress|Proposal|Fallback)(\.|$)/,
         "GAM records": [

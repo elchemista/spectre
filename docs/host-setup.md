@@ -30,6 +30,44 @@ maps. Validation establishes shape and consistency; it does not establish that
 an external actor really consented or signed. Do not put credentials in any of
 these portable records.
 
+### Assemble the links without choosing policy
+
+`Spectre.Foundation.new/2` removes the manual copying of content references into
+Genesis. This fragment assumes the records above have already been explicitly
+prepared; it is not a default foundation or an authority generator:
+
+```elixir
+{:ok, foundation} = Spectre.Foundation.new("domain:payments",
+  genesis: %{
+    ref: genesis_ref,
+    issued_at: issued_at,
+    attestation_ref: attestation_ref,
+    emergency_mandate_ref: nil
+  },
+  constitution: constitution,
+  principals: principals,
+  root_mandates: root_mandates,
+  surface: surface,
+  host_profile: host_profile
+)
+
+foundation = Keyword.put(foundation, :genesis_verifier, MyApp.GenesisVerifier)
+```
+
+Supply all six bundle fields and all four Genesis metadata fields. An explicit
+`nil` means no emergency Mandate. The root Mandates must already name the chosen
+`genesis_ref` in `source_ref`; the builder does not rewrite them. It derives the
+remaining Genesis links from the exact records and previews the ordinary
+bootstrap fold at `issued_at`, including independent Duty disposition routes.
+It does not pick expiry, budgets, Principals, clock or credentials, call a
+verifier, write a ledger or start a process.
+
+The result is an ordinary keyword list accepted by dynamic startup or the child
+spec below. A successful preview is **not external recognition**: the host still
+has to obtain the attestation and implement its verifier. Startup rechecks the
+bundle at its trusted time and calls that verifier. Using the record constructors
+and `Genesis.new/1` directly remains supported; neither helper is mandatory.
+
 ## Wire and supervise the boundaries
 
 For a Domain that belongs to the application's static topology, use its
@@ -143,6 +181,14 @@ Scope queries include `view/1`, `authority/2`, `acts/2`, `duties/2`,
 capabilities. Prefer a targeted query to repeatedly requesting the broad view.
 General cursor pagination is not yet implemented; do not assume an arbitrary
 `limit` option is supported.
+
+`Spectre.Error.message/1` gives a short description of a known failure reason or
+its `{:error, reason}` envelope. Unknown errors use a constant fallback. It does
+not serialize arbitrary terms, adapter exceptions, credentials or record refs.
+Keep the original structured reason for application decisions and appropriately
+protected diagnostics; the description does not authorize a retry. Use
+`Spectre.Proposal.Result.status/1`, not this formatter, to distinguish admission,
+execution and an uncertain Outcome in a successful proposal response.
 
 Configure and run `mix spectre.doctor` to inspect declared boundary wiring and
 ordinary compiled dependencies. Export and audit the canonical history for

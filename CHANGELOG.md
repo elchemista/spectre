@@ -44,6 +44,11 @@ It is not yet performance-qualified or declared stable.
 - Pure Prompt composition from pinned assets and Turn Evidence, with byte/part
   budgets, conservative labels and optional text-free provenance records.
   `Proposal.Result.status/1` keeps admission, execution and fallback distinct.
+- Static Definition/Surface reports reuse closed consequence validation and
+  explicitly defer occurrence fields, without preauthorizing Candidates.
+  Pure Foundation assembly derives Genesis links and reuses bootstrap semantics;
+  all foundation choices and external recognition remain the host's responsibility.
+  `Error.message/1` describes known failures without serializing their contents.
 - Canonical audit exports and CLI. Later observation reports distinguish pending
   Duty causes and expired dispatches from records present at capture; omissions
   already required at capture remain errors.
