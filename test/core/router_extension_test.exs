@@ -42,6 +42,16 @@ defmodule Spectre.Core.RouterExtensionTest do
     end
   end
 
+  defmodule ConfigurablePrepareMatcher do
+    use Spectre.Router.Adapter
+
+    @impl true
+    def prepare(_data, opts), do: Keyword.fetch!(opts, :prepare_reply)
+
+    @impl true
+    def evaluate(_request, _opts), do: {:ok, []}
+  end
+
   defmodule Package do
     @behaviour Spectre.Extension
     @impl true
@@ -298,6 +308,43 @@ defmodule Spectre.Core.RouterExtensionTest do
 
     for data <- ["[", %{"source" => ".*", "options" => "invalid"}, %{source: 1, options: ""}] do
       assert {:error, _} = Router.new(%{"a" => %{to: "a", match: %{regex: data}}}, via: [:regex])
+    end
+  end
+
+  test "the router grammar rejects malformed rules and preparation replies at construction" do
+    assert {:ok, empty} = Router.new(%{})
+    assert :no_match = Router.route(empty, "anything")
+    assert {:error, :invalid_router_rules} = Router.rules(nil)
+
+    for attrs <- [
+          [to: "target", match: []],
+          [to: "target", match: [:not_a_keyword]],
+          [to: "target", match: nil],
+          [to: "target", match: %{nil => "value"}]
+        ] do
+      assert {:error, _reason} = Rule.new("rule", attrs)
+    end
+
+    assert {:error, {:invalid_declaration_path, 42}} = Rule.path(42)
+    assert {:error, :invalid_router_method} = Rule.method(nil)
+
+    assert {:error, :invalid_router_adapter_options} =
+             Router.new(rule(),
+               via: [:binary],
+               adapters: [binary: {BinaryMatcher, [:not_a_keyword]}]
+             )
+
+    assert {:error, _reason} =
+             Router.new(rule(), via: [:binary], adapters: [binary: String])
+
+    for reply <- [:invalid, {:error, :cannot_prepare}] do
+      assert {:error, _reason} =
+               Router.new(rule(),
+                 via: [:binary],
+                 adapters: [
+                   binary: {ConfigurablePrepareMatcher, prepare_reply: reply}
+                 ]
+               )
     end
   end
 

@@ -200,6 +200,27 @@ defmodule Spectre.Core.PayloadStoreContractTest do
     ]
 
     assert Store.introduced_refs(events) == [c.ref]
+    assert Store.introduced_refs(nil) == []
+  end
+
+  test "fallback recovery indexes both Evidence and rendered Presentation payloads", c do
+    # Recovery may receive a valid prefix produced before the derived read
+    # index was rebuilt. The fallback must still retain every live content
+    # address; otherwise a missing rendered disclosure would go unnoticed.
+    state = %{
+      c.state
+      | presentations: %{
+          "presentation:legacy" => %{rendered_payload_ref: c.ref}
+        }
+    }
+
+    assert Store.verify_live_references(c.config, state) == :ok
+    assert_receive {:verify_payload, ref}
+    assert ref == c.ref
+
+    assert Store.act_payload_refs(nil, nil) == []
+    assert Store.post_attempt_payload_refs(nil, nil) == []
+    assert Store.evidence_payload_refs(nil, nil) == []
   end
 
   test "evidence reference lookup ignores inline and absent evidence and deduplicates", c do

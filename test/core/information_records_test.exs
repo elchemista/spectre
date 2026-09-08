@@ -130,6 +130,80 @@ defmodule Spectre.CoreTest.InformationRecordsTest do
     label
   end
 
+  test "declassification replay validates quantity of information removed, not just references" do
+    removed = label("owner:alice")
+    retained = label("owner:bob")
+    parent = evidence(labels: [removed, retained])
+    output = evidence(provenance: :derived, parent_refs: [parent.ref], labels: [retained])
+    {:ok, draft} = Declassification.draft(output, [removed])
+    {:ok, record} = Declassification.from_draft(draft, "act:redact", 100)
+    assert :ok = Declassification.validate_transition(record, output, [parent])
+
+    for {labels, reason} <- [
+          {[removed, retained], :removed_label_still_present},
+          {[], :declassification_drops_undeclared_label}
+        ] do
+      changed = evidence(provenance: :derived, parent_refs: [parent.ref], labels: labels)
+      {:ok, proof} = Declassification.new(%{record | ref: nil, evidence_ref: changed.ref})
+
+      assert {:error, {^reason, _}} =
+               Declassification.validate_transition(proof, changed, [parent])
+    end
+
+    outside = label("owner:charlie")
+    {:ok, outside_draft} = Declassification.draft(output, [outside])
+    {:ok, outside_proof} = Declassification.from_draft(outside_draft, "act:redact", 100)
+
+    assert {:error, {:declassification_removes_uninherited_label, _}} =
+             Declassification.validate_transition(outside_proof, output, [parent])
+
+    assert {:error, {:invalid_declassification_parent, _}} =
+             Declassification.validate_transition(record, output, [%{}])
+
+    assert {:error, {:declassification_evidence_mismatch, _, _}} =
+             Declassification.validate_transition(
+               record,
+               %{output | ref: nil, payload: "different summary"}
+               |> then(fn attrs ->
+                 {:ok, e} = Evidence.new(attrs)
+                 e
+               end),
+               [parent]
+             )
+  end
+
+  test "declassification cannot cite future observations or future parents" do
+    removed = label("owner:alice")
+    parent = evidence(labels: [removed], observed_at: 101)
+    output = evidence(provenance: :derived, parent_refs: [parent.ref], observed_at: 100)
+    {:ok, draft} = Declassification.draft(output, [removed])
+    {:ok, record} = Declassification.from_draft(draft, "act:redact", 100)
+
+    assert {:error, {:evidence_parent_from_future, _, _}} =
+             Declassification.validate_transition(record, output, [parent])
+
+    {:ok, past} = Declassification.new(%{record | ref: nil, recorded_at: 99})
+
+    assert {:error, {:declassified_evidence_from_future, _}} =
+             Declassification.validate_transition(past, output, [parent])
+
+    assert {:error, _} = Declassification.new(%{record | ref: nil, recorded_at: 100.0})
+    assert {:error, _} = Declassification.new(%{record | ref: nil, schema_version: 99})
+    assert {:error, _} = Declassification.decode_draft(%{draft | "schema_version" => 99})
+
+    assert {:error, _} =
+             Declassification.decode_draft(%{draft | "removed_label_refs" => ["wrong-label"]})
+  end
+
+  test "declassification public guards reject absent provenance and malformed removal lists" do
+    assert {:error, _} = Declassification.bind_producer(nil, "producer")
+    assert {:error, _} = Declassification.validate_producer(nil, "producer")
+    assert {:error, _} = Declassification.from_draft(nil, "act", 1)
+    assert {:error, _} = Declassification.required_target_refs(nil, [])
+    assert {:error, _} = Declassification.validate_transition(nil, nil, [])
+    assert {:error, {:invalid_declassification_labels, _}} = Declassification.label_refs([%{}])
+  end
+
   defp evidence(overrides) do
     {:ok, evidence} =
       Evidence.new(

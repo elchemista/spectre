@@ -43,6 +43,16 @@ defmodule Spectre.CoreTest.FallbackTest do
     assert {:error, :invalid_fallback_input} = Fallback.materialize(:silence, nil, c)
   end
 
+  test "malformed policy records cannot acquire defaults during restoration" do
+    assert {:error, :invalid_fallback_template} = Policy.from_canonical(%{})
+
+    assert {:error, :invalid_fallback_template} =
+             Policy.new(mode: :silence, template: %{"hidden" => "candidate"})
+
+    assert {:error, {:unsupported_fallback_policy_schema_version, 2}} =
+             Policy.new(schema_version: 2, mode: :silence, template: nil)
+  end
+
   test "templates bind fresh identity and context without inheriting authority or Evidence",
        data do
     for mode <- [:candidate_template, :governed_handoff] do

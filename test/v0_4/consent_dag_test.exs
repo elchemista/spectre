@@ -3,10 +3,12 @@ Code.require_file("support/fixture.ex", __DIR__)
 defmodule Spectre.V04Test.ConsentDagTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.{Candidate, Consent, Evidence, Presentation}
+  alias Spectre.{Candidate, Consent, Evidence, Presentation, Row}
   alias Spectre.Domain.Sequencer
   alias Spectre.Erasure.Analysis
+  alias Spectre.GovernedAct.Admission.Binding
   alias Spectre.GovernedAct.ReadIndex
+  alias Spectre.GovernedAct.Transition.Admission.Presentation, as: PresentationProof
   alias Spectre.Kernel, as: AdmissionKernel
   alias Spectre.V04Test.{Fixture, Ingress, Runtime}
 
@@ -336,6 +338,173 @@ defmodule Spectre.V04Test.ConsentDagTest do
              )
   end
 
+  test "consent replay fails closed across missing, stale and contradictory material", ctx do
+    {show, outcome} = show!(ctx)
+    show_ref = show.ref
+    show_projection = Sequencer.projection(ctx.fixture.server)
+    {:ok, show_candidate} = Binding.candidate(show)
+
+    assert {:ok, []} = PresentationProof.validate(show_projection, show_candidate, show, [])
+
+    assert {:error, {:act_presentation_not_found, ^show_ref}} =
+             PresentationProof.validate(
+               %{show_projection | presentations: %{}},
+               show_candidate,
+               show,
+               []
+             )
+
+    future_presentation = %{ctx.presentation | prepared_at: show.committed_at + 1}
+    state = put_in(show_projection.presentations[ctx.presentation.ref], future_presentation)
+
+    assert {:error, {:act_presentation_show_precedes_preparation, ^show_ref}} =
+             PresentationProof.validate(state, show_candidate, show, [])
+
+    assert {:error, {:invalid_presentation_show_act, ^show_ref, :presentation_show_row_mismatch}} =
+             PresentationProof.validate(
+               show_projection,
+               %{show_candidate | row: %Row{}},
+               show,
+               []
+             )
+
+    approval = response!(ctx, show, :supports)
+    assert {:ok, ^approval} = Fixture.observe_payment(ctx.fixture, approval)
+    candidate = final_candidate(ctx, [approval.ref])
+    assert {:ok, %{outcome: :admitted} = decision, act} = evaluate(ctx, candidate)
+    act_ref = act.ref
+    presentation_ref = ctx.presentation.ref
+    projection = Sequencer.projection(ctx.fixture.server)
+
+    assert {:ok, [approval_ref]} =
+             PresentationProof.validate(projection, candidate, act, [approval])
+
+    assert approval_ref == approval.ref
+
+    assert {:error, {:act_presentation_approval_missing, ^act_ref}} =
+             PresentationProof.validate(projection, candidate, act, [])
+
+    contradiction = response!(ctx, show, :contradicts)
+
+    assert {:error, {:act_presentation_approval_contradicted, ^act_ref}} =
+             PresentationProof.validate(projection, candidate, act, [contradiction])
+
+    from_future = rebuild_evidence(approval, observed_at: act.committed_at + 1)
+
+    assert {:error, {:act_presentation_approval_not_current_or_final, ^act_ref}} =
+             PresentationProof.validate(projection, candidate, act, [from_future])
+
+    changed = %{ctx.presentation | candidate_binding_ref: "candidate-binding:other"}
+    changed_projection = put_in(projection.presentations[ctx.presentation.ref], changed)
+
+    assert {:error, {:act_presentation_binding_mismatch, ^act_ref}} =
+             PresentationProof.validate(changed_projection, candidate, act, [approval])
+
+    assert {:error, {:act_presentation_not_found, ^act_ref, ^presentation_ref}} =
+             PresentationProof.validate(
+               %{projection | presentations: %{}},
+               candidate,
+               act,
+               [approval]
+             )
+
+    # These delegates are application-facing boundaries. Invalid shapes and
+    # temporal states must remain distinguishable without entering Admission.
+    assert {:error, :invalid_presentation_response_evidence} =
+             Presentation.response_evidence(nil, ctx.presentation, show, :supports, 0, [])
+
+    assert {:error, :invalid_presentation_response} =
+             Presentation.validate_response_with_basis(nil, ctx.presentation, show, [], [], 0)
+
+    assert {:error, :invalid_presentation_approval} =
+             Presentation.validate_approval_with_basis(nil, ctx.presentation, show, [], [], 0)
+
+    assert {:error, :invalid_presentation_assumption_evidence} =
+             Presentation.validate_assumption_contradiction_with_basis(
+               nil,
+               approval,
+               ctx.presentation,
+               [],
+               0
+             )
+
+    contradiction_ref = contradiction.ref
+
+    assert {:ok, [^contradiction_ref]} =
+             Presentation.validate_approval_contradiction_with_basis(
+               contradiction,
+               ctx.presentation,
+               show,
+               [outcome],
+               [contradiction],
+               contradiction.observed_at
+             )
+
+    unrelated =
+      Fixture.paid_evidence(ctx.fixture, %{
+        proposition: "not-a-presentation-response",
+        issuer_ref: ctx.fixture.refs.proposer
+      })
+
+    assert {:error, :not_presentation_approval} =
+             Presentation.validate_approval(
+               unrelated,
+               ctx.presentation,
+               show,
+               [outcome],
+               [unrelated],
+               unrelated.observed_at
+             )
+
+    not_yet_valid = rebuild_evidence(approval, valid_from: approval.observed_at + 10)
+
+    assert {:error, :presentation_approval_not_yet_valid} =
+             Presentation.validate_approval(
+               not_yet_valid,
+               ctx.presentation,
+               show,
+               [outcome],
+               [not_yet_valid],
+               approval.observed_at
+             )
+
+    expired = rebuild_evidence(approval, valid_until: approval.observed_at + 5)
+
+    assert {:error, :presentation_approval_expired} =
+             Presentation.validate_approval(
+               expired,
+               ctx.presentation,
+               show,
+               [outcome],
+               [expired],
+               expired.valid_until
+             )
+
+    assert {:error, :presentation_approval_from_future} =
+             Presentation.validate_approval(
+               from_future,
+               ctx.presentation,
+               show,
+               [outcome],
+               [from_future],
+               act.committed_at
+             )
+
+    assert :ok =
+             Presentation.validate_approval(
+               approval,
+               ctx.presentation,
+               show,
+               [:corrupt_outcome, outcome],
+               [approval],
+               approval.observed_at
+             )
+
+    # The locally evaluated Decision is deliberately not appended by this
+    # proof test; replay input remains the acknowledged prefix.
+    assert decision.ref not in Map.keys(projection.decisions)
+  end
+
   defp show!(ctx) do
     fixture = ctx.fixture
 
@@ -405,6 +574,15 @@ defmodule Spectre.V04Test.ConsentDagTest do
     |> Map.put(:presentation_ref, ctx.presentation.ref)
     |> Map.put(:evidence_refs, ctx.draft.evidence_refs ++ response_refs)
     |> Candidate.new()
+    |> ok!()
+  end
+
+  defp rebuild_evidence(evidence, changes) do
+    evidence
+    |> Map.from_struct()
+    |> Map.drop([:ref])
+    |> Map.merge(Map.new(changes))
+    |> Evidence.new()
     |> ok!()
   end
 

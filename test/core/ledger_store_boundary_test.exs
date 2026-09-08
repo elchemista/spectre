@@ -66,6 +66,14 @@ defmodule Spectre.Core.LedgerStoreBoundaryTest do
     refute_received {:store_callback, _, _}
   end
 
+  test "the ETS adapter rejects malformed startup, cursors and missing owner bindings" do
+    assert {:error, :invalid_ledger_ets_options} = ETS.start_link(nil)
+    assert {:error, :invalid_ledger_ets_compressed} = ETS.start_link(compressed: :yes)
+    assert {:error, :invalid_ledger_cursor} = ETS.load_from("tenant-A", -1, [])
+    assert {:error, :invalid_ledger_cursor} = ETS.read_batch("tenant-A", 0, [])
+    assert {:error, :ledger_ets_store_server_required} = ETS.load("tenant-A", [])
+  end
+
   test "malformed adapter options are rejected before callback invocation" do
     for options <- [["bad"], %{}, nil] do
       assert {:error, _} = Store.normalize({HostStore, options})

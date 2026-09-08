@@ -147,6 +147,14 @@ defmodule Spectre.Agents.ComponentsTest do
         before = Sequencer.projection(c.fixture.server)
         other = if c.scope_kind == :work, do: :vigil, else: :work
 
+        assert {:error, :invalid_component_kind} =
+                 Spectre.Agent.start_component(c.parent, :skill, c.name, c.options)
+
+        assert {:error, :missing_component_start_options} = start(c, [])
+
+        assert {:error, :component_supervisor_unavailable} =
+                 start(c, Keyword.put(c.options, :supervisor, :missing_component_supervisor))
+
         options =
           Keyword.update!(c.options, :opening, fn opening ->
             Keyword.update!(opening, :attributes, &Map.put(&1, :kind, other))

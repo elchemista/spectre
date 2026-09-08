@@ -456,6 +456,143 @@ defmodule Spectre.CoreTest.PostgresAdapterTest do
     ]
   end
 
+  test "a subsequent append advances the existing head with an exact CAS before inserting the batch" do
+    previous = stored_batch()
+
+    Repo.script([
+      {"SET LOCAL", rows([])},
+      {"pg_advisory_xact_lock", rows([[nil]])},
+      {"SELECT identity_digest", rows([])},
+      {"FOR UPDATE", rows([[2, previous.head]])},
+      {~s(UPDATE "public"."spectre_ledger_heads"), {:ok, %{num_rows: 1}}},
+      {~s(INSERT INTO "public"."spectre_ledger_batches"), {:ok, %{num_rows: 1}}}
+    ])
+
+    assert {:ok, 3} = Postgres.append("domain", "next", [%{"event" => "third"}], 2, @opts)
+
+    assert_received {:query, ~s(UPDATE "public"."spectre_ledger_heads"), ["domain", 3, head, 2],
+                     []}
+
+    assert_received {:query, ~s(INSERT INTO "public"."spectre_ledger_batches"),
+                     ["domain", "next", _, 2, 3, 3, 1, ^head, _], []}
+
+    assert Repo.remaining() == []
+  end
+
+  test "a lock error or malformed lock result prevents all writes" do
+    for {reply, error} <- [
+          {rows([]), :invalid_ledger_postgres_lock_result},
+          {{:error, :offline}, {:ledger_postgres_query_failed, :offline}}
+        ] do
+      Repo.script([{"SET LOCAL", rows([])}, {"pg_advisory_xact_lock", reply}])
+      assert {:error, ^error} = Postgres.append("domain", "next", @payloads, 0, @opts)
+      assert Repo.remaining() == []
+      refute_received {:query, ~s(INSERT INTO "public"."spectre_ledger_batches"), _, _}
+    end
+  end
+
+  test "batch point reads reject duplicate, corrupt and incorrectly positioned SQL rows" do
+    batch = stored_batch()
+
+    for {reply, revision, error} <- [
+          {rows([]), 1, :not_found},
+          {rows([batch.row, batch.row]), 1, {:error, :invalid_ledger_postgres_batch_row}},
+          {rows([["invalid"]]), 1, {:error, :invalid_ledger_postgres_batch_row}},
+          {rows([batch.row]), 2, {:error, :ledger_cursor_inside_batch}}
+        ] do
+      Repo.script([{"AND first_revision = $2", reply}])
+      assert Postgres.read_batch("domain", revision, @read_opts) === error
+      assert Repo.remaining() == []
+    end
+  end
+
+  test "a batch index cannot acknowledge entries absent from the durable head" do
+    batch = stored_batch()
+
+    for head_rows <- [[[1, batch.head]], [[2, String.duplicate("f", 64)]]] do
+      Repo.script([
+        {"SELECT identity_digest", rows([tl(batch.row)])},
+        {"FOR SHARE", rows(head_rows)}
+      ])
+
+      assert {:error, :ledger_postgres_batch_not_in_head} =
+               Postgres.lookup_batch("domain", "batch", @read_opts)
+    end
+
+    Repo.script([{"SELECT identity_digest", rows([])}])
+    assert :not_found = Postgres.lookup_batch("domain", "missing", @read_opts)
+
+    Repo.script([
+      {"SELECT identity_digest", rows([tl(batch.row)])},
+      {"FOR SHARE", {:error, :offline}}
+    ])
+
+    assert {:error, {:ledger_postgres_query_failed, :offline}} =
+             Postgres.lookup_batch("domain", "batch", @read_opts)
+  end
+
+  test "export is canonical, absent remains absent and damaged storage is not exportable" do
+    batch = stored_batch()
+    Repo.script(load_script(batch))
+    assert {:ok, export} = Postgres.export("domain", @read_opts)
+    assert {:ok, verified} = Spectre.Ledger.verify(export)
+    assert verified.entries === batch.entries
+    Repo.script([{"FOR SHARE", rows([])}])
+    assert :not_found = Postgres.export("domain", @read_opts)
+    Repo.script([{"FOR SHARE", rows([["bad", batch.head]])}])
+    assert {:error, :invalid_ledger_postgres_head_row} = Postgres.export("domain", @read_opts)
+  end
+
+  test "invalid configuration and cursors are rejected without a Repo call" do
+    Repo.script([])
+
+    for cursor <- [-1, 1.0, nil] do
+      assert {:error, :invalid_ledger_cursor} = Postgres.load_from("domain", cursor, @read_opts)
+      assert {:error, :invalid_ledger_cursor} = Postgres.read_batch("domain", cursor, @read_opts)
+    end
+
+    assert {:error, :invalid_ledger_cursor} = Postgres.read_batch("domain", 0, @read_opts)
+    assert {:error, :invalid_ledger_postgres_options} = Postgres.load("domain", %{})
+
+    for opts <- [
+          [],
+          [repo: "not-module"],
+          [repo: Enum],
+          [repo: __MODULE__.Missing],
+          [repo: Repo, query_module: Enum],
+          [repo: Repo, query_module: __MODULE__.Missing]
+        ] do
+      assert {:error, _} = Postgres.load("domain", opts)
+    end
+
+    assert Repo.remaining() == []
+    assert {:ok, %{up: [_ | _]}} = Postgres.migration_sql()
+  end
+
+  test "malformed transaction acknowledgements and affected-row replies fail closed" do
+    assert {:error, :invalid_ledger_postgres_transaction_reply} =
+             Postgres.load(
+               "domain",
+               Keyword.put(@read_opts, :transaction_opts, test_result: :unexpected)
+             )
+
+    Repo.script(Enum.take(new_batch_script(), 4) ++ [{"INSERT INTO", {:ok, %{}}}])
+
+    assert {:error, :invalid_ledger_postgres_query_result} =
+             Postgres.append("domain", "batch", @payloads, 0, @opts)
+
+    assert Repo.remaining() == []
+
+    Repo.script([
+      {"SET LOCAL", rows([])},
+      {"pg_advisory_xact_lock", rows([[nil]])},
+      {"SELECT identity_digest", rows([[nil]])}
+    ])
+
+    assert {:error, :invalid_ledger_postgres_batch_row} =
+             Postgres.append("domain", "batch", @payloads, 0, @opts)
+  end
+
   test "suffix query keeps the head lock and binds its lower bound as a parameter" do
     batch = stored_batch()
 

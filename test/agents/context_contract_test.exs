@@ -1,6 +1,7 @@
 defmodule Spectre.Agents.ContextContractTest do
   use ExUnit.Case, async: true
 
+  alias Spectre.Agent.Context
   alias Spectre.{History, Memory}
 
   # These adapters intentionally return hostile replies. The tests exercise
@@ -229,8 +230,126 @@ defmodule Spectre.Agents.ContextContractTest do
     end
   end
 
+  test "agent context composes explicitly wired history and memory windows", c do
+    owner = context_owner(%{
+      "history/chat" => %{keep: 2, max_bytes: 2048},
+      "memory/policy" => %{limit: 2, max_bytes: 2048},
+      "prompt/ignored" => %{max_bytes: 2048}
+    })
+
+    page = %{binding: c.binding, messages: [c.message], cursor: nil, truncated?: false}
+    memory_binding = Map.take(c.binding, [:tenant_id])
+
+    wiring = %{
+      ports: %{
+        "history/chat" =>
+          {HistoryBackend,
+           tenant_id: c.binding.tenant_id,
+           conversation_id: c.binding.conversation_id,
+           test_pid: self(),
+           page: {:ok, page}},
+        "memory/policy" =>
+          {Retrieval,
+           tenant_id: c.binding.tenant_id,
+           observer: self(),
+           reply: {:ok, %{binding: memory_binding, items: [c.item]}}}
+      }
+    }
+
+    assert {:ok, %{history: [message], memory: [item]}} =
+             Context.load(owner, wiring, "damaged order")
+
+    assert message == c.message
+    assert item == c.item
+  end
+
+  test "agent context refuses unwired sources and cumulative context overflow", c do
+    assert {:error, {:unwired_history, "chat"}} =
+             Context.load(context_owner(%{"history/chat" => %{keep: 1}}), %{ports: %{}}, "input")
+
+    assert {:error, {:unwired_memory, "policy"}} =
+             Context.load(context_owner(%{"memory/policy" => %{limit: 1}}), %{ports: %{}}, "input")
+
+    huge_message = %{c.message | content: String.duplicate("h", 33_000)}
+    huge_item = %{c.item | content: String.duplicate("m", 33_000)}
+    page = %{binding: c.binding, messages: [huge_message], cursor: nil, truncated?: false}
+    memory_binding = Map.take(c.binding, [:tenant_id])
+
+    wiring = %{
+      ports: %{
+        "history/chat" =>
+          {HistoryBackend,
+           tenant_id: c.binding.tenant_id,
+           conversation_id: c.binding.conversation_id,
+           test_pid: self(),
+           page: {:ok, page}},
+        "memory/policy" =>
+          {Retrieval,
+           tenant_id: c.binding.tenant_id,
+           observer: self(),
+           reply: {:ok, %{binding: memory_binding, items: [huge_item]}}}
+      }
+    }
+
+    owner =
+      context_owner(%{
+        "history/chat" => %{keep: 1, max_bytes: 40_000},
+        "memory/policy" => %{limit: 1, max_bytes: 40_000}
+      })
+
+    assert {:error, :agent_context_budget_exceeded} = Context.load(owner, wiring, "input")
+  end
+
   defp bind(c, opts \\ []) do
     assert {:ok, history} = History.bind({HistoryBackend, [test_pid: self()] ++ opts}, c.binding)
     history
+  end
+
+  defp context_owner(settings) do
+    %{prefix: "", definition_ref: "definition:context-test", plan: %{settings: settings}}
+  end
+
+  test "summary loading validates the payload as strictly as summary writes", c do
+    summary = %{
+      ref: "summary:latest",
+      revision: 1,
+      content: "Customer requested a return.",
+      evidence_refs: c.message.evidence_refs
+    }
+
+    reply = %{binding: c.binding, summary: summary}
+    assert {:ok, ^summary} = History.load_summary(bind(c, summary: {:ok, reply}))
+
+    assert {:error, :invalid_history_summary_reply} =
+             History.load_summary(bind(c, summary: {:ok, %{}}))
+
+    assert {:error, :invalid_history_summary_reply} =
+             History.save_summary(bind(c, saved_summary: {:ok, %{}}), summary, 0)
+
+    assert {:error, :invalid_summary_revision} = History.save_summary(bind(c), summary, 0.0)
+
+    for change <- [%{revision: 0}, %{content: <<255>>}, %{ref: nil}, %{evidence_refs: [42]}] do
+      invalid = Map.merge(summary, change)
+      assert {:error, _} = History.save_summary(bind(c), invalid, 0)
+
+      assert {:error, _} =
+               History.load_summary(bind(c, summary: {:ok, %{reply | summary: invalid}}))
+    end
+  end
+
+  test "malformed callback replies and missing handles cannot become empty successful history",
+       c do
+    assert {:error, :invalid_history_adapter} = History.bind(HistoryBackend, c.binding)
+    assert {:error, _} = History.bind({String, []}, c.binding)
+    assert {:error, _} = History.bind({HistoryBackend, []}, %{c.binding | tenant_id: nil})
+    assert {:error, :invalid_history_handle} = History.load(nil)
+    assert {:error, {:invalid_history_reply, :load}} = History.load(bind(c, page: :unrecognized))
+
+    assert {:error, :backend_unavailable} =
+             History.load(bind(c, page: {:error, :backend_unavailable}))
+
+    assert {:error, _} = History.append(bind(c), %{c.message | evidence_refs: [42]})
+    assert {:error, _} = History.append(bind(c, saved: %{}), c.message)
+    assert {:error, _} = History.load(bind(c), keep: 10, imaginary: true)
   end
 end

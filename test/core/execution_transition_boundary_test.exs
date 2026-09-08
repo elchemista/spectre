@@ -1,241 +1,86 @@
-defmodule Spectre.Core.ExecutionTransitionBoundaryTest do
-  use ExUnit.Case, async: false
+defmodule Spectre.ExecutionTransitionBoundaryTest do
+  use Spectre.Test.GovernedBoundaryCase, async: false
 
-  alias Spectre.{Attempt, Outcome, Portable, Row}
-  alias Spectre.Domain.{Event, Sequencer}
-  alias Spectre.GovernedAct.{Completeness, DispatchState}
-  alias Spectre.GovernedAct.Transition.Execution
-  alias Spectre.V04Test.{Fixture, Runtime}
+  alias Spectre.{Act, Duty, Governance, Outcome, Row}
+  alias Spectre.Domain.Event
+  alias Spectre.Duty.Disposition
+  alias Spectre.GovernedAct.{DispatchState, Execution}
+  alias Spectre.GovernedAct.Batch.Effect
+  alias Spectre.GovernedAct.Transition.Execution, as: Transition
 
-  setup do
-    Runtime.reset(Fixture.default_now())
-    f = Fixture.start_domain(namespace: "execution-transition")
-    on_exit(fn -> Fixture.stop_domain(f) end)
-    payment = Fixture.paid_evidence(f)
-    {:ok, _} = Fixture.observe_payment(f, payment)
-
-    {:ok, %{act: act, grant: grant}} =
-      Sequencer.submit(
-        f.server,
-        Fixture.context(f),
-        Fixture.refund_candidate(f, 100, evidence_refs: [payment.ref])
-      )
-
-    pending = Sequencer.projection(f.server)
-    {:ok, _, attempt, _} = Sequencer.consume_grant(f.server, grant)
-    attempted = Sequencer.projection(f.server)
-    {:ok, attempt_event} = Event.record(:attempt, attempt)
-    {:ok, attempt_event} = Event.decode(attempt_event)
-    ready = Event.dispatch_ready(act)
-    {:ok, ready} = Event.decode(ready)
-
-    %{
-      f: f,
-      act: act,
-      attempt: attempt,
-      pending: pending,
-      attempted: attempted,
-      attempt_event: attempt_event,
-      ready: ready
-    }
-  end
-
-  for {field, value, reason} <- [
-        {"executor_ref", "other", :dispatch_executor_mismatch},
-        {"executor_contract_ref", "other", :dispatch_contract_mismatch}
-      ] do
-    test "dispatch readiness binds exact #{field}", c do
-      state = %{c.pending | pending_dispatches: MapSet.new()}
-      assert {:ok, _} = Execution.apply(state, c.ready, nil)
-      changed = %{c.ready | data: Map.put(c.ready.data, unquote(field), unquote(value))}
-      assert {:error, reason} = Execution.apply(state, changed, nil)
-      assert elem(reason, 0) == unquote(reason)
+  test "ledger-only effects cannot be dispatched or converted to executor Attempts", c do
+    internal = %{c.act | class: "save", row: %Row{write: true}, reservations: %{}, disclosure: nil,
+      executor_ref: Governance.kernel_executor_ref(), executor_contract_ref: Governance.kernel_contract_ref(), observation_window_ms: 0}
+    state = put_in(c.pending, [Access.key(:acts), c.act.ref], internal)
+    assert Execution.ledger_internal?(internal)
+    assert {:error, {:act_not_executor_mediated, _}} = record(state, :attempt, c.attempt)
+    assert {:error, {:dispatch_cancellation_act_not_executor_mediated, _}} = cancel(state, c.act, %{})
+    refute Execution.ledger_internal?(nil)
+    refute Execution.metered_ledger_internal?(internal)
+    assert {:error, :invalid_governance_execution_boundary} = Execution.mode(nil)
+    assert {:error, :invalid_governance_execution_boundary} = Execution.validate(nil)
+    for changed <- [%{c.act | executor_ref: Governance.kernel_executor_ref()}, %{c.act | executor_contract_ref: Governance.kernel_contract_ref()}] do
+      assert {:error, :invalid_ledger_internal_application_act} = Execution.mode(changed)
     end
   end
 
-  test "readiness is neither repeatable nor restorable after consumption or cancellation", c do
-    assert {:error, {:duplicate_dispatch_ready, _}} = Execution.apply(c.pending, c.ready, nil)
-    assert {:error, {:act_already_attempted, _}} = Execution.apply(c.attempted, c.ready, nil)
-
-    cancelled =
-      DispatchState.mark_cancelled(c.pending, c.act.ref, %{
-        cause_ref: "cause",
-        reason: :mandate_expired,
-        cancelled_at: Runtime.now()
-      })
-
-    assert {:error, {:dispatch_already_cancelled, _}} = Execution.apply(cancelled, c.ready, nil)
-    state = %{c.pending | pending_dispatches: MapSet.new(), meter_reservations: %{}}
-    assert {:error, {:act_reservation_not_ready, _}} = Execution.apply(state, c.ready, nil)
-
-    internal =
-      update_in(
-        state.acts[c.act.ref],
-        &%{
-          &1
-          | class: "mandate.revoke",
-            row: %Row{govern: true},
-            executor_ref: "spectre:kernel:ledger",
-            executor_contract_ref: "spectre:kernel:ledger:v1"
-        }
-      )
-
-    assert {:error, {:act_not_executor_mediated, _}} = Execution.apply(internal, c.ready, nil)
+  test "the executor can start only while the Mandate is current, never from cached admission", c do
+    {:ok, attempt} = Spectre.Attempt.new(%{c.attempt | started_at: c.f.mandate.expires_at})
+    assert {:error, {:act_without_current_authority, _, _}} = record(c.pending, :attempt, attempt)
+    assert {:error, {:act_without_current_authority, _, {:mandate_not_found, _}}} = record(%{c.pending | mandates: %{}}, :attempt, c.attempt)
+    assert {:error, :invalid_domain_event_identity_binding} = Transition.apply(c.pending, %Event{type: "dispatch_cancelled", identity: "invalid", data: %{"act_ref" => nil}}, nil)
   end
 
-  test "Attempt replay cannot consume absent readiness, a released reservation or a used nonce",
-       c do
-    assert {:ok, rebuilt} = Execution.apply(c.pending, c.attempt_event, nil)
-    assert rebuilt.attempts == c.attempted.attempts
-
-    assert {:error, {:act_not_dispatch_ready, _}} =
-             Execution.apply(
-               %{c.pending | pending_dispatches: MapSet.new()},
-               c.attempt_event,
-               nil
-             )
-
-    assert {:error, {:act_reservation_not_attemptable, _}} =
-             Execution.apply(
-               %{c.pending | meter_reservations: %{c.act.ref => :released}},
-               c.attempt_event,
-               nil
-             )
-
-    assert {:error, {:grant_nonce_already_consumed, _}} =
-             Execution.apply(
-               %{c.pending | consumed_nonces: MapSet.new([c.attempt.grant_nonce_digest])},
-               c.attempt_event,
-               nil
-             )
-
-    assert {:error, {:act_already_attempted, _, _}} =
-             Execution.apply(%{c.attempted | attempts: %{}}, c.attempt_event, nil)
+  test "an Outcome cannot refer to an Attempt on a different admitted Act", c do
+    {:ok, other} = Act.new(%{c.act | ref: nil, candidate_identity_key: "other"})
+    state = put_in(c.attempted, [Access.key(:acts), other.ref], other)
+    {:ok, outcome} = Outcome.new(act_ref: other.ref, attempt_ref: c.attempt.ref, status: :ambiguous, observed_at: c.act.committed_at, details_ref: "receipt:ambiguous")
+    assert {:error, {:outcome_act_mismatch, _, _}} = record(state, :outcome, outcome)
   end
 
-  for {field, value, reason} <- [
-        {:executor_ref, "other", :attempt_executor_mismatch},
-        {:material_digest, String.duplicate("a", 64), :attempt_material_mismatch},
-        {:started_at, 999_999, :attempt_precedes_act}
-      ] do
-    test "a validly encoded Attempt cannot change #{field} from its admitted Act", c do
-      {:ok, attempt} =
-        c.attempt |> Map.from_struct() |> Map.put(unquote(field), unquote(value)) |> Attempt.new()
-
-      {:ok, event} = Event.record(:attempt, attempt)
-      {:ok, event} = Event.decode(event)
-      assert {:error, reason} = Execution.apply(c.pending, event, nil)
-      assert elem(reason, 0) == unquote(reason)
-    end
-  end
-
-  test "expiry cancellation requires the exact integer expiry and matching Mandate", c do
-    event = cancellation(c)
-    assert {:ok, cancelled} = Execution.apply(c.pending, event, nil)
+  test "a disputed pending Act cannot regain readiness, and cancellation must cite its exact Duty", c do
+    {:ok, duty} = Duty.new(class: :disputed_evidence, cause_key: {:dispute, c.act.ref}, accountable: c.act.accountable_ref,
+      act_ref: c.act.ref, mandate_ref: c.act.mandate_ref, opened_at: c.act.committed_at)
+    state = %{c.pending | duties: %{duty.cause_key => duty}, pending_dispatches: MapSet.new()}
+    state = put_in(state.read_index.duties.by_ref[duty.ref], duty.cause_key)
+    payload = Event.dispatch_ready(c.act)
+    {:ok, event} = Event.decode(payload)
+    assert {:error, {:act_dispatch_blocked_by_disputed_evidence, _}} = Transition.apply(state, event, nil)
+    state = DispatchState.mark_pending(state, c.act.ref)
+    valid = %{"cause_ref" => duty.ref, "reason" => :disputed_evidence, "cancelled_at" => duty.opened_at}
+    assert {:ok, cancelled} = cancel(state, c.act, valid)
     assert DispatchState.cancelled?(cancelled, c.act.ref)
-
-    assert {:error, {:duplicate_dispatch_cancellation, _}} =
-             Execution.apply(cancelled, event, nil)
-
-    assert {:error, {:dispatch_cancellation_after_attempt, _}} =
-             Execution.apply(c.attempted, event, nil)
-
-    assert {:error, {:dispatch_cancellation_not_pending, _}} =
-             Execution.apply(%{c.pending | pending_dispatches: MapSet.new()}, event, nil)
-
-    for {field, value} <- [
-          {"cause_ref", "other"},
-          {"cancelled_at", c.f.mandate.expires_at + 1},
-          {"cancelled_at", c.f.mandate.expires_at * 1.0}
-        ] do
-      assert {:error, {:invalid_dispatch_expiration, _}} =
-               Execution.apply(c.pending, %{event | data: Map.put(event.data, field, value)}, nil)
-    end
-
-    assert {:error, {:dispatch_cancellation_mandate_mismatch, _}} =
-             Execution.apply(
-               c.pending,
-               %{event | data: Map.put(event.data, "mandate_ref", "other")},
-               nil
-             )
-
-    assert {:error, {:invalid_dispatch_cancellation_reason, _, :invented}} =
-             Execution.apply(
-               c.pending,
-               %{event | data: Map.put(event.data, "reason", :invented)},
-               nil
-             )
-
-    assert {:error, {:dispatch_cancellation_reservation_not_pending, _}} =
-             Execution.apply(%{c.pending | meter_reservations: %{}}, event, nil)
+    assert {:error, {:invalid_disputed_dispatch_cancellation, _}} = cancel(state, c.act, %{valid | "cancelled_at" => duty.opened_at / 1})
+    assert {:error, {:duty_not_found, "missing"}} = cancel(state, c.act, %{valid | "cause_ref" => "missing"})
+    assert {:error, {:mandate_not_found, _}} = cancel(%{c.pending | mandates: %{}}, c.act, %{"cause_ref" => c.act.mandate_ref, "reason" => :mandate_expired, "cancelled_at" => c.f.mandate.expires_at})
   end
 
-  test "Outcome acquisition cannot precede its Attempt or escape the consumption index", c do
-    outcome = Fixture.outcome(c.f, c.act, c.attempt, :ambiguous)
-    {:ok, payload} = Event.record(:outcome, outcome)
+  test "batch effects require the exact disposition suffix, not merely an Act named duty.dispose", c do
+    assert Effect.exact?([], c.act, 0)
+    assert :unsupported = Effect.exact?([], %{c.act | row: %Row{govern: true}}, 0)
+    refute Effect.exact?([], %{c.act | class: "mandate.revoke", row: %Row{govern: true}, consequence: %{}}, 0)
+    refute Effect.exact?([], %{c.act | class: "duty.dispose", consequence: %{}}, 0)
+    {:ok, disposition} = Disposition.new(kind: :accept_loss, duty_ref: "duty", opening_digest: String.duplicate("a", 64), cause_key: {:review, 1}, supporting_refs: [c.payment.ref], meter_resolution: :none)
+    {:ok, act} = Act.new(%{c.act | ref: nil, class: "duty.dispose", consequence: Disposition.consequence(disposition),
+      row: %Row{govern: true}, reservations: %{}, disclosure: nil, executor_ref: Governance.kernel_executor_ref(),
+      executor_contract_ref: Governance.kernel_contract_ref(), observation_window_ms: 0})
+    {:ok, payload} = Event.duty_disposed(act, disposition.cause_key)
     {:ok, event} = Event.decode(payload)
-    assert {:ok, _} = Execution.apply(c.attempted, event, nil)
+    events = [%Event{type: "act_committed", identity: act.ref, data: %{}}, event]
+    assert Effect.exact?(events, act, 0)
+    refute Effect.exact?(Enum.reverse(events), act, 0)
+    settle = %{act | consequence: Disposition.consequence(%{disposition | meter_resolution: :settle})}
+    refute Effect.exact?(events, settle, 0)
+  end
 
-    assert {:error, {:outcome_attempt_index_mismatch, _, _}} =
-             Execution.apply(%{c.attempted | terminal_dispatches: %{}}, event, nil)
-
-    {:ok, early} =
-      outcome
-      |> Map.from_struct()
-      |> Map.merge(%{ref: nil, observed_at: c.attempt.started_at - 1})
-      |> Outcome.new()
-
-    {:ok, payload} = Event.record(:outcome, early)
+  defp record(state, kind, record) do
+    {:ok, payload} = Event.record(kind, record)
     {:ok, event} = Event.decode(payload)
-    assert {:error, {:outcome_precedes_attempt, _, _}} = Execution.apply(c.attempted, event, nil)
+    Transition.apply(state, event, nil)
   end
 
-  test "complete prefixes detect missing or contradictory indexes even when individual records decode",
-       c do
-    assert :ok = Completeness.validate(c.pending)
-    assert :ok = Completeness.validate(c.attempted)
-    assert {:error, :invalid_governed_fold} = Completeness.validate(%{})
-
-    for {field, value, expected} <- [
-          {:admissions, %{}, :admission_index_size_mismatch},
-          {:acts, %{}, :admission_act_size_mismatch},
-          {:meter_reservations, %{}, :act_reservation_not_recorded},
-          {:meter_reservations, %{c.act.ref => :invented}, :invalid_meter_reservation},
-          {:pending_dispatches, MapSet.new(["other", c.act.ref]), :dispatch_act_not_found},
-          {:pending_dispatches, MapSet.new(), :invalid_act_dispatch_state},
-          {:meter_reservations, %{c.act.ref => :suspended}, :suspended_reservation_without_duty},
-          {:meters, %{}, :mandate_meter_ownership_incomplete},
-          {:mandate_successors, %{"missing" => "successor"}, :mandate_restriction_links_mismatch},
-          {:mandate_successors, %{"a" => "c", "b" => "c"}, :mandate_already_has_predecessor}
-        ] do
-      assert {:error, reason} = Completeness.validate(Map.replace!(c.pending, field, value))
-      assert error_tag(reason) == expected
-    end
-
-    ghost = %{c.attempt | ref: "01900000-0000-7000-8000-000000000001"}
-
-    assert {:error, {:attempt_dispatch_binding_mismatch, _}} =
-             Completeness.validate(%{
-               c.attempted
-               | attempts: Map.put(c.attempted.attempts, ghost.ref, ghost)
-             })
-
-    assert Portable.sha256_digest?(c.pending.head_digest)
+  defp cancel(state, act, attrs) do
+    data = Map.merge(%{"act_ref" => act.ref, "mandate_ref" => act.mandate_ref}, attrs)
+    Transition.apply(state, %Event{type: "dispatch_cancelled", identity: "dispatch_cancelled:" <> act.ref, data: data}, nil)
   end
-
-  defp cancellation(c),
-    do: %Event{
-      type: "dispatch_cancelled",
-      identity: "dispatch_cancelled:" <> c.act.ref,
-      data: %{
-        "act_ref" => c.act.ref,
-        "mandate_ref" => c.act.mandate_ref,
-        "cause_ref" => c.f.mandate.ref,
-        "reason" => :mandate_expired,
-        "cancelled_at" => c.f.mandate.expires_at
-      }
-    }
-
-  defp error_tag(reason) when is_tuple(reason), do: elem(reason, 0)
-  defp error_tag(reason), do: reason
 end

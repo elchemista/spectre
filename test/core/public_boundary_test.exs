@@ -77,6 +77,70 @@ defmodule Spectre.Core.PublicBoundaryTest do
              Spectre.show_presentation(c.scope, "missing", %{})
   end
 
+  test "public governance helpers still traverse ordinary admission instead of granting authority", c do
+    attrs = %{
+      identity_key: "public-governance-helper",
+      requested_mandate_ref: c.f.mandate.ref,
+      accountable_ref: c.f.mandate.accountable_ref,
+      purpose_ref: c.f.refs.purpose
+    }
+
+    child = %{c.f.mandate | ref: nil, parent_ref: c.f.mandate.ref}
+
+    assert {:ok, delegated} = Spectre.delegate_mandate(c.scope, child, attrs)
+    assert delegated.primary.decision.outcome == :unknown_class
+    assert delegated.primary.act == nil
+
+    assert {:ok, devolved} =
+             Spectre.devolve_mandate(
+               c.scope,
+               "mandate:child",
+               %{c.f.refs.meter => 1},
+               %{attrs | identity_key: "public-governance-devolution"}
+             )
+
+    assert devolved.primary.decision.outcome == :unknown_class
+
+    disposition = %{
+      kind: :accept_loss,
+      duty_ref: "duty:unmaterialized",
+      opening_digest: String.duplicate("a", 64),
+      cause_key: {:application_review, 1},
+      supporting_refs: [c.f.refs.payment_evidence],
+      meter_resolution: :none
+    }
+
+    assert {:ok, disposed} =
+             Spectre.dispose_duty(
+               c.scope,
+               disposition,
+               %{attrs | identity_key: "public-governance-disposition"}
+             )
+
+    assert disposed.primary.decision.outcome == :unknown_class
+  end
+
+  test "direct Scope opening validates the exact typed record and rejects governed kinds", c do
+    context = c.scope.context
+    state = Sequencer.projection(c.f.server)
+    opening = state.catalog.scopes[c.f.refs.scope]
+
+    assert {:ok, reopened} = Spectre.open_scope(c.domain, context, opening)
+    assert Spectre.Scope.ref(reopened) == c.f.refs.scope
+
+    assert {:error, {:missing_scope_opening_field, :opened_at}} =
+             Spectre.open_scope(c.domain, context, [])
+
+    assert {:error, {:governed_scope_opening_required, :work}} =
+             Spectre.open_scope(c.domain, context, kind: :work, opened_at: opening.opened_at)
+
+    assert {:error, {:invalid_scope_kind, :unknown}} =
+             Spectre.open_scope(c.domain, context, kind: :unknown, opened_at: opening.opened_at)
+
+    assert {:error, {:unknown_governed_scope_opening_options, [:unexpected]}} =
+             Spectre.open_scope(c.scope, context, %{}, %{}, unexpected: true)
+  end
+
   test "editing public Scope data cannot replace its seal, principal or generation", c do
     before = Sequencer.projection(c.f.server)
     context = c.scope.context

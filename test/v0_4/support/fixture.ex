@@ -212,6 +212,17 @@ defmodule Spectre.V04Test.Fixture do
 
     store_config = if mock, do: {Mock, server: mock}, else: underlying_store
 
+    broker =
+      Keyword.get(
+        opts,
+        :broker,
+        {Spectre.Secret.Broker.Passthrough,
+         capability: Keyword.get(opts, :capability, :test_only),
+         domain_ref: refs.domain,
+         clock: clock,
+         checkout_receipt_secret: @grant_secret}
+      )
+
     sequencer_opts =
       [
         domain_ref: refs.domain,
@@ -219,12 +230,7 @@ defmodule Spectre.V04Test.Fixture do
         ingress: Ingress,
         executors: Keyword.get(opts, :executors, [Executor]),
         checkout_receipt_secret: @grant_secret,
-        broker:
-          {Spectre.Secret.Broker.Passthrough,
-           capability: Keyword.get(opts, :capability, :test_only),
-           domain_ref: refs.domain,
-           clock: clock,
-           checkout_receipt_secret: @grant_secret},
+        broker: broker,
         clock: clock,
         clock_tolerance_ms: Keyword.get(opts, :clock_tolerance_ms, :infinity),
         id_source: IdSource,

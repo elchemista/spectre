@@ -44,4 +44,14 @@ defmodule Spectre.GrantVerificationBoundaryTest do
     assert {:error, :grant_generation_mismatch} =
              Grant.verify(c.grant, c.secret, %{c.expected | generation: 1.0})
   end
+
+  test "time, shape and authentication failures remain distinguishable", c do
+    assert {:error, :invalid_grant_material} = Grant.mint(nil, c.secret)
+    assert {:error, :invalid_grant} = Grant.verify(nil, c.secret, c.expected)
+    assert {:error, :incomplete_grant_material} = Grant.mint(%{}, c.secret)
+    assert {:error, :grant_not_yet_valid} = Grant.verify(c.grant, c.secret, %{c.expected | now: 9})
+    assert {:error, :grant_expired} = Grant.verify(c.grant, c.secret, %{c.expected | now: 20})
+    assert {:error, :grant_authentication_failed} = Grant.verify(c.grant, :crypto.strong_rand_bytes(32), c.expected)
+    assert {:error, :invalid_grant} = Grant.verify(%{c.grant | mac: nil}, c.secret, c.expected)
+  end
 end

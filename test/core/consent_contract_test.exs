@@ -99,6 +99,20 @@ defmodule Spectre.Core.ConsentContractTest do
     assert {:error, :consent_purpose_mismatch} = Candidate.new(attrs)
   end
 
+  test "malformed consent material is rejected before it can bind a Presentation", c do
+    assert {:error, :invalid_consent_material} = Consent.validate_purpose(nil, "purpose", %{})
+
+    for {field, value, expected} <- [
+          {:schema_version, 2, :unsupported_consent_schema_version},
+          {:data_digest, "not-a-sha256-digest", :invalid_consent_data_digest},
+          {:purpose_params, [], :invalid_consent_purpose_params},
+          {:alternatives, %{}, :invalid_consent_alternatives}
+        ] do
+      assert {:error, reason} = Consent.new(Map.put(c.attrs, field, value))
+      assert elem(reason, 0) == expected
+    end
+  end
+
   test "a show Candidate cannot substitute numerically equal purpose parameters", c do
     attrs = show_attrs(c.presentation)
 

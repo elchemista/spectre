@@ -252,6 +252,31 @@ defmodule Spectre.Core.ErasureClosureTest do
              {:error, :invalid_erasure_facts}
   end
 
+  test "every public erasure query rejects malformed facts and payload addresses", c do
+    invalid_ref = %{private: "not a content address"}
+
+    assert {:error, :invalid_erasure_analysis} =
+             Analysis.derive_request(c.facts, c.ref, "scope", "delete", 120.0)
+
+    assert {:ok, request} = Analysis.request_attrs(c.facts, c.ref, "scope", "delete", 120)
+    assert request.target_ref == c.ref
+
+    assert {:error, {:invalid_erasable_payload_ref, ^invalid_ref}} =
+             Analysis.affected_evidence_refs(c.facts, invalid_ref)
+
+    assert {:error, {:invalid_erasable_payload_ref, ^invalid_ref}} =
+             Analysis.execution_state(c.facts, invalid_ref)
+
+    assert {:error, {:invalid_erasable_payload_ref, ^invalid_ref}} =
+             Analysis.requestable?(c.facts, invalid_ref)
+
+    assert Analysis.unavailable_evidence_refs(%{}) == MapSet.new()
+    assert Analysis.available_evidence(%{}) == %{}
+
+    assert {:error, :invalid_evidence_availability_check} =
+             Analysis.validate_evidence_available(c.facts, :not_a_ref_list)
+  end
+
   test "fixed-point expansion terminates on a corrupted cyclic Evidence index", c do
     # Content-addressed constructors cannot produce cycles. Exercise the
     # disposable graph algorithm defensively, not as a valid ledger export.

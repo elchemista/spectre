@@ -256,6 +256,20 @@ defmodule Spectre.Core.MandateAttenuationTest do
              )
   end
 
+  test "attenuation rejects malformed records and non-integral trusted time", c do
+    assert {:error, :invalid_delegation} =
+             Attenuation.delegation_within?(c.parent, c.child, 100.0)
+
+    assert {:error, :invalid_mandate_restriction} =
+             Attenuation.restriction_within?(c.parent, c.successor, 100.0)
+
+    assert {:error, {:invalid_delegation_mandate, :parent, _reason}} =
+             Attenuation.delegation_within?(%{}, c.child, 100)
+
+    assert {:error, {:invalid_restriction_mandate, :predecessor, _reason}} =
+             Attenuation.restriction_within?(%{}, c.successor, 100)
+  end
+
   test "delegation cannot use a parent before validity or at its expiry", c do
     assert {:error, :mandate_not_yet_valid} =
              Attenuation.delegation_within?(c.parent, c.child, 89)

@@ -66,7 +66,8 @@ defmodule Spectre.Ledger do
          :ok <- validate_revision(Map.get(snapshot, :revision)),
          :ok <- validate_digest(Map.get(snapshot, :head_digest)),
          true <- snapshot.revision >= cursor.revision,
-         entries when is_list(entries) <- Map.get(snapshot, :entries),
+         entries = Map.get(snapshot, :entries),
+         :ok <- validate_snapshot_entries(entries),
          {:ok, rebuilt} <-
            Entry.verify_chain(entries,
              domain_ref: domain_ref,
@@ -87,6 +88,11 @@ defmodule Spectre.Ledger do
 
   def verify_suffix(_snapshot, _domain_ref, _cursor),
     do: {:error, :invalid_ledger_snapshot}
+
+  # A malformed entries value (including false) is not a cursor failure.
+  # Keep tagged checks so the with's ahead-of-head branch stays unambiguous.
+  defp validate_snapshot_entries(entries) when is_list(entries), do: :ok
+  defp validate_snapshot_entries(_entries), do: {:error, :invalid_ledger_snapshot_entries}
 
   defp validate_cursor(%{revision: revision, head_digest: digest})
        when is_integer(revision) and revision >= 0 do

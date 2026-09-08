@@ -10,6 +10,7 @@ Code.require_file("support/documentation_runtime.ex", __DIR__)
 Code.require_file("support/duty_frontier_assertions.ex", __DIR__)
 Code.require_file("support/full_agent_case.ex", __DIR__)
 Code.require_file("support/routed_agent_case.ex", __DIR__)
+Code.require_file("support/governed_boundary_case.ex", __DIR__)
 
 # Keep the shared fake clock alive for the test VM, like the application broker.
 # An ETS table owned by a test process disappears before its on_exit callbacks;

@@ -1,8 +1,10 @@
 defmodule Spectre.Core.AdmissionProofBoundaryTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.{Decision, Ledger, Row}
+  alias Spectre.{Candidate, Condition, Decision, Ledger, Row}
+  alias Spectre.Consequence.Contract
   alias Spectre.Domain.{Event, Sequencer}
+  alias Spectre.GovernedAct.Admission.Binding
   alias Spectre.GovernedAct.Transition.Admission
   alias Spectre.GovernedAct.Transition.Admission.Act, as: ActProof
   alias Spectre.GovernedAct.Transition.Admission.Decision, as: DecisionProof
@@ -16,12 +18,13 @@ defmodule Spectre.Core.AdmissionProofBoundaryTest do
     {:ok, _} = Fixture.observe_payment(f, payment)
     before = Sequencer.projection(f.server)
 
+    {:ok, candidate} =
+      f
+      |> Fixture.refund_candidate(100, evidence_refs: [payment.ref])
+      |> Candidate.new()
+
     {:ok, %{act: act, decision: decision}} =
-      Sequencer.submit(
-        f.server,
-        Fixture.context(f),
-        Fixture.refund_candidate(f, 100, evidence_refs: [payment.ref])
-      )
+      Sequencer.submit(f.server, Fixture.context(f), candidate)
 
     {:ok, payload} = Event.record(:decision, decision)
     {:ok, event} = Event.decode(payload)
@@ -29,7 +32,17 @@ defmodule Spectre.Core.AdmissionProofBoundaryTest do
     admitted = %{admitted | revision: before.revision + 1}
     assert :ok = DecisionProof.validate(before, decision, before.revision + 1)
     assert :ok = ActProof.validate(admitted, act, decision)
-    %{f: f, before: before, admitted: admitted, act: act, decision: decision, event: event}
+
+    %{
+      f: f,
+      payment: payment,
+      candidate: candidate,
+      before: before,
+      admitted: admitted,
+      act: act,
+      decision: decision,
+      event: event
+    }
   end
 
   # Exercise the semantic proof independently of the content digest checker.
@@ -145,6 +158,92 @@ defmodule Spectre.Core.AdmissionProofBoundaryTest do
              ActProof.validate(state, c.act, c.decision)
   end
 
+  test "replay revalidates the Surface consequence contract instead of trusting admission", c do
+    {:ok, rejecting_contract} = Contract.new(shape: %{"required_after_admission" => "string"})
+    state = c.admitted
+    surface_ref = state.catalog.surface_ref
+
+    state =
+      put_in(
+        state.catalog.surfaces[surface_ref].consequence_contracts[c.act.class],
+        rejecting_contract
+      )
+
+    assert {:error,
+            {:act_consequence_contract_mismatch, _,
+             {:consequence_shape_missing_keys, [], ["required_after_admission"]}}} =
+             ActProof.validate(state, c.act, c.decision)
+  end
+
+  test "replay rejects authority that became structurally undecidable", c do
+    state = %{c.admitted | revocations: %{c.f.mandate.ref => :corrupt_record}}
+
+    assert {:error, {:act_without_current_authority, _, {:invalid_mandate_revocation, _}}} =
+             ActProof.validate(state, c.act, c.decision)
+  end
+
+  test "recognition references and their Evidence basis are independently pinned", c do
+    decision = %{c.decision | recognition_refs: []}
+    act = %{c.act | recognition_refs: []}
+
+    assert {:error, {:decision_recognition_refs_mismatch, _}} =
+             ActProof.validate(c.admitted, act, decision)
+
+    decision = %{c.decision | recognition_evidence_refs: []}
+    act = %{c.act | recognition_evidence_refs: []}
+
+    assert {:error, {:decision_recognition_evidence_refs_mismatch, _}} =
+             ActProof.validate(c.admitted, act, decision)
+
+    missing_ref = "evidence:not-in-the-admitted-prefix"
+
+    {state, decision, act, _candidate} =
+      rebind_candidate(c, %{evidence_refs: [c.payment.ref, missing_ref]})
+
+    assert {:error, {:evidence_not_found, ^missing_ref}} =
+             ActProof.validate(state, act, decision)
+  end
+
+  test "a recorded recognition result is recomputed from the admitted prefix", c do
+    {:ok, impossible} =
+      Condition.new(
+        proposition: "payment_confirmed_by_an_unseen_issuer",
+        bindings: %{},
+        cardinality: 1,
+        accepted_provenance: [:observed],
+        allow_provisional: false,
+        parameters: %{"issuer_refs" => ["issuer:not-present"]}
+      )
+
+    mandate = %{c.f.mandate | conditions: [impossible]}
+    decision = %{c.decision | recognition_refs: [impossible.ref], recognition_evidence_refs: []}
+    act = %{c.act | recognition_refs: [impossible.ref], recognition_evidence_refs: []}
+    state = c.admitted
+    state = put_in(state.mandates[mandate.ref], mandate)
+
+    assert {:error, {:act_recognition_not_satisfied, _, {:undecidable, _}}} =
+             ActProof.validate(state, act, decision)
+  end
+
+  test "Meter intent must agree with both the occurrence Row and consequence", c do
+    no_spend_row = %{c.candidate.row | spend: false}
+
+    {state, decision, act, candidate} = rebind_candidate(c, %{row: no_spend_row})
+    surface_ref = state.catalog.surface_ref
+    state = put_in(state.catalog.surfaces[surface_ref].declarations[act.class], candidate.row)
+
+    assert {:error, {:act_meter_request_not_declared_in_row, _}} =
+             ActProof.validate(state, act, decision)
+
+    consequence = Map.put(c.candidate.consequence, "meter_requests", %{})
+
+    {state, decision, act, _candidate} =
+      rebind_candidate(c, %{meter_requests: %{}, consequence: consequence})
+
+    assert {:error, {:act_spend_without_meter_request, _}} =
+             ActProof.validate(state, act, decision)
+  end
+
   test "Decision replay fences both the authority prefix and its own entry coordinate", c do
     assert {:error, {:decision_authority_revision_mismatch, _, _, _}} =
              DecisionProof.validate(
@@ -225,5 +324,35 @@ defmodule Spectre.Core.AdmissionProofBoundaryTest do
              )
 
     assert {:ok, ^snapshot} = Ledger.load(c.f.store_config, c.f.refs.domain)
+  end
+
+  defp rebind_candidate(c, changes) do
+    attrs =
+      c.candidate
+      |> Map.from_struct()
+      |> Map.merge(changes)
+      |> Map.put(:ref, nil)
+      |> Map.put(:material_digest, nil)
+
+    {:ok, candidate} = Candidate.new(attrs)
+
+    decision = %{
+      c.decision
+      | candidate_identity_key: candidate.identity_key,
+        candidate_class: candidate.class,
+        candidate_digest: candidate.material_digest,
+        reservations: candidate.meter_requests
+    }
+
+    {:ok, act} = Binding.act(candidate, decision)
+
+    admission = %{decision_ref: decision.ref, act_ref: nil}
+
+    state = %{
+      c.admitted
+      | admissions: Map.put(c.admitted.admissions, candidate.identity_key, admission)
+    }
+
+    {state, decision, act, candidate}
   end
 end

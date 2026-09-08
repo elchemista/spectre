@@ -46,6 +46,8 @@ defmodule Spectre.Core.DutyEvidenceCauseTest do
   end
 
   test "application facts round-trip without carrying authority policy", c do
+    assert {:ok, rebuilt} = EvidenceCause.new(c.cause)
+    assert rebuilt === c.cause
     canonical = EvidenceCause.canonical(c.cause)
     assert {:ok, exact} = EvidenceCause.from_canonical(canonical)
     assert exact == c.cause
@@ -76,6 +78,8 @@ defmodule Spectre.Core.DutyEvidenceCauseTest do
       assert {:error, {:duty_evidence_cause_requires_application_class, ^class}} =
                EvidenceCause.new(%{c.attrs | class: class})
     end
+
+    assert {:error, _reason} = EvidenceCause.new(%{c.attrs | class: %{name: "app.fake"}})
   end
 
   test "a cause must explain at least one missing fact", c do
@@ -106,6 +110,8 @@ defmodule Spectre.Core.DutyEvidenceCauseTest do
   test "unrelated propositions are not application Duty markers", c do
     unrelated = evidence(c.cause, proposition: "ordinary.observation")
     assert :not_cause = EvidenceCause.extract(unrelated, c.rules)
+    assert :not_cause = EvidenceCause.extract(:not_evidence, c.rules)
+    assert {:error, :invalid_duty_evidence_constitution} = EvidenceCause.extract(c.evidence, nil)
   end
 
   test "a contrary stance cannot demand a Duty", c do

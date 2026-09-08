@@ -444,6 +444,72 @@ defmodule Spectre.V04Test.LedgerMnesiaTest do
     {fixture, prefix, prepared}
   end
 
+  test "batch paging rejects an interior cursor and an entry whose batch metadata disappeared", %{
+    store: {Mnesia, opts} = store
+  } do
+    assert :not_found = Mnesia.export("missing", opts)
+    assert :not_found = Mnesia.load_from("missing", 0, opts)
+    assert :not_found = Mnesia.read_batch("missing", 1, opts)
+    assert {:ok, 2} = append(store, "paging", "batch", [%{"n" => 1}, %{"n" => 2}], 0)
+    assert {:error, :ledger_cursor_inside_batch} = Mnesia.read_batch("paging", 2, opts)
+    :ok = :mnesia.dirty_delete(@batches, {"paging", "batch"})
+    assert {:error, :ledger_mnesia_entry_without_batch} = Mnesia.read_batch("paging", 1, opts)
+  end
+
+  test "an orphaned occupied entry slot cannot be overwritten by a fresh append", %{store: store} do
+    assert {:ok, 1} = append(store, "orphan", "original", [%{"value" => "must-survive"}], 0)
+    [entry] = :mnesia.dirty_read(@entries, {"orphan", 1})
+    :ok = :mnesia.dirty_delete(@heads, "orphan")
+    :ok = :mnesia.dirty_delete(@batches, {"orphan", "original"})
+
+    assert {:error, {:ledger_mnesia_entry_already_exists, 1}} =
+             append(store, "orphan", "new", [%{"value" => "replacement"}], 0)
+
+    assert :mnesia.dirty_read(@entries, {"orphan", 1}) === [entry]
+    assert :mnesia.dirty_read(@heads, "orphan") === []
+    assert :mnesia.dirty_read(@batches, {"orphan", "new"}) === []
+  end
+
+  test "idempotency cannot acknowledge a batch beyond, outside or without the current head", %{
+    store: store
+  } do
+    payloads = [%{"n" => 1}, %{"n" => 2}]
+    assert {:ok, 2} = append(store, "retry-head", "batch", payloads, 0)
+    [head] = :mnesia.dirty_read(@heads, "retry-head")
+    :ok = :mnesia.dirty_delete(@heads, "retry-head")
+
+    assert {:error, :ledger_mnesia_batch_without_head} =
+             append(store, "retry-head", "batch", payloads, 0)
+
+    for corrupt <- [put_elem(head, 2, 1), put_elem(head, 3, String.duplicate("f", 64))] do
+      :ok = :mnesia.dirty_write(@heads, corrupt)
+
+      assert {:error, :ledger_mnesia_batch_not_in_head} =
+               append(store, "retry-head", "batch", payloads, 0)
+
+      assert {:error, :ledger_mnesia_batch_not_in_head} =
+               Ledger.lookup_batch(store, "retry-head", "batch")
+    end
+
+    :ok = :mnesia.dirty_write(@heads, put_elem(head, 2, 2.0))
+
+    assert {:error, :invalid_ledger_mnesia_head_row} =
+             append(store, "retry-head", "batch", payloads, 0)
+
+    :ok = :mnesia.dirty_write(@heads, head)
+    assert {:ok, 2} = append(store, "retry-head", "batch", payloads, 0)
+  end
+
+  test "malformed cursors and options cannot start Mnesia transactions", %{store: {Mnesia, opts}} do
+    for invalid <- [nil, -1, 1.0, "1"] do
+      assert {:error, :invalid_ledger_cursor} = Mnesia.load_from("domain", invalid, opts)
+      assert {:error, :invalid_ledger_cursor} = Mnesia.read_batch("domain", invalid, opts)
+    end
+
+    assert {:error, :invalid_ledger_mnesia_options} = Mnesia.load("domain", %{})
+    assert {:error, :invalid_ledger_mnesia_options} = Mnesia.ensure_tables(%{})
+  end
+
   defp corrupt_first_revision(store) do
     payloads = [%{"event" => "first"}, %{"event" => "second"}]
     assert {:ok, 2} = append(store, "corrupt-range", "batch", payloads, 0)

@@ -12,7 +12,7 @@ defmodule Spectre.CoreTest.DocumentationExamplesTest do
 
   @moduletag capture_log: true
   @examples ~w(application_store input_pipeline checkout_dependency dynamic_domain
-    readme_agent readme_instance guide_agent guide_instance extracted_router prompts
+    readme_agent readme_instance readme_assistant guide_agent guide_instance extracted_router prompts
     exact_cache_declaration cache_wiring native_cache_declaration native_cache_child
     foundation supervised_domain doctor_config pending_operation direct_handler draft_agent
     classifier_agent reusable_components lookup_bindings complete_authoring routing_evaluation routed_handler)

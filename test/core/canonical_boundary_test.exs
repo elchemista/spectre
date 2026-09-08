@@ -4,6 +4,30 @@ defmodule Spectre.Core.CanonicalBoundaryTest do
 
   alias Spectre.Canonical.Value
 
+  defmodule BrokenStruct do
+    def __struct__, do: raise("broken schema")
+  end
+
+  test "codec metadata and invalid option shapes are stable public contracts" do
+    assert Value.version() == 1
+    assert Value.digest_algorithm() == :sha256
+    for opts <- [nil, %{}, [allowed_structs: URI], [allowed_structs: [nil]]] do
+      assert {:error, _} = Value.encode(nil, opts)
+      assert {:error, _} = Value.decode(Value.encode!(nil), opts)
+    end
+    for value <- [[], %{}, {}, self()] do
+      assert {:error, {:invalid_canonical_binary, _}} = Value.decode(value)
+    end
+
+    port = Port.open({:spawn, "true"}, [])
+    assert {:error, {:unsupported_canonical_value, [], :port}} = Value.encode(port)
+    Port.close(port)
+
+    counterfeit = %{__struct__: BrokenStruct}
+    assert {:error, {:invalid_canonical_struct, [], BrokenStruct, RuntimeError}} =
+             Value.encode(counterfeit, allowed_structs: [BrokenStruct])
+  end
+
   test "the byte budget includes the header and every sibling, including map keys" do
     for value <- [
           nil,

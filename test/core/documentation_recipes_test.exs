@@ -209,6 +209,35 @@ defmodule Spectre.CoreTest.DocumentationRecipesTest do
     assert_replay(fixture)
   end
 
+  test "the README assistant renders its prompt locally and delivers as a separate effect" do
+    {{:module, agent, _, _}, _} = Documentation.eval!("readme_assistant")
+    definition = publish(MyApp.Assistant)
+    {:ok, plan, %{}} = Publication.verify(MyApp.Assistant, definition)
+    owner = %{module: MyApp.Assistant, plan: plan}
+    turn = turn(definition)
+
+    assert {:ask, :answer, assigns, %{}} =
+             agent.handle_turn(
+               {:support, :question, %{"text" => "Where is my order?"}},
+               turn,
+               %{}
+             )
+
+    # Rendering is local and ordered: system policy first, task second.
+    assert {:ok, rendered} = Prompt.render(owner, turn, :answer, assigns)
+    assert Enum.map(rendered["parts"], & &1["name"]) == ["policy", "question"]
+    assert List.last(rendered["parts"])["text"] == "Customer asked: Where is my order?"
+
+    # A completed inference proposes delivery; returning text never delivers it.
+    assert {:request, "chat.send", %{"text" => "It ships today."}, %{}} =
+             agent.handle_result(
+               {:ask, :answer},
+               %{status: :done, data: %{"text" => "It ships today."}},
+               turn,
+               %{}
+             )
+  end
+
   defp publish(module), do: module.definition(revision: 1, declared_at: Fixture.default_now())
 
   defp turn(definition),

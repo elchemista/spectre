@@ -91,6 +91,26 @@ defmodule Spectre.Core.ErasureDebtTest do
     assert cause.subject_refs == c.act.subject_refs
   end
 
+  test "historical Evidence availability is rebuilt at acquisition time, not today's erasure cache", c do
+    {:ok, evidence} = Spectre.Evidence.new(proposition: "document.present", bindings: %{},
+      issuer_ref: "archive", source_ref: "archive", provenance: :observed, observed_at: 90,
+      payload_ref: c.erasure.target_ref)
+    state = %{c.state | evidence: %{evidence.ref => evidence}}
+    state = put_in(state.event_metadata[evidence.ref], metadata(1, 90))
+    facts = Facts.from_state(state)
+    assert [^evidence] = Facts.available_evidence(facts, 99)
+    assert [^evidence] = Facts.available_evidence(facts, 100)
+    assert [] = Facts.available_evidence(facts, 120)
+    cached = %{facts | availability: {120, MapSet.new([evidence.ref])}}
+    assert [] = Facts.available_evidence(cached, 121)
+    assert [^evidence] = Facts.available_evidence(cached, 99)
+    assert {:error, :missing_event_metadata} = Facts.metadata(facts, nil)
+    refute Facts.recorded_through?(facts, "unacquired", 100)
+    assert [^evidence] = Facts.records_through(facts, [evidence], 1)
+    assert [] = Facts.records_through(facts, [evidence], 0)
+    assert [^evidence] = Derive.available_evidence_at(state, 99)
+  end
+
   test "the authorizing request or a pending Attempt alone is not proof of deletion", c do
     assert causes(%{c.state | outcomes: %{}}, 1_000) == []
     assert causes(%{c.state | attempts: %{}, outcomes: %{}}, 1_000) == []
