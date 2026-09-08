@@ -18,10 +18,10 @@ defmodule Spectre.Agent.Flow do
   Transformations are local: govern remote inference through an Act.
   """
 
-  alias Spectre.Agent.Collection
+  alias Spectre.{Adapter, Portable, Router}
+  alias Spectre.Agent.{Collection, Publication}
   alias Spectre.Canonical.Value
   alias Spectre.Input.Pipeline
-  alias Spectre.{Portable, Router}
 
   @enforce_keys [:definition_ref, :name, :pipelines, :router]
   defstruct @enforce_keys
@@ -39,6 +39,62 @@ defmodule Spectre.Agent.Flow do
           | {:halt, term()}
           | {:unrouted, term()}
           | {:error, term()}
+
+  @doc false
+  def from_code(module, name, opts) when is_binary(name) do
+    with :ok <- Adapter.validate(module, __spectre_plan__: 0),
+         {:ok, owner, declaration} <- find_flow(module, String.split(name, "/")),
+         {:ok, prepared} <-
+           new(Publication.code_ref(owner), name, Publication.flow_body(declaration, name), opts) do
+      {:ok, prepared, declaration}
+    end
+  end
+
+  def from_code(_module, _name, _opts), do: {:error, :invalid_agent_flow}
+
+  @doc false
+  def route_message(module, name, input, opts) do
+    with {:ok, flow, declaration} <- from_code(module, name, opts) do
+      {_normalized, result} = route_with_input(flow, input)
+      {message, _branch, _selection} = message(declaration, result, input)
+      {:ok, message}
+    end
+  end
+
+  # One conversion for offline handler tests and live turns. This never invokes
+  # callbacks, constructs authentication or records routing as GAM Evidence.
+  @doc false
+  def message(declaration, {:ok, selection}, _input) do
+    local = Map.fetch!(declaration.routes, selection.candidate).local
+    {{declaration.local, local, selection.matched || %{}}, local, selection}
+  end
+
+  def message(declaration, result, input) do
+    {status, details} =
+      case result do
+        :no_match -> {:no_match, input}
+        {:ambiguous, refs} -> {:ambiguous, refs}
+        {:halt, halted} -> {:halted, halted}
+        {:unrouted, normalized} -> {:unrouted, normalized}
+        {:error, reason} -> {:error, reason}
+      end
+
+    {{declaration.local, status, details}, nil, nil}
+  end
+
+  defp find_flow(module, [name]) do
+    case Map.fetch(module.__spectre_plan__().flows, name) do
+      {:ok, declaration} -> {:ok, module, declaration}
+      :error -> {:error, :unknown_agent_flow}
+    end
+  end
+
+  defp find_flow(module, [component | rest]) do
+    case Map.fetch(module.__spectre_plan__().components, component) do
+      {:ok, child} -> find_flow(child.module, rest)
+      :error -> {:error, :unknown_agent_flow}
+    end
+  end
 
   @doc false
   def new(definition_ref, name, data, opts) do

@@ -175,8 +175,8 @@ defmodule Spectre.Instance do
   Reads a retained operation without re-submitting it.
 
   A deferred proposal is refreshed once in the mutation worker when it is free;
-  otherwise this returns `:pending`. A completed result continues its original
-  handler only if that exact turn and state revision remain current. Otherwise
+  otherwise this returns `{:pending, ref}`, like `advance/3`. A completed result
+  continues its original handler only if that exact turn and state revision remain current. Otherwise
   `{:error, {:instance_continuation_superseded, result}}` returns the durable
   facts without changing local state. Reading a completed operation is inert.
 
@@ -184,7 +184,8 @@ defmodule Spectre.Instance do
   retained. An expired ref does not prove no effect: the ledger remains the
   source of durable facts. `timeout` bounds the caller's wait, not accepted work.
   """
-  @spec operation(server(), String.t(), timeout()) :: term()
+  @spec operation(server(), String.t(), timeout()) ::
+          {:ok, Spectre.Agent.Turn.t()} | {:pending, String.t()} | {:error, term()}
   def operation(server, ref, timeout \\ 5000),
     do: GenServer.call(server, {:operation, ref}, timeout)
 
@@ -283,6 +284,9 @@ defmodule Spectre.Instance do
         entry = entry |> Map.delete(:resume) |> Map.put(:from, from)
         state = retain_operation(state, ref, entry)
         enqueue({:recover_advance, request, proposal}, from, state)
+
+      {:ok, %{result: :pending}} ->
+        {:reply, {:pending, ref}, state}
 
       {:ok, %{result: result}} ->
         {:reply, result, state}
@@ -383,8 +387,7 @@ defmodule Spectre.Instance do
     case result do
       {:deferred, request, proposal} ->
         entry = Map.fetch!(state.operations, request.ref)
-        reply = if job.operation == :advance, do: {:pending, request.ref}, else: :pending
-        reply_operation(entry, reply)
+        reply_operation(entry, {:pending, request.ref})
 
         entry = %{result: :pending, from: nil, resume: {request, proposal}}
         next_job(retain_operation(state, request.ref, entry))

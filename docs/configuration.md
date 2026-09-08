@@ -212,6 +212,31 @@ names are qualified: `history: %{"faq/chat" => {MyHistory, options}}` fills
 `faq/history/chat`. An alias such as a classifier's `via` is wired at the target
 request port, not independently replaced at both ends.
 
+### Validate backend options at wiring
+
+An adapter may opt into `@behaviour Spectre.Adapter.Options` and implement
+`validate_options/1`. Wiring passes the **merged backend keyword options**,
+after checking fixed-value conflicts. It excludes History tenant/conversation
+bindings and observer, Memory tenant binding, and cache namespace/profile
+bindings. Request `:declaration` is injected later and cannot be supplied here.
+Aliased ports reuse the target's validated configuration.
+
+Return `:ok`, or an error reason of `:invalid_options`,
+`{:missing_option, :repo}`, `{:invalid_option, :timeout}` or
+`{:unknown_options, [:misspelled_key]}`. Names must be atoms and contain no
+private values. Other reasons are replaced with `:invalid_options`; other
+return shapes become `:invalid_validator_reply`. Wiring attaches the port name
+in `{:invalid_port, port, reason}`. Callback exceptions are contained without
+including their messages. Shape checks cannot prove that a host-defined name
+is non-sensitive; adapters must honor the diagnostic contract.
+
+The callback validates, never normalizes, adds defaults or calls a database,
+model or service. Defaults remain the adapter's responsibility. A function
+named `validate_options/1` alone is not opt-in: declare the behaviour. Adapters
+without it keep their own use-time validation. Prepared pipelines use their
+existing preparation API instead. The default `Agent.RequestBuilder` opts in
+and accepts no host options; its declaration comes from the runtime.
+
 Stack merges configuration without starting resources. `override: true` is
 supported by `adapter` and the `ask/history/memory/classifier/semantic_cache`
 declarations to replace an inherited entry; it is **not** a universal option on

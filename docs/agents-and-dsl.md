@@ -150,7 +150,7 @@ The result retains `details` (the original governed result), `fallback`,
 | `:unclear` | Ambiguous Outcome |
 
 Pending is operational: `{:pending, request_ref}`, not `:unclear`.
-`Instance.operation(instance, ref)` returns `:pending`, a retained completed
+`Instance.operation(instance, ref)` returns `{:pending, ref}`, a retained completed
 result, or an explicit error, without submission.
 An evicted reference or lost process proves nothing about external effects.
 Fallback results remain separate; fallback success does not rewrite refusal.

@@ -36,6 +36,11 @@ It does not send a message or create an authorized effect. To use the same
 handler in an OTP Instance, supply the host setup described below.
 See [scaffolding and routing regression](docs/testing-and-release.md#scaffold-a-local-agent).
 
+For the next step, `mix spectre.gen.host MyApp.Hello --class greeting.save`
+generates **application-owned Host and Executor skeletons**, plus a governed
+integration test. It leaves authority and backend choices explicitly unfinished;
+it is not a permissive sandbox. Follow [your first governed save](docs/host-setup.md#from-a-draft-to-your-first-governed-save).
+
 Here is an order assistant with no LLM and no Skill required:
 
 <!-- spectre:example readme_agent -->

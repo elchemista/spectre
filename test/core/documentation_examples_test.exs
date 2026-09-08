@@ -15,7 +15,7 @@ defmodule Spectre.CoreTest.DocumentationExamplesTest do
     readme_agent readme_instance guide_agent guide_instance extracted_router prompts
     exact_cache_declaration cache_wiring native_cache_declaration native_cache_child
     foundation supervised_domain doctor_config pending_operation direct_handler draft_agent
-    classifier_agent reusable_components lookup_bindings complete_authoring routing_evaluation)
+    classifier_agent reusable_components lookup_bindings complete_authoring routing_evaluation routed_handler)
 
   test "every published Elixir block has an explicit tested context" do
     assert Documentation.examples!() |> Map.keys() |> Enum.sort() == Enum.sort(@examples)
@@ -42,6 +42,11 @@ defmodule Spectre.CoreTest.DocumentationExamplesTest do
   test "routing evaluation guide runs against the real Router without agent execution" do
     assert {0, bindings} = Documentation.eval!("routing_evaluation")
     assert %{total: 2, passed: 2, failed: 0} = Keyword.fetch!(bindings, :report)
+  end
+
+  test "the routed handler guide derives its actual request from input, not a hand-written message" do
+    assert {{:request, "orders.lookup", %{"order_id" => "42"}, %{}}, _bindings} =
+             Documentation.eval!("routed_handler")
   end
 
   for {agent_example, instance_example} <- [
@@ -328,7 +333,7 @@ defmodule Spectre.CoreTest.DocumentationExamplesTest do
 
   defp await_operation(instance, ref, remaining) when remaining > 0 do
     case Spectre.Instance.operation(instance, ref) do
-      :pending ->
+      {:pending, ^ref} ->
         receive do
         after
           10 -> await_operation(instance, ref, remaining - 1)

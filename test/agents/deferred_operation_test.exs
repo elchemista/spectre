@@ -35,7 +35,7 @@ defmodule Spectre.Agents.DeferredOperationTest do
     before = Sequencer.projection(c.fixture.server)
 
     for _read <- 1..3 do
-      assert :pending = Instance.operation(c.instance, request.ref)
+      assert Instance.operation(c.instance, request.ref) == {:pending, request.ref}
       refute Instance.info(c.instance).busy?
     end
 
@@ -190,7 +190,7 @@ defmodule Spectre.Agents.DeferredOperationTest do
     # The original advance has already replied. Its delayed timer must not
     # clear the new recovery caller's reply address for this same request ref.
     send(c.instance, {:advance_wait_elapsed, request.ref, {self(), make_ref()}})
-    assert :pending = Instance.operation(c.instance, request.ref)
+    assert Instance.operation(c.instance, request.ref) == {:pending, request.ref}
     assert Instance.state(c.instance, 200).value.count == 1
     assert Task.yield(recovery, 0) == nil
     send(worker, :release_continuation)
@@ -211,7 +211,7 @@ defmodule Spectre.Agents.DeferredOperationTest do
     caller = Task.async(fn -> catch_exit(Instance.operation(c.instance, request.ref, 50)) end)
     assert_receive {:continuation_started, worker}, 1000
     assert {:timeout, _} = Task.await(caller)
-    assert :pending = Instance.operation(c.instance, request.ref)
+    assert Instance.operation(c.instance, request.ref) == {:pending, request.ref}
 
     store = start_supervised!(ApplicationStore)
 
@@ -247,7 +247,7 @@ defmodule Spectre.Agents.DeferredOperationTest do
     [{oldest, _, _} | _] = pending
     {latest, _, _} = List.last(pending)
     assert {:error, :instance_operation_not_retained} = Instance.operation(c.instance, oldest.ref)
-    assert :pending = Instance.operation(c.instance, latest.ref)
+    assert Instance.operation(c.instance, latest.ref) == {:pending, latest.ref}
 
     # Inspect only the local retention bound, never replace the owner state or
     # fabricate any dispatch fact for this memory regression.

@@ -16,6 +16,8 @@ defmodule Spectre.Agent.RequestBuilder do
   an adapter cannot override them or authorize its own result.
   """
 
+  @behaviour Spectre.Adapter.Options
+
   alias Spectre.{Adapter, Candidate, Mind, Portable, Row, Surface}
   alias Spectre.Agent.Wiring
   alias Spectre.Candidate.Template
@@ -68,6 +70,14 @@ defmodule Spectre.Agent.RequestBuilder do
   end
 
   def prepare(_operation, _data, _turn, _opts), do: {:error, :invalid_handler_request}
+
+  @impl Spectre.Adapter.Options
+  def validate_options(opts) do
+    case Keyword.keys(opts) do
+      [] -> :ok
+      keys -> {:error, {:unknown_options, keys}}
+    end
+  end
 
   @doc false
   def build(operation, data, turn, owner, runtime, ref) do

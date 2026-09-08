@@ -25,6 +25,77 @@ in one tenant Domain. They share the Domain's authority accounting; a new
 Instance does not replenish its refund budget. Choosing Domain boundaries is
 an application decision, not inferred from the Agent's `namespace`.
 
+## From a draft to your first governed save
+
+If you used `spectre.gen.agent`, this optional second step keeps that Router
+and prompt and shows how its handler can request an actual effect:
+
+```sh
+mix compile
+mix spectre.gen.host MyApp.Hello --class greeting.save --dry-run
+mix spectre.gen.host MyApp.Hello --class greeting.save
+```
+
+The module must already be a compiled Agent. `--class` names the application
+class; intrinsic classes such as `mandate.delegate` cannot be used for this
+example. Both commands refuse existing targets, including dangling symlinks;
+there is no `--force`. Dry-run performs no compilation or writes. Generation
+does not start the application or edit the existing Agent or supervisor.
+
+Three files are generated:
+
+| File | What you complete |
+| --- | --- |
+| `lib/my_app/hello/host.ex` | Explicit Foundation records, store/ingress/broker/clock wiring, and request bindings |
+| `lib/my_app/hello/executor.ex` | Executor identity, contract reference and the actual save function |
+| `test/my_app/hello_governed_test.exs` | A test Domain, authentication, Definition activation and observable test backend |
+
+The executable checklist is `MyApp.Hello.Host.missing_setup/0`. It reads the
+actual TODO values (and missing required fields), not a separate completion
+flag. `domain_options/0` returns `{:error, {:incomplete_host_setup, missing}}`
+until they are completed, **before any startup**. The generated tests remain
+red with that list; they are neither skipped nor counted as successful work.
+An empty checklist means no scaffold TODOs, not proof of authority or backend
+readiness. The ordinary Foundation/bootstrap checks still run.
+
+Complete `Host.configuration/0` using the records and boundaries explained
+below. `application_surface(revision)` builds only the `greeting.save` fragment:
+`attempt` means an external attempt; `write` means changing a resource. Its
+closed consequence has `target_ref` (the exact resource covered by the Mandate)
+and `text` (the greeting). Add required governance classes to the full Surface
+deliberately; do not give their authority to the greeting agent by default.
+
+In `Executor.configuration/0`, `executor_ref` names the actual Principal,
+`contract_ref` names its immutable execution contract, and `execute` is your
+function of four arguments: Act, Attempt, broker capability, backend options.
+It returns the existing `Spectre.Attempt.Executor` result and receipt Evidence.
+No new backend behaviour or storage dependency is required.
+
+The command prints the manual handler change: declare `:save_greeting`, then
+return a request with the rendered text and `state.greeting_box_ref`. Validate
+that target in your Agent's `init/1`. `Host.bindings/1` accepts your existing
+Mandate, accountable Principal, purpose/parameters and observation window,
+and attaches the configured executor references. The builder still owns Row,
+Scope, proposer and occurrence identity. Activate the changed Definition
+before starting its Instance.
+
+The resulting path is **Router → handler → unsubmitted request → advance →
+Decision → Act → Attempt → backend save → Outcome**. The generated integration
+test checks that a turn does not call the backend, that one accepted advance
+saves once, and that the exported history audits successfully. Supply actual
+backend readers/counters in the test, not functions returning canned success.
+Also test unauthorized targets and uncertain receipts in your application.
+
+Saving means backend-confirmed storage, **not delivery or reading by a person**.
+The application storage is separate from the ledger. A remote backend crossing
+your disclosure boundary needs an appropriate contract too. An uncertain save
+must not be retried automatically.
+
+For an existing Domain, reuse the contract and binding helpers with its
+governed Surface/Definition revision procedures. Do not bootstrap a new Domain
+for every Instance. See [ticket handling](integration-and-streaming.md#a-host-owned-interaction-without-a-stream-runtime)
+for asynchronous execution; a pending result is not permission to resubmit.
+
 ## Prepare the foundation
 
 1. Create immutable `Spectre.Principal` records for the relevant actors:

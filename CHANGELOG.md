@@ -14,6 +14,15 @@ It is not yet performance-qualified or declared stable.
 
 ### Added
 
+- `mix spectre.gen.host` generates application-owned foundation/wiring and
+  executor skeletons plus a first governed-save test. TODOs block setup; the
+  generator never patches the Agent or invents permissions.
+- `Spectre.Agent.route_message/4` connects real routing input to handler tests
+  through the runtime's shared message conversion, without creating a Turn.
+- Optional `Spectre.Adapter.Options` validates backend options during authoring
+  wiring, with explicit opt-in and bounded, value-free diagnostic forms.
+- Pre-release API alignment: `Instance.operation/3` now returns `{:pending, ref}`
+  while work is pending, matching `advance/3`. No retry or polling was added.
 - `mix spectre.gen.agent` scaffolds an Agent, separate Router, compiled greeting
   prompt, executable contract test and JSONL routing cases, with dry-run and
   overwrite protection. It creates no authority, provider wiring or runtime.

@@ -43,6 +43,51 @@ callbacks, not authenticated admission. To run an Instance, follow
 [host setup](host-setup.md) to activate the exact Definition and provide a Scope.
 There is no parallel Hello World runtime that bypasses those checks.
 
+For an opt-in host scaffold and a test of the first actual save, see
+[your first governed save](host-setup.md#from-a-draft-to-your-first-governed-save).
+That scaffold intentionally requires host completion; the local generator's
+immediately runnable tests do not claim to test governance.
+
+### Test the connection from input to handler
+
+`Spectre.Agent.route_message/4` uses the same flow preparation and message
+conversion as live routing. Feed real input instead of hand-building a tuple
+that might outlive a renamed route:
+
+<!-- spectre:example routed_handler -->
+```elixir
+defmodule Guide.RoutingContract do
+  use Spectre.Agent, namespace: "guide", name: "routing-contract"
+
+  flow :orders do
+    router via: [:regex]
+    route :lookup, match: [regex: ~r/^order (?<id>[0-9]+)$/]
+  end
+
+  @impl true
+  def handle_turn({:orders, :lookup, %{"id" => id}}, _turn, state),
+    do: {:request, "orders.lookup", %{"order_id" => id}, state}
+end
+
+{:ok, message} = Spectre.Agent.route_message(Guide.RoutingContract, "orders", "order 42")
+{:request, "orders.lookup", %{"order_id" => "42"}, %{}} =
+  Guide.RoutingContract.handle_turn(message, nil, %{})
+```
+
+`nil` works here only because this handler does not inspect the Turn. This
+tests a proposed request, not a Candidate or permission. Handlers using real
+authentication/Evidence need Instance tests. Nested Skill paths preserve local
+names: test the owning Skill's callback with its own state, not its parent.
+
+Optional `pipelines` and `adapters` are explicit registries, as in `Eval.prepare`.
+Preparation errors return `{:error, reason}`. A routing miss/error/ambiguity is
+instead returned as `{:ok, handler_message}`, so the application's callback
+chooses how to handle it. No-match retains original input; halted/unrouted
+messages retain the corresponding pipeline output, just like a live turn.
+The helper neither calls the handler nor creates a Turn or records Evidence.
+Host pipelines/adapters still run ordinary code: absence of a Domain is not
+proof that a supplied callback performs no I/O.
+
 ## Check routing behavior before changing a classifier
 
 `spectre.routes` displays structure; `spectre.eval` measures agreement with

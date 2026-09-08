@@ -93,7 +93,7 @@ defmodule Spectre.Agent.Context do
 
   defp window("history/" <> name, config, prefix, wiring, _input) do
     with {:ok, {module, opts}} <- Wiring.fetch(wiring, prefix, :history, name),
-         {binding, opts} = Keyword.split(opts, [:tenant_id, :conversation_id]),
+         {binding, opts} = Wiring.split_options(:history, opts),
          {:ok, history} <- History.bind({module, opts}, binding),
          {:ok, page} <- History.load(history, Map.take(config, [:keep, :max_bytes])) do
       {:ok, :history, page.messages}
@@ -105,7 +105,7 @@ defmodule Spectre.Agent.Context do
 
   defp window("memory/" <> name, config, prefix, wiring, input) do
     with {:ok, {module, opts}} <- Wiring.fetch(wiring, prefix, :memory, name),
-         {binding, opts} = Keyword.split(opts, [:tenant_id]),
+         {binding, opts} = Wiring.split_options(:memory, opts),
          {:ok, items} <-
            Memory.retrieve({module, opts}, binding, input, Map.take(config, [:limit, :max_bytes])) do
       {:ok, :memory, items}

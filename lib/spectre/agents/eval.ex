@@ -27,8 +27,8 @@ defmodule Spectre.Eval do
   JSONL is read as a stream. Case numbers in file reports are physical lines.
   """
 
-  alias Spectre.{Adapter, Portable, Router}
-  alias Spectre.Agent.{Flow, Publication}
+  alias Spectre.Agent.Flow
+  alias Spectre.{Portable, Router}
   alias Spectre.Router.Selection
 
   @type target :: Router.t() | Flow.t() | (term() -> Flow.result())
@@ -52,9 +52,10 @@ defmodule Spectre.Eval do
   def prepare(module, name, opts \\ [])
 
   def prepare(module, name, opts) when is_binary(name) do
-    with :ok <- Adapter.validate(module, __spectre_plan__: 0),
-         {:ok, owner, flow} <- find_flow(module, String.split(name, "/")) do
-      Flow.new(Publication.code_ref(owner), name, Publication.flow_body(flow, name), opts)
+    case Flow.from_code(module, name, opts) do
+      {:ok, flow, _declaration} -> {:ok, flow}
+      {:error, :unknown_agent_flow} -> {:error, :unknown_eval_flow}
+      error -> error
     end
   end
 
@@ -92,20 +93,6 @@ defmodule Spectre.Eval do
         {:error, reason} ->
           {:error, {:eval_file, reason}}
       end
-    end
-  end
-
-  defp find_flow(module, [name]) do
-    case Map.fetch(module.__spectre_plan__().flows, name) do
-      {:ok, flow} -> {:ok, module, flow}
-      :error -> {:error, :unknown_eval_flow}
-    end
-  end
-
-  defp find_flow(module, [component | rest]) do
-    case Map.fetch(module.__spectre_plan__().components, component) do
-      {:ok, child} -> find_flow(child.module, rest)
-      :error -> {:error, :unknown_eval_flow}
     end
   end
 

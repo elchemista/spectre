@@ -3,6 +3,7 @@ defmodule Spectre.Agents.EvalTest do
   import ExUnit.CaptureIO
 
   alias Mix.Tasks.Spectre.Eval, as: EvalTask
+  alias Spectre.Agent
   alias Spectre.Agent.Classification
   alias Spectre.Eval
   alias Spectre.Input.{Pipeline, Plugs.NormalizeText}
@@ -37,6 +38,77 @@ defmodule Spectre.Agents.EvalTest do
 
     flow :plain do
     end
+  end
+
+  defmodule Stop do
+    @behaviour Spectre.Input.Plug
+    @impl true
+    def call(input, _opts), do: {:halt, "stopped: " <> input}
+  end
+
+  defmodule Broken do
+    @behaviour Spectre.Input.Plug
+    @impl true
+    def call(_input, _opts), do: {:error, :unreadable_input}
+  end
+
+  defmodule Count do
+    @behaviour Spectre.Input.Plug
+    @impl true
+    def call(input, opts) do
+      send(opts[:observer], {:pipeline_input, input})
+      {:cont, input |> String.trim() |> String.downcase()}
+    end
+  end
+
+  test "handler messages come from actual input and preserve local names and all routing outcomes" do
+    assert {:ok, {:orders, :lookup, %{"id" => "42"}}} =
+             Agent.route_message(Support, "orders", "order 42")
+
+    assert {:ok, {:orders, :help, _}} =
+             Agent.route_message(Support, "orders", "help with my order")
+
+    assert {:ok, {:orders, :no_match, "refund"}} =
+             Agent.route_message(Support, "orders", "refund")
+
+    assert {:ok, {:orders, :ambiguous, refs}} = Agent.route_message(Support, "orders", "both")
+    assert Enum.sort(refs) == ["orders/first", "orders/second"]
+    assert {:ok, {:plain, :unrouted, "raw"}} = Agent.route_message(Support, "plain", "raw")
+
+    assert {:ok, {:questions, :hours, _}} =
+             Agent.route_message(Support, "faq/questions", "when are you open")
+  end
+
+  test "offline routing runs a pipeline exactly once and retains stopped/error messages" do
+    {:ok, counted} = Pipeline.new([{Count, observer: self()}])
+
+    assert {:ok, {:normalized, :hello, %{}}} =
+             Agent.route_message(Support, "normalized", " HELLO ",
+               pipelines: %{"normalize" => counted}
+             )
+
+    assert_receive {:pipeline_input, " HELLO "}
+    refute_receive {:pipeline_input, _}
+
+    for {plug, expected} <- [
+          {{NormalizeText, case: :downcase}, {:normalized, :hello, %{}}},
+          {Stop, {:normalized, :halted, "stopped:  HELLO "}},
+          {Broken, {:normalized, :error, {:input_plug_failed, Broken, :unreadable_input}}}
+        ] do
+      {:ok, pipeline} = Pipeline.new([plug])
+
+      assert {:ok, ^expected} =
+               Agent.route_message(Support, "normalized", " HELLO ",
+                 pipelines: %{"normalize" => pipeline}
+               )
+    end
+
+    assert {:error, {:unwired_flow_pipeline, "normalize"}} =
+             Agent.route_message(Support, "normalized", "hello")
+
+    assert {:error, :unknown_agent_flow} = Agent.route_message(Support, "missing", "hello")
+    assert {:error, :invalid_agent_flow} = Agent.route_message(Support, :orders, "hello")
+    assert {:error, _} = Agent.route_message(String, "orders", "hello")
   end
 
   setup do

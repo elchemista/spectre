@@ -193,7 +193,7 @@ end
 
 On a later UI tick, read `Instance.info(instance, 1_000)` and
 `Instance.operation(instance, operation_ref, 1_000)`. The latter returns
-`:pending`, the retained completed result, or an error. Neither read submits
+`{:pending, operation_ref}`, the retained completed result, or an error. Neither read submits
 another Candidate. Use the returned operation ref, not a new `advance` call.
 The Instance reserves a ticket once; selecting one alternative invalidates its
 siblings. For a deferred proposal, `operation/3` runs one recovery and, if its

@@ -20,29 +20,14 @@ defmodule Mix.Tasks.Spectre.Gen.Agent do
   targets without writing or compiling. There is deliberately no `--force`.
   """
   use Mix.Task
+  alias Spectre.Mix.Scaffold
   @shortdoc "Generate an Agent, Router, prompt and runnable Hello World tests"
 
   @impl Mix.Task
   def run(args) do
     {opts, names} = OptionParser.parse!(args, strict: [dry_run: :boolean])
-    name = module_name!(names)
-    files = files(name)
-
-    for {path, _content} <- files do
-      case File.lstat(path) do
-        {:error, :enoent} -> :ok
-        {:ok, _} -> Mix.raise("refusing to overwrite #{path}")
-        {:error, reason} -> Mix.raise("cannot inspect #{path}: #{:file.format_error(reason)}")
-      end
-    end
-
-    for {path, content} <- files do
-      if opts[:dry_run] do
-        Mix.shell().info("would create #{path}")
-      else
-        write_file(path, content)
-      end
-    end
+    name = Scaffold.module_name!(names, "usage: mix spectre.gen.agent MyApp.Hello [--dry-run]")
+    Scaffold.write(files(name), opts[:dry_run])
 
     path = Macro.underscore(name)
     Mix.shell().info("Next: mix test test/#{path}_test.exs")
@@ -51,27 +36,9 @@ defmodule Mix.Tasks.Spectre.Gen.Agent do
     Mix.shell().info(
       "This prepares local drafts only. Wire a Scope and Definition to start an Instance."
     )
-  end
 
-  defp write_file(path, content) do
-    File.mkdir_p!(Path.dirname(path))
-    # Exclusive creation also refuses an overwrite if a file appeared
-    # since preflight. Do not replace the developer's edits on rerun.
-    case File.open(path, [:write, :exclusive], &IO.binwrite(&1, content)) do
-      {:ok, :ok} -> Mix.shell().info("created #{path}")
-      {:error, reason} -> Mix.raise("cannot create #{path}: #{:file.format_error(reason)}")
-      {:ok, {:error, reason}} -> Mix.raise("cannot write #{path}: #{inspect(reason)}")
-    end
+    Mix.shell().info("Optional next step: mix spectre.gen.host #{name} --class greeting.save")
   end
-
-  defp module_name!([name]) do
-    if Regex.match?(~r/^[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*$/, name) and
-         not String.starts_with?(name, "Elixir."),
-       do: name,
-       else: Mix.raise("expected a module name such as MyApp.Hello")
-  end
-
-  defp module_name!(_), do: Mix.raise("usage: mix spectre.gen.agent MyApp.Hello [--dry-run]")
 
   defp files(name) do
     path = Macro.underscore(name)
@@ -85,11 +52,6 @@ defmodule Mix.Tasks.Spectre.Gen.Agent do
       {"test/#{path}_test.exs", contract_test(name)},
       {"test/#{path}_routes.jsonl", cases()}
     ]
-    |> Enum.map(fn {file, source} ->
-      if Path.extname(file) in [".ex", ".exs"],
-        do: {file, IO.iodata_to_binary(Code.format_string!(source)) <> "\n"},
-        else: {file, source}
-    end)
   end
 
   defp router(name) do
@@ -161,7 +123,7 @@ defmodule Mix.Tasks.Spectre.Gen.Agent do
       use ExUnit.Case, async: true
 
       alias #{name}, as: Hello
-      alias Spectre.Agent.Flow
+      alias Spectre.Agent
 
       test "greeting grammar, phrase matching and misses retain their meaning" do
         assert {:ok, flow} = Spectre.Eval.prepare(Hello, "greetings")
@@ -170,19 +132,18 @@ defmodule Mix.Tasks.Spectre.Gen.Agent do
       end
 
       test "the same routed handler renders a local draft without a model" do
-        assert {:ok, flow} = Spectre.Eval.prepare(Hello, "greetings")
-        assert {:ok, selection} = Flow.route(flow, "hello Ada")
-        assert selection.candidate == "hello"
         assert {:ok, state} = Hello.init(%{})
 
         # This pure callback does not use a sealed Turn. It cannot submit an
         # Act; real ingress and Instance integration remain host responsibilities.
-        assert {:ok, %{draft: "Hello, Ada!"}} =
-                 Hello.handle_turn({:greetings, :hello, selection.matched}, nil, state)
-        assert {:ok, %{draft: "Hello, World!"}} =
-                 Hello.handle_turn({:greetings, :hello, %{}}, nil, state)
+        for {input, text} <- [{"hello Ada", "Hello, Ada!"}, {"hi", "Hello, World!"}] do
+          assert {:ok, message} = Agent.route_message(Hello, "greetings", input)
+          assert {:ok, %{draft: ^text}} = Hello.handle_turn(message, nil, state)
+        end
+
+        assert {:ok, message} = Agent.route_message(Hello, "greetings", "refund")
         assert {:error, :unrecognized_message, ^state} =
-                 Hello.handle_turn({:greetings, :no_match, "refund"}, nil, state)
+                 Hello.handle_turn(message, nil, state)
       end
     end
     """

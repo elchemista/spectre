@@ -2,6 +2,7 @@ defmodule Spectre.Agent.Wiring do
   @moduledoc false
 
   alias Spectre.{Adapter, Portable}
+  alias Spectre.Adapter.Options
   alias Spectre.Agent.{Classification, Flow, Publication}
   alias Spectre.Input.Pipeline
   alias Spectre.Router.Rule
@@ -58,7 +59,7 @@ defmodule Spectre.Agent.Wiring do
   @doc false
   def cache(name, definition_ref, flow, wiring, prefix) do
     with {:ok, {module, opts}} <- fetch(wiring, prefix, :semantic_cache, name),
-         {binding, opts} = Keyword.split(opts, [:namespace, :profile_ref]),
+         {binding, opts} = split_options(:semantic_cache, opts),
          binding = Map.new(binding) |> Map.merge(%{definition_ref: definition_ref, flow: flow}),
          {:ok, cache} <- SemanticCache.bind({module, opts}, binding) do
       {:ok, cache}
@@ -66,6 +67,21 @@ defmodule Spectre.Agent.Wiring do
       :error -> {:error, {:unwired_semantic_cache, name}}
       error -> error
     end
+  end
+
+  # The same split is used at wiring and at invocation. Backend validators
+  # must never see a different option set than the actual adapter callbacks.
+  @doc false
+  def split_options(kind, opts) do
+    keys =
+      case kind do
+        :history -> [:tenant_id, :conversation_id]
+        :memory -> [:tenant_id]
+        :semantic_cache -> [:namespace, :profile_ref]
+        _other -> []
+      end
+
+    Keyword.split(opts, keys)
   end
 
   defp flow_adapter(:cache, name, definition_ref, flow, wiring, prefix, _via) do
@@ -182,8 +198,10 @@ defmodule Spectre.Agent.Wiring do
              Adapter.validate(
                port.module,
                callbacks(port) ++ Map.get(port, :required_callbacks, [])
-             ) do
-        {:ok, {port.module, Keyword.merge(port.options, opts)}}
+             ),
+           merged = Keyword.merge(port.options, opts),
+           :ok <- validate_options(port, merged) do
+        {:ok, {port.module, merged}}
       else
         [_ | _] -> {:error, :semantic_port_options_overridden}
         {:error, _} = error -> error
@@ -194,6 +212,35 @@ defmodule Spectre.Agent.Wiring do
   end
 
   defp configure(_port, _value), do: {:error, :invalid_port_binding}
+
+  defp validate_options(port, opts) do
+    {binding, backend} = split_options(port.kind, opts)
+    backend = if port.kind == :history, do: Keyword.delete(backend, :observer), else: backend
+
+    with :ok <- validate_binding(port.kind, port.module, binding, backend),
+         do: Options.validate(port.module, backend)
+  end
+
+  defp validate_binding(:history, module, binding, backend) do
+    case Spectre.History.bind({module, backend}, binding) do
+      {:ok, _history} -> :ok
+      error -> error
+    end
+  end
+
+  defp validate_binding(:memory, _module, binding, _backend) do
+    case Spectre.Memory.binding(binding) do
+      {:ok, _binding} -> :ok
+      error -> error
+    end
+  end
+
+  defp validate_binding(:semantic_cache, _module, binding, _backend) do
+    with :ok <- Portable.validate_ref(binding[:namespace], :cache_namespace),
+         do: Portable.validate_optional_ref(binding[:profile_ref], :cache_profile)
+  end
+
+  defp validate_binding(_kind, _module, _binding, _backend), do: :ok
 
   defp reserved_options(port, opts) do
     opts = port.options ++ opts

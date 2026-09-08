@@ -23,6 +23,7 @@ defines what the implementation actually guarantees.
 | Structured proposal status | `Spectre.Proposal.Result.status/1` | Admission, Attempt and Outcome remain separate; absence is not failure |
 | Static authoring diagnostics | `Spectre.Surface.verify_definition/2`, `mix spectre.routes` | Deferred fields remain explicit; no preauthorization or sensitive error serialization |
 | Local agent scaffolding | `mix spectre.gen.agent` | Generates Router, Agent, prompt and runnable tests; never generates authority or provider wiring |
+| First governed effect scaffold | `mix spectre.gen.host` | Generates host/executor skeletons and an integration test; explicit TODOs block setup, no automatic authority |
 | Offline routing regression | `Spectre.Eval`, `mix spectre.eval` | JSONL expectations, bounded mismatch reports; no handler execution, model call, learning or governance claims |
 | Pure foundation assembly | `Spectre.Foundation.new/2` | Derives Genesis links and reuses bootstrap checks; no authority defaults, verifier callback or I/O |
 | Input normalization and Evidence builders | `Spectre.Input.Pipeline`, Ingress/Mind/Executor builders | No prescribed audio/VoIP schema or media engine |

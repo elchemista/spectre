@@ -5,6 +5,37 @@ defmodule Spectre.Agents.HandlerRuntimeTest do
   alias Spectre.Instance
   alias Spectre.Router.SemanticCache
   alias Spectre.Store.Memory, as: ApplicationStore
+  alias Spectre.Test.HandlerAgentCase
+
+  test "offline router-to-handler mapping agrees with live Skill dispatch and local state", c do
+    pipeline = c.instance_options[:adapters].pipelines["billing/text"]
+    input = input(c, " REFUND ")
+
+    assert {:ok, message} =
+             Spectre.Agent.route_message(HandlerAgentCase.Assistant, "billing/support", input,
+               pipelines: %{"text" => pipeline}
+             )
+
+    assert {:support, :refund, %{}} = message
+
+    assert {:request, :refund, consequence, expected} =
+             HandlerAgentCase.Billing.handle_turn(message, nil, c.state)
+
+    assert {:ok, turn} =
+             Instance.turn(c.instance, input,
+               flow: "billing/support",
+               context_evidence_refs: [c.fixture.refs.payment_evidence]
+             )
+
+    assert turn.owner == "billing/"
+    assert turn.flow == :support
+    assert turn.branch == :refund
+    assert [request] = turn.requests
+    assert request.candidate.consequence === consequence
+    assert Instance.state(c.instance).components["billing"].value === expected
+    assert Instance.state(c.instance).value === c.state
+    refute_received {:handler_execution, _, _, _}
+  end
 
   test "multiple flows still require an explicit host choice", c do
     assert {:error, :agent_flow_required} = Instance.turn(c.instance, input(c, "refund 20"))
@@ -139,7 +170,7 @@ defmodule Spectre.Agents.HandlerRuntimeTest do
     assert {:pending, operation} = Instance.advance(c.instance, request, wait: 0)
     assert operation == request.ref
     assert_receive {:handler_execution, executor, _act, _attempt}, 1000
-    assert :pending = Instance.operation(c.instance, operation)
+    assert {:pending, ^operation} = Instance.operation(c.instance, operation)
     assert Instance.state(c.instance, 200).value.count == 1
     assert Instance.info(c.instance, 200).definition_ref == c.definition.ref
     assert {:ok, definition} = Instance.definition(c.instance, 200)
@@ -175,7 +206,7 @@ defmodule Spectre.Agents.HandlerRuntimeTest do
     assert {:error, :instance_busy} =
              Instance.turn(c.instance, input(c, "refund 21"), flow: :support)
 
-    assert :pending = Instance.operation(c.instance, operation)
+    assert {:pending, ^operation} = Instance.operation(c.instance, operation)
     send(executor, :release)
   end
 

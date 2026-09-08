@@ -7,11 +7,19 @@ defmodule Spectre.Memory do
   retrieval through an Act; implementing this behaviour does not authorize
   network I/O inside a Router or make retrieved content trusted instructions.
   """
+  import Kernel, except: [binding: 1]
   alias Spectre.{Adapter, Portable}
   alias Spectre.Canonical.Value
 
   @callback retrieve(map(), map(), keyword()) ::
               {:ok, %{binding: map(), items: [map()]}} | {:error, term()}
+
+  @doc false
+  def binding(value) do
+    with {:ok, binding} <- Portable.normalize_attrs(value, [:tenant_id], :memory_binding),
+         :ok <- Portable.validate_ref(binding[:tenant_id], :tenant_id),
+         do: {:ok, binding}
+  end
 
   @doc "Requests a bounded, source-labelled result; rejects backend overflow rather than copying all history."
   @spec retrieve({module(), keyword()}, map() | keyword(), term(), map() | keyword()) ::
@@ -20,8 +28,7 @@ defmodule Spectre.Memory do
 
   def retrieve({module, opts}, binding, query, limits) do
     with true <- Portable.keyword?(opts),
-         {:ok, binding} <- Portable.normalize_attrs(binding, [:tenant_id], :memory_binding),
-         :ok <- Portable.validate_ref(binding[:tenant_id], :tenant_id),
+         {:ok, binding} <- binding(binding),
          {:ok, limits} <- Portable.normalize_attrs(limits, [:limit, :max_bytes], :memory_limits),
          limit = Map.get(limits, :limit, 5),
          bytes = Map.get(limits, :max_bytes, 8000),

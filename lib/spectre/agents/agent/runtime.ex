@@ -386,31 +386,8 @@ defmodule Spectre.Agent.Runtime do
 
   defp message(turn, routing, input) do
     {normalized, result} = Flow.route_with_input(routing.prepared, input)
-
-    {message, turn} =
-      case result do
-        {:ok, selection} ->
-          local = routing.declaration.routes[selection.candidate].local
-
-          {{turn.flow, local, selection.matched || %{}},
-           %{turn | branch: local, selection: selection}}
-
-        :no_match ->
-          {{turn.flow, :no_match, input}, turn}
-
-        {:ambiguous, refs} ->
-          {{turn.flow, :ambiguous, refs}, turn}
-
-        {:halt, input} ->
-          {{turn.flow, :halted, input}, turn}
-
-        {:unrouted, input} ->
-          {{turn.flow, :unrouted, input}, turn}
-
-        {:error, reason} ->
-          {{turn.flow, :error, reason}, turn}
-      end
-
+    {message, branch, selection} = Flow.message(routing.declaration, result, input)
+    turn = %{turn | branch: branch, selection: selection}
     {message, turn, normalized}
   end
 

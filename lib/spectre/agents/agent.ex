@@ -117,6 +117,27 @@ defmodule Spectre.Agent do
   defdelegate route_result(turn, result), to: Spectre.Agent.Classification, as: :route_result
 
   @doc """
+  Routes explicit input to the same handler message used by a live Instance.
+
+      Spectre.Agent.route_message(MyApp.Hello, "greetings", "hello Ada")
+      # {:ok, {:greetings, :hello, %{"name" => "Ada"}}}
+
+  Uses current compiled code, not an activated Definition. `:pipelines` and
+  `:adapters` are the explicit registries accepted by `flow/3`. Setup failures
+  return `{:error, reason}`; routing misses, ambiguity, halts and errors become
+  handler messages inside `{:ok, message}`, just as during a live turn.
+
+  Does not call the handler, create a Turn, record Evidence or submit an Act.
+  Supplied pipelines/adapters still execute host code: this is not a sandbox
+  or a purity guarantee. Nested paths (e.g. `faq/questions`) use the Skill's
+  local names; call that Skill's handler with its own state in offline tests.
+  Test handlers needing authenticated context through a real Instance instead.
+  """
+  @spec route_message(module(), String.t(), term(), keyword()) ::
+          {:ok, tuple()} | {:error, term()}
+  defdelegate route_message(module, name, input, opts \\ []), to: Flow
+
+  @doc """
   Renders one compiled prompt as local text, without calling a model or delivering it.
 
   Accepts a declared atom/string name and an assigns map; returns `{:ok, text}`
