@@ -7,14 +7,18 @@ defmodule Spectre.SemanticCache.Vettore do
   index is native. Supply saved vectors and an explicit encoder `profile_ref`;
   this backend never embeds text, downloads models or calls a provider.
 
-  Add `:spectre_semantic_cache_vettore` to the host's dependencies and supervise
-  this child there. Index configuration selects `:flat` (default) or `:hnsw`.
+  The adapter ships with Spectre, but Vettore does not. Add
+  `{:vettore, "~> 0.3.5"}` to the host's dependencies and supervise this child
+  there. Starting it without Vettore returns an adapter wiring error; other
+  Spectre features need neither Vettore nor an embedding provider.
+
+  Index configuration selects `:flat` (default) or `:hnsw`.
   Vectors in snapshots remain host-owned data with their own retention policy.
   """
 
   use Spectre.Router.SemanticCache.Memory
 
-  alias Spectre.Portable
+  alias Spectre.{Adapter, Portable}
   alias Spectre.SemanticCache.Vettore.Index
 
   @doc "Selects a local native index without changing the cache's binding or review rules."
@@ -23,7 +27,8 @@ defmodule Spectre.SemanticCache.Vettore do
          index = Keyword.get(opts, :index, :flat),
          true <- index in [:flat, :hnsw],
          index_options = Keyword.get(opts, :index_options, []),
-         true <- Portable.keyword?(index_options) do
+         true <- Portable.keyword?(index_options),
+         :ok <- Adapter.validate(Vettore, new: 1, put_many: 2, search: 3, close: 1) do
       native = [
         dimensions: Keyword.get(opts, :dimensions),
         metric: :cosine,
@@ -39,7 +44,8 @@ defmodule Spectre.SemanticCache.Vettore do
       |> Keyword.put(:search, {Index, native})
       |> super()
     else
-      _invalid -> {:error, :invalid_vettore_cache_options}
+      false -> {:error, :invalid_vettore_cache_options}
+      {:error, _reason} = error -> error
     end
   end
 end

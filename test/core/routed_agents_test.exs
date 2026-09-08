@@ -29,7 +29,8 @@ defmodule Spectre.Core.RoutedAgentsTest do
        c do
     {result, route, candidate} = prepare(c, "refund 125")
     assert route.template == "support/billing/refund"
-    assert c.definition.body["components"]["support/billing"] == RefundSkill.definition().ref
+    assert {:ok, _templates, components} = Spectre.Agent.declarations(c.definition)
+    assert components["support/billing"] == RefundSkill.definition().ref
     assert {:ok, proposal} = Instance.propose(c.instance, candidate)
     assert_completed(c, result.turn, proposal, 125)
   end

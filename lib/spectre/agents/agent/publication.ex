@@ -10,6 +10,7 @@ defmodule Spectre.Agent.Publication do
   """
 
   alias Spectre.{Adapter, Definition, Portable}
+  alias Spectre.Agent.{Collection, Wiring}
 
   @doc "Builds a Definition without choosing publication metadata or activating it."
   def definition(module, opts) do
@@ -112,7 +113,7 @@ defmodule Spectre.Agent.Publication do
   end
 
   defp components(declared, supplied) when is_map(supplied) and not is_struct(supplied) do
-    with {:ok, supplied} <- Spectre.Agent.Wiring.registry(supplied) do
+    with {:ok, supplied} <- Wiring.registry(supplied) do
       verify_components(declared, supplied)
     end
   end
@@ -121,20 +122,18 @@ defmodule Spectre.Agent.Publication do
 
   defp verify_components(declared, supplied) do
     if Enum.sort(Map.keys(declared)) === Enum.sort(Map.keys(supplied)) do
-      Enum.reduce_while(declared, {:ok, %{}}, fn {name, entry}, {:ok, children} ->
-        case verify(entry.module, supplied[name]) do
-          {:ok, plan, _children} when plan === entry.plan ->
-            {:cont, {:ok, Map.put(children, name, supplied[name])}}
-
-          {:ok, _changed, _children} ->
-            {:halt, {:error, {:component_code_changed, name}}}
-
-          {:error, reason} ->
-            {:halt, {:error, {:component_definition, name, reason}}}
-        end
-      end)
+      with {:ok, children} <- Collection.map(declared, &verify_component(&1, supplied)),
+           do: {:ok, Map.new(children)}
     else
       {:error, {:component_definitions_required, Enum.sort(Map.keys(declared))}}
+    end
+  end
+
+  defp verify_component({name, entry}, supplied) do
+    case verify(entry.module, supplied[name]) do
+      {:ok, plan, _children} when plan === entry.plan -> {:ok, {name, supplied[name]}}
+      {:ok, _changed, _children} -> {:error, {:component_code_changed, name}}
+      {:error, reason} -> {:error, {:component_definition, name, reason}}
     end
   end
 
@@ -194,59 +193,59 @@ defmodule Spectre.Agent.Publication do
         end
       end)
 
-    Enum.reduce(plan.flows, ports, fn {_name, flow}, ports ->
-      ports =
-        Enum.reduce(flow.pipelines, ports, &require_port(&2, :pipelines, "pipelines/" <> &1))
+    Enum.reduce(plan.flows, ports, &flow_ports(&1, &2, plan.settings))
+  end
 
-      via = if flow.routing, do: flow.routing["via"], else: []
+  defp flow_ports({_name, flow}, ports, settings) do
+    ports = Enum.reduce(flow.pipelines, ports, &require_port(&2, :pipelines, "pipelines/" <> &1))
+    via = if flow.routing, do: flow.routing["via"], else: []
+    ports = Enum.reduce(via, ports, &method_port/2)
+    Enum.reduce(flow.binding, ports, &bound_port(&1, &2, settings))
+  end
 
-      ports =
-        via
-        |> Enum.reject(&(&1 in ["regex", "string_bag", "bag_distance", "jaro"]))
-        |> Enum.reduce(ports, fn method, ports ->
-          key = "router/" <> method
+  defp method_port(method, ports) when method in ["regex", "string_bag", "bag_distance", "jaro"],
+    do: ports
 
-          if method in ["semantic_cache", "local_classifier", "llm_classifier"] do
-            # The ordinary bridge is supplied by the flow binding. An explicit
-            # host matcher may replace it, using the same registry as :binary.
-            Map.put_new(ports, key, %{
-              kind: :router,
-              module: nil,
-              options: [],
-              origin: key,
-              optional: true
-            })
-          else
-            require_port(ports, :router, key)
-          end
-        end)
+  defp method_port(method, ports) do
+    key = "router/" <> method
 
-      Enum.reduce(flow.binding, ports, fn {kind, name}, ports ->
-        kind = if kind == :cache, do: :semantic_cache, else: kind
-        key = Atom.to_string(kind) <> "/" <> to_string(name)
-        ports = require_port(ports, kind, key)
+    if method in ["semantic_cache", "local_classifier", "llm_classifier"] do
+      # Flow bindings provide the ordinary bridges. The host may explicitly
+      # replace one through the same registry used by custom matchers.
+      Map.put_new(ports, key, %{
+        kind: :router,
+        module: nil,
+        options: [],
+        origin: key,
+        optional: true
+      })
+    else
+      require_port(ports, :router, key)
+    end
+  end
 
-        config = Map.get(plan.settings, key, %{})
+  defp bound_port({kind, name}, ports, settings) do
+    kind = if kind == :cache, do: :semantic_cache, else: kind
+    key = Atom.to_string(kind) <> "/" <> to_string(name)
+    ports = require_port(ports, kind, key)
+    config = Map.get(settings, key, %{})
 
-        if kind == :classifier and Map.has_key?(config, :class) do
-          ports = Map.update!(ports, key, &Map.put(&1, :mode, :governed))
+    if kind == :classifier and Map.has_key?(config, :class),
+      do: classifier_port(ports, key, config),
+      else: ports
+  end
 
-          case Map.get(config, :via) do
-            nil ->
-              ports
+  defp classifier_port(ports, key, config) do
+    ports = Map.update!(ports, key, &Map.put(&1, :mode, :governed))
 
-            via ->
-              target = "request/" <> to_string(via)
+    case Map.get(config, :via) do
+      nil ->
+        ports
 
-              ports
-              |> require_port(:request, target)
-              |> Map.update!(key, &Map.put(&1, :via, target))
-          end
-        else
-          ports
-        end
-      end)
-    end)
+      via ->
+        target = "request/" <> to_string(via)
+        ports |> require_port(:request, target) |> Map.update!(key, &Map.put(&1, :via, target))
+    end
   end
 
   defp require_port(ports, kind, name),

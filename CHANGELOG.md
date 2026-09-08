@@ -14,6 +14,14 @@ It is not yet performance-qualified or declared stable.
 
 ### Added
 
+- `mix spectre.gen.agent` scaffolds an Agent, separate Router, compiled greeting
+  prompt, executable contract test and JSONL routing cases, with dry-run and
+  overwrite protection. It creates no authority, provider wiring or runtime.
+- `Spectre.Eval` and `mix spectre.eval` check routing expectations with bounded
+  failure reports, including misses, ambiguity, pipeline halts and explicit
+  adapter errors. Prepared cache/classifier adapters can be reused offline.
+- `Spectre.Agent.render_prompt/3` exposes the existing bounded template renderer
+  for local drafts without model calls, delivery or implicit ask injections.
 - Governed-act core: Genesis, Principal, Mandate, Evidence, Candidate, Decision,
   Act, Attempt, Outcome, Duty and conserved Meter accounting.
 - One logical append-only ledger per Domain, CAS and idempotent batch identity,
@@ -48,7 +56,6 @@ It is not yet performance-qualified or declared stable.
   explicitly defer occurrence fields, without preauthorizing Candidates.
   Pure Foundation assembly derives Genesis links and reuses bootstrap semantics;
   all foundation choices and external recognition remain the host's responsibility.
-  `Error.message/1` describes known failures without serializing their contents.
 - Canonical audit exports and CLI. Later observation reports distinguish pending
   Duty causes and expired dispatches from records present at capture; omissions
   already required at capture remain errors.
@@ -991,11 +998,11 @@ It is not yet performance-qualified or declared stable.
   attaches to adapter calls (plus any `spectre_*`-prefixed key), so LLM
   adapters forward provider options without maintaining hand-written
   allowlists. `Spectre.LLM.runtime_opt_keys/0` exposes the list.
-- `Spectre.Router.SemanticCache.learn_eligibility/2` and `learnable?/2` own
+- The then-current cache APIs `learn_eligibility/2` and `learnable?/2` own
   the learn-safety rules hosts used to re-implement: routes served from the
   cache itself, rules without `learn: true`, and routes staging
   policy-protected actions are skipped with an explaining reason.
-- `Spectre.Router.SemanticCache.update_example/4` edits an online learned
+- The then-current cache API `update_example/4` edits an online learned
   example in place (`:text` re-embeds through the configured adapter,
   `:label` must stay cacheable, `:verified` toggles review state), replacing
   the snapshot round-trip hosts used for edits. Custom cache adapters may

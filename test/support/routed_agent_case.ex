@@ -43,6 +43,7 @@ defmodule Spectre.Test.RoutedAgentCase do
   alias Spectre.Mind.Turn
   alias Spectre.Router.Rule
   alias Spectre.Store.Memory, as: ApplicationStore
+  alias Spectre.Test.Authoring
   alias Spectre.V04Test.{Fixture, Runtime}
 
   defmodule RefundSkill do
@@ -264,8 +265,8 @@ defmodule Spectre.Test.RoutedAgentCase do
     definition = Map.get(tags, :agent, SkilledAgent).definition()
     first_template = if tags[:agent] == PlainAgent, do: "refund", else: "support/billing/refund"
     second_template = if tags[:agent] == PlainAgent, do: "refund", else: "retention/refund"
-    template = Map.fetch!(Spectre.Test.Authoring.requests(definition), first_template)
-    body = Spectre.Test.Authoring.replace_requests(definition, %{"revised/refund" => template})
+    template = Map.fetch!(Authoring.requests(definition), first_template)
+    body = Authoring.replace_requests(definition, %{"revised_refund" => template})
 
     {:ok, successor} =
       Spectre.Morph.prepare(definition, [%{op: :put, path: [], value: body}], Runtime.now())
@@ -333,7 +334,7 @@ defmodule Spectre.Test.RoutedAgentCase do
 
     configurations = %{
       definition.ref => {definition, rules(first_template, second_template)},
-      successor.ref => {successor, rules("revised/refund", "revised/refund")}
+      successor.ref => {successor, rules("revised_refund", "revised_refund")}
     }
 
     {:ok, input_pipeline} = Pipeline.new([{NormalizeText, case: :downcase}])

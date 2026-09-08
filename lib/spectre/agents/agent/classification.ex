@@ -7,7 +7,7 @@ defmodule Spectre.Agent.Classification do
   No model call, download, retry or provider selection occurs in this module.
   """
   use Spectre.Router.Adapter
-  alias Spectre.Agent.Turn
+  alias Spectre.Agent.{Publication, Turn}
   alias Spectre.Router
 
   @impl true
@@ -76,9 +76,7 @@ defmodule Spectre.Agent.Classification do
     for {name, route} <- flow.routes,
         route.rule["match"]["llm_classifier"] === true,
         into: %{},
-        do:
-          {Spectre.Agent.Publication.rule_ref(flow_name, name),
-           %{to: name, match: %{llm_classifier: true}}}
+        do: {Publication.rule_ref(flow_name, name), %{to: name, match: %{llm_classifier: true}}}
   end
 
   defp nominations(labels, allowed) when is_list(labels) and length(labels) <= 32 do

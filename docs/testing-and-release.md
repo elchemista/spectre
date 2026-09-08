@@ -4,6 +4,98 @@ The useful question is not "how many tests?" but "which invalid history,
 authority change or host failure would this test detect?" Coverage locates
 unexercised code; it does not establish the four GAM laws.
 
+## Scaffold a local agent
+
+From the host Mix application (inside the selected child for umbrellas):
+
+```sh
+mix spectre.gen.agent MyApp.Hello --dry-run
+mix spectre.gen.agent MyApp.Hello
+mix test test/my_app/hello_test.exs
+mix spectre.routes MyApp.Hello
+mix spectre.eval MyApp.Hello test/my_app/hello_routes.jsonl --flow greetings
+```
+
+The generator writes five ordinary files:
+
+| File | Purpose |
+| --- | --- |
+| `lib/my_app/hello.ex` | Agent callbacks that prepare a local greeting in `state.draft` |
+| `lib/my_app/hello/router.ex` | `:greetings` flow with regex greeting and string-bag help routes |
+| `lib/my_app/hello/prompts/hello.txt.eex` | EEx text compiled through the normal `prompt_root` / `prompt` declarations |
+| `test/my_app/hello_test.exs` | Executable local routing/handler contract tests |
+| `test/my_app/hello_routes.jsonl` | Example inputs and expected routes for regression checks |
+
+`MyApp.Hello` determines the paths and authoring identity. `--dry-run` reports
+targets without writing; a collision refuses the whole scaffold before any
+write. There is no force-overwrite option. No application config, dependency,
+Surface, Mandate, credential, Domain or supervisor is generated.
+
+The greeting uses `Spectre.Agent.render_prompt/3`: a module, declared prompt
+name and assigns map produce `{:ok, text}` or an error. It renders one template,
+not ask/flow injections; it does not call a model. The ordinary `{:ask, ...}`
+path still composes injections/context and prepares a governed inference request.
+Returning `{:ok, state}` only updates local state. Delivery remains a separate
+governed request if it crosses the application's protected boundary.
+
+The generated tests deliberately need no Scope: they exercise pure authoring
+callbacks, not authenticated admission. To run an Instance, follow
+[host setup](host-setup.md) to activate the exact Definition and provide a Scope.
+There is no parallel Hello World runtime that bypasses those checks.
+
+## Check routing behavior before changing a classifier
+
+`spectre.routes` displays structure; `spectre.eval` measures agreement with
+explicit examples. An example dataset looks like this:
+
+```jsonl
+{"input":"hello Ada","expected":{"status":"matched","rule":"greetings/hello","via":"regex"}}
+{"input":"what can you do","expected":{"status":"matched","rule":"greetings/help"}}
+{"input":"refund order 42","expected":{"status":"no_match"}}
+```
+
+Use qualified **rule** names printed by `spectre.routes`, not kernel classes.
+`via` is optional: include it only when changing the matching method should
+itself count as a regression. Other expected statuses are `ambiguous` with a
+`rules` list, `halted`, `unrouted`, and `error`. Ambiguity compares the rule set,
+not its order. A callback failure is not a miss. Malformed and empty datasets
+fail the command; they cannot produce a green zero-case report.
+
+`--flow greetings` is mandatory. `--max-cases 10000` rejects oversized datasets
+rather than silently testing a prefix. `--max-failures 20` limits retained
+details, not the number of evaluated mismatches. The command prints totals and
+failed physical line numbers, then fails CI if any expectation differs. It
+does not print input, captures, vectors or private callback error messages.
+
+For custom adapters, semantic caches, pipelines or captured classifier outputs,
+use `Spectre.Eval.run/3` / `run_file/3` from an application test with its prepared
+Router or `Spectre.Agent.Flow`. `Eval.prepare/3` can also prepare current compiled
+Agent, Router or nested Skill code with explicit `:adapters` and `:pipelines`.
+The CLI supplies neither wiring nor implicit application startup.
+
+<!-- spectre:example routing_evaluation -->
+```elixir
+{:ok, router} = Spectre.Router.new(%{
+  "orders/lookup" => %{to: "lookup", match: %{regex: ~r/^order [0-9]+$/}},
+  "orders/help" => %{to: "help", match: %{string_bag: ["help with my order"]}}
+}, via: [:regex, :string_bag])
+
+cases = [
+  %{"input" => "order 2041", "expected" => %{"status" => "matched", "rule" => "orders/lookup"}},
+  %{"input" => "weather tomorrow", "expected" => %{"status" => "no_match"}}
+]
+{:ok, report} = Spectre.Eval.run(router, cases)
+0 = report.failed
+```
+
+`run/3` also accepts a function of one input returning the normal routing result.
+That lets a test replay recorded classifier nominations through the existing
+`Spectre.Agent.Classification` bridge or query a preloaded cache. Captured
+vectors must use the same embedding profile as that cache. The harness never
+trains/promotes cache entries, obtains embeddings, calls models, runs handlers,
+or proves GAM authorization. Explicit host callbacks remain ordinary code:
+the harness does not sandbox them or establish that they are pure.
+
 ## Development checks
 
 From the repository, with Elixir `~> 1.19` and the supported OTP version:
@@ -76,6 +168,30 @@ Use `test/support/full_agent_case.ex` and `test/support/routed_agent_case.ex`
 for common host wiring and ledger/accounting assertions. Keep scenario-specific
 assertions alongside their tests, so the property under examination stays visible.
 
+### Real semantic-cache integration
+
+`vettore` and `ex_fastembed` are test-only dependencies in the root project.
+There is no separate adapter package or alternate Mix configuration. The first
+test build compiles native code and requires a Rust toolchain; the first model
+load downloads `BAAI/bge-small-en-v1.5` (384 dimensions). Reuse `.fastembed_cache/`
+between runs. Models and compiled native libraries are not Spectre runtime
+dependencies or release artifacts.
+
+```sh
+MIX_ENV=test mix deps.get
+mix test test/agents/semantic_cache_vettore_test.exs \
+  test/agents/semantic_cache_real_embeddings_test.exs \
+  test/agents/semantic_cache_real_agent_test.exs \
+  test/agents/optional_cache_dependencies_test.exs --seed 42
+```
+
+These tests also run in the ordinary full suite. Flat/HNSW searches use real
+native indexes; held-out customer paraphrases use actual model output, not
+hand-written vectors. The complete-agent tests continue through governed
+admission, execution, recorded Outcome and offline audit. A missing model or
+failed download is a test failure, never a silent skip. Separate VM tests check
+that Spectre and the Exact cache still work without either native dependency.
+
 ## Faults and differential checks
 
 Inject failure before commit, after durable commit but before acknowledgement,
@@ -115,10 +231,50 @@ sample counts and whether explicit GC changed the measurement.
 ## Documentation is an executable artifact
 
 The release-artifact tests check that published guides exist, are included in
-the package and do not link to missing local files. Marked self-contained guide
-examples are executed; wiring fragments are explicitly labeled as requiring
-host-provisioned values. Keep code examples on the current branch's public API,
-not on assumptions about the removed runtime.
+the package and do not link to missing local files or Markdown sections.
+**Every fenced Elixir block**
+in the published guides must have a unique `spectre:example` marker and an
+explicit test context in `test/core/documentation_examples_test.exs` or
+`test/core/documentation_recipes_test.exs`. Removing
+a marker fails verification rather than silently dropping the example.
+Wiring fragments execute with explicit test-host foundations and resources;
+Agent/Stack body fragments compile inside the declared module context.
+The tests render the distributed prompt file, exercise custom/semantic routing,
+start the real Domain and verify admitted, undecidable and pending paths.
+They do not create a permissive production foundation or simulate a provider.
+
+The complete authoring listing in the recipes is checked byte-for-byte against
+`examples/authoring.exs` and compiled in that file's declared location, beside
+its prompt directory. Links to the listing target the guide, not a raw `.exs`
+path that would work on GitHub but be missing from generated HexDocs.
+
+After generation, `mix run scripts/check_documentation_links.exs doc` checks
+local files and fragments in the actual HTML site. CI runs it too. This catches
+relative source links and callback anchors that a successful ExDoc build alone
+can miss. It does not certify external websites or unpublished source commits.
+
+While 0.4 is unreleased, source links target its development branch. After the
+release commit/tag is published, generate release docs with the explicit ref:
+
+```sh
+SPECTRE_DOCS_REF=v0.4.0 mix docs --warnings-as-errors
+```
+
+`SPECTRE_DOCS_REF` only changes documentation source links. It does not select
+an Agent Definition, change runtime behavior or create/push a Git tag. New
+source files are accessible remotely only after the host repository is pushed.
+
+CI uses the root `mix.lock` for all test dependencies. The ordinary matrix runs
+real embeddings and the >=60-second Worker/Vigil/Skill lifecycle, with a cached
+model download and no separate checkout or opt-in lane. The benchmark smoke job
+runs the development Benchee suite and uploads latency/ledger/memory results;
+it is not a throughput guarantee on a shared runner. Coverage remains a separate
+gate at the configured threshold, not evidence that every contract is correct.
+
+The package job compares the unpacked release byte-for-byte with `mix.exs`'s
+file manifest. It also compiles in a fresh production directory and starts
+Spectre/Exact with Vettore and ExFastembed absent from the code path. Residual
+native files in a developer's `_build` cannot make this isolation check pass.
 
 ExDoc and Hex packaging must both succeed. The landing page, capability
 inventory and trust assumptions must describe the same version. A clean

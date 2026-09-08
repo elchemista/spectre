@@ -175,6 +175,10 @@ defmodule Spectre.Core.MeterStateBoundaryTest do
           {Map.put(data, "outcome_ref", no_effect.ref),
            :meter_recontainment_outcome_not_correction},
           {Map.put(data, "recontained", %{}), :invalid_meter_recontainment_partition},
+          {Map.merge(data, %{
+             "recontained" => %{c.f.refs.meter => 50},
+             "deficits" => %{c.f.refs.meter => 50}
+           }), :meter_recontainment_balance_mismatch},
           {Map.merge(data, %{"recontained" => %{}, "deficits" => c.act.reservations}),
            :meter_recontainment_balance_mismatch}
         ] do

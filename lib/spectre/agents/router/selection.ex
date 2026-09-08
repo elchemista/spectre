@@ -1,7 +1,8 @@
 defmodule Spectre.Router.Selection do
   @moduledoc """
   A strategy's selection, not a GAM Decision. It carries no Mandate or Grant.
-  `evidence/4` can describe the selection as derived Evidence; the caller must
+
+  `evidence/4` describes the selection as derived Evidence; the caller must
   record it through the ordinary derivation API before proposing with it.
   """
   alias Spectre.Mind
@@ -46,14 +47,22 @@ defmodule Spectre.Router.Selection do
           "router_ref" => selection.router_ref,
           "turn_ref" => turn.ref
         })
-        |> Map.put(:payload, %{
-          "rule" => selection.rule,
-          "candidate" => selection.candidate,
-          "via" => selection.via,
-          "score" => selection.score,
-          "source" => source(selection)
-        })
+        |> Map.put(:payload, payload(selection))
       )
+    end
+  end
+
+  defp payload(selection) do
+    payload = %{
+      "rule" => selection.rule,
+      "candidate" => selection.candidate,
+      "via" => selection.via,
+      "score" => selection.score
+    }
+
+    case source(selection) do
+      source when map_size(source) == 0 -> payload
+      source -> Map.put(payload, "source", source)
     end
   end
 

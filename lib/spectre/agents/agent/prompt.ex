@@ -51,8 +51,7 @@ defmodule Spectre.Agent.Prompt do
   defp parts(owner, names, role, assigns) do
     Collection.map(names, fn name ->
       with {:ok, template} <- Map.fetch(owner.plan.prompts, to_string(name)),
-           {:ok, text} <- render_source(owner.module, to_string(name), assigns),
-           true <- is_binary(text) and byte_size(text) <= 65_536 and String.valid?(text) do
+           {:ok, text} <- render_template(owner.module, name, assigns) do
         {:ok,
          %{
            "role" => role,
@@ -62,18 +61,29 @@ defmodule Spectre.Agent.Prompt do
          }}
       else
         :error -> {:error, {:unknown_prompt, name}}
-        false -> {:error, {:invalid_rendered_prompt, name}}
         {:error, _} = error -> error
       end
     end)
   end
 
-  defp render_source(module, name, assigns) do
-    case Adapter.invoke(module, :__spectre_render__, [name, assigns]) do
-      {:ok, {:error, _} = error} -> error
-      other -> other
+  @doc false
+  def render_template(module, name, assigns)
+      when (is_atom(name) or is_binary(name)) and is_map(assigns) and not is_struct(assigns) do
+    with :ok <- Adapter.validate(module, __spectre_render__: 2),
+         {:ok, reply} <- Adapter.invoke(module, :__spectre_render__, [to_string(name), assigns]) do
+      rendered(reply, name)
     end
   end
+
+  def render_template(_module, _name, _assigns), do: {:error, :invalid_prompt_assigns}
+
+  defp rendered({:error, _} = error, _name), do: error
+
+  defp rendered(text, name) when is_binary(text) and byte_size(text) <= 65_536 do
+    if String.valid?(text), do: {:ok, text}, else: {:error, {:invalid_rendered_prompt, name}}
+  end
+
+  defp rendered(_reply, name), do: {:error, {:invalid_rendered_prompt, name}}
 
   defp budget(parts) do
     if length(parts) <= 64 and Enum.reduce(parts, 0, &(byte_size(&1["text"]) + &2)) <= 65_536,

@@ -6,7 +6,7 @@ defmodule Spectre.Test.Authoring do
   # do not activate a Definition, mint authority or fake a governed result.
   defmacro __using__(_opts) do
     quote do
-      def definition, do: Spectre.Test.Authoring.publish(__MODULE__)
+      def definition, do: unquote(__MODULE__).publish(__MODULE__)
 
       def candidate(name, turn, attrs),
         do: Spectre.Agent.candidate(definition(), name, turn, attrs)

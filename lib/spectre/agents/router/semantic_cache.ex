@@ -125,7 +125,7 @@ defmodule Spectre.Router.SemanticCache do
   def lookup(%__MODULE__{} = cache, value) do
     with {:ok, query} <- Configuration.query(value),
          :ok <-
-           Spectre.Router.SemanticCache.Example.profile(
+           Example.profile(
              query.vector,
              query.profile_ref,
              cache.binding.profile_ref

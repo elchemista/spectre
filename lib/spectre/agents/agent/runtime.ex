@@ -3,7 +3,7 @@ defmodule Spectre.Agent.Runtime do
 
   # This is data and functions used by Instance's existing temporary worker,
   # not another process, scheduler, supervisor or admission implementation.
-  alias Spectre.{Adapter, Id, Portable}
+  alias Spectre.{Adapter, Candidate, Id, Portable}
 
   alias Spectre.Agent.{
     Classification,
@@ -20,7 +20,9 @@ defmodule Spectre.Agent.Runtime do
     Wiring
   }
 
-  alias Spectre.Instance.Request
+  alias Spectre.Canonical.Value
+  alias Spectre.Instance.{Operation, Request}
+  alias Spectre.Router.{Rule, Selection}
 
   @doc false
   def new(
@@ -71,7 +73,7 @@ defmodule Spectre.Agent.Runtime do
              :handler_turn
            ),
          {:ok, owner, routing} <- select_flow(runtime, opts[:flow]),
-         :ok <- Spectre.Canonical.Value.validate(input, max_bytes: 65_536),
+         :ok <- Value.validate(input, max_bytes: 65_536),
          {:ok, surface} <- Spectre.surface(snapshot.scope),
          {:ok, context} <- Context.load(owner, runtime.wiring, input),
          {:ok, refs} <- Context.evidence_refs(context),
@@ -115,16 +117,18 @@ defmodule Spectre.Agent.Runtime do
       input = if callback == :handle_turn, do: message, else: input
       value = value(runtime, owner, snapshot.value)
 
-      with {:ok, turn} <- record_selection(turn, snapshot.scope) do
-        apply_callback(
-          owner,
-          callback,
-          [input, turn, value],
-          %{runtime | current: turn},
-          snapshot
-        )
-      else
-        {:error, _} = error -> {:authoring, error, snapshot.value, runtime}
+      case record_selection(turn, snapshot.scope) do
+        {:ok, turn} ->
+          apply_callback(
+            owner,
+            callback,
+            [input, turn, value],
+            %{runtime | current: turn},
+            snapshot
+          )
+
+        {:error, _} = error ->
+          {:authoring, error, snapshot.value, runtime}
       end
     else
       {:error, _} = error -> {:reply, error}
@@ -141,23 +145,60 @@ defmodule Spectre.Agent.Runtime do
          {:ok, proposal} <-
            Observer.span(runtime, :submission, request_metadata(request, runtime), fn ->
              Spectre.propose(snapshot.scope, request.candidate, opts)
-           end),
-         {:ok, result} <-
-           Observer.span(runtime, :await_result, request_metadata(request, runtime), fn ->
-             await_result(proposal, snapshot.scope)
-           end),
-         {:ok, _scope} <- Spectre.Instance.Operation.current_scope(snapshot.scope),
+           end) do
+      finish_request(request, proposal, snapshot)
+    else
+      # A queued turn may have replaced the request's originating state since
+      # the owner accepted it. Never submit it using another turn's context.
+      false -> {:reply, {:error, :stale_instance_request}}
+      {:error, _} = error -> {:reply, error}
+    end
+  end
+
+  @doc false
+  def recover(request, proposal, snapshot) do
+    # Recovery only rereads this durable occurrence; it never calls propose.
+    # There is no polling loop or sleeping worker holding the mutation slot.
+    case Spectre.recover_proposal(snapshot.scope, proposal) do
+      {:ok, proposal} -> finish_request(request, proposal, snapshot)
+      {:error, _} = error -> {:reply, error}
+    end
+  end
+
+  defp finish_request(request, proposal, snapshot) do
+    case Result.from_proposal(proposal, snapshot.scope) do
+      {:ok, %{status: :pending}} ->
+        {:deferred, request, proposal}
+
+      {:ok, result} ->
+        result =
+          Map.merge(result, %{
+            operation: request.operation,
+            request_ref: request.ref,
+            turn_ref: request.turn_ref
+          })
+
+        if bound_request?(snapshot.authoring, request, snapshot.instance_ref, snapshot.revision) do
+          continue_result(request, result, snapshot)
+        else
+          # The effect remains a fact, but its old handler must not overwrite a
+          # newer turn's state. Return the facts with the explicit local fence.
+          {:reply, {:error, {:instance_continuation_superseded, result}}}
+        end
+
+      {:error, _} = error ->
+        {:reply, error}
+    end
+  end
+
+  defp continue_result(request, result, snapshot) do
+    runtime = snapshot.authoring
+
+    with {:ok, _scope} <- Operation.current_scope(snapshot.scope),
          {:ok, _plan, _children} <- Publication.verify(runtime.module, runtime.definition),
          refs = result_evidence_refs(result.details),
          {:ok, continued} <-
            Spectre.continue_turn(snapshot.scope, runtime.current.mind_turn, refs) do
-      result =
-        Map.merge(result, %{
-          operation: request.operation,
-          request_ref: request.ref,
-          turn_ref: request.turn_ref
-        })
-
       turn = %{runtime.current | requests: [], result: result, mind_turn: continued}
       owner = Map.fetch!(runtime.owners, turn.owner)
       turn = classified_turn(turn, result)
@@ -182,29 +223,9 @@ defmodule Spectre.Agent.Runtime do
       args = [request.operation, result, turn, value(runtime, owner, snapshot.value)]
       apply_callback(owner, :handle_result, args, runtime, snapshot)
     else
-      # A queued turn may have replaced the request's originating state since
-      # the owner accepted it. Never submit it using another turn's context.
-      false -> {:reply, {:error, :stale_instance_request}}
       # No exception or failed callback re-submits this occurrence. The original
       # result remains durable even if code or Scope changed while awaiting it.
       {:error, _} = error -> {:reply, error}
-    end
-  end
-
-  defp await_result(proposal, scope) do
-    case Result.from_proposal(proposal, scope) do
-      {:ok, %{status: :pending}} ->
-        # This is a bounded-frequency read in the existing temporary worker.
-        # It never retries submission/execution, and cannot block state readers.
-        receive do
-        after
-          1000 ->
-            with {:ok, proposal} <- Spectre.recover_proposal(scope, proposal),
-                 do: await_result(proposal, scope)
-        end
-
-      complete ->
-        complete
     end
   end
 
@@ -306,11 +327,11 @@ defmodule Spectre.Agent.Runtime do
 
   defp publish(value, owner, runtime, snapshot, requests) do
     with :ok <-
-           Spectre.Canonical.Value.validate(
-             Enum.map(requests, &Spectre.Candidate.canonical(&1.candidate)),
+           Value.validate(
+             Enum.map(requests, &Candidate.canonical(&1.candidate)),
              max_bytes: 262_144
            ),
-         {:ok, _scope} <- Spectre.Instance.Operation.current_scope(snapshot.scope) do
+         {:ok, _scope} <- Operation.current_scope(snapshot.scope) do
       turn = %{runtime.current | requests: requests}
       # At most 32 alternatives: this list is both the public view and the
       # owner's exact-ticket check, not a second mutable readiness registry.
@@ -397,7 +418,7 @@ defmodule Spectre.Agent.Runtime do
 
   defp record_selection(turn, scope) do
     with {:ok, evidence} <-
-           Spectre.Router.Selection.evidence(
+           Selection.evidence(
              turn.selection,
              turn.mind_turn,
              turn.mind_turn.opened_at
@@ -426,7 +447,9 @@ defmodule Spectre.Agent.Runtime do
   defp select_flow(runtime, nil) do
     owner = runtime.owners[""]
 
-    if owner.plan.kind in [:worker, :vigil],
+    # An agent without routes is an ordinary input handler. Once flows exist,
+    # selecting one remains the host's decision; do not invent a default.
+    if owner.plan.kind in [:worker, :vigil] or map_size(runtime.flows) == 0,
       do: {:ok, owner, nil},
       else: {:error, :agent_flow_required}
   end
@@ -530,7 +553,7 @@ defmodule Spectre.Agent.Runtime do
       {name, value}, {:ok, found} when is_binary(name) or is_atom(name) ->
         name = String.trim_trailing(to_string(name), "/")
 
-        with :ok <- Spectre.Router.Rule.path(name),
+        with :ok <- Rule.path(name),
              false <- Map.has_key?(found, name <> "/") do
           {:cont, {:ok, Map.put(found, name <> "/", value)}}
         else
@@ -547,18 +570,18 @@ defmodule Spectre.Agent.Runtime do
 
     if Map.keys(states) -- expected == [] and
          (not restored? or Enum.sort(Map.keys(states)) == Enum.sort(expected)) do
-      Enum.reduce_while(Map.delete(owners, ""), {:ok, %{}}, fn {name, owner}, {:ok, result} ->
-        case initialize(owner.module, Map.get(states, name, %{}), restored?) do
-          {:ok, value} ->
-            state = if restored?, do: value, else: %{revision: 0, value: value}
-            {:cont, {:ok, Map.put(result, name, state)}}
-
-          error ->
-            {:halt, error}
-        end
-      end)
+      with {:ok, components} <-
+             Collection.map(Map.delete(owners, ""), &initialize_component(&1, states, restored?)),
+           do: {:ok, Map.new(components)}
     else
       {:error, :component_state_names_mismatch}
+    end
+  end
+
+  defp initialize_component({name, owner}, states, restored?) do
+    with {:ok, value} <- initialize(owner.module, Map.get(states, name, %{}), restored?) do
+      state = if restored?, do: value, else: %{revision: 0, value: value}
+      {:ok, {name, state}}
     end
   end
 

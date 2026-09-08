@@ -6,8 +6,8 @@ defmodule Spectre.Agent.Result do
   absent Outcome does not prove either success or failure. Fallback facts stay
   separate from the primary result. This module performs no executor retry.
   """
-  alias Spectre.{Outcome, Scope}
   alias Spectre.Attempt.Runner
+  alias Spectre.{Outcome, Scope}
   alias Spectre.Proposal.Result, as: Proposal
 
   @doc "Projects a governed result; verifies dispatch facts only when the result lacks an Outcome."

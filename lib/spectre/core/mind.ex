@@ -7,21 +7,21 @@ defmodule Spectre.Mind do
   proposal until each Candidate independently crosses the kernel boundary.
 
   `use Spectre.Mind, ref: "mind:my-app:v1"` declares the behaviour and an
-  overridable `ref/0`. Implement `deliberate/2` yourself. When this stateless
+  overridable `c:ref/0`. Implement `c:deliberate/2` yourself. When this stateless
   implementation is used by an Instance, the existing runtime bridge preserves
   its local state unchanged.
 
   For a stateful implementation, opt into `stateful: true` and implement
-  `deliberate/3`. The generated, overridable `deliberate/2` calls it with `nil`
+  `c:deliberate/3`. The generated, overridable `c:deliberate/2` calls it with `nil`
   state and discards the returned state. A stateless call therefore starts
   without local state; it never substitutes the options for that state. Your
-  callback must handle `nil` or you must override `deliberate/2` explicitly.
+  callback must handle `nil` or you must override `c:deliberate/2` explicitly.
 
   This helper does not choose an Agent, flow, router, pipeline or fallback,
   record derived Evidence, or submit Candidates. Those remain application
   decisions. Plain `@behaviour Spectre.Mind` implementations remain supported.
 
-  Without the helper, `deliberate/2` is always required; `deliberate/3` is an
+  Without the helper, `c:deliberate/2` is always required; `c:deliberate/3` is an
   optional, explicit stateful variant. Define both arities separately. Do not
   write `def deliberate(turn, state, opts \\ [])`: the generated `/2` would
   receive stateless turn options as `state`. The two callbacks also have

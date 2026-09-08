@@ -2,6 +2,10 @@ defmodule Spectre.Agent do
   @moduledoc """
   Handler-oriented agent authoring above the governed-act core.
 
+  Start here to write an agent; `Spectre` is the host's governance facade.
+  `mix spectre.gen.agent MyApp.Hello` generates a Router, Agent, local prompt
+  and runnable contract test. `Spectre.Eval` checks routing without a Domain.
+
       defmodule MyApp.Orders do
         use Spectre.Agent, namespace: "shop", name: "orders"
 
@@ -30,8 +34,8 @@ defmodule Spectre.Agent do
   """
 
   alias Spectre.Agent.{Declaration, Flow, Publication}
-  alias Spectre.{Definition, Mind}
   alias Spectre.Candidate.Template
+  alias Spectre.{Definition, Mind}
 
   @behaviour Spectre.Mind
   @impl Spectre.Mind
@@ -47,7 +51,8 @@ defmodule Spectre.Agent do
           | {:classify, atom(), term(), term()}
           | {:error, term(), term()}
   @callback init(term()) :: {:ok, term()} | {:error, term()}
-  @callback handle_turn(tuple(), Spectre.Agent.Turn.t(), term()) :: callback_result()
+  # Routed flows deliver a tagged message; a no-flow Agent receives its input.
+  @callback handle_turn(term(), Spectre.Agent.Turn.t(), term()) :: callback_result()
   @callback handle_work(term(), Spectre.Agent.Turn.t(), term()) :: callback_result()
   @callback handle_vigil(term(), Spectre.Agent.Turn.t(), term()) :: callback_result()
   @callback handle_result(tuple(), map(), Spectre.Agent.Turn.t(), term()) :: callback_result()
@@ -110,6 +115,18 @@ defmodule Spectre.Agent do
 
   @doc "Routes a confirmed classifier result using the originating flow's allowed labels."
   defdelegate route_result(turn, result), to: Spectre.Agent.Classification, as: :route_result
+
+  @doc """
+  Renders one compiled prompt as local text, without calling a model or delivering it.
+
+  Accepts a declared atom/string name and an assigns map; returns `{:ok, text}`
+  or `{:error, reason}`. Output is bounded to 65,536 UTF-8 bytes. This does not
+  apply ask/flow injections or load history: the ordinary `{:ask, ...}` path
+  does that. Rendering a draft does not authorize disclosure of its contents.
+  """
+  @spec render_prompt(module(), atom() | String.t(), map()) ::
+          {:ok, String.t()} | {:error, term()}
+  defdelegate render_prompt(module, name, assigns), to: Spectre.Agent.Prompt, as: :render_template
 
   @doc "Opens a declared component through the existing Scope/Instance lifecycle."
   defdelegate start_component(instance, kind, name, opts), to: Spectre.Agent.Component, as: :start

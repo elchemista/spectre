@@ -157,7 +157,7 @@ defmodule Spectre.Core.RoutedAgentsLifecycleTest do
     {first, old_route, old_candidate} = prepare(c, "money back", identity: "old")
     {second, new_route, new_candidate} = prepare(updated_c, "money back", identity: "new")
     assert old_route.template == "retention/refund"
-    assert new_route.template == "revised/refund"
+    assert new_route.template == "revised_refund"
     assert Instance.state(c.instance) == %{revision: 1, value: 1}
     assert Instance.state(updated) == %{revision: 1, value: 41}
     assert {:ok, proposal} = Instance.propose(c.instance, old_candidate)

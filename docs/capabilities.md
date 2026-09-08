@@ -19,9 +19,11 @@ defines what the implementation actually guarantees.
 | Package extension ports | `Spectre.Extension`, `install` | Explicit host wiring; not a Stack resolver |
 | Regex, string-bag, Jaro and custom routing | `Spectre.Router`, `Spectre.Router.Adapter` | Zone M selection only; `via: [:binary]` remains supported |
 | Independent named flows | `flow`, `pipe_through`, `Spectre.Agent.Flow` | Reusable host-prepared plans; no inherited routing, hidden handler policy or process per flow |
-| Bounded prompt composition | `Spectre.Prompt` | Ordered sources and conservative labels, no code evaluation or implicit inference |
+| Prompt templates and bounded composition | `prompt`, `prompt_root`, `inject`, `ask`; low-level `Spectre.Prompt` | Developer-owned EEx compiles at build time; context text is data, not evaluated template source; no implicit inference |
 | Structured proposal status | `Spectre.Proposal.Result.status/1` | Admission, Attempt and Outcome remain separate; absence is not failure |
 | Static authoring diagnostics | `Spectre.Surface.verify_definition/2`, `mix spectre.routes` | Deferred fields remain explicit; no preauthorization or sensitive error serialization |
+| Local agent scaffolding | `mix spectre.gen.agent` | Generates Router, Agent, prompt and runnable tests; never generates authority or provider wiring |
+| Offline routing regression | `Spectre.Eval`, `mix spectre.eval` | JSONL expectations, bounded mismatch reports; no handler execution, model call, learning or governance claims |
 | Pure foundation assembly | `Spectre.Foundation.new/2` | Derives Genesis links and reuses bootstrap checks; no authority defaults, verifier callback or I/O |
 | Input normalization and Evidence builders | `Spectre.Input.Pipeline`, Ingress/Mind/Executor builders | No prescribed audio/VoIP schema or media engine |
 | Behaviour authoring helpers | `use Spectre.Mind`, `Ingress`, `Attempt.Executor`, `Secret.Broker` | Explicit identities and opt-in Mind bridge; no authentication, execution or routing policy generated |
@@ -61,11 +63,12 @@ integrations cannot gain power through ordinary proposal data.
 | Long-lived memory | Verified State/history still resides in the sequencer heap | Granular fenced reads/deltas and backend integration; measure both process and store memory |
 | Durable projection checkpoints | Ledger suffix/paging exists, but no trusted persistent projection checkpoint | Validate prefix binding/version, refuse corruption and preserve independent audit |
 | Public query/control load | No general revision-fenced pagination or uniform bounded queues/timeouts | Bounded work with explicit uncertainty behavior, not silent truncation |
-| Authoring qualification | New request/ask/classify handlers and exact advance tickets are implemented; old DSL tests need migration | Real complete-agent lifecycle tests against these contracts |
+| Authoring qualification | Handler, ticket, native-cache and complete-agent lifecycle tests exist; deployment-specific qualification remains | Exercise actual host contracts and load, not just compiled declarations |
 | Skill planning policy | Namespaced substate, flows and explicit publication are implemented; applicability remains application policy | No implicit applicability evaluator or second authoritative Meter |
 | Work/Vigil scheduling | Reusable handlers and explicit Scope/Instance startup are implemented; timers/subscriptions remain host-owned | Lifecycle tests must include failed startup after a committed opening |
 | Advanced Morph | Changesets/diff/rollback and governed revision exist; no review/reflection/Forge workflow | Proposal-only review with governed activation, not arbitrary hot code or state replacement |
 | Observability qualification | Payload-free observer spans cover queue, handlers, submission/result and optional provider/history work | Measure host collectors under load; operational events are not Evidence |
+| Prism/Pulse integrations | Their separate 0.4 migrations are not complete here | Implement the published request/router/observer contracts and verify end-to-end wiring |
 | Release qualification | Full long-history/backend/load/retention qualification still open | Adversarial lifecycle tests, current measurements and all release artifacts/checks |
 
 Constitution revision is not an accidental hidden API: the Constitution is

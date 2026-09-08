@@ -11,12 +11,17 @@ defmodule Spectre.Core.DiagnosticToolsTest do
   @moduletag :tmp_dir
 
   defmodule PortAgent do
-    def ports do
-      %{
-        "payments/http_client" => {Spectre.Router.Matchers, []},
-        "payments/store" => {Spectre.Store.Memory, []}
-      }
+    use Spectre.Agent, namespace: "diagnostics", name: "ports"
+
+    flow :payments do
+      router(via: [:http_client, :store])
     end
+  end
+
+  defmodule PortMatcher do
+    use Spectre.Router.Adapter
+    @impl true
+    def evaluate(_request, _opts), do: {:ok, []}
   end
 
   defmodule BrokenPortAgent do
@@ -85,15 +90,13 @@ defmodule Spectre.Core.DiagnosticToolsTest do
     assert %{check: :boundary_declaration, reason: :boundary_declaration_not_checked} in report.warnings
   end
 
-  test "port checks report every missing connection and reject misspelled names", c do
-    wiring = %{PortAgent => %{"payments/http_clinet" => Spectre.Router.Matchers}}
+  test "port checks reject misspelled names before accepting host wiring", c do
+    wiring = %{PortAgent => %{router: %{http_clinet: PortMatcher}}}
     report = Doctor.check(Keyword.put(c.config, :port_wiring, wiring))
     refute report.ok?
 
     assert Enum.map(report.errors, & &1.reason) == [
-             {:unwired_extension_port, PortAgent, "payments/http_client"},
-             {:unwired_extension_port, PortAgent, "payments/store"},
-             {:undeclared_extension_port, PortAgent, "payments/http_clinet"}
+             {:invalid_agent_port_wiring, PortAgent, {:undeclared_ports, ["router/http_clinet"]}}
            ]
   end
 
@@ -103,8 +106,7 @@ defmodule Spectre.Core.DiagnosticToolsTest do
     # false claim that a socket is connected or a service was started.
     wiring = %{
       PortAgent => %{
-        "payments/http_client" => {Spectre.Router.Matchers, pool: :not_started},
-        "payments/store" => Spectre.Store.Memory
+        router: %{http_client: {PortMatcher, pool: :not_started}, store: PortMatcher}
       }
     }
 
@@ -120,8 +122,8 @@ defmodule Spectre.Core.DiagnosticToolsTest do
           nil,
           [],
           %{PortAgent => nil},
-          %{PortAgent => %{"payments/http_client" => {String, [:bad]}}},
-          %{PortAgent => %{"payments/http_client" => Spectre.UnavailablePort}},
+          %{PortAgent => %{router: %{http_client: {String, [:bad]}}}},
+          %{PortAgent => %{router: %{http_client: Spectre.UnavailablePort}}},
           %{BrokenPortAgent => %{}},
           %{Spectre.NotAnAgent => %{}}
         ] do
@@ -135,10 +137,10 @@ defmodule Spectre.Core.DiagnosticToolsTest do
   test "Doctor CLI identifies an agent's unwired port without resolving it", c do
     config = Keyword.put(c.config, :port_wiring, %{PortAgent => %{}})
     Application.put_env(:spectre, :doctor, config)
-    assert_raise Mix.Error, ~r/doctor found 2 error/, fn -> DoctorTask.run([]) end
+    assert_raise Mix.Error, ~r/doctor found 1 error/, fn -> DoctorTask.run([]) end
     assert_received {:mix_shell, :error, [message]}
-    assert message =~ "unwired_extension_port"
-    assert message =~ "payments/http_client"
+    assert message =~ "unwired_port"
+    assert message =~ "router/http_client"
     assert Application.fetch_env!(:spectre, :doctor) == config
   end
 

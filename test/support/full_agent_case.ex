@@ -24,6 +24,7 @@ defmodule Spectre.Test.FullAgentCase do
   alias Spectre.Attempt.Executor, as: ExecutorAPI
   alias Spectre.Domain.{Projection, Sequencer}
   alias Spectre.Mind.Turn
+  alias Spectre.Test.Authoring
   alias Spectre.V04Test.{Fixture, Runtime}
 
   defmodule PaymentSkill do
@@ -189,8 +190,8 @@ defmodule Spectre.Test.FullAgentCase do
     Runtime.reset(Fixture.default_now())
     authoring = Map.get(tags, :authoring, SkilledAgent)
     definition = authoring.definition()
-    template = Spectre.Test.Authoring.requests(definition) |> Map.values() |> hd()
-    body = Spectre.Test.Authoring.replace_requests(definition, %{"updated/refund" => template})
+    template = Authoring.requests(definition) |> Map.values() |> hd()
+    body = Authoring.replace_requests(definition, %{"updated_refund" => template})
     {:ok, successor} = Definition.revise(definition, body, Runtime.now())
     mind = Map.get(tags, :mind, StatefulMind)
     namespace = "full-agent-#{System.unique_integer([:positive])}"

@@ -2,8 +2,9 @@ defmodule Spectre.Agent.Wiring do
   @moduledoc false
 
   alias Spectre.{Adapter, Portable}
-  alias Spectre.Agent.{Flow, Publication}
+  alias Spectre.Agent.{Classification, Flow, Publication}
   alias Spectre.Input.Pipeline
+  alias Spectre.Router.Rule
   alias Spectre.Router.SemanticCache
 
   @groups [:router, :pipelines, :history, :memory, :semantic_cache, :classifier, :request]
@@ -73,25 +74,28 @@ defmodule Spectre.Agent.Wiring do
   end
 
   defp flow_adapter(:classifier, name, _definition, _flow, wiring, prefix, via) do
-    with {:ok, {module, opts}} <- fetch(wiring, prefix, :classifier, name) do
-      cond do
-        "local_classifier" in via and "llm_classifier" in via ->
-          {:error, :one_classifier_mode_per_flow}
-
-        "local_classifier" in via ->
-          with :ok <- Adapter.validate(module, evaluate: 2),
-               do: {:ok, "local_classifier", {module, opts}}
-
-        "llm_classifier" in via ->
-          with :ok <- Adapter.validate(module, prepare: 4),
-               do: {:ok, "llm_classifier", Spectre.Agent.Classification}
-
-        true ->
-          {:error, :classifier_method_required}
-      end
-    else
+    case fetch(wiring, prefix, :classifier, name) do
+      {:ok, {module, opts}} -> classifier_adapter(module, opts, via)
       :error -> {:error, {:unwired_classifier, name}}
       error -> error
+    end
+  end
+
+  defp classifier_adapter(module, opts, via) do
+    cond do
+      "local_classifier" in via and "llm_classifier" in via ->
+        {:error, :one_classifier_mode_per_flow}
+
+      "local_classifier" in via ->
+        with :ok <- Adapter.validate(module, evaluate: 2),
+             do: {:ok, "local_classifier", {module, opts}}
+
+      "llm_classifier" in via ->
+        with :ok <- Adapter.validate(module, prepare: 4),
+             do: {:ok, "llm_classifier", Classification}
+
+      true ->
+        {:error, :classifier_method_required}
     end
   end
 
@@ -102,23 +106,25 @@ defmodule Spectre.Agent.Wiring do
       {aliases, concrete} =
         Enum.split_with(declared, fn {_name, port} -> Map.has_key?(port, :via) end)
 
-      Enum.reduce_while(concrete, {:ok, %{}}, fn {name, port}, {:ok, ports} ->
-        with {:ok, value} <- supplied_binding(supplied, name, port),
-             {:ok, configured} <- configure(port, value) do
-          {:cont, {:ok, Map.put(ports, name, configured)}}
-        else
-          :error ->
-            if Map.get(port, :optional, false),
-              do: {:cont, {:ok, ports}},
-              else: {:halt, {:error, {:unwired_port, name, port.origin}}}
-
-          {:error, reason} ->
-            {:halt, {:error, {:invalid_port, name, reason}}}
-        end
-      end)
+      Enum.reduce_while(concrete, {:ok, %{}}, &resolve_port(&1, &2, supplied))
       |> resolve_aliases(aliases, supplied)
     else
       {:error, {:undeclared_ports, Enum.sort(extras)}}
+    end
+  end
+
+  defp resolve_port({name, port}, {:ok, ports}, supplied) do
+    with {:ok, value} <- supplied_binding(supplied, name, port),
+         {:ok, configured} <- configure(port, value) do
+      {:cont, {:ok, Map.put(ports, name, configured)}}
+    else
+      :error ->
+        if Map.get(port, :optional, false),
+          do: {:cont, {:ok, ports}},
+          else: {:halt, {:error, {:unwired_port, name, port.origin}}}
+
+      {:error, reason} ->
+        {:halt, {:error, {:invalid_port, name, reason}}}
     end
   end
 
@@ -218,11 +224,7 @@ defmodule Spectre.Agent.Wiring do
       case registry(values) do
         {:ok, values} ->
           entries =
-            Map.new(values, fn {name, value} ->
-              segments = String.split(name, "/")
-              {prefix, [local]} = Enum.split(segments, -1)
-              {Enum.join(prefix ++ [Atom.to_string(kind), local], "/"), value}
-            end)
+            Map.new(values, &qualified_binding(&1, kind))
 
           {:cont, {:ok, Map.merge(result, entries)}}
 
@@ -230,6 +232,11 @@ defmodule Spectre.Agent.Wiring do
           {:halt, error}
       end
     end)
+  end
+
+  defp qualified_binding({name, value}, kind) do
+    {prefix, [local]} = name |> String.split("/") |> Enum.split(-1)
+    {Enum.join(prefix ++ [Atom.to_string(kind), local], "/"), value}
   end
 
   @doc false
@@ -248,7 +255,7 @@ defmodule Spectre.Agent.Wiring do
       {key, value}, {:ok, found} when is_atom(key) or is_binary(key) ->
         key = to_string(key)
 
-        with :ok <- Spectre.Router.Rule.path(key),
+        with :ok <- Rule.path(key),
              false <- Map.has_key?(found, key) do
           {:cont, {:ok, Map.put(found, key, value)}}
         else

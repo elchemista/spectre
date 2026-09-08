@@ -51,10 +51,10 @@ defmodule Spectre.Instance do
 
   use GenServer
 
-  alias Spectre.{Candidate, Definition, Domain, Portable, Scope}
-  alias Spectre.Instance.{Checkpoint, Operation, State}
+  alias Spectre.Agent.Observer
   alias Spectre.Agent.Runtime, as: AgentRuntime
-  alias Spectre.Instance.Request
+  alias Spectre.{Candidate, Definition, Domain, Portable, Scope}
+  alias Spectre.Instance.{Checkpoint, Operation, Request, State}
 
   @options [
     :scope,
@@ -150,7 +150,9 @@ defmodule Spectre.Instance do
 
   wait: milliseconds (default 5,000), or :infinity, bounds the wait for a
   completed continuation, not the lifetime of accepted work. A pending reply
-  carries the known request ref; operation/3 reads it without re-submission.
+  carries the known request ref. Once the proposal returns pending, the worker
+  is released; operation/3 can refresh it without re-submission. No background
+  polling is started. A slow executor still needs its host-configured timeout.
   A timeout is not cancellation. proposal_opts are the ordinary facade options.
   """
   @spec advance(server(), Request.t(), keyword()) ::
@@ -169,7 +171,19 @@ defmodule Spectre.Instance do
     end
   end
 
-  @doc "Reads a retained operation without re-submitting it; an expired ref does not prove no effect."
+  @doc """
+  Reads a retained operation without re-submitting it.
+
+  A deferred proposal is refreshed once in the mutation worker when it is free;
+  otherwise this returns `:pending`. A completed result continues its original
+  handler only if that exact turn and state revision remain current. Otherwise
+  `{:error, {:instance_continuation_superseded, result}}` returns the durable
+  facts without changing local state. Reading a completed operation is inert.
+
+  The last 64 operations (completed or deferred), plus active/queued work, are
+  retained. An expired ref does not prove no effect: the ledger remains the
+  source of durable facts. `timeout` bounds the caller's wait, not accepted work.
+  """
   @spec operation(server(), String.t(), timeout()) :: term()
   def operation(server, ref, timeout \\ 5000),
     do: GenServer.call(server, {:operation, ref}, timeout)
@@ -263,14 +277,19 @@ defmodule Spectre.Instance do
   def handle_call(:current_turn, _from, state),
     do: {:reply, if(state.authoring, do: state.authoring.current, else: nil), state}
 
-  def handle_call({:operation, ref}, _from, state) do
-    reply =
-      case Map.fetch(state.operations, ref) do
-        {:ok, %{result: result}} -> result
-        :error -> {:error, :instance_operation_not_retained}
-      end
+  def handle_call({:operation, ref}, from, state) do
+    case Map.fetch(state.operations, ref) do
+      {:ok, %{resume: {request, proposal}} = entry} when is_nil(state.job) ->
+        entry = entry |> Map.delete(:resume) |> Map.put(:from, from)
+        state = retain_operation(state, ref, entry)
+        enqueue({:recover_advance, request, proposal}, from, state)
 
-    {:reply, reply, state}
+      {:ok, %{result: result}} ->
+        {:reply, result, state}
+
+      :error ->
+        {:reply, {:error, :instance_operation_not_retained}, state}
+    end
   end
 
   def handle_call({:component, kind, name}, _from, state) do
@@ -299,14 +318,19 @@ defmodule Spectre.Instance do
         {:reply, {:error, :instance_busy}, state}
 
       true ->
-        state = retain_operation(state, request.ref, %{result: :pending, from: from})
+        case wait_timer(request.ref, from, wait) do
+          {:ok, timer} ->
+            state =
+              retain_operation(state, request.ref, %{result: :pending, from: from, timer: timer})
 
-        if wait != :infinity,
-          do: Process.send_after(self(), {:advance_wait_elapsed, request.ref}, wait)
+            # Reserve only after the VM accepted the timer. An unsupported time
+            # must neither kill this owner nor consume an otherwise valid ticket.
+            authoring = AgentRuntime.discard_requests(state.authoring)
+            enqueue({:advance, request, opts}, from, %{state | authoring: authoring})
 
-        # Reserve all alternatives before returning control to the mailbox.
-        authoring = AgentRuntime.discard_requests(state.authoring)
-        enqueue({:advance, request, opts}, from, %{state | authoring: authoring})
+          {:error, _} = error ->
+            {:reply, error, state}
+        end
     end
   end
 
@@ -332,11 +356,13 @@ defmodule Spectre.Instance do
   def handle_cast(_message, state), do: {:noreply, state}
 
   @impl GenServer
-  def handle_info({:advance_wait_elapsed, ref}, state) do
+  def handle_info({:advance_wait_elapsed, ref, caller}, state) do
     case Map.get(state.operations, ref) do
-      %{result: :pending, from: from} = entry when not is_nil(from) ->
-        GenServer.reply(from, {:pending, ref})
-        {:noreply, %{state | operations: Map.put(state.operations, ref, %{entry | from: nil})}}
+      %{result: :pending, from: ^caller} = entry when not is_nil(caller) ->
+        # An advance timer must not time out a later recovery of the same ref.
+        GenServer.reply(caller, {:pending, ref})
+        entry = entry |> Map.put(:from, nil) |> Map.delete(:timer)
+        {:noreply, %{state | operations: Map.put(state.operations, ref, entry)}}
 
       _completed ->
         {:noreply, state}
@@ -355,6 +381,14 @@ defmodule Spectre.Instance do
     state = %{state | job: nil}
 
     case result do
+      {:deferred, request, proposal} ->
+        entry = Map.fetch!(state.operations, request.ref)
+        reply = if job.operation == :advance, do: {:pending, request.ref}, else: :pending
+        reply_operation(entry, reply)
+
+        entry = %{result: :pending, from: nil, resume: {request, proposal}}
+        next_job(retain_operation(state, request.ref, entry))
+
       {:authoring, reply, value, authoring} ->
         state = %{state | value: value, authoring: authoring, revision: state.revision + 1}
         complete_job(reply, job, state)
@@ -411,7 +445,7 @@ defmodule Spectre.Instance do
 
     task =
       Task.async(fn ->
-        Spectre.Agent.Observer.emit(
+        Observer.emit(
           Map.get(snapshot, :authoring),
           [:queue, :stop],
           %{duration: System.monotonic_time() - enqueued_at},
@@ -425,7 +459,9 @@ defmodule Spectre.Instance do
         Operation.run(request, snapshot)
       end)
 
-    ref = if elem(request, 0) == :advance, do: elem(request, 1).ref, else: nil
+    ref =
+      if elem(request, 0) in [:advance, :recover_advance], do: elem(request, 1).ref, else: nil
+
     %{state | job: %{task: task, from: from, operation: elem(request, 0), request_ref: ref}}
   end
 
@@ -433,10 +469,24 @@ defmodule Spectre.Instance do
 
   defp complete_job(reply, %{request_ref: ref}, state) do
     entry = Map.fetch!(state.operations, ref)
-    if entry.from, do: GenServer.reply(entry.from, reply)
-    result = if match?({:pending, _}, reply), do: :pending, else: reply
-    state = %{state | operations: Map.put(state.operations, ref, %{result: result, from: nil})}
+    reply_operation(entry, reply)
+    state = retain_operation(state, ref, %{result: reply, from: nil})
     after_complete(reply, state)
+  end
+
+  defp wait_timer(_ref, _from, :infinity), do: {:ok, nil}
+
+  defp wait_timer(ref, from, wait) do
+    {:ok, Process.send_after(self(), {:advance_wait_elapsed, ref, from}, wait)}
+  rescue
+    ArgumentError -> {:error, :invalid_instance_advance_options}
+  end
+
+  defp reply_operation(entry, reply) do
+    # A wait timer belongs to this outstanding reply, not to the retained
+    # operation. Release it on completion, failure and deferred handoff alike.
+    if entry[:timer], do: Process.cancel_timer(entry.timer)
+    if entry.from, do: GenServer.reply(entry.from, reply)
   end
 
   defp complete(reply, from, state) do
@@ -536,12 +586,22 @@ defmodule Spectre.Instance do
     }
 
   defp retain_operation(state, ref, entry) do
-    # Waiting callers may already have received :pending. Keep their operation
-    # until completion nonetheless; the active job + FIFO bounds these entries.
+    # Only active/queued work is protected from eviction. Deferred proposals no
+    # longer occupy a slot, so keeping all of them would leak memory forever.
+    order =
+      if Map.has_key?(state.operations, ref),
+        do: state.operation_order,
+        else: [ref | state.operation_order]
+
     operations = Map.put(state.operations, ref, entry)
-    order = [ref | state.operation_order]
     {recent, older} = Enum.split(order, 64)
-    {keep, remove} = Enum.split_with(older, &(operations[&1].result == :pending))
+
+    {keep, remove} =
+      Enum.split_with(older, fn ref ->
+        entry = operations[ref]
+        entry.result == :pending and not Map.has_key?(entry, :resume)
+      end)
+
     %{state | operations: Map.drop(operations, remove), operation_order: recent ++ keep}
   end
 

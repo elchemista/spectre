@@ -1,8 +1,29 @@
 # Provisioning a Domain
 
-An Agent declaration is not a deployable authority boundary by itself. The host
-must supply a foundation, fixed adapters and supervision. This checklist makes
-that wiring explicit; it does not manufacture a permissive default Mandate.
+An Agent module says **what the program proposes**. Host setup says **who may
+do it, through which services, and where the official facts are stored**.
+This is usually application/platform work, shared by many agent Instances;
+you do not build a new kernel or ledger for every chat message.
+
+Start with [the Agent example](agents-and-dsl.md#a-small-agent) if you have not
+written a handler yet. This guide supplies its missing `scope`, `definition`
+and `class_bindings` variables. [Configuration reference](configuration.md#domain-options)
+lists the supported startup options and actual defaults.
+
+| Term | Plain meaning |
+| --- | --- |
+| Host | Your Elixir application and deployment; not a Spectre hosting service |
+| Domain | Shared authority/accounting boundary with one ordered history |
+| Principal | An identified actor: user, organization, proposer or executor |
+| Scope | One authenticated interaction or promised unit of work inside a Domain |
+| Foundation / Genesis | The explicitly recognized initial actors, rules and authority |
+| Surface | The catalog of actions your app promises to mediate |
+| Binding | A reference connecting a prepared request to those actual records |
+
+For example, several support conversations can use separate Instances/Scopes
+in one tenant Domain. They share the Domain's authority accounting; a new
+Instance does not replenish its refund budget. Choosing Domain boundaries is
+an application decision, not inferred from the Agent's `namespace`.
 
 ## Prepare the foundation
 
@@ -11,7 +32,8 @@ that wiring explicit; it does not manufacture a permissive default Mandate.
    disposition authorities. A record identifies an actor; the Ingress must
    still authenticate the actual caller.
 2. Define the recognized consequence classes in `Spectre.Surface`, their rows
-   of power, consequence contracts, executor contracts and any governance
+   of power (the [boolean summary explained here](architecture.md#what-is-a-row)),
+   consequence contracts, executor contracts and any governance
    classes this Domain will use. Register only the surface you intend to mediate.
 3. Define root `Spectre.Mandate` records with explicit holders, coverage,
    Conditions, Meter ceilings, time bounds and allowed delegation/revocation
@@ -36,8 +58,9 @@ these portable records.
 Genesis. This fragment assumes the records above have already been explicitly
 prepared; it is not a default foundation or an authority generator:
 
+<!-- spectre:example foundation -->
 ```elixir
-{:ok, foundation} = Spectre.Foundation.new("domain:payments",
+{:ok, foundation} = Spectre.Foundation.new(domain_ref,
   genesis: %{
     ref: genesis_ref,
     issued_at: issued_at,
@@ -51,7 +74,7 @@ prepared; it is not a default foundation or an authority generator:
   host_profile: host_profile
 )
 
-foundation = Keyword.put(foundation, :genesis_verifier, MyApp.GenesisVerifier)
+foundation = Keyword.put(foundation, :genesis_verifier, genesis_verifier)
 ```
 
 Supply all six bundle fields and all four Genesis metadata fields. An explicit
@@ -76,14 +99,16 @@ contains the explicitly prepared Genesis, Constitution, Principals, Mandates,
 Surface, HostProfile and verifier described above; `directory` is chosen by
 the host. No authority records are invented by startup.
 
+<!-- spectre:example supervised_domain -->
 ```elixir
 domain_opts = Keyword.merge(foundation,
-  domain_ref: "domain:payments",
+  domain_ref: domain_ref,
   store: {Spectre.Ledger.Store.Disk, server: MyApp.LedgerStore},
-  ingress: MyApp.Ingress,
+  ingress: ingress,
   mind: Spectre.Agent,
-  executors: [MyApp.PaymentExecutor],
-  broker: MyApp.CredentialBroker
+  executors: executors,
+  broker: broker,
+  clock: clock
 )
 
 children = [
@@ -98,12 +123,19 @@ OTP starts children in order. With `:rest_for_one`, failure of the earlier store
 restarts the Domain after it; a Domain failure does not restart that store.
 Choose the strategy and grouping for the actual resource dependencies. Spectre's
 application must be started for its default Registry to exist. Once the tree is
-up, `Spectre.lookup_domain("domain:payments")` returns the current handle.
+up, `Spectre.lookup_domain(domain_ref)` returns the current handle.
+The variables above are host choices: `ingress`, `broker` and `genesis_verifier`
+have different contracts: `ingress` is a module; `broker` and
+`genesis_verifier` accept a module or `{module, options}`. `executors` is a
+list of modules or `{module, options}`, indexed by their executor/contract
+identities. `clock` is a module exposing `now/0`. Do not assume every adapter
+uses the same tuple form; [the option reference](configuration.md#domain-options)
+spells this out.
 
 Use `Spectre.start_domain/3` for a Domain provisioned dynamically, for example
 when creating a tenant. That facade starts it under Spectre's Domain supervisor;
 it does not move host services into that tree. Do not start the same Domain in
-both supervisors. The [README startup fragment](../README.md#host-integration)
+both supervisors. The [dynamic startup fragment](#host-integration)
 shows this dynamic form. Both forms use the same core and configuration:
 
 | Configuration | Meaning |
@@ -136,7 +168,7 @@ map and is not a new Mandate.
 `Spectre.open_scope/3` records an ordinary opening from that context.
 `Spectre.resume_scope/2` requires an already recorded, compatible opening.
 Work/Vigil use the governed parent-Scope opening path with a finite promise;
-see [agent authoring](agents-and-dsl.md#work-and-vigil).
+see [reusable work and vigil](agent-recipes.md#reusable-skills-workers-and-vigils).
 
 An open Scope does not imply permission to execute every class. Build Candidates
 against the actual Mandate coverage. Register/revise a Definition through
@@ -169,9 +201,92 @@ bindings, not an arbitrary predicate language. To model a limit such as
 Condition supported by trusted Evidence. Specify who attests that Evidence,
 its exact bindings and validity, and what contradictory Evidence means.
 
+The contract is not a general predicate/JSON-Schema engine: arbitrary ranges,
+comparisons and executable policy callbacks do not live in the ledger. For
+money, declare the integer unit (for example cents) in the host's Meter/contract.
+A payload field called `amount` is not automatically proven equal to the
+quantity reserved from a Meter; bind them explicitly. Router confidence and
+model-generated explanations cannot supply that missing accounting relation.
+
 Do not put a policy callback in the Router and assume that makes it a kernel
-rule. A route proposes a template. The Surface/Constitution and the pure core
+rule. A route selects a handler. The Surface/Constitution and the pure core
 decide what can be admitted, and the executor must actually honor its contract.
+
+## Connect a handler to a governed action
+
+The handler returned `{:request, "orders.lookup", %{"order_id" => "42"}, state}`.
+It did not say which credentials to use or grant itself permission to read all
+orders. Here is the host-side mapping for that class:
+
+<!-- spectre:example lookup_bindings -->
+```elixir
+{:ok, lookup_power} = Spectre.Row.new(attempt: true, read: true)
+{:ok, lookup_contract} = Spectre.Consequence.Contract.new(
+  shape: %{"order_id" => "target_ref"}
+)
+
+{:ok, lookup_surface} = Spectre.Surface.new(
+  revision: 1,
+  declarations: %{"orders.lookup" => lookup_power},
+  consequence_contracts: %{"orders.lookup" => lookup_contract}
+)
+
+class_bindings = %{
+  "orders.lookup" => %{
+    requested_mandate_ref: lookup_mandate.ref,
+    executor_ref: executor_ref,
+    executor_contract_ref: executor_contract_ref,
+    accountable_ref: accountable_ref,
+    purpose_ref: purpose_ref,
+    purpose_params: purpose_params,
+    observation_window_ms: 5_000
+  }
+}
+```
+
+This is one application class, not a complete foundation. `lookup_mandate`
+is the already-created Mandate authorizing the relevant proposer, Scope,
+class, targets and purpose. The executor/contract/accountability/purpose
+references come from the host's actual registered records; `purpose_params`
+is the map allowed by that Mandate. Add your other application and needed
+governance classes to the full Surface before Genesis or through its governed
+revision path. Constructing `lookup_surface` here does not activate it.
+
+Read the fields as follows:
+
+| Field | Why it exists |
+| --- | --- |
+| `attempt: true` | This class is an external attempt, so admission must lead through recorded dispatch/Attempt before execution |
+| `read: true` | This action reads a resource; the chosen Mandate's power ceiling must allow reading |
+| `shape` | Closed payload structure: exactly the fields declared by the consequence contract |
+| `"target_ref"` | A contract marker, not a literal order ID: extract `order_id` as the exact target to check against the Mandate |
+| `requested_mandate_ref` | Which existing permission to evaluate; a reference is not proof it applies |
+| `executor_ref` | Which actor will attempt this class |
+| `executor_contract_ref` | Which registered execution contract that actor must honor |
+| `accountable_ref` | Which Principal is accountable for the consequence |
+| `purpose_ref`, `purpose_params` | Declared reason and its permitted parameters; not a prompt or arbitrary metadata |
+| `observation_window_ms` | How long the causal contract expects an observation; not an HTTP timeout and not a retry interval |
+
+Other Candidate fields may be fixed by a named request or supplied by an
+application preparation adapter:
+
+| Field | Meaning |
+| --- | --- |
+| `subject_refs` | Parties affected by the consequence |
+| `target_refs` | Resources acted on; derived from this example's contract, not guessed from a route name |
+| `evidence_refs` | Recorded supporting facts; preparation binds the authenticated Turn's context |
+| `meter_requests` | Exact nonnegative integer quantities requested from each Meter, in the host's declared units |
+| `disclosure` | Destinations, source Evidence and labels for information leaving a boundary |
+| `consent`, `presentation_ref` | Required consent material and its exact recorded presentation, when applicable |
+
+The handler builder supplies the occurrence identity, proposer/Scope context
+and Row. `class_bindings` cannot replace `identity_key`, `row`, `class` or
+`consequence`. Independent sources of a fixed field must agree exactly;
+conflicts are reported, not resolved by “last option wins”.
+
+In the example, `"order_id" => "43"` changes the target checked by the kernel.
+If the Mandate only covers `"42"`, the request is refused regardless of the
+Router score. Adding `read: true` to the Surface does not create that Mandate.
 
 ## Read and diagnose
 
@@ -196,6 +311,7 @@ provider behavior or absence of alternate network/credential paths.
 
 For Extension ports, supply the actual named adapter map from host wiring:
 
+<!-- spectre:example doctor_config -->
 ```elixir
 config :spectre, :doctor,
   ingress: MyApp.Ingress,
@@ -216,3 +332,50 @@ installs, resolves or starts anything.
 For incident handling, clock behavior, timeouts and ambiguous writes, continue
 with [storage and recovery](storage-and-recovery.md). For integration-specific
 streaming and UI concerns, use [input and streaming](integration-and-streaming.md).
+
+
+## Host integration
+
+This is the dynamic counterpart of the supervision example. All foundation
+records, adapters and the trusted `clock` have already been prepared above.
+`scope_ref` names the new interaction; `authenticated_request` contains the
+credentials/claims your fixed Ingress actually verifies. `now` is trusted host
+time, `input` is the input accepted by that Ingress, and `select_proposal` is
+your explicit policy for choosing among the custom Mind's proposals.
+
+This lower-level form uses a **custom Mind**, not `mind: Spectre.Agent` (which
+requires the Instance handler API). Choose one authoring path, not both.
+
+<!-- spectre:example dynamic_domain -->
+```elixir
+{:ok, store_pid} = Spectre.Ledger.Store.ETS.start_link()
+store = {Spectre.Ledger.Store.ETS, server: store_pid}
+
+{:ok, domain} =
+  Spectre.start_domain(domain_ref, store,
+    constitution: constitution,
+    genesis: genesis,
+    principals: principals,
+    host_profile: host_profile,
+    surface: surface,
+    root_mandates: root_mandates,
+    genesis_verifier: genesis_verifier,
+    ingress: ingress,
+    mind: mind,
+    executors: executors,
+    broker: broker,
+    clock: clock
+  )
+
+{:ok, context} = Spectre.authenticate(domain, scope_ref, authenticated_request)
+{:ok, scope} = Spectre.open_scope(domain, context, opened_at: now)
+
+{:ok, %{candidates: candidates}} = Spectre.turn(scope, input)
+# Application policy selects a proposal; the list may contain alternatives.
+candidate = select_proposal.(candidates)
+{:ok, result} = Spectre.propose(scope, candidate)
+```
+
+The ETS store here is volatile. Use the supervised durable-store form for
+promises that must survive a restart. `{:ok, result}` is a completed API call,
+not proof of successful execution; inspect the Decision and Outcome.

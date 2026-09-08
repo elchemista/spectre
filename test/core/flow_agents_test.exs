@@ -108,7 +108,9 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
     end
   end
 
-  setup context do
+  setup :start_agent
+
+  defp start_agent(context) do
     Runtime.reset(Fixture.default_now())
     definition = Assistant.definition()
     domain_ref = "v0.4:flow-agent:domain"
@@ -201,11 +203,6 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
       assert result.primary.decision.outcome == :admitted,
              inspect(result.primary.decision.reasons)
 
-      assert_receive {:executed, act, attempt, revision}
-      assert act.ref == result.primary.act.ref
-      assert attempt.ref == result.primary.attempt.ref
-      assert revision > 0
-
       assert Result.status(result) == %{
                primary: %{
                  admission: :admitted,
@@ -214,7 +211,13 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
                  outcome: :succeeded
                },
                fallback: :not_applicable
-             }
+             },
+             inspect({Result.status(result), result.primary.outcome})
+
+      assert_receive {:executed, act, attempt, revision}
+      assert act.ref == result.primary.act.ref
+      assert attempt.ref == result.primary.attempt.ref
+      assert revision > 0
 
       assert Instance.state(c.instance) == %{revision: i, value: i}
     end
@@ -234,6 +237,20 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
     assert Instance.state(c.instance) == %{revision: 1, value: 1}
     assert {:ok, []} = Spectre.acts(c.scope)
     refute_receive {:executed, _, _, _}, 0
+  end
+
+  test "fresh test Domains with the same identity cannot reuse a broker's claimed nonce", c do
+    first = completed_refund(c)
+    stop_supervised!({Instance, c.fixture.refs.domain, Spectre.Scope.ref(c.scope)})
+    Fixture.stop_domain(c.fixture)
+
+    # The application broker outlives both fixtures. Resetting the test clock
+    # must not recreate identifiers the broker has already claimed; clearing
+    # its anti-replay state to get a green suite would hide the actual defect.
+    restarted = start_agent(%{})
+    second = completed_refund(restarted)
+    refute first.ref == second.ref
+    refute first.grant_nonce_digest == second.grant_nonce_digest
   end
 
   test "a routed request above the Mandate budget is refused, not promoted by its prompt", c do
@@ -268,6 +285,17 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
     assert Enum.any?(duties, &(&1.class == :ambiguous_outcome))
     assert {:ok, snapshot} = Ledger.load(c.fixture.store_config, c.fixture.refs.domain)
     assert {:ok, _} = Audit.verify(snapshot, c.fixture.constitution, Runtime.now())
+  end
+
+  defp completed_refund(c) do
+    assert {:ok, %{candidates: [candidate]}} = turn(c, :support, "refund 13", 1)
+    assert_receive {:planned, _, _, _}
+    assert {:ok, result} = Instance.propose(c.instance, candidate)
+    assert result.primary.outcome.status == :succeeded, inspect(result.primary.outcome)
+    assert_receive {:executed, _, attempt, _}
+    assert {:ok, snapshot} = Ledger.load(c.fixture.store_config, c.fixture.refs.domain)
+    assert {:ok, _report} = Audit.verify(snapshot, c.fixture.constitution, Runtime.now())
+    attempt
   end
 
   defp turn(c, flow, text, occurrence) do

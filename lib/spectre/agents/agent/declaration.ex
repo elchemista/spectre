@@ -1,7 +1,7 @@
 defmodule Spectre.Agent.Declaration do
   @moduledoc false
 
-  alias Spectre.Agent.Publication
+  alias Spectre.Agent.{Publication, RequestBuilder}
   alias Spectre.{Definition, Portable, Router}
   alias Spectre.Router.Rule
 
@@ -58,10 +58,7 @@ defmodule Spectre.Agent.Declaration do
          {:ok, declaration} <- read_verified(child) do
       merged =
         Map.new(parent, fn {field, values} ->
-          nested =
-            Map.new(declaration[field], fn {key, data} ->
-              {name <> "/" <> key, qualify(field, name, data)}
-            end)
+          nested = mount_entries(declaration[field], field, name)
 
           {field, Map.merge(values, nested)}
         end)
@@ -72,13 +69,17 @@ defmodule Spectre.Agent.Declaration do
     end
   end
 
+  defp mount_entries(entries, field, name) do
+    Map.new(entries, fn {key, data} ->
+      {name <> "/" <> key, qualify(field, name, data)}
+    end)
+  end
+
   defp qualify(:flows, name, flow) do
     flow = Map.update!(flow, "pipelines", &Enum.map(&1, fn key -> name <> "/" <> key end))
 
     if flow["routing"] do
-      update_in(flow, ["routing", "rules"], fn rules ->
-        Map.new(rules, fn {key, rule} -> {name <> "/" <> key, rule} end)
-      end)
+      update_in(flow, ["routing", "rules"], &mount_entries(&1, :rules, name))
     else
       flow
     end
@@ -123,18 +124,7 @@ defmodule Spectre.Agent.Declaration do
     with :ok <- pipeline_names(pipelines),
          {:ok, normalized} <- Router.configuration(config || []),
          true <- is_nil(config) or normalized === config do
-      entries(routes, fn
-        %{rule: rule, local: local, injections: injections}
-        when is_atom(local) and is_list(injections) ->
-          with {:ok, value} <- Rule.new(to_string(local), rule),
-               true <- value.to === Atom.to_string(local),
-               true <- Rule.canonical(value) === rule,
-               do: :ok,
-               else: (_invalid -> {:error, :invalid_agent_route})
-
-        _invalid ->
-          {:error, :invalid_agent_route}
-      end)
+      entries(routes, &route/1)
     else
       false -> {:error, :invalid_agent_routing}
       error -> error
@@ -143,11 +133,22 @@ defmodule Spectre.Agent.Declaration do
 
   defp flow(_flow), do: {:error, :invalid_agent_flow}
 
+  defp route(%{rule: rule, local: local, injections: injections})
+       when is_atom(local) and is_list(injections) do
+    with {:ok, value} <- Rule.new(to_string(local), rule),
+         true <- value.to === Atom.to_string(local),
+         true <- Rule.canonical(value) === rule,
+         do: :ok,
+         else: (_invalid -> {:error, :invalid_agent_route})
+  end
+
+  defp route(_invalid), do: {:error, :invalid_agent_route}
+
   defp prompt(%{text: text}) when is_binary(text), do: Portable.validate(text)
   defp prompt(_value), do: {:error, :invalid_prompt_declaration}
 
   defp template(value) do
-    with {:ok, canonical} <- Spectre.Agent.RequestBuilder.template(value) do
+    with {:ok, canonical} <- RequestBuilder.template(value) do
       if canonical === value, do: :ok, else: {:error, :noncanonical_candidate_template}
     end
   end

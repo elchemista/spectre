@@ -47,8 +47,11 @@ revision, governed child Scope promises, declassification and erasure. These are
 not privileged shortcuts: their Candidates need the appropriate authority and
 bindings. There is no runtime `mandate.issue` that invents another root.
 
-Agent/Skill/Extension declarations compose portable templates, route rules and
-assets; executable adapter ports remain explicit host configuration. Morph
+Agent/Skill/Stack declarations compose handlers, flow/route plans and prompt
+templates; Extension packages contribute portable data and named ports.
+Developer-owned EEx templates are compiled at build time; user context is not
+evaluated as template source. Executable adapter ports remain explicit host
+configuration. Morph
 changesets and rollback prepare new Definitions, not hot code replacement.
 Instance state and its optional CAS checkpoints are non-authoritative. Restoring
 a checkpoint requires a separately authenticated Scope and cannot restore
@@ -68,8 +71,10 @@ adapter registry operate before the kernel in Zone M. A matcher can nominate
 only supplied rules; its score or optional derived Evidence is not authority.
 No external inference is implicitly invoked by a built-in matcher. Application
 adapters, stores and ports are not BEAM sandboxes: the host must mediate any
-declared governed I/O. The legacy telemetry API is not yet ported. Current
-observability consists of Scope views, ledger heads and audit exports.
+declared governed I/O. Current observability includes Scope views, ledger heads,
+audit exports and optional payload-free Agent.Observer phase events. The legacy
+telemetry API is not restored; host collectors and the separate Pulse migration
+remain application/integration work. Operational events are not GAM Evidence.
 
 A Scope opening freezes its original authenticated context, including the host
 generation. Resume requires that same context to be authenticated by the live

@@ -4,6 +4,7 @@ defmodule Spectre.Core.LedgerStoreBoundaryTest do
   alias Spectre.Ledger
   alias Spectre.Ledger.Store
   alias Spectre.Ledger.Store.ETS
+  alias Spectre.Ledger.Writer
 
   defmodule HostStore do
     @behaviour Spectre.Ledger.Store
@@ -229,6 +230,67 @@ defmodule Spectre.Core.LedgerStoreBoundaryTest do
     end
 
     refute_received {:store_callback, _, _}
+  end
+
+  test "writer preserves identity validation errors instead of blaming a valid timestamp" do
+    for {domain, batch, payloads, revision} <- [
+          {"", "batch", [%{}], 0},
+          {"tenant-A", "", [%{}], 0},
+          {"tenant-A", "batch", [%{}], 0.0},
+          {"tenant-A", "batch", [], 0},
+          {"tenant-A", "batch", ["not a payload"], 0}
+        ] do
+      assert {:error, reason} = Ledger.batch_identity(domain, batch, payloads, revision)
+
+      assert Writer.append(host(:raise), domain, batch, payloads, revision, recorded_at: 0) ==
+               {:error, reason}
+    end
+
+    refute_received {:store_callback, _, _}
+  end
+
+  test "writer distinguishes malformed options from a missing or malformed acquisition time" do
+    for opts <- [nil, %{}, ["bad"], [{:recorded_at, 1} | :broken]] do
+      assert Writer.append(host(:raise), "tenant-A", "batch", [%{}], 0, opts) ==
+               {:error, :invalid_ledger_options}
+    end
+
+    for opts <- [
+          [],
+          [recorded_at: nil],
+          [recorded_at: false],
+          [recorded_at: -1],
+          [recorded_at: 1.0],
+          [recorded_at: {:error, :forged_validation_error}]
+        ] do
+      assert Writer.append(host(:raise), "tenant-A", "batch", [%{}], 0, opts) ==
+               {:error, :ledger_recorded_at_required}
+    end
+
+    refute_received {:store_callback, _, _}
+  end
+
+  test "writer preserves store conflicts and ambiguous replies after valid local validation" do
+    for reply <- [{:error, :conflict}, {:error, :ambiguous}, {:error, :disk_full}] do
+      assert Writer.append(host({:reply, reply}), "tenant-A", "batch", [%{}], 0, recorded_at: 0) ==
+               reply
+
+      assert_receive {:store_callback, :append, opts}
+      assert opts[:recorded_at] === 0
+    end
+  end
+
+  test "writer commits a real atomic batch once and keeps its acquisition time", c do
+    assert {:ok, 4} =
+             Writer.append(c.backing, "tenant-A", "writer-batch", c.payloads, 2, recorded_at: 7)
+
+    assert {:ok, snapshot} = Ledger.load(c.backing, "tenant-A")
+    assert Enum.map(Enum.drop(snapshot.entries, 2), & &1.recorded_at) == [7, 7]
+
+    assert {:ok, 4} =
+             Writer.append(c.backing, "tenant-A", "writer-batch", c.payloads, 2, recorded_at: 7)
+
+    assert Ledger.load(c.backing, "tenant-A") === {:ok, snapshot}
   end
 
   defp host(response, opts \\ []),

@@ -7,10 +7,13 @@ defmodule Spectre.V04Test.Runtime do
   def reset(now) when is_integer(now) do
     case :ets.whereis(@table) do
       :undefined -> :ets.new(@table, [:named_table, :public, :set])
-      _table -> :ets.delete_all_objects(@table)
+      _table -> :ok
     end
 
-    true = :ets.insert(@table, now: now, id: 0)
+    # The application broker outlives individual fixtures and remembers claimed
+    # nonces. A clock reset must neither reissue their IDs nor temporarily erase
+    # the clock under a still-running Domain's reconciliation timer.
+    true = :ets.insert(@table, {:now, now})
     :ok
   end
 
@@ -24,7 +27,7 @@ defmodule Spectre.V04Test.Runtime do
   end
 
   def next_id do
-    sequence = :ets.update_counter(@table, :id, 1)
+    sequence = System.unique_integer([:positive, :monotonic])
     suffix = sequence |> Integer.to_string(16) |> String.downcase() |> String.pad_leading(12, "0")
     @uuid_prefix <> suffix
   end
@@ -119,7 +122,8 @@ defmodule Spectre.V04Test.Fixture do
 
   def start_domain(opts \\ []) do
     namespace = Keyword.get(opts, :namespace, "refund")
-    now = Clock.now()
+    clock = Keyword.get(opts, :clock, Clock)
+    now = clock.now()
     refs = refs(namespace)
 
     principal_records = principals(refs)
@@ -157,7 +161,7 @@ defmodule Spectre.V04Test.Fixture do
           ),
         else: if(Keyword.get(opts, :consent, false), do: %{row | present: true}, else: row)
 
-    condition = payment_condition(refs)
+    condition = payment_condition(refs, Keyword.get(opts, :condition_bindings, %{}))
     refs = Map.put(refs, :condition, condition.ref)
     surface = surface(row, delegation_row, governance_row, opts)
     refs = Map.put(refs, :surface, surface.ref)
@@ -182,7 +186,10 @@ defmodule Spectre.V04Test.Fixture do
         do: Map.put(refs, :governance_mandate, governance_mandate.ref),
         else: refs
 
-    root_mandates = [mandate] ++ List.wrap(governance_mandate)
+    # Multi-agent fixtures may explicitly provision separate roots at Genesis.
+    # This hook never adds authority to an already running Domain.
+    additional_mandates = Keyword.get(opts, :additional_mandates, fn _root -> [] end).(mandate)
+    root_mandates = [mandate] ++ additional_mandates ++ List.wrap(governance_mandate)
     emergency_ref = if Keyword.get(opts, :emergency_mandate, false), do: mandate.ref
 
     genesis =
@@ -216,9 +223,9 @@ defmodule Spectre.V04Test.Fixture do
           {Spectre.Secret.Broker.Passthrough,
            capability: Keyword.get(opts, :capability, :test_only),
            domain_ref: refs.domain,
-           clock: Clock,
+           clock: clock,
            checkout_receipt_secret: @grant_secret},
-        clock: Clock,
+        clock: clock,
         clock_tolerance_ms: Keyword.get(opts, :clock_tolerance_ms, :infinity),
         id_source: IdSource,
         generation: Keyword.get(opts, :generation, @default_generation),
@@ -267,6 +274,7 @@ defmodule Spectre.V04Test.Fixture do
       governance_row: governance_row,
       condition: condition,
       mandate: mandate,
+      additional_mandates: additional_mandates,
       governance_mandate: governance_mandate,
       genesis: genesis,
       constitution: constitution,
@@ -356,11 +364,10 @@ defmodule Spectre.V04Test.Fixture do
   end
 
   def paid_evidence(fixture, overrides \\ %{}) do
-    attrs = paid_evidence_attrs(fixture.refs, Clock.now())
+    now = now(fixture)
+    attrs = paid_evidence_attrs(fixture.refs, now)
 
-    record!(
-      Ingress.observe(context(fixture), Map.merge(attrs, Map.new(overrides)), Clock.now(), [])
-    )
+    record!(Ingress.observe(context(fixture), Map.merge(attrs, Map.new(overrides)), now, []))
   end
 
   def observe_payment(fixture, evidence, opts \\ []) do
@@ -393,7 +400,7 @@ defmodule Spectre.V04Test.Fixture do
       issuer_ref: act.executor_ref,
       source_ref: act.executor_ref,
       provenance: :observed,
-      observed_at: Clock.now(),
+      observed_at: now(fixture),
       bindings: %{"act_ref" => act_ref, "attempt_ref" => attempt.ref},
       labels: [],
       payload: %{"receipt" => fixture.refs.receipt_payload},
@@ -448,7 +455,7 @@ defmodule Spectre.V04Test.Fixture do
         attempt_ref: attempt.ref,
         status: status,
         evidence_refs: evidence_refs,
-        observed_at: Clock.now(),
+        observed_at: now(fixture),
         details_ref: fixture.refs.outcome_details <> ":" <> Atom.to_string(status)
       })
     )
@@ -517,11 +524,11 @@ defmodule Spectre.V04Test.Fixture do
     )
   end
 
-  defp payment_condition(refs) do
+  defp payment_condition(refs, bindings) do
     record!(
       Spectre.Condition.new(%{
         proposition: "order_paid",
-        bindings: %{"order_ref" => refs.order},
+        bindings: Map.merge(%{"order_ref" => refs.order}, bindings),
         cardinality: 1,
         accepted_provenance: [:observed],
         allow_provisional: false,
@@ -561,21 +568,25 @@ defmodule Spectre.V04Test.Fixture do
         fallbacks: Keyword.get(opts, :fallbacks, %{}),
         presentation_required_classes:
           if(Keyword.get(opts, :consent, false), do: ["refund.issue"], else: []),
-        consequence_contracts: %{
-          "refund.issue" =>
-            record!(
-              Contract.new(%{
-                shape: %{
-                  "amount_cents" => "positive_integer",
-                  "currency" => %{"$const" => "EUR"},
-                  "customer_ref" => "subject_ref",
-                  "order_ref" => "ref",
-                  "destination_ref" => "destination_ref",
-                  "meter_requests" => "meter_requests"
-                }
-              })
-            )
-        }
+        consequence_contracts:
+          Map.merge(
+            %{
+              "refund.issue" =>
+                record!(
+                  Contract.new(%{
+                    shape: %{
+                      "amount_cents" => "positive_integer",
+                      "currency" => %{"$const" => "EUR"},
+                      "customer_ref" => "subject_ref",
+                      "order_ref" => "ref",
+                      "destination_ref" => "destination_ref",
+                      "meter_requests" => "meter_requests"
+                    }
+                  })
+                )
+            },
+            Keyword.get(opts, :consequence_contracts, %{})
+          )
       })
     )
   end
@@ -618,14 +629,15 @@ defmodule Spectre.V04Test.Fixture do
             else: [refs.payment_target]
           ),
         classes:
-          if(delegation_allowed?,
-            do: ["mandate.delegate", "refund.issue"],
-            else:
-              if(Keyword.get(opts, :consent, false),
-                do: ["refund.issue", "presentation.show"],
-                else: ["refund.issue"]
-              )
-          ),
+          Keyword.get(opts, :classes) ||
+            if(delegation_allowed?,
+              do: ["mandate.delegate", "refund.issue"],
+              else:
+                if(Keyword.get(opts, :consent, false),
+                  do: ["refund.issue", "presentation.show"],
+                  else: ["refund.issue"]
+                )
+            ),
         ceiling: ceiling,
         purpose_ref: refs.purpose,
         purpose_params: %{"currency" => "EUR"},
@@ -743,7 +755,7 @@ defmodule Spectre.V04Test.Fixture do
           session_ref: context.session_ref,
           host_generation: context.host_generation,
           disposition_authority_refs: [],
-          opened_at: Clock.now()
+          opened_at: now(fixture)
         })
       )
 
@@ -752,4 +764,6 @@ defmodule Spectre.V04Test.Fixture do
 
   defp record!({:ok, record}), do: record
   defp record!({:error, reason}), do: raise("invalid v0.4 fixture: #{inspect(reason)}")
+
+  defp now(fixture), do: Keyword.fetch!(fixture.sequencer_opts, :clock).now()
 end

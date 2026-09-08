@@ -15,6 +15,8 @@ defmodule Spectre.History do
   """
 
   alias Spectre.{Adapter, Portable}
+  alias Spectre.Agent.Observer
+  alias Spectre.Canonical.Value
   @enforce_keys [:module, :binding, :options]
   defstruct @enforce_keys
   @type t :: %__MODULE__{module: module(), binding: map(), options: keyword()}
@@ -75,7 +77,7 @@ defmodule Spectre.History do
          true <- length(messages) <= window.keep,
          true <- is_boolean(page[:truncated?]),
          :ok <- Portable.validate_optional_ref(page[:cursor], :history_cursor),
-         :ok <- Spectre.Canonical.Value.validate(messages, max_bytes: window.max_bytes),
+         :ok <- Value.validate(messages, max_bytes: window.max_bytes),
          {:ok, messages} <- messages(messages) do
       {:ok, %{page | messages: messages}}
     else
@@ -177,7 +179,7 @@ defmodule Spectre.History do
 
     with :ok <- Adapter.validate(module, [{operation, length(args)}]),
          {:ok, reply} <-
-           Spectre.Agent.Observer.span_with(observer, :history, %{operation: operation}, fn ->
+           Observer.span_with(observer, :history, %{operation: operation}, fn ->
              Adapter.invoke(module, operation, args)
            end) do
       case reply do
@@ -233,7 +235,7 @@ defmodule Spectre.History do
          true <- m[:role] in [:user, :assistant, :tool],
          true <- m[:status] in [:received, :draft, :delivered, :failed, :unclear],
          true <- is_binary(m[:content]) and String.valid?(m.content),
-         :ok <- Spectre.Canonical.Value.validate(m, max_bytes: 65_536),
+         :ok <- Value.validate(m, max_bytes: 65_536),
          {:ok, refs} <- Portable.normalize_refs(m[:evidence_refs], :history_evidence_refs) do
       {:ok, %{m | evidence_refs: refs}}
     else
@@ -253,7 +255,7 @@ defmodule Spectre.History do
          true <- is_integer(value[:revision]) and value.revision > 0,
          true <- is_binary(value[:content]) and String.valid?(value.content),
          {:ok, refs} <- Portable.normalize_refs(value[:evidence_refs], :summary_evidence_refs),
-         :ok <- Spectre.Canonical.Value.validate(value, max_bytes: 65_536) do
+         :ok <- Value.validate(value, max_bytes: 65_536) do
       {:ok, %{value | evidence_refs: refs}}
     else
       false -> {:error, :invalid_history_summary}

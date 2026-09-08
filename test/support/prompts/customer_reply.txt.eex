@@ -1,0 +1,1 @@
+Order <%= @order_id %>: explain the next step to <%= @customer %> without claiming that a refund has already run.

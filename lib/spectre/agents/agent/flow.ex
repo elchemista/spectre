@@ -18,8 +18,8 @@ defmodule Spectre.Agent.Flow do
   Transformations are local: govern remote inference through an Act.
   """
 
-  alias Spectre.Canonical.Value
   alias Spectre.Agent.Collection
+  alias Spectre.Canonical.Value
   alias Spectre.Input.Pipeline
   alias Spectre.{Portable, Router}
 

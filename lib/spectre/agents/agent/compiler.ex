@@ -1,6 +1,7 @@
 defmodule Spectre.Agent.Compiler do
   @moduledoc false
 
+  alias Spectre.Agent.{Declaration, DSL, Publication, RequestBuilder}
   alias Spectre.{Portable, Router}
   alias Spectre.Router.Rule
 
@@ -21,9 +22,9 @@ defmodule Spectre.Agent.Compiler do
   # and Stack presets. This plan contains no running resource or GAM authority.
   defmacro __using__(opts) do
     quote do
-      import Spectre.Agent.DSL
-      Spectre.Agent.Compiler.setup!(__MODULE__, unquote(opts), __ENV__)
-      @before_compile Spectre.Agent.Compiler
+      import unquote(DSL)
+      unquote(__MODULE__).setup!(__MODULE__, unquote(opts), __ENV__)
+      @before_compile unquote(__MODULE__)
     end
   end
 
@@ -118,7 +119,7 @@ defmodule Spectre.Agent.Compiler do
     names = List.wrap(names)
     Enum.each(names, &name!(&1, env))
     names = Enum.map(names, &key/1)
-    unwrap_ok!(Spectre.Agent.Declaration.pipeline_names(names), env)
+    unwrap_ok!(Declaration.pipeline_names(names), env)
 
     update_flow!(module, env, fn flow ->
       if flow.pipelines != [], do: fail!(env, :duplicate_flow_pipeline_configuration)
@@ -161,7 +162,7 @@ defmodule Spectre.Agent.Compiler do
       module,
       :requests,
       key(name),
-      unwrap!(Spectre.Agent.RequestBuilder.template(opts), env),
+      unwrap!(RequestBuilder.template(opts), env),
       false,
       env
     )
@@ -276,37 +277,7 @@ defmodule Spectre.Agent.Compiler do
     plan = Module.get_attribute(env.module, :spectre_plan)
     sources = Module.get_attribute(env.module, :spectre_sources)
     # Paths are build inputs, not durable prompt identities.
-    renderers =
-      for {name, %{text: text} = prompt} <- plan.prompts do
-        file = Map.get(prompt, :file)
-        ast = EEx.compile_string(text, engine: EEx.SmartEngine, file: file || env.file)
-
-        {_ast, assigns} =
-          Macro.prewalk(ast, [], fn
-            {{:., _, [{:__aliases__, _, [:EEx, :Engine]}, :fetch_assign!]}, _, [_assigns, name]} =
-                node,
-            found
-            when is_atom(name) ->
-              {node, [name | found]}
-
-            node, found ->
-              {node, found}
-          end)
-
-        assigns = Enum.uniq(assigns)
-
-        quote do
-          @doc false
-          def __spectre_render__(unquote(name), var!(assigns)) do
-            # EEx's default missing-assign exception includes the entire map.
-            # Report only the declared key, never the caller's private context.
-            case Enum.find(unquote(assigns), &(not Map.has_key?(var!(assigns), &1))) do
-              nil -> unquote(ast)
-              key -> {:error, {:missing_prompt_assign, unquote(name), key}}
-            end
-          end
-        end
-      end
+    renderers = Enum.map(plan.prompts, &renderer(&1, env))
 
     plan = %{
       plan
@@ -325,18 +296,51 @@ defmodule Spectre.Agent.Compiler do
       def __spectre_render__(name, _assigns), do: {:error, {:unknown_prompt, name}}
       @doc "Returns named adapter declarations without starting host resources."
       @spec ports() :: map()
-      def ports, do: Spectre.Agent.Publication.ports(__MODULE__)
+      def ports, do: unquote(Publication).ports(__MODULE__)
 
       unquote(
         if plan.kind in [:agent, :skill, :worker, :vigil] do
           quote do
             @doc "Builds an immutable Definition from explicit revision/time and component bindings."
             @spec definition(keyword()) :: Spectre.Definition.t()
-            def definition(opts), do: Spectre.Agent.Publication.definition!(__MODULE__, opts)
+            def definition(opts), do: unquote(Publication).definition!(__MODULE__, opts)
           end
         end
       )
     end
+  end
+
+  defp renderer({name, %{text: text} = prompt}, env) do
+    ast = EEx.compile_string(text, engine: EEx.SmartEngine, file: prompt[:file] || env.file)
+    assigns = prompt_assigns(ast)
+
+    quote do
+      @doc false
+      def __spectre_render__(unquote(name), var!(assigns)) do
+        # EEx's default exception includes the entire map. Report only the
+        # declared missing key, never the caller's private context.
+        case Enum.find(unquote(assigns), &(not Map.has_key?(var!(assigns), &1))) do
+          nil -> unquote(ast)
+          key -> {:error, {:missing_prompt_assign, unquote(name), key}}
+        end
+      end
+    end
+  end
+
+  defp prompt_assigns(ast) do
+    {_ast, assigns} =
+      Macro.prewalk(ast, [], fn
+        {{:., _, [{:__aliases__, _, [:EEx, :Engine]}, :fetch_assign!]}, _, [_assigns, name]} =
+            node,
+        found
+        when is_atom(name) ->
+          {node, [name | found]}
+
+        node, found ->
+          {node, found}
+      end)
+
+    Enum.uniq(assigns)
   end
 
   defp validate_prompts!(plan, env) do
@@ -458,7 +462,8 @@ defmodule Spectre.Agent.Compiler do
   end
 
   defp plan!(module, kind, env) do
-    with {:module, ^module} <- Code.ensure_compiled(module),
+    with true <- is_atom(module) and module not in [nil, true, false],
+         {:module, ^module} <- Code.ensure_compiled(module),
          true <- function_exported?(module, :__spectre_plan__, 0),
          %{kind: ^kind} = plan <- Macro.compile_apply(module, :__spectre_plan__, [], env) do
       plan

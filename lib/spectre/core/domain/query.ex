@@ -11,6 +11,7 @@ defmodule Spectre.Domain.Query do
   alias Spectre.Authority.View, as: AuthorityView
   alias Spectre.Domain.{Context, Transaction}
   alias Spectre.{Governance, Mandate, Presentation}
+  alias Spectre.GovernedAct.{DispatchState, Execution, State}
   alias Spectre.Scope.View, as: ScopeView
 
   @doc false
@@ -31,17 +32,17 @@ defmodule Spectre.Domain.Query do
     do: ScopeView.from_projection(state.projection, Spectre.Scope.ref(scope))
 
   defp read(state, _scope, :surface),
-    do: {:ok, Spectre.GovernedAct.State.surface(state.projection)}
+    do: {:ok, State.surface(state.projection)}
 
   defp read(state, scope, {:dispatch_status, ref}) do
     with {:ok, act} <- Map.fetch(state.projection.acts, ref),
          true <- act.scope_ref === Spectre.Scope.ref(scope),
-         {:ok, mode} <- Spectre.GovernedAct.Execution.mode(act) do
+         {:ok, mode} <- Execution.mode(act) do
       {:ok,
        %{
          mode: mode,
-         terminal: Spectre.GovernedAct.DispatchState.terminal(state.projection, ref),
-         pending?: Spectre.GovernedAct.DispatchState.pending?(state.projection, ref)
+         terminal: DispatchState.terminal(state.projection, ref),
+         pending?: DispatchState.pending?(state.projection, ref)
        }}
     else
       :error -> {:error, {:act_not_found, ref}}

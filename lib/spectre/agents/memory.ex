@@ -8,12 +8,17 @@ defmodule Spectre.Memory do
   network I/O inside a Router or make retrieved content trusted instructions.
   """
   alias Spectre.{Adapter, Portable}
+  alias Spectre.Canonical.Value
 
   @callback retrieve(map(), map(), keyword()) ::
               {:ok, %{binding: map(), items: [map()]}} | {:error, term()}
 
   @doc "Requests a bounded, source-labelled result; rejects backend overflow rather than copying all history."
-  def retrieve({module, opts}, binding, query, limits \\ []) do
+  @spec retrieve({module(), keyword()}, map() | keyword(), term(), map() | keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def retrieve(adapter, binding, query, limits \\ [])
+
+  def retrieve({module, opts}, binding, query, limits) do
     with true <- Portable.keyword?(opts),
          {:ok, binding} <- Portable.normalize_attrs(binding, [:tenant_id], :memory_binding),
          :ok <- Portable.validate_ref(binding[:tenant_id], :tenant_id),
@@ -31,7 +36,7 @@ defmodule Spectre.Memory do
            ]),
          true <- reported === binding,
          true <- is_list(items) and length(items) <= limit,
-         :ok <- Spectre.Canonical.Value.validate(items, max_bytes: bytes),
+         :ok <- Value.validate(items, max_bytes: bytes),
          :ok <- Spectre.Validation.all(items, &item/1) do
       {:ok, items}
     else
@@ -41,6 +46,8 @@ defmodule Spectre.Memory do
       {:error, _} = error -> error
     end
   end
+
+  def retrieve(_adapter, _binding, _query, _limits), do: {:error, :invalid_memory_adapter}
 
   defp item(%{ref: ref, source_ref: source, evidence_refs: refs, content: content})
        when is_binary(content) do

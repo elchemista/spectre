@@ -75,8 +75,8 @@ defmodule Spectre.Agent.RequestBuilder do
          :ok <- absent(attrs, [:identity_key, :row]),
          {:ok, row} <- Surface.classify(runtime.surface, attrs[:class]),
          {:ok, attrs} <- boundaries(runtime.surface, attrs, turn, row.disclose),
-         :ok <- template_constraints(operation, attrs, owner.plan),
-         attrs = attrs |> Map.put(:identity_key, ref) |> Map.put(:row, Row.canonical(row)) do
+         :ok <- template_constraints(operation, attrs, owner.plan) do
+      attrs = attrs |> Map.put(:identity_key, ref) |> Map.put(:row, Row.canonical(row))
       Mind.candidate(turn.mind_turn, attrs)
     end
   end
@@ -178,15 +178,19 @@ defmodule Spectre.Agent.RequestBuilder do
   defp boundaries(surface, attrs, turn, disclose?) do
     case Map.fetch(surface.consequence_contracts, attrs[:class]) do
       {:ok, contract} ->
-        with {:ok, extracted} <- Contract.bindings(contract, attrs[:consequence]),
-             {:ok, attrs} <- merge_exact(attrs, Map.drop(extracted, [:destination_refs])) do
-          if disclose?,
-            do: disclosure(attrs, extracted.destination_refs, turn),
-            else: {:ok, attrs}
-        end
+        contract_boundaries(contract, attrs, turn, disclose?)
 
       :error ->
         {:ok, attrs}
+    end
+  end
+
+  defp contract_boundaries(contract, attrs, turn, disclose?) do
+    with {:ok, extracted} <- Contract.bindings(contract, attrs[:consequence]),
+         {:ok, attrs} <- merge_exact(attrs, Map.drop(extracted, [:destination_refs])) do
+      if disclose?,
+        do: disclosure(attrs, extracted.destination_refs, turn),
+        else: {:ok, attrs}
     end
   end
 
@@ -214,18 +218,7 @@ defmodule Spectre.Agent.RequestBuilder do
     destinations = declaration["disclosure_to"]
     meters = Map.values(declaration["meter"])
 
-    actual_destinations =
-      case attrs[:disclosure] do
-        nil ->
-          []
-
-        value ->
-          Spectre.Disclosure.new(value)
-          |> case do
-            {:ok, disclosure} -> disclosure.destination_refs
-            _invalid -> :invalid
-          end
-      end
+    actual_destinations = destination_refs(attrs[:disclosure])
 
     cond do
       destinations != [] and destinations !== actual_destinations ->
@@ -242,23 +235,34 @@ defmodule Spectre.Agent.RequestBuilder do
 
   defp template_constraints(_operation, _attrs, _plan), do: :ok
 
+  defp destination_refs(nil), do: []
+
+  defp destination_refs(value) do
+    case Spectre.Disclosure.new(value) do
+      {:ok, disclosure} -> disclosure.destination_refs
+      _invalid -> :invalid
+    end
+  end
+
   defp meter_names(value) when is_map(value) or is_list(value) do
     if is_map(value) or Portable.keyword?(value) do
-      Enum.reduce_while(value, {:ok, %{}}, fn {name, ref}, {:ok, found} ->
-        with true <- is_atom(name) or is_binary(name),
-             :ok <- Portable.validate_ref(ref, :meter_ref),
-             false <- Map.has_key?(found, to_string(name)) do
-          {:cont, {:ok, Map.put(found, to_string(name), ref)}}
-        else
-          _invalid -> {:halt, {:error, :invalid_request_meter_bindings}}
-        end
-      end)
+      Enum.reduce_while(value, {:ok, %{}}, &meter_name/2)
     else
       {:error, :invalid_request_meter_bindings}
     end
   end
 
   defp meter_names(_value), do: {:error, :invalid_request_meter_bindings}
+
+  defp meter_name({name, ref}, {:ok, found}) do
+    with true <- is_atom(name) or is_binary(name),
+         :ok <- Portable.validate_ref(ref, :meter_ref),
+         false <- Map.has_key?(found, to_string(name)) do
+      {:cont, {:ok, Map.put(found, to_string(name), ref)}}
+    else
+      _invalid -> {:halt, {:error, :invalid_request_meter_bindings}}
+    end
+  end
 
   defp merge_exact(left, right) do
     case Enum.find(right, fn {key, value} -> Map.has_key?(left, key) and left[key] !== value end) do

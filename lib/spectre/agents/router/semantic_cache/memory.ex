@@ -23,19 +23,20 @@ defmodule Spectre.Router.SemanticCache.Memory do
   use GenServer
   @behaviour Spectre.Router.SemanticCache
 
-  alias Spectre.Router.SemanticCache.{Configuration, Example, Index}
   alias Spectre.Agent.Collection
+  alias Spectre.Router.SemanticCache
+  alias Spectre.Router.SemanticCache.{Configuration, Example, Index}
 
   @doc "Reuses this storage/review engine in a backend that selects its own search index."
   defmacro __using__(_opts) do
     callbacks =
-      for {name, arity} <- Spectre.Router.SemanticCache.behaviour_info(:callbacks) do
+      for {name, arity} <- SemanticCache.behaviour_info(:callbacks) do
         args = Macro.generate_arguments(arity, __MODULE__)
 
         quote do
           @impl Spectre.Router.SemanticCache
           defdelegate unquote(name)(unquote_splicing(args)),
-            to: Spectre.Router.SemanticCache.Memory
+            to: unquote(__MODULE__)
         end
       end
 
@@ -44,7 +45,7 @@ defmodule Spectre.Router.SemanticCache.Memory do
       unquote_splicing(callbacks)
 
       @doc "Starts the explicitly configured, bounded cache under the host's supervision."
-      def start_link(opts), do: Spectre.Router.SemanticCache.Memory.start_link(opts)
+      def start_link(opts), do: unquote(__MODULE__).start_link(opts)
 
       @doc "Returns the host supervision specification; binding a cache never starts it."
       def child_spec(opts) do
@@ -215,16 +216,20 @@ defmodule Spectre.Router.SemanticCache.Memory do
   end
 
   defp perform({:lookup, value}, state) do
-    with {:ok, query} <- Configuration.query(value, state.config) do
-      hits =
-        for id <- exact_ids(state, Example.normalize(query.text)),
-            {:ok, example} = fetch(state, id),
-            MapSet.member?(query.labels, example.label),
-            do: Example.nomination(example, 1.0, state.config.binding)
+    case Configuration.query(value, state.config) do
+      {:ok, query} ->
+        hits =
+          for id <- exact_ids(state, Example.normalize(query.text)),
+              {:ok, example} = fetch(state, id),
+              MapSet.member?(query.labels, example.label),
+              do: Example.nomination(example, 1.0, state.config.binding)
 
-      if hits == [], do: search(query, state), else: {{:ok, Index.rank(hits, query.limit)}, state}
-    else
-      {:error, _} = error -> {error, state}
+        if hits == [],
+          do: search(query, state),
+          else: {{:ok, Index.rank(hits, query.limit)}, state}
+
+      {:error, _} = error ->
+        {error, state}
     end
   end
 
@@ -257,17 +262,19 @@ defmodule Spectre.Router.SemanticCache.Memory do
   defp search(%{vector: nil}, state), do: {{:error, :embedding_required}, state}
 
   defp search(query, state) do
-    with {:ok, index} <- ensure_index(state) do
-      # Retain ownership even when search fails, so native resources are closed.
-      state = %{state | index: index}
+    case ensure_index(state) do
+      {:ok, index} ->
+        # Retain ownership even when search fails, so native resources are closed.
+        state = %{state | index: index}
 
-      result =
-        with {:ok, hits} <- Index.search(index, query.vector, query),
-             do: nominations(hits, query, state)
+        result =
+          with {:ok, hits} <- Index.search(index, query.vector, query),
+               do: nominations(hits, query, state)
 
-      {result, state}
-    else
-      {:error, _} = error -> {error, state}
+        {result, state}
+
+      {:error, _} = error ->
+        {error, state}
     end
   end
 
@@ -351,8 +358,12 @@ defmodule Spectre.Router.SemanticCache.Memory do
 
   defp count(state), do: :ets.info(state.examples, :size)
 
-  defp ensure_index(%{index: nil} = state),
-    do: Index.build(state.config.search, :ets.tab2list(state.examples))
+  defp ensure_index(%{index: nil} = state) do
+    # Review is an engine invariant, not an opt-in filter for each index
+    # adapter. Select approved records before copying anything to the adapter.
+    approved = :ets.select(state.examples, [{{:"$1", %{verified: true}}, [], [:"$_"]}])
+    Index.build(state.config.search, approved)
+  end
 
   defp ensure_index(state), do: {:ok, state.index}
 
@@ -388,8 +399,7 @@ defmodule Spectre.Router.SemanticCache.Memory do
          true <- is_integer(revision) and revision >= 0,
          attrs = snapshot["examples"],
          true <- is_list(attrs) and length(attrs) <= config.max_entries,
-         {:ok, examples} <-
-           prepare_examples(attrs, fn {attrs, _index} -> Example.restore(attrs, config) end),
+         {:ok, examples} <- prepare_examples(attrs, config),
          true <- Enum.all?(examples, &(&1.revision <= revision)) do
       {:ok, examples, revision}
     else
@@ -399,11 +409,11 @@ defmodule Spectre.Router.SemanticCache.Memory do
 
   defp restore(_snapshot, _config), do: {:error, :invalid_cache_snapshot}
 
-  defp prepare_examples(attrs, builder) do
+  defp prepare_examples(attrs, config) do
     attrs
-    |> Enum.with_index(1)
     |> Enum.reduce_while({:ok, %{}}, fn attrs, {:ok, examples} ->
-      with {:ok, example} <- builder.(attrs), false <- Map.has_key?(examples, example.id) do
+      with {:ok, example} <- Example.restore(attrs, config),
+           false <- Map.has_key?(examples, example.id) do
         {:cont, {:ok, Map.put(examples, example.id, example)}}
       else
         true -> {:halt, {:error, :duplicate_cache_example}}

@@ -10,12 +10,6 @@
 # Where third-party dependencies like ExDoc output generated docs.
 /doc/
 
-# Optional packages are independent Mix projects, not vendored dependencies.
-/packages/*/_build/
-/packages/*/deps/
-/packages/*/doc/
-/packages/*/cover/
-
 # Temporary files, for example, from tests.
 /tmp/
 
@@ -31,12 +25,8 @@
 /example/
 
 GUIDELINE.md
-# SPECTRE_VNEXT_CONCEPT(2)(1).md
 SKILL.md
 
-PLAN.md
-piano*.md
-IMPLEMENTATION_STATUS_0.4.0.md
 bench/results/local/
 
 # If the VM crashes, it generates a dump, let's ignore it too.

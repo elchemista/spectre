@@ -3,6 +3,11 @@
 Spectre has three different store boundaries. Implementing one does not satisfy
 the others. All are host-selectable; ETS is not a required deployment backend.
 
+In everyday terms: the **ledger** remembers permission, attempts and unresolved
+work; an **application store** remembers a draft or local checkpoint; a
+**payload store** keeps the actual large/private bytes referenced by evidence.
+Deleting an old chat message is not the same operation as deleting a Duty.
+
 | Boundary | Stores or checks | Guarantee required |
 | --- | --- | --- |
 | `Spectre.Ledger.Store` | Canonical, append-only Domain batches | Atomic visibility, exact revision CAS, batch identity and truthful durability acknowledgement |
@@ -18,6 +23,43 @@ the others. All are host-selectable; ETS is not a required deployment backend.
 | `Spectre.Ledger.Store.Mnesia` | Atomic Mnesia transactions with configured tables/copies | The host provisions schema, copies, availability and cluster fencing |
 | `Spectre.Ledger.Store.Postgres` | Transactional append/CAS using the application's Repo | The host provides Repo/driver, migration, credentials, database settings and backups |
 | `Spectre.Ledger.Store.Mock` | Fault injection around another ledger adapter | Test double, not a durability backend |
+
+### Which options belong to the backend?
+
+Store **startup** and Domain **wiring** are different. For ETS/Disk you start
+one store owner under your supervisor, then pass `{Module, server: address}`
+to the Domain. Mnesia uses the host's existing schema/tables; PostgreSQL uses
+the host's already supervised Repo. They do not need an ETS-style server PID.
+
+| Adapter | Configuration | Meaning and default |
+| --- | --- | --- |
+| ETS | `compressed: false` | Optional compressed rows; saves memory at some CPU cost, never adds durability |
+| ETS / Disk startup | `name` | Optional OTP registration so the Domain can use a stable server address |
+| ETS / Disk calls | `server`, `timeout` | Store owner address and optional call timeout; a timeout does not prove an append failed |
+| Disk startup | `directory` (alias `path`) | Required dedicated directory owned exclusively by this store process, not an arbitrary existing shared data directory |
+| Disk startup | `tail_policy: :reject` | Reject incomplete final frames; explicit `:truncate` permits only incomplete-tail recovery, not arbitrary corruption repair |
+| Disk startup | `max_frame_bytes: 67_108_864` | Default 64 MiB frame bound; a per-frame limit, not a bound on the entire ledger or live projection |
+| Disk startup | `compressed: false` | Optional lossless frame compression; not deletion or anonymization |
+| Mnesia | `heads_table`, `batches_table`, `entries_table` | Defaults `:spectre_ledger_heads`, `:spectre_ledger_batches`, `:spectre_ledger_entries`; use distinct tables for distinct storage configurations |
+| Mnesia | `storage: :disc_copies` | Table copies; `:disc_only_copies` is also supported |
+| Mnesia | `nodes: [node()]` | Nodes that should hold copies; the application provisions the cluster/schema |
+| Mnesia | `wait_timeout: 30_000` | Time to wait for configured tables to become available |
+| Mnesia / Postgres | `compressed: false` | Compress stored canonical entry bytes; digests still refer to the same canonical data |
+| Postgres | `repo` | Required application Repo module; Spectre does not start or configure it |
+| Postgres | `schema: "public"`, `table_prefix: "spectre_ledger"` | SQL namespace; must match the generated/reviewed migration |
+| Postgres | `query_module` | SQL bridge, default Ecto.Adapters.SQL supplied by the host; can be replaced by a compatible query adapter |
+| Postgres | `query_opts: []`, `transaction_opts: []` | Options forwarded to the host's query/transaction implementation, including its supported timeouts |
+
+ETS/Disk also accept ordinary GenServer startup options `timeout`, `debug`,
+`spawn_opt`, `hibernate_after`. Startup `timeout` is not a provider timeout.
+Prefer defaults unless you have measured a reason to change these.
+Fault-injection options are for tests, not normal application wiring.
+
+Use `Spectre.Ledger.Store.Mnesia.ensure_tables/1` only after the host has
+provisioned and started its Mnesia schema. It creates the adapter's required
+tables, not your cluster. The application store and History backend have their
+**own** configuration; do not forward ledger options to every persistence
+callback indiscriminately.
 
 Spectre does not import Ecto or a PostgreSQL driver. Run
 `mix spectre.gen.postgres_ledger_migration` in the host project, review the

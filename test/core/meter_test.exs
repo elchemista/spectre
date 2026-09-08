@@ -4,6 +4,7 @@ defmodule Spectre.Core.MeterTest do
 
   alias Spectre.Kernel.Meter
   alias Spectre.Kernel.Meter.Account
+  alias Spectre.Kernel.Meter.Amounts
 
   property "arbitrary operation sequences conserve quantity, including rejected overdrafts" do
     check all(
@@ -66,6 +67,42 @@ defmodule Spectre.Core.MeterTest do
       assert parent.delegated == reserved
       assert parent.available + child.suspended == ceiling
       assert conserved?(parent) and conserved?(child)
+    end
+  end
+
+  property "recontainment partitions free, partly reused and exhausted resources without minting" do
+    check all(
+            released <- integer(2..1_000_000),
+            reused <- integer(1..(released - 1))
+          ) do
+      {:ok, partial} = Meter.reserve(Account.root("partial", released), reused)
+      {:ok, exhausted} = Meter.reserve(Account.root("exhausted", released), released)
+
+      accounts = %{
+        "free" => Account.root("free", released),
+        "partial" => partial,
+        "exhausted" => exhausted,
+        "unrelated" => Account.root("unrelated", 10)
+      }
+
+      requests = Map.new(["free", "partial", "exhausted"], &{&1, released})
+      assert {:ok, updated, recovered, deficits} = Meter.recontain_many(requests, accounts)
+      assert recovered === %{"free" => released, "partial" => released - reused}
+      assert deficits === %{"partial" => reused, "exhausted" => released}
+      assert :ok = Amounts.exact_partition(requests, recovered, deficits)
+      assert updated["unrelated"] === accounts["unrelated"]
+
+      for {ref, original} <- accounts do
+        quantity = Map.get(recovered, ref, 0)
+
+        assert updated[ref] === %{
+                 original
+                 | available: original.available - quantity,
+                   suspended: original.suspended + quantity
+               }
+
+        assert conserved?(updated[ref])
+      end
     end
   end
 

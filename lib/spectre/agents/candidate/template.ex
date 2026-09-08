@@ -12,8 +12,8 @@ defmodule Spectre.Candidate.Template do
   fields. A template requests authority; it neither provides nor selects it.
   """
 
-  alias Spectre.{Candidate, Consent, Disclosure, Portable, Row}
   alias Spectre.Agent.Collection
+  alias Spectre.{Candidate, Consent, Disclosure, Portable, Row}
 
   @fields Candidate.request_fields() -- [:identity_key]
   @type t :: %{optional(String.t()) => term()}

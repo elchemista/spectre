@@ -49,14 +49,15 @@ defmodule Spectre.Core.MeterAmountsBoundaryTest do
     end
   end
 
-  test "a partition is disjoint, complete and exact in canonical quantity types" do
+  test "a quantity partition is complete and exact even when one Meter has a deficit" do
     total = %{"a" => 2, "b" => 3}
     assert :ok = Amounts.exact_partition(total, %{"a" => 2}, %{"b" => 3})
     assert :ok = Amounts.exact_partition(total, total, %{})
     assert :ok = Amounts.exact_partition(%{}, %{}, %{})
+    assert :ok = Amounts.exact_partition(total, %{"a" => 1}, %{"a" => 1, "b" => 3})
 
     for {left, right} <- [
-          {%{"a" => 1}, %{"a" => 1, "b" => 3}},
+          {%{"a" => 2}, %{"a" => 1, "b" => 3}},
           {%{"a" => 2}, %{}},
           {%{"a" => 2, "c" => 1}, %{"b" => 3}},
           {%{"a" => 2.0}, %{"b" => 3}},
@@ -69,5 +70,8 @@ defmodule Spectre.Core.MeterAmountsBoundaryTest do
              Amounts.exact_partition(%{"a" => -1}, %{"a" => -1}, %{})
 
     assert {:error, :invalid_meter_partition} = Amounts.exact_partition(nil, %{}, %{})
+
+    assert {:error, :invalid_meter_partition} =
+             Amounts.exact_partition(total, %{"a" => 3}, %{"a" => -1, "b" => 3})
   end
 end

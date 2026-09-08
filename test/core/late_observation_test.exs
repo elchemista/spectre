@@ -353,6 +353,46 @@ defmodule Spectre.Core.LateObservationTest do
   end
 
   @tag initial: :definitive_no_effect
+  test "partially reused budget records both recovered quantity and debt for the same Meter", c do
+    candidate =
+      Fixture.refund_candidate(c.fixture, 9_000,
+        identity_key: "partially-reused-budget",
+        evidence_refs: c.candidate.evidence_refs
+      )
+
+    assert {:ok, %{act: reused}} =
+             Sequencer.submit(c.fixture.server, Fixture.context(c.fixture), candidate)
+
+    assert account(c).available == 1_000
+    assert account(c).reserved == 9_000
+
+    assert {:ok, result} = observe(c, %{corrected_ref: c.initial.outcome.ref})
+    meter = c.fixture.refs.meter
+    state = projection(c)
+    record = state.meter_recontainments[c.initial.act.ref]
+    assert record.recontained === %{meter => 1_000}
+    assert record.deficits === %{meter => 1_000}
+    assert record.outcome_ref == result.outcome.ref
+    assert account(c).available == 0
+    assert account(c).reserved == 9_000
+    assert account(c).suspended == 1_000
+    assert state.meter_reservations[reused.ref] == :reserved
+    assert Map.has_key?(state.outcomes, c.initial.outcome.ref)
+    assert Enum.any?(Map.values(state.duties), &(&1.class == :contradicted_outcome))
+    assert_replay(c)
+
+    # Redelivery must not withdraw another quantity or duplicate the causal debt.
+    assert {:ok, ^result} = observe(c, %{corrected_ref: c.initial.outcome.ref})
+    assert projection(c) === state
+
+    GenServer.stop(c.fixture.server)
+    recovered = Fixture.restart_domain(c.fixture, generation: 8)
+    on_exit(fn -> Fixture.stop_process(recovered.server) end)
+    assert Sequencer.projection(recovered.server) === state
+    assert_replay(%{c | fixture: recovered})
+  end
+
+  @tag initial: :definitive_no_effect
   test "an unattested correction cannot retract a recorded no-effect claim", c do
     before = projection(c)
 

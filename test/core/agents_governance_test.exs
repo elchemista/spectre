@@ -24,7 +24,7 @@ defmodule Spectre.Core.AgentsGovernanceTest do
           id: :updated
         )
 
-      configured = %{c | instance: updated, definition: c.successor, template: "updated/refund"}
+      configured = %{c | instance: updated, definition: c.successor, template: "updated_refund"}
       assert {:ok, %{candidates: [candidate], turn: turn}} = turn(configured, "refund")
       assert_receive {:deliberation, worker, ^turn, opts}
       refute worker == updated

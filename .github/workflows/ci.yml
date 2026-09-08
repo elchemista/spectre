@@ -22,7 +22,7 @@ jobs:
   quality:
     name: Quality (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +36,9 @@ jobs:
     env:
       MIX_ENV: test
       MIX_BUILD_PATH: _build/quality
+      FASTEMBED_CACHE_DIR: ${{ github.workspace }}/.fastembed_cache
+      CC: /usr/bin/clang
+      CXX: /usr/bin/clang++
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -49,6 +52,9 @@ jobs:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
+      - name: Set up Rust for test-only native dependencies
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Restore quality build cache
         uses: actions/cache@v6
         with:
@@ -56,6 +62,12 @@ jobs:
             deps
             _build/quality
           key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-quality-${{ hashFiles('mix.lock') }}
+
+      - name: Restore real embedding model cache
+        uses: actions/cache@v6
+        with:
+          path: .fastembed_cache
+          key: ${{ runner.os }}-fastembed-models-${{ hashFiles('mix.lock', 'test/support/semantic_cache_customer_support.ex') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -66,11 +78,21 @@ jobs:
       - name: Compile without warnings
         run: mix compile --warnings-as-errors
 
-      - name: Run tests
-        run: mix test ${{ matrix.test_args }}
-
       - name: Run Credo
         run: mix credo --strict
+
+      # The ordinary suite includes real ExFastembed/Vettore and the >=60s
+      # complete-agent lifecycle. No duplicate checkout or opt-in test lane.
+      - name: Run all tests, including real embeddings and agent endurance
+        run: mix test --warnings-as-errors ${{ matrix.test_args }}
+
+      - name: Upload coverage even when its threshold fails
+        if: ${{ always() && matrix.test_args == '--cover' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: cover
+          if-no-files-found: warn
 
   dialyzer:
     name: Dialyzer
@@ -106,13 +128,12 @@ jobs:
         run: mix dialyzer
 
   performance:
-    name: Instance performance budgets
+    name: Governed runtime benchmark smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      MIX_ENV: test
+      MIX_ENV: dev
       MIX_BUILD_PATH: _build/performance
-      SPECTRE_PERF_TESTS: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -137,8 +158,16 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Run pinned Instance budgets
-        run: mix test test/instance_performance_test.exs --include perf
+      # Measurements, not a throughput SLO on shared GitHub runners.
+      - name: Measure latency, ledger growth and process memory
+        run: mix run bench/suite.exs --quick --output "$RUNNER_TEMP/spectre-bench"
+
+      - name: Upload benchmark measurements
+        uses: actions/upload-artifact@v7
+        with:
+          name: governed-runtime-bench
+          path: ${{ runner.temp }}/spectre-bench
+          if-no-files-found: error
 
   package:
     name: Package dry-run
@@ -174,73 +203,20 @@ jobs:
         run: mix hex.audit
 
       - name: Build HexDocs without warnings
-        run: mix docs --warnings-as-errors
+        run: |
+          mix docs --warnings-as-errors
+          mix run scripts/check_documentation_links.exs doc
 
       - name: Validate package locally (no publish)
         run: mix hex.build --unpack --output "$RUNNER_TEMP/hex-package"
 
       - name: Verify packaged runtime and documentation contracts
+        run: mix run scripts/check_package.exs "$RUNNER_TEMP/hex-package"
+
+      - name: Prove production isolation in a fresh build directory
+        env:
+          MIX_ENV: prod
+          MIX_BUILD_PATH: ${{ runner.temp }}/spectre-prod
         run: |
-          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent.ex.eex"
-          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent_test.exs.eex"
-          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable.ex.eex"
-          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable_test.exs.eex"
-          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store.ex.eex"
-          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store_test.exs.eex"
-          test -f "$RUNNER_TEMP/hex-package/docs/examples/routing-eval.jsonl"
-          test ! -e "$RUNNER_TEMP/hex-package/docs/adr"
-          test ! -e "$RUNNER_TEMP/hex-package/lib/spectre/agents/instance/README.md"
-          test ! -e "$RUNNER_TEMP/hex-package/test"
-          test ! -e "$RUNNER_TEMP/hex-package/scripts"
-          test ! -e "$RUNNER_TEMP/hex-package/.github"
-
-  real-ex-fastembed:
-    name: Real ExFastembed system test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      MIX_ENV: test
-      SPECTRE_EX_FASTEMBED_PATH: ${{ github.workspace }}/ex_fastembed
-      SPECTRE_REAL_EMBEDDING_TESTS: "1"
-      CC: /usr/bin/clang
-      CXX: /usr/bin/clang++
-    steps:
-      - name: Check out Spectre
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Check out ExFastembed
-        uses: actions/checkout@v6
-        with:
-          repository: elchemista/ex_fastembed
-          ref: 02edfc604274077d8a02848dcfafd56797598d77
-          path: ex_fastembed
-          persist-credentials: false
-
-      - name: Set up Elixir and Erlang/OTP
-        id: beam
-        uses: erlef/setup-beam@v1
-        with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore native build and model caches
-        uses: actions/cache@v6
-        with:
-          path: |
-            deps
-            _build/test
-            .fastembed_cache
-            ex_fastembed/priv/native
-            ex_fastembed/native/ex_fastembed/target
-          key: ${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-real-fastembed-v2-${{ hashFiles('mix.real_embeddings.lock', 'ex_fastembed/mix.lock', 'ex_fastembed/native/ex_fastembed/Cargo.lock') }}
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Run real embedding lifecycle test
-        run: mix test test/real_ex_fastembed_semantic_cache_test.exs --include real_ex_fastembed
+          mix compile --warnings-as-errors
+          mix run --no-start scripts/check_optional_runtime.exs

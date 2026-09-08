@@ -2,6 +2,10 @@ defmodule Spectre do
   @moduledoc """
   Public 0.4 boundary for governed Acts.
 
+  To write an agent, start with `Spectre.Agent` and `mix spectre.gen.agent`.
+  This facade is for the host's authority, observation and governed execution
+  operations; it is not the agent authoring DSL or a hidden conversational loop.
+
   Source organization keeps two concerns separate without changing module names:
   `lib/spectre/core/` owns GAM records, kernel, durable runtime, persistence and
   boundary contracts; `lib/spectre/agents/` owns the Agent/Skill DSL, proposal
@@ -9,7 +13,7 @@ defmodule Spectre do
   public facade over the governed runtime. Agent authoring is optional: callers
   can construct core records and use this facade without adopting the DSL.
 
-  The public surface is intentionally small. Host code wires one explicit
+  Host code wires one explicit
   ledger Store into a supervised Domain, an authenticated ingress adapter
   supplies a `Spectre.SubmissionContext`, and callers durably open a Scope
   before proposing a Candidate. `propose/3` keeps Admission and execution in

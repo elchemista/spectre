@@ -2,7 +2,7 @@ defmodule Spectre.Agent.Component do
   @moduledoc false
 
   alias Spectre.Agent.{Publication, Wiring}
-  alias Spectre.{Instance, Portable}
+  alias Spectre.{Governance, Instance, Portable}
 
   @doc "Validates wiring before opening a promised Scope; never closes it on startup failure."
   def start(instance, kind, name, opts) when kind in [:worker, :vigil] do
@@ -26,8 +26,16 @@ defmodule Spectre.Agent.Component do
              [:context, :attributes, :candidate, :options],
              :component_opening
            ),
-         {:ok, draft} <- Spectre.Scope.Opening.governed_draft(opening[:attributes]),
-         true <- draft["kind"] === scope_kind(kind),
+         # Use the same pure builder as open_scope: it binds the parent and
+         # authenticated child context before validating a promised opening.
+         {:ok, candidate} <-
+           Governance.open_scope(
+             parent,
+             opening[:context],
+             opening[:attributes],
+             opening[:candidate]
+           ),
+         true <- candidate.consequence["scope_open"]["kind"] === scope_kind(kind),
          {:ok, scope} <-
            Spectre.open_scope(
              parent,

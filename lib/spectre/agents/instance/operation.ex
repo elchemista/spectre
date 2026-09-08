@@ -4,6 +4,7 @@ defmodule Spectre.Instance.Operation do
   # Only this small execution snapshot crosses into a temporary worker. The
   # owner retains the last completed value and its queue; neither enters GAM
   # authority. All effects still use the public facade and its durable boundary.
+  alias Spectre.Agent.Runtime
   alias Spectre.Instance.Checkpoint
   alias Spectre.{Portable, Scope}
 
@@ -20,19 +21,24 @@ defmodule Spectre.Instance.Operation do
   @typep request ::
            {:turn, term(), keyword()}
            | {:advance, Spectre.Instance.Request.t(), keyword()}
+           | {:recover_advance, Spectre.Instance.Request.t(), Spectre.Proposal.Result.t()}
            | {:propose, term(), keyword()}
            | {:checkpoint, Spectre.Store.config(), String.t(), non_neg_integer()}
 
   @doc "Runs one owner-selected mutation in its temporary worker; local state advances only after a fresh Scope check."
   @spec run(request(), snapshot()) ::
           {:reply, term()}
+          | {:deferred, Spectre.Instance.Request.t(), Spectre.Proposal.Result.t()}
           | {:advance, {:ok, map()}, term()}
           | {:authoring, term(), term(), map()}
   def run({:turn, input, opts}, %{authoring: authoring} = snapshot) when not is_nil(authoring),
-    do: Spectre.Agent.Runtime.turn(input, opts, snapshot)
+    do: Runtime.turn(input, opts, snapshot)
 
   def run({:advance, request, opts}, snapshot),
-    do: Spectre.Agent.Runtime.advance(request, opts, snapshot)
+    do: Runtime.advance(request, opts, snapshot)
+
+  def run({:recover_advance, request, proposal}, snapshot),
+    do: Runtime.recover(request, proposal, snapshot)
 
   def run({:turn, input, opts}, snapshot) do
     with {:ok, opts} <- bind_mind_options(opts, snapshot),

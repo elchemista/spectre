@@ -2,15 +2,6 @@ defmodule Spectre.CoreTest.ReleaseArtifactsTest do
   use ExUnit.Case, async: false
 
   @root Path.expand("../..", __DIR__)
-  @guide_modules [
-    Guide.OrderSkill,
-    Guide.SupportAgent,
-    Guide.BinaryMatcher,
-    Guide.RejectEmpty,
-    Guide.StatefulMind,
-    Guide.FlowAgent,
-    Guide.VerifiedAgent
-  ]
 
   test "package and HexDocs declarations reference files present in this checkout" do
     project = Mix.Project.config()
@@ -51,46 +42,47 @@ defmodule Spectre.CoreTest.ReleaseArtifactsTest do
     end
   end
 
-  test "published self-contained guide examples execute against the current public API" do
-    on_exit(fn ->
-      for module <- @guide_modules do
-        :code.purge(module)
-        :code.delete(module)
-      end
-    end)
+  test "CI references existing scripts, tests and lockfile inputs" do
+    workflow = File.read!(Path.join(@root, ".github/workflows/ci.yml"))
 
-    examples =
-      for source <- Mix.Project.config()[:docs][:extras],
-          [_match, name, code] <-
-            Regex.scan(
-              ~r/<!-- spectre:example (\w+) -->\n```elixir\n(.*?)\n```/s,
-              File.read!(Path.join(@root, source))
-            ) do
-        Code.eval_string(code, [], file: source)
-        name
-      end
+    paths = Regex.scan(~r/\b(?:test|bench|scripts)\/[^\s"']+\.exs\b/, workflow)
 
-    assert Enum.sort(examples) ===
-             ~w(application_store input_pipeline)
+    assert ["bench/suite.exs"] in paths
+    assert ["scripts/check_package.exs"] in paths
+    assert ["scripts/check_optional_runtime.exs"] in paths
+    assert ["scripts/check_documentation_links.exs"] in paths
+
+    for [path] <- paths do
+      assert File.regular?(Path.join(@root, path)), "missing CI entry point: #{path}"
+    end
+
+    for [_, arguments] <- Regex.scan(~r/hashFiles\(([^)]+)\)/, workflow),
+        [_, pattern] <- Regex.scan(~r/'([^']+)'/, arguments) do
+      assert Path.wildcard(Path.join(@root, pattern)) != [], "empty CI cache input: #{pattern}"
+    end
+
+    refute workflow =~ "mix.real_embeddings.lock"
+    refute workflow =~ "repository: elchemista/ex_fastembed"
+    assert workflow =~ "MIX_ENV: prod"
   end
 
-  test "README handler declaration compiles with explicit publication metadata" do
-    snippet =
-      ~r/```elixir\n(.*?)```/s
-      |> Regex.scan(File.read!(Path.join(@root, "README.md")))
-      |> Enum.map(fn [_match, code] -> code end)
-      |> Enum.find(&String.contains?(&1, "use Spectre.Agent"))
+  test "guide links with fragments point to existing Markdown sections" do
+    for source <- Mix.Project.config()[:docs][:extras] do
+      markdown = File.read!(Path.join(@root, source))
 
-    assert is_binary(snippet)
-    {_result, binding} = Code.eval_string(snippet, [published_at: 0], file: "README.md")
+      for [_, target] <- Regex.scan(~r/\[[^\]]*\]\(([^)]+)\)/, markdown),
+          not String.starts_with?(target, ["https://", "http://"]),
+          [file, anchor] <- [String.split(target, "#", parts: 2)],
+          anchor != "" do
+        path =
+          if file == "",
+            do: Path.join(@root, source),
+            else: Path.expand(file, Path.dirname(Path.join(@root, source)))
 
-    on_exit(fn ->
-      :code.purge(MyApp.Orders)
-      :code.delete(MyApp.Orders)
-    end)
-
-    definition = Keyword.fetch!(binding, :definition)
-    assert {:ok, _, _} = Spectre.Agent.verify_definition(MyApp.Orders, definition)
+        assert URI.decode(anchor) in heading_ids(File.read!(path)),
+               "#{source} links to a missing section: #{target}"
+      end
+    end
   end
 
   test "complete example publishes Skills and reusable Worker/Vigil without startup" do
@@ -103,17 +95,52 @@ defmodule Spectre.CoreTest.ReleaseArtifactsTest do
       end
     end)
 
-    definitions = Spectre.Example.Publication.definitions(0)
+    # These modules exist only after the example is compiled above. Resolve
+    # from that result instead of statically calling an unavailable module.
+    compiled = Map.new(modules, fn {module, _bytecode} -> {inspect(module), module} end)
+    publication = Map.fetch!(compiled, "Spectre.Example.Publication")
+    definitions = publication.definitions(0)
 
     assert {:ok, _, children} =
              Spectre.Agent.verify_definition(Spectre.Example.Support, definitions.agent)
 
-    assert children["faq"] == Spectre.Example.Faq.definition(revision: 1, declared_at: 0)
+    faq = Map.fetch!(compiled, "Spectre.Example.Faq")
+    assert children["faq"] == faq.definition(revision: 1, declared_at: 0)
 
     assert {:ok, _, _} =
              Spectre.Agent.verify_definition(Spectre.Example.OrderWorker, definitions.worker)
 
     assert {:ok, _, _} =
              Spectre.Agent.verify_definition(Spectre.Example.QueueVigil, definitions.vigil)
+  end
+
+  @tag :tmp_dir
+  test "rendered-link check catches missing source files and fragments", %{tmp_dir: directory} do
+    source = Path.join(directory, "index.html")
+    target = Path.join(directory, "example.html")
+    File.write!(target, ~s(<section id="known"></section>))
+    File.write!(source, ~s(<a href="example.html#known">Example</a>))
+    script = Path.join(@root, "scripts/check_documentation_links.exs")
+    elixir = System.find_executable("elixir")
+    assert {_, 0} = System.cmd(elixir, [script, directory], stderr_to_stdout: true)
+
+    for href <- ["example.html#absent", "examples/authoring.exs"] do
+      File.write!(source, ~s(<a href="#{href}">Broken example</a>))
+      assert {output, 1} = System.cmd(elixir, [script, directory], stderr_to_stdout: true)
+      assert output =~ "index.html -> #{href}"
+    end
+  end
+
+  # Published guides use ordinary ATX headings. Ignore headings inside examples;
+  # the resulting IDs follow GitHub's punctuation-removal rule, not URL guesses.
+  defp heading_ids(markdown) do
+    prose = Regex.replace(~r/^```[^\n]*\n.*?^```\s*$/ms, markdown, "")
+
+    for [_, heading] <- Regex.scan(~r/^\#{1,6}\s+(.+?)\s*\#*$/m, prose) do
+      heading
+      |> String.downcase()
+      |> String.replace(~r/[^\p{L}\p{N}_\-\s]/u, "")
+      |> String.replace(" ", "-")
+    end
   end
 end

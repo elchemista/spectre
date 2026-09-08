@@ -4,6 +4,7 @@ defmodule Spectre.Core.AgentAuthoringTest do
   use ExUnit.Case, async: true
 
   alias Spectre.{Agent, Audit, Candidate, Definition, Ledger}
+  alias Spectre.Agent.RequestBuilder
   alias Spectre.Bench.P1.Fixture
   alias Spectre.Candidate.Template
   alias Spectre.Domain.Sequencer
@@ -98,6 +99,39 @@ defmodule Spectre.Core.AgentAuthoringTest do
 
     assert {:ok, _report} =
              Audit.verify(snapshot, before.constitution, System.system_time(:millisecond))
+  end
+
+  test "recomputing only the parent ref cannot replace a twice-nested Skill revision", %{
+    fixture: f,
+    turn: turn,
+    attrs: attrs
+  } do
+    original = Assistant.definition()
+    before = Sequencer.projection(f.server)
+
+    body =
+      put_in(
+        original.body,
+        [
+          "authoring",
+          "component_definitions",
+          "bundle",
+          "body",
+          "authoring",
+          "component_definitions",
+          "effects",
+          "revision"
+        ],
+        2
+      )
+
+    assert {:ok, revised} = Definition.revise(original, body, 1)
+    refute revised.ref == original.ref
+    assert {:error, _} = Agent.verify_definition(Assistant, revised)
+    assert {:error, _} = Agent.candidate(revised, "bundle/effects/effect", turn, attrs)
+    assert {:ok, _, _} = Agent.verify_definition(Assistant, original)
+    assert {:ok, _} = Agent.candidate(original, "bundle/effects/effect", turn, attrs)
+    assert Sequencer.projection(f.server) === before
   end
 
   test "an installed Skill supplies no authority of its own", %{
@@ -243,7 +277,8 @@ defmodule Spectre.Core.AgentAuthoringTest do
     attrs: attrs
   } do
     assert {:ok, template} = Template.new(row: %{disclose: true})
-    assert {:ok, request} = Template.bind(template, Map.put(attrs, :class, "example.disclose"))
+    attrs = attrs |> Map.delete(:row) |> Map.put(:class, "example.disclose")
+    assert {:ok, request} = Template.bind(template, attrs)
     assert {:error, _} = Spectre.Mind.candidate(turn, request)
   end
 
@@ -298,7 +333,7 @@ defmodule Spectre.Core.AgentAuthoringTest do
   } do
     before = Sequencer.projection(f.server)
     current = Assistant.definition()
-    {:ok, template} = Spectre.Agent.RequestBuilder.template(class: "new.effect")
+    {:ok, template} = RequestBuilder.template(class: "new.effect")
     body = put_in(current.body, ["authoring", "plan", :requests, "new"], template)
     assert {:ok, successor} = Definition.revise(current, body, 10)
     assert successor.ref != current.ref

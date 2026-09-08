@@ -173,8 +173,9 @@ The same handler API can prepare a voice, text or delivery request. No media typ
 is required in the kernel. A host can submit the exact selected ticket and then
 poll its progress without resubmission:
 
+<!-- spectre:example pending_operation -->
 ```elixir
-{:ok, prepared} = Spectre.Instance.turn(instance, input, flow: :support)
+{:ok, prepared} = Spectre.Instance.turn(instance, input, flow: flow)
 [chosen] = prepared.requests
 
 case Spectre.Instance.advance(instance, chosen, wait: 0) do
@@ -195,7 +196,13 @@ On a later UI tick, read `Instance.info(instance, 1_000)` and
 `:pending`, the retained completed result, or an error. Neither read submits
 another Candidate. Use the returned operation ref, not a new `advance` call.
 The Instance reserves a ticket once; selecting one alternative invalidates its
-siblings. Completed results have bounded retention, so they are not an archive.
+siblings. For a deferred proposal, `operation/3` runs one recovery and, if its
+turn is still current, the result handler in the mutation worker. Concurrent
+reads report pending while that work runs; no background polling or executor
+retry is started. A superseded continuation returns
+`{:error, {:instance_continuation_superseded, result}}` without changing newer
+state. Completed and deferred results have bounded retention, so tickets are
+not an archive.
 
 The provider/transport's executor can report operational progress to a
 host-owned bounded collector. Use refs, counts and durations, not unapproved

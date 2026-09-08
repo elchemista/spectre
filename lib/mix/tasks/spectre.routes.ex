@@ -15,25 +15,31 @@ defmodule Mix.Tasks.Spectre.Routes do
   @impl Mix.Task
   def run([name]) do
     Mix.Task.run("compile")
-    module = name |> String.trim_leading("Elixir.") |> then(&("Elixir." <> &1))
+    module = existing_module(name)
 
+    if not Code.ensure_loaded?(module) or not function_exported?(module, :__spectre_plan__, 0),
+      do: Mix.raise("module has no compiled Spectre declarations")
+
+    print(module, module.__spectre_plan__(), "")
+
+    Mix.shell().info(
+      "required ports: " <> (module.ports() |> Map.keys() |> Enum.sort() |> Enum.join(", "))
+    )
+  end
+
+  def run(_args), do: Mix.raise("usage: mix spectre.routes MyApp.Agent")
+
+  defp existing_module(name) do
+    name = "Elixir." <> String.trim_leading(name, "Elixir.")
+
+    # Only name resolution belongs to this diagnostic. Declaration and printing
+    # errors must retain their cause instead of masquerading as a misspelling.
     try do
-      module = String.to_existing_atom(module)
-
-      if not Code.ensure_loaded?(module) or not function_exported?(module, :__spectre_plan__, 0),
-        do: Mix.raise("module has no compiled Spectre declarations")
-
-      print(module, module.__spectre_plan__(), "")
-
-      Mix.shell().info(
-        "required ports: " <> (module.ports() |> Map.keys() |> Enum.sort() |> Enum.join(", "))
-      )
+      String.to_existing_atom(name)
     rescue
       ArgumentError -> Mix.raise("unknown compiled authoring module")
     end
   end
-
-  def run(_args), do: Mix.raise("usage: mix spectre.routes MyApp.Agent")
 
   defp print(module, plan, prefix) do
     sources = module.__spectre_sources__()
@@ -55,22 +61,24 @@ defmodule Mix.Tasks.Spectre.Routes do
             "  classifier: consumes an observed result; no provider call during routing"
           )
 
-      for {name, route} <- Enum.sort(flow.routes) do
-        methods = route.rule["match"] |> Map.keys() |> Enum.sort()
-
-        Mix.shell().info(
-          "  #{name} -> handle_turn {#{inspect(flow.local)}, #{inspect(route.local)}, captures}; methods=#{inspect(methods)}"
-        )
-
-        source(Map.get(sources, {:route, to_string(flow.local), name}))
-
-        if route.injections != [],
-          do: Mix.shell().info("    injections: #{inspect(route.injections)}")
-      end
+      Enum.each(Enum.sort(flow.routes), &print_route(&1, flow, sources))
     end
 
     for {name, child} <- Enum.sort(plan.components),
         do: print(child.module, child.plan, prefix <> name <> "/")
+  end
+
+  defp print_route({name, route}, flow, sources) do
+    methods = route.rule["match"] |> Map.keys() |> Enum.sort()
+
+    Mix.shell().info(
+      "  #{name} -> handle_turn {#{inspect(flow.local)}, #{inspect(route.local)}, captures}; methods=#{inspect(methods)}"
+    )
+
+    source(Map.get(sources, {:route, to_string(flow.local), name}))
+
+    if route.injections != [],
+      do: Mix.shell().info("    injections: #{inspect(route.injections)}")
   end
 
   defp source(nil), do: :ok

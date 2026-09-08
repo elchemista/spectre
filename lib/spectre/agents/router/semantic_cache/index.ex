@@ -17,9 +17,8 @@ defmodule Spectre.Router.SemanticCache.Index do
 
   @doc false
   def build({module, opts}, examples) do
-    with {:ok, {:ok, index}} <- Adapter.invoke(module, :build, [examples, opts]) do
-      {:ok, {module, index}}
-    else
+    case Adapter.invoke(module, :build, [examples, opts]) do
+      {:ok, {:ok, index}} -> {:ok, {module, index}}
       {:ok, {:error, _} = error} -> error
       {:error, _} = error -> error
       _invalid -> {:error, :invalid_cache_index_reply}

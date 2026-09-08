@@ -6,6 +6,80 @@ and [the capability inventory](capabilities.md) for what is not implemented.
 The [Governed Act Model](../GOVERNED_ACT_MODEL.md) is the normative model;
 this guide maps its concepts to code.
 
+## Start with the problem, not the implementation
+
+An agent proposes a €50 refund. Three different questions follow:
+
+1. **Is it a sensible suggestion?** Your handlers, Router and optional models
+   help answer this. They may still be wrong.
+2. **May this exact refund be attempted?** The kernel checks the declared
+   class, Mandate, evidence, recipients, purpose, consent and available budget.
+3. **Did the refund happen?** The executor's observations answer this after
+   the recorded authorization. A lost response may leave it unresolved.
+
+The new kernel keeps these questions separate. It is not an LLM safety prompt,
+Router, provider SDK or background agent loop. It is a deterministic function
+over an exact proposal and verified facts; the surrounding Domain makes the
+result durable before any governed capability is released.
+
+The host defines `refund.issue` as its own action class. That name has no magic
+meaning to the kernel. Its Surface explains the action's payload and powers;
+its Mandate limits who may propose it. The executor implements the actual
+payment-service contract. Changing a model or Router does not require changing
+those core admission rules.
+
+## What is a Row?
+
+A `Spectre.Row` is a **small boolean summary of the types of power an action
+uses**. It is not a database row, a route, an ACL or a permission granted by the
+Agent. The name comes from an effect row: a set of declared effects.
+
+For an external order lookup, `attempt: true, read: true` means “attempt an
+external operation that reads a resource”. The Mandate must allow both powers
+and also cover the exact class, order, proposer, time and purpose. An allowed
+power type is not permission to act on every resource of that type.
+
+| Dimension | Meaning in an application |
+| --- | --- |
+| `attempt` | Carry out an external attempt through dispatch/executor |
+| `observe` | Establish an observation through a declared boundary |
+| `read` | Read a resource |
+| `write` | Change a resource |
+| `disclose` | Release information to specified destinations |
+| `spend` | Consume a declared resource budget |
+| `delegate` | Transfer narrower authority, not duplicate it |
+| `govern` | Change governed authority/configuration through a recorded action |
+| `present` | Present material relevant to consent |
+
+Omitted dimensions are false. Rows do not contain money amounts, order IDs or
+provider credentials. Those belong to the consequence, its exact bindings,
+the Mandate and Meter accounting. The kernel checks that the Candidate's Row
+matches its Surface class and fits within the Mandate's ceiling.
+
+You normally declare the Row in host setup, **not in Agent handlers**.
+`RequestBuilder` obtains it from the actual Surface. The
+[lookup example](host-setup.md#connect-a-handler-to-a-governed-action) shows the
+Row, a closed consequence contract and the host binding map together.
+
+## A few names worth keeping separate
+
+| Name | Plain meaning |
+| --- | --- |
+| Surface | The versioned catalog of actions the application governs |
+| Consequence | The exact proposed payload: which order, recipient, amount or model request |
+| Condition | A fact that must be established from appropriate Evidence, not simply asserted by the model |
+| Meter | Accounting for a limited quantity; a reservation is not yet settled spending |
+| Candidate | A complete proposal before authorization; contains no execution credential |
+| Decision | The kernel's answer: admitted, refused, undecidable or unknown class |
+| Attempt | The recorded beginning of an admitted external operation; distinct from success |
+| Outcome | What the observed result supports: success, failure, definite no effect or ambiguity |
+| Grant | An internal short-lived execution capability, not a value handlers should hold |
+| Definition | Immutable agent code/configuration publication; not an active process |
+| Constitution | The Domain's pinned Duty/disposition rules, not the agent's system prompt |
+
+The four GAM records below connect those concepts. Ordinary authoring does not
+require constructing each record manually for every turn.
+
 ## Four different kinds of fact
 
 | Concept | Question answered | Main modules |
@@ -13,7 +87,7 @@ this guide maps its concepts to code.
 | Mandate | Who may exercise which authority, for whom, with what limits? | `Spectre.Mandate`, `Spectre.Kernel.Authority`, `Spectre.Mandate.Ancestry` |
 | Evidence | What supports or contradicts a proposition, from which sources? | `Spectre.Evidence`, `Spectre.Condition`, `Spectre.Kernel.Recognition` |
 | Act | Which exact consequence was admitted and durably authorized? | `Spectre.Candidate`, `Spectre.Decision`, `Spectre.Act`, `Spectre.Kernel.Commit` |
-| Duty | What causal debt remains, and who can independently dispose of it? | `Spectre.Duty`, `Spectre.Duty.Derive`, `Spectre.Duty.Disposition`; internal checks in `lib/spectre/duty/authority.ex` |
+| Duty | What causal debt remains, and who can independently dispose of it? | `Spectre.Duty`, `Spectre.Duty.Derive`, `Spectre.Duty.Disposition`; internal checks in `lib/spectre/core/duty/authority.ex` |
 
 A Candidate is not an Act. Evidence that a user wants something is not a
 Mandate to do it. A successful function return is not proof of an external
@@ -32,7 +106,12 @@ Application intake / fixed Ingress
   → bound Evidence + Outcome → accounting / Duty
 ```
 
-`Spectre.turn/3` records observations before invoking the Mind. The Mind runs
+For the handler DSL, `Instance.turn/3` opens an authenticated Turn, runs the
+selected flow and prepares requests; `Instance.advance/3` submits one choice.
+The optional model is itself reached through a request, not called by the
+kernel. See [the combinations](agent-recipes.md).
+
+For the lower-level custom-Mind path, `Spectre.turn/3` records observations before invoking the Mind. The Mind runs
 outside the Domain sequencer, receives a capability-free `Spectre.Mind.Turn`,
 and returns proposals. Routing happens here, before kernel evaluation.
 
@@ -94,8 +173,8 @@ checks current authority again and records an Attempt before issuing the
 checkout receipt. This is why neither a valid template, a kernel result nor a
 prepared transaction can substitute for the durable execution boundary.
 
-On the return path, the classifier in `lib/spectre/attempt/runner/observation.ex`
-interprets the executor's report; `lib/spectre/outcome/attestation.ex` supplies
+On the return path, the classifier in `lib/spectre/core/attempt/runner/observation.ex`
+interprets the executor's report; `lib/spectre/core/outcome/attestation.ex` supplies
 the shared causal binding checks used by classification and replay. Relevant contradictory
 Evidence may support an ambiguous Outcome; it cannot establish success.
 These checks establish recorded consistency, not a cryptographic signature
@@ -108,17 +187,28 @@ ordinary function calls in the caller's process, not additional Domain owners:
 
 | Source | Responsibility |
 | --- | --- |
-| `lib/spectre/facade/access.ex` | Resolve live Domain addresses, validate host options and issue narrow authenticated queries; rebinding does not renew a Scope's authority or generation |
-| `lib/spectre/facade/proposal.ex` | Admission, execution orchestration and at most one declared refusal fallback; never retry an uncertain effect |
-| `lib/spectre/facade/observation.ex` | Record supported late Evidence before its Outcome, without re-executing the original Act |
+| `lib/spectre/core/facade/access.ex` | Resolve live Domain addresses, validate host options and issue narrow authenticated queries; rebinding does not renew a Scope's authority or generation |
+| `lib/spectre/core/facade/proposal.ex` | Admission, execution orchestration and at most one declared refusal fallback; never retry an uncertain effect |
+| `lib/spectre/core/facade/observation.ex` | Record supported late Evidence before its Outcome, without re-executing the original Act |
 
 The disk adapter has a separate physical boundary. In
-`lib/spectre/ledger/store/disk.ex`, one owner serializes writes, checks prefix
+`lib/spectre/core/ledger/store/disk.ex`, one owner serializes writes, checks prefix
 continuity and maintains its indexes. `disk/frame.ex` checks the bounded
 canonical storage envelope and batch identity; `disk/file_io.ex` performs file
 reads, writes and durability barriers. A valid frame alone is neither a durable
 commit nor a GAM authorization. Corrupt frames are rejected; only the owner's
 explicit incomplete-tail policy permits truncation.
+
+## Finding code in the repository
+
+- `lib/spectre/agents/`: Agent/Skill/Stack DSL, Instance, Router, templates,
+  context and optional integration adapters. Change authoring here.
+- `lib/spectre/core/`: governed records, kernel, Domain sequencing, replay,
+  execution boundary, ledger, erasure and audit. This owns GAM correctness.
+- `lib/spectre.ex`: public facade connecting host calls to those boundaries.
+
+Directories separate responsibilities; module names remain `Spectre.Agent`,
+`Spectre.Kernel`, and so on. There is no second DSL-specific kernel.
 
 ## What owns state?
 
@@ -186,7 +276,7 @@ answer or transcription is not automatically an observed fact.
 it. `Spectre.show_presentation/4` mediates delivery, and approval is bound to the
 material Candidate occurrence and qualified Evidence, not just an identical
 string. The internal evaluator in
-`lib/spectre/presentation/approval/assumptions.ex` checks the assumption graph,
+`lib/spectre/core/presentation/approval/assumptions.ex` checks the assumption graph,
 including contradictory or unavailable support.
 
 `Spectre.Declassification` changes allowed information flow through an

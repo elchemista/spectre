@@ -149,7 +149,7 @@ defmodule Spectre.Core.RoutedAgentsRecoveryTest do
       assert {:error, :candidate_retry_context_mismatch} = Instance.propose(instance, candidate)
       assert executions(c) == 1
       {next, route, candidate} = prepare(c, "money back", identity: "recovered-message")
-      assert route.template == "revised/refund"
+      assert route.template == "revised_refund"
       assert {:ok, proposal} = Instance.propose(instance, candidate)
       assert_completed(c, next.turn, proposal, 193)
       assert_history(c)

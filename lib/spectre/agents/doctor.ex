@@ -15,6 +15,7 @@ defmodule Spectre.Doctor do
   service is reachable. No adapter is started, selected or installed here.
   """
 
+  alias Spectre.Agent.Wiring
   alias Spectre.Genesis
   alias Spectre.HostProfile
   alias Spectre.Ingress
@@ -241,7 +242,7 @@ defmodule Spectre.Doctor do
 
   defp port_findings({agent, wired}) do
     if Code.ensure_loaded?(agent) and function_exported?(agent, :__spectre_plan__, 0) do
-      case Spectre.Agent.Wiring.resolve(agent, wired) do
+      case Wiring.resolve(agent, wired) do
         {:ok, _wiring} -> []
         {:error, reason} -> [{:invalid_agent_port_wiring, agent, reason}]
       end

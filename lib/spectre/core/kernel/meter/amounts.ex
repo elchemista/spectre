@@ -40,13 +40,16 @@ defmodule Spectre.Kernel.Meter.Amounts do
     end
   end
 
-  @doc "Checks that two partial maps are an exact, disjoint partition of a total."
+  @doc "Checks that partial quantities sum exactly to the total for each Meter."
   @spec exact_partition(t(), t(), t()) :: :ok | {:error, :invalid_meter_partition}
   def exact_partition(total, left, right)
       when is_map(total) and is_map(left) and is_map(right) do
-    with {:ok, _total} <- normalize(total),
-         true <- map_size(left) + map_size(right) == map_size(total),
-         true <- Map.merge(left, right) === total do
+    # One Meter can be partly recovered and partly a deficit. Partition its
+    # quantity, not its key; neither side may introduce negative/float units.
+    with {:ok, total} <- normalize(total),
+         {:ok, left} <- normalize(left),
+         {:ok, right} <- normalize(right),
+         true <- Map.merge(left, right, fn _ref, a, b -> a + b end) === total do
       :ok
     else
       _invalid -> {:error, :invalid_meter_partition}

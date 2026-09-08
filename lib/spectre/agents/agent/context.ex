@@ -7,6 +7,7 @@ defmodule Spectre.Agent.Context do
   alias Spectre.Agent.{Observer, Wiring}
   alias Spectre.Canonical.Value
   alias Spectre.{History, Memory, Portable}
+  alias Spectre.Mind.Turn
 
   @type t :: %{history: [map()], memory: [map()]}
   @max_bytes 65_536
@@ -17,25 +18,11 @@ defmodule Spectre.Agent.Context do
     owner.plan.settings
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.reduce_while({:ok, %{history: [], memory: []}}, fn {name, config}, {:ok, context} ->
-      phase = if String.starts_with?(name, "history/"), do: :history_load, else: :memory_load
-      metadata = %{definition_ref: owner.definition_ref, owner: owner.prefix}
-
-      result =
-        if phase == :history_load or String.starts_with?(name, "memory/"),
-          do:
-            Observer.span(%{wiring: wiring}, phase, metadata, fn ->
-              window(name, config, owner.prefix, wiring, input)
-            end),
-          else: :skip
-
-      case result do
+      case observed_window(name, config, owner, wiring, input) do
         {:ok, kind, items} ->
           context = Map.update!(context, kind, &(&1 ++ items))
 
-          case Value.validate(context, max_bytes: @max_bytes) do
-            :ok -> {:cont, {:ok, context}}
-            {:error, _} -> {:halt, {:error, :agent_context_budget_exceeded}}
-          end
+          checked_context(context)
 
         :skip ->
           {:cont, {:ok, context}}
@@ -44,6 +31,26 @@ defmodule Spectre.Agent.Context do
           {:halt, error}
       end
     end)
+  end
+
+  defp observed_window(name, config, owner, wiring, input) do
+    phase = if String.starts_with?(name, "history/"), do: :history_load, else: :memory_load
+    metadata = %{definition_ref: owner.definition_ref, owner: owner.prefix}
+
+    if phase == :history_load or String.starts_with?(name, "memory/") do
+      Observer.span(%{wiring: wiring}, phase, metadata, fn ->
+        window(name, config, owner.prefix, wiring, input)
+      end)
+    else
+      :skip
+    end
+  end
+
+  defp checked_context(context) do
+    case Value.validate(context, max_bytes: @max_bytes) do
+      :ok -> {:cont, {:ok, context}}
+      {:error, _} -> {:halt, {:error, :agent_context_budget_exceeded}}
+    end
   end
 
   @doc false
@@ -61,7 +68,7 @@ defmodule Spectre.Agent.Context do
   @spec validate_sources(t(), Spectre.Mind.Turn.t()) :: :ok | {:error, term()}
   def validate_sources(context, turn) do
     with {:ok, refs} <- evidence_refs(context) do
-      visible = Spectre.Mind.Turn.evidence_refs(turn)
+      visible = Turn.evidence_refs(turn)
 
       if Enum.all?(refs, &(&1 in visible)),
         do: :ok,
