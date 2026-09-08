@@ -13,6 +13,7 @@ defmodule Spectre.Candidate.Template do
   """
 
   alias Spectre.{Candidate, Consent, Disclosure, Portable, Row}
+  alias Spectre.Agent.Collection
 
   @fields Candidate.request_fields() -- [:identity_key]
   @type t :: %{optional(String.t()) => term()}
@@ -44,10 +45,9 @@ defmodule Spectre.Candidate.Template do
   end
 
   defp normalize_entries(attrs) do
-    Enum.reduce_while(attrs, {:ok, []}, fn {field, value}, {:ok, entries} ->
-      case normalize_value(field, value) do
-        {:ok, value} -> {:cont, {:ok, [{Atom.to_string(field), value} | entries]}}
-        {:error, _reason} = error -> {:halt, error}
+    Collection.map(attrs, fn {field, value} ->
+      with {:ok, value} <- normalize_value(field, value) do
+        {:ok, {Atom.to_string(field), value}}
       end
     end)
   end

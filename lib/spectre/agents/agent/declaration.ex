@@ -1,201 +1,162 @@
 defmodule Spectre.Agent.Declaration do
   @moduledoc false
 
-  alias Spectre.Candidate.Template
+  alias Spectre.Agent.Publication
   alias Spectre.{Definition, Portable, Router}
   alias Spectre.Router.Rule
-
-  @base_keys ["format", "candidates", "components"]
-  @keys @base_keys ++ ["routing", "assets", "flows"]
 
   @type t :: %{
           templates: map(),
           components: map(),
-          assets: map(),
-          routes: map(),
-          router: map(),
-          flows: map()
+          flows: map(),
+          operations: map()
         }
 
-  # Optional sections are omitted when empty. Every present section is strict:
-  # portable content alone does not establish an authoring schema or authority.
-  @doc "Checks the data-only Agent grammar and references without resolving executable host ports."
+  @doc "Reads portable authoring declarations without loading or interpreting executable modules."
   @spec read(Definition.t()) :: {:ok, t()} | {:error, term()}
-  def read(%Definition{body: body}) do
-    with :ok <- envelope(body),
-         :ok <- entries(body["candidates"], &template/1),
-         :ok <- entries(body["components"], &Portable.validate_ref(&1, :component_ref)),
-         :ok <- entries(Map.get(body, "assets", %{}), &Portable.validate/1),
-         {:ok, routing} <- routing(Map.fetch(body, "routing"), body["candidates"]),
-         :ok <- entries(Map.get(body, "flows", %{}), &flow(&1, body["candidates"])) do
-      {:ok,
-       %{
-         templates: body["candidates"],
-         components: body["components"],
-         assets: Map.get(body, "assets", %{}),
-         routes: routing.rules,
-         router: routing.config,
-         flows: Map.get(body, "flows", %{})
-       }}
-    end
+  def read(%Definition{} = definition) do
+    with {:ok, definition} <- Definition.new(definition), do: read_verified(definition)
   end
 
   def read(_definition), do: {:error, :not_an_agent_declaration}
 
-  @doc "Assembles the portable body from compiler-validated sections; empty optional sections stay absent."
-  @spec body(map(), map(), map(), map() | keyword() | nil, map(), map()) :: map()
-  def body(templates, components, routes, router, assets, flows \\ %{}) do
-    base = %{
-      "format" => "spectre-agent-declaration-v1",
-      "candidates" => templates,
-      "components" => components
-    }
+  defp read_verified(%Definition{
+         body: %{"format" => "spectre-agent-declaration-v3", "authoring" => authoring} = body
+       })
+       when map_size(body) == 2 and is_map(authoring) do
+    with %{"plan" => plan, "code_ref" => code, "component_definitions" => children}
+         when map_size(authoring) == 3 <- authoring,
+         :ok <- Portable.validate_ref(code, :code_ref),
+         true <- is_map(plan) and is_map(children),
+         %{requests: requests, flows: flows, prompts: prompts, asks: asks, settings: settings} <-
+           plan,
+         :ok <- entries(requests, &template/1),
+         :ok <- entries(flows, &flow/1),
+         :ok <- entries(prompts, &prompt/1),
+         true <- is_map(asks) and is_map(settings) do
+      own = %{
+        templates: requests,
+        components: %{},
+        flows: Map.new(flows, fn {name, flow} -> {name, Publication.flow_body(flow, name)} end),
+        operations: operation_classes(asks, settings)
+      }
 
-    base = if assets == %{}, do: base, else: Map.put(base, "assets", assets)
-
-    base =
-      if flows == %{},
-        do: base,
-        else:
-          base
-          |> Map.put("format", "spectre-agent-declaration-v2")
-          |> Map.put("flows", Map.new(flows, fn {name, flow} -> {name, flow_body(flow)} end))
-
-    if routes == %{} and router == nil do
-      base
+      # Publication stores each child once. Diagnostics and the low-level
+      # reader flatten only what they need, without evaluating loaded modules.
+      Enum.reduce_while(children, {:ok, own}, &include_child/2)
     else
-      {:ok, config} = Router.configuration(router || [])
-      Map.put(base, "routing", %{"rules" => routes, "config" => config})
-    end
-  end
-
-  defp envelope(
-         %{
-           "format" => format,
-           "candidates" => templates,
-           "components" => components
-         } = body
-       )
-       when is_map(templates) and is_map(components) and
-              format in ["spectre-agent-declaration-v1", "spectre-agent-declaration-v2"] do
-    if Enum.all?(Map.keys(body), &(&1 in @keys)) and
-         (format == "spectre-agent-declaration-v2" or not Map.has_key?(body, "flows")),
-       do: :ok,
-       else: {:error, :not_an_agent_declaration}
-  end
-
-  defp envelope(_body), do: {:error, :not_an_agent_declaration}
-
-  defp routing(:error, _templates) do
-    {:ok, config} = Router.configuration([])
-    {:ok, %{rules: %{}, config: config}}
-  end
-
-  defp routing({:ok, %{"rules" => rules, "config" => config} = data}, templates)
-       when map_size(data) == 2 do
-    with {:ok, normalized} <- Router.configuration(config),
-         true <- normalized === config,
-         {:ok, parsed} <- Router.rules(rules),
-         true <-
-           Enum.all?(parsed, fn {name, rule} ->
-             Rule.canonical(rule) === rules[name] and Map.has_key?(templates, rule.to)
-           end) do
-      {:ok, %{rules: rules, config: config}}
-    else
-      false -> {:error, :invalid_agent_routing}
       {:error, _} = error -> error
+      _invalid -> {:error, :not_an_agent_declaration}
     end
   end
 
-  defp routing(_data, _templates), do: {:error, :invalid_agent_routing}
+  defp read_verified(_definition), do: {:error, :not_an_agent_declaration}
+
+  defp include_child({name, value}, {:ok, parent}) do
+    with :ok <- Rule.local_name(name),
+         {:ok, child} <- Definition.from_canonical(value),
+         {:ok, declaration} <- read_verified(child) do
+      merged =
+        Map.new(parent, fn {field, values} ->
+          nested =
+            Map.new(declaration[field], fn {key, data} ->
+              {name <> "/" <> key, qualify(field, name, data)}
+            end)
+
+          {field, Map.merge(values, nested)}
+        end)
+
+      {:cont, {:ok, put_in(merged.components[name], child.ref)}}
+    else
+      error -> {:halt, error}
+    end
+  end
+
+  defp qualify(:flows, name, flow) do
+    flow = Map.update!(flow, "pipelines", &Enum.map(&1, fn key -> name <> "/" <> key end))
+
+    if flow["routing"] do
+      update_in(flow, ["routing", "rules"], fn rules ->
+        Map.new(rules, fn {key, rule} -> {name <> "/" <> key, rule} end)
+      end)
+    else
+      flow
+    end
+  end
+
+  defp qualify(_field, _name, value), do: value
+
+  defp operation_classes(asks, settings) do
+    asks = Map.new(asks, fn {name, value} -> {"ask/" <> name, class_only(value)} end)
+
+    classifiers =
+      for {"classifier/" <> _ = name, value} <- settings, into: %{}, do: {name, class_only(value)}
+
+    Map.merge(asks, classifiers)
+  end
+
+  defp class_only(%{class: class}), do: %{"class" => class}
+  defp class_only(_value), do: %{}
 
   @doc "Validates bounded, unique pipeline names; the host must still wire their implementations."
-  @spec pipeline_names(term()) :: :ok | {:error, term()}
   def pipeline_names(names) when is_list(names) and length(names) <= 64 do
     with :ok <- Portable.validate(names),
          true <- length(Enum.uniq(names)) == length(names) do
-      validate_names(names)
+      Spectre.Validation.all(names, &Rule.path/1)
     else
       false -> {:error, :duplicate_flow_pipeline}
-      {:error, _} = error -> error
+      error -> error
     end
   end
 
   def pipeline_names(_names), do: {:error, :invalid_flow_pipelines}
 
-  defp validate_names(names) do
-    Enum.reduce_while(names, :ok, fn name, :ok ->
-      case Rule.path(name) do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
-      end
-    end)
-  end
+  defp flow(%{
+         pipelines: pipelines,
+         routes: routes,
+         routing: config,
+         binding: binding,
+         injections: injections,
+         local: local
+       })
+       when is_atom(local) and is_map(routes) and is_map(binding) and is_list(injections) do
+    with :ok <- pipeline_names(pipelines),
+         {:ok, normalized} <- Router.configuration(config || []),
+         true <- is_nil(config) or normalized === config do
+      entries(routes, fn
+        %{rule: rule, local: local, injections: injections}
+        when is_atom(local) and is_list(injections) ->
+          with {:ok, value} <- Rule.new(to_string(local), rule),
+               true <- value.to === Atom.to_string(local),
+               true <- Rule.canonical(value) === rule,
+               do: :ok,
+               else: (_invalid -> {:error, :invalid_agent_route})
 
-  @doc "Namespaces a component's pipeline names and Candidate targets without inheriting parent policy."
-  @spec mount_flow(map(), String.t()) :: map()
-  def mount_flow(flow, prefix) do
-    raw = %{
-      pipelines: Enum.map(flow["pipelines"], &(prefix <> "/" <> &1)),
-      routes: %{},
-      router: nil
-    }
-
-    case Map.fetch(flow, "routing") do
-      :error ->
-        raw
-
-      {:ok, routing} ->
-        %{
-          raw
-          | router: routing["config"],
-            routes:
-              Map.new(routing["rules"], fn {name, rule} ->
-                {name, Map.update!(rule, "to", &(prefix <> "/" <> &1))}
-              end)
-        }
-    end
-  end
-
-  defp flow_body(%{routes: routes, router: router, pipelines: pipelines}) do
-    base = %{"pipelines" => pipelines || []}
-
-    if routes == %{} and router == nil do
-      base
+        _invalid ->
+          {:error, :invalid_agent_route}
+      end)
     else
-      {:ok, config} = Router.configuration(router || [])
-      Map.put(base, "routing", %{"rules" => routes, "config" => config})
+      false -> {:error, :invalid_agent_routing}
+      error -> error
     end
   end
 
-  defp flow(%{"pipelines" => pipelines} = flow, templates) when map_size(flow) in [1, 2] do
-    with true <- Enum.all?(Map.keys(flow), &(&1 in ["pipelines", "routing"])),
-         :ok <- pipeline_names(pipelines),
-         {:ok, _} <- routing(Map.fetch(flow, "routing"), templates) do
-      :ok
-    else
-      false -> {:error, :invalid_agent_flow}
-      {:error, _} = error -> error
+  defp flow(_flow), do: {:error, :invalid_agent_flow}
+
+  defp prompt(%{text: text}) when is_binary(text), do: Portable.validate(text)
+  defp prompt(_value), do: {:error, :invalid_prompt_declaration}
+
+  defp template(value) do
+    with {:ok, canonical} <- Spectre.Agent.RequestBuilder.template(value) do
+      if canonical === value, do: :ok, else: {:error, :noncanonical_candidate_template}
     end
   end
-
-  defp flow(_flow, _templates), do: {:error, :invalid_agent_flow}
 
   defp entries(values, validate) when is_map(values) and not is_struct(values) do
-    Enum.reduce_while(values, :ok, fn {name, value}, :ok ->
-      with :ok <- Rule.path(name), :ok <- validate.(value) do
-        {:cont, :ok}
-      else
-        {:error, _} = error -> {:halt, error}
-      end
+    Spectre.Validation.all(values, fn {name, value} ->
+      with :ok <- Rule.local_name(name), do: validate.(value)
     end)
   end
 
   defp entries(_values, _validate), do: {:error, :invalid_agent_entries}
-
-  defp template(value) do
-    with {:ok, canonical} <- Template.new(value) do
-      if canonical === value, do: :ok, else: {:error, :noncanonical_candidate_template}
-    end
-  end
 end

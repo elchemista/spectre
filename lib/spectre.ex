@@ -521,6 +521,75 @@ defmodule Spectre do
   def turn(_scope, _input, _opts), do: {:error, :invalid_turn}
 
   @doc """
+  Records ingress Evidence and returns its sealed Turn without invoking a Mind.
+
+  This is the same preparation used by turn/3, exposed for host-controlled
+  handler authoring. It does not submit a Candidate or replace the configured
+  ingress. In particular, routing an input cannot make its contents trusted.
+  """
+  @spec open_turn(Scope.t(), term(), keyword()) :: {:ok, Turn.t()} | {:error, term()}
+  def open_turn(scope, input, opts \\ [])
+
+  def open_turn(%Scope{} = scope, input, opts) when is_list(opts) do
+    with {:ok, _mind, turn, _mind_opts} <- prepare_turn(scope, input, opts), do: {:ok, turn}
+  end
+
+  def open_turn(_scope, _input, _opts), do: {:error, :invalid_turn}
+
+  @doc """
+  Adds already-durable Evidence to a sealed deliberation context.
+
+  Rechecks Scope, seal, provenance and availability; no input is observed twice.
+  Required context cannot be silently dropped to fit a smaller Mind window.
+  """
+  def continue_turn(%Scope{} = scope, %Turn{} = turn, evidence_refs)
+      when is_list(evidence_refs) do
+    with {:ok, scope} <- Access.rebind_scope(scope) do
+      Access.sequencer_result(
+        fn ->
+          Sequencer.continue_turn(scope.domain.server, scope.context, turn, evidence_refs)
+        end,
+        :turn_continuation_failed
+      )
+    end
+  end
+
+  def continue_turn(_scope, _turn, _refs), do: {:error, :invalid_turn_continuation}
+
+  @doc "Refreshes available durable result facts without calling an executor again."
+  def recover_proposal(%Scope{} = scope, %Spectre.Proposal.Result{} = proposal) do
+    primary = proposal.primary
+
+    if primary.act do
+      with {:ok, _scope, recovered} <-
+             Access.scoped_read(
+               scope,
+               {:recover_attempt, primary.decision.ref, primary.act.ref}
+             ) do
+        {:ok, %{proposal | primary: recovered}}
+      end
+    else
+      with {:ok, _fresh_scope} <- resume_scope(scope.domain, scope.context), do: {:ok, proposal}
+    end
+  end
+
+  @doc "Reads the current Surface through the live Scope fence; does not copy Domain history."
+  @spec surface(Scope.t()) :: {:ok, Surface.t()} | {:error, term()}
+  def surface(%Scope{} = scope) do
+    with {:ok, _scope, surface} <- Access.scoped_read(scope, :surface), do: {:ok, surface}
+  end
+
+  def surface(_scope), do: {:error, :invalid_scope}
+
+  @doc "Reads durable dispatch facts for one scoped Act, never inferring cancellation from a missing Attempt."
+  def dispatch_status(%Scope{} = scope, act_ref) when is_binary(act_ref) do
+    with {:ok, _scope, status} <- Access.scoped_read(scope, {:dispatch_status, act_ref}),
+         do: {:ok, status}
+  end
+
+  def dispatch_status(_scope, _ref), do: {:error, :invalid_dispatch_query}
+
+  @doc """
   Runs one Turn with explicit, non-authoritative application state.
 
   This is the explicit-state counterpart of `turn/3`: the supplied value is

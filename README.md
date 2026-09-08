@@ -27,9 +27,10 @@ the surface document explains what this implementation can actually promise.
 | What exists, what is host-owned, and what is still missing? | [Capability inventory](docs/capabilities.md) |
 | How do I verify a complete agent and a release? | [Testing and release](docs/testing-and-release.md) |
 
-These guides describe the current 0.4 implementation. They explicitly distinguish
-working APIs from proposed conveniences such as `ask`. Package wiring stays
-explicit through `extend`, `ports/0`, Mix and OTP, not a Stack resolver.
+These guides describe the new 0.4 authoring contracts. The implementation is
+still being qualified; library compilation does not replace integration tests.
+Package wiring stays explicit through `install`, `ports/0`, Mix and OTP;
+Stack is a shared preset, not a resolver.
 
 ## The core
 
@@ -149,94 +150,69 @@ Outcome or Duty disposition.
 
 ## Agent DSL, Skills and local state
 
-The DSL creates immutable data, not another runtime or policy engine:
+A route names the handler to call, not a Candidate row or an effect:
 
 ```elixir
-defmodule MyApp.LookupSkill do
-  use Spectre.Skill,
-    namespace: "my_app", name: "lookup", revision: 1, declared_at: 0
+defmodule MyApp.Orders do
+  use Spectre.Agent, namespace: "shop", name: "orders"
 
-  candidate "order", class: "orders.lookup", row: %{read: true}
+  flow :orders do
+    router via: [:regex]
+    route :lookup, match: [regex: ~r/^order (?<id>[0-9]+)$/u]
+  end
+
+  @impl true
+  def handle_turn({:orders, :lookup, %{"id" => id}}, _turn, state),
+    do: {:request, "orders.lookup", %{"order_id" => id}, state}
+
+  def handle_turn({:orders, :no_match, _input}, _turn, state),
+    do: {:error, :clarification_needed, state}
+
+  @impl true
+  def handle_result(_operation, result, _turn, state),
+    do: {:ok, Map.put(state, :last_status, result.status)}
 end
 
-defmodule MyApp.SupportAgent do
-  use Spectre.Agent,
-    namespace: "my_app", name: "support", revision: 1, declared_at: 0
-
-  install MyApp.LookupSkill, as: "lookup"
-end
+definition = MyApp.Orders.definition(revision: 1, declared_at: published_at)
 ```
 
-`MyApp.SupportAgent.definition/0` returns a Definition. Its
-`candidate("lookup/order", turn, attrs)` fills an occurrence from a template.
-The host supplies the remaining exact consequence, Mandate, executor and
-contract fields. Installing a Skill neither grants authority nor reserves money.
+The host publishes that Definition, supplies the foundation and class bindings,
+and opens an authenticated Scope. Configure `mind: Spectre.Agent` on the Domain
+for this authoring path. One supervised Instance owns the application's state:
 
-Named `flow` blocks can select independent routers and ordered `pipe_through`
-plans prepared by the host. An ordinary Mind handler interprets the result and
-may compose a bounded `Spectre.Prompt`; no-match and ambiguity remain explicit
-application decisions. Prompt text is not a Candidate template or permission
-to call a provider. See [flows and handlers](docs/agents-and-dsl.md#flows-and-ordinary-mind-handlers).
+```elixir
+{:ok, instance} = MyApp.Orders.start_link(
+  scope: scope, definition: definition, bindings: class_bindings, state: %{}
+)
+{:ok, turn} = MyApp.Orders.turn(instance, "order 42", flow: :orders)
+[request] = turn.requests
+Spectre.Instance.advance(instance, request)
+```
 
-A Mind implements `deliberate/2`; an optional `deliberate/3` supports local
-application state. `use Spectre.Mind, ref: "mind:support", stateful: true`
-generates the stateless bridge so you implement `/3`. With a plain behaviour,
-define the two callbacks separately, without default arguments that could
-interpret options as state. Neither form selects a router or runs proposals.
+`turn` prepares; `advance` submits one chosen ticket. A returned continuation
+may contain another request, which is not automatically submitted. Slow work
+uses the existing temporary worker, leaving state reads responsive. Pending,
+refusal, inability to decide and ambiguous execution remain distinct.
 
-Routing is a reusable Zone M component. Declare `route "lookup", to: "order",
-match: [regex: ~r/^find order$/u, string_bag: ["lookup order"]]` in a Skill,
-and choose `router via: [:regex, :string_bag]` in its Agent. Compile once with
-`MyApp.SupportAgent.router/0`, then call `Spectre.Router.route/2` and materialize
-the selected template. Regex, string-bag (`bag_distance` is also accepted) and
-Jaro are built in. Custom methods implement `Spectre.Router.Adapter` and are
-wired with `adapters: [binary: MyMatcher]` for `via: [:binary]`. A route is not
-a GAM Decision; ties and callback errors are explicit. Optional provenance can
-be built with `Spectre.Router.Selection.evidence/4` and recorded as a derivation.
+The [authoring guide](docs/agents-and-dsl.md) covers extracted Routers, reusable
+Stack presets, Skill substate, Worker/Vigil, request/ask/classify callbacks,
+compiled EEx prompt files, injection, History/Memory adapters and semantic cache.
+The [complete example](examples/authoring.exs) compiles without starting services.
+Row, authority and execution are derived/checked against the governed Surface,
+not hidden in DSL syntax.
 
-`Spectre.Input.Pipeline.new/2` prepares reusable local input plugs; `run/2`
-validates each intermediate value and distinguishes completion, halt and error.
-Use the built-in `Spectre.Input.Plugs.NormalizeText` or implement
-`Spectre.Input.Plug` for application-specific envelopes. No text/audio/VoIP schema
-is imposed. Run it in host code or the Mind, preserve relevant raw observations,
-and record interpretations with `Spectre.Mind.evidence/3`. Normalization does not
-authenticate input, grant authority or implicitly call remote providers.
+`use Spectre.Stack` shares explicit configuration; it is not a dependency
+resolver. `install Package do ... end` contributes data and named adapter ports.
+Mix and host OTP supervision still own dependencies and resources. Built-in
+router methods, including the semantic-cache bridge, use the same extension
+contract as `via: [:binary]`. Optional Vettore/Prism/Pulse integrations do not
+become core dependencies.
 
-`extend MyPackage, as: "package", options: [...]` composes an extension's
-Definition through the same namespace/pinning mechanism as Skills. The
-`Spectre.Extension` contract separates portable templates/routes/assets from
-host adapter ports exposed through `ports/0`. The application explicitly wires
-ports to their boundaries; installing a package cannot grant authority.
-
-The legacy telemetry API is not yet ported. Read-only Scope views, ledger heads
-and audit exports provide the current governed observability surface.
-
-`Spectre.Instance` is optional: one GenServer serializes one authenticated
-Scope's deliberation and holds opaque application state. The host supervises
-it. Domain loss stops the Instance; the host must re-authenticate before creating
-a replacement. Scope openings bind their original authentication and host
-generation: changing either requires a new Scope, already covered by the needed
-Mandate. Local state is not a ledger checkpoint. `Instance.checkpoint/4` saves
-portable Mind state through an explicit application-store CAS; start with
-`checkpoint: {store, key}` and a currently authenticated Scope to restore it.
-Restoration never replays an executor or resets governed Meter/Duty state.
-
-`Spectre.Store` supplies a generic canonical-value/CAS adapter contract and a
-compressed ETS `Spectre.Store.Memory` implementation. `Definition.Store` adds
-immutable publication with verified readback. Application persistence is
-separate from the append-only ledger; durable application adapters implement
-the same small contract. No additional database dependency is imposed.
-
-Work and Vigil are durable Scope promises, not extra worker runtimes. Their
-Duty obligations survive the agent process. The host supplies scheduling and
-work execution.
-
-Morph is a Definition revision: `Spectre.Morph` prepares atomic `put`/`delete`/
-`test` changesets, deterministic diffs, forward-only rollback and host-selected
-transformation adapters. `Spectre.revise_definition/4` submits the resulting
-Definition through governance. It does not hot-load
-code, migrate process state or enlarge a Mandate. An Instance's pinned Definition
-is configuration, not proof that every Candidate originated from its templates.
+A custom `Spectre.Mind` remains available for lower-level authoring.
+`Spectre.Store` and `Instance.checkpoint/4` persist portable application state,
+not authentication or a duplicate authority ledger. Morph prepares an exact
+Definition revision; governed activation, code deployment and state migration
+remain distinct. Active Instances do not silently follow a new Definition head.
 
 ## Business constraints
 

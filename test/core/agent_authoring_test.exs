@@ -10,25 +10,29 @@ defmodule Spectre.Core.AgentAuthoringTest do
   alias Spectre.Mind.Turn
 
   defmodule EffectSkill do
-    use Spectre.Skill, namespace: "test", name: "effect", revision: 1, declared_at: 0
-    candidate("effect", class: "bench.effect", row: %{attempt: true, spend: true})
+    use Spectre.Skill, namespace: "test", name: "effect"
+    use Spectre.Test.Authoring
+    request(:effect, class: "bench.effect")
   end
 
   defmodule Bundle do
-    use Spectre.Skill, namespace: "test", name: "bundle", revision: 1, declared_at: 0
-    install(EffectSkill, as: "effects")
+    use Spectre.Skill, namespace: "test", name: "bundle"
+    use Spectre.Test.Authoring
+    skill(EffectSkill, as: :effects)
   end
 
   defmodule Assistant do
-    use Spectre.Agent, namespace: "test", name: "assistant", revision: 1, declared_at: 0
-    install(Bundle, as: "bundle")
-    install(EffectSkill, as: "direct")
+    use Spectre.Agent, namespace: "test", name: "assistant"
+    use Spectre.Test.Authoring
+    skill(Bundle, as: :bundle)
+    skill(EffectSkill, as: :direct)
   end
 
   defmodule SameAssistant do
-    use Spectre.Agent, namespace: "test", name: "assistant", revision: 1, declared_at: 0
-    install(EffectSkill, as: "direct")
-    install(Bundle, as: "bundle")
+    use Spectre.Agent, namespace: "test", name: "assistant"
+    use Spectre.Test.Authoring
+    skill(EffectSkill, as: :direct)
+    skill(Bundle, as: :bundle)
   end
 
   setup do
@@ -47,14 +51,17 @@ defmodule Spectre.Core.AgentAuthoringTest do
     attrs =
       fixture
       |> Fixture.candidate(1)
-      |> Map.drop([:class, :row, :proposer_ref, :scope_ref, :evidence_refs])
+      |> Map.drop([:class, :proposer_ref, :scope_ref, :evidence_refs])
 
     %{fixture: fixture, turn: turn, attrs: attrs}
   end
 
-  test "skill expansion pins content without module identity or declaration-order dependence" do
+  test "publication pins exact code and every explicitly published component" do
     definition = Assistant.definition()
-    assert definition == SameAssistant.definition()
+    refute definition.ref == SameAssistant.definition().ref
+    assert Assistant.__spectre_plan__().components == SameAssistant.__spectre_plan__().components
+    assert {:ok, _, _} = Agent.verify_definition(Assistant, definition)
+    assert {:error, _} = Agent.verify_definition(SameAssistant, definition)
 
     assert {:ok, ^definition} =
              definition |> Definition.canonical() |> Definition.from_canonical()
@@ -113,7 +120,7 @@ defmodule Spectre.Core.AgentAuthoringTest do
     turn: turn,
     attrs: attrs
   } do
-    for {field, value} <- [class: "other", row: %{}, proposer_ref: "admin", scope_ref: "foreign"] do
+    for {field, value} <- [class: "other", proposer_ref: "admin", scope_ref: "foreign"] do
       assert {:error, _} =
                Assistant.candidate("direct/effect", turn, Map.put(attrs, field, value))
     end
@@ -177,9 +184,23 @@ defmodule Spectre.Core.AgentAuthoringTest do
     definition = Assistant.definition()
 
     body =
-      put_in(definition.body, ["candidates", "direct/effect", "evidence_refs"], [
-        "evidence:absent"
-      ])
+      put_in(
+        definition.body,
+        [
+          "authoring",
+          "component_definitions",
+          "direct",
+          "body",
+          "authoring",
+          "plan",
+          :requests,
+          "effect",
+          "evidence_refs"
+        ],
+        [
+          "evidence:absent"
+        ]
+      )
 
     assert {:ok, revised} = Definition.revise(definition, body, 1)
     assert {:error, _} = Agent.candidate(revised, "direct/effect", turn, attrs)
@@ -191,7 +212,24 @@ defmodule Spectre.Core.AgentAuthoringTest do
     fixture: f
   } do
     original = Assistant.definition()
-    tampered = put_in(original.body, ["candidates", "direct/effect", "class"], "admin")
+
+    tampered =
+      put_in(
+        original.body,
+        [
+          "authoring",
+          "component_definitions",
+          "direct",
+          "body",
+          "authoring",
+          "plan",
+          :requests,
+          "effect",
+          "class"
+        ],
+        "admin"
+      )
+
     before = Sequencer.projection(f.server)
 
     assert {:error, _} =
@@ -233,9 +271,10 @@ defmodule Spectre.Core.AgentAuthoringTest do
       Code.compile_quoted(
         quote do
           defmodule Spectre.Core.AgentAuthoringTest.Duplicate do
-            use Spectre.Agent, namespace: "test", name: "invalid", revision: 1, declared_at: 0
-            candidate("same", class: "one")
-            candidate("same", class: "two")
+            use Spectre.Agent, namespace: "test", name: "invalid"
+            use Spectre.Test.Authoring
+            request(:same, class: "one")
+            request(:same, class: "two")
           end
         end
       )
@@ -245,8 +284,9 @@ defmodule Spectre.Core.AgentAuthoringTest do
       Code.compile_quoted(
         quote do
           defmodule Spectre.Core.AgentAuthoringTest.FrozenIdentity do
-            use Spectre.Agent, namespace: "test", name: "invalid", revision: 1, declared_at: 0
-            candidate("fixed", identity_key: "reused")
+            use Spectre.Agent, namespace: "test", name: "invalid"
+            use Spectre.Test.Authoring
+            request(:fixed, identity_key: "reused")
           end
         end
       )
@@ -258,7 +298,8 @@ defmodule Spectre.Core.AgentAuthoringTest do
   } do
     before = Sequencer.projection(f.server)
     current = Assistant.definition()
-    body = put_in(current.body, ["candidates", "new"], %{"class" => "new.effect"})
+    {:ok, template} = Spectre.Agent.RequestBuilder.template(class: "new.effect")
+    body = put_in(current.body, ["authoring", "plan", :requests, "new"], template)
     assert {:ok, successor} = Definition.revise(current, body, 10)
     assert successor.ref != current.ref
     assert successor.previous_ref == current.ref
@@ -266,7 +307,7 @@ defmodule Spectre.Core.AgentAuthoringTest do
     assert Definition.key(successor) == Definition.key(current)
     assert successor.declared_at == 10
     assert {:ok, ^successor} = successor |> Definition.canonical() |> Definition.from_canonical()
-    refute Map.has_key?(current.body["candidates"], "new")
+    refute Map.has_key?(current.body["authoring"]["plan"].requests, "new")
     assert Sequencer.projection(f.server) == before
 
     assert {:error, _} = Definition.revise(%{current | body: %{}}, body, 10)

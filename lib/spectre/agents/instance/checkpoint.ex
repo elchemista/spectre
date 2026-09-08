@@ -16,15 +16,17 @@ defmodule Spectre.Instance.Checkpoint do
   @spec save(Store.config(), String.t(), non_neg_integer(), String.t(), String.t(), map()) ::
           {:ok, pos_integer()} | {:error, term()}
   def save(store, key, expected, domain_ref, definition_ref, state) do
-    with {:ok, %{revision: revision, value: value}} <-
-           Portable.normalize_attrs(state, [:revision, :value], :instance_checkpoint),
-         :ok <- bindings(domain_ref, definition_ref, revision) do
+    with {:ok, %{revision: revision, value: value} = attrs} <-
+           Portable.normalize_attrs(state, [:revision, :value, :components], :instance_checkpoint),
+         :ok <- bindings(domain_ref, definition_ref, revision),
+         :ok <- components(Map.get(attrs, :components, %{})) do
       Store.compare_and_swap(store, key, expected, %{
-        "format" => "spectre-mind-checkpoint-v1",
+        "format" => "spectre-instance-checkpoint-v2",
         "domain_ref" => domain_ref,
         "definition_ref" => definition_ref,
         "state_revision" => revision,
-        "value" => value
+        "value" => value,
+        "components" => Map.get(attrs, :components, %{})
       })
     else
       {:ok, _} -> {:error, :invalid_instance_checkpoint}
@@ -46,21 +48,36 @@ defmodule Spectre.Instance.Checkpoint do
 
   defp restore(
          %{
-           "format" => "spectre-mind-checkpoint-v1",
+           "format" => "spectre-instance-checkpoint-v2",
            "domain_ref" => domain,
            "definition_ref" => definition,
            "state_revision" => revision,
-           "value" => value
+           "value" => value,
+           "components" => components
          } = record,
          domain,
          definition
        )
-       when map_size(record) == 5 do
+       when map_size(record) == 6 do
     with :ok <- bindings(domain, definition, revision),
-         do: {:ok, %{revision: revision, value: value}}
+         :ok <- components(components),
+         do: {:ok, %{revision: revision, value: value, components: components}}
   end
 
   defp restore(_value, _domain, _definition), do: {:error, :instance_checkpoint_binding_mismatch}
+
+  defp components(values) when is_map(values) and not is_struct(values) do
+    Spectre.Validation.all(values, fn
+      {name, %{revision: revision, value: _value} = entry}
+      when is_binary(name) and is_integer(revision) and revision >= 0 and map_size(entry) == 2 ->
+        Portable.validate_ref(name, :component_name)
+
+      _invalid ->
+        {:error, :invalid_checkpoint_component}
+    end)
+  end
+
+  defp components(_values), do: {:error, :invalid_checkpoint_components}
 
   defp bindings(domain, definition, revision) do
     with :ok <- Portable.validate_ref(domain, :domain_ref),

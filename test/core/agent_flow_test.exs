@@ -1,8 +1,8 @@
 defmodule Spectre.CoreTest.AgentFlowTest do
   use ExUnit.Case, async: true
 
-  alias Spectre.{Agent, Definition, Router}
-  alias Spectre.Agent.Flow
+  alias Spectre.{Agent, Definition}
+  alias Spectre.Agent.{Flow, Wiring}
   alias Spectre.Input.Pipeline
   alias Spectre.Input.Plugs.NormalizeText
 
@@ -22,166 +22,163 @@ defmodule Spectre.CoreTest.AgentFlowTest do
   end
 
   defmodule Billing do
-    use Spectre.Skill, namespace: "flows", name: "billing", revision: 1, declared_at: 0
-    candidate("refund", class: "refund.issue")
+    use Spectre.Skill, namespace: "flows", name: "billing"
+    use Spectre.Test.Authoring
 
-    flow "request" do
-      pipe_through("text")
+    flow :refunds do
+      pipe_through(:text)
       router(via: [:regex])
-      route("refund", to: "refund", match: %{regex: ~r/^refund$/})
+      route(:refund, match: [regex: ~r/^refund$/])
+    end
+  end
+
+  defmodule Routes do
+    use Spectre.Router
+
+    flow :support do
+      pipe_through(:text)
+      router(via: [:regex, :string_bag])
+      route(:order, match: [regex: ~r/^order (?<id>[0-9]+)$/, string_bag: ["find my order"]])
     end
   end
 
   defmodule Assistant do
-    use Spectre.Agent, namespace: "flows", name: "assistant", revision: 1, declared_at: 0
-    install(Billing, as: "billing")
-    candidate("order", class: "order.lookup")
-    candidate("status", class: "device.status")
-    router(via: [:regex])
-    route("root", to: "order", match: %{regex: ~r/^root$/})
+    use Spectre.Agent, namespace: "flows", name: "assistant"
+    use Spectre.Test.Authoring
+    skill(Billing, as: :billing)
+    router(Routes)
 
-    flow "support" do
-      pipe_through("text")
-      router(via: [:regex, :string_bag])
-
-      route("order",
-        to: "order",
-        match: %{regex: ~r/^order (?<id>[0-9]+)$/, string_bag: ["find my order"]}
-      )
-
-      flow "raw" do
-      end
+    flow :raw do
     end
 
-    flow "device" do
+    flow :device do
       router(via: [:binary])
-      route("status", to: "status", match: %{binary: <<0, 1>>})
+      route(:status, match: [binary: <<0, 1>>])
     end
 
-    flow "ambiguous" do
+    flow :uncertain do
       router(via: [:regex])
-      route("first", to: "order", match: %{regex: ~r/.*/})
-      route("second", to: "status", match: %{regex: ~r/.*/})
+      route(:first, match: [regex: ~r/.*/])
+      route(:second, match: [regex: ~r/.*/])
     end
   end
 
-  test "flows keep independent methods and normalization, while root routing still works" do
+  defmodule Inline do
+    use Spectre.Agent, namespace: "flows", name: "inline"
+
+    flow :support do
+      pipe_through(:text)
+      router(via: [:regex, :string_bag])
+      route(:order, match: [regex: ~r/^order (?<id>[0-9]+)$/, string_bag: ["find my order"]])
+    end
+  end
+
+  test "inline and extracted flows have one identical declaration and independent code pins" do
+    assert Assistant.__spectre_plan__().flows["support"] ===
+             Inline.__spectre_plan__().flows["support"]
+
+    assert {:ok, _, _} = Agent.verify_definition(Assistant, Assistant.definition())
+    assert {:error, _} = Agent.verify_definition(Inline, Assistant.definition())
+  end
+
+  test "independent flow policies use the same low-level Pipeline and Router" do
     {:ok, text} = Pipeline.new([{NormalizeText, case: :downcase}])
-    assert {:ok, support} = Assistant.flow("support", pipelines: %{"text" => text})
+    {:ok, support} = flow("support", pipelines: %{"text" => text})
 
     assert {:ok, %{candidate: "order", via: "regex", matched: %{"id" => "42"}}} =
              Flow.route(support, "  ORDER 42  ")
 
     assert {:ok, %{via: "string_bag"}} = Flow.route(support, "find my order")
-    assert :no_match = Flow.route(support, "ROOT")
-    assert {:ok, root} = Assistant.router()
-    assert {:ok, %{rule: "root"}} = Router.route(root, "root")
+    assert :no_match = Flow.route(support, "unrelated")
 
-    assert {:ok, device} = Assistant.flow("device", adapters: [binary: BinaryMatcher])
+    {:ok, device} = flow("device", adapters: [binary: BinaryMatcher])
     assert {:ok, %{candidate: "status", via: "binary"}} = Flow.route(device, <<0, 1>>)
     assert :no_match = Flow.route(device, "find my order")
+    {:ok, raw} = flow("raw")
+    assert {:unrouted, "  RAW  "} = Flow.route(raw, "  RAW  ")
   end
 
-  test "nested names do not silently inherit a parent router or pipeline" do
-    assert {:ok, plain} = Assistant.flow("support/raw")
-    assert {:unrouted, "  ROOT  "} = Flow.route(plain, "  ROOT  ")
-  end
-
-  test "Skill installation namespaces flows, pipeline bindings and Candidate targets together" do
+  test "Skill pipeline and rule refs are namespaced without inheriting parent policy" do
     {:ok, text} = Pipeline.new([{NormalizeText, case: :downcase}])
 
     assert {:error, {:unwired_flow_pipeline, "billing/text"}} =
-             Assistant.flow("billing/request", pipelines: %{"text" => text})
+             flow("billing/refunds", pipelines: %{"text" => text})
 
-    assert {:ok, billing} =
-             Assistant.flow("billing/request", pipelines: %{"billing/text" => text})
+    {:ok, billing} = flow("billing/refunds", pipelines: %{"billing/text" => text})
 
-    assert {:ok, %{candidate: "billing/refund"}} = Flow.route(billing, "REFUND")
+    assert {:ok, %{candidate: "refund", rule: "billing/refunds/refund"}} =
+             Flow.route(billing, "REFUND")
   end
 
-  test "portable definitions do not load pipeline or matcher modules after a round trip" do
+  test "serialized Definitions do not automatically execute their declared adapter modules" do
     definition = Assistant.definition()
-    assert definition.body["format"] == "spectre-agent-declaration-v2"
     assert {:ok, restored} = definition |> Definition.canonical() |> Definition.from_canonical()
     assert restored === definition
-    refute inspect(restored.body) =~ "BinaryMatcher"
-    assert {:error, {:unknown_router_method, "binary"}} = Agent.flow(restored, "device", [])
-    assert {:error, {:unwired_flow_pipeline, "text"}} = Agent.flow(restored, "support", [])
-    assert Assistant.flows() == definition.body["flows"]
+    assert {:error, {:unknown_router_method, "binary"}} = Agent.flow(restored, "device")
+    assert {:error, {:unwired_flow_pipeline, "text"}} = Agent.flow(restored, "support")
   end
 
-  test "unknown flows, malformed registries and invalid bindings fail explicitly" do
-    assert {:error, {:unknown_agent_flow, "missing"}} = Assistant.flow("missing")
-    assert {:error, :invalid_flow_pipeline_registry} = Assistant.flow("support", pipelines: [])
+  test "unknown flows and malformed host bindings fail without changing routing policy" do
+    assert {:error, {:unknown_agent_flow, "missing"}} = flow("missing")
+    assert {:error, :invalid_flow_pipeline_registry} = flow("support", pipelines: [])
 
     assert {:error, {:invalid_flow_pipeline, "text"}} =
-             Assistant.flow("support", pipelines: %{"text" => NormalizeText})
+             flow("support", pipelines: %{"text" => NormalizeText})
 
-    assert {:error, _} = Assistant.flow("device", via: [:regex])
+    assert {:error, _} = flow("device", via: [:regex])
+    assert {:error, _} = Wiring.resolve(Assistant, %{router: [regex: BinaryMatcher]})
   end
 
-  test "pipeline halt and failure remain distinct from a router miss or ambiguity" do
+  test "pipeline halt and error remain distinct from a miss or ambiguous route" do
     for status <- [:halt, :error] do
       {:ok, pipeline} = Pipeline.new([{StopPlug, status: status}])
-      assert {:ok, support} = Assistant.flow("support", pipelines: %{"text" => pipeline})
+      {:ok, support} = flow("support", pipelines: %{"text" => pipeline})
 
-      if status == :halt do
-        assert {:halt, "order 42"} = Flow.route(support, "order 42")
-      else
-        assert {:error, {:input_plug_failed, StopPlug, "order 42"}} =
-                 Flow.route(support, "order 42")
+      case status do
+        :halt ->
+          assert {:halt, "order 42"} = Flow.route(support, "order 42")
+
+        :error ->
+          assert {:error, {:input_plug_failed, StopPlug, "order 42"}} =
+                   Flow.route(support, "order 42")
       end
     end
 
-    assert {:ok, ambiguous} = Assistant.flow("ambiguous")
-    assert {:ambiguous, ["first", "second"]} = Flow.route(ambiguous, "anything")
+    {:ok, ambiguous} = flow("uncertain")
+
+    assert {:ambiguous, ["uncertain/first", "uncertain/second"]} =
+             Flow.route(ambiguous, "anything")
   end
 
-  test "input resource limits reject oversized values before custom matchers run" do
-    {:ok, flow} = Assistant.flow("device", adapters: [binary: {BinaryMatcher, observer: self()}])
-    assert {:error, _} = Flow.route(flow, :binary.copy("x", 65_537))
+  test "input limits run before custom matcher invocation" do
+    {:ok, device} = flow("device", adapters: [binary: {BinaryMatcher, observer: self()}])
+    assert {:error, _} = Flow.route(device, :binary.copy("x", 65_537))
     refute_receive :matcher_called
-    assert {:ok, _} = Flow.route(flow, <<0, 1>>)
+    assert {:ok, _} = Flow.route(device, <<0, 1>>)
     assert_receive :matcher_called
   end
 
-  test "flow schema rejects unknown fields, malformed paths and nonexistent templates" do
-    original = Assistant.definition()
-
-    for flow <- [
-          %{"pipelines" => [], "authority" => "grant"},
-          %{"pipelines" => ["a", "a"]},
-          %{"pipelines" => ["a//b"]},
-          %{"pipelines" => [], "routing" => %{"rules" => %{}, "config" => %{}}},
-          put_in(
-            original.body["flows"]["support"],
-            ["routing", "rules", "order", "to"],
-            "missing"
-          )
-        ] do
-      body = put_in(original.body, ["flows", "support"], flow)
-      assert {:ok, changed} = Definition.revise(original, body, 1)
-      assert {:error, _} = Agent.flow(changed, "support", [])
-    end
-  end
-
-  test "DSL diagnoses duplicate and misplaced declarations at their source" do
+  test "duplicate, nested and misplaced declarations fail at their source" do
     for body <- [
-          "flow \"a\" do end\nflow \"a\" do end",
-          "pipe_through \"a\"",
-          "flow \"a\" do\npipe_through []\npipe_through []\nend",
-          "flow \"a\" do\nrouter via: [:regex]\nrouter via: [:regex]\nend",
-          "flow \"a\" do\ncandidate \"x\", class: \"x\"\nend",
-          "flow \"a\" do\nroute \"r\", to: \"missing\", match: %{regex: \".*\"}\nend"
+          "flow :a do end\nflow :a do end",
+          "pipe_through :a",
+          "flow :a do\nflow :b do end\nend",
+          "flow :a do\nrouter via: [:regex]\nrouter via: [:regex]\nend",
+          "flow :a do\nrequest :x, class: \"x\"\nend",
+          "flow :a do\nroute :r, to: :hidden, match: [regex: \".*\"]\nend"
         ] do
       assert_raise CompileError, fn ->
+        module = "Spectre.InvalidFlow#{System.unique_integer([:positive])}"
+
         Code.compile_string("""
-        defmodule Spectre.InvalidFlowDeclaration do
-          use Spectre.Agent, namespace: "test", name: "bad-flow", revision: 1, declared_at: 0
+        defmodule #{module} do
+          use Spectre.Agent, namespace: "test", name: "invalid"
           #{body}
         end
         """)
       end
     end
   end
+
+  defp flow(name, opts \\ []), do: Agent.flow(Assistant.definition(), name, opts)
 end

@@ -3,16 +3,17 @@ defmodule Spectre.Prompt do
   Pure, bounded composition of prompt text with explicit source contributions.
 
       Prompt.compose(turn, [
-        {:asset, agent.definition(), "instructions"},
         {:evidence, input.ref},
         {:text, "request", "Propose an answer; do not claim an effect happened."}
       ], max_bytes: 16_384)
 
-  Contributions are ordered, not implicitly merged. An asset is pinned to its
-  exact Definition; Evidence must be visible to the Turn. `{:evidence, ref,
+  Contributions are ordered, not implicitly merged. Evidence must be visible
+  to the Turn. `{:evidence, ref,
   text}` records an explicit local rendering of non-text input. `{:text, name,
   text}` is application-generated text, not observed Evidence or authority.
-  All text must be UTF-8. No EEx or executable template comes from ledger data.
+  All text must be UTF-8. Agent prompt declarations use their own compiled EEx
+  renderer; this lower-level API only composes already rendered text. No EEx
+  or executable template comes from ledger data.
 
   `text/1` joins the parts with two newlines. Alternatively a host can map
   `parts` to its provider's message format: this library assigns no provider
@@ -26,8 +27,7 @@ defmodule Spectre.Prompt do
   streaming engine. Only an admitted Act may cross the governed I/O boundary.
   """
 
-  alias Spectre.Agent.Declaration
-  alias Spectre.{Definition, Evidence, Label, Mind, Portable}
+  alias Spectre.{Evidence, Label, Mind, Portable}
   alias Spectre.Mind.Turn
   alias Spectre.Router.Rule
 
@@ -36,15 +36,13 @@ defmodule Spectre.Prompt do
   defstruct @enforce_keys
 
   @type contribution ::
-          {:asset, Definition.t(), String.t()}
-          | {:evidence, String.t()}
+          {:evidence, String.t()}
           | {:evidence, String.t(), String.t()}
           | {:text, String.t(), String.t()}
   @type part :: %{
-          required(:kind) => :asset | :evidence | :generated,
+          required(:kind) => :evidence | :generated,
           required(:name) => String.t(),
           required(:text) => String.t(),
-          optional(:definition_ref) => String.t(),
           optional(:evidence_ref) => String.t()
         }
   @type t :: %__MODULE__{turn_ref: String.t(), parts: [part()], labels: [Label.t()]}
@@ -149,17 +147,6 @@ defmodule Spectre.Prompt do
 
   defp collect(_improper, _evidence, _limits, _bytes, _count, _parts),
     do: {:error, :invalid_prompt_contributions}
-
-  defp part({:asset, %Definition{} = definition, name}, _evidence) do
-    with {:ok, definition} <- Definition.new(definition),
-         {:ok, declaration} <- Declaration.read(definition),
-         {:ok, text} <- Map.fetch(declaration.assets, name) do
-      {:ok, %{kind: :asset, name: name, text: text, definition_ref: definition.ref}}
-    else
-      :error -> {:error, {:unknown_prompt_asset, name}}
-      {:error, _} = error -> error
-    end
-  end
 
   defp part({:evidence, ref}, evidence) do
     case Map.fetch(evidence, ref) do

@@ -30,6 +30,37 @@ defmodule Spectre.Domain.Query do
   defp read(state, scope, :view),
     do: ScopeView.from_projection(state.projection, Spectre.Scope.ref(scope))
 
+  defp read(state, _scope, :surface),
+    do: {:ok, Spectre.GovernedAct.State.surface(state.projection)}
+
+  defp read(state, scope, {:dispatch_status, ref}) do
+    with {:ok, act} <- Map.fetch(state.projection.acts, ref),
+         true <- act.scope_ref === Spectre.Scope.ref(scope),
+         {:ok, mode} <- Spectre.GovernedAct.Execution.mode(act) do
+      {:ok,
+       %{
+         mode: mode,
+         terminal: Spectre.GovernedAct.DispatchState.terminal(state.projection, ref),
+         pending?: Spectre.GovernedAct.DispatchState.pending?(state.projection, ref)
+       }}
+    else
+      :error -> {:error, {:act_not_found, ref}}
+      false -> {:error, :act_scope_mismatch}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp read(state, scope, {:recover_attempt, decision_ref, act_ref}) do
+    with {:ok, decision} <- Map.fetch(state.projection.decisions, decision_ref),
+         {:ok, act} <- Map.fetch(state.projection.acts, act_ref),
+         true <- act.scope_ref === Spectre.Scope.ref(scope) and act.decision_ref === decision.ref do
+      Recovery.from_projection(state.projection, decision, act)
+    else
+      :error -> {:error, :execution_result_not_found}
+      false -> {:error, :execution_result_scope_mismatch}
+    end
+  end
+
   defp read(state, scope, :authority) do
     with {:ok, now} <- Transaction.trusted_recorded_at(state),
          do: AuthorityView.from_projection(state.projection, scope, now)

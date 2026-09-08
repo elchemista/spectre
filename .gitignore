@@ -10,6 +10,12 @@
 # Where third-party dependencies like ExDoc output generated docs.
 /doc/
 
+# Optional packages are independent Mix projects, not vendored dependencies.
+/packages/*/_build/
+/packages/*/deps/
+/packages/*/doc/
+/packages/*/cover/
+
 # Temporary files, for example, from tests.
 /tmp/
 

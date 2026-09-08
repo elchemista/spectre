@@ -162,9 +162,63 @@ Progress is not a successful Outcome. Displaying generated or confidential
 content to a recipient can itself be a governed disclosure, even if the UI
 calls it a preview. Keep operational status separate from material delivery.
 
-Making `Instance.state/1` responsive is an independent OTP concern; it does not
-solve these semantic questions. See [Instance lifecycle](agents-and-dsl.md#instance-lifecycle-and-checkpoint)
-for the current behavior and [capabilities](capabilities.md) for the remaining work.
+The Instance now runs slow work in its existing monitored worker; its owner
+keeps state/info reads responsive. This is independent of the semantic questions
+above. Pure reads accept an explicit timeout (including `:infinity`). Do not
+make a LiveView wait indefinitely merely to hide a blocked application callback.
+
+## A host-owned interaction, without a stream runtime
+
+The same handler API can prepare a voice, text or delivery request. No media type
+is required in the kernel. A host can submit the exact selected ticket and then
+poll its progress without resubmission:
+
+```elixir
+{:ok, prepared} = Spectre.Instance.turn(instance, input, flow: :support)
+[chosen] = prepared.requests
+
+case Spectre.Instance.advance(instance, chosen, wait: 0) do
+  {:pending, operation_ref} ->
+    # Retain this ref in host state. A pending operation is not an ambiguity.
+    {:watch, operation_ref}
+
+  {:ok, completed} ->
+    {:completed, completed.result}
+
+  {:error, reason} ->
+    {:failed, reason}
+end
+```
+
+On a later UI tick, read `Instance.info(instance, 1_000)` and
+`Instance.operation(instance, operation_ref, 1_000)`. The latter returns
+`:pending`, the retained completed result, or an error. Neither read submits
+another Candidate. Use the returned operation ref, not a new `advance` call.
+The Instance reserves a ticket once; selecting one alternative invalidates its
+siblings. Completed results have bounded retention, so they are not an archive.
+
+The provider/transport's executor can report operational progress to a
+host-owned bounded collector. Use refs, counts and durations, not unapproved
+prompt/output bytes. `Spectre.Agent.Observer` supplies payload-free phase
+events; it is not a stream transport or a material-delivery authorization.
+Keep provider buffers and byte delivery inside the host's executor contract.
+
+Steering creates a new authenticated input and a new turn. Ordinary Instance
+work is serialized; a new turn may queue behind work already accepted. If the
+application must interrupt a live provider before that queue drains, the host
+uses its explicit provider-control mechanism. When that control is an effect
+on the declared Surface, submit it through an appropriate independent Scope;
+do not turn a local `cancel` message into an implicit capability.
+
+A cancelled UI watcher must not kill the executor and report success. A lost
+connection is not proof of no effect. Preserve the old Act/Attempt refs and
+authenticate later observations through `Spectre.record_late_observation/4`.
+The result can repair the original record without being applied to a newer
+conversation state. Checkpoint/chat persistence failure after delivery likewise
+requires repair of persistence, not repetition of delivery.
+
+See [Instance lifecycle](agents-and-dsl.md#instance-lifecycle-and-checkpoint) and
+[capabilities](capabilities.md) for the implementation and qualification limits.
 
 ## Integration acceptance checklist
 

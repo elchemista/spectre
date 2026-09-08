@@ -2,7 +2,7 @@ defmodule Spectre.Agent.Flow do
   @moduledoc """
   Reusable, process-free routing plan for one exact declared flow.
 
-  Prepare through `Spectre.Agent.flow/3` (or the compiled agent's `flow/2`).
+  Prepare through `Spectre.Agent.flow/3` using an explicitly published Definition.
   `:pipelines` is a host map of names to prepared `Spectre.Input.Pipeline`
   objects; `:adapters` is the existing Router registry. Definitions contain
   only pipeline names and routing data, never executable pipeline modules.
@@ -19,6 +19,7 @@ defmodule Spectre.Agent.Flow do
   """
 
   alias Spectre.Canonical.Value
+  alias Spectre.Agent.Collection
   alias Spectre.Input.Pipeline
   alias Spectre.{Portable, Router}
 
@@ -57,31 +58,36 @@ defmodule Spectre.Agent.Flow do
   @doc "Normalizes and routes explicit input without making an application decision."
   @spec route(t(), term()) :: result()
   def route(%__MODULE__{} = flow, input) do
-    with :ok <- Value.validate(input, max_bytes: 65_536),
-         {:ok, input} <- normalize(flow.pipelines, input) do
-      if flow.router, do: Router.route(flow.router, input), else: {:unrouted, input}
-    end
+    {_normalized, result} = route_with_input(flow, input)
+    result
   end
 
   def route(_flow, _input), do: {:error, :invalid_agent_flow}
 
+  @doc false
+  @spec route_with_input(t(), term()) :: {term(), result()}
+  def route_with_input(%__MODULE__{} = flow, input) do
+    with :ok <- Value.validate(input, max_bytes: 65_536),
+         {:ok, input} <- normalize(flow.pipelines, input) do
+      {input, if(flow.router, do: Router.route(flow.router, input), else: {:unrouted, input})}
+    else
+      stopped -> {input, stopped}
+    end
+  end
+
   defp pipelines(names, registry) when is_map(registry) and not is_struct(registry) do
-    Enum.reduce_while(names, {:ok, []}, fn name, {:ok, found} ->
+    Collection.map(names, fn name ->
       with {:ok, value} <- Map.fetch(registry, name),
            {:ok, pipeline} <- Pipeline.fetch(value) do
-        {:cont, {:ok, [pipeline | found]}}
+        {:ok, pipeline}
       else
         {:error, :invalid_input_pipeline} ->
-          {:halt, {:error, {:invalid_flow_pipeline, name}}}
+          {:error, {:invalid_flow_pipeline, name}}
 
         :error ->
-          {:halt, {:error, {:unwired_flow_pipeline, name}}}
+          {:error, {:unwired_flow_pipeline, name}}
       end
     end)
-    |> case do
-      {:ok, pipelines} -> {:ok, Enum.reverse(pipelines)}
-      error -> error
-    end
   end
 
   defp pipelines(_names, _registry), do: {:error, :invalid_flow_pipeline_registry}

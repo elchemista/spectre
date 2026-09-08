@@ -2,20 +2,21 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Spectre.Agent.Declaration
-  alias Spectre.Candidate.Template
+  alias Spectre.Agent.RequestBuilder
   alias Spectre.Consequence.Contract
   alias Spectre.{Definition, Surface}
 
   defmodule LookupSkill do
-    use Spectre.Skill, namespace: "verify", name: "lookup", revision: 1, declared_at: 0
-    candidate("lookup", class: "lookup", row: %{read: true})
+    use Spectre.Skill, namespace: "verify", name: "lookup"
+    use Spectre.Test.Authoring
+    request(:lookup, class: "lookup")
   end
 
   defmodule Assistant do
-    use Spectre.Agent, namespace: "verify", name: "support", revision: 1, declared_at: 0
-    install(LookupSkill, as: "orders")
-    candidate("missing", class: "not-declared")
+    use Spectre.Agent, namespace: "verify", name: "support"
+    use Spectre.Test.Authoring
+    skill(LookupSkill, as: :orders)
+    request(:missing, class: "not-declared")
   end
 
   setup do
@@ -32,11 +33,11 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
   end
 
   test "reports exact immutable refs and leaves occurrence facts explicitly deferred", c do
-    definition = definition(%{"lookup" => %{class: "lookup", row: %{read: true}}})
+    definition = definition(%{"lookup" => %{class: "lookup"}})
     assert {:ok, report} = Surface.verify_definition(c.surface, definition)
     assert report.definition_ref == definition.ref
     assert report.surface_ref == c.surface.ref
-    assert report.templates["lookup"].checked == [:class, :row]
+    assert report.templates["lookup"].checked == [:class]
     assert report.templates["lookup"].errors == []
     assert :consequence in report.templates["lookup"].deferred
     assert :target_refs in report.templates["lookup"].deferred
@@ -51,13 +52,13 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
     assert {:error, {:definition_surface_mismatch, report}} =
              Surface.verify_definition(c.surface, Assistant.definition())
 
-    assert report.templates["orders/lookup"].checked == [:class, :row]
+    assert report.templates["orders/lookup"].checked == [:class]
     assert report.templates["orders/lookup"].errors == []
     assert report.templates["missing"].errors == [{:unknown_class, "not-declared"}]
   end
 
   test "missing class is allowed in a partial template, not guessed from the name", c do
-    definition = definition(%{"lookup" => %{row: %{read: true}}, "empty" => %{}})
+    definition = definition(%{"lookup" => %{consequence: %{}}, "empty" => %{}})
     assert {:ok, report} = Surface.verify_definition(c.surface, definition)
     assert report.templates["lookup"].checked == []
     assert :class in report.templates["lookup"].deferred
@@ -68,15 +69,15 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
     definition =
       definition(%{
         "unknown" => %{class: "not-declared"},
-        "wrong-row" => %{class: "lookup", row: %{write: true}},
-        "correct" => %{class: "lookup", row: %{read: true}}
+        "wrong-consequence" => %{class: "lookup", consequence: %{}},
+        "correct" => %{class: "lookup"}
       })
 
     assert {:error, {:definition_surface_mismatch, report}} =
              Surface.verify_definition(c.surface, definition)
 
     assert report.templates["unknown"].errors == [{:unknown_class, "not-declared"}]
-    assert report.templates["wrong-row"].errors == [:candidate_row_mismatch]
+    assert report.templates["wrong-consequence"].errors != []
     assert report.templates["correct"].errors == []
   end
 
@@ -134,7 +135,7 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
       })
 
     assert {:ok, report} = Surface.verify_definition(c.surface, definition)
-    assert report.templates["lookup"].deferred == [:row]
+    assert report.templates["lookup"].deferred == []
     assert :ok = Contract.validate(c.contract, consequence, %{target_refs: ["a", "a"]})
   end
 
@@ -163,7 +164,7 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
       })
 
     assert {:ok, report} = Surface.verify_definition(surface, correct)
-    assert report.templates["send"].deferred == [:row, :subject_refs]
+    assert report.templates["send"].deferred == [:subject_refs]
 
     for fixed <- [
           %{disclosure: nil},
@@ -187,11 +188,11 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
 
     definition =
       definition(%{
-        "revise" => %{class: "definition.revise", row: %{govern: true}, consequence: %{}}
+        "revise" => %{class: "definition.revise", consequence: %{}}
       })
 
     assert {:ok, report} = Surface.verify_definition(surface, definition)
-    assert report.templates["revise"].checked == [:class, :row]
+    assert report.templates["revise"].checked == [:class]
     assert :consequence in report.templates["revise"].deferred
   end
 
@@ -236,7 +237,6 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
       attrs =
         Map.merge(attrs, %{
           class: "lookup",
-          row: %{read: true, spend: true},
           consequence: consequence
         })
 
@@ -270,7 +270,7 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
   defp definition(templates) do
     templates =
       Map.new(templates, fn {name, attrs} ->
-        {:ok, value} = Template.new(attrs)
+        {:ok, value} = RequestBuilder.template(attrs)
         {name, value}
       end)
 
@@ -280,7 +280,7 @@ defmodule Spectre.CoreTest.DefinitionVerificationTest do
         name: "assistant",
         revision: 1,
         declared_at: 0,
-        body: Declaration.body(templates, %{}, %{}, nil, %{})
+        body: put_in(LookupSkill.definition().body, ["authoring", "plan", :requests], templates)
       )
 
     definition

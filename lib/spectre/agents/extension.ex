@@ -1,78 +1,56 @@
 defmodule Spectre.Extension do
   @moduledoc """
-  On-demand package contributions without a second runtime or compiler hook.
+  Explicit compile-time package contributions, without an installer runtime.
 
-  An extension supplies `definition/1`, returning an Agent/Skill declaration
-  built from its configuration, and optionally `ports/1`, returning a map of
-  named host adapter configurations (`module` or `{module, keyword}`). Mount it
-  with `extend MyPackage, as: "package", options: [...]` in an Agent or Skill.
+  The shared authoring DSL passes an install block as a keyword of declaration
+  names and argument lists to configure/1. A package validates its vocabulary
+  and returns portable configuration plus named adapter ports:
 
-  Candidate templates, routes, assets and component references are expanded
-  and pinned in the immutable parent Definition. Ports remain in the compiled
-  host module's `ports/0`, under the same namespace; no executable module or
-  capability is loaded from ledger data. The application explicitly wires each
-  port to its boundary (router, ingress, store, executor, observer, etc.), whose
-  own behaviour validates it. Merely installing a package creates no authority.
+      {:ok, %{
+        data: %{catalog: catalog},
+        ports: %{{:request, :inference} => {MyPackage.Request, [catalog: catalog]}}
+      }}
 
-  This replaces the old action-provider/effect-executor ownership machinery.
-  Package DSL macros can call these ordinary declarations; they need neither a
-  private Agent attribute nor an additional `@before_compile` hook.
+  Configuration never starts resources, fetches credentials, downloads models
+  or grants authority. Mix installs the optional package; the host supervises
+  and wires its resources. A package may expose ordinary functions in addition
+  to this callback. There is no private Agent attribute or second compiler hook.
   """
 
-  alias Spectre.{Adapter, Definition, Portable}
-  alias Spectre.Agent.Declaration
-  alias Spectre.Router.Rule
+  alias Spectre.{Adapter, Portable}
 
-  @type ports :: %{String.t() => {module(), keyword()}}
-  @callback definition(keyword()) :: {:ok, Definition.t()} | {:error, term()}
-  @callback ports(keyword()) :: ports()
-  @optional_callbacks ports: 1
+  @type ports :: %{{atom(), atom()} => {module(), keyword()}}
+  @type contribution :: %{data: term(), ports: ports()}
+  @callback configure(keyword()) :: {:ok, contribution()} | {:error, term()}
 
-  @doc "Compiles and validates inert declarations separately from host ports."
-  @spec compile(module(), keyword()) :: {:ok, Definition.t(), ports()} | {:error, term()}
-  def compile(module, opts) do
+  @doc "Validates a package's inert contribution without invoking a runtime adapter."
+  @spec configure(module(), keyword()) :: {:ok, contribution()} | {:error, term()}
+  def configure(module, opts) do
     with true <- Portable.keyword?(opts),
-         :ok <- Adapter.validate(module, definition: 1),
-         {:ok, {:ok, value}} <- Adapter.invoke(module, :definition, [opts]),
-         {:ok, definition} <- Definition.new(value),
-         {:ok, _} <- Declaration.read(definition),
-         {:ok, ports} <- load_ports(module, opts) do
-      {:ok, definition, ports}
+         :ok <- Portable.validate(opts),
+         :ok <- Adapter.validate(module, configure: 1),
+         {:ok, {:ok, contribution}} <- Adapter.invoke(module, :configure, [opts]),
+         {:ok, attrs} <- Portable.normalize_attrs(contribution, [:data, :ports], :extension),
+         :ok <- Portable.validate(attrs),
+         ports = Map.get(attrs, :ports, %{}),
+         true <- is_map(ports),
+         :ok <- Spectre.Validation.all(ports, &port/1) do
+      {:ok, %{data: Map.get(attrs, :data, %{}), ports: ports}}
     else
-      false -> {:error, :invalid_extension_options}
+      false -> {:error, :invalid_extension_configuration}
       {:ok, {:error, _} = error} -> error
-      {:ok, _} -> {:error, :invalid_extension_definition_reply}
+      {:ok, _invalid} -> {:error, :invalid_extension_reply}
       {:error, _} = error -> error
     end
   end
 
-  @doc false
-  def validate_ports(values) when is_map(values) and not is_struct(values) do
-    Enum.reduce_while(values, {:ok, %{}}, fn {name, value}, {:ok, acc} ->
-      {module, opts} =
-        case value do
-          {module, opts} -> {module, opts}
-          module -> {module, []}
-        end
-
-      with :ok <- Rule.path(name),
-           true <- Portable.keyword?(opts),
-           :ok <- Adapter.validate(module, []) do
-        {:cont, {:ok, Map.put(acc, name, {module, opts})}}
-      else
-        false -> {:halt, {:error, :invalid_extension_port_options}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
+  defp port({{kind, name}, {module, opts}})
+       when is_atom(kind) and kind not in [nil, true, false] and
+              is_atom(name) and name not in [nil, true, false] do
+    if Portable.keyword?(opts),
+      do: Adapter.validate(module, []),
+      else: {:error, :invalid_extension_port_options}
   end
 
-  def validate_ports(_values), do: {:error, :invalid_extension_ports}
-
-  defp load_ports(module, opts) do
-    if function_exported?(module, :ports, 1) do
-      with {:ok, ports} <- Adapter.invoke(module, :ports, [opts]), do: validate_ports(ports)
-    else
-      {:ok, %{}}
-    end
-  end
+  defp port(_entry), do: {:error, :invalid_extension_port}
 end

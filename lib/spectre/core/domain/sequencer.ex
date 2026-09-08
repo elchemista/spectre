@@ -229,6 +229,11 @@ defmodule Spectre.Domain.Sequencer do
     do: {:error, :invalid_turn_input}
 
   @doc false
+  def continue_turn(server, %SubmissionContext{} = context, %Turn{} = turn, refs)
+      when is_list(refs),
+      do: call(server, {:continue_turn, context, turn, refs}, [], :invalid_continuation_options)
+
+  @doc false
   @spec record_derivation(
           GenServer.server(),
           SubmissionContext.t(),
@@ -541,6 +546,9 @@ defmodule Spectre.Domain.Sequencer do
 
   def handle_call({:record_derivation, context, turn, evidence, opts}, _from, %State{} = state),
     do: derivation_reply(state, context, turn, evidence, opts)
+
+  def handle_call({:continue_turn, context, turn, refs}, _from, %State{} = state),
+    do: command_reply(InputCommand.continue_turn(state, context, turn, refs))
 
   def handle_call(
         {:record_executor_evidence, act_ref, attempt_ref, evidence, opts},

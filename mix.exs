@@ -30,14 +30,13 @@ defmodule Spectre.MixProject do
   def application do
     [
       mod: {Spectre.Application, []},
-      extra_applications: [:logger, :crypto, :mnesia]
+      extra_applications: [:logger, :crypto, :mnesia, :eex]
     ]
   end
 
   defp deps do
     [
       {:uuid_v7, "~> 0.6.0"},
-      {:vettore, "~> 0.3.5"},
       {:benchee, "~> 1.5", only: :dev, runtime: false},
       {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -51,7 +50,8 @@ defmodule Spectre.MixProject do
       name: "spectre",
       maintainers: ["elchemista"],
       files: ~w(lib mix.exs README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md LICENSE
-           GOVERNED_ACT_MODEL.md GOVERNED_SURFACE.md) ++ @guides,
+           GOVERNED_ACT_MODEL.md GOVERNED_SURFACE.md examples/authoring.exs
+           examples/prompts/answer.text.eex) ++ @guides,
       licenses: ["Apache-2.0"],
       links: %{
         "Website" => @homepage_url,
@@ -85,11 +85,10 @@ defmodule Spectre.MixProject do
           Spectre.Domain,
           Spectre.Scope,
           Spectre.Instance,
-          Spectre.Foundation,
-          Spectre.Error
+          Spectre.Foundation
         ],
         "Authoring and integration":
-          ~r/^Spectre\.(Agent|Skill|Definition|Extension|Morph|Mind|Prompt|Router|Input|Ingress|Proposal|Fallback)(\.|$)/,
+          ~r/^Spectre\.(Agent|Skill|Stack|Worker|Vigil|History|Memory|Definition|Extension|Morph|Mind|Prompt|Router|Input|Ingress|Proposal|Fallback)(\.|$)/,
         "GAM records": [
           Spectre.Act,
           Spectre.Attempt,

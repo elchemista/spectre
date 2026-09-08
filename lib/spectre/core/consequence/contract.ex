@@ -94,6 +94,26 @@ defmodule Spectre.Consequence.Contract do
     |> collect_binding_kinds(MapSet.new())
   end
 
+  @doc """
+  Extracts the boundaries explicitly carried by a valid consequence.
+
+  Authoring can reuse the same schema walk as admission instead of guessing
+  targets or Meter quantities. This is not authorization and supplies neither
+  an executor nor consent. Runtime validation still compares every boundary.
+  """
+  @spec bindings(t(), term()) :: {:ok, map()} | {:error, term()}
+  def bindings(%__MODULE__{} = contract, consequence) do
+    with {:ok, contract} <- new(contract),
+         {:ok, bindings} <- validate_value(contract.shape, consequence, [], empty_bindings()) do
+      refs =
+        Map.new([:subject_refs, :target_refs, :destination_refs], fn key ->
+          {key, bindings |> Map.fetch!(key) |> Enum.uniq() |> Enum.sort()}
+        end)
+
+      {:ok, Map.put(refs, :meter_requests, bindings.meter_requests || %{})}
+    end
+  end
+
   @doc "Returns the plain, string-keyed ledger representation."
   @spec canonical(t()) :: map()
   def canonical(%__MODULE__{} = contract), do: Portable.canonical_fields(contract, @fields)

@@ -27,6 +27,7 @@ defmodule Spectre.Input.Pipeline do
   """
 
   alias Spectre.{Adapter, Portable}
+  alias Spectre.Agent.Collection
   alias Spectre.Canonical.Value
 
   @defaults [max_bytes: 65_536, max_depth: 32, max_collection_size: 1024]
@@ -73,19 +74,13 @@ defmodule Spectre.Input.Pipeline do
   def run(_pipeline, _input), do: {:error, :invalid_input_pipeline}
 
   defp prepare(specs) do
-    Enum.reduce_while(specs, {:ok, []}, fn spec, {:ok, steps} ->
+    Collection.map(specs, fn spec ->
       with {:ok, {module, opts}} <- declaration(spec),
            :ok <- Adapter.validate(module, call: 2),
            {:ok, state} <- initialize(module, opts) do
-        {:cont, {:ok, [{module, state} | steps]}}
-      else
-        {:error, _} = error -> {:halt, error}
+        {:ok, {module, state}}
       end
     end)
-    |> case do
-      {:ok, steps} -> {:ok, Enum.reverse(steps)}
-      error -> error
-    end
   end
 
   defp declaration({module, opts}) do

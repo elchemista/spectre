@@ -81,7 +81,7 @@ domain_opts = Keyword.merge(foundation,
   domain_ref: "domain:payments",
   store: {Spectre.Ledger.Store.Disk, server: MyApp.LedgerStore},
   ingress: MyApp.Ingress,
-  mind: MyApp.SupportMind,
+  mind: Spectre.Agent,
   executors: [MyApp.PaymentExecutor],
   broker: MyApp.CredentialBroker
 )
@@ -159,7 +159,7 @@ opened, and the exact Definition must be governed in that Domain. A bare
 that module must obtain fresh authentication and, after a Domain generation
 change, open a new Scope with appropriate authority. Do not retain an old Scope
 in a static child specification. There is no automatic credential or
-authentication policy in `use`, `child_spec` or `extend`.
+authentication policy in `use`, `child_spec` or an Extension's `install` block.
 
 ## Business limits are explicit
 
@@ -182,13 +182,12 @@ capabilities. Prefer a targeted query to repeatedly requesting the broad view.
 General cursor pagination is not yet implemented; do not assume an arbitrary
 `limit` option is supported.
 
-`Spectre.Error.message/1` gives a short description of a known failure reason or
-its `{:error, reason}` envelope. Unknown errors use a constant fallback. It does
-not serialize arbitrary terms, adapter exceptions, credentials or record refs.
-Keep the original structured reason for application decisions and appropriately
-protected diagnostics; the description does not authorize a retry. Use
-`Spectre.Proposal.Result.status/1`, not this formatter, to distinguish admission,
-execution and an uncertain Outcome in a successful proposal response.
+Failures are structured terms, not a central catalog of UI messages.
+Translate recognized codes in the application; use a constant fallback for
+unknown reasons. Do not inspect arbitrary exceptions, input or provider data in
+public errors. Keep protected diagnostics separate. `Spectre.Proposal.Result.status/1`
+and the handler's `result.status` distinguish admission from execution; neither
+an error message nor a timeout authorizes retry.
 
 Configure and run `mix spectre.doctor` to inspect declared boundary wiring and
 ordinary compiled dependencies. Export and audit the canonical history for
@@ -203,10 +202,11 @@ config :spectre, :doctor,
   port_wiring: %{MyApp.SupportAgent => wired_ports}
 ```
 
-For example, `wired_ports` might contain
-`%{"payments/http_client" => {MyApp.HTTPClient, pool: MyApp.PaymentPool}}`.
-An empty map for this Agent reports every declared port as unwired; a misspelled
-name is also reported. Omitting `port_wiring` means the check was not performed.
+`wired_ports` has the same grouped form as Instance startup, for example
+`[history: [chat: {MyApp.History, tenant_id: tenant, conversation_id: conversation}]]`.
+Complete static adapter declarations need no redundant empty runtime binding.
+Missing dynamic ports and misspelled names are reported. Omitting `port_wiring`
+means the check was not performed.
 Do not simply pass `MyApp.SupportAgent.ports()` as proof that you wired it:
 declaration is not connection. Doctor validates module/configuration shape and
 name coverage, not actual runtime usage, connectivity or suitability for a

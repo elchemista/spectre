@@ -29,37 +29,42 @@ defmodule Spectre.Test.FullAgentCase do
   defmodule PaymentSkill do
     @moduledoc false
 
-    use Spectre.Skill, namespace: "full-agent", name: "payment", revision: 1, declared_at: 0
-    candidate("refund", class: "refund.issue", row: %{attempt: true, disclose: true, spend: true})
+    use Spectre.Skill, namespace: "full-agent", name: "payment"
+    use Spectre.Test.Authoring
+    request(:refund, class: "refund.issue")
   end
 
   defmodule ManualSkill do
     @moduledoc false
 
-    use Spectre.Skill, namespace: "full-agent", name: "manual", revision: 1, declared_at: 0
-    candidate("refund", class: "refund.issue", row: %{attempt: true, disclose: true, spend: true})
+    use Spectre.Skill, namespace: "full-agent", name: "manual"
+    use Spectre.Test.Authoring
+    request(:refund, class: "refund.issue")
   end
 
   defmodule PlainAgent do
     @moduledoc false
 
-    use Spectre.Agent, namespace: "full-agent", name: "plain", revision: 1, declared_at: 0
-    candidate("refund", class: "refund.issue", row: %{attempt: true, disclose: true, spend: true})
+    use Spectre.Agent, namespace: "full-agent", name: "plain"
+    use Spectre.Test.Authoring
+    request(:refund, class: "refund.issue")
   end
 
   defmodule SkilledAgent do
     @moduledoc false
 
-    use Spectre.Agent, namespace: "full-agent", name: "skilled", revision: 1, declared_at: 0
-    install(PaymentSkill, as: "payment")
+    use Spectre.Agent, namespace: "full-agent", name: "skilled"
+    use Spectre.Test.Authoring
+    skill(PaymentSkill, as: :payment)
   end
 
   defmodule MultiSkillAgent do
     @moduledoc false
 
-    use Spectre.Agent, namespace: "full-agent", name: "multi", revision: 1, declared_at: 0
-    install(PaymentSkill, as: "payment")
-    install(ManualSkill, as: "manual")
+    use Spectre.Agent, namespace: "full-agent", name: "multi"
+    use Spectre.Test.Authoring
+    skill(PaymentSkill, as: :payment)
+    skill(ManualSkill, as: :manual)
   end
 
   # Application routing stays outside the kernel. The same Mind can use a
@@ -184,8 +189,8 @@ defmodule Spectre.Test.FullAgentCase do
     Runtime.reset(Fixture.default_now())
     authoring = Map.get(tags, :authoring, SkilledAgent)
     definition = authoring.definition()
-    template = definition.body["candidates"] |> Map.values() |> hd()
-    body = Map.put(definition.body, "candidates", %{"updated/refund" => template})
+    template = Spectre.Test.Authoring.requests(definition) |> Map.values() |> hd()
+    body = Spectre.Test.Authoring.replace_requests(definition, %{"updated/refund" => template})
     {:ok, successor} = Definition.revise(definition, body, Runtime.now())
     mind = Map.get(tags, :mind, StatefulMind)
     namespace = "full-agent-#{System.unique_integer([:positive])}"
@@ -271,7 +276,7 @@ defmodule Spectre.Test.FullAgentCase do
       |> Fixture.refund_candidate(Keyword.get(opts, :amount, 100),
         identity_key: Keyword.get(opts, :identity, "full-agent:refund")
       )
-      |> Map.drop([:class, :row, :proposer_ref, :scope_ref, :evidence_refs])
+      |> Map.drop([:class, :proposer_ref, :scope_ref, :evidence_refs])
       |> Map.put(:requested_mandate_ref, Keyword.get(opts, :mandate, c.fixture.mandate.ref))
 
     [

@@ -24,10 +24,16 @@ defmodule Spectre.Core.MorphChangesetTest do
   end
 
   defmodule Agent do
-    use Spectre.Agent, namespace: "morph", name: "agent", revision: 1, declared_at: 0
-    candidate("lookup", class: "orders.lookup")
-    route("request", to: "lookup", match: [string_bag: ["find order"]])
-    asset("prompt", "look up the order")
+    use Spectre.Agent, namespace: "morph", name: "agent"
+    use Spectre.Test.Authoring
+    request(:lookup, class: "orders.lookup")
+
+    flow :orders do
+      router(via: [:string_bag])
+      route(:lookup, match: [string_bag: ["find order"]])
+    end
+
+    prompt(:instructions, "look up the order")
   end
 
   test "atomic changesets pin the exact predecessor and retain metadata identity" do
@@ -128,32 +134,37 @@ defmodule Spectre.Core.MorphChangesetTest do
     end
   end
 
-  test "a changeset cannot hide dangling routes or discard the Agent schema" do
-    assert {:error, :invalid_agent_routing} =
-             Morph.prepare(
-               Agent.definition(),
-               [%{op: :delete, path: ["candidates", "lookup"]}],
-               1
-             )
+  test "changesets preserve declaration grammar without treating routes as effects" do
+    original = Agent.definition()
 
-    assert {:error, :not_an_agent_declaration} =
+    assert {:error, _} =
              Morph.prepare(
-               Agent.definition(),
-               [%{op: :put, path: ["format"], value: "bypass"}],
-               1
-             )
-
-    assert {:ok, revised} =
-             Morph.prepare(
-               Agent.definition(),
+               original,
                [
-                 %{op: :delete, path: ["routing", "rules", "request"]},
-                 %{op: :delete, path: ["candidates", "lookup"]}
+                 %{
+                   op: :put,
+                   path: ["authoring", "plan", :flows, "orders", :routes, "lookup", :rule, "to"],
+                   value: "undeclared_handler"
+                 }
                ],
                1
              )
 
-    assert revised.body["candidates"] == %{}
+    assert {:error, :not_an_agent_declaration} =
+             Morph.prepare(original, [%{op: :put, path: ["format"], value: "bypass"}], 1)
+
+    # A route now names a handler, not a request template. Removing a template
+    # is valid data but cannot silently change code in an already bound Instance.
+    assert {:ok, revised} =
+             Morph.prepare(
+               original,
+               [%{op: :delete, path: ["authoring", "plan", :requests, "lookup"]}],
+               1
+             )
+
+    assert revised.body["authoring"]["plan"].requests == %{}
+    assert {:error, _} = Spectre.Agent.verify_definition(Agent, revised)
+    assert original.body["authoring"]["plan"].requests != %{}
   end
 
   test "diff distinguishes integer/float changes and preserves deletions" do

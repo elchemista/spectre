@@ -52,6 +52,26 @@ defmodule Spectre.Domain.Command.Input do
     end
   end
 
+  @doc "Continues a sealed Turn with already-durable scoped Evidence, without repeating ingress observation."
+  def continue_turn(state, context_input, turn, refs) do
+    with {:ok, context, opening} <- Context.validate_scope(state, context_input),
+         :ok <- Turn.verify_seal(turn, state.grant_secret),
+         {:ok, now} <- Transaction.trusted_recorded_at(state),
+         {:ok, previous} <- validate_turn(state, context, opening, turn, now),
+         {:ok, refs} <- Spectre.Portable.normalize_refs(refs, :continuation_evidence_refs),
+         {:ok, added} <- scoped_evidence(state.projection, context.scope_ref, refs),
+         evidence = merge_evidence(previous, added),
+         {:ok, next, continued} <- seal_recorded_turn(state, context, evidence, now),
+         selected = MapSet.new(Turn.evidence_refs(continued)),
+         true <- Enum.all?(evidence, &MapSet.member?(selected, &1.ref)) do
+      {:ok, next, continued}
+    else
+      false -> {:error, state, :continuation_context_exceeds_window}
+      {:error, %State{}, _} = error -> error
+      {:error, reason} -> {:error, state, reason}
+    end
+  end
+
   defp seal_recorded_turn(state, context, evidence, opened_at) do
     with {:ok, turn_ref} <- Transaction.operational_id(state),
          {:ok, turn} <- build_turn(state, context, turn_ref, evidence, opened_at) do

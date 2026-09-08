@@ -7,8 +7,8 @@ defmodule Spectre.Router.Adapter do
 
         @impl true
         def evaluate(request, _opts) do
-          {:ok, for rule <- request.rules, rule.data == request.input,
-            do: result(rule, 1.0)}
+          {:ok, for(rule <- request.rules, rule.data == request.input,
+            do: result(rule, 1.0))}
         end
       end
 
@@ -51,7 +51,7 @@ defmodule Spectre.Router.Adapter do
     end
   end
 
-  @doc "Nominates a visible rule without exposing its target Candidate template."
+  @doc "Nominates a visible rule without exposing its handler or application target."
   @spec result(map() | String.t(), number(), term()) :: result()
   def result(rule, score, matched \\ nil)
   def result(%{ref: ref}, score, matched), do: result(ref, score, matched)

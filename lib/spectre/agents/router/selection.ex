@@ -23,7 +23,7 @@ defmodule Spectre.Router.Selection do
   Builds optional provenance without changing recognition or admission.
 
   The proposition identifies this router's selection for the exact Turn;
-  the payload records the selected rule, template, method and score. Raw input
+  the payload records the selected rule, target, method and score. Raw input
   and matcher diagnostics are not copied into the ledger. Parent Evidence,
   conservative labels and trusted bindings come from the ordinary Mind builder.
   """
@@ -50,9 +50,24 @@ defmodule Spectre.Router.Selection do
           "rule" => selection.rule,
           "candidate" => selection.candidate,
           "via" => selection.via,
-          "score" => selection.score
+          "score" => selection.score,
+          "source" => source(selection)
         })
       )
     end
   end
+
+  # Copy references only. Regex captures and adapter-specific diagnostics can
+  # contain private input and must not become a second payload in the ledger.
+  defp source(%{matched: matched}) when is_map(matched),
+    do:
+      Map.take(matched, [
+        "example_ref",
+        "example_revision",
+        "content_ref",
+        "profile_ref",
+        "artifact_ref"
+      ])
+
+  defp source(_selection), do: %{}
 end

@@ -24,11 +24,17 @@ defmodule Spectre.Router do
   """
 
   alias Spectre.{Adapter, Portable}
+  alias Spectre.Agent.Collection
   alias Spectre.Canonical.Value
   alias Spectre.Router.Adapter.Request
   alias Spectre.Router.{Matchers, Rule, Selection}
 
   @builtins ["regex", "string_bag", "bag_distance", "jaro"]
+  @doc "Extracts the same flow/route declarations used inline in an Agent; creates no process."
+  defmacro __using__(_opts) do
+    quote do: use(Spectre.Agent.Compiler, kind: :router)
+  end
+
   @enforce_keys [:ref, :rules, :methods, :accept, :margin]
   defstruct [:ref, :rules, :methods, :accept, :margin]
 
@@ -155,37 +161,27 @@ defmodule Spectre.Router do
   defp adapter_config(module), do: {module, []}
 
   defp methods(ids, registry, rules) do
-    Enum.reduce_while(ids, {:ok, []}, fn id, {:ok, acc} ->
+    Collection.map(ids, fn id ->
       with {:ok, {module, opts}} <- Map.fetch(registry, id),
            :ok <- Adapter.validate(module, evaluate: 2),
            {:ok, prepared} <- prepare_rules(rules, id, module, opts) do
-        {:cont, {:ok, [%{id: id, module: module, opts: opts, rules: prepared} | acc]}}
+        {:ok, %{id: id, module: module, opts: opts, rules: prepared}}
       else
-        :error -> {:halt, {:error, {:unknown_router_method, id}}}
-        {:error, _} = error -> {:halt, error}
+        :error -> {:error, {:unknown_router_method, id}}
+        {:error, _} = error -> error
       end
     end)
-    |> case do
-      {:ok, methods} -> {:ok, Enum.reverse(methods)}
-      error -> error
-    end
   end
 
   defp prepare_rules(rules, id, module, opts) do
     rules
     |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.reduce_while({:ok, []}, fn {ref, rule}, {:ok, acc} ->
-      with {:ok, data} <- Map.fetch(rule.match, id), {:ok, data} <- prepare(module, data, opts) do
-        {:cont, {:ok, [%{ref: ref, data: data} | acc]}}
-      else
-        :error -> {:cont, {:ok, acc}}
-        {:error, _} = error -> {:halt, error}
+    |> Stream.filter(fn {_ref, rule} -> Map.has_key?(rule.match, id) end)
+    |> Collection.map(fn {ref, rule} ->
+      with {:ok, data} <- prepare(module, Map.fetch!(rule.match, id), opts) do
+        {:ok, %{ref: ref, data: data}}
       end
     end)
-    |> case do
-      {:ok, prepared} -> {:ok, Enum.reverse(prepared)}
-      error -> error
-    end
   end
 
   defp prepare(module, data, opts) do

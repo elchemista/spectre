@@ -12,16 +12,28 @@ defmodule Spectre.Instance.Operation do
   @typep snapshot :: %{
            required(:scope) => Scope.t(),
            optional(:definition_ref) => String.t(),
+           optional(:instance_ref) => String.t(),
+           optional(:authoring) => map() | nil,
            optional(:revision) => non_neg_integer(),
            optional(:value) => term()
          }
   @typep request ::
            {:turn, term(), keyword()}
+           | {:advance, Spectre.Instance.Request.t(), keyword()}
            | {:propose, term(), keyword()}
            | {:checkpoint, Spectre.Store.config(), String.t(), non_neg_integer()}
 
   @doc "Runs one owner-selected mutation in its temporary worker; local state advances only after a fresh Scope check."
-  @spec run(request(), snapshot()) :: {:reply, term()} | {:advance, {:ok, map()}, term()}
+  @spec run(request(), snapshot()) ::
+          {:reply, term()}
+          | {:advance, {:ok, map()}, term()}
+          | {:authoring, term(), term(), map()}
+  def run({:turn, input, opts}, %{authoring: authoring} = snapshot) when not is_nil(authoring),
+    do: Spectre.Agent.Runtime.turn(input, opts, snapshot)
+
+  def run({:advance, request, opts}, snapshot),
+    do: Spectre.Agent.Runtime.advance(request, opts, snapshot)
+
   def run({:turn, input, opts}, snapshot) do
     with {:ok, opts} <- bind_mind_options(opts, snapshot),
          {:ok, result} <- Spectre.turn(snapshot.scope, input, snapshot.value, opts),
@@ -47,7 +59,12 @@ defmodule Spectre.Instance.Operation do
           expected,
           Scope.domain_ref(scope),
           snapshot.definition_ref,
-          %{revision: snapshot.revision, value: snapshot.value}
+          %{
+            revision: snapshot.revision,
+            value: snapshot.value,
+            components:
+              if(Map.get(snapshot, :authoring), do: snapshot.authoring.components, else: %{})
+          }
         )
       end
 

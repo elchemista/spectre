@@ -2,6 +2,7 @@ defmodule Spectre.Core.RouterExtensionTest do
   use ExUnit.Case, async: true
 
   alias Spectre.{Agent, Definition, Extension, Router}
+  alias Spectre.Agent.Flow
   alias Spectre.Router.Rule
 
   defmodule BinaryMatcher do
@@ -41,75 +42,77 @@ defmodule Spectre.Core.RouterExtensionTest do
     end
   end
 
-  defmodule Billing do
-    use Spectre.Skill, namespace: "router-test", name: "billing", revision: 1, declared_at: 0
-    candidate("refund", class: "refund.issue")
-
-    route("refund",
-      to: "refund",
-      match: [regex: ~r/^refund (?<amount>[0-9]+)$/u, binary: <<1, 2>>]
-    )
-
-    asset("prompt", %{"text" => "Offer a refund proposal, never promise execution."})
-  end
-
   defmodule Package do
     @behaviour Spectre.Extension
     @impl true
-    def definition(_opts), do: {:ok, Billing.definition()}
-    @impl true
-    def ports(opts), do: %{"binary" => {BinaryMatcher, opts}}
+    def configure(opts),
+      do: {:ok, %{data: %{version: 1}, ports: %{{:router, :binary} => {BinaryMatcher, opts}}}}
+  end
+
+  defmodule Billing do
+    use Spectre.Skill, namespace: "router-test", name: "billing"
+    use Spectre.Test.Authoring
+    install(Package, [])
+    request(:refund, class: "refund.issue")
+    prompt(:instructions, "Offer a proposal, never promise execution.")
+
+    flow :refunds do
+      router(via: [:binary, :regex])
+      route(:refund, match: [regex: ~r/^refund (?<amount>[0-9]+)$/u, binary: <<1, 2>>])
+    end
   end
 
   defmodule Bundle do
-    use Spectre.Skill, namespace: "router-test", name: "bundle", revision: 1, declared_at: 0
-    extend(Package, as: "billing")
+    use Spectre.Skill, namespace: "router-test", name: "bundle"
+    use Spectre.Test.Authoring
+    skill(Billing, as: :billing)
   end
 
   defmodule Assistant do
-    use Spectre.Agent, namespace: "router-test", name: "assistant", revision: 1, declared_at: 0
-    router(via: [:binary, :regex])
-    install(Bundle, as: "support")
+    use Spectre.Agent, namespace: "router-test", name: "assistant"
+    use Spectre.Test.Authoring
+    skill(Bundle, as: :support)
   end
 
-  defmodule WrongDefinition do
+  defmodule WrongContribution do
     @behaviour Spectre.Extension
     @impl true
-    def definition(_opts), do: Billing.definition()
+    def configure(_opts), do: %{ports: %{}}
   end
 
   defmodule WrongPorts do
     @behaviour Spectre.Extension
     @impl true
-    def definition(_opts), do: {:ok, Billing.definition()}
-    @impl true
-    def ports(_opts), do: %{"runtime" => {BinaryMatcher, [:invalid]}}
+    def configure(_opts),
+      do: {:ok, %{ports: %{{:router, :binary} => {BinaryMatcher, [:invalid]}}}}
   end
 
-  test "custom via binary works in a nested extension/Skill with namespaced targets" do
-    port = Assistant.ports()["support/billing/binary"]
-    assert port == {BinaryMatcher, []}
-    assert {:ok, router} = Assistant.router(adapters: [binary: port])
-    assert {:ok, selection} = Router.route(router, <<1, 2>>)
-    assert selection.rule == "support/billing/refund"
-    assert selection.candidate == "support/billing/refund"
-    assert selection.via == "binary"
-    assert {:ok, regex} = Router.route(router, "refund 37")
-    assert regex.matched == %{"amount" => "37"}
+  test "an ordinary custom method is mounted through an Extension and Skill namespace" do
+    assert %{module: BinaryMatcher, options: []} =
+             Assistant.ports()["support/billing/router/binary"]
+
+    {:ok, flow} =
+      Agent.flow(Assistant.definition(), "support/billing/refunds",
+        adapters: [binary: BinaryMatcher]
+      )
+
+    assert {:ok, %{candidate: "refund", rule: "support/billing/refunds/refund", via: "binary"}} =
+             Flow.route(flow, <<1, 2>>)
+
+    assert {:ok, %{matched: %{"amount" => "37"}}} = Flow.route(flow, "refund 37")
   end
 
-  test "router/extension assets are canonical and transport does not load executable ports" do
-    definition = Assistant.definition()
-    assert {:ok, restored} = definition |> Definition.canonical() |> Definition.from_canonical()
-    assert restored === definition
+  test "transport retains declarative ports but does not install or invoke them" do
+    original = Assistant.definition()
+    assert {:ok, restored} = original |> Definition.canonical() |> Definition.from_canonical()
+    assert restored === original
+    assert {:ok, _, components} = Agent.declarations(restored)
+    assert components["support/billing"] == Billing.definition().ref
 
-    assert definition.body["assets"]["support/billing/prompt"] ==
-             Billing.definition().body["assets"]["prompt"]
+    assert {:error, {:unknown_router_method, "binary"}} =
+             Agent.flow(restored, "support/billing/refunds")
 
-    assert definition.body["components"]["support/billing"] == Billing.definition().ref
-    refute inspect(Definition.canonical(definition)) =~ inspect(BinaryMatcher)
-    assert {:error, {:unknown_router_method, "binary"}} = Agent.router(restored, [])
-    assert {:ok, _} = Agent.router(restored, adapters: [binary: BinaryMatcher])
+    refute_receive {:matcher_request, _}
   end
 
   test "matcher sees no Candidate target or another method's rule data" do
@@ -314,64 +317,61 @@ defmodule Spectre.Core.RouterExtensionTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(id) end
   end
 
-  test "changing route data changes the pinned Definition and router references" do
-    original = Assistant.definition()
+  test "changing route data changes the Definition and invalidates the loaded code pin" do
+    original = Billing.definition()
 
     body =
       put_in(
         original.body,
-        ["routing", "rules", "support/billing/refund", "match", "binary"],
+        ["authoring", "plan", :flows, "refunds", :routes, "refund", :rule, "match", "binary"],
         <<3>>
       )
 
-    assert {:ok, revised} = Definition.revise(original, body, 1)
-    assert {:ok, first} = Agent.router(original, adapters: [binary: BinaryMatcher])
-    assert {:ok, second} = Agent.router(revised, adapters: [binary: BinaryMatcher])
-    refute first.ref == second.ref
-    assert :no_match = Router.route(second, <<1, 2>>)
+    {:ok, revised} = Definition.revise(original, body, 1)
+    refute revised.ref == original.ref
+    assert {:error, _} = Agent.verify_definition(Billing, revised)
+    {:ok, first} = Agent.flow(original, "refunds", adapters: [binary: BinaryMatcher])
+    {:ok, second} = Agent.flow(revised, "refunds", adapters: [binary: BinaryMatcher])
+    assert {:ok, _} = Flow.route(first, <<1, 2>>)
+    assert :no_match = Flow.route(second, <<1, 2>>)
+    assert {:ok, _} = Flow.route(second, <<3>>)
   end
 
-  test "stored declarations cannot route to undeclared templates or override pinned thresholds" do
-    original = Assistant.definition()
-    body = put_in(original.body, ["routing", "rules", "support/billing/refund", "to"], "admin")
-    assert {:ok, revised} = Definition.revise(original, body, 1)
+  test "stored route targets and configuration cannot bypass the compiled grammar" do
+    original = Billing.definition()
 
-    assert {:error, :invalid_agent_routing} =
-             Agent.router(revised, adapters: [binary: BinaryMatcher])
+    body =
+      put_in(
+        original.body,
+        ["authoring", "plan", :flows, "refunds", :routes, "refund", :rule, "to"],
+        "admin"
+      )
 
-    assert {:error, _} = Agent.router(original, via: [:regex])
+    {:ok, revised} = Definition.revise(original, body, 1)
+    assert {:error, _} = Agent.declarations(revised)
+    assert {:error, _} = Agent.flow(original, "refunds", via: [:regex])
   end
 
-  test "an explicitly null routing section is not a missing optional declaration" do
-    original = Assistant.definition()
-
-    assert {:ok, revised} =
-             Definition.revise(original, Map.put(original.body, "routing", nil), 1)
-
-    assert {:error, :invalid_agent_routing} = Agent.declarations(revised)
-
-    assert {:error, :invalid_agent_routing} =
-             Agent.router(revised, adapters: [binary: BinaryMatcher])
+  test "extension contributions and port options are validated at the shared boundary" do
+    assert {:error, :invalid_extension_reply} = Extension.configure(WrongContribution, [])
+    assert {:error, _} = Extension.configure(WrongPorts, [])
+    assert {:error, _} = Extension.configure(Package, [:bad])
+    assert {:ok, %{ports: ports}} = Extension.configure(Package, [])
+    assert ports[{:router, :binary}] == {BinaryMatcher, []}
   end
 
-  test "extension callback shapes and adapter options fail explicitly" do
-    assert {:error, :invalid_extension_definition_reply} = Extension.compile(WrongDefinition, [])
-    assert {:error, :invalid_extension_port_options} = Extension.compile(WrongPorts, [])
-    assert {:error, :invalid_extension_options} = Extension.compile(Package, [:bad])
-  end
-
-  test "duplicate extension namespaces and dangling DSL routes fail compilation" do
-    assert_raise CompileError, ~r/duplicate_declaration/, fn ->
+  test "duplicate extensions and misplaced routes fail compilation" do
+    assert_raise CompileError, fn ->
       compile(
         quote do
-          extend(unquote(Package), as: "one")
-          extend(unquote(Package), as: "one")
+          install(unquote(Package), [])
+          install(unquote(Package), [])
         end
       )
     end
 
-    assert_raise CompileError, ~r/invalid_agent_routing/, fn ->
-      compile(quote do: route("bad", to: "missing", match: [regex: ".*"]))
+    assert_raise CompileError, fn ->
+      compile(quote do: route(:bad, match: [regex: ".*"]))
     end
   end
 
@@ -390,7 +390,7 @@ defmodule Spectre.Core.RouterExtensionTest do
     Module.create(
       module,
       quote do
-        use Spectre.Agent, namespace: "router-test", name: "compiled", revision: 1, declared_at: 0
+        use Spectre.Agent, namespace: "router-test", name: "compiled"
         unquote(body)
       end,
       Macro.Env.location(__ENV__)

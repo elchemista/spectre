@@ -3,8 +3,8 @@ defmodule Spectre.Morph do
   Pure, atomic changesets for immutable Definitions, before governance.
 
       Spectre.Morph.prepare(definition, [
-        %{op: :test, path: ["assets", "prompt"], value: "old prompt"},
-        %{op: :put, path: ["assets", "prompt"], value: "revised prompt"}
+        %{op: :test, path: ["instructions"], value: "old instructions"},
+        %{op: :put, path: ["instructions"], value: "revised instructions"}
       ], declared_at)
 
   Changes use `put`, `delete` and exact `test` preconditions. Paths traverse
@@ -17,6 +17,8 @@ defmodule Spectre.Morph do
   authority. Submit the returned Definition with `Spectre.revise_definition/4`:
   the kernel still checks the exact active predecessor and governance Mandate.
   Neither preparation nor rollback activates code or changes a live Instance.
+  A data edit to a compiled Agent plan still needs matching published code;
+  the Instance's code/Definition pin is not weakened by a valid changeset.
   """
 
   alias Spectre.{Adapter, Definition, Portable}
@@ -173,7 +175,7 @@ defmodule Spectre.Morph do
   defp fetch(:error), do: {:error, :morph_path_not_found}
   defp fetch({:ok, _} = value), do: value
 
-  defp authoring_integrity(%{body: %{"format" => "spectre-agent-declaration-v1"}}, revised) do
+  defp authoring_integrity(%{body: %{"format" => "spectre-agent-declaration-v3"}}, revised) do
     case Declaration.read(revised) do
       {:ok, _} -> :ok
       {:error, _} = error -> error

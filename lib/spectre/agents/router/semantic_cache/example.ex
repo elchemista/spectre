@@ -25,13 +25,20 @@ defmodule Spectre.Router.SemanticCache.Example do
         }
 
   @doc false
-  def new(attrs, config, revision, source \\ "online_learned") do
-    with {:ok, attrs} <- Portable.normalize_attrs(attrs, @fields, :cache_example),
+  def new(attrs, config, revision) do
+    with {:ok, attrs} <-
+           Portable.normalize_attrs(attrs, @fields ++ [:profile_ref], :cache_example),
          id = Map.get_lazy(attrs, :id, &Id.generate/0),
          true <- string?(id, 128),
          {:ok, text} <- text(Map.get(attrs, :text), config.max_text_bytes),
          label = Map.get(attrs, :label),
          true <- MapSet.member?(config.labels, label),
+         :ok <-
+           profile(
+             Map.get(attrs, :embedding),
+             Map.get(attrs, :profile_ref),
+             config.binding.profile_ref
+           ),
          {:ok, embedding} <- embedding(Map.get(attrs, :embedding), config.dimensions) do
       {:ok,
        %__MODULE__{
@@ -39,8 +46,8 @@ defmodule Spectre.Router.SemanticCache.Example do
          text: text,
          label: label,
          embedding: embedding,
-         source: source,
-         verified: source != "online_learned",
+         source: "online_learned",
+         verified: false,
          revision: revision
        }}
     else
@@ -52,8 +59,15 @@ defmodule Spectre.Router.SemanticCache.Example do
   @doc false
   def update(%__MODULE__{} = example, attrs, config, revision) do
     with {:ok, attrs} <-
-           Portable.normalize_attrs(attrs, [:text, :label, :embedding], :cache_example_update) do
-      original = Map.take(example, @fields)
+           Portable.normalize_attrs(
+             attrs,
+             [:text, :label, :embedding, :profile_ref],
+             :cache_example_update
+           ) do
+      original = example |> Map.take(@fields) |> Map.put(:profile_ref, config.binding.profile_ref)
+
+      original =
+        if Map.has_key?(attrs, :embedding), do: Map.delete(original, :profile_ref), else: original
 
       original =
         if Map.has_key?(attrs, :text) and attrs.text !== example.text,
@@ -75,15 +89,23 @@ defmodule Spectre.Router.SemanticCache.Example do
   def normalize(text), do: text |> String.trim() |> String.downcase()
 
   @doc false
+  def profile(nil, _supplied, _expected), do: :ok
+  def profile(_vector, ref, ref) when is_binary(ref), do: :ok
+  def profile(_vector, _supplied, _expected), do: {:error, :cache_encoder_profile_mismatch}
+
+  @doc false
   def embedding(nil, _dimensions), do: {:ok, nil}
 
   def embedding(values, dimensions) when is_list(values) do
-    if length(values) == dimensions and Enum.all?(values, &finite?/1) and
-         Enum.any?(values, &(&1 != 0)) do
-      {:ok, Enum.map(values, &(&1 / 1))}
+    if length(values) in 1..8192 and (is_nil(dimensions) or length(values) == dimensions) and
+         Enum.all?(values, &is_number/1) do
+      floats = Enum.map(values, &(&1 / 1))
+      with :ok <- Portable.validate(floats), do: {:ok, floats}
     else
       {:error, :invalid_cache_embedding}
     end
+  rescue
+    ArithmeticError -> {:error, :invalid_cache_embedding}
   end
 
   def embedding(_value, _dimensions), do: {:error, :invalid_cache_embedding}
@@ -94,17 +116,38 @@ defmodule Spectre.Router.SemanticCache.Example do
     do: Map.new(Map.from_struct(example), fn {key, value} -> {Atom.to_string(key), value} end)
 
   @doc false
+  def from_backend(%__MODULE__{} = example), do: from_backend(Map.from_struct(example))
+
+  def from_backend(value) do
+    with {:ok, attrs} <- Portable.normalize_attrs(value, @enforce_keys, :cache_example),
+         true <- map_size(attrs) == length(@enforce_keys),
+         true <-
+           string?(attrs.id, 128) and string?(attrs.label, 256) and string?(attrs.source, 128),
+         true <- is_boolean(attrs.verified) and is_integer(attrs.revision) and attrs.revision > 0,
+         {:ok, text} <- text(attrs.text, 65_536),
+         {:ok, embedding} <- embedding(attrs.embedding, nil) do
+      {:ok, struct!(__MODULE__, %{attrs | text: text, embedding: embedding})}
+    else
+      _invalid -> {:error, :invalid_cache_example_reply}
+    end
+  end
+
+  @doc false
   def restore(value, config) when is_map(value) do
     with true <-
            Enum.sort(Map.keys(value)) == Enum.sort(Enum.map(@enforce_keys, &Atom.to_string/1)),
          revision = value["revision"],
          true <- is_integer(revision) and revision > 0,
-         source = value["source"],
-         true <- source in ["online_learned", "offline_dataset", "static_route_example"],
          verified = value["verified"],
-         true <- is_boolean(verified) and (source == "online_learned" or verified),
+         true <- value["source"] === "online_learned" and is_boolean(verified),
          {:ok, example} <-
-           new(Map.take(value, Enum.map(@fields, &Atom.to_string/1)), config, revision, source) do
+           new(
+             value
+             |> Map.take(Enum.map(@fields, &Atom.to_string/1))
+             |> Map.put("profile_ref", config.binding.profile_ref),
+             config,
+             revision
+           ) do
       {:ok, %{example | verified: verified}}
     else
       _invalid -> {:error, :invalid_cache_snapshot_example}
@@ -116,7 +159,15 @@ defmodule Spectre.Router.SemanticCache.Example do
   defp string?(value, limit),
     do: is_binary(value) and byte_size(value) in 1..limit and String.valid?(value)
 
-  # Vettore stores f32 vectors. Reject overflow and the zero vector before the
-  # native boundary, including arbitrarily large Elixir integers.
-  defp finite?(value), do: is_number(value) and abs(value) <= 3.402_823_466_385_288_6e38
+  @doc "Returns a small nomination bound to the exact approved revision, not its private payload."
+  def nomination(%__MODULE__{verified: true} = example, score, binding) do
+    %{
+      label: example.label,
+      score: score,
+      example_ref: example.id,
+      example_revision: example.revision,
+      content_ref: Portable.content_ref!(:cache_example, dump(example)),
+      binding: binding
+    }
+  end
 end

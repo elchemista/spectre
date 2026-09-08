@@ -1,7 +1,8 @@
 defmodule Spectre.Router.Rule do
   @moduledoc """
-  Portable routing declaration. `to` names a Candidate template; `match` maps
-  method identifiers to method-specific data. Neither is an admission decision.
+  Portable routing declaration. `to` names a selection target; the Agent DSL
+  uses it for a handler branch. `match` maps methods to their own data.
+  Neither is an admission decision or permission to execute a Candidate.
   Regex structs are lowered to source/options before entering a Definition.
   """
 
@@ -34,6 +35,16 @@ defmodule Spectre.Router.Rule do
   end
 
   def path(name), do: {:error, {:invalid_declaration_path, name}}
+
+  @doc false
+  @spec local_name(term()) :: :ok | {:error, term()}
+  def local_name(name) when is_binary(name) and name != "" do
+    if :binary.match(name, "/") == :nomatch,
+      do: :ok,
+      else: {:error, {:local_name_contains_namespace_separator, name}}
+  end
+
+  def local_name(name), do: {:error, {:invalid_local_name, name}}
 
   @doc false
   def method(id) when is_atom(id) and id not in [nil, true, false], do: method(Atom.to_string(id))

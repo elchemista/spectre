@@ -15,7 +15,7 @@ defmodule Spectre.Doctor do
   service is reachable. No adapter is started, selected or installed here.
   """
 
-  alias Spectre.{Adapter, Extension, Genesis}
+  alias Spectre.Genesis
   alias Spectre.HostProfile
   alias Spectre.Ingress
   alias Spectre.Ledger.Store
@@ -240,17 +240,13 @@ defmodule Spectre.Doctor do
   end
 
   defp port_findings({agent, wired}) do
-    with :ok <- Adapter.validate(agent, ports: 0),
-         {:ok, declared} <- Adapter.invoke(agent, :ports, []),
-         {:ok, declared} <- Extension.validate_ports(declared),
-         {:ok, wired} <- Extension.validate_ports(wired) do
-      missing = Map.keys(declared) -- Map.keys(wired)
-      extra = Map.keys(wired) -- Map.keys(declared)
-
-      Enum.map(Enum.sort(missing), &{:unwired_extension_port, agent, &1}) ++
-        Enum.map(Enum.sort(extra), &{:undeclared_extension_port, agent, &1})
+    if Code.ensure_loaded?(agent) and function_exported?(agent, :__spectre_plan__, 0) do
+      case Spectre.Agent.Wiring.resolve(agent, wired) do
+        {:ok, _wiring} -> []
+        {:error, reason} -> [{:invalid_agent_port_wiring, agent, reason}]
+      end
     else
-      {:error, reason} -> [{:invalid_agent_port_wiring, agent, reason}]
+      [{:invalid_agent_port_wiring, agent, :compiled_authoring_plan_required}]
     end
   end
 

@@ -7,7 +7,8 @@ defmodule Spectre.Core.PromisedAgentsTest do
   alias Spectre.V04Test.{Fixture, Runtime}
 
   defmodule Worker do
-    use Spectre.Agent, namespace: "promise-tests", name: "worker", revision: 1, declared_at: 0
+    use Spectre.Agent, namespace: "promise-tests", name: "worker"
+    use Spectre.Test.Authoring
   end
 
   defmodule Mind do

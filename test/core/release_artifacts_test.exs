@@ -71,33 +71,49 @@ defmodule Spectre.CoreTest.ReleaseArtifactsTest do
       end
 
     assert Enum.sort(examples) ===
-             ~w(application_store authoring custom_router definition_check flows input_pipeline mind_adapter)
+             ~w(application_store input_pipeline)
   end
 
-  test "the actual README Agent and Skill example compiles into pinned declarations" do
+  test "README handler declaration compiles with explicit publication metadata" do
     snippet =
       ~r/```elixir\n(.*?)```/s
       |> Regex.scan(File.read!(Path.join(@root, "README.md")))
       |> Enum.map(fn [_match, code] -> code end)
-      |> Enum.find(&String.contains?(&1, "use Spectre.Skill"))
+      |> Enum.find(&String.contains?(&1, "use Spectre.Agent"))
 
-    assert is_binary(snippet), "README must contain its Agent/Skill example"
-    modules = Code.compile_string(snippet, "README.md")
+    assert is_binary(snippet)
+    {_result, binding} = Code.eval_string(snippet, [published_at: 0], file: "README.md")
 
     on_exit(fn ->
-      for {module, _binary} <- modules do
+      :code.purge(MyApp.Orders)
+      :code.delete(MyApp.Orders)
+    end)
+
+    definition = Keyword.fetch!(binding, :definition)
+    assert {:ok, _, _} = Spectre.Agent.verify_definition(MyApp.Orders, definition)
+  end
+
+  test "complete example publishes Skills and reusable Worker/Vigil without startup" do
+    modules = Code.compile_file(Path.join(@root, "examples/authoring.exs"))
+
+    on_exit(fn ->
+      for {module, _} <- modules do
         :code.purge(module)
         :code.delete(module)
       end
     end)
 
-    definitions =
-      Map.new(modules, fn {module, _binary} -> {module, module.definition()} end)
+    definitions = Spectre.Example.Publication.definitions(0)
 
-    agent = Map.fetch!(definitions, MyApp.SupportAgent)
-    skill = Map.fetch!(definitions, MyApp.LookupSkill)
-    assert {:ok, ^agent} = Spectre.Definition.new(agent)
-    assert agent.body["components"] === %{"lookup" => skill.ref}
-    assert agent.body["candidates"] === %{"lookup/order" => skill.body["candidates"]["order"]}
+    assert {:ok, _, children} =
+             Spectre.Agent.verify_definition(Spectre.Example.Support, definitions.agent)
+
+    assert children["faq"] == Spectre.Example.Faq.definition(revision: 1, declared_at: 0)
+
+    assert {:ok, _, _} =
+             Spectre.Agent.verify_definition(Spectre.Example.OrderWorker, definitions.worker)
+
+    assert {:ok, _, _} =
+             Spectre.Agent.verify_definition(Spectre.Example.QueueVigil, definitions.vigil)
   end
 end

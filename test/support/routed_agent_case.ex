@@ -48,30 +48,34 @@ defmodule Spectre.Test.RoutedAgentCase do
   defmodule RefundSkill do
     @moduledoc false
 
-    use Spectre.Skill, namespace: "routing-tests", name: "refund", revision: 1, declared_at: 0
-    candidate("refund", class: "refund.issue", row: %{attempt: true, disclose: true, spend: true})
+    use Spectre.Skill, namespace: "routing-tests", name: "refund"
+    use Spectre.Test.Authoring
+    request(:refund, class: "refund.issue")
   end
 
   defmodule SupportSkill do
     @moduledoc false
 
-    use Spectre.Skill, namespace: "routing-tests", name: "support", revision: 1, declared_at: 0
-    install(RefundSkill, as: "billing")
+    use Spectre.Skill, namespace: "routing-tests", name: "support"
+    use Spectre.Test.Authoring
+    skill(RefundSkill, as: :billing)
   end
 
   defmodule SkilledAgent do
     @moduledoc false
 
-    use Spectre.Agent, namespace: "routing-tests", name: "skilled", revision: 1, declared_at: 0
-    install(SupportSkill, as: "support")
-    install(RefundSkill, as: "retention")
+    use Spectre.Agent, namespace: "routing-tests", name: "skilled"
+    use Spectre.Test.Authoring
+    skill(SupportSkill, as: :support)
+    skill(RefundSkill, as: :retention)
   end
 
   defmodule PlainAgent do
     @moduledoc false
 
-    use Spectre.Agent, namespace: "routing-tests", name: "plain", revision: 1, declared_at: 0
-    candidate("refund", class: "refund.issue", row: %{attempt: true, disclose: true, spend: true})
+    use Spectre.Agent, namespace: "routing-tests", name: "plain"
+    use Spectre.Test.Authoring
+    request(:refund, class: "refund.issue")
   end
 
   # Application glue supplies observed input to the library's compiled Router
@@ -260,8 +264,8 @@ defmodule Spectre.Test.RoutedAgentCase do
     definition = Map.get(tags, :agent, SkilledAgent).definition()
     first_template = if tags[:agent] == PlainAgent, do: "refund", else: "support/billing/refund"
     second_template = if tags[:agent] == PlainAgent, do: "refund", else: "retention/refund"
-    template = Map.fetch!(definition.body["candidates"], first_template)
-    body = Map.put(definition.body, "candidates", %{"revised/refund" => template})
+    template = Map.fetch!(Spectre.Test.Authoring.requests(definition), first_template)
+    body = Spectre.Test.Authoring.replace_requests(definition, %{"revised/refund" => template})
 
     {:ok, successor} =
       Spectre.Morph.prepare(definition, [%{op: :put, path: [], value: body}], Runtime.now())
@@ -450,7 +454,7 @@ defmodule Spectre.Test.RoutedAgentCase do
   def candidate_attrs(c, identity, amount, refs) do
     c.fixture
     |> Fixture.refund_candidate(amount, identity_key: identity, evidence_refs: refs)
-    |> Map.drop([:class, :row, :proposer_ref, :scope_ref, :evidence_refs])
+    |> Map.drop([:class, :proposer_ref, :scope_ref, :evidence_refs])
   end
 
   def prepare(c, text, opts \\ []) do

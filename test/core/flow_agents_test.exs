@@ -11,8 +11,9 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
   alias Spectre.V04Test.{Fixture, Runtime}
 
   defmodule Refunds do
-    use Spectre.Skill, namespace: "flow-agent", name: "refunds", revision: 1, declared_at: 0
-    candidate("refund", class: "refund.issue", row: %{attempt: true, disclose: true, spend: true})
+    use Spectre.Skill, namespace: "flow-agent", name: "refunds"
+    use Spectre.Test.Authoring
+    request(:refund, class: "refund.issue")
   end
 
   defmodule BinaryMatcher do
@@ -26,30 +27,30 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
   # A small agent needs no separate Controller behaviour. This same module
   # declares reusable data and implements ordinary, capability-free handlers.
   defmodule Assistant do
-    use Spectre.Agent, namespace: "flow-agent", name: "assistant", revision: 1, declared_at: 0
+    use Spectre.Agent, namespace: "flow-agent", name: "assistant"
+    use Spectre.Test.Authoring
     use Spectre.Mind, ref: "mind:flow-agent", stateful: true
-    install(Refunds, as: "billing")
-    asset("instructions", "Refunds are proposals, not promises of successful payment.")
+    skill(Refunds, as: :billing)
+    prompt(:instructions, "Refunds are proposals, not promises of successful payment.")
 
-    flow "support" do
-      pipe_through("text")
+    flow :support do
+      pipe_through(:text)
       router(via: [:regex, :string_bag])
 
-      route("refund",
-        to: "billing/refund",
+      route(:refund,
         match: %{regex: ~r/^refund (?<amount>[0-9]+)$/, string_bag: ["money back"]}
       )
     end
 
-    flow "device" do
+    flow :device do
       router(via: [:binary])
-      route("refund", to: "billing/refund", match: %{binary: "REFUND"})
+      route(:refund, match: %{binary: "REFUND"})
     end
 
-    flow "uncertain" do
+    flow :uncertain do
       router(via: [:regex])
-      route("first", to: "billing/refund", match: %{regex: ".*"})
-      route("second", to: "billing/refund", match: %{regex: ".*"})
+      route(:first, match: %{regex: ".*"})
+      route(:second, match: %{regex: ".*"})
     end
 
     @impl true
@@ -75,9 +76,12 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
         if selection.via == "regex", do: String.to_integer(selection.matched["amount"]), else: 7
 
       with {:ok, prompt} <-
-             Prompt.compose(turn, [{:asset, definition(), "instructions"}, {:evidence, input.ref}]),
+             Prompt.compose(turn, [
+               {:text, "instructions", __spectre_render__("instructions", %{})},
+               {:evidence, input.ref}
+             ]),
            attrs = opts[:build].(amount, Turn.evidence_refs(turn)),
-           {:ok, proposal} <- candidate(selection.candidate, turn, attrs) do
+           {:ok, proposal} <- candidate("billing/refund", turn, attrs) do
         send(opts[:observer], {:planned, self(), selection, prompt})
         {:ok, [proposal]}
       end
@@ -157,9 +161,14 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
       start_supervised!({Instance, scope: scope, definition_ref: definition.ref, state: 0})
 
     {:ok, text} = Pipeline.new([{NormalizeText, case: :downcase}])
-    {:ok, support} = Assistant.flow("support", pipelines: %{"text" => text})
-    {:ok, device} = Assistant.flow("device", adapters: [binary: BinaryMatcher])
-    {:ok, uncertain} = Assistant.flow("uncertain")
+
+    {:ok, support} =
+      Spectre.Agent.flow(Assistant.definition(), "support", pipelines: %{"text" => text})
+
+    {:ok, device} =
+      Spectre.Agent.flow(Assistant.definition(), "device", adapters: [binary: BinaryMatcher])
+
+    {:ok, uncertain} = Spectre.Agent.flow(Assistant.definition(), "uncertain")
 
     %{
       fixture: fixture,
@@ -183,7 +192,7 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
       refute worker == c.instance
       refute worker == c.fixture.server
       assert selection.via == method
-      assert selection.candidate == "billing/refund"
+      assert selection.candidate == "refund"
       assert Prompt.text(prompt) =~ input
       refute_receive {:executed, _, _, _}, 0
 
@@ -217,7 +226,7 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
   end
 
   test "uncertainty and no-match follow explicit handler policies without execution", c do
-    assert {:error, {:clarification_required, ["first", "second"]}} =
+    assert {:error, {:clarification_required, ["uncertain/first", "uncertain/second"]}} =
              turn(c, :uncertain, "refund 9", 1)
 
     assert Instance.state(c.instance) == %{revision: 0, value: 0}
@@ -277,7 +286,7 @@ defmodule Spectre.CoreTest.FlowAgentsTest do
         identity_key: "refund:#{occurrence}",
         evidence_refs: refs
       )
-      |> Map.drop([:class, :row, :proposer_ref, :scope_ref])
+      |> Map.drop([:class, :proposer_ref, :scope_ref])
     end
 
     Instance.turn(c.instance, input,

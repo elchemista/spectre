@@ -12,9 +12,10 @@ defmodule Spectre.CoreTest.FoundationBuilderTest do
   @moduletag capture_log: true
 
   defmodule Assistant do
-    use Spectre.Agent, namespace: "foundation", name: "assistant", revision: 1, declared_at: 0
+    use Spectre.Agent, namespace: "foundation", name: "assistant"
+    use Spectre.Test.Authoring
     use Spectre.Mind, ref: "mind:foundation"
-    candidate("refund", class: "refund.issue", row: %{attempt: true, disclose: true, spend: true})
+    request(:refund, class: "refund.issue")
 
     @impl true
     def deliberate(turn, opts) do
@@ -209,7 +210,7 @@ defmodule Spectre.CoreTest.FoundationBuilderTest do
       attrs =
         c.fixture
         |> Fixture.refund_candidate(amount, identity_key: "refund:#{amount}")
-        |> Map.drop([:class, :row, :proposer_ref, :scope_ref])
+        |> Map.drop([:class, :proposer_ref, :scope_ref])
 
       assert {:ok, %{candidates: [candidate]}} =
                Spectre.turn(scope, input, mind_opts: [attrs: attrs])

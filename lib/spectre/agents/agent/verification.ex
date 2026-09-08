@@ -5,11 +5,10 @@ defmodule Spectre.Agent.Verification do
   # use immutable declarations; no Scope, Mandate, clock or provider is read.
   alias Spectre.Agent.Declaration
   alias Spectre.Consequence.Contract
-  alias Spectre.{Definition, Row, Surface}
+  alias Spectre.{Definition, Surface}
 
   @static_fields [
     :class,
-    :row,
     :consequence,
     :subject_refs,
     :target_refs,
@@ -26,7 +25,11 @@ defmodule Spectre.Agent.Verification do
          {:ok, definition} <- Definition.new(definition),
          {:ok, declaration} <- Declaration.read(definition) do
       reports =
-        Map.new(declaration.templates, fn {name, data} -> {name, check(surface, data)} end)
+        declaration.templates
+        |> Map.merge(declaration.operations)
+        |> Map.new(fn {name, data} ->
+          {name, check(surface, Map.drop(data, ["disclosure_to", "meter"]))}
+        end)
 
       report = %{surface_ref: surface.ref, definition_ref: definition.ref, templates: reports}
 
@@ -41,10 +44,9 @@ defmodule Spectre.Agent.Verification do
   @spec check(Surface.t(), map()) :: Surface.template_check()
   defp check(surface, %{"class" => class} = data) do
     case Surface.classify(surface, class) do
-      {:ok, row} ->
+      {:ok, _row} ->
         @unchecked
         |> record([:class], :ok)
-        |> check_row(data, row)
         |> check_consequence(data, Map.get(surface.consequence_contracts, class))
 
       {:error, reason} ->
@@ -53,19 +55,6 @@ defmodule Spectre.Agent.Verification do
   end
 
   defp check(_surface, _data), do: @unchecked
-
-  defp check_row(report, data, row) do
-    case Map.fetch(data, "row") do
-      :error -> report
-      {:ok, declared} -> record(report, [:row], match_row(declared, row))
-    end
-  end
-
-  defp match_row(declared, row) do
-    if declared === Row.canonical(row),
-      do: :ok,
-      else: {:error, :candidate_row_mismatch}
-  end
 
   # Intrinsic classes need actual governed state to validate their consequence.
   # No dummy Candidate, fake authority or incomplete State is manufactured here.

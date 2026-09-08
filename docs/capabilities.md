@@ -15,22 +15,25 @@ defines what the implementation actually guarantees.
 | Durable Attempt, broker and executor | `Spectre.propose/3`, `Spectre.Attempt.Executor`, `Spectre.Secret.Broker` | No automatic retry of an uncertain effect |
 | Consent, presentation and assumption graphs | `Spectre.Presentation`, prepare/show APIs | Exact material/occurrence binding, not future-output blanket approval |
 | Labels, declassification and payload erasure | `Spectre.Evidence`, declassification/erasure APIs | Causal history and verifiability debt remain |
-| Agent and Skill DSL | `Spectre.Agent`, `Spectre.Skill` | Immutable declarations, not a second runtime |
-| Package extension ports | `Spectre.Extension`, `extend` | Explicit host wiring; not a Stack resolver |
+| Agent and Skill DSL | `Spectre.Agent`, `Spectre.Skill`, `Spectre.Stack` | Handler declarations and presets, not a second runtime |
+| Package extension ports | `Spectre.Extension`, `install` | Explicit host wiring; not a Stack resolver |
 | Regex, string-bag, Jaro and custom routing | `Spectre.Router`, `Spectre.Router.Adapter` | Zone M selection only; `via: [:binary]` remains supported |
 | Independent named flows | `flow`, `pipe_through`, `Spectre.Agent.Flow` | Reusable host-prepared plans; no inherited routing, hidden handler policy or process per flow |
 | Bounded prompt composition | `Spectre.Prompt` | Ordered sources and conservative labels, no code evaluation or implicit inference |
 | Structured proposal status | `Spectre.Proposal.Result.status/1` | Admission, Attempt and Outcome remain separate; absence is not failure |
-| Static authoring diagnostics | `Spectre.Surface.verify_definition/2`, `Spectre.Error.message/1` | Deferred fields remain explicit; no preauthorization or sensitive error serialization |
+| Static authoring diagnostics | `Spectre.Surface.verify_definition/2`, `mix spectre.routes` | Deferred fields remain explicit; no preauthorization or sensitive error serialization |
 | Pure foundation assembly | `Spectre.Foundation.new/2` | Derives Genesis links and reuses bootstrap checks; no authority defaults, verifier callback or I/O |
 | Input normalization and Evidence builders | `Spectre.Input.Pipeline`, Ingress/Mind/Executor builders | No prescribed audio/VoIP schema or media engine |
 | Behaviour authoring helpers | `use Spectre.Mind`, `Ingress`, `Attempt.Executor`, `Secret.Broker` | Explicit identities and opt-in Mind bridge; no authentication, execution or routing policy generated |
 | Pure Morph changesets, diff and forward rollback | `Spectre.Morph`, `Spectre.revise_definition/4` | Governed activation is separate; no hot code/state migration |
 | Responsive agent state, serialized work and explicit checkpoints | `Spectre.Instance`, `Spectre.Instance.Checkpoint` | Bounded waiting FIFO and temporary worker; no restoration of Scope authentication or execution facts |
-| Promised Work/Vigil scopes | `Spectre.Scope.Opening`, governed `open_scope` | Host schedules work; kernel records promise/debt |
+| Reusable Work/Vigil | `Spectre.Worker`, `Spectre.Vigil`, governed opening/Instance | Host schedules work; kernel records promise/debt |
 | Pluggable ledger and application stores | Ledger ETS/Disk/Mnesia/Postgres/Mock; `Spectre.Store` | Backend deployment guarantees differ |
 | Batch paging and optional lossless compression | `Spectre.Ledger.Reader`, native store callbacks | Not bounded total State or a durable projection checkpoint |
 | Recovery hooks, clock guard, offline tools | Recovery Policy, `Spectre.Clock.Guard`, audit/doctor/migration tasks | Cannot override failed semantic verification |
+| History and Memory | `Spectre.History`, `Spectre.Memory` | Tenant-bound adapter contracts, bounded context, explicit writes/erasure; no bundled chat DB |
+| Reviewable semantic cache | `Spectre.Router.SemanticCache`, Exact and optional Vettore | Ordinary Router method, binding/profile checks, quarantine/CAS; never embeds during lookup |
+| Handler continuation | `Spectre.Instance.advance/3`, `operation/3` | Submit one exact request; pending is not ambiguous and does not authorize retry |
 | Scoped inspection and auditability | head/authority/acts/duties queries, export | Not a full live telemetry/event subscription integration |
 
 ## Deliberately supplied by the application
@@ -42,8 +45,8 @@ defines what the implementation actually guarantees.
   should be proposed; see [streaming and control](integration-and-streaming.md).
 - Task/Work/Vigil scheduling and operational UI progress.
 - Library dependencies and resource startup: Mix, ordinary OTP supervision,
-  `extend`, `ports/0` and explicit host wiring. No Stack installer or resolver
-  is planned. Doctor checks declared port coverage, not automatic composition.
+  `install`, `ports/0` and explicit host wiring. Stack shares declarations; it
+  never installs dependencies or resolves a startup graph. Doctor checks ports.
 - Business-class contracts and trustworthy Evidence for business Conditions.
 - Payload ingestion/deletion, backups and retention policy across external systems.
 
@@ -58,11 +61,11 @@ integrations cannot gain power through ordinary proposal data.
 | Long-lived memory | Verified State/history still resides in the sequencer heap | Granular fenced reads/deltas and backend integration; measure both process and store memory |
 | Durable projection checkpoints | Ledger suffix/paging exists, but no trusted persistent projection checkpoint | Validate prefix binding/version, refuse corruption and preserve independent audit |
 | Public query/control load | No general revision-fenced pagination or uniform bounded queues/timeouts | Bounded work with explicit uncertainty behavior, not silent truncation |
-| Higher-level authoring | No public `ask`, `stream`, `steer` or `cancel` API | Only add reusable blocks whose exact GAM semantics and host ownership are established |
-| Skill planning | Templates, assets and flows compose; no dedicated applicability/state/budget helper | Reusable planning conventions without another runtime or a second authoritative Meter |
-| Work/Vigil drivers | Governed Scope promises exist; reusable operational drivers remain open | Explicit host scheduling, with real pause/resume/failure and Duty tests |
+| Authoring qualification | New request/ask/classify handlers and exact advance tickets are implemented; old DSL tests need migration | Real complete-agent lifecycle tests against these contracts |
+| Skill planning policy | Namespaced substate, flows and explicit publication are implemented; applicability remains application policy | No implicit applicability evaluator or second authoritative Meter |
+| Work/Vigil scheduling | Reusable handlers and explicit Scope/Instance startup are implemented; timers/subscriptions remain host-owned | Lifecycle tests must include failed startup after a committed opening |
 | Advanced Morph | Changesets/diff/rollback and governed revision exist; no review/reflection/Forge workflow | Proposal-only review with governed activation, not arbitrary hot code or state replacement |
-| Observability integrations | Inspection and audit exist; no general telemetry subscription contract | Operational events must remain distinct from authorization and observed world facts |
+| Observability qualification | Payload-free observer spans cover queue, handlers, submission/result and optional provider/history work | Measure host collectors under load; operational events are not Evidence |
 | Release qualification | Full long-history/backend/load/retention qualification still open | Adversarial lifecycle tests, current measurements and all release artifacts/checks |
 
 Constitution revision is not an accidental hidden API: the Constitution is

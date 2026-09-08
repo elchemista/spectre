@@ -6,7 +6,8 @@ defmodule Spectre.Instance.State do
   governed Domain. `domain_monitor` is process-local lifecycle state. `value`
   is deliberately opaque and non-canonical: losing or replacing it cannot
   authorize an Act, prove an Attempt or dispose a Duty. Only successful
-  Mind deliberations that change the value advance `revision`. One temporary
+  Mind deliberations that change the value advance `revision`; a handler turn
+  also advances it when it supersedes pending requests without changing value. One temporary
   `job` owns in-flight work; the bounded FIFO holds requests, never a second
   authoritative copy of the application value.
   """
@@ -19,7 +20,11 @@ defmodule Spectre.Instance.State do
                 revision: 0,
                 job: nil,
                 pending_count: 0,
-                max_pending_operations: 32
+                max_pending_operations: 32,
+                instance_ref: nil,
+                authoring: nil,
+                operations: %{},
+                operation_order: []
               ]
 
   @type t :: %__MODULE__{
@@ -29,9 +34,13 @@ defmodule Spectre.Instance.State do
           domain_monitor: reference(),
           revision: non_neg_integer(),
           job: %{task: Task.t(), from: GenServer.from(), operation: atom()} | nil,
-          pending: :queue.queue({tuple(), GenServer.from()}),
+          pending: :queue.queue({tuple(), GenServer.from(), integer()}),
           pending_count: non_neg_integer(),
-          max_pending_operations: non_neg_integer()
+          max_pending_operations: non_neg_integer(),
+          instance_ref: String.t() | nil,
+          authoring: map() | nil,
+          operations: map(),
+          operation_order: [String.t()]
         }
 
   @doc false
@@ -44,7 +53,8 @@ defmodule Spectre.Instance.State do
       definition_ref: definition_ref,
       value: value,
       domain_monitor: domain_monitor,
-      pending: :queue.new()
+      pending: :queue.new(),
+      instance_ref: Spectre.Id.generate()
     }
   end
 
@@ -59,10 +69,13 @@ defmodule Spectre.Instance.State do
   @spec info(t()) :: map()
   def info(%__MODULE__{} = state) do
     %{
-      ref: Scope.ref(state.scope),
+      ref: state.instance_ref,
+      scope_ref: Scope.ref(state.scope),
       domain_ref: Scope.domain_ref(state.scope),
       definition_ref: state.definition_ref,
-      state_revision: state.revision
+      state_revision: state.revision,
+      busy?: not is_nil(state.job),
+      pending_operations: state.pending_count
     }
   end
 end
