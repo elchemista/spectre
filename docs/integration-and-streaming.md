@@ -1,39 +1,52 @@
-# Input, streaming, steering and cancellation
+# Input, streaming and cancellation
 
-Spectre is a library of governed boundaries, not a drop-in media server.
-The application chooses input formats, codecs, voice/VoIP sessions, TTS/model
-providers, buffering, worker placement and when to submit a proposal. There is
-no mandatory media schema, stream process or chunk-per-Act policy.
+Spectre does not choose your chat protocol, voice codec, model SDK or streaming
+buffer. Your application supplies those pieces.
 
-This division is intentional. The core must reject invalid authority,
-provenance and accounting regardless of the application's transport.
-See [architecture](architecture.md) and [the governed surface](../GOVERNED_SURFACE.md).
+Spectre's job is to preserve the boundary between **preparing something** and
+**being allowed to do it**. That boundary matters just as much for spoken audio
+as it does for a refund.
+
+Use this guide when connecting a UI, webhook, model stream, TTS provider or
+other long-running service.
 
 ## Intake is not authentication or authority
 
-| Stage | Existing building block | Application responsibility |
-| --- | --- | --- |
-| Local normalization | `Spectre.Input.Pipeline`, `Spectre.Input.Plug` | Parse/normalize a portable value; protect raw input and resource use |
-| Authentication | `c:Spectre.Ingress.authenticate/5`, `Spectre.SubmissionContext` | Verify the actual user/session and bind the fixed Domain ingress |
-| Observation | `c:Spectre.Ingress.observe/4`, `Spectre.Ingress.evidence/3` | Attest what was observed; choose issuer, proposition, lifetime and labels |
-| Interpretation | `Spectre.Mind.evidence/3`, `Spectre.record_derivation/4` | Preserve the original and distinguish interpretation from observation |
-| Proposal | `Spectre.Mind.candidate/2`, `Spectre.Agent.candidate/4` | Construct the exact governed consequence and its evidence/authority references |
-| External attempt | `Spectre.Attempt.Executor`, `Spectre.Secret.Broker` | Implement the declared contract and report bounded, bound observations |
-| Later reconciliation | `Spectre.Attempt.Observer`, `Spectre.record_late_observation/4` | Authenticate later receipts; resolve uncertainty without blindly retrying |
+Imagine receiving a voice message. There are several jobs to do:
 
-An arbitrary inbound `principal_ref` is not authentication. The Ingress is
-host-selected at Domain startup, not selected by a request. Its evidence builder
-forces context bindings and observed provenance; it does not verify an IdP,
-telephone number, webhook signature or provider receipt on the host's behalf.
+1. **Accept the transport input.** Your application verifies the connection,
+   webhook signature or session.
+2. **Identify the caller.** The Domain's fixed Ingress authenticates the actual
+   principal and interaction.
+3. **Record what was observed.** The ingress creates Evidence with the right
+   source, labels and lifetime.
+4. **Interpret it.** Your application might normalize text or obtain a transcript.
+5. **Propose what to do.** A handler prepares a request using those facts.
 
-An input Plug is not an effect executor. If remote transcription or model
-inference is part of the declared governed Surface, call it through a governed
-Act, not from a Plug with ambient credentials. Same-BEAM callbacks are not
-technically sandboxed, so the host must close alternate effect paths.
+A field named `principal_ref` in an incoming JSON object does not authenticate
+that person. An input parser does not grant authority.
+
+### Which building block should I use?
+
+| Task | Spectre building block |
+| --- | --- |
+| Local parsing and normalization | `Spectre.Input.Pipeline` / `Input.Plug` |
+| Authentication and input observations | `Spectre.Ingress` and its Evidence builder |
+| Record an interpretation with its sources | `Spectre.Mind.evidence/3`, `Spectre.record_derivation/4` |
+| Prepare an action | Agent handlers, or lower-level Mind/Candidate builders |
+| Perform the admitted operation | `Spectre.Attempt.Executor` and `Spectre.Secret.Broker` |
+| Record a receipt that arrives later | `Spectre.Attempt.Observer`, `Spectre.record_late_observation/4` |
+
+The builders connect records correctly. They do not verify your identity
+provider, telephone number or provider signature for you.
+
+If remote transcription or inference is a governed action in your application,
+request it through the normal execution path. A local Plug is not the place
+to hide that call with unrestricted credentials.
 
 ## A reusable local pipeline
 
-Prepare once and run it in the caller/worker selected by the application:
+Here is a pipeline that normalizes text and rejects an empty result:
 
 <!-- spectre:example input_pipeline -->
 ```elixir
@@ -55,123 +68,170 @@ end
 {:error, _reason} = Spectre.Input.Pipeline.run(pipeline, "   ")
 ```
 
-`init/1` is optional; `call/2` returns `{:cont, value}`, `{:halt, value}` or an
-error. A halt is a local pipeline result, not a kernel refusal. Values at every
-boundary must be portable and fit the configured limits. Defaults are 65,536
-canonical bytes, depth 32 and 1,024 items per collection, with at most 64 stages.
-These limits do not bound arbitrary allocations or time inside a callback.
+Read it as two steps: NormalizeText turns `"  HELLO  "` into `"hello"`;
+RejectEmpty rejects whitespace-only input after normalization.
 
-Keep the raw observation when it matters. A transcript, summary or normalized
-interpretation can carry different uncertainty than the original audio or text;
-do not overwrite that distinction to simplify an integration.
+Create the pipeline once and connect its name to a flow's `pipe_through`.
+Your application chooses the process in which local pipeline work runs.
+
+A Plug returns:
+
+- `{:cont, value}` to continue with a new value;
+- `{:halt, value}` to stop the pipeline;
+- `{:error, reason}` to report a failure.
+
+A pipeline halt is not a kernel refusal. These are different stages.
+
+Defaults limit each input/output to 65,536 canonical bytes, nesting depth 32
+and 1,024 items per collection, with at most 64 stages. “Canonical bytes”
+means the size of Spectre's encoded value, not just its visible text.
+Limits on returned values do not sandbox the callback's own time or allocations.
+
+Keep the original observation when it matters. A transcript is an interpretation
+of audio; it should not overwrite the audio's provenance or uncertainty.
 
 ## Context windows do not weaken the kernel
 
-The Domain option
-`context: [max_events: 100, max_evidence: 50, max_bytes: 256_000]` bounds recent
-Scope Evidence exposed to a Mind. `max_events` counts ledger positions, not
-valid authority. The Turn reports the selected revision, limits and whether
+You may choose how much recent information to expose to a Mind:
+
+`context: [max_events: 100, max_evidence: 50, max_bytes: 256_000]`
+
+This means “consider a bounded recent window when preparing the next proposal.”
+It does not mean “forget older permissions and obligations.”
+
+`max_events` counts ledger positions. `max_evidence` counts selected contextual
+Evidence. The Turn reports the selected revision, limits and whether the
 selection is partial. Zero limits are allowed.
 
-This is a deliberation budget, not permission to forget an old revocation,
-counterproof, unresolved Duty or consent assumption. Kernel checks still use
-all relevant governed facts. The window does not compact the ledger or bound
-the projection's lifetime memory.
+Old revocations, unresolved Duties and relevant consent facts still matter to
+kernel evaluation. This setting neither deletes history nor bounds the
+Domain's internal memory.
 
 ## Streaming: three different units
 
-1. A transport chunk is a byte/token/audio fragment chosen by the app/provider.
-2. A proposal unit is an exact consequence whose required facts can be checked.
-3. An Attempt is a recorded exercise of a committed Act, with its own Outcome
-   and accounting.
+A token, a proposal and an Attempt are not the same unit.
 
-These units need not be equal. Already-frozen, admitted content can be sent in
-multiple transport chunks if the Act's contract covers that delivery. Conversely,
-authorizing generation does not automatically authorize disclosure of whatever
-content will later be produced to any recipient.
+| Unit | Who chooses it? | Example |
+| --- | --- | --- |
+| Transport chunk | Your app/provider | One audio frame or text fragment |
+| Proposed consequence | Your application's contract | Deliver one particular paragraph to one recipient |
+| Attempt | The governed execution lifecycle | Start the admitted delivery operation |
 
-For generated output whose delivery needs separate approval, a possible host
-flow is: govern generation, obtain bound output Evidence, construct a delivery
-Candidate for a material unit, obtain admission, then deliver it through the
-executor. This is an integration pattern, not a new Spectre stream API and not
-a requirement to create one Act for every token.
+**You do not need one Act per token.**
 
-The app can flush buffers by size, time, sentence or explicit user action. But
-"validate every N chunks" is only meaningful when the selected units preserve
-the declared Conditions, consent, lineage, recipients and budget. Approval of
-isolated pieces does not prove a property of their concatenation. Sending first
-and auditing later violates the mediated execution order.
+### Case 1: the content is already fixed
 
-`Spectre.Consequence.Contract` checks declared structure and bindings; it is not
-a universal semantic classifier for generated language. An unknown future
-result is not inherently forbidden: the consequence may be a governed inference
-attempt. It simply does not imply authority for an undeclared downstream effect.
+Suppose the full answer is known and an admitted Act covers delivering it to
+the specified recipient. The executor may transport that content in multiple
+chunks if its contract covers that delivery.
+
+Chunking the network transfer does not create a different business operation
+for every packet.
+
+### Case 2: generation and delivery are separate decisions
+
+Suppose output must be checked before a customer receives it.
+
+A suitable workflow is:
+
+1. Request generation.
+2. Receive its output and recorded Evidence.
+3. Prepare a delivery request for the material unit you want to send.
+4. Submit it and, if admitted, deliver through the executor.
+
+Your app can choose a paragraph, sentence or another suitable unit. It also
+chooses buffering by size, time or user action.
+
+The selected unit must still make the contract checkable. Approving individual
+pieces does not necessarily establish a property of the combined message.
+Sending first and reviewing later is not prior authorization.
+
+### Does every generation need human approval?
+
+No. The declared rules determine whether consent or approval is needed.
+An admitted inference request may produce an answer that was not known in
+advance. What it does not do is automatically authorize every later use or
+recipient of that answer.
+
+The consequence contract checks declared structure and bindings. It is not a
+universal semantic judge of generated language.
 
 ## Streaming constraints the integration must preserve
 
-- **Lineage:** new steering/input/tool output is not retroactively a parent of
-  an old Act. Derived executor Evidence is constrained by that Act's evidence
-  basis. A changed basis can require a new proposal.
-- **Disclosure:** labels inherited from confidential context do not disappear
-  because an output chunk appears innocuous. Use the governed declassification
-  path when justified; do not strip labels in the transport.
-- **Consent:** approval binds material and occurrence. It is not reusable
-  approval for future regenerated or expanded output.
-- **Revocation:** authority is checked at admission and dispatch/consumption;
-  a capability already checked out is not reauthorized on every byte. Database
-  commit and network send are not atomic. Chunk boundaries cannot promise
-  instantaneous remote cancellation.
-- **Accounting:** the current Meter transitions settle/release/suspend the
-  Act's exact reservations. There is no generic partial settlement API that
-  reserves 100, bills 20 and refunds 80 from a stream counter. Model cost and
-  delivery are distinct consequences when the application models them so.
-- **Time:** `observation_window_ms` is declared before execution. A long stream
-  needs an appropriate finite observation window; heartbeat/progress does not
-  silently extend it or erase a Duty already derived at its deadline.
-- **Uncertainty:** losing a worker or connection after an Attempt does not prove
-  that the provider did nothing. Keep receipts, record late observations and
-  retain uncertainty until properly resolved.
+### A changed input is a new basis
 
-The current executor callback returns a final result. The Runner records its
-Evidence after the callback returns; there is no public incremental executor
-receipt/stream-session API. The application must not expose an internal writer
-or Grant to manufacture such an API. A future bridge needs these same bindings
-and lifecycle tests, not a bypass around the final-result contract.
+If the user steers the conversation halfway through, do not rewrite the
+Evidence attached to an already committed Act. Prepare new work against the
+new input.
+
+Confidential source labels also do not disappear because a short output
+fragment looks harmless.
+
+### Approval and cancellation have limits
+
+Approval belongs to particular material and a particular occurrence.
+Do not reuse it for regenerated or expanded content.
+
+Authority is checked at admission and dispatch. A capability already checked
+out is not reauthorized on every byte. A database commit and a remote send
+are not atomic, so a chunk boundary cannot guarantee instantaneous cancellation.
+
+### Budget and time still need a contract
+
+The current Meter API accounts for an Act's exact reservation. It does not
+provide generic streaming settlement such as “reserve 100, use 20, refund 80”
+based on a local byte counter.
+
+Set an appropriate finite `observation_window_ms` for long-running work.
+A progress heartbeat does not extend that window or close a Duty.
+
+### The executor reports a final result
+
+The current callback returns final Evidence and a result. The Runner records
+those observations after the callback returns.
+
+There is no public incremental executor-receipt or stream-session API.
+Operational progress can use a host collector, but do not expose an internal
+Grant or ledger writer to turn it into an alternate execution API.
 
 ## Steering, cancel and UI progress
 
-There are no current public `Spectre.stream`, `Spectre.steer` or `Spectre.cancel`
-functions. Those words describe application intentions with different effects:
+There are no public `Spectre.stream`, `Spectre.steer` or `Spectre.cancel`
+functions in 0.4. Your application implements the interaction it needs.
 
-| Intention | Safe interpretation |
+The important question is: **what exactly are you stopping?**
+
+| Intention | What it means |
 | --- | --- |
-| Stop local planning | Stop/discard unsubmitted Zone M work; do not claim a world effect was cancelled |
-| Replace an unsubmitted proposal | Build a new Candidate against the new input; do not alter a committed Act |
-| Steer after a commit | Preserve the old Act/Attempt and propose separately for the new basis |
-| Stop a running provider/transport | Host contract determines the control effect and required authority; receipt uncertainty remains |
-| Cancel before an Attempt | Respect the core's durable dispatch lifecycle; local UI state is not its record |
-| Undo an external effect | A new compensating Act, if supported and authorized, not history deletion |
+| Discard a draft | Stop local, unsubmitted work |
+| Replace a proposed action | Prepare a new request; do not edit a committed Act |
+| Stop waiting in the UI | Detach the watcher; the operation may still be running |
+| Stop a provider | Use the host's explicit control mechanism and its authority requirements |
+| Undo an effect | Propose a new compensating operation, if the service supports one |
 
-A generic "cancel" flag is not an authorized Duty disposition. Never invent a
-global root Mandate or wildcard target just to make an example's cancellation
-succeed. Epoch/generation fencing can reject stale proposals or local state
-updates; it must not discard true late Evidence about an already-started effect.
+A cancelled watcher is not proof of a cancelled payment, message or model call.
+A killed worker is not proof of no effect. Record later receipts when they
+arrive, and keep uncertainty until the facts support resolving it.
 
-An app may run local workers and show operational progress while they work.
-Progress is not a successful Outcome. Displaying generated or confidential
-content to a recipient can itself be a governed disclosure, even if the UI
-calls it a preview. Keep operational status separate from material delivery.
+### What should a UI display?
 
-The Instance now runs slow work in its existing monitored worker; its owner
-keeps state/info reads responsive. This is independent of the semantic questions
-above. Pure reads accept an explicit timeout (including `:infinity`). Do not
-make a LiveView wait indefinitely merely to hide a blocked application callback.
+Use Instance reads for the last completed local state and operation status.
+Slow work runs in a monitored worker, so the Instance owner can answer reads.
+
+Progress such as “working,” counts and elapsed time can go to a bounded host
+collector. `Spectre.Agent.Observer` supplies payload-free phase events.
+
+Showing generated text is different from showing “working.” A preview can itself
+disclose information to a recipient; calling it a preview does not bypass your
+delivery rules.
 
 ## A host-owned interaction, without a stream runtime
 
-The same handler API can prepare a voice, text or delivery request. No media type
-is required in the kernel. A host can submit the exact selected ticket and then
-poll its progress without resubmission:
+This works for a text, voice or delivery request. The media implementation stays
+outside the kernel.
+
+The example assumes a configured Instance and an input accepted by its ingress.
+It submits once and gives the UI a reference to watch:
 
 <!-- spectre:example pending_operation -->
 ```elixir
@@ -191,56 +251,51 @@ case Spectre.Instance.advance(instance, chosen, wait: 0) do
 end
 ```
 
-On a later UI tick, read `Instance.info(instance, 1_000)` and
-`Instance.operation(instance, operation_ref, 1_000)`. The latter returns
-`{:pending, operation_ref}`, the retained completed result, or an error. Neither read submits
-another Candidate. Use the returned operation ref, not a new `advance` call.
-The Instance reserves a ticket once; selecting one alternative invalidates its
-siblings. For a deferred proposal, `operation/3` runs one recovery and, if its
-turn is still current, the result handler in the mutation worker. Concurrent
-reads report pending while that work runs; no background polling or executor
-retry is started. A superseded continuation returns
-`{:error, {:instance_continuation_superseded, result}}` without changing newer
-state. Completed and deferred results have bounded retention, so tickets are
-not an archive.
+### On the next UI update
 
-The provider/transport's executor can report operational progress to a
-host-owned bounded collector. Use refs, counts and durations, not unapproved
-prompt/output bytes. `Spectre.Agent.Observer` supplies payload-free phase
-events; it is not a stream transport or a material-delivery authorization.
-Keep provider buffers and byte delivery inside the host's executor contract.
+Read `Instance.info(instance, 1_000)` for process information and
+`Instance.operation(instance, operation_ref, 1_000)` for that operation.
 
-Steering creates a new authenticated input and a new turn. Ordinary Instance
-work is serialized; a new turn may queue behind work already accepted. If the
-application must interrupt a live provider before that queue drains, the host
-uses its explicit provider-control mechanism. When that control is an effect
-on the declared Surface, submit it through an appropriate independent Scope;
-do not turn a local `cancel` message into an implicit capability.
+`operation` returns pending, the retained completed result, or an error.
+**Do not call `advance` again to poll.**
 
-A cancelled UI watcher must not kill the executor and report success. A lost
-connection is not proof of no effect. Preserve the old Act/Attempt refs and
-authenticate later observations through `Spectre.record_late_observation/4`.
-The result can repair the original record without being applied to a newer
-conversation state. Checkpoint/chat persistence failure after delivery likewise
-requires repair of persistence, not repetition of delivery.
+For a deferred operation, `operation/3` can refresh the durable occurrence once
+and run its result handler if the original turn is still current. It does not
+resubmit the effect or start a background polling loop.
 
-See [Instance lifecycle](agents-and-dsl.md#instance-lifecycle-and-checkpoint) and
-[capabilities](capabilities.md) for the implementation and qualification limits.
+A later result from a superseded turn returns
+`{:error, {:instance_continuation_superseded, result}}`. The facts are retained
+in the result, but the old continuation cannot overwrite the newer local state.
+
+Tickets have bounded retention. Keep durable Act/Attempt references when your
+application needs to investigate an operation beyond that local window.
+
+### If new input must interrupt current work
+
+A new turn is authenticated input. Instance mutations are serialized, so the
+turn can queue behind already accepted work.
+
+If the host must interrupt a live provider sooner, it needs a separate explicit
+provider-control path. If that control is governed, submit it through an
+appropriately authorized independent Scope. A local `cancel` message must
+not become an implicit credential.
+
+If delivery succeeded but saving chat or a checkpoint failed, repair the
+persistence problem. Do not send the answer again as a persistence retry.
 
 ## Integration acceptance checklist
 
-Test the full path with the host's contract, not just a mocked Mind result:
+Test your actual host boundary, including:
 
-- Invalid authentication cannot bind a different principal or ingress.
-- Input/routing/derived output cannot inject capability, observed provenance or
-  an unrelated evidence parent.
-- Refusal, unknown class and undecidable results never invoke the executor.
-- No bytes cross a governed delivery boundary before the applicable commit and
-  Attempt, including preview/error paths.
-- Revocation, stale Scope, provider death, caller death and late receipts have
-  distinct expected outcomes.
-- Long-running work does not silently extend time or accounting; interruption
-  does not release ambiguous reservations or close Duties.
+- another user's identity or Evidence cannot be injected through input;
+- refused, undecidable and unknown-class requests do not call the executor;
+- governed content is not sent before its applicable commit and Attempt;
+- timeout, disconnection and provider death do not become “no effect”;
+- steering cannot rewrite an old Act or overwrite newer local state;
+- cancellation does not automatically release held resources or resolve a Duty;
+- later receipts can still be recorded without executing the operation again.
 
-These checks apply to text, voice and TTS alike; the transport implementation
-remains the application's choice.
+The same tests apply to chat, voice and TTS. The transport remains your choice.
+
+Next: [Instance lifecycle](agents-and-dsl.md#instance-lifecycle-and-checkpoint)
+or [storage and recovery](storage-and-recovery.md).

@@ -1,27 +1,48 @@
-# Configuration: what each option means
+# Configuration: find the option you need
 
-Use this as a reference while reading the [small Agent](agents-and-dsl.md#a-small-agent)
-or the [worked recipes](agent-recipes.md). You do not need every option to
-write an agent. Start with a handler, then add the pieces your app needs.
+This is a reference, not a checklist to complete before writing an Agent.
+
+Choose the section for the thing you are configuring:
+
+- [Agent identity](#agent-identity-and-publication) and published versions.
+- [Flows and routing](#flow-and-router): matching and thresholds.
+- [Prompts and model requests](#requests-prompts-and-model-selection).
+- [Adapters](#connecting-adapters): connect your services.
+- [History, Memory and cache limits](#history-memory-and-cache-limits).
+- [Instance startup and calls](#instance-startup-and-calls).
+- [Domain startup](#domain-options): authority, storage and execution.
+
+For a walkthrough rather than a list of options, use
+[the Agent guide](agents-and-dsl.md) or [host setup](host-setup.md).
 
 ## Four places for configuration
 
-| Place | Put here | Do not put here |
-| --- | --- | --- |
-| Agent/Skill/Stack declarations | Flow names, route rules, prompt templates, fixed adapter choices | Live PIDs, credentials or permission invented by the agent |
-| Definition publication | Revision, publication time and exact component Definitions | A running process or automatic activation |
-| Instance startup | Authenticated Scope, local state, live service addresses and class bindings | A replacement kernel or an automatic provider loop |
-| Domain startup | Ledger, authenticated ingress, execution boundary and governed foundation | Per-message overrides of authority or executor wiring |
+The simplest rule is: **declarations describe; startup connects.**
 
-A **port** is a named connection point, not a TCP port. For example,
-`request/inference` connects a prepared model request to a preparation adapter;
-`history/chat` connects the chat window to a backend you supervise.
+1. Put flow names, route rules, prompts and fixed adapter choices in the
+   Agent/Skill/Stack module.
+2. Supply revision, time and Skill Definitions when publishing a Definition.
+3. Supply the authenticated Scope, local state and service addresses when
+   starting an Instance.
+4. Supply the ledger, authority and execution boundaries when starting a Domain.
 
-Local DSL names are atoms written in source: `:support`, `:lookup`, `:answer`.
-Action classes are strings: `"orders.lookup"`. Mounted paths are strings:
-`"faq/questions"`. Do not convert user-provided text into atoms.
+Do not put live PIDs or credentials in a published Definition.
+
+A **port** is a named connection point, not a TCP port.
+`history/chat` connects a chat window to a backend.
+`request/inference` connects an ask to its preparation adapter.
+
+A **ref** identifies a particular record or resource. A **revision** is an
+integer version used to detect stale reads/writes.
+
+Local names are atoms written in source, such as `:support` and `:lookup`.
+Action classes are strings, such as `"orders.lookup"`.
+Mounted paths are strings, such as `"faq/questions"`.
+Never turn arbitrary user input into atoms.
 
 ## Agent identity and publication
+
+### Name the declaration
 
 `use Spectre.Agent` and `use Spectre.Skill/Worker/Vigil` accept:
 
@@ -31,7 +52,12 @@ Action classes are strings: `"orders.lookup"`. Mounted paths are strings:
 | `name` | Required nonempty string | Logical name of this definition, such as `"orders"`; not an OTP process name |
 | `stack` | Omitted | Module using `Spectre.Stack` whose declarations are reused |
 
-Use `MyAgent.definition(...)` to construct a Definition:
+The name identifies the definition, not the running process. Several Instances
+can use the same published Definition.
+
+### Publish a particular version
+
+`MyAgent.definition(...)` constructs the versioned record:
 
 | Option | Meaning |
 | --- | --- |
@@ -40,19 +66,25 @@ Use `MyAgent.definition(...)` to construct a Definition:
 | `previous_ref` | Exact predecessor for a later revision; absent for the first |
 | `components` | Map from each Skill mount name to its exact Definition; defaults to `%{}` when there are no Skills |
 
-`definition/1` returns the Definition directly and raises on an invalid
-declaration. `Spectre.Agent.Publication.definition/2` is the tuple-returning
-alternative. Construction is not governed activation: see
+Time is Unix milliseconds, not seconds. Compiling a file does not choose a new
+publication time.
+
+`definition/1` returns the Definition directly and raises on invalid input.
+`Spectre.Agent.Publication.definition/2` returns a tagged tuple instead.
+
+Construction does not activate the Definition. See
 [publishing and starting](host-setup.md#authenticate-open-and-use-a-scope).
 
 ## Flow and Router
 
-`flow :support do ... end` groups one routing policy and its handlers.
-There is no process per flow and no nested flow block. Select a flow on each
-`turn`; the library does not guess even when only one flow is declared.
+A flow names one interaction path. It creates no process.
 
-`router MyApp.Routes` at module level imports a `use Spectre.Router` plan.
-Inside a flow, `router ...` configures matching:
+For an Agent with declared flows, pass the chosen flow on each `turn`.
+Even a single declared flow is not selected automatically.
+An Agent without flows receives input directly.
+
+Use `router MyApp.Routes` at module level to reuse an extracted Router.
+Inside a flow, `router` accepts:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -62,15 +94,23 @@ Inside a flow, `router ...` configures matching:
 | `cache` | Omitted | Name of a semantic-cache port used by the supplied bridge |
 | `classifier` | Omitted | Name of a classifier declaration/port used by this flow |
 
-Each method gets a chance in order. A unique accepted result stops the search;
-a miss, skip or ambiguity lets the next method try. A callback error stops
-with an error. If no later method decides, an earlier ambiguity is retained.
-An exact tie is ambiguous even with `margin: 0.0`. Scores are **not combined
-across methods** and are not calibrated probabilities.
+### Read the scores with an example
 
-For example, with `accept: 0.85, margin: 0.05`, scores `0.94` and `0.87`
-select the first rule; `0.94` and `0.92` are ambiguous. This tunes routing,
-not who may read an order or spend money.
+With `accept: 0.85, margin: 0.05`:
+
+- scores 0.94 and 0.87 select the first rule;
+- scores 0.94 and 0.92 are ambiguous;
+- a best score below 0.85 is not accepted.
+
+A tie remains ambiguous even with zero margin. Scores are matching scores,
+not calibrated probabilities or permission levels.
+
+Each method tries in order. A unique accepted result wins. A miss, skip or
+ambiguity allows the next method to try. An error stops routing.
+If nothing later decides, an earlier ambiguity remains.
+Scores from different methods are not combined.
+
+### Configure a route
 
 `route :lookup, ...` accepts:
 
@@ -81,10 +121,12 @@ not who may read an order or spend money.
 | `classify` | `false` | Allow this route to be nominated by the configured classifier |
 | `inject` | Omitted | Add this named prompt to asks reached through this route |
 
-There is no `to:` or `row:` option in the handler DSL. The route's name is
-the handler branch. `:error`, `:no_match`, `:ambiguous`, `:halted` and `:unrouted`
-are reserved branch names. Each flow owns its policy; a Skill or another flow
-does not inherit it. See [routing messages](agents-and-dsl.md#flow-router-and-custom-methods).
+The route name selects a handler branch. There is no `to:` or `row:`
+option in the handler DSL.
+
+`:error`, `:no_match`, `:ambiguous`, `:halted` and `:unrouted` are
+reserved for routing results. A Skill or another flow does not inherit this
+flow's policy.
 
 ### Built-in and supplied matching methods
 
@@ -98,21 +140,27 @@ does not inherit it. See [routing messages](agents-and-dsl.md#flow-router-and-cu
 | `:llm_classifier` | A later governed classifier result / `classify: true` | Supplied bridge; does not call a model during initial routing |
 | Your name, e.g. `:binary` | Adapter-specific | Implement `Spectre.Router.Adapter` and declare its port |
 
-String matchers normalize Unicode, case and whitespace for fuzzy comparison.
-Regex keeps its declared behavior. Built-in text matchers skip non-string
-input; they do not automatically extract a `"text"` field from a map.
-For vector envelopes plus regex, the host needs an explicit local matcher or
-pipeline design that preserves the data each method needs. Converting the
-whole envelope to text before the cache would discard its vector.
+For example, string-bag matching compares characters in example strings; it
+does not understand their meaning through an embedding.
+
+Fuzzy string matchers normalize Unicode, case and whitespace. Regex follows
+the regex you declared. Built-in text matchers skip non-string input: they
+do not automatically extract a map's `"text"` field.
+
+If you combine vector-envelope input with text matching, provide adapters or
+pipelines that preserve the input each method needs. Converting the whole
+envelope to text would throw away the cache's vector.
 
 ## Pipelines
 
-`pipe_through :normalize` or `pipe_through [:decode, :normalize]` references
-host-prepared `Spectre.Input.Pipeline` objects. Supply them in Instance
-`adapters: [pipelines: [normalize: pipeline]]`; a name is not an automatic module
-lookup. Each pipeline runs in list order before routing.
+`pipe_through :normalize` names a pipeline prepared by the host.
+It is not an automatic module lookup.
 
-`Pipeline.new(stages, options)` accepts these bounds:
+For several stages, use `pipe_through [:decode, :normalize]`. Connect the
+prepared values at Instance startup through
+`adapters: [pipelines: [normalize: pipeline]]`.
+
+`Pipeline.new(stages, options)` accepts:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -120,27 +168,39 @@ lookup. Each pipeline runs in list order before routing.
 | `max_depth` | `32` | Maximum nesting depth |
 | `max_collection_size` | `1_024` | Maximum items in each collection |
 
-There are at most 64 stages. A stage is a module or `{module, options}` with
-`call/2` and optional `init/1`. It returns `{:cont, value}`, `{:halt, value}` or
-`{:error, reason}`. The shipped NormalizeText supports `trim` and
-`collapse_whitespace` (both default `true`), `case` (`nil`, default,
-preserves case; or `:downcase` / `:upcase`), and `unicode` (`:nfc`, default;
-also `:nfd`, `:nfkc`, `:nfkd` or `false`). See the
-[running pipeline example](integration-and-streaming.md#a-reusable-local-pipeline).
-Bounds on returned data do not sandbox allocations, time or I/O inside a callback.
+“Canonical bytes” is the size of the encoded value. It includes structure,
+not just visible text. A limit applies to input and each stage's returned value,
+not arbitrary allocations inside the callback.
+
+There are at most 64 stages. Each is a module or `{module, options}`, with
+`call/2` and optional `init/1`. Returns are `{:cont, value}`,
+`{:halt, value}` or `{:error, reason}`.
+
+### NormalizeText options
+
+- `trim: true`: remove surrounding whitespace.
+- `collapse_whitespace: true`: collapse repeated whitespace.
+- `case: nil`: preserve case; alternatives are `:downcase` and `:upcase`.
+- `unicode: :nfc`: normalize Unicode; alternatives are `:nfd`, `:nfkc`,
+  `:nfkd` and `false`.
+
+See [the runnable pipeline](integration-and-streaming.md#a-reusable-local-pipeline).
 
 ## Requests, prompts and model selection
 
-`{:request, "orders.lookup", data, state}` prepares that action class directly.
-`request :lookup, class: "orders.lookup"` gives it a reusable local name, so the
-handler can return `{:request, :lookup, data, state}`. Named templates can fix
-Candidate fields; fixed values cannot be overwritten later. They cannot set
-`row` or `identity_key`. See [bindings](host-setup.md#connect-a-handler-to-a-governed-action)
-for the meaning of the remaining fields.
+Use `{:request, "orders.lookup", data, state}` to propose a class directly.
 
-Template-only `disclosure_to` restricts exact destination references; `meter`
-maps friendly names to exact Meter refs and restricts which Meters may be used.
-Neither creates a destination, a budget or a resource request.
+Use `request :lookup, class: "orders.lookup"` when you want a reusable local
+name, then return `{:request, :lookup, data, state}`.
+
+Named request templates may fix Candidate fields. Later inputs cannot replace
+those values. Templates cannot choose `row` or `identity_key`; the builder
+supplies those. [Host bindings](host-setup.md#connect-a-handler-to-a-governed-action)
+explains the remaining fields.
+
+The template-only `disclosure_to` constrains exact recipients.
+`meter` maps friendly names to allowed Meter references.
+Neither option creates authority or a budget.
 
 ### Prompt declarations
 
@@ -153,18 +213,27 @@ Neither creates a destination, a budget or a resource request.
 | `into: :system` | Apply this injection only when that base prompt is selected; omitted means all base prompts |
 | `position: :start` / `:end` | Before/after the base prompt; default `:end` |
 
-For inline text, pass the string directly: `prompt :policy, "Be helpful."`.
-The keyword form currently accepts `file:`, not `text:`. Neither form sends a
-request to a provider; `ask` selects the template when preparing a request.
+For inline text, pass the string directly:
+`prompt :policy, "Be helpful."`.
+The keyword form accepts `file:`, not `text:`.
 
-Templates are developer-owned Elixir/EEx source, not safe evaluation of user
-templates. User text passed as an assign is not evaluated again as EEx.
-Within each start/end group, injections are ordered Agent → flow → route.
-Then come the task and separately tagged history/memory parts. `@history` and
-`@memory` are reserved context assigns. Files are build inputs, not runtime
-hot-reloadable prompts. See [rendering example](agents-and-dsl.md#prompts-and-injection).
+Files are compiled with your code. They are not runtime hot-reloaded templates.
+Use developer-owned EEx source; pass user text as assigns, not template source
+to evaluate.
+
+Within each start/end position, injection order is Agent → flow → route.
+Task and separately tagged History/Memory parts follow.
+`@history` and `@memory` are reserved context assigns.
+
+See [the rendering example](agents-and-dsl.md#prompts-and-injection).
 
 ### Ask and classifier declarations
+
+There are three names to keep apart:
+
+- `prompt: :system` selects local template text;
+- `via: :inference` selects a preparation connection;
+- a model ID is interpreted by your provider integration.
 
 | Field | Used by | Meaning |
 | --- | --- | --- |
@@ -174,31 +243,30 @@ hot-reloadable prompts. See [rendering example](agents-and-dsl.md#prompts-and-in
 | `via` | `ask`, governed `classifier` | Name of a `request/...` preparation port, **not a provider name** |
 | Additional settings, e.g. `model_ref`, `temperature`, `max_tokens` | Adapter/provider contract | Portable configuration passed along; Spectre does not interpret or enforce their business meaning |
 
-Use `via: :inference` plus a port declaration to choose the preparation adapter.
-That adapter builds consequence data; the **Domain's executor** makes the actual
-model call after admission. The provider and model ID must be chosen explicitly
-by your integration and bound in its governed contract when material.
-The legacy `ask` field `model` can act as a port-name fallback when `via` is
-absent; prefer `via` to avoid confusing a port with a model ID.
+The preparation adapter builds consequence data. The Domain's executor makes
+the actual model call after admission.
 
-Writing `max_tokens: 300` does not create a 300-token Meter or guarantee a
-provider will comply. Your executor and Surface contract must implement that
-limit. A provider option is not a kernel policy. Unknown adapter-specific
-settings are not universally validated by the generic DSL.
+For example, `max_tokens: 300` is an option the integration must honor.
+It does not automatically create a 300-token Meter. If the value matters to
+authorization or accounting, represent that in the contract.
 
-A flow chooses **one** classifier mode: local or governed, not both.
-For governed classification, `classifier :intent, class: "model.classify",
-via: :inference` links its port to `request/inference`. On no match the handler
-may request classification; after its confirmed result, `route_result/2` only
-accepts that turn's declared labels. See [classifier recipe](agent-recipes.md#a-classifier-before-the-business-handler).
+Extra adapter settings are not all understood or validated by the generic DSL.
+The legacy `model` field can name a port when `via` is absent; prefer `via`
+to avoid confusing it with a concrete model ID.
+
+A flow uses one classifier mode: local or governed.
+`classifier :intent, class: "model.classify", via: :inference` connects governed
+classification to `request/inference`.
+The handler requests it on a miss, then uses the confirmed result to nominate
+a declared route. See [the classifier recipe](agent-recipes.md#a-classifier-before-the-business-handler).
 
 ## Connecting adapters
 
-`adapter :kind, :name, Module, options` declares an implementation and fixed
-options. It does **not** start it. At Instance startup, `adapters` supplies
-missing resources such as `server`, a tenant binding or a prepared pipeline.
-Options with the same fixed key must agree exactly; changing a published choice
-requires a new declaration/Definition, not an unannounced runtime override.
+`adapter :kind, :name, Module, options` declares an implementation.
+It does not start the service.
+
+At Instance startup, the `adapters` option supplies missing runtime resources:
+server addresses, tenant bindings or prepared pipelines.
 
 | Group | Contract | Typical runtime resource |
 | --- | --- | --- |
@@ -211,44 +279,64 @@ requires a new declaration/Definition, not an unannounced runtime override.
 | `memory` | `Spectre.Memory` | Retrieval service and `tenant_id` |
 | `observer` | `Spectre.Agent.Observer.handle_event/4` | `events` port; default adapter accepts `to: collector` |
 
-An undeclared runtime port is an error, not a new dependency. Mounted Skill
-names are qualified: `history: %{"faq/chat" => {MyHistory, options}}` fills
-`faq/history/chat`. An alias such as a classifier's `via` is wired at the target
-request port, not independently replaced at both ends.
+### Why is an option conflict an error?
+
+Suppose a published declaration fixes one backend setting. Startup must not
+quietly replace it with another value. Fixed keys must agree exactly; changing
+the declaration requires a new Definition.
+
+An undeclared runtime port is also an error. Use `MyAgent.ports()` to inspect
+what is declared.
+
+For a mounted Skill, `history: %{"faq/chat" => {MyHistory, options}}`
+fills the qualified port `faq/history/chat`.
+A classifier alias is wired at its target request port, not replaced
+independently at both ends.
 
 ### Validate backend options at wiring
 
-An adapter may opt into `@behaviour Spectre.Adapter.Options` and implement
-`validate_options/1`. Wiring passes the **merged backend keyword options**,
-after checking fixed-value conflicts. It excludes History tenant/conversation
-bindings and observer, Memory tenant binding, and cache namespace/profile
-bindings. Request `:declaration` is injected later and cannot be supplied here.
-Aliased ports reuse the target's validated configuration.
+Adapter authors can opt into `@behaviour Spectre.Adapter.Options` and implement
+`validate_options/1`. This catches mistakes at setup instead of first use.
 
-Return `:ok`, or an error reason of `:invalid_options`,
-`{:missing_option, :repo}`, `{:invalid_option, :timeout}` or
-`{:unknown_options, [:misspelled_key]}`. Names must be atoms and contain no
-private values. Other reasons are replaced with `:invalid_options`; other
-return shapes become `:invalid_validator_reply`. Wiring attaches the port name
-in `{:invalid_port, port, reason}`. Callback exceptions are contained without
-including their messages. Shape checks cannot prove that a host-defined name
-is non-sensitive; adapters must honor the diagnostic contract.
+The callback receives merged backend options after fixed-value checks.
+Spectre-owned tenant/conversation/cache bindings are removed first.
+History's observer is removed too. The runtime adds request `:declaration`
+later; callers cannot supply it.
 
-The callback validates, never normalizes, adds defaults or calls a database,
-model or service. Defaults remain the adapter's responsibility. A function
-named `validate_options/1` alone is not opt-in: declare the behaviour. Adapters
-without it keep their own use-time validation. Prepared pipelines use their
-existing preparation API instead. The default `Agent.RequestBuilder` opts in
-and accepts no host options; its declaration comes from the runtime.
+Valid responses are `:ok` or `{:error, reason}`, where reason is:
 
-Stack merges configuration without starting resources. `override: true` is
-supported by `adapter` and the `ask/history/memory/classifier/semantic_cache`
-declarations to replace an inherited entry; it is **not** a universal option on
-`flow`, `route`, `prompt` or `request`. Duplicate names otherwise fail.
-Extension `install` blocks use the extension's own vocabulary and return data
-and ports. There is no dependency resolver, training service or sandbox.
+- `:invalid_options`;
+- `{:missing_option, :repo}`;
+- `{:invalid_option, :timeout}`;
+- `{:unknown_options, [:misspelled_key]}`.
+
+Use atom option names, not private values. Other reasons are replaced with
+`:invalid_options`; malformed responses become `:invalid_validator_reply`.
+Wiring adds the port name in `{:invalid_port, port, reason}`.
+Exceptions are contained without exposing their messages.
+
+This callback checks shape only. It must not connect to a database, call a
+model, normalize options or add defaults. Runtime validation is still needed.
+
+Declaring the behaviour is the opt-in; a same-named function alone is not.
+Prepared pipelines use their own preparation API.
+The default RequestBuilder accepts no host options.
+
+### Reusing and overriding settings
+
+Stack shares declarations without starting services.
+`override: true` is supported on `adapter` and
+`ask/history/memory/classifier/semantic_cache` to replace inherited entries.
+
+It is not a universal option for `flow`, `route`, `prompt` or `request`.
+Other duplicate names fail.
+
+An Extension's `install` block uses the package's own vocabulary and returns
+configuration and ports. It is not a dependency resolver.
 
 ## History, Memory and cache limits
+
+### How much context should a turn load?
 
 | Declaration/option | Default | Meaning |
 | --- | --- | --- |
@@ -260,17 +348,23 @@ and ports. There is no dependency resolver, training service or sandbox.
 | Memory binding `tenant_id` | Required | Retrieval tenant, not an authority grant |
 | `semantic_cache :routing, learn: ...` | `false` | `:review` may save a quarantined example after a confirmed result; it never auto-approves |
 
-History `keep` accepts 1–1,000; Memory `limit` accepts 1–100. Each per-window
-`max_bytes` accepts 1–1,048,576. Direct `History.load/2` also accepts `before`,
-a backend cursor/message ref for paging; the Agent declaration currently loads
-the latest window, not a cursor chosen by a handler.
+History `keep` accepts 1–1,000 messages; Memory `limit` accepts 1–100 items.
+Each window's byte budget accepts 1–1,048,576. The combined Agent context is
+also bounded to 65,536 bytes.
 
-History/Memory load into `turn.context`; each item must cite available Evidence
-in the authenticated Turn. Both together have a 65,536-byte context budget.
-These limits do not erase ledger records or relax authority checks.
+Loaded items must cite available Evidence in the authenticated Turn.
+These limits reduce the context shown to the agent. They do not erase ledger
+entries or hide relevant authority facts.
+
+Direct `History.load/2` supports a `before` cursor for paging.
+The Agent declaration loads the latest window; a handler does not supply
+that cursor through `history`.
+
 See [explicit chat persistence](agents-and-dsl.md#history-and-memory).
 
-For the supplied Exact/Vettore cache processes:
+### Cache process settings
+
+Start the cache with its exact identity and capacity:
 
 | Startup option | Required/default | Meaning |
 | --- | --- | --- |
@@ -287,27 +381,41 @@ For the supplied Exact/Vettore cache processes:
 | Vettore `index_options` | `[]` | Backend index tuning forwarded to Vettore; consult your installed version |
 | Memory/Exact `search` | `nil` | Advanced `{IndexAdapter, opts}` with `build/2`, `search/3`, `close/1`; Vettore selects this internally |
 
-Instance cache wiring adds `server` and the same `namespace/profile_ref`.
-Definition and flow bindings are derived from the published plan. A map from
-complete bindings to server addresses can select explicitly created partitions.
-The adapter does not create them automatically.
+`profile_ref` is especially important: equal vector lengths do not mean
+the vectors came from compatible encoders.
 
-Direct `SemanticCache.lookup` uses `text`, `vector`, `profile_ref`, `labels`
-and optional `limit` (default 5, range 1–32). Router input instead uses the
-envelope `%{"text" => text, "embedding" => vector, "profile_ref" => ref}`;
-the bridge performs that field mapping and requests up to 32 nominations.
-Plain text works for Exact. Native lookup needs a previously obtained vector;
-missing embeddings skip that method rather than trigger a model call.
+Instance wiring adds `server` with the same namespace/profile.
+Definition and flow come from the published plan.
+For multiple partitions, pass a map from complete bindings to already-created
+server addresses. Startup does not create partitions for you.
 
-Example writes use `text`, `label` and, for vector search, `embedding` with its
-`profile_ref`. `verify` approves one exact revision; editing an approved example
-removes its approval. `examples` paging accepts `limit` (100, range 1–500),
-`after` (last ID) and `verified` (`nil`, `true` or `false`). Snapshot restore
-requires a fresh destination and preserves review state. These are cache
-snapshots, not authority checkpoints. [Cache examples](agents-and-dsl.md#semantic-cache-and-classification)
-show actual wiring. The application owns review, embeddings and training.
+### Cache queries and review
+
+Direct `SemanticCache.lookup` takes `text`, `vector`, `profile_ref`,
+`labels` and optional `limit` (default 5; range 1–32).
+
+Router input instead uses
+`%{"text" => text, "embedding" => vector, "profile_ref" => ref}`.
+The bridge translates that shape and requests up to 32 nominations.
+
+Exact supports plain text. Native lookup needs an existing vector.
+A missing vector skips the method; it does not trigger an encoder call.
+
+Writes supply `text`, `label` and, for native search, `embedding` and
+`profile_ref`. Approval applies to one exact revision. Editing removes
+approval.
+
+Example paging uses `limit` (default 100, range 1–500), `after` (last ID)
+and `verified` (`nil`, `true`, `false`).
+Snapshot restore needs a fresh destination and preserves review state.
+It is a cache snapshot, not an authority checkpoint.
+
+The application owns review, embedding generation and training.
+See [cache wiring](agents-and-dsl.md#semantic-cache-and-classification).
 
 ## Instance startup and calls
+
+### Start the state owner
 
 | Startup field | Default/meaning |
 | --- | --- |
@@ -323,13 +431,14 @@ show actual wiring. The application owns review, embeddings and training.
 | `max_pending_operations` | `32` waiting mutations; `0` rejects concurrent work instead of queuing |
 | `name` | Optional ordinary GenServer name |
 
-One persistent Instance process owns state. One monitored worker at a time does
-slow work; the FIFO stores waiting mutations. Local reads see the last completed
-value, not a partly updated value. The limit counts jobs, not arbitrary mailbox
-bytes or provider allocations.
+Supply either initial `state/component_states` or a `checkpoint`, not both.
+They are competing sources of initial state.
 
-Do not supply `state` or `component_states` together with `checkpoint`: these
-are conflicting sources of the initial value and startup rejects them.
+The Instance owns the last completed value. A monitored worker handles one
+mutation at a time, with waiting work in a FIFO queue.
+The job limit does not bound arbitrary provider allocations or mailbox bytes.
+
+### Choose the call for your intention
 
 | Call/options | Meaning |
 | --- | --- |
@@ -344,22 +453,32 @@ are conflicting sources of the initial value and startup rejects them.
 | `definition(instance, timeout)` | Bound timeout for the local read, followed by a separate Domain fence/Definition check |
 | `checkpoint(instance, store, key, expected_revision)` | Explicit CAS save of local state; not automatically called after effects |
 
-`turn`, `propose` and `checkpoint` wait indefinitely at the Instance call level.
-A provider needs its own timeout in its host executor. `wait:` does not stop
-the provider and an OTP call timeout is not evidence of cancellation.
-See [pending and steering](integration-and-streaming.md#a-host-owned-interaction-without-a-stream-runtime).
+There are three different waits:
 
-Worker/Vigil startup accepts `input`, `definition`, `supervisor`, `opening`,
-plus optional `state`, `bindings`, `adapters`. The opening contains `context`,
-`attributes`, `candidate` and optional `options`: authenticated child context,
-finite promise, explicit authority for opening it, and facade call options.
+1. An Instance call timeout controls how long a caller waits for a response.
+2. `advance`'s `wait:` can return a known pending ticket.
+3. The provider timeout is configured in your executor/integration.
+
+None of these alone proves cancellation or no effect.
+`turn`, `propose` and `checkpoint` wait indefinitely at the Instance call
+level. See [pending work](integration-and-streaming.md#a-host-owned-interaction-without-a-stream-runtime).
+
+Worker/Vigil startup adds `input`, `definition`, `supervisor` and
+`opening`, with optional `state`, `bindings`, `adapters`.
+The opening contains authenticated `context`, promise `attributes`,
+authority `candidate` and optional call `options`.
 See [reusable work](agent-recipes.md#reusable-skills-workers-and-vigils).
 
 ## Domain options
 
-These configure the host boundary, not an individual model. Pass them in the
-`Spectre.Domain` child spec or to `Spectre.start_domain(domain_ref, store, opts)`.
-In the latter form `domain_ref` and `store` are arguments rather than options.
+A Domain connects shared authority, storage and execution. These are host
+options, not per-model settings.
+
+Pass them to the `Spectre.Domain` child spec.
+For `Spectre.start_domain(domain_ref, store, opts)`, the Domain and store are
+arguments instead.
+
+### Connect the boundaries
 
 | Field | Default / required | Purpose |
 | --- | --- | --- |
@@ -371,12 +490,34 @@ In the latter form `domain_ref` and `store` are arguments rather than options.
 | `broker` | Required when executors exist | Module or `{module, opts}` implementing scoped capability checkout |
 | `payload_store` | Omitted | Module/adapter configuration for external content verification |
 | `late_observer` | Omitted | Module implementing `Spectre.Attempt.Observer`; authenticated later receipts |
+
+The foundation fields are `genesis`, `principals`, `root_mandates`,
+`surface`, `host_profile`, `constitution`, `genesis_verifier`.
+[Host setup](host-setup.md#prepare-the-foundation) explains them.
+The host must choose its Duty policy; a model preference cannot supply it.
+
+### Time, context and recovery
+
+| Field | Default / required | Purpose |
+| --- | --- | --- |
 | `clock` | Spectre.Clock.System | Module exposing trusted Unix milliseconds via `now/0` |
 | `clock_tolerance_ms` | `60_000` | Allowed drift against monotonic elapsed time; `:infinity` disables this guard |
 | `id_source` | Spectre.Id.UUIDv7 | Module exposing `generate/0` for occurrence IDs; not a replacement for canonical content hashes |
 | `context` | Omitted | Optional recent-Evidence window, detailed below |
 | `recovery_policy` | Omitted | Host witness/incident adapter; cannot override invalid core state |
 | `recovery_timeout` | `5_000` ms | Positive callback time bound for recovery policy |
+
+With `context` configured, its defaults are `max_events: 100`,
+`max_evidence: 50`, `max_bytes: 256_000`. Each accepts zero.
+
+The first counts ledger positions, the second selected contextual Evidence,
+and the third encoded bytes. With no `context` option, there is no automatic
+recent-history selection. This window does not bound lifetime projection RAM.
+
+### Queues, batching and advanced settings
+
+| Field | Default / required | Purpose |
+| --- | --- | --- |
 | `ingress_max_concurrency` | `32` | Maximum concurrent temporary authentication/observation jobs |
 | `ingress_timeout` | `30_000` ms | Positive time bound for an ingress callback |
 | `max_pending_submissions` | `1_024` | Submission queue bound, not uniform backpressure for every API |
@@ -388,30 +529,16 @@ In the latter form `domain_ref` and `store` are arguments rather than options.
 | `ledger_opts` | `[]` | Host append/verification options; use the ledger adapter's documented contract |
 | `registry` | Spectre.Domain.Registry | Advanced child-spec Registry selection; ordinary facade lookups use the default registry |
 
-The foundation options are `genesis`, `principals`, `root_mandates`, `surface`,
-`host_profile`, `constitution`, `genesis_verifier`. They name actual recognized
-records, not model preferences. [Host setup](host-setup.md#prepare-the-foundation)
-explains each and the optional Foundation builder. Constitution defaults are
-validated, but the deployment must explicitly decide its Duty policy.
+The retry options here resolve ledger conflicts/uncertainty.
+They do not repeat an executor's external action.
 
-The sequencer also has an internal `name` option; `Domain.start_link` sets it
-from `registry` and `domain_ref`. It is not an independent public naming option
-to override alongside the Domain identity.
+The Domain's internal process name comes from its Registry and `domain_ref`.
+Do not override it as another independent identity.
 
-Advanced `generation`, `grant_secret`, `checkout_receipt_secret` exist for
-controlled wiring/tests. Normally leave all three omitted: fresh values are
-generated at boot. Hard-coding them risks weakening restart fences and seals.
-They are not agent-facing configuration and must not enter a Definition.
+Leave `generation`, `grant_secret` and `checkout_receipt_secret` omitted
+in ordinary setup: fresh values are generated at boot. The overrides are for
+controlled wiring/tests and must not enter a Definition.
 
-When `context` is provided, its defaults are `max_events: 100`,
-`max_evidence: 50`, `max_bytes: 256_000`. `max_events` counts recent ledger
-positions; `max_evidence` counts selected contextual Evidence; `max_bytes`
-bounds their canonical bytes. Each allows zero. With no configuration there is
-no automatic recent-history selection. This window does not hide old revocations
-from the kernel or bound the Domain's lifetime memory.
-
-Storage has separate process/connection options: choose a backend in
-[storage and recovery](storage-and-recovery.md#ledger-adapters-and-batch-reads)
-and its API module documentation. A Disk `directory`, an ETS `server` and a
-PostgreSQL `repo` are not interchangeable. A universal config map would hide
-these different ownership and durability contracts.
+Finally, backend settings belong to their own adapters.
+A Disk `directory`, ETS `server` and PostgreSQL `repo` are different
+resources. See [storage configuration](storage-and-recovery.md#ledger-adapters-and-batch-reads).

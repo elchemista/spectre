@@ -1,24 +1,20 @@
-# Authoring agents in 0.4
+# Build an agent
 
-An Agent is a module of declarations and callbacks. One supervised
-`Spectre.Instance` owns its local state; the existing Domain/kernel owns
-authority and durable facts. A route selects a handler, **not an effect**.
+An Agent is an Elixir module with callbacks. You describe how to handle input
+and what to request next. Spectre checks permission before a requested governed
+operation runs.
 
-```text
-host input → flow/pipeline/router → handle_turn → prepared request
-host advance → Candidate → kernel/commit/Attempt/executor → Outcome
-             → handle_result → next prepared request, or local state
-```
+You can start with one module. A model, Router, Stack and Skills are all
+optional.
 
-The host chooses each advance. No-match, ambiguity, approval, streaming and
-automatic continuation are application decisions, not macro defaults.
-
-Read this guide as a progression: one handler → a flow → an optional model
-request → reusable components. You do not need a Stack, Skill or LLM to start.
-For alternatives with complete callback code, see [recipes](agent-recipes.md).
-For defaults and the meaning of each keyword, see [configuration](configuration.md).
+This guide builds up the pieces in that order. Keep the
+[configuration reference](configuration.md) nearby when you need an exact
+default; you do not need to read every option first.
 
 ## A small Agent
+
+This agent understands “order 42” and “help with orders.” It proposes an order
+lookup or a help action; it does not call either service directly.
 
 <!-- spectre:example guide_agent -->
 ```elixir
@@ -55,21 +51,38 @@ end
 definition = MyApp.Orders.definition(revision: 1, declared_at: published_at)
 ```
 
-Here `:orders` is the group of interactions, `:lookup`/`:help` are handler
-branches and `"orders.lookup"`/`"support.help"` are governed action classes.
-They are not interchangeable names. Named regex captures give `%{"id" => "42"}`;
-string-bag matching compares the input to example strings, not to embeddings.
-`accept: 0.85` is a routing-score threshold; `margin: 0.05` requires the winning
-nomination to lead the runner-up by at least 0.05. A tie is not broken at random.
+### Read the example from top to bottom
 
-`_turn` is the correlated authenticated input/context; `_` means this handler
-does not need to inspect it. `state` is your component's local value, not the
-ledger or a budget. Returning an updated state does not attest an external fact.
+- `namespace: "shop", name: "orders"` identifies this agent's published
+  definition. These are not login credentials or process names.
+- `flow :orders` names a group of interactions.
+- `router via: ...` chooses the matching methods to try, in order.
+- `route :lookup` names the handler branch. The regex captures the order ID.
+- `handle_turn` receives the selected flow, branch and captures.
+- `{:request, "orders.lookup", data, state}` proposes an application action.
+- `handle_result` receives the result after a submitted request is resolved.
 
-Publication time is explicit; compiling a module never chooses a new revision
-or activates it. Publish the Definition through the governed revision path.
-After the host has provisioned the Domain, published the Definition and opened
-an authenticated Scope:
+There are two different names in the lookup handler: `:lookup` is the local
+route; `"orders.lookup"` is the action class declared by your application.
+You may rename a route without inventing a new kind of permission.
+
+`state` is your local value. In this example it starts as a map and later
+holds `:last_status`. It is not the ledger or a spend budget. `_turn` means
+the callback does not need to inspect the authenticated input/context.
+
+The routing scores are only about choosing a handler. With `accept: 0.85`,
+a score below 0.85 is not enough. With `margin: 0.05`, the winner must also
+lead the second result by at least 0.05. Neither setting grants authority.
+
+### Start it after host setup
+
+The last line constructs a Definition: versioned data describing the agent.
+`published_at` is an explicit timestamp supplied by the application.
+
+Before starting an Instance, the host must activate that Definition in a
+Domain and open an authenticated Scope. If those words are new, follow
+[host setup](host-setup.md). That guide supplies the `scope`, `definition`
+and `class_bindings` used here:
 
 <!-- spectre:example guide_instance -->
 ```elixir
@@ -89,75 +102,85 @@ case Spectre.Instance.advance(instance, request, wait: 1_000) do
 end
 ```
 
-These are host-wiring fragments, not a permissive foundation. `class_bindings`
-maps each class to its explicit Candidate occurrence bindings: Mandate,
-executor/contract, accountable parties, purpose and other required coverage.
-The DSL derives Row from the current Surface, not from a `row:` option.
-Consequence contracts can derive target/disclosure/Meter bindings; missing or
-conflicting facts are errors, never authority defaults.
-For these examples the host Surface binds `orders.lookup`'s `order_id` and
-`support.help`'s `target_ref` as consequence targets. The host Mandate still has
-to cover the exact requested order/help target; a matching regex grants nothing.
-The final tuple is for the application's UI; it does not deliver content or
-retry an operation. The tests supply explicit host fixtures to execute these
-fragments, not a library-generated permissive foundation.
+Read these calls as:
 
-Configure the Domain with `mind: Spectre.Agent` for this handler path.
-It uses `Spectre.open_turn/3` for authenticated input without calling a second
-Mind. Low-level `Spectre.turn` with a custom Mind remains a separate supported
-interface; it does not execute Agent handlers implicitly.
+1. **Start:** bind this Instance to its Scope, Definition and local state.
+2. **Turn:** process “order 42” and get a prepared request.
+3. **Advance:** choose that request and submit it for permission and execution.
+4. **Inspect:** handle a completed result, a pending ticket, or an error.
+
+`class_bindings` tells Spectre which existing Mandate, executor, accountable
+actor and purpose apply to each action class. The
+[lookup binding example](host-setup.md#connect-a-handler-to-a-governed-action)
+explains every field.
+
+The host configures the Domain with `mind: Spectre.Agent` for this API.
+A custom `Spectre.Mind` is a separate lower-level option; you do not run both
+paths for the same turn.
 
 ## Handler contract
 
-`init/1` defaults to `{:ok, state}`. Other handlers are explicit. There is no
-generated successful empty response for missing no-match/error clauses.
+### What can a handler return?
 
-| Return | Meaning |
+| Return | Use it when you want to… |
 | --- | --- |
-| `{:ok, state}` | Local state, no request |
-| `{:request, "class", data, state}` | Prepare a Candidate for a business class |
-| `{:request, :name, data, state}` | Prepare a declared request template |
-| `{:ask, :name, assigns, state}` | Render the declared prompt and prepare inference |
-| `{:classify, :name, input, state}` | Prepare an external classification |
-| `{:request, candidate_or_list, state}` | Low-level Candidate, or at most 32 alternatives |
-| `{:error, reason, state}` | Structured application error and local state |
+| `{:ok, state}` | Update local state without proposing an operation |
+| `{:request, "class", data, state}` | Propose an application action directly |
+| `{:request, :name, data, state}` | Use a named `request` template |
+| `{:ask, :name, assigns, state}` | Render a prompt and prepare a model request |
+| `{:classify, :name, input, state}` | Prepare a governed classification request |
+| `{:error, reason, state}` | Return an application error |
+| `{:request, candidate_or_list, state}` | Supply complete Candidates through the lower-level path |
 
-A list offers alternatives, not instructions to execute all elements.
-`advance/3` reserves one exact ticket and supersedes its siblings. Ticket
-Instance, Definition, turn and state revision must still match. Calling it again
-does not execute again. `handle_result/4` receives `{kind, name}`, the result,
-the correlated Turn, and that component's local state.
+A list contains up to 32 **alternatives**, not a sequence to execute.
+Choosing one ticket with `advance` invalidates its siblings.
 
-The names line up this way: handler `{:request, ...}` → prepared Instance ticket
-→ `advance` → ordinary `Spectre.propose` → governed result → `handle_result`.
-`ask` and `classify` use that same path after preparing model-specific data.
-The application chooses whether to advance immediately or after approval.
-Do not call the provider in `handle_turn` or in a request-preparation adapter
-when its effect belongs to your governed Surface.
+The default `init/1` accepts the initial state. Define the input branches you
+need, including misses and errors. Spectre does not invent a helpful reply
+for an unhandled message.
 
-The result retains `details` (the original governed result), `fallback`,
-`operation`, `request_ref` and `turn_ref`. Its factual status is:
+### What does submitting a request mean?
 
-| Status | Fact |
+Returning a request does not submit it. The host calls `advance` when its
+workflow is ready. It can do that automatically; human approval is only needed
+where your declared rules require it.
+
+After submission, `handle_result/4` receives the operation name, result,
+corresponding Turn and component state. It can return another prepared request.
+The host decides whether to advance that next request too.
+
+Do not perform a governed provider call inside `handle_turn` or a request
+preparation callback. Those callbacks prepare the proposal; an executor performs
+the admitted operation.
+
+### What does the result mean?
+
+| `result.status` | Meaning |
 | --- | --- |
-| `:done` | Succeeded Outcome, or committed ledger-internal operation |
-| `:refused` | Kernel refused |
-| `:undecidable` | Evidence did not establish a decision |
-| `:unknown_class` | Kernel did not recognize the class |
-| `:not_attempted` | Durable dispatch cancellation, not just a missing Attempt |
-| `:failed` | Failed Outcome |
-| `:no_effect` | Explicit definitive-no-effect Outcome |
-| `:unclear` | Ambiguous Outcome |
+| `:done` | The operation succeeded, or a ledger-only change was committed |
+| `:refused` | Permission was refused |
+| `:undecidable` | The available Evidence did not establish a decision |
+| `:unknown_class` | The action class is not recognized |
+| `:not_attempted` | A durable record confirms dispatch cancellation |
+| `:failed` | An Outcome records failure |
+| `:no_effect` | An Outcome establishes that no effect occurred |
+| `:unclear` | The Outcome is ambiguous: the effect may have happened |
 
-Pending is operational: `{:pending, request_ref}`, not `:unclear`.
-`Instance.operation(instance, ref)` returns `{:pending, ref}`, a retained completed
-result, or an explicit error, without submission.
-An evicted reference or lost process proves nothing about external effects.
-Fallback results remain separate; fallback success does not rewrite refusal.
+A successful API return is not automatically `:done`. Inspect the status.
+
+The result also retains the original facts in `details`, any separate
+`fallback` result, and the operation/request/turn references. A successful
+fallback does not turn the original refusal into an approval.
+
+Still running? `advance` returns `{:pending, ref}`. Keep that reference and
+use `Instance.operation(instance, ref)` later. Pending work is not an
+ambiguous Outcome; `handle_result` is not called merely because time passed.
+An expired or forgotten local ticket also does not prove that nothing happened.
 
 ## Flow, Router and custom methods
 
-Extract precisely the same flow block when it helps readability:
+Keep the Router inline for a small agent. Extract it when the routes make the
+handler module hard to read. The declarations behave the same in either form:
 
 <!-- spectre:example extracted_router -->
 ```elixir
@@ -196,48 +219,74 @@ defmodule MyApp.RoutedOrders do
 end
 ```
 
-Prepare pipelines once with `Spectre.Input.Pipeline.new/2`; pass them as
-`adapters: [pipelines: [normalize: pipeline]]`. Each flow has its own policy;
-the host selects the flow rather than the library guessing among several.
-Handlers see `{flow, route, captures}`, `{flow, :no_match, input}`,
-`{flow, :ambiguous, refs}`, `{flow, :error, reason}`,
-`{flow, :halted, input}`, or `{flow, :unrouted, input}`.
+There are three pieces here:
 
-Matcher order and thresholds use the existing Router algebra. A skipped
-optional method differs from corrupted data or callback failure. Methods see
-only their own rule data and explicit input, not the Scope or executor.
-Selected-route provenance is recorded as derived Evidence against the Turn;
-it still carries no permission to execute.
+1. `OrderRoutes` declares where input should go.
+2. `BinaryMatcher` implements an additional matching method. Its `result`
+   helper returns a nomination with a score.
+3. `RoutedOrders` connects that method and implements the chosen handlers.
+
+`pipe_through :normalize` names a prepared local pipeline. The host creates
+it once with `Spectre.Input.Pipeline.new/2` and supplies
+`adapters: [pipelines: [normalize: pipeline]]`.
+
+A flow does not inherit another flow's routing policy. Choose the flow in
+`turn(..., flow: :orders)`. When mounting a Skill, use its qualified flow path,
+such as `"faq/questions"`.
+
+### Messages your handler can receive
+
+| Message | What happened |
+| --- | --- |
+| `{flow, route, captures}` | A route won |
+| `{flow, :no_match, input}` | No rule won |
+| `{flow, :ambiguous, refs}` | More than one nomination remained plausible |
+| `{flow, :error, reason}` | Routing failed |
+| `{flow, :halted, input}` | A pipeline stopped processing |
+| `{flow, :unrouted, input}` | The flow has no Router |
+
+Methods try in order. A miss, skip or ambiguity can fall through to a later
+method; an adapter error stops routing. Scores are not averaged across methods.
+See [routing options](configuration.md#flow-and-router) for the exact rules.
+
+The runtime records the selected route's provenance as derived Evidence.
+That makes the choice traceable; it does not authorize the chosen action.
 
 ## Stack and Extension
 
-Use a Stack when several agents share prompt instructions or adapter choices.
-It is like reusing application configuration, not installing a new agent engine.
-A Skill instead reuses behavior and local substate; use whichever problem you
-actually have. [The component recipe](agent-recipes.md#reusable-skills-workers-and-vigils)
-shows both together.
+Use a **Stack** to share configuration. Use a **Skill** to share behavior.
 
+A Stack might contain common prompts, cache settings and adapter declarations.
+An Agent chooses it with `stack: MyApp.Shared`. It does not start a process,
+download dependencies or create permission.
 
-`use Spectre.Stack` creates a reusable configuration plan. An Agent uses
-`stack: MyApp.Shared`; a local replacement of an inherited declaration requires
-`override: true`. Stack does not resolve dependencies or start processes.
+An optional package can support `install Package do ... end`.
+The package's `c:Spectre.Extension.configure/1` callback turns that block into
+configuration and named adapter connections. The host still adds the package
+to Mix dependencies and supervises its services.
 
-`install Package do ... end` calls that package's `c:Spectre.Extension.configure/1`
-at compile time. It returns portable data and named adapter ports. No package
-can contribute a new runtime, credentials, implicit authority or an installer.
+`ports/0` lists those connection points. For example, `history/chat` means
+“the chat-history backend named chat,” not a network port.
 
-`ports/0` is the single manifest for authoring and Doctor. A statically declared
-module/options pair is already wired; the host supplies only missing resources.
-Runtime options cannot silently replace fixed semantic options. Component
-bindings use names such as `"faq/history/chat"`; in grouped startup options,
-use `history: %{"faq/chat" => {MyApp.History, ...}}`.
+A fixed adapter module/options pair is already a declaration of wiring.
+At startup, supply its missing runtime resources, such as a server address.
+Do not repeat empty bindings just to make the declaration look connected.
+Conflicting fixed values are errors, not “last option wins.”
+
+Some inherited declarations support `override: true`; see
+[configuration](configuration.md#connecting-adapters) for which ones.
+The [component recipe](agent-recipes.md#reusable-skills-workers-and-vigils)
+shows Stack and Skill used together.
 
 ## Prompts and injection
 
-A prompt is a named template. An injection adds another named template around
-the selected base prompt. An ask renders those parts into a model request.
-None of those declarations contacts a model on its own.
+A **prompt** is a named text template. An **injection** adds another template
+before or after it. An **ask** chooses the templates for a model request.
 
+For a plain string, write `prompt :system, "Be helpful."`. You do not need a
+file or an `asset` declaration.
+
+Here is the file-based form with an extra instruction:
 
 <!-- spectre:example prompts -->
 ```elixir
@@ -256,81 +305,100 @@ ask :answer,
   max_tokens: 300
 ```
 
-Templates are compiled EEx (`.text.eex` or `.txt.eex`), not Phoenix HEEx or
-runtime file lookups. Paths are build dependencies. Injection order is Agent,
-flow, route within the selected start/end position. A route can declare
-`inject: :safety`; flow blocks can use `inject` directly.
-This guide's path uses the shipped example template. In an application, choose
-the directory relative to the Agent/Stack source file, for example
-`prompt_root Path.join(__DIR__, "prompts")`.
+Read the settings as follows:
 
-The plan preserves system/task/history/memory parts and template identities.
-History/memory are data, not extra system instructions. Reserved context assigns
-cannot be replaced by handler arguments. Rendering rejects missing assigns,
-invalid UTF-8 or a combined budget above 64 parts / 65,536 text bytes.
-It never formats an exception containing the complete assigns map.
+- `prompt_root`: where the compiler finds prompt files.
+- `file:`: the template file to compile.
+- `@order_id` and `@question`: values supplied by the handler.
+- `inject`: include the safety text before the system template.
+- `prompt:` and `task:`: which named templates this ask uses.
+- `via: :inference`: which request-preparation adapter is connected.
+- `class: "model.generate"`: which governed action the host must define.
+- `max_tokens:`: an option for the integration to implement, not an
+  automatically created kernel budget.
 
-`via: :inference` names an explicit `request/inference` adapter implementing
-`Spectre.Agent.RequestBuilder.prepare/4`. Preparation performs no external
-effect. A Prism integration must supply such a bridge; its separate 0.4
-migration is still pending. Generation still needs the host's Surface,
-executor and broker.
+These are EEx text templates (`.txt.eex` or `.text.eex`), not Phoenix
+`.heex` templates. Files are compiled with your code, not reread on every
+turn. In your app, a typical root is `Path.join(__DIR__, "prompts")`.
 
-An inline inference plan becomes durable consequence data. For private material
-that needs independent retention/erasure, use an application request adapter and
-executor with protected payload references. Rendering alone does not store
-private prompts safely or erase chat/backup copies.
+Injections can be declared at Agent, flow or route level. Within the selected
+start/end position, that is also their ordering. An `into:` option restricts
+the injection to one base prompt.
+
+Rendering preserves separate system, task, history and memory parts. It
+rejects missing assigns, invalid UTF-8 and output beyond 64 parts / 65,536
+text bytes. User-supplied text is an assign, not template code to evaluate.
+
+### Where is the model call?
+
+The adapter implementing `Spectre.Agent.RequestBuilder.prepare/4` prepares
+the consequence. The Domain's executor makes the actual provider call after
+admission. An optional package such as Prism can supply that integration;
+Spectre itself has no required provider dependency.
+
+If private prompt text is put inline in the consequence, it becomes part of
+the durable history. For separately erasable text, use a request/executor
+integration with protected payload references. Deleting chat does not remove
+copies already stored in an Act.
 
 ## History and Memory
 
-History answers “what was said in this conversation?”. Memory answers “what
-relevant knowledge should this turn see?”. Neither answers “what is this
-agent allowed to do?”—that belongs to the Domain's governed facts.
+Use **History** for “what was said in this conversation.”
+Use **Memory** for “what relevant knowledge should this turn see.”
 
+Neither is the authority ledger.
 
-`history :chat, keep: 30, max_bytes: 24_000` declares a bounded chat window.
-The host wires a `Spectre.History` backend with explicit tenant/conversation
-binding. The backend limits the DB query before returning records. Each message
-has ref, revision, role, status, content and Evidence references.
+### Load a small chat window
 
-Loading does not save input or generated drafts. The host explicitly calls
-`History.append/2`, `record_delivery/2`, `load_summary/1`, `save_summary/3`
-and `erase/2` at appropriate points. Stable message IDs are idempotent;
-a delivery receipt uses CAS and actual Evidence. A draft is never marked
-delivered because generation completed. Summarization does not call a model
-inside the store; it is a separate governed request when needed.
+`history :chat, keep: 30, max_bytes: 24_000` asks for up to 30 messages
+within a byte budget. The host connects its backend through Instance adapters:
 
-For a chat backend, the message fields are not arbitrary JSON:
+`history: [chat: {YourHistoryBackend, tenant_id: tenant, conversation_id: conversation}]`
 
-| Field | Meaning |
-| --- | --- |
-| `ref` | Stable message identity chosen by the host; reuse only for the same message |
-| `revision` | Nonnegative integer for exact concurrent-update checks |
-| `role` | `:user`, `:assistant` or `:tool` |
-| `status` | `:received`, `:draft`, `:delivered`, `:failed` or `:unclear`; generation alone only establishes a draft |
-| `content` | Valid UTF-8 text, returned as data rather than evaluated prompt source |
-| `evidence_refs` | References to the recorded facts supporting this context |
+The backend should limit its query before returning the data. Spectre supplies
+the contract, not a bundled chat database.
 
-The usual sequence is: observe input → explicitly append the received message;
-govern inference → explicitly save a draft; govern delivery → record its actual
-receipt with `record_delivery`. The delivery receipt names `message_ref`, its
-`expected_revision`, its own stable `ref`, delivery `status` and supporting
-`evidence_refs`. This prevents a generated answer from being logged as sent
-just because the model returned successfully.
+Each message has a stable `ref`, a revision for concurrent-update checks,
+UTF-8 `content`, a `role` (`:user`, `:assistant`, `:tool`), a status and
+supporting `evidence_refs`.
 
-Host wiring uses `history: [chat: {YourHistoryBackend, tenant_id: tenant,
-conversation_id: conversation}]` inside Instance `adapters`. The backend must
-implement `load/3`, `append/3`, `record_delivery/3`; summaries and erasure are
-optional callbacks. Spectre supplies the contract, **not a bundled chat database**.
-Implement it over your Repo/application store and enforce partition/limits in
-the query. Loading protected context is not permission for unmediated remote I/O.
+### Saving is a separate choice
 
-`memory :knowledge, limit: 5, max_bytes: 8_000` uses
-`Spectre.Memory.retrieve/4` via its own tenant-bound adapter. Retrieved context
-must cite available Evidence within the authenticated Turn. Chat windows do not
-discard old Mandates, revocations or Duties from kernel evaluation.
+Loading a window does not automatically save new messages. The usual host flow is:
+
+1. Observe input and append a `:received` message with `History.append/2`.
+2. Complete inference and save the answer as a `:draft`.
+3. Complete a delivery action and record its actual delivery receipt with
+   `History.record_delivery/2`.
+
+The other message statuses are `:failed` and `:unclear`. A generated answer
+must not be marked `:delivered` just because the model returned it.
+
+The backend implements `load/3`, `append/3` and `record_delivery/3`.
+Summary and erasure callbacks are optional. The public helpers include
+`load_summary/1`, `save_summary/3` and `erase/2`.
+Summary generation, when needed, is a separate model request—not a hidden
+call inside the store.
+
+### Retrieve relevant knowledge
+
+`memory :knowledge, limit: 5, max_bytes: 8_000` loads a small result set from
+a `Spectre.Memory` adapter.
+
+History and Memory items must cite Evidence available to the authenticated
+Turn. This is how retrieved content stays connected to its sources. If old
+records have no such references, the host integration must establish them;
+the adapter cannot turn arbitrary stored text into an observed fact.
+
+These context limits neither erase ledger entries nor hide old revocations
+or Duties from the kernel.
 
 ## Semantic cache and classification
+
+A routing cache remembers approved input-to-route examples. It helps choose
+a handler; it does not cache permission to run an action.
+
+### Start with Exact when you do not need vectors
 
 <!-- spectre:example exact_cache_declaration -->
 ```elixir
@@ -345,7 +413,11 @@ flow :support do
 end
 ```
 
-The host supervises the backend with the same limits and binds it at startup:
+`cache: true` lets that route be nominated by the cache.
+`learn: :review` may save a new example after a confirmed result, but leaves
+it unapproved until review.
+
+The host supervises the cache and supplies its address:
 
 <!-- spectre:example cache_wiring -->
 ```elixir
@@ -356,17 +428,19 @@ adapters = [
 ]
 ```
 
-Backend identity includes namespace, exact Definition, flow and encoder profile.
-A server cannot be reused under a different binding. For multiple flows, Memory
-backends accept `server: %{complete_binding => server_address}`; the host
-creates those partitions explicitly.
+The cache belongs to an exact combination of namespace, Definition, flow and
+encoder profile. This prevents examples for one agent version or tenant
+partition being silently reused for another.
 
-The built-in bridge implements ordinary Router.Adapter. `via: [:semantic_cache]`
-does not require a custom matcher; an explicit router-method binding may replace
-the bridge. Exact lookup needs no vector. `Spectre.SemanticCache.Vettore` is
-included in Spectre and shares the same review/storage engine; the host adds
-`{:vettore, "~> 0.3.5"}` only when choosing that backend. There is no separate
-Spectre cache package and no transitive Vettore or embedding dependency.
+The built-in Router bridge handles `via: [:semantic_cache]`; you do not need
+to write a matcher just to connect a cache backend.
+
+### Use Vettore for vector search
+
+The Vettore adapter is included in Spectre. Add `{:vettore, "~> 0.3.5"}` to
+your application's dependencies if you choose it; Spectre does not require it.
+
+Replace the Exact declaration:
 
 <!-- spectre:example native_cache_declaration -->
 ```elixir
@@ -375,7 +449,7 @@ adapter :semantic_cache, :routing, Spectre.SemanticCache.Vettore,
   max_entries: 2_000, dimensions: 384
 ```
 
-The host supervises the matching child, without any implicit startup:
+Then supervise the corresponding process:
 
 <!-- spectre:example native_cache_child -->
 ```elixir
@@ -391,103 +465,133 @@ The host supervises the matching child, without any implicit startup:
  index: :flat}
 ```
 
-Wire the same namespace and encoder `profile_ref` to the Instance. Native search
-supports `:flat` and `:hnsw`; both use normalized cosine vectors. Starting this
-adapter without Vettore returns `{:error, {:adapter_module_not_loaded, Vettore}}`.
-The Spectre test suite uses `vettore` and `ex_fastembed` as **test-only**
-dependencies; it exercises actual model-generated vectors as well as native
-index boundaries. They are not needed to compile or run Spectre itself.
+`dimensions` is the vector length. `profile_ref` identifies the encoder
+and preprocessing contract, not just that length. Two encoders producing
+384 values are not necessarily interchangeable.
 
-Lookup never accepts `embed:` or computes an embedding. Supply a precomputed
-vector **and** its matching profile ref. The expected `:embedding_required`
-becomes `:skip` in the default bridge; corruption/binding failures remain errors.
-`put/update/verify/delete` use quarantined examples and exact revision checks.
-Pages are bounded; snapshot restore requires a fresh destination. Host backups
-and deletion policy remain separate responsibilities.
+Wire the same namespace and profile to the Instance. The host can create
+separate partitions for several flows and pass a map from complete bindings
+to server addresses. Spectre does not create those partitions implicitly.
 
-With `learn: :review`, a cache-enabled route can save one quarantined example
-after a confirmed request/ask result. It never promotes it, learns from ambiguity,
-or self-learns from a cache hit. Storage failure cannot retry the business effect.
+### Who computes the embedding?
 
-For external classification, declare a classifier with a class and request-port
-`via`, and select `via: [..., :llm_classifier], classifier: :intent`.
-No match may return `{:classify, :intent, input, state}`. Only after its governed
-Outcome may `route_result(turn, result)` nominate the originating flow's declared
-labels. It does not resubmit the next business request. Local classifiers
-implement Router.Adapter and use `:local_classifier`; artifacts/loading/training
-belong to the host.
+Your integration does, before lookup. Native lookup expects text, a vector
+and the matching profile. It does not accept an `embed:` callback.
 
-For the complete classifier handler—including low scores and ambiguity—see
-[the classifier recipe](agent-recipes.md#a-classifier-before-the-business-handler).
-For the difference between router `via`, ask `via`, and a model identifier,
-see [model configuration](configuration.md#ask-and-classifier-declarations).
+Without a vector, the default bridge skips that cache method. A binding error
+or corrupted response is an error, not an ordinary cache miss.
+
+Both `:flat` and `:hnsw` indexes use normalized cosine vectors. Without the
+Vettore dependency, startup returns `{:error, {:adapter_module_not_loaded, Vettore}}`.
+The library's tests use real Vettore and ExFastembed; those are test-only
+dependencies.
+
+### Review and classification
+
+Cache edits use revision checks. Editing an approved example removes its
+approval; `verify` approves the exact new revision. Restoring a cache snapshot
+requires a fresh destination. Backups and deletion policy belong to the host.
+
+Automatic review collection does not promote examples, learn from ambiguous
+effects, or learn again from a cache hit. A failed cache write does not retry
+the original business action.
+
+For a model-based classifier, the handler can return
+`{:classify, :intent, input, state}`. After the governed result,
+`route_result(turn, result)` checks nominations against the originating flow's
+allowed labels. It chooses a handler message, not permission to execute.
+
+Local classifiers use `Router.Adapter` and `:local_classifier`; governed
+classifiers use `:llm_classifier`. See the
+[complete classifier recipe](agent-recipes.md#a-classifier-before-the-business-handler).
 
 ## Skills, Worker/Vigil and Morph
 
-`skill MyApp.Faq, as: :faq` mounts a component with its own substate in the same
-Instance. Publish its exact Definition under `components: %{faq: faq_definition}`.
-Route into it with `flow: "faq/questions"`; callbacks/results return to that
-component. A Skill never receives a second authoritative budget.
+### Share a behavior with a Skill
 
-Reusable `use Spectre.Worker` and `use Spectre.Vigil` modules implement
-`handle_work/3` or `handle_vigil/3` plus `handle_result/4`.
-Declare `worker :name, Module` / `vigil :name, Module` in the Agent.
-`Agent.start_worker/start_vigil` require explicit input, published Definition,
-host DynamicSupervisor and an ordinary governed opening bundle
-(`context`, `attributes`, `candidate`, optional `options`).
-No Scope is created from a bare string; failed startup does not silently close
-the durable promise. Timers, trigger registration and scheduling belong to the
-application.
+`skill MyApp.Faq, as: :faq` adds a component with its own substate in the same
+Instance. Publish its exact Definition in
+`components: %{faq: faq_definition}`, then select `flow: "faq/questions"`.
 
-Morph still prepares a new Definition; `Spectre.revise_definition/4` governs
-activation. Deployment, substate migration and re-authentication are host work.
-Active Instances remain pinned to the old Definition and loaded code fingerprint.
-They never silently follow the latest head. This detects accidental upgrades,
-not hostile code in the same BEAM.
+Callbacks return to the owning Skill. It does not get an extra process or a
+second independent copy of the Domain's budget.
 
-Morph changes use `:test` (exact precondition), `:put` or `:delete` with a
-`path` into maps or zero-based list indexes and, where needed, `value`.
-`prepare/3` returns a new Definition or rejects the whole changeset; `diff/2`
-prepares reviewable changes and `rollback/3` creates a **new forward revision**
-from an earlier body. It does not rewind the ledger. A data change to a compiled
-Agent plan must still match its newly published code; Morph is not a way to
-hot-swap prompt code in an Instance without the normal publication checks.
+### Run a separate job or watch
+
+A Worker implements `handle_work/3`; a Vigil implements `handle_vigil/3`.
+Both can use `handle_result/4`.
+
+Declare them with `worker :name, Module` or `vigil :name, Module`.
+The host starts them with an input, published Definition, DynamicSupervisor
+and a governed opening describing the promised work. Declaring one does not
+schedule it.
+
+If process startup fails after the opening was committed, the promise still
+exists. The application must handle it rather than pretending the opening
+never happened. See [reusable work](agent-recipes.md#reusable-skills-workers-and-vigils).
+
+### Change a Definition with Morph
+
+Morph prepares a new Definition for review. `Spectre.revise_definition/4`
+handles its governed activation.
+
+A changeset uses `:test` for an exact precondition, `:put` to write a value
+and `:delete` to remove one. Paths address maps or zero-based list positions.
+`prepare/3` accepts the whole changeset or rejects it.
+`rollback/3` creates a new forward revision; it does not rewind history.
+
+Deployment and state migration remain host work. Existing Instances stay bound
+to their original Definition and code identity; they do not automatically
+follow the newest version.
 
 ## Instance lifecycle and checkpoint
 
-One Instance owns the last completed state. A temporary worker performs slow
-mutations; the bounded FIFO defaults to 32 waiting operations. Pure
-`state/info/scope/current_turn` reads remain responsive and accept a timeout,
-including `:infinity`. Returned local state is not a world-effect receipt.
+### What stays responsive?
 
-`advance` waits up to 5 seconds by default, or a supplied `wait:`, then reports
-the known pending ref. That is not cancellation. If the proposal itself returns
-pending, its worker is released immediately: no background polling is started.
-`operation/3` can refresh that same durable occurrence once and continue the
-handler, without resubmitting an effect. A slow executor still needs its own
-host-configured timeout; `wait:` does not stop it.
+One persistent Instance holds the last completed state. A monitored worker
+performs slow work; by default, up to 32 mutations can wait in its queue.
 
-Retention keeps the last 64 completed or deferred operations, plus active/queued
-work. A forgotten ticket does not imply that its effect never occurred; query
-the ledger's durable facts. New input supersedes unsubmitted tickets, not
-already committed effects. If a deferred result completes after a newer turn,
-`operation/3` returns `{:error, {:instance_continuation_superseded, result}}`:
-the result remains available, but its old handler cannot overwrite newer state.
+State/info/scope/current-turn reads remain responsive. They accept an explicit
+timeout, including `:infinity`. They return completed local state, not partial
+provider output or proof that an external action succeeded.
 
-Domain loss stops the Instance. Restart with fresh authentication and an
-appropriately governed Scope; a stale child-spec Scope is not renewable.
-`Instance.checkpoint/4` stores portable local state and Skill substate via the
-application store. It does not save Scope authentication, resumable request
-tickets, Grants or a projection checkpoint. It never replays an executor.
+### What happens when advance takes longer?
 
-The [complete modular example](agent-recipes.md#a-complete-modular-authoring-example)
-is also shipped as `examples/authoring.exs`.
-Its host bindings are intentionally explicit, not a generated sandbox.
+`advance` waits up to five seconds by default. After the chosen `wait:`,
+it can return `{:pending, ref}`. This stops the caller waiting; it does not
+cancel the executor.
+
+When a proposal returns deferred, the worker slot is released. There is no
+infinite background polling. `operation/3` can refresh that occurrence once
+and continue its handler without submitting the effect again.
+
+The Instance retains 64 recent completed/deferred operations plus active and
+queued work. Tickets are not an archive: use durable records for older facts.
+
+New input invalidates unsubmitted tickets. If an old submitted result arrives
+after a newer turn, it is still a fact, but its old handler must not overwrite
+the newer state. The API reports
+`{:error, {:instance_continuation_superseded, result}}`.
+
+### What survives a restart?
+
+A checkpoint saves portable local state and Skill substates through the
+application store. It does not save authentication, request tickets, Grants
+or the Domain projection.
+
+Domain loss stops its Instances. Startup needs fresh authentication and a
+suitable Scope; restoring the old checkpoint does not renew the old Scope.
 
 ## Check fixed declarations against a Surface
 
-`Spectre.Surface.verify_definition/2` validates fixed template declarations and
-reports deferred occurrence facts. It is not kernel admission. Use
-`mix spectre.routes MyApp.Agent` to inspect flow/route sources, policy, prompt
-injection and ports. Extend the existing Doctor configuration with actual
-`port_wiring`; these diagnostics do not prove external identity or safety.
+Use `Spectre.Surface.verify_definition/2` to check fixed declarations and see
+which facts still need to be supplied for an actual request.
+
+Use `mix spectre.routes MyApp.Agent` to inspect flows, routes, prompts and
+ports. Doctor can check actual `port_wiring`.
+
+These checks catch setup mistakes. They do not execute an action or prove
+that a remote identity, credential service or backend is trustworthy.
+
+Next: [connect the agent to your host application](host-setup.md), or choose
+a [complete recipe](agent-recipes.md).

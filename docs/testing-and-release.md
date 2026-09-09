@@ -1,12 +1,19 @@
-# Testing and release validation
+# Test an agent and prepare a release
 
-The useful question is not "how many tests?" but "which invalid history,
-authority change or host failure would this test detect?" Coverage locates
-unexercised code; it does not establish the four GAM laws.
+Start with the behavior you want to trust.
+
+Can the Router select the right handler? Can a refused request accidentally
+reach the backend? What happens when a receipt arrives after a timeout?
+
+Those questions need different tests. A coverage percentage helps find missing
+paths, but it does not answer them on its own.
+
+This guide starts with tests for your application. The
+[release checklist](#build-locally-before-publishing) is for Spectre maintainers.
 
 ## Scaffold a local agent
 
-From the host Mix application (inside the selected child for umbrellas):
+From your host Mix application:
 
 ```sh
 mix spectre.gen.agent MyApp.Hello --dry-run
@@ -16,43 +23,32 @@ mix spectre.routes MyApp.Hello
 mix spectre.eval MyApp.Hello test/my_app/hello_routes.jsonl --flow greetings
 ```
 
-The generator writes five ordinary files:
+For an umbrella, run from the chosen child application.
+
+The generator creates five files:
 
 | File | Purpose |
 | --- | --- |
-| `lib/my_app/hello.ex` | Agent callbacks that prepare a local greeting in `state.draft` |
-| `lib/my_app/hello/router.ex` | `:greetings` flow with regex greeting and string-bag help routes |
-| `lib/my_app/hello/prompts/hello.txt.eex` | EEx text compiled through the normal `prompt_root` / `prompt` declarations |
-| `test/my_app/hello_test.exs` | Executable local routing/handler contract tests |
-| `test/my_app/hello_routes.jsonl` | Example inputs and expected routes for regression checks |
+| `lib/my_app/hello.ex` | Agent handlers that prepare a local greeting |
+| `lib/my_app/hello/router.ex` | Greeting/help routes |
+| `lib/my_app/hello/prompts/hello.txt.eex` | Compiled greeting template |
+| `test/my_app/hello_test.exs` | Local routing and handler tests |
+| `test/my_app/hello_routes.jsonl` | Input/expected-route examples |
 
-`MyApp.Hello` determines the paths and authoring identity. `--dry-run` reports
-targets without writing; a collision refuses the whole scaffold before any
-write. There is no force-overwrite option. No application config, dependency,
-Surface, Mandate, credential, Domain or supervisor is generated.
+`--dry-run` lists paths without writing. Existing targets stop generation
+before any write; there is no force-overwrite option.
 
-The greeting uses `Spectre.Agent.render_prompt/3`: a module, declared prompt
-name and assigns map produce `{:ok, text}` or an error. It renders one template,
-not ask/flow injections; it does not call a model. The ordinary `{:ask, ...}`
-path still composes injections/context and prepares a governed inference request.
-Returning `{:ok, state}` only updates local state. Delivery remains a separate
-governed request if it crosses the application's protected boundary.
+The local greeting uses `Spectre.Agent.render_prompt/3`. It needs no model,
+Domain or credential. Returning local state does not send a message.
 
-The generated tests deliberately need no Scope: they exercise pure authoring
-callbacks, not authenticated admission. To run an Instance, follow
-[host setup](host-setup.md) to activate the exact Definition and provide a Scope.
-There is no parallel Hello World runtime that bypasses those checks.
-
-For an opt-in host scaffold and a test of the first actual save, see
-[your first governed save](host-setup.md#from-a-draft-to-your-first-governed-save).
-That scaffold intentionally requires host completion; the local generator's
-immediately runnable tests do not claim to test governance.
+These tests establish local authoring behavior, not permission to act.
+For the first governed backend operation, use
+[the host scaffold](host-setup.md#from-a-draft-to-your-first-governed-save).
 
 ### Test the connection from input to handler
 
-`Spectre.Agent.route_message/4` uses the same flow preparation and message
-conversion as live routing. Feed real input instead of hand-building a tuple
-that might outlive a renamed route:
+A hand-built handler message can hide a broken route. Route actual input,
+then call the handler with the resulting message:
 
 <!-- spectre:example routed_handler -->
 ```elixir
@@ -74,24 +70,28 @@ end
   Guide.RoutingContract.handle_turn(message, nil, %{})
 ```
 
-`nil` works here only because this handler does not inspect the Turn. This
-tests a proposed request, not a Candidate or permission. Handlers using real
-authentication/Evidence need Instance tests. Nested Skill paths preserve local
-names: test the owning Skill's callback with its own state, not its parent.
+Changing the regex or route name now affects the test.
 
-Optional `pipelines` and `adapters` are explicit registries, as in `Eval.prepare`.
-Preparation errors return `{:error, reason}`. A routing miss/error/ambiguity is
-instead returned as `{:ok, handler_message}`, so the application's callback
-chooses how to handle it. No-match retains original input; halted/unrouted
-messages retain the corresponding pipeline output, just like a live turn.
-The helper neither calls the handler nor creates a Turn or records Evidence.
-Host pipelines/adapters still run ordinary code: absence of a Domain is not
-proof that a supplied callback performs no I/O.
+`nil` is appropriate here only because this callback ignores the Turn.
+If your handler needs authenticated context, test it through a real Instance.
+
+`route_message/4` does not create a Turn, record Evidence or submit a request.
+For custom methods and pipelines, pass explicit `adapters` and `pipelines`.
+Those callbacks are still ordinary host code, not sandboxed pure functions.
+
+Preparation failures return `{:error, reason}`.
+Routing misses, ambiguity and errors become `{:ok, handler_message}`, allowing
+you to test the application's chosen response.
+
+Nested Skill paths use the Skill's local handler names. Call the owning Skill
+with its own state, not the parent handler.
 
 ## Check routing behavior before changing a classifier
 
-`spectre.routes` displays structure; `spectre.eval` measures agreement with
-explicit examples. An example dataset looks like this:
+Use `spectre.routes` to inspect structure.
+Use `spectre.eval` to check behavior against examples.
+
+A JSONL file contains one case per line:
 
 ```jsonl
 {"input":"hello Ada","expected":{"status":"matched","rule":"greetings/hello","via":"regex"}}
@@ -99,24 +99,27 @@ explicit examples. An example dataset looks like this:
 {"input":"refund order 42","expected":{"status":"no_match"}}
 ```
 
-Use qualified **rule** names printed by `spectre.routes`, not kernel classes.
-`via` is optional: include it only when changing the matching method should
-itself count as a regression. Other expected statuses are `ambiguous` with a
-`rules` list, `halted`, `unrouted`, and `error`. Ambiguity compares the rule set,
-not its order. A callback failure is not a miss. Malformed and empty datasets
-fail the command; they cannot produce a green zero-case report.
+`rule` uses the qualified name printed by `spectre.routes`, not a kernel
+action class. Include `via` only if changing the method should count as a
+regression too.
 
-`--flow greetings` is mandatory. `--max-cases 10000` rejects oversized datasets
-rather than silently testing a prefix. `--max-failures 20` limits retained
-details, not the number of evaluated mismatches. The command prints totals and
-failed physical line numbers, then fails CI if any expectation differs. It
-does not print input, captures, vectors or private callback error messages.
+Supported expected statuses are matched, ambiguous, no_match, halted, unrouted
+and error. An ambiguous expectation has a `rules` list whose order does not
+matter.
 
-For custom adapters, semantic caches, pipelines or captured classifier outputs,
-use `Spectre.Eval.run/3` / `run_file/3` from an application test with its prepared
-Router or `Spectre.Agent.Flow`. `Eval.prepare/3` can also prepare current compiled
-Agent, Router or nested Skill code with explicit `:adapters` and `:pipelines`.
-The CLI supplies neither wiring nor implicit application startup.
+### What the CLI checks
+
+- `--flow` is required.
+- `--max-cases` defaults to 10,000; oversized input is rejected, not silently
+  truncated.
+- `--max-failures` defaults to 20 retained details. Every case is still checked.
+- Empty or malformed datasets fail.
+- Any mismatch fails the command.
+
+Reports identify failed lines without printing inputs, captures or private
+callback error messages.
+
+### Use the same evaluator from ExUnit
 
 <!-- spectre:example routing_evaluation -->
 ```elixir
@@ -133,17 +136,131 @@ cases = [
 0 = report.failed
 ```
 
-`run/3` also accepts a function of one input returning the normal routing result.
-That lets a test replay recorded classifier nominations through the existing
-`Spectre.Agent.Classification` bridge or query a preloaded cache. Captured
-vectors must use the same embedding profile as that cache. The harness never
-trains/promotes cache entries, obtains embeddings, calls models, runs handlers,
-or proves GAM authorization. Explicit host callbacks remain ordinary code:
-the harness does not sandbox them or establish that they are pure.
+For a cache, pipeline or captured classifier result, use a prepared Router or
+Flow with `Spectre.Eval.run/3` or `run_file/3`.
+`Eval.prepare/3` can prepare an Agent, extracted Router or nested Skill with
+explicit wiring.
+
+`run/3` also accepts a function returning the ordinary routing result.
+That lets you replay recorded classifier nominations or query a preloaded
+cache without asking a live model.
+
+Eval does not run handlers, dispatch effects, train models or prove authority.
+A supplied callback can still perform I/O; the evaluator does not sandbox it.
+
+## Agent integration tests
+
+Once routing works, test the path into your actual governed operation.
+
+For the order Agent, useful cases include:
+
+1. A covered order produces one admitted lookup.
+2. An uncovered order never reaches the executor.
+3. Missing required Evidence produces `:undecidable`, not a provider call.
+4. An executor timeout does not produce a retry.
+5. A later receipt is recorded without repeating the lookup or overwriting
+   newer conversation state.
+
+Test Agents both with and without Skills. Include adapter failures, ambiguous
+routes, checkpoint restoration and governed Definition changes.
+
+### Test concurrency deliberately
+
+Hold a callback behind a test-controlled barrier. While it is waiting, read
+Instance state, change authority or stop the Domain. Then release the callback
+and inspect what is accepted.
+
+This tests the actual ordering. Sleeping for an estimated interval and hoping
+two processes overlap is a weaker test.
+
+For streaming, include preview/delivery paths and ensure no governed content is
+sent before authorization. Stopping the UI must not become a successful
+Outcome or Duty resolution.
+
+### Find existing whole-agent tests
+
+Shared fixtures are in `test/support/`; each test gets isolated state.
+
+| Scenario | Test source under `test/core/` |
+| --- | --- |
+| Basic agents, Skills and Instance lifecycle | `full_agents_test.exs` |
+| Information lineage, governance, Duties, consent and external payloads | `agents_information_test.exs`, `agents_governance_test.exs`, `agents_duty_test.exs`, `agents_consent_test.exs`, `agents_payload_test.exs` |
+| Regex, string-bag, custom matching and input pipelines | `routed_agents_test.exs` |
+| Routed checkpoints/Morph, provenance/isolation and durable recovery | `routed_agents_lifecycle_test.exs`, `routed_agents_provenance_test.exs`, `routed_agents_recovery_test.exs` |
+
+
+Use `full_agent_case.ex` and `routed_agent_case.ex` for common host wiring,
+but keep the scenario's assertions beside the test.
+
+### Real semantic-cache integration
+
+The root test dependencies include Vettore and ExFastembed.
+They are not production dependencies.
+
+The first native build needs Rust. The first embedding-model load downloads
+`BAAI/bge-small-en-v1.5` (384 dimensions); cache it in `.fastembed_cache/`.
+
+Run the focused integration tests with:
+
+```sh
+MIX_ENV=test mix deps.get
+mix test test/agents/semantic_cache_vettore_test.exs \
+  test/agents/semantic_cache_real_embeddings_test.exs \
+  test/agents/semantic_cache_real_agent_test.exs \
+  test/agents/optional_cache_dependencies_test.exs --seed 42
+```
+
+They also run in the ordinary suite. They use native Flat/HNSW search and real
+model-generated vectors. Whole-agent cases continue through admission,
+execution, Outcome and offline audit.
+
+A missing model or failed download is a failure, not a skipped test.
+Separate VM tests check that Spectre and Exact work without either native
+dependency.
+
+## Trace the law through the whole lifecycle
+
+Do not stop at “the callback returned ok.”
+
+| Property | What to assert |
+| --- | --- |
+| Authority cannot grow | Child permissions and budgets do not exceed their source |
+| Record before capability | No executor/broker call on refusal or unconfirmed commit |
+| Preserve causality | Late receipts survive revocation/restart; uncertain effects are not retried |
+| Duties need resolution | Timer expiry or the responsible actor alone cannot silently close one |
+| Preserve information constraints | Consent, source labels and erased support remain meaningful through replay |
+| Exact canonical records | Reject malformed fields, non-integer revisions and wrong identities |
+
+Prefer the public ingress/governance path for lifecycle tests.
+Directly constructing a projection can test a helper, but does not establish
+that the running application can obtain that authority.
+
+Inspect ledger records, callback counts and both sides of Meter accounting.
+
+## Faults and differential checks
+
+Test failures at the boundaries where uncertainty changes meaning:
+
+- before the write;
+- after commit but before acknowledgement;
+- after Attempt/grant consumption;
+- during broker checkout;
+- after the external effect but before its receipt.
+
+Also test altered storage: missing batches, wrong keys, malformed timestamps,
+bad digests and impossible transitions.
+
+A fully rewritten but internally consistent history needs an independent
+witness to detect. A hash-chain test cannot establish that guarantee alone.
+
+A **differential test** compares two ways of deriving the same answer.
+For example, compare an incremental index with exhaustive derivation over the
+same history, or live replay with offline audit.
+Use real transition sequences as well as isolated helper fixtures.
 
 ## Development checks
 
-From the repository, with Elixir `~> 1.19` and the supported OTP version:
+From the source repository:
 
 ```sh
 mix deps.get
@@ -154,105 +271,20 @@ mix test --seed 42
 mix test --cover
 mix credo --strict
 mix dialyzer
-mix docs --warnings-as-errors
-mix hex.build
 git diff --check
 ```
 
-Benchee is development-only; provider/database libraries are not implicit
-runtime dependencies. Tests use host doubles and deterministic fixtures, but
-those doubles are not proof of a real PostgreSQL, Mnesia cluster, S3 or network
-deployment. Run integration tests against the deployment you intend to claim.
+The checks complement each other. Static analysis does not detect every
+ordering error, duplicated test name, misleading operator instruction or
+history-dependent performance problem.
 
-## Trace the law through the whole lifecycle
-
-| Property | Assertions beyond happy-path output |
-| --- | --- |
-| Authority never grows | Child coverage/Meters do not exceed ancestors; restriction/revocation survive replay; evidence cannot choose a new principal |
-| Record before capability | No broker/executor call on refusal, incomplete/ambiguous commit or invalid receipt; Attempt is durable before checkout |
-| Causality is not rewritten | Late observation after revocation/restart is recorded; no-effect and ambiguous results are not conflated; no blind executor retry |
-| Duty does not self-extinguish | Deadline derives debt; timer alone never disposes it; responsible/conflicted actors cannot self-clear it |
-| Information flow remains bound | Consent occurrence, assumption DAG, counterproofs, erased parents and labels survive complete-agent paths |
-| Canonical facts are exact | Integer/float confusion, duplicate fields, wrong keys, malformed frames, wrong Domain and hash/identity mismatch are rejected |
-
-Use a real admitted setup and normal ingress/governance paths where possible.
-Manually inserting a root Mandate into a projection can test a pure helper; it
-does not prove an application can obtain that authority through the runtime.
-Assert callback order/cardinality, forbidden calls, ledger records and both
-sides of the accounting transition, not just `{:ok, _}`.
-
-## Agent integration tests
-
-Exercise agents without Skills, with namespaced Skills, with Extension ports,
-and after a governed Morph. Include regex/string-bag/custom binary routing,
-ties, misses and adapter failures. The selected Candidate must still be denied
-when the current authority or evidence does not cover it.
-
-Stateful Instance tests need barriers, not timing guesses: hold a callback until
-the test explicitly releases it, read state during the hold, change authority,
-stop the Domain and deliver a late result. Verify that only an allowed successful
-completion changes local state and that no stale worker resurrects a fenced Scope.
-
-For [streaming integrations](integration-and-streaming.md), assert that governed
-content is not delivered before admission, new input does not rewrite an old
-Act's evidence basis, interrupted provider work stays uncertain when appropriate,
-and local cancel is not a successful Outcome or Duty disposal.
-
-The complete-agent suites are organized by scenario rather than one growing
-file. Shared `ExUnit.CaseTemplate` fixtures live in `test/support/`; they start
-isolated state for each test, not a shared Domain for the whole suite.
-
-| Scenario | Test source under `test/core/` |
-| --- | --- |
-| Basic agents, Skills and Instance lifecycle | `full_agents_test.exs` |
-| Information lineage, governance, Duties, consent and external payloads | `agents_information_test.exs`, `agents_governance_test.exs`, `agents_duty_test.exs`, `agents_consent_test.exs`, `agents_payload_test.exs` |
-| Regex, string-bag, custom matching and input pipelines | `routed_agents_test.exs` |
-| Routed checkpoints/Morph, provenance/isolation and durable recovery | `routed_agents_lifecycle_test.exs`, `routed_agents_provenance_test.exs`, `routed_agents_recovery_test.exs` |
-
-Use `test/support/full_agent_case.ex` and `test/support/routed_agent_case.ex`
-for common host wiring and ledger/accounting assertions. Keep scenario-specific
-assertions alongside their tests, so the property under examination stays visible.
-
-### Real semantic-cache integration
-
-`vettore` and `ex_fastembed` are test-only dependencies in the root project.
-There is no separate adapter package or alternate Mix configuration. The first
-test build compiles native code and requires a Rust toolchain; the first model
-load downloads `BAAI/bge-small-en-v1.5` (384 dimensions). Reuse `.fastembed_cache/`
-between runs. Models and compiled native libraries are not Spectre runtime
-dependencies or release artifacts.
-
-```sh
-MIX_ENV=test mix deps.get
-mix test test/agents/semantic_cache_vettore_test.exs \
-  test/agents/semantic_cache_real_embeddings_test.exs \
-  test/agents/semantic_cache_real_agent_test.exs \
-  test/agents/optional_cache_dependencies_test.exs --seed 42
-```
-
-These tests also run in the ordinary full suite. Flat/HNSW searches use real
-native indexes; held-out customer paraphrases use actual model output, not
-hand-written vectors. The complete-agent tests continue through governed
-admission, execution, recorded Outcome and offline audit. A missing model or
-failed download is a test failure, never a silent skip. Separate VM tests check
-that Spectre and the Exact cache still work without either native dependency.
-
-## Faults and differential checks
-
-Inject failure before commit, after durable commit but before acknowledgement,
-after Grant consumption, during broker checkout and after the external action
-but before its receipt. Independently tamper with storage keys, batches, counts,
-timestamps, digests and entire internally consistent histories. The last case
-requires an external witness to detect: a hash chain alone cannot do it.
-
-Compare indexed/incremental facts to the exhaustive pure derivation over the
-same verified prefix. Compare live fold and offline export audit. Keep raw
-state fixtures for helper tests, but include real transition sequences: otherwise
-an index test can agree with an equally incomplete fixture.
+Tests using scripted backends do not qualify a real PostgreSQL deployment,
+Mnesia cluster or remote payload store. Add fault tests for the backend and
+deployment you intend to rely on.
 
 ## Performance and memory
 
-The development benchmark suite can be run with:
+The source checkout includes development benchmarks:
 
 ```sh
 mix run bench/suite.exs --quick
@@ -261,57 +293,44 @@ mix run bench/suite.exs --phase growth --stores ets,disk_compressed \
 mix run bench/authority_reads.exs --quick
 ```
 
-These scripts are repository development assets, not Hex package commands.
-See `bench/README.md` in the source checkout for all options and units.
-Quick runs check the workloads, not p99 stability. The focused authority
-microbenchmark is not a complete agent benchmark.
+These scripts are not shipped as Hex package commands. See `bench/README.md`
+in the source checkout for options and units.
 
-Measure completed cycles, CPU reductions, append counts/bytes, payload verify
-calls, sequencer heap, backend ETS/process memory and physical ledger bytes
-separately. Include external payloads, consent, completed erasure, concurrent
-proponents, overload and recovery. A compressed store or flat CPU curve does
-not imply bounded total memory. Record environment, revision, dirty status,
-sample counts and whether explicit GC changed the measurement.
+A quick run checks that the workload works. It does not establish reliable
+tail latency—the slowest requests—or months of sustained service.
+
+Measure elapsed time, CPU work, ledger growth, external payload calls and
+process/store memory separately. Include consent, erasure, concurrent requests,
+overload and recovery. State the revision, environment and sample count, and
+whether you forced garbage collection.
+
+Compression or flat CPU cost alone does not prove bounded total memory.
 
 ## Documentation is an executable artifact
 
-The release-artifact tests check that published guides exist, are included in
-the package and do not link to missing local files or Markdown sections.
-**Every fenced Elixir block**
-in the published guides must have a unique `spectre:example` marker and an
-explicit test context in `test/core/documentation_examples_test.exs` or
-`test/core/documentation_recipes_test.exs`. Removing
-a marker fails verification rather than silently dropping the example.
-Wiring fragments execute with explicit test-host foundations and resources;
-Agent/Stack body fragments compile inside the declared module context.
-The tests render the distributed prompt file, exercise custom/semantic routing,
-start the real Domain and verify admitted, undecidable and pending paths.
-They do not create a permissive production foundation or simulate a provider.
+The guides' Elixir examples are checked by tests, including setup fragments
+that need explicit host fixtures.
 
-The complete authoring listing in the recipes is checked byte-for-byte against
-`examples/authoring.exs` and compiled in that file's declared location, beside
-its prompt directory. Links to the listing target the guide, not a raw `.exs`
-path that would work on GitHub but be missing from generated HexDocs.
+Every fenced Elixir example needs a unique `spectre:example` marker and a
+test context in the documentation tests. Removing the marker fails verification;
+it does not quietly remove that example from the suite.
 
-After generation, `mix run scripts/check_documentation_links.exs doc` checks
-local files and fragments in the actual HTML site. CI runs it too. This catches
-relative source links and callback anchors that a successful ExDoc build alone
-can miss. It does not certify external websites or unpublished source commits.
+The full recipe listing is checked against `examples/authoring.exs`.
+Its prompt file must stay in the matching location.
 
-While 0.4 is unreleased, source links target its development branch. After the
-release commit/tag is published, generate release docs with the explicit ref:
+After generating HTML, check the actual links:
 
 ```sh
-SPECTRE_DOCS_REF=v0.4.0 mix docs --warnings-as-errors
+mix docs --warnings-as-errors
+mix run scripts/check_documentation_links.exs doc
 ```
 
-`SPECTRE_DOCS_REF` only changes documentation source links. It does not select
-an Agent Definition, change runtime behavior or create/push a Git tag. New
-source files are accessible remotely only after the host repository is pushed.
+This catches missing pages and section anchors. It does not verify external
+websites or guarantee that a source commit has been pushed.
 
 ### Build locally before publishing
 
-From a source checkout, run the artifact checks without uploading anything:
+These checks create local artifacts only:
 
 ```sh
 mix compile --warnings-as-errors
@@ -327,30 +346,29 @@ mix hex.build --unpack --output "$package_dir"
 mix run scripts/check_package.exs "$package_dir"
 ```
 
-`hex.build` creates a local artifact, not a release. `hex.audit` checks Hex
-dependency advisories, not application security or the host's adapters. Keep
-the unpacked package for inspection; it contains the public guides and runtime
-source, not test dependencies, model downloads or private planning notes.
+`hex.build` does not publish. `hex.audit` checks dependency advisories,
+not the security of your application.
 
-Before publishing, also complete CI's isolated production-build check, review
-the current [capability limits](capabilities.md), update the release status/date,
-and ensure the intended source tag exists remotely. Use that same
-`SPECTRE_DOCS_REF` when generating documentation for publication. Publication
-and Git tagging are explicit maintainer actions, never performed by these checks.
+Before publishing, finalize the release status/date, review the
+[documented limits](capabilities.md), and ensure the intended source tag exists
+remotely. Generate published documentation with that tag:
 
-CI uses the root `mix.lock` for all test dependencies. The ordinary matrix runs
-real embeddings and the >=60-second Worker/Vigil/Skill lifecycle, with a cached
-model download and no separate checkout or opt-in lane. The benchmark smoke job
-runs the development Benchee suite and uploads latency/ledger/memory results;
-it is not a throughput guarantee on a shared runner. Coverage remains a separate
-gate at the configured 95.5% threshold, not evidence that every contract is correct.
+```sh
+SPECTRE_DOCS_REF=v0.4.0 mix docs --warnings-as-errors
+```
 
-The package job compares the unpacked release byte-for-byte with `mix.exs`'s
-file manifest. It also compiles in a fresh production directory and starts
-Spectre/Exact with Vettore and ExFastembed absent from the code path. Residual
-native files in a developer's `_build` cannot make this isolation check pass.
+That variable changes source links only. It does not create or push a tag.
 
-ExDoc and Hex packaging must both succeed. The landing page, capability
-inventory and trust assumptions must describe the same version. A clean
-compiler, Credo and Dialyzer result cannot detect duplicated ExUnit names,
-incorrect operator advice, network-effect ordering or quadratic runtime work.
+### What CI checks
+
+The ordinary test matrix includes native embeddings and the one-minute
+Worker/Vigil/Skill lifecycle. Coverage has a separate 95.5% gate.
+The benchmark job is a smoke run with measurements, not a production SLO.
+
+The package job compares files byte-for-byte with the manifest and performs
+a fresh production build. It starts Spectre/Exact with Vettore and ExFastembed
+absent, so an old local build cannot hide a dependency leak.
+
+Keep library checks and deployment qualification separate.
+The release should state the guarantees and limitations it actually has,
+without promising that every external integration has been qualified.

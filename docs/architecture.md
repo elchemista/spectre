@@ -1,305 +1,333 @@
-# Architecture and the GAM boundary
+# Architecture: follow one request
 
-This guide describes the current 0.4 runtime, not the removed 0.3 runtime.
-Read [the governed surface](../GOVERNED_SURFACE.md) for the deployment assumptions
-and [the capability inventory](capabilities.md) for what is not implemented.
-The [Governed Act Model](../GOVERNED_ACT_MODEL.md) is the normative model;
-this guide maps its concepts to code.
+You do not need to understand the whole kernel to write an agent.
+
+Start with this distinction: **the agent suggests what to do; the application
+decides what it may do; an executor performs the allowed operation.** Spectre
+keeps a record of those steps so that a suggestion cannot quietly become an
+action.
+
+This guide follows a refund through that process, then shows where the code
+lives. If you want to write a handler first, start with
+[building an agent](agents-and-dsl.md). For the exact guarantees and trust
+assumptions, keep [the governed surface](../GOVERNED_SURFACE.md) as a reference.
 
 ## Start with the problem, not the implementation
 
-An agent proposes a €50 refund. Three different questions follow:
+A customer says: “Please refund order 42.”
 
-1. **Is it a sensible suggestion?** Your handlers, Router and optional models
-   help answer this. They may still be wrong.
-2. **May this exact refund be attempted?** The kernel checks the declared
-   class, Mandate, evidence, recipients, purpose, consent and available budget.
-3. **Did the refund happen?** The executor's observations answer this after
-   the recorded authorization. A lost response may leave it unresolved.
+Your agent might propose a €50 refund. That leaves three separate questions:
 
-The new kernel keeps these questions separate. It is not an LLM safety prompt,
-Router, provider SDK or background agent loop. It is a deterministic function
-over an exact proposal and verified facts; the surrounding Domain makes the
-result durable before any governed capability is released.
+1. **Is €50 the right suggestion?** Your handler, business logic or model works
+   this out. It can still make a mistake.
+2. **Is this agent allowed to attempt that refund?** Spectre's kernel checks
+   the permission, the order, the supporting facts and the remaining budget.
+3. **Did the payment service actually refund the money?** The executor reports
+   what it observed. A lost response might leave the answer unknown.
 
-The host defines `refund.issue` as its own action class. That name has no magic
-meaning to the kernel. Its Surface explains the action's payload and powers;
-its Mandate limits who may propose it. The executor implements the actual
-payment-service contract. Changing a model or Router does not require changing
-those core admission rules.
+Passing step 1 does not pass step 2. Passing step 2 does not prove step 3.
+
+The name `refund.issue` is an application-defined **class**: a name for one
+kind of governed action. Spectre does not contain special business logic for
+your refund service. Your application declares the class and supplies the
+implementation.
+
+## From input to an external effect
+
+For an Agent written with the DSL, the path looks like this:
+
+```text
+Input
+  → Router chooses a handler
+  → handle_turn prepares a request
+  → host calls advance
+  → kernel decides whether this exact request is allowed
+  → ledger records the authorization
+  → executor attempts the operation
+  → observations are recorded
+  → handle_result decides what to prepare next
+```
+
+Routing and model use are optional. A handler can receive structured input
+directly. A model can help prepare a request, but the kernel does not call it.
+See [agent recipes](agent-recipes.md) for these combinations.
+
+### Before the application submits anything
+
+`Instance.turn/3` processes input and returns prepared requests. Think of a
+request as a ticket saying “this is the operation I suggest.” It is not an
+execution credential.
+
+The application chooses a ticket and calls `Instance.advance/3`. It may do
+that immediately, after a UI interaction, or according to its own workflow.
+GAM does not require a human approval for every request.
+
+### When the request is submitted
+
+The kernel checks the complete proposal against the current rules and facts.
+It returns a **Decision**. If admitted, the authorized operation is recorded
+as an **Act**.
+
+For an external operation, Spectre then records an **Attempt** before asking
+the broker for the capability used by the executor. The broker is your
+application's credential-access boundary; handlers do not receive its keys.
+
+The ordering matters: a failed or uncertain ledger write must not be treated
+as permission to call the external service.
+
+Some governance changes happen entirely through ledger transitions. Those do
+not need an external executor Attempt.
+
+### When the service responds—or does not
+
+An **Outcome** records what the observations support. Success, failure,
+definite no effect and ambiguity are different results.
+
+If the payment service times out, Spectre does not assume that no money moved.
+It does not automatically repeat the refund. Budget may remain held, and an
+unresolved obligation—a **Duty**—may need investigation.
+
+A receipt arriving later can still be recorded, even after the agent's
+permission has been revoked. Revocation prevents new use of authority; it
+does not erase what happened earlier.
+
+## Four different kinds of fact
+
+These are the four names you will encounter most often:
+
+| Name | Read it as | Refund example |
+| --- | --- | --- |
+| Mandate | Permission with limits | This proposer may refund covered orders within this budget and time window |
+| Evidence | Information supporting or contradicting a claim | A payment receipt or a disputed delivery record |
+| Act | The exact operation recorded as authorized | Attempt a €50 refund for order 42 |
+| Duty | Something that still needs a responsible resolution | Find out whether the timed-out refund happened |
+
+Evidence is not permission. A message saying “the customer asked for it” can
+support a fact about the request; it cannot grant refund authority.
+
+A Duty does not disappear because a timer elapsed. Resolving it requires the
+appropriate recorded action and authority, including the required independence
+from those responsible for the original operation.
+
+## A few names worth keeping separate
+
+### The application, the running agent and the shared rules
+
+- **Host:** your Elixir application and its deployment.
+- **Definition:** a published version of an agent's declarations and code
+  identity. It is data, not a running process.
+- **Instance:** the OTP process holding one agent's local state.
+- **Scope:** the authenticated interaction or unit of work that an Instance
+  is bound to.
+- **Domain:** the shared rules, accounting and ordered history used by one
+  or more Scopes.
+
+For example, several support conversations can have separate Instances in the
+same tenant Domain. Starting another conversation does not create more refund
+budget.
+
+### The proposed operation
+
+A **Candidate** is the complete proposal presented to the kernel. Its
+**consequence** describes the actual operation: the order, amount, recipient
+or model request.
+
+A **Surface** is the application's catalog of governed classes and their
+contracts. A **Condition** says which supporting facts must be established.
+A **Meter** accounts for a limited quantity, such as a spend budget.
+
+You usually work with requests and handlers. The authoring layer builds the
+Candidate using your request data and the host's bindings; you do not manually
+construct every GAM record on every turn.
 
 ## What is a Row?
 
-A `Spectre.Row` is a **small boolean summary of the types of power an action
-uses**. It is not a database row, a route, an ACL or a permission granted by the
-Agent. The name comes from an effect row: a set of declared effects.
+A Row answers one small question: **what kinds of power does this action use?**
 
-For an external order lookup, `attempt: true, read: true` means “attempt an
-external operation that reads a resource”. The Mandate must allow both powers
-and also cover the exact class, order, proposer, time and purpose. An allowed
-power type is not permission to act on every resource of that type.
+It is not a database row or a Router rule. It contains boolean flags, not
+money amounts, resource IDs or credentials.
 
-| Dimension | Meaning in an application |
+For an external order lookup, `attempt: true, read: true` says:
+
+- an external operation will be attempted;
+- that operation reads a resource.
+
+It does **not** say “read any order.” The class, exact target, Mandate and other
+checks still limit which order may be read.
+
+| Flag | Meaning |
 | --- | --- |
-| `attempt` | Carry out an external attempt through dispatch/executor |
+| `attempt` | Attempt an external operation |
 | `observe` | Establish an observation through a declared boundary |
 | `read` | Read a resource |
 | `write` | Change a resource |
 | `disclose` | Release information to specified destinations |
-| `spend` | Consume a declared resource budget |
-| `delegate` | Transfer narrower authority, not duplicate it |
-| `govern` | Change governed authority/configuration through a recorded action |
+| `spend` | Use a limited resource budget |
+| `delegate` | Pass on narrower authority |
+| `govern` | Make a governed change to authority or configuration |
 | `present` | Present material relevant to consent |
 
-Omitted dimensions are false. Rows do not contain money amounts, order IDs or
-provider credentials. Those belong to the consequence, its exact bindings,
-the Mandate and Meter accounting. The kernel checks that the Candidate's Row
-matches its Surface class and fits within the Mandate's ceiling.
+Omitted flags are false. The host declares the Row on the Surface class.
+The normal request builder reads it from there; an agent handler does not
+choose its own powers with a `row:` option.
 
-You normally declare the Row in host setup, **not in Agent handlers**.
-`RequestBuilder` obtains it from the actual Surface. The
-[lookup example](host-setup.md#connect-a-handler-to-a-governed-action) shows the
-Row, a closed consequence contract and the host binding map together.
-
-## A few names worth keeping separate
-
-| Name | Plain meaning |
-| --- | --- |
-| Surface | The versioned catalog of actions the application governs |
-| Consequence | The exact proposed payload: which order, recipient, amount or model request |
-| Condition | A fact that must be established from appropriate Evidence, not simply asserted by the model |
-| Meter | Accounting for a limited quantity; a reservation is not yet settled spending |
-| Candidate | A complete proposal before authorization; contains no execution credential |
-| Decision | The kernel's answer: admitted, refused, undecidable or unknown class |
-| Attempt | The recorded beginning of an admitted external operation; distinct from success |
-| Outcome | What the observed result supports: success, failure, definite no effect or ambiguity |
-| Grant | An internal short-lived execution capability, not a value handlers should hold |
-| Definition | Immutable agent code/configuration publication; not an active process |
-| Constitution | The Domain's pinned Duty/disposition rules, not the agent's system prompt |
-
-The four GAM records below connect those concepts. Ordinary authoring does not
-require constructing each record manually for every turn.
-
-## Four different kinds of fact
-
-| Concept | Question answered | Main modules |
-| --- | --- | --- |
-| Mandate | Who may exercise which authority, for whom, with what limits? | `Spectre.Mandate`, `Spectre.Kernel.Authority`, `Spectre.Mandate.Ancestry` |
-| Evidence | What supports or contradicts a proposition, from which sources? | `Spectre.Evidence`, `Spectre.Condition`, `Spectre.Kernel.Recognition` |
-| Act | Which exact consequence was admitted and durably authorized? | `Spectre.Candidate`, `Spectre.Decision`, `Spectre.Act`, `Spectre.Kernel.Commit` |
-| Duty | What causal debt remains, and who can independently dispose of it? | `Spectre.Duty`, `Spectre.Duty.Derive`, `Spectre.Duty.Disposition`; internal checks in `lib/spectre/core/duty/authority.ex` |
-
-A Candidate is not an Act. Evidence that a user wants something is not a
-Mandate to do it. A successful function return is not proof of an external
-effect. An expired timer is not proof that a Duty has been discharged.
-
-## From input to an external effect
-
-```text
-Application intake / fixed Ingress
-  → authenticated Scope + observed Evidence
-  → Mind / local Router → Candidate                     Zone M
-  → Kernel evaluation → Decision                       pure boundary
-  → atomic commit: Act + accounting + dispatch facts    Domain / store
-  → internal Grant consumption → durable Attempt
-  → Broker → Executor → external system                effect boundary
-  → bound Evidence + Outcome → accounting / Duty
-```
-
-For the handler DSL, `Instance.turn/3` opens an authenticated Turn, runs the
-selected flow and prepares requests; `Instance.advance/3` submits one choice.
-The optional model is itself reached through a request, not called by the
-kernel. See [the combinations](agent-recipes.md).
-
-For the lower-level custom-Mind path, `Spectre.turn/3` records observations before invoking the Mind. The Mind runs
-outside the Domain sequencer, receives a capability-free `Spectre.Mind.Turn`,
-and returns proposals. Routing happens here, before kernel evaluation.
-
-`Spectre.propose/3` takes one proposal through admission and, where applicable,
-execution. The sequencer orders it against the current verified prefix.
-`Spectre.Kernel.evaluate/4` performs no I/O: it checks the Surface, authenticated
-claims, authority, Conditions, consent, information flow and Meter availability.
-
-An admitted world Act does not immediately call the executor. Its commit must
-be confirmed first. Grant consumption records an Attempt before the broker
-releases a capability. `Spectre.Attempt.Runner` invokes the selected executor;
-it does not retry an uncertain external effect. Intrinsic governance Acts can
-complete through their recorded transitions without an external Attempt.
-
-Finally, bound observations support an Outcome. Settlement, release and
-suspension are different accounting transitions. Ambiguity can retain a Meter
-reservation and derive a Duty. Late observations remain recordable after
-revocation: revocation prevents future authority, not historical truth.
-
-## One semantics, two drivers
-
-`Spectre.GovernedAct.Fold` verifies canonical entries and applies deterministic
-transitions. `Spectre.Domain.Projection` drives live/recovery replay;
-`Spectre.Audit` drives an independently obtained canonical export. They share
-the rules, not a trusted copy of the live read model.
-
-| Code family | Responsibility |
-| --- | --- |
-| `Spectre.Domain.Event`, `Spectre.Canonical.Value`, `Spectre.Ledger.Entry` | Event grammar, portable encoding, identities and chain verification |
-| `Spectre.GovernedAct.Transition.Foundation` | Genesis and governed artifact revisions |
-| `Spectre.GovernedAct.Transition.Authority` | Subtractive delegation, restriction, revocation and Meter transfer |
-| `Spectre.GovernedAct.Transition.Admission` | Recheck Decision/Act bindings during replay |
-| `Spectre.GovernedAct.Transition.Execution` | Dispatch and Attempt lifecycle |
-| `Spectre.GovernedAct.Transition.Information` | Evidence and information lineage |
-| `Spectre.GovernedAct.Transition.Duty` | Opening, authorized disposition and associated accounting |
-| `Spectre.GovernedAct.Batch`, `Spectre.GovernedAct.Completeness` | Cross-entry atomicity and complete-prefix invariants |
-| `Spectre.GovernedAct.Commit`, `Spectre.Domain.Transaction` | Pure prepared batch versus host-side durable commit/recovery |
-| `Spectre.Domain.Command.Durability` | Command preflight and recovery of required materializations |
-
-Do not add business policy by pattern-matching a new application class in the
-kernel. Declare the class in a `Spectre.Surface`, with its consequence contract,
-and implement its host executor. The built-in governance classes have explicit
-runtime semantics. `Spectre.Consequence.Validator` resolves a closed registry;
-ledger data cannot name arbitrary executable validation code.
-
-### Following the commit boundary in code
-
-`Spectre.Kernel.Commit.payloads/3` turns an evaluation into proposed event data.
-It does not persist it. `Spectre.GovernedAct.Commit.prepare/4` builds the exact
-entry batch and folds it against the current prefix. Its resulting State is
-still provisional. `Spectre.Domain.Transaction.append_exact/4` owns the write;
-`Spectre.Domain.Recovery` confirms its receipt or reads back the actual durable
-records. An exact receipt match permits reuse of the prepared fold, not a
-second interpretation of the same events. A failed confirmation is not proof
-that nothing was written.
-
-Only then may `Spectre.Domain.Command.Execution` mint a Grant. Consumption
-checks current authority again and records an Attempt before issuing the
-checkout receipt. This is why neither a valid template, a kernel result nor a
-prepared transaction can substitute for the durable execution boundary.
-
-On the return path, the classifier in `lib/spectre/core/attempt/runner/observation.ex`
-interprets the executor's report; `lib/spectre/core/outcome/attestation.ex` supplies
-the shared causal binding checks used by classification and replay. Relevant contradictory
-Evidence may support an ambiguous Outcome; it cannot establish success.
-These checks establish recorded consistency, not a cryptographic signature
-or independently authenticated provider identity.
-
-### Public workflows and storage internals
-
-`Spectre` keeps the documented application API. Its internal workflows are
-ordinary function calls in the caller's process, not additional Domain owners:
-
-| Source | Responsibility |
-| --- | --- |
-| `lib/spectre/core/facade/access.ex` | Resolve live Domain addresses, validate host options and issue narrow authenticated queries; rebinding does not renew a Scope's authority or generation |
-| `lib/spectre/core/facade/proposal.ex` | Admission, execution orchestration and at most one declared refusal fallback; never retry an uncertain effect |
-| `lib/spectre/core/facade/observation.ex` | Record supported late Evidence before its Outcome, without re-executing the original Act |
-
-The disk adapter has a separate physical boundary. In
-`lib/spectre/core/ledger/store/disk.ex`, one owner serializes writes, checks prefix
-continuity and maintains its indexes. `disk/frame.ex` checks the bounded
-canonical storage envelope and batch identity; `disk/file_io.ex` performs file
-reads, writes and durability barriers. A valid frame alone is neither a durable
-commit nor a GAM authorization. Corrupt frames are rejected; only the owner's
-explicit incomplete-tail policy permits truncation.
-
-## Finding code in the repository
-
-- `lib/spectre/agents/`: Agent/Skill/Stack DSL, Instance, Router, templates,
-  context and optional integration adapters. Change authoring here.
-- `lib/spectre/core/`: governed records, kernel, Domain sequencing, replay,
-  execution boundary, ledger, erasure and audit. This owns GAM correctness.
-- `lib/spectre.ex`: public facade connecting host calls to those boundaries.
-- `lib/mix/tasks/`: development commands such as scaffolding, routing evaluation,
-  diagnostics and migration generation; not an agent runtime.
-
-Directories separate responsibilities; module names remain `Spectre.Agent`,
-`Spectre.Kernel`, and so on. There is no second DSL-specific kernel.
-
-There is no `lib/package` layer. `package/0` in `mix.exs` is Mix configuration:
-it lists the source files and public guides shipped to Hex, plus package
-metadata. It starts no processes and installs no optional integrations. The
-release check in `scripts/check_package.exs` verifies that the built package
-matches that manifest byte-for-byte; plans, checkpoints and development build
-artifacts are not part of the distribution.
+See [the order-lookup setup](host-setup.md#connect-a-handler-to-a-governed-action)
+for the Row alongside its target contract and executor binding.
 
 ## What owns state?
 
-| Owner | Contains | Is not |
-| --- | --- | --- |
-| Domain history | Committed causal records, authority and accounting facts | A conversation buffer that can drop old obligations |
-| `Spectre.GovernedAct.State` | Verified, rebuildable projection and indexes | An independent source of authority |
-| Domain sequencer | Ordering, current projection, host configuration, timers | The Mind or a media transport |
-| `Spectre.Instance` | One authenticated Scope, selected Definition, opaque local value | Another kernel or execution checkpoint |
-| Host workers | Input processing, planning, provider/transport integration | Permission to bypass an Act for a governed effect |
+There are three kinds of state. Keeping them separate makes integration easier.
 
-One Domain has one logical order; several Instances may share it. An Instance
-is one persistent OTP child, supervised by the application. A Definition is
-immutable data, not a process. `Spectre.Attempt.Runner` runs one governed
-attempt path; it is not an agent registry or scheduler.
+### 1. Agent state: “what am I working on?”
 
-Slow Ingress callbacks run in bounded temporary tasks, outside the sequencer.
-The Domain owns their links and monitors; worker failure returns an error,
-normal shutdown stops pending work, and an abnormal owner exit kills its tasks.
-There is no nested Task.Supervisor or automatic callback retry. Completion is
-revalidated against the current generation before anything is committed.
-This isolates callback latency, not arbitrary same-BEAM code or transport load.
+The Instance holds your local value and Skill substates. Examples include
+the selected order, a draft answer, or the next step in a workflow.
 
-The projection currently retains historical records. `ReadIndex`,
-`AuthorityIndex`, the Duty frontier and the erasure index reduce repeated
-semantic scans, but do not make total memory bounded. Ledger paging and disk
-compression do not remove the live projection's heap cost. See
-[storage and recovery](storage-and-recovery.md).
+One Instance is one persistent OTP child. Slow mutations run in a temporary
+worker so that state reads remain responsive. The host chooses how to supervise
+Instances and when to start Workers or Vigils.
+
+A local checkpoint saves application state. It does not restore authentication,
+execution credentials or permission to repeat an old effect.
+
+### 2. Governed state: “what is allowed, and what happened?”
+
+The Domain sequencer owns the ordering of changes and its current
+**projection**: records and indexes rebuilt from verified ledger entries.
+
+The ledger is the durable history. The projection is a working view of that
+history, not a second authority source.
+
+Several Instances can share a Domain. The Mind runs outside the sequencer;
+slow ingress callbacks also use temporary tasks owned by the Domain. Their
+results are checked again before being accepted.
+
+### 3. Application storage: “where do we keep the data?”
+
+Your adapters choose the databases and services for chat, memory, payloads and
+the ledger. Your application owns their supervision, backups and retention.
+
+There is an important current limit: Spectre's own projection retains
+historical records in memory. A different ledger backend changes persistence,
+not that internal retention. Paging reduces how much ledger data is read at
+once; it does not make the projection a bounded cache.
+
+See [storage and recovery](storage-and-recovery.md) for the adapter contracts
+and the distinction between host storage policy and library resource limits.
 
 ## Foundation, governance and authority
 
-Genesis pins the initial Principals, root Mandates, Surface, HostProfile and
-Constitution. The host supplies the external recognition of that foundation;
-constructing a valid record is not such recognition.
+A Domain needs initial rules before it can evaluate its first request.
 
-`Spectre.Foundation.new/2` is optional assembly assistance: it derives those
-links from explicit records and uses the same pure bootstrap fold. It returns
-ordinary host options, chooses no authority policy and never calls a verifier.
-Actual bootstrap and recovery still require external recognition through the
-configured Genesis verifier.
+The **foundation** supplies the actors, root Mandates, Surface, host assumptions
+and Duty rules. **Genesis** records the links to those exact initial records.
+The host's Genesis verifier says which foundation it recognizes.
 
-Root authority is introduced only at Genesis. At runtime,
-`Spectre.delegate_mandate/4` can create a narrower child; the historical
-`issue_mandate/4` name is an alias for delegation, not root issuance.
-Delegation transfers Meter availability rather than duplicating it.
+`Spectre.Foundation.new/2` helps assemble those links. It does not choose a
+budget, invent an administrator or authenticate a signature for you.
 
-Surface, HostProfile and Definition revisions are governed transitions with
-exact predecessor checks. The Constitution is deliberately immutable within a
-Domain in this implementation. Changing it requires a new Domain and explicit
-host treatment of the old obligations, not editing the stored Genesis.
+Once running:
 
-`Spectre.Governance` builds administrative Candidates. The facade's
-`revise_*`, `revoke_mandate`, `dispose_duty` and related functions submit them
-through normal admission. None is an administrative bypass. A host must grant
-the necessary class, target, Scope and accountable-party coverage; an
-authenticated administrator name alone grants nothing.
+- delegation may create narrower authority, not a new unrestricted root;
+- transferring budget to a child does not leave the same budget available
+  to spend on the parent;
+- changes to Surface, HostProfile and Definition go through governed actions;
+- the Constitution—the Domain's Duty and disposition rules—is immutable
+  within that Domain in 0.4.
+
+Changing the Constitution requires a new Domain and explicit handling of the
+old obligations. Editing Genesis in the database is not an upgrade procedure.
+
+The facade's `revise_*`, `revoke_mandate` and `dispose_duty` helpers build and
+submit normal proposals. An “admin” caller still needs the relevant authority.
+The older `issue_mandate/4` name is an alias for delegation, not root issuance.
 
 ## Information and consent
 
-Observed, derived and generated Evidence retain different provenance. Derived
-data cannot silently discard parents or their labels. A router score, model
-answer or transcription is not automatically an observed fact.
+Suppose an agent proposes sending a customer's order details to another service.
 
-`Spectre.Presentation` stores exact consent material. Preparing it does not show
-it. `Spectre.show_presentation/4` mediates delivery, and approval is bound to the
-material Candidate occurrence and qualified Evidence, not just an identical
-string. The internal evaluator in
-`lib/spectre/core/presentation/approval/assumptions.ex` checks the assumption graph,
-including contradictory or unavailable support.
+The system needs more than “the user clicked yes.” It needs to know what
+information would be sent, where it would go, and what material the user saw.
 
-`Spectre.Declassification` changes allowed information flow through an
-authorized new record; it does not rewrite provenance. `Spectre.Erasure`
-records a governed payload-erasure request and its verifiability consequences.
-Deleting bytes does not erase the Act, its Duty or its causal tombstone.
+A **Presentation** records that material. Preparing one does not show it.
+`Spectre.show_presentation/4` handles the declared delivery step. Approval is
+bound to the particular proposal and its supporting facts, not just matching
+text that could be reused for another occurrence.
+
+Information also keeps its source relationships and labels. A summary or
+transcription cannot quietly shed restrictions inherited from its sources.
+
+An authorized **declassification** changes permitted information flow through
+a new record. **Erasure** handles deletion of payloads and records its result.
+Neither operation rewrites the past or automatically closes related Duties.
+
+## How replay and audit check the same rules
+
+Recovery rebuilds the working state from the ledger. Audit checks a separately
+obtained canonical export. Both use the same pure transition rules.
+
+“Canonical” means that records have one defined encoding, so their digests can
+be checked consistently. “Fold” means applying entries in order to rebuild
+state. Neither term implies that the external provider told the truth.
+
+Sharing these rules avoids maintaining one interpretation for live operation
+and another for audit. The auditor reads the export; it does not simply trust
+the live projection.
+
+### Following the commit boundary in code
+
+For contributors tracing one write, read these in order:
+
+1. `Spectre.Kernel.Commit.payloads/3` builds proposed events.
+2. `Spectre.GovernedAct.Commit.prepare/4` builds and checks a provisional batch.
+3. `Spectre.Domain.Transaction.append_exact/4` asks the store to write it.
+4. `Spectre.Domain.Recovery` confirms the receipt or reads back the durable
+   records. An exact match can reuse the prepared state.
+5. `Spectre.Domain.Command.Execution` releases the internal Grant only after
+   that confirmation. Consuming it records the Attempt before broker checkout.
+
+A prepared batch is not a committed batch. A failed acknowledgement does not
+prove that nothing was written.
+
+Return-path checks live in `core/attempt/runner/observation.ex` and
+`core/outcome/attestation.ex`. They bind observations to the right Act and
+Attempt. They establish consistency, not independent provider authenticity.
+
+## Finding code in the repository
+
+Start in the part that matches what you want to change:
+
+| You want to work on… | Start here |
+| --- | --- |
+| DSL, handlers, prompts, Skills, routing or Instances | `lib/spectre/agents/` |
+| GAM records, authorization, accounting, replay or execution ordering | `lib/spectre/core/` |
+| Public host calls | `lib/spectre.ex` and `lib/spectre/core/facade/` |
+| Generators, routing evaluation and diagnostics | `lib/mix/tasks/` |
+
+Within the core, `governed_act/transition/` contains the rules for foundation,
+authority, admission, execution, information and Duty changes. `Batch` and
+`Completeness` check relationships spanning multiple entries.
+
+The disk adapter separates ledger ownership (`disk.ex`), frame validation
+(`disk/frame.ex`) and physical I/O (`disk/file_io.ex`). A well-formed frame is
+not, by itself, proof of durability or authorization.
+
+Application classes belong in a Surface and an executor, not new
+pattern-matching branches in the kernel. The built-in governance classes are
+different: they have explicit runtime semantics. Ledger records cannot name
+arbitrary executable validator code.
+
+There is no `lib/package` runtime. `package/0` in `mix.exs` only lists what
+ships to Hex. It does not install integrations or start services.
 
 ## Where to read next
 
-- [Agent authoring](agents-and-dsl.md): every current DSL declaration, Skills,
-  routing, Extension ports, Morph and Instance.
-- [Input, streaming and control](integration-and-streaming.md): what the app
-  decides, which builders it uses, and what chunking/cancel cannot mean.
-- [Storage and recovery](storage-and-recovery.md): three distinct store roles,
-  failure handling, clocks and audit.
-- [Testing and release](testing-and-release.md): how to test these boundaries,
-  including failures that static analysis cannot find.
+- [Build an agent](agents-and-dsl.md) for declarations and callbacks.
+- [Connect it to your application](host-setup.md) for permission and services.
+- [Handle streaming and cancellation](integration-and-streaming.md) for
+  long-running interactions.
+- [Operate storage and recovery](storage-and-recovery.md) for failure handling.
+- [Read the precise trust boundary](../GOVERNED_SURFACE.md) when reviewing a deployment.
+
+The [Governed Act Model](../GOVERNED_ACT_MODEL.md) is the formal model behind
+these explanations. You can use this guide without reading the whole model first.

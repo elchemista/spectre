@@ -1,94 +1,168 @@
-# Current capabilities and completion boundaries
+# What Spectre provides—and what you provide
 
-This inventory describes executable 0.4 APIs, not promises inferred from module
-names or the previous runtime. "Implemented" does not mean production-qualified.
-The checkout is unreleased. The [governed surface](../GOVERNED_SURFACE.md)
-defines what the implementation actually guarantees.
+Spectre is a library for building governed agents. It is not a hosted agent
+service, a model provider or a complete application.
+
+This page separates three things:
+
+1. features implemented in this checkout;
+2. responsibilities deliberately left to your application;
+3. limitations of the current library implementation.
+
+Those are not the same kind of “missing feature.”
 
 ## Available now
 
-| Capability | Entry points | Important boundary |
-| --- | --- | --- |
-| Pure admission and shared replay/audit semantics | `Spectre.Kernel`, `Spectre.GovernedAct.Fold`, `Spectre.Audit` | Store/provider truth is not proven by deterministic replay |
-| Authority attenuation, restriction, revocation | `Spectre.Mandate`, governance facade | No runtime root-authority creation |
-| Meter accounting and independent Duty disposal | `Spectre.Kernel.Meter`, `Spectre.Duty`, `Spectre.dispose_duty/4` | No time-based auto-discharge or generic partial-stream refund |
-| Durable Attempt, broker and executor | `Spectre.propose/3`, `Spectre.Attempt.Executor`, `Spectre.Secret.Broker` | No automatic retry of an uncertain effect |
-| Consent, presentation and assumption graphs | `Spectre.Presentation`, prepare/show APIs | Exact material/occurrence binding, not future-output blanket approval |
-| Labels, declassification and payload erasure | `Spectre.Evidence`, declassification/erasure APIs | Causal history and verifiability debt remain |
-| Agent and Skill DSL | `Spectre.Agent`, `Spectre.Skill`, `Spectre.Stack` | Handler declarations and presets, not a second runtime |
-| Package extension ports | `Spectre.Extension`, `install` | Explicit host wiring; not a Stack resolver |
-| Regex, string-bag, Jaro and custom routing | `Spectre.Router`, `Spectre.Router.Adapter` | Zone M selection only; `via: [:binary]` remains supported |
-| Independent named flows | `flow`, `pipe_through`, `Spectre.Agent.Flow` | Reusable host-prepared plans; no inherited routing, hidden handler policy or process per flow |
-| Prompt templates and bounded composition | `prompt`, `prompt_root`, `inject`, `ask`; low-level `Spectre.Prompt` | Developer-owned EEx compiles at build time; context text is data, not evaluated template source; no implicit inference |
-| Structured proposal status | `Spectre.Proposal.Result.status/1` | Admission, Attempt and Outcome remain separate; absence is not failure |
-| Static authoring diagnostics | `Spectre.Surface.verify_definition/2`, `mix spectre.routes` | Deferred fields remain explicit; no preauthorization or sensitive error serialization |
-| Local agent scaffolding | `mix spectre.gen.agent` | Generates Router, Agent, prompt and runnable tests; never generates authority or provider wiring |
-| First governed effect scaffold | `mix spectre.gen.host` | Generates host/executor skeletons and an integration test; explicit TODOs block setup, no automatic authority |
-| Offline routing regression | `Spectre.Eval`, `mix spectre.eval` | JSONL expectations, bounded mismatch reports; no handler execution, model call, learning or governance claims |
-| Pure foundation assembly | `Spectre.Foundation.new/2` | Derives Genesis links and reuses bootstrap checks; no authority defaults, verifier callback or I/O |
-| Input normalization and Evidence builders | `Spectre.Input.Pipeline`, Ingress/Mind/Executor builders | No prescribed audio/VoIP schema or media engine |
-| Behaviour authoring helpers | `use Spectre.Mind`, `Ingress`, `Attempt.Executor`, `Secret.Broker` | Explicit identities and opt-in Mind bridge; no authentication, execution or routing policy generated |
-| Pure Morph changesets, diff and forward rollback | `Spectre.Morph`, `Spectre.revise_definition/4` | Governed activation is separate; no hot code/state migration |
-| Responsive agent state, serialized work and explicit checkpoints | `Spectre.Instance`, `Spectre.Instance.Checkpoint` | Bounded waiting FIFO and temporary worker; no restoration of Scope authentication or execution facts |
-| Reusable Work/Vigil | `Spectre.Worker`, `Spectre.Vigil`, governed opening/Instance | Host schedules work; kernel records promise/debt |
-| Pluggable ledger and application stores | Ledger ETS/Disk/Mnesia/Postgres/Mock; `Spectre.Store` | Backend deployment guarantees differ |
-| Batch paging and optional lossless compression | `Spectre.Ledger.Reader`, native store callbacks | Not bounded total State or a durable projection checkpoint |
-| Recovery hooks, clock guard, offline tools | Recovery Policy, `Spectre.Clock.Guard`, audit/doctor/migration tasks | Cannot override failed semantic verification |
-| History and Memory | `Spectre.History`, `Spectre.Memory` | Tenant-bound adapter contracts, bounded context, explicit writes/erasure; no bundled chat DB |
-| Reviewable semantic cache | `Spectre.Router.SemanticCache`, Exact and optional Vettore | Ordinary Router method, binding/profile checks, quarantine/CAS; never embeds during lookup |
-| Handler continuation | `Spectre.Instance.advance/3`, `operation/3` | Submit one exact request; pending is not ambiguous and does not authorize retry |
-| Scoped inspection and auditability | head/authority/acts/duties queries, export | Not a full live telemetry/event subscription integration |
+### Write an agent
+
+You can write an Agent with ordinary callbacks and add only the pieces you need:
+
+- **Flows and routing:** regex, string-bag, Jaro and custom methods.
+- **Prompts:** inline text or compiled EEx files, with named injections.
+- **Skills:** reusable behavior and local substate inside an Instance.
+- **Stacks:** reusable declarations and adapter choices.
+- **Workers and Vigils:** reusable handlers with explicit governed work/watch
+  openings. The host chooses when to start and trigger them.
+- **Morph:** prepare, compare and roll back Definition data through a new
+  forward revision. Activation is a separate governed action.
+
+[Start with one Agent](agents-and-dsl.md), or
+[choose a recipe](agent-recipes.md) for your kind of input.
+
+### Connect services
+
+Spectre provides adapter contracts for authentication, input normalization,
+request preparation, execution, credentials, History, Memory and storage.
+
+Optional packages can contribute configuration and ports through
+`Spectre.Extension`. `install` does not install a Mix dependency or start a
+service.
+
+The semantic cache is an ordinary Router method. Exact search is available
+without an encoder. The Vettore adapter is included, but the host adds its
+optional native dependency and supplies previously obtained embeddings.
+
+History and Memory return bounded, source-linked context. They are not a
+bundled chat database or an unrestricted replacement for the authority ledger.
+
+See [adapter configuration](configuration.md#connecting-adapters).
+
+### Govern the operation
+
+The implemented kernel/runtime covers:
+
+| Capability | What it protects |
+| --- | --- |
+| Candidate → Decision → Act | A suggestion is checked before being recorded as authorized |
+| Mandates and delegation | Authority can narrow, not multiply |
+| Attempt, broker and executor | Execution capability is released after the durable boundary |
+| Outcome and late observations | Timeout is not silently converted into no effect |
+| Meter accounting | Reserved, settled, released and suspended resources remain distinct |
+| Duties and independent disposition | An unresolved obligation does not close itself |
+| Presentation and consent | Approval belongs to particular material and an occurrence |
+| Labels, declassification and erasure | Information use and deletion retain their causal record |
+
+Surface, HostProfile and Definition revisions use governed actions.
+The Constitution is fixed for the Domain's lifetime in this implementation.
+
+See [the architecture walkthrough](architecture.md) for how these parts
+work together.
+
+### Run, inspect and recover
+
+An Instance has responsive reads, serialized mutations and a bounded waiting
+queue. It can save local checkpoints and return a pending operation reference
+without resubmitting an effect.
+
+Ledger adapters include ETS, Disk, Mnesia, PostgreSQL using the host Repo, and
+a fault-injection Mock. Batch paging, suffix reads and optional lossless
+compression are available.
+
+Recovery verification, clock checks, incident hooks and offline audit support
+operation of the Domain. Observer spans report payload-free operational
+metadata; they are not an independent durable audit log.
+
+### Develop and test
+
+The shipped tools include:
+
+- `mix spectre.gen.agent`: Agent, Router, prompt and local contract tests;
+- `mix spectre.gen.host`: host/executor skeletons and a first governed-effect
+  test, with explicit setup still required;
+- `mix spectre.routes`: inspect routing and declared ports;
+- `mix spectre.eval`: compare routing behavior against example inputs;
+- `mix spectre.doctor`: check declared boundaries and supplied wiring;
+- audit and PostgreSQL migration-generation tasks.
+
+The source suite exercises whole agents, failure cases, replay, real embeddings
+and native cache integration. Those tests do not replace tests of your own
+provider, database and deployment.
 
 ## Deliberately supplied by the application
 
-- Real authentication, channel security, webhook/receipt verification, credential
-  custody, external witnesses and deployment isolation.
-- Providers, network transports, text/voice/TTS/VoIP codecs and sessions.
-- Media buffering, chunking, worker scheduling and when a material consequence
-  should be proposed; see [streaming and control](integration-and-streaming.md).
-- Task/Work/Vigil scheduling and operational UI progress.
-- Library dependencies and resource startup: Mix, ordinary OTP supervision,
-  `install`, `ports/0` and explicit host wiring. Stack shares declarations; it
-  never installs dependencies or resolves a startup graph. Doctor checks ports.
-- Business-class contracts and trustworthy Evidence for business Conditions.
-- Payload ingestion/deletion, backups and retention policy across external systems.
+These responsibilities are part of the integration contract, not unfinished
+built-in services:
 
-These are extension responsibilities, not missing codec features to put into the
-kernel. The library must supply usable boundaries/builders and test that host
-integrations cannot gain power through ordinary proposal data.
+### Identity and access to the outside world
+
+You verify users, webhooks and receipts, protect credentials, choose external
+witnesses where needed, and enforce the deployment's actual isolation.
+
+Your application defines the business classes, Conditions and trustworthy
+sources of Evidence. Spectre does not infer those policies from a route name.
+
+### Models, channels and control
+
+You choose providers, model IDs, network transports, voice/TTS/VoIP codecs and
+sessions. You also choose stream buffering, meaningful delivery units and how
+the user asks to steer or stop work.
+
+Spectre need not grow a codec or stream server to support those integrations.
+See [input and streaming](integration-and-streaming.md).
+
+### Storage and scheduling
+
+You choose databases, supervise processes, manage backups, and implement
+payload ingestion/deletion and retention policy across your systems.
+
+You also schedule agent turns, Workers and Vigils. A declaration is not an
+automatic timer, process supervisor or credential grant.
 
 ## Still missing or requiring consolidation
 
-| Area | Current gap | Completion criterion |
-| --- | --- | --- |
-| Long-lived memory | Verified State/history still resides in the sequencer heap | Granular fenced reads/deltas and backend integration; measure both process and store memory |
-| Durable projection checkpoints | Ledger suffix/paging exists, but no trusted persistent projection checkpoint | Validate prefix binding/version, refuse corruption and preserve independent audit |
-| Public query/control load | No general revision-fenced pagination or uniform bounded queues/timeouts | Bounded work with explicit uncertainty behavior, not silent truncation |
-| Authoring qualification | Handler, ticket, native-cache and complete-agent lifecycle tests exist; deployment-specific qualification remains | Exercise actual host contracts and load, not just compiled declarations |
-| Skill planning policy | Namespaced substate, flows and explicit publication are implemented; applicability remains application policy | No implicit applicability evaluator or second authoritative Meter |
-| Work/Vigil scheduling | Reusable handlers and explicit Scope/Instance startup are implemented; timers/subscriptions remain host-owned | Lifecycle tests must include failed startup after a committed opening |
-| Advanced Morph | Changesets/diff/rollback and governed revision exist; no review/reflection/Forge workflow | Proposal-only review with governed activation, not arbitrary hot code or state replacement |
-| Observability qualification | Payload-free observer spans cover queue, handlers, submission/result and optional provider/history work | Measure host collectors under load; operational events are not Evidence |
-| Prism/Pulse integrations | Their separate 0.4 migrations are not complete here | Implement the published request/router/observer contracts and verify end-to-end wiring |
-| Release qualification | Full long-history/backend/load/retention qualification still open | Adversarial lifecycle tests, current measurements and all release artifacts/checks |
+The following are actual implementation limits, not responsibilities that an
+existing adapter can automatically take over:
 
-Constitution revision is not an accidental hidden API: the Constitution is
-immutable for a Domain. A new Domain and explicit treatment of old obligations
-are required. No 0.3 checkpoint importer or compatibility runtime is promised.
-The Governed Holon Model is a future direction, not an implemented 0.4 feature.
+| Area | Current limit |
+| --- | --- |
+| Internal memory | The sequencer's verified projection retains historical records and indexes |
+| Durable projection checkpoints | Paging exists; a trusted persistent projection checkpoint does not |
+| Query/control load | No general revision-fenced pagination or uniform queue/timeout bound across all APIs |
+| Incremental execution receipts | Executors return a final result; there is no public stream-session receipt API |
+| Partial stream accounting | No generic “reserve 100, bill 20, refund 80” settlement from a stream counter |
+
+Changing the ledger backend alone does not remove the internal projection's
+memory cost. A bounded chat or Mind window limits context, not all runtime state.
+
+Other boundaries are deliberate: no automatic 0.3 checkpoint import, no hidden
+Skill applicability policy, no automatic hot code/state migration, and no
+training or Forge service. The Governed Holon Model is research and inspiration,
+not an implemented 0.4 feature.
 
 ## What an honest readiness claim needs
 
-Passing static checks does not show that no executor runs before commit, that
-late receipts survive a restart, or that an agent can serve hundreds of users
-for months. A test count does not show those things either.
+Publishing a library does not require implementing every host's backend,
+retention strategy or integration package.
 
-Recent fixes reduce repeated full-history work through incremental Duty,
-erasure, evidence and authority indexes, delta payload verification and reuse
-of a verified prepared commit. They do not establish bounded memory or qualify
-every workload. Historical benchmark failures remain evidence about those
-revisions, not current throughput measurements or claims of a completed fix.
+It does require being clear about the implemented contract and its limits.
+This checkout is unreleased; deployment-specific qualification remains separate.
 
-Keep this inventory aligned with actual public APIs and update it when a gap is
-implemented and tested. Do not mark host-owned integration policy as a hidden
-kernel feature just to declare the list complete.
+Recent indexing and commit changes reduce repeated history work. They do not
+prove bounded RAM, particular throughput, or months of unattended operation for
+an arbitrary workload. Historical benchmark results describe their measured
+revisions, not today's performance.
+
+Before relying on a deployment, test the actual store, provider and workload,
+including faults and later receipts. Use
+[the testing guide](testing-and-release.md) for a starting checklist and
+[the governed surface](../GOVERNED_SURFACE.md) for the precise trust assumptions.
