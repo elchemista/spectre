@@ -1,3 +1,6 @@
+# Manual-stage growth diagnostic for the 0.4 kernel. No model, Instance or real
+# executor is run here. bench/suite.exs --phase growth measures public proposals
+# and should be used for new end-to-end runtime comparisons.
 Code.require_file("support/p1_fixture.exs", __DIR__)
 
 defmodule Spectre.Bench.HistoryGrowth do
@@ -7,7 +10,8 @@ defmodule Spectre.Bench.HistoryGrowth do
   alias Spectre.Domain.Sequencer
 
   # Keep one Domain alive: fresh fixtures per sample hide history-dependent work.
-  # Timings include submission, checkout, executor evidence and terminal outcome.
+  # Timings include submission, Grant consumption and synthetic receipt records,
+  # not broker checkout or executor invocation.
   def run do
     f = Fixture.start(:ets, "growth-#{System.unique_integer([:positive])}", 2_100, 1, 0)
 
@@ -53,7 +57,7 @@ defmodule Spectre.Bench.HistoryGrowth do
       if "--compare" in System.argv(), do: compare(f)
 
       {us, restarted} = :timer.tc(fn -> Fixture.restart(f) end)
-      IO.puts("cold_recovery_ms=#{us / 1_000}")
+      IO.puts("sequencer_recovery_ms=#{us / 1_000} (store and filesystem cache remain warm)")
       Fixture.stop(f, restarted)
     after
       if Process.alive?(f.server), do: Fixture.stop(f)

@@ -1,4 +1,4 @@
-# Runtime benchmarks
+# Spectre 0.4 runtime benchmarks
 
 Benchee is a development-only dependency; it is not started with Spectre and
 is not required in test or production releases.
@@ -24,7 +24,13 @@ This avoids silently changing the history size between samples. Setup can take
 much longer than the estimated Benchee measurement time, especially on Disk or
 with a large `--history`.
 
-Jobs exercise actual admission, Grant consumption, executor Evidence and Outcome:
+The main suite uses `Spectre.propose/3`: public facade → admission → durable
+Act/Attempt → broker checkout → local executor → recorded Evidence/Outcome.
+Erasure uses `Spectre.request_erasure/4` and deletes its file **inside the
+executor**, not from the benchmark caller. A rejected, pending or ambiguous
+operation fails the measurement instead of being counted as a fast success.
+
+Jobs:
 
 - `individual`: `--operations` complete cycles, sequentially.
 - `group`: the same number of cycles submitted concurrently to one Domain.
@@ -43,6 +49,26 @@ Jobs exercise actual admission, Grant consumption, executor Evidence and Outcome
 Do not compare recovery/erasure throughput with multi-cycle jobs as if they
 performed the same work. These are core lifecycle benchmarks, not an LLM, Mind,
 Instance, network executor or end-user throughput benchmark.
+
+The fixture explicitly provisions a small Surface, finite Meter, root Mandate,
+authentication Evidence and Scope. Its ingress trusts generated local inputs;
+fixed secrets, a synthetic ID source and a development broker are **benchmark
+fixtures**, not production setup examples. See
+[host setup](../docs/host-setup.md) for the application trust boundary.
+
+### Where the code lives
+
+| File | Responsibility |
+| --- | --- |
+| `support/p1_fixture.exs` | Explicit foundation, isolated Store/Domain, authenticated Scope and candidate data shared with P1 |
+| `support/workload.exs` | Public proposals, local executor, external receipt files and governed deletion |
+| `support/metrics.exs` | Ledger traversal, process/backend memory, I/O counters and CSV output, outside timed cycles |
+| `suite.exs` | Benchee lifecycle, scenarios, history checkpoints and CLI options |
+
+`environment.txt` labels this workload `public_proposal_v1`. Earlier suite
+results manually consumed Grants and recorded outcomes: those timings exclude
+the public facade, Runner and broker, so they are **not equivalent baselines**.
+No historical result files are rewritten to suggest otherwise.
 
 ## Long-lived Domain growth
 
@@ -101,8 +127,21 @@ suite currently supports native ETS and Disk (compressed/uncompressed), not
 PostgreSQL or Mnesia deployment qualification. It does not establish that
 historical memory is bounded or that 100 users can run for months.
 
-Older focused tools remain available: `bench/p1.exs`, `bench/history_growth.exs`
-and `bench/ledger_ets.exs`. The P1 fixture defaults are preserved.
+## Focused measurements
+
+These tools also use 0.4 contracts, but deliberately measure smaller boundaries:
+
+| Tool | What is timed | What is not measured |
+| --- | --- | --- |
+| `mix run bench/p1.exs` | Individual/group commit with 1/10/100/N proponent processes; separate admission, checkout, receipt and recovery stages | Real executor/broker calls; its stream floor is repeated synthetic segments, not a streaming/voice pipeline |
+| `mix run bench/history_growth.exs` | The same manual-stage lifecycle over 2,000 cycles in one Domain; `--profile` traces calls, `--compare` compares young/old Domains | Public facade and executor orchestration; use the suite for that comparison |
+| `mix run bench/ledger_ets.exs` | ETS adapter append, batch lookup and export, with/without compression | GAM admission or valid agent history; payloads here are simple storage records |
+
+The low-level P1 workload keeps its original authority/data defaults; fixture
+startup now registers the Domain, as the public 0.4 facade requires. Do not mix
+manual-stage and public-lifecycle rows when comparing latency or ledger bytes.
+Adapter heap/reduction metrics refer to the store process; encoding work in the
+caller and transient export allocations are not a whole-VM memory measurement.
 
 ## Authority reads independent of terminal history
 

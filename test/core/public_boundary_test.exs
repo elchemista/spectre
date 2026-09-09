@@ -77,7 +77,8 @@ defmodule Spectre.Core.PublicBoundaryTest do
              Spectre.show_presentation(c.scope, "missing", %{})
   end
 
-  test "public governance helpers still traverse ordinary admission instead of granting authority", c do
+  test "public governance helpers still traverse ordinary admission instead of granting authority",
+       c do
     attrs = %{
       identity_key: "public-governance-helper",
       requested_mandate_ref: c.f.mandate.ref,

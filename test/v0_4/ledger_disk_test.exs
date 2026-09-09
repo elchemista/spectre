@@ -8,7 +8,9 @@ defmodule Spectre.V04Test.LedgerDiskTest do
 
   @frame_header_size 45
 
-  test "all read APIs preserve a corrupt-file diagnostic and missing Domains remain absent", %{directory: directory} do
+  test "all read APIs preserve a corrupt-file diagnostic and missing Domains remain absent", %{
+    directory: directory
+  } do
     {store, _child} = start_disk(directory)
     {Disk, opts} = store
     assert :not_found = Disk.read_batch("missing", 1, opts)
@@ -17,34 +19,60 @@ defmodule Spectre.V04Test.LedgerDiskTest do
     assert {:error, :ledger_disk_store_server_required} = Disk.load("missing", [])
     path = domain_path(directory, "corrupt")
     File.mkdir!(path)
-    for call <- [fn -> Disk.head("corrupt", opts) end, fn -> Disk.load_from("corrupt", 0, opts) end,
-      fn -> Disk.read_batch("corrupt", 1, opts) end] do
+
+    for call <- [
+          fn -> Disk.head("corrupt", opts) end,
+          fn -> Disk.load_from("corrupt", 0, opts) end,
+          fn -> Disk.read_batch("corrupt", 1, opts) end
+        ] do
       assert {:error, {:invalid_ledger_disk_file_type, :directory}} = call.()
     end
+
     assert File.dir?(path)
   end
 
-  test "physical read and sync failures never look like an empty complete batch", %{directory: directory} do
+  test "physical read and sync failures never look like an empty complete batch", %{
+    directory: directory
+  } do
     alias Spectre.Ledger.Store.Disk.FileIO
     path = FileIO.path(directory, "physical")
-    assert {:error, {:ledger_disk_open_failed, :enoent}} = FileIO.pread(directory, "physical", 0, 1)
-    assert {:error, {:ledger_disk_open_failed, :enoent}} = FileIO.append(Path.join(directory, "absent"), "physical", "frame")
+
+    assert {:error, {:ledger_disk_open_failed, :enoent}} =
+             FileIO.pread(directory, "physical", 0, 1)
+
+    assert {:error, {:ledger_disk_open_failed, :enoent}} =
+             FileIO.append(Path.join(directory, "absent"), "physical", "frame")
+
     File.write!(path, "abc")
     assert {:ok, "abc"} = FileIO.pread(directory, "physical", 0, 3)
-    assert {:error, {:ledger_disk_frame_read_failed, 3, :eof}} = FileIO.pread(directory, "physical", 3, 1)
+
+    assert {:error, {:ledger_disk_frame_read_failed, 3, :eof}} =
+             FileIO.pread(directory, "physical", 3, 1)
+
     {:ok, io} = :file.open(String.to_charlist(path), [:raw, :binary, :read])
     assert {:ok, "abc"} = FileIO.read_body(io, 3, 0)
     assert {:incomplete, {:ledger_frame_body, 3}} = FileIO.read_body(io, 1, 3)
     :ok = :file.close(io)
     assert {:error, {:ledger_disk_read_failed, 0, _}} = FileIO.read_body(io, 1, 0)
-    assert {:error, {:ledger_disk_directory_open_failed, :enoent}} = FileIO.durability_barrier(path, Path.join(directory, "absent"))
-    assert {:error, {:ledger_disk_open_failed, :enoent}} = FileIO.durability_barrier(Path.join(directory, "absent/file"), directory)
+
+    assert {:error, {:ledger_disk_directory_open_failed, :enoent}} =
+             FileIO.durability_barrier(path, Path.join(directory, "absent"))
+
+    assert {:error, {:ledger_disk_open_failed, :enoent}} =
+             FileIO.durability_barrier(Path.join(directory, "absent/file"), directory)
+
     domain_directory = FileIO.path(directory, "not-a-file")
     File.mkdir!(domain_directory)
-    assert {:error, {:invalid_ledger_disk_file_type, :directory}} = FileIO.append(directory, "not-a-file", "frame")
+
+    assert {:error, {:invalid_ledger_disk_file_type, :directory}} =
+             FileIO.append(directory, "not-a-file", "frame")
+
     loop = FileIO.path(directory, "loop")
     File.ln_s!(loop, loop)
-    assert {:error, {:ledger_disk_stat_failed, :eloop}} = FileIO.append(directory, "loop", "frame")
+
+    assert {:error, {:ledger_disk_stat_failed, :eloop}} =
+             FileIO.append(directory, "loop", "frame")
+
     {{Disk, opts}, _child} = start_disk(directory)
     assert {:error, {:ledger_disk_stat_failed, :eloop}} = Disk.load("loop", opts)
   end

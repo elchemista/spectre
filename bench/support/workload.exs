@@ -1,5 +1,11 @@
 defmodule Spectre.Bench.Payloads do
-  @moduledoc false
+  @moduledoc """
+  Benchmark-only content-addressed files and a verification I/O counter.
+
+  Payload bodies live outside the append-only ledger. The counter records real
+  verification calls, so old payloads being reread on every append is visible.
+  This is a local fixture, not an application storage or privacy policy.
+  """
   @behaviour Spectre.Payload.Store
   alias Spectre.Portable
 
@@ -33,12 +39,73 @@ defmodule Spectre.Bench.Payloads do
   defp path(root, "payload:" <> digest), do: Path.join(root, digest)
 end
 
-defmodule Spectre.Bench.Workload do
-  @moduledoc false
-  alias Spectre.Bench.P1.{Executor, Fixture}
+defmodule Spectre.Bench.Executor do
+  @moduledoc """
+  Small local executor for the public 0.4 proposal benchmark.
+
+  The Runner invokes this only after durable admission and capability checkout.
+  Inline work returns a receipt; external work writes that receipt to a file;
+  `data.erase` deletes the exact target of the admitted erasure request.
+  No provider/network latency is simulated and no effect is retried.
+  """
+  @behaviour Spectre.Attempt.Executor
+
+  alias Spectre.Attempt.Executor
   alias Spectre.Bench.Payloads
+
+  @impl true
+  defdelegate executor_ref(), to: Spectre.Bench.P1.Executor
+
+  @impl true
+  defdelegate contract_ref(), to: Spectre.Bench.P1.Executor
+
+  @impl true
+  def execute(act, attempt, :benchmark_only, opts) do
+    payload = perform(act, opts)
+
+    {:ok, evidence} =
+      Executor.outcome_evidence(
+        act,
+        attempt,
+        :succeeded,
+        System.system_time(:millisecond),
+        payload
+      )
+
+    {:ok, %{evidence: [evidence], details_ref: "spectre:bench:receipt:succeeded"}}
+  end
+
+  defp perform(%{class: "data.erase", consequence: consequence}, opts) do
+    Payloads.delete(Keyword.fetch!(opts, :root), consequence["erasure_request"]["target_ref"])
+    %{payload: %{"benchmark" => "erased"}}
+  end
+
+  defp perform(%{class: "bench.effect", consequence: consequence}, opts) do
+    if Keyword.fetch!(opts, :mode) == :external do
+      body =
+        Integer.to_string(consequence["sequence"]) <>
+          ":" <> String.duplicate("p", Keyword.fetch!(opts, :payload_bytes))
+
+      %{payload_ref: Payloads.put(Keyword.fetch!(opts, :root), body)}
+    else
+      %{payload: %{"benchmark" => "succeeded"}}
+    end
+  end
+end
+
+defmodule Spectre.Bench.Workload do
+  @moduledoc """
+  One real governed lifecycle per cycle through `Spectre.propose/3`.
+
+  Foundation, authentication and history seeding are setup, outside the timer.
+  Every measured cycle must reach an admitted Act and a successful Outcome;
+  rejection, a pending dispatch or ambiguity fails the benchmark, not its speed.
+  The isolated manual-stage comparison remains in `bench/p1.exs`.
+  """
+  alias Spectre.Bench.P1.Fixture
+  alias Spectre.Bench.{Executor, Payloads}
   alias Spectre.Domain.Sequencer
-  alias Spectre.{Domain, Evidence, Governance, Scope}
+  alias Spectre.{Domain, Scope}
 
   def start(input, mode) do
     namespace = "suite-#{System.unique_integer([:positive])}"
@@ -61,17 +128,19 @@ defmodule Spectre.Bench.Workload do
         input.batch_size,
         input.batch_wait_ms,
         payload_store: {Payloads, root: root, counter: counter},
+        executors: [{Executor, root: root, mode: mode, payload_bytes: input.payload_bytes}],
         erasure_target: target
       )
+
+    {:ok, scope} = Scope.new(Domain.handle(f.server, f.refs.domain), f.context)
 
     f =
       Map.merge(f, %{
         payload_root: root,
         payload_counter: counter,
         erasure_target: target,
-        payload_bytes: input.payload_bytes,
         input: input,
-        mode: mode
+        scope: scope
       })
 
     if mode in [:erasure, :after_erasure] do
@@ -82,9 +151,7 @@ defmodule Spectre.Bench.Workload do
         })
     end
 
-    each(input.history, fn n ->
-      cycle(f, n, if(mode == :external, do: :external, else: :inline))
-    end)
+    each(input.history, &cycle(f, &1))
 
     if mode == :after_erasure, do: erase(f)
     f
@@ -97,13 +164,13 @@ defmodule Spectre.Bench.Workload do
   end
 
   def run(f, :individual) do
-    each(f.input.operations, &cycle(f, f.input.history + &1, :inline))
+    each(f.input.operations, &cycle(f, f.input.history + &1))
     f
   end
 
   def run(f, :group) do
     1..f.input.operations
-    |> Task.async_stream(fn n -> cycle(f, f.input.history + n, :inline) end,
+    |> Task.async_stream(fn n -> cycle(f, f.input.history + n) end,
       max_concurrency: f.input.operations,
       ordered: false,
       timeout: :infinity
@@ -114,7 +181,7 @@ defmodule Spectre.Bench.Workload do
   end
 
   def run(f, :external) do
-    each(f.input.operations, &cycle(f, f.input.history + &1, :external))
+    each(f.input.operations, &cycle(f, f.input.history + &1))
     f
   end
 
@@ -125,25 +192,17 @@ defmodule Spectre.Bench.Workload do
 
   def run(f, :recovery), do: %{f | server: Fixture.restart(f)}
 
-  def cycle(f, sequence, mode) do
+  def cycle(f, sequence) do
     candidate = Fixture.candidate(f, sequence)
-
-    {:ok, %{decision: %{outcome: :admitted}, act: act, grant: grant}} =
-      Sequencer.submit(f.server, f.context, candidate)
-
-    {:ok, ^act, attempt, _receipt} = Sequencer.consume_grant(f.server, grant)
-    complete(f, act, attempt, mode, sequence)
+    completed!(Spectre.propose(f.scope, candidate))
   end
 
   def erase(f) do
-    {:ok, scope} = Scope.new(Domain.handle(f.server, f.refs.domain), f.context)
-    projection = Sequencer.projection(f.server)
     now = System.system_time(:millisecond)
 
-    {:ok, candidate} =
-      Governance.request_erasure(
-        scope,
-        projection,
+    result =
+      Spectre.request_erasure(
+        f.scope,
         %{target_ref: f.erasure_target, requested_at: now, reason: "benchmark governed erasure"},
         identity_key: "benchmark:erase",
         requested_mandate_ref: f.mandate.ref,
@@ -156,38 +215,12 @@ defmodule Spectre.Bench.Workload do
         observation_window_ms: 600_000
       )
 
-    {:ok, %{decision: %{outcome: :admitted}, act: act, grant: grant}} =
-      Sequencer.submit(f.server, f.context, candidate)
-
-    {:ok, ^act, attempt, _receipt} = Sequencer.consume_grant(f.server, grant)
-    Payloads.delete(f.payload_root, f.erasure_target)
-    complete(f, act, attempt, :inline, 0)
+    completed!(result)
   end
 
-  defp complete(f, act, attempt, mode, sequence) do
-    evidence = Fixture.outcome_evidence(f, act, attempt)
-    evidence = if mode == :external, do: external(f, evidence, sequence), else: evidence
-
-    {:ok, [^evidence]} =
-      Sequencer.record_executor_evidence(f.server, act.ref, attempt.ref, evidence)
-
-    outcome = Fixture.outcome(act, attempt, evidence)
-    {:ok, ^outcome} = Sequencer.record_outcome(f.server, outcome)
+  defp completed!(result) do
+    {:ok, %{primary: %{decision: %{outcome: :admitted}, outcome: %{status: :succeeded}}}} = result
     :ok
-  end
-
-  defp external(f, evidence, sequence) do
-    body = Integer.to_string(sequence) <> ":" <> String.duplicate("p", f.payload_bytes)
-    ref = Payloads.put(f.payload_root, body)
-
-    {:ok, evidence} =
-      evidence
-      |> Map.from_struct()
-      |> Map.delete(:ref)
-      |> Map.merge(%{payload: nil, payload_ref: ref})
-      |> Evidence.new()
-
-    evidence
   end
 
   defp each(0, _fun), do: :ok

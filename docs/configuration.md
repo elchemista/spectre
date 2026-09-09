@@ -122,8 +122,8 @@ lookup. Each pipeline runs in list order before routing.
 
 There are at most 64 stages. A stage is a module or `{module, options}` with
 `call/2` and optional `init/1`. It returns `{:cont, value}`, `{:halt, value}` or
-`{:error, reason}`. The shipped NormalizeText supports `trim` (default `true`)
-and `collapse_whitespace` (both default `true`), `case` (`nil`, default,
+`{:error, reason}`. The shipped NormalizeText supports `trim` and
+`collapse_whitespace` (both default `true`), `case` (`nil`, default,
 preserves case; or `:downcase` / `:upcase`), and `unicode` (`:nfc`, default;
 also `:nfd`, `:nfkc`, `:nfkd` or `false`). See the
 [running pipeline example](integration-and-streaming.md#a-reusable-local-pipeline).
@@ -152,6 +152,10 @@ Neither creates a destination, a budget or a resource request.
 | `inject :policy` | Include the named prompt in asks at Agent or flow scope |
 | `into: :system` | Apply this injection only when that base prompt is selected; omitted means all base prompts |
 | `position: :start` / `:end` | Before/after the base prompt; default `:end` |
+
+For inline text, pass the string directly: `prompt :policy, "Be helpful."`.
+The keyword form currently accepts `file:`, not `text:`. Neither form sends a
+request to a provider; `ask` selects the template when preparing a request.
 
 Templates are developer-owned Elixir/EEx source, not safe evaluation of user
 templates. User text passed as an assign is not evaluated again as EEx.

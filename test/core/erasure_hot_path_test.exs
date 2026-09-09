@@ -36,7 +36,7 @@ defmodule Spectre.Core.ErasureHotPathTest do
       for probe <- probes,
           do: assert(:erlang.trace_pattern(probe, true, [:local, :call_count]) === 1)
 
-      for sequence <- 101..120, do: Workload.cycle(fixture, sequence, :inline)
+      for sequence <- 101..120, do: Workload.cycle(fixture, sequence)
 
       for probe <- probes do
         assert :erlang.trace_info(probe, :call_count) === {:call_count, 0},

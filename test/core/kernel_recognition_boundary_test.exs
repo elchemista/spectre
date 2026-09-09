@@ -2,7 +2,7 @@ defmodule Spectre.KernelRecognitionBoundaryTest do
   use Spectre.Test.GovernedBoundaryCase, async: false
 
   alias Spectre.{Candidate, Condition, Consent, Evidence, Presentation, Row, Surface}
-  alias Spectre.GovernedAct.State
+  alias Spectre.GovernedAct.{ReadIndex, State}
   alias Spectre.Kernel, as: Admission
   alias Spectre.Kernel.Recognition
   alias Spectre.V04Test.Fixture
@@ -71,7 +71,7 @@ defmodule Spectre.KernelRecognitionBoundaryTest do
       state = %{state | read_index: %{state.read_index | evidence_by_proposition: %{}}}
 
       state =
-        Spectre.GovernedAct.ReadIndex.record(state, %{
+        ReadIndex.record(state, %{
           type: "evidence_recorded",
           identity: evidence.ref,
           revision: state.revision
@@ -153,7 +153,8 @@ defmodule Spectre.KernelRecognitionBoundaryTest do
     assert :satisfied = Recognition.check([exact_issuer], [c.payment], c.act.committed_at)
   end
 
-  test "consent recognition composes contrary facts with missing, corrupt and mismatched material", c do
+  test "consent recognition composes contrary facts with missing, corrupt and mismatched material",
+       c do
     {candidate, presentation} = presented_candidate(c)
 
     assert {:ok, missing, nil} = evaluate(c, candidate, c.before)

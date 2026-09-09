@@ -19,7 +19,9 @@ defmodule Spectre.Core.CompletenessBoundaryTest do
     admission = Map.fetch!(state.admissions, identity)
 
     assert {:error, {:incomplete_admitted_decision, ^ref}} =
-             Completeness.validate(put_in(state.admissions[identity], %{admission | act_ref: nil}))
+             Completeness.validate(
+               put_in(state.admissions[identity], %{admission | act_ref: nil})
+             )
 
     refused = %{c.decision | outcome: :refused}
     before = c.before
@@ -48,7 +50,8 @@ defmodule Spectre.Core.CompletenessBoundaryTest do
     state = %{
       c.pending
       | pending_dispatches: MapSet.delete(c.pending.pending_dispatches, c.act.ref),
-        terminal_dispatches: Map.put(c.pending.terminal_dispatches, c.act.ref, {:cancelled, cancellation})
+        terminal_dispatches:
+          Map.put(c.pending.terminal_dispatches, c.act.ref, {:cancelled, cancellation})
     }
 
     assert {:error, {:cancelled_dispatch_reservation_not_released, ref}} =
@@ -130,7 +133,10 @@ defmodule Spectre.Core.CompletenessBoundaryTest do
     assert {:error, {:duplicate_declassification_act, "act:one"}} =
              Completeness.validate(%{
                state
-               | declassifications: %{"declassification:one" => first, "declassification:two" => duplicate}
+               | declassifications: %{
+                   "declassification:one" => first,
+                   "declassification:two" => duplicate
+                 }
              })
   end
 end

@@ -28,9 +28,9 @@ end
 defmodule Spectre.Core.IngressReplyBoundaryTest do
   use Spectre.Test.GovernedBoundaryCase, async: false
 
-  alias Spectre.{Evidence, Ingress, SubmissionContext}
   alias Spectre.Core.IngressReplyBoundaryTest.{Adapter, BadRef, CrashedRef}
   alias Spectre.Domain.{Context, Sequencer}
+  alias Spectre.{Evidence, Ingress, SubmissionContext}
   alias Spectre.V04Test.{Fixture, Runtime}
 
   setup c do

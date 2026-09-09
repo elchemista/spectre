@@ -3,7 +3,7 @@ defmodule Spectre.MixProject do
 
   @version "0.4.0"
   @source_url "https://github.com/elchemista/spectre"
-  @homepage_url "https://spectre.elchemista.com"
+  @homepage_url "https://spectre.guide"
   @guides ~w(docs/agents-and-dsl.md docs/agent-recipes.md docs/configuration.md
              docs/architecture.md docs/host-setup.md
              docs/integration-and-streaming.md docs/storage-and-recovery.md
@@ -18,7 +18,7 @@ defmodule Spectre.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       test_ignore_filters: [&String.contains?(&1, "/support/")],
-      test_coverage: [summary: [threshold: 95]],
+      test_coverage: [summary: [threshold: 95.5]],
       description: "A durable governed-act kernel for Elixir.",
       package: package(),
       dialyzer: [plt_add_apps: [:mix]],

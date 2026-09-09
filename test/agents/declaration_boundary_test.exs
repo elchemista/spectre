@@ -1,8 +1,8 @@
 defmodule Spectre.Agents.DeclarationBoundaryTest do
   use ExUnit.Case, async: true
 
-  alias Spectre.{Definition, Router}
   alias Spectre.Agent.{Declaration, Publication, Wiring}
+  alias Spectre.{Definition, Router}
 
   defmodule Request do
     def prepare(_, _, _, _), do: raise("wiring must never execute a request")
@@ -37,6 +37,7 @@ defmodule Spectre.Agents.DeclarationBoundaryTest do
 
   defmodule Child do
     use Spectre.Skill, namespace: "boundary", name: "child"
+
     flow :lookup do
       route(:find, match: [regex: ~r/^find$/])
     end
@@ -51,13 +52,24 @@ defmodule Spectre.Agents.DeclarationBoundaryTest do
     child = Child.definition(revision: 1, declared_at: 0)
     definition = Parent.definition(revision: 1, declared_at: 0, components: %{child: child})
     assert {:ok, _, %{"child" => ^child}} = Publication.verify(Parent, definition)
-    assert {:error, :invalid_component_definitions} = Publication.definition(Parent, revision: 1, declared_at: 0, components: [])
+
+    assert {:error, :invalid_component_definitions} =
+             Publication.definition(Parent, revision: 1, declared_at: 0, components: [])
+
     assert {:error, {:component_definition, "child", :authoring_definition_mismatch}} =
-             Publication.definition(Parent, revision: 1, declared_at: 0, components: %{child: c.definition})
+             Publication.definition(Parent,
+               revision: 1,
+               declared_at: 0,
+               components: %{child: c.definition}
+             )
+
     assert {:error, :invalid_authoring_definition} = Publication.verify(Parent, %{})
     assert {:error, :not_an_authoring_definition} = Publication.children(nil)
     flow = Child.__spectre_plan__().flows["lookup"]
-    assert %{"routing" => %{"rules" => %{"find" => _}, "config" => config}} = Publication.flow_body(flow)
+
+    assert %{"routing" => %{"rules" => %{"find" => _}, "config" => config}} =
+             Publication.flow_body(flow)
+
     assert config["via"] != []
   end
 
@@ -186,7 +198,9 @@ defmodule Spectre.Agents.DeclarationBoundaryTest do
       end
       """
 
-      error = assert_raise CompileError, fn -> Code.compile_string(source, "diagnostic_agent.ex") end
+      error =
+        assert_raise CompileError, fn -> Code.compile_string(source, "diagnostic_agent.ex") end
+
       assert Exception.message(error) =~ diagnostic
     end
   end

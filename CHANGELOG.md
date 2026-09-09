@@ -87,6 +87,11 @@ It is not yet performance-qualified or declared stable.
 
 ### Fixed during development
 
+- Validate Meter recovery as an exact partition of quantities, allowing the
+  same resource to have both recontained and deficit amounts. This preserves
+  accounting when a late receipt contradicts no effect after partial reuse.
+- Keep malformed ledger timestamps distinct from payload-validation failures,
+  so append diagnostics identify the boundary that actually rejected the input.
 - Reject non-integer batch first revisions before Mnesia range construction;
   compare PostgreSQL/Mnesia derived metadata using exact term equality.
 - Preserve capture-time integrity checks when auditing an export at a later
@@ -104,9 +109,10 @@ It is not yet performance-qualified or declared stable.
   unsupervised nested Task.Supervisor. Normal shutdown and abnormal exits stop
   outstanding callbacks; stale completions cannot mutate a later job.
 
-### Known release gates
+### Known qualification limits
 
-- Targeted adversarial validation and the configured coverage gate remain open.
+- Library tests and the configured coverage gate do not qualify a deployment's
+  actual adapters, failure handling or sustained load; test those separately.
 - Historical P1 measurements were a no-go. Incremental indexes, delta payload
   checks and prepared-commit reuse remove several repeated scans, but lifetime
   memory remains history-dependent and performance must be requalified.

@@ -3,9 +3,18 @@
 [![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
 [![Hex](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
 [![HexDocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/spectre)
+[Website](https://spectre.guide)
 
 **An OTP-native Elixir runtime for agents, built on one rule: a proposal must
 never carry the power to make itself happen.**
+
+> **Warning for 0.3 users:** Spectre 0.4 is a complete rewrite, not an
+> incremental upgrade. It changes the library's philosophy from an agent
+> execution framework to a governed-act kernel with an explicit authoring
+> layer. Public APIs, runtime topology, durable records and integration
+> contracts have changed substantially. Existing 0.3 agents, checkpoints and
+> satellite packages must be reviewed and adapted; no automatic or drop-in
+> migration is promised.
 
 An agent can be wrong, be persuaded, invent a fact or change its plan. No
 architecture makes a mind infallible, and Spectre does not try. It removes the
@@ -16,9 +25,9 @@ OTP supervision. Your application declares, separately, which consequences are
 governed and who may authorize them. Between the two sits a kernel the agent
 does not control.
 
-This checkout is **0.4.0, unreleased**. It is not a drop-in upgrade from 0.3,
-and it is a library rather than a hosted service: you choose the providers,
-credentials, storage and policy. See [current limits](docs/capabilities.md).
+This checkout is **0.4.0**. It is a library rather than a hosted
+service: you choose the providers, credentials, storage and policy. See
+[current limits](docs/capabilities.md).
 
 ## Philosophy
 
@@ -382,10 +391,12 @@ satellite repositories each add one bounded capability, depending on Spectre's
 public contracts while Spectre neither depends on nor discovers them. Each is
 versioned independently.
 
-**These packages were built against 0.3 contracts.** 0.4 changed the runtime
-they integrate with, so each needs its own migration before it can be used here.
-`spectre_prism` and `spectre_pulse` are the two currently being migrated;
-treat the rest as not yet available for 0.4 rather than as drop-in additions.
+**Do not assume a package targeting 0.3 is compatible with 0.4.** The runtime
+contracts changed, so each integration needs its own migration and end-to-end
+checks. In particular, this repository does not certify compatible Prism/Pulse
+releases. Check the selected package's supported Spectre version and migration
+guide before wiring it; the list below describes responsibilities, not a
+verified 0.4 compatibility matrix.
 
 | Repository | Responsibility |
 | --- | --- |

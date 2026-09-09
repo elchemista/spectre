@@ -11,10 +11,12 @@ defmodule Spectre.Core.CanonicalBoundaryTest do
   test "codec metadata and invalid option shapes are stable public contracts" do
     assert Value.version() == 1
     assert Value.digest_algorithm() == :sha256
+
     for opts <- [nil, %{}, [allowed_structs: URI], [allowed_structs: [nil]]] do
       assert {:error, _} = Value.encode(nil, opts)
       assert {:error, _} = Value.decode(Value.encode!(nil), opts)
     end
+
     for value <- [[], %{}, {}, self()] do
       assert {:error, {:invalid_canonical_binary, _}} = Value.decode(value)
     end
@@ -24,6 +26,7 @@ defmodule Spectre.Core.CanonicalBoundaryTest do
     Port.close(port)
 
     counterfeit = %{__struct__: BrokenStruct}
+
     assert {:error, {:invalid_canonical_struct, [], BrokenStruct, RuntimeError}} =
              Value.encode(counterfeit, allowed_structs: [BrokenStruct])
   end

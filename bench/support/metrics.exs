@@ -1,8 +1,14 @@
 defmodule Spectre.Bench.Metrics do
-  @moduledoc false
-  alias Spectre.Ledger.{Entry, Reader}
-  alias Spectre.Ledger.Store.Disk
+  @moduledoc """
+  Idle-checkpoint measurements, kept out of the timed proposal path.
 
+  Ledger bytes, process heaps, owned ETS tables and shared binary references
+  describe different things. Do not add them as exclusive ownership or mistake
+  one checkpoint for peak RAM. See bench/README.md for each CSV column's units.
+  """
+  alias Spectre.Ledger.{Entry, Reader}
+
+  @doc "Samples a completed fixture; optional forced GC is a separate diagnostic."
   def capture(f, collect_gc? \\ false) do
     process = process(f.server)
     store_process = process(f.store)
@@ -13,11 +19,9 @@ defmodule Spectre.Bench.Metrics do
 
     ledger = Task.async(fn -> ledger(f) end) |> Task.await(:infinity)
 
-    physical =
-      case f.store_config do
-        {Disk, _} -> directory_bytes(:sys.get_state(f.store).directory)
-        _volatile -> nil
-      end
+    # The fixture owns this directory; do not couple measurements to a Store's
+    # private GenServer state or assume that every backend has a local file.
+    physical = if f.store_directory, do: directory_bytes(f.store_directory)
 
     Map.merge(ledger, %{
       sequencer_bytes: process.memory,
@@ -101,7 +105,8 @@ defmodule Spectre.Bench.Metrics do
     result
   end
 
-  defp owned_ets_bytes(owner) do
+  @doc "Sums all tables owned by the process, without inspecting its private State."
+  def owned_ets_bytes(owner) do
     Enum.reduce(:ets.all(), 0, fn table, sum ->
       if :ets.info(table, :owner) == owner,
         do: sum + :ets.info(table, :memory) * :erlang.system_info(:wordsize),

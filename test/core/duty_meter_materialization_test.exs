@@ -2,6 +2,7 @@ defmodule Spectre.Core.DutyMeterMaterializationTest do
   use ExUnit.Case, async: false
 
   alias Spectre.{Act, Duty, Outcome, Portable, Principal}
+  alias Spectre.Attempt.Executor
   alias Spectre.Domain.{Event, Sequencer}
   alias Spectre.Duty.Disposition
   alias Spectre.GovernedAct.Catalog
@@ -306,7 +307,7 @@ defmodule Spectre.Core.DutyMeterMaterializationTest do
     c = with_independent_reviewer(c)
 
     {:ok, no_effect_evidence} =
-      Spectre.Attempt.Executor.outcome_evidence(
+      Executor.outcome_evidence(
         c.cause,
         c.attempt,
         :definitive_no_effect,
@@ -331,6 +332,7 @@ defmodule Spectre.Core.DutyMeterMaterializationTest do
       | evidence: Map.put(c.state.evidence, no_effect_evidence.ref, no_effect_evidence),
         outcomes: Map.put(c.state.outcomes, no_effect.ref, no_effect)
     }
+
     c = %{c | state: state}
     {_disposition, act} = disposition(c, :release, [no_effect.ref])
     state = %{state | acts: Map.put(state.acts, act.ref, act)}
@@ -343,6 +345,7 @@ defmodule Spectre.Core.DutyMeterMaterializationTest do
     unsupported_state = %{state | acts: Map.put(state.acts, unsupported.ref, unsupported)}
     assert {:ok, [payload, _disposed]} = Materialization.events(unsupported_state, unsupported)
     assert {:ok, event} = Event.decode(payload)
+
     assert {:error, :duty_meter_release_not_proven} =
              DutyMeter.resolve(unsupported_state, event.data)
   end

@@ -206,9 +206,18 @@ explicit incomplete-tail policy permits truncation.
 - `lib/spectre/core/`: governed records, kernel, Domain sequencing, replay,
   execution boundary, ledger, erasure and audit. This owns GAM correctness.
 - `lib/spectre.ex`: public facade connecting host calls to those boundaries.
+- `lib/mix/tasks/`: development commands such as scaffolding, routing evaluation,
+  diagnostics and migration generation; not an agent runtime.
 
 Directories separate responsibilities; module names remain `Spectre.Agent`,
 `Spectre.Kernel`, and so on. There is no second DSL-specific kernel.
+
+There is no `lib/package` layer. `package/0` in `mix.exs` is Mix configuration:
+it lists the source files and public guides shipped to Hex, plus package
+metadata. It starts no processes and installs no optional integrations. The
+release check in `scripts/check_package.exs` verifies that the built package
+matches that manifest byte-for-byte; plans, checkpoints and development build
+artifacts are not part of the distribution.
 
 ## What owns state?
 

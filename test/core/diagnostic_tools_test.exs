@@ -86,18 +86,23 @@ defmodule Spectre.Core.DiagnosticToolsTest do
       refute report.ok?
       assert [%{reason: :invalid_doctor_options}] = report.errors
     end
+
     for {key, value} <- [store: nil, ingress: nil, mind_modules: 123] do
       report = Doctor.check(Keyword.put(c.config, key, value))
       refute report.ok?
       refute report.errors == []
     end
+
     assert {:ok, dependencies} = Doctor.dependencies(:erlang)
     assert MapSet.size(dependencies) == 0
   end
 
   test "an isolated declaration differs from development and mediation assumptions", c do
     {:ok, profile} = HostProfile.new(%{c.config[:host_profile] | ref: nil, mode: :isolated})
-    {:ok, genesis} = Genesis.new(%{c.fixture.genesis | ref: "genesis:isolated", host_profile_ref: profile.ref})
+
+    {:ok, genesis} =
+      Genesis.new(%{c.fixture.genesis | ref: "genesis:isolated", host_profile_ref: profile.ref})
+
     report = Doctor.check(Keyword.merge(c.config, genesis: genesis, host_profile: profile))
     assert report.ok?
     refute Enum.any?(report.warnings, &(&1.check == :boundary_declaration))

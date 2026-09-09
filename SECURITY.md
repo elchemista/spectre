@@ -69,5 +69,6 @@ backups or logs, and hashes/references can still reveal sensitive information.
 
 Tests, offline audit, Credo, Dialyzer and Doctor address different properties.
 None proves physical isolation, truthful Evidence or absence of alternate
-effect paths. Coverage and performance qualification remain open release gates.
+effect paths. Coverage is a regression gate, not a security certification;
+deployment-specific fault testing and performance qualification remain necessary.
 Report a violated supported invariant even if the static checks pass.

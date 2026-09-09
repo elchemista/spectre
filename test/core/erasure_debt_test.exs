@@ -91,10 +91,19 @@ defmodule Spectre.Core.ErasureDebtTest do
     assert cause.subject_refs == c.act.subject_refs
   end
 
-  test "historical Evidence availability is rebuilt at acquisition time, not today's erasure cache", c do
-    {:ok, evidence} = Spectre.Evidence.new(proposition: "document.present", bindings: %{},
-      issuer_ref: "archive", source_ref: "archive", provenance: :observed, observed_at: 90,
-      payload_ref: c.erasure.target_ref)
+  test "historical Evidence availability is rebuilt at acquisition time, not today's erasure cache",
+       c do
+    {:ok, evidence} =
+      Spectre.Evidence.new(
+        proposition: "document.present",
+        bindings: %{},
+        issuer_ref: "archive",
+        source_ref: "archive",
+        provenance: :observed,
+        observed_at: 90,
+        payload_ref: c.erasure.target_ref
+      )
+
     state = %{c.state | evidence: %{evidence.ref => evidence}}
     state = put_in(state.event_metadata[evidence.ref], metadata(1, 90))
     facts = Facts.from_state(state)

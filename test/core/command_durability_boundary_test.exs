@@ -1,9 +1,9 @@
 defmodule Spectre.CommandDurabilityBoundaryTest do
   use Spectre.Test.GovernedBoundaryCase, async: false
 
-  alias Spectre.Domain.{Configuration, Event, Transaction}
   alias Spectre.Domain.Command.{Durability, Input}
   alias Spectre.Domain.Command.Evidence, as: EvidenceCommand
+  alias Spectre.Domain.{Configuration, Event, Transaction}
   alias Spectre.Domain.Sequencer.State
   alias Spectre.Ledger.Store.Mock
   alias Spectre.V04Test.Fixture

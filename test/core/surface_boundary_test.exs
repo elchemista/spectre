@@ -1,9 +1,9 @@
 defmodule Spectre.Core.SurfaceBoundaryTest do
   use Spectre.Test.GovernedBoundaryCase, async: false
 
-  alias Spectre.{Portable, Row, Surface}
   alias Spectre.Consequence.Validator
   alias Spectre.GovernedAct.State
+  alias Spectre.{Portable, Row, Surface}
 
   test "an undeclared class never falls back to an empty row, contract or validator", c do
     surface = State.surface(c.before)

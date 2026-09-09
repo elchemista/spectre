@@ -1,8 +1,8 @@
 defmodule Spectre.Agents.RequestBuilderBoundaryTest do
   use Spectre.Test.GovernedBoundaryCase, async: false
 
-  alias Spectre.Candidate
   alias Spectre.Agent.{RequestBuilder, Turn}
+  alias Spectre.Candidate
   alias Spectre.GovernedAct.State
   alias Spectre.Mind.Turn, as: MindTurn
   alias Spectre.V04Test.{Fixture, Runtime}

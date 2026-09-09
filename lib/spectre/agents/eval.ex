@@ -97,9 +97,14 @@ defmodule Spectre.Eval do
   end
 
   defp evaluator(%Router{} = router), do: {:ok, &Router.route(router, &1)}
-  defp evaluator(%Flow{} = flow), do: {:ok, &Flow.route(flow, &1)}
   defp evaluator(fun) when is_function(fun, 1), do: {:ok, fun}
-  defp evaluator(_target), do: {:error, :invalid_eval_target}
+
+  defp evaluator(target) do
+    case Flow.fetch(target) do
+      {:ok, flow} -> {:ok, &Flow.route(flow, &1)}
+      {:error, _} -> {:error, :invalid_eval_target}
+    end
+  end
 
   defp limits(opts) do
     with {:ok, opts} <- Portable.normalize_attrs(opts, [:max_cases, :max_failures], :eval),

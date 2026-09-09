@@ -82,7 +82,6 @@ defmodule Spectre.Ledger do
     else
       false -> {:error, :ledger_cursor_ahead_of_head}
       {:error, _} = error -> error
-      _invalid -> {:error, :invalid_ledger_snapshot_entries}
     end
   end
 

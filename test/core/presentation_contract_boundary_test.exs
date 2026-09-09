@@ -29,7 +29,10 @@ defmodule Spectre.Core.PresentationContractBoundaryTest do
     material = Presentation.material(c.presentation)
     refute Map.has_key?(material, "renderer_ref")
     assert material["data"] == %{"amount_cents" => 100}
-    assert Presentation.digest(c.presentation) == Portable.digest!(Presentation.canonical(c.presentation))
+
+    assert Presentation.digest(c.presentation) ==
+             Portable.digest!(Presentation.canonical(c.presentation))
+
     assert c.presentation.material_digest == Portable.digest!(material)
     assert Presentation.content_ref(c.presentation) == c.presentation.ref
 
@@ -86,7 +89,8 @@ defmodule Spectre.Core.PresentationContractBoundaryTest do
           {:disclosure, nil, :presentation_show_disclosure_mismatch},
           {:purpose_ref, "purpose:other", :presentation_show_purpose_mismatch}
         ] do
-      assert {:error, ^reason} = Presentation.validate_show(Map.put(base, field, value), c.presentation)
+      assert {:error, ^reason} =
+               Presentation.validate_show(Map.put(base, field, value), c.presentation)
     end
   end
 

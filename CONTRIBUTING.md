@@ -8,9 +8,14 @@ new adapters, and focused runtime changes are welcome.
 ```bash
 git clone https://github.com/elchemista/spectre.git
 cd spectre
+git switch feature/v0.4.0-governed-act-runtime
 mix deps.get
 mix test
 ```
+
+The branch above is the unreleased 0.4 development line. For a published
+release, use its tag instead; do not assume the default branch has the same API
+as the guide you are reading.
 
 Spectre requires Elixir `~> 1.19`. The current 0.4 runtime dependency is UUIDv7;
 Benchee is development-only. Provider, embedding and database-driver libraries
@@ -29,6 +34,7 @@ mix test --cover
 mix credo --strict
 mix dialyzer
 mix docs --warnings-as-errors
+mix run scripts/check_documentation_links.exs doc
 mix hex.build
 git diff --check
 ```

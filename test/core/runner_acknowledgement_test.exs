@@ -280,6 +280,7 @@ defmodule Spectre.Core.RunnerAcknowledgementTest do
     assert Sequencer.projection(c.f.server) === c.prefix
   end
 
+  @tag capture_log: true
   test "a sequencer disappearing after dispatch never causes a second execution", c do
     consume_proxy = proxy(c, :consume_grant, :crash)
 

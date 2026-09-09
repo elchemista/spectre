@@ -1,3 +1,6 @@
+# Synthetic identities/authentication and fixed secrets make this fixture
+# repeatable. Never copy them into an application's trust boundary. See
+# docs/host-setup.md for real ingress, broker and foundation responsibilities.
 defmodule Spectre.Bench.P1.IdSource do
   @moduledoc false
   @behaviour Spectre.Id.Source
@@ -86,7 +89,13 @@ defmodule Spectre.Bench.P1.Executor do
 end
 
 defmodule Spectre.Bench.P1.Fixture do
-  @moduledoc false
+  @moduledoc """
+  Explicit lab foundation shared by isolated-stage and public 0.4 benchmarks.
+
+  This is not a production host scaffold. It admits one synthetic effect class
+  with one finite budget; optional erasure grants cover only the supplied target.
+  Every fixture owns its temporary Store and Domain. Call stop/2 after use.
+  """
 
   alias Spectre.Bench.P1.{Executor, IdSource, Ingress}
   alias Spectre.Consequence.Contract
@@ -100,6 +109,15 @@ defmodule Spectre.Bench.P1.Fixture do
   @grant_secret :binary.copy(<<0x47>>, 32)
   @checkout_secret :binary.copy(<<0x43>>, 32)
 
+  @doc """
+  Creates an authenticated lab Scope and its authorization Evidence.
+
+  `capacity` is the total number of spend units, including seeded history; each
+  `bench.effect` reserves one. `batch_size` caps grouped submissions and
+  `batch_wait_ms` bounds their collection window. `namespace` isolates records.
+  Optional `executors` replaces the manual P1 stub without changing its identity
+  or contract; `payload_store` verifies external references when configured.
+  """
   def start(store_kind, namespace, capacity, batch_size, batch_wait_ms, opts \\ []) do
     now = System.system_time(:millisecond)
     refs = refs(namespace)
@@ -109,6 +127,8 @@ defmodule Spectre.Bench.P1.Fixture do
     accountable = principal!(:organization, "accountable", namespace)
     principals = [grantor, proposer, executor, accountable]
 
+    # Row declares effect dimensions, not routing preferences. The Mandate
+    # covers those dimensions; the Meter accounts for the spend quantity.
     row = ok!(Spectre.Row.new(%{attempt: true, spend: true}))
     erasure_target = Keyword.get(opts, :erasure_target)
     erasure_row = %Spectre.Row{attempt: true, write: true, govern: true}
@@ -216,7 +236,7 @@ defmodule Spectre.Bench.P1.Fixture do
         })
       )
 
-    {store, store_config, cleanup} = start_store(store_kind, namespace)
+    {store, store_config, store_directory, cleanup} = start_store(store_kind, namespace)
 
     sequencer_opts = [
       domain_ref: refs.domain,
@@ -248,8 +268,12 @@ defmodule Spectre.Bench.P1.Fixture do
          clock: Spectre.Clock.System}
     ]
 
-    sequencer_opts = Keyword.merge(sequencer_opts, Keyword.take(opts, [:payload_store]))
-    server = ok!(Sequencer.start_link(sequencer_opts))
+    # The same explicit foundation supports both isolated P1 stages and the
+    # public proposal workload. Only the latter supplies a working executor.
+    sequencer_opts =
+      Keyword.merge(sequencer_opts, Keyword.take(opts, [:payload_store, :executors]))
+
+    server = ok!(Spectre.Domain.start_link(sequencer_opts))
     context = authenticate!(server, refs, proposer.ref)
     opening = session_opening!(context, now)
     ^opening = ok!(Sequencer.open_scope(server, context, opening))
@@ -271,6 +295,7 @@ defmodule Spectre.Bench.P1.Fixture do
       server: server,
       store: store,
       store_config: store_config,
+      store_directory: store_directory,
       cleanup: cleanup,
       sequencer_opts: sequencer_opts,
       context: context,
@@ -282,6 +307,7 @@ defmodule Spectre.Bench.P1.Fixture do
     }
   end
 
+  @doc "Builds a distinct occurrence using this Scope's explicit authority and one Meter unit."
   def candidate(fixture, sequence) do
     meter_requests = %{fixture.refs.meter => 1}
 
@@ -346,7 +372,7 @@ defmodule Spectre.Bench.P1.Fixture do
 
   def restart(fixture) do
     stop_process(fixture.server)
-    ok!(Sequencer.start_link(fixture.sequencer_opts))
+    ok!(Spectre.Domain.start_link(fixture.sequencer_opts))
   end
 
   def stop(fixture, server \\ nil) do
@@ -387,7 +413,7 @@ defmodule Spectre.Bench.P1.Fixture do
 
   defp start_store(kind, _namespace) when kind in [:ets, :ets_compressed] do
     store = ok!(ETS.start_link(compressed: kind == :ets_compressed))
-    {store, {ETS, server: store}, fn -> :ok end}
+    {store, {ETS, server: store}, nil, fn -> :ok end}
   end
 
   defp start_store(kind, namespace) when kind in [:disk, :disk_compressed] do
@@ -406,7 +432,7 @@ defmodule Spectre.Bench.P1.Fixture do
       end
     end
 
-    {store, {Disk, server: store}, cleanup}
+    {store, {Disk, server: store}, root, cleanup}
   end
 
   defp principal!(kind, role, namespace) do

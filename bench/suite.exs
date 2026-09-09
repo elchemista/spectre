@@ -53,6 +53,7 @@ defmodule Spectre.Bench.Suite do
       inspect(
         %{
           config: config,
+          workload: :public_proposal_v1,
           elixir: System.version(),
           otp: :erlang.system_info(:otp_release),
           schedulers: :erlang.system_info(:schedulers_online),
@@ -66,6 +67,10 @@ defmodule Spectre.Bench.Suite do
     )
 
     IO.puts("Bench outputs: #{config.output}")
+
+    IO.puts(
+      "0.4 public proposals: admission -> durable Attempt -> broker -> executor -> Outcome."
+    )
 
     IO.puts(
       "Fresh Domain per latency sample; setup/history and cleanup excluded. No shared growing input."
@@ -184,7 +189,7 @@ defmodule Spectre.Bench.Suite do
                                                                         {previous, before, acc} ->
                 times =
                   Enum.map((previous + 1)..total, fn n ->
-                    {us, :ok} = :timer.tc(fn -> Workload.cycle(f, n, mode) end)
+                    {us, :ok} = :timer.tc(fn -> Workload.cycle(f, n) end)
                     us / 1_000
                   end)
 

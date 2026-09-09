@@ -1,11 +1,11 @@
 defmodule Spectre.Core.BatchCausalityBoundaryTest do
   use Spectre.Test.GovernedBoundaryCase, async: false
 
-  alias Spectre.{Duty, Evidence}
   alias Spectre.Attempt.Reconciler
   alias Spectre.Domain.{Event, Reconciliation}
-  alias Spectre.GovernedAct.{Fold, Materialization}
+  alias Spectre.{Duty, Evidence}
   alias Spectre.GovernedAct.Batch.{Dispatch, Events, World}
+  alias Spectre.GovernedAct.{Fold, Materialization}
   alias Spectre.GovernedAct.Materialization.Authority, as: AuthorityMaterialization
   alias Spectre.V04Test.{Fixture, Runtime}
 

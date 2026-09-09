@@ -231,11 +231,12 @@ defmodule Spectre.Agents.ContextContractTest do
   end
 
   test "agent context composes explicitly wired history and memory windows", c do
-    owner = context_owner(%{
-      "history/chat" => %{keep: 2, max_bytes: 2048},
-      "memory/policy" => %{limit: 2, max_bytes: 2048},
-      "prompt/ignored" => %{max_bytes: 2048}
-    })
+    owner =
+      context_owner(%{
+        "history/chat" => %{keep: 2, max_bytes: 2048},
+        "memory/policy" => %{limit: 2, max_bytes: 2048},
+        "prompt/ignored" => %{max_bytes: 2048}
+      })
 
     page = %{binding: c.binding, messages: [c.message], cursor: nil, truncated?: false}
     memory_binding = Map.take(c.binding, [:tenant_id])
@@ -268,7 +269,11 @@ defmodule Spectre.Agents.ContextContractTest do
              Context.load(context_owner(%{"history/chat" => %{keep: 1}}), %{ports: %{}}, "input")
 
     assert {:error, {:unwired_memory, "policy"}} =
-             Context.load(context_owner(%{"memory/policy" => %{limit: 1}}), %{ports: %{}}, "input")
+             Context.load(
+               context_owner(%{"memory/policy" => %{limit: 1}}),
+               %{ports: %{}},
+               "input"
+             )
 
     huge_message = %{c.message | content: String.duplicate("h", 33_000)}
     huge_item = %{c.item | content: String.duplicate("m", 33_000)}

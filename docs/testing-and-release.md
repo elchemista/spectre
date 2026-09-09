@@ -309,12 +309,41 @@ SPECTRE_DOCS_REF=v0.4.0 mix docs --warnings-as-errors
 an Agent Definition, change runtime behavior or create/push a Git tag. New
 source files are accessible remotely only after the host repository is pushed.
 
+### Build locally before publishing
+
+From a source checkout, run the artifact checks without uploading anything:
+
+```sh
+mix compile --warnings-as-errors
+mix format --check-formatted
+mix credo --strict
+mix dialyzer
+ERL_FLAGS='+S 4:4' mix test --cover --seed 1701 --max-cases 16 --warnings-as-errors
+mix docs --warnings-as-errors
+mix run scripts/check_documentation_links.exs doc
+mix hex.audit
+package_dir=$(mktemp -d)
+mix hex.build --unpack --output "$package_dir"
+mix run scripts/check_package.exs "$package_dir"
+```
+
+`hex.build` creates a local artifact, not a release. `hex.audit` checks Hex
+dependency advisories, not application security or the host's adapters. Keep
+the unpacked package for inspection; it contains the public guides and runtime
+source, not test dependencies, model downloads or private planning notes.
+
+Before publishing, also complete CI's isolated production-build check, review
+the current [capability limits](capabilities.md), update the release status/date,
+and ensure the intended source tag exists remotely. Use that same
+`SPECTRE_DOCS_REF` when generating documentation for publication. Publication
+and Git tagging are explicit maintainer actions, never performed by these checks.
+
 CI uses the root `mix.lock` for all test dependencies. The ordinary matrix runs
 real embeddings and the >=60-second Worker/Vigil/Skill lifecycle, with a cached
 model download and no separate checkout or opt-in lane. The benchmark smoke job
 runs the development Benchee suite and uploads latency/ledger/memory results;
 it is not a throughput guarantee on a shared runner. Coverage remains a separate
-gate at the configured threshold, not evidence that every contract is correct.
+gate at the configured 95.5% threshold, not evidence that every contract is correct.
 
 The package job compares the unpacked release byte-for-byte with `mix.exs`'s
 file manifest. It also compiles in a fresh production directory and starts

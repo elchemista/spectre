@@ -1,6 +1,9 @@
 # Run with: mix run bench/ledger_ets.exs
 # Isolates adapter costs; this is not an end-to-end Domain/P1 benchmark.
+Code.require_file("support/metrics.exs", __DIR__)
+
 defmodule Spectre.Bench.LedgerETS do
+  alias Spectre.Bench.Metrics
   alias Spectre.Ledger.Store
   alias Spectre.Ledger.Store.ETS
 
@@ -32,7 +35,6 @@ defmodule Spectre.Bench.LedgerETS do
       {:memory, heap_before_gc} = Process.info(server, :memory)
       :erlang.garbage_collect(server)
       {:memory, heap_after_gc} = Process.info(server, :memory)
-      %{table: table} = :sys.get_state(server)
       before = reductions(server)
       {export_us, {:ok, _export}} = :timer.tc(fn -> Store.export(store, "domain", []) end)
       export_reductions = reductions(server) - before
@@ -48,7 +50,7 @@ defmodule Spectre.Bench.LedgerETS do
         owner_bytes_after_gc: heap_after_gc,
         export_us: export_us,
         export_owner_reductions: export_reductions,
-        ets_bytes: :ets.info(table, :memory) * :erlang.system_info(:wordsize)
+        ets_bytes: Metrics.owned_ets_bytes(server)
       })
     after
       GenServer.stop(server)

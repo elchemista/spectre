@@ -1,12 +1,25 @@
 defmodule Spectre.ValueContractBoundaryTest do
   use Spectre.Test.GovernedBoundaryCase, async: false
 
-  alias Spectre.{Act, Condition, Decision, Disclosure, Duty, Evidence, Label, Mandate, Outcome, Row}
+  alias Spectre.{
+    Act,
+    Condition,
+    Decision,
+    Disclosure,
+    Duty,
+    Evidence,
+    Label,
+    Mandate,
+    Outcome,
+    Row
+  }
+
   alias Spectre.Consequence.Contract
   alias Spectre.Evidence.Derivation
+  alias Spectre.V04Test.Fixture
 
   test "record identity helpers expose exact canonical values rather than loose equality", c do
-    outcome = Spectre.V04Test.Fixture.outcome(c.f, c.act, c.attempt, :succeeded, [c.receipt.ref])
+    outcome = Fixture.outcome(c.f, c.act, c.attempt, :succeeded, [c.receipt.ref])
     assert Act.digest(c.act) == Spectre.Portable.digest!(Act.canonical(c.act))
     assert Act.content_ref(c.act) == c.act.ref
     assert Decision.admitted?(c.decision)
@@ -26,30 +39,71 @@ defmodule Spectre.ValueContractBoundaryTest do
     assert {:error, :invalid_derivation_labels} = Derivation.conservative_labels([], nil)
     assert {:error, :invalid_evidence_derivation} = Derivation.validate(nil, [])
     assert {:error, {:invalid_derivation_parent, _}} = Derivation.inherited_labels([%{}])
-    assert {:error, {:invalid_derivation_provenance, :observed}} = Derivation.validate(c.payment, [])
+
+    assert {:error, {:invalid_derivation_provenance, :observed}} =
+             Derivation.validate(c.payment, [])
   end
 
   test "Disclosure proves both its effect row and inherited labels", c do
     {:ok, row} = Row.new(disclose: false)
     {:ok, label} = Label.new(owner_ref: "owner", value: "private")
-    {:ok, disclosure} = Disclosure.new(destination_refs: ["customer"], source_evidence_refs: [c.payment.ref], labels: [label])
-    assert {:error, :disclosure_not_declared_in_row} = Disclosure.validate_boundary(row, disclosure, ["customer"], [c.payment.ref])
+
+    {:ok, disclosure} =
+      Disclosure.new(
+        destination_refs: ["customer"],
+        source_evidence_refs: [c.payment.ref],
+        labels: [label]
+      )
+
+    assert {:error, :disclosure_not_declared_in_row} =
+             Disclosure.validate_boundary(row, disclosure, ["customer"], [c.payment.ref])
+
     assert {:error, :invalid_disclosure_sources} = Disclosure.verify_sources(nil, nil)
-    assert {:error, :disclosure_labels_not_derived_from_sources} = Disclosure.verify_sources(disclosure, %{c.payment.ref => c.payment})
-    assert {:error, {:invalid_disclosure_evidence, _}} = Disclosure.verify_sources(disclosure, %{c.payment.ref => %{}})
+
+    assert {:error, :disclosure_labels_not_derived_from_sources} =
+             Disclosure.verify_sources(disclosure, %{c.payment.ref => c.payment})
+
+    assert {:error, {:invalid_disclosure_evidence, _}} =
+             Disclosure.verify_sources(disclosure, %{c.payment.ref => %{}})
+
     refute Disclosure.labels_covered?(nil, [])
     refute Disclosure.labels_covered?(disclosure, [nil])
-    assert {:error, {:unsupported_disclosure_schema_version, 2}} = Disclosure.new(%{disclosure | schema_version: 2})
+
+    assert {:error, {:unsupported_disclosure_schema_version, 2}} =
+             Disclosure.new(%{disclosure | schema_version: 2})
+
     assert {:ok, ^disclosure} = Disclosure.from_canonical(Disclosure.canonical(disclosure))
   end
 
   test "Condition and Duty constructors reject malformed collection tails", c do
     assert {:error, {:invalid_condition_cardinality, :list}} = Condition.new(cardinality: [])
-    assert {:error, {:invalid_condition_provenance, :observed}} = Condition.new(accepted_provenance: :observed)
-    assert {:error, {:invalid_condition_provenance, _}} = Condition.new(accepted_provenance: [:observed | :bad])
+
+    assert {:error, {:invalid_condition_provenance, :observed}} =
+             Condition.new(accepted_provenance: :observed)
+
+    assert {:error, {:invalid_condition_provenance, _}} =
+             Condition.new(accepted_provenance: [:observed | :bad])
+
     assert {:error, _} = Condition.new(%{c.f.condition | ref: nil, accepted_provenance: []})
-    assert {:error, {:missing_outcome_evidence, :succeeded}} = Outcome.new(%{act_ref: "act", attempt_ref: "attempt", status: :succeeded, evidence_refs: [], observed_at: 1, details_ref: "details"})
-    assert {:error, _} = Duty.new(class: "app.review", cause_key: {:review, 1}, accountable: "owner", conflict_refs: ["owner" | :bad], opened_at: 1)
+
+    assert {:error, {:missing_outcome_evidence, :succeeded}} =
+             Outcome.new(%{
+               act_ref: "act",
+               attempt_ref: "attempt",
+               status: :succeeded,
+               evidence_refs: [],
+               observed_at: 1,
+               details_ref: "details"
+             })
+
+    assert {:error, _} =
+             Duty.new(
+               class: "app.review",
+               cause_key: {:review, 1},
+               accountable: "owner",
+               conflict_refs: ["owner" | :bad],
+               opened_at: 1
+             )
   end
 
   test "Evidence identity and freshness helpers preserve lineage and exact time bounds", c do

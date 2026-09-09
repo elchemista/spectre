@@ -40,6 +40,13 @@ defmodule Spectre.Agent.Flow do
           | {:unrouted, term()}
           | {:error, term()}
 
+  # Keep recognition of the opaque plan inside its owning module, as with
+  # Pipeline.fetch/1. Consumers need not inspect its internal representation.
+  @doc false
+  @spec fetch(term()) :: {:ok, t()} | {:error, :invalid_agent_flow}
+  def fetch(%__MODULE__{} = flow), do: {:ok, flow}
+  def fetch(_value), do: {:error, :invalid_agent_flow}
+
   @doc false
   def from_code(module, name, opts) when is_binary(name) do
     with :ok <- Adapter.validate(module, __spectre_plan__: 0),

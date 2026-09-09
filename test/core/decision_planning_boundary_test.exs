@@ -4,8 +4,8 @@ defmodule Spectre.Core.DecisionPlanningBoundaryTest do
   alias Spectre.{Act, Decision, Row}
   alias Spectre.Domain.Projection
   alias Spectre.GovernedAct.Index
-  alias Spectre.Kernel.{Commit, Observation}
   alias Spectre.Kernel.Authority.Effective
+  alias Spectre.Kernel.{Commit, Observation}
   alias Spectre.Kernel.Decision, as: Planner
   alias Spectre.Kernel.Decision.Context
   alias Spectre.V04Test.{Fixture, Runtime}

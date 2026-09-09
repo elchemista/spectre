@@ -1,8 +1,9 @@
 defmodule Spectre.Agents.HandlerAlternativesTest do
   use Spectre.Test.HandlerAgentCase, async: false
 
-  alias Spectre.{Candidate, Instance, Mind}
   alias Spectre.Agent.Runtime
+  alias Spectre.{Candidate, Instance, Mind}
+  alias Spectre.Domain.Sequencer
   alias Spectre.V04Test.Fixture
 
   defmodule Assistant do
@@ -94,13 +95,13 @@ defmodule Spectre.Agents.HandlerAlternativesTest do
   end
 
   test "invalid flow choices are rejected before observing input", c do
-    before = Spectre.Domain.Sequencer.head(c.fixture.server)
+    before = Sequencer.head(c.fixture.server)
 
     assert {:error, {:unknown_agent_flow, :missing}} =
              Instance.turn(c.instance, input(c, "hello"), flow: :missing)
 
     assert {:error, :invalid_agent_flow} = Instance.turn(c.instance, input(c, "hello"), flow: 42)
-    assert Spectre.Domain.Sequencer.head(c.fixture.server) == before
+    assert Sequencer.head(c.fixture.server) == before
   end
 
   defp configured(c) do

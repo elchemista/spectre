@@ -290,6 +290,8 @@ There is no general durable projection checkpoint/compaction or bounded-history
 guarantee. See the [capability inventory](docs/capabilities.md) and
 [operations guide](docs/storage-and-recovery.md).
 
-Coverage and adversarial validation are incomplete. Neither a green static
-analysis nor a count of 1,000 tests is proof of the four laws. Do not present this
-checkout as a stable, performance-qualified 0.4.0 release.
+The automated suite exercises adversarial boundaries and enforces a coverage
+gate. Passing it is not proof of the four laws or qualification of a particular
+host's adapters, storage and workload. Keep deployment fault/load testing
+separate from the library's checks. Do not present this checkout as a stable,
+performance-qualified 0.4.0 release.

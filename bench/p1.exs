@@ -1,3 +1,7 @@
+# Stage-isolated 0.4 baseline: the caller consumes Grants and records synthetic
+# receipts. This deliberately omits Runner/broker/executor overhead so the
+# individual/group commit comparison stays separate. For the public lifecycle,
+# real receipt files and governed deletion, use bench/suite.exs.
 Code.require_file("support/p1_fixture.exs", __DIR__)
 
 defmodule Spectre.Bench.P1 do
