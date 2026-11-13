@@ -1,0 +1,103 @@
+{
+  "branch": "feature/agent-server-gam",
+  "version": "0.4.0",
+  "date": "2026-11-13",
+  "source_test_files": 1003,
+  "source_test_sha256": "2227e7a1343803229397f6cd143618132cf232f90295ad6f9b3cf579ee38c3e9",
+  "reviewed_files_sha256": {
+    "lib/spectre/server/runtime.ex": "a1597f988efc81f6671a9635571f274eb6e3d8b8cd2146a30729cb183f9c35af",
+    "lib/spectre/server/checkpoint.ex": "989fe3eecd470cad959044033ddfb6881b321b812228576dc5cddadcb6bd4fb6",
+    "lib/spectre/server/pending_lifecycle.ex": "63d81f728f84f39cff5e784a8630f529f018f9513d73e6253e43cdd90ff5648c",
+    "test/server/lifecycle_resume_recovery_test.exs": "d566a2df2ba22caf0598ffcaaf705ddb7fbd4478532e2083a2a4df624e8904ee",
+    "test/server/checkpoint_execution_state_test.exs": "f3831d497f99ea830affa5dc9705f65b898ed623c9ab0f6e0b1a9771add71ba6",
+    "test/server/pending_lifecycle_runtime_test.exs": "bd789ed5ff54e3896ff9958ee21c4ba2e5742109716a56d3b7b8dbd955e26395",
+    "test/server/gam_lifecycle_test.exs": "c7bd664d46644988280c2e83f40790bceb65797a7cba624fda7f419a96cefdb1"
+  },
+  "review": {
+    "runtime": "read-only independent subagent, no remaining blocker in reviewed scope",
+    "gam": "separate read-only subagent, kernel/bridge invariants preserved",
+    "opus_final": "interrupted by usage limit; user selected cross-review"
+  },
+  "quality_checks": [
+    {
+      "check": "format",
+      "exit_code": 0,
+      "duration_seconds": 13.01
+    },
+    {
+      "check": "compile",
+      "exit_code": 0,
+      "duration_seconds": 6.15
+    },
+    {
+      "check": "credo",
+      "exit_code": 0,
+      "duration_seconds": 27.1
+    },
+    {
+      "check": "types",
+      "exit_code": 0,
+      "duration_seconds": 45.38
+    },
+    {
+      "check": "docs",
+      "exit_code": 0,
+      "duration_seconds": 7.18
+    },
+    {
+      "check": "package",
+      "exit_code": 0,
+      "duration_seconds": 1.1
+    }
+  ],
+  "package_contract": {
+    "matching_files": 671,
+    "development_paths_excluded": true
+  },
+  "verification_status": "complete",
+  "test_checks": [
+    {
+      "check": "otp29-cover",
+      "exit_code": 0,
+      "duration_seconds": 203.74
+    },
+    {
+      "check": "instance-budgets",
+      "exit_code": 0,
+      "duration_seconds": 9.12
+    },
+    {
+      "check": "otp28-compile",
+      "exit_code": 0,
+      "duration_seconds": 2.47
+    },
+    {
+      "check": "otp28-tests",
+      "exit_code": 0,
+      "duration_seconds": 173.53
+    }
+  ],
+  "suite": {
+    "otp29": {
+      "passed": 4323,
+      "tests": 4297,
+      "properties": 25,
+      "doctests": 1,
+      "excluded": 1,
+      "coverage_percent": 95.1
+    },
+    "otp28": {
+      "passed": 4323,
+      "failures": 0,
+      "excluded": 1
+    },
+    "instance_performance": {
+      "passed": 3
+    }
+  },
+  "audit": {
+    "exit_code": 0,
+    "result": "No retired or security advisory packages found"
+  },
+  "source_test_manifest_unchanged_after_tests": true
+}

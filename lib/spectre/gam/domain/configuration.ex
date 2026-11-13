@@ -1,0 +1,384 @@
+defmodule Spectre.GAM.Domain.Configuration do
+  @moduledoc """
+  Validated host wiring for one Domain sequencer.
+
+  Configuration is deliberately separate from governed state. It selects the
+  adapters through which a deployment authenticates input, persists the ledger
+  and reaches Zone X, but it grants no Mandate and is never treated as ledger
+  truth. The resulting struct is immutable process configuration consumed by
+  `Spectre.GAM.Domain.Sequencer` during boot.
+  """
+
+  alias Spectre.GAM.{Adapter, Clock, Constitution, Ingress, Mind, Seal}
+  alias Spectre.GAM.Clock.Guard, as: ClockGuard
+  alias Spectre.GAM.Domain.Recovery.Policy, as: RecoveryPolicy
+  alias Spectre.GAM.Execution.Boundary
+  alias Spectre.GAM.Ledger.Store
+  alias Spectre.GAM.Mind.Context, as: MindContext
+  alias Spectre.GAM.Payload.Store, as: PayloadStore
+
+  @default_batch_size 64
+  @default_batch_wait_ms 1
+  @default_grant_ttl_ms 30_000
+  @default_conflict_retries 8
+  @default_ambiguous_retries 2
+
+  @bootstrap_options [
+    :genesis,
+    :principals,
+    :host_profile,
+    :surface,
+    :root_mandates,
+    :genesis_verifier
+  ]
+
+  @options [
+    :name,
+    :registry,
+    :domain_ref,
+    :store,
+    :ingress,
+    :clock,
+    :clock_tolerance_ms,
+    :id_source,
+    :late_observer,
+    :recovery_policy,
+    :recovery_timeout,
+    :mind,
+    :context,
+    :ingress_max_concurrency,
+    :ingress_timeout,
+    :max_pending_submissions,
+    :generation,
+    :grant_secret,
+    :checkout_receipt_secret,
+    :grant_ttl_ms,
+    :batch_size,
+    :batch_wait_ms,
+    :conflict_retries,
+    :ambiguous_retries,
+    :ledger_opts,
+    :payload_store,
+    :executors,
+    :broker,
+    :constitution,
+    :genesis,
+    :principals,
+    :host_profile,
+    :surface,
+    :root_mandates,
+    :genesis_verifier
+  ]
+  @runtime_options [:name, :registry, :domain_ref, :store]
+  @host_options @options -- @runtime_options
+
+  @runtime_fields [
+    :store,
+    :ingress,
+    :ingress_ref,
+    :clock,
+    :clock_guard,
+    :id_source,
+    :late_observer,
+    :recovery_policy,
+    :recovery_timeout,
+    :mind,
+    :mind_ref,
+    :context_limits,
+    :ingress_max_concurrency,
+    :ingress_timeout,
+    :max_pending_submissions,
+    :execution_boundary,
+    :generation,
+    :grant_secret,
+    :checkout_receipt_secret,
+    :grant_ttl_ms,
+    :batch_size,
+    :batch_wait_ms,
+    :conflict_retries,
+    :ambiguous_retries,
+    :ledger_opts,
+    :payload_store
+  ]
+  @enforce_keys [:domain_ref, :bootstrap_opts, :constitution | @runtime_fields]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          domain_ref: String.t(),
+          store: Store.config(),
+          ingress: module(),
+          ingress_ref: String.t(),
+          clock: module(),
+          clock_guard: ClockGuard.t() | nil,
+          id_source: module(),
+          late_observer: module() | nil,
+          recovery_policy: RecoveryPolicy.config(),
+          recovery_timeout: pos_integer(),
+          mind: module() | nil,
+          mind_ref: String.t() | nil,
+          context_limits: MindContext.limits() | nil,
+          ingress_max_concurrency: pos_integer(),
+          ingress_timeout: pos_integer(),
+          max_pending_submissions: pos_integer(),
+          execution_boundary: Boundary.t(),
+          generation: non_neg_integer(),
+          grant_secret: binary(),
+          checkout_receipt_secret: binary(),
+          grant_ttl_ms: pos_integer(),
+          batch_size: pos_integer(),
+          batch_wait_ms: non_neg_integer(),
+          conflict_retries: non_neg_integer(),
+          ambiguous_retries: non_neg_integer(),
+          ledger_opts: keyword(),
+          payload_store: PayloadStore.config() | nil,
+          bootstrap_opts: keyword(),
+          constitution: map()
+        }
+
+  @doc "Normalizes and validates all immutable Domain process configuration."
+  @spec new(keyword()) :: {:ok, t()} | {:error, term()}
+  def new(opts) when is_list(opts) do
+    with true <- Keyword.keyword?(opts),
+         :ok <- known_options(opts),
+         {:ok, domain_ref} <- required_non_empty_binary(opts, :domain_ref),
+         {:ok, store} <- required_store(opts),
+         {:ok, {ingress, ingress_ref}} <- required_ingress(opts),
+         {:ok, payload_store} <- PayloadStore.normalize(Keyword.get(opts, :payload_store)),
+         {:ok, clock} <- module_option(opts, :clock, Spectre.GAM.Clock.System, now: 0),
+         {:ok, id_source} <- module_option(opts, :id_source, Spectre.GAM.Id.UUIDv7, generate: 0),
+         {:ok, late_observer} <- late_observer_option(opts),
+         {:ok, recovery_policy} <- RecoveryPolicy.normalize(Keyword.get(opts, :recovery_policy)),
+         {:ok, recovery_timeout} <- positive_option(opts, :recovery_timeout, 5_000),
+         {:ok, {mind, mind_ref}} <- mind_option(opts),
+         {:ok, context_limits} <- MindContext.normalize(Keyword.get(opts, :context)),
+         {:ok, ingress_max_concurrency} <- positive_option(opts, :ingress_max_concurrency, 32),
+         {:ok, ingress_timeout} <- positive_option(opts, :ingress_timeout, 30_000),
+         {:ok, max_pending_submissions} <- positive_option(opts, :max_pending_submissions, 1_024),
+         {:ok, execution_boundary} <-
+           Boundary.normalize(Keyword.get(opts, :executors, []), Keyword.get(opts, :broker)),
+         {:ok, generation} <- generation_option(opts),
+         {:ok, grant_secret} <- secret_option(opts, :grant_secret),
+         {:ok, checkout_receipt_secret} <- secret_option(opts, :checkout_receipt_secret),
+         {:ok, grant_ttl_ms} <- positive_option(opts, :grant_ttl_ms, @default_grant_ttl_ms),
+         {:ok, batch_size} <- positive_option(opts, :batch_size, @default_batch_size),
+         {:ok, batch_wait_ms} <-
+           non_negative_option(opts, :batch_wait_ms, @default_batch_wait_ms),
+         {:ok, conflict_retries} <-
+           non_negative_option(opts, :conflict_retries, @default_conflict_retries),
+         {:ok, ambiguous_retries} <-
+           non_negative_option(opts, :ambiguous_retries, @default_ambiguous_retries),
+         {:ok, ledger_opts} <- keyword_option(opts, :ledger_opts, []),
+         {:ok, constitution} <- constitution_option(opts),
+         {:ok, now} <- usable_clock(clock),
+         {:ok, clock_guard} <- ClockGuard.new(now, Keyword.get(opts, :clock_tolerance_ms, 60_000)) do
+      {:ok,
+       %__MODULE__{
+         domain_ref: domain_ref,
+         store: store,
+         ingress: ingress,
+         ingress_ref: ingress_ref,
+         clock: clock,
+         clock_guard: clock_guard,
+         id_source: id_source,
+         late_observer: late_observer,
+         recovery_policy: recovery_policy,
+         recovery_timeout: recovery_timeout,
+         mind: mind,
+         mind_ref: mind_ref,
+         context_limits: context_limits,
+         ingress_max_concurrency: ingress_max_concurrency,
+         ingress_timeout: ingress_timeout,
+         max_pending_submissions: max_pending_submissions,
+         execution_boundary: execution_boundary,
+         generation: generation,
+         grant_secret: grant_secret,
+         checkout_receipt_secret: checkout_receipt_secret,
+         grant_ttl_ms: grant_ttl_ms,
+         batch_size: batch_size,
+         batch_wait_ms: batch_wait_ms,
+         conflict_retries: conflict_retries,
+         ambiguous_retries: ambiguous_retries,
+         ledger_opts: ledger_opts,
+         payload_store: payload_store,
+         bootstrap_opts: Keyword.take(opts, @bootstrap_options),
+         constitution: constitution
+       }}
+    else
+      false -> {:error, :invalid_sequencer_options}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def new(_opts), do: {:error, :invalid_sequencer_options}
+
+  @doc false
+  @spec runtime_fields() :: [atom()]
+  def runtime_fields, do: @runtime_fields
+
+  @doc false
+  @spec runtime_values(t()) :: map()
+  def runtime_values(%__MODULE__{} = config), do: Map.take(config, @runtime_fields)
+
+  @doc false
+  @spec validate_host_options(keyword()) :: :ok | {:error, term()}
+  def validate_host_options(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      case Keyword.keys(opts) -- @host_options do
+        [] -> :ok
+        unknown -> {:error, {:unknown_options, :domain, unknown}}
+      end
+    else
+      {:error, {:invalid_keyword_options, :domain_options}}
+    end
+  end
+
+  def validate_host_options(_opts),
+    do: {:error, {:invalid_keyword_options, :domain_options}}
+
+  @doc false
+  @spec verification_opts(t()) :: keyword()
+  def verification_opts(%__MODULE__{bootstrap_opts: opts}),
+    do: Keyword.take(opts, [:genesis_verifier])
+
+  @doc false
+  @spec genesis_verifier(t()) :: term()
+  def genesis_verifier(%__MODULE__{bootstrap_opts: opts}),
+    do: Keyword.get(opts, :genesis_verifier)
+
+  defp known_options(opts) do
+    case Keyword.keys(opts) -- @options do
+      [] -> :ok
+      unknown -> {:error, {:unknown_sequencer_configuration_options, Enum.sort(unknown)}}
+    end
+  end
+
+  defp required_non_empty_binary(opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} when is_binary(value) and value != "" -> {:ok, value}
+      :error -> {:error, {:missing_sequencer_option, key}}
+      {:ok, _invalid} -> {:error, {:invalid_sequencer_option, key}}
+    end
+  end
+
+  defp required_store(opts) do
+    case Keyword.fetch(opts, :store) do
+      {:ok, store} -> Store.normalize(store)
+      :error -> {:error, {:missing_sequencer_option, :store}}
+    end
+  end
+
+  defp required_ingress(opts) do
+    case Keyword.fetch(opts, :ingress) do
+      {:ok, module} -> Ingress.resolve(module)
+      :error -> {:error, {:missing_sequencer_option, :ingress}}
+    end
+  end
+
+  defp module_option(opts, key, default, callbacks) do
+    module = Keyword.get(opts, key, default)
+
+    case Adapter.validate(module, callbacks) do
+      :ok ->
+        {:ok, module}
+
+      {:error, {:invalid_adapter_module, _module}} ->
+        {:error, {:invalid_sequencer_option, key}}
+
+      {:error, _reason} ->
+        [{callback, arity} | _rest] = callbacks
+        {:error, {:sequencer_callback_unavailable, key, module, callback, arity}}
+    end
+  end
+
+  defp generation_option(opts) do
+    case Keyword.fetch(opts, :generation) do
+      {:ok, value} when is_integer(value) and value >= 0 -> {:ok, value}
+      {:ok, _invalid} -> {:error, {:invalid_sequencer_option, :generation}}
+      :error -> {:ok, :binary.decode_unsigned(:crypto.strong_rand_bytes(8))}
+    end
+  end
+
+  defp late_observer_option(opts) do
+    case Keyword.get(opts, :late_observer) do
+      nil ->
+        {:ok, nil}
+
+      module when is_atom(module) ->
+        case Adapter.validate(module, observe: 4) do
+          :ok ->
+            {:ok, module}
+
+          {:error, _reason} ->
+            {:error, {:sequencer_callback_unavailable, :late_observer, module, :observe, 4}}
+        end
+
+      _invalid ->
+        {:error, {:invalid_sequencer_option, :late_observer}}
+    end
+  end
+
+  defp mind_option(opts) do
+    case Keyword.get(opts, :mind) do
+      nil -> {:ok, {nil, nil}}
+      module -> Mind.resolve(module)
+    end
+  end
+
+  defp secret_option(opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} ->
+        if Seal.valid_secret?(value),
+          do: {:ok, value},
+          else: {:error, {:invalid_sequencer_option, key}}
+
+      :error ->
+        {:ok, Seal.generate_secret()}
+    end
+  end
+
+  defp positive_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value > 0 -> {:ok, value}
+      _invalid -> {:error, {:invalid_sequencer_option, key}}
+    end
+  end
+
+  defp non_negative_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value >= 0 -> {:ok, value}
+      _invalid -> {:error, {:invalid_sequencer_option, key}}
+    end
+  end
+
+  defp keyword_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_list(value) ->
+        if Keyword.keyword?(value),
+          do: {:ok, value},
+          else: {:error, {:invalid_sequencer_option, key}}
+
+      _invalid ->
+        {:error, {:invalid_sequencer_option, key}}
+    end
+  end
+
+  defp constitution_option(opts) do
+    case Keyword.get(opts, :constitution, %{}) do
+      value when is_map(value) and not is_struct(value) ->
+        case Constitution.validate(value) do
+          :ok -> {:ok, value}
+          {:error, _reason} = error -> error
+        end
+
+      _invalid ->
+        {:error, :invalid_constitution}
+    end
+  end
+
+  defp usable_clock(clock) do
+    case Clock.read(clock) do
+      {:ok, now} -> {:ok, now}
+      _invalid -> {:error, :invalid_clock_value}
+    end
+  end
+end

@@ -1,5 +1,7 @@
 # Spectre 0.3.4 guide for LLMs and coding agents
 
+For the **0.4 development architecture**, read [Agent and Server](docs/AGENT_SERVER.md) first. An Agent with `server:` runs through `Spectre.Server.Runtime` and the namespaced `Spectre.GAM` bridge. The chapters below describe the retained 0.3 compatibility API; do not mix its Instance continuations with Server callbacks.
+
 This file is the compact, machine-oriented entry point for using Spectre
 correctly. It is written for coding assistants, autonomous development agents,
 and retrieval systems that need the library's contracts without guessing from

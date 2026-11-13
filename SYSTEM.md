@@ -1,5 +1,7 @@
 # The Spectre System
 
+**0.4 development:** [Agent and Server](docs/AGENT_SERVER.md) describes the new owner and GAM boundary. This ecosystem overview documents the retained 0.3 contracts; compatibility of individual packages with 0.4 requires the checks listed in that guide.
+
 Spectre `0.3.4` is an OTP-native kernel for building conversational and
 operational agents in Elixir. It is deliberately not a package that owns every
 model, tool, memory store, browser, transport, and workflow. Those capabilities

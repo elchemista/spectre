@@ -2793,7 +2793,7 @@ defmodule SpectreDataDrivenExecutionTest do
     assert report.consumed_recordings == expected["consumed_recordings"]
 
     matrix = Conformance.matrix()
-    assert matrix.release == "0.3.4"
+    assert matrix.release == Spectre.version()
     assert matrix.data_execution.program_schema == 1
     assert matrix.data_execution.handoff_schema == 1
     assert matrix.data_execution.prompt_receipt_schema == 1

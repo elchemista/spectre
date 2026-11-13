@@ -1,10 +1,12 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.3.4"
+  @version "0.4.0"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
+    "docs/AGENT_SERVER.md",
+    "docs/PENDING_LIFECYCLE.md",
     "docs/START_HERE.md",
     "README.md",
     "docs/INSTALLATION.md",
@@ -73,12 +75,17 @@ defmodule Spectre.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
-      test_ignore_filters: [&String.starts_with?(&1, "test/support/")],
+      test_ignore_filters: [
+        &String.contains?(&1, "/support/"),
+        &String.ends_with?(&1, "/helper.exs")
+      ],
       test_coverage: [summary: [threshold: 95]],
       description: description(),
       package: package(),
       dialyzer: [
         plt_add_apps: [:mix],
+        # The application is analyzed below, not cached as its own dependency.
+        plt_ignore_apps: [:spectre],
         flags: [:no_opaque]
       ],
       docs: docs(),
@@ -90,7 +97,7 @@ defmodule Spectre.MixProject do
   def application do
     [
       mod: {Spectre.Application, []},
-      extra_applications: [:logger, :eex, :crypto]
+      extra_applications: [:logger, :eex, :crypto, :mnesia]
     ]
   end
 
@@ -117,7 +124,8 @@ defmodule Spectre.MixProject do
 
   defp deps do
     [
-      {:vettore, "~> 0.3.5"},
+      {:uuid_v7, "~> 0.6.0"},
+      {:vettore, "~> 0.3.6"},
       {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

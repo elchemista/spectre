@@ -1,5 +1,11 @@
 # Spectre
 
+**0.4 development:** the new authoring separates a declarative Agent from an
+OTP Server and imports the governed kernel under `Spectre.GAM`. Start with
+[Agent and Server](docs/AGENT_SERVER.md). The complete architecture proposal is
+in `docs/proposals/agent-server-gam-from-0.3.it.md` in the source checkout.
+The examples below document the retained 0.3 compatibility API.
+
 [![CI](https://github.com/elchemista/spectre/actions/workflows/ci.yml/badge.svg)](https://github.com/elchemista/spectre/actions/workflows/ci.yml)
 [![Hex](https://img.shields.io/hexpm/v/spectre.svg)](https://hex.pm/packages/spectre)
 [![HexDocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/spectre/0.3.4)

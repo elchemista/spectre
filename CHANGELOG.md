@@ -7,6 +7,22 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
+## 0.4.0 (unreleased)
+
+- Add separate declarative Agent and OTP Server authoring, with asynchronous
+  services, explicit continuations and runtime-owned pending conversations.
+- Import the governed-act kernel from the 0.4 development line into the
+  `Spectre.GAM` namespace, retaining its admission, ledger and consent contracts.
+- Add IntentDataset naming and configuration while retaining online examples,
+  training artifacts and exact/vector lookup compatibility.
+- Add a durable Server snapshot store and outcome continuation dispatcher.
+- Add per-intention closure schedules with runtime or application OTP timers,
+  private application state and authenticated GAM lifecycle observations.
+  Failed presentations preserve existing deadlines; recovery distinguishes
+  unstarted continuations from governed work requiring reconciliation and
+  correlates lifecycle receipts with their recorded phase.
+- See [Agent and Server](docs/AGENT_SERVER.md) for setup and migration boundaries.
+
 ## 0.3.4 — 2026-08-30
 
 ### Added

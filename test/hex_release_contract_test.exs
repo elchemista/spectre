@@ -2,7 +2,7 @@ defmodule SpectreHexReleaseContractTest do
   use ExUnit.Case, async: true
 
   @root Path.expand("..", __DIR__)
-  @release "0.3.4"
+  @release "0.4.0"
   @workflow Path.join(@root, ".github/workflows/ci.yml")
   @satellite_apps ~w(
     spectre_history
@@ -33,6 +33,9 @@ defmodule SpectreHexReleaseContractTest do
   @generator_templates ~w(
     priv/templates/spectre.gen.agent/agent.ex.eex
     priv/templates/spectre.gen.agent/agent_test.exs.eex
+    priv/templates/spectre.gen.agent/server_agent.ex.eex
+    priv/templates/spectre.gen.agent/server.ex.eex
+    priv/templates/spectre.gen.agent/server_agent_test.exs.eex
     priv/templates/spectre.gen.checkpoint_store/checkpoint_store.ex.eex
     priv/templates/spectre.gen.checkpoint_store/checkpoint_store_test.exs.eex
     priv/templates/spectre.gen.installable/installable.ex.eex
@@ -65,7 +68,7 @@ defmodule SpectreHexReleaseContractTest do
                          "SECURITY.md"
                        ] ++ Path.wildcard("docs/*.md", match_dot: true)
 
-  test "Hex package metadata describes the stable 0.3.4 release" do
+  test "Hex package metadata describes the 0.4.0 development release" do
     config = Mix.Project.config()
     package = Keyword.fetch!(config, :package)
     docs = Keyword.fetch!(config, :docs)
@@ -103,7 +106,7 @@ defmodule SpectreHexReleaseContractTest do
     assert ex_doc_opts[:only] == :dev
     assert ex_doc_opts[:runtime] == false
 
-    assert {:vettore, "~> 0.3.5"} =
+    assert {:vettore, "~> 0.3.6"} =
              Enum.find(config[:deps], &match?({:vettore, _requirement}, &1))
 
     refute Enum.any?(config[:deps], fn
@@ -190,7 +193,7 @@ defmodule SpectreHexReleaseContractTest do
              "#{Path.relative_to(source_path, @root)} couples core code to a satellite module"
     end
 
-    refute File.read!(Path.join(@root, "CHANGELOG.md")) =~ ~r/^## 0\.4\.0\b/mu
+    assert File.read!(Path.join(@root, "CHANGELOG.md")) =~ "## 0.4.0 (unreleased)"
   end
 
   defp forbidden_satellite_aliases(source) do

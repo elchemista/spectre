@@ -1,0 +1,58 @@
+defmodule Spectre.GAM.GovernedAct.Batch.Events do
+  @moduledoc """
+  Positional queries over a verified ledger batch.
+
+  Ledger verification guarantees contiguous, zero-based `batch_index` values,
+  so semantic validators can express adjacency directly without each family
+  reimplementing record decoding and event matching.
+  """
+
+  alias Spectre.GAM.Domain.Event
+
+  @doc false
+  @spec at([Event.t()], integer()) :: Event.t() | nil
+  def at(_events, index) when index < 0, do: nil
+  def at(events, index), do: Enum.at(events, index)
+
+  @doc false
+  @spec after?([Event.t()], String.t(), String.t(), integer()) :: boolean()
+  def after?(events, type, identity, index) do
+    Enum.any?(events, fn event ->
+      event.type == type and event.identity == identity and event.batch_index > index
+    end)
+  end
+
+  @doc false
+  @spec payload_sequence?([Event.t()], [map()], non_neg_integer()) :: boolean()
+  def payload_sequence?(events, payloads, first_index) do
+    payloads
+    |> Enum.with_index(first_index)
+    |> Enum.all?(fn {payload, index} -> payload_at?(events, index, payload) end)
+  end
+
+  @doc false
+  @spec manual_at?([Event.t()], integer(), String.t(), String.t(), map()) :: boolean()
+  def manual_at?(events, index, type, identity, expected_data) do
+    case at(events, index) do
+      %{type: ^type, identity: ^identity, data: data} ->
+        Enum.all?(expected_data, fn {key, value} -> data[key] == value end)
+
+      _missing_or_different ->
+        false
+    end
+  end
+
+  defp payload_at?(events, index, %{
+         "type" => type,
+         "identity" => identity,
+         "data" => data,
+         "schema_version" => 1
+       }) do
+    case at(events, index) do
+      %{type: ^type, identity: ^identity, data: ^data} -> true
+      _missing_or_different -> false
+    end
+  end
+
+  defp payload_at?(_events, _index, _payload), do: false
+end

@@ -44,6 +44,9 @@ defmodule Spectre.Router.SemanticCache do
   # Route strategies that mean "this classification came out of the cache
   # itself" — learning them back would only amplify the cache's own output.
   @cache_strategies [
+    :intent_dataset,
+    :intent_exact,
+    :intent_similarity,
     :semantic_cache,
     :semantic_cache_exact,
     :semantic_cache_search,

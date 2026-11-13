@@ -35,7 +35,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.3.4"
+  @version "0.4.0"
 
   @doc """
   Returns the running Spectre library version.
@@ -131,23 +131,47 @@ defmodule Spectre do
   end
 
   @doc """
-  Summons an Agent Instance or legacy Session process directly.
+  Summons the Server bound to an Agent, or its legacy Instance/Session runtime.
 
       {:ok, pid} = Spectre.summon(agent: MyApp.Agent, subject: account.id)
 
-  Supplying `:subject` selects the Agent Instance runtime. Calls without
-  it preserve the conversation-scoped Session compatibility path.
+  An Agent with `server:` uses the Server runtime. Supplying `:subject` selects
+  its unique local owner. Agents without `server:` preserve the legacy
+  subject-scoped Instance or conversation-scoped Session path.
   """
   @spec summon(keyword()) :: GenServer.on_start()
   def summon(opts) when is_list(opts) do
-    if Keyword.has_key?(opts, :subject) do
-      case Spectre.Instance.start_link(opts) do
-        {:error, {:already_started, pid}} -> {:ok, pid}
-        other -> other
-      end
-    else
-      Spectre.Session.start_link(opts)
+    agent = Keyword.get(opts, :agent)
+
+    server = bound_server(agent)
+
+    cond do
+      not is_nil(server) and Keyword.has_key?(opts, :subject) ->
+        Spectre.Server.Registry.ensure_started(
+          Spectre.Server.Supervisor,
+          agent,
+          opts[:subject],
+          opts
+        )
+
+      not is_nil(server) ->
+        Spectre.Server.start_link(opts)
+
+      Keyword.has_key?(opts, :subject) ->
+        case Spectre.Instance.start_link(opts) do
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          other -> other
+        end
+
+      true ->
+        Spectre.Session.start_link(opts)
     end
+  end
+
+  defp bound_server(agent) do
+    if is_atom(agent) and Code.ensure_loaded?(agent) and
+         function_exported?(agent, :__spectre_server__, 0),
+       do: agent.__spectre_server__()
   end
 
   @doc """

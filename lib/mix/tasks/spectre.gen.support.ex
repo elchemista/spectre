@@ -6,8 +6,8 @@ defmodule Mix.Tasks.Spectre.Gen.Support do
   @type template :: {String.t(), String.t()}
 
   @doc false
-  @spec generate!([String.t()], String.t(), [template()]) :: :ok | no_return()
-  def generate!(argv, usage, templates) do
+  @spec generate!([String.t()], String.t(), [template()], keyword()) :: :ok | no_return()
+  def generate!(argv, usage, templates, extra_assigns \\ []) do
     Mix.Task.run("app.config")
 
     {opts, args, invalid} = OptionParser.parse(argv, strict: @switches)
@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Spectre.Gen.Support do
     if invalid != [], do: Mix.raise("invalid options\n\n#{usage}")
 
     module = module_name!(args, usage)
-    assigns = assigns(module)
+    assigns = Keyword.merge(assigns(module), extra_assigns)
     entries = entries!(templates, assigns)
     force? = Keyword.get(opts, :force, false)
     dry_run? = Keyword.get(opts, :dry_run, false)

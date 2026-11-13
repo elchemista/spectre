@@ -5,7 +5,7 @@ defmodule SpectreFoundationConformanceTest.ProviderPackage do
     id: :foundation_provider,
     version: "1.0.0",
     contract: 1,
-    spectre: ">= 0.3.0 and < 0.4.0",
+    spectre: ">= 0.3.0 and < 0.5.0",
     provides: [{:contract, :foundation_search}],
     operations: [:foundation_search]
 end
@@ -17,7 +17,7 @@ defmodule SpectreFoundationConformanceTest.ConsumerPackage do
     id: :foundation_consumer,
     version: "1.1.0",
     contract: 1,
-    spectre: ">= 0.3.0 and < 0.4.0",
+    spectre: ">= 0.3.0 and < 0.5.0",
     requires: [{:contract, :foundation_search}]
 end
 
@@ -344,7 +344,7 @@ defmodule SpectreFoundationConformanceTest do
       id: id,
       version: version,
       contract: 1,
-      spectre: ">= 0.3.0 and < 0.4.0"
+      spectre: ">= 0.3.0 and < 0.5.0"
     }
     |> Map.merge(Map.new(overrides))
   end

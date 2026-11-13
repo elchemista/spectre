@@ -1,5 +1,7 @@
 # Start Here
 
+**Using the 0.4 development branch?** Start with [Agent and Server](AGENT_SERVER.md) for the new architecture, callback examples and migration limits. The paths below remain the 0.3 compatibility guide.
+
 Spectre is an OTP-native runtime for agents whose routing, state, policies,
 durability, and side effects remain explicit. This page is the shortest path
 from a new Mix project to a correct mental model of the runtime.

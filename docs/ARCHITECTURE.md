@@ -1,5 +1,7 @@
 # Architecture
 
+**0.4 development:** the new architecture is documented in [Agent and Server](AGENT_SERVER.md): declarative Agent, one OTP Server owner and the imported GAM kernel. The sections below describe the retained Instance architecture and its compatibility contracts.
+
 Spectre separates conversational decisions from application authority. An
 agent may classify input and propose work, but only deterministic lifecycle and
 policy code can make that work executable. The host application remains the

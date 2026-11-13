@@ -329,7 +329,7 @@ defmodule SpectreGovernanceGateTest do
     assert {:ok, ^report} = report |> HumanReport.encode() |> elem(1) |> HumanReport.decode()
 
     matrix = Conformance.matrix()
-    assert matrix.release == "0.3.4"
+    assert matrix.release == Spectre.version()
     assert {Spectre, :rollback, 3} in matrix.golden_path
     assert {Approval, :reject, 3} in matrix.golden_path
 

@@ -82,9 +82,12 @@ defmodule Spectre.Route do
   @doc """
   Builds an accepted deterministic route from a compiled rule.
 
+  `raw` is the matched input text, or `nil` when inspecting a declaration or
+  restoring its dispatch identity without retaining the original transport.
+
       route = Spectre.Route.from_rule(rule, :regex, "hello")
   """
-  @spec from_rule(Spectre.Rule.t(), atom(), String.t()) :: t()
+  @spec from_rule(Spectre.Rule.t(), atom(), String.t() | nil) :: t()
   def from_rule(%Spectre.Rule{} = rule, strategy, raw) do
     new(%{
       label: rule.label,

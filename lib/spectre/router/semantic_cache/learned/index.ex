@@ -117,7 +117,14 @@ defmodule Spectre.Router.SemanticCache.Learned.Index do
   defp embedding_profile(opts) do
     config = Application.get_env(:spectre, :classifier, []) |> Keyword.merge(opts)
     adapter = Keyword.get(opts, :embedding, Keyword.get(config, :embedding_adapter))
-    model = Keyword.get(opts, :embedding_model, adapter_model(adapter))
+
+    model =
+      Keyword.get(
+        config,
+        :embedding_model,
+        adapter_model(adapter) || Keyword.get(config, :encoder_model)
+      )
+
     explicit = Keyword.get(config, :embedding_model_profile_ref)
     profile = Keyword.get(config, :embedding_model_profile, %{})
 
@@ -228,7 +235,7 @@ defmodule Spectre.Router.SemanticCache.Learned.Index do
     metadata = %{query_embedding: query}
     minimum_score = threshold(opts)
 
-    case Vettore.search(collection, query, limit: top_k(opts)) do
+    case vector_search(collection, query, opts) do
       {:ok, [%{score: score} = first | rest] = results} when score >= minimum_score ->
         second_score = rest |> List.first(%{score: 0.0}) |> Map.get(:score)
 
@@ -252,6 +259,22 @@ defmodule Spectre.Router.SemanticCache.Learned.Index do
 
       {:error, reason} ->
         {:error, reason, metadata}
+    end
+  end
+
+  defp vector_search(collection, query, opts) do
+    case Keyword.get(opts, :semantic_cache_search_method, :standard) do
+      :standard ->
+        Vettore.search(collection, query, limit: top_k(opts))
+
+      :quantized ->
+        Vettore.quantized_search(collection, query,
+          candidates: Keyword.get(opts, :semantic_cache_search_candidates, 100),
+          limit: top_k(opts)
+        )
+
+      method ->
+        {:error, {:invalid_intent_dataset_search_method, method}}
     end
   end
 

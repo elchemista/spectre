@@ -183,6 +183,9 @@ jobs:
         run: |
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent.ex.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent_test.exs.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/server_agent.ex.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/server.ex.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/server_agent_test.exs.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable.ex.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable_test.exs.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store.ex.eex"
