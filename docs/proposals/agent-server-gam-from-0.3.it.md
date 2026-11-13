@@ -135,6 +135,157 @@ Le capacità cognitive restano sostituibili tramite i behaviour degli adapter. N
 
 Un flow riconosciuto ma non implementato non viene degradato a «nessun match»: è un errore di binding/handler. Il default registra il problema e usa il percorso di errore configurato. `mix spectre.routes` e le verifiche di conformance dovranno mostrare destinazione e copertura; non si presume di provare staticamente pattern e guardie Elixir arbitrari.
 
+### 4.3 Helper dei package installati: `kinetic`, `mnemonic`, `lens`
+
+La decisione di authoring è usare **funzioni helper con il nome del package**,
+una sola parola: `kinetic`, `mnemonic`, `lens` e, dove esiste un'operazione
+applicativa utile, `beam`, `pulse` o `directive`. Sono funzioni Elixir ordinarie
+con `ctx` esplicito; non introducono una DSL di esecuzione nel Server.
+
+**Stato:** i nomi sono concordati; gli adapter e la primitiva condivisa di
+richiesta alle capability sono lavoro da implementare. Gli esempi di questa
+sezione non descrivono API già disponibili nel branch.
+
+Il nome pubblico dell'helper Kinetic è `kinetic`, non `plan_response`,
+`prepare_actions` o `interpret`. Le API dirette della libreria, come
+`SpectreKinetic.plan(kinetic_runtime, al)`, mantengono il proprio contratto.
+Nel Server l'helper riceve la risposta del modello e prepara le azioni candidate:
+non serve un secondo helper per scrivere a mano una singola istruzione AL e non
+si introduce un nuovo oggetto `Plan` come risultato di Kinetic.
+
+#### Import e firme
+
+Lo Stack installa configurazione, adapter e risorse. Il Server può importare
+esplicitamente soltanto le funzioni che usa:
+
+```elixir
+import Spectre.Kinetic, only: [kinetic: 3]
+import Spectre.Mnemonic, only: [mnemonic: 3]
+import Spectre.Lens, only: [lens: 3]
+```
+
+L'import accorcia il nome; la disponibilità della capability viene verificata
+contro lo Stack dell'Agent del dispatch. Importare una funzione non installa
+una risorsa e non concede autorità. Non si importano automaticamente tutte le
+funzioni dei package dentro ogni Server, che può essere riusato da Agent con
+Stack diversi.
+
+Ogni helper restituisce il `ctx` con la richiesta aggiunta. Il runtime acquisisce
+la richiesta al ritorno del callback e soltanto allora avvia l'I/O; il valore
+restituito dall'helper non è il risultato dello strumento.
+
+| Helper proposto | Input | Risultato tramite `on_result` |
+| --- | --- | --- |
+| `kinetic(ctx, response, opts)` | Risposta consolidata del modello, con output originale interno | Azioni candidate validate, in ordine, con operazione, argomenti e metadata di origine |
+| `mnemonic(ctx, {:recall, query}, opts)` | Richiesta di memoria e scope risolto dal dispatch | Snapshot portabile dei ricordi e della loro provenienza |
+| `mnemonic(ctx, {:remember, observation}, opts)` | Osservazione esplicita da memorizzare | Esito correlato della scrittura, con chiave di idempotenza stabile |
+| `lens(ctx, {:look, tab_ref}, opts)` | Riferimento logico alla pagina | Vista portabile e provenienza della percezione |
+| `lens(ctx, {:act, tab_ref, action}, opts)` | Operazione browser esplicita | Risultato del percorso previsto per quell'operazione; le conseguenze governate attraversano GAM |
+
+Il nome del package rimane una parola; l'operazione resta visibile nel dato
+passato a `mnemonic` e `lens`. Gli adapter espongono un insieme chiuso di
+operazioni e schemi. Il modello non può fornire moduli, MFA o una scelta libera
+fra «servizio cognitivo» ed «effetto»: il percorso è fissato dal binding fidato
+dell'operazione.
+Per Lens si risolve anche la sottooperazione concreta prima di scegliere quel
+binding. Il contenuto di una pagina conserva la propria provenienza e rimane
+marcato come materiale web non attendibile, distinto dagli input dell'utente.
+
+#### Modello, Kinetic e callback del risultato
+
+L'AL viene prodotto dal modello. Il punto naturale della chiamata `kinetic` è
+quindi `handle_result`, dopo la generazione:
+
+```elixir
+defmodule MyApp.MailServer do
+  use Spectre.Server
+  import Spectre.Kinetic, only: [kinetic: 3]
+
+  def handle_flow({:mail, :send}, _input, ctx) do
+    generate(ctx, :mail, on_result: :mail_generated)
+  end
+
+  def handle_result(:mail_generated, {:generated, response}, ctx) do
+    kinetic(ctx, response, on_result: :mail_actions)
+  end
+
+  # Questo esempio prepara le azioni e le conserva per il seguito del dialogo.
+  def handle_result(:mail_actions, {:ok, %{proposals: proposals}}, ctx) do
+    ctx
+    |> assign(:mail_actions, proposals)
+    |> respond("Azioni preparate.")
+  end
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+end
+```
+
+Il risultato di `kinetic` usa un envelope distinto da `{:generated, ...}`.
+Nel runtime attuale il default di quel formato può avviare le proposte:
+riutilizzarlo per le azioni soltanto preparate introdurrebbe un'esecuzione
+implicita. Il callback sceglie invece come proseguire: mostrare le azioni,
+chiedere chiarimenti, richiamare un altro servizio o proporre le conseguenze a
+GAM. Più azioni conservano ordine e identità; nessuna viene scartata per
+ridurre il risultato a un solo elemento.
+
+La generazione deve conservare un campo portabile interno `model_output`,
+distinto da `text`, che rimane il testo pubblico ripulito. Kinetic estrae dal
+primo l'AL, comprese catene ed errori di estrazione. Non legge
+`response.inference.text`: quel campo tecnico può esistere live ma viene escluso
+dal checkpoint attuale. Live e replay devono ricevere lo stesso input utile.
+L'output originale non viene pubblicato automaticamente in reply, preview,
+memoria conversazionale o proiezioni di monitoraggio. Eventuali persistenza e
+retention seguono la configurazione dei dati interni dell'host.
+
+La generazione semplice non deve eliminare l'unica copia dell'AL prima del
+callback; il percorso integrato `planning: true` esistente resta distinto dal
+percorso esplicito `handle_result -> kinetic`. Non si eseguono entrambi sullo
+stesso risultato. Un helper fallisce con un risultato tipizzato quando la
+risposta non è valida o il catalogo non risolve un'azione; non perde in silenzio
+istruzioni malformate o ambigue.
+
+#### Proprietà delle risorse e acquisizione
+
+`ctx` contiene Agent, identità, input, routing, assigns, private, memoria,
+attese e comandi. Il framework **non inserisce uno struct Kinetic inizializzato
+in `ctx.assigns`**. La risorsa vive nel runtime supervisionato dello Stack;
+worker e adapter la risolvono dal binding del dispatch. PID, encoder, ETS,
+connessioni e Tab vivi rimangono nelle risorse o nei dati `private` volatili.
+Il bootstrap della risorsa Kinetic va implementato nel package: l'installazione
+attuale non lo fornisce già automaticamente.
+
+Il percorso comune da implementare è:
+
+```text
+helper(ctx, richiesta, on_result: tag)
+  -> richiesta portabile acquisita nell'outbox
+  -> worker risolve capability e risorsa installate
+  -> adapter invoca l'operazione e proietta il risultato
+  -> risultato portabile acquisito nell'inbox
+  -> handle_result(tag, result, ctx)
+```
+
+La proiezione è richiesta in entrambe le direzioni: **prima dell'outbox e prima
+dell'inbox**. Un TabRef logico può ancora essere uno struct non ammesso dal
+codec; l'helper usa la sua proiezione portabile prima di accodarlo. Packet,
+Moment, View e Action dei package non vanno inseriti come struct grezzi nel
+checkpoint. Il codec del package conserva i dati significativi e la versione,
+senza conversioni superficiali o stringify silenzioso degli argomenti.
+Convertire soltanto in `handle_result` arriva troppo tardi.
+
+Le azioni Kinetic conservano provider, schema e origine dal catalogo chiuso del
+dispatch. Per le scritture esplicite Mnemonic la chiave di idempotenza deriva
+dal comando, non dal solo turno, che può contenere più scritture. Il recall
+specifico di flow usa la route già risolta; non si applica al nuovo messaggio
+il flow precedente del recall automatico. L'adapter evita la doppia ingestione
+fra memoria automatica del turno e richieste esplicite `mnemonic`.
+
+GAM conserva i propri contratti: generazione, classificazione e preparazione
+cognitiva delle azioni non ricevono una nuova cerimonia di consenso. Le
+conseguenze governate passano dai binding e dagli executor previsti; un risultato
+Kinetic, una memoria o una pagina web non costituiscono consenso dell'utente.
+La memoria di un effetto riuscito deriva dal suo Outcome verificato.
+
 ## 5. Contratto OTP, stato e avanzamento
 
 ### 5.1 Un vero GenServer, con delega
@@ -925,6 +1076,11 @@ Ogni fase produce codice verificabile e una matrice di compatibilità aggiornata
 ### Fase 6 — Stack, Skill e procedure
 
 - Stabilizzare i contratti dei manifest e adapter per Prism, Kinetic, Mnemonic, Beam e Pulse.
+- Implementare la primitiva condivisa per le capability e i normali helper di package `kinetic`, `mnemonic`, `lens` descritti in 4.3, con binding allo Stack del dispatch e operazioni chiuse.
+- Conservare l'output originale del modello nel risultato portabile della generazione; collegare `handle_result -> kinetic -> handle_result` senza planning duplicato o esecuzione automatica.
+- Implementare proiezioni versionate delle richieste prima dell'outbox e dei risultati prima dell'inbox, con la stessa forma live e dopo recovery.
+- Supervisionare le risorse per runtime dello Stack; verificare che ctx/assigns e comandi durevoli non contengano runtime Kinetic, Tab, encoder o connessioni vivi.
+- Adattare isolamento e idempotenza di Mnemonic, riferimenti Lens, trasporti Server, workflow manuali ed eventuali backend Store ai nuovi contratti, oltre ai vincoli di versione.
 - Conservare mount, binding, stato privato e versioni delle Skill.
 - Collegare Work/Vigil/Directive e operazioni allo stesso owner e confine degli effetti, mantenendo checkpoint e riconciliazione.
 - Verificare isolamento dei cataloghi e compatibilità di prompt, artifact e risorse installate.
@@ -964,6 +1120,11 @@ Ogni fase produce codice verificabile e una matrice di compatibilità aggiornata
 | --- | --- |
 | Greeting deterministico | Nessuna chiamata modello o azione accidentale |
 | Classifier diverso dal responder | Binding separati e scelta del provider verificabile |
+| Risposta del modello seguita da `kinetic` | AL conservato fino al callback, azioni candidate preparate senza esecuzione implicita, ordine ed errori preservati |
+| Helper su capability non installata | Errore esplicito prima dell'I/O; nessuna selezione arbitraria di un'altra risorsa |
+| Richiesta/risultato di package e restart | Proiezioni portabili prima di outbox/inbox; callback equivalente al live, senza dipendere da campi tecnici esclusi dal checkpoint |
+| Due richieste `mnemonic` nello stesso turno | Comandi distinti con chiavi stabili; un retry non duplica la singola scrittura e il flow segue il dispatch corretto |
+| `lens` con TabRef e View | Riferimenti e snapshot proiettati; nessun handle vivo nel checkpoint, operazione risolta sul binding concreto |
 | Classifier locale debole + LLM | Entrambi utilizzabili nello stesso flow, con arbitraggio |
 | Adapter classifier custom | Collegabile senza cambiare DSL delle route o kernel |
 | Timeout di una fonte di evidenza | Altre strategie e fallback continuano, con causa originale osservabile |
@@ -1278,6 +1439,9 @@ I comandi attuali di export/train/eval rimangono funzionanti. I nuovi comandi ri
 | `assign(ctx, key, value)` | Modifica stato applicativo; non riscrive identità o pending |
 | `generate(ctx, prompt, opts)` | Generazione, planning opzionale e stream; risultato consolidato |
 | `classify(ctx, input, opts)` | Classificazione sul binding dichiarato; label senza autorità |
+| `kinetic(ctx, response, opts)` | Helper del package da implementare: interpreta l'AL del modello e prepara azioni candidate; nessuna esecuzione automatica |
+| `mnemonic(ctx, operation, opts)` | Helper del package da implementare: recall/scrittura esplicita, con scope e risultato correlati |
+| `lens(ctx, operation, opts)` | Helper del package da implementare: percezione/operazioni browser tramite binding e proiezioni portabili |
 | `respond(ctx, content, opts)` | Richiesta di risposta; non prova automatica di consegna o show GAM |
 | `propose(ctx, operation, args, opts)` | Proposta concreta, collegamento al percorso governato e continuazione |
 | `confirm_pending` / `reject_pending` | Richiede la transizione usando attesa e input d'origine; non scrive una Decision |

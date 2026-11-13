@@ -17,6 +17,12 @@ Vedi [correzioni e regressioni](remaining-fixes-0.4.it.md) e
 La suite finale conta **4.323 casi passati** sia su OTP 29 sia su OTP 28;
 la copertura è **95,10%**, con soglia originaria 95% invariata.
 
+**Decisione successiva sui package:** gli helper applicativi si chiamano
+`kinetic`, `mnemonic`, `lens` ecc., come descritto nella
+[sezione 4.3 della proposta](agent-server-gam-from-0.3.it.md#43-helper-dei-package-installati-kinetic-mnemonic-lens).
+Il contratto è documentato; helper, primitiva condivisa e adapter dei package
+non sono ancora implementati o certificati dai risultati della suite sopra.
+
 | Area | Implementazione nel branch | Verifica |
 | --- | --- | --- |
 | Versione e baseline | 0.4.0; contratti 0.3 conservati come baseline del core | Il run iniziale di baseline contava 2.552 test passati; non è il risultato finale del branch |
