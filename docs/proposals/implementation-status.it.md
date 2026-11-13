@@ -9,19 +9,25 @@ destinazione. Questo documento distingue l'implementazione verificabile dalle
 attività di migrazione ancora necessarie. La guida operativa è
 [Agent e Server](../AGENT_SERVER.md).
 
-**Stato: correzioni finali completate e verificate.** Il core e il
+**Stato del precedente incremento core:** correzioni finali completate e verificate. Il core e il
 lifecycle con timer sono implementati. I tre problemi della review e le race
 aggiuntive sono chiusi dalla [review indipendente](reviews/cross-review-lifecycle-resolution.it.md).
 Vedi [correzioni e regressioni](remaining-fixes-0.4.it.md) e
 [verifica del branch](verification-0.4.it.md).
-La suite finale conta **4.323 casi passati** sia su OTP 29 sia su OTP 28;
+La suite di quell’incremento contava **4.323 casi passati** sia su OTP 29 sia su OTP 28;
 la copertura è **95,10%**, con soglia originaria 95% invariata.
 
 **Decisione successiva sui package:** gli helper applicativi si chiamano
 `kinetic`, `mnemonic`, `lens` ecc., come descritto nella
-[sezione 4.3 della proposta](agent-server-gam-from-0.3.it.md#43-helper-dei-package-installati-kinetic-mnemonic-lens).
-Il contratto è documentato; helper, primitiva condivisa e adapter dei package
-non sono ancora implementati o certificati dai risultati della suite sopra.
+[sezione 4.3 della proposta](agent-server-gam-from-0.3.it.md#43-helper-generati-dallo-stack-kinetic-mnemonic-lens).
+Gli helper sono generati dal framework dalle registrazioni dello Stack e
+invocano le API/adapter registrati; non sono funzioni da aggiungere e importare
+dai package.
+Helper, primitiva condivisa e adapter dei nove package sono ora implementati
+nei branch `feature/stack-tools-0.4`. La verifica aggiornata del core conta
+**4378 casi passati** con copertura **95,09%**; l’integrazione dei nove tool
+ha tre scenari passati. I numeri sopra descrivono la precedente verifica.
+Dettagli e limiti sono nel [rapporto Stack tools](stack-tools-0.4-verification.it.md).
 
 | Area | Implementazione nel branch | Verifica |
 | --- | --- | --- |
@@ -80,14 +86,10 @@ le continuazioni.
   nuovo owner. Servono adapter e verifiche dei singoli contratti.
 - I checkpoint legacy non vengono promossi automaticamente a prove di consenso
   GAM. Migrazione o riavvio controllato vanno decisi per ciascun tipo di attesa.
-- Kinetic, Mnemonic, Beam e Directive dichiarano Spectre `~> 0.3.3`, che esclude
-  0.4; per Kinetic e Beam è una dipendenza di test. I repository esterni non sono
-  stati migrati da questo branch. La porta di proiezione pubblica non crea un
-  cleaner incrementale Kinetic che il package non implementa.
-- Prism e Pulse dichiarano `~> 0.4.0`, ma usano l'authoring della precedente
-  linea 0.4: Collection/Observer/Turn e RequestBuilder dell'Agent. Il numero di
-  versione non attesta compatibilità con il nuovo split Agent/Server; richiedono
-  adattamento e test dei rispettivi package.
+- I nove package installabili hanno branch dedicati compatibili con il nuovo
+  contratto. Il test [outreach](../../integration/stack_tools/README.md) usa tutti
+  gli helper con core e GAM reali, trasporti esterni simulati. Non certifica
+  credenziali, browser o canali di produzione.
 - Il bridge di memoria non ricostruisce tutto lo stato del vecchio Instance.
   Adapter che dipendono da route, effetti, awaitable o eventi completi richiedono
   verifica; i test di recall/persist non attestano Mnemonic in produzione.
@@ -107,6 +109,14 @@ le continuazioni.
   dimostrate dal solo passaggio dei test del framework. Vanno misurate sul pilota.
 
 ## Revisione
+
+Aggiornamento Stack tools: il [piano dedicato](stack-tools-0.4-plan.it.md) è stato
+revisionato da Opus 5.5 in due passaggi; la
+[risoluzione](reviews/claude-opus-5.5-stack-tools-resolution.it.md) recepisce le
+condizioni finali. Sono implementati registrazione, generazione degli helper,
+dispatch durevole e adapter dei nove package. La guida
+[Installed tools](../STACK_TOOLS.md) documenta il contratto effettivo; il progetto
+`integration/stack_tools` sostituisce gli sketch storici come esempio eseguibile.
 
 La [review di implementazione Opus 5.5](reviews/claude-opus-5.5-implementation-review.it.md)
 resta immutata. La [risposta tecnica ai rilievi](reviews/claude-opus-5.5-implementation-resolution.it.md)

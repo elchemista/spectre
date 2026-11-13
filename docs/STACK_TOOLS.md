@@ -1,0 +1,146 @@
+# Installed tools in AgentServer 0.4
+
+The package's existing `Spectre.Stack.Installable` behaviour declares `tools/1`.
+A Server selects a Stack with `use Spectre.Server, tools: MyApp.AI`. The core
+creates private helpers named by the installed descriptors. No imports from
+`Spectre.Kinetic`, `Spectre.Mnemonic` or `Spectre.Lens` are needed.
+
+```elixir
+defmodule MyApp.AI do
+  use Spectre.Stack
+  install Spectre.Kinetic, mode: :closed_moves, actions: MyApp.Actions
+  install Spectre.Mnemonic, automatic: false, bind: [remember: :save_report] do
+    isolate_by [:agent, :subject]
+  end
+end
+
+defmodule MyApp.Server do
+  use Spectre.Server, tools: MyApp.AI, prompt_root: "priv/prompts"
+
+  def handle_flow({:outreach, :compose}, _input, ctx) do
+    generate(ctx, :compose, on_result: :composed)
+  end
+
+  def handle_result(:composed, {:generated, response}, ctx) do
+    kinetic(ctx, response, on_result: :prepared)
+  end
+
+  def handle_result(:prepared, {:prepared, %{actions: [candidate]}}, ctx) do
+    propose(ctx, candidate.operation, candidate.args,
+      proposal_metadata: candidate.metadata, on_result: :sent)
+  end
+
+  def handle_result(operation, result, ctx), do: super(operation, result, ctx)
+end
+
+defmodule MyApp.Agent do
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.Server
+  flow :outreach do
+    on :compose, regex: ~r/^compose$/i
+  end
+end
+```
+
+The host still supplies the ActionProvider implementation, model, prompt and
+GAM bindings/executors. Kinetic reads **consolidated model output**. It prepares
+candidate actions; a prepared action is not an admitted Act. `generate/3`
+without automatic planning keeps `model_output` for this continuation while
+its public `text` is cleaned. The runtime never dispatches partial AL tokens.
+`planning: true` retains the existing automatic planner path; do not run the
+explicit Kinetic helper a second time on that result.
+
+## Command lifecycle
+
+A helper appends a command to the returned context. It does not call the
+package synchronously. The Server normalizes and validates all returned
+commands before committing the event, then persists outbox identities before
+starting workers. This applies to flow, result, pending and native OTP callbacks.
+
+A tagged tuple selects an operation: `mnemonic(ctx, {:recall, "Luca"},
+on_result: :remembered)`. Remaining tuple elements become the adapter's payload
+list. Non-tuple input selects the descriptor's declared default; an unknown
+tag is rejected rather than falling back to that default.
+
+The adapter implements `prepare/3`, `invoke/3` for cognitive operations and
+`project/2`. Preparation is pure and receives the Agent, routing hints and
+immutable installation configuration. Invocation receives resolved installation
+and service context; live browser/memory/model handles remain in supervised
+resources, outside durable assigns. Projection produces bounded portable data.
+
+Cognitive work (classifying, generating, looking up, planning) does not require
+an end user's consent merely because it calls a model. The descriptor chooses
+`:safe` replay or `:never` replay. An uncertain nonrepeatable request returns
+`{:tool_unknown, details}` instead of being blindly retried.
+
+A governed operation is normalized to the existing `propose` command **before**
+the outbox is written. GAM then owns Candidate, admission, Presentation when
+required, Act, Attempt and Outcome. `bind:` only selects a host operation; it
+never grants a mandate. The Server refuses startup if that binding is missing
+or the standard GAM bridge is absent. Consent may be suspended, resumed,
+rejected or closed by a timer through the existing pending/lifecycle API.
+
+Package `ServerTool.execute` functions are technical APIs for an already
+admitted host executor. Calling them directly in application callbacks bypasses
+the framework boundary, just as calling an email client directly would. Use
+helpers and proposal commands for consequential work in Server callbacks.
+
+## Installed packages
+
+| Helper | Cognitive operations | Governed operations when explicitly bound |
+| --- | --- | --- |
+| `kinetic` | Interpret model AL into portable candidates | Candidates later passed to `propose` |
+| `mnemonic` | Recall, with portable/redacted memory projection | Remember |
+| `lens` | Open/read/close, using logical browser references | Browser action |
+| `prism` | Select a model; ordinary generation also uses installed extension | — |
+| `beam` | Inspect endpoints | Deliver |
+| `directive` | Pure state reducer: new/next/respond/inform | Proposed effects handled by the application |
+| `pulse` | Inspect protocol/contacts | Send |
+| `ledger` | Inspect Server checkpoint head/entry metadata | — |
+| `lab` | Inspect canonical checkpoint data | — |
+
+Mnemonic supports `automatic: false` to use only explicit memory helpers.
+Use a **named** `Spectre.Stack.Runtime` and pass that name as `stack_runtime:`
+to the Server and admitted memory executor so both resolve the same isolated
+engine. Explicit memory tools fail if that named runtime is missing. A host
+candidate must freeze the authenticated subject/conversation partition into its
+payload; the admitted executor reconstructs its memory context from that payload.
+It must not take the partition from a later mutable conversation or from model
+arguments. See the subject-isolated integration for the complete binding.
+Credentials and mutable resources belong in runtime options, not in compiled
+Stack configuration or `ctx.assigns`.
+
+Ledger supplies a durable CAS Server store. Both checkpoint and GAM journal can
+use it: `checkpoint: {Spectre.Ledger.ServerStore, store, key}` and bridge option
+`store: {Spectre.Ledger.ServerStore, store}`. The existing Disk forms
+remain supported. `ledger(ctx, {:head})` and `{:entries}` inspect only metadata
+for this Server's checkpoint key. An explicit different key is rejected. No
+raw checkpoint is copied into the calling Server's inbox. Use
+`lab(ctx, {:inspect, :checkpoint})` to decode the current snapshot inside its
+worker and return a bounded summary. Lab cannot manufacture consent or replay
+effects. Its binary input form remains available for explicit offline inspection.
+
+Ledger compacts its coordination log atomically when append capacity is reached;
+`Spectre.Ledger.ServerStore.compact(store)` also lets the host schedule compaction.
+It preserves live values and a global revision watermark, then removes deleted
+keys from memory and disk without allowing stale CAS revisions to match a newly
+created key. Revisions are opaque monotonic tokens; a fresh key need not start
+at 1. Reads wait through compaction instead of using the five-second default
+GenServer timeout. This is a coordination store, not an immutable audit archive. Deleted old payloads
+remain in the log until compaction; filesystem backups and physical erasure need
+host retention controls. Corrupt or truncated records fail closed.
+
+Bad input and adapter domain rejections arrive through `on_result` as bounded
+`{:error, {:tool_rejected, tool, operation, reason}}` results. Invalid developer
+options, incompatible compiled bindings and nonportable application state are
+programming failures; they do not become successful callback acquisitions.
+Checkpoint fingerprints include adapter code and installation descriptors.
+A changed fingerprint still requires an explicit checkpoint migrator. If the
+migrator preserves an older in-flight tool command, the runtime records contract
+drift without rewriting its original facts: cognitive work completes as changed
+or uncertain, an unstarted governed command is rejected, and started governed
+work uses its original GAM journal for reconciliation. No changed adapter is
+silently invoked with the old arguments.
+
+The runnable [integration project](../integration/stack_tools/README.md) uses
+all nine packages with the real Server and GAM kernel. Its external browser,
+model and email transports are deterministic fixtures, not production clients.

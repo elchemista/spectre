@@ -33,9 +33,13 @@ defmodule Spectre.Server do
   @callback format_status(map()) :: map()
 
   defmacro __using__(opts) do
-    quote bind_quoted: [opts: opts] do
+    tools = Spectre.Server.ToolCompiler.snapshot!(opts, __CALLER__)
+
+    quote bind_quoted: [opts: opts, tools: Macro.escape(tools)] do
       @behaviour Spectre.Server
       @spectre_server_options opts
+      @spectre_server_tools tools
+      @before_compile Spectre.Server.ToolCompiler
       import Spectre.Server,
         except: [start_link: 1, child_spec: 1, input: 2, input: 3, cancel: 1, status: 1]
 
@@ -67,6 +71,9 @@ defmodule Spectre.Server do
         do: respond(ctx, "The request could not be completed.")
 
       def handle_result(_tag, {:governed_unknown, _details}, ctx),
+        do: respond(ctx, "The operation is still under verification.")
+
+      def handle_result(_tag, {:tool_unknown, _details}, ctx),
         do: respond(ctx, "The operation is still under verification.")
 
       def handle_result(_tag, _result, ctx), do: no_response(ctx)

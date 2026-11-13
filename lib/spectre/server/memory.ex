@@ -81,6 +81,7 @@ defmodule Spectre.Server.Memory do
     |> Keyword.merge(Map.get(context, :options, []))
     |> Keyword.merge(opts)
     |> Keyword.put(:agent, agent)
+    |> Keyword.put(:spectre_server, true)
     |> Keyword.put(:identity, Map.get(context, :identity, %{}))
   end
 

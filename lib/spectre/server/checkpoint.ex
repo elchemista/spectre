@@ -3,7 +3,8 @@ defmodule Spectre.Server.Checkpoint do
   Explicit durable projection of Server coordination state.
 
   Configure `checkpoint: {store, key}` with a `Spectre.Server.Store.Disk`
-  owner. The checkpoint, inbox and command outbox share one CAS revision.
+  owner, or `checkpoint: {module, store_ref, key}` for an implementation of
+  `Spectre.Server.Store`. The checkpoint, inbox and command outbox share one CAS revision.
   Runtime references and capabilities are never serialized. The default
   codec accepts the listed portable records; custom application structs must
   be projected into plain data by the application before acquisition.
@@ -19,11 +20,19 @@ defmodule Spectre.Server.Checkpoint do
   `{:ok, projection, %{old_dispatch_key => new_dispatch_key}}`. Reconciliation
   facts must remain unchanged; the runtime applies explicit mappings only to
   routing hints after validating each target against the current Definition.
+
+  After an explicit migration, changed tool contracts are marked without
+  rewriting their original commands or provenance. Cognitive requests complete
+  with a contract-change error (or uncertainty for nonrepeatable requests).
+  Known unstarted governed requests are rejected; already-started governed
+  requests reconcile their original journal through GAM.
   """
   alias Spectre.GAM.Canonical.Value
   alias Spectre.Server.Store.Disk
   alias Spectre.{Definition, Route}
   alias Spectre.Server.Router
+
+  @max_bytes 16 * 1_024 * 1_024 - 16_384
 
   @records [
     Spectre.Input,
@@ -54,17 +63,22 @@ defmodule Spectre.Server.Checkpoint do
     case Keyword.get(opts, :checkpoint) do
       nil -> state
       {store, key} -> load_entry(Disk.fetch(store, key), state)
+      {module, store, key} -> load_entry(module.fetch(store, key), state)
     end
   end
 
   defp load_entry(:not_found, state), do: state
 
   defp load_entry({:ok, %{revision: revision, value: binary}}, state) do
-    with {:ok, projection} <- Value.decode(binary, allowed_structs: @records),
-         {:ok, projection} <- migrate_if_needed(projection, state),
+    with {:ok, saved} <- Value.decode(binary, allowed_structs: @records),
+         {:ok, projection} <- migrate_if_needed(saved, state),
          :ok <- validate(projection, state) do
       projection = restore_projection(state.agent, projection)
-      restore_state(state, projection, revision)
+
+      migrated? =
+        Map.get(saved, :definition_fingerprint) != Map.get(projection, :definition_fingerprint)
+
+      state |> restore_state(projection, revision) |> Map.put(:checkpoint_migrated, migrated?)
     else
       {:error, reason} -> raise ArgumentError, "invalid Server checkpoint: #{inspect(reason)}"
     end
@@ -136,31 +150,12 @@ defmodule Spectre.Server.Checkpoint do
       nil ->
         state
 
-      {store, key} ->
-        projection = %{
-          version: 1,
-          agent: state.agent,
-          server: state.server,
-          identity: state.identity,
-          definition_fingerprint: cached_fingerprint(state),
-          assigns: state.assigns,
-          pending: project_pending(state.pending),
-          outbox: project_entries(state.outbox),
-          inbox: project_inbox(state.inbox),
-          seen_events: state.seen_events,
-          dead_letters: Map.get(state, :dead_letters, %{}),
-          operations: project_entries(Map.get(state, :operations, %{})),
-          seen_event_order: Map.get(state, :seen_event_order, Map.keys(state.seen_events)),
-          sequence: state.sequence,
-          history: state.history,
-          current_flow: state.current_flow,
-          current_scope: state.current_scope,
-          current: project_event(state.current),
-          queue: Enum.map(:queue.to_list(state.queue), &project_event/1)
-        }
+      configuration ->
+        {module, store, key} = storage(configuration)
+        projection = projection(state)
 
         with {:ok, bytes} <- Value.encode(projection, allowed_structs: @records),
-             {:ok, revision} <- commit(store, key, state.checkpoint_revision, bytes) do
+             {:ok, revision} <- commit(module, store, key, state.checkpoint_revision, bytes) do
           %{state | checkpoint_revision: revision}
         else
           {:error, reason} ->
@@ -169,8 +164,75 @@ defmodule Spectre.Server.Checkpoint do
     end
   end
 
-  defp commit(store, key, nil, bytes), do: Disk.put_new(store, key, bytes)
-  defp commit(store, key, revision, bytes), do: Disk.compare_and_swap(store, key, revision, bytes)
+  @doc "Encodes a portable Server coordination value with the checkpoint record allowlist."
+  def encode_value(value), do: Value.encode(value, allowed_structs: @records)
+
+  @doc """
+  Decodes a portable value without loading or executing an Agent.
+
+  This checks the codec and record allowlist only. Snapshot identity, definition
+  compatibility and checkpoint structure are validated separately during load.
+  """
+  def decode_snapshot(binary), do: Value.decode(binary, allowed_structs: @records)
+
+  @doc "Validates portable callback data using the checkpoint codec and record allowlist."
+  def validate_value(value, opts \\ []) do
+    Value.validate(value, Keyword.put(opts, :allowed_structs, @records))
+  end
+
+  @doc "Maximum coordination payload size, reserving space for Store envelopes."
+  def max_bytes, do: @max_bytes
+
+  @doc false
+  def tool_reference(%{opts: opts}) do
+    case Keyword.get(opts, :checkpoint) do
+      nil ->
+        nil
+
+      configuration ->
+        {adapter, store, key} = storage(configuration)
+        %{adapter: adapter, store: store, key: key}
+    end
+  end
+
+  @doc false
+  def validate_state(%{opts: opts} = state, codec_opts \\ []) do
+    if Keyword.get(opts, :checkpoint),
+      do: validate_value(projection(state), Keyword.put_new(codec_opts, :max_bytes, @max_bytes)),
+      else: :ok
+  end
+
+  defp projection(state) do
+    %{
+      version: 1,
+      agent: state.agent,
+      server: state.server,
+      identity: state.identity,
+      definition_fingerprint: cached_fingerprint(state),
+      assigns: state.assigns,
+      pending: project_pending(state.pending),
+      outbox: project_entries(state.outbox),
+      inbox: project_inbox(state.inbox),
+      seen_events: state.seen_events,
+      dead_letters: Map.get(state, :dead_letters, %{}),
+      operations: project_entries(Map.get(state, :operations, %{})),
+      seen_event_order: Map.get(state, :seen_event_order, Map.keys(state.seen_events)),
+      sequence: state.sequence,
+      history: state.history,
+      current_flow: state.current_flow,
+      current_scope: state.current_scope,
+      current: project_event(state.current),
+      queue: Enum.map(:queue.to_list(state.queue), &project_event/1)
+    }
+  end
+
+  defp storage({store, key}), do: {Disk, store, key}
+  defp storage({module, store, key}) when is_atom(module), do: {module, store, key}
+
+  defp commit(module, store, key, nil, bytes), do: module.put_new(store, key, bytes)
+
+  defp commit(module, store, key, revision, bytes),
+    do: module.compare_and_swap(store, key, revision, bytes)
 
   # Raw transport data and executable legacy route definitions are deliberately
   # excluded. Durable callbacks retain the canonical input and dispatch key.
@@ -394,6 +456,7 @@ defmodule Spectre.Server.Checkpoint do
     modules =
       modules
       |> MapSet.put(state.server)
+      |> MapSet.union(MapSet.new(Spectre.Server.Tool.adapter_modules(state.server)))
       |> Enum.sort()
       |> Enum.map(fn module ->
         Code.ensure_loaded!(module)

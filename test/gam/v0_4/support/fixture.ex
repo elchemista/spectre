@@ -551,7 +551,7 @@ defmodule Spectre.GAM.V04Test.Fixture do
   end
 
   defp surface(row, delegation_row, governance_row, opts) do
-    declarations = %{"refund.issue" => row}
+    declarations = Map.merge(%{"refund.issue" => row}, Keyword.get(opts, :declarations, %{}))
 
     declarations =
       if Keyword.get(opts, :consent, false),

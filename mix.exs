@@ -40,6 +40,7 @@ defmodule Spectre.MixProject do
     "SECURITY.md",
     "docs/INTEGRATIONS.md",
     "docs/STACK.md",
+    "docs/STACK_TOOLS.md",
     "docs/RUNTIME_SKILLS.md",
     "docs/DATA_DRIVEN_EXECUTION.md",
     "docs/GOVERNANCE.md",
@@ -216,6 +217,7 @@ defmodule Spectre.MixProject do
         "Extensions and integration": [
           "docs/INTEGRATIONS.md",
           "docs/STACK.md",
+          "docs/STACK_TOOLS.md",
           "docs/RUNTIME_SKILLS.md",
           "docs/DATA_DRIVEN_EXECUTION.md",
           "docs/GOVERNANCE.md",

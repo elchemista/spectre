@@ -9,6 +9,7 @@ defmodule Spectre.Server.Command do
     :classify,
     :propose,
     :call_actor,
+    :tool,
     :await_reply,
     :resolve_await,
     :confirm_pending,
@@ -28,6 +29,9 @@ defmodule Spectre.Server.Command do
       not Keyword.keyword?(opts) ->
         {:error, :invalid_options}
 
+      Keyword.has_key?(opts, :tool_origin) ->
+        {:error, :reserved_tool_options}
+
       Keyword.has_key?(opts, :lifecycle_recorded) or
           Keyword.has_key?(opts, :lifecycle_authorized) ->
         {:error, :reserved_lifecycle_options}
@@ -38,6 +42,14 @@ defmodule Spectre.Server.Command do
   end
 
   def validate(_), do: {:error, :invalid_command}
+
+  def validate_internal(%__MODULE__{kind: :tool_call, args: [identity, _args], opts: opts})
+      when is_map(identity) and is_list(opts), do: timeout(opts)
+
+  def validate_internal(%__MODULE__{kind: :tool_rejected, args: [_result], opts: opts})
+      when is_list(opts), do: :ok
+
+  def validate_internal(command), do: validate(command)
 
   defp validate_args(:respond, [content], _opts) when is_binary(content) or is_atom(content),
     do: :ok
@@ -54,6 +66,9 @@ defmodule Spectre.Server.Command do
            do: {:error, :governed_timeout_owned_by_host},
            else: :ok
          )
+
+  defp validate_args(:tool, [name, _input, expected], opts)
+       when is_atom(name) and is_map(expected), do: timeout(opts)
 
   defp validate_args(:call_actor, [_actor, _request], opts), do: timeout(opts)
   defp validate_args(:await_reply, [id], opts) when not is_nil(id), do: timeout(opts)

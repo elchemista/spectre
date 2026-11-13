@@ -2,13 +2,16 @@ defmodule Spectre.Stack.Installable do
   @moduledoc """
   Versioned contract implemented by packages that can be installed in a Stack.
 
-  `manifest/0` and `compile/3` run while the Stack definition is compiled and
-  must return immutable data. `child_specs/2`, when implemented, runs only
+  `manifest/0`, `compile/3` and optional `tools/1` run while the Stack definition
+  is compiled and must return immutable data. `tools/1` receives the compiled
+  configuration and declares tool adapters without executing them.
+  `child_specs/2`, when implemented, runs only
   when a caller explicitly starts `Spectre.Stack.Runtime`.
   """
 
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Package
+  alias Spectre.Stack.Tools
   alias Spectre.Stack.Value
 
   @contract_version 1
@@ -16,12 +19,13 @@ defmodule Spectre.Stack.Installable do
   @callback manifest() :: Package.t() | map() | keyword()
   @callback compile(keyword(), Macro.t() | nil, Macro.Env.t()) ::
               {:ok, map() | keyword()} | {:error, term()}
+  @callback tools(map() | keyword()) :: Tools.t()
   @callback child_specs(Installation.t(), keyword()) ::
               [{term(), Supervisor.child_spec()}]
               | {:ok, [{term(), Supervisor.child_spec()}]}
               | {:error, term()}
 
-  @optional_callbacks compile: 3, child_specs: 2
+  @optional_callbacks compile: 3, child_specs: 2, tools: 1
 
   @doc """
   Defines a static manifest and default data-only compiler.
@@ -101,6 +105,19 @@ defmodule Spectre.Stack.Installable do
     config = module |> invoke_compile(opts, block, caller) |> normalize_compile_reply!(module)
     validate_config!(config, module)
     Value.ensure_portable!(config, "Stack package #{inspect(module)} configuration")
+  end
+
+  @doc false
+  @spec tools!(module(), map() | keyword()) :: Tools.t()
+  def tools!(module, config) do
+    if function_exported?(module, :tools, 1) do
+      case invoke(module, :tools, [config]) do
+        {:ok, tools} -> Tools.validate!(tools)
+        {:error, reason} -> raise_compile_error(module, reason)
+      end
+    else
+      %{}
+    end
   end
 
   @doc false

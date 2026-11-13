@@ -30,7 +30,7 @@ defmodule Spectre.Server.GAM do
   alias Spectre.GAM
   alias Spectre.GAM.{Candidate, Presentation, Scope}
   alias Spectre.GAM.Mind.Turn
-  alias Spectre.Server.Store.Disk
+  alias Spectre.Server.Store.Port, as: Store
 
   @doc "Whether the host explicitly connected Server lifecycle observations to its fixed ingress."
   def lifecycle_configured?(config) when is_list(config),
@@ -222,7 +222,7 @@ defmodule Spectre.Server.GAM do
   def recover_command(command_id, context, opts) do
     with {:ok, config} <- config(opts),
          {:ok, store} <- journal_store(config),
-         {:ok, %{value: saved}} <- Disk.fetch(store, journal_key(command_id)),
+         {:ok, %{value: saved}} <- Store.fetch(store, journal_key(command_id)),
          {:ok, scope} <- scope(config, context),
          :ok <- matching_scope(scope, saved),
          {:ok, candidate} <- Candidate.from_canonical(saved.candidate) do
@@ -265,14 +265,14 @@ defmodule Spectre.Server.GAM do
   end
 
   defp release_journal(store, id, config, context) do
-    case Disk.fetch(store, journal_key(id)) do
+    case Store.fetch(store, journal_key(id)) do
       :not_found ->
         :ok
 
       {:ok, %{revision: revision, value: saved}} ->
         with {:ok, scope} <- scope(config, context),
              :ok <- matching_scope(scope, saved),
-             do: Disk.delete(store, journal_key(id), revision)
+             do: Store.delete(store, journal_key(id), revision)
 
       {:error, _} = error ->
         error
@@ -310,7 +310,7 @@ defmodule Spectre.Server.GAM do
   def resolve_command_result(command_id, reference, context, opts) do
     with {:ok, config} <- config(opts),
          {:ok, store} <- journal_store(config),
-         {:ok, %{value: saved}} <- Disk.fetch(store, journal_key(command_id)),
+         {:ok, %{value: saved}} <- Store.fetch(store, journal_key(command_id)),
          {:ok, scope} <- scope(config, context),
          :ok <- matching_scope(scope, saved),
          {:ok, candidate} <- Candidate.from_canonical(saved.candidate),
@@ -393,7 +393,7 @@ defmodule Spectre.Server.GAM do
   end
 
   defp write_journal(store, id, entry) when is_binary(id) and id != "" do
-    case Disk.put_new(store, journal_key(id), entry) do
+    case Store.put_new(store, journal_key(id), entry) do
       {:ok, _revision} -> :ok
       {:error, :exists} -> match_journal(store, id, entry)
       {:error, _} = error -> error
@@ -403,7 +403,7 @@ defmodule Spectre.Server.GAM do
   defp write_journal(_, _, _), do: {:error, :durable_command_id_required}
 
   defp match_journal(store, id, entry) do
-    case Disk.fetch(store, journal_key(id)) do
+    case Store.fetch(store, journal_key(id)) do
       {:ok, %{value: ^entry}} -> :ok
       _ -> {:error, :governed_command_conflict}
     end

@@ -52,6 +52,7 @@ defmodule Spectre.Stack.Definition do
     validate_header!(id, owner, version, contract, installations)
     installations = Enum.map(installations, &Installation.rebuild!/1)
     validate_unique_installations!(installations)
+    Spectre.Stack.Tools.table!(installations)
     validate_compatibility!(installations)
 
     ordered = order_installations!(installations)

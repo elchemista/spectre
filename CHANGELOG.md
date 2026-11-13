@@ -16,6 +16,15 @@ migration called out explicitly below.
 - Add IntentDataset naming and configuration while retaining online examples,
   training artifacts and exact/vector lookup compatibility.
 - Add a durable Server snapshot store and outcome continuation dispatcher.
+- Extend `Stack.Installable` with optional `tools/1` registration, validated
+  operation descriptors, digest fencing and cross-package helper-name checks.
+  Generate private Server helpers from the selected Stack, normalize cognitive
+  and governed operations before persistence, validate portable results and
+  retain uncertain nonrepeatable work without blind replay.
+- Add explicit Kinetic model-output planning, isolated installed tool adapters
+  across nine satellites, Ledger checkpoint/journal stores and Lab inspection.
+  Include a runnable nine-package integration with real GAM admission/consent
+  and simulated external transports.
 - Add per-intention closure schedules with runtime or application OTP timers,
   private application state and authenticated GAM lifecycle observations.
   Failed presentations preserve existing deadlines; recovery distinguishes

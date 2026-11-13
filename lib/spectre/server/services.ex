@@ -10,7 +10,7 @@ defmodule Spectre.Server.Services do
   alias Spectre.Inference.Request
 
   def generate(request, context, opts) do
-    ctx = legacy_context(context, request.input, opts, request.assigns)
+    ctx = Spectre.Server.ServiceContext.legacy(context, request.input, opts, request.assigns)
 
     with {:ok, plan} <- Spectre.Prompt.build(ctx.agent, request.prompt, ctx, ctx.opts),
          inference <- Request.for_response(plan, ctx, ctx.opts),
@@ -21,7 +21,7 @@ defmodule Spectre.Server.Services do
   end
 
   def classify(request, context, opts) do
-    ctx = legacy_context(context, request.input, opts, %{})
+    ctx = Spectre.Server.ServiceContext.legacy(context, request.input, opts, %{})
     choices = request.choices || []
     pending_context = classification_context(request.context)
     assigns = Keyword.get(ctx.opts, :classifier_assigns, %{}) |> Map.new()
@@ -52,7 +52,7 @@ defmodule Spectre.Server.Services do
   defp classification_context(_), do: nil
 
   def respond(content, context, opts) when is_atom(content) do
-    ctx = legacy_context(context, context.input, opts, %{})
+    ctx = Spectre.Server.ServiceContext.legacy(context, context.input, opts, %{})
 
     case Spectre.Runner.reply(content, ctx.input, ctx, ctx.opts) do
       {:ok, result} -> {:rendered, result.reply_text}
@@ -72,55 +72,19 @@ defmodule Spectre.Server.Services do
   end
 
   defp consolidate(text, false, ctx) do
-    {:ok, %{text: Spectre.ActionPlanner.clean_reply(text, ctx, planner_opts(ctx)), proposals: []}}
+    {:ok,
+     %{
+       text:
+         Spectre.ActionPlanner.clean_reply(text, ctx, Spectre.Server.Catalog.planner_options(ctx)),
+       proposals: [],
+       planning: false,
+       model_output: text
+     }}
   end
 
   defp consolidate(text, true, ctx) do
-    with {:ok, result} <- Spectre.ActionPlanner.plan_response(text, ctx, planner_opts(ctx)) do
-      proposals = Enum.map(result.effects, &proposal/1)
-
-      {:ok, %{text: result.reply_text, proposals: proposals}}
+    with {:ok, result} <- Spectre.Server.Planning.prepare_context(text, ctx) do
+      {:ok, %{text: result.text, proposals: result.actions, planning: true}}
     end
-  end
-
-  defp proposal(effect) do
-    action = Spectre.Action.from_effect(effect)
-    operation = Spectre.Server.Catalog.operation(action, effect.scope)
-
-    %{
-      operation: operation,
-      args: effect.args,
-      metadata: %{
-        provider: action.via,
-        schema_hash: action.schema_hash,
-        owner: effect.owner,
-        scope: effect.scope
-      }
-    }
-  end
-
-  defp planner_opts(ctx) do
-    Spectre.Server.Catalog.planner_options(ctx)
-  end
-
-  defp legacy_context(context, input, opts, assigns) do
-    options =
-      context.agent.__spectre_config__()
-      |> Keyword.merge(context.options)
-      |> Keyword.merge(opts)
-      |> Keyword.put(:server_prompt_root, Keyword.get(context.options, :prompt_root))
-      |> Keyword.put(:instance_run_lifecycle?, false)
-      |> Keyword.put(:streaming?, false)
-      |> Keyword.put(:plan_actions?, false)
-
-    %Spectre.Context{
-      agent: context.agent,
-      input: Spectre.Input.new(input || ""),
-      state: %Spectre.State{},
-      route: Map.get(context.routing, :route),
-      memory: Map.get(context, :memory),
-      assigns: Map.merge(context.assigns, assigns),
-      opts: options
-    }
   end
 end

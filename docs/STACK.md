@@ -63,6 +63,57 @@ An installed package may intentionally contribute an Action provider, but that
 does not make every operation planner-visible or bypass protection and host
 authorization.
 
+## Tool registration in 0.4
+
+The optional `Spectre.Stack.Installable.tools/1` callback receives the compiled
+package configuration and returns immutable tool descriptors. It is the same
+installation contract; packages do not need a second registration behaviour.
+The callback must perform no I/O and must not initialize adapters or resources.
+
+```elixir
+@impl Spectre.Stack.Installable
+def tools(_config) do
+  %{
+    notes: %{
+      contract: 1,
+      adapter: MyApp.Notes.Adapter,
+      default: :recall,
+      operations: %{
+        recall: %{path: :cognitive, retry: :safe, max_bytes: 1_048_576}
+      }
+    }
+  }
+end
+```
+
+Descriptors have exactly `contract`, `adapter`, `default` and `operations`.
+Operations are a non-empty map. A cognitive operation requires `path`, `retry`
+(`:safe` or `:never`) and `max_bytes`. A governed operation instead requires
+`path: :governed`, `operation` (the host binding name) and `max_bytes`; it cannot
+declare its own retry policy or execution authority. Byte budgets must be
+positive integers no larger than the core codec's 16 MiB limit.
+
+`default` is `nil` or a declared operation. Tool names are Elixir identifiers;
+each name must be unique across the Stack. Installation `as:` changes only the
+installation ID, never the declared tool names. Unknown descriptor keys and
+unsupported versions are rejected. Adapter availability is deliberately not
+checked during Stack compilation, so adapter modules can compile separately.
+
+Descriptors are stored in `Installation.adapters[:tools]` and participate in
+the installation and Stack digests. Serialized definitions are revalidated.
+Packages without the callback, or returning `%{}`, retain their existing
+installation representation. Late-bound packages can expose `tools/1` directly
+without a compile-time dependency on the behaviour module.
+
+`Stack.Conformance.run/2` checks these declarations for module entries, using
+the compiled configuration supplied through `configs:`. Raw `{module, manifest}`
+pairs remain data-only manifest checks and do not execute callbacks.
+
+Server helpers and dispatch consume these descriptors with
+`use Spectre.Server, tools: MyApp.AI`. Adapter availability, compiled installation
+identity and governed host bindings are validated at Server startup. See
+[Installed tools](STACK_TOOLS.md) for the lifecycle, package matrix and example.
+
 ## Installable Contract V1
 
 A package implements `Spectre.Stack.Installable`:

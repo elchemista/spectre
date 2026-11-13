@@ -135,16 +135,21 @@ Le capacità cognitive restano sostituibili tramite i behaviour degli adapter. N
 
 Un flow riconosciuto ma non implementato non viene degradato a «nessun match»: è un errore di binding/handler. Il default registra il problema e usa il percorso di errore configurato. `mix spectre.routes` e le verifiche di conformance dovranno mostrare destinazione e copertura; non si presume di provare staticamente pattern e guardie Elixir arbitrari.
 
-### 4.3 Helper dei package installati: `kinetic`, `mnemonic`, `lens`
+### 4.3 Helper generati dallo Stack: `kinetic`, `mnemonic`, `lens`
 
-La decisione di authoring è usare **funzioni helper con il nome del package**,
+La decisione di authoring è usare **funzioni helper generate dal framework dal
+nome della tool registrata nello Stack**,
 una sola parola: `kinetic`, `mnemonic`, `lens` e, dove esiste un'operazione
-applicativa utile, `beam`, `pulse` o `directive`. Sono funzioni Elixir ordinarie
-con `ctx` esplicito; non introducono una DSL di esecuzione nel Server.
+applicativa utile, `beam`, `pulse` o `directive`. Il package non deve esportare
+funzioni omonime: il framework genera funzioni Elixir ordinarie con `ctx`
+esplicito, collegate al binding registrato. Non si introduce una DSL di dialogo
+o di esecuzione nel Server.
 
-**Stato:** i nomi sono concordati; gli adapter e la primitiva condivisa di
-richiesta alle capability sono lavoro da implementare. Gli esempi di questa
-sezione non descrivono API già disponibili nel branch.
+**Stato:** callback `Spectre.Stack.Installable.tools/1`, descrittori, helper,
+dispatch e adapter dei nove package sono implementati. La guida operativa è
+[STACK_TOOLS](../STACK_TOOLS.md); l'[integrazione eseguibile](../../integration/stack_tools/README.md)
+mostra il contratto effettivo. Il [rapporto di verifica](stack-tools-0.4-verification.it.md)
+distingue test reali e trasporti simulati.
 
 Il nome pubblico dell'helper Kinetic è `kinetic`, non `plan_response`,
 `prepare_actions` o `interpret`. Le API dirette della libreria, come
@@ -153,32 +158,63 @@ Nel Server l'helper riceve la risposta del modello e prepara le azioni candidate
 non serve un secondo helper per scrivere a mano una singola istruzione AL e non
 si introduce un nuovo oggetto `Plan` come risultato di Kinetic.
 
-#### Import e firme
+#### Registrazione, generazione e firme
 
-Lo Stack installa configurazione, adapter e risorse. Il Server può importare
-esplicitamente soltanto le funzioni che usa:
+Lo Stack installa configurazione, adapter e risorse e conserva descrittori
+immutabili delle tool. Un descrittore specifica nome, operazioni disponibili,
+funzione/adapter realmente esistente, iniezione del runtime, proiezioni e schemi,
+versione del contratto e percorso cognitivo o governato. Non si deduce la
+funzione da invocare dal solo nome del modulo.
+
+Il punto di estensione è il behaviour esistente `Spectre.Stack.Installable`:
+`tools(config)` riceve il risultato di `compile/3`. Le dichiarazioni sono
+validate e conservate in `Installation.adapters[:tools]`; non si aggiunge un
+secondo registro. La specifica normativa del piano fissa i contratti degli
+adapter e prevale sulle firme schematiche illustrate qui sotto.
+
+Per Kinetic, ad esempio, la registrazione può collegare la risposta completa del
+modello all'adapter già esistente `Spectre.Kinetic.Planner.plan_response/3`;
+`SpectreKinetic.plan/3` è invece l'API diretta della singola AL. Il framework
+adatta gli argomenti al contratto registrato: non passa semplicemente il `ctx`
+come primo argomento di una funzione che si aspetta un runtime Kinetic.
+
+Il collegamento di compilazione è:
 
 ```elixir
-import Spectre.Kinetic, only: [kinetic: 3]
-import Spectre.Mnemonic, only: [mnemonic: 3]
-import Spectre.Lens, only: [lens: 3]
+defmodule MyApp.SupportServer do
+  use Spectre.Server, tools: MyApp.AI
+
+  # kinetic/3, mnemonic/3 e lens/3 vengono generati dalle registrazioni di AI.
+end
 ```
 
-L'import accorcia il nome; la disponibilità della capability viene verificata
-contro lo Stack dell'Agent del dispatch. Importare una funzione non installa
-una risorsa e non concede autorità. Non si importano automaticamente tutte le
-funzioni dei package dentro ogni Server, che può essere riusato da Agent con
-Stack diversi.
+`tools:` è un’opzione di compilazione: consente al compiler del Server di
+conoscere i nomi e le arità da generare. Il binding Agent → Server rimane quello
+già deciso. Non si cerca l'Agent con un registry globale di compilazione e non
+si crea una dipendenza circolare Server → Agent. Un `before_compile` del Server
+genera i wrapper locali dai descrittori dello Stack, senza import di inesistenti
+funzioni `Spectre.Kinetic.kinetic/3` o analoghe.
+
+Il corpo generato accoda una richiesta logica tramite la primitiva interna
+`Spectre.Server.Tool.request/5`: contesto, nome, input, opzioni e descrittore
+compilato con i relativi digest. L'applicazione usa soltanto l'helper a due o
+tre argomenti; non costruisce quel descrittore a mano.
+L'helper generato non invoca direttamente la libreria. Il runtime valida
+capability e contratto sullo Stack effettivo di `ctx.agent`, quindi risolve
+target e risorsa. Non usa silenziosamente una risorsa dello Stack di compilazione
+per un Agent diverso. Binding mancanti/incompatibili e collisioni dei nomi o
+delle arità con helper core, callback e funzioni applicative producono errori
+espliciti; nessuna sovrascrittura implicita.
 
 Ogni helper restituisce il `ctx` con la richiesta aggiunta. Il runtime acquisisce
 la richiesta al ritorno del callback e soltanto allora avvia l'I/O; il valore
 restituito dall'helper non è il risultato dello strumento.
 
-| Helper proposto | Input | Risultato tramite `on_result` |
+| Helper | Input | Risultato tramite `on_result` |
 | --- | --- | --- |
 | `kinetic(ctx, response, opts)` | Risposta consolidata del modello, con output originale interno | Azioni candidate validate, in ordine, con operazione, argomenti e metadata di origine |
 | `mnemonic(ctx, {:recall, query}, opts)` | Richiesta di memoria e scope risolto dal dispatch | Snapshot portabile dei ricordi e della loro provenienza |
-| `mnemonic(ctx, {:remember, observation}, opts)` | Osservazione esplicita da memorizzare | Esito correlato della scrittura, con chiave di idempotenza stabile |
+| `mnemonic(ctx, {:remember, observation}, opts)` | Osservazione esplicita da memorizzare | Esito governato della scrittura, con identità stabile per correlazione; nessun retry cieco |
 | `lens(ctx, {:look, tab_ref}, opts)` | Riferimento logico alla pagina | Vista portabile e provenienza della percezione |
 | `lens(ctx, {:act, tab_ref, action}, opts)` | Operazione browser esplicita | Risultato del percorso previsto per quell'operazione; le conseguenze governate attraversano GAM |
 
@@ -198,8 +234,7 @@ quindi `handle_result`, dopo la generazione:
 
 ```elixir
 defmodule MyApp.MailServer do
-  use Spectre.Server
-  import Spectre.Kinetic, only: [kinetic: 3]
+  use Spectre.Server, tools: MyApp.AI
 
   def handle_flow({:mail, :send}, _input, ctx) do
     generate(ctx, :mail, on_result: :mail_generated)
@@ -210,7 +245,7 @@ defmodule MyApp.MailServer do
   end
 
   # Questo esempio prepara le azioni e le conserva per il seguito del dialogo.
-  def handle_result(:mail_actions, {:ok, %{proposals: proposals}}, ctx) do
+  def handle_result(:mail_actions, {:prepared, %{actions: proposals}}, ctx) do
     ctx
     |> assign(:mail_actions, proposals)
     |> respond("Azioni preparate.")
@@ -248,13 +283,12 @@ istruzioni malformate o ambigue.
 
 `ctx` contiene Agent, identità, input, routing, assigns, private, memoria,
 attese e comandi. Il framework **non inserisce uno struct Kinetic inizializzato
-in `ctx.assigns`**. La risorsa vive nel runtime supervisionato dello Stack;
-worker e adapter la risolvono dal binding del dispatch. PID, encoder, ETS,
-connessioni e Tab vivi rimangono nelle risorse o nei dati `private` volatili.
-Il bootstrap della risorsa Kinetic va implementato nel package: l'installazione
-attuale non lo fornisce già automaticamente.
+in `ctx.assigns`**. L'adapter Kinetic usa il planner installato e il catalogo
+chiuso dell'Agent. Le risorse persistenti che i package dichiarano, come Engine
+Mnemonic e runtime Lens, vivono nella supervisione dello Stack. PID, encoder,
+ETS, connessioni e Tab vivi rimangono nelle risorse o nei dati `private` volatili.
 
-Il percorso comune da implementare è:
+Il percorso comune è:
 
 ```text
 helper(ctx, richiesta, on_result: tag)
@@ -264,6 +298,14 @@ helper(ctx, richiesta, on_result: tag)
   -> risultato portabile acquisito nell'inbox
   -> handle_result(tag, result, ctx)
 ```
+
+Per un'operazione governata il dispatcher normalizza durevolmente la richiesta
+nel percorso `propose` già esistente: ammissione GAM, eventuale consenso,
+executor e funzione registrata, poi risultato acquisito. La funzione con
+conseguenze non viene chiamata prima per chiedere consenso dopo. Un worker tool
+generico non può aggiungere un percorso di retry che riesegue liberamente gli
+effetti al restart. Versione/digest del binding partecipano al fingerprint della
+richiesta; un replay non cambia silenziosamente il target registrato.
 
 La proiezione è richiesta in entrambe le direzioni: **prima dell'outbox e prima
 dell'inbox**. Un TabRef logico può ancora essere uno struct non ammesso dal
@@ -1076,7 +1118,7 @@ Ogni fase produce codice verificabile e una matrice di compatibilità aggiornata
 ### Fase 6 — Stack, Skill e procedure
 
 - Stabilizzare i contratti dei manifest e adapter per Prism, Kinetic, Mnemonic, Beam e Pulse.
-- Implementare la primitiva condivisa per le capability e i normali helper di package `kinetic`, `mnemonic`, `lens` descritti in 4.3, con binding allo Stack del dispatch e operazioni chiuse.
+- Implementare i descrittori di registrazione, la generazione degli helper `kinetic`, `mnemonic`, `lens` e la primitiva condivisa di dispatch descritti in 4.3; verificare binding allo Stack, operazioni chiuse e collisioni di nomi/arità, senza richiedere funzioni helper nei package.
 - Conservare l'output originale del modello nel risultato portabile della generazione; collegare `handle_result -> kinetic -> handle_result` senza planning duplicato o esecuzione automatica.
 - Implementare proiezioni versionate delle richieste prima dell'outbox e dei risultati prima dell'inbox, con la stessa forma live e dopo recovery.
 - Supervisionare le risorse per runtime dello Stack; verificare che ctx/assigns e comandi durevoli non contengano runtime Kinetic, Tab, encoder o connessioni vivi.
@@ -1439,9 +1481,9 @@ I comandi attuali di export/train/eval rimangono funzionanti. I nuovi comandi ri
 | `assign(ctx, key, value)` | Modifica stato applicativo; non riscrive identità o pending |
 | `generate(ctx, prompt, opts)` | Generazione, planning opzionale e stream; risultato consolidato |
 | `classify(ctx, input, opts)` | Classificazione sul binding dichiarato; label senza autorità |
-| `kinetic(ctx, response, opts)` | Helper del package da implementare: interpreta l'AL del modello e prepara azioni candidate; nessuna esecuzione automatica |
-| `mnemonic(ctx, operation, opts)` | Helper del package da implementare: recall/scrittura esplicita, con scope e risultato correlati |
-| `lens(ctx, operation, opts)` | Helper del package da implementare: percezione/operazioni browser tramite binding e proiezioni portabili |
+| `kinetic(ctx, response, opts)` | Helper generato dalla registrazione Stack: interpreta l'AL del modello e prepara azioni candidate; nessuna esecuzione automatica |
+| `mnemonic(ctx, operation, opts)` | Helper generato dalla registrazione Stack: recall/scrittura esplicita, con scope e risultato correlati |
+| `lens(ctx, operation, opts)` | Helper generato dalla registrazione Stack: percezione/operazioni browser tramite binding e proiezioni portabili |
 | `respond(ctx, content, opts)` | Richiesta di risposta; non prova automatica di consegna o show GAM |
 | `propose(ctx, operation, args, opts)` | Proposta concreta, collegamento al percorso governato e continuazione |
 | `confirm_pending` / `reject_pending` | Richiede la transizione usando attesa e input d'origine; non scrive una Decision |

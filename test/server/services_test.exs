@@ -16,6 +16,8 @@ defmodule Spectre.Server.ServicesTest do
   end
 
   defmodule Planner do
+    def clean_reply(_text, _ctx, _opts), do: "public text"
+
     def plan_response(_, _, _) do
       {:ok,
        %{
@@ -102,12 +104,16 @@ defmodule Spectre.Server.ServicesTest do
       preview: :off
     }
 
-    assert {:generated, %{text: "CONFIRM", proposals: []}} =
+    assert {:generated,
+            %{text: "CONFIRM", proposals: [], model_output: "CONFIRM", planning: false}} =
              Services.generate(request, context, test_pid: self())
 
     assert_receive {:model_prompt, prompt}
     assert prompt =~ "SERVER_PRICING"
     assert prompt =~ "remembered prices"
+
+    assert {:generated, %{text: "public text", model_output: "CONFIRM", planning: false}} =
+             Services.generate(request, context, test_pid: self(), action_planner: Planner)
   end
 
   test "consolidated planning retains the qualified provider, schema and trusted route owner" do
@@ -135,8 +141,11 @@ defmodule Spectre.Server.ServicesTest do
       preview: :off
     }
 
-    assert {:generated, %{proposals: [proposal]}} =
+    assert {:generated, %{proposals: [proposal], planning: true} = generated} =
              Services.generate(request, ctx, test_pid: self())
+
+    refute Map.has_key?(generated, :model_output)
+    assert {:ok, %{actions: [^proposal]}} = Spectre.Server.Planning.prepare("CONFIRM", ctx)
 
     assert proposal.operation == {:foreign, :same}
     assert proposal.metadata.provider == :foreign

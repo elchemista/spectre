@@ -331,17 +331,14 @@ not migrate every Skill workflow, private state, effect or recovery path to the
 new owner. The memory bridge likewise provides a history-oriented legacy state
 projection; adapters relying on the complete old Instance state need an audit.
 
-External packages have separate migration work:
+The nine installable satellite packages have companion
+`feature/stack-tools-0.4` branches implementing the existing Stack behaviour's
+`tools/1` callback. See [Installed tools](STACK_TOOLS.md) for helper usage and
+[the integration project](../integration/stack_tools/README.md) for an executable
+Agent using all nine. Legacy package APIs remain available; arbitrary existing
+application effects and workflow callbacks still need explicit migration.
 
-| Package | Current compatibility boundary |
-| --- | --- |
-| Kinetic | Declares Spectre `~> 0.3.3` for its test dependency, which excludes 0.4. The incremental public planner projection still needs a package adapter. |
-| Mnemonic | Declares Spectre `~> 0.3.3`; the new memory bridge is not proof of complete package compatibility. |
-| Beam | Declares Spectre `~> 0.3.3` for its test dependency; 0.4 integration is not verified by that constraint. |
-| Directive | Declares Spectre `~> 0.3.3`; its legacy workflow contracts need adaptation and verification. |
-| Prism and Pulse | Declare `~> 0.4.0` but use the previous 0.4 authoring APIs, including Agent Collection/Observer/Turn or RequestBuilder. The version constraint does not establish compatibility with the new Agent/Server split. |
-
-Those sibling repositories are not migrated by this core branch. Legacy
+Legacy
 Instance checkpoints are not automatically converted into Server checkpoints
 or GAM consent Evidence. `freelance` is a reference application only; its
 Client/Freelancer flows, production services and alternate anonymization paths

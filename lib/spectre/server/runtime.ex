@@ -17,7 +17,8 @@ defmodule Spectre.Server.Runtime do
     Failure,
     Inbox,
     Operations,
-    PendingLifecycle
+    PendingLifecycle,
+    Tool
   }
 
   def start_link(opts) do
@@ -30,7 +31,7 @@ defmodule Spectre.Server.Runtime do
 
   @impl true
   def init(opts) do
-    state = opts |> initial_state() |> Checkpoint.load()
+    state = opts |> initial_state() |> Checkpoint.load() |> Tool.validate_persisted!()
     send(self(), {__MODULE__, state.control, :recover})
     init_application(state)
   end
@@ -43,7 +44,7 @@ defmodule Spectre.Server.Runtime do
     opts = Keyword.merge(server_options(server), opts)
     state = new_state(agent, server, opts)
     validate_initial_state!(state)
-    state
+    Map.put(state, :tool_bindings, Tool.bindings!(state))
   end
 
   defp server_options(server) do
@@ -103,12 +104,32 @@ defmodule Spectre.Server.Runtime do
   defp init_application(state) do
     {ctx, dispatch} = context(state, nil)
 
+    result = Failure.capture(fn -> prepare_init(state, ctx, dispatch) end)
+
+    case result do
+      {:ok, {:ok, prepared}} -> {:ok, commit_acquisition(prepared)}
+      {:ok, {:ok, prepared, action}} -> {:ok, commit_acquisition(prepared), action}
+      {:ok, other} -> other
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp prepare_init(state, ctx, dispatch) do
     case state.server.init(Keyword.get(state.opts, :init_arg), ctx) do
-      {:ok, returned} -> {:ok, acquire(state, returned, dispatch)}
-      {:ok, returned, action} -> {:ok, acquire(state, returned, dispatch), otp_action(action)}
-      :ignore -> :ignore
-      {:stop, reason} -> {:stop, reason}
-      other -> {:stop, {:invalid_init_return, other}}
+      {:ok, returned} ->
+        {:ok, prepare_acquisition(state, returned, dispatch)}
+
+      {:ok, returned, action} ->
+        {:ok, prepare_acquisition(state, returned, dispatch), otp_action(action)}
+
+      :ignore ->
+        :ignore
+
+      {:stop, reason} ->
+        {:stop, reason}
+
+      other ->
+        {:stop, {:invalid_init_return, other}}
     end
   end
 
@@ -235,7 +256,7 @@ defmodule Spectre.Server.Runtime do
         state =
           if governed?(worker.kind),
             do: uncertain_governed(state, ref, worker, {:worker_exit, reason}),
-            else: receive_result(state, worker, {:error, {:worker_exit, reason}})
+            else: receive_result(state, worker, tool_failure(worker, {:worker_exit, reason}))
 
         {:noreply, finish(state)}
     end
@@ -268,7 +289,10 @@ defmodule Spectre.Server.Runtime do
       {:ok, returned} ->
         validate_context!(returned, dispatch)
         if returned.commands != [], do: raise(ArgumentError, "code_change cannot start commands")
-        state = %{state | assigns: returned.assigns} |> Checkpoint.refresh_fingerprint()
+        state = %{state | assigns: returned.assigns}
+        state = Map.put(state, :tool_bindings, Tool.bindings!(state))
+        state = state |> Tool.validate_persisted!() |> Checkpoint.refresh_fingerprint()
+        validate_tool_state!(state)
         {:ok, state}
 
       {:error, _} = error ->
@@ -299,7 +323,7 @@ defmodule Spectre.Server.Runtime do
     else
       if worker.monitor, do: Process.demonitor(worker.monitor, [:flush])
       if worker.pid, do: Process.exit(worker.pid, :kill)
-      receive_result(state, worker, {:error, :timeout})
+      receive_result(state, worker, tool_failure(worker, :timeout))
     end
   end
 
@@ -703,17 +727,23 @@ defmodule Spectre.Server.Runtime do
 
     case Failure.capture(fn ->
            prepare_conversation(state, callback, args, event, ctx, dispatch)
+           |> prepare_conversation_acquisition(state, dispatch)
          end) do
       {:ok, {:stale_consent, on_result}} ->
         conversation(state, :handle_result, [on_result, {:consent, :stale_input}], event)
 
-      {:ok, returned} ->
-        acquire(state, returned, dispatch)
+      {:ok, prepared} ->
+        commit_acquisition(prepared)
 
       {:error, reason} ->
         quarantine_callback(state, callback, event, reason)
     end
   end
+
+  defp prepare_conversation_acquisition({:stale_consent, _} = stale, _state, _dispatch), do: stale
+
+  defp prepare_conversation_acquisition(returned, state, dispatch),
+    do: prepare_acquisition(state, returned, dispatch)
 
   defp prepare_conversation(state, callback, args, event, ctx, dispatch) do
     if event && event.steps > state.max_steps,
@@ -841,12 +871,12 @@ defmodule Spectre.Server.Runtime do
         returned = apply(module, function, [failure, ctx])
         validate_context!(returned, dispatch)
         validate_stateful_commands!(state, returned.commands, event)
-        returned
+        prepare_acquisition(state, returned, dispatch)
       end)
 
     case result do
-      {:ok, returned} ->
-        acquire(state, returned, dispatch)
+      {:ok, prepared} ->
+        commit_acquisition(prepared)
 
       {:error, reason} ->
         notify(state, {:callback_error_handler_failed, failure.id, reason})
@@ -925,12 +955,15 @@ defmodule Spectre.Server.Runtime do
 
   defp validate_context!(_, _), do: raise(ArgumentError, "invalid or stale Server context")
 
-  defp acquire(state, returned, dispatch) do
+  defp acquire(state, returned, dispatch),
+    do: state |> prepare_acquisition(returned, dispatch) |> commit_acquisition()
+
+  defp prepare_acquisition(state, returned, dispatch) do
     validate_context!(returned, dispatch)
 
     case expired_schedule(state, returned.commands) do
       nil ->
-        acquire_commands(state, returned, dispatch, %{})
+        prepare_acquisition_commands(state, returned, dispatch, %{})
 
       pending ->
         command = %Command{
@@ -943,15 +976,28 @@ defmodule Spectre.Server.Runtime do
           ]
         }
 
-        acquire_commands(state, %{returned | commands: [command]}, dispatch, %{
+        prepare_acquisition_commands(state, %{returned | commands: [command]}, dispatch, %{
           expiry_result: pending.on_result,
           policy_closed: true
         })
     end
   end
 
-  defp acquire_commands(state, returned, dispatch, extra) do
-    validate_stateful_commands!(state, returned.commands, dispatch.event)
+  defp prepare_acquisition_commands(state, returned, dispatch, extra) do
+    normalized = Enum.map(returned.commands, &Tool.normalize(state, &1, dispatch.event))
+    commands = Enum.map(normalized, &elem(&1, 0))
+
+    Enum.each(commands, fn command ->
+      case Command.validate_internal(command) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          raise ArgumentError, "invalid normalized Server command: #{inspect(reason)}"
+      end
+    end)
+
+    validate_stateful_commands!(state, commands, dispatch.event)
 
     if dispatch.event && returned.commands == [],
       do: raise(ArgumentError, "foreground callback must choose a next step")
@@ -968,13 +1014,29 @@ defmodule Spectre.Server.Runtime do
     state = %{state | released_commands: []}
 
     entries =
-      Enum.map(returned.commands, fn command ->
-        {Spectre.Identity.uuid7(),
-         Map.merge(%{command: command, event: dispatch.event, execution_started: false}, extra)}
+      Enum.map(normalized, fn {command, origin} ->
+        entry =
+          Map.merge(%{command: command, event: dispatch.event, execution_started: false}, extra)
+
+        entry = if origin, do: Map.put(entry, :tool_origin, origin), else: entry
+        {Spectre.Identity.uuid7(), entry}
       end)
 
-    state = %{state | outbox: Map.merge(state.outbox, Map.new(entries))} |> Checkpoint.save()
-    execute_entries(state, entries ++ released)
+    state = %{state | outbox: Map.merge(state.outbox, Map.new(entries))}
+    validate_tool_state!(state)
+    {:prepared, state, entries ++ released}
+  end
+
+  defp commit_acquisition({:prepared, state, entries}),
+    do: execute_entries(Checkpoint.save(state), entries)
+
+  defp validate_tool_state!(state) do
+    if map_size(state.tool_bindings) > 0 do
+      case Checkpoint.validate_state(state) do
+        :ok -> :ok
+        {:error, reason} -> raise ArgumentError, "Server state not portable: #{inspect(reason)}"
+      end
+    end
   end
 
   defp validate_stateful_commands!(state, commands, event) do
@@ -1107,6 +1169,31 @@ defmodule Spectre.Server.Runtime do
     worker(state, kind, Keyword.get(opts, :on_result, kind), event, opts, fn ->
       run_command(state, kind, args, opts, event)
     end)
+  end
+
+  defp execute(state, %Command{kind: :tool_call, args: [identity, args], opts: opts}, event) do
+    worker(
+      state,
+      :tool_call,
+      Keyword.fetch!(opts, :on_result),
+      event,
+      opts,
+      fn ->
+        Tool.invoke(state, identity, args, service_context(state, event))
+      end,
+      tool_identity: identity
+    )
+  end
+
+  defp execute(state, %Command{kind: :tool_rejected, args: [result], opts: opts}, event) do
+    worker = %{
+      kind: :tool_rejected,
+      tag: Keyword.fetch!(opts, :on_result),
+      event: event,
+      command_id: state.active_command
+    }
+
+    receive_result(state, worker, result)
   end
 
   defp execute(state, %Command{kind: :await_reply, args: [id], opts: opts}, event) do
@@ -1440,17 +1527,15 @@ defmodule Spectre.Server.Runtime do
          if(event_id(worker.event) == id, do: Map.put(worker, :detached, true), else: worker)}
       end)
 
-    Enum.each(cancelled, fn {_ref, worker} ->
-      if worker.pid, do: Process.exit(worker.pid, :kill)
-      if worker.monitor, do: Process.demonitor(worker.monitor, [:flush])
-      cancel_timer(worker.timer)
-    end)
+    Enum.each(cancelled, &stop_cancelled_worker/1)
 
     notify(state, {:cancelled, id})
 
     outbox =
       Enum.reduce(cancelled, state.outbox, fn {_ref, worker}, acc ->
-        Map.delete(acc, Map.get(worker, :command_id))
+        if match?(%{tool_identity: %{retry: :never}}, worker),
+          do: acc,
+          else: Map.delete(acc, Map.get(worker, :command_id))
       end)
 
     state =
@@ -1458,7 +1543,23 @@ defmodule Spectre.Server.Runtime do
         if worker.kind == :await_reply, do: delete_pending(state, worker.pending_id), else: state
       end)
 
-    %{state | workers: Map.new(keep), outbox: outbox} |> Checkpoint.save()
+    state = %{state | workers: Map.new(keep), outbox: outbox} |> Checkpoint.save()
+
+    Enum.reduce(cancelled, state, fn {_ref, worker}, current ->
+      case worker do
+        %{tool_identity: %{retry: :never}} ->
+          receive_result(current, worker, tool_failure(worker, :cancelled))
+
+        _ ->
+          current
+      end
+    end)
+  end
+
+  defp stop_cancelled_worker({_ref, worker}) do
+    if worker.pid, do: Process.exit(worker.pid, :kill)
+    if worker.monitor, do: Process.demonitor(worker.monitor, [:flush])
+    cancel_timer(worker.timer)
   end
 
   defp suspend_pending(state, id) do
@@ -1549,6 +1650,9 @@ defmodule Spectre.Server.Runtime do
       receive_result(state, worker, {:consent, :expired}, event_id)
     end
   end
+
+  defp execute_entry(state, id, %{tool_contract_changed: true} = entry),
+    do: recover_changed_tool(state, id, entry)
 
   defp execute_entry(state, id, entry) do
     if lifecycle_entry?(state, entry),
@@ -1913,7 +2017,8 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp mark_execution_started(state, id, entry) do
-    if governed?(entry.command.kind) and not local_reply_resume?(state, entry) do
+    if (governed?(entry.command.kind) and not local_reply_resume?(state, entry)) or
+         Tool.never?(entry.command) do
       entry = Map.put(entry, :execution_started, true)
       %{state | outbox: Map.put(state.outbox, id, entry)} |> Checkpoint.save()
     else
@@ -1986,7 +2091,7 @@ defmodule Spectre.Server.Runtime do
   defp settled_worker_result?(_state, _worker, _result), do: false
 
   defp acquire_worker_result(state, worker, result, id) do
-    state = Operations.record(state, worker, result)
+    recorded = Operations.record(state, worker, result)
 
     safe_worker =
       Map.take(worker, [
@@ -1998,21 +2103,62 @@ defmodule Spectre.Server.Runtime do
         :opts,
         :recovered,
         :uncertain,
-        :external_event_id
+        :external_event_id,
+        :tool_identity
       ])
 
-    state =
-      %{
-        state
-        | outbox: Map.delete(state.outbox, Map.get(worker, :command_id)),
-          inbox: Map.put(state.inbox, id, %{worker: safe_worker, result: result})
-      }
-      |> Checkpoint.save()
+    case stage_worker_result(recorded, safe_worker, result, id) do
+      {:deferred, reason} ->
+        uncertain_governed(state, nil, worker, {:result_not_acquired, Tool.bounded(reason)})
 
-    state = worker_result(%{state | processing_result: id}, safe_worker, result)
-    state = state |> acquire_result() |> Checkpoint.save()
-    release_worker_journal(state, worker)
+      {staged, acquired_result} ->
+        staged = Checkpoint.save(staged)
+        staged = worker_result(%{staged | processing_result: id}, safe_worker, acquired_result)
+        staged = staged |> acquire_result() |> Checkpoint.save()
+        release_worker_journal(staged, worker)
+    end
   end
+
+  defp stage_worker_result(state, worker, result, id) do
+    staged = %{
+      state
+      | outbox: Map.delete(state.outbox, Map.get(worker, :command_id)),
+        inbox: Map.put(state.inbox, id, %{worker: worker, result: result})
+    }
+
+    validation =
+      if map_size(state.tool_bindings) > 0, do: Checkpoint.validate_state(staged), else: :ok
+
+    case {worker.kind, validation} do
+      {kind, {:error, reason}} when kind in [:tool_call, :tool_rejected] ->
+        replace_unportable_result(staged, worker, id, :tool_result_not_portable, reason)
+
+      {kind, {:error, reason}}
+      when kind in [:generate, :classify, :call_actor, :prepare_input] ->
+        if map_size(state.tool_bindings) > 0,
+          do: replace_unportable_result(staged, worker, id, :service_result_not_portable, reason),
+          else: {staged, result}
+
+      {kind, {:error, reason}}
+      when kind in [:propose, :confirm_pending, :explain_pending, :resume_pending] ->
+        if map_size(state.tool_bindings) > 0, do: {:deferred, reason}, else: {staged, result}
+
+      _ ->
+        {staged, result}
+    end
+  end
+
+  defp replace_unportable_result(state, worker, id, type, reason) do
+    replacement = tool_failure(worker, {type, Tool.bounded(reason)})
+
+    {%{state | inbox: Map.put(state.inbox, id, %{worker: worker, result: replacement})},
+     replacement}
+  end
+
+  defp tool_failure(%{tool_identity: %{retry: :never} = identity} = worker, reason),
+    do: Tool.unknown(identity, worker.command_id, reason)
+
+  defp tool_failure(_worker, reason), do: {:error, reason}
 
   defp complete_delivery(state, worker, {:governed, _} = result) do
     id = Delivery.result_key(result, worker.external_event_id)
@@ -2195,11 +2341,11 @@ defmodule Spectre.Server.Runtime do
 
   defp recover_outbox_entry({id, entry}, state) do
     cond do
-      Map.has_key?(entry, :blocked_by) ->
+      recovery_blocked?(state, id, entry) ->
         state
 
-      active_command?(state, id) ->
-        state
+      Map.get(entry, :tool_contract_changed) == true ->
+        recover_changed_tool(state, id, entry)
 
       Map.has_key?(entry, :lifecycle) ->
         execute_lifecycle_entry(state, id, entry)
@@ -2207,11 +2353,21 @@ defmodule Spectre.Server.Runtime do
       entry.command.kind == :await_reply ->
         recover_reply_wait(state, id, entry)
 
-      local_reply_resume?(state, entry) ->
+      replayable_entry?(state, entry) ->
         execute_entries(state, [{id, entry}])
 
-      Map.get(entry, :execution_started) == false ->
-        execute_entries(state, [{id, entry}])
+      Tool.never?(entry.command) ->
+        [identity, _args] = entry.command.args
+
+        worker = %{
+          kind: :tool_call,
+          tag: Keyword.fetch!(entry.command.opts, :on_result),
+          event: entry.event,
+          command_id: id,
+          tool_identity: identity
+        }
+
+        receive_result(state, worker, Tool.unknown(identity, id, :interrupted))
 
       entry.command.kind in [:propose, :confirm_pending, :explain_pending, :resume_pending] ->
         recover_governed(state, id, entry)
@@ -2220,6 +2376,50 @@ defmodule Spectre.Server.Runtime do
         execute_entry(state, id, entry)
     end
   end
+
+  defp recover_changed_tool(
+         state,
+         id,
+         %{command: %{kind: :propose}, execution_started: started} = entry
+       )
+       when started != false do
+    notify(state, {:tool_contract_changed, id, :reconciliation_required})
+    recover_governed(state, id, entry)
+  end
+
+  defp recover_changed_tool(state, id, %{command: %{kind: :propose}} = entry)
+       when not is_map_key(entry, :execution_started) do
+    notify(state, {:tool_contract_changed, id, :reconciliation_required})
+    recover_governed(state, id, entry)
+  end
+
+  defp recover_changed_tool(state, id, entry) do
+    command = entry.command
+
+    worker = %{
+      kind: :tool_rejected,
+      tag: Keyword.fetch!(command.opts, :on_result),
+      event: entry.event,
+      command_id: id
+    }
+
+    result =
+      case command do
+        %Command{kind: :tool_call, args: [%{retry: :never} = identity, _]} ->
+          Tool.unknown(identity, id, :tool_contract_changed)
+
+        _ ->
+          {:error, :tool_contract_changed}
+      end
+
+    receive_result(state, worker, result)
+  end
+
+  defp recovery_blocked?(state, id, entry),
+    do: Map.has_key?(entry, :blocked_by) or active_command?(state, id)
+
+  defp replayable_entry?(state, entry),
+    do: local_reply_resume?(state, entry) or Map.get(entry, :execution_started) == false
 
   defp active_command?(state, id),
     do: Enum.any?(state.workers, fn {_ref, worker} -> Map.get(worker, :command_id) == id end)
