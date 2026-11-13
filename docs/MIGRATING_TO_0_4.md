@@ -45,10 +45,21 @@ existence does not make arbitrary direct calls governed or durable.
 
 ## 1. Split the application modules
 
-Keep `MyApp.AI` as the Stack. Define the Server before the Agent in single-file
-examples so the compiler can resolve the binding:
+Keep `MyApp.AI` as the Stack. Read the Agent's declarations before the Server's
+implementation. The `server:` binding names the callback module; it does not
+require that module to appear before the Agent in a single-file example:
 
 ```elixir
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+
+  router strategies: [:regex]
+
+  flow :support do
+    on :pricing, regex: ~r/^pricing$/i
+  end
+end
+
 defmodule MyApp.SupportServer do
   use Spectre.Server, tools: MyApp.AI
 
@@ -58,16 +69,6 @@ defmodule MyApp.SupportServer do
 
   def handle_flow(:unmatched, _input, ctx),
     do: respond(ctx, "Do you mean pricing or account deletion?")
-end
-
-defmodule MyApp.SupportAgent do
-  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
-
-  router strategies: [:regex]
-
-  flow :support do
-    on :pricing, regex: ~r/^pricing$/i
-  end
 end
 ```
 

@@ -98,13 +98,16 @@ terminalization explicitly when supplying your own pipeline. See
 ## Dataset configuration is separate from training
 
 ```elixir
-intent_dataset Spectre.Router.SemanticCache,
+# Optional: MyApp.Dataset implements the custom dataset adapter contract.
+intent_dataset MyApp.Dataset,
   lookup: [exact: true, semantic: true],
   search: [min_score: 0.90, limit: 5],
   collect: [enabled: true, include_protected: false]
 ```
 
-This binds the retained store under its clearer application-facing name.
+This binds an application-supplied dataset adapter. For the built-in store, omit
+this declaration and use `:intent_dataset` in the router strategy list.
+`Spectre.Router.SemanticCache` is the dispatcher, not an adapter to bind to itself.
 `collect_intent: true` on a route enables eligible collection; it does not train
 a model or make an online example verified. Text-only examples may support exact
 lookup/training; vector lookup only includes valid compatible embeddings.

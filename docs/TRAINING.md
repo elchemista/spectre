@@ -24,9 +24,8 @@ defmodule MyApp.SupportAgent do
   classifier :local, MyApp.LocalClassifier, artifact_dir: "priv/intents"
   classifier :llm, MyApp.IntentModel, timeout: 8_000
 
-  intent_dataset Spectre.Router.SemanticCache,
-    lookup: [exact: true, semantic: true],
-    collect: [enabled: true, include_protected: false]
+  # Use the built-in dataset through the router strategy below.
+  # A custom store can instead be bound with intent_dataset MyApp.Dataset, opts.
 
   router strategies: [:regex, :intent_dataset, :embedding,
                        :local_classifier, :llm_classifier]
@@ -39,7 +38,10 @@ defmodule MyApp.SupportAgent do
 end
 ```
 
-The referenced adapters and Server must be implemented/configured by the host.
+The referenced embedding/classifier adapters and Server must be supplied by the
+host. This example uses the built-in dataset without a custom adapter binding.
+Do not bind `Spectre.Router.SemanticCache` as its own adapter: it is the dispatcher,
+so that configuration would recurse instead of reaching the built-in store.
 `collect_intent:` replaces the unclear `learn:` spelling in new declarations.
 It enables eligible runtime collection under the configured collection policy;
 it does not mean every matched input is automatically promoted to ground truth.
