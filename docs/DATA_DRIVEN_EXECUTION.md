@@ -1,5 +1,11 @@
 # Data-driven execution
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers legacy Work/Definition execution.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre 0.2.8 adds precise Work programs authored as portable data. Compiled
 and runtime-authored programs normalize into the same
 `Spectre.Execution.Program` IR and execute through the existing

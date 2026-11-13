@@ -1,72 +1,118 @@
-# Training
+# Intent examples, semantic lookup and training
 
-Training examples live in labeled datasets. Runtime routing does not accept a
-`train:` DSL flag; local classifier artifacts and semantic-cache dataset
-mirroring are separate systems.
+0.4 retains example collection, review, semantic lookup and classifier training.
+The clearer application-facing name is **IntentDataset**: it stores labeled
+examples, not cached model answers. Not every useful example already has a
+vector; only rows with valid compatible embeddings enter the semantic index.
 
-For modern labeled datasets, write rows with `text` and `label`/`intent` and let
-the classifier trainer consume them directly:
+| Operation | What changes |
+| --- | --- |
+| Collect an accepted intent example | Adds an eligible labeled row, unverified by default. |
+| Verify/relabel an example | Reviews its label and eligibility for ordinary lookup. |
+| Exact lookup | Recognizes matching text without embedding the query. |
+| Prepare embeddings | Adds compatible vectors for semantic lookup, without classifier training. |
+| Train a local classifier | Builds classifier artifacts from a labeled corpus. |
+| Load snapshots/artifact vectors | Reuses saved examples/vectors without regenerating every row. |
 
-```json
-[
-  {"text": "how much does it cost?", "label": "PRICING"},
-  {"text": "my API key is failing", "intent": "TECHNICAL_SUPPORT"}
-]
-```
-
-Classifier artifacts route by label when `:classifier` can see the route.
-Semantic cache mirrors labeled dataset rows by default unless the route uses
-`cache: false`.
-
-You can configure those sources globally:
+## Declare recognition and collection separately
 
 ```elixir
-config :spectre, :classifier,
-  dataset_path: "training/dataset.json",
-  artifact_dir: "artifacts/spectre"
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+
+  embedding MyApp.Embeddings
+  classifier :local, MyApp.LocalClassifier, artifact_dir: "priv/intents"
+  classifier :llm, MyApp.IntentModel, timeout: 8_000
+
+  intent_dataset Spectre.Router.SemanticCache,
+    lookup: [exact: true, semantic: true],
+    collect: [enabled: true, include_protected: false]
+
+  router strategies: [:regex, :intent_dataset, :embedding,
+                       :local_classifier, :llm_classifier]
+
+  flow :support, defaults: [collect_intent: true] do
+    on :pricing, semantic_examples: ["How much does a subscription cost?"]
+    on :delete_account, regex: ~r/^delete my account$/i,
+      collect_intent: false, dataset_lookup: false, protected: true
+  end
+end
 ```
 
-Do not put training examples in the DSL. `train:`, `training:`,
-`train: [...]`, `train: "file.jsonl"`, and similar inline training forms are
-invalid.
+The referenced adapters and Server must be implemented/configured by the host.
+`collect_intent:` replaces the unclear `learn:` spelling in new declarations.
+It enables eligible runtime collection under the configured collection policy;
+it does not mean every matched input is automatically promoted to ground truth.
+`train:`, `training:` and inline training DSL forms are not supported.
 
-Dataset files can be:
+## Review runtime examples
 
-- `.json` list of objects
-- `.jsonl` one object per line
+```elixir
+{:ok, row} = Spectre.IntentDataset.put(
+  "I need a custom subscription quotation",
+  %{label: :pricing, strategy: :llm_classifier},
+  agent: MyApp.SupportAgent)
 
-Rows can use either `label` or `intent`. Labeled `.json` and `.jsonl` rows are
-also mirrored into exact semantic-cache lookup by default for cacheable routes:
+{:ok, examples} = Spectre.IntentDataset.examples(MyApp.SupportAgent)
+{:ok, verified} = Spectre.IntentDataset.verify(MyApp.SupportAgent, row.id)
+```
+
+Use `update_example`, `relabel`, `delete`, `snapshot` and `load_snapshot` to manage
+examples explicitly. Online rows remain unverified by default. Review APIs can
+list them without making them available to ordinary recognition. An explicit
+`lookup: [include_unverified: true]` changes that policy and should not be the
+unexplained default in application examples.
+
+A text-only verified row may support exact recognition. It does not enter the
+vector index until a valid vector with compatible profile metadata exists.
+Never fabricate a zero vector or silently relabel an unknown encoder profile
+as the active one. Collection and review do not grant execution authority.
+
+## Export and prepare vectors independently
+
+```bash
+mix spectre.intent_dataset.export MyApp.SupportAgent examples.jsonl
+mix spectre.intent_dataset.embed MyApp.SupportAgent examples.jsonl vectors.jsonl
+```
+
+Export includes verified rows by default; `--include-unverified` is explicit.
+The embedding command uses the encoder already configured by the Agent/Stack.
+It validates labels and profiles, reuses compatible saved vectors and embeds
+only rows missing them. It neither chooses a remote model nor trains a classifier.
+The output replaces its target only after the whole batch succeeds; incompatible
+or unidentified stored vectors fail instead of being silently reassigned.
+
+Labeled sources can use JSON arrays or JSONL records with `text` and `label`
+(or the retained `intent` field). Labels must correspond to the Agent's declared
+routes and obey their dataset-lookup restrictions.
 
 ```json
 [
-  {"text": "how much does it cost?", "label": "PRICING"},
-  {"text": "my API key is failing", "intent": "TECHNICAL_SUPPORT"}
+  {"text": "How much is the monthly subscription?", "label": "pricing"},
+  {"text": "My API key stopped working", "label": "technical"}
 ]
 ```
 
-Export rows from an agent:
+The example's `technical` label requires a corresponding route in your Agent.
+No runtime-created atom or invented route is added when loading a dataset.
+
+## Train a local classifier
+
+The existing classifier tasks remain available:
 
 ```bash
 mix spectre.classifier.dataset MyApp.SupportAgent \
-  training/support/dataset.json \
-  --source training/raw/support.jsonl
-```
-
-Train a local classifier artifact:
-
-```bash
+  training/support/dataset.json --source training/raw/support.jsonl
 mix spectre.classifier.download_model --model intfloat/multilingual-e5-small
 mix spectre.classifier.train training/support/dataset.json priv/spectre/support
 ```
 
-Training writes a `semantic_cache.jsonl` companion into the artifact directory.
-It contains each training row together with the embedding already created
-during training. At runtime, Spectre filters it to cacheable routes and loads
-the saved vectors; it does not call the embedding provider once per dataset
-row.
-
-Configure the classifier:
+Model download/training requires the appropriate host embedding dependencies.
+The trainer writes local classifier artifacts and a `semantic_cache.jsonl`
+companion containing training rows and their saved vectors. That retained
+filename is an artifact format, not a reason to call all text examples a cache.
+Runtime filtering respects route eligibility and reuses vectors rather than
+embedding every dataset row on load.
 
 ```elixir
 config :spectre, :classifier,
@@ -75,82 +121,24 @@ config :spectre, :classifier,
   embedding_adapter: Spectre.Classifier.Embeddings.ExFastembed
 ```
 
-Classifier artifacts use compact centroids by default. At runtime, the local
-classifier indexes centroids with Vettore, while semantic-cache search uses the
-saved row vectors in `semantic_cache.jsonl`.
+Classifier centroid/example indexes and semantic row lookup are distinct.
+Vettore provides the indexes; quantized candidate search may use Hamming distance
+and full-metric reranking. That optimization still requires compatible vectors.
+Choose CPU/GPU/index options according to the installed Vettore release and the
+actual workload; training an artifact does not change the response model.
 
-The default Flat classifier index uses `gpu: :auto`, `gpu_fallback: :cpu`, and
-`gpu_min_size: 1_000_000`. Vettore sends an eligible scan to an available GPU;
-smaller scans and hosts without a GPU stay on CPU. Valid
-`local_classifier_index_options` override these defaults and are validated by
-Vettore, so `gpu: false` forces CPU while `gpu: true` forces a GPU attempt under
-the selected fallback policy. Options for HNSW and custom indexes are passed
-through unchanged.
+## Retained storage and migration
 
-Vettore 0.3.5 still reads its application-level compute configuration while
-normalizing collection vectors and queries. No Vettore configuration is
-required; without one, those normalization steps stay on CPU. To apply
-automatic selection to them too, optionally configure the host:
+`Spectre.IntentDataset` delegates to the existing supervised example store and
+artifact/snapshot machinery. Existing `Spectre.Router.SemanticCache` management
+APIs remain for compatibility. Old `learn`, `cache` and semantic-cache settings
+are translated where supported; conflicting aliases fail rather than silently
+changing collection policy.
 
-```elixir
-config :vettore,
-  gpu: :auto,
-  gpu_fallback: :cpu,
-  gpu_min_size: 1_000_000
-```
+Text-only rows remain useful for exact intent recognition and future corpus
+preparation. The semantic index remains vector-only. These are separate uses of
+the same reviewed examples, not two competing stores.
 
-For larger datasets, nearest-example routing can be worth the extra memory:
-
-```elixir
-config :spectre, :classifier,
-  local_classifier_mode: :examples,
-  local_classifier_index: :hnsw,
-  local_classifier_index_options: [ef_search: 64],
-  local_example_score: :max
-```
-
-Use `:mean` for `local_example_score` if you prefer averaging returned hits per
-label.
-
-## Online learning review
-
-Rows mirrored from an offline labeled dataset are trusted immediately. Rows
-created at runtime through `SemanticCache.put/3` are different: they remain
-editable but unverified and are excluded from exact and semantic routing until
-`SemanticCache.verify/3` or `SemanticCache.relabel/4` approves them.
-
-```elixir
-{:ok, row} =
-  Spectre.Router.SemanticCache.put(
-    "need a custom quote",
-    %{label: :SALES, strategy: :llm_classifier},
-    spectre_agent: MyApp.SupportAgent
-  )
-
-{:ok, pending_review} =
-  Spectre.Router.SemanticCache.examples(MyApp.SupportAgent)
-
-{:ok, verified} =
-  Spectre.Router.SemanticCache.verify(MyApp.SupportAgent, row.id)
-```
-
-This prevents an unverified classifier or LLM decision from immediately
-becoming ground truth. Review APIs still list quarantined rows, and snapshots
-preserve both their verification state and embedding.
-
-The runtime request invariant is:
-
-- an accepted exact-cache hit makes zero embedding calls;
-- a non-exact semantic lookup embeds only the incoming text once;
-- a newly learned row stores its embedding for later snapshots; and
-- loading a snapshot never regenerates every stored embedding.
-
-Built-in semantic indexes are bounded to four cached revisions per agent by
-default. Override this only when an agent intentionally uses several embedding
-configurations:
-
-```elixir
-config :spectre, :semantic_cache, index_capacity: 8
-```
-
-Use `:unlimited` explicitly if unbounded index retention is truly intended.
+See [Routing](ROUTING.md), [DSL](DSL.md), [migration](MIGRATING_TO_0_4.md) and the
+[retained training reference](legacy/TRAINING_0_3.md) for older configuration
+and index-tuning details.

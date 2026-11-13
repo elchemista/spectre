@@ -1,5 +1,11 @@
 # Event Ownership and Definition Lifecycle
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers Instance-owned event admission and lifecycle.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre 0.2.4 admits external events through the canonical Instance sequencer.
 The same mailbox owns activation, Runs, operations, lifecycle transitions, and
 checkpoint commits, so admission cannot race those decisions outside the

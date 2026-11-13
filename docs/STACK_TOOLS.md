@@ -68,7 +68,10 @@ and service context; live browser/memory/model handles remain in supervised
 resources, outside durable assigns. Projection produces bounded portable data.
 
 Cognitive work (classifying, generating, looking up, planning) does not require
-an end user's consent merely because it calls a model. The descriptor chooses
+an end user's consent merely because it calls a model. The host still declares
+its governed surface: protected access, disclosure or consumption may require
+mediation regardless of the callback or helper name. See [GAM](GAM.md) and the
+[GAM manifesto](https://spectre.guide/en/governed-act-model). The descriptor chooses
 `:safe` replay or `:never` replay. An uncertain nonrepeatable request returns
 `{:tool_unknown, details}` instead of being blindly retried.
 
@@ -141,6 +144,72 @@ or uncertain, an unstarted governed command is rejected, and started governed
 work uses its original GAM journal for reconciliation. No changed adapter is
 silently invoked with the old arguments.
 
-The runnable [integration project](../integration/stack_tools/README.md) uses
+The runnable [integration project](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) uses
 all nine packages with the real Server and GAM kernel. Its external browser,
 model and email transports are deterministic fixtures, not production clients.
+
+## Package descriptor and adapter contract
+
+The optional `tools/1` callback belongs to the existing
+`Spectre.Stack.Installable` behaviour. Packages without it retain their existing
+installation surface; they do not gain invented helpers. A minimal declaration
+looks like this inside an installable package:
+
+```elixir
+@impl Spectre.Stack.Installable
+def tools(_config) do
+  %{
+    knowledge: %{
+      contract: 1,
+      adapter: MyApp.KnowledgeTool,
+      default: :search,
+      operations: %{
+        search: %{path: :cognitive, retry: :safe, max_bytes: 65_536},
+        save: %{path: :governed, operation: :save_knowledge, max_bytes: 65_536}
+      }
+    }
+  }
+end
+```
+
+This generates `knowledge(ctx, input)` and `knowledge(ctx, input, opts)` in a
+Server selecting that Stack. A non-tuple input chooses `:search`;
+`{:save, value}` chooses `:save` and passes `[value]` to preparation. Descriptors
+have exact validated keys. Duplicate names and collisions with Server functions,
+imports or special forms fail at compilation. Startup verifies the compiled
+snapshot against the Agent's actual Stack before restoring a checkpoint.
+
+| Adapter function | Contract |
+| --- | --- |
+| `prepare(operation, payload, trusted)` | Pure validation/projection; returns `{:ok, args}` or `{:error, reason}`. Trusted fields are `agent`, routing hints and immutable installation `config`. |
+| `invoke(operation, args, context)` | Cognitive worker invocation. Context contains the resolved `installation`, `service_context`, `config` and trusted current `checkpoint_ref` when configured. |
+| `project(operation, raw)` | Returns `{:ok, portable_result}` or a projection failure. A normal service error is a portable result, e.g. `{:ok, {:error, reason}}`. |
+
+`invoke/3` is required only when the descriptor declares cognitive operations.
+Governed operations require a map from preparation and become ordinary
+`propose` commands; they do not invoke a generic tool effect worker. Concrete
+execution belongs to the admitted host executor. Technical package `execute`
+functions are not permissions or substitutes for this boundary.
+
+The trusted checkpoint reference is resolved from Runtime configuration, not
+model arguments or mutable Context. It is supplied only to the tool worker,
+not to generation options or durable assigns. Ledger's current-key inspection
+and Lab's `:checkpoint` inspection use this field to avoid cross-conversation
+checkpoint reads or copying raw snapshots into the inbox.
+
+The public helper options are `on_result:`, cognitive `timeout:` and governed
+`confirmation:`. An unknown option, a nonportable result tag/confirmation or a
+mismatched binding is a programming error. Unknown operation tags, bad domain
+input and invalid projected arguments produce a durable bounded rejection.
+All callback entrypoints follow the same validation/acquisition rules.
+
+A `:safe` command may repeat with the same command identity after a crash.
+A `:never` command records execution-start before invocation; interruption,
+timeout or loss of a usable projected receipt preserves `tool_unknown`.
+Neither choice supplies exactly-once external effects. Keep stable logical ids
+when an application service implements its own idempotency contract.
+
+The [public callable manifest](PUBLIC_API.md) already includes Server and GAM,
+but does not yet list this complete tool adapter/descriptor addition. Its
+manifest test must not be cited as coverage of generated helper contracts.
+Use the source declarations and tool integration tests for that boundary.

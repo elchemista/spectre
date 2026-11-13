@@ -5,6 +5,21 @@ defmodule Spectre.MixProject do
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
+    "docs/legacy/INTEGRATIONS_0_3.md",
+    "docs/legacy/MEMORY_0_3.md",
+    "docs/legacy/STREAMING_INFERENCE_0_3.md",
+    "docs/GAM.md",
+    "docs/MIGRATING_TO_0_4.md",
+    "docs/GETTING_STARTED_0_3.md",
+    "docs/ARCHITECTURE_0_3.md",
+    "docs/legacy/LLMS_0_3.md",
+    "docs/legacy/SYSTEM_0_3.md",
+    "docs/legacy/API_0_3.md",
+    "docs/legacy/DSL_0_3.md",
+    "docs/legacy/ACTIONS_0_3.md",
+    "docs/legacy/EXAMPLES_0_3.md",
+    "docs/legacy/ROUTING_0_3.md",
+    "docs/legacy/TRAINING_0_3.md",
     "docs/AGENT_SERVER.md",
     "docs/PENDING_LIFECYCLE.md",
     "docs/START_HERE.md",
@@ -111,14 +126,14 @@ defmodule Spectre.MixProject do
       name: "spectre",
       maintainers: ["elchemista"],
       files:
-        ~w(lib/**/*.ex priv mix.exs .formatter.exs docs/examples/routing-eval.jsonl) ++
+        ~w(lib/**/*.ex priv mix.exs .formatter.exs docs/examples/routing-eval.jsonl docs/examples/agent_server_quickstart.exs) ++
           @docs_extras,
       licenses: ["Apache-2.0"],
       links: %{
         "Website" => @homepage_url,
-        "Documentation" => "https://hexdocs.pm/spectre/#{@version}",
+        "Documentation" => "#{@source_url}/blob/feature/agent-server-gam/docs/START_HERE.md",
         "GitHub" => @source_url,
-        "Changelog" => "#{@source_url}/blob/#{@version}/CHANGELOG.md"
+        "Changelog" => "#{@source_url}/blob/feature/agent-server-gam/CHANGELOG.md"
       }
     ]
   end
@@ -170,7 +185,7 @@ defmodule Spectre.MixProject do
   defp docs do
     [
       main: "start_here",
-      source_ref: @version,
+      source_ref: "feature/agent-server-gam",
       extras: @docs_extras,
       groups_for_extras: [
         "Start here": [
@@ -178,7 +193,9 @@ defmodule Spectre.MixProject do
           "README.md",
           "docs/INSTALLATION.md",
           "docs/GETTING_STARTED.md",
-          "docs/ARCHITECTURE.md"
+          "docs/ARCHITECTURE.md",
+          "docs/GAM.md",
+          "docs/MIGRATING_TO_0_4.md"
         ],
         Tutorials: [
           "docs/EXAMPLES.md"
@@ -193,7 +210,12 @@ defmodule Spectre.MixProject do
           "docs/STREAMING_INFERENCE.md",
           "docs/RECEIPTS.md"
         ],
-        "Runtime and durability": [
+        "AgentServer runtime": [
+          "docs/AGENT_SERVER.md",
+          "docs/PENDING_LIFECYCLE.md",
+          "docs/STACK_TOOLS.md"
+        ],
+        "Instance compatibility runtime": [
           "docs/INSTANCES.md",
           "docs/RUNS.md",
           "docs/OPERATIONS.md",
@@ -217,7 +239,6 @@ defmodule Spectre.MixProject do
         "Extensions and integration": [
           "docs/INTEGRATIONS.md",
           "docs/STACK.md",
-          "docs/STACK_TOOLS.md",
           "docs/RUNTIME_SKILLS.md",
           "docs/DATA_DRIVEN_EXECUTION.md",
           "docs/GOVERNANCE.md",
@@ -227,6 +248,21 @@ defmodule Spectre.MixProject do
           "docs/DSL.md",
           "docs/API.md",
           "docs/PUBLIC_API.md"
+        ],
+        "Legacy 0.3 authoring": [
+          "docs/legacy/INTEGRATIONS_0_3.md",
+          "docs/legacy/MEMORY_0_3.md",
+          "docs/legacy/STREAMING_INFERENCE_0_3.md",
+          "docs/GETTING_STARTED_0_3.md",
+          "docs/ARCHITECTURE_0_3.md",
+          "docs/legacy/LLMS_0_3.md",
+          "docs/legacy/SYSTEM_0_3.md",
+          "docs/legacy/API_0_3.md",
+          "docs/legacy/DSL_0_3.md",
+          "docs/legacy/ACTIONS_0_3.md",
+          "docs/legacy/EXAMPLES_0_3.md",
+          "docs/legacy/ROUTING_0_3.md",
+          "docs/legacy/TRAINING_0_3.md"
         ],
         "Migration and history": [
           "docs/MIGRATING_TO_0_2.md",
@@ -252,6 +288,9 @@ defmodule Spectre.MixProject do
         ]
       ],
       groups_for_modules: [
+        AgentServer: ~r/^Spectre\.Server(?:\.|$)/,
+        "Governed Act Model": ~r/^Spectre\.GAM(?:\.|$)/,
+        "Intent datasets": ~r/^Spectre\.IntentDataset(?:\.|$)/,
         "Canonical definitions and projections": [
           Spectre.Authority.Envelope,
           Spectre.Canonical.Value,

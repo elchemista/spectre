@@ -1,263 +1,120 @@
-# Turn semantics and integration boundaries
+# Integration boundaries in 0.4
 
-Spectre uses one local turn vocabulary, not one callback or one serialized
-message for every runtime.
+The public AgentServer loop is asynchronous: `Spectre.Server.input/3` admits an
+input, and callbacks build durable next-step commands. Transports, actor systems
+and workflow packages connect to that owner without pretending to share one
+serialized turn or one failure model.
 
 ```text
-protocol / UI / GenServer / FSM
-              │
-              │ validated input + stable identities
-              ▼
-        Spectre.turn/3
-              │
-              ├─ open Spectre policy
-              │
-              ├─ ordered Turn.Handler ownership
-              │
-              └─ normal Agent routing
-              │
-              ▼
-    %Spectre.Turn{decision: ...}
-              │
-              ▼
-       host / protocol adapter
+UI / Beam / Pulse / application actor
+    -> authenticated host input boundary
+    -> Server.input -> pending handler or Agent recognition
+    -> Server callback -> cognitive tool or governed proposal
+    -> durable result -> handle_result -> response/next step
 ```
 
-The layers deliberately have different responsibilities:
+The host validates identities, scopes and transport provenance. A Subject names
+a local conversation owner; arbitrary process messages are not authenticated
+user consent. The [GAM guide](GAM.md) explains Evidence and authority boundaries.
 
-| Layer | Contract | Owner |
-| --- | --- | --- |
-| Local Agent turn | `Spectre.turn/3` returning `%Spectre.Turn{}` | Spectre |
-| Pre-route dialogue ownership | `Spectre.Turn.Handler` | configured Agent/application |
-| Durable mission and plan | Directive snapshot plus Store | SpectreDirective/application |
-| Remote envelope and task lifecycle | protocol adapter | SpectrePulse/application |
-
-This keeps the semantics consistent without forcing an Agent, `GenServer`,
-`gen_statem`, durable workflow, and distributed transport to pretend they have
-the same execution or failure model.
-
-## The canonical local turn
-
-Hosts should prefer `Spectre.turn/3` when they need to decide what happens
-after an Agent call:
+## Connect a user-facing transport
 
 ```elixir
-{:ok, %Spectre.Turn{decision: decision} = turn} =
-  Spectre.turn(MyApp.Agent, input,
-    conversation_id: conversation_id,
-    turn_id: message_id,
-    trace_id: trace_id
-  )
-
-case decision do
-  {:awaiting, awaitable, result} ->
-    MyApp.Channel.request_input(awaitable, result)
-
-  {:needs, effect, result} ->
-    MyApp.Effects.dispatch(effect, result)
-
-  {:completed, completion, result} ->
-    MyApp.Channel.complete(completion, result)
-
-  {:reply, result} ->
-    MyApp.Channel.reply(result.reply_text)
-
-  {:no_response, _result} ->
-    :ok
-end
-```
-
-Agent modules and supervised `Spectre.Session` processes return the same turn
-shape. A `GenServer` or `gen_statem` can call this API as a client and translate
-the decision into its own replies or state transitions. Spectre does not guess
-the native message protocol of an arbitrary process.
-
-If a foreign process itself is the remote target, its adapter should translate
-between the process's explicit API and the same conceptual turn vocabulary.
-That adapter belongs beside the process or in the transport package; it does
-not require Spectre to dispatch arbitrary messages to arbitrary pids.
-
-## Choose the narrowest boundary
-
-| Integration owns | Spectre boundary |
-| --- | --- |
-| Input validation or decoding | `Spectre.Input.Plug` or the host before `turn/3` |
-| Reusable routes, prompts, policies, or actions | `Spectre.Skill` |
-| Conversation recall and memory persistence | `memory/1` adapter |
-| Durable Spectre machine state | `Spectre.State.Store` |
-| A capability or external side effect | `actions/2` |
-| An already-active dialogue before routing | `Spectre.Turn.Handler` |
-| Observation of decisions and timings | telemetry or `Spectre.Journal.Store` |
-| Remote addressing and delivery | the protocol/host around `Spectre.turn/3` |
-
-For example, SpectreMnemonic naturally belongs behind the memory adapter.
-SpectreLens browser operations belong behind trusted actions or mounted Skills,
-and its Agent-safe projection can enter prompt context as data. Neither package
-needs authority over every turn.
-
-## A pre-route turn handler
-
-A handler is the intentionally narrow escape hatch for an external runtime
-that already owns a conversation-scoped interaction, such as a durable
-Directive mission or an active `gen_statem` dialogue.
-
-```elixir
-defmodule MyApp.ActiveWorkflowTurn do
-  @behaviour Spectre.Turn.Handler
-
-  alias Spectre.Turn.Handler.Reply
-  alias Spectre.Turn.Handler.Request
-
-  @impl true
-  def handle_turn(%Request{} = request, opts) do
-    case MyApp.Workflow.resume(request.conversation_id, request.input,
-           server: opts[:server],
-           turn_id: request.turn_id
-         ) do
-      :not_active ->
-        :cont
-
-      {:reply, text, workflow_id, status} ->
-        {:reply,
-         Reply.new(text,
-           events: [%{type: :external_workflow_turn}],
-           metadata: %{workflow_id: workflow_id, status: status}
-         )}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-end
-```
-
-Register handlers in explicit precedence order:
-
-```elixir
-defmodule MyApp.Agent do
-  use Spectre.Agent
-
-  turn_handler MyApp.ActiveCheckout, namespace: :checkout
-  turn_handler MyApp.ActiveWorkflowTurn, server: MyApp.Workflow
-end
-```
-
-The first handler returning `{:reply, reply}` owns the turn. `:cont` consults
-the next handler and eventually the normal router. An error, crash, malformed
-reply, or timeout fails closed; Spectre does not reinterpret the same input as
-a different integration or route.
-
-Handlers run:
-
-1. after input normalization, state restoration, and memory recall;
-2. after an already-open Spectre policy, which always has precedence;
-3. before interrupts and ordinary routing.
-
-The handler receives a `Spectre.Turn.Handler.Request` with normalized input,
-loaded state and memory, conversation identity, turn identity, trace identity,
-and assigns. It may only continue, return a typed
-`Spectre.Turn.Handler.Reply`, or fail. A reply cannot replace Spectre state,
-inject a route, stage effects, or manufacture awaitables. Spectre converts the
-reply to a normal `Spectre.Result`, so the outer `Spectre.turn/3` still returns
-the canonical `%Spectre.Turn{}`.
-
-Use `turn_handlers false` in an Agent definition to disable the pipeline. A
-trusted internal call can bypass configured handlers for one call:
-
-```elixir
-Spectre.ask(MyApp.Agent, internal_input, turn_handlers: false)
-```
-
-Do not build bypass values from untrusted message fields. Per-call options are
-host authority.
-
-## Durable Directive turns
-
-SpectreDirective owns mission and plan state. Its Store persists a complete
-snapshot at each externally visible boundary. The Directive handler only
-decides whether the stored mission owns the current input and returns its
-visible reply; it does not move Directive state into `Spectre.State`.
-
-Use two stable identifiers for request/response transports:
-
-- `conversation_id` selects the durable mission;
-- `turn_id` identifies one external message/delivery attempt.
-
-If a response is delivered ambiguously, retry the same input with the same
-`turn_id`. Directive can replay the reply recorded in the snapshot without
-consuming the answer twice. Reusing one `turn_id` with different input fails
-closed. The Store must still perform an atomic revision check because stable
-turn ids do not serialize concurrent different messages.
-
-## SpectrePulse and agent-to-agent calls
-
-SpectrePulse is the natural owner of the distributed protocol, not of local
-Agent reasoning. Its future envelope can define:
-
-- sender and recipient identities;
-- message, context, correlation, causation, and remote task identifiers;
-- request/reply, one-way event, streaming, cancellation, and terminal states;
-- deadlines, retry rules, deduplication, and delivery guarantees;
-- serialization, authentication, authorization context, and transport binding.
-
-An inbound Pulse adapter should validate the envelope, map its payload to a
-`Spectre.Input`, preserve stable identifiers, and call the ordinary local port:
-
-```elixir
-# Adapter sketch, not a promised SpectrePulse API.
-Spectre.turn(target_agent, payload,
-  conversation_id: envelope.context_id,
-  turn_id: envelope.message_id,
-  trace_id: envelope.trace_id
+{:ok, server} = Spectre.summon(
+  agent: MyApp.SupportAgent,
+  subject: customer.id,
+  identity: %{subject: customer.id, conversation: conversation.id},
+  consumer: transport_pid,
+  checkpoint: {MyApp.Checkpoints, conversation.id},
+  stack_runtime: MyApp.AIRuntime,
+  gam: {Spectre.Server.GAM, host_gam_config}
 )
+
+{:ok, interaction_id} = Spectre.Server.input(server, validated_input)
 ```
 
-It then maps `%Spectre.Turn{}` into a Pulse reply or task transition. A remote
-information request, command, or tool execution initiated by an Agent is an
-outbound capability/effect, not a direct call from a pre-route handler. Today
-that can be implemented as a trusted Spectre action whose adapter dispatches
-through Pulse. A more general agent-effect executor should be added only when
-the Pulse task contract is concrete.
+The referenced Agent, named stores/resources and host config are application
+setup. Configure one trusted ingress/transport path for user observations and
+retain correlation ids when rendering asynchronous responses or previews.
+Do not treat input acceptance as completion or execute an external consequence
+because a consumer event sounds confident.
 
-An integration that stages a non-Action Effect directly must preserve the
-Instance Run lifecycle:
+Beam's installed helpers can inspect endpoints and submit a bound delivery
+operation. The host executor sends the message only after admission. Pulse
+similarly exposes protocol/contact inspection and explicitly bound sends.
+Installing either package does not create an authenticated user Scope or a
+mandate to contact arbitrary people.
+
+## Use native OTP callbacks for application events
 
 ```elixir
-run_id = Spectre.Context.lifecycle_run_id(ctx)
-effect = Spectre.Effect.bind_run(effect, run_id)
-
-with {:ok, transition} <-
-       Spectre.Lifecycle.apply(ctx.state, {:stage_effect, effect, policy}) do
-  staged = Spectre.State.pending_effect(transition.to, run_id)
-  {:ok, %{result | state: transition.to, effects: [staged]}}
+def handle_info({:inventory_updated, sku, quantity}, ctx) do
+  inventory = Map.put(ctx.assigns[:inventory] || %{}, sku, quantity)
+  {:noreply, assign(ctx, :inventory, inventory)}
 end
+
+def handle_info(message, ctx), do: super(message, ctx)
+
+def handle_flow({:stock, :check}, _input, ctx),
+  do: call_actor(ctx, MyApp.Inventory, {:count, ctx.assigns.sku}, on_result: :stock)
+
+def handle_result(:stock, quantity, ctx) when is_integer(quantity),
+  do: respond(ctx, "Available: #{quantity}")
+
+def handle_result(tag, result, ctx), do: super(tag, result, ctx)
 ```
 
-The scoped lookup is significant when several Runs share one subject State.
-For stateless calls and `Spectre.Session`, `lifecycle_run_id/1` returns `nil`
-and the same code keeps the single-lifecycle compatibility behavior.
+These are Server callback fragments, with the named actor supplied by the host.
+Framework worker/timer messages are handled before application callbacks.
+`call_actor` runs the request in a worker; a direct synchronous GenServer call
+inside a callback still blocks the owner. Direct external effects in native
+callbacks do not become governed simply because the callback belongs to a Server.
 
-Pulse needs a `Turn.Handler` only when an already-active local or delegated
-task must claim subsequent input before normal Agent routing. Registering a
-global Pulse handler merely to decode every envelope would mix transport with
-dialogue ownership.
+For asynchronous actor replies use `await_reply` plus `resolve_await` from a
+native callback. This background wait does not capture the next user message.
+`await_input` explicitly owns a foreground user answer. Store live monitor/timer
+references in `ctx.private`, not durable assigns.
 
-## Composition rules
+## Install tools once and use continuations
 
-- Ordering is application-owned and visible in the Agent module; there is no
-  hidden priority registry.
-- A Skill cannot register handlers because a mounted Skill must not acquire
-  Agent-wide infrastructure authority.
-- Input plugs may enrich an input and continue. Handlers cannot mutate an
-  input and continue; use the input pipeline for that job.
-- Handlers are not post-turn hooks. Encode or deliver the result after
-  `Spectre.turn/3`, and observe facts through telemetry or the journal.
-- Persistence stays with the state machine that owns the state: Spectre state
-  uses its state adapter; Directive missions use a Directive Store; Pulse task
-  persistence belongs to Pulse.
-- If an integration only needs one action, one memory lookup, or prompt
-  context, use that dedicated port instead of claiming the turn.
+Packages implement the `tools/1` callback of `Spectre.Stack.Installable`.
+`use Spectre.Server, tools: MyApp.AI` generates package-named helpers; no manually
+invented imports are needed. Helpers normalize inputs, acquire a command identity
+and deliver results through `on_result:`. Their implementation stays in package
+adapters; live resources stay in the named runtime.
 
-The result is one clear local turn semantics with explicit adapters between
-execution models, not one oversized callback that silently becomes a second
-runtime and wire protocol.
+Kinetic prepares proposals from consolidated model output. Mnemonic recalls
+memory and can bind writes to a governed host operation. Lens provides browser
+perception and can bind actions. Directive is a reducer of mission state: a
+returned proposed effect still needs the application's concrete dispatch path.
+A plan or workflow snapshot never grants execution authority.
+
+The [complete integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) exercises all
+nine installable packages with a real Server and GAM kernel. Its external
+providers are deterministic fixtures. See [Stack tools](STACK_TOOLS.md) for
+current operation shapes and recovery semantics.
+
+## Results, recovery and remote actors
+
+Server checkpoints, GAM journals, package stores and a remote protocol's task
+state have separate owners. Keep their stable ids rather than serializing live
+process handles. `Spectre.Server.deliver/4` is the durable result ingress;
+governed results resolve real kernel references and original continuations.
+The OutcomeDispatcher requires an explicit host recovery/delivery adapter.
+
+Delivery is at least once. Safe cognitive work may be repeated after restart;
+nonrepeatable tools and uncertain governed effects are not blindly retried.
+A remote peer evaluates a received proposal under its own authority. A transport
+receipt is not the recipient's permission, and a timeout is not proof that the
+remote effect did not occur.
+
+## Existing Turn/Instance integrations
+
+`Spectre.turn/3`, `%Spectre.Turn{}`, Turn.Handler, Session, Instance and legacy
+Directive/Pulse integration paths remain available. They use the older decision
+and state protocol. Do not translate their approval records into GAM consent
+Evidence without a deliberate host migration.
+
+The complete [0.3 integration guide](legacy/INTEGRATIONS_0_3.md) remains for those
+clients. [Migration](MIGRATING_TO_0_4.md) describes when to retain an old owner and
+when to move behavior into a Server.

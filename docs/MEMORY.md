@@ -1,85 +1,105 @@
-# Memory
+# State and memory in AgentServer 0.4
 
-For a single long-lived session:
+The Server's durable state and recalled memory have different roles. A checkpoint
+records coordination and application assigns. Memory supplies contextual data;
+it does not carry authority or establish that an effect occurred.
 
-```elixir
-children = [
-  {Spectre.Session,
-   agent: MyApp.SupportAgent,
-   name: MyApp.SupportSession,
-   shutdown: :timer.minutes(10)}
-]
-```
+| Data | Owner / representation |
+| --- | --- |
+| Application values needed after restart | Portable `ctx.assigns` in the Server checkpoint. |
+| Timers, monitors and local actor handles | `ctx.private`, never checkpointed. |
+| Conversation history | Runtime-owned bounded conversation projection. |
+| Recalled knowledge | Portable memory projection, consumed as contextual data. |
+| Memory engine/client | Named Stack runtime resource. |
+| Permission to save/disclose protected memory | Host governed operation and GAM facts, not a memory score. |
 
-For many conversation-scoped sessions:
-
-```elixir
-children = [
-  {Spectre.Supervisor, name: MyApp.SpectreSupervisor}
-]
-
-{:ok, pid} =
-  Spectre.summon(
-    MyApp.SpectreSupervisor,
-    MyApp.SupportAgent,
-    conversation_id: conversation.id,
-    idle: :timer.minutes(10)
-  )
-```
-
-State adapter:
+## Explicit recall and governed writes
 
 ```elixir
-defmodule MyApp.AgentStateStore do
-  def load(_input, _agent, opts) do
-    MyApp.Conversations.load_spectre_state(Keyword.fetch!(opts, :conversation_id))
+defmodule MyApp.AI do
+  use Spectre.Stack
+
+  install Spectre.Mnemonic, automatic: false, bind: [remember: :save_report] do
+    isolate_by [:agent, :subject]
   end
+end
 
-  def persist(state, _input, _agent, _opts) do
-    MyApp.Conversations.save_spectre_state(state.conversation_id, state)
-  end
+defmodule MyApp.ResearchServer do
+  use Spectre.Server, tools: MyApp.AI
+
+  def handle_flow({:research, :recall}, input, ctx),
+    do: mnemonic(ctx, {:recall, input.text}, on_result: :remembered)
+
+  def handle_flow({:research, :save}, _input, ctx),
+    do: mnemonic(ctx, {:remember, ctx.assigns.report}, on_result: :saved)
+
+  def handle_result(:remembered, {:ok, packet}, ctx),
+    do: ctx |> assign(:memory, packet) |> respond("Relevant memory is available.")
+
+  def handle_result(:saved, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
+    do: respond(ctx, "The report was saved.")
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
 end
 ```
 
-Memory adapter:
+This is a composition fragment: the Agent must declare those routes, the host
+must populate a portable report and provide the `:save_report` candidate binding
+and admitted executor. Configure presentation/consent in that host binding when
+saving requires user approval. `automatic: false` avoids silently using the
+legacy automatic memory-write path in an application that wants explicit
+permission for every saved report.
+
+## Keep the partition and engine stable
+
+Start a named Stack runtime and pass the same name to the Server and admitted
+memory executor:
 
 ```elixir
-defmodule MyApp.AgentMemory do
-  def recall(cue, opts) do
-    SpectreMnemonic.recall(cue, scope: {:conversation, opts[:state].conversation_id})
-  end
+{:ok, _runtime} = Spectre.Stack.start_link(MyApp.AI, name: MyApp.AIRuntime)
 
-  def remember(turn, opts) do
-    SpectreMnemonic.remember(turn,
-      scope: {:conversation, opts[:state].conversation_id},
-      persist?: true
-    )
-  end
-end
-```
-
-Every successful turn records a compact chat entry in
-`state.data[:chat_history]` before persistence. Use `history false` in the DSL
-or pass `chat_history_limit: false` to disable it.
-
-State is the authoritative machine record; recalled memory is a contextual
-projection. Spectre therefore persists state first. If the memory adapter then
-fails, the turn still returns the persisted state and adds a
-`:memory_persist_failed` event plus a `:persistence_warnings` metadata entry.
-This prevents a session from retaining an older in-memory state and replaying a
-machine transition.
-
-Hosts that require both writes to report success can opt into strict failure:
-
-```elixir
-Spectre.ask(MyApp.SupportAgent, input,
-  memory_persist_failure: :error
+{:ok, server} = Spectre.summon(
+  agent: MyApp.ResearchAgent,
+  subject: "customer-42",
+  identity: %{subject: "customer-42", conversation: "thread-a"},
+  stack_runtime: MyApp.AIRuntime,
+  gam: {Spectre.Server.GAM, host_gam_config}
 )
 ```
 
-Strict mode reports
-`{:error, {:memory_persist_failed, reason, committed_result}}`. The state write
-has already succeeded, and supervised sessions retain
-`committed_result.state` before returning the error. Stateless hosts should do
-the same. True cross-store atomicity still requires the host to place both
-records in the same database transaction.
+The Agent and host config are application setup. Explicit Mnemonic tools fail
+when the named runtime needed to resolve the installed engine is missing.
+Isolation keys such as `:subject` or `:conversation` come from authenticated
+identity, not from model-generated arguments.
+
+For governed writes, the host candidate freezes that partition into its payload.
+The admitted executor reconstructs memory context from the frozen payload and
+resolves the same engine. It must not substitute the current user's mutable
+context when an older operation resumes. The
+[subject-isolated integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) shows the
+complete host wiring and verifies no cross-subject recall.
+
+A stable command id helps correlate a write; it is not a promise of whole-request
+idempotency in Mnemonic. An uncertain write needs reconciliation instead of
+blind replay. A recalled packet cannot itself authorize disclosure to another
+person or scope. The host's declared governed surface determines that boundary.
+
+## Existing automatic memory adapters
+
+The Server includes a bridge to retained memory adapters for ordinary recall
+and chat-history persistence. It supplies a history-oriented legacy State
+projection, not the complete old Instance state. Adapters depending on arbitrary
+Instance fields, hidden global engines or complete legacy Effect state require
+an audit before reuse.
+
+Automatic adapter writes are not all magically converted into GAM Acts. Choose
+explicit bound helpers when the host's governed surface includes the save.
+Likewise, a direct database or memory-library call in a callback can bypass the
+framework boundary; trusted application code remains responsible for using the
+intended host path.
+
+The old Session/State-adapter APIs and their cross-store persistence warning
+semantics are preserved in [the 0.3 memory reference](legacy/MEMORY_0_3.md).
+Do not apply those return tuples to Server Context or treat their checkpoint as
+a Server checkpoint. See [migration](MIGRATING_TO_0_4.md), [AgentServer](AGENT_SERVER.md)
+and [GAM](GAM.md).

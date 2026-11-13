@@ -1,5 +1,10 @@
 # Canonical Definitions and Audit Projections
 
+**Compatibility/reference scope.** This page describes retained authored Definition and Manifest contracts.
+For the new 0.4 owner and execution boundary read [AgentServer](AGENT_SERVER.md),
+[GAM](GAM.md) and [migration](MIGRATING_TO_0_4.md). These records and guarantees
+must not be assumed to be Server checkpoints or GAM Evidence/Acts.
+
 Spectre 0.2.1 can lower a compiled Agent or Skill into a portable, immutable
 Definition envelope. This is the first reflective-runtime foundation: it gives
 declared behavior an exact content identity and an inspectable Audit view

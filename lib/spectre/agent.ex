@@ -1,84 +1,43 @@
 defmodule Spectre.Agent do
   @moduledoc """
-  Declarative DSL for building Spectre agents.
+  Declarative recognition for Spectre agents.
 
-  The DSL is intentionally a control plane, not a place to hide application
-  logic. It describes the agent boundary: how input is normalized, how routes
-  are selected, which prompts/actions run, and which actions must pass a policy
-  gate before side effects can execute. The actual domain work should stay in
-  ordinary Elixir modules and be called through `run/2`, `action/2`, adapters,
-  or lifecycle hooks.
+  In 0.4, the Agent binds a Stack and a Server callback module. It declares
+  classifiers, routing strategies, flows and intent examples; application
+  behaviour lives in ordinary `Spectre.Server` callbacks.
 
-  This split keeps complex agents understandable:
+      defmodule MyApp.SupportAgent do
+        use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
 
-    * `flow/2` declares conversation intents and handlers.
-    * `router/1` declares which evidence providers produce candidates.
-    * `policy/2` declares approval/rejection gates for dangerous actions.
-    * `protect/2` attaches an action name to a policy independently from the
-      prompt or handler that produced the action.
-    * `actions/2` and `action_provider/3` keep side effects behind registered
-      providers.
-    * `action_planner/2` accepts provider-neutral plans without coupling the
-      runtime to a planning library.
-    * `state/1` and `memory/1` keep persistence at explicit runtime boundaries.
+        classifier :llm, MyApp.IntentModel
+        router strategies: [:regex, :intent_dataset, :llm_classifier]
 
-      defmodule MyApp.ProjectAgent do
-        use Spectre.Agent, prompt_root: "priv/agents/project/prompts"
-
-        model MyApp.LLM
-        actions MyApp.ProjectActions
-        state MyApp.AgentStateStore
-        memory MyApp.AgentMemory
-        input_pipeline do
-          plug Spectre.Input.Plugs.NormalizeText, case: :downcase
-        end
-        shutdown 600_000
-        fail :agent_failure_reply
-
-        router via: [:regex, :semantic_cache, :classifier, :llm_classifier]
-
-        protect :create_project, with: :terms
-
-        policy :terms do
-          request :accept_terms
-          accept :accepted_terms, regex: ~r/^accetto$/i
-          reject :rejected_terms, regex: ~r/^no$/i
-          otherwise ask: :accept_terms_retry
-          attempts 3, then: :cancel_pending
-        end
-
-        flow :project_create do
-          on :wants_project_create, regex: ~r/crea.*progetto/i do
-            ask :project_create
-          end
+        flow :support, defaults: [collect_intent: true] do
+          on :pricing, regex: ~r/^pricing$/i
+          on :delete_account, regex: ~r/^delete my account$/i,
+            protected: true, collect_intent: false
         end
       end
 
-  In a larger agent, keep this module as the readable map of the system and
-  move business decisions into named functions or modules:
+  The referenced Stack, Server and model are application-supplied. Bodyless
+  routes dispatch to `c:Spectre.Server.handle_flow/3`; unresolved recognition
+  reaches `handle_flow(:unmatched, input, ctx)`. Classifiers may differ from
+  the generation model. IntentDataset collection and vector lookup remain
+  distinct: useful labelled text does not need a vector until vector search.
 
-      defmodule MyApp.BillingAgent do
-        use Spectre.Agent
+  A route's `protected: true` does not grant authority. The Server proposes a
+  concrete consequence through the host GAM binding; `Spectre.GAM` admits and
+  records acts before executors receive capability. See the GAM and 0.4
+  migration guides and the
+  [GAM manifesto](https://spectre.guide/en/governed-act-model).
 
-        actions MyApp.BillingActions
-        router via: [:regex, :classifier, :embedding, :llm_classifier]
+  ## Retained authoring compatibility
 
-        protect :issue_refund, with: :refund_confirmation
-
-        flow :billing do
-          on :refund_request do
-            run :prepare_refund_case
-          end
-
-          on :confirm_refund, regex: ~r/^refund now$/i do
-            action :issue_refund
-          end
-        end
-
-        def prepare_refund_case(input, ctx) do
-          MyApp.Billing.PrepareRefund.call(input, ctx)
-        end
-      end
+  This module also retains the older route-body, `policy`, `protect`, `act`,
+  `reason` and other Instance/Run DSL forms. They describe the 0.3 execution
+  path and are not automatically translated into Server callbacks or GAM
+  mandates. New Server-bound applications keep recognition here and effects,
+  continuations and conversational pending handling in the Server.
   """
 
   alias Spectre.Definition
@@ -116,8 +75,8 @@ defmodule Spectre.Agent do
 
       defmodule MyApp.SupportAgent do
         use Spectre.Agent,
-          prompt_root: "priv/agents/support/prompts",
-          history: 20
+          stack: MyApp.AI,
+          server: MyApp.SupportServer
       end
   """
   defmacro __using__(opts) do

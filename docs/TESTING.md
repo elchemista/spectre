@@ -1,5 +1,11 @@
 # Testing
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers the retained compatibility APIs and the historical 0.3 package matrix.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre's tests are designed around boundaries and invariants, not only
 successful conversations.
 

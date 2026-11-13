@@ -1,26 +1,17 @@
 # Agent and Server in 0.4
 
-This branch evolves the 0.3 runtime while retaining its core Stack,
-classifiers, intent examples, training and routing pipeline.
-New applications separate declarative recognition from application behaviour.
-The governed kernel is imported from commit `6906258` under `Spectre.GAM`.
-This guide describes the implemented core, not a completed migration of every
-application or external package.
+Spectre 0.4 separates declarations from application behavior:
+**Stack → Agent → Server**, with the Runtime owning the GenServer and GAM owning
+admission of the host's declared governed consequences. The existing router,
+classifiers, labeled examples, semantic lookup and training remain available.
+
+Read [the migration guide](MIGRATING_TO_0_4.md) for the change from 0.3,
+[GAM](GAM.md) for the host/kernel contract, and the
+[GAM manifesto](https://spectre.guide/en/governed-act-model) for its foundations.
+[Installed tools](STACK_TOOLS.md) explains generated helpers and the companion
+satellite adapters. Existing application effects still require an explicit audit.
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
-
-  router strategies: [:regex, :intent_dataset, :embedding,
-                      :local_classifier, :llm_classifier]
-
-  flow :support, defaults: [collect_intent: true] do
-    on :pricing, semantic_examples: ["How much does it cost?"]
-    on :delete_account, regex: ~r/^delete my account$/i,
-      collect_intent: false, protected: true
-  end
-end
-
 defmodule MyApp.SupportServer do
   use Spectre.Server, prompt_root: "priv/support/prompts"
 
@@ -77,6 +68,19 @@ defmodule MyApp.SupportServer do
 
   def handle_info(message, ctx), do: super(message, ctx)
 end
+
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+
+  router strategies: [:regex, :intent_dataset, :embedding,
+                      :local_classifier, :llm_classifier]
+
+  flow :support, defaults: [collect_intent: true] do
+    on :pricing, semantic_examples: ["How much does it cost?"]
+    on :delete_account, regex: ~r/^delete my account$/i,
+      collect_intent: false, protected: true
+  end
+end
 ```
 
 The example assumes the referenced Stack, prompts, model services and host GAM
@@ -118,8 +122,10 @@ of ordinary GenServer state. They execute inside the owner and should return
 quickly; slow work belongs in service workers. A synchronous application call
 to another actor still has ordinary OTP blocking semantics.
 
-`assigns` is application state. Identity, input, routing and pending data are
-views. Returning a modified identity does not change the runtime's original
+`assigns` is portable application state. `private` holds process-local references
+and actor handles; it is not checkpointed or sent to cognitive services. Live
+model, browser and memory resources stay in the named Stack runtime, not in
+assigns. Identity, Agent, input, routing and pending data are views. Returning a modified identity does not change the runtime's original
 identity, and returning an old dispatch context is an error. This prevents
 composition mistakes; it is not a sandbox against arbitrary code in the BEAM.
 
@@ -177,8 +183,8 @@ change does not approve a suspended operation.
 
 See [Pending lifecycle](PENDING_LIFECYCLE.md) for durable intention closure,
 sixty-second topic-change timers, native OTP timers with `Context.private`, and
-host lifecycle observations through GAM. This API is being validated in the
-core; its checkpoint and authenticated-ingress requirements are explicit.
+host lifecycle observations through GAM. Its checkpoint and authenticated-ingress requirements are explicit; application
+policy still belongs to ordinary Server callbacks.
 
 In the GAM bridge, `consent_ttl_ms` defaults to **300,000 ms**. Use a positive
 integer or explicitly choose `:infinity`. A fresh presentation receives a new
@@ -254,9 +260,12 @@ already committed effect.
 ## Checkpoints and reconciliation
 
 `Spectre.Server.Store` and its disk adapter provide versioned portable snapshots
-with compare-and-swap. Configure `checkpoint: {store_process, subject_key}` on
-the Server, and `store: store_process` in the GAM bridge configuration for its
-command journal. Use distinct keys per conversation. The disk adapter is
+with compare-and-swap. Configure `checkpoint: {store_process, subject_key}` for
+the Disk adapter, or `checkpoint: {StoreModule, store_ref, subject_key}` for an
+explicit Store implementation. The GAM journal separately accepts
+`store: store_process` or `store: {StoreModule, store_ref}`. Use distinct keys per
+conversation. For example, Ledger's `Spectre.Ledger.ServerStore` implements both
+storage ports; it remains distinct from the GAM ledger of governed facts. The disk adapter is
 intended for conversations or small groups; capacity and compaction are
 operational concerns, not evidence of large-scale throughput.
 
@@ -269,6 +278,19 @@ flow/scope, but must preserve identity, active/queued input events, inbox, outbo
 pending proofs, seen events, operations and dead letters.
 It cannot turn an old approval into authority for changed code. Restored
 consents remain suspended and require a fresh presentation before confirmation.
+
+Tool descriptors, installation configuration and adapter code participate in
+the fingerprint. After an explicit migration, changed in-flight contracts are
+marked without rewriting the original command, provenance or execution-start
+fact. Cognitive commands complete as contract-changed or uncertain; a known
+unstarted governed proposal is rejected, while a started one reconciles its
+original GAM journal. Changed adapters never silently run old arguments.
+
+Callback acquisition and result staging share a portable-state budget with
+headroom for Store envelopes. Tool projections have bounded per-operation
+limits as well. Invalid developer options and nonportable application state
+remain programming failures; bounded input/adapter domain rejections go through
+the ordinary durable result continuation.
 
 For a renamed or moved route, return an explicit dispatch-key mapping as a third
 element. No new DSL is required:
@@ -334,7 +356,7 @@ projection; adapters relying on the complete old Instance state need an audit.
 The nine installable satellite packages have companion
 `feature/stack-tools-0.4` branches implementing the existing Stack behaviour's
 `tools/1` callback. See [Installed tools](STACK_TOOLS.md) for helper usage and
-[the integration project](../integration/stack_tools/README.md) for an executable
+[the integration project](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) for an executable
 Agent using all nine. Legacy package APIs remain available; arbitrary existing
 application effects and workflow callbacks still need explicit migration.
 
@@ -346,6 +368,7 @@ have not been migrated here.
 
 The architecture and full acceptance plan remain in the source checkout at
 `docs/proposals/agent-server-gam-from-0.3.it.md`.
-The implementation status in `docs/proposals/implementation-status.it.md` separates
-core changes from remaining migration and validation work. Production host
-isolation and application/package integration require their own verification.
+Historical proposal/status files explain the design work; the current API,
+migration and integration guides describe the supported implementation.
+Production host isolation and application-specific providers require their own
+verification.

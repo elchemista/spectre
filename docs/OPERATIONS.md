@@ -1,5 +1,11 @@
 # Work, Vigil, and the operational runtime
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers Work/Vigil and the Instance-owned operational runtime.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre 0.2.0 adds durable operational loops alongside conversational Runs.
 They solve different problems:
 

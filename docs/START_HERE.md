@@ -1,43 +1,40 @@
-# Start Here
+# Start here: Spectre 0.4
 
-**Using the 0.4 development branch?** Start with [Agent and Server](AGENT_SERVER.md) for the new architecture, callback examples and migration limits. The paths below remain the 0.3 compatibility guide.
+This checkout documents the unreleased `0.4.0` AgentServer development line.
+Its primary path is **Stack → Agent → Server → GAM for governed consequences**.
+For an existing 0.3 application, begin with [Migration](MIGRATING_TO_0_4.md).
 
-Spectre is an OTP-native runtime for agents whose routing, state, policies,
-durability, and side effects remain explicit. This page is the shortest path
-from a new Mix project to a correct mental model of the runtime.
+## Learn in this order
 
-## Your first path
+1. [Installation](INSTALLATION.md): compatible development branches, requirements
+   and application supervision.
+2. [Getting started](GETTING_STARTED.md): a runnable agent, callback results and
+   the path to models and tools.
+3. [Architecture](ARCHITECTURE.md): ownership, command execution, streaming and
+   the boundary between recognition and authority.
+4. [GAM](GAM.md): the imported kernel, consent, outcomes and host responsibilities,
+   with the [manifesto](https://spectre.guide/en/governed-act-model).
+5. [Agent and Server](AGENT_SERVER.md): callbacks, services, context and recovery.
+6. [Stack tools](STACK_TOOLS.md): generated helpers and package-author contracts.
 
-Read these four pages in order:
+## Find a specific answer
 
-1. [Overview](../README.md) explains what Spectre is, when it fits, and the
-   safety boundary it preserves.
-2. [Installation](INSTALLATION.md) adds the stable package, formatter metadata,
-   and read-only diagnostics.
-3. [Getting Started](GETTING_STARTED.md) builds an Agent and follows one turn
-   through routing, policy approval, and explicit host execution.
-4. [Architecture](ARCHITECTURE.md) establishes ownership, trust boundaries,
-   Runs, Instances, and the separation between conversational and operational
-   work.
-
-Do not start with every extension or durable subsystem. A deterministic local
-turn is enough to learn the public boundary; add persistence and integrations
-only when the application needs them.
-
-## Continue by goal
-
-| Goal | Continue with |
+| Task | Guide |
 | --- | --- |
-| See complete applications | [Two Realistic Agents](EXAMPLES.md) |
-| Choose routes and stage side effects | [Routing](ROUTING.md) and [Actions](ACTIONS.md) |
-| Own durable subject state | [Agent Instances and Subjects](INSTANCES.md), then [Resumable Runs](RUNS.md) |
-| Stream an Instance-owned model response | [Streaming inference](STREAMING_INFERENCE.md) |
-| Persist nondeterministic boundary evidence | [Boundary receipts](RECEIPTS.md) |
-| Run long or recurring procedures | [Work, Vigil, and the Operational Runtime](OPERATIONS.md) |
-| Deploy and verify a release | [Production Operations](PRODUCTION.md) and [Testing](TESTING.md) |
-| Integrate another package or host runtime | [Integration Boundaries](INTEGRATIONS.md) and [Stack](STACK.md) |
-| Look up functions and compatibility | [Public API](API.md) and the [Public API Manifest](PUBLIC_API.md) |
-| Upgrade an existing application | Read the [current release notes](../CHANGELOG.md), then the [Run v3](MIGRATING_TO_RUN_V3.md) and [Instance v3](MIGRATING_TO_INSTANCE_CHECKPOINT_V3.md) guides when applicable |
+| Recognize intent and handle unmatched input | [Routing](ROUTING.md) |
+| Collect intent examples and train a classifier | [Training](TRAINING.md) |
+| Generate text and turn consolidated AL into proposals | [Actions](ACTIONS.md) |
+| Suspend, resume or expire an open consent | [Pending lifecycle](PENDING_LIFECYCLE.md) |
+| Browse, contact people and remember results | [Examples](EXAMPLES.md) and [nine-package test application](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) |
+| Inspect callback and helper APIs | [API](API.md), [DSL](DSL.md), `Spectre.Server` |
+| Give an AI coding assistant the correct contracts | [LLMS](../LLMS.md) |
+| Understand what changed | [0.4 migration](MIGRATING_TO_0_4.md), [Changelog](../CHANGELOG.md) |
 
-The [guide for LLMs and coding agents](../LLMS.md) is a separate,
-machine-oriented contract. Human readers should follow the path above first.
+## Compatibility documentation
+
+The repository still contains APIs for the earlier Instance/Run architecture.
+They remain useful for existing applications and do not describe an automatic
+GAM migration. The [0.3 tutorial](GETTING_STARTED_0_3.md) and
+[0.3 architecture](ARCHITECTURE_0_3.md) preserve that context. Guides specifically
+about Instances, Runs and their checkpoint formats apply to that runtime; use
+[Agent and Server](AGENT_SERVER.md) for Server checkpoints and execution.

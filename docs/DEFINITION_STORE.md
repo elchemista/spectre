@@ -1,5 +1,10 @@
 # Definition Store, Resolver, and Manifest V2
 
+**Compatibility/reference scope.** This page describes the retained Definition publication/activation store.
+For the new 0.4 owner and execution boundary read [AgentServer](AGENT_SERVER.md),
+[GAM](GAM.md) and [migration](MIGRATING_TO_0_4.md). These records and guarantees
+must not be assumed to be Server checkpoints or GAM Evidence/Acts.
+
 Spectre 0.2.2 adds the publication boundary for canonical Definitions. A
 `Spectre.Definition.Manifest` seals two separate contracts around one
 `Spectre.Definition.Ref`:

@@ -30,7 +30,12 @@ migration called out explicitly below.
   Failed presentations preserve existing deadlines; recovery distinguishes
   unstarted continuations from governed work requiring reconciliation and
   correlates lifecycle receipts with their recorded phase.
-- See [Agent and Server](docs/AGENT_SERVER.md) for setup and migration boundaries.
+- Rewrite README and onboarding around Stack → Agent → Server, with a runnable
+  quickstart, explicit 0.3 → 0.4 migration, and GAM/host-boundary documentation
+  linked to the [manifesto](https://spectre.guide/en/governed-act-model).
+  Preserve legacy Instance/Run examples as labelled compatibility guides.
+- See [Migration to 0.4](docs/MIGRATING_TO_0_4.md), [GAM](docs/GAM.md) and
+  [Agent and Server](docs/AGENT_SERVER.md) for setup and migration boundaries.
 
 ## 0.3.4 — 2026-08-30
 

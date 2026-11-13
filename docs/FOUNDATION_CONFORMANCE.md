@@ -1,5 +1,10 @@
 # Foundation Conformance
 
+**Compatibility/reference scope.** This page describes the retained State/Run/Instance fixture and adapter conformance boundaries.
+For the new 0.4 owner and execution boundary read [AgentServer](AGENT_SERVER.md),
+[GAM](GAM.md) and [migration](MIGRATING_TO_0_4.md). These records and guarantees
+must not be assumed to be Server checkpoints or GAM Evidence/Acts.
+
 Spectre 0.3.4 exposes the compatibility boundary as an executable public
 contract. Applications and satellite packages can verify
 durable recovery and Stack composition without importing ExUnit or copying

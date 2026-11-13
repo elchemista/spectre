@@ -1,5 +1,11 @@
 # Reflective Runtime
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers the retained reflection/Forge/Instance runtime.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre `0.3.0` completes the core reflective-runtime path without giving
 models control over code, authority, evaluation policy, publication, approval,
 or activation. Reflection is mechanical inspection; Forge emits an inert,

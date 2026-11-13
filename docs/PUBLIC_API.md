@@ -7,9 +7,18 @@ privacy-scoped request structs, and executable Adapter conformance.
 The Agent/Server API and the imported `Spectre.GAM` boundary are listed below
 alongside the retained compatibility API. See [Agent and Server](AGENT_SERVER.md)
 for ownership and migration requirements.
-Compatibility guarantees apply only to the modules and callables listed below.
-Any module, function, macro, or callback not listed here is an implementation
-detail even when it is exported or visible in generated docs.
+This is the machine-checked callable inventory, not an architecture tutorial.
+For new code start with [AgentServer](AGENT_SERVER.md), [Stack tools](STACK_TOOLS.md)
+and [GAM](GAM.md); use [migration](MIGRATING_TO_0_4.md) for the retained Instance API.
+
+The inventory includes the Server and GAM additions listed below, alongside the
+retained compatibility surface. It does **not yet enumerate the complete 0.4
+Stack tool-descriptor contract**: the optional `c:Spectre.Stack.Installable.tools/1`
+callback, adapter prepare/invoke/project contract and Stack-generated private
+helpers are documented in [Stack tools](STACK_TOOLS.md) and their source modules.
+The manifest test does not establish coverage of those omitted additions.
+Other unlisted exports should not be inferred to be application APIs merely
+because they are visible in generated documentation.
 
 Default arguments are expanded into every callable arity. For the listed
 modules, documented types, opaque types, and documented struct fields are also

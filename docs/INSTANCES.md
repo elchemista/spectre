@@ -1,5 +1,11 @@
 # Agent Instances and Subjects
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers the Instance owner and its checkpoint/lease model.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre provides a long-lived owner for the ordered state of one logical
 Agent and one canonical Subject:
 

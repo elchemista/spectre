@@ -1,5 +1,11 @@
 # Production Operations
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers Instance/Run deployment, distributed ownership and legacy receipt operations.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 This guide describes the host responsibilities for running Spectre in a real
 product. Spectre provides deterministic runtime transitions; it does not replace
 application-level authorization, persistence, queues, or observability.

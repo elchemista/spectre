@@ -1,5 +1,11 @@
 # Resumable Runs
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers the Run/Turn continuation protocol.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre 0.1.3 separates a unit of work from the process that happens to execute
 it. `%Spectre.Run{}` is the logical continuation; `Spectre.Runtime` advances it
 through a small, closed protocol:

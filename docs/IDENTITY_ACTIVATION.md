@@ -1,5 +1,11 @@
 # Stable Identity, Activation, and Definition-Pinned Runs
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers legacy Definition identity and activation.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre 0.2.3 separates three values that previously moved together:
 
 - `Spectre.AgentRef` identifies one logical Agent independently of its compiled

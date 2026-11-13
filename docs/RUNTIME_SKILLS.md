@@ -1,5 +1,11 @@
 # Runtime Skills and Routing Projections
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers runtime Skill/Definition activation in the compatibility runtime.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre 0.2.7 lets trusted host code mount declarative Skills without compiling
 a new BEAM module. Compiled and runtime-authored Skills both enter
 `Spectre.Definition.Canonical`; `Spectre.Skill.Definition.semantic_ir/1`

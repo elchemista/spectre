@@ -1,4 +1,4 @@
-# Stack
+# Stack in 0.4
 
 `Spectre.Stack` compiles the packages and services available to an Agent into
 one immutable environment. It replaces implicit global extension discovery
@@ -29,20 +29,33 @@ Package blocks are kept as raw AST until the package compiler receives them.
 `provider` and `model` in this example are local forms understood by
 `MyApp.Inference`; Stack does not import those names as macros.
 
-Bind the resolved Stack to an Agent:
+Select installed helpers in a Server and bind the same Stack to the Agent:
 
 ```elixir
+defmodule MyApp.Server do
+  use Spectre.Server, tools: MyApp.AI
+
+  def handle_flow(:unmatched, _input, ctx),
+    do: respond(ctx, "How can I help?")
+end
+
 defmodule MyApp.Agent do
-  use Spectre.Agent, stack: MyApp.AI
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.Server
 end
 ```
+
+Recognition remains declarative in the Agent. Application continuations live
+in Server callbacks; the Runtime owns the actual GenServer. See
+[AgentServer](AGENT_SERVER.md) and [DSL](DSL.md).
 
 The compiled Agent stores the Stack module and immutable, digest-fenced
 installation references. For each package that declares `agent_extensions`,
 the Agent automatically registers the corresponding adapter with that
-package's compiled Stack configuration. A package can therefore activate its
-selector, memory adapter, turn handler, action provider, flow handler, or
-effect executor without asking the application to repeat `use Package`.
+package's compiled Stack configuration. Selectors, memory adapters and action
+catalogs can therefore be supplied without repeating `use Package` on every
+Agent. The retained extension contract also supports legacy turn/flow/effect
+hooks; their availability does not convert every old execution path into a
+Server callback or a GAM-governed executor.
 
 It does not copy runtime clients, credentials, processes, or connections into
 the Agent definition.
@@ -56,8 +69,10 @@ Binding and policy remain separate:
 - package manifests declare capabilities;
 - Stack validates ownership and returns closed `Spectre.Stack.Ref` values;
 - package-declared Agent extensions activate the installed implementation;
-- a later Flow, Work, Skill, or policy binding selects which Refs are usable;
-- policy and the host still decide whether a staged effect may execute.
+- the Server selects its generated tool surface with `tools: MyApp.AI`;
+- a governed tool names a closed host operation binding;
+- GAM and the host mediate the declared consequence before executor capability
+  is released. Legacy Flow/Work/Skill policy bindings retain their separate API.
 
 An installed package may intentionally contribute an Action provider, but that
 does not make every operation planner-visible or bypass protection and host
@@ -65,7 +80,7 @@ authorization.
 
 ## Tool registration in 0.4
 
-The optional `Spectre.Stack.Installable.tools/1` callback receives the compiled
+The optional `c:Spectre.Stack.Installable.tools/1` callback receives the compiled
 package configuration and returns immutable tool descriptors. It is the same
 installation contract; packages do not need a second registration behaviour.
 The callback must perform no I/O and must not initialize adapters or resources.
@@ -122,9 +137,9 @@ A package implements `Spectre.Stack.Installable`:
 defmodule MyApp.Inference do
   use Spectre.Stack.Installable,
     id: :inference,
-    version: "0.3.4",
+    version: "0.1.0",
     contract: 1,
-    spectre: "~> 0.3.4",
+    spectre: "~> 0.4.0",
     provides: [{:service, :inference}],
     operations: [{:inference, :complete}],
     resources: [:client],
@@ -170,10 +185,12 @@ assert {:ok, package} =
 Package dependencies use closed descriptors:
 
 ```elixir
-requires: [
-  {:package, :inference, "~> 0.1.5"},
-  {:service, :continuity},
-  {:contract, :memory_store}
+[
+  requires: [
+    {:package, :inference, "~> 0.1.5"},
+    {:service, :continuity},
+    {:contract, :memory_store}
+  ]
 ]
 ```
 
@@ -208,7 +225,7 @@ end
 ```
 
 Start a runtime explicitly and pass secrets only at that boundary. For a
-long-lived Instance integration, supervise it under a stable atom or `:via`
+long-lived AgentServer integration, supervise it under a stable atom or `:via`
 name:
 
 ```elixir
@@ -230,20 +247,25 @@ one resource resolves the replacement process rather than retaining an old PID.
 Child identifiers are fenced by the Stack, Installation, package version, and
 digests, so stale Refs do not resolve.
 
-An Instance accepts the runtime address as a top-level runtime-only option:
+Pass the named runtime as a top-level Server option:
 
 ```elixir
-{:ok, instance} =
-  Spectre.instance(MyApp.Agent, subject,
-    stack_runtime: MyApp.AIRuntime
-  )
+{:ok, server} = Spectre.summon(
+  agent: MyApp.Agent,
+  subject: "account-42",
+  stack_runtime: MyApp.AIRuntime
+)
 ```
 
-Only an atom name or `{:via, Registry, ...}` reference is accepted. PID, port,
-and reference handles are rejected. The historical nested
-`opts: [stack_runtime: ...]` form remains compatible, but the address is removed
-from base options and never enters Run metadata, checkpoints, Journal records,
-receipts, or Definitions.
+Resources are resolved inside service/tool workers. Do not copy clients,
+credentials or initialized library structs into `ctx.assigns` or compiled
+configuration. For subject-isolated memory, the Server and admitted executor
+must resolve the same named runtime and the executor must use the authenticated
+partition frozen by the host candidate. See [Memory](MEMORY.md).
+
+The retained Instance runtime also accepts `stack_runtime:`. Its older nested
+options, metadata filtering and ownership rules are documented in the legacy
+API/reference pages; they are not a Server checkpoint migration mechanism.
 
 ## Journal identity
 
@@ -258,3 +280,16 @@ PIDs, connections, and runtime handles are never copied into Journal metadata.
 `from_provider_mount/1` materialize legacy mounts as explicit immutable
 installations. This keeps existing Extension, provider, and Kinetic integrations
 source-compatible while packages adopt the V1 manifest.
+
+## Contracts and migration boundaries
+
+The Stack manifest contract number, package version and Spectre requirement are
+separate values. `contract: 1` does not mean Spectre 0.1, and a satellite does not
+need to copy core's version. Check the package's actual compatible requirement.
+The full nine-package example is [here](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md).
+
+The optional tool descriptor contract is documented in [Stack tools](STACK_TOOLS.md).
+Its startup check pins the Server's compiled helper snapshot to the actual Agent
+Stack. Definition/config/adapter drift requires explicit checkpoint migration;
+changing an installation does not authorize reinterpreting an in-flight effect.
+See [migration](MIGRATING_TO_0_4.md) and [GAM](GAM.md).

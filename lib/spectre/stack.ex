@@ -3,9 +3,8 @@ defmodule Spectre.Stack do
   Compile-time installer and resolver for Spectre packages.
 
   A Stack describes one immutable environment. Packages contribute manifests,
-  local DSL compilers, and optional caller-owned runtime resources without
-  importing package verbs globally or registering capabilities in a process
-  registry.
+  local DSL compilers, optional tool descriptors and caller-owned resources.
+  Secrets and live clients belong in runtime configuration, not this definition.
 
       defmodule MyApp.AI do
         use Spectre.Stack
@@ -16,10 +15,21 @@ defmodule Spectre.Stack do
         end
       end
 
-  Selecting the Stack from `use Spectre.Agent, stack: MyStack` activates every
-  package-declared Agent extension. Installed operations and planner-visible
-  actions still require explicit Flow, Work, Skill, or policy binding before
-  they are visible or authorized.
+  Selecting `stack: MyApp.AI` in `Spectre.Agent` connects package-declared Agent
+  extensions. Selecting `tools: MyApp.AI` in `Spectre.Server` generates private
+  helpers from installed `c:Spectre.Stack.Installable.tools/1` descriptors.
+  Packages do not need to export those helper functions themselves.
+
+  Helpers append commands; runtime adapters resolve named Stack resources,
+  return cognitive results or normalize bound consequences to GAM proposals.
+  Installation and `bind:` configuration do not grant authority. Governed
+  operations need authenticated host scope, contracts, mandate and executors.
+  See the Stack Tools and GAM guides.
+
+  `Spectre.Stack.Runtime` supervises declared resources when explicitly started
+  by the host. Pass its stable name as `stack_runtime:` to resource-using Servers.
+  Standalone package APIs and older Instance/Run integrations remain separate
+  compatibility paths.
   """
 
   alias Spectre.Stack.Binding

@@ -1,5 +1,10 @@
 # Boundary receipts
 
+**Compatibility/reference scope.** This page describes Instance boundary receipts and their delivery modes.
+For the new 0.4 owner and execution boundary read [AgentServer](AGENT_SERVER.md),
+[GAM](GAM.md) and [migration](MIGRATING_TO_0_4.md). These records and guarantees
+must not be assumed to be Server checkpoints or GAM Evidence/Acts.
+
 `Spectre.Receipt.Envelope` is the provider-neutral evidence record for an
 admitted input, nondeterministic output or authority decision. It links the
 boundary to pre/post canonical state digests and immutable Definition/closure

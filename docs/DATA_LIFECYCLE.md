@@ -1,5 +1,11 @@
 # Instance data lifecycle
 
+**Compatibility reference (0.3 runtime retained in 0.4).** This page covers the legacy Instance data lifecycle.
+For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
+[Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
+These protocols and guarantees are not automatically inherited by the new
+Server owner; legacy effects do not become GAM-governed merely by upgrading.
+
 Spectre owns the lifecycle of canonical Instance state, but a deployment may
 copy related data across several host adapters. A deletion request is complete
 only when the operator has inventoried every configured and host-owned copy.

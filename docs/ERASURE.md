@@ -1,5 +1,10 @@
 # Offline Instance erasure
 
+**Compatibility/reference scope.** This page describes offline Instance/legacy store erasure.
+For the new 0.4 owner and execution boundary read [AgentServer](AGENT_SERVER.md),
+[GAM](GAM.md) and [migration](MIGRATING_TO_0_4.md). These records and guarantees
+must not be assumed to be Server checkpoints or GAM Evidence/Acts.
+
 `Spectre.erase_instance/3` is an offline, fenced coordinator for the data that
 core can identify from one Instance. It requires the exact stable Instance key
 as confirmation, refuses a live local Instance, acquires a non-preemptive

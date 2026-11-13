@@ -1,9 +1,31 @@
 # Roadmap
 
-Spectre remains a focused OTP-native runtime rather than a framework that owns
-application business logic. The core keeps one canonical Definition and one
-Instance owner for conversational and operational state; adapters and
-distributed integration do not introduce a second runtime owner.
+Spectre 0.4 introduces the **Stack → declarative Agent → OTP Server** authoring
+model. `Spectre.Server.Runtime` owns new conversations, workers, pending
+intentions and inbox/outbox recovery; `Spectre.GAM` owns the host's declared
+governed admission boundary. The Instance runtime remains a compatibility path,
+not the only conversation owner for new applications.
+
+## 0.4 AgentServer and GAM
+
+The current development branch implements the Server callbacks and native OTP
+integration, generated installed-tool helpers, durable consent lifecycle/timers,
+stream consolidation and explicit GAM proposal/reconciliation paths. Routing,
+independent classifiers, IntentDataset review/collection, semantic embeddings
+and classifier training remain available. The nine companion installable
+packages have 0.4 tool adapters and an executable integration with deterministic
+external providers.
+
+Read [Architecture](ARCHITECTURE.md), [AgentServer](AGENT_SERVER.md),
+[Stack tools](STACK_TOOLS.md), [GAM](GAM.md) and [migration](MIGRATING_TO_0_4.md)
+for the actual contracts. Production host policies, provider integrations and
+existing application effect paths still require their own migration and checks.
+The branch version is not an assertion that the new line is published on Hex.
+
+## Historical milestones and retained compatibility work
+
+The entries below describe the earlier Instance/Run/Definition runtime. Their
+API ownership and guarantees do not automatically transfer to Server/GAM.
 
 ## 0.3.3 ownership, erasure, policy addressing, and Instance efficiency
 

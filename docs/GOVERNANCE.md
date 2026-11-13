@@ -1,5 +1,15 @@
 # Governed Definition Changes
 
+**Definition governance reference (retained compatibility API).** This page
+covers `Spectre.Governance`: composition, review and activation of immutable
+behavior Definitions. It is separate from `Spectre.GAM`, which governs concrete
+consequences through Mandate, Evidence, Act and Duty in the 0.4 Server loop.
+A Definition Candidate here is not a `Spectre.GAM.Candidate`, and a legacy
+activation/approval receipt is not automatically GAM consent Evidence.
+
+For new AgentServer execution read [GAM](GAM.md),
+[AgentServer](AGENT_SERVER.md) and [migration](MIGRATING_TO_0_4.md).
+
 Spectre 0.2.9 adds a host-controlled path for proposing, reviewing, approving,
 activating, rolling back, and eventually collecting immutable Definition
 Candidates. It composes over the existing Definition Store, Manifest,

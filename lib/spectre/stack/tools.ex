@@ -1,6 +1,6 @@
 defmodule Spectre.Stack.Tools do
   @moduledoc """
-  Immutable tool descriptors returned by `Spectre.Stack.Installable.tools/1`.
+  Immutable tool descriptors returned by `c:Spectre.Stack.Installable.tools/1`.
 
   A descriptor declares a helper name and a closed set of operations. It does
   not execute an adapter or grant authority. Cognitive operations declare their

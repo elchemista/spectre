@@ -1,8 +1,11 @@
 # Pending intentions, timers and GAM observations
 
-This guide describes the pending lifecycle API being implemented and validated
-in the Agent/Server core. It does not establish compatibility of external
-packages or readiness of an application deployment.
+This guide describes the implemented 0.4 pending lifecycle API. It complements
+[AgentServer](AGENT_SERVER.md), [GAM](GAM.md) and the
+[migration guide](MIGRATING_TO_0_4.md). Application callbacks implement policy;
+Runtime coordinates durable transitions; GAM records the authenticated lifecycle
+observations. The [GAM manifesto](https://spectre.guide/en/governed-act-model)
+explains why a timeout cannot silently extinguish an unresolved Duty.
 
 A pending intention is an unfinished conversation, such as an account deletion
 waiting for confirmation. The Server can suspend it, schedule its closure or
@@ -63,15 +66,6 @@ The Agent declares recognition. The Server decides how an open deletion
 intention responds to a new topic:
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
-
-  flow :support do
-    on :delete_account, regex: ~r/^delete my account$/i, protected: true
-    on :pricing, regex: ~r/^how much does it cost\?$/i
-  end
-end
-
 defmodule MyApp.SupportServer do
   use Spectre.Server
 
@@ -133,6 +127,15 @@ defmodule MyApp.SupportServer do
   end
 
   def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+end
+
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+
+  flow :support do
+    on :delete_account, regex: ~r/^delete my account$/i, protected: true
+    on :pricing, regex: ~r/^how much does it cost\?$/i
+  end
 end
 ```
 
