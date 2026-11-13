@@ -39,8 +39,9 @@ README for configuration; most packages also retain a standalone API.
 
 ## First run
 
-Use the complete [Getting started](GETTING_STARTED.md) example. From the core
-repository itself, the equivalent smoke example is:
+Use [Getting started](GETTING_STARTED.md) for the Lens/Kinetic email workflow
+and its host configuration. For a separate model-free installation smoke check
+from the core repository, run:
 
 ```sh
 mix run docs/examples/agent_server_quickstart.exs

@@ -46,56 +46,206 @@ reviewed commit with `ref:`. Companion libraries use `feature/stack-tools-0.4`;
 see [Installation](docs/INSTALLATION.md) for compatible dependency and runtime
 setup. Published 0.3 documentation does not describe this branch's Server API.
 
-## A complete small agent
+## An agent that reads a website and asks before sending email
 
-This example uses no model, credentials or external service. Put it in an `.exs`
-file in an application depending on Spectre and run it with `mix run`:
+Send a new URL. Lens opens the page, an application parser finds its contact
+email, the model drafts a message in Action Language, and Kinetic prepares the
+email proposal. **GAM requires confirmation before the host executor sends it.**
+The user can also ask for `status`, `info` or `history`.
+
+This is the main application code, not a standalone no-configuration script.
+`MyApp.MailActions`, `MyApp.Contacts` and `MyApp.TextModel` are application modules;
+the [complete guide](docs/GETTING_STARTED.md) explains their small contracts and
+the GAM host wiring. Install Lens and Kinetic from their companion branches.
 
 ```elixir
-defmodule Quickstart.AI do
+defmodule MyApp.OutreachAI do
   use Spectre.Stack
-end
 
-defmodule Quickstart.SupportServer do
-  use Spectre.Server, tools: Quickstart.AI
-
-  @impl true
-  def handle_flow({:support, :pricing}, _input, ctx) do
-    respond(ctx, "Plans start at EUR 20 per month.")
+  install Spectre.Lens do
+    backend(SpectreLens.Browsers.Lightpanda, instances: 1)
   end
 
-  def handle_flow(:unmatched, _input, ctx) do
-    respond(ctx, "Ask me about pricing.")
+  # MailActions declares SEND EMAIL and its typed arguments; planning does not send.
+  install(Spectre.Kinetic,
+    mode: :closed_moves,
+    actions: MyApp.MailActions,
+    modes: [send_email: :write]
+  )
+end
+
+defmodule MyApp.OutreachServer do
+  use Spectre.Server, tools: MyApp.OutreachAI, prompt_root: "priv/outreach/prompts"
+
+  def init(_arg, ctx) do
+    # Preserve restored work/history; initialize only missing values.
+    {:ok,
+     ctx
+     |> assign(:job, ctx.assigns[:job])
+     |> assign(:history, Map.get(ctx.assigns, :history, []))}
+  end
+
+  def handle_flow({:outreach, :new_link}, input, ctx) do
+    # One active job: another link cannot replace an email awaiting approval.
+    if ctx.assigns.job do
+      respond(ctx, "A job is already open. Ask for status or finish its confirmation.")
+    else
+      ctx
+      |> assign(:job, %{url: input.text, status: :reading})
+      |> lens({:open, input.text}, on_result: :opened)
+    end
+  end
+
+  def handle_flow({:outreach, :status}, _input, ctx) do
+    status = if ctx.assigns.job, do: ctx.assigns.job.status, else: :idle
+    respond(ctx, "Job status: #{status}")
+  end
+
+  def handle_flow({:outreach, :info}, _input, ctx),
+    do:
+      respond(
+        ctx,
+        "Send a URL. I find its contact email, draft a message and ask before sending."
+      )
+
+  def handle_flow({:outreach, :history}, _input, ctx) do
+    lines = Enum.map_join(ctx.assigns.history, "\n", &"#{&1.url}: #{&1.status}")
+    respond(ctx, if(lines == "", do: "No completed jobs yet.", else: lines))
+  end
+
+  def handle_flow(:unmatched, _input, ctx),
+    do: respond(ctx, "Send a URL, or ask for status, info or history.")
+
+  def handle_result(:opened, {:ok, tab}, ctx),
+    do: ctx |> assign(:tab, tab) |> lens({:look, tab}, on_result: :looked)
+
+  # Close the known tab even if reading failed, before moving to the model.
+  def handle_result(:looked, result, ctx),
+    do: ctx |> assign(:page_result, result) |> lens({:close, ctx.assigns.tab}, on_result: :closed)
+
+  def handle_result(:closed, {:ok, _}, ctx) do
+    with {:ok, view} <- ctx.assigns.page_result,
+         # Application parser: returns {:ok, email} only for an address in the page.
+         {:ok, email} <- MyApp.Contacts.email_from(view) do
+      ctx
+      |> assign(:job, Map.merge(ctx.assigns.job, %{email: email, status: :drafting}))
+      |> generate(:contact,
+        assigns: %{page: view.context, email: email},
+        planning: false,
+        on_result: :drafted
+      )
+    else
+      :not_found -> finish(ctx, :no_email, "No contact email found on this page.")
+      {:error, _} -> finish(ctx, :read_failed, "Could not inspect the contact page.")
+    end
+  end
+
+  # The model generates AL; Kinetic interprets the consolidated response.
+  def handle_result(:drafted, {:generated, response}, ctx),
+    do: kinetic(ctx, response, on_result: :prepared)
+
+  def handle_result(
+        :prepared,
+        {:prepared, %{actions: [%{operation: {:kinetic, :send_email}} = p]}},
+        ctx
+      ) do
+    ctx
+    |> assign(:job, %{ctx.assigns.job | status: :awaiting_confirmation})
+    # GAM's host binding below presents the exact recipient and body for consent.
+    |> propose(p.operation, p.args, proposal_metadata: p.metadata, on_result: :sent)
+  end
+
+  def handle_result(:prepared, {:prepared, _}, ctx),
+    do: finish(ctx, :invalid_draft, "Expected exactly one email proposal; nothing was sent.")
+
+  def handle_result(:sent, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
+    do: finish(ctx, :sent, "The mail service confirmed the send operation.")
+
+  # Refusal, cancellation and uncertain-result handling: see the full guide.
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+
+  def handle_pending(%{kind: :consent} = pending, input, ctx) do
+    case String.downcase(String.trim(input.text)) do
+      "confirm" -> confirm_pending(ctx, pending.id)
+      "cancel" -> reject_pending(ctx, pending.id)
+      # Informational flows may run without replacing the pending email.
+      word when word in ["status", "info", "history"] -> route_current_input(ctx)
+      _ -> explain_pending(ctx, pending.id)
+    end
+  end
+
+  def handle_pending(pending, input, ctx), do: super(pending, input, ctx)
+
+  defp finish(ctx, status, message) do
+    entry = %{url: ctx.assigns.job.url, status: status}
+
+    ctx
+    |> assign(:history, Enum.take([entry | ctx.assigns.history], 20))
+    |> assign(:job, nil)
+    |> respond(message)
   end
 end
 
-defmodule Quickstart.SupportAgent do
-  use Spectre.Agent, stack: Quickstart.AI, server: Quickstart.SupportServer
+defmodule MyApp.OutreachAgent do
+  use Spectre.Agent, stack: MyApp.OutreachAI, server: MyApp.OutreachServer
+  model(MyApp.TextModel)
+  router(strategies: [:regex])
 
-  router strategies: [:regex]
-
-  flow :support do
-    on :pricing, regex: ~r/\b(price|pricing|cost)\b/i
+  flow :outreach do
+    on(:new_link, regex: ~r/^https?:\/\/\S+$/i, collect_intent: false)
+    on(:status, regex: ~r/^status$/i)
+    on(:info, regex: ~r/^info$/i)
+    on(:history, regex: ~r/^history$/i)
   end
 end
-
-{:ok, server} = Spectre.Server.start_link(agent: Quickstart.SupportAgent, consumer: self())
-{:ok, interaction} = Spectre.Server.input(server, "What is the price?")
-
-receive do
-  {Spectre.Server, ^server, {:response, ^interaction, text, _metadata}} ->
-    IO.puts(text)
-after
-  5_000 -> raise "No response from the agent"
-end
-
-GenServer.stop(server)
 ```
 
-The same executable example is in
-[agent_server_quickstart.exs](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/examples/agent_server_quickstart.exs).
-Use [Getting started](docs/GETTING_STARTED.md) to add generation, fallbacks,
-installed tools and governed effects.
+The Stack generates `lens` and `kinetic`; there are no package helper imports.
+Kinetic receives the **model result**, not a hand-written send command in a flow.
+The email binding below applies regardless of how the proposal was recognized;
+a regex match or an installed action is not permission to send.
+
+```elixir
+# Host-owned policy: sending mail always needs consent for this exact draft.
+# MailPolicy builds the Candidate/Presentation; the Domain's authenticated
+# ingress validates the original answer. These are application callbacks.
+gam = [
+  scope: authenticated_scope,
+  store: MyApp.ServerStore,
+  consent_ttl_ms: 300_000,
+  bindings: %{
+    {:kinetic, :send_email} => %{
+      candidate: {MyApp.MailPolicy, :candidate},
+      presentation: {MyApp.MailPolicy, :presentation},
+      interpreter: {MyApp.MailPolicy, :interpret}
+    }
+  }
+]
+
+# The host supervises ServerStore, the GAM Domain and this named Stack runtime.
+{:ok, _runtime} = Spectre.Stack.start_link(MyApp.OutreachAI, name: MyApp.OutreachRuntime)
+{:ok, agent} = Spectre.summon(
+  agent: MyApp.OutreachAgent,
+  subject: authenticated_user.id,
+  stack_runtime: MyApp.OutreachRuntime,
+  checkpoint: {MyApp.ServerStore, "outreach:" <> to_string(authenticated_user.id)},
+  gam: {Spectre.Server.GAM, gam},
+  consumer: channel_pid
+)
+
+Spectre.Server.input(agent, "https://company.example/contact")
+# Later messages from the same authenticated channel:
+Spectre.Server.input(agent, "status")
+# Only after the consent presentation has actually been delivered:
+# Spectre.Server.input(agent, "confirm")
+```
+
+`MyApp.MailPolicy.presentation/3` must show the exact recipient and body, with
+confirm/cancel choices. Its Candidate and the Domain contract bind approval to
+that email; the admitted executor invokes the mail transport only after GAM
+commits the Act. Finding an address on a page does not itself authorize contact.
+See [the guide](docs/GETTING_STARTED.md) for the model prompt, result handling,
+provider setup and what is intentionally omitted from this sketch.
 
 ## Capabilities retained from 0.3
 

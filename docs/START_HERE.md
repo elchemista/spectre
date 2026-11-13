@@ -8,8 +8,8 @@ For an existing 0.3 application, begin with [Migration](MIGRATING_TO_0_4.md).
 
 1. [Installation](INSTALLATION.md): compatible development branches, requirements
    and application supervision.
-2. [Getting started](GETTING_STARTED.md): a runnable agent, callback results and
-   the path to models and tools.
+2. [Getting started](GETTING_STARTED.md): a website-to-email agent with Lens, Kinetic,
+   informational flows and GAM confirmation.
 3. [Architecture](ARCHITECTURE.md): ownership, command execution, streaming and
    the boundary between recognition and authority.
 4. [GAM](GAM.md): the imported kernel, consent, outcomes and host responsibilities,

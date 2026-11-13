@@ -126,7 +126,7 @@ defmodule Spectre.MixProject do
       name: "spectre",
       maintainers: ["elchemista"],
       files:
-        ~w(lib/**/*.ex priv mix.exs .formatter.exs docs/examples/routing-eval.jsonl docs/examples/agent_server_quickstart.exs) ++
+        ~w(lib/**/*.ex priv mix.exs .formatter.exs docs/examples/routing-eval.jsonl docs/examples/agent_server_quickstart.exs docs/examples/outreach_agent.exs) ++
           @docs_extras,
       licenses: ["Apache-2.0"],
       links: %{
