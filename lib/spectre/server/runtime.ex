@@ -234,7 +234,7 @@ defmodule Spectre.Server.Runtime do
 
   @impl true
   def handle_call({__MODULE__, :gam_view}, {caller, _}, state) do
-    {:reply, managed_call(state, :view, [caller]), state}
+    {:reply, diagnostic_managed_call(state, :view, [caller]), state}
   end
 
   def handle_call({__MODULE__, :gam_inspect, opts}, {caller, _}, state) do

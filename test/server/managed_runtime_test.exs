@@ -955,6 +955,24 @@ defmodule Spectre.Server.ManagedRuntimeTest do
   end
 
   @tag :tmp_dir
+  test "legacy view owner timeout leaves the runtime alive", %{tmp_dir: path} do
+    server = diagnostics_server(path)
+    managed = :sys.get_state(server).managed_owner
+    :ok = :sys.suspend(managed)
+
+    try do
+      assert {:error, :diagnostic_source_unavailable} =
+               GenServer.call(server, {Spectre.Server.Runtime, :gam_view}, 6_000)
+
+      assert Process.alive?(server)
+    after
+      :sys.resume(managed)
+    end
+
+    assert {:ok, _} = Server.gam_view(server)
+  end
+
+  @tag :tmp_dir
   test "a subscription accepted while notifications are unavailable retains checkpoint delivery",
        %{tmp_dir: path} do
     server = diagnostics_server(path)
