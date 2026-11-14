@@ -918,6 +918,69 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     assert {:ok, _} = Server.gam_inspect(server)
   end
 
+  @tag :tmp_dir
+  test "slow diagnostic reads and legacy views cannot block checkout or terminate the Domain", %{
+    tmp_dir: path
+  } do
+    server = diagnostics_server(path)
+    managed = :sys.get_state(server).managed_owner
+    domain = :sys.get_state(managed).domain
+    :ok = :sys.suspend(domain)
+
+    try do
+      for query <- [&Server.gam_inspect/1, &Server.gam_view/1] do
+        probe =
+          Task.async(fn ->
+            diagnostics_eventually(fn ->
+              {:messages, messages} = Process.info(domain, :messages)
+              Enum.any?(messages, &match?({:"$gen_call", _, {:query, _, _}}, &1))
+            end)
+
+            assert {:ok, _} = GenServer.call(managed, :checkout, 250)
+            GenServer.cast(managed, {:checkin, self()})
+            :ok
+          end)
+
+        assert {:error, :diagnostic_source_unavailable} = query.(server)
+        assert :ok = Task.await(probe)
+        assert Process.alive?(server)
+        assert Process.alive?(managed)
+        assert Process.alive?(domain)
+      end
+    after
+      :sys.resume(domain)
+    end
+
+    assert {:ok, _} = Server.gam_inspect(server)
+  end
+
+  @tag :tmp_dir
+  test "a subscription accepted while notifications are unavailable retains checkpoint delivery",
+       %{tmp_dir: path} do
+    server = diagnostics_server(path)
+    notifier = Spectre.GAM.Domain.Notifications
+    supervisor = Spectre.GAM.ApplicationSupervisor
+    managed = :sys.get_state(server).managed_owner
+    domain_ref = :sys.get_state(managed).refs.domain
+    assert :ok = Supervisor.terminate_child(supervisor, notifier)
+
+    try do
+      assert :ok = Server.subscribe(server)
+      assert :sys.get_state(server).opts[:diagnostics_notifications]
+      assert {:ok, _} = Server.input(server, "pending subscription")
+      ref = presentation()
+      assert :ok = Server.presented(server, ref)
+      assert_receive {Server, ^server, {:pending, _, _}}, 5_000
+      assert_receive {Server, ^server, {:diagnostics_changed, %{source: :checkpoint}}}, 5_000
+      assert {:ok, _} = Supervisor.restart_child(supervisor, notifier)
+      diagnostics_eventually(fn -> managed in :pg.get_local_members(notifier, domain_ref) end)
+      assert_receive {Server, ^server, {:diagnostics_changed, %{source: :gam}}}, 5_000
+      assert Process.alive?(server)
+    after
+      if Process.whereis(notifier) == nil, do: Supervisor.restart_child(supervisor, notifier)
+    end
+  end
+
   defp diagnostics_eventually(check, attempts \\ 100)
   defp diagnostics_eventually(check, 0), do: assert(check.())
 

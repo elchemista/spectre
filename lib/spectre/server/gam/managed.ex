@@ -210,20 +210,17 @@ defmodule Spectre.Server.GAM.Managed do
   def handle_call(:info, _, state), do: {:reply, state.refs, state}
   def handle_call(:gate, _, state), do: {:reply, state.gate, state}
 
-  def handle_call({:view, caller}, {runtime, _}, state) do
+  def handle_call({:view, caller}, {runtime, _} = from, state) do
     reviewer = if state.reviewer, do: state.reviewer.consumer
 
     if runtime == state.options[:runtime] and caller in [state.options[:consumer], reviewer],
-      do: {:reply, GAM.view(state.scope), state},
+      do: start_diagnostic_read(state, from, :view),
       else: {:reply, {:error, :untrusted_audit_transport}, state}
   end
 
-  def handle_call({:diagnostics, opts, caller}, {runtime, _}, state) do
+  def handle_call({:diagnostics, opts, caller}, {runtime, _} = from, state) do
     if runtime == state.options[:runtime] and caller == state.options[:consumer] do
-      result =
-        GAM.Domain.Sequencer.query(state.scope.domain.server, state.scope, {:diagnostics, opts})
-
-      {:reply, result, state}
+      start_diagnostic_read(state, from, {:diagnostics, opts})
     else
       {:reply, {:error, :untrusted_audit_transport}, state}
     end
@@ -310,12 +307,20 @@ defmodule Spectre.Server.GAM.Managed do
   end
 
   @impl true
+  def handle_info({:diagnostic_read, token, result}, state),
+    do: {:noreply, finish_diagnostic_read(state, token, result)}
+
+  def handle_info({:diagnostic_read_timeout, token}, state),
+    do: {:noreply, finish_diagnostic_read(state, token, {:error, :diagnostic_source_unavailable})}
+
   def handle_info({:diagnostics_revision, revision}, state) do
     unless Map.get(state, :diagnostics_timer),
       do: Process.send_after(self(), :diagnostics_flush, 50)
 
     {:noreply,
-     state |> Map.put(:diagnostics_timer, true) |> Map.put(:diagnostics_revision, revision)}
+     state
+     |> Map.put(:diagnostics_timer, true)
+     |> Map.put(:diagnostics_revision, max(revision, Map.get(state, :diagnostics_revision, 0)))}
   end
 
   def handle_info(:diagnostics_flush, state) do
@@ -360,9 +365,17 @@ defmodule Spectre.Server.GAM.Managed do
   end
 
   def handle_info({:DOWN, monitor, :process, worker, _}, state) do
-    if Map.get(state.workers, worker) == monitor,
-      do: finish_close(%{state | workers: Map.delete(state.workers, worker)}),
-      else: {:noreply, state}
+    case Enum.find(Map.get(state, :diagnostic_reads, %{}), fn {_token, read} ->
+           read.monitor == monitor
+         end) do
+      {token, _} ->
+        {:noreply, finish_diagnostic_read(state, token, {:error, :diagnostic_source_unavailable})}
+
+      nil ->
+        if Map.get(state.workers, worker) == monitor,
+          do: finish_close(%{state | workers: Map.delete(state.workers, worker)}),
+          else: {:noreply, state}
+    end
   end
 
   def handle_info({:EXIT, pid, reason}, state) do
@@ -401,32 +414,84 @@ defmodule Spectre.Server.GAM.Managed do
       case GAM.Domain.Notifications.subscribe(state.refs.domain) do
         {:ok, notifier} ->
           if timer = Map.get(state, :diagnostics_retry), do: Process.cancel_timer(timer)
-          if Map.get(state, :diagnostics_registered), do: refresh_diagnostics(state)
 
-          {:ok,
-           Map.merge(state, %{
-             diagnostics_notifier: notifier,
-             diagnostics_monitor: Process.monitor(notifier),
-             diagnostics_retry: nil,
-             diagnostics_registered: true
-           })}
+          state =
+            Map.merge(state, %{
+              diagnostics_notifier: notifier,
+              diagnostics_monitor: Process.monitor(notifier),
+              diagnostics_retry: nil,
+              diagnostics_registered: true
+            })
 
-        {:error, _} = error ->
-          {error, retry_diagnostics_subscription(state)}
+          {:noreply, state} = start_diagnostic_read(state, :refresh, :head)
+          {:ok, state}
+
+        {:error, _} ->
+          # Subscription is an accepted intent, even while its disposable
+          # notification process is being replaced. Checkpoint delivery stays on.
+          {:ok, retry_diagnostics_subscription(state)}
       end
     end
   end
 
-  @spec refresh_diagnostics(map()) :: :ok
-  defp refresh_diagnostics(state) do
-    case GAM.Domain.Sequencer.head(state.scope.domain.server) do
-      {:ok, %{revision: revision}} -> send(self(), {:diagnostics_revision, revision})
-      _ -> :ok
-    end
+  @spec start_diagnostic_read(map(), GenServer.from() | :refresh, term()) :: tuple()
+  defp start_diagnostic_read(state, from, request) do
+    reads = Map.get(state, :diagnostic_reads, %{})
 
-    :ok
-  catch
-    :exit, _ -> :ok
+    if state.closing or map_size(reads) >= 4 do
+      if from == :refresh do
+        {:noreply, state}
+      else
+        {:reply, {:error, :diagnostic_source_unavailable}, state}
+      end
+    else
+      owner = self()
+      token = make_ref()
+      domain = state.scope.domain.server
+      query = if request == :head, do: :head, else: {:query, state.scope, request}
+
+      {pid, monitor} =
+        spawn_monitor(fn ->
+          result =
+            try do
+              GenServer.call(domain, query, 3_500)
+            catch
+              :exit, _ -> {:error, :diagnostic_source_unavailable}
+            end
+
+          send(owner, {:diagnostic_read, token, result})
+        end)
+
+      timer = Process.send_after(self(), {:diagnostic_read_timeout, token}, 4_000)
+      read = %{pid: pid, monitor: monitor, timer: timer, from: from}
+      {:noreply, Map.put(state, :diagnostic_reads, Map.put(reads, token, read))}
+    end
+  end
+
+  @spec finish_diagnostic_read(map(), reference(), term()) :: map()
+  defp finish_diagnostic_read(state, token, result) do
+    case Map.pop(Map.get(state, :diagnostic_reads, %{}), token) do
+      {nil, _} ->
+        state
+
+      {read, remaining} ->
+        Process.cancel_timer(read.timer)
+        Process.demonitor(read.monitor, [:flush])
+        if Process.alive?(read.pid), do: Process.exit(read.pid, :kill)
+
+        case {read.from, result} do
+          {:refresh, {:ok, %{revision: revision}}} ->
+            send(self(), {:diagnostics_revision, revision})
+
+          {:refresh, _} ->
+            :ok
+
+          {from, result} ->
+            GenServer.reply(from, result)
+        end
+
+        Map.put(state, :diagnostic_reads, remaining)
+    end
   end
 
   @spec retry_diagnostics_subscription(map()) :: map()
@@ -467,6 +532,14 @@ defmodule Spectre.Server.GAM.Managed do
 
   @impl true
   def terminate(_, state) do
+    Enum.each(Map.get(state, :diagnostic_reads, %{}), fn {_token, read} ->
+      Process.cancel_timer(read.timer)
+      Process.exit(read.pid, :kill)
+
+      if read.from != :refresh,
+        do: GenServer.reply(read.from, {:error, :diagnostic_source_unavailable})
+    end)
+
     Enum.each([state.domain, state.gate | state.owned], fn pid ->
       if is_pid(pid) and Process.alive?(pid), do: GenServer.stop(pid, :normal, 5_000)
     end)

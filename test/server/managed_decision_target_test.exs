@@ -44,6 +44,17 @@ defmodule Spectre.Server.ManagedDecisionTargetTest do
   defmodule App do
     use Spectre.Server
 
+    def init(_, ctx) do
+      table = :ets.whereis(Spectre.Server.ManagedDecisionTargetTest.SlowInit)
+
+      if ctx.skill && table != :undefined && :ets.lookup(table, ctx.skill.id) != [] do
+        send(Spectre.Server.ManagedDecisionTargetTest, {:slow_skill_init, self()})
+        receive do: (:release_init -> :ok)
+      end
+
+      {:ok, ctx}
+    end
+
     def handle_flow({:delivery, :send}, input, ctx),
       do: propose(ctx, :deliver, %{body: input.text}, on_result: :sent)
 
@@ -224,6 +235,33 @@ defmodule Spectre.Server.ManagedDecisionTargetTest do
     assert {:ok, _} = Server.gam_inspect(server)
     assert {:ok, _} = Server.decide(server, :first, pending.presentation.ref, :reject)
     assert_receive {:completed, :first, {:consent, :rejected}}, 5_000
+  end
+
+  test "slow restarted Skill init does not block root subscription and cannot consume forged notifications",
+       %{server: server} do
+    assert {:ok, child} = Server.skill_server(server, :first)
+    send(child, {Server.Runtime, :diagnostics_subscribe, server, make_ref()})
+    assert %{pending: _} = Server.status(child)
+    refute :sys.get_state(child).opts[:diagnostics_notifications]
+    assert :ok = Server.subscribe(server)
+    table = :ets.new(__MODULE__.SlowInit, [:named_table, :public])
+    :ets.insert(table, {:first, true})
+    Process.exit(child, :kill)
+    assert_receive {:slow_skill_init, replacement}, 5_000
+
+    try do
+      assert %{pending: _} = GenServer.call(server, {Server.Runtime, :status}, 250)
+      # Hold initialization beyond the removed synchronous subscription timeout.
+      Process.sleep(1_100)
+      assert %{pending: _} = GenServer.call(server, {Server.Runtime, :status}, 250)
+    after
+      :ets.delete(table, :first)
+      send(replacement, :release_init)
+    end
+
+    assert ^replacement = subscribed_replacement(server, child)
+    assert_receive {Server, ^server, {:skill, :first, {:diagnostics_changed, _}}}, 5_000
+    assert Process.alive?(server)
   end
 
   defp subscribed_replacement(server, old, attempts \\ 100)

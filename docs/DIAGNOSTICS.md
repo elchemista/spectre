@@ -36,6 +36,16 @@ consumer boundary. A direct call from an unrelated process fails with
 view. These are trusted OTP process boundaries, not a sandbox against arbitrary
 code running inside the BEAM.
 
+After authenticating the caller, the managed integration performs GAM inspection
+and the retained `gam_view/1` API in monitored read workers. At most four reads
+run concurrently per managed integration. Each Domain query has a 3.5-second
+timeout and an independent 4-second worker deadline, shorter than the public
+call timeout. A slow or unavailable Domain returns
+`{:error, :diagnostic_source_unavailable}`; it does not terminate Managed or
+occupy its mailbox while governed workers check out. Read workers never enter
+the governed-work drain and are stopped when their owner terminates. The
+authenticated Scope remains private to framework code.
+
 ## Incremental refresh
 
 After subscribing, the consumer receives invalidations:
@@ -50,13 +60,24 @@ After subscribing, the consumer receives invalidations:
 ```
 
 Checkpoint notifications follow a successful store commit. GAM notifications
-follow verified durable append and recovery repair. The ephemeral Domain
+follow verified durable append, including batches committed before a subsequent
+recovery-repair error. These are commit hints, not successful command completion.
+The ephemeral Domain
 notification process group holds no records or authority; subscriber failure cannot
 change admission or commit. The automatic integration coalesces GAM revision
 hints over 50ms. Consumers should also coalesce checkpoint/Skill hints before
 refreshing, subscribe before the initial read, and resubscribe after a Server
 restart. Notifications are not a durable event stream. Always recover current
 state by reading; a revision hint is not evidence of an action's success.
+
+`subscribe/1` acknowledges an accepted subscription intent even if the disposable
+notification process is temporarily absent. Checkpoint notifications stay
+enabled while the managed integration retries joining the process group with
+one 100ms retry timer. Once joined, it refreshes the current revision. GAM hints
+are coalesced monotonically. Skill subscriptions use a private authenticated
+parent message, processed after initialization; slow or restarting Skill
+initialization does not block the root or lose its subscription. These messages
+are handled by the runtime and never routed to application callbacks.
 
 ## Lab: tool versus developer facade
 
@@ -86,6 +107,14 @@ command IDs and references between Decisions, Acts, presentations, attempts and
 Outcomes. Lifecycle summaries show registered transitions and atom reason codes.
 No chronology is invented for missing or pruned commands. A route's strategy is
 unknown when it was not retained. An empty trace does not prove nothing happened.
+
+Public AgentServers always use managed GAM. Internal/custom-adapter runtimes can
+still expose a retained checkpoint trace: `gam` is `nil` and
+`coverage.gam` is `%{available: false, reason: :managed_gam_not_configured}`.
+This does not imply the custom adapter has no governed history; that history is
+outside this diagnostic source. A configured managed source that fails still
+returns an explicit diagnostic error. Operational checkpoint inspection rejects
+`:cursor`; cursors paginate GAM pages only.
 
 Checkpoint and GAM reads are separate snapshots and carry separate revisions;
 they are not a cross-store atomic snapshot. GAM output is bounded, but projection

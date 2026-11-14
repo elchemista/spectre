@@ -58,7 +58,6 @@ defmodule Spectre.GAM.Domain.Transaction do
     with {:ok, projection} <- append_verified(state, batch_id, payloads, recorded_at) do
       case repair_missing_duties(%{state | projection: projection}) do
         {:ok, projection} ->
-          Spectre.GAM.Domain.Notifications.committed(projection.domain_ref, projection.revision)
           {:ok, projection}
 
         {:error, reason} ->
@@ -78,8 +77,12 @@ defmodule Spectre.GAM.Domain.Transaction do
 
     if recorded_at >= latest_recorded_at do
       with {:ok, prepared} <-
-             Commit.prepare(state.projection, batch_id, payloads, recorded_at) do
-        append_exact_at(state, prepared, state.ambiguous_retries)
+             Commit.prepare(state.projection, batch_id, payloads, recorded_at),
+           {:ok, confirmed} <- append_exact_at(state, prepared, state.ambiguous_retries) do
+        # The verified batch is durable even if a later repair fails. Hints
+        # describe committed history, never successful completion of a command.
+        Spectre.GAM.Domain.Notifications.committed(confirmed.domain_ref, confirmed.revision)
+        {:ok, confirmed}
       end
     else
       {:error, {:ledger_time_regression, recorded_at, latest_recorded_at}}

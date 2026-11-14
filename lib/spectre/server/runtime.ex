@@ -263,7 +263,7 @@ defmodule Spectre.Server.Runtime do
           else: diagnostic_managed_call(state, :subscribe, [caller])
 
       if result == :ok do
-        Enum.each(Map.values(state.skill_current), &subscribe_diagnostics/1)
+        Enum.each(Map.values(state.skill_current), &subscribe_diagnostics(state, &1))
         {:reply, :ok, %{state | opts: Keyword.put(state.opts, :diagnostics_notifications, true)}}
       else
         {:reply, result, state}
@@ -652,13 +652,24 @@ defmodule Spectre.Server.Runtime do
 
   def handle_info({__MODULE__, token, :skill_started, id, pid}, %{control: token} = state) do
     if Keyword.get(state.opts, :diagnostics_notifications, false),
-      do: subscribe_diagnostics(pid)
+      do: subscribe_diagnostics(state, pid)
 
     current = Map.put(state.skill_current, id, pid)
     order = Enum.take([pid | state.skill_pid_order], 256)
     retained = Enum.uniq(Map.values(current) ++ order)
     pids = state.skill_pids |> Map.put(pid, id) |> Map.take(retained)
     {:noreply, %{state | skill_current: current, skill_pids: pids, skill_pid_order: order}}
+  end
+
+  def handle_info({__MODULE__, :diagnostics_subscribe, parent, token}, state) do
+    if Keyword.get(state.opts, :skill_parent) == {parent, token} do
+      Enum.each(Map.values(state.skill_current), &subscribe_diagnostics(state, &1))
+      state = %{state | opts: Keyword.put(state.opts, :diagnostics_notifications, true)}
+      Spectre.Server.Diagnostics.changed(state, state.checkpoint_revision)
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info({Spectre.Server, child, event} = message, state) do
@@ -840,17 +851,17 @@ defmodule Spectre.Server.Runtime do
     :exit, _ -> {:error, :diagnostic_source_unavailable}
   end
 
-  @spec subscribe_diagnostics(pid()) :: :ok | {:error, atom()}
-  defp subscribe_diagnostics(pid) do
-    GenServer.call(pid, {__MODULE__, :diagnostics_subscribe}, 1_000)
-  catch
-    :exit, _ -> {:error, :diagnostic_source_unavailable}
+  @spec subscribe_diagnostics(map(), pid()) :: :ok
+  defp subscribe_diagnostics(state, pid) do
+    send(pid, {__MODULE__, :diagnostics_subscribe, self(), state.control})
+    :ok
   end
 
   @spec diagnostic_read(map(), term(), term()) :: {:ok, map()} | {:error, term()}
   defp diagnostic_read(state, mode, opts) do
     with true <- is_list(opts) and Keyword.keyword?(opts),
          true <- Enum.all?(Keyword.keys(opts), &(&1 in [:skill, :limit, :cursor])),
+         true <- mode != :operational or not Keyword.has_key?(opts, :cursor),
          true <- length(Keyword.keys(opts)) == length(Enum.uniq(Keyword.keys(opts))),
          {:ok, snapshot} <- diagnostic_snapshot(state, mode, opts) do
       diagnostic_correlate(state, mode, opts, snapshot)
@@ -892,8 +903,22 @@ defmodule Spectre.Server.Runtime do
     else
       gam_opts = opts |> Keyword.take([:limit, :cursor]) |> Keyword.put(:interaction, interaction)
 
-      with {:ok, gam} <- managed_call(state, :diagnostics, [gam_opts, state.consumer]),
-           do: {:ok, Map.put(snapshot, :gam, gam)}
+      case diagnostic_managed_call(state, :diagnostics, [gam_opts, state.consumer]) do
+        {:ok, gam} ->
+          {:ok, Map.put(snapshot, :gam, gam)}
+
+        {:error, :managed_gam_not_configured} ->
+          coverage =
+            Map.put(snapshot.coverage, :gam, %{
+              available: false,
+              reason: :managed_gam_not_configured
+            })
+
+          {:ok, snapshot |> Map.put(:gam, nil) |> Map.put(:coverage, coverage)}
+
+        {:error, _} = error ->
+          error
+      end
     end
   end
 

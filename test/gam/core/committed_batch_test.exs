@@ -14,6 +14,10 @@ end
 defmodule Spectre.GAM.Core.CommittedBatchTest do
   use ExUnit.Case, async: true
 
+  defmodule FailedRepairClock do
+    def now, do: :unavailable
+  end
+
   alias Spectre.GAM.Bench.P1.Fixture
   alias Spectre.GAM.Domain.{Event, Projection, Recovery, Sequencer, Transaction}
   alias Spectre.GAM.{Evidence, Ledger}
@@ -50,6 +54,17 @@ defmodule Spectre.GAM.Core.CommittedBatchTest do
     assert next.evidence[ctx.evidence.ref] == ctx.evidence
     assert operations(ctx.mock) == [:append, :lookup_batch]
     assert_replay(ctx.fixture, next)
+  end
+
+  test "a confirmed batch invalidates diagnostics even when subsequent repair fails", ctx do
+    assert {:ok, _} = Spectre.GAM.Domain.Notifications.subscribe(ctx.state.projection.domain_ref)
+    previous = ctx.state.projection.revision
+    state = %{ctx.state | clock: FailedRepairClock}
+    assert {:error, {:durable_recovery_failed, _}} = append(%{ctx | state: state})
+    assert_receive {:diagnostics_revision, revision}
+    assert revision > previous
+    assert {:ok, snapshot} = Ledger.load(ctx.fixture.store_config, ctx.fixture.refs.domain)
+    assert snapshot.revision == revision
   end
 
   test "preparation does not commit and binds real batch metadata before publication", ctx do

@@ -138,7 +138,14 @@ defmodule Spectre.GAM.Scope.Diagnostics do
       end)
 
     evidence_refs = MapSet.new(selected ++ lifecycle, & &1.ref)
-    commands = MapSet.new(selected, & &1.payload.command_id)
+
+    candidate_keys =
+      selected
+      |> Enum.flat_map(fn evidence ->
+        id = evidence.payload.command_id
+        ["spectre:managed:" <> id, "spectre:managed:show:" <> id]
+      end)
+      |> MapSet.new()
 
     acts =
       Enum.filter(view.acts, fn act ->
@@ -167,7 +174,7 @@ defmodule Spectre.GAM.Scope.Diagnostics do
             kind,
             record,
             evidence_refs,
-            commands,
+            candidate_keys,
             act_refs,
             decision_refs,
             presentation_refs
@@ -221,15 +228,9 @@ defmodule Spectre.GAM.Scope.Diagnostics do
   defp linked?(:evidence, record, evidence, _, _, _, _), do: MapSet.member?(evidence, record.ref)
   defp linked?(:act, record, _, _, acts, _, _), do: MapSet.member?(acts, record.ref)
 
-  defp linked?(:decision, record, _, commands, _, decisions, _) do
+  defp linked?(:decision, record, _, candidate_keys, _, decisions, _) do
     MapSet.member?(decisions, record.ref) or
-      Enum.any?(
-        commands,
-        &(record.candidate_identity_key in [
-            "spectre:managed:" <> &1,
-            "spectre:managed:show:" <> &1
-          ])
-      )
+      MapSet.member?(candidate_keys, record.candidate_identity_key)
   end
 
   defp linked?(:presentation, record, _, _, _, _, presentations),
