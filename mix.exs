@@ -23,6 +23,8 @@ defmodule Spectre.MixProject do
     "docs/legacy/ROUTING_0_3.md",
     "docs/legacy/TRAINING_0_3.md",
     "docs/AGENT_SERVER.md",
+    "docs/SERVER_CONTRACTS.md",
+    "docs/DIAGNOSTICS.md",
     "docs/PENDING_LIFECYCLE.md",
     "docs/START_HERE.md",
     "README.md",
@@ -217,6 +219,8 @@ defmodule Spectre.MixProject do
         ],
         "AgentServer runtime": [
           "docs/AGENT_SERVER.md",
+          "docs/SERVER_CONTRACTS.md",
+          "docs/DIAGNOSTICS.md",
           "docs/PENDING_LIFECYCLE.md",
           "docs/STACK_TOOLS.md"
         ],

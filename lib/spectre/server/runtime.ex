@@ -105,6 +105,8 @@ defmodule Spectre.Server.Runtime do
     server = Keyword.get(opts, :server) || server_binding(agent)
     Code.ensure_loaded!(server)
     opts = Keyword.merge(server_options(server), opts)
+    Spectre.Server.Contracts.validate_configuration!(server)
+    Spectre.Server.PermissionDiagnostics.validate_options!(agent, opts)
     state = new_state(agent, server, opts) |> setup_managed_gam()
     validate_initial_state!(state)
     Map.put(state, :tool_bindings, Tool.bindings!(state))
@@ -233,6 +235,42 @@ defmodule Spectre.Server.Runtime do
   @impl true
   def handle_call({__MODULE__, :gam_view}, {caller, _}, state) do
     {:reply, managed_call(state, :view, [caller]), state}
+  end
+
+  def handle_call({__MODULE__, :gam_inspect, opts}, {caller, _}, state) do
+    result =
+      if caller == state.consumer and not Keyword.has_key?(state.opts, :skill),
+        do: diagnostic_managed_call(state, :diagnostics, [opts, caller]),
+        else: {:error, :untrusted_audit_transport}
+
+    {:reply, result, state}
+  end
+
+  def handle_call({__MODULE__, :diagnostics, mode, opts}, {caller, _}, state) do
+    result =
+      if caller == state.consumer,
+        do: diagnostic_read(state, mode, opts),
+        else: {:error, :untrusted_audit_transport}
+
+    {:reply, result, state}
+  end
+
+  def handle_call({__MODULE__, :diagnostics_subscribe}, {caller, _}, state) do
+    if caller == state.consumer do
+      result =
+        if Keyword.has_key?(state.opts, :skill),
+          do: :ok,
+          else: diagnostic_managed_call(state, :subscribe, [caller])
+
+      if result == :ok do
+        Enum.each(Map.values(state.skill_current), &subscribe_diagnostics/1)
+        {:reply, :ok, %{state | opts: Keyword.put(state.opts, :diagnostics_notifications, true)}}
+      else
+        {:reply, result, state}
+      end
+    else
+      {:reply, {:error, :untrusted_audit_transport}, state}
+    end
   end
 
   def handle_call({__MODULE__, :revoke}, {caller, _}, state) do
@@ -613,6 +651,9 @@ defmodule Spectre.Server.Runtime do
   end
 
   def handle_info({__MODULE__, token, :skill_started, id, pid}, %{control: token} = state) do
+    if Keyword.get(state.opts, :diagnostics_notifications, false),
+      do: subscribe_diagnostics(pid)
+
     current = Map.put(state.skill_current, id, pid)
     order = Enum.take([pid | state.skill_pid_order], 256)
     retained = Enum.uniq(Map.values(current) ++ order)
@@ -625,7 +666,7 @@ defmodule Spectre.Server.Runtime do
       {:ok, id} ->
         notify(state, {:skill, id, event})
 
-        if Skills.preview?(event),
+        if Skills.preview?(event) or match?({:diagnostics_changed, _}, event),
           do: {:noreply, state},
           else: {:noreply, conversation(state, :handle_skill, [id, event], nil) |> finish()}
 
@@ -666,6 +707,8 @@ defmodule Spectre.Server.Runtime do
       {:ok, returned} ->
         validate_context!(returned, dispatch)
         if returned.commands != [], do: raise(ArgumentError, "code_change cannot start commands")
+        Spectre.Server.Contracts.validate_assigns!(state.server, returned.assigns)
+        Spectre.Server.Contracts.validate_retained!(state.server, state)
         state = %{state | assigns: returned.assigns}
         state = Map.put(state, :tool_bindings, Tool.bindings!(state))
         state = state |> Tool.validate_persisted!() |> Checkpoint.refresh_fingerprint()
@@ -789,6 +832,72 @@ defmodule Spectre.Server.Runtime do
     do: apply(Managed, function, [Keyword.fetch!(config, :server) | args])
 
   defp managed_call(_state, _function, _args), do: {:error, :managed_gam_not_configured}
+
+  @spec diagnostic_managed_call(map(), atom(), list()) :: term()
+  defp diagnostic_managed_call(state, function, args) do
+    managed_call(state, function, args)
+  catch
+    :exit, _ -> {:error, :diagnostic_source_unavailable}
+  end
+
+  @spec subscribe_diagnostics(pid()) :: :ok | {:error, atom()}
+  defp subscribe_diagnostics(pid) do
+    GenServer.call(pid, {__MODULE__, :diagnostics_subscribe}, 1_000)
+  catch
+    :exit, _ -> {:error, :diagnostic_source_unavailable}
+  end
+
+  @spec diagnostic_read(map(), term(), term()) :: {:ok, map()} | {:error, term()}
+  defp diagnostic_read(state, mode, opts) do
+    with true <- is_list(opts) and Keyword.keyword?(opts),
+         true <- Enum.all?(Keyword.keys(opts), &(&1 in [:skill, :limit, :cursor])),
+         true <- length(Keyword.keys(opts)) == length(Enum.uniq(Keyword.keys(opts))),
+         {:ok, snapshot} <- diagnostic_snapshot(state, mode, opts) do
+      diagnostic_correlate(state, mode, opts, snapshot)
+    else
+      false -> {:error, :invalid_diagnostic_options}
+      {:error, _} = error -> error
+    end
+  catch
+    :exit, _ -> {:error, :diagnostic_source_unavailable}
+  end
+
+  @spec diagnostic_snapshot(map(), term(), keyword()) :: {:ok, map()} | {:error, term()}
+  defp diagnostic_snapshot(state, mode, opts) do
+    local_opts = Keyword.take(opts, [:limit])
+
+    case Keyword.get(opts, :skill) do
+      nil ->
+        diagnostic_local(state, mode, local_opts)
+
+      skill ->
+        with {:ok, pid} <- Skills.lookup(state.skill_supervisor, skill),
+             do: GenServer.call(pid, {__MODULE__, :diagnostics, mode, local_opts})
+    end
+  end
+
+  @spec diagnostic_local(map(), term(), keyword()) :: {:ok, map()} | {:error, term()}
+  defp diagnostic_local(state, :operational, opts),
+    do: Spectre.Server.Diagnostics.read(state, opts)
+
+  defp diagnostic_local(state, {:trace, interaction}, opts),
+    do: Spectre.Server.Diagnostics.read_trace(state, interaction, opts)
+
+  defp diagnostic_local(_, _, _), do: {:error, :invalid_diagnostic_query}
+
+  @spec diagnostic_correlate(map(), term(), keyword(), map()) :: {:ok, map()} | {:error, term()}
+  defp diagnostic_correlate(state, {:trace, interaction}, opts, snapshot) do
+    if Keyword.has_key?(state.opts, :skill) do
+      {:ok, snapshot}
+    else
+      gam_opts = opts |> Keyword.take([:limit, :cursor]) |> Keyword.put(:interaction, interaction)
+
+      with {:ok, gam} <- managed_call(state, :diagnostics, [gam_opts, state.consumer]),
+           do: {:ok, Map.put(snapshot, :gam, gam)}
+    end
+  end
+
+  defp diagnostic_correlate(_, _, _, snapshot), do: {:ok, snapshot}
 
   @spec accept_decision(map(), String.t(), :confirm | :reject, String.t()) :: tuple()
   defp accept_decision(state, ref, decision, proof) do
@@ -1207,6 +1316,8 @@ defmodule Spectre.Server.Runtime do
         revision: Map.get(previous, :revision, 0) + 1,
         shown_at_sequence: state.sequence,
         on_result: Map.get(previous, :on_result, tag),
+        explicit_on_result:
+          Map.get(previous, :explicit_on_result, Map.get(worker, :explicit_on_result, false)),
         command_id: Map.get(previous, :command_id, Map.get(worker, :command_id)),
         origin: Map.get(previous, :origin, event)
       })
@@ -1361,6 +1472,15 @@ defmodule Spectre.Server.Runtime do
   defp prepare_conversation(state, callback, args, event, ctx, dispatch) do
     if event && event.steps > state.max_steps,
       do: raise(ArgumentError, "Server interaction step limit exceeded")
+
+    if callback == :handle_result do
+      [tag, result] = args
+
+      Spectre.Server.Contracts.validate_result!(state.server, tag, result, %{
+        interaction_id: event_id(event),
+        command_id: get_in(state.inbox, [state.processing_result, :worker, :command_id])
+      })
+    end
 
     returned = apply(state.server, callback, args ++ [ctx])
     validate_context!(returned, dispatch)
@@ -1576,6 +1696,8 @@ defmodule Spectre.Server.Runtime do
 
   defp prepare_acquisition(state, returned, dispatch) do
     validate_context!(returned, dispatch)
+    Spectre.Server.Contracts.validate_assigns!(state.server, returned.assigns)
+    Spectre.Server.Contracts.validate_commands!(state.server, returned.commands)
 
     case expired_schedule(state, returned.commands) do
       nil ->
@@ -1642,9 +1764,18 @@ defmodule Spectre.Server.Runtime do
     state = %{state | released_commands: []}
 
     entries =
-      Enum.map(normalized, fn {command, origin} ->
+      Enum.zip(normalized, returned.commands)
+      |> Enum.map(fn {{command, origin}, original} ->
         entry =
-          Map.merge(%{command: command, event: dispatch.event, execution_started: false}, extra)
+          Map.merge(
+            %{
+              command: command,
+              event: dispatch.event,
+              execution_started: false,
+              explicit_on_result: Keyword.has_key?(original.opts, :on_result)
+            },
+            extra
+          )
 
         entry = if origin, do: Map.put(entry, :tool_origin, origin), else: entry
         {Spectre.Identity.uuid7(), entry}
@@ -1889,6 +2020,7 @@ defmodule Spectre.Server.Runtime do
       status: if(Keyword.get(opts, :foreground, false), do: :foreground, else: :background),
       origin: event,
       on_result: Keyword.get(opts, :on_result, id),
+      explicit_on_result: Keyword.has_key?(opts, :on_result),
       deadline:
         if(timeout == :infinity, do: nil, else: System.system_time(:millisecond) + timeout)
     }
@@ -1906,6 +2038,7 @@ defmodule Spectre.Server.Runtime do
       monitor: nil,
       timer: timer,
       tag: pending.on_result,
+      explicit_on_result: pending.explicit_on_result,
       event: event,
       pending_id: id,
       command_id: state.active_command
@@ -2147,6 +2280,15 @@ defmodule Spectre.Server.Runtime do
       )
 
     worker = Map.put(worker, :command_id, state.active_command)
+    entry = Map.get(state.outbox, state.active_command, %{})
+
+    worker =
+      Map.put(
+        worker,
+        :explicit_on_result,
+        Map.get(entry, :explicit_on_result, Keyword.has_key?(opts, :on_result))
+      )
+
     %{state | workers: Map.put(state.workers, ref, worker)}
   end
 
@@ -2777,6 +2919,8 @@ defmodule Spectre.Server.Runtime do
        do: uncertain_governed(state, nil, worker, {:reconciliation_unavailable, reason})
 
   defp receive_result(state, worker, result, result_id) do
+    source = Map.get(state.outbox, Map.get(worker, :command_id), %{})
+    worker = Map.put_new(worker, :explicit_on_result, Map.get(source, :explicit_on_result, false))
     fallback_id = Map.get(worker, :command_id) || result_id || Spectre.Identity.uuid7()
     id = Delivery.result_key(result, fallback_id)
     worker = if result_id, do: Map.put(worker, :external_event_id, result_id), else: worker
@@ -2804,6 +2948,7 @@ defmodule Spectre.Server.Runtime do
 
     safe_worker =
       Map.take(worker, [
+        :explicit_on_result,
         :kind,
         :tag,
         :event,

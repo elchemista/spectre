@@ -16,7 +16,9 @@ defmodule Spectre.GAM.Application do
     children = [
       {Registry, keys: :unique, name: Spectre.GAM.Domain.Registry},
       Spectre.GAM.Secret.Broker.Passthrough,
-      {Spectre.GAM.Domain.Supervisor, name: Spectre.GAM.Domain.Supervisor}
+      {Spectre.GAM.Domain.Supervisor, name: Spectre.GAM.Domain.Supervisor},
+      # Observability loss must not restart authority or running Domains.
+      {Spectre.GAM.Domain.Notifications, []}
     ]
 
     Supervisor.start_link(children,

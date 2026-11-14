@@ -1,7 +1,7 @@
 # Nine-package AgentServer integration
 
 This standalone Mix project uses the sibling `feature/stack-tools-0.4` branches
-and the core `feature/agent-server-gam` branch. It deliberately keeps satellite
+(Lab uses `feature/diagnostics-0.4`) and the core `feature/agent-server-gam` branch. It deliberately keeps satellite
 path dependencies out of Spectre's production dependencies.
 
 From this directory:

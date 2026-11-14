@@ -41,3 +41,9 @@ GAM migration. The [0.3 tutorial](GETTING_STARTED_0_3.md) and
 [0.3 architecture](ARCHITECTURE_0_3.md) preserve that context. Guides specifically
 about Instances, Runs and their checkpoint formats apply to that runtime; use
 [Agent and Server](AGENT_SERVER.md) for Server checkpoints and execution.
+
+## Release hardening
+
+[Server contracts](SERVER_CONTRACTS.md) covers optional assigns/continuation schemas
+and root/mount permission diagnostics. [Diagnostics](DIAGNOSTICS.md) describes
+authorized operational views, GAM pagination, notifications and trace coverage.

@@ -4,6 +4,9 @@ defmodule Spectre.Server.Failure do
   def capture(function) do
     {:ok, function.()}
   rescue
+    exception in Spectre.Server.ContractError ->
+      {:error, Map.put(exception.details, :kind, :contract)}
+
     exception ->
       {:error,
        %{

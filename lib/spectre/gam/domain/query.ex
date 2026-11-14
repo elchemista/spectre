@@ -31,6 +31,9 @@ defmodule Spectre.GAM.Domain.Query do
   defp read(state, scope, :view),
     do: ScopeView.from_projection(state.projection, Spectre.GAM.Scope.ref(scope))
 
+  defp read(state, scope, {:diagnostics, opts}),
+    do: Spectre.GAM.Scope.Diagnostics.page(state.projection, Spectre.GAM.Scope.ref(scope), opts)
+
   defp read(state, _scope, :surface),
     do: {:ok, State.surface(state.projection)}
 

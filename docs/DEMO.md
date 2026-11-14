@@ -1,16 +1,17 @@
 # Spectre 0.4 LiveView showcase
 
-The demo is a **separate sibling application**, `../demo_spectre` relative to
-this checkout. It is not part of the Spectre Hex package and is not yet a
-published standalone repository. It was generated with Phoenix without a DB.
+The demo is a [separate repository](https://github.com/elchemista/demo_spectre),
+created with Phoenix without a database. It is not part of the Spectre Hex package.
 
 ## Start locally
 
-Keep `spectre`, `demo_spectre` and the nine package checkouts in the same parent
-directory. Core uses `feature/agent-server-gam`; satellite packages use their
-compatible `feature/stack-tools-0.4` development branches. From that parent:
+Clone the demo and follow its README. Default dependencies are exact Git commits
+for core and all nine packages, so sibling checkouts are not required. Its checked-in
+manifest and lockfile identify the tested set. For ecosystem development only,
+`SPECTRE_LOCAL_DEPS=1` explicitly selects sibling paths instead.
 
 ```sh
+git clone https://github.com/elchemista/demo_spectre.git
 cd demo_spectre
 mix setup
 mix phx.server
@@ -61,8 +62,9 @@ GAM** shows the single authority projection. The sibling application's
    remains available. Confirmation buttons pin the Skill, pending ID and revision.
 5. **Sospendi** changes topic within Research and schedules an audited closure
    after 30 seconds. **Riprendi** before expiry asks for a fresh presentation.
-6. The inspector shows tool results, local mail and the real `GAM.view/1`
-   projection (Evidence, Decisions, Acts, Outcomes and Duties).
+6. The inspector shows tool results, local mail and redacted, paginated GAM
+   records. Commit notifications trigger refresh; there is no periodic full-ledger
+   polling. See [Diagnostics](DIAGNOSTICS.md) for authorization and trace limits.
 
 The Stack installs Lens, Kinetic, Mnemonic, Prism, Beam, Directive, Pulse, Ledger
 and Lab. Diagnostics exercises Beam endpoint discovery, Pulse protocol inspection,
@@ -122,3 +124,7 @@ The demo now also includes:
 The core tests exercise online collection, verification, re-embedding and
 training artifacts. The demo disables automatic shared intent collection;
 Mnemonic's per-session user memory remains separate from that intent dataset.
+
+Contacts are selected from structured Lens links and observed semantic text, with
+source provenance. Multiple distinct addresses stop before message generation.
+The demo keeps consent and execution material bound to the selected observation.

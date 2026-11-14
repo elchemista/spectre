@@ -76,6 +76,14 @@ defmodule Spectre.Server.GAM.Managed do
     GenServer.call(server, {:view, caller})
   end
 
+  @doc false
+  @spec diagnostics(pid(), keyword(), pid()) :: {:ok, map()} | {:error, term()}
+  def diagnostics(server, opts, caller), do: GenServer.call(server, {:diagnostics, opts, caller})
+
+  @doc false
+  @spec subscribe(pid(), pid()) :: :ok | {:error, atom()}
+  def subscribe(server, caller), do: GenServer.call(server, {:subscribe, caller})
+
   @doc "Acknowledges rendering through the configured consumer."
   @spec presented(pid(), binary(), pid()) :: :ok | {:error, atom()}
   def presented(server, ref, caller),
@@ -210,6 +218,26 @@ defmodule Spectre.Server.GAM.Managed do
       else: {:reply, {:error, :untrusted_audit_transport}, state}
   end
 
+  def handle_call({:diagnostics, opts, caller}, {runtime, _}, state) do
+    if runtime == state.options[:runtime] and caller == state.options[:consumer] do
+      result =
+        GAM.Domain.Sequencer.query(state.scope.domain.server, state.scope, {:diagnostics, opts})
+
+      {:reply, result, state}
+    else
+      {:reply, {:error, :untrusted_audit_transport}, state}
+    end
+  end
+
+  def handle_call({:subscribe, caller}, {runtime, _}, state) do
+    if runtime == state.options[:runtime] and caller == state.options[:consumer] do
+      {result, state} = ensure_diagnostics_subscription(state)
+      {:reply, result, state}
+    else
+      {:reply, {:error, :untrusted_audit_transport}, state}
+    end
+  end
+
   def handle_call(:close, from, state) do
     Process.send_after(
       self(),
@@ -282,6 +310,45 @@ defmodule Spectre.Server.GAM.Managed do
   end
 
   @impl true
+  def handle_info({:diagnostics_revision, revision}, state) do
+    unless Map.get(state, :diagnostics_timer),
+      do: Process.send_after(self(), :diagnostics_flush, 50)
+
+    {:noreply,
+     state |> Map.put(:diagnostics_timer, true) |> Map.put(:diagnostics_revision, revision)}
+  end
+
+  def handle_info(:diagnostics_flush, state) do
+    if is_pid(state.options[:consumer]) do
+      send(
+        state.options[:consumer],
+        {Spectre.Server, state.options[:runtime],
+         {:diagnostics_changed, %{source: :gam, revision: state.diagnostics_revision}}}
+      )
+    end
+
+    {:noreply, Map.put(state, :diagnostics_timer, false)}
+  end
+
+  def handle_info(:diagnostics_resubscribe, state) do
+    state = Map.put(state, :diagnostics_retry, nil)
+
+    if state.closing do
+      {:noreply, state}
+    else
+      {_result, state} = ensure_diagnostics_subscription(state)
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(
+        {:DOWN, monitor, :process, _notifier, _},
+        %{diagnostics_monitor: monitor} = state
+      ) do
+    state = Map.merge(state, %{diagnostics_notifier: nil, diagnostics_monitor: nil})
+    {:noreply, retry_diagnostics_subscription(state)}
+  end
+
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state) do
     Process.send_after(
       self(),
@@ -320,6 +387,59 @@ defmodule Spectre.Server.GAM.Managed do
   def handle_info(:drain_timeout, state) do
     Enum.each(state.close_waiters, &GenServer.reply(&1, {:error, :shutdown_drain_timeout}))
     {:stop, :normal, %{state | close_waiters: []}}
+  end
+
+  @spec ensure_diagnostics_subscription(map()) :: {:ok | {:error, atom()}, map()}
+  defp ensure_diagnostics_subscription(state) do
+    notifier = Map.get(state, :diagnostics_notifier)
+
+    if is_pid(notifier) and Process.alive?(notifier) do
+      {:ok, state}
+    else
+      if monitor = Map.get(state, :diagnostics_monitor), do: Process.demonitor(monitor, [:flush])
+
+      case GAM.Domain.Notifications.subscribe(state.refs.domain) do
+        {:ok, notifier} ->
+          if timer = Map.get(state, :diagnostics_retry), do: Process.cancel_timer(timer)
+          if Map.get(state, :diagnostics_registered), do: refresh_diagnostics(state)
+
+          {:ok,
+           Map.merge(state, %{
+             diagnostics_notifier: notifier,
+             diagnostics_monitor: Process.monitor(notifier),
+             diagnostics_retry: nil,
+             diagnostics_registered: true
+           })}
+
+        {:error, _} = error ->
+          {error, retry_diagnostics_subscription(state)}
+      end
+    end
+  end
+
+  @spec refresh_diagnostics(map()) :: :ok
+  defp refresh_diagnostics(state) do
+    case GAM.Domain.Sequencer.head(state.scope.domain.server) do
+      {:ok, %{revision: revision}} -> send(self(), {:diagnostics_revision, revision})
+      _ -> :ok
+    end
+
+    :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  @spec retry_diagnostics_subscription(map()) :: map()
+  defp retry_diagnostics_subscription(state) do
+    if Map.get(state, :diagnostics_retry) || state.closing do
+      state
+    else
+      Map.put(
+        state,
+        :diagnostics_retry,
+        Process.send_after(self(), :diagnostics_resubscribe, 100)
+      )
+    end
   end
 
   @spec finish_close(map()) :: {:noreply, map()} | {:stop, :normal, map()}

@@ -200,6 +200,51 @@ defmodule Spectre.Server.ManagedDecisionTargetTest do
     end
   end
 
+  test "a restarted Skill inherits diagnostic subscription and preserves the shared Domain", %{
+    server: server
+  } do
+    assert :ok = Server.subscribe(server)
+    assert {:ok, child} = Server.skill_server(server, :first)
+    assert {:ok, sibling} = Server.skill_server(server, :second)
+    root_bridge = :sys.get_state(server).gam
+    assert :sys.get_state(child).gam == root_bridge
+    assert :sys.get_state(sibling).gam == root_bridge
+    assert {:error, :untrusted_audit_transport} = Server.inspect(child)
+    assert {:error, :untrusted_audit_transport} = Server.subscribe(child)
+    monitor = Process.monitor(child)
+    Process.exit(child, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^child, :killed}, 5_000
+
+    replacement = subscribed_replacement(server, child)
+    assert :sys.get_state(replacement).gam == root_bridge
+    assert :sys.get_state(server).gam == root_bridge
+    assert Process.alive?(sibling)
+    pending = shown_pending(server, :first)
+    assert_receive {Server, ^server, {:diagnostics_changed, %{source: :gam}}}, 5_000
+    assert {:ok, _} = Server.gam_inspect(server)
+    assert {:ok, _} = Server.decide(server, :first, pending.presentation.ref, :reject)
+    assert_receive {:completed, :first, {:consent, :rejected}}, 5_000
+  end
+
+  defp subscribed_replacement(server, old, attempts \\ 100)
+  defp subscribed_replacement(_, _, 0), do: flunk("Skill subscription was not restored")
+
+  defp subscribed_replacement(server, old, attempts) do
+    case Server.skill_server(server, :first) do
+      {:ok, child} when child != old ->
+        if :sys.get_state(child).opts[:diagnostics_notifications] do
+          child
+        else
+          Process.sleep(10)
+          subscribed_replacement(server, old, attempts - 1)
+        end
+
+      _ ->
+        Process.sleep(10)
+        subscribed_replacement(server, old, attempts - 1)
+    end
+  end
+
   @spec shown_pending(GenServer.server(), atom()) :: map()
   defp shown_pending(server, skill) do
     assert {:ok, _} = Server.input(server, "send", skill: skill)

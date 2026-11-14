@@ -133,6 +133,20 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     end
   end
 
+  defmodule ContractApp do
+    use Spectre.Server
+
+    def continuation_contracts, do: %{sent: {:tuple, [{:enum, [:ok]}, :integer]}}
+
+    def handle_flow({:test, :send}, input, ctx),
+      do: propose(ctx, :deliver, %{body: input.text}, on_result: :sent)
+
+    def handle_result(:sent, _result, ctx) do
+      send(Spectre.Server.ManagedRuntimeTest, :invalid_continuation_entered)
+      no_response(ctx)
+    end
+  end
+
   @doc false
   @spec custom_interpret(Spectre.Input.t(), Spectre.GAM.Presentation.t()) ::
           :confirm | :reject | :unclear
@@ -715,5 +729,221 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     assert {:ok, _} = Server.input(server, "yes")
     assert_receive {:effect, %{body: "send"}, _}, 5_000
     assert_receive {:completed, {:governed, %{outcome: %{status: :succeeded}}}}, 5_000
+  end
+
+  @tag :tmp_dir
+  test "diagnostics authenticate the actual consumer and reject privilege-shaped options", %{
+    tmp_dir: path
+  } do
+    server = diagnostics_server(path)
+
+    task =
+      Task.async(fn ->
+        [
+          Server.inspect(server),
+          Server.trace(server, "unknown"),
+          Server.gam_inspect(server),
+          Server.subscribe(server)
+        ]
+      end)
+
+    assert List.duplicate({:error, :untrusted_audit_transport}, 4) == Task.await(task)
+    assert {:ok, _} = Server.inspect(server)
+
+    for opts <- [[scope: :domain], [consumer: self()], [limit: 1, limit: 2]] do
+      assert {:error, :invalid_diagnostic_options} = Server.inspect(server, opts)
+      assert {:error, :invalid_diagnostic_options} = Server.trace(server, "unknown", opts)
+      assert {:error, :invalid_diagnostic_options} = Server.gam_inspect(server, opts)
+    end
+
+    assert {:ok, %{total: 0, coverage: %{complete: false}, gam: %{total: 0}}} =
+             Server.trace(server, "unknown")
+  end
+
+  @tag :tmp_dir
+  test "diagnostics publish invalidations and correlate consent and outcomes without payloads", %{
+    tmp_dir: path
+  } do
+    server = diagnostics_server(path)
+    assert :ok = Server.subscribe(server)
+    assert :ok = Server.subscribe(server)
+    assert {:ok, interaction} = Server.input(server, "PRIVATE DIAGNOSTIC BODY")
+    ref = presentation()
+    assert :ok = Server.presented(server, ref)
+    assert_receive {Server, ^server, {:pending, _, _}}, 5_000
+
+    assert_receive {Server, ^server,
+                    {:diagnostics_changed, %{source: :checkpoint, revision: checkpoint_revision}}},
+                   5_000
+
+    assert_receive {Server, ^server,
+                    {:diagnostics_changed, %{source: :gam, revision: gam_revision}}},
+                   5_000
+
+    assert is_integer(checkpoint_revision)
+    assert is_integer(gam_revision)
+
+    assert {:ok, operational} = Server.inspect(server)
+    assert operational.checkpoint.pending == 1
+    refute inspect(operational) =~ "PRIVATE DIAGNOSTIC BODY"
+
+    assert {:ok, pending_trace} = Server.trace(server, interaction, limit: 100)
+    assert pending_trace.coverage.complete == false
+    assert Enum.any?(pending_trace.gam.records, &(&1.kind == :presentation and &1.ref == ref))
+
+    assert Enum.any?(
+             pending_trace.gam.records,
+             &(&1.kind == :evidence and &1[:interaction_id] == interaction)
+           )
+
+    refute inspect(pending_trace) =~ "PRIVATE DIAGNOSTIC BODY"
+    refute Map.has_key?(pending_trace.gam, :scope)
+
+    assert {:ok, first_page} = Server.gam_inspect(server, limit: 1)
+    assert length(first_page.records) == 1
+    assert first_page.next_cursor != nil
+    assert {:ok, next_page} = Server.gam_inspect(server, limit: 1, cursor: first_page.next_cursor)
+    assert next_page.revision == first_page.revision
+    refute next_page.records == first_page.records
+
+    assert {:ok, _} = Server.decide(server, nil, ref, :confirm)
+    assert_receive {:effect, %{body: "PRIVATE DIAGNOSTIC BODY"}, _}, 5_000
+    assert_receive {:completed, {:governed, %{outcome: %{status: :succeeded}}}}, 5_000
+    assert {:error, :stale_cursor} = Server.gam_inspect(server, cursor: first_page.next_cursor)
+    assert {:ok, completed_trace} = Server.trace(server, interaction, limit: 100)
+    assert Enum.any?(completed_trace.gam.records, &(&1.kind == :act))
+    assert Enum.any?(completed_trace.gam.records, &(&1.kind == :outcome))
+    refute inspect(completed_trace) =~ "PRIVATE DIAGNOSTIC BODY"
+  end
+
+  @tag :tmp_dir
+  test "governed contract failures preserve GAM outcome and never reexecute after restore", %{
+    tmp_dir: path
+  } do
+    store = start_supervised!({Server.Store.Disk, path: Path.join(path, "contract-coordination")})
+
+    opts = [
+      agent: Agent,
+      server: ContractApp,
+      consumer: self(),
+      identity: %{subject: "contract-human"},
+      checkpoint: {store, :agent},
+      gam: [
+        storage: {:disk, Path.join(path, "contract-gam")},
+        operations: %{deliver: [confirm: false]}
+      ]
+    ]
+
+    {:ok, server} = Server.start_link(opts)
+    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    {:ok, interaction} = Server.input(server, "PRIVATE CONTRACT BODY")
+    assert_receive {:effect, %{body: "PRIVATE CONTRACT BODY"}, _}, 5_000
+
+    assert_receive {Server, ^server, {:callback_error, ^interaction, :handle_result, failure}},
+                   5_000
+
+    assert failure.kind == :contract
+    refute inspect(failure) =~ "PRIVATE CONTRACT BODY"
+    refute_receive :invalid_continuation_entered
+
+    [letter] = Map.values(Server.status(server).dead_letters)
+    assert is_binary(letter.source.act_ref)
+    assert is_binary(letter.source.outcome_ref)
+    assert {:ok, trace} = Server.trace(server, interaction, limit: 100)
+
+    assert Enum.any?(
+             trace.records,
+             &(&1.collection == :dead_letters and &1.command_id == failure.command_id)
+           )
+
+    assert Enum.any?(
+             trace.gam.records,
+             &(&1.kind == :outcome and &1.ref == letter.source.outcome_ref)
+           )
+
+    assert :ok = GenServer.stop(server)
+
+    {:ok, restored} = Server.start_link(opts)
+    on_exit(fn -> if Process.alive?(restored), do: GenServer.stop(restored) end)
+    assert map_size(Server.status(restored).dead_letters) == 1
+    refute_receive {:effect, _, _}
+    refute_receive :invalid_continuation_entered
+  end
+
+  @tag :tmp_dir
+  test "diagnostic process group restart preserves the Domain and restores subscriptions", %{
+    tmp_dir: path
+  } do
+    server = diagnostics_server(path)
+    managed = :sys.get_state(server).managed_owner
+    domain = :sys.get_state(managed).domain
+    domain_ref = :sys.get_state(managed).refs.domain
+    registry = Spectre.GAM.Domain.Notifications
+
+    assert :ok = Server.subscribe(server)
+    assert :ok = Server.subscribe(server)
+    assert :pg.get_local_members(registry, domain_ref) == [managed]
+
+    old_registry = Process.whereis(registry)
+    Process.exit(old_registry, :kill)
+
+    diagnostics_eventually(fn ->
+      replacement = Process.whereis(registry)
+
+      replacement != nil and replacement != old_registry and
+        :pg.get_local_members(registry, domain_ref) == [managed]
+    end)
+
+    assert Process.alive?(server)
+    assert Process.alive?(managed)
+    assert Process.alive?(domain)
+    assert :sys.get_state(managed).domain == domain
+    assert :ok = Server.subscribe(server)
+    assert :pg.get_local_members(registry, domain_ref) == [managed]
+
+    # Recovering subscription also invalidates a stale inspector even when no
+    # later effect happens to produce another commit.
+    assert {:ok, current} = Server.gam_inspect(server)
+    revision = current.revision
+
+    assert_receive {Server, ^server,
+                    {:diagnostics_changed, %{source: :gam, revision: ^revision}}},
+                   5_000
+
+    assert {:ok, _} = Server.input(server, "notifications recovered")
+    ref = presentation()
+    assert :ok = Server.presented(server, ref)
+    assert_receive {Server, ^server, {:pending, _, _}}, 5_000
+    assert_receive {Server, ^server, {:diagnostics_changed, %{source: :gam}}}, 5_000
+    assert {:ok, _} = Server.gam_inspect(server)
+  end
+
+  defp diagnostics_eventually(check, attempts \\ 100)
+  defp diagnostics_eventually(check, 0), do: assert(check.())
+
+  defp diagnostics_eventually(check, attempts) do
+    if check.() do
+      :ok
+    else
+      Process.sleep(10)
+      diagnostics_eventually(check, attempts - 1)
+    end
+  end
+
+  defp diagnostics_server(path) do
+    store =
+      start_supervised!({Server.Store.Disk, path: Path.join(path, "diagnostic-coordination")})
+
+    start_supervised!(
+      {Server,
+       agent: Agent,
+       consumer: self(),
+       identity: %{subject: "diagnostic-human"},
+       checkpoint: {store, :agent},
+       gam: [
+         storage: {:disk, Path.join(path, "diagnostic-gam")},
+         operations: %{deliver: [confirm: true]}
+       ]}
+    )
   end
 end

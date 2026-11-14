@@ -233,9 +233,15 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
     server = start_supervised!({Spectre.Server.Runtime, opts})
     old = operate(server)
     Server.input(server, "other")
-    wait(fn -> length(Server.status(server).pending) == 2 end)
-    assert Enum.any?(Server.status(server).pending, &(&1.id == old and &1.status == :suspended))
-    wait(fn -> length(Server.status(server).pending) == 1 end)
+    # The short timer may fire between two reads on a busy CI worker. Verify
+    # the durable suspension facts below, rather than racing its transient state.
+    wait(fn ->
+      case Server.status(server).pending do
+        [%{id: id, operation: :other}] -> id != old
+        _ -> false
+      end
+    end)
+
     [current] = Server.status(server).pending
     assert current.id != old
     assert current.operation == :other

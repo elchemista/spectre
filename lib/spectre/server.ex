@@ -43,6 +43,11 @@ defmodule Spectre.Server do
   @callback terminate(term(), Context.t()) :: term()
   @callback code_change(term(), Context.t(), term()) :: {:ok, Context.t()} | {:error, term()}
   @callback format_status(map()) :: map()
+  @callback assigns_schema() :: nil | %{optional(atom()) => Spectre.Server.Contracts.schema()}
+  @callback continuation_contracts() ::
+              nil | %{optional(atom()) => Spectre.Server.Contracts.schema()}
+
+  @optional_callbacks assigns_schema: 0, continuation_contracts: 0
 
   defmacro __using__(opts) do
     tools = Spectre.Server.ToolCompiler.snapshot!(opts, __CALLER__)
@@ -60,10 +65,19 @@ defmodule Spectre.Server do
           input: 3,
           cancel: 1,
           status: 1,
-          skill_server: 2
+          skill_server: 2,
+          inspect: 1,
+          inspect: 2,
+          trace: 2,
+          trace: 3,
+          gam_inspect: 1,
+          gam_inspect: 2,
+          subscribe: 1
         ]
 
       def __spectre_server_options__, do: @spectre_server_options
+      def assigns_schema, do: nil
+      def continuation_contracts, do: nil
       def init(_arg, ctx), do: {:ok, ctx}
 
       def handle_flow(:unmatched, _input, ctx),
@@ -125,7 +139,9 @@ defmodule Spectre.Server do
       def code_change(_old_vsn, ctx, _extra), do: {:ok, ctx}
       def format_status(status), do: status
 
-      defoverridable init: 2,
+      defoverridable assigns_schema: 0,
+                     continuation_contracts: 0,
+                     init: 2,
                      handle_action: 2,
                      handle_flow: 3,
                      handle_pending: 3,
@@ -304,6 +320,24 @@ defmodule Spectre.Server do
   @doc "Returns the authoritative managed GAM projection, without exposing its Scope."
   @spec gam_view(GenServer.server()) :: {:ok, map()} | {:error, term()}
   def gam_view(server), do: GenServer.call(server, {Runtime, :gam_view})
+
+  @doc "Returns a redacted durable operational snapshot to the configured consumer. Use skill: id for a mounted Skill."
+  @spec inspect(GenServer.server(), keyword()) :: {:ok, map()} | {:error, term()}
+  def inspect(server, opts \\ []),
+    do: GenServer.call(server, {Runtime, :diagnostics, :operational, opts})
+
+  @doc "Returns retained coordination facts and a bounded page of correlated GAM records; coverage is explicit."
+  @spec trace(GenServer.server(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
+  def trace(server, interaction, opts \\ []),
+    do: GenServer.call(server, {Runtime, :diagnostics, {:trace, interaction}, opts})
+
+  @doc "Returns a redacted GAM page to the configured consumer. Cursors expire when the Domain revision changes."
+  @spec gam_inspect(GenServer.server(), keyword()) :: {:ok, map()} | {:error, term()}
+  def gam_inspect(server, opts \\ []), do: GenServer.call(server, {Runtime, :gam_inspect, opts})
+
+  @doc "Subscribes the configured consumer to post-commit diagnostic invalidations. Read a snapshot after subscribing."
+  @spec subscribe(GenServer.server()) :: :ok | {:error, term()}
+  def subscribe(server), do: GenServer.call(server, {Runtime, :diagnostics_subscribe})
 
   def assign(%Context{} = ctx, key, value), do: %{ctx | assigns: Map.put(ctx.assigns, key, value)}
 

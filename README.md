@@ -406,7 +406,7 @@ adapter/resource and applies its cognitive or governed contract.
 | [Directive](https://github.com/elchemista/spectre_directive/tree/feature/stack-tools-0.4) | `directive`: portable task-state reduction |
 | [Pulse](https://github.com/elchemista/spectre_pulse/tree/feature/stack-tools-0.4) | `pulse`: protocol/contacts and bound sends |
 | [Ledger](https://github.com/elchemista/spectre_ledger/tree/feature/stack-tools-0.4) | `ledger`: current checkpoint metadata; durable store adapter |
-| [Lab](https://github.com/elchemista/spectre_lab/tree/feature/stack-tools-0.4) | `lab`: checkpoint inspection and validation |
+| [Lab](https://github.com/elchemista/spectre_lab/tree/feature/diagnostics-0.4) | `lab`: checkpoint inspection and validation |
 
 See [Stack tools](docs/STACK_TOOLS.md) for exact requests, results, bindings and
 replay rules. The [nine-package integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md)
@@ -416,12 +416,13 @@ adapters, persistence and GAM loop are real.
 
 ## LiveView showcase
 
-The sibling `demo_spectre` development application runs a chat, two supervised
+The [demo_spectre](https://github.com/elchemista/demo_spectre) development application runs a chat, two supervised
 Skills, all nine Stack packages and a shared GAM Domain. Lens visits a local
 website in Lightpanda; the deterministic model produces AL, Kinetic prepares the
 email, and GAM asks for separate email and memory consent. The UI includes
 stream previews, pending controls, tool activity, local mail and the actual
-GAM read-only projection. See the [showcase guide](docs/DEMO.md) for setup,
+paginated, redacted GAM inspector with commit-triggered refresh. The standalone
+repository pins all ten Spectre dependencies to exact Git commits. See the [showcase guide](docs/DEMO.md) for setup,
 coverage and the optional OpenRouter mode. The demo lives outside this package.
 
 ## Documentation
@@ -430,12 +431,15 @@ Start at [Start here](docs/START_HERE.md), then read
 [Getting started](docs/GETTING_STARTED.md), [Agent and Server](docs/AGENT_SERVER.md),
 [GAM](docs/GAM.md), [Routing](docs/ROUTING.md) and [Training](docs/TRAINING.md).
 [Migration](docs/MIGRATING_TO_0_4.md) identifies breaking changes and compatibility
-boundaries. [Changelog](CHANGELOG.md) records version history.
+boundaries. [Server contracts](docs/SERVER_CONTRACTS.md) documents optional
+state/continuation validation; [Diagnostics](docs/DIAGNOSTICS.md) explains
+operational snapshots, GAM pages and partial traces. [Changelog](CHANGELOG.md) records version history.
 
 The old `Instance`/`Run` APIs remain in the repository for compatibility; using
 them does not automatically migrate an application or its checkpoints to GAM.
-The host still owns authentication, mandates, executors, credentials and actual
-external-effect boundaries. Spectre is not a sandbox for arbitrary Elixir code.
+The application supplies authenticated identity, operation policy, credentials and
+registered effect adapters. AgentServer provisions GAM and records its protocol
+automatically. Spectre is not a sandbox for arbitrary Elixir code.
 
 Apache-2.0; see [LICENSE](LICENSE).
 

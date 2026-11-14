@@ -57,8 +57,12 @@ defmodule Spectre.GAM.Domain.Transaction do
       ) do
     with {:ok, projection} <- append_verified(state, batch_id, payloads, recorded_at) do
       case repair_missing_duties(%{state | projection: projection}) do
-        {:ok, projection} -> {:ok, projection}
-        {:error, reason} -> {:error, {:durable_recovery_failed, reason}}
+        {:ok, projection} ->
+          Spectre.GAM.Domain.Notifications.committed(projection.domain_ref, projection.revision)
+          {:ok, projection}
+
+        {:error, reason} ->
+          {:error, {:durable_recovery_failed, reason}}
       end
     end
   end

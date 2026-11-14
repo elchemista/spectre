@@ -9,6 +9,15 @@ migration called out explicitly below.
 
 ## 0.4.0 (unreleased)
 
+- Add optional assigns schemas and continuation contracts with pre-acquisition
+  validation and post-migration restore checks. Invalid results are quarantined
+  without replaying effects; add root/mount permission compatibility reports.
+- Add authorized redacted operational views, revision-bound GAM pagination,
+  post-commit invalidations and explicitly partial correlated traces. Lab consumes
+  runtime diagnostics without owning another ledger or exposing payloads.
+- Publish the standalone demo with exact dependency commits, structured contact
+  provenance, safe unknown-continuation handling and an event-driven inspector.
+
 - Document that separate Skill Servers automatically reuse the root AgentServer's
   GAM Domain, authority ledger and execution boundary. Clarify per-Skill state,
   mount operation restrictions, invocation provenance, isolated consent and

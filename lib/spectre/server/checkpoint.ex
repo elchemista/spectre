@@ -72,7 +72,9 @@ defmodule Spectre.Server.Checkpoint do
   defp load_entry({:ok, %{revision: revision, value: binary}}, state) do
     with {:ok, saved} <- Value.decode(binary, allowed_structs: @records),
          {:ok, projection} <- migrate_if_needed(saved, state),
-         :ok <- validate(projection, state) do
+         :ok <- validate(projection, state),
+         :ok <- Spectre.Server.Contracts.validate_assigns(state.server, projection.assigns),
+         :ok <- Spectre.Server.Contracts.validate_retained(state.server, projection) do
       projection = restore_projection(state.agent, projection)
 
       migrated? =
@@ -157,6 +159,7 @@ defmodule Spectre.Server.Checkpoint do
 
         with {:ok, bytes} <- Value.encode(projection, allowed_structs: @records),
              {:ok, revision} <- commit(module, store, key, state.checkpoint_revision, bytes) do
+          Spectre.Server.Diagnostics.changed(state, revision)
           %{state | checkpoint_revision: revision}
         else
           {:error, reason} ->

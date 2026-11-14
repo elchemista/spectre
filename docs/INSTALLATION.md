@@ -27,8 +27,9 @@ end
 ```
 
 The companion `spectre_mnemonic`, `spectre_lens`, `spectre_prism`, `spectre_beam`,
-`spectre_directive`, `spectre_pulse`, `spectre_ledger` and `spectre_lab` repositories
-also use `feature/stack-tools-0.4`. Do not mix their older installable contracts
+`spectre_directive`, `spectre_pulse` and `spectre_ledger` repositories
+also use `feature/stack-tools-0.4`. Lab diagnostics use
+[`feature/diagnostics-0.4`](https://github.com/elchemista/spectre_lab/tree/feature/diagnostics-0.4). Do not mix their older installable contracts
 with examples that depend on generated Server helpers. Commit `mix.lock`;
 for a reproducible reviewed snapshot replace each `branch:` with its exact
 `ref:`. If a satellite declares a conflicting core dependency source, make the
@@ -41,7 +42,9 @@ For an exact reviewed revision:
 {:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"}
 ```
 
-Replace `COMMIT_SHA` with the commit you reviewed.
+Replace `COMMIT_SHA` with the commit you reviewed. The standalone
+[demo manifest](https://github.com/elchemista/demo_spectre/blob/main/spectre.lock.exs)
+pins a complete tested set of core and all nine companion packages.
 
 ```sh
 mix deps.get
