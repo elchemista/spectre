@@ -99,4 +99,31 @@ defmodule Spectre.Server.DiagnosticProjectionTest do
       assert {:error, :invalid_diagnostic_limit} = Diagnostics.checkpoint(encoded(), limit: limit)
     end
   end
+
+  test "routing projects actual nested and Skill dispatch keys and saved strategy attributes" do
+    for {key, expected} <- [
+          {{[:support, :billing], "PRICING"}, [[:support, :billing], "PRICING"]},
+          {{{{:skill, :research}, :outreach}, :new_link},
+           [[[:skill, :research], :outreach], :new_link]}
+        ] do
+      bytes =
+        encoded(%{
+          current: %{
+            id: "i1",
+            routing: %{
+              route_key: key,
+              checkpoint_route: %{
+                kind: :definition_rule,
+                attributes: %{strategy: :semantic, scores: "PRIVATE"}
+              }
+            }
+          }
+        })
+
+      assert {:ok, %{routing: %{route: ^expected, strategy: :semantic}} = result} =
+               Diagnostics.checkpoint(bytes)
+
+      refute inspect(result) =~ "PRIVATE"
+    end
+  end
 end

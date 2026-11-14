@@ -182,7 +182,7 @@ defmodule Spectre.Server.Diagnostics do
       interaction_id: label(current[:id]),
       routing: %{
         route: route(routing[:route_key]),
-        strategy: label(routing[:strategy]),
+        strategy: strategy(routing),
         available: routing != %{}
       },
       current: %{phase: label(current[:phase])},
@@ -238,6 +238,39 @@ defmodule Spectre.Server.Diagnostics do
   end
 
   @spec route(term()) :: list() | nil
-  defp route({flow, intent}) when is_atom(flow) and is_atom(intent), do: [flow, intent]
+  defp route({{{:skill, skill}, flow}, intent}) do
+    with id when not is_nil(id) <- label(skill),
+         path when not is_nil(path) <- flow_path(flow),
+         name when not is_nil(name) <- label(intent),
+         do: [[[:skill, id], path], name]
+  end
+
+  defp route({flow, intent}) do
+    with path when not is_nil(path) <- flow_path(flow),
+         name when not is_nil(name) <- label(intent),
+         do: [path, name]
+  end
+
   defp route(_), do: nil
+
+  @spec flow_path(term()) :: atom() | binary() | list() | nil
+  defp flow_path(path) when is_list(path) do
+    if length(path) <= 16 and Enum.all?(path, &(not is_nil(label(&1)))), do: path
+  end
+
+  defp flow_path(path), do: label(path)
+
+  @spec strategy(map()) :: atom() | binary() | nil
+  defp strategy(routing) do
+    case Map.get(routing, :checkpoint_route) do
+      %{kind: :definition_rule, attributes: attrs} when is_map(attrs) ->
+        label(Map.get(attrs, :strategy))
+
+      %{kind: :portable, value: value} when is_map(value) ->
+        label(Map.get(value, :strategy))
+
+      _ ->
+        label(routing[:strategy])
+    end
+  end
 end
