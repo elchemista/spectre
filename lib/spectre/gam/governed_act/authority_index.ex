@@ -13,26 +13,33 @@ defmodule Spectre.GAM.GovernedAct.AuthorityIndex do
 
   alias Spectre.GAM.Duty
 
-  defstruct mandates_by_holder: %{},
+  @version 2
+
+  defstruct version: @version,
+            mandates_by_holder: %{},
             aliases_by_owner: %{},
             debts_by_owner: %{},
             debt_owners: %{},
             effects: %{},
+            open_duty_causes: MapSet.new(),
             counts: {0, 0, 0, 0}
 
   @type t :: %__MODULE__{
+          version: pos_integer(),
           mandates_by_holder: map(),
           aliases_by_owner: map(),
           debts_by_owner: map(),
           debt_owners: map(),
           effects: map(),
+          open_duty_causes: MapSet.t(),
           counts:
             {non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()} | nil
         }
 
   @doc false
   @spec complete?(t(), Spectre.GAM.GovernedAct.State.t()) :: boolean()
-  def complete?(index, state), do: index.counts === counts(state)
+  def complete?(index, state),
+    do: Map.get(index, :version) === @version and index.counts === counts(state)
 
   @doc false
   @spec record(Spectre.GAM.GovernedAct.State.t(), Spectre.GAM.Domain.Event.t()) ::
@@ -44,9 +51,10 @@ defmodule Spectre.GAM.GovernedAct.AuthorityIndex do
     # A partial, hand-built State must not acquire a complete index by recording
     # just one new event. Counts check coverage, not authenticity of host memory.
     index =
-      if index.counts === previous_counts(counts, event.type),
-        do: %{update(index, state, event) | counts: counts},
-        else: %{index | counts: nil}
+      if Map.get(index, :version) === @version and
+           index.counts === previous_counts(counts, event.type),
+         do: %{update(index, state, event) | counts: counts},
+         else: %{index | counts: nil}
 
     %{state | read_index: %{state.read_index | authority: index}}
   end
@@ -84,6 +92,8 @@ defmodule Spectre.GAM.GovernedAct.AuthorityIndex do
     cause = Map.fetch!(state.read_index.duties.by_ref, ref)
     duty = Map.fetch!(state.duties, cause)
 
+    index = %{index | open_duty_causes: MapSet.put(index.open_duty_causes, cause)}
+
     case blocked_effect(duty) do
       nil -> index
       digest -> %{index | effects: put(index.effects, digest, cause)}
@@ -92,6 +102,8 @@ defmodule Spectre.GAM.GovernedAct.AuthorityIndex do
 
   defp update(index, state, %{type: "duty_disposed", data: %{"cause_key" => cause}}) do
     duty = Map.fetch!(state.duties, cause)
+
+    index = %{index | open_duty_causes: MapSet.delete(index.open_duty_causes, cause)}
 
     # Disposition changes status, not the recorded containment of the cause.
     case blocked_effect(%{duty | status: :open}) do

@@ -13,6 +13,7 @@ defmodule Spectre.Server.Context do
             assigns: %{},
             private: %{},
             identity: %{},
+            skill: nil,
             interaction: nil,
             input: nil,
             routing: %{},

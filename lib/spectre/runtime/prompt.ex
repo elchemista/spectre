@@ -111,18 +111,26 @@ defmodule Spectre.Prompt do
     end
   end
 
-  # The Server provides this trusted runtime binding. Mounted Skills retain
-  # their own root; an Agent-level override cannot read another Skill's assets.
+  # A root override belongs to the Server's own scope. An Agent Server must
+  # never replace a mounted Skill's root; a Skill Server may bind its own.
   defp resolve_root(agent, :agent, opts) do
-    case Keyword.fetch(opts, :server_prompt_root) do
-      {:ok, root} when is_binary(root) and byte_size(root) > 0 -> {:ok, root}
-      {:ok, nil} -> Definition.prompt_root(agent, :agent)
-      {:ok, invalid} -> {:error, {:invalid_server_prompt_root, invalid}}
-      :error -> Definition.prompt_root(agent, :agent)
-    end
+    server_root(agent, :agent, opts)
   end
 
-  defp resolve_root(agent, scope, _opts), do: Definition.prompt_root(agent, scope)
+  defp resolve_root(agent, scope, opts) do
+    if Keyword.get(opts, :server_prompt_scope) == scope,
+      do: server_root(agent, scope, opts),
+      else: Definition.prompt_root(agent, scope)
+  end
+
+  defp server_root(agent, scope, opts) do
+    case Keyword.fetch(opts, :server_prompt_root) do
+      {:ok, root} when is_binary(root) and byte_size(root) > 0 -> {:ok, root}
+      {:ok, nil} -> Definition.prompt_root(agent, scope)
+      {:ok, invalid} -> {:error, {:invalid_server_prompt_root, invalid}}
+      :error -> Definition.prompt_root(agent, scope)
+    end
+  end
 
   @spec do_render_asset(module(), atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, String.t()} | {:error, term()}

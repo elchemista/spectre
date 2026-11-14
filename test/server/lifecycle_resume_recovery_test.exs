@@ -1,3 +1,5 @@
+# Protocol component tests use the internal Runtime to inject boundary adapters.
+# Application AgentServers always start through the automatic Spectre.Server API.
 defmodule Spectre.Server.LifecycleResumeRecoveryTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
@@ -269,7 +271,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
 
   test "a crash during requested resume retries the lifecycle without inventing an in-flight effect" do
     {opts, observer, _gate} = setup_runtime()
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     id = open(server)
     Server.input(server, "other")
     assert_receive {Server, ^server, {:response, _, "other", _}}, 2_000
@@ -277,7 +279,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
     GenServer.call(server, {:resume, id})
     assert_receive {:lifecycle_called, %{kind: :resume, phase: :requested}, held}, 2_000
     crash(server)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     assert_receive {:show_called, :resume, _}, 2_000
     wait(fn -> hd(Server.status(restored).pending).revision == 2 end)
     assert [%{id: ^id, status: :foreground}] = Server.status(restored).pending
@@ -291,7 +293,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
     test "a released but unstarted #{kind} executes once after restart" do
       kind = unquote(kind)
       {opts, observer, gate} = setup_runtime()
-      {:ok, server} = Server.start_link(opts)
+      {:ok, server} = Spectre.Server.Runtime.start_link(opts)
       id = open(server)
       assert :ok = GenServer.call(gate, {:arm, :released})
 
@@ -301,7 +303,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
       assert Agent.get(observer, & &1.shows) == []
       crash(server)
       GenServer.call(gate, :release)
-      {:ok, restored} = Server.start_link(opts)
+      {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
       assert_receive {:show_called, ^kind, _}, 2_000
       wait(fn -> hd(Server.status(restored).pending).revision == 2 end)
       assert [%{id: ^id, status: :foreground}] = Server.status(restored).pending
@@ -313,7 +315,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
 
   test "an unstarted resume whose application deadline passes while stopped closes without a show" do
     {opts, observer, gate} = setup_runtime()
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     id = open(server)
     GenServer.call(server, {:schedule, id, 1_000})
     assert_receive {:lifecycle_completed, :schedule_close, ^id}, 2_000
@@ -324,7 +326,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
     crash(server)
     GenServer.call(gate, :release)
     wait(fn -> System.system_time(:millisecond) > deadline end)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     wait(fn -> Server.status(restored).assigns[:closed] end)
     assert Server.status(restored).pending == []
     assert Agent.get(observer, & &1.shows) == []
@@ -343,14 +345,14 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
 
   test "a released reply resume remains local after restart" do
     {opts, observer, gate} = setup_runtime()
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     id = open(server, "reply")
     GenServer.call(gate, {:arm, :released})
     GenServer.call(server, {:resume, id})
     assert_receive {:checkpoint_acquired, :released}, 2_000
     crash(server)
     GenServer.call(gate, :release)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     wait(fn -> hd(Server.status(restored).pending).status == :foreground end)
     assert [%{id: ^id, kind: :reply, status: :foreground}] = Server.status(restored).pending
     assert Agent.get(observer, & &1.shows) == []
@@ -363,7 +365,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
     test "a deferred #{owner} close completes once when the in-flight show fails after its wake" do
       owner = unquote(owner)
       {opts, observer, _gate} = setup_runtime()
-      {:ok, server} = Server.start_link(opts)
+      {:ok, server} = Spectre.Server.Runtime.start_link(opts)
       id = open(server)
       GenServer.call(server, {:schedule, id, 1_000, owner})
       assert_receive {:lifecycle_completed, :schedule_close, ^id}, 2_000
@@ -402,7 +404,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
 
   test "a quarantined ignored callback preserves and drains its independent expired close" do
     {opts, observer, _gate} = setup_runtime()
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     id = open(server)
     GenServer.call(server, {:schedule, id, 1_000, :application})
     assert_receive {:lifecycle_completed, :schedule_close, ^id}, 2_000
@@ -440,7 +442,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
 
   test "inbox replay starts exactly one delayed worker for the following lifecycle" do
     {opts, observer, gate} = setup_runtime()
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     id = open(server)
     GenServer.call(gate, {:arm, :schedule_completion})
     Server.input(server, "scheduled_other")
@@ -448,7 +450,7 @@ defmodule Spectre.Server.LifecycleResumeRecoveryTest do
     crash(server)
     GenServer.call(gate, :release)
     Agent.update(observer, &%{&1 | hold: {:suspend, :requested}})
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     assert_receive {:lifecycle_called, %{kind: :suspend, phase: :requested}, held}, 2_000
     wait(fn -> Server.status(restored).workers == 1 end)
     assert Agent.get(observer, &Map.get(&1.calls, {:suspend, :requested}, 0)) == 1

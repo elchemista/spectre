@@ -62,6 +62,17 @@ defmodule Outreach.Server do
 
   def handle_flow(route, input, ctx), do: super(route, input, ctx)
 
+  # Business restrictions can narrow configured authority. They cannot bypass
+  # GAM admission, grant consumption, confirmation or outcome recording.
+  def handle_action(%{operation: operation, args: args} = action, ctx)
+      when operation in [{:kinetic, :send_email}, {{:skill, :outreach}, :kinetic, :send_email}] do
+    if args["to"] == "dev@example.com",
+      do: super(action, ctx),
+      else: {:reject, :recipient_not_allowed}
+  end
+
+  def handle_action(action, ctx), do: super(action, ctx)
+
   def handle_pending(pending, %Spectre.Input{text: text}, ctx) do
     case text do
       "yes" ->
@@ -143,7 +154,7 @@ defmodule Outreach.Server do
   defp next(:notice, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
     do: pulse(ctx, {:protocol}, on_result: :pulse)
 
-  defp next(:pulse, {:ok, _}, ctx), do: ledger(ctx, {:head, :outreach}, on_result: :ledger)
+  defp next(:pulse, {:ok, _}, ctx), do: ledger(ctx, {:head}, on_result: :ledger)
 
   defp next(:ledger, {:ok, %{revision: _}}, ctx),
     do: lab(ctx, {:inspect, :checkpoint}, on_result: :lab)

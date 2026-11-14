@@ -1,3 +1,5 @@
+# Protocol component tests use the internal Runtime to inject boundary adapters.
+# Application AgentServers always start through the automatic Spectre.Server API.
 Code.require_file("../gam/helper.exs", __DIR__)
 
 defmodule Spectre.Server.NoEffectCorrectionTest do
@@ -139,7 +141,7 @@ defmodule Spectre.Server.NoEffectCorrectionTest do
         gam: {Bridge, config}
       ]
 
-      first = start_supervised!({Server, opts}, id: :runtime)
+      first = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
       assert {:ok, input_id} = Server.input(first, "refund")
       assert_receive {:execution, act_ref, attempt_ref}, 2_000
       assert_receive {Server, ^first, {:response, ^input_id, "definitive_no_effect", _}}, 2_000
@@ -152,7 +154,7 @@ defmodule Spectre.Server.NoEffectCorrectionTest do
       assert initial_outcome.status == :definitive_no_effect
 
       :ok = stop_supervised(:runtime)
-      restored = start_supervised!({Server, opts}, id: :runtime)
+      restored = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
       eventually(fn -> Server.status(restored).workers == 0 end)
       assert Map.has_key?(Server.status(restored).operations, command_id)
       Runtime.set_time(Runtime.now() + 10)
@@ -186,7 +188,7 @@ defmodule Spectre.Server.NoEffectCorrectionTest do
       assert Server.status(restored).operations == %{}
 
       :ok = stop_supervised(:runtime)
-      final = start_supervised!({Server, opts}, id: :runtime)
+      final = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
 
       assert :ok =
                Server.deliver(

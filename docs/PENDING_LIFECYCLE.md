@@ -13,52 +13,41 @@ close it through ordinary Elixir functions. GAM records what the host observed
 about that lifecycle. Closing this conversation does not manufacture a user
 rejection, cancel a committed Act or dispose of a Duty.
 
+## Pending intentions inside Skills
+
+Each mounted Skill Server owns its pending intentions and timers. It shares the
+root AgentServer's automatically configured GAM Domain, ledger and lifecycle
+ingress. No Skill-specific Host or Domain is needed. Closure and expiry are
+therefore visible beside the Agent's other facts, with Skill provenance, while
+the Skill's own checkpoint retains its local continuation.
+
+If two Skills are waiting at once, a decision addresses the originating mount
+and exact presentation; it cannot approve a different Skill's request. Expiring
+or stopping a Skill does not erase Acts, ambiguous Outcomes or Duties in the
+shared Domain. See [Skills](SKILLS.md) for the confirmation and lifetime contract.
+
 ## Connect the durable lifecycle
 
-The new lifecycle helpers require both a Server checkpoint and a GAM bridge
-whose host explicitly enables lifecycle observations. Assume
-`MyApp.ServerStore` is an already supervised `Spectre.Server.Store.Disk`, and
-that the host has supplied the authenticated Scope and operation bindings:
+AgentServer creates its lifecycle ingress and coherent checkpoint/journal
+automatically. Select disk storage when schedules must survive restart:
 
 ```elixir
-gam_config = [
-  scope: authenticated_scope,
-  bindings: host_bindings,
-  store: MyApp.ServerStore,
-  lifecycle: true
-]
-
 {:ok, server} = Spectre.summon(
   agent: MyApp.SupportAgent,
   subject: account.id,
-  identity: %{account_id: account.id},
-  checkpoint: {MyApp.ServerStore, "support:" <> to_string(account.id)},
-  gam: {Spectre.Server.GAM, gam_config}
+  identity: %{subject: account.id},
+  consumer: self(),
+  gam: [
+    storage: {:disk, "var/support/" <> to_string(account.id)},
+    operations: %{delete_my_account: [confirm: true]}
+  ]
 )
 ```
 
-`lifecycle: true` declares that the Domain's fixed ingress handles the trusted
-host envelope `:spectre_server_lifecycle`. It is not an authentication mechanism
-and does not replace the existing deletion Candidate, presentation or approval
-bindings. Add this observation clause to the host's existing ingress:
-
-```elixir
-@impl true
-def observe(
-      context,
-      %{kind: :spectre_server_lifecycle, event: event},
-      observed_at,
-      _opts
-    ) do
-  Spectre.Server.GAM.Lifecycle.evidence(context, event, observed_at)
-end
-```
-
-This clause belongs on the authenticated host path. The ingress must keep its
-`authenticate/5` implementation and distinguish host events from untrusted user
-messages; receiving a map with that `kind` alone is not proof of its origin.
-The helper returns `{:ok, evidence}` with the ingress as both issuer and source,
-and with the original Domain, Scope and principal bindings.
+The runtime authenticates lifecycle observations through its fixed ingress and
+retains their Domain, Scope and principal bindings. The application does not
+implement an ingress clause or enable a separate lifecycle mode. A fabricated
+map or actor message cannot become a trusted lifecycle observation.
 
 ## Change topic, keep the intention for sixty seconds
 
@@ -72,7 +61,7 @@ defmodule MyApp.SupportServer do
   @impl true
   def handle_flow({:support, :delete_account}, _input, ctx) do
     propose(ctx, :delete_my_account,
-      %{account_id: ctx.identity.account_id},
+      %{account_id: ctx.identity.subject},
       on_result: :deleted
     )
   end
@@ -139,7 +128,7 @@ defmodule MyApp.SupportAgent do
 end
 ```
 
-The referenced Stack and host bindings must exist. The exact phrases only make
+The referenced Stack and registered deletion effect must exist. The exact phrases only make
 the example easy to read; the pending handler can use a connected classifier
 to distinguish confirmation, clarification and a new topic.
 

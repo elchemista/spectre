@@ -6,6 +6,7 @@ defmodule Spectre.Server.ServiceContext do
       |> Keyword.merge(context.options)
       |> Keyword.merge(opts)
       |> Keyword.put(:server_prompt_root, Keyword.get(context.options, :prompt_root))
+      |> Keyword.put(:server_prompt_scope, Keyword.get(context.options, :runtime_scope, :agent))
       |> Keyword.put(:instance_run_lifecycle?, false)
       |> Keyword.put(:streaming?, false)
       |> Keyword.put(:plan_actions?, false)

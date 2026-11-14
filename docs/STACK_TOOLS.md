@@ -1,5 +1,34 @@
 # Installed tools in AgentServer 0.4
 
+AgentServer manages GAM automatically. For startup, application callbacks and
+the boundary between application policy and kernel invariants, see
+[Automatic GAM](MANAGED_GAM.md).
+
+## Registered execution for managed GAM
+
+`c:Spectre.Stack.Installable.effects/1` is an optional, immutable execution
+catalog. It complements `tools/1`: helpers describe requests, while effects
+register which adapter may execute a particular admitted operation. This is
+the **effect catalog contract 1**, separate from tool descriptor version 1 and
+`Spectre.Stack.Contract.V2`. AgentServer owns the GAM integration for registered effects.
+
+A registration includes `adapter`, package-local `operation`, `side_effect`,
+`material: :arguments`, identity `partition`, optional `schema_hash`, and portable
+`config`. The adapter implements `c:Spectre.Server.GAM.EffectAdapter.execute_effect/3`.
+Its result distinguishes `{:ok, receipt}` from
+`{:error, :failed | :definitive_no_effect | :ambiguous, reason}`. Only actual
+observations justify those statuses; an unknown result must not trigger blind retry.
+
+The compiled installation digest covers these registrations. The managed bridge
+resolves the operation and validates that digest again before execution. The
+adapter receives the frozen identity partition, Act correlation ID and required
+Stack resource reference; it receives no GAM Scope or submission credentials.
+Kinetic registers the configured action catalog; Mnemonic, Beam, Pulse and Lens
+register only their explicitly bound writes. Registration grants no authority:
+the application must enable the operation and GAM must admit its concrete effect.
+
+## Generated helper contract
+
 The package's existing `Spectre.Stack.Installable` behaviour declares `tools/1`.
 A Server selects a Stack with `use Spectre.Server, tools: MyApp.AI`. The core
 creates private helpers named by the installed descriptors. No imports from
@@ -92,7 +121,7 @@ helpers and proposal commands for consequential work in Server callbacks.
 | Helper | Cognitive operations | Governed operations when explicitly bound |
 | --- | --- | --- |
 | `kinetic` | Interpret model AL into portable candidates | Candidates later passed to `propose` |
-| `mnemonic` | Recall, with portable/redacted memory projection | Remember |
+| `mnemonic` | Search, recall, reflect, evidence/knowledge queries, status, atlas | Remember, signal, learn, forget, models/observations, graph edits and maintenance; explicit bindings only |
 | `lens` | Open/read/close, using logical browser references | Browser action |
 | `prism` | Select a model; ordinary generation also uses installed extension | — |
 | `beam` | Inspect endpoints | Deliver |
@@ -103,12 +132,11 @@ helpers and proposal commands for consequential work in Server callbacks.
 
 Mnemonic supports `automatic: false` to use only explicit memory helpers.
 Use a **named** `Spectre.Stack.Runtime` and pass that name as `stack_runtime:`
-to the Server and admitted memory executor so both resolve the same isolated
-engine. Explicit memory tools fail if that named runtime is missing. A host
-candidate must freeze the authenticated subject/conversation partition into its
-payload; the admitted executor reconstructs its memory context from that payload.
-It must not take the partition from a later mutable conversation or from model
-arguments. See the subject-isolated integration for the complete binding.
+to the Server; Spectre passes it to the admitted adapter so both resolve the same
+isolated engine. Explicit memory tools fail if that named runtime is missing.
+Spectre freezes the authenticated subject/conversation partition into the
+Candidate and reconstructs execution context from the committed payload, rather
+than later mutable state or model arguments. See [Automatic GAM](MANAGED_GAM.md).
 Credentials and mutable resources belong in runtime options, not in compiled
 Stack configuration or `ctx.assigns`.
 
@@ -213,3 +241,45 @@ The [public callable manifest](PUBLIC_API.md) already includes Server and GAM,
 but does not yet list this complete tool adapter/descriptor addition. Its
 manifest test must not be cited as coverage of generated helper contracts.
 Use the source declarations and tool integration tests for that boundary.
+
+## The same helpers inside a Skill
+
+A Skill's callback module selects `use Spectre.Server, tools: MyApp.AI`, exactly
+like the root Server. No second package installation or invented import is
+needed. Stack resources are resolved by the same host runtime; conversation
+state and pending intentions belong to the calling Skill. A scoped Kinetic
+proposal retains its mounted operation reference, for example
+`{{:skill, :research}, :kinetic, :send_email}`. Declare that reference in both
+the mount's `governed:` list and the root AgentServer's allowed operations.
+
+The root passes its existing automatic GAM connection to each Skill. All
+governed commands share one Domain and authority ledger; mounting a Skill
+creates no new grant and requires no extra Host or ingress. The runtime records
+the originating mount for each proposal. Independent workers may run concurrently
+while the shared kernel orders admission. Consent identifies the exact Skill and
+presentation, so a confirmation cannot authorize a different Skill's command.
+Local checkpoints and timer state remain separate; lifecycle changes are recorded
+in the shared Domain and do not erase Duties.
+
+Bound Mnemonic/Beam/Pulse/Lens effects similarly need their host operation in
+the mount's allowlist. Cognitive reads do not acquire authority. Ledger/Lab
+inspect the calling runtime's checkpoint by default. See [Skills](SKILLS.md)
+and the [LiveView showcase](DEMO.md).
+
+## Mnemonic request ergonomics
+
+A single generated helper exposes the package's declared operations:
+
+```elixir
+mnemonic(ctx, {:search, input.text, limit: 5}, on_result: :found)
+mnemonic(ctx, {:recall, input.text, max_tokens: 1200}, on_result: :context)
+mnemonic(ctx, {:reflect, input.text}, on_result: :evidence)
+mnemonic(ctx, {:forget, memory_id}, on_result: :forgotten)
+```
+
+The tuple carries library operation arguments and options. `on_result` and
+`timeout` outside the tuple belong to the Server. `search` returns flat portable
+hits with source/id/record; `recall` returns a richer packet. Writes require their
+own Stack `bind:` entries and allowed GAM operations; mounting a Skill also requires
+the matching `governed:` allowance. Read helpers do not reinforce graph/attention
+or reveal secrets. See [Mnemonic's complete operation catalogue](https://github.com/elchemista/spectre_mnemonic/blob/feature/stack-tools-0.4/README.md#choosing-a-memory-operation-in-an-agentserver).

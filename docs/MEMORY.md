@@ -13,6 +13,14 @@ it does not carry authority or establish that an effect occurred.
 | Memory engine/client | Named Stack runtime resource. |
 | Permission to save/disclose protected memory | Host governed operation and GAM facts, not a memory score. |
 
+Mounted Skill Servers use the root's same automatic GAM Domain and authority
+ledger, while each keeps its own assigns, conversation, pending intentions and
+checkpoint. Sharing GAM does not automatically merge conversations or memory
+partitions: the installed memory policy determines what each query can recall.
+Writes must satisfy root operation authority and mount `governed:` restrictions;
+each exact presentation needs its own decision. Email consent never authorizes
+a later memory save. See [Skills](SKILLS.md) and the [two-Skill demo](DEMO.md).
+
 ## Explicit recall and governed writes
 
 ```elixir
@@ -44,9 +52,9 @@ end
 ```
 
 This is a composition fragment: the Agent must declare those routes, the host
-must populate a portable report and provide the `:save_report` candidate binding
-and admitted executor. Configure presentation/consent in that host binding when
-saving requires user approval. `automatic: false` avoids silently using the
+must populate a portable report and bind `:save_report` to a registered memory
+effect. Configure `operations: %{save_report: [confirm: true]}` when saving
+requires user approval. Spectre supplies the Candidate and admission path. `automatic: false` avoids silently using the
 legacy automatic memory-write path in an application that wants explicit
 permission for every saved report.
 
@@ -63,16 +71,16 @@ memory executor:
   subject: "customer-42",
   identity: %{subject: "customer-42", conversation: "thread-a"},
   stack_runtime: MyApp.AIRuntime,
-  gam: {Spectre.Server.GAM, host_gam_config}
+  gam: [operations: %{save_report: [confirm: true]}]
 )
 ```
 
-The Agent and host config are application setup. Explicit Mnemonic tools fail
+The Agent and allowed operations are application setup. Explicit Mnemonic tools fail
 when the named runtime needed to resolve the installed engine is missing.
 Isolation keys such as `:subject` or `:conversation` come from authenticated
 identity, not from model-generated arguments.
 
-For governed writes, the host candidate freezes that partition into its payload.
+For governed writes, the runtime freezes that partition into its payload.
 The admitted executor reconstructs memory context from the frozen payload and
 resolves the same engine. It must not substitute the current user's mutable
 context when an older operation resumes. The

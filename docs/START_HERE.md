@@ -16,11 +16,14 @@ For an existing 0.3 application, begin with [Migration](MIGRATING_TO_0_4.md).
    with the [manifesto](https://spectre.guide/en/governed-act-model).
 5. [Agent and Server](AGENT_SERVER.md): callbacks, services, context and recovery.
 6. [Stack tools](STACK_TOOLS.md): generated helpers and package-author contracts.
+7. [Skills](SKILLS.md): reusable GenServers sharing their Agent’s GAM Domain.
+8. [LiveView showcase](DEMO.md): run the nine-package chat with two Skills.
 
 ## Find a specific answer
 
 | Task | Guide |
 | --- | --- |
+| Run parallel Skill servers with one GAM and isolated confirmations | [Skills](SKILLS.md), [Automatic GAM](MANAGED_GAM.md) and [LiveView showcase](DEMO.md) |
 | Recognize intent and handle unmatched input | [Routing](ROUTING.md) |
 | Collect intent examples and train a classifier | [Training](TRAINING.md) |
 | Generate text and turn consolidated AL into proposals | [Actions](ACTIONS.md) |

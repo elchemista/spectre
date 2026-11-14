@@ -2,6 +2,9 @@ defmodule Spectre.Server.NativeApplicationStateTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Server
+
+  # Component fixtures start Runtime directly: they exercise OTP/checkpoint
+  # behavior independently of the public Server automatic GAM bootstrap.
   alias Spectre.Server.{Command, Context}
   alias Spectre.Server.Store.Disk
 
@@ -60,7 +63,7 @@ defmodule Spectre.Server.NativeApplicationStateTest do
        %{tmp_dir: dir} do
     store = start_supervised!({Disk, path: Path.join(dir, "native.snapshot")})
     opts = [agent: Definition, checkpoint: {store, "native"}]
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     assert {^server, timer} = GenServer.call(server, :install_timer)
     assert is_reference(timer)
     eventually(fn -> elem(GenServer.call(server, :local_state), 1)[:ticks] == 1 end)
@@ -73,7 +76,7 @@ defmodule Spectre.Server.NativeApplicationStateTest do
     assert {%{owner: ^server}, %{ticks: 1}} = GenServer.call(server, :local_state)
 
     GenServer.stop(server)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     on_exit(fn -> if Process.alive?(restored), do: GenServer.stop(restored) end)
     assert {%{}, %{ticks: 1}} = GenServer.call(restored, :local_state)
   end
@@ -91,7 +94,7 @@ defmodule Spectre.Server.NativeApplicationStateTest do
     store = start_supervised!({Disk, path: Path.join(dir, "probe.snapshot")})
 
     {:ok, server} =
-      Server.start_link(
+      Spectre.Server.Runtime.start_link(
         agent: Definition,
         checkpoint: {store, "probe"},
         consumer: self(),

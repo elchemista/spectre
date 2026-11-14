@@ -4,6 +4,13 @@ Spectre requires Elixir `~> 1.19`. Vettore is a required dependency. JSON uses
 Elixir's standard `JSON` module; applications using Jason directly must declare
 Jason themselves.
 
+Mounting a process-based Skill reuses the root AgentServer's Stack resources and
+automatic GAM Domain. Install packages once in the selected Stack, select that
+Stack with `use Spectre.Server, tools: MyApp.AI` in each callback module, and
+declare the mount's permitted `governed:` operations. Each Skill has its own
+runtime state and checkpoint; no second GAM installation, Domain or Host is
+required. See [Skills](SKILLS.md).
+
 ## Dependencies
 
 This branch declares version `0.4.0` but is unreleased. Use the development
@@ -27,6 +34,14 @@ for a reproducible reviewed snapshot replace each `branch:` with its exact
 `ref:`. If a satellite declares a conflicting core dependency source, make the
 application's intended core dependency explicit with `override: true` after
 checking that the chosen branches are compatible.
+
+For an exact reviewed revision:
+
+```elixir
+{:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"}
+```
+
+Replace `COMMIT_SHA` with the commit you reviewed.
 
 ```sh
 mix deps.get

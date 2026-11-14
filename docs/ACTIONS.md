@@ -7,14 +7,14 @@ cannot itself execute that consequence.
 
 The [GAM manifesto](https://spectre.guide/en/governed-act-model) defines the
 boundary. [GAM in Spectre](GAM.md) maps Mandate, Evidence, Act and Duty to the
-implementation and explains Domain/Scope setup.
+implementation and explains the automatic Domain/Scope boundary.
 
 ## Deterministic proposal
 
 ```elixir
 def handle_flow({:account, :delete_account}, _input, ctx) do
   propose(ctx, :delete_my_account,
-    %{account_id: ctx.identity.account_id},
+    %{account_id: ctx.identity.subject},
     on_result: :deleted)
 end
 
@@ -27,16 +27,22 @@ def handle_result(:deleted, {:governed_unknown, _details}, ctx),
 def handle_result(tag, result, ctx), do: super(tag, result, ctx)
 ```
 
-The host must bind `:delete_my_account` to its candidate builder in
-`gam: {Spectre.Server.GAM, host_config}`. The builder freezes authenticated
-subject, purpose, data, scope and requested authority into the Candidate. The
-host also provides ingress and the relevant executor, and presentation and
-interpretation functions when consent is required. This snippet does not create
-those domain-specific facts.
+Register an effect adapter for `:delete_my_account`, then permit the operation
+with `gam: [operations: %{delete_my_account: [confirm: true]}]`. AgentServer
+freezes authenticated identity, purpose, arguments, scope and authority into the
+Candidate and owns ingress, presentation and execution. Business validation
+belongs in `handle_action/2`; it may restrict a proposal but cannot bypass GAM.
+
+The same proposal path applies inside a mounted Skill Server. The child has
+independent state and pending intentions but automatically uses the root's
+existing GAM Domain and authority ledger. The effect must also be permitted by
+the mount's `governed:` references. Skill provenance is recorded, and consent is
+bound to that mount and exact presentation; another Skill's approval cannot
+authorize it. See [Skills](SKILLS.md) for concurrency and the shared/local table.
 
 `protected: true` on an Agent route marks sensitive recognition/collection and
 requests the standard bridge's confirmation path. It is not a replacement for
-this binding, a governed class, or a mandate.
+the operation policy, a governed class, or a mandate.
 
 ## Model-produced action language
 

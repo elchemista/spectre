@@ -1,5 +1,6 @@
 defmodule Spectre.Server.ToolCompilerTest do
-  use ExUnit.Case, async: true
+  # Captures VM-wide compiler stderr; do not race concurrent module redefinition tests.
+  use ExUnit.Case, async: false
   import ExUnit.CaptureIO
 
   defmodule Package do

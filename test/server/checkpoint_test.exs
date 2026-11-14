@@ -2,6 +2,9 @@ defmodule Spectre.Server.CheckpointTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
 
+  # Component fixtures start Runtime directly: they exercise OTP/checkpoint
+  # behavior independently of the public Server automatic GAM bootstrap.
+
   defmodule App do
     use Spectre.Server
     def handle_flow({:test, "echo"}, _input, ctx), do: respond(ctx, "echo")
@@ -69,13 +72,13 @@ defmodule Spectre.Server.CheckpointTest do
   test "acquired state and delivery inbox survive restart together" do
     store = store()
     opts = [agent: Agent, identity: %{account_id: "one"}, checkpoint: {store, "one"}]
-    {:ok, first} = Server.start_link(opts)
+    {:ok, first} = Spectre.Server.Runtime.start_link(opts)
     assert :ok = GenServer.call(first, :remember)
     assert :ok = Server.deliver(first, "event-one", :delivered, 2)
     assert :ok = Server.deliver(first, "event-one", :delivered, 2)
     assert Server.status(first).assigns == %{count: 2, remembered: true}
     GenServer.stop(first)
-    {:ok, second} = Server.start_link(opts)
+    {:ok, second} = Spectre.Server.Runtime.start_link(opts)
     assert Server.status(second).assigns == %{count: 2, remembered: true}
     assert :ok = Server.deliver(second, "event-one", :delivered, 2)
     assert :ok = Server.deliver(second, "event-two", :delivered, 3)
@@ -84,7 +87,7 @@ defmodule Spectre.Server.CheckpointTest do
   end
 
   test "delivery requires durable acquisition rather than an in-memory acknowledgement" do
-    {:ok, server} = Server.start_link(agent: Agent)
+    {:ok, server} = Spectre.Server.Runtime.start_link(agent: Agent)
     assert {:error, :checkpoint_required} = Server.deliver(server, "event-one", :delivered, 1)
     assert Server.status(server).assigns == %{}
     GenServer.stop(server)
@@ -101,12 +104,12 @@ defmodule Spectre.Server.CheckpointTest do
       services: [router: Router, generate: Service]
     ]
 
-    {:ok, first} = Server.start_link(opts)
+    {:ok, first} = Spectre.Server.Runtime.start_link(opts)
     {:ok, first_id} = Server.input(first, "slow")
     assert_receive {:checkpoint_worker, _first_worker}, 2_000
     {:ok, second_id} = Server.input(first, "echo")
     GenServer.stop(first)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     assert_receive {:checkpoint_worker, worker}, 2_000
     send(worker, :release)
     assert_receive {Server, ^restored, {:response, ^first_id, "finished", _}}, 2_000
@@ -117,11 +120,11 @@ defmodule Spectre.Server.CheckpointTest do
   test "a reply wait restores its absolute deadline and expires once" do
     store = store()
     opts = [agent: Agent, checkpoint: {store, "await"}, services: [router: Router]]
-    {:ok, first} = Server.start_link(opts)
+    {:ok, first} = Spectre.Server.Runtime.start_link(opts)
     {:ok, _id} = Server.input(first, "await")
     eventually(fn -> Server.status(first).pending != [] end)
     GenServer.stop(first)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     eventually(fn -> Server.status(restored).assigns[:expired] == true end)
     assert Server.status(restored).pending == []
     GenServer.stop(restored)
@@ -140,12 +143,12 @@ defmodule Spectre.Server.CheckpointTest do
   @tag :capture_log
   test "nonportable application data fails before a successful OTP reply" do
     store = store()
-    {:ok, server} = Server.start_link(agent: Agent, checkpoint: {store, "bad"})
+    {:ok, server} = Spectre.Server.Runtime.start_link(agent: Agent, checkpoint: {store, "bad"})
     Process.unlink(server)
     monitor = Process.monitor(server)
     catch_exit(GenServer.call(server, :bad_assign))
     assert_receive {:DOWN, ^monitor, :process, ^server, _}
-    {:ok, restored} = Server.start_link(agent: Agent, checkpoint: {store, "bad"})
+    {:ok, restored} = Spectre.Server.Runtime.start_link(agent: Agent, checkpoint: {store, "bad"})
     assert Server.status(restored).assigns == %{}
     GenServer.stop(restored)
   end

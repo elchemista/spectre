@@ -2,6 +2,9 @@ defmodule Spectre.Server.PreRouteTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
 
+  # Component fixtures start Runtime directly: they exercise OTP/checkpoint
+  # behavior independently of the public Server automatic GAM bootstrap.
+
   defmodule Handler do
     def handle_turn(request, _) do
       case request.input.text do
@@ -46,7 +49,8 @@ defmodule Spectre.Server.PreRouteTest do
   test "pre-route ownership remains available without creating another runtime" do
     pid =
       start_supervised!(
-        {Server, agent: Definition, consumer: self(), identity: %{observer: self()}}
+        {Spectre.Server.Runtime,
+         agent: Definition, consumer: self(), identity: %{observer: self()}}
       )
 
     assert {:ok, id} = Server.input(pid, "owned")
@@ -56,7 +60,8 @@ defmodule Spectre.Server.PreRouteTest do
   test "interrupt beats pending, while ordinary pre-route handlers do not steal its replies" do
     pid =
       start_supervised!(
-        {Server, agent: Definition, consumer: self(), identity: %{observer: self()}}
+        {Spectre.Server.Runtime,
+         agent: Definition, consumer: self(), identity: %{observer: self()}}
       )
 
     assert {:ok, _} = Server.input(pid, "begin")

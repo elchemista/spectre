@@ -156,10 +156,18 @@ also demonstrates topic change, a scheduled close, suspended consent and
 explicit resume. A generic yes must not approve whichever operation happens to
 be found later.
 
-Read the integration's host and test files for the full domain, scope, ingress,
-candidate, executor, ambiguity and recovery wiring. Its browser/model/email
-providers are deterministic fixtures. Do not copy their test-only blocking or
-fake network configuration into production.
+Read the integration's `support/configuration.ex`, registered adapters and tests
+for operation configuration, consent, ambiguity and recovery. AgentServer
+automatically creates the Domain, Scope, ingress and execution protocol; no
+application Host is required. The external providers are deterministic fixtures,
+not validation of live transport credentials.
+
+The integration also runs the workflow in a dedicated Skill Server with the
+same GAM Domain and authority ledger as the root. It verifies the email/save
+Acts and Skill invocation Evidence through the root consumer. Each child keeps
+its own state, pending intentions and checkpoint; mount restrictions and exact
+presentation correlation isolate permissions and consent. The [LiveView demo](DEMO.md)
+adds two concurrent Skills so these boundaries can be exercised interactively.
 
 ## Further recipes and compatibility
 

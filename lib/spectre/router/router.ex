@@ -64,6 +64,7 @@ defmodule Spectre.Router do
     rules =
       agent
       |> candidate_rules(state)
+      |> runtime_scope_rules(opts)
       |> maybe_interrupt_rules(opts)
       |> Constraint.filter_and_order(input)
 
@@ -108,6 +109,14 @@ defmodule Spectre.Router do
     with {:ok, plan} <- AdapterPlan.build(compiled_adapters, opts) do
       {:ok, Keyword.put(opts, AdapterCompiler.compiled_key(), plan),
        AdapterPlan.diagnostics(plan)}
+    end
+  end
+
+  @spec runtime_scope_rules([Rule.t()], keyword()) :: [Rule.t()]
+  defp runtime_scope_rules(rules, opts) do
+    case Keyword.get(opts, :runtime_scope) do
+      nil -> rules
+      scope -> Enum.filter(rules, &(&1.scope == scope))
     end
   end
 

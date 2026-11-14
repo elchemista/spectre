@@ -9,6 +9,46 @@ migration called out explicitly below.
 
 ## 0.4.0 (unreleased)
 
+- Document that separate Skill Servers automatically reuse the root AgentServer's
+  GAM Domain, authority ledger and execution boundary. Clarify per-Skill state,
+  mount operation restrictions, invocation provenance, isolated consent and
+  audited lifecycle timers across the core, nine companion packages and demo.
+
+- Add managed GAM configuration to AgentServer, standard Candidate/Presentation
+  builders, registered execution, consumer-bound one-use consent and optional
+  `handle_action/2` callbacks. AgentServer owns the integration in every environment.
+- Add the optional Stack `effects/1` execution contract without changing existing
+  tool helpers. Freeze callback policy, execution identity/partition and catalog
+  digest; detect authority changes on disk recovery and drain governed workers
+  before stopping their Domain.
+- Remove the development/production authority selector and application-owned
+  GAM wiring from AgentServer. Trusted application identity and operation policy
+  feed the automatic boundary; see [Automatic GAM](docs/MANAGED_GAM.md).
+- Add `Spectre.GAM.submit/4` for the trusted consumer or explicitly configured
+  application submitters to acquire a proposal through the same AgentServer
+  policy, consent, outbox and GAM path. Acquisition is separate from execution;
+  results use the existing Server continuation. Optional acquisition keys survive
+  checkpoint recovery and reject conflicting reuse. Add consumer-only
+  `Spectre.GAM.revoke/1`; revocation preserves history and survives restart.
+- Add optional independently authenticated Duty review through automatic reviewer
+  provisioning and `Spectre.GAM.resolve_duty/4`. The Agent does not acquire
+  review authority; absent a reviewer, Duties remain open.
+
+
+- Make explicit regex routes hard evidence by default in the new Server, while
+  retaining legacy routing defaults and explicit weak-rule overrides.
+- Honor a mounted Skill Server's own `prompt_root` without allowing the root
+  Server's override to replace another Skill's assets.
+- Document expanded Mnemonic operations and the LiveView cache/memory/consent
+  showcase, including searches with portable sources and governed forgetting.
+
+
+- Add supervised Skill Servers sharing their Agent's GAM Domain, with independent
+  state, scoped routing, native OTP callbacks, concurrent workers and checkpoints.
+  Record Skill command attribution through authenticated ingress; limit mount
+  operations, correlate confirmations, and preserve governed crash recovery.
+  Add explicit delegation and namespaced Skill output, plus a nine-tool Skill test.
+
 - Add separate declarative Agent and OTP Server authoring, with asynchronous
   services, explicit continuations and runtime-owned pending conversations.
 - Import the governed-act kernel from the 0.4 development line into the

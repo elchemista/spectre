@@ -1,31 +1,23 @@
 defmodule Spectre.Server.GAM do
   @moduledoc """
-  Server bridge to the imported GAM kernel.
+  Internal protocol adapter between AgentServer and the GAM kernel.
 
-  Configure `gam: {Spectre.Server.GAM, config}`. Host-owned config
-  contains `:scope` (an authenticated Scope or `{module, function}` accepting
-  the service context) and `:bindings`, a map from operation names to bindings.
-  Each binding has `candidate: {module, function}` called with arguments, sealed
-  Turn and service context. A confirming binding also has
-  `presentation: {module, function}` returning `{:ok, presentation, show_attrs}`
-  from candidate, context and confirmation options, and
-  `interpreter: {module, function}` accepting original input and Presentation.
+  `Spectre.Server.GAM.Managed` constructs the authenticated Scope, operation
+  bindings, ingress and journal automatically. Applications configure allowed
+  operations through `Spectre.Server.start_link/1`; this adapter is not a
+  replacement bridge option. External actors use `Spectre.GAM.submit/4` to enter
+  the same runtime path.
 
-  The Domain's fixed ingress must recognize the `:presentation_response`
-  envelope and construct response Evidence through
-  `Spectre.GAM.Presentation.response_evidence/6`. The bridge never turns a
-  classifier label into approval. Show and effect both cross normal admission.
-  All bindings are host configuration, not options supplied by a model.
+  Candidate construction, presentations and confirmation remain distinct from
+  admission. Show and effect both cross the kernel. The adapter never turns a
+  classifier label into user approval. Required Evidence must come from the
+  fixed authenticated ingress.
 
-  `consent_ttl_ms` defaults to five minutes. `:infinity` explicitly disables
-  expiry. Each fresh show gets its own absolute deadline; recovery preserves
-  the journaled deadline and returns a suspended consent.
-
-  Response ingress receives `received_at`, `event_sequence` and `expires_at`.
-  In a host whose GAM clock uses UTC milliseconds, ingress should bind the
-  response Evidence's `valid_until` to that deadline. The bridge rechecks expiry
-  after interpretation and before submission; the Evidence validity also fences
-  admission if a queued Domain command crosses the deadline.
+  Consent expiry defaults to five minutes; `:infinity` explicitly disables
+  expiry. A fresh presentation has its own absolute deadline. Recovery preserves
+  recorded facts and restores a wait suspended until a fresh presentation.
+  The adapter rechecks expiry after interpretation and before submission;
+  Evidence validity also fences admission across queued Domain commands.
   """
   alias Spectre.GAM
   alias Spectre.GAM.{Candidate, Presentation, Scope}
@@ -53,15 +45,29 @@ defmodule Spectre.Server.GAM do
   def propose(operation, args, context, opts) do
     context = Map.put(context, :proposal_metadata, Keyword.get(opts, :proposal_metadata, %{}))
 
-    with {:ok, config} <- config(opts),
+    with :ok <- skill_authority(context, operation),
+         {:ok, config} <- config(opts),
          {:ok, binding} <- binding(config, operation),
          :ok <-
            Spectre.Server.Catalog.validate(operation, context.proposal_metadata, binding, context),
          {:ok, scope} <- scope(config, context),
-         {:ok, turn} <- GAM.open_turn(scope, context.input, observation_options(config)),
+         {:ok, invocation_refs} <-
+           Spectre.Server.GAM.Invocation.record(
+             scope,
+             context,
+             operation,
+             observation_options(config)
+           ),
+         {:ok, turn} <-
+           GAM.open_turn(
+             scope,
+             context.input,
+             Keyword.put(observation_options(config), :context_evidence_refs, invocation_refs)
+           ),
          {:ok, attrs} <- invoke(binding[:candidate], [args, turn, context]),
          {:ok, candidate} <- Candidate.new(attrs),
-         :ok <- input_basis(candidate, turn, scope) do
+         :ok <- input_basis(candidate, turn, scope),
+         :ok <- invocation_basis(candidate, invocation_refs) do
       if binding[:presentation] || opts[:confirmation] || get_in(context, [:routing, :protected]) do
         prepare_confirmation(scope, candidate, binding, context, opts, config)
       else
@@ -225,6 +231,7 @@ defmodule Spectre.Server.GAM do
          {:ok, %{value: saved}} <- Store.fetch(store, journal_key(command_id)),
          {:ok, scope} <- scope(config, context),
          :ok <- matching_scope(scope, saved),
+         :ok <- matching_skill(saved, context),
          {:ok, candidate} <- Candidate.from_canonical(saved.candidate) do
       recover_saved(scope, saved, candidate, config)
     else
@@ -272,6 +279,7 @@ defmodule Spectre.Server.GAM do
       {:ok, %{revision: revision, value: saved}} ->
         with {:ok, scope} <- scope(config, context),
              :ok <- matching_scope(scope, saved),
+             :ok <- matching_skill(saved, context),
              do: Store.delete(store, journal_key(id), revision)
 
       {:error, _} = error ->
@@ -313,6 +321,7 @@ defmodule Spectre.Server.GAM do
          {:ok, %{value: saved}} <- Store.fetch(store, journal_key(command_id)),
          {:ok, scope} <- scope(config, context),
          :ok <- matching_scope(scope, saved),
+         :ok <- matching_skill(saved, context),
          {:ok, candidate} <- Candidate.from_canonical(saved.candidate),
          {:governed, result} <- resolve_result(reference, context, opts),
          true <- result.act.candidate_identity_key == candidate.identity_key,
@@ -388,7 +397,11 @@ defmodule Spectre.Server.GAM do
         :ok
 
       store ->
-        write_journal(store, Map.get(context, :command_id), entry)
+        write_journal(
+          store,
+          Map.get(context, :command_id),
+          Map.put(entry, :skill, Map.get(context, :skill))
+        )
     end
   end
 
@@ -509,12 +522,62 @@ defmodule Spectre.Server.GAM do
     end
   end
 
-  defp scope(config, context) do
-    case Keyword.get(config, :scope) do
-      %Scope{} = scope -> {:ok, scope}
-      {module, function} -> invoke({module, function}, [context])
-      _ -> {:error, :authenticated_scope_required}
+  @doc "Pins the host integration to one Domain before starting its agent and Skill runtimes."
+  @spec pin_domain(term(), map()) :: {:ok, term()} | {:error, term()}
+  def pin_domain({__MODULE__, config}, context) do
+    with {:ok, scope} <- scope(config, context) do
+      {:ok, {__MODULE__, Keyword.put(config, :domain_ref, Scope.domain_ref(scope))}}
     end
+  end
+
+  def pin_domain({Spectre.Server.GAM.Managed, config} = bridge, _context) do
+    if is_pid(Keyword.get(config, :server)),
+      do: {:ok, bridge},
+      else: {:error, :managed_domain_required}
+  end
+
+  def pin_domain(nil, _context), do: {:ok, nil}
+  def pin_domain(_bridge, _context), do: {:error, :skills_require_standard_gam_bridge}
+
+  @spec scope(keyword(), map()) :: {:ok, Scope.t()} | {:error, term()}
+  defp scope(config, context) do
+    result =
+      case Keyword.get(config, :scope) do
+        %Scope{} = scope -> {:ok, scope}
+        {module, function} -> invoke({module, function}, [context])
+        _ -> {:error, :authenticated_scope_required}
+      end
+
+    with {:ok, %Scope{} = scope} <- result do
+      if Keyword.get(config, :domain_ref, Scope.domain_ref(scope)) == Scope.domain_ref(scope),
+        do: {:ok, scope},
+        else: {:error, :agent_domain_mismatch}
+    end
+  end
+
+  @spec skill_authority(map(), term()) :: :ok | {:error, term()}
+  defp skill_authority(%{skill: %{governed: allowed}}, operation) do
+    if operation in allowed, do: :ok, else: {:error, {:skill_operation_not_allowed, operation}}
+  end
+
+  defp skill_authority(_context, _operation), do: :ok
+
+  @spec matching_skill(map(), map()) :: :ok | {:error, atom()}
+  defp matching_skill(saved, context) do
+    if skill_identity(Map.get(saved, :skill)) == skill_identity(Map.get(context, :skill)),
+      do: :ok,
+      else: {:error, :journal_skill_mismatch}
+  end
+
+  @spec skill_identity(map() | nil) :: map() | nil
+  defp skill_identity(nil), do: nil
+  defp skill_identity(skill), do: Map.take(skill, [:id, :module])
+
+  @spec invocation_basis(Candidate.t(), [binary()]) :: :ok | {:error, atom()}
+  defp invocation_basis(candidate, refs) do
+    if Enum.all?(refs, &(&1 in candidate.evidence_refs)),
+      do: :ok,
+      else: {:error, :candidate_skill_invocation_missing}
   end
 
   defp observation_options(config), do: Keyword.take(config, [:ingress_opts])

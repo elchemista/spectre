@@ -2,6 +2,9 @@ defmodule Spectre.Server.RuntimeBoundariesTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
 
+  # Component fixtures start Runtime directly: they exercise OTP/checkpoint
+  # behavior independently of the public Server automatic GAM bootstrap.
+
   defmodule Actor do
     use GenServer
     def start_link(test), do: GenServer.start_link(__MODULE__, test)
@@ -170,7 +173,7 @@ defmodule Spectre.Server.RuntimeBoundariesTest do
         opts
       )
 
-    start_supervised!({Server, opts})
+    start_supervised!({Spectre.Server.Runtime, opts})
   end
 
   defp actor, do: start_supervised!({Actor, self()})
@@ -241,16 +244,16 @@ defmodule Spectre.Server.RuntimeBoundariesTest do
 
   test "init continuation and a plain callback module work without extra macros" do
     Process.flag(:trap_exit, true)
-    {:ok, server} = Server.start_link(agent: ConfigAgent, init_arg: :continue)
+    {:ok, server} = Spectre.Server.Runtime.start_link(agent: ConfigAgent, init_arg: :continue)
     assert Server.status(server).assigns.continued
     GenServer.stop(server)
-    assert :ignore = Server.start_link(agent: ConfigAgent, init_arg: :ignore)
+    assert :ignore = Spectre.Server.Runtime.start_link(agent: ConfigAgent, init_arg: :ignore)
 
     assert {:error, :initialization_refused} =
-             Server.start_link(agent: ConfigAgent, init_arg: :stop)
+             Spectre.Server.Runtime.start_link(agent: ConfigAgent, init_arg: :stop)
 
     assert {:error, {:invalid_init_return, :invalid}} =
-             Server.start_link(agent: ConfigAgent, init_arg: :invalid)
+             Spectre.Server.Runtime.start_link(agent: ConfigAgent, init_arg: :invalid)
   end
 
   @tag :capture_log
@@ -259,10 +262,11 @@ defmodule Spectre.Server.RuntimeBoundariesTest do
 
     for opts <- [[identity: []], [assigns: nil], [queue_limit: -1], [max_steps: 0]] do
       assert {:error, {%ArgumentError{}, _}} =
-               Server.start_link(Keyword.merge([agent: ConfigAgent], opts))
+               Spectre.Server.Runtime.start_link(Keyword.merge([agent: ConfigAgent], opts))
     end
 
-    assert {:error, {%ArgumentError{}, _}} = Server.start_link(agent: MissingBindingAgent)
+    assert {:error, {%ArgumentError{}, _}} =
+             Spectre.Server.Runtime.start_link(agent: MissingBindingAgent)
   end
 
   test "invalid user input and unsupported boundary options are rejected before dispatch" do
@@ -292,7 +296,7 @@ defmodule Spectre.Server.RuntimeBoundariesTest do
   @tag :capture_log
   test "invalid OTP return/action and invalid command groups stop without a successful reply" do
     for request <- [:invalid_return, :invalid_action, {:resume, "missing"}, {:confirm, "missing"}] do
-      {:ok, server} = Server.start_link(agent: ConfigAgent, server: App)
+      {:ok, server} = Spectre.Server.Runtime.start_link(agent: ConfigAgent, server: App)
       Process.unlink(server)
       monitor = Process.monitor(server)
       catch_exit(GenServer.call(server, request))
@@ -301,7 +305,7 @@ defmodule Spectre.Server.RuntimeBoundariesTest do
 
     for input <- ["duplicate", "bad_suspend"] do
       {:ok, server} =
-        Server.start_link(
+        Spectre.Server.Runtime.start_link(
           agent: ConfigAgent,
           server: App,
           consumer: self(),

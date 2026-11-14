@@ -97,6 +97,7 @@ defmodule Spectre.Server.Checkpoint do
       state
       |> Map.put(:dead_letters, Map.get(projection, :dead_letters, %{}))
       |> Map.put(:operations, Map.get(projection, :operations, %{}))
+      |> Map.put(:external_submissions, Map.get(projection, :external_submissions, %{}))
       |> Map.put(
         :seen_event_order,
         Map.get(projection, :seen_event_order, Map.keys(projection.seen_events))
@@ -214,6 +215,7 @@ defmodule Spectre.Server.Checkpoint do
       outbox: project_entries(state.outbox),
       inbox: project_inbox(state.inbox),
       seen_events: state.seen_events,
+      external_submissions: Map.get(state, :external_submissions, %{}),
       dead_letters: Map.get(state, :dead_letters, %{}),
       operations: project_entries(Map.get(state, :operations, %{})),
       seen_event_order: Map.get(state, :seen_event_order, Map.keys(state.seen_events)),
@@ -241,7 +243,9 @@ defmodule Spectre.Server.Checkpoint do
   def project_event(event) do
     input = %{event.input | raw: nil}
     routing = project_routing(event.routing)
-    %{event | input: input, routing: routing}
+    # A recovered consent must be re-presented. Transport receipts are one-use
+    # runtime credentials, never part of the durable conversation snapshot.
+    event |> Map.delete(:consent_proof) |> Map.merge(%{input: input, routing: routing})
   end
 
   defp project_pending(pending),
@@ -635,6 +639,7 @@ defmodule Spectre.Server.Checkpoint do
       :inbox,
       :pending,
       :seen_events,
+      :external_submissions,
       :seen_event_order,
       :operations,
       :dead_letters
@@ -685,10 +690,27 @@ defmodule Spectre.Server.Checkpoint do
       not is_integer(value.sequence) ->
         {:error, :invalid_checkpoint_sequence}
 
+      not valid_submission_keys?(Map.get(value, :external_submissions, %{})) ->
+        {:error, :invalid_checkpoint_submissions}
+
       true ->
         :ok
     end
   end
 
   defp validate(_, _), do: {:error, :unsupported_checkpoint_version}
+
+  @spec valid_submission_keys?(term()) :: boolean()
+  defp valid_submission_keys?(entries) when is_map(entries) and map_size(entries) <= 4096 do
+    Enum.all?(entries, fn
+      {key, %{id: id, fingerprint: fingerprint}} ->
+        is_binary(key) and byte_size(key) in 1..256 and is_binary(id) and id != "" and
+          is_binary(fingerprint) and byte_size(fingerprint) == 64
+
+      _ ->
+        false
+    end)
+  end
+
+  defp valid_submission_keys?(_), do: false
 end

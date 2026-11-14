@@ -79,7 +79,7 @@ defmodule SpectreHexReleaseContractTest do
     assert Spectre.version() == @release
     assert Application.spec(:spectre, :vsn) |> to_string() == @release
     assert config[:homepage_url] == "https://spectre.elchemista.com"
-    assert docs[:source_ref] == @release
+    assert docs[:source_ref] == "feature/agent-server-gam"
     assert package[:licenses] == ["Apache-2.0"]
     assert "LLMS.md" in package[:files]
     assert "priv" in package[:files]
@@ -95,9 +95,11 @@ defmodule SpectreHexReleaseContractTest do
 
     assert package[:links] == %{
              "Website" => "https://spectre.elchemista.com",
-             "Documentation" => "https://hexdocs.pm/spectre/#{@release}",
+             "Documentation" =>
+               "https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/START_HERE.md",
              "GitHub" => "https://github.com/elchemista/spectre",
-             "Changelog" => "https://github.com/elchemista/spectre/blob/#{@release}/CHANGELOG.md"
+             "Changelog" =>
+               "https://github.com/elchemista/spectre/blob/feature/agent-server-gam/CHANGELOG.md"
            }
 
     assert {:ex_doc, "~> 0.40.3", ex_doc_opts} =
@@ -229,15 +231,19 @@ defmodule SpectreHexReleaseContractTest do
     end
   end
 
-  test "current installation examples use Hex while snapshots require an exact ref" do
+  test "unreleased installation examples identify the development branch and reviewed refs" do
     readme = File.read!(Path.join(@root, "README.md"))
     installation = File.read!(Path.join(@root, "docs/INSTALLATION.md"))
     llm_guide = File.read!(Path.join(@root, "LLMS.md"))
     changelog = File.read!(Path.join(@root, "CHANGELOG.md"))
 
-    assert readme =~ ~s({:spectre, "~> 0.3.4"})
-    assert installation =~ ~s({:spectre, "~> 0.3.4"})
-    assert llm_guide =~ ~s({:spectre, "~> 0.3.4"})
+    assert readme =~
+             ~s({:spectre, github: "elchemista/spectre", branch: "feature/agent-server-gam"})
+
+    assert readme =~ "not\nan announcement of a published Hex release"
+    assert installation =~ ~s(branch: "feature/agent-server-gam")
+    assert installation =~ "unreleased"
+    assert llm_guide =~ "Spectre 0.4 guide"
     assert changelog =~ "## 0.3.4 — 2026-08-30"
     assert changelog =~ "## 0.3.3 — 2026-08-23"
     assert installation =~ ~s({:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"})

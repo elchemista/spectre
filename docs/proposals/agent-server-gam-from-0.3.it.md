@@ -1598,3 +1598,25 @@ Gli esempi della sezione 7 sono il riferimento di leggibilità per la nuova arch
 - Applicazione: `Freelance.Spectre.Stack`, `Client.Agent`, `Freelancer.Agent`; stessa baseline della proposta principale. Package: sorgente Kinetic, in particolare `Catalog.verify_runtime/3`; configurazioni Prism/Beam/Mnemonic usate dall'applicazione.
 
 Questa revisione è documentale. Non modifica parser, runtime, package, dipendenze o applicazione; nessuna nuova macro mostrata è dichiarata già funzionante.
+
+
+## Aggiornamento implementato: SkillServer e Domain condiviso (0.4)
+
+Una Skill con `server:` usa un proprio `Spectre.Server.Runtime` supervisionato
+dall'agente. Agente e Skill usano lo stesso `Spectre.Server.GAM`, con Domain
+fissato all'avvio, senza duplicare il kernel o concedere autorità con il mount.
+Le operazioni consentite al mount sono dichiarate con `governed:` o derivate
+dai binding esistenti; le proposte registrano Evidence di attribuzione della Skill
+attraverso l'ingress autenticato. Restano validi Act prima dell'esecuzione,
+conferma della conseguenza mostrata, Outcome e recupero del journal.
+
+Routing e training rimangono nell'Agent; gli handler della Skill ricevono chiavi
+locali mentre lo scope montato resta nei metadati e nel checkpoint. Ogni Skill
+ha stato, worker, pending e timer separati. `delegate` restituisce accettazione,
+`handle_skill` riceve output correlato; la chat indirizza il consenso con
+`Server.input(agent, risposta, skill: nome)`. Lo streaming passa direttamente
+al consumer e termina anche dopo la morte del processo che lo possiede.
+
+Vedere [Skills](../../docs/SKILLS.md) per API ed esempi e
+[risoluzione della review](reviews/skills-implementation-resolution.md) per
+le verifiche di crash, parallelismo e osservazioni di Opus 5.5.

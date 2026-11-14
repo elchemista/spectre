@@ -1,5 +1,9 @@
 # Agent and Server in 0.4
 
+AgentServer manages GAM automatically. For startup, application callbacks and
+the boundary between application policy and kernel invariants, see
+[Automatic GAM](MANAGED_GAM.md).
+
 Spectre 0.4 separates declarations from application behavior:
 **Stack → Agent → Server**, with the Runtime owning the GenServer and GAM owning
 admission of the host's declared governed consequences. The existing router,
@@ -10,6 +14,23 @@ Read [the migration guide](MIGRATING_TO_0_4.md) for the change from 0.3,
 [GAM manifesto](https://spectre.guide/en/governed-act-model) for its foundations.
 [Installed tools](STACK_TOOLS.md) explains generated helpers and the companion
 satellite adapters. Existing application effects still require an explicit audit.
+
+## Skill Servers share the root's automatic GAM
+
+`Spectre.Skill, server: MyApp.SkillServer` gives a mount its own GenServer and
+ordinary Server callbacks. It keeps local state, workers, streams, pending
+intentions and a separate checkpoint key. The root automatically supplies its
+existing GAM connection, identity and shared authority ledger; the Skill does
+not start another Domain or implement a Host.
+
+Skills can run concurrently while the shared kernel orders admission. Effects
+must satisfy both the root's configured operations and the mount's `governed:`
+allowlist. Proposal provenance identifies the Skill. Consent targets that mount
+and its exact presentation; expiry records lifecycle facts without erasing a
+Duty. See [Skills](SKILLS.md) for the complete shared/local ownership table and
+confirmation example.
+
+## Root Server example
 
 ```elixir
 defmodule MyApp.SupportServer do
@@ -22,7 +43,7 @@ defmodule MyApp.SupportServer do
 
   def handle_flow({:support, :delete_account}, _input, ctx) do
     propose(ctx, :delete_my_account,
-      %{account_id: ctx.identity.account_id}, on_result: :deleted)
+      %{account_id: ctx.identity.subject}, on_result: :deleted)
   end
 
   def handle_flow(:unmatched, input, ctx) do
@@ -83,17 +104,20 @@ defmodule MyApp.SupportAgent do
 end
 ```
 
-The example assumes the referenced Stack, prompts, model services and host GAM
-bindings exist. Start the actual owner through `Spectre.Server.start_link/1` or
+The example assumes the referenced Stack, prompts, model services and registered
+application effect adapters exist. Start the actual owner through `Spectre.Server.start_link/1` or
 `Spectre.summon/1` with the Agent. The callback module is not a second process.
 
 ```elixir
 {:ok, server} = Spectre.summon(
   agent: MyApp.SupportAgent,
   subject: account.id,
-  identity: %{account_id: account.id},
+  identity: %{subject: account.id},
   assigns: %{},
-  gam: {Spectre.Server.GAM, host_gam_config}
+  gam: [
+    storage: {:disk, "var/support/" <> to_string(account.id)},
+    operations: %{delete_my_account: [confirm: true]}
+  ]
 )
 ```
 
@@ -104,7 +128,7 @@ Direct `Spectre.Server.start_link/1` with a Subject uses the same registry name
 and can return `{:error, {:already_started, pid}}`. Without a Subject, each
 start creates a new process. This is ownership within one BEAM node, not a
 distributed lock or authentication of that Subject. The host supplies the
-authenticated identity and Scope.
+authenticated identity; the runtime creates the Scope.
 
 ## Ownership and callbacks
 
@@ -145,11 +169,11 @@ without an admission ceremony. Governed consequences use the host GAM bridge.
 A HostProfile must still declare its boundary, including any governed
 disclosures or consumption. No callback name exempts a governed effect.
 
-Configure `gam: {Spectre.Server.GAM, config}` with an authenticated Scope or a
-scope resolver and a closed map of operation bindings. Each binding provides a
-candidate builder. Confirming operations also provide a presentation builder
-and an interpreter of the original user response. These are ordinary Elixir
-functions supplied by the host. See `Spectre.Server.GAM` for their signatures.
+Configure allowed `gam: [operations: ...]` and storage. Spectre constructs the
+Domain, authenticated Scope, standard Candidate and presentation from registered
+effects. Optional `handle_action/2` restricts business requests; `handle_pending/3`
+controls conversation. Neither callback can bypass admission, fabricate consent,
+or release an effect before its Act is committed. See [Automatic GAM](MANAGED_GAM.md).
 
 ```text
 input -> Router -> handle_flow -> concrete proposal
@@ -348,9 +372,12 @@ an application before replacing its owner. In particular, migrating a nominal
 delete action is insufficient when anonymization happens in an after-delivery
 hook or another branch.
 
-Skill route scopes and prompt roots are preserved by the new Router. This does
-not migrate every Skill workflow, private state, effect or recovery path to the
-new owner. The memory bridge likewise provides a history-oriented legacy state
+Skills with a `server:` binding now run in supervised child runtimes, sharing
+the Agent's GAM Domain while retaining separate state and checkpoints.
+See [Skills](SKILLS.md) for native OTP callbacks, parallel execution, scoped
+confirmation and ingress attribution. Mounts without a Server retain declarative
+routing. This does not automatically migrate legacy workflow bodies or the old
+generational private-state protocol. The memory bridge likewise provides a history-oriented legacy state
 projection; adapters relying on the complete old Instance state need an audit.
 
 The nine installable satellite packages have companion

@@ -1,6 +1,7 @@
 # Runtime Skills and Routing Projections
 
 **Compatibility reference (0.3 runtime retained in 0.4).** This page covers runtime Skill/Definition activation in the compatibility runtime.
+For process-based 0.4 Skills use [Skills](SKILLS.md).
 For new applications use [AgentServer](AGENT_SERVER.md), [GAM](GAM.md),
 [Stack tools](STACK_TOOLS.md) and [migration](MIGRATING_TO_0_4.md).
 These protocols and guarantees are not automatically inherited by the new

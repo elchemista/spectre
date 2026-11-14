@@ -25,16 +25,19 @@ user consent. The [GAM guide](GAM.md) explains Evidence and authority boundaries
   subject: customer.id,
   identity: %{subject: customer.id, conversation: conversation.id},
   consumer: transport_pid,
-  checkpoint: {MyApp.Checkpoints, conversation.id},
   stack_runtime: MyApp.AIRuntime,
-  gam: {Spectre.Server.GAM, host_gam_config}
+  gam: [
+    storage: {:disk, "var/conversations/" <> to_string(conversation.id)},
+    operations: allowed_operations
+  ]
 )
 
 {:ok, interaction_id} = Spectre.Server.input(server, validated_input)
 ```
 
-The referenced Agent, named stores/resources and host config are application
-setup. Configure one trusted ingress/transport path for user observations and
+The referenced Agent, named resources and allowed operations are application
+setup. The runtime supplies its GAM ingress and coherent stores. Authenticate
+the user at the configured consumer/transport boundary and
 retain correlation ids when rendering asynchronous responses or previews.
 Do not treat input acceptance as completion or execute an external consequence
 because a consumer event sounds confident.
@@ -44,6 +47,20 @@ operation. The host executor sends the message only after admission. Pulse
 similarly exposes protocol/contact inspection and explicitly bound sends.
 Installing either package does not create an authenticated user Scope or a
 mandate to contact arbitrary people.
+
+## Reusable Skill processes
+
+A Skill with `server:` has its own GenServer, callbacks, workers, streams, pending
+intentions and checkpoint key. The root AgentServer automatically connects that
+child to its existing GAM Domain, shared ledger and execution boundary. Stack
+resources are reused; a Skill requires neither another GAM bootstrap nor a Host.
+
+Effects must be enabled by the root's operation configuration and permitted by
+the mount's `governed:` references. The shared kernel orders admission and retains
+Skill invocation provenance while workers can operate concurrently. Confirmation
+must identify the originating mount and exact presentation; it cannot cross to
+another Skill's pending request. Timer closure is recorded in the same Domain
+and never disposes of a Duty. See [Skills](SKILLS.md) and the [demo](DEMO.md).
 
 ## Use native OTP callbacks for application events
 

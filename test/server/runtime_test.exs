@@ -2,6 +2,9 @@ defmodule Spectre.Server.RuntimeTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
 
+  # Component fixtures start Runtime directly: they exercise OTP/checkpoint
+  # behavior independently of the public Server automatic GAM bootstrap.
+
   defmodule Agent do
     def __spectre_config__, do: []
     def __spectre_server__, do: Spectre.Server.RuntimeTest.App
@@ -98,7 +101,7 @@ defmodule Spectre.Server.RuntimeTest do
       services: [router: Router, generate: Service]
     ]
 
-    start_supervised!({Server, Keyword.merge(defaults, opts)})
+    start_supervised!({Spectre.Server.Runtime, Keyword.merge(defaults, opts)})
   end
 
   test "application OTP callbacks execute in the single owner process" do
@@ -181,7 +184,13 @@ defmodule Spectre.Server.RuntimeTest do
   @tag :capture_log
   test "stale contexts and invalid groups fail before acquiring commands" do
     for action <- [:stale_context, :invalid_group] do
-      {:ok, pid} = Server.start_link(agent: Agent, identity: %{test: self()}, consumer: self())
+      {:ok, pid} =
+        Spectre.Server.Runtime.start_link(
+          agent: Agent,
+          identity: %{test: self()},
+          consumer: self()
+        )
+
       Process.unlink(pid)
       monitor = Process.monitor(pid)
       if action == :stale_context, do: GenServer.call(pid, :keep_context)

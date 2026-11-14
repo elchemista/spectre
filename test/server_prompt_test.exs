@@ -98,5 +98,21 @@ defmodule Spectre.ServerPromptTest do
 
     assert {:ok, "skill prompt"} =
              Spectre.Prompt.render_asset(agent, :answer, ctx, server_prompt_root: server_root)
+
+    context = %{
+      agent: agent,
+      input: Spectre.Input.new("question"),
+      assigns: %{},
+      routing: %{route: ctx.route},
+      options: [prompt_root: server_root, runtime_scope: {:skill, :billing}]
+    }
+
+    legacy = Spectre.Server.ServiceContext.legacy(context, context.input, [], %{})
+
+    assert {:ok, "server prompt"} =
+             Spectre.Prompt.render_asset(agent, :answer, legacy, legacy.opts)
+
+    assert {:error, {:prompt_outside_root, _, _}} =
+             Spectre.Prompt.resolve(agent, "../outside.text.heex", legacy, legacy.opts)
   end
 end

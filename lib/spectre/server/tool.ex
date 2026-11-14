@@ -330,17 +330,27 @@ defmodule Spectre.Server.Tool do
   end
 
   defp validate_governed_bindings!(descriptor, gam) do
-    for {_name, %{path: :governed, operation: operation}} <- descriptor.operations do
-      case gam do
-        {Spectre.Server.GAM, config} when is_list(config) ->
-          binding = config |> Keyword.get(:bindings, %{}) |> Map.get(operation)
-          validate_candidate!(binding, operation)
-
-        _ ->
-          invalid!({:governed_tool_requires_standard_gam_bridge, operation})
-      end
-    end
+    for {_name, %{path: :governed, operation: operation}} <- descriptor.operations,
+        do: validate_governed_binding!(gam, operation)
   end
+
+  @spec validate_governed_binding!(term(), term()) :: :ok
+  defp validate_governed_binding!({Spectre.Server.GAM.Managed, config}, _operation)
+       when is_list(config) do
+    # Installation exposes a helper, not authority to execute every operation.
+    # Managed validates enabled effects at bootstrap and records a rejection
+    # if a callback later proposes an operation outside that immutable allowlist.
+    _operations = Spectre.Server.GAM.Managed.operations(Keyword.fetch!(config, :server))
+    :ok
+  end
+
+  defp validate_governed_binding!({Spectre.Server.GAM, config}, operation) when is_list(config) do
+    binding = config |> Keyword.get(:bindings, %{}) |> Map.get(operation)
+    validate_candidate!(binding, operation)
+  end
+
+  defp validate_governed_binding!(_gam, operation),
+    do: invalid!({:governed_tool_requires_standard_gam_bridge, operation})
 
   defp validate_candidate!(%{candidate: {module, function}}, operation)
        when is_atom(module) and is_atom(function) do

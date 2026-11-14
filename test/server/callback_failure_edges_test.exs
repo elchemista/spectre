@@ -1,3 +1,5 @@
+# Internal OTP protocol tests intentionally inject mock services and process-local identities.
+# Public AgentServer bootstrap is covered by automatic_runtime_test.exs.
 defmodule Spectre.Server.CallbackFailureEdgesTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
@@ -68,7 +70,7 @@ defmodule Spectre.Server.CallbackFailureEdgesTest do
       services: [router: Router, generate: Service]
     ]
 
-    start_supervised!({Server, Keyword.merge(defaults, opts)})
+    start_supervised!({Spectre.Server.Runtime, Keyword.merge(defaults, opts)})
   end
 
   defp wait(check, tries \\ 400)
@@ -109,7 +111,7 @@ defmodule Spectre.Server.CallbackFailureEdgesTest do
   test "a failing error handler cannot replace the original quarantine with a crash loop" do
     for function <- [:throw, :malformed] do
       {:ok, server} =
-        Server.start_link(
+        Spectre.Server.Runtime.start_link(
           agent: Agent,
           consumer: self(),
           services: [router: Router],
@@ -231,7 +233,10 @@ defmodule Spectre.Server.InterruptEvidenceFailureTest do
   end
 
   test "unavailable interrupt evidence preserves the active pending and its original input" do
-    server = start_supervised!({Server, agent: Agent, consumer: self(), gam: Bridge})
+    # Injecting a test boundary is an internal Runtime protocol test.
+    server =
+      start_supervised!({Spectre.Server.Runtime, agent: Agent, consumer: self(), gam: Bridge})
+
     {:ok, _} = Server.input(server, "operate")
     wait(fn -> Server.status(server).pending != [] end)
     [before] = Server.status(server).pending

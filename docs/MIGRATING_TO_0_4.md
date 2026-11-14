@@ -1,5 +1,9 @@
 # Migrating from 0.3 to 0.4 AgentServer
 
+AgentServer manages GAM automatically. For startup, application callbacks and
+the boundary between application policy and kernel invariants, see
+[Automatic GAM](MANAGED_GAM.md).
+
 0.4.0 is an unreleased development line with changes to the authoring DSL,
 runtime ownership and installed-tool integration. Use core branch
 `feature/agent-server-gam` and satellite branches `feature/stack-tools-0.4`.
@@ -18,7 +22,7 @@ the host's declared consequences**. The kernel follows the
 | `Instance` owns the legacy conversational lifecycle | `Spectre.Server.Runtime` owns Server context, workers, continuations and pending intentions |
 | Application orchestrates `turn` / `execute` | Return command-bearing contexts; the Server acquires commands and delivers results |
 | `act`, `reason`, `reply` inside routing blocks | Ordinary Server callbacks using `generate`, `respond`, `propose` and installed helpers |
-| Policy DSL around protected actions | Host GAM bindings/contracts plus `handle_pending` for conversational behaviour |
+| Policy DSL around protected actions | Automatic GAM, registered effects, `handle_action` business checks and `handle_pending` conversation |
 | `learn: true` | `collect_intent: true`: explicitly collect intent examples |
 | `embedding:` examples on a rule | `semantic_examples:` describes the intent examples more clearly |
 | `via:` routing pipeline and `:classifier` / `:semantic_cache` names | `strategies:` with `:local_classifier` / `:intent_dataset`; older spellings remain aliases |
@@ -97,17 +101,31 @@ the background. Neither should be confused with an active GAM consent. See
 
 ## 3. Reconnect consequences through GAM
 
-Inventory the effects your host governs. Define their classes, contracts,
-mandates, authenticated ingress and executors. Bind operation names to Candidate
-builders in `gam: {Spectre.Server.GAM, config}`. Add presentation/interpreter
-bindings where consent is required. A route's `protected: true` does not replace
-these definitions and does not grant permission.
+The earlier 0.4 preview used `authority: :development` or a manually constructed
+`gam: {module, config}`. Both are replaced by automatic AgentServer integration.
+`identity` is now closed to `subject`, `conversation`, `task`, `tenant`, `org` and
+`organization`. Remove extra business/credential fields; use `subject` for the
+represented account and application state for other business data. Conflicting
+atom/string aliases fail startup.
 
-A model-generated action and a deterministic route must reach the same
-operation binding. Preserve proposal metadata from Kinetic so catalog/schema
-validation remains meaningful. Installing a classifier/tool does not authorize
-the consequences it suggests. See [GAM](GAM.md) for the exact boundary and a
-host wiring fragment.
+Remove the authority selector and replace the tuple with operation/storage options;
+remove application Host, Scope and ingress construction. Existing persisted
+preview authority histories are not silently rewritten or assigned new authority.
+Keep the old record and handle any pending work before starting a new configuration.
+
+
+Inventory the effects your application governs. Register their adapters and
+configure allowed operation names in `gam: [operations: ...]`, with `confirm: true`
+where consent is required. Pass the authenticated identity and configure storage.
+AgentServer builds the Domain, Scope, records and standard consent protocol;
+there is no application Host or environment-specific integration.
+
+Move business checks into `handle_action/2` and conversation into `handle_pending/3`.
+A route's `protected: true` cannot grant permission. A model-generated action and a
+deterministic route reach the same admission path. Preserve proposal metadata
+from Kinetic so catalog/schema validation remains meaningful. Installing a
+classifier/tool does not authorize the consequences it suggests. See
+[Automatic GAM](MANAGED_GAM.md) for the configurable and fixed responsibilities.
 
 Replace “request accepted, therefore done” handling with observed results:
 `{:governed, %{outcome: %{status: :succeeded}}}` means observed success;
@@ -166,3 +184,29 @@ credentials or the host's production authorization policy.
 
 The [old tutorial](GETTING_STARTED_0_3.md) and
 [old architecture](ARCHITECTURE_0_3.md) remain available for comparison.
+
+## Skills
+
+Add `server:` to reusable Skill declarations and move route bodies into that
+Server's `handle_flow` callbacks. Mount with `governed:` operation references
+(or existing logical `bind:` targets). Configure the root AgentServer's allowed
+GAM operations once; Spectre automatically passes its existing Domain and
+execution boundary to every Skill and records invocation provenance. Do not
+create another Domain, copy the authority ledger or extend ingress manually.
+
+Each child has its own GenServer, assigns, workers, streams, pending intentions
+and checkpoint key. They can work concurrently under the same GAM laws. Address
+text replies with `skill:`; UI decisions use the originating mount and exact
+presentation through `Server.decide/4`. Approval in one Skill does not authorize
+another. Timers record lifecycle changes in the shared ledger without erasing
+Duties. Legacy Instance Skill snapshots are not automatically converted. See
+[the full Skill example and ownership table](SKILLS.md).
+
+## Recognition precedence in the new Server
+
+`Spectre.Server.Router` treats an explicit regex match as hard evidence by
+default. This prevents an approximate cache/classifier hit from replacing a
+command such as “mappa memoria”. Route `strength:`/`regex_strength:` declarations
+can explicitly weaken a rule; `router regex_strength: :weak` keeps the old
+normal-rule precedence for the new Server. The legacy 0.3 routing entry point
+keeps its previous defaults.

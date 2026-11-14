@@ -152,6 +152,7 @@ defmodule Spectre.Agent do
     caller = __CALLER__
     module = Macro.expand(module, caller)
     opts = eval_opts(opts, caller)
+    Code.ensure_compiled!(module)
     definition = Definition.fetch!(module)
 
     if definition.kind != :skill do

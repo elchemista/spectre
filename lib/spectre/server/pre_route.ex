@@ -20,6 +20,8 @@ defmodule Spectre.Server.PreRoute do
     end
   end
 
+  def handle(_agent, _input, %{skill: skill}) when is_map(skill), do: :cont
+
   def handle(agent, input, context) do
     opts = options(agent, context)
 

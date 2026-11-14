@@ -2,7 +2,7 @@ defmodule Spectre.Stack.Installable do
   @moduledoc """
   Versioned contract implemented by packages that can be installed in a Stack.
 
-  `c:manifest/0`, `c:compile/3` and optional `c:tools/1` run while the Stack
+  `c:manifest/0`, `c:compile/3` and optional `c:tools/1` / `c:effects/1` run while the Stack
   definition is compiled and must return immutable data. `c:tools/1` receives
   compiled configuration and returns `Spectre.Stack.Tools` descriptors.
   `use Spectre.Server, tools: MyApp.Stack` generates helpers from their names;
@@ -13,6 +13,12 @@ defmodule Spectre.Stack.Installable do
   normalize to host-bound proposals before persistence and enter GAM. A tool
   registration is not authority to execute its consequences.
 
+  Optional `c:effects/1` returns `Spectre.Stack.Effects` registrations for the
+  managed GAM executor. It is an additive version-1 effect catalog, distinct from
+  helper descriptors and `Spectre.Stack.Contract.V2`. Packages without it remain
+  compatible with manual GAM bindings. Installing an execution adapter still
+  requires the application to enable the operation under its declared authority.
+
   `c:child_specs/2`, when implemented, runs only when a caller explicitly starts
   `Spectre.Stack.Runtime`. The optional callback extends the existing version-1
   installable contract; packages without tools still install but provide no
@@ -20,6 +26,7 @@ defmodule Spectre.Stack.Installable do
   example and the adapter contract.
   """
 
+  alias Spectre.Stack.Effects
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Package
   alias Spectre.Stack.Tools
@@ -31,12 +38,13 @@ defmodule Spectre.Stack.Installable do
   @callback compile(keyword(), Macro.t() | nil, Macro.Env.t()) ::
               {:ok, map() | keyword()} | {:error, term()}
   @callback tools(map() | keyword()) :: Tools.t()
+  @callback effects(map() | keyword()) :: Effects.t()
   @callback child_specs(Installation.t(), keyword()) ::
               [{term(), Supervisor.child_spec()}]
               | {:ok, [{term(), Supervisor.child_spec()}]}
               | {:error, term()}
 
-  @optional_callbacks compile: 3, child_specs: 2, tools: 1
+  @optional_callbacks compile: 3, child_specs: 2, tools: 1, effects: 1
 
   @doc """
   Defines a static manifest and default data-only compiler.
@@ -124,6 +132,19 @@ defmodule Spectre.Stack.Installable do
     if function_exported?(module, :tools, 1) do
       case invoke(module, :tools, [config]) do
         {:ok, tools} -> Tools.validate!(tools)
+        {:error, reason} -> raise_compile_error(module, reason)
+      end
+    else
+      %{}
+    end
+  end
+
+  @doc "Compiles optional, data-only execution registrations without granting authority."
+  @spec effects!(module(), map() | keyword()) :: Effects.t()
+  def effects!(module, config) do
+    if function_exported?(module, :effects, 1) do
+      case invoke(module, :effects, [config]) do
+        {:ok, effects} -> Effects.validate!(effects)
         {:error, reason} -> raise_compile_error(module, reason)
       end
     else

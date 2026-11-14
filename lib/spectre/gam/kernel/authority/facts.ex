@@ -11,9 +11,11 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
   resolver never performs atom/string fallback or decodes ledger records.
   """
 
-  alias Spectre.GAM.{Act, Candidate}
+  alias Spectre.GAM.{Act, Candidate, Duty}
+  alias Spectre.GAM.Duty.Disposition
   alias Spectre.GAM.GovernedAct.{AuthorityIndex, MeterState}
   alias Spectre.GAM.GovernedAct.State
+  alias Spectre.GAM.Kernel.Authority.DutyTargets
   alias Spectre.GAM.Mandate
   alias Spectre.GAM.Mandate.Ancestry
   alias Spectre.GAM.Mandate.Revocation
@@ -25,14 +27,15 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
     :blocked_mandate_refs,
     :blocked_effect_digests
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [disposition_duties: %{}]
 
   @type t :: %__MODULE__{
           mandates: %{optional(String.t()) => Mandate.t()},
           mandate_successors: %{optional(String.t()) => String.t()},
           revocations: %{optional(String.t()) => Revocation.t()},
           blocked_mandate_refs: MapSet.t(String.t()),
-          blocked_effect_digests: MapSet.t(String.t())
+          blocked_effect_digests: MapSet.t(String.t()),
+          disposition_duties: %{optional(binary()) => map()}
         }
 
   @doc "Builds the exhaustive authority-only view, independent of operational indexes."
@@ -43,7 +46,8 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
       mandate_successors: state.mandate_successors,
       revocations: state.revocations,
       blocked_mandate_refs: blocked_mandate_refs(state),
-      blocked_effect_digests: blocked_effect_digests(state)
+      blocked_effect_digests: blocked_effect_digests(state),
+      disposition_duties: all_dispositions(state)
     }
   end
 
@@ -65,7 +69,8 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
         mandate_successors: state.mandate_successors,
         revocations: state.revocations,
         blocked_mandate_refs: blocked,
-        blocked_effect_digests: MapSet.new(Map.keys(index.effects))
+        blocked_effect_digests: MapSet.new(Map.keys(index.effects)),
+        disposition_duties: indexed_dispositions(state, index.open_duty_causes)
       }
     else
       from_state(state)
@@ -107,14 +112,69 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
     mandates = Ancestry.select(state.mandates, roots)
     refs = Map.keys(mandates)
 
-    %__MODULE__{
+    facts = %__MODULE__{
       mandates: mandates,
       mandate_successors: Map.take(state.mandate_successors, refs),
       revocations: Map.take(state.revocations, refs),
       blocked_mandate_refs: selected_debts(state, refs, indexed?),
       blocked_effect_digests: selected_containment(state, occurrence, indexed?)
     }
+
+    select_disposition(facts, state, occurrence)
   end
+
+  @spec all_dispositions(State.t()) :: %{optional(binary()) => map()}
+  defp all_dispositions(state) do
+    disposition_entries(state, Map.values(state.duties))
+  end
+
+  @spec indexed_dispositions(State.t(), MapSet.t()) :: %{optional(binary()) => map()}
+  defp indexed_dispositions(state, causes) do
+    disposition_entries(state, Enum.map(causes, &Map.fetch!(state.duties, &1)))
+  end
+
+  @spec disposition_entries(State.t(), [Duty.t()]) :: %{optional(binary()) => map()}
+  defp disposition_entries(state, duties) do
+    predecessors = DutyTargets.predecessors(state)
+
+    Enum.reduce(duties, %{}, fn duty, selected ->
+      Map.merge(selected, disposition_entry(state, duty, predecessors))
+    end)
+  end
+
+  @spec select_disposition(t(), State.t(), Candidate.t() | Act.t()) :: t()
+  defp select_disposition(facts, state, %{class: "duty.dispose", consequence: consequence}) do
+    selected =
+      with {:ok, disposition} <- Disposition.from_consequence(consequence),
+           %Duty{} = duty <- Map.get(state.duties, disposition.cause_key),
+           true <- duty.ref == disposition.duty_ref do
+        disposition_entry(state, duty, DutyTargets.predecessors(state))
+      else
+        _ -> %{}
+      end
+
+    %{facts | disposition_duties: selected}
+  end
+
+  defp select_disposition(facts, _state, _occurrence), do: %{facts | disposition_duties: %{}}
+
+  @spec disposition_entry(State.t(), Duty.t(), map()) :: %{optional(binary()) => map()}
+  defp disposition_entry(state, %Duty{status: :open} = duty, predecessors) do
+    case DutyTargets.causal_refs(state, duty, predecessors) do
+      {:ok, refs} ->
+        envelope =
+          duty
+          |> Map.take([:ref, :cause_key, :mandate_ref, :status, :disposition_authority_refs])
+          |> Map.put(:causal_refs, refs)
+
+        %{duty.ref => envelope}
+
+      {:error, _} ->
+        %{}
+    end
+  end
+
+  defp disposition_entry(_state, _duty, _predecessors), do: %{}
 
   defp candidate_roots(_state, %Candidate{requested_mandate_ref: ref}, _indexed?)
        when not is_nil(ref),

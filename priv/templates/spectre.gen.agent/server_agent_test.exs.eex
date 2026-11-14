@@ -10,6 +10,7 @@ defmodule <%= @module %>Test do
       agent: <%= @module %>, identity: %{user_id: "example"}, consumer: self()})
 
     assert {:ok, interaction} = Spectre.Server.input(server, "hello")
-    assert_receive {Spectre.Server, ^server, {:response, ^interaction, "Hello!", []}}
+    assert_receive {Spectre.Server, ^server, {:response, ^interaction, "Hello!", metadata}}
+    assert is_binary(metadata[:message_id])
   end
 end

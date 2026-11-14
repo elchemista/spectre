@@ -60,10 +60,15 @@ defmodule Outreach.Sink do
   use Agent
 
   def start_link(_),
-    do: Agent.start_link(fn -> %{email: [], notice: [], model_calls: 0} end, name: __MODULE__)
+    do:
+      Agent.start_link(
+        fn -> %{email: [], notice: [], model_calls: 0, attempts: %{email: 0, notice: 0}} end,
+        name: __MODULE__
+      )
 
   def deliver(kind, to, content) do
     Agent.get_and_update(__MODULE__, fn state ->
+      state = update_in(state, [:attempts, kind], &(&1 + 1))
       previous = Map.fetch!(state, kind)
 
       if Enum.any?(previous, &(&1.to == to)) do

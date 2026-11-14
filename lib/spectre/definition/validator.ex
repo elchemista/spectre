@@ -13,7 +13,6 @@ defmodule Spectre.Definition.Validator do
 
   @supported_skill_versions [1]
   @skill_forbidden_config [
-    :server,
     :actions,
     :operations,
     :action_providers,

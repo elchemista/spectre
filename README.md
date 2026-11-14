@@ -33,6 +33,32 @@ the recorded Act and capability release; observed Outcomes describe what
 actually happened. Read the [GAM manifesto](https://spectre.guide/en/governed-act-model)
 and [how Spectre integrates GAM](docs/GAM.md).
 
+## Independent Skill servers, one shared GAM
+
+A `Spectre.Skill` with `server:` runs its callbacks in a separate GenServer.
+The root AgentServer automatically connects every mounted Skill to its **same
+GAM Domain, authority ledger and execution boundary**. Mounting a Skill creates
+neither another Domain nor an additional grant; no Skill Host or manual GAM
+wiring is required.
+
+```text
+AgentServer ─────────┐
+Research Skill ──────┼──→ shared Server.GAM boundary → one Domain / ledger
+Knowledge Skill ────┘
+```
+
+Each Server owns its assigns, workers, streams, pending intentions and checkpoint.
+Skills can work concurrently; the shared kernel orders admission and applies its
+existing laws. A governed operation must be enabled in the root `gam:` operations
+configuration and allowed by the mount's `governed:` references. Installing a
+Stack package alone grants no execution authority.
+
+Every Skill proposal records its mount and invocation provenance in the shared
+ledger. Consent belongs to the exact Skill and presentation: approving Research's
+email cannot approve Knowledge's memory write. Timers record lifecycle changes
+in that same Domain; closing an intention does not erase a Duty. See
+[Skills](docs/SKILLS.md) and the [two-Skill LiveView demo](docs/DEMO.md).
+
 ## Install this development line
 
 Requires Elixir `~> 1.19`:
@@ -56,7 +82,7 @@ The user can also ask for `status`, `info` or `history`.
 This is the main application code, not a standalone no-configuration script.
 `MyApp.MailActions`, `MyApp.Contacts` and `MyApp.TextModel` are application modules;
 the [complete guide](docs/GETTING_STARTED.md) explains their small contracts and
-the GAM host wiring. Install Lens and Kinetic from their companion branches.
+the GAM configuration. Install Lens and Kinetic from their companion branches.
 
 ```elixir
 # 1. Stack: install capabilities shared by recognition and execution.
@@ -265,46 +291,43 @@ The email binding below applies regardless of how the proposal was recognized;
 a regex match or an installed action is not permission to send.
 
 ```elixir
-# Host-owned policy: sending mail always needs consent for this exact draft.
-# MailPolicy builds the Candidate/Presentation; the Domain's authenticated
-# ingress validates the original answer. These are application callbacks.
-gam = [
-  scope: authenticated_scope,
-  store: MyApp.ServerStore,
-  consent_ttl_ms: 300_000,
-  bindings: %{
-    {:kinetic, :send_email} => %{
-      candidate: {MyApp.MailPolicy, :candidate},
-      presentation: {MyApp.MailPolicy, :presentation},
-      interpreter: {MyApp.MailPolicy, :interpret}
-    }
-  }
-]
-
-# The host supervises ServerStore, the GAM Domain and this named Stack runtime.
+# Spectre owns GAM; the application supplies identity and operation policy.
 {:ok, _runtime} = Spectre.Stack.start_link(MyApp.OutreachAI, name: MyApp.OutreachRuntime)
 {:ok, agent} = Spectre.summon(
   agent: MyApp.OutreachAgent,
-  subject: authenticated_user.id,
+  identity: %{subject: authenticated_user.id},
   stack_runtime: MyApp.OutreachRuntime,
-  checkpoint: {MyApp.ServerStore, "outreach:" <> to_string(authenticated_user.id)},
-  gam: {Spectre.Server.GAM, gam},
-  consumer: channel_pid
+  gam: [
+    storage: :ephemeral,
+    operations: %{{:kinetic, :send_email} => [confirm: true]}
+  ],
+  consumer: self()
 )
 
 Spectre.Server.input(agent, "https://company.example/contact")
-# Later messages from the same authenticated channel:
 Spectre.Server.input(agent, "status")
-# Only after the consent presentation has actually been delivered:
-# Spectre.Server.input(agent, "confirm")
+# The configured consumer renders the presentation, then acknowledges it:
+# Spectre.Server.presented(agent, presentation_ref)
+# A separate user click approves that exact presentation:
+# Spectre.Server.decide(agent, nil, presentation_ref, :confirm)
 ```
 
-`MyApp.MailPolicy.presentation/3` must show the exact recipient and body, with
-confirm/cancel choices. Its Candidate and the Domain contract bind approval to
-that email; the admitted executor invokes the mail transport only after GAM
-commits the Act. Finding an address on a page does not itself authorize contact.
+The framework constructs Candidate, Presentation and execution records from the
+registered action and configured authority. Confirmation shows the frozen recipient
+and body; an admitted executor runs only after GAM commits the Act. Use optional
+`handle_action/2` and `handle_pending/3` callbacks for business rules or custom
+conversation. There is one automatic integration for every environment; the
+application does not construct a Host, Scope, Candidate or executor bridge. It
+supplies an identity from its authenticated transport and declares which registered
+operations are allowed. These policies can restrict proposals, but cannot bypass
+GAM admission, consent or recording. See [automatic GAM](docs/MANAGED_GAM.md).
 See [the guide](docs/GETTING_STARTED.md) for the model prompt, result handling,
 provider setup and what is intentionally omitted from this sketch.
+
+Application actors can use `Spectre.GAM.submit(agent, operation, args,
+on_result: :tag)` to enter this same governed loop. Only the configured consumer
+or startup `submitters` may do so; submission does not approve the operation.
+The eventual outcome still reaches the Server's `handle_result/3`.
 
 ## Capabilities retained from 0.3
 
@@ -323,6 +346,47 @@ Server callbacks, and governed effects enter GAM. Consent and its lifetime are
 pending state with correlation and recovery, not an unscoped match on “yes”.
 Native `handle_call`, `handle_cast` and `handle_info` remain available. See
 [Architecture](docs/ARCHITECTURE.md) and [Pending lifecycle](docs/PENDING_LIFECYCLE.md).
+
+## Reusable Skills with their own Server
+
+A `Spectre.Skill` with a `server:` binding gets a supervised runtime with its
+own handlers, state, streams and pending intentions. Mount it with
+`skill MyApp.ResearchSkill, as: :research, governed: [:save_report]`.
+The Agent and its Skills share one GAM Domain and ledger; a Skill does not gain
+new authority by being mounted. Skill commands record their origin through the
+host's authenticated ingress.
+
+The Agent routes input to mounted flows automatically. `delegate(ctx, :research,
+input)` starts work explicitly; output reaches `handle_skill/3` and the consumer
+with mount and interaction identities. Answer a Skill's confirmation using
+`Spectre.Server.input(agent, "yes", skill: :research)`. Confirmation buttons
+should also pin the exact request: `pending: {pending.id, pending.revision}`;
+an old button cannot approve a newer proposal.
+
+```elixir
+# Declarations select the reusable routes and callback module.
+defmodule MyApp.ResearchSkill do
+  use Spectre.Skill, server: MyApp.ResearchServer
+  flow :research do
+    on :inspect, regex: ~r/^https?:\/\/\S+$/i, collect_intent: false
+  end
+end
+
+# In the mounting Agent:
+# skill MyApp.ResearchSkill, as: :research, governed: [:save_report]
+
+# Behavior runs in this Skill's own GenServer, with Stack-generated helpers.
+defmodule MyApp.ResearchServer do
+  use Spectre.Server, tools: MyApp.AI
+  def handle_flow({:research, :inspect}, input, ctx),
+    do: lens(ctx, {:look, input.text}, on_result: :observed)
+  def handle_result(:observed, {:ok, page}, ctx), do: respond(ctx, page.markdown)
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+end
+```
+
+See [Skills](docs/SKILLS.md) for a commented example, host ingress wiring,
+installed helpers and crash recovery.
 
 ## Installed tools
 
@@ -350,6 +414,16 @@ includes browsing, memory, model-generated AL, email, consent, topic changes,
 timers and crash recovery. Its external transports are simulated; the package
 adapters, persistence and GAM loop are real.
 
+## LiveView showcase
+
+The sibling `demo_spectre` development application runs a chat, two supervised
+Skills, all nine Stack packages and a shared GAM Domain. Lens visits a local
+website in Lightpanda; the deterministic model produces AL, Kinetic prepares the
+email, and GAM asks for separate email and memory consent. The UI includes
+stream previews, pending controls, tool activity, local mail and the actual
+GAM read-only projection. See the [showcase guide](docs/DEMO.md) for setup,
+coverage and the optional OpenRouter mode. The demo lives outside this package.
+
 ## Documentation
 
 Start at [Start here](docs/START_HERE.md), then read
@@ -364,3 +438,9 @@ The host still owns authentication, mandates, executors, credentials and actual
 external-effect boundaries. Spectre is not a sandbox for arbitrary Elixir code.
 
 Apache-2.0; see [LICENSE](LICENSE).
+
+The Stack helper selects an explicit library operation, for example
+`mnemonic(ctx, {:search, query, limit: 5}, on_result: :found)`. Search, recall and
+reflection have different result shapes; writes have separate host bindings.
+See [Stack tools](docs/STACK_TOOLS.md#mnemonic-request-ergonomics) and
+[Skill prompt roots](docs/SKILLS.md#prompt-roots-in-skill-servers).

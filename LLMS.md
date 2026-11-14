@@ -6,7 +6,7 @@ declared governed consequences. The model is a cognitive dependency, not the
 owner of authority or application state.
 
 Read [Getting started](docs/GETTING_STARTED.md), [Agent and Server](docs/AGENT_SERVER.md),
-[installed tools](docs/STACK_TOOLS.md), [GAM](docs/GAM.md) and
+[installed tools](docs/STACK_TOOLS.md), [Skills](docs/SKILLS.md), [GAM](docs/GAM.md) and
 [migration from 0.3](docs/MIGRATING_TO_0_4.md). The
 [GAM manifesto](https://spectre.guide/en/governed-act-model) defines the model;
 the implementation guide maps its concepts to Elixir modules.
@@ -94,7 +94,7 @@ end
 ```
 
 This fragment requires a Stack with Kinetic, a closed action registry, a model
-and host GAM bindings. The model produces AL; Kinetic prepares candidates from
+and configured allowed GAM operations. The model produces AL; Kinetic prepares candidates from
 its consolidated output. Do not execute raw AL or partial streaming tokens.
 If `generate(..., planning: true)` already prepared proposals, do not parse them
 again with the explicit helper. See [Actions](docs/ACTIONS.md).
@@ -164,3 +164,31 @@ surfaces remain compatibility APIs. They are not automatically governed by the
 new Server/GAM loop. Never mix their state or continuation protocols into new
 Server examples. The archived [0.3 guide](docs/legacy/LLMS_0_3.md) is for maintaining
 those applications, not for scaffolding a new one.
+
+## Skill processes
+
+Use `Spectre.Skill, server: SkillServer` and ordinary `Spectre.Server` callbacks.
+Mounts run independently under the Agent's Skill supervisor, sharing its pinned
+GAM Domain, authority ledger and automatic execution boundary. Configure `gam:`
+once on the root; do not generate a Skill Host, another Domain or custom ingress.
+Each child owns its assigns, workers, streams, pending intentions and checkpoint
+key. Parallel work still passes through the shared kernel's ordered admission.
+
+Declare the mount's `governed:` operations; they cannot widen root authority or
+infer permission from Stack installation. Spectre automatically records invocation
+Evidence through its fixed ingress. Use `delegate/4` for work and `handle_skill/3`
+for live output. Target chat with `Server.input(agent, text, skill: mount)`;
+explicit UI decisions use `Server.decide(agent, mount, presentation_ref, decision)`
+after a separate rendering acknowledgement. Consent cannot cross mounts or
+presentations. Delegated/model input is not consent. Timer closure records the
+Skill lifecycle in the shared Domain and cannot erase unresolved Duties.
+
+## Local LiveView showcase
+
+The sibling `../demo_spectre` application demonstrates core 0.4 with independent
+Outreach and Knowledge Skill Servers, all nine Stack packages and one shared GAM
+Domain per chat. It is outside this package. See `docs/DEMO.md` and the demo's
+README for local paths, real versus deterministic components and test results.
+It uses automatically provisioned GAM, session-specific disk storage and local
+email receipts. Do not present it as account authentication, automatic reconnect
+recovery or live-provider validation.

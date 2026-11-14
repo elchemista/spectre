@@ -8,6 +8,8 @@ defmodule Spectre.Server.ToolGovernedRuntimeTest do
   alias Spectre.GAM.Mind.Turn
   alias Spectre.GAM.V04Test.{Fixture, Runtime}
   alias Spectre.Server
+
+  # Low-level bridge protocol fixture; public managed integration has separate tests.
   alias Spectre.Server.Store.Disk
   alias Spectre.Server.{Checkpoint, Command, Tool}
 
@@ -228,7 +230,7 @@ defmodule Spectre.Server.ToolGovernedRuntimeTest do
          ]}
     ]
 
-    server = start_supervised!({Server, opts}, restart: :temporary)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, restart: :temporary)
     %{server: server, opts: opts, scope: scope, store: store}
   end
 
@@ -273,9 +275,11 @@ defmodule Spectre.Server.ToolGovernedRuntimeTest do
     Process.flag(:trap_exit, true)
 
     assert {:error, _} =
-             Server.start_link(Keyword.put(c.opts, :gam, {Server.GAM, [bindings: %{}]}))
+             Spectre.Server.Runtime.start_link(
+               Keyword.put(c.opts, :gam, {Server.GAM, [bindings: %{}]})
+             )
 
-    assert {:error, _} = Server.start_link(Keyword.put(c.opts, :gam, __MODULE__))
+    assert {:error, _} = Spectre.Server.Runtime.start_link(Keyword.put(c.opts, :gam, __MODULE__))
   end
 
   def migrate(projection, _metadata), do: {:ok, projection}
@@ -318,7 +322,8 @@ defmodule Spectre.Server.ToolGovernedRuntimeTest do
     opts =
       Keyword.merge(c.opts, checkpoint_version: 2, checkpoint_migrator: {__MODULE__, :migrate})
 
-    restored = start_supervised!({Server, opts}, id: :restored, restart: :temporary)
+    restored =
+      start_supervised!({Spectre.Server.Runtime, opts}, id: :restored, restart: :temporary)
 
     assert_receive {Server, ^restored, {:tool_contract_changed, _, :reconciliation_required}},
                    2000
@@ -352,7 +357,9 @@ defmodule Spectre.Server.ToolGovernedRuntimeTest do
     opts =
       Keyword.merge(c.opts, checkpoint_version: 2, checkpoint_migrator: {__MODULE__, :migrate})
 
-    restored = start_supervised!({Server, opts}, id: :restored, restart: :temporary)
+    restored =
+      start_supervised!({Spectre.Server.Runtime, opts}, id: :restored, restart: :temporary)
+
     assert_receive {:result, :refund, {:error, :tool_contract_changed}}, 2000
     assert Server.status(restored).outbox_size == 0
     refute_receive {:effect, _, _}

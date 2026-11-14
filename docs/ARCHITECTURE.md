@@ -11,15 +11,52 @@ remains a compatibility path, not a description of the new owner.
 | --- | --- | --- |
 | `Spectre.Stack` | Installed packages, immutable tool descriptors, provider bindings, resource declarations | Business permission to execute a proposed effect |
 | `Spectre.Agent` | Classifiers, router strategies, flow/intent metadata, dataset collection settings | Mutable conversation state or execution of route bodies |
+| `Spectre.Skill` | Reusable scoped routes and an optional Server binding; mount-local allowed operations | A separate mandate or automatically granted authority |
 | Application `Spectre.Server` module | `handle_flow`, `handle_result`, `handle_pending`, ordinary OTP callbacks | Independent ownership outside the runtime process |
-| `Spectre.Server.Runtime` | One GenServer owner, context, command acquisition/outbox, workers, streaming, pending intentions, checkpoints | Authority inferred from a model label or arbitrary “yes” |
-| `Spectre.GAM` and host bridge | Scoped observations, admission, recorded Acts, attempts/outcomes, consent evidence and unresolved duties | Proof that an external effect succeeded just because it was admitted |
-| Host application | Authentication, governed surface, contracts, mandates, ingress, executors, stores and reconciliation | Automatic safety for arbitrary direct I/O in application callbacks |
+| `Spectre.Server.Runtime` | One GenServer owner, context, command outbox, workers, streaming, pending intentions, checkpoints and automatic GAM integration | Authority inferred from a model label or arbitrary “yes” |
+| `Spectre.GAM` kernel | Scoped observations, admission, recorded Acts, attempts/outcomes, consent evidence and unresolved duties | Proof that an external effect succeeded just because it was admitted |
+| Host application | Authenticated identity, allowed operations, business policy, registered effect adapters, storage and independent real-world review | Automatic safety for arbitrary direct I/O in application callbacks |
 
 Stack resources are supervised separately; that does not create a second owner
 of the conversation. Your Server module is a behaviour implementation delegated
 to by the runtime in the same process. It can use `handle_info` and other OTP
 callbacks without taking over framework message dispatch.
+
+## Agent and Skill process tree
+
+```text
+Application session
+└── Agent Server.Runtime
+    ├── Automatic GAM boundary / Domain (Sequencer + authority ledger)
+    └── Skill supervisor (one_for_one)
+        ├── Research Server.Runtime
+        └── Knowledge Server.Runtime
+
+All governed commands → Server.GAM → the same Domain
+Shared Stack resources are supervised separately.
+```
+
+A mounted Skill with `server:` receives its own GenServer, workers, assigns,
+streaming, pending intentions and checkpoint. Matching its route delegates to
+that process. Its `handle_flow` receives the local `{flow, intent}`; `ctx.skill`
+and the authenticated invocation Evidence retain the mount identity. Skills
+without `server:` keep their declarative routing behavior in the Agent Server.
+
+The root stays responsive while Skill workers run. The GAM Domain orders
+admission according to its existing laws; process concurrency never grants
+permission. `governed:` restricts the mount's available host operation references.
+Confirmation controls address both the mount and `{pending.id, pending.revision}`.
+
+The root creates the GAM integration once. Each Skill receives that same pinned
+connection: there is no per-Skill Domain, copied ledger, new mandate or manual
+ingress to implement. Shared governance does not merge the Servers' local state
+or pending intentions. Every proposal retains its mount provenance; one Skill's
+consent cannot approve another Skill's operation. Timer closure is recorded in
+the same Domain and cannot erase unresolved Duties.
+
+See [Skills](SKILLS.md) for delegation, native OTP callbacks, recorded provenance,
+uncertain dispatch recovery and the cancellation contract, or the
+[LiveView showcase](DEMO.md) to exercise this tree interactively.
 
 ## Input and execution loop
 

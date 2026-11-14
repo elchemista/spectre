@@ -1,3 +1,5 @@
+# Protocol component tests use the internal Runtime to inject boundary adapters.
+# Application AgentServers always start through the automatic Spectre.Server API.
 defmodule Spectre.Server.DurableDeliveryExpiryTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
@@ -105,7 +107,7 @@ defmodule Spectre.Server.DurableDeliveryExpiryTest do
   end
 
   test "an ordinary payload cannot remove an in-flight governed outbox entry" do
-    server = start_supervised!({Server, options(store(), :hold)})
+    server = start_supervised!({Spectre.Server.Runtime, options(store(), :hold)})
     Server.input(server, "operate")
     assert_receive {:registered_command, id, worker}, 2_000
 
@@ -120,7 +122,7 @@ defmodule Spectre.Server.DurableDeliveryExpiryTest do
   end
 
   test "an ordinary payload cannot invoke a registered ambiguous operation continuation" do
-    server = start_supervised!({Server, options(store(), :ambiguous)})
+    server = start_supervised!({Spectre.Server.Runtime, options(store(), :ambiguous)})
     Server.input(server, "operate")
     assert_receive {:registered_command, id, _worker}, 2_000
     wait(fn -> map_size(Server.status(server).operations) == 1 end)
@@ -138,7 +140,7 @@ defmodule Spectre.Server.DurableDeliveryExpiryTest do
     :persistent_term.put(key, %{test: self(), block: true})
     on_exit(fn -> :persistent_term.erase(key) end)
     options = options(store(), :expiry)
-    {:ok, first} = Server.start_link(options)
+    {:ok, first} = Spectre.Server.Runtime.start_link(options)
     Process.unlink(first)
     monitor = Process.monitor(first)
     Server.input(first, "operate")
@@ -146,12 +148,12 @@ defmodule Spectre.Server.DurableDeliveryExpiryTest do
     Process.exit(first, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^first, :killed}, 2_000
     :persistent_term.put(key, %{test: self(), block: false})
-    {:ok, restored} = Server.start_link(options)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(options)
     assert_receive {:expiry_callback, ^restored}, 2_000
     assert Server.status(restored).pending == []
     assert Server.status(restored).assigns.expired == 1
     GenServer.stop(restored)
-    {:ok, third} = Server.start_link(options)
+    {:ok, third} = Spectre.Server.Runtime.start_link(options)
     assert Server.status(third).assigns.expired == 1
     assert Server.status(third).pending == []
     refute_receive {:expiry_callback, ^third}, 30

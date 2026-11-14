@@ -137,7 +137,7 @@ defmodule Spectre.GAM.Kernel.Authority do
          :ok <- Status.not_revoked(mandate, view, time),
          :ok <- Coverage.matching_scope(candidate, mandate),
          :ok <- Coverage.covered_values(:subjects, candidate, mandate),
-         :ok <- Coverage.covered_values(:targets, candidate, mandate),
+         :ok <- Coverage.covered_values(:targets, candidate, mandate, view),
          :ok <- Coverage.covered_class(candidate, mandate),
          :ok <- Coverage.declassification_owners(candidate, mandate, view),
          :ok <- Coverage.covered_row(candidate, mandate),

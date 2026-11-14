@@ -78,6 +78,14 @@ An installed package may intentionally contribute an Action provider, but that
 does not make every operation planner-visible or bypass protection and host
 authorization.
 
+Process-based Skills select the same Stack with `use Spectre.Server, tools: ...`.
+Their generated helpers reuse its supervised resources; no second installation
+or package-specific Skill adapter is needed. Each Skill owns its runtime state
+and checkpoint, but the root automatically passes the same GAM connection and
+authority ledger. Mount `governed:` references restrict the root's configured
+operations, not grant new permissions. Consent and provenance stay associated
+with the exact Skill and presentation. See [Skills](SKILLS.md).
+
 ## Tool registration in 0.4
 
 The optional `c:Spectre.Stack.Installable.tools/1` callback receives the compiled

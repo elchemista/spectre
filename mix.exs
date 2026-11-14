@@ -6,9 +6,11 @@ defmodule Spectre.MixProject do
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
     "docs/legacy/INTEGRATIONS_0_3.md",
+    "docs/legacy/SKILLS_0_3.md",
     "docs/legacy/MEMORY_0_3.md",
     "docs/legacy/STREAMING_INFERENCE_0_3.md",
     "docs/GAM.md",
+    "docs/MANAGED_GAM.md",
     "docs/MIGRATING_TO_0_4.md",
     "docs/GETTING_STARTED_0_3.md",
     "docs/ARCHITECTURE_0_3.md",
@@ -33,6 +35,7 @@ defmodule Spectre.MixProject do
     "docs/ROUTING.md",
     "docs/ACTIONS.md",
     "docs/SKILLS.md",
+    "docs/DEMO.md",
     "docs/MEMORY.md",
     "docs/STREAMING_INFERENCE.md",
     "docs/RECEIPTS.md",
@@ -195,6 +198,7 @@ defmodule Spectre.MixProject do
           "docs/GETTING_STARTED.md",
           "docs/ARCHITECTURE.md",
           "docs/GAM.md",
+          "docs/MANAGED_GAM.md",
           "docs/MIGRATING_TO_0_4.md"
         ],
         Tutorials: [
@@ -206,6 +210,7 @@ defmodule Spectre.MixProject do
           "docs/ROUTING.md",
           "docs/ACTIONS.md",
           "docs/SKILLS.md",
+          "docs/DEMO.md",
           "docs/MEMORY.md",
           "docs/STREAMING_INFERENCE.md",
           "docs/RECEIPTS.md"
@@ -251,6 +256,7 @@ defmodule Spectre.MixProject do
         ],
         "Legacy 0.3 authoring": [
           "docs/legacy/INTEGRATIONS_0_3.md",
+          "docs/legacy/SKILLS_0_3.md",
           "docs/legacy/MEMORY_0_3.md",
           "docs/legacy/STREAMING_INFERENCE_0_3.md",
           "docs/GETTING_STARTED_0_3.md",

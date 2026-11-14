@@ -42,6 +42,7 @@ clause. The Server prompt root belongs in
 | `router strategies: [...]` | Select recognition strategies and arbitration options. |
 | `flow name, defaults: [...] do ... end` | Group routes and inherit common declaration options. |
 | `on label, opts` | Declare recognition and a Server dispatch destination. |
+| `skill Module, as: mount, governed: refs` | Mount reusable scoped routes and, when the Skill declares `server:`, its own Server process under the root's shared GAM. |
 
 The classifier may be another model or a host implementation. A named local
 binding accepts `function:`/`with:` when needed; classifier options are not
@@ -65,6 +66,20 @@ nested routes retain their path and mounted Skill routes retain scope. Labels
 remain globally unique. Do not discard those keys in a catch-all dispatcher.
 The input pipeline can normalize input and attach metadata before pending or
 routing dispatch; it runs once for an admitted input.
+
+## Skill declarations and shared authority
+
+Declare `server: MyApp.ResearchServer` in `use Spectre.Skill`, then mount that
+Skill in the Agent. Its Server uses ordinary callbacks and selects the existing
+Stack with `use Spectre.Server, tools: MyApp.AI`. Each mount owns local state,
+workers, streams, pending intentions and a checkpoint key.
+
+The root automatically supplies its same GAM connection, Domain and authority
+ledger. No Skill GAM DSL, extra Host or ingress implementation is required.
+`governed:` restricts root-configured operations; it grants no additional
+authority. Provenance identifies each Skill proposal, and consent targets the
+exact mount and presentation. Parallel work and timer closure remain subject to
+the shared kernel laws. See [Skills](SKILLS.md) for the complete example.
 
 ## Router ergonomics and retained aliases
 

@@ -2,6 +2,9 @@ defmodule Spectre.Server.MemoryTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
 
+  # Component fixtures start Runtime directly: they exercise OTP/checkpoint
+  # behavior independently of the public Server automatic GAM bootstrap.
+
   defmodule Adapter do
     def recall(text, opts) do
       send(opts[:identity].test, {:recalled, text})
@@ -44,7 +47,11 @@ defmodule Spectre.Server.MemoryTest do
   end
 
   test "recall runs once per input before pending and is reused during rerouting" do
-    pid = start_supervised!({Server, agent: Agent, identity: %{test: self()}, consumer: self()})
+    pid =
+      start_supervised!(
+        {Spectre.Server.Runtime, agent: Agent, identity: %{test: self()}, consumer: self()}
+      )
+
     Server.input(pid, "waiting")
     assert_receive {:recalled, "waiting"}, 2_000
     eventually(fn -> Server.status(pid).pending != [] end)
@@ -59,7 +66,8 @@ defmodule Spectre.Server.MemoryTest do
   test "a persistence failure is reported without rerunning the input" do
     pid =
       start_supervised!(
-        {Server, agent: Agent, identity: %{test: self(), fail_memory: true}, consumer: self()}
+        {Spectre.Server.Runtime,
+         agent: Agent, identity: %{test: self(), fail_memory: true}, consumer: self()}
       )
 
     {:ok, id} = Server.input(pid, "topic")
@@ -70,7 +78,11 @@ defmodule Spectre.Server.MemoryTest do
   end
 
   test "multiple replies in one stable event produce one combined memory episode" do
-    pid = start_supervised!({Server, agent: Agent, identity: %{test: self()}, consumer: self()})
+    pid =
+      start_supervised!(
+        {Spectre.Server.Runtime, agent: Agent, identity: %{test: self()}, consumer: self()}
+      )
+
     {:ok, id} = Server.input(pid, "double")
     assert_receive {Server, ^pid, {:response, ^id, "first ", _}}, 2_000
     assert_receive {Server, ^pid, {:response, ^id, "second", _}}, 2_000

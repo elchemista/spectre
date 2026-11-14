@@ -318,69 +318,62 @@ The exact AL string is produced by the model. `generate(..., planning: false)`
 retains the consolidated `model_output` for the subsequent `kinetic` command.
 Do not also enable automatic `planning: true` on this path. The Server only
 accepts one `{:kinetic, :send_email}` proposal, preserving its catalog metadata.
-The host Candidate builder must also validate its recipient against the job's
-observed contact and enforce any business constraints on the body.
+The Server's optional `handle_action/2` callback validates the recipient against
+the job's observed contact and applies business constraints to the body.
 
-## The email consent policy and startup
+## Automatic email consent and startup
 
-Policy lives in ordinary host functions and the GAM Domain contracts, not in a
-new Agent policy DSL. This binding requires a presentation for every email:
+Spectre provides the GAM Domain, Candidate, presentation and executor wiring
+from the registered Stack effects. The same integration applies in every
+environment:
 
 ```elixir
-# Host-owned policy: sending mail always needs consent for this exact draft.
-# MailPolicy builds the Candidate/Presentation; the Domain's authenticated
-# ingress validates the original answer. These are application callbacks.
-gam = [
-  scope: authenticated_scope,
-  store: MyApp.ServerStore,
-  consent_ttl_ms: 300_000,
-  bindings: %{
-    {:kinetic, :send_email} => %{
-      candidate: {MyApp.MailPolicy, :candidate},
-      presentation: {MyApp.MailPolicy, :presentation},
-      interpreter: {MyApp.MailPolicy, :interpret}
-    }
-  }
-]
-
-# The host supervises ServerStore, the GAM Domain and this named Stack runtime.
 {:ok, _runtime} = Spectre.Stack.start_link(MyApp.OutreachAI, name: MyApp.OutreachRuntime)
-{:ok, agent} = Spectre.summon(
+{:ok, agent} = Spectre.Server.start_link(
   agent: MyApp.OutreachAgent,
-  subject: authenticated_user.id,
+  identity: %{subject: authenticated_user.id},
+  consumer: self(),
   stack_runtime: MyApp.OutreachRuntime,
-  checkpoint: {MyApp.ServerStore, "outreach:" <> to_string(authenticated_user.id)},
-  gam: {Spectre.Server.GAM, gam},
-  consumer: channel_pid
+  gam: [
+    storage: {:disk, "var/outreach/" <> to_string(authenticated_user.id)},
+    operations: %{{:kinetic, :send_email} => [confirm: true]}
+  ]
 )
-
-Spectre.Server.input(agent, "https://company.example/contact")
-# Later messages from the same authenticated channel:
-Spectre.Server.input(agent, "status")
-# Only after the consent presentation has actually been delivered:
-# Spectre.Server.input(agent, "confirm")
 ```
 
-The host provides these functions:
+The runtime supplies a coherent default checkpoint and journal. Its consumer
+renders each presentation, acknowledges it with `Spectre.Server.presented/2`,
+and submits the separate choice with `Spectre.Server.decide/4`. Acknowledge and
+decide only from your authenticated transport owner; a render ack does not send
+mail. Add an optional `handle_action/2` callback to validate that the recipient
+is the one actually observed by Lens. See [Managed GAM](MANAGED_GAM.md) for the
+complete contract, callback templates, pending controls and responsibility boundaries.
 
-| Function | Contract and responsibility |
-| --- | --- |
-| `MailPolicy.candidate(args, turn, context)` | Return `{:ok, attributes}` for the exact email consequence, scoped mandate and evidence. Validate destination/payload and bind consent material. |
-| `MailPolicy.presentation(candidate, context, opts)` | Return `{:ok, presentation, show_attributes}` showing the recipient, body, purpose and relevant costs/risks with confirm/cancel choices. |
-| `MailPolicy.interpret(original_input, presentation)` | Return `:confirm`, `:reject` or `:unclear` for the original response; align its vocabulary with `handle_pending`. |
+## Application policy stays in the Server
 
-These names are app-owned callbacks, not missing Spectre implementations. The
-host must configure the Domain classes/contracts, principals, mandate, fixed
-authenticated ingress, and mail/show executors. The show executor delivers the
-presentation through the user's channel and reports its actual outcome; a
-successful show precedes admissible consent. The ingress creates response
-Evidence bound to that presentation. A model label or the Server's branch on
-`"confirm"` cannot manufacture approval on its own.
+The framework builds the GAM records. The application decides which business
+requests are acceptable, using normal Elixir callbacks:
 
-`authenticated_scope`, `authenticated_user`, `channel_pid` and the already
-supervised `MyApp.ServerStore` are supplied by the host. In production supervise
-the Stack runtime too, provision Lightpanda, configure model credentials and
-route messages from the authenticated channel to `Spectre.Server.input/3`.
+```elixir
+@impl true
+def handle_action(%{operation: {:kinetic, :send_email}, args: args}, ctx) do
+  if args["to"] == ctx.assigns.job.email,
+    do: {:confirm, %{message: "Send this draft to the observed contact?"}},
+    else: {:reject, :recipient_not_observed}
+end
+
+def handle_action(action, ctx), do: super(action, ctx)
+```
+
+This callback may require confirmation, reject a request, or attach reviewed
+business context. It cannot enlarge the allowed operations, remove a required
+confirmation, issue an Act or claim that an external effect succeeded. It prepares
+data and returns; only the admitted executor performs the effect.
+
+`authenticated_user` and the consumer process come from the application's
+transport. The application authenticates its user and supervises the Stack;
+Spectre owns the Domain, Scope, ingress, command journal and standard presentation
+protocol. Configure Lightpanda and model/mail provider credentials as usual.
 Normal text responses arrive as
 `{Spectre.Server, pid, {:response, interaction_id, text, metadata}}`.
 
@@ -406,8 +399,9 @@ while an email awaits approval. Unmatched or ambiguous input re-explains the
 pending presentation. A new URL is rejected while a job is active; this example
 does not silently queue or discard a previous email. For actual topic switching,
 resumption and durable closure timers, see [Pending lifecycle](PENDING_LIFECYCLE.md).
-The bridge expires consent after five minutes; authenticated lifecycle observation
-requires the additional wiring described in that guide.
+Consent expires after five minutes by default. The runtime records lifecycle
+changes through its GAM integration; application code only chooses the timeout
+and conversational behavior.
 
 The compact example leaves transport retries/reconciliation, abandoned browser
 resource cleanup, persistent contact deduplication and business authorization
@@ -420,7 +414,7 @@ repeating an email. See [GAM](GAM.md) and the
 The [nine-package integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md)
 is an executable reference for package adapters, GAM consent and recovery with
 simulated external services. This application sketch uses the same helper
-contracts but needs the host modules above for live use.
+contracts; live use needs the application's model, mail transport and authenticated UI.
 
 The older model-free
 [smoke script](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/examples/agent_server_quickstart.exs)
@@ -429,3 +423,15 @@ independent classifiers, embeddings and IntentDataset collection as explained in
 [Routing](ROUTING.md) and [Training](TRAINING.md). See [Agent and Server](AGENT_SERVER.md)
 for native OTP callbacks, streaming and durable state, or
 [Migration](MIGRATING_TO_0_4.md) for an existing 0.3 application.
+
+For a runnable local host, chat UI and independent Skill processes, continue
+with the [LiveView showcase](DEMO.md). Unlike the compact sketch above, that
+sibling application includes presentation acknowledgement and local effect
+adapters, while Spectre automatically creates its shared GAM Domain.
+
+That demo has separate Research and Knowledge GenServers. Each owns its state,
+streams, pending requests and checkpoint, but both use the root's single GAM
+connection and authority ledger. Configuration happens once at root startup;
+mount allowlists restrict each Skill, and the runtime records its provenance.
+Approving the email cannot approve a memory write in either Skill. See
+[Skills](SKILLS.md) for the shared/local ownership table and confirmation example.

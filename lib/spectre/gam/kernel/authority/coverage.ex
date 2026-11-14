@@ -10,6 +10,7 @@ defmodule Spectre.GAM.Kernel.Authority.Coverage do
 
   alias Spectre.GAM.{Candidate, Declassification, Disclosure, Mandate, Portable, Row}
   alias Spectre.GAM.Kernel.Authority.{Facts, Status}
+  alias Spectre.GAM.Duty.Disposition
 
   @doc false
   @spec matching_principal(Candidate.t(), map(), Mandate.t()) :: :ok | {:error, term()}
@@ -91,6 +92,41 @@ defmodule Spectre.GAM.Kernel.Authority.Coverage do
       do: :ok,
       else: {:error, {kind, :outside_mandate}}
   end
+
+  @doc false
+  @spec covered_values(:subjects | :targets, Candidate.t(), Mandate.t(), Facts.t()) ::
+          :ok | {:error, term()}
+  def covered_values(:targets, %Candidate{class: "duty.dispose"} = candidate, mandate, facts) do
+    case covered_values(:targets, candidate, mandate) do
+      :ok ->
+        :ok
+
+      {:error, _} = error ->
+        if causal_duty_target?(candidate, mandate, facts), do: :ok, else: error
+    end
+  end
+
+  def covered_values(kind, candidate, mandate, _facts),
+    do: covered_values(kind, candidate, mandate)
+
+  @spec causal_duty_target?(Candidate.t(), Mandate.t(), Facts.t()) :: boolean()
+  defp causal_duty_target?(candidate, %Mandate{classes: ["duty.dispose"]} = mandate, %Facts{
+         disposition_duties: duties
+       }) do
+    with {:ok, disposition} <- Disposition.from_consequence(candidate.consequence),
+         %{status: :open} = duty <- Map.get(duties, disposition.duty_ref),
+         true <- disposition.cause_key === duty.cause_key,
+         true <- candidate.target_refs == [duty.ref],
+         true <-
+           mandate.ref in duty.disposition_authority_refs or
+             candidate.proposer_ref in duty.disposition_authority_refs do
+      Enum.any?(mandate.target_refs, &MapSet.member?(duty.causal_refs, &1))
+    else
+      _ -> false
+    end
+  end
+
+  defp causal_duty_target?(_candidate, _mandate, _facts), do: false
 
   @doc false
   @spec covered_class(Candidate.t(), Mandate.t()) :: :ok | {:error, term()}

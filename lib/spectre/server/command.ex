@@ -3,12 +3,15 @@ defmodule Spectre.Server.Command do
   @enforce_keys [:kind, :args]
   defstruct [:kind, :args, opts: []]
 
+  @type t :: %__MODULE__{kind: atom(), args: list(), opts: keyword()}
+
   @kinds [
     :respond,
     :generate,
     :classify,
     :propose,
     :call_actor,
+    :delegate,
     :tool,
     :await_reply,
     :resolve_await,
@@ -32,6 +35,9 @@ defmodule Spectre.Server.Command do
       Keyword.has_key?(opts, :tool_origin) ->
         {:error, :reserved_tool_options}
 
+      Keyword.has_key?(opts, :external_submission) ->
+        {:error, :reserved_submission_options}
+
       Keyword.has_key?(opts, :lifecycle_recorded) or
           Keyword.has_key?(opts, :lifecycle_authorized) ->
         {:error, :reserved_lifecycle_options}
@@ -48,6 +54,12 @@ defmodule Spectre.Server.Command do
 
   def validate_internal(%__MODULE__{kind: :tool_rejected, args: [_result], opts: opts})
       when is_list(opts), do: :ok
+
+  def validate_internal(%__MODULE__{kind: :delegate_route, args: [_id], opts: opts}),
+    do: timeout(opts)
+
+  def validate_internal(%__MODULE__{kind: :propose, opts: opts} = command),
+    do: validate(%{command | opts: Keyword.delete(opts, :external_submission)})
 
   def validate_internal(command), do: validate(command)
 
@@ -69,6 +81,10 @@ defmodule Spectre.Server.Command do
 
   defp validate_args(:tool, [name, _input, expected], opts)
        when is_atom(name) and is_map(expected), do: timeout(opts)
+
+  defp validate_args(:delegate, [id, input], opts) when not is_nil(id) do
+    with :ok <- Spectre.Server.Skills.validate_input(input), do: timeout(opts)
+  end
 
   defp validate_args(:call_actor, [_actor, _request], opts), do: timeout(opts)
   defp validate_args(:await_reply, [id], opts) when not is_nil(id), do: timeout(opts)

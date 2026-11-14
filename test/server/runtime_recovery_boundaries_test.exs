@@ -1,3 +1,5 @@
+# Protocol component tests use the internal Runtime to inject boundary adapters.
+# Application AgentServers always start through the automatic Spectre.Server API.
 defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
@@ -179,7 +181,7 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
         gam: {Bridge, test: self(), mode: :hold}
       )
 
-    server = start_supervised!({Server, options})
+    server = start_supervised!({Spectre.Server.Runtime, options})
     {:ok, id} = Server.input(server, "operate")
     assert_receive {:proposal_started, worker}, 2_000
     assert_receive {Server, ^server, {:recovery_required, _command, :propose}}, 2_000
@@ -197,7 +199,7 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
   test "a crashed governed worker is uncertain and remains available for reconciliation" do
     server =
       start_supervised!(
-        {Server,
+        {Spectre.Server.Runtime,
          opts(checkpoint: {store(), "crashed"}, gam: {Bridge, test: self(), mode: :crash})}
       )
 
@@ -211,7 +213,7 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
 
   test "failing conversational callbacks are quarantined once across restart" do
     options = opts(checkpoint: {store(), "callbacks"})
-    {:ok, server} = Server.start_link(options)
+    {:ok, server} = Spectre.Server.Runtime.start_link(options)
 
     for text <- ["explode", "no_step", "missing"] do
       {:ok, id} = Server.input(server, text)
@@ -221,7 +223,7 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
     assert map_size(Server.status(server).dead_letters) == 3
     assert Process.alive?(server)
     GenServer.stop(server)
-    {:ok, restored} = Server.start_link(options)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(options)
     assert map_size(Server.status(restored).dead_letters) == 3
     {:ok, id} = Server.input(restored, "echo")
     assert_receive {Server, ^restored, {:response, ^id, "echo", _}}, 2_000
@@ -229,7 +231,7 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
   end
 
   test "a stale classifier reply cannot approve a newer presentation" do
-    server = start_supervised!({Server, opts(gam: {Bridge, test: self()})})
+    server = start_supervised!({Spectre.Server.Runtime, opts(gam: {Bridge, test: self()})})
     Server.input(server, "operate")
     wait(fn -> Server.status(server).pending != [] end)
     [pending] = Server.status(server).pending
@@ -254,7 +256,11 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
   end
 
   test "an input accepted before show completion cannot become its confirmation" do
-    server = start_supervised!({Server, opts(gam: {Bridge, test: self(), mode: :show_hold})})
+    server =
+      start_supervised!(
+        {Spectre.Server.Runtime, opts(gam: {Bridge, test: self(), mode: :show_hold})}
+      )
+
     Server.input(server, "operate")
     assert_receive {:proposal_started, showing}, 2_000
     {:ok, early_id} = Server.input(server, "yes")
@@ -271,7 +277,7 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
   end
 
   test "actor waits stay in the background and cannot absorb the next user input" do
-    server = start_supervised!({Server, opts()})
+    server = start_supervised!({Spectre.Server.Runtime, opts()})
     Server.input(server, "background")
     wait(fn -> Server.status(server).pending != [] end)
     assert [%{status: :background}] = Server.status(server).pending
@@ -282,7 +288,8 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
   test "unverified governed payloads cannot consume a pending continuation" do
     server =
       start_supervised!(
-        {Server, opts(checkpoint: {store(), "delivery"}, gam: {Bridge, test: self()})}
+        {Spectre.Server.Runtime,
+         opts(checkpoint: {store(), "delivery"}, gam: {Bridge, test: self()})}
       )
 
     Server.input(server, "operate")
@@ -306,7 +313,7 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
 
   test "late observations retain their registered operation across restart and bounded dedup retention" do
     options = opts(checkpoint: {store(), "late"}, max_seen_events: 2, gam: {FactBridge, []})
-    {:ok, first} = Server.start_link(options)
+    {:ok, first} = Spectre.Server.Runtime.start_link(options)
     Server.input(first, "operate")
 
     wait(fn ->
@@ -316,7 +323,7 @@ defmodule Spectre.Server.RuntimeRecoveryBoundariesTest do
     [command_id] = Map.keys(Server.status(first).operations)
     assert Server.status(first).assigns.observations == [:ambiguous]
     GenServer.stop(first)
-    {:ok, restored} = Server.start_link(options)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(options)
 
     Enum.each(1..4, fn _ ->
       {:ok, id} = Server.input(restored, "echo")

@@ -10,6 +10,7 @@ defmodule Spectre.Stack.Installation do
   alias Spectre.Action.Provider.Mount, as: ProviderMount
   alias Spectre.Extension
   alias Spectre.Extension.Mount, as: ExtensionMount
+  alias Spectre.Stack.Effects
   alias Spectre.Stack.Installable
   alias Spectre.Stack.Package
   alias Spectre.Stack.Tools
@@ -47,7 +48,9 @@ defmodule Spectre.Stack.Installation do
     package = Installable.verify!(module)
     config = Installable.compile!(module, package_opts, block, caller)
     tools = Installable.tools!(module, config)
+    effects = Installable.effects!(module, config)
     adapters = if map_size(tools) == 0, do: %{}, else: %{tools: tools}
+    adapters = if map_size(effects) == 0, do: adapters, else: Map.put(adapters, :effects, effects)
 
     build!(
       installation_id || package.id,
@@ -124,6 +127,7 @@ defmodule Spectre.Stack.Installation do
     Value.ensure_portable!(config, "Stack installation configuration")
     Value.ensure_portable!(adapters, "Stack installation adapters")
     Tools.validate!(Map.get(adapters, :tools, %{}))
+    Effects.validate!(Map.get(adapters, :effects, %{}))
 
     installation = %__MODULE__{
       id: id,

@@ -127,6 +127,9 @@ defmodule Spectre.Server.RenderingServiceEdgesTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
 
+  # Component fixtures start Runtime directly: they exercise OTP/checkpoint
+  # behavior independently of the public Server automatic GAM bootstrap.
+
   defmodule Bindings do
     def route(_agent, %{text: "bad_router"}, _opts), do: :invalid_router_return
     def route(_agent, %{text: "route_error"}, _opts), do: {:error, :classifier_unavailable}
@@ -178,7 +181,7 @@ defmodule Spectre.Server.RenderingServiceEdgesTest do
       services: [router: {Bindings, :route}, generate: {Bindings, :inference}]
     ]
 
-    start_supervised!({Server, Keyword.merge(defaults, opts)})
+    start_supervised!({Spectre.Server.Runtime, Keyword.merge(defaults, opts)})
   end
 
   @tag :tmp_dir

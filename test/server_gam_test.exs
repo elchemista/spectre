@@ -1,3 +1,5 @@
+# Protocol component tests use the internal Runtime to inject boundary adapters.
+# Application AgentServers always start through the automatic Spectre.Server API.
 Code.require_file("gam/helper.exs", __DIR__)
 
 defmodule Spectre.ServerGAMTest do
@@ -419,7 +421,7 @@ defmodule Spectre.ServerGAMTest do
       services: [classify: AlwaysConfirmClassifier]
     ]
 
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
 
     assert {:ok, _} = Spectre.Server.input(server, "refund")
     assert_receive {:effect, "presentation.show"}, 2_000
@@ -438,7 +440,7 @@ defmodule Spectre.ServerGAMTest do
     assert length(Spectre.Server.status(server).pending) == 1
 
     :ok = stop_supervised(:runtime)
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
     [pending] = Spectre.Server.status(server).pending
     assert pending.status == :suspended
     GenServer.cast(server, {:resume, pending.id})
@@ -549,12 +551,12 @@ defmodule Spectre.ServerGAMTest do
       services: [classify: AlwaysConfirmClassifier]
     ]
 
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
     assert {:ok, input_id} = Spectre.Server.input(server, "refund")
     assert_receive {:effect, "presentation.show"}, 2_000
     eventually(fn -> length(Spectre.Server.status(server).pending) == 1 end)
     :ok = stop_supervised(:runtime)
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
 
     assert_receive {Spectre.Server, ^server,
                     {:response, ^input_id, "Confirmation expired", _options}},
@@ -563,7 +565,7 @@ defmodule Spectre.ServerGAMTest do
     assert Spectre.Server.status(server).pending == []
     refute_receive {:effect, "refund.issue"}, 50
     :ok = stop_supervised(:runtime)
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
     refute_receive {Spectre.Server, ^server, {:response, _, "Confirmation expired", _}}, 50
   end
 
@@ -588,7 +590,7 @@ defmodule Spectre.ServerGAMTest do
       services: [classify: AlwaysConfirmClassifier]
     ]
 
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
 
     assert {:ok, _} = Spectre.Server.input(server, "refund")
     assert_receive {:effect, "presentation.show"}, 2_000
@@ -600,7 +602,7 @@ defmodule Spectre.ServerGAMTest do
     assert Process.alive?(worker)
 
     :ok = stop_supervised(:runtime)
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
 
     assert_receive {Spectre.Server, ^server,
                     {:response, ^input_id, "Refund completed", _options}},
@@ -629,12 +631,12 @@ defmodule Spectre.ServerGAMTest do
       services: [classify: AlwaysConfirmClassifier]
     ]
 
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
     assert {:ok, _} = Spectre.Server.input(server, "refund")
     assert_receive {:effect, "presentation.show"}, 2_000
     eventually(fn -> length(Spectre.Server.status(server).pending) == 1 end)
     :ok = stop_supervised(:runtime)
-    server = start_supervised!({Spectre.Server, opts}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, opts}, id: :runtime)
     [pending] = Spectre.Server.status(server).pending
     assert pending.status == :suspended
 

@@ -1,5 +1,9 @@
 # GAM in Spectre 0.4
 
+AgentServer manages GAM automatically. For startup, application callbacks and
+the boundary between application policy and kernel invariants, see
+[Automatic GAM](MANAGED_GAM.md).
+
 Spectre 0.4 imports the Governed Act Model kernel under `Spectre.GAM` and
 connects it to AgentServer through `Spectre.Server.GAM`. It does not redefine
 the model. The source of its principles is the
@@ -44,7 +48,7 @@ input → recognition → handle_flow / handle_result
                          ↓
                   propose(operation, args)
                          ↓
-             authenticated Scope + host Candidate builder
+             runtime-owned Scope + frozen Candidate
                          ↓
             optional presentation and consent workflow
                          ↓
@@ -65,59 +69,50 @@ worker can release a governed consequence, the kernel must record the admitted
 Act. If the worker loses contact after execution starts, the Server reconciles
 with recorded facts instead of assuming that the effect never happened.
 
-## Connect the host bridge
+## Configure the automatic boundary
 
-The following is a wiring fragment. `authenticated_scope`, `MyApp.Governance`
-and the already supervised store are host-supplied, not framework defaults:
+The application supplies an authenticated identity, declares which registered
+operations it allows, and selects storage. AgentServer owns the Domain, Scope,
+record construction, standard ingress and execution protocol:
 
 ```elixir
-gam_config = [
-  scope: authenticated_scope,
-  bindings: %{
-    delete_account: %{
-      candidate: {MyApp.Governance, :deletion_candidate},
-      presentation: {MyApp.Governance, :deletion_presentation},
-      interpreter: {MyApp.Governance, :interpret_deletion_response}
-    }
-  },
-  store: MyApp.ServerStore,
-  lifecycle: true,
-  consent_ttl_ms: 300_000
-]
-
 {:ok, server} = Spectre.Server.start_link(
   agent: MyApp.SupportAgent,
   subject: account.id,
-  identity: %{account_id: account.id},
-  checkpoint: {MyApp.ServerStore, "support:" <> to_string(account.id)},
-  gam: {Spectre.Server.GAM, gam_config}
+  identity: %{subject: account.id},
+  consumer: self(),
+  gam: [
+    storage: {:disk, "var/support/" <> to_string(account.id)},
+    operations: %{delete_account: [confirm: true]}
+  ]
 )
 ```
 
-`scope` can instead be a `{module, function}` resolver of the authenticated
-service context. `store:` configures the bridge journal; `checkpoint:` configures
-the Server's durable state. They can share a compatible store but have different
-roles. A store reference can also use the documented adapter/ref form.
+The delete operation must have a registered effect adapter. A `handle_action/2`
+callback can reject the proposed account, require confirmation, or freeze business
+context. It cannot grant authority or execute deletion itself. The consumer renders
+and acknowledges the presentation, then submits the user's separate decision.
+See [Automatic GAM](MANAGED_GAM.md) for the transport and persistence contract.
 
-The binding functions are ordinary Elixir:
+`Spectre.GAM` also exposes the kernel's standalone protocol API for integrations
+outside AgentServer. That low-level API is not a second Server startup mode and
+is not required to author an Agent or Skill. Its callers must preserve the same
+admission, commitment, evidence and execution rules.
 
-| Binding | Arguments | Result |
-| --- | --- | --- |
-| `candidate` | operation arguments, sealed Turn, service context | `{:ok, candidate_attributes}` |
-| `presentation` | Candidate, service context, confirmation options | `{:ok, presentation, show_attributes}` |
-| `interpreter` | original input, Presentation | `:confirm`, `:reject` or `:unclear` |
+## Agent and Skill servers share one Domain
 
-The host must provision a Domain, governed classes/contracts, scoped mandates,
-authenticated principals/ingress, and executors. The fixed ingress must handle
-presentation responses and construct bound response Evidence. Setting
-`lifecycle: true` additionally promises that it handles trusted Server lifecycle
-observations; it does not authenticate incoming maps by itself.
+The root AgentServer automatically creates the GAM connection used by its
+mounted Skill Servers. Each Skill runs in a separate GenServer with its own
+continuations, pending intentions and checkpoint; all governed proposals enter
+the **same Domain and authority ledger**. There is no per-Skill Host, duplicate
+ledger or additional grant to provision.
 
-See `Spectre.Server.GAM` for exact callback contracts,
-[Pending lifecycle](PENDING_LIFECYCLE.md) for ingress wiring, and the
-[nine-package integration host](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/support/host.ex) for
-an executable **test-only** Domain setup. Its synthetic authorization is not a
-production policy template.
+The root's operation configuration and each mount's `governed:` restrictions
+both apply. The runtime records Skill invocation provenance, and the shared
+kernel orders admission even when workers run concurrently. Consent identifies
+the originating Skill and exact presentation; approval in one Skill cannot
+approve another. Timers use the same lifecycle ingress and cannot erase a Duty.
+See [Skills](SKILLS.md) for the process tree and two-Skill example.
 
 ## Consent is attached to what was shown
 
@@ -149,14 +144,13 @@ def handle_pending(pending, input, ctx), do: super(pending, input, ctx)
 The helper selects the pending intention; the host interpreter and ingress
 still validate the original response. An application can use classification to
 help choose its conversational branch without treating classification as
-consent. The timer example requires durable checkpointing and lifecycle ingress.
+consent. The runtime records the timer through its lifecycle ingress; durable storage
+preserves the schedule across restart.
 
 Topic changes suspend the intention. A later `resume_pending` creates a fresh
 presentation. Recovery does not silently reactivate old consent, and a generic
 “yes” on another topic cannot approve it. Default consent expiry is five minutes;
-`:infinity` explicitly disables it. With the durable lifecycle bridge configured, closure and expiry record
-lifecycle facts. Without it, ordinary consent expiry returns an expired result
-without that GAM lifecycle observation. Neither path fabricates a rejection or
+`:infinity` explicitly disables it. Closure and expiry record lifecycle facts. Neither fabricates a rejection or
 reverses an already committed Act.
 
 ## Handle facts, not optimistic completion

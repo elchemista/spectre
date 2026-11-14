@@ -2,6 +2,9 @@ defmodule Spectre.Server.ToolRuntimeTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Server
+
+  # Component fixtures start Runtime directly: they exercise OTP/checkpoint
+  # behavior independently of the public Server automatic GAM bootstrap.
   alias Spectre.Server.{Checkpoint, Command}
   alias Spectre.Server.Store.Disk
 
@@ -169,7 +172,7 @@ defmodule Spectre.Server.ToolRuntimeTest do
   test "cognitive tool execution starts after callback and carries a stable command id", c do
     server = start_server(c)
     assert {:ok, _} = Server.input(server, "hello")
-    assert_receive :flow_callback
+    assert_receive :flow_callback, 2000
     assert_receive {:invoked, :echo, "hello", command_id, worker}, 2000
     assert is_binary(command_id)
     refute worker == server
@@ -207,7 +210,9 @@ defmodule Spectre.Server.ToolRuntimeTest do
     refute_receive {:invoked, _, _, _, _}
 
     assert {:error, _} =
-             Server.start_link(options(c, init_arg: {self(), {:submit, :ok, [bad: true]}}))
+             Spectre.Server.Runtime.start_link(
+               options(c, init_arg: {self(), {:submit, :ok, [bad: true]}})
+             )
   end
 
   test "unknown operations, invalid prepared data and adapter exceptions become typed results",
@@ -380,7 +385,7 @@ defmodule Spectre.Server.ToolRuntimeTest do
 
   test "mismatched runtime Stack fails startup and direct reserved metadata is rejected", c do
     Process.flag(:trap_exit, true)
-    assert {:error, _} = Server.start_link(options(c, agent: OtherAgent))
+    assert {:error, _} = Spectre.Server.Runtime.start_link(options(c, agent: OtherAgent))
 
     assert {:error, :reserved_tool_options} =
              Command.validate(%Command{
@@ -431,10 +436,10 @@ defmodule Spectre.Server.ToolRuntimeTest do
       GenServer.stop(server)
       rewrite_old_tool_origin(c, id)
 
-      assert {:error, _} = Server.start_link(options(c, checkpoint_version: 2))
+      assert {:error, _} = Spectre.Server.Runtime.start_link(options(c, checkpoint_version: 2))
 
       assert {:error, _} =
-               Server.start_link(
+               Spectre.Server.Runtime.start_link(
                  options(c,
                    checkpoint_version: 2,
                    checkpoint_migrator: {__MODULE__, :tamper_migration}
@@ -518,7 +523,10 @@ defmodule Spectre.Server.ToolRuntimeTest do
   end
 
   defp start_server(context, extra \\ []) do
-    start_supervised!({Server, options(context, extra)}, id: make_ref(), restart: :temporary)
+    start_supervised!({Spectre.Server.Runtime, options(context, extra)},
+      id: make_ref(),
+      restart: :temporary
+    )
   end
 
   defp options(context, extra) do

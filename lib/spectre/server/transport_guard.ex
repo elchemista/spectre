@@ -8,7 +8,8 @@ defmodule Spectre.Server.TransportGuard do
     {:ok, pid} =
       Task.Supervisor.start_child(Spectre.Server.TaskSupervisor, fn ->
         monitor = Process.monitor(caller)
-        watch(adapter, transport, context, generation, caller, monitor, token)
+        owner = if is_pid(context[:runtime]), do: Process.monitor(context.runtime)
+        watch(adapter, transport, context, generation, caller, monitor, owner, token)
       end)
 
     {pid, token}
@@ -17,16 +18,23 @@ defmodule Spectre.Server.TransportGuard do
   def update({pid, token}, transport), do: send(pid, {token, :transport, transport})
   def finish({pid, token}, result), do: send(pid, {token, :finish, result})
 
-  defp watch(adapter, transport, context, generation, caller, monitor, token) do
+  defp watch(adapter, transport, context, generation, caller, monitor, owner, token) do
     receive do
       {^token, :transport, latest} ->
-        watch(adapter, latest, context, generation, caller, monitor, token)
+        watch(adapter, latest, context, generation, caller, monitor, owner, token)
 
       {^token, :finish, result} ->
         Process.demonitor(monitor, [:flush])
+        if owner, do: Process.demonitor(owner, [:flush])
         finish_transport(adapter, transport, context, generation, result)
 
+      {:DOWN, ^owner, :process, _runtime, _reason} ->
+        Process.demonitor(monitor, [:flush])
+        Process.exit(caller, :kill)
+        finish_transport(adapter, transport, context, generation, {:error, :stream_interrupted})
+
       {:DOWN, ^monitor, :process, ^caller, _reason} ->
+        if owner, do: Process.demonitor(owner, [:flush])
         finish_transport(adapter, transport, context, generation, {:error, :stream_interrupted})
     end
   end

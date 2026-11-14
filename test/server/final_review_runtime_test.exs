@@ -1,3 +1,5 @@
+# Protocol component tests use the internal Runtime to inject boundary adapters.
+# Application AgentServers always start through the automatic Spectre.Server API.
 defmodule Spectre.Server.FinalReviewRuntimeTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
@@ -212,7 +214,9 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
   @tag :capture_log
   test "crashed confirm, explain and resume leave a nonblocking uncertain continuation" do
     for kind <- [:confirm, :explain, :resume] do
-      {:ok, server} = Server.start_link(options(gam: {Bridge, test: self(), mode: :crash}))
+      {:ok, server} =
+        Spectre.Server.Runtime.start_link(options(gam: {Bridge, test: self(), mode: :crash}))
+
       Server.input(server, "operate")
       wait(fn -> Server.status(server).pending != [] end)
       [pending] = Server.status(server).pending
@@ -235,7 +239,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
   test "a confirm deadline frees the input queue and its eventual result keeps the original input" do
     server =
       start_supervised!(
-        {Server,
+        {Spectre.Server.Runtime,
          options(
            worker_timeout: 50,
            gam: {Bridge, test: self(), mode: :hold, ttl: 120}
@@ -260,7 +264,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
   end
 
   test "a background resume cannot replace an existing foreground reply wait" do
-    server = start_supervised!({Server, options()})
+    server = start_supervised!({Spectre.Server.Runtime, options()})
     Server.input(server, "operate")
     wait(fn -> Server.status(server).pending != [] end)
     [consent] = Server.status(server).pending
@@ -283,7 +287,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
   end
 
   test "a show arriving after its deadline stays suspended behind a newer foreground" do
-    server = start_supervised!({Server, options(worker_timeout: 50)})
+    server = start_supervised!({Spectre.Server.Runtime, options(worker_timeout: 50)})
     {:ok, original} = Server.input(server, "held")
     assert_receive {:proposing, :held, _command, showing}, 2_000
     assert_receive {Server, ^server, {:response, ^original, "uncertain", _}}, 2_000
@@ -307,11 +311,11 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
         gam: {Bridge, test: self(), mode: :show, recovery: :show}
       )
 
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     Server.input(server, "held")
     assert_receive {:proposing, :held, _command, old_worker}, 2_000
     GenServer.stop(server)
-    {:ok, restored} = Server.start_link(Keyword.put(opts, :init_arg, :foreground))
+    {:ok, restored} = Spectre.Server.Runtime.start_link(Keyword.put(opts, :init_arg, :foreground))
     assert_receive :recovering_command, 2_000
     wait(fn -> length(Server.status(restored).pending) == 2 end)
     state = :sys.get_state(restored)
@@ -328,7 +332,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
 
   test "an actor result delivered by pending id removes its infinite wait across restart" do
     opts = options(checkpoint: {store(), "delivered-wait"})
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     Server.input(server, "actor")
     wait(fn -> Server.status(server).pending != [] end)
     assert :ok = Server.deliver(server, "actor-message", {:pending, "actor"}, {:ok, :delivered})
@@ -338,7 +342,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
     assert Server.status(server).workers == 0
     assert Server.status(server).assigns.actor_result == {:ok, :delivered}
     GenServer.stop(server)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     assert Server.status(restored).pending == []
     assert Server.status(restored).outbox_size == 0
     assert Server.status(restored).assigns.actor_result == {:ok, :delivered}
@@ -353,7 +357,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
         gam: {DeliveryBridge, test: self(), mode: :crash}
       )
 
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     Server.input(server, "operate")
     wait(fn -> Server.status(server).pending != [] end)
     [pending] = Server.status(server).pending
@@ -381,7 +385,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
     assert Server.status(server).pending == []
     assert Server.status(server).assigns.completions == 1
     GenServer.stop(server)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
 
     assert :ok =
              Server.deliver(
@@ -402,7 +406,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
   test "pending delivery refuses to choose between multiple crashed confirmation commands" do
     server =
       start_supervised!(
-        {Server,
+        {Spectre.Server.Runtime,
          options(
            checkpoint: {store(), "ambiguous-confirm-delivery"},
            gam: {DeliveryBridge, test: self(), mode: :crash}
@@ -436,7 +440,11 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
   end
 
   test "external cognitive completion consumes the live command exactly once" do
-    server = start_supervised!({Server, options(checkpoint: {store(), "delivered-generate"})})
+    server =
+      start_supervised!(
+        {Spectre.Server.Runtime, options(checkpoint: {store(), "delivered-generate"})}
+      )
+
     {:ok, input_id} = Server.input(server, "generate")
     assert_receive {:generating, command, worker}, 2_000
     monitor = Process.monitor(worker)
@@ -452,7 +460,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
   test "journal release runs only for governed commands and does not enter the durable inbox" do
     server =
       start_supervised!(
-        {Server,
+        {Spectre.Server.Runtime,
          options(
            checkpoint: {store(), "cleanup"},
            gam: {Bridge, test: self(), mode: :show, hold_cleanup: true}
@@ -483,7 +491,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
         gam: {Bridge, test: self(), mode: :hold}
       )
 
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     Server.input(server, "operate")
     assert_receive {:proposing, :operate, proposal, _}, 2_000
     wait(fn -> Server.status(server).pending != [] end)
@@ -499,7 +507,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
     refute_receive {:released_command, ^command}, 30
     GenServer.stop(server)
 
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     assert_receive :recovering_command, 2_000
     assert_receive {Server, ^restored, {:response, ^confirmation, "uncertain", _}}, 2_000
     wait(fn -> Server.status(restored).workers == 0 end)
@@ -514,7 +522,7 @@ defmodule Spectre.Server.FinalReviewRuntimeTest do
     GenServer.stop(restored)
 
     available = Keyword.put(opts, :gam, {Bridge, test: self(), mode: :hold, recovery: :fact})
-    {:ok, reconciled} = Server.start_link(available)
+    {:ok, reconciled} = Spectre.Server.Runtime.start_link(available)
     assert_receive :recovering_command, 2_000
     assert_receive {Server, ^reconciled, {:response, ^confirmation, "done", _}}, 2_000
     assert_receive {:released_command, ^command}, 2_000

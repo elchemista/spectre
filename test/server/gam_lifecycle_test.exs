@@ -1,3 +1,5 @@
+# Protocol component tests use the internal Runtime to inject boundary adapters.
+# Application AgentServers always start through the automatic Spectre.Server API.
 Code.require_file("../gam/helper.exs", __DIR__)
 
 defmodule Spectre.Server.GAMLifecycleTest do
@@ -370,7 +372,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
       gam: {Bridge, config}
     ]
 
-    server = start_supervised!({Spectre.Server, options}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, options}, id: :runtime)
     assert {:ok, _} = Spectre.Server.input(server, "refund")
     assert_receive {:effect, "presentation.show"}, 2_000
     eventually(fn -> length(Spectre.Server.status(server).pending) == 1 end)
@@ -385,7 +387,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
     assert [%{id: id, status: :suspended}] = Spectre.Server.status(server).pending
     assert id == pending.id
     :ok = stop_supervised(:runtime)
-    restored = start_supervised!({Spectre.Server, options}, id: :runtime)
+    restored = start_supervised!({Spectre.Server.Runtime, options}, id: :runtime)
     assert_receive {Spectre.Server, ^restored, {:response, _, "intention closed", _}}, 2_000
     assert Spectre.Server.status(restored).pending == []
     {:ok, view} = GAM.view(c.scope)
@@ -413,7 +415,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
     refute_receive {:effect, "refund.issue"}, 30
     before = Enum.map(view.evidence, & &1.ref) |> Enum.sort()
     :ok = stop_supervised(:runtime)
-    final = start_supervised!({Spectre.Server, options}, id: :runtime)
+    final = start_supervised!({Spectre.Server.Runtime, options}, id: :runtime)
     assert Spectre.Server.status(final).pending == []
     refute_receive {Spectre.Server, ^final, {:response, _, "intention closed", _}}, 30
     {:ok, after_restart} = GAM.view(c.scope)
@@ -594,7 +596,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
       gam: {Bridge, failure}
     ]
 
-    server = start_supervised!({Spectre.Server, options}, id: :runtime)
+    server = start_supervised!({Spectre.Server.Runtime, options}, id: :runtime)
     assert {:ok, _} = Spectre.Server.input(server, "refund")
     assert_receive {:effect, "presentation.show"}, 2_000
     eventually(fn -> length(Spectre.Server.status(server).pending) == 1 end)
@@ -613,7 +615,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
     :ok = stop_supervised(:runtime)
 
     restored =
-      start_supervised!({Spectre.Server, Keyword.put(options, :gam, {Bridge, config})},
+      start_supervised!({Spectre.Server.Runtime, Keyword.put(options, :gam, {Bridge, config})},
         id: :runtime
       )
 
@@ -670,7 +672,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
       gam: {Bridge, config}
     ]
 
-    server = start_supervised!({Spectre.Server, options})
+    server = start_supervised!({Spectre.Server.Runtime, options})
     assert {:ok, _} = Spectre.Server.input(server, "refund")
     assert_receive {:effect, "presentation.show"}, 2_000
     eventually(fn -> length(Spectre.Server.status(server).pending) == 1 end)
@@ -730,7 +732,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
       gam: {Bridge, config}
     ]
 
-    {:ok, first} = Spectre.Server.start_link(options)
+    {:ok, first} = Spectre.Server.Runtime.start_link(options)
     Process.unlink(first)
     on_exit(fn -> if Process.alive?(first), do: GenServer.stop(first) end)
     assert {:ok, _} = Spectre.Server.input(first, "refund")
@@ -749,7 +751,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
       for %{proposition: {:spectre_server_lifecycle, _}} = e <- before.evidence, do: e.ref
 
     assert length(events_before) == 2
-    restored = start_supervised!({Spectre.Server, options}, id: :runtime)
+    restored = start_supervised!({Spectre.Server.Runtime, options}, id: :runtime)
 
     assert_receive {Spectre.Server, ^restored, {:response, ^close_input, "intention closed", _}},
                    2_000
@@ -787,7 +789,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
         gam: {Bridge, c.config}
       ]
 
-      server = start_supervised!({Spectre.Server, options}, id: {:runtime, index})
+      server = start_supervised!({Spectre.Server.Runtime, options}, id: {:runtime, index})
       assert {:ok, _} = Spectre.Server.input(server, "wait")
       eventually(fn -> length(Spectre.Server.status(server).pending) == 1 end)
       assert [%{id: ^pending_id}] = Spectre.Server.status(server).pending
@@ -844,12 +846,14 @@ defmodule Spectre.Server.GAMLifecycleTest do
         agent: RuntimeAgent,
         server: FailedShowServer,
         consumer: self(),
-        assigns: %{fixture_key: "fixture", close_delay: 1_000, show_failure: c.show_failure},
+        # Leave room for the journal writes before testing failure and restart.
+        # This checks deadline preservation, not completion within one second.
+        assigns: %{fixture_key: "fixture", close_delay: 3_000, show_failure: c.show_failure},
         checkpoint: {store, "agent:failed-show-deadline"},
         gam: {Bridge, config}
       ]
 
-      first = start_supervised!({Spectre.Server, options}, id: :runtime)
+      first = start_supervised!({Spectre.Server.Runtime, options}, id: :runtime)
       assert {:ok, _} = Spectre.Server.input(first, "refund")
       assert_receive {:effect, "presentation.show"}, 2_000
       eventually(fn -> length(Spectre.Server.status(first).pending) == 1 end)
@@ -876,11 +880,11 @@ defmodule Spectre.Server.GAMLifecycleTest do
       assert after_failure.presentation.ref == original.presentation.ref
       assert schedule.deadline > System.system_time(:millisecond)
       :ok = stop_supervised(:runtime)
-      restored = start_supervised!({Spectre.Server, options}, id: :runtime)
+      restored = start_supervised!({Spectre.Server.Runtime, options}, id: :runtime)
       [after_restart] = Spectre.Server.status(restored).pending
       assert after_restart.status == :suspended
       assert Map.get(after_restart, :close_schedule) == schedule
-      assert_receive {Spectre.Server, ^restored, {:response, _, "intention closed", _}}, 2_000
+      assert_receive {Spectre.Server, ^restored, {:response, _, "intention closed", _}}, 4_000
       assert System.system_time(:millisecond) >= schedule.deadline
       assert Spectre.Server.status(restored).pending == []
       {:ok, view} = GAM.view(c.scope)
@@ -949,7 +953,7 @@ defmodule Spectre.Server.GAMLifecycleTest do
       gam: {Bridge, config}
     ]
 
-    server = start_supervised!({Spectre.Server, options})
+    server = start_supervised!({Spectre.Server.Runtime, options})
     assert {:ok, _} = Spectre.Server.input(server, "refund")
     assert_receive {:effect, "presentation.show"}, 2_000
     eventually(fn -> length(Spectre.Server.status(server).pending) == 1 end)

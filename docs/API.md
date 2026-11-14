@@ -12,7 +12,7 @@ contract whose full surface is not yet in that machine-checked list.
 {:ok, pid} = Spectre.summon(
   agent: MyApp.SupportAgent,
   subject: "account-42",
-  identity: %{account_id: "account-42"},
+  identity: %{subject: "account-42"},
   consumer: self()
 )
 
@@ -24,11 +24,31 @@ The Agent must bind `server: MyApp.SupportServer`. Repeated summons for the same
 Agent and canonical Subject share one supervised local owner. Direct
 `Spectre.Server.start_link/1` also supports OTP supervision through `child_spec/1`.
 Without a Subject, each start creates a separate process. Subject naming is not
-authentication and does not establish a GAM Scope.
+authentication and does not establish a GAM Scope. `identity` accepts only
+`subject`, `conversation`, `task`, `tenant`, `org` and `organization`, with equivalent
+atom/string keys. Unknown fields and conflicting aliases are rejected; business
+metadata and provider credentials are not identity fields.
 
 Input returns an acceptance/id, not the completed answer. Configure a consumer
 for response and preview events; see [AgentServer](AGENT_SERVER.md). Do not mix
 this asynchronous protocol with a legacy `Spectre.Turn` result.
+
+## Address Skill Servers under the same GAM
+
+Mount `Spectre.Skill, server: MyApp.SkillServer` on the Agent, then resolve the
+child with `Spectre.Server.skill_server(agent, mount)`. Each mount has independent
+callbacks, state, pending intentions and checkpoint, but automatically uses the
+root's GAM Domain and authority ledger. There is no second `gam:` startup or
+manual ingress for the child; its `governed:` allowlist can only restrict the
+configured operation authority.
+
+Use `Server.input(agent, text, skill: mount)` for targeted chat input and
+`Server.decide(agent, mount, presentation_ref, :confirm)` for an explicit UI
+decision after rendering acknowledgement. Consent is bound to the exact mount
+and presentation. `Server.gam_view(agent)` returns the shared authority projection
+to an authorized consumer, including Skill proposal provenance. Separate local
+checkpoints do not split this ledger. See [Skills](SKILLS.md) for concurrency,
+timers, recovery and rejection handling.
 
 ## Implement callbacks
 
@@ -99,10 +119,11 @@ not fabricate user rejection or dispose of an unresolved GAM Duty.
 
 ## Governed results
 
-Configure `gam: {Spectre.Server.GAM, host_config}` with an authenticated scope,
-a closed operation-binding map and durable journal. The host's candidate
-builder maps application arguments to a concrete Candidate. Presentation and
-response interpretation are host functions when consent is required.
+Configure `gam: [operations: allowed_operations, storage: {:disk, path}]` and
+pass the trusted identity and consumer. AgentServer constructs its Scope, Candidate,
+presentation, ingress and journal automatically. Optional `handle_action/2`
+restricts business requests; `handle_pending/3` controls their conversation.
+Neither callback can replace kernel admission or fabricate consent.
 
 Admission is `Decision.outcome`; observed execution is `Outcome.status`.
 Use `{:governed, %{outcome: %{status: :succeeded}}}` to report observed success.
@@ -157,3 +178,28 @@ availability does not mean all paths now pass through GAM.
 
 The complete [0.3 API guide](legacy/API_0_3.md) is retained for those applications.
 Use [migration](MIGRATING_TO_0_4.md) before changing ownership or effect execution.
+
+## Submit from an application actor
+
+`Spectre.GAM.submit(server, operation, arguments, on_result: tag)` acquires a
+proposal through the root AgentServer's existing policy, outbox and GAM loop.
+Only its consumer or startup `submitters: [pid]` may call it. `{:ok, command_id}`
+is acquisition; the eventual result reaches `handle_result/3`. A busy runtime
+returns `{:error, :busy}` without acquiring the command. Optional `key: "stable-id"` deduplicates the same
+request across checkpoint recovery and rejects conflicting reuse; it does not
+promise external exactly-once delivery. Submission does not supply user consent. See [Automatic GAM](MANAGED_GAM.md#submit-from-another-process).
+
+`Spectre.GAM.revoke(server)` lets only the root consumer revoke its application
+mandate through the kernel. Existing Acts, Outcomes and Duties remain recorded,
+and restart does not restore that authority.
+
+`Spectre.GAM.resolve_duty(server, duty_ref, kind, supporting_refs: refs)` uses the
+optional independent `gam: [reviewer: [identity: ..., consumer: pid]]` boundary.
+Only that reviewer process may submit a disposition; the kernel checks the exact
+opening, authority and existing supporting records. No reviewer means the Duty
+remains open. Disposition does not rewrite the original Outcome or prove success.
+
+The reviewer may specify its own absolute `expires_at`; its default year-9999
+upper bound is independent of the operation authorization deadline. Expired
+operation authority therefore does not automatically remove the ability of a
+still-authorized independent reviewer to settle historical Duties.

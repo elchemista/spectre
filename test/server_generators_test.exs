@@ -33,7 +33,8 @@ defmodule Spectre.ServerGeneratorsTest do
     assert agent.__spectre_server__() == server_module
     pid = start_supervised!({Spectre.Server, agent: agent, consumer: self()})
     assert {:ok, interaction} = Spectre.Server.input(pid, "hello")
-    assert_receive {Spectre.Server, ^pid, {:response, ^interaction, "Hello!", []}}, 1_000
+    assert_receive {Spectre.Server, ^pid, {:response, ^interaction, "Hello!", metadata}}, 1_000
+    assert is_binary(metadata[:message_id])
 
     human = capture_io(fn -> assert :ok = Mix.Tasks.Spectre.Routes.run([module]) end)
     assert human =~ "#{server}"

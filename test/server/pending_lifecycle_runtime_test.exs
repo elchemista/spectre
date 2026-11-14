@@ -1,3 +1,5 @@
+# Protocol component tests use the internal Runtime to inject boundary adapters.
+# Application AgentServers always start through the automatic Spectre.Server API.
 defmodule Spectre.Server.PendingLifecycleRuntimeTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
@@ -217,7 +219,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "interrupt suspension is audited before dispatching the exact interrupt route" do
     {opts, observer} = setup_server(agent: InterruptDefinition)
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     id = operate(server)
     {:ok, interaction} = Server.input(server, "cancel")
     assert_receive {Server, ^server, {:response, ^interaction, "interrupted", _}}, 2_000
@@ -228,7 +230,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "a topic change closes only its old intention after the audited schedule and suspension" do
     {opts, observer} = setup_server()
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     old = operate(server)
     Server.input(server, "other")
     wait(fn -> length(Server.status(server).pending) == 2 end)
@@ -249,7 +251,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "an already queued timer cannot consume a replacement schedule in the same revision" do
     {opts, observer} = setup_server()
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     id = operate(server)
     GenServer.call(server, {:schedule, id, 5_000, []})
     assert_receive {:lifecycle_result, %{kind: :schedule_close, status: :applied}}, 2_000
@@ -277,7 +279,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "resuming invalidates the previous timer and its stale wake cannot close the fresh show" do
     {opts, _observer} = setup_server()
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     id = operate(server)
     GenServer.call(server, {:schedule, id, 5_000, []})
     assert_receive {:lifecycle_result, %{kind: :schedule_close, status: :applied}}, 2_000
@@ -299,7 +301,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "an uncertain operation cannot be closed or lose its governing obligation" do
     {opts, _observer} = setup_server(worker_timeout: 40)
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     id = operate(server)
     Server.input(server, "confirm")
     assert_receive {:confirm_called, worker}, 2_000
@@ -320,7 +322,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
   test "requested and applied receipt crashes recover the same events and acquire closure once" do
     for phase <- [:requested, :applied] do
       {opts, observer} = setup_server()
-      {:ok, server} = Server.start_link(opts)
+      {:ok, server} = Spectre.Server.Runtime.start_link(opts)
       Process.unlink(server)
       id = operate(server)
       Agent.update(observer, &%{&1 | hold: phase})
@@ -329,7 +331,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
       monitor = Process.monitor(server)
       Process.exit(server, :kill)
       assert_receive {:DOWN, ^monitor, :process, ^server, :killed}, 2_000
-      {:ok, restored} = Server.start_link(opts)
+      {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
 
       assert_receive {:lifecycle_result, %{kind: :close, status: :applied, pending_id: ^id}},
                      2_000
@@ -344,7 +346,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "application timers have durable schedules and cannot confirm past the logical deadline" do
     {opts, _observer} = setup_server()
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     id = operate(server)
     GenServer.call(server, {:schedule, id, 25, [timer: :application]})
 
@@ -363,7 +365,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "external deliveries cannot acquire lifecycle controls or their blocked following commands" do
     {opts, observer} = setup_server()
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     id = operate(server)
     Agent.update(observer, &%{&1 | hold: :requested})
     GenServer.call(server, {:schedule_then_reply, id})
@@ -391,7 +393,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
   test "cancelling the current input preserves lifecycle registration in either phase" do
     for phase <- [:requested, :applied] do
       {opts, observer} = setup_server()
-      {:ok, server} = Server.start_link(opts)
+      {:ok, server} = Spectre.Server.Runtime.start_link(opts)
       id = operate(server)
       Agent.update(observer, &%{&1 | hold: phase})
       Server.input(server, "schedule_and_reply")
@@ -413,7 +415,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "a completion callback killed before acquisition restores its following once" do
     {opts, observer} = setup_server()
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     Process.unlink(server)
     id = operate(server)
     Agent.update(observer, &%{&1 | hold_callback: true})
@@ -422,12 +424,12 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
     monitor = Process.monitor(server)
     Process.exit(server, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^server, :killed}, 2_000
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     assert_receive {Server, ^restored, {:response, nil, "after schedule", _}}, 2_000
     assert Server.status(restored).assigns.callbacks == 1
     assert Server.status(restored).outbox_size == 0
     GenServer.stop(restored)
-    {:ok, third} = Server.start_link(opts)
+    {:ok, third} = Spectre.Server.Runtime.start_link(opts)
     assert Server.status(third).assigns.callbacks == 1
     refute_receive {Server, ^third, {:response, nil, "after schedule", _}}, 30
     GenServer.stop(third)
@@ -435,7 +437,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "a wake during confirmation closes automatically after a deterministic unclear result" do
     {opts, observer} = setup_server()
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     id = operate(server)
     GenServer.call(server, {:schedule, id, 500, []})
     assert_receive {:lifecycle_result, %{kind: :schedule_close, status: :applied}}, 2_000
@@ -468,7 +470,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "a quarantined completion aborts its unstarted following commands across restart" do
     {opts, observer} = setup_server()
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     id = operate(server)
     Agent.update(observer, &Map.put(&1, :fail_callback, true))
     GenServer.call(server, {:schedule_then_reply, id})
@@ -478,7 +480,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
     refute_receive {Server, ^server, {:response, _, "after schedule", _}}, 30
     GenServer.stop(server)
     Agent.update(observer, &Map.put(&1, :fail_callback, false))
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     assert Server.status(restored).outbox_size == 0
     assert map_size(Server.status(restored).dead_letters) == 1
     refute_receive {Server, ^restored, {:response, _, "after schedule", _}}, 30
@@ -487,7 +489,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "native OTP resume after an application deadline closes the policy instead of reopening a show" do
     {opts, _observer} = setup_server()
-    server = start_supervised!({Server, opts})
+    server = start_supervised!({Spectre.Server.Runtime, opts})
     id = operate(server)
     GenServer.call(server, {:schedule, id, 25, [timer: :application]})
     assert_receive {:lifecycle_result, %{kind: :schedule_close, status: :applied}}, 2_000
@@ -501,7 +503,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
 
   test "native handle_info closure observes schedule generation after restart" do
     {opts, _observer} = setup_server()
-    {:ok, server} = Server.start_link(opts)
+    {:ok, server} = Spectre.Server.Runtime.start_link(opts)
     id = operate(server)
     GenServer.call(server, {:schedule, id, 5_000, [timer: :application]})
 
@@ -510,7 +512,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
                    2_000
 
     GenServer.stop(server)
-    {:ok, restored} = Server.start_link(opts)
+    {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
     assert hd(Server.status(restored).pending).close_schedule.command_id == schedule
     Process.send_after(restored, {:native_close, id, schedule}, 0)
     assert_receive {:lifecycle_result, %{kind: :close, status: :applied}}, 2_000

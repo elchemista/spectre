@@ -61,6 +61,10 @@ defmodule Spectre.Server.Router do
       agent.__spectre_config__()
       |> Keyword.merge(opts)
       |> Keyword.put(:instance_run_lifecycle?, false)
+      |> Keyword.put_new(
+        :regex_strength,
+        Keyword.get(agent.__spectre_router__(), :regex_strength, :hard)
+      )
 
     state = %State{
       current_flow: Keyword.get(opts, :current_flow),

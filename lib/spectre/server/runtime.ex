@@ -1,13 +1,19 @@
 defmodule Spectre.Server.Runtime do
   @moduledoc """
-  The single OTP owner of an agent conversation.
+  Internal OTP owner of an agent conversation.
+
+  Applications start through `Spectre.Server.start_link/1`, which owns the
+  automatic GAM configuration boundary. Direct runtime construction exists for
+  supervised Skill wiring and isolated protocol tests, not application setup.
 
   Application callbacks run in this process. Routing, cognitive services,
-  actor calls and the host GAM bridge run in monitored workers. Each result
+  actor calls and the internal GAM adapter run in monitored workers. Each result
   carries a runtime-owned reference and its original interaction. Application
   callbacks cannot intercept internal worker messages accidentally.
   """
   use GenServer
+
+  alias Spectre.Server.GAM.Managed
 
   alias Spectre.Server.{
     Checkpoint,
@@ -18,22 +24,79 @@ defmodule Spectre.Server.Runtime do
     Inbox,
     Operations,
     PendingLifecycle,
+    Skills,
     Tool
   }
 
+  @doc false
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(
-      __MODULE__,
-      opts,
-      Keyword.take(opts, [:name, :debug, :spawn_opt, :hibernate_after])
-    )
+    result =
+      GenServer.start(
+        __MODULE__,
+        {opts, self()},
+        Keyword.take(opts, [:name, :debug, :spawn_opt, :hibernate_after])
+      )
+
+    case result do
+      {:ok, pid} ->
+        Process.link(pid)
+        {:ok, pid}
+
+      {:error, _} = error ->
+        error
+
+      :ignore ->
+        :ignore
+    end
   end
 
   @impl true
+  def init({opts, owner}) do
+    Process.put({__MODULE__, :startup_owner}, {owner, Process.monitor(owner)})
+    init(opts)
+  end
+
   def init(opts) do
     state = opts |> initial_state() |> Checkpoint.load() |> Tool.validate_persisted!()
     send(self(), {__MODULE__, state.control, :recover})
-    init_application(state)
+
+    case start_skills(state) do
+      {:ok, state} ->
+        register_skill(state)
+        init_application(state)
+
+      {:error, reason} ->
+        {:stop, {:skills_start_failed, reason}}
+    end
+  catch
+    {:managed_gam_start_failed, reason} -> {:stop, reason}
+  end
+
+  @spec start_skills(map()) :: {:ok, map()} | {:error, term()}
+  defp start_skills(state) do
+    if Keyword.has_key?(state.opts, :skill) or Skills.mounts(state.agent) == [] do
+      {:ok, state}
+    else
+      with {:ok, gam} <- Spectre.Server.GAM.pin_domain(state.gam, service_context(state, nil)),
+           state = %{state | gam: gam},
+           {:ok, supervisor} <- Skills.start_link(state) do
+        {:ok, %{state | skill_supervisor: supervisor}}
+      end
+    end
+  end
+
+  @spec register_skill(map()) :: :ok
+  defp register_skill(state) do
+    case Keyword.get(state.opts, :skill_parent) do
+      {parent, token} ->
+        send(parent, {__MODULE__, token, :skill_started, state.opts[:skill].id, self()})
+
+      nil ->
+        :ok
+    end
+
+    :ok
   end
 
   defp initial_state(opts) do
@@ -42,10 +105,37 @@ defmodule Spectre.Server.Runtime do
     server = Keyword.get(opts, :server) || server_binding(agent)
     Code.ensure_loaded!(server)
     opts = Keyword.merge(server_options(server), opts)
-    state = new_state(agent, server, opts)
+    state = new_state(agent, server, opts) |> setup_managed_gam()
     validate_initial_state!(state)
     Map.put(state, :tool_bindings, Tool.bindings!(state))
   end
+
+  @spec setup_managed_gam(map()) :: map()
+  defp setup_managed_gam(%{gam: config} = state) when is_list(config) do
+    options =
+      config
+      |> Keyword.put(:agent, state.agent)
+      |> Keyword.put(:identity, state.identity)
+      |> Keyword.put(:consumer, state.consumer)
+      |> Keyword.put(:runtime, self())
+      |> Keyword.put(:options, Keyword.drop(state.opts, [:gam, :assigns, :identity]))
+      |> Keyword.put(:stack_runtime, Keyword.get(state.opts, :stack_runtime))
+
+    case Managed.start_link(options) do
+      {:ok, pid} ->
+        opts =
+          if Keyword.get(state.opts, :checkpoint),
+            do: state.opts,
+            else: Keyword.put(state.opts, :checkpoint, Managed.runtime_checkpoint(pid))
+
+        Map.merge(state, %{gam: {Managed, [server: pid]}, managed_owner: pid, opts: opts})
+
+      {:error, reason} ->
+        throw({:managed_gam_start_failed, reason})
+    end
+  end
+
+  defp setup_managed_gam(state), do: Map.put(state, :managed_owner, nil)
 
   defp server_options(server) do
     if function_exported?(server, :__spectre_server_options__, 0),
@@ -65,6 +155,10 @@ defmodule Spectre.Server.Runtime do
       services: Map.new(Keyword.get(opts, :services, [])),
       consumer: Keyword.get(opts, :consumer),
       gam: Keyword.get(opts, :gam),
+      skill_supervisor: nil,
+      skill_pids: %{},
+      skill_current: %{},
+      skill_pid_order: [],
       workers: %{},
       pending: %{},
       pending_timers: %{},
@@ -82,6 +176,8 @@ defmodule Spectre.Server.Runtime do
       outbox: %{},
       inbox: %{},
       seen_events: %{},
+      external_submissions: %{},
+      submission_epoch: Spectre.Identity.uuid7(),
       seen_event_order: [],
       dead_letters: %{},
       operations: %{},
@@ -89,7 +185,8 @@ defmodule Spectre.Server.Runtime do
       released_commands: [],
       checkpoint_revision: nil,
       active_command: nil,
-      processing_result: nil
+      processing_result: nil,
+      startup_owner: Process.get({__MODULE__, :startup_owner})
     }
   end
 
@@ -134,12 +231,96 @@ defmodule Spectre.Server.Runtime do
   end
 
   @impl true
-  def handle_call({__MODULE__, :input, value, opts}, _from, state) do
+  def handle_call({__MODULE__, :gam_view}, {caller, _}, state) do
+    {:reply, managed_call(state, :view, [caller]), state}
+  end
+
+  def handle_call({__MODULE__, :revoke}, {caller, _}, state) do
+    if caller == state.consumer and not Keyword.has_key?(state.opts, :skill),
+      do: {:reply, managed_call(state, :revoke, []), state},
+      else: {:reply, {:error, :untrusted_governance_transport}, state}
+  end
+
+  def handle_call({__MODULE__, :resolve_duty, ref, kind, opts}, {caller, _}, state) do
+    if Keyword.has_key?(state.opts, :skill),
+      do: {:reply, {:error, :review_through_root_agent}, state},
+      else: {:reply, managed_call(state, :dispose, [ref, kind, opts, caller]), state}
+  end
+
+  def handle_call({__MODULE__, :submit, operation, arguments, opts}, {caller, _}, state) do
+    with :ok <- authorize_submission(state, caller),
+         :ok <- validate_submission(operation, arguments, opts) do
+      acquire_submission(state, caller, operation, arguments, opts)
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({__MODULE__, :presented, ref}, {caller, _}, state) do
+    {:reply, managed_call(state, :presented, [ref, caller]), state}
+  end
+
+  def handle_call({__MODULE__, :decide, skill, ref, decision}, {caller, _} = from, state) do
+    if caller == state.consumer and decision in [:confirm, :reject],
+      do: dispatch_decision(state, skill, ref, decision, from),
+      else: {:reply, {:error, :untrusted_consent_transport}, state}
+  end
+
+  def handle_call({__MODULE__, :transport_input, skill, value, opts}, from, state) do
+    case Skills.lookup(state.skill_supervisor, skill) do
+      {:ok, child} ->
+        start_transport_query(state, child, from, value, opts)
+        {:noreply, state}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({__MODULE__, :relay, token, {:decision, ref, decision, proof}}, _from, state) do
+    case Keyword.get(state.opts, :skill_parent) do
+      {_parent, ^token} -> accept_decision(state, ref, decision, proof)
+      _ -> {:reply, {:error, :untrusted_consent_transport}, state}
+    end
+  end
+
+  def handle_call({__MODULE__, :relay, token, {:input, value, opts, proof}}, _from, state) do
+    case Keyword.get(state.opts, :skill_parent) do
+      {_parent, ^token} -> accept_relay_input(state, value, opts, proof)
+      _ -> {:reply, {:error, :untrusted_consent_transport}, state}
+    end
+  end
+
+  def handle_call({__MODULE__, :skill_server, id}, _from, state) do
+    result =
+      case Map.get(state.skill_current, id) do
+        nil -> {:error, :unknown_skill}
+        pid -> if Process.alive?(pid), do: {:ok, pid}, else: {:error, :skill_restarting}
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({__MODULE__, :skill_input, id, input, dispatch}, _from, state) do
+    if Keyword.has_key?(state.opts, :skill) do
+      if Map.has_key?(state.seen_events, "skill:" <> id) do
+        {:reply, {:ok, id}, state}
+      else
+        accept_input(state, Spectre.Input.new(input), dispatch, id, nil)
+      end
+    else
+      {:reply, {:error, :not_a_skill_runtime}, state}
+    end
+  end
+
+  def handle_call({__MODULE__, :input, value, opts}, {caller, _}, state) do
     input = Spectre.Input.new(value)
 
     with :ok <- Spectre.Input.validate(input),
-         :ok <- validate_input_options(opts) do
-      accept_input(state, input)
+         :ok <- validate_input_options(opts),
+         :ok <- validate_pending_target(state, Keyword.get(opts, :pending)) do
+      proof = textual_consent_proof(state, input, caller)
+      accept_input(state, input, nil, nil, Keyword.get(opts, :pending), proof)
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -182,6 +363,121 @@ defmodule Spectre.Server.Runtime do
 
   def handle_call(message, from, state), do: delegate_otp(:handle_call, [message, from], state)
 
+  @spec authorize_submission(map(), pid()) :: :ok | {:error, atom()}
+  defp authorize_submission(state, caller) do
+    cond do
+      Keyword.has_key?(state.opts, :skill) ->
+        {:error, :submit_through_root_agent}
+
+      caller != state.consumer and caller not in Keyword.get(state.opts, :submitters, []) ->
+        {:error, :untrusted_submitter}
+
+      true ->
+        :ok
+    end
+  end
+
+  @spec validate_submission(term(), term(), term()) :: :ok | {:error, term()}
+  defp validate_submission(operation, arguments, opts) when is_list(opts) do
+    if Keyword.keyword?(opts) and Keyword.keys(opts) -- [:on_result, :confirmation, :key] == [] and
+         length(Keyword.keys(opts)) == length(Enum.uniq(Keyword.keys(opts))) do
+      command = %Command{kind: :propose, args: [operation, arguments], opts: opts}
+
+      with :ok <- submission_key(Keyword.get(opts, :key)),
+           :ok <- Command.validate(command),
+           do: Checkpoint.validate_value({operation, arguments, opts})
+    else
+      {:error, :invalid_submission_options}
+    end
+  end
+
+  defp validate_submission(_, _, _), do: {:error, :invalid_submission_options}
+
+  @spec submission_key(term()) :: :ok | {:error, :invalid_submission_key}
+  defp submission_key(nil), do: :ok
+  defp submission_key(key) when is_binary(key) and byte_size(key) in 1..256, do: :ok
+  defp submission_key(_), do: {:error, :invalid_submission_key}
+
+  @spec acquire_submission(map(), pid(), term(), map(), keyword()) :: tuple()
+  defp acquire_submission(state, caller, operation, arguments, opts) do
+    key = Keyword.get(opts, :key)
+
+    fingerprint =
+      Spectre.GAM.Canonical.Value.digest!({operation, arguments, Keyword.delete(opts, :key)})
+
+    case Map.get(state.external_submissions, key) do
+      %{id: id, fingerprint: ^fingerprint} ->
+        {:reply, {:ok, id}, state}
+
+      %{} ->
+        {:reply, {:error, :submission_key_conflict}, state}
+
+      nil ->
+        prepare_submission(state, caller, operation, arguments, opts, key, fingerprint)
+    end
+  end
+
+  @spec prepare_submission(map(), pid(), term(), map(), keyword(), binary() | nil, binary()) ::
+          tuple()
+  defp prepare_submission(state, caller, operation, arguments, opts, key, fingerprint) do
+    cond do
+      not is_nil(state.current) ->
+        {:reply, {:error, :busy}, state}
+
+      map_size(state.outbox) >= max(1, state.queue_limit) ->
+        {:reply, {:error, :busy}, state}
+
+      not is_nil(key) and map_size(state.external_submissions) >= 4096 ->
+        {:reply, {:error, :submission_key_capacity_reached}, state}
+
+      true ->
+        commit_submission(state, caller, operation, arguments, opts, key, fingerprint)
+    end
+  end
+
+  @spec commit_submission(map(), pid(), term(), map(), keyword(), binary() | nil, binary()) ::
+          tuple()
+  defp commit_submission(state, caller, operation, arguments, opts, key, fingerprint) do
+    {ctx, dispatch} = context(state, nil)
+
+    provenance = %{
+      source: :external_actor,
+      submitter_ref:
+        Spectre.GAM.Canonical.Value.digest!({state.submission_epoch, inspect(caller)})
+    }
+
+    opts =
+      opts
+      |> Keyword.delete(:key)
+      |> Keyword.put_new(:on_result, :submission)
+
+    returned = Spectre.Server.propose(ctx, operation, arguments, opts)
+
+    case Failure.capture(fn -> prepare_acquisition(state, returned, dispatch) end) do
+      {:ok, {:prepared, next, [{id, entry} | remaining]}} ->
+        command = %{
+          entry.command
+          | opts: Keyword.put(entry.command.opts, :external_submission, provenance)
+        }
+
+        entry = %{entry | command: command}
+        next = %{next | outbox: Map.put(next.outbox, id, entry)}
+
+        submissions =
+          if is_nil(key),
+            do: next.external_submissions,
+            else: Map.put(next.external_submissions, key, %{id: id, fingerprint: fingerprint})
+
+        prepared =
+          {:prepared, %{next | external_submissions: submissions}, [{id, entry} | remaining]}
+
+        {:reply, {:ok, id}, prepared |> commit_acquisition() |> finish()}
+
+      {:error, reason} ->
+        {:reply, {:error, {:submission_rejected, Tool.bounded(reason)}}, state}
+    end
+  end
+
   @impl true
   def handle_cast(message, state), do: delegate_otp(:handle_cast, [message], state)
 
@@ -190,6 +486,54 @@ defmodule Spectre.Server.Runtime do
     do: delegate_otp(:handle_continue, [value], state)
 
   @impl true
+  def handle_info(
+        {__MODULE__, token, :decision_ready, {caller, _} = from, child, ref, decision,
+         {:ok, pending}},
+        %{control: token} = state
+      ) do
+    with true <- valid_decision_target?(pending, ref),
+         {:ok, proof} <- managed_call(state, :authorize_decision, [ref, decision, caller]) do
+      relay_request(state, child, from, {:decision, ref, decision, proof})
+    else
+      false -> GenServer.reply(from, {:error, :stale_presentation})
+      {:error, _} = error -> GenServer.reply(from, error)
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {__MODULE__, token, :decision_ready, from, _child, _ref, _decision, {:error, reason}},
+        %{control: token} = state
+      ) do
+    GenServer.reply(from, {:error, {:skill_unavailable, reason}})
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {__MODULE__, token, :transport_ready, {caller, _} = from, child, value, opts,
+         {:ok, pending}},
+        %{control: token} = state
+      ) do
+    proof_state = %{
+      state
+      | pending: if(pending, do: %{pending.id => pending}, else: %{}),
+        foreground: if(pending, do: pending.id)
+    }
+
+    proof = textual_consent_proof(proof_state, Spectre.Input.new(value), caller)
+    relay_request(state, child, from, {:input, value, opts, proof})
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {__MODULE__, token, :transport_ready, from, _child, _value, _opts, {:error, reason}},
+        %{control: token} = state
+      ) do
+    GenServer.reply(from, {:error, {:skill_unavailable, reason}})
+    {:noreply, state}
+  end
+
   def handle_info({__MODULE__, ref, :close_pending}, state) do
     case Map.pop(state.close_timers, ref) do
       {nil, _} ->
@@ -244,6 +588,12 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
+  def handle_info(
+        {:DOWN, monitor, :process, owner, reason},
+        %{startup_owner: {owner, monitor}} = state
+      ),
+      do: {:stop, reason, state}
+
   def handle_info({:DOWN, monitor, :process, _pid, reason} = message, state) do
     case Enum.find(state.workers, fn {_ref, worker} -> worker.monitor == monitor end) do
       nil ->
@@ -262,6 +612,28 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
+  def handle_info({__MODULE__, token, :skill_started, id, pid}, %{control: token} = state) do
+    current = Map.put(state.skill_current, id, pid)
+    order = Enum.take([pid | state.skill_pid_order], 256)
+    retained = Enum.uniq(Map.values(current) ++ order)
+    pids = state.skill_pids |> Map.put(pid, id) |> Map.take(retained)
+    {:noreply, %{state | skill_current: current, skill_pids: pids, skill_pid_order: order}}
+  end
+
+  def handle_info({Spectre.Server, child, event} = message, state) do
+    case Map.fetch(state.skill_pids, child) do
+      {:ok, id} ->
+        notify(state, {:skill, id, event})
+
+        if Skills.preview?(event),
+          do: {:noreply, state},
+          else: {:noreply, conversation(state, :handle_skill, [id, event], nil) |> finish()}
+
+      :error ->
+        delegate_otp(:handle_info, [message], state)
+    end
+  end
+
   # Unknown messages in this reserved envelope cannot complete an operation.
   def handle_info({__MODULE__, _ref, _kind}, state), do: {:noreply, state}
   def handle_info({__MODULE__, _ref, _kind, _value}, state), do: {:noreply, state}
@@ -269,6 +641,8 @@ defmodule Spectre.Server.Runtime do
 
   @impl true
   def terminate(reason, state) do
+    Skills.stop(state.skill_supervisor)
+
     Enum.each(state.pending_timers, fn {_ref, entry} -> cancel_timer(entry.timer) end)
     Enum.each(state.close_timers, fn {_ref, entry} -> cancel_timer(entry.timer) end)
 
@@ -276,6 +650,9 @@ defmodule Spectre.Server.Runtime do
       if worker.pid && not governed?(worker.kind), do: Process.exit(worker.pid, :kill)
       cancel_timer(worker.timer)
     end)
+
+    if is_pid(state.managed_owner) and Process.alive?(state.managed_owner),
+      do: Managed.close(state.managed_owner)
 
     {ctx, _} = context(state, nil)
     state.server.terminate(reason, ctx)
@@ -376,35 +753,200 @@ defmodule Spectre.Server.Runtime do
   defp resolve_delivery_reference(state, _tag, reference),
     do: bridge(state, :resolve_result, [reference, service_context(state, nil), []])
 
-  defp accept_input(state, input) do
+  defp accept_input(state, input, dispatch, invocation, target, proof \\ nil) do
     queued? = not :queue.is_empty(state.queue)
     busy? = not is_nil(state.current) or resolving_pending?(state)
+    waiting? = busy? or queued?
 
-    if (busy? or queued?) && :queue.len(state.queue) >= state.queue_limit do
+    if waiting? and :queue.len(state.queue) >= state.queue_limit do
       {:reply, {:error, :busy}, state}
     else
-      id = Spectre.Identity.uuid7()
+      event =
+        input_event(state, input, dispatch, invocation)
+        |> Map.put(:target_pending, target)
+        |> Map.put(:consent_proof, proof)
+        |> Map.put(
+          :consent_source_digest,
+          if(proof, do: Base.encode16(:crypto.hash(:sha256, input.text), case: :lower))
+        )
 
-      event = %{
-        id: id,
-        input: input,
-        routing: %{},
-        steps: 0,
-        phase: :preparing,
-        sequence: state.sequence + 1,
-        received_at: System.system_time(:millisecond)
-      }
-
+      id = event.id
       state = %{state | sequence: state.sequence + 1}
+      state = if invocation, do: Inbox.mark_seen(state, "skill:" <> invocation), else: state
 
       state =
-        if busy? or queued?,
+        if waiting?,
           do: %{state | queue: :queue.in(event, state.queue)},
           else: begin_input(state, event)
 
       if queued? and not busy?, do: send(self(), {__MODULE__, state.control, :pump})
       {:reply, {:ok, id}, Checkpoint.save(state)}
     end
+  end
+
+  @spec managed_call(map(), atom(), list()) :: term()
+  defp managed_call(%{gam: {Managed, config}}, function, args),
+    do: apply(Managed, function, [Keyword.fetch!(config, :server) | args])
+
+  defp managed_call(_state, _function, _args), do: {:error, :managed_gam_not_configured}
+
+  @spec accept_decision(map(), String.t(), :confirm | :reject, String.t()) :: tuple()
+  defp accept_decision(state, ref, decision, proof) do
+    pending = Map.get(state.pending, state.foreground)
+
+    if pending && get_in(pending, [:presentation, Access.key(:ref)]) == ref &&
+         pending.status == :foreground do
+      input = Spectre.Input.new(if decision == :confirm, do: "confermo", else: "annulla")
+      accept_input(state, input, nil, nil, {pending.id, pending.revision}, proof)
+    else
+      {:reply, {:error, :stale_presentation}, state}
+    end
+  end
+
+  @spec textual_consent_proof(map(), Spectre.Input.t(), pid()) :: String.t() | nil
+  defp textual_consent_proof(%{gam: {Managed, _}} = state, input, caller) do
+    with true <- caller == state.consumer,
+         %{kind: :consent, presentation: %{ref: ref}} <- Map.get(state.pending, state.foreground),
+         {:ok, proof} <- authorize_reply(state, ref, input.text, caller) do
+      proof
+    else
+      _ -> nil
+    end
+  end
+
+  defp textual_consent_proof(_state, _input, _caller), do: nil
+
+  @spec authorize_reply(map(), binary(), binary(), pid()) :: {:ok, binary()} | {:error, term()}
+  defp authorize_reply(state, ref, text, caller) do
+    case decision_from_text(text) do
+      nil -> managed_call(state, :authorize_input, [ref, text, caller])
+      decision -> managed_call(state, :authorize_decision, [ref, decision, caller])
+    end
+  end
+
+  @spec decision_from_text(String.t()) :: :confirm | :reject | nil
+  defp decision_from_text(text) do
+    case String.downcase(String.trim(text)) do
+      answer when answer in ["yes", "confirm", "confermo", "si", "sì"] -> :confirm
+      answer when answer in ["no", "cancel", "annulla"] -> :reject
+      _ -> nil
+    end
+  end
+
+  @spec dispatch_decision(map(), term(), binary(), atom(), GenServer.from()) :: tuple()
+  defp dispatch_decision(state, skill, ref, decision, {caller, _}) when skill in [nil, :agent] do
+    with true <- valid_decision_target?(Map.get(state.pending, state.foreground), ref),
+         {:ok, proof} <- managed_call(state, :authorize_decision, [ref, decision, caller]) do
+      accept_decision(state, ref, decision, proof)
+    else
+      false -> {:reply, {:error, :stale_presentation}, state}
+      {:error, _} = error -> {:reply, error, state}
+    end
+  end
+
+  defp dispatch_decision(state, skill, ref, decision, from) do
+    case Skills.lookup(state.skill_supervisor, skill) do
+      {:ok, child} ->
+        start_decision_query(state, child, from, ref, decision)
+        {:noreply, state}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  @spec start_decision_query(map(), pid(), GenServer.from(), binary(), atom()) :: {:ok, pid()}
+  defp start_decision_query(state, child, from, ref, decision) do
+    owner = self()
+    token = state.control
+
+    Task.Supervisor.start_child(Spectre.Server.TaskSupervisor, fn ->
+      result = Failure.capture(fn -> foreground_skill_pending(child) end)
+      send(owner, {__MODULE__, token, :decision_ready, from, child, ref, decision, result})
+    end)
+  end
+
+  @spec valid_decision_target?(map() | nil, binary()) :: boolean()
+  defp valid_decision_target?(
+         %{kind: :consent, status: :foreground, presentation: %{ref: ref}},
+         ref
+       ),
+       do: true
+
+  defp valid_decision_target?(_pending, _ref), do: false
+
+  @spec start_transport_query(map(), pid(), GenServer.from(), term(), keyword()) :: {:ok, pid()}
+  defp start_transport_query(state, child, from, value, opts) do
+    owner = self()
+    token = state.control
+
+    Task.Supervisor.start_child(Spectre.Server.TaskSupervisor, fn ->
+      result = Failure.capture(fn -> foreground_skill_pending(child) end)
+      send(owner, {__MODULE__, token, :transport_ready, from, child, value, opts, result})
+    end)
+  end
+
+  @spec foreground_skill_pending(pid()) :: map() | nil
+  defp foreground_skill_pending(child) do
+    status = GenServer.call(child, {__MODULE__, :status}, 1_500)
+    Enum.find(status.pending, &(Map.get(&1, :status) == :foreground))
+  end
+
+  @spec relay_request(map(), pid(), GenServer.from(), tuple()) :: {:ok, pid()}
+  defp relay_request(state, child, from, request) do
+    token = state.control
+
+    Task.Supervisor.start_child(Spectre.Server.TaskSupervisor, fn ->
+      reply =
+        case Failure.capture(fn ->
+               GenServer.call(child, {__MODULE__, :relay, token, request}, 2_000)
+             end) do
+          {:ok, reply} -> reply
+          {:error, reason} -> {:error, {:skill_unavailable, reason}}
+        end
+
+      GenServer.reply(from, reply)
+    end)
+  end
+
+  @spec accept_relay_input(map(), term(), keyword(), binary() | nil) :: tuple()
+  defp accept_relay_input(state, value, opts, proof) do
+    input = Spectre.Input.new(value)
+
+    with :ok <- Spectre.Input.validate(input),
+         :ok <- validate_input_options(opts),
+         :ok <- validate_pending_target(state, Keyword.get(opts, :pending)) do
+      accept_input(state, input, nil, nil, Keyword.get(opts, :pending), proof)
+    else
+      {:error, _} = error -> {:reply, error, state}
+    end
+  end
+
+  @spec input_event(map(), Spectre.Input.t(), map() | nil, binary() | nil) :: map()
+  defp input_event(state, input, dispatch, invocation) do
+    id = invocation || Spectre.Identity.uuid7()
+
+    event = %{
+      id: id,
+      input: input,
+      routing: %{},
+      steps: 0,
+      phase: :preparing,
+      sequence: state.sequence + 1,
+      received_at: System.system_time(:millisecond)
+    }
+
+    event =
+      if is_map(dispatch),
+        do:
+          event
+          |> Map.put(:skill_dispatch, dispatch.key)
+          |> Map.put(:routing, dispatch.routing)
+          |> Map.put(:memory, Map.get(dispatch, :memory))
+          |> Map.put(:received_at, Map.get(dispatch, :received_at, event.received_at)),
+        else: event
+
+    if invocation, do: Map.put(event, :delegated, true), else: event
   end
 
   defp server_binding(agent) do
@@ -420,8 +962,21 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
-  defp validate_input_options(opts) do
-    if Keyword.keyword?(opts) and opts == [], do: :ok, else: {:error, :unsupported_input_options}
+  defp validate_input_options([]), do: :ok
+
+  defp validate_input_options(pending: {id, revision})
+       when not is_nil(id) and is_integer(revision) and revision > 0, do: :ok
+
+  defp validate_input_options(_opts), do: {:error, :unsupported_input_options}
+
+  @spec validate_pending_target(map(), nil | {term(), pos_integer()}) :: :ok | {:error, atom()}
+  defp validate_pending_target(_state, nil), do: :ok
+
+  defp validate_pending_target(state, {id, revision}) do
+    case Map.get(state.pending, id) do
+      %{revision: ^revision, status: :foreground} when state.foreground == id -> :ok
+      _ -> {:error, :stale_pending}
+    end
   end
 
   defp begin_input(state, event) do
@@ -433,8 +988,19 @@ defmodule Spectre.Server.Runtime do
 
     state = %{state | current: event, history: history}
 
-    start_input_preparation(state, event)
+    if Map.has_key?(event, :skill_dispatch),
+      do: prepared_input(state, event),
+      else: start_input_preparation(state, event)
   end
+
+  defp prepared_input(state, %{skill_dispatch: key} = event) do
+    apply_worker_result(state, %{kind: :route, event: event}, {:ok, key, event.routing})
+  end
+
+  defp prepared_input(state, %{delegated: true} = event), do: route(state, event)
+
+  defp prepared_input(state, %{target_pending: {_id, _revision}} = event),
+    do: after_interrupt(state, event)
 
   defp prepared_input(state, event) do
     worker(state, :interrupt, nil, event, [], fn ->
@@ -443,6 +1009,18 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp after_interrupt(state, event) do
+    case validate_pending_target(state, Map.get(event, :target_pending)) do
+      :ok ->
+        dispatch_pending_input(state, event)
+
+      {:error, :stale_pending} ->
+        conversation(state, :handle_result, [:pending, {:consent, :stale_input}], event)
+        |> finish()
+    end
+  end
+
+  @spec dispatch_pending_input(map(), map()) :: map()
+  defp dispatch_pending_input(state, event) do
     case Map.get(state.pending, state.foreground) do
       nil ->
         route(state, event)
@@ -463,6 +1041,7 @@ defmodule Spectre.Server.Runtime do
     worker(state, :route, nil, event, [], fn ->
       opts = [
         assigns: state.assigns,
+        runtime_scope: Keyword.get(state.opts, :runtime_scope),
         current_flow: state.current_flow,
         current_scope: state.current_scope,
         state_data: %{chat_history: Enum.reject(state.history, &(&1.id == event.id))},
@@ -577,7 +1156,7 @@ defmodule Spectre.Server.Runtime do
             do: %{state | current_flow: selected.flow, current_scope: selected.scope},
             else: state
 
-        conversation(state, :handle_flow, [key, event.input], event)
+        dispatch_flow(state, key, event)
 
       {:unmatched, routing} when is_map(routing) ->
         event = %{event | routing: routing}
@@ -596,6 +1175,11 @@ defmodule Spectre.Server.Runtime do
           {:error, {:invalid_router_result, other}}
         )
     end
+  end
+
+  defp apply_worker_result(state, %{kind: :delegate_route, event: event}, {:delegated, details}) do
+    notify(state, {:delegated, event_id(event), details})
+    state
   end
 
   defp apply_worker_result(state, %{kind: :respond, event: event} = worker, {:rendered, text})
@@ -633,6 +1217,7 @@ defmodule Spectre.Server.Runtime do
         else: if(state.foreground == id, do: nil, else: state.foreground)
 
     state = %{state | pending: Map.put(state.pending, id, pending), foreground: foreground}
+    notify(state, {:pending, event_id(event), id})
     state |> arm_pending_timer(pending) |> reconcile_close_timers()
   end
 
@@ -662,6 +1247,34 @@ defmodule Spectre.Server.Runtime do
       end
 
     conversation(state, :handle_result, [tag, result], event)
+  end
+
+  @spec dispatch_flow(map(), term(), map()) :: map()
+  defp dispatch_flow(state, {{{:skill, id}, _flow}, _label} = key, event)
+       when not is_nil(state.skill_supervisor) do
+    if Enum.any?(Skills.mounts(state.agent), &(&1.id == id)) do
+      command = %Command{kind: :delegate_route, args: [id], opts: [on_result: :delegate]}
+      event = %{event | phase: :commands}
+      state = state |> acquire_result() |> update_current(event)
+      enqueue_runtime_commands(state, [command], event)
+    else
+      conversation(state, :handle_flow, [key, event.input], event)
+    end
+  end
+
+  defp dispatch_flow(state, key, event) do
+    scope = Keyword.get(state.opts, :runtime_scope)
+
+    if is_nil(scope) or event.routing[:scope] == scope do
+      conversation(state, :handle_flow, [Skills.local_key(key, state.opts), event.input], event)
+    else
+      conversation(
+        state,
+        :handle_result,
+        [:delegate, {:error, :skill_route_scope_mismatch}],
+        event
+      )
+    end
   end
 
   defp shown_pending_status(state, worker, id) do
@@ -842,7 +1455,9 @@ defmodule Spectre.Server.Runtime do
   defp callback_error_handler(state, failure, event) do
     attempts =
       Enum.count(state.dead_letters, fn {_id, entry} ->
-        entry.interaction == failure.interaction
+        if is_nil(failure.interaction),
+          do: entry.id == failure.id,
+          else: entry.interaction == failure.interaction
       end)
 
     if attempts <= Keyword.get(state.opts, :max_callback_error_attempts, 1) do
@@ -926,9 +1541,10 @@ defmodule Spectre.Server.Runtime do
       assigns: state.assigns,
       private: state.private,
       identity: state.identity,
+      skill: Keyword.get(state.opts, :skill),
       interaction: if(event, do: event.id),
       input: if(event, do: event.input),
-      routing: if(event, do: event.routing, else: %{}),
+      routing: Skills.routing(state, event),
       memory: if(event, do: Map.get(event, :memory)),
       pending: Map.get(state.pending, state.foreground),
       pending_by_id: state.pending,
@@ -984,7 +1600,19 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp prepare_acquisition_commands(state, returned, dispatch, extra) do
-    normalized = Enum.map(returned.commands, &Tool.normalize(state, &1, dispatch.event))
+    tool_event =
+      if Keyword.has_key?(state.opts, :skill),
+        do: %{routing: Skills.routing(state, dispatch.event)},
+        else: dispatch.event
+
+    normalized =
+      Enum.map(returned.commands, fn command ->
+        command
+        |> then(&Tool.normalize(state, &1, tool_event))
+        |> Skills.authorize(state)
+        |> action_policy(state, returned)
+      end)
+
     commands = Enum.map(normalized, &elem(&1, 0))
 
     Enum.each(commands, fn command ->
@@ -1029,6 +1657,61 @@ defmodule Spectre.Server.Runtime do
 
   defp commit_acquisition({:prepared, state, entries}),
     do: execute_entries(Checkpoint.save(state), entries)
+
+  @spec action_policy({Command.t(), term()}, map(), Context.t()) :: {Command.t(), term()}
+  defp action_policy(
+         {%Command{kind: :propose, args: [operation, args]} = command, origin},
+         state,
+         ctx
+       ) do
+    action = %{
+      operation: operation,
+      args: args,
+      metadata: Keyword.get(command.opts, :proposal_metadata, %{})
+    }
+
+    result =
+      if function_exported?(state.server, :handle_action, 2),
+        do: state.server.handle_action(action, ctx),
+        else: :default
+
+    case result do
+      :default ->
+        {command, origin}
+
+      :confirm ->
+        {put_action_policy(command, %{confirm: true}), origin}
+
+      {:confirm, policy} when is_map(policy) ->
+        {put_action_policy(command, Map.put(policy, :confirm, true)), origin}
+
+      {:reject, reason} ->
+        case state.gam do
+          {Managed, _} ->
+            {put_action_policy(command, %{reject: reason}), origin}
+
+          _ ->
+            {%Command{
+               kind: :tool_rejected,
+               args: [{:error, {:action_rejected, reason}}],
+               opts: command.opts
+             }, origin}
+        end
+
+      other ->
+        raise ArgumentError, "invalid handle_action return: #{inspect(other)}"
+    end
+  end
+
+  defp action_policy(command, _state, _ctx), do: command
+
+  @spec put_action_policy(Command.t(), map()) :: Command.t()
+  defp put_action_policy(command, policy) do
+    if Checkpoint.validate_value(policy) != :ok,
+      do: raise(ArgumentError, "handle_action policy must be portable")
+
+    %{command | opts: Keyword.put(command.opts, :action_policy, policy)}
+  end
 
   defp validate_tool_state!(state) do
     if map_size(state.tool_bindings) > 0 do
@@ -1120,7 +1803,7 @@ defmodule Spectre.Server.Runtime do
     newer? = Map.get(event, :sequence, 0) > Map.get(pending, :shown_at_sequence, 0)
     different? = event.id != event_id(pending.origin)
 
-    snapshot_valid? and newer? and different?
+    snapshot_valid? and newer? and different? and not Map.get(event, :delegated, false)
   end
 
   defp execute(state, %Command{kind: :no_response}, _event), do: state
@@ -1165,7 +1848,7 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp execute(state, %Command{kind: kind, args: args, opts: opts}, event)
-       when kind in [:generate, :classify, :propose, :call_actor] do
+       when kind in [:generate, :classify, :propose, :call_actor, :delegate, :delegate_route] do
     worker(state, kind, Keyword.get(opts, :on_result, kind), event, opts, fn ->
       run_command(state, kind, args, opts, event)
     end)
@@ -1297,6 +1980,20 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
+  defp run_command(state, :delegate, [id, input], _opts, _event),
+    do: Skills.dispatch(state.skill_supervisor, id, state.active_command, input, nil)
+
+  defp run_command(state, :delegate_route, [id], _opts, event) do
+    dispatch = %{
+      key: event.routing.route_key,
+      routing: event.routing,
+      memory: Map.get(event, :memory),
+      received_at: event.received_at
+    }
+
+    Skills.dispatch(state.skill_supervisor, id, state.active_command, event.input, dispatch)
+  end
+
   defp run_command(_state, :call_actor, [actor, request], opts, _event) do
     GenServer.call(actor, request, Keyword.get(opts, :timeout, 30_000))
   catch
@@ -1305,7 +2002,12 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp run_command(state, :propose, [operation, args], opts, event) do
-    bridge(state, :propose, [operation, args, service_context(state, event), opts])
+    context =
+      state
+      |> service_context(event)
+      |> Map.put(:external_submission, Keyword.get(opts, :external_submission))
+
+    bridge(state, :propose, [operation, args, context, opts])
   end
 
   defp run_command(state, kind, [value], opts, event) do
@@ -1348,7 +2050,10 @@ defmodule Spectre.Server.Runtime do
     bridge(state, action, [
       pending,
       if(event, do: event.input),
-      service_context(state, event),
+      Map.merge(service_context(state, event), %{
+        consent_proof: if(event, do: Map.get(event, :consent_proof)),
+        consent_source_digest: if(event, do: Map.get(event, :consent_source_digest))
+      }),
       opts
     ])
   end
@@ -1371,12 +2076,13 @@ defmodule Spectre.Server.Runtime do
       server: state.server,
       runtime: state.runtime_pid,
       identity: state.identity,
+      skill: Keyword.get(state.opts, :skill),
       assigns: state.assigns,
       input: if(event, do: event.input),
       interaction: event_id(event),
       received_at: if(event, do: Map.get(event, :received_at)),
       event_sequence: if(event, do: Map.get(event, :sequence)),
-      routing: if(event, do: event.routing, else: %{}),
+      routing: Skills.routing(state, event),
       history: state.history,
       memory: if(event, do: Map.get(event, :memory)),
       current_flow: state.current_flow,
@@ -1386,11 +2092,14 @@ defmodule Spectre.Server.Runtime do
         Keyword.drop(state.opts, [
           :agent,
           :server,
+          :skill_parent,
+          :skill_options,
           :identity,
           :assigns,
           :gam,
           :checkpoint,
           :consumer,
+          :submitters,
           :services,
           :name,
           :debug,
@@ -2018,7 +2727,7 @@ defmodule Spectre.Server.Runtime do
 
   defp mark_execution_started(state, id, entry) do
     if (governed?(entry.command.kind) and not local_reply_resume?(state, entry)) or
-         Tool.never?(entry.command) do
+         Tool.never?(entry.command) or entry.command.kind in [:delegate, :delegate_route] do
       entry = Map.put(entry, :execution_started, true)
       %{state | outbox: Map.put(state.outbox, id, entry)} |> Checkpoint.save()
     else
@@ -2157,6 +2866,9 @@ defmodule Spectre.Server.Runtime do
 
   defp tool_failure(%{tool_identity: %{retry: :never} = identity} = worker, reason),
     do: Tool.unknown(identity, worker.command_id, reason)
+
+  defp tool_failure(%{kind: kind} = worker, reason) when kind in [:delegate, :delegate_route],
+    do: {:skill_unknown, %{command_id: Map.get(worker, :command_id), reason: reason}}
 
   defp tool_failure(_worker, reason), do: {:error, reason}
 
@@ -2356,6 +3068,24 @@ defmodule Spectre.Server.Runtime do
       replayable_entry?(state, entry) ->
         execute_entries(state, [{id, entry}])
 
+      true ->
+        recover_started_entry(state, id, entry)
+    end
+  end
+
+  @spec recover_started_entry(map(), binary(), map()) :: map()
+  defp recover_started_entry(state, id, entry) do
+    cond do
+      entry.command.kind in [:delegate, :delegate_route] ->
+        worker = %{
+          kind: :delegate,
+          tag: Keyword.get(entry.command.opts, :on_result, :delegate),
+          event: entry.event,
+          command_id: id
+        }
+
+        receive_result(state, worker, {:skill_unknown, %{command_id: id, reason: :interrupted}})
+
       Tool.never?(entry.command) ->
         [identity, _args] = entry.command.args
 
@@ -2446,6 +3176,9 @@ defmodule Spectre.Server.Runtime do
 
   defp recover_idle_current(state, :commands), do: finish(state)
   defp recover_idle_current(state, _phase), do: start_input_preparation(state, state.current)
+
+  defp start_input_preparation(state, %{skill_dispatch: _} = event),
+    do: prepared_input(state, event)
 
   defp start_input_preparation(state, event) do
     worker(state, :prepare_input, nil, event, [], fn -> prepare_input_result(state, event) end)
