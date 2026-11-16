@@ -115,9 +115,5 @@ defmodule Spectre.Instance.Erasure.Request do
   defp non_negative(_value, field),
     do: {:error, {:invalid_instance_erasure_request_field, field}}
 
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :tuple, :atom])
 end

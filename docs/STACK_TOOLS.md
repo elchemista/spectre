@@ -282,4 +282,4 @@ The tuple carries library operation arguments and options. `on_result` and
 hits with source/id/record; `recall` returns a richer packet. Writes require their
 own Stack `bind:` entries and allowed GAM operations; mounting a Skill also requires
 the matching `governed:` allowance. Read helpers do not reinforce graph/attention
-or reveal secrets. See [Mnemonic's complete operation catalogue](https://github.com/elchemista/spectre_mnemonic/blob/feature/stack-tools-0.4/README.md#choosing-a-memory-operation-in-an-agentserver).
+or reveal secrets. See [Mnemonic's complete operation catalogue](https://github.com/elchemista/spectre_mnemonic/blob/feature/stack-tools-0.4/docs/AGENT_SERVER.md).

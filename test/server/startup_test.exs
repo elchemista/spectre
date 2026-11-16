@@ -24,7 +24,7 @@ defmodule Spectre.Server.StartupTest do
     assert :sys.get_state(server).server == Callback
 
     assert {:ok, direct} = Spectre.summon(agent: Definition, consumer: self())
-    on_exit(fn -> if Process.alive?(direct), do: GenServer.stop(direct) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(direct) end)
     assert :sys.get_state(direct).server == Callback
   end
 end

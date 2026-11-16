@@ -48,7 +48,7 @@ defmodule Spectre.Governance.Review do
          all_new = supplied ++ [delta_receipt],
          {:ok, new_refs} <- publish_receipts(store, all_new, opts),
          refs = Enum.uniq(governance.gate_receipt_refs ++ new_refs),
-         {:ok, stored_receipts} <- fetch_receipts(store, refs, opts),
+         {:ok, stored_receipts} <- Store.fetch_gate_receipts(store, refs, store_opts(opts)),
          {:ok, state} <- gate_state(governance, stored_receipts, opts),
          {:ok, parent_artifact} <- fetch_definition(store, governance.parent_definition_ref, opts),
          {:ok, candidate_artifact} <-
@@ -174,20 +174,6 @@ defmodule Spectre.Governance.Review do
     end)
   end
 
-  defp fetch_receipts(store, refs, opts) do
-    Enum.reduce_while(refs, {:ok, []}, fn ref, {:ok, receipts} ->
-      case Store.fetch_gate_receipt(store, ref, store_opts(opts)) do
-        {:ok, receipt} -> {:cont, {:ok, [receipt | receipts]}}
-        :not_found -> {:halt, {:error, {:gate_receipt_not_found, ref}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> then(fn
-      {:ok, receipts} -> {:ok, Enum.reverse(receipts)}
-      {:error, _reason} = error -> error
-    end)
-  end
-
   defp gate_state(governance, receipts, opts) do
     grouped = Enum.group_by(receipts, & &1.gate_class)
 
@@ -276,8 +262,5 @@ defmodule Spectre.Governance.Review do
   defp store_opts(opts),
     do: Keyword.take(opts, [:checkpoint_store, :component_registry, :now])
 
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :tuple])
 end

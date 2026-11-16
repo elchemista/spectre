@@ -22,6 +22,7 @@ defmodule Spectre.GAM.Domain.Transaction do
   alias Spectre.GAM.Attempt.Reconciler
   alias Spectre.GAM.Clock.Guard, as: ClockGuard
   alias Spectre.GAM.Domain.{Bootstrap, Recovery}
+  alias Spectre.GAM.Domain.Projection.{Persistence, Replay, WorkingSet}
   alias Spectre.GAM.Domain.Sequencer.State
   alias Spectre.GAM.GovernedAct.Commit
   alias Spectre.GAM.GovernedAct.State, as: GovernedState
@@ -76,9 +77,10 @@ defmodule Spectre.GAM.Domain.Transaction do
     latest_recorded_at = latest_recorded_at(state.projection)
 
     if recorded_at >= latest_recorded_at do
-      with {:ok, prepared} <-
-             Commit.prepare(state.projection, batch_id, payloads, recorded_at),
-           {:ok, confirmed} <- append_exact_at(state, prepared, state.ambiguous_retries) do
+      with {:ok, prefix, prepared} <-
+             prepare_commit(state, batch_id, payloads, recorded_at),
+           {:ok, confirmed} <-
+             append_exact_at(%{state | projection: prefix}, prepared, state.ambiguous_retries) do
         # The verified batch is durable even if a later repair fails. Hints
         # describe committed history, never successful completion of a command.
         Spectre.GAM.Domain.Notifications.committed(confirmed.domain_ref, confirmed.revision)
@@ -96,6 +98,23 @@ defmodule Spectre.GAM.Domain.Transaction do
          recorded_at
        ),
        do: {:error, {:invalid_recorded_at, recorded_at}}
+
+  defp prepare_commit(state, batch_id, payloads, recorded_at) do
+    with {:ok, prefix} <- load_commit_prefix(state, batch_id, payloads, recorded_at),
+         {:ok, prepared} <- Commit.prepare(prefix, batch_id, payloads, recorded_at),
+         do: {:ok, prefix, prepared}
+  catch
+    {:projection_not_loaded, query} -> {:error, {:projection_not_loaded, query}}
+  end
+
+  defp load_commit_prefix(%{projection_store: nil} = state, _, _, _),
+    do: {:ok, state.projection}
+
+  defp load_commit_prefix(state, batch_id, payloads, recorded_at) do
+    with {:ok, projection} <- WorkingSet.extend(state, payloads, recorded_at) do
+      WorkingSet.include_batch(%{state | projection: projection}, batch_id)
+    end
+  end
 
   defp append_exact_at(
          state,
@@ -160,15 +179,21 @@ defmodule Spectre.GAM.Domain.Transaction do
 
   @doc "Materializes every Duty required by the current prefix, retrying CAS conflicts."
   @spec repair_missing_duties(State.t()) :: {:ok, GovernedState.t()} | {:error, term()}
+  def repair_missing_duties(%State{projection_store: store, working_time: nil} = state)
+      when not is_nil(store) do
+    with {:ok, loaded} <- WorkingSet.load(state, :repair),
+         do: repair_missing_duties(loaded)
+  end
+
   def repair_missing_duties(%State{} = state) do
     with {:ok, now} <- trusted_recorded_at(state) do
       repair_missing_duties(state, now, state.conflict_retries, @max_duty_repair_rounds)
     end
+  catch
+    {:projection_not_loaded, query} -> {:error, {:projection_not_loaded, query}}
   end
 
-  defp repair_missing_duties(state, now, conflicts_left, rounds_left) do
-    projection = state.projection
-
+  defp repair_missing_duties(%{projection: projection} = state, now, conflicts_left, rounds_left) do
     with {:ok, plan} <- Reconciler.repair_plan(projection, now) do
       cond do
         plan.payloads == [] ->
@@ -178,13 +203,7 @@ defmodule Spectre.GAM.Domain.Transaction do
           {:error, :duty_repair_rounds_exhausted}
 
         true ->
-          commit_duty_repair(
-            %{state | projection: projection},
-            plan,
-            conflicts_left,
-            now,
-            rounds_left
-          )
+          commit_duty_repair(state, plan, conflicts_left, now, rounds_left)
       end
     end
   end
@@ -249,22 +268,41 @@ defmodule Spectre.GAM.Domain.Transaction do
   end
 
   defp recover_after_append(state, prepared) do
-    result =
-      with {:ok, projection} <-
-             Recovery.confirm_prepared(
-               state.store,
-               state.projection,
-               prepared,
-               state.ledger_opts,
-               &verify_recovered_payloads(state.payload_store, &1, &2)
-             ),
-           :ok <- verify_projection(state, projection) do
-        {:ok, projection}
-      end
-
-    case result do
-      {:ok, projection} -> {:ok, projection}
+    with {:ok, projection} <-
+           Recovery.confirm_prepared(
+             state.store,
+             state.projection,
+             prepared,
+             state.ledger_opts,
+             &PayloadStore.verify_references(state.payload_store, &1, &2),
+             projection_resume(state)
+           ),
+         {:ok, projection} <- persist_confirmed(state, projection) do
+      {:ok, projection}
+    else
       {:error, reason} -> {:error, {:durable_recovery_failed, reason}}
+    end
+  catch
+    {:projection_not_loaded, query} ->
+      {:error, {:durable_recovery_failed, {:projection_not_loaded, query}}}
+  end
+
+  defp persist_confirmed(state, {:persisted, projection}) do
+    with :ok <- verify_projection(state, projection), do: {:ok, projection}
+  end
+
+  defp persist_confirmed(state, projection) do
+    with :ok <- verify_projection(state, projection),
+         :ok <- Persistence.advance(state, projection),
+         do: {:ok, projection}
+  end
+
+  defp projection_resume(%{projection_store: nil}), do: nil
+
+  defp projection_resume(state) do
+    fn ->
+      with {:ok, projection} <- Replay.resume(state),
+           do: {:ok, {:persisted, projection}}
     end
   end
 
@@ -280,17 +318,28 @@ defmodule Spectre.GAM.Domain.Transaction do
   @doc "Recovers and verifies the durable projection without adding repair events."
   @spec recover_verified(State.t()) ::
           {:ok, GovernedState.t()} | {:error, term()}
+  def recover_verified(%{projection_store: store} = state) when not is_nil(store) do
+    with {:ok, projection} <- Replay.resume(state),
+         :ok <- verify_projection(state, projection),
+         :ok <-
+           PayloadStore.verify_references(
+             state.payload_store,
+             projection,
+             MapSet.to_list(projection.read_index.payload_refs)
+           ) do
+      {:ok, projection}
+    end
+  end
+
   def recover_verified(state) do
     case Recovery.resume(
            state.store,
            state.projection,
            state.ledger_opts,
-           &verify_recovered_payloads(state.payload_store, &1, &2)
+           &PayloadStore.verify_references(state.payload_store, &1, &2)
          ) do
       {:ok, projection} ->
-        with :ok <- verify_projection(state, projection) do
-          {:ok, projection}
-        end
+        persist_confirmed(state, projection)
 
       :not_found ->
         {:error, :domain_ledger_disappeared}
@@ -302,10 +351,6 @@ defmodule Spectre.GAM.Domain.Transaction do
 
   defp verify_projection(state, projection) do
     Bootstrap.verify_extension(state.projection, projection, State.verification_opts(state))
-  end
-
-  defp verify_recovered_payloads(store, projection, refs) do
-    PayloadStore.verify_references(store, projection, refs)
   end
 
   @doc "Checks content references carried by a list of canonical event envelopes."
@@ -343,6 +388,8 @@ defmodule Spectre.GAM.Domain.Transaction do
 
   @doc "Returns monotonic ledger time relative to the recovered prefix."
   @spec trusted_recorded_at(State.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def trusted_recorded_at(%State{working_time: now}) when is_integer(now), do: {:ok, now}
+
   def trusted_recorded_at(%State{} = state) do
     with {:ok, now} <- trusted_now(state.clock),
          :ok <- ClockGuard.validate(state.clock_guard, now),

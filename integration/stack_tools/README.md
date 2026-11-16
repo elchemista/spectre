@@ -80,3 +80,14 @@ through the root consumer and asserts the email and save Acts plus Skill
 invocation Evidence in that one projection. See the [Skill ownership and consent
 contract](../../docs/SKILLS.md) for the concurrent two-Skill case exercised by the
 [LiveView demo](../../docs/DEMO.md).
+
+## OTP process and CPU profile
+
+Run `ERL_FLAGS='+S 4:4' mix run bench/profile_stack.exs` in this directory.
+The isolated developer probe executes the same four integration scenarios,
+including the Skill flow, and samples all live BEAM processes every 50 ms.
+It writes per-process reductions/memory/mailbox observations and `:eprof` call
+costs to `/tmp/spectre-stack-profile` (override with `PROFILE_OUTPUT`). Fixtures
+simulate external providers; this does not profile remote services or prove
+unbounded uptime. Use Ledger's `bench/otp_profile.exs` separately for the sustained
+PostgreSQL approval-history load and post-GC/teardown measurements.

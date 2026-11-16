@@ -154,6 +154,22 @@ defmodule Spectre.GAM.Core.ConsequenceContractBoundaryTest do
     assert {:error, _} = Contract.validate(portable, self(), %{})
   end
 
+  test "static authoring may omit occurrence bindings but must honor supplied claims" do
+    {:ok, contract} = Contract.new(shape: %{"target" => "target_ref", "cost" => "meter_requests"})
+    consequence = %{"target" => "invoice", "cost" => %{"budget" => 2}}
+
+    assert :ok = Contract.validate_static(contract, consequence, %{})
+
+    assert :ok =
+             Contract.validate_static(contract, consequence, %{meter_requests: %{"budget" => 2}})
+
+    for claims <- [%{target_refs: ["another"]}, %{meter_requests: %{"budget" => 1}}] do
+      assert {:error, _} = Contract.validate_static(contract, consequence, claims)
+    end
+
+    assert {:error, _} = Contract.validate(contract, consequence, %{})
+  end
+
   defp boundary(:destination_refs, value),
     do: %{destination_refs: List.wrap(value), target_refs: List.wrap(value)}
 

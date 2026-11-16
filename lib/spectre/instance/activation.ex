@@ -384,11 +384,6 @@ defmodule Spectre.Instance.Activation do
   defp validate_non_negative(value, field),
     do: {:error, {:invalid_activation_field, field, value}}
 
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(value) when is_integer(value), do: :integer
-  defp shape(_value), do: :other
+  defp shape(value),
+    do: Spectre.ValueShape.of(value, [:binary, :map, :list, :tuple, :atom, :integer])
 end

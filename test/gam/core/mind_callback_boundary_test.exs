@@ -4,6 +4,7 @@ defmodule Spectre.GAM.MindCallbackBoundaryTest do
   use Spectre.GAM.Test.GovernedBoundaryCase, async: false
 
   alias Spectre.GAM.{Candidate, Disclosure, Mind, SubmissionContext}
+  alias Spectre.GAM.Domain.{Configuration, Command.Input, Sequencer.State}
   alias Spectre.GAM.Mind.{Derivation, Turn}
   alias Spectre.GAM.V04Test.{Fixture, Runtime}
 
@@ -19,7 +20,11 @@ defmodule Spectre.GAM.MindCallbackBoundaryTest do
       end
     end
 
-    def deliberate(_turn, _state, opts), do: Keyword.get(opts, :reply, :invalid)
+    def deliberate(turn, _state, opts) do
+      if Keyword.has_key?(opts, :fault),
+        do: deliberate(turn, opts),
+        else: Keyword.get(opts, :reply, :invalid)
+    end
   end
 
   defmodule InvalidRef do
@@ -51,6 +56,9 @@ defmodule Spectre.GAM.MindCallbackBoundaryTest do
     for {fault, tag} <- [raise: ArgumentError, exit: :exit, throw: :throw] do
       assert {:error, {:mind_failed, ReplyMind, ^tag}} =
                Mind.deliberate(ReplyMind, c.turn, fault: fault)
+
+      assert {:error, {:mind_failed, ReplyMind, ^tag}} =
+               Mind.deliberate(ReplyMind, c.turn, %{}, fault: fault)
     end
 
     assert {:error, {:invalid_mind_result, ReplyMind}} =
@@ -58,6 +66,9 @@ defmodule Spectre.GAM.MindCallbackBoundaryTest do
 
     assert {:error, {:invalid_stateful_mind_result, ReplyMind}} =
              Mind.deliberate(ReplyMind, c.turn, %{}, [])
+
+    assert {:error, :provider_unavailable} =
+             Mind.deliberate(ReplyMind, c.turn, %{}, reply: {:error, :provider_unavailable})
 
     assert {:error, :invalid_mind_deliberation} = Mind.deliberate(nil, c.turn)
     assert {:error, :invalid_stateful_mind_deliberation} = Mind.deliberate(nil, c.turn, %{}, [])
@@ -114,6 +125,24 @@ defmodule Spectre.GAM.MindCallbackBoundaryTest do
 
     assert {:error, :invalid_turn_seal_material} = Turn.seal(nil, "secret")
     assert {:error, :turn_authentication_failed} = Turn.verify_seal(c.turn, "secret")
+  end
+
+  test "restored valid Turn seals do not waive Mind, time or immutable Evidence bindings", c do
+    {:ok, config} = Configuration.new(c.f.sequencer_opts)
+    state = %{State.new(config, c.attempted) | mind_ref: c.turn.mind_ref}
+    context = Fixture.context(c.f)
+
+    for {changed, reason} <- [
+          {%{c.turn | mind_ref: "mind:another"}, :turn_mind_mismatch},
+          {%{c.turn | opened_at: Runtime.now() + 1}, :turn_time_invalid},
+          {%{c.turn | evidence: [%{c.payment | payload: "substitution"}]},
+           :turn_evidence_mismatch}
+        ] do
+      {:ok, changed} = Turn.seal(changed, state.grant_secret)
+      assert {:error, ^state, ^reason} = Input.continue_turn(state, context, changed, [])
+    end
+
+    assert Spectre.GAM.Domain.Sequencer.projection(c.f.server) === c.attempted
   end
 
   test "derived evidence is tied to this Turn and cannot be duplicated or masquerade as an observation",

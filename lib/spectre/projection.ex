@@ -153,12 +153,7 @@ defmodule Spectre.Projection do
   defp valid_digest?(_digest), do: false
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :binary, :list, :tuple, :atom])
 
   @spec validate_generator(module()) :: :ok | {:error, term()}
   defp validate_generator(generator) do

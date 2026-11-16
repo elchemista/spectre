@@ -8,6 +8,7 @@ defmodule Spectre.GAM.Erasure.Analysis do
   """
 
   alias Spectre.GAM.{Erasure, Portable}
+  alias Spectre.GAM.GovernedAct.Reads, as: Selection
   alias Spectre.GAM.Erasure.Analysis.{Closure, Execution, Facts}
   alias Spectre.GAM.Erasure.Index
   alias Spectre.GAM.GovernedAct.State
@@ -44,10 +45,6 @@ defmodule Spectre.GAM.Erasure.Analysis do
 
   def derive_request(_input, _target_ref, _scope_ref, _reason, _requested_at),
     do: {:error, :invalid_erasure_analysis}
-
-  @doc false
-  def request_attrs(input, target_ref, scope_ref, reason, requested_at),
-    do: derive_request(input, target_ref, scope_ref, reason, requested_at)
 
   @doc "Checks a supplied draft against the closure derivable at this exact prefix."
   @spec validate_request(input(), Erasure.t() | map() | keyword()) ::
@@ -102,6 +99,13 @@ defmodule Spectre.GAM.Erasure.Analysis do
   def execution_state(input, target_ref) when is_binary(target_ref) do
     with {:ok, facts} <- Facts.coerce(input),
          {:ok, _digest} <- payload_digest(target_ref) do
+      if facts.availability_index,
+        do:
+          Selection.ensure(
+            facts.availability_index.selection,
+            {:row, :erasure_states, target_ref}
+          )
+
       if indexed?(facts),
         do: {:ok, Map.get(facts.availability_index.states, target_ref, :live)},
         else: {:ok, Execution.state(facts, target_ref)}
@@ -134,7 +138,11 @@ defmodule Spectre.GAM.Erasure.Analysis do
 
   @doc "Returns the Evidence records that remain valid inputs after erasure."
   @spec available_evidence(input()) :: %{optional(String.t()) => Spectre.GAM.Evidence.t()}
-  def available_evidence(%State{erasures: erasures, evidence: evidence})
+  def available_evidence(%State{
+        erasures: erasures,
+        evidence: evidence,
+        read_index: %{selection: nil}
+      })
       when map_size(erasures) == 0, do: evidence
 
   def available_evidence(input) do
@@ -165,6 +173,15 @@ defmodule Spectre.GAM.Erasure.Analysis do
     do: {:error, :invalid_evidence_availability_check}
 
   defp indexed?(%Facts{availability_index: nil}), do: false
+
+  defp indexed?(%Facts{availability_index: %{selection: reads}} = facts) when not is_nil(reads) do
+    Enum.each(facts.evidence, fn {ref, _} ->
+      Selection.ensure(reads, {:row, :unavailable_evidence, ref})
+    end)
+
+    true
+  end
+
   defp indexed?(facts), do: Index.complete?(facts.availability_index, facts)
 
   defp unavailable(facts) do

@@ -16,14 +16,28 @@ defmodule Spectre.Server.Store.Port do
 
   def delete(store, key, revision), do: invoke(store, :delete, [key, revision])
 
-  defp invoke({:store, module, reference}, function, args) when is_atom(module),
-    do: apply(module, function, [reference | args])
+  @doc "Reads a namespace page when the selected adapter supports listing."
+  def list(store, prefix, opts \\ []) do
+    {module, reference} = adapter(store)
 
-  defp invoke({module, reference} = store, function, args) when is_atom(module) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :fetch, 2),
-      do: apply(module, function, [reference | args]),
-      else: apply(Disk, function, [store | args])
+    if Code.ensure_loaded?(module) and function_exported?(module, :list, 3),
+      do: module.list(reference, prefix, opts),
+      else: {:error, :store_list_unavailable}
   end
 
-  defp invoke(store, function, args), do: apply(Disk, function, [store | args])
+  @doc false
+  def adapter({:store, module, reference}) when is_atom(module), do: {module, reference}
+
+  def adapter({module, reference} = store) when is_atom(module) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :fetch, 2),
+      do: {module, reference},
+      else: {Disk, store}
+  end
+
+  def adapter(store), do: {Disk, store}
+
+  defp invoke(store, function, args) do
+    {module, reference} = adapter(store)
+    apply(module, function, [reference | args])
+  end
 end

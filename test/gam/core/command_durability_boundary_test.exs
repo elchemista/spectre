@@ -22,7 +22,11 @@ defmodule Spectre.GAM.CommandDurabilityBoundaryTest do
     mock = start_supervised!({Mock, store: c.f.store_config})
 
     {:ok, config} =
-      Configuration.new(Keyword.put(c.f.sequencer_opts, :store, {Mock, server: mock}))
+      Configuration.new(
+        c.f.sequencer_opts
+        |> Keyword.put(:store, {Mock, server: mock})
+        |> Keyword.put(:projection_store, nil)
+      )
 
     %{state: State.new(config, c.attempted), mock: mock}
   end

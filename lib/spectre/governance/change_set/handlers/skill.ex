@@ -233,31 +233,11 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
     definition
     |> SkillDefinition.works()
     |> Enum.reduce_while(:ok, fn program, :ok ->
-      checks = [
-        {:cost, :max_cost},
-        {:duration_ms, :max_duration_ms},
-        {:pages, :max_pages}
-      ]
-
-      case Enum.find_value(checks, &budget_excess(program, authority, &1)) do
-        nil -> {:cont, :ok}
-        reason -> {:halt, {:error, reason}}
+      case Spectre.Execution.Admission.budget_authority(authority, program) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
       end
     end)
-  end
-
-  defp budget_excess(program, authority, {budget_field, authority_field}) do
-    case Map.fetch(authority.limits, authority_field) do
-      :error ->
-        nil
-
-      {:ok, ceiling} ->
-        requested = Map.get(program.budget, budget_field)
-
-        if is_number(requested) and requested <= ceiling,
-          do: nil,
-          else: {:execution_budget_not_authorized, program.id, budget_field, requested, ceiling}
-    end
   end
 
   defp authorize_applicability(definition, context, mount_id) do
@@ -533,9 +513,5 @@ defmodule Spectre.Governance.ChangeSet.Handlers.Skill do
     if Map.has_key?(map, string), do: Map.put(map, string, value), else: Map.put(map, key, value)
   end
 
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :binary, :tuple])
 end

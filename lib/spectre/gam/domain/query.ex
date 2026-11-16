@@ -31,6 +31,14 @@ defmodule Spectre.GAM.Domain.Query do
   defp read(state, scope, :view),
     do: ScopeView.from_projection(state.projection, Spectre.GAM.Scope.ref(scope))
 
+  defp read(state, scope, {:selected_view, _refs}),
+    do: ScopeView.from_projection(state.projection, Spectre.GAM.Scope.ref(scope))
+
+  defp read(state, scope, {:evidence_proposition, proposition}) do
+    with {:ok, view} <- ScopeView.from_projection(state.projection, Spectre.GAM.Scope.ref(scope)),
+         do: {:ok, Enum.filter(view.evidence, &(&1.proposition === proposition))}
+  end
+
   defp read(state, scope, {:diagnostics, opts}),
     do: Spectre.GAM.Scope.Diagnostics.page(state.projection, Spectre.GAM.Scope.ref(scope), opts)
 

@@ -254,9 +254,5 @@ defmodule Spectre.AgentRef do
   defp legacy_source_available(%__MODULE__{}),
     do: {:error, :legacy_agent_ref_source_unavailable}
 
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :binary, :tuple])
 end

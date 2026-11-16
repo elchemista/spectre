@@ -145,11 +145,11 @@ defmodule Spectre.GAM.Core.DutyTargetAuthorityTest do
       facts = Facts.for_candidate(c.state, candidate)
       # Existing exact-target coverage remains ordinary authority, so this
       # assertion exercises only shapes outside the original target list.
-      if targets not in [[], [c.operation.ref]] do
+      if targets in [[], [c.operation.ref]] do
+        refute targets == [c.duty.ref]
+      else
         assert {:error, {:targets, :outside_mandate}} =
                  Coverage.covered_values(:targets, candidate, c.review, facts)
-      else
-        refute targets == [c.duty.ref]
       end
     end
 

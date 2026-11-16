@@ -22,6 +22,7 @@ defmodule Spectre.GAM.Duty.Frontier do
   }
 
   alias Spectre.GAM.Duty.Derive.Outcome, as: OutcomeCause
+  alias Spectre.GAM.GovernedAct.Reads
 
   defstruct by_ref: %{},
             pending: %{},
@@ -53,6 +54,8 @@ defmodule Spectre.GAM.Duty.Frontier do
 
     state = subscribe(state, outcome.act_ref, outcome.evidence_refs)
     state = derive_attempt(state, outcome.attempt_ref, state.recorded_at)
+
+    Reads.group(state.read_index.selection, :act_erasures, outcome.act_ref)
 
     erasures =
       Map.get(frontier.erasures_by_act, outcome.act_ref, MapSet.new()) |> MapSet.to_list()
@@ -155,12 +158,16 @@ defmodule Spectre.GAM.Duty.Frontier do
   end
 
   defp derive_scope_boundary(state) do
+    Reads.group(state.read_index.selection, :scope_deadlines, state.recorded_at)
+
     state.read_index.duties.scopes_by_deadline
     |> Map.get(state.recorded_at, MapSet.new())
     |> Enum.reduce(state, &derive_deadline(&2, :scope, &1, state.recorded_at))
   end
 
   defp derive_attempt(state, ref, time) do
+    Reads.group(state.read_index.selection, :attempt_outcomes, ref)
+
     refs =
       state.read_index.duties.outcomes_by_attempt
       |> Map.get(ref, MapSet.new())
@@ -190,6 +197,7 @@ defmodule Spectre.GAM.Duty.Frontier do
 
   defp derive_evidence(state, ref, time) do
     evidence = Map.fetch!(state.evidence, ref)
+    Reads.group(state.read_index.selection, :evidence_subscriptions, evidence.proposition)
 
     acts =
       state.read_index.duties.subscriptions
@@ -198,6 +206,8 @@ defmodule Spectre.GAM.Duty.Frontier do
 
     outcomes =
       Enum.flat_map(acts, fn act_ref ->
+        Reads.group(state.read_index.selection, :act_outcomes, act_ref)
+
         state.read_index.duties.outcomes_by_act
         |> Map.get(act_ref, MapSet.new())
         |> MapSet.to_list()

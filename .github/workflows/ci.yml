@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/agent-server-gam
   pull_request:
   workflow_dispatch:
 
@@ -19,10 +20,51 @@ env:
   OTP_VERSION: "28.x"
 
 jobs:
+  stack-tools:
+    name: Nine-package AgentServer integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      MIX_ENV: test
+      ERL_FLAGS: "+S 4:4"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Check out core candidate
+        uses: actions/checkout@v6
+        with:
+          path: spectre
+          persist-credentials: false
+
+      - name: Check out compatible satellites
+        run: |
+          for package in beam directive kinetic ledger lab lens mnemonic prism pulse; do
+            ref=feature/stack-tools-0.4
+            if [ "$package" = lab ]; then ref=feature/diagnostics-0.4; fi
+            git clone --depth 1 --branch "$ref" "https://github.com/elchemista/spectre_$package.git" "spectre_$package"
+          done
+
+      - name: Set up Elixir and Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+
+      - name: Compile and test the complete Stack
+        working-directory: spectre/integration/stack_tools
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+          mix test --max-cases 4
+
   quality:
     name: Quality (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +109,29 @@ jobs:
         run: mix compile --warnings-as-errors
 
       - name: Run tests
-        run: mix test ${{ matrix.test_args }}
+        run: |
+          if [ "${{ matrix.test_args }}" = "--cover" ]; then
+            mix test --cover --export-coverage ram
+            SPECTRE_TEST_PROJECTION=1 mix test test/gam --cover --export-coverage projection
+          else
+            mix test
+            SPECTRE_TEST_PROJECTION=1 mix test test/gam
+          fi
+
+      - name: Cover the native PostgreSQL integration
+        if: matrix.test_args == '--cover'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          export PATH="$(pg_config --bindir):$PATH"
+          git clone --depth 1 --branch feature/stack-tools-0.4 https://github.com/elchemista/spectre_ledger.git ../spectre_ledger
+          cd ../spectre_ledger
+          export SPECTRE_PATH="$GITHUB_WORKSPACE"
+          export SPECTRE_CORE_COVERAGE_DIR="$GITHUB_WORKSPACE/cover"
+          mix deps.get
+          mix test test/postgres_server_store_test.exs --cover --export-coverage postgres
+          cd "$GITHUB_WORKSPACE"
+          mix test.coverage
 
       - name: Run Credo
         run: mix credo

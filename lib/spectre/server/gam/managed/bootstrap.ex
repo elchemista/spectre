@@ -13,11 +13,13 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
 
   alias Spectre.Server.GAM.Managed.{
     Authority,
+    Approval,
     Binding,
     Broker,
     Executor,
     Gate,
     Ingress,
+    LedgerStorage,
     Mind,
     Reviewer,
     StorageLock
@@ -33,37 +35,99 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
   @doc false
   @spec open(keyword(), pid()) :: {:ok, map()} | {:error, term()}
   def open(opts, owner) do
-    with {:ok, opts} <- Reviewer.normalize(opts),
+    with {:ok, policy} <- Spectre.GAM.Domain.Recovery.Policy.normalize(opts[:recovery_policy]),
+         opts = Keyword.put(opts, :recovery_policy, policy),
+         {:ok, opts} <- Reviewer.normalize(opts),
+         {:ok, opts} <- Approval.normalize(opts),
+         {:ok, _} <- Spectre.Payload.Store.normalize(opts[:payload_store]),
          :ok <- configuration(opts),
          :ok <- coherent_storage(opts),
          operations when is_map(operations) <- Keyword.get(opts, :operations, %{}),
          {:ok, effects} <- effects(opts[:agent], operations),
+         :ok <- validate_approvers(opts, effects),
          :ok <- Binding.validate_overrides(effects, Keyword.get(opts, :bindings, %{})),
-         {:ok, storage} <- storage(opts, effects),
-         {:ok, host} <- foundation(opts, storage, effects),
-         {:ok, gate} <- gate(opts, owner, host),
-         {:ok, domain} <- domain(host, gate, owner, opts),
-         :ok <- verify_foundation(domain, host),
-         {:ok, context} <-
-           Sequencer.authenticate(domain, host.refs.scope, %{gate: gate, token: host.token}),
-         {:ok, scope} <- open_scope(domain, host, context),
-         {:ok, reviewer} <- Reviewer.open(domain, host, owner, opts) do
-      {:ok,
-       Map.merge(host, %{
-         scope: scope,
-         reviewer: reviewer,
-         owned: host.owned ++ if(reviewer, do: [reviewer.gate], else: []),
-         domain: domain,
-         gate: gate,
-         effects: effects,
-         operations: operations,
-         options: opts,
-         owner: owner
-       })}
+         {:ok, storage} <- storage(opts, effects) do
+      open_storage(storage, opts, owner, effects, operations)
     else
       {:error, _} = error -> error
       _ -> {:error, :invalid_managed_gam_configuration}
     end
+  end
+
+  defp open_storage(storage, opts, owner, effects, operations) do
+    case foundation(opts, storage, effects) do
+      {:ok, host} ->
+        host =
+          host
+          |> payload_journal(opts)
+          |> Map.merge(%{
+            options: opts,
+            owner: owner,
+            effects: effects,
+            operations: operations
+          })
+
+        open_host(host, opts, owner)
+
+      error ->
+        close_resources(storage)
+        error
+    end
+  end
+
+  defp open_host(host, opts, owner) do
+    with {:ok, host} <- start_resource(host, :gate, fn -> gate(opts, owner, host) end),
+         {:ok, host} <-
+           start_resource(host, :domain, fn -> domain(host, host.gate, owner, opts) end),
+         do: finish_host(host)
+  end
+
+  defp start_resource(host, key, start) do
+    case start.() do
+      {:ok, resource} ->
+        {:ok, Map.put(host, key, resource)}
+
+      error ->
+        close_resources(host)
+        error
+    end
+  end
+
+  defp finish_host(host) do
+    result =
+      with :ok <- verify_foundation(host.domain, host),
+           :ok <- LedgerStorage.ready(host),
+           {:ok, context} <-
+             Sequencer.authenticate(host.domain, host.refs.scope, %{
+               gate: host.gate,
+               token: host.token
+             }),
+           {:ok, scope} <- open_scope(host.domain, host, context),
+           {:ok, reviewer} <- Reviewer.open(host.domain, host, host.owner, host.options) do
+        {:ok,
+         Map.merge(host, %{
+           scope: scope,
+           reviewer: reviewer,
+           owned: host.owned ++ if(reviewer, do: [reviewer.gate], else: [])
+         })}
+      end
+
+    if match?({:error, _}, result), do: close_resources(host)
+    result
+  end
+
+  @doc false
+  def close_resources(host) do
+    for pid <- [Map.get(host, :domain), Map.get(host, :gate) | host.owned],
+        is_pid(pid) and Process.alive?(pid) do
+      try do
+        GenServer.stop(pid, :normal, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
+    :ok
   end
 
   @spec configuration(keyword()) :: :ok | {:error, atom()}
@@ -113,7 +177,7 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
   @spec coherent_storage(keyword()) :: :ok | {:error, atom()}
   defp coherent_storage(opts) do
     ephemeral? = Keyword.get(opts, :storage, :ephemeral) == :ephemeral
-    external_store? = Keyword.has_key?(opts, :store)
+    external_store? = not is_nil(Keyword.get(opts, :store))
     checkpoint? = not is_nil(Keyword.get(Keyword.get(opts, :options, []), :checkpoint))
 
     if ephemeral? and (external_store? or checkpoint?),
@@ -145,7 +209,7 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
 
   @spec validate_settings(term()) :: :ok | {:error, atom()}
   defp validate_settings(settings) when is_list(settings) do
-    allowed = [:confirm, :class, :message, :expires_in]
+    allowed = [:confirm, :class, :message, :expires_in, :approver]
 
     if Keyword.keyword?(settings) and
          length(Keyword.keys(settings)) == length(Enum.uniq(Keyword.keys(settings))) and
@@ -160,6 +224,26 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
 
   defp validate_settings(_), do: {:error, :invalid_managed_operation_options}
 
+  defp validate_approvers(opts, effects) do
+    Enum.reduce_while(effects, :ok, fn {_, entry}, :ok ->
+      ttl = entry.settings[:expires_in] || Keyword.get(opts, :consent_ttl_ms, 300_000)
+
+      case {Approval.approver(opts, entry.settings), entry.settings[:confirm], ttl} do
+        {{:ok, nil}, _, _} ->
+          {:cont, :ok}
+
+        {{:ok, _}, true, ttl} when is_integer(ttl) and ttl > 0 ->
+          {:cont, :ok}
+
+        {{:ok, _}, _, _} ->
+          {:halt, {:error, :external_approval_requires_finite_consent}}
+
+        {error, _, _} ->
+          {:halt, error}
+      end
+    end)
+  end
+
   @spec storage(keyword(), map()) :: {:ok, map()} | {:error, term()}
   defp storage(opts, effects) do
     domain =
@@ -169,8 +253,8 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
         "managed:" <> Value.digest!(%{agent: opts[:agent], identity: opts[:identity]})
       )
 
-    digest =
-      Value.digest!(%{
+    authority_profile =
+      %{
         domain: domain,
         identity: opts[:identity],
         reviewer_authority: Reviewer.authority(opts),
@@ -181,41 +265,78 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
           Map.new(effects, fn {op, value} ->
             {op, %{contract: value.effect.contract_ref, settings: value.settings}}
           end)
-      })
+      }
 
-    if is_binary(domain) and domain != "",
-      do: allocate_storage(Keyword.get(opts, :storage, :ephemeral), domain, digest, opts),
-      else: {:error, :invalid_managed_domain}
+    authority_profile =
+      case Approval.authority(opts) do
+        nil -> authority_profile
+        approval -> Map.put(authority_profile, :approval_authority, approval)
+      end
+
+    digest = Value.digest!(authority_profile)
+
+    with true <- is_binary(domain) and domain != "",
+         {:ok, journal} <- Spectre.Server.Store.Binding.configured(opts) do
+      if journal && Keyword.get(opts, :storage, :ephemeral) == :ephemeral do
+        {:error, :managed_ephemeral_storage_cannot_recover_external_state}
+      else
+        allocate_storage(
+          Keyword.get(opts, :storage, :ephemeral),
+          domain,
+          digest,
+          Keyword.put(opts, :resolved_store, journal)
+        )
+      end
+    else
+      false -> {:error, :invalid_managed_domain}
+      error -> error
+    end
   end
 
   @spec allocate_storage(term(), binary(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
   defp allocate_storage(:ephemeral, domain, digest, _opts) do
-    with {:ok, ledger} <- LedgerETS.start_link(),
-         {:ok, journal} <- Managed.Store.start_link([]) do
-      {:ok,
-       %{
-         domain: domain,
-         issued_at: System.system_time(:millisecond),
-         digest: digest,
-         ledger: ledger,
-         store: {LedgerETS, server: ledger},
-         journal: {Managed.Store, journal},
-         owned: [ledger, journal],
-         ephemeral: true
-       }}
+    with {:ok, ledger} <- LedgerETS.start_link() do
+      ephemeral_journal(ledger, domain, digest)
     end
   end
 
   defp allocate_storage({:disk, path}, domain, digest, opts) when is_binary(path),
     do: disk_storage(path, domain, digest, opts)
 
+  defp allocate_storage(:ledger, domain, digest, opts),
+    do: LedgerStorage.open(:ledger, opts[:resolved_store], domain, digest)
+
+  defp allocate_storage({:ledger, _} = selection, domain, digest, opts),
+    do: LedgerStorage.open(selection, opts[:resolved_store], domain, digest)
+
   defp allocate_storage(_, _, _, _), do: {:error, :invalid_managed_storage}
 
   @spec disk_storage(binary(), binary(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
+  defp ephemeral_journal(ledger, domain, digest) do
+    case Managed.Store.start_link([]) do
+      {:ok, journal} ->
+        {:ok,
+         %{
+           domain: domain,
+           issued_at: System.system_time(:millisecond),
+           digest: digest,
+           ledger: ledger,
+           store: {LedgerETS, server: ledger},
+           journal: {Managed.Store, journal},
+           owned: [ledger, journal],
+           ephemeral: true
+         }}
+
+      {:error, _} = error ->
+        GenServer.stop(ledger)
+        error
+    end
+  end
+
   defp disk_storage(path, domain, digest, opts) do
     with :ok <- File.mkdir_p(path),
          {:ok, lock} <- StorageLock.start_link(Keyword.put(opts, :path, path)) do
-      case locked_disk_storage(path, domain, digest, lock) do
+      case locked_disk_storage(path, domain, digest, lock, opts[:resolved_store]) do
         {:ok, _} = result ->
           result
 
@@ -226,14 +347,13 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
     end
   end
 
-  @spec locked_disk_storage(binary(), binary(), binary(), pid()) ::
+  @spec locked_disk_storage(binary(), binary(), binary(), pid(), term()) ::
           {:ok, map()} | {:error, term()}
-  defp locked_disk_storage(path, domain, digest, lock) do
+  defp locked_disk_storage(path, domain, digest, lock, selected) do
     with {:ok, ledger} <- LedgerDisk.start_link(path: Path.join(path, "gam")) do
       result =
         with {:ok, issued_at} <- initial_time(Path.join(path, "authority.profile"), digest),
-             {:ok, journal} <-
-               ServerDisk.start_link(path: Path.join(path, "commands.store")) do
+             {:ok, journal, owned} <- coordination_store(path, selected) do
           {:ok,
            %{
              domain: domain,
@@ -241,8 +361,8 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
              digest: digest,
              ledger: ledger,
              store: {LedgerDisk, server: ledger},
-             journal: {ServerDisk, journal},
-             owned: [ledger, journal, lock],
+             journal: journal,
+             owned: [ledger, lock] ++ owned,
              ephemeral: false
            }}
         end
@@ -257,6 +377,13 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
       end
     end
   end
+
+  defp coordination_store(path, nil) do
+    with {:ok, pid} <- ServerDisk.start_link(path: Path.join(path, "commands.store")),
+         do: {:ok, {ServerDisk, pid}, [pid]}
+  end
+
+  defp coordination_store(_path, selected), do: {:ok, selected, []}
 
   @spec initial_time(binary(), binary()) :: {:ok, integer()} | {:error, term()}
   defp initial_time(path, digest) do
@@ -407,8 +534,13 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
                source_ref: refs.genesis
              }),
            {:ok, reviewer_mandate} <- Reviewer.mandate(opts, refs, reviewer, mandate),
-           mandates = [mandate | List.wrap(reviewer_mandate)],
-           principals = [actor, accountable, Executor.principal(), reviewer],
+           {:ok, show_mandate} <- Approval.show_mandate(opts, mandate),
+           mandates = [mandate | List.wrap(reviewer_mandate) ++ List.wrap(show_mandate)],
+           principals =
+             Enum.uniq_by(
+               [actor, accountable, Executor.principal(), reviewer] ++ Approval.principals(opts),
+               & &1.ref
+             ),
            {:ok, genesis} <-
              GAM.Genesis.new(%{
                ref: refs.genesis,
@@ -428,6 +560,7 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
            refs: refs,
            row: row,
            mandate: mandate,
+           show_mandate: show_mandate,
            mandates: mandates,
            reviewer_principal: reviewer,
            reviewer_mandate: reviewer_mandate,
@@ -454,6 +587,20 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
       else: {:error, :invalid_managed_authorization_deadline}
   end
 
+  defp payload_journal(host, opts) do
+    case opts[:payload_store] do
+      nil ->
+        host
+
+      config ->
+        journal =
+          {Spectre.Server.Store.Payload,
+           %{store: host.journal, payload_store: config, domain: host.refs.domain}}
+
+        %{host | journal: journal}
+    end
+  end
+
   @spec gate(keyword(), pid(), map()) :: GenServer.on_start()
   defp gate(opts, owner, host) do
     Gate.start_link(%{
@@ -461,6 +608,10 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
       token: host.token,
       consumer: opts[:consumer],
       runtime: opts[:runtime],
+      runtime_control: opts[:runtime_control],
+      approvals: opts[:approvals],
+      store: host.journal,
+      domain_ref: host.refs.domain,
       show_timeout: Keyword.get(opts, :show_timeout, 20_000),
       auth: %{
         domain: host.refs.domain,
@@ -486,11 +637,20 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
     GAM.Domain.start_link(
       domain_ref: host.refs.domain,
       store: host.store,
+      projection_store: Map.get(host, :projection_store),
+      recovery_policy:
+        {Managed.Recovery,
+         owner: owner,
+         token: host.token,
+         policy: opts[:recovery_policy],
+         timeout: Keyword.get(opts, :recovery_timeout, 5_000)},
       ingress: Ingress,
       mind: Mind,
       executors: [
         {Executor,
          managed: owner,
+         payload_store: opts[:payload_store],
+         domain_ref: host.refs.domain,
          gate: gate,
          broker: broker_options,
          show_timeout: Keyword.get(opts, :show_timeout, 20_000)}
@@ -513,13 +673,17 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
 
   @spec verify_foundation(pid(), map()) :: :ok | {:error, atom()}
   defp verify_foundation(domain, host) do
-    projection = Sequencer.projection(domain)
+    case GenServer.call(domain, :foundation, :infinity) do
+      {:error, _} = error ->
+        error
 
-    if projection.catalog.genesis == host.genesis and
-         State.surface(projection) == host.surface and
-         Enum.all?(host.mandates, &(Map.get(projection.mandates, &1.ref) == &1)),
-       do: :ok,
-       else: {:error, :managed_authority_configuration_changed}
+      %State{} = projection ->
+        if projection.catalog.genesis == host.genesis and
+             State.surface(projection) == host.surface and
+             Enum.all?(host.mandates, &(Map.get(projection.mandates, &1.ref) == &1)),
+           do: :ok,
+           else: {:error, :managed_authority_configuration_changed}
+    end
   end
 
   @spec open_scope(pid(), map(), GAM.SubmissionContext.t()) ::

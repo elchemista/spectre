@@ -40,4 +40,15 @@ defmodule Spectre.Server.ManagedMaterialTest do
     refute Material.render("nil") == Material.render(nil)
     refute Material.render(<<255>>) == Material.render("binary(0xFF)")
   end
+
+  test "empty collections, unusual keys and quoted controls retain exact rendering" do
+    for {value, expected} <- [{%{}, "{}"}, {[], "[]"}, {{}, "tuple()"}] do
+      assert Material.render(value) == expected
+    end
+
+    assert Material.render(%{1 => "tab\tquote\"", "not:label" => false}) =~
+             "key(1): \"tab\\tquote\\\"\""
+
+    assert Material.render(%{"not:label" => false}) =~ "\"not:label\": false"
+  end
 end

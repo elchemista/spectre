@@ -25,12 +25,7 @@ defmodule Spectre.Server.Diagnostics do
          {:ok, saved} <- decode(encoded) do
       records =
         [:operations, :outbox, :inbox, :dead_letters]
-        |> Enum.flat_map(fn collection ->
-          saved
-          |> Map.get(collection, %{})
-          |> Enum.filter(fn {_id, value} -> Map.get(event(value), :id) == interaction end)
-          |> Enum.map(fn {id, entry} -> entry(id, entry) |> Map.put(:collection, collection) end)
-        end)
+        |> Enum.flat_map(&interaction_records(saved, &1, interaction))
         |> Enum.sort_by(&{&1.command_id, &1.collection})
 
       {:ok,
@@ -50,6 +45,13 @@ defmodule Spectre.Server.Diagnostics do
       false -> {:error, :invalid_interaction_id}
       {:error, _} = error -> error
     end
+  end
+
+  defp interaction_records(saved, collection, interaction) do
+    saved
+    |> Map.get(collection, %{})
+    |> Enum.filter(fn {_id, value} -> Map.get(event(value), :id) == interaction end)
+    |> Enum.map(fn {id, value} -> entry(id, value) |> Map.put(:collection, collection) end)
   end
 
   @doc false
@@ -130,7 +132,7 @@ defmodule Spectre.Server.Diagnostics do
          true <- optional_map?(Map.get(saved, :current) || %{}, :routing),
          true <-
            Enum.all?([:pending, :inbox, :outbox, :operations, :dead_letters], fn key ->
-             Enum.all?(Map.get(saved, key, %{}), fn {_id, value} -> diagnostic_entry?(value) end)
+             valid_collection?(Map.get(saved, key, %{}))
            end) do
       {:ok, saved}
     else
@@ -211,24 +213,34 @@ defmodule Spectre.Server.Diagnostics do
     }
   end
 
+  defp valid_collection?(collection),
+    do: Enum.all?(collection, fn {_id, value} -> diagnostic_entry?(value) end)
+
   @spec entry(term(), map()) :: map()
   defp entry(id, value) do
     worker = Map.get(value, :worker) || %{}
     source = Map.get(value, :source) || %{}
     command = Map.get(value, :command) || Map.get(worker, :command) || %{}
     opts = Map.get(command, :opts, [])
-    tag = if is_list(opts) and Keyword.keyword?(opts), do: Keyword.get(opts, :on_result)
+    tag = result_tag(opts)
 
     %{
       command_id: label(Map.get(worker, :command_id) || Map.get(source, :command_id) || id),
       interaction_id: label(Map.get(event(value), :id)),
       kind: label(Map.get(command, :kind) || Map.get(worker, :kind)),
       status: label(value[:status]),
-      tag:
-        label(
-          tag || Map.get(value, :tag) || Map.get(worker, :tag) || Map.get(source, :continuation)
-        )
+      tag: continuation_tag(tag, value, worker, source)
     }
+  end
+
+  defp continuation_tag(tag, value, worker, source),
+    do:
+      label(
+        tag || Map.get(value, :tag) || Map.get(worker, :tag) || Map.get(source, :continuation)
+      )
+
+  defp result_tag(opts) do
+    if is_list(opts) and Keyword.keyword?(opts), do: Keyword.get(opts, :on_result)
   end
 
   @spec event(map()) :: map()

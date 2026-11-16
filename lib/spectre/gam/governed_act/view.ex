@@ -71,6 +71,11 @@ defmodule Spectre.GAM.GovernedAct.View do
           {:ok, Spectre.GAM.Decision.t()} | :not_found | {:error, term()}
   def candidate_decision(%State{} = state, identity_key)
       when is_binary(identity_key) and identity_key != "" do
+    Spectre.GAM.GovernedAct.Reads.ensure(
+      state.read_index.selection,
+      {:row, :admissions, identity_key}
+    )
+
     case Map.fetch(state.admissions, identity_key) do
       {:ok, %{decision_ref: decision_ref}} ->
         case Map.fetch(state.decisions, decision_ref) do
@@ -135,6 +140,42 @@ defmodule Spectre.GAM.GovernedAct.View do
   end
 
   def scope_context(%State{}, _context), do: {:error, :invalid_scope_context}
+
+  @doc "Validates an observation, allowing only exact Presentation responses from another authenticated recipient."
+  @spec observation_context(State.t(), SubmissionContext.t(), Spectre.GAM.Evidence.t()) ::
+          {:ok, Opening.t()} | {:error, term()}
+  def observation_context(state, context, evidence) do
+    case scope_context(state, context) do
+      {:ok, opening} ->
+        {:ok, opening}
+
+      {:error, _} = error ->
+        alias Spectre.GAM.Presentation.Approval
+
+        with {:ok, presentation_ref, show_ref} <- Approval.refs(evidence),
+             {:ok, presentation} <- Map.fetch(state.presentations, presentation_ref),
+             {:ok, show} <- Map.fetch(state.acts, show_ref),
+             {:ok, opening} <- Map.fetch(state.catalog.scopes, context.scope_ref),
+             true <- context.domain_ref == state.domain_ref,
+             true <- context.scope_ref == presentation.scope_ref,
+             true <- evidence.source_ref == context.ingress_ref,
+             true <- Map.has_key?(state.catalog.principals, context.authenticated_principal_ref),
+             :ok <- SubmissionContext.validate_evidence_bindings(context, evidence.bindings),
+             {:ok, _} <-
+               Approval.validate_response_with_basis(
+                 evidence,
+                 presentation,
+                 show,
+                 Map.values(state.outcomes),
+                 Map.values(state.evidence),
+                 evidence.observed_at
+               ) do
+          {:ok, opening}
+        else
+          _ -> error
+        end
+    end
+  end
 
   defp match_scope_context(state, opening, context) do
     cond do

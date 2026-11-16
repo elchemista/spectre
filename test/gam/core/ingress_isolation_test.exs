@@ -190,7 +190,7 @@ defmodule Spectre.GAM.Core.IngressIsolationTest do
 
     state = :sys.get_state(c.f.server)
     assert state.pending_count == 1
-    assert state.projection === before
+    assert Sequencer.projection(c.f.server) === before
     {token, _timer} = state.flush
     send(c.f.server, {:flush, token})
 

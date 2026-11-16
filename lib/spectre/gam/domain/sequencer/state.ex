@@ -19,6 +19,9 @@ defmodule Spectre.GAM.Domain.Sequencer.State do
 
   defstruct @enforce_keys ++
               [
+                projection_handle: nil,
+                working_time: nil,
+                working_intent: nil,
                 pending: :queue.new(),
                 pending_count: 0,
                 ingress_jobs: %{},

@@ -428,7 +428,9 @@ defmodule Spectre.Server.SkillsGAMTest do
     root_monitor = Process.monitor(root)
     Process.exit(root, :kill)
     assert_receive {:DOWN, ^root_monitor, :process, ^root, :killed}
-    assert_receive {:DOWN, ^child_monitor, :process, ^child, _}, 6000
+    # Both suspended children receive the supervisor's normal 5-second
+    # shutdown allowance, in reverse start order.
+    assert_receive {:DOWN, ^child_monitor, :process, ^child, _}, 12_000
     # The test supervisor restarts the root; the recovered command reports uncertainty.
     assert_receive {Server, restarted, {:response, _, "delegation uncertain", _}}, 6000
     assert restarted != root

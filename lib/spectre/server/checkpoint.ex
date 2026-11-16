@@ -26,8 +26,17 @@ defmodule Spectre.Server.Checkpoint do
   with a contract-change error (or uncertainty for nonrepeatable requests).
   Known unstarted governed requests are rejected; already-started governed
   requests reconcile their original journal through GAM.
+
+  With `payload_store: {module, options}`, the application stores the encoded
+  snapshot and the coordination Store receives only an opaque reference. The
+  callback runs in a supervised task; this existing ordered durability barrier
+  still waits for completion before releasing effects or acknowledgements.
+  `payload_timeout` defaults to 30 seconds. Failed storage never falls back to
+  writing the snapshot inline. Retention and protection of external snapshots
+  belong to the configured application adapter.
   """
   alias Spectre.GAM.Canonical.Value
+  alias Spectre.Payload.Store, as: PayloadStore
   alias Spectre.Server.Store.Disk
   alias Spectre.{Definition, Route}
   alias Spectre.Server.Router
@@ -70,7 +79,8 @@ defmodule Spectre.Server.Checkpoint do
   defp load_entry(:not_found, state), do: state
 
   defp load_entry({:ok, %{revision: revision, value: binary}}, state) do
-    with {:ok, saved} <- Value.decode(binary, allowed_structs: @records),
+    with {:ok, binary} <- restore_payload(binary, state.opts, revision),
+         {:ok, saved} <- Value.decode(binary, allowed_structs: @records),
          {:ok, projection} <- migrate_if_needed(saved, state),
          :ok <- validate(projection, state),
          :ok <- Spectre.Server.Contracts.validate_assigns(state.server, projection.assigns),
@@ -95,16 +105,6 @@ defmodule Spectre.Server.Checkpoint do
         {id, Map.put(pending, :status, status)}
       end)
 
-    state =
-      state
-      |> Map.put(:dead_letters, Map.get(projection, :dead_letters, %{}))
-      |> Map.put(:operations, Map.get(projection, :operations, %{}))
-      |> Map.put(:external_submissions, Map.get(projection, :external_submissions, %{}))
-      |> Map.put(
-        :seen_event_order,
-        Map.get(projection, :seen_event_order, Map.keys(projection.seen_events))
-      )
-
     %{
       state
       | assigns: projection.assigns,
@@ -121,6 +121,12 @@ defmodule Spectre.Server.Checkpoint do
         current: projection.current,
         queue: :queue.from_list(projection.queue)
     }
+    |> Map.merge(%{
+      dead_letters: Map.get(projection, :dead_letters, %{}),
+      operations: Map.get(projection, :operations, %{}),
+      external_submissions: Map.get(projection, :external_submissions, %{}),
+      seen_event_order: Map.get(projection, :seen_event_order, Map.keys(projection.seen_events))
+    })
   end
 
   defp recovering_pending_ids(outbox, pending) do
@@ -158,13 +164,23 @@ defmodule Spectre.Server.Checkpoint do
         projection = projection(state)
 
         with {:ok, bytes} <- Value.encode(projection, allowed_structs: @records),
+             {:ok, bytes} <- protect_payload(bytes, opts, key, state.checkpoint_revision),
              {:ok, revision} <- commit(module, store, key, state.checkpoint_revision, bytes) do
           Spectre.Server.Diagnostics.changed(state, revision)
           %{state | checkpoint_revision: revision}
         else
-          {:error, reason} ->
-            raise ArgumentError, "Server checkpoint not acquired: #{inspect(reason)}"
+          {:error, reason} -> checkpoint_failure(state, reason)
         end
+    end
+  end
+
+  defp checkpoint_failure(state, reason) do
+    case Spectre.Server.Runtime.checkpoint_failed(state, reason) do
+      {:ok, continued} ->
+        continued
+
+      {:error, reason} ->
+        raise ArgumentError, "Server checkpoint not acquired: #{inspect(reason)}"
     end
   end
 
@@ -179,6 +195,101 @@ defmodule Spectre.Server.Checkpoint do
   """
   def decode_snapshot(binary), do: Value.decode(binary, allowed_structs: @records)
 
+  @doc "Decodes a snapshot, resolving an external payload through the configured application store."
+  def decode_snapshot(binary, opts) do
+    with {:ok, bytes} <- restore_payload(binary, opts, nil), do: decode_snapshot(bytes)
+  end
+
+  defp protect_payload(bytes, opts, key, revision) do
+    case Keyword.get(opts, :payload_store) do
+      nil ->
+        {:ok, bytes}
+
+      config ->
+        context = %{kind: :server_checkpoint, key: key, expected_revision: revision}
+        store_payload(config, bytes, context, opts)
+    end
+  end
+
+  defp store_payload(config, bytes, context, opts) do
+    with {:ok, reference} <-
+           payload_work(opts, fn -> PayloadStore.put(config, bytes, context) end) do
+      Value.encode(%{format: "spectre/payload-checkpoint", version: 1, reference: reference})
+    end
+  end
+
+  defp restore_payload(bytes, opts, revision) do
+    case Value.decode(bytes, allowed_structs: @records) do
+      {:ok, %{format: "spectre/payload-checkpoint", version: 1, reference: reference}} ->
+        fetch_payload(Keyword.get(opts, :payload_store), reference, opts, revision)
+
+      {:ok, _projection} ->
+        {:ok, bytes}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp fetch_payload(nil, _, _, _), do: {:error, :checkpoint_payload_store_required}
+
+  defp fetch_payload(config, reference, opts, revision) do
+    key =
+      case Keyword.get(opts, :checkpoint) do
+        nil -> nil
+        configuration -> elem(storage(configuration), 2)
+      end
+
+    context = %{kind: :server_checkpoint, key: key, revision: revision}
+    payload_work(opts, fn -> PayloadStore.fetch(config, reference, context) end)
+  end
+
+  # Checkpoint acquisition is an existing ordered durability barrier. The
+  # callback runs outside the Runtime, but the caller still waits before effects
+  # or acknowledgements can escape. Never queue unbounded pending snapshots.
+  defp payload_work(opts, callback) do
+    timeout = Keyword.get(opts, :payload_timeout, 30_000)
+
+    if timeout == :infinity or (is_integer(timeout) and timeout > 0),
+      do: run_payload_work(callback, timeout),
+      else: {:error, :invalid_checkpoint_payload_timeout}
+  end
+
+  defp run_payload_work(callback, timeout) do
+    owner = self()
+
+    task =
+      Task.Supervisor.async_nolink(Spectre.Server.TaskSupervisor, fn ->
+        supervised_payload_callback(owner, callback)
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> {:error, :checkpoint_payload_unavailable}
+    end
+  end
+
+  defp supervised_payload_callback(owner, callback) do
+    worker = self()
+
+    case Task.Supervisor.start_child(Spectre.Server.TaskSupervisor, fn ->
+           watch_payload_owner(owner, worker)
+         end) do
+      {:ok, _watcher} -> callback.()
+      _ -> {:error, :checkpoint_payload_unavailable}
+    end
+  end
+
+  defp watch_payload_owner(owner, worker) do
+    owner_monitor = Process.monitor(owner)
+    worker_monitor = Process.monitor(worker)
+
+    receive do
+      {:DOWN, ^owner_monitor, :process, ^owner, _} -> Process.exit(worker, :kill)
+      {:DOWN, ^worker_monitor, :process, ^worker, _} -> :ok
+    end
+  end
+
   @doc "Validates portable callback data using the checkpoint codec and record allowlist."
   def validate_value(value, opts \\ []) do
     Value.validate(value, Keyword.put(opts, :allowed_structs, @records))
@@ -188,7 +299,7 @@ defmodule Spectre.Server.Checkpoint do
   def max_bytes, do: @max_bytes
 
   @doc false
-  def tool_reference(%{opts: opts}) do
+  def coordination_reference(%{opts: opts}) do
     case Keyword.get(opts, :checkpoint) do
       nil ->
         nil
@@ -197,6 +308,41 @@ defmodule Spectre.Server.Checkpoint do
         {adapter, store, key} = storage(configuration)
         %{adapter: adapter, store: store, key: key}
     end
+  end
+
+  @doc false
+  def tool_reference(%{opts: opts} = state) do
+    case coordination_reference(state) do
+      nil ->
+        nil
+
+      %{adapter: adapter, store: store, key: key} = reference ->
+        if Keyword.get(opts, :payload_store) do
+          reader = %{
+            adapter: adapter,
+            store: store,
+            opts: Keyword.take(opts, [:checkpoint, :payload_store, :payload_timeout])
+          }
+
+          %{adapter: __MODULE__, store: reader, key: key}
+        else
+          reference
+        end
+    end
+  end
+
+  @doc false
+  def fetch(%{adapter: adapter, store: store, opts: opts}, key) do
+    with {:ok, %{value: bytes, revision: revision} = entry} <- adapter.fetch(store, key),
+         {:ok, resolved} <- restore_payload(bytes, opts, revision),
+         do: {:ok, %{entry | value: resolved}}
+  end
+
+  @doc false
+  def entries(%{adapter: adapter, store: store}, key, limit) do
+    if function_exported?(adapter, :entries, 3),
+      do: adapter.entries(store, key, limit),
+      else: {:error, :checkpoint_history_unavailable}
   end
 
   @doc false
@@ -214,7 +360,7 @@ defmodule Spectre.Server.Checkpoint do
       identity: state.identity,
       definition_fingerprint: cached_fingerprint(state),
       assigns: state.assigns,
-      pending: project_pending(state.pending),
+      pending: project_entries(state.pending, :origin),
       outbox: project_entries(state.outbox),
       inbox: project_inbox(state.inbox),
       seen_events: state.seen_events,
@@ -234,10 +380,13 @@ defmodule Spectre.Server.Checkpoint do
   defp storage({store, key}), do: {Disk, store, key}
   defp storage({module, store, key}) when is_atom(module), do: {module, store, key}
 
-  defp commit(module, store, key, nil, bytes), do: module.put_new(store, key, bytes)
-
-  defp commit(module, store, key, revision, bytes),
-    do: module.compare_and_swap(store, key, revision, bytes)
+  defp commit(module, store, key, revision, bytes) do
+    if is_nil(revision),
+      do: module.put_new(store, key, bytes),
+      else: module.compare_and_swap(store, key, revision, bytes)
+  catch
+    :exit, _ -> {:error, :checkpoint_store_unavailable}
+  end
 
   # Raw transport data and executable legacy route definitions are deliberately
   # excluded. Durable callbacks retain the canonical input and dispatch key.
@@ -251,54 +400,39 @@ defmodule Spectre.Server.Checkpoint do
     event |> Map.delete(:consent_proof) |> Map.merge(%{input: input, routing: routing})
   end
 
-  defp project_pending(pending),
-    do:
-      Map.new(pending, fn {id, value} ->
-        {id, Map.update(value, :origin, nil, &project_event/1)}
-      end)
-
-  defp project_entries(entries),
+  defp project_entries(entries, field \\ :event),
     do:
       Map.new(entries, fn {id, value} ->
-        {id, Map.update(value, :event, nil, &project_event/1)}
+        {id, Map.update(value, field, nil, &project_event/1)}
       end)
 
   defp project_inbox(inbox) do
-    Map.new(inbox, fn {id, value} ->
-      value =
-        Map.update(value, :worker, nil, fn worker ->
-          Map.update(worker, :event, nil, &project_event/1)
-        end)
-
-      value =
-        case {value.worker.kind, value.result} do
-          {:route, {:ok, key, routing}} ->
-            %{value | result: {:ok, key, project_routing(Map.put(routing, :route_key, key))}}
-
-          {:interrupt, {:interrupt, key, routing}} ->
-            %{
-              value
-              | result: {:interrupt, key, project_routing(Map.put(routing, :route_key, key))}
-            }
-
-          {:route, {:unmatched, routing}} ->
-            %{value | result: {:unmatched, project_routing(routing)}}
-
-          {:prepare_input, {:ok, input, memory}} ->
-            %{value | result: {:ok, %{input | raw: nil}, memory}}
-
-          {:generate, {:generated, generated}} ->
-            # Model selection objects may contain live bindings. Telemetry is
-            # separate from the portable, consolidated application result.
-            %{value | result: {:generated, Map.drop(generated, [:inference])}}
-
-          _ ->
-            value
-        end
-
-      {id, value}
+    Map.new(inbox, fn {id, %{worker: worker, result: result} = entry} ->
+      {id,
+       %{
+         entry
+         | worker: Map.update(worker, :event, nil, &project_event/1),
+           result: project_result(worker.kind, result)
+       }}
     end)
   end
+
+  defp project_result(kind, {tag, key, routing})
+       when {kind, tag} in [{:route, :ok}, {:interrupt, :interrupt}],
+       do: {tag, key, project_routing(Map.put(routing, :route_key, key))}
+
+  defp project_result(:route, {:unmatched, routing}),
+    do: {:unmatched, project_routing(routing)}
+
+  defp project_result(:prepare_input, {:ok, input, memory}),
+    do: {:ok, %{input | raw: nil}, memory}
+
+  # Model selection objects may contain live bindings. Keep only the portable
+  # consolidated result; inference telemetry has its own lifecycle.
+  defp project_result(:generate, {:generated, generated}),
+    do: {:generated, Map.drop(generated, [:inference])}
+
+  defp project_result(_kind, result), do: result
 
   defp project_routing(routing) do
     snapshot = route_snapshot(Map.get(routing, :route), Map.get(routing, :route_key))

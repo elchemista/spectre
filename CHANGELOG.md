@@ -9,82 +9,71 @@ migration called out explicitly below.
 
 ## 0.4.0 (unreleased)
 
-- Add optional assigns schemas and continuation contracts with pre-acquisition
-  validation and post-migration restore checks. Invalid results are quarantined
-  without replaying effects; add root/mount permission compatibility reports.
-- Add authorized redacted operational views, revision-bound GAM pagination,
-  post-commit invalidations and explicitly partial correlated traces. Lab consumes
-  runtime diagnostics without owning another ledger or exposing payloads.
-- Publish the standalone demo with exact dependency commits, structured contact
-  provenance, safe unknown-continuation handling and an event-driven inspector.
+### Added
 
-- Document that separate Skill Servers automatically reuse the root AgentServer's
-  GAM Domain, authority ledger and execution boundary. Clarify per-Skill state,
-  mount operation restrictions, invocation provenance, isolated consent and
-  audited lifecycle timers across the core, nine companion packages and demo.
+- Declarative Agent and OTP Server authoring, asynchronous worker commands,
+  explicit result continuations, streaming, native OTP callbacks and durable
+  pending-intention lifecycle. The Runtime owns the conversation GenServer.
+- Managed GAM with identity and operation configuration, registered effects,
+  frozen Candidates/Presentations, consumer-bound consent and recorded admission
+  before capability release. Add trusted-actor submission, keyed acquisition
+  deduplication, revocation and independent Duty review.
+- Parallel Skill Servers with separate state, workers and checkpoints, sharing
+  the root Domain. Mount restrictions, invocation provenance and exact
+  presentation correlation keep consent scoped to its originating Skill.
+- Transport-independent external human approval, signed request/decision binding,
+  deadlines, exact-reply retries and durable inbox recovery. Pulse is an optional
+  adapter; a runnable two-AgentServer example also works without it.
+- Ledger-backed Managed storage for canonical GAM history and Server coordination,
+  with optional revision/generation-fenced per-record Domain projection. Commands
+  load historical dependencies as needed and release them after use.
+- Explicit storage recovery policy for retry or a fresh RAM Domain. Fresh-Domain
+  recovery invalidates previous grants, consent and governed outbox work.
+- Optional application-owned payload storage through `put/3` and `fetch/3`, used
+  for operation material, Evidence, receipts, approval records and checkpoints.
+  The host chooses references, protection, retention and backend.
+- Stack `tools/1` helpers and `effects/1` registrations, descriptor validation,
+  portable results and adapter fingerprint checks. Add nine-package integration
+  and a LiveView/PostgreSQL demo with two Skills.
+- Authorized redacted diagnostics, revision-bound GAM pagination, commit
+  invalidations, continuation/assigns contracts and mount permission reports.
 
-- Add managed GAM configuration to AgentServer, standard Candidate/Presentation
-  builders, registered execution, consumer-bound one-use consent and optional
-  `handle_action/2` callbacks. AgentServer owns the integration in every environment.
-- Add the optional Stack `effects/1` execution contract without changing existing
-  tool helpers. Freeze callback policy, execution identity/partition and catalog
-  digest; detect authority changes on disk recovery and drain governed workers
-  before stopping their Domain.
-- Remove the development/production authority selector and application-owned
-  GAM wiring from AgentServer. Trusted application identity and operation policy
-  feed the automatic boundary; see [Automatic GAM](docs/MANAGED_GAM.md).
-- Add `Spectre.GAM.submit/4` for the trusted consumer or explicitly configured
-  application submitters to acquire a proposal through the same AgentServer
-  policy, consent, outbox and GAM path. Acquisition is separate from execution;
-  results use the existing Server continuation. Optional acquisition keys survive
-  checkpoint recovery and reject conflicting reuse. Add consumer-only
-  `Spectre.GAM.revoke/1`; revocation preserves history and survives restart.
-- Add optional independently authenticated Duty review through automatic reviewer
-  provisioning and `Spectre.GAM.resolve_duty/4`. The Agent does not acquire
-  review authority; absent a reviewer, Duties remain open.
+### Changed
 
+- New applications use Stack → Agent → Server. Recognition, independent
+  classifiers, intent examples, embeddings, review/training and router adapters
+  remain available; IntentDataset names make their roles explicit.
+- Explicit regex rules are hard evidence by default in Server routing, retaining
+  legacy defaults and explicit weak-rule overrides.
+- Server owns managed authority wiring in every environment. Application identity,
+  business policy and registered effects configure the boundary; application
+  callbacks cannot select a weaker authority protocol or enlarge mandates.
+- Share canonical codec implementation while preserving existing bytes, digests,
+  profile-specific budget checks and error ordering. Consolidate decoder,
+  lifecycle, owner-guard and projection persistence paths.
+- Reorganize documentation around current architecture, runnable examples and
+  static diagrams; retain earlier runtime guides in the compatibility archive.
 
-- Make explicit regex routes hard evidence by default in the new Server, while
-  retaining legacy routing defaults and explicit weak-rule overrides.
-- Honor a mounted Skill Server's own `prompt_root` without allowing the root
-  Server's override to replace another Skill's assets.
-- Document expanded Mnemonic operations and the LiveView cache/memory/consent
-  showcase, including searches with portable sources and governed forgetting.
+### Fixed
 
+- Restore interrupted consent as suspended and require a fresh Presentation.
+  Keep slow approval delivery and inbox I/O in bounded supervised tasks, preserve
+  exact signed retries and report delivery separately from consent.
+- Preserve recorded lifecycle deadlines and fence stale decisions, retired stores,
+  missing derived history and ambiguous durable commits.
+- Honor each mounted Skill Server's prompt root and reject malformed execution
+  budgets with validation errors.
 
-- Add supervised Skill Servers sharing their Agent's GAM Domain, with independent
-  state, scoped routing, native OTP callbacks, concurrent workers and checkpoints.
-  Record Skill command attribution through authenticated ingress; limit mount
-  operations, correlate confirmations, and preserve governed crash recovery.
-  Add explicit delegation and namespaced Skill output, plus a nine-tool Skill test.
+### Compatibility
 
-- Add separate declarative Agent and OTP Server authoring, with asynchronous
-  services, explicit continuations and runtime-owned pending conversations.
-- Import the governed-act kernel from the 0.4 development line into the
-  `Spectre.GAM` namespace, retaining its admission, ledger and consent contracts.
-- Add IntentDataset naming and configuration while retaining online examples,
-  training artifacts and exact/vector lookup compatibility.
-- Add a durable Server snapshot store and outcome continuation dispatcher.
-- Extend `Stack.Installable` with optional `tools/1` registration, validated
-  operation descriptors, digest fencing and cross-package helper-name checks.
-  Generate private Server helpers from the selected Stack, normalize cognitive
-  and governed operations before persistence, validate portable results and
-  retain uncertain nonrepeatable work without blind replay.
-- Add explicit Kinetic model-output planning, isolated installed tool adapters
-  across nine satellites, Ledger checkpoint/journal stores and Lab inspection.
-  Include a runnable nine-package integration with real GAM admission/consent
-  and simulated external transports.
-- Add per-intention closure schedules with runtime or application OTP timers,
-  private application state and authenticated GAM lifecycle observations.
-  Failed presentations preserve existing deadlines; recovery distinguishes
-  unstarted continuations from governed work requiring reconciliation and
-  correlates lifecycle receipts with their recorded phase.
-- Rewrite README and onboarding around Stack → Agent → Server, with a runnable
-  quickstart, explicit 0.3 → 0.4 migration, and GAM/host-boundary documentation
-  linked to the [manifesto](https://spectre.guide/en/governed-act-model).
-  Preserve legacy Instance/Run examples as labelled compatibility guides.
-- See [Migration to 0.4](docs/MIGRATING_TO_0_4.md), [GAM](docs/GAM.md) and
-  [Agent and Server](docs/AGENT_SERVER.md) for setup and migration boundaries.
+- Instance/Run and standalone satellite APIs remain supported. Their checkpoints,
+  policies and direct effects do not automatically become Server/GAM records.
+- RAM-only operation remains available without Ledger or a database. Database
+  history is not automatically migrated, deleted or merged with fallback RAM.
+- Payload storage is opt-in; old inline records remain readable. Required
+  governance facts continue to obey the existing GAM verification contracts.
+- See [Migration](docs/MIGRATING_TO_0_4.md), [Managed GAM](docs/MANAGED_GAM.md)
+  and [Compatibility](docs/COMPATIBILITY.md).
 
 ## 0.3.4 — 2026-08-30
 

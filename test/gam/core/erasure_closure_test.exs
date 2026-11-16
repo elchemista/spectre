@@ -260,7 +260,7 @@ defmodule Spectre.GAM.Core.ErasureClosureTest do
     assert {:error, :invalid_erasure_analysis} =
              Analysis.derive_request(c.facts, c.ref, "scope", "delete", 120.0)
 
-    assert {:ok, request} = Analysis.request_attrs(c.facts, c.ref, "scope", "delete", 120)
+    assert {:ok, request} = Analysis.derive_request(c.facts, c.ref, "scope", "delete", 120)
     assert request.target_ref == c.ref
 
     assert {:error, {:invalid_erasable_payload_ref, ^invalid_ref}} =

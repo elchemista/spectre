@@ -25,6 +25,7 @@ defmodule Spectre.GAM.Erasure.Index do
     "erasure_requested" => 5
   }
   defstruct children: %{},
+            selection: nil,
             roots: %{},
             sources: %{},
             reached: %{},
@@ -36,7 +37,7 @@ defmodule Spectre.GAM.Erasure.Index do
   @type t :: %__MODULE__{}
 
   @doc false
-  def complete?(index, state), do: index.counts === counts(state)
+  def complete?(index, state), do: index.selection == nil and index.counts === counts(state)
 
   @doc false
   def record(state, event) do
@@ -52,8 +53,8 @@ defmodule Spectre.GAM.Erasure.Index do
     # A hand-built/filtered pure State has no complete graph. Never bless its
     # old records merely because we indexed one new event.
     index =
-      if index.counts === before,
-        do: %{update(index, state, event) | counts: counts},
+      if index.selection != nil or index.counts === before,
+        do: %{update(index, state, event) | counts: if(index.selection, do: nil, else: counts)},
         else: %{index | counts: nil}
 
     %{state | read_index: %{state.read_index | erasure: index}}

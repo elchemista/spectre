@@ -31,7 +31,14 @@ defmodule Spectre.GAM.Core.PayloadIncrementalRecoveryTest do
   setup do
     Runtime.reset(Fixture.default_now())
     table = :ets.new(__MODULE__, [:set, :public])
-    f = Fixture.start_domain(payload_store: {Payloads, table: table}, mock_store: true)
+
+    f =
+      Fixture.start_domain(
+        projection_store: nil,
+        payload_store: {Payloads, table: table},
+        mock_store: true
+      )
+
     on_exit(fn -> Fixture.stop_domain(f) end)
     %{f: f, table: table}
   end

@@ -752,9 +752,9 @@ against the local `0.3.4` checkout plus the published package independently.
 
 ## Further Reading
 
-- [Getting Started](../GETTING_STARTED_0_3.md)
-- [Architecture](../ARCHITECTURE_0_3.md)
+- [Getting Started](GETTING_STARTED_0_3.md)
+- [Architecture](ARCHITECTURE_0_3.md)
 - [Stack](../STACK.md)
 - [Integration Boundaries](INTEGRATIONS_0_3.md)
-- [Work, Vigil, and the Operational Runtime](../OPERATIONS.md)
-- [Migrating to 0.2.0](../MIGRATING_TO_0_2.md)
+- [Work, Vigil, and the Operational Runtime](OPERATIONS.md)
+- [Migrating to 0.2.0](MIGRATING_TO_0_2.md)

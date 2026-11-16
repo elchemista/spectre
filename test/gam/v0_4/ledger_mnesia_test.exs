@@ -259,7 +259,7 @@ defmodule Spectre.GAM.V04Test.LedgerMnesiaTest do
     store: store
   } do
     Runtime.reset(Fixture.default_now())
-    fixture = Fixture.start_domain(namespace: "mnesia-recovery-tampering")
+    fixture = Fixture.start_domain(projection_store: nil, namespace: "mnesia-recovery-tampering")
     on_exit(fn -> Fixture.stop_domain(fixture) end)
     evidence = Fixture.paid_evidence(fixture)
     assert {:ok, ^evidence} = Fixture.observe_payment(fixture, evidence)
@@ -403,7 +403,10 @@ defmodule Spectre.GAM.V04Test.LedgerMnesiaTest do
 
   defp prepared_admission(store) do
     Runtime.reset(Fixture.default_now())
-    fixture = Fixture.start_domain(namespace: "mnesia-prepared", meter_ceiling: 2)
+
+    fixture =
+      Fixture.start_domain(projection_store: nil, namespace: "mnesia-prepared", meter_ceiling: 2)
+
     on_exit(fn -> Fixture.stop_domain(fixture) end)
     evidence = Fixture.paid_evidence(fixture)
     assert {:ok, ^evidence} = Fixture.observe_payment(fixture, evidence)

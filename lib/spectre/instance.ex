@@ -86,6 +86,14 @@ defmodule Spectre.Instance do
   alias Spectre.Turn
 
   @operation_event_limit 512
+  @activation_actions %{
+    instance_activate:
+      {:verify_activation, :activation_candidate_not_found,
+       :activation_checkpoint_outcome_unknown, :activation_checkpoint_conflict},
+    instance_rollback:
+      {:verify_rollback, :rollback_candidate_not_found, :rollback_checkpoint_outcome_unknown,
+       :rollback_checkpoint_conflict}
+  }
   @type option ::
           {:agent, module()}
           | {:agent_ref, AgentRef.t()}
@@ -1037,7 +1045,7 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:skill_state_update, skill_id, value, opts}, _from, data) do
-    with :ok <- owner_guard(data, :commit),
+    with :ok <- Owner.assert_current(data, :commit),
          {:ok, binding, next} <- SkillStates.update(data, skill_id, value, opts) do
       {:reply, {:ok, binding}, Idle.arm(next)}
     else
@@ -1050,7 +1058,7 @@ defmodule Spectre.Instance do
         _from,
         data
       ) do
-    with :ok <- owner_guard(data, :commit),
+    with :ok <- Owner.assert_current(data, :commit),
          {:ok, binding, next} <-
            SkillStates.transition_retention(data, skill_id, branch_id, retention, opts) do
       {:reply, {:ok, binding}, Idle.arm(next)}
@@ -1059,9 +1067,12 @@ defmodule Spectre.Instance do
     end
   end
 
-  def handle_call({:instance_activate, candidate_ref, opts}, _from, data) do
+  def handle_call({action, candidate_ref, opts}, _from, data)
+      when is_map_key(@activation_actions, action) do
+    {verifier, missing, unknown, conflict} = Map.fetch!(@activation_actions, action)
+
     with {:ok, expected_generation} <- Activations.expected_generation(opts),
-         :ok <- owner_guard(data, :activation_commit),
+         :ok <- Owner.assert_current(data, :activation_commit),
          {:ok, definition_store} <- Activations.require_store(data.definition_store),
          {:ok, candidate_resolution} <-
            DefinitionResolver.resolve_candidate_for_activation(
@@ -1070,77 +1081,35 @@ defmodule Spectre.Instance do
              Activations.resolver_opts(data, opts)
            ),
          :ok <-
-           GovernanceVerifier.verify_activation(
+           apply(GovernanceVerifier, verifier, [
              definition_store,
              candidate_resolution,
              data.activation,
              Activations.resolver_opts(data, opts)
-           ),
+           ]),
          {:ok, prospective, skill_states} <-
-           Activations.build(data, candidate_resolution, expected_generation, opts),
+           Activations.build(
+             data,
+             candidate_resolution,
+             expected_generation,
+             activation_options(action, opts, data)
+           ),
          {:ok, activation} <-
            Activation.compare_and_swap(data.activation, expected_generation, prospective),
          {:ok, next} <- Activations.commit(data, activation, skill_states) do
       {:reply, {:ok, activation}, Idle.arm(next)}
     else
       :not_found ->
-        {:reply, {:error, :activation_candidate_not_found}, Idle.arm(data)}
+        {:reply, {:error, missing}, Idle.arm(data)}
 
       {:error, {:ambiguous, _detail} = reason} ->
-        {:stop, {:activation_checkpoint_outcome_unknown, reason}, {:error, reason}, data}
+        {:stop, {unknown, reason}, {:error, reason}, data}
 
       {:error, reason} when reason in [:conflict, :stale] ->
-        {:stop, {:activation_checkpoint_conflict, reason}, {:error, reason}, data}
+        {:stop, {conflict, reason}, {:error, reason}, data}
 
       {:error, {kind, _expected, _current} = reason} when kind in [:conflict, :stale] ->
-        {:stop, {:activation_checkpoint_conflict, reason}, {:error, reason}, data}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, Idle.arm(data)}
-    end
-  end
-
-  def handle_call({:instance_rollback, candidate_ref, opts}, _from, data) do
-    with {:ok, expected_generation} <- Activations.expected_generation(opts),
-         :ok <- owner_guard(data, :activation_commit),
-         {:ok, definition_store} <- Activations.require_store(data.definition_store),
-         {:ok, candidate_resolution} <-
-           DefinitionResolver.resolve_candidate_for_activation(
-             definition_store,
-             candidate_ref,
-             Activations.resolver_opts(data, opts)
-           ),
-         :ok <-
-           GovernanceVerifier.verify_rollback(
-             definition_store,
-             candidate_resolution,
-             data.activation,
-             Activations.resolver_opts(data, opts)
-           ),
-         rollback_opts =
-           Keyword.put(
-             opts,
-             :provenance,
-             %{source: :rollback, instance_ref: data.ref.key, external_effects_rolled_back: false}
-           ),
-         {:ok, prospective, skill_states} <-
-           Activations.build(data, candidate_resolution, expected_generation, rollback_opts),
-         {:ok, activation} <-
-           Activation.compare_and_swap(data.activation, expected_generation, prospective),
-         {:ok, next} <- Activations.commit(data, activation, skill_states) do
-      {:reply, {:ok, activation}, Idle.arm(next)}
-    else
-      :not_found ->
-        {:reply, {:error, :rollback_candidate_not_found}, Idle.arm(data)}
-
-      {:error, {:ambiguous, _detail} = reason} ->
-        {:stop, {:rollback_checkpoint_outcome_unknown, reason}, {:error, reason}, data}
-
-      {:error, reason} when reason in [:conflict, :stale] ->
-        {:stop, {:rollback_checkpoint_conflict, reason}, {:error, reason}, data}
-
-      {:error, {kind, _expected, _current} = reason} when kind in [:conflict, :stale] ->
-        {:stop, {:rollback_checkpoint_conflict, reason}, {:error, reason}, data}
+        {:stop, {conflict, reason}, {:error, reason}, data}
 
       {:error, reason} ->
         {:reply, {:error, reason}, Idle.arm(data)}
@@ -1148,7 +1117,7 @@ defmodule Spectre.Instance do
   end
 
   def handle_call({:event_admit, event, opts}, _from, data) do
-    with :ok <- owner_guard(data, :admission),
+    with :ok <- Owner.assert_current(data, :admission),
          {:ok, envelope, next} <- Events.admit(data, event, opts) do
       {:reply, {:ok, envelope}, Idle.arm(next)}
     else
@@ -1175,7 +1144,7 @@ defmodule Spectre.Instance do
         from,
         data
       ) do
-    with :ok <- owner_guard(data, :commit),
+    with :ok <- Owner.assert_current(data, :commit),
          {:ok, definition_ref} <- Activations.resolve_definition_ref(data, value),
          {:ok, lifecycle, writes, commit_opts} <-
            Events.prepare_lifecycle_transition(data, definition_ref, axis, status, opts),
@@ -1798,6 +1767,16 @@ defmodule Spectre.Instance do
     Idle.arm(next)
   end
 
+  defp activation_options(:instance_activate, opts, _data), do: opts
+
+  defp activation_options(:instance_rollback, opts, data) do
+    Keyword.put(opts, :provenance, %{
+      source: :rollback,
+      instance_ref: data.ref.key,
+      external_effects_rolled_back: false
+    })
+  end
+
   defp reason_class(reason), do: InstanceTelemetry.reason_class(reason)
 
   defp checkpoint_error_class(nil), do: nil
@@ -1810,10 +1789,6 @@ defmodule Spectre.Instance do
     do: min(value, @operation_event_limit)
 
   defp normalize_event_limit(_value), do: @operation_event_limit
-
-  defp owner_guard(data, operation) do
-    Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
-  end
 
   defp restore_initial_state(agent, opts, base_opts) do
     if Keyword.has_key?(opts, :state) do

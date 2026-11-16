@@ -2807,6 +2807,15 @@ defmodule SpectreDataDrivenExecutionTest do
     end)
   end
 
+  test "malformed program budgets return validation errors without raising" do
+    data = Program.to_data(loop_program())
+
+    for {budget, shape} <- [{:invalid, :atom}, {42, :other}, {"invalid", :binary}] do
+      assert {:error, {:invalid_execution_program_budget, ^shape}} =
+               Program.new(Map.put(data, :budget, budget))
+    end
+  end
+
   defp loop_program do
     Program.new!(%{
       id: :bounded_loop,

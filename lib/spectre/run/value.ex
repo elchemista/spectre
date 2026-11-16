@@ -400,9 +400,5 @@ defmodule Spectre.Run.Value do
   defp path_label(_value), do: :key
 
   @spec shape(term()) :: :pid | :port | :reference | :function | :other
-  defp shape(value) when is_pid(value), do: :pid
-  defp shape(value) when is_port(value), do: :port
-  defp shape(value) when is_reference(value), do: :reference
-  defp shape(value) when is_function(value), do: :function
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:pid, :port, :reference, :function])
 end

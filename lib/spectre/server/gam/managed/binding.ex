@@ -3,7 +3,7 @@ defmodule Spectre.Server.GAM.Managed.Binding do
   alias Spectre.GAM
   alias Spectre.GAM.Mind.Turn
   alias Spectre.Server.GAM.Effect
-  alias Spectre.Server.GAM.Managed.{Executor, Ingress, Material}
+  alias Spectre.Server.GAM.Managed.{Approval, Content, Executor, Gate, Ingress, Material}
 
   @doc false
   @spec validate_overrides(map(), map()) :: :ok | {:error, term()}
@@ -30,7 +30,7 @@ defmodule Spectre.Server.GAM.Managed.Binding do
   @spec bindings(map(), term(), map()) :: map()
   def bindings(state, current, policy) do
     Map.new(state.effects, fn {operation, entry} ->
-      override = Map.get(Keyword.get(state.options, :bindings, %{}), operation, %{})
+      override = override(state.options, operation)
 
       confirm? =
         Keyword.get(entry.settings, :confirm, false) or
@@ -58,12 +58,8 @@ defmodule Spectre.Server.GAM.Managed.Binding do
   @spec candidate(map(), GAM.Mind.Turn.t(), map()) :: {:ok, map()} | {:error, term()}
   def candidate(args, turn, context) do
     with {:ok, expected} <- standard_candidate(args, turn, context) do
-      override =
-        context.managed.options
-        |> Keyword.get(:bindings, %{})
-        |> Map.get(context.managed_operation, %{})
-
-      custom_candidate(Map.get(override, :candidate), expected, args, turn, context)
+      callback = override(context.managed.options, context.managed_operation)[:candidate]
+      custom_candidate(callback, expected, args, turn, context)
     end
   end
 
@@ -149,45 +145,53 @@ defmodule Spectre.Server.GAM.Managed.Binding do
         "bound" => Map.get(policy, :bind, %{})
       }
 
-      {:ok, digest} = GAM.Consent.data_digest(consequence)
-      evidence = Turn.evidence_refs(turn)
+      with {:ok, consequence} <-
+             Content.protect_consequence(
+               host.options[:payload_store],
+               consequence,
+               host.refs.domain,
+               context.command_id
+             ) do
+        {:ok, digest} = GAM.Consent.data_digest(consequence)
+        evidence = Turn.evidence_refs(turn)
 
-      {:ok,
-       %{
-         identity_key: "spectre:managed:" <> context.command_id,
-         class: entry.class,
-         consequence: consequence,
-         row: host.row,
-         requested_mandate_ref: host.mandate.ref,
-         proposer_ref: refs.proposer,
-         executor_ref: refs.executor,
-         accountable_ref: refs.accountable,
-         scope_ref: refs.scope,
-         subject_refs: [refs.subject],
-         target_refs: [refs.target],
-         purpose_ref: refs.purpose,
-         purpose_params: host.mandate.purpose_params,
-         evidence_refs: evidence,
-         disclosure: %{
-           destination_refs: [refs.target],
-           source_evidence_refs: evidence,
-           labels: []
-         },
-         meter_requests: %{},
-         executor_contract_ref: Executor.contract_ref(),
-         observation_window_ms: 30_000,
-         consent: %{
-           schema_version: 1,
-           recipient_refs: [refs.proposer],
-           data_digest: digest,
-           cost: 0,
+        {:ok,
+         %{
+           identity_key: "spectre:managed:" <> context.command_id,
+           class: entry.class,
+           consequence: consequence,
+           row: host.row,
+           requested_mandate_ref: host.mandate.ref,
+           proposer_ref: refs.proposer,
+           executor_ref: refs.executor,
+           accountable_ref: refs.accountable,
+           scope_ref: refs.scope,
+           subject_refs: [refs.subject],
+           target_refs: [refs.target],
            purpose_ref: refs.purpose,
            purpose_params: host.mandate.purpose_params,
-           risk: "Application effect",
-           reversibility: false,
-           alternatives: ["cancel"]
-         }
-       }}
+           evidence_refs: evidence,
+           disclosure: %{
+             destination_refs: [refs.target],
+             source_evidence_refs: evidence,
+             labels: []
+           },
+           meter_requests: %{},
+           executor_contract_ref: Executor.contract_ref(),
+           observation_window_ms: 30_000,
+           consent: %{
+             schema_version: 1,
+             recipient_refs: recipient_refs(host, entry),
+             data_digest: digest,
+             cost: 0,
+             purpose_ref: refs.purpose,
+             purpose_params: host.mandate.purpose_params,
+             risk: "Application effect",
+             reversibility: false,
+             alternatives: ["cancel"]
+           }
+         }}
+      end
     else
       false -> {:error, :managed_effect_contract_mismatch}
       {:error, _} = error -> error
@@ -199,14 +203,25 @@ defmodule Spectre.Server.GAM.Managed.Binding do
   @spec presentation(GAM.Candidate.t(), map(), keyword()) ::
           {:ok, GAM.Presentation.t(), map()} | {:error, term()}
   def presentation(candidate, context, opts) do
-    with {:ok, expected, show} <- standard_presentation(candidate, context) do
-      callback =
-        context.managed.options
-        |> Keyword.get(:bindings, %{})
-        |> Map.get(context.managed_operation, %{})
-        |> Map.get(:presentation)
+    callback = override(context.managed.options, context.managed_operation)[:presentation]
 
-      custom_presentation(callback, candidate, context, opts, expected, show)
+    with {:ok, expected, show} <- standard_presentation(candidate, context),
+         {:ok, presentation, show} <-
+           custom_presentation(callback, candidate, context, opts, expected, show),
+         {:ok, presentation} <-
+           Content.presentation(
+             context.managed.options[:payload_store],
+             presentation,
+             context.managed.refs.domain
+           ),
+         :ok <-
+           prepare_approval(
+             context.managed,
+             context.managed.effects[context.managed_operation],
+             presentation,
+             context
+           ) do
+      {:ok, presentation, show}
     end
   end
 
@@ -216,51 +231,103 @@ defmodule Spectre.Server.GAM.Managed.Binding do
     host = context.managed
     entry = host.effects[context.managed_operation]
 
-    message =
-      Map.get(
-        context.managed_policy,
-        :message,
-        Keyword.get(entry.settings, :message, "Confermare questa operazione?")
-      )
+    with {:ok, material} <-
+           Content.consequence(
+             host.options[:payload_store],
+             candidate.consequence,
+             host.refs.domain
+           ) do
+      message =
+        Map.get(
+          context.managed_policy,
+          :message,
+          Keyword.get(entry.settings, :message, "Confermare questa operazione?")
+        )
 
-    rendered =
-      Material.render(message) <> "\n\n" <> Material.render(candidate.consequence["payload"])
+      rendered =
+        "Operation: " <>
+          Material.render(context.managed_operation) <>
+          "\n" <>
+          Material.render(message) <>
+          "\n\n" <>
+          Material.render(material["payload"])
 
-    rendered =
-      if candidate.consequence["bound"] == %{},
-        do: rendered,
-        else: rendered <> "\n" <> Material.render(candidate.consequence["bound"])
+      rendered =
+        if material["bound"] == %{},
+          do: rendered,
+          else: rendered <> "\n" <> Material.render(material["bound"])
 
-    consent = candidate.consent
+      consent = candidate.consent
 
-    with {:ok, presentation} <-
-           GAM.Presentation.new(%{
-             candidate_binding_ref: GAM.Candidate.presentation_binding_ref(candidate),
-             scope_ref: candidate.scope_ref,
-             recipient_refs: consent["recipient_refs"],
-             approval_source_refs: [Ingress.ref()],
-             data: candidate.consequence,
-             cost: 0,
-             purpose_ref: candidate.purpose_ref,
-             purpose_params: candidate.purpose_params,
-             risk: consent["risk"],
-             reversibility: false,
-             alternatives: consent["alternatives"],
-             renderer_ref: "spectre:managed:consumer:v1",
-             rendered_payload: rendered,
-             prepared_at: System.system_time(:millisecond)
-           }) do
-      {:ok, presentation,
-       %{
-         identity_key: "spectre:managed:show:" <> context.command_id,
-         requested_mandate_ref: host.mandate.ref,
-         executor_ref: host.refs.executor,
-         executor_contract_ref: host.refs.contract,
-         accountable_ref: host.refs.accountable,
-         subject_refs: candidate.subject_refs,
-         evidence_refs: candidate.evidence_refs,
-         observation_window_ms: 30_000
-       }}
+      with {:ok, presentation} <-
+             GAM.Presentation.new(%{
+               candidate_binding_ref: GAM.Candidate.presentation_binding_ref(candidate),
+               scope_ref: candidate.scope_ref,
+               recipient_refs: consent["recipient_refs"],
+               approval_source_refs: [Ingress.ref()],
+               data: candidate.consequence,
+               cost: 0,
+               purpose_ref: candidate.purpose_ref,
+               purpose_params: candidate.purpose_params,
+               risk: consent["risk"],
+               reversibility: false,
+               alternatives: consent["alternatives"],
+               renderer_ref: "spectre:managed:consumer:v1",
+               rendered_payload: rendered,
+               prepared_at: System.system_time(:millisecond)
+             }) do
+        {:ok, presentation,
+         %{
+           identity_key: "spectre:managed:show:" <> context.command_id,
+           requested_mandate_ref: show_mandate(host, entry).ref,
+           executor_ref: host.refs.executor,
+           executor_contract_ref: host.refs.contract,
+           accountable_ref: host.refs.accountable,
+           subject_refs: candidate.subject_refs,
+           evidence_refs: candidate.evidence_refs,
+           observation_window_ms: 30_000
+         }}
+      end
+    end
+  end
+
+  defp recipient_refs(host, entry) do
+    case Approval.approver(host.options, entry.settings) do
+      {:ok, nil} -> [host.refs.proposer]
+      {:ok, {_, trust}} -> [trust.principal.ref]
+    end
+  end
+
+  defp show_mandate(host, entry) do
+    case Approval.approver(host.options, entry.settings) do
+      {:ok, nil} -> host.mandate
+      {:ok, _} -> host.show_mandate
+    end
+  end
+
+  defp prepare_approval(host, entry, presentation, context) do
+    case Approval.approver(host.options, entry.settings) do
+      {:ok, nil} ->
+        :ok
+
+      {:ok, approver} ->
+        with {:ok, material} <-
+               Content.shown(
+                 host.options[:payload_store],
+                 %{"rendered_payload" => presentation.rendered_payload},
+                 host.refs.domain
+               ) do
+          presentation = %{presentation | rendered_payload: material["rendered_payload"]}
+
+          Gate.prepare_external(
+            host.gate,
+            presentation,
+            approver,
+            context.consent_expires_at,
+            Map.get(context, :managed_revision, 1),
+            Map.get(context, :skill)
+          )
+        end
     end
   end
 
@@ -338,12 +405,6 @@ defmodule Spectre.Server.GAM.Managed.Binding do
     if Map.has_key?(override, :schema_hash) and override.schema_hash != entry.effect.schema_hash,
       do: invalid!("schema override must match the registered effect")
 
-    # Required presentation cannot be removed with nil. A configured override
-    # still crosses the kernel's presentation binding and surface checks.
-    if Keyword.get(entry.settings, :confirm, false) and
-         Map.get(override, :presentation, :default) == nil,
-       do: invalid!("required presentation cannot be removed")
-
     :ok
   end
 
@@ -366,15 +427,15 @@ defmodule Spectre.Server.GAM.Managed.Binding do
 
   @spec frozen_policy(map(), map()) :: map()
   defp frozen_policy(entry, context) do
-    override =
-      context.managed.options
-      |> Keyword.get(:bindings, %{})
-      |> Map.get(context.managed_operation, %{})
+    override = override(context.managed.options, context.managed_operation)
 
     if Keyword.get(entry.settings, :confirm, false) or not is_nil(override[:presentation]),
       do: Map.put(context.managed_policy, :confirm, true),
       else: context.managed_policy
   end
+
+  defp override(options, operation),
+    do: options |> Keyword.get(:bindings, %{}) |> Map.get(operation, %{})
 
   @spec application_context(map()) :: map()
   defp application_context(context) do

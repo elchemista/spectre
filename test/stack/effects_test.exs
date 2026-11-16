@@ -23,9 +23,17 @@ defmodule Spectre.Stack.EffectsTest do
           Map.put(@descriptor, :executor, {Kernel, :apply}),
           Map.put(@descriptor, :contract, 2),
           Map.put(@descriptor, :partition, [:credentials]),
+          Map.put(@descriptor, :partition, :subject),
+          Map.put(@descriptor, :adapter, nil),
+          Map.put(@descriptor, :schema_hash, 42),
+          Map.put(@descriptor, :config, []),
           Map.put(@descriptor, :config, %{callback: fn -> :ok end})
         ] do
       assert_raise ArgumentError, fn -> Effects.validate!(%{send: descriptor}) end
+    end
+
+    for entries <- [[], %{nil => @descriptor}, %{send: []}] do
+      assert_raise ArgumentError, fn -> Effects.validate!(entries) end
     end
   end
 

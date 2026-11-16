@@ -56,7 +56,7 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
   def current(%State{} = state) do
     index = state.read_index.authority
 
-    if AuthorityIndex.complete?(index, state) do
+    if AuthorityIndex.usable?(index, state) do
       blocked =
         Enum.reduce(index.debts_by_owner, MapSet.new(), fn {owner, _causes}, refs ->
           index.aliases_by_owner
@@ -92,7 +92,7 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
   @spec for_candidate(State.t(), Candidate.t()) :: t()
   def for_candidate(%State{} = state, %Candidate{} = candidate) do
     index = state.read_index.authority
-    indexed? = AuthorityIndex.complete?(index, state)
+    indexed? = AuthorityIndex.selected?(index, state)
     roots = candidate_roots(state, candidate, indexed?)
     select(state, roots, candidate, indexed?)
   end
@@ -104,7 +104,7 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
       state,
       [act.mandate_ref],
       act,
-      AuthorityIndex.complete?(state.read_index.authority, state)
+      AuthorityIndex.selected?(state.read_index.authority, state)
     )
   end
 
@@ -181,9 +181,17 @@ defmodule Spectre.GAM.Kernel.Authority.Facts do
        do: [ref]
 
   defp candidate_roots(state, candidate, true) do
-    state.read_index.authority.mandates_by_holder
-    |> Map.get(candidate.proposer_ref, MapSet.new())
-    |> MapSet.to_list()
+    reads = state.read_index.selection
+
+    if reads != nil and MapSet.member?(reads, {:page, :mandates, []}) do
+      candidate_roots(state, candidate, false)
+    else
+      Spectre.GAM.GovernedAct.Reads.group(reads, :holder_mandates, candidate.proposer_ref)
+
+      state.read_index.authority.mandates_by_holder
+      |> Map.get(candidate.proposer_ref, MapSet.new())
+      |> MapSet.to_list()
+    end
   end
 
   defp candidate_roots(state, candidate, false) do

@@ -16,9 +16,15 @@ defmodule Spectre.GAM.Domain.Startup do
   @doc "Loads verified durable state, bootstrapping only when no ledger exists."
   @spec load(Configuration.t()) :: {:ok, Spectre.GAM.Domain.Projection.t()} | {:error, term()}
 
-  def load(config) do
+  def load(config), do: load_runtime(%{config | projection_store: nil})
+
+  @doc false
+  def load_runtime(config) do
     case load_verified(config) do
       {:ok, _projection} = success ->
+        success
+
+      {:ok, _projection, _handle} = success ->
         success
 
       {:error, reason} = error ->
@@ -36,6 +42,9 @@ defmodule Spectre.GAM.Domain.Startup do
     case recover(config) do
       {:ok, projection} ->
         verify_recovered(config, projection)
+
+      {:ok, projection, handle} ->
+        verify_stored(config, projection, handle)
 
       :not_found ->
         with :ok <- check_policy(config, nil), do: bootstrap(config)
@@ -131,6 +140,9 @@ defmodule Spectre.GAM.Domain.Startup do
       {:ok, projection} ->
         verify_recovered(config, projection)
 
+      {:ok, projection, handle} ->
+        verify_stored(config, projection, handle)
+
       :not_found ->
         {:error, :domain_bootstrap_not_durable}
 
@@ -139,6 +151,9 @@ defmodule Spectre.GAM.Domain.Startup do
     end
   end
 
+  defp recover(%{projection_store: store} = config) when not is_nil(store),
+    do: Spectre.GAM.Domain.Projection.Replay.recover(config)
+
   defp recover(config) do
     Recovery.recover(
       config.store,
@@ -146,6 +161,13 @@ defmodule Spectre.GAM.Domain.Startup do
       config.constitution,
       config.ledger_opts
     )
+  end
+
+  defp verify_stored(config, projection, handle) do
+    with :ok <- Bootstrap.verify_projection(projection, Configuration.verification_opts(config)),
+         :ok <- check_policy(config, Map.take(projection, [:revision, :head_digest])) do
+      {:ok, projection, handle}
+    end
   end
 
   defp verify_recovered(config, projection) do

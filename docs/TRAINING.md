@@ -142,5 +142,5 @@ preparation. The semantic index remains vector-only. These are separate uses of
 the same reviewed examples, not two competing stores.
 
 See [Routing](ROUTING.md), [DSL](DSL.md), [migration](MIGRATING_TO_0_4.md) and the
-[retained training reference](legacy/TRAINING_0_3.md) for older configuration
+[retained training reference](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/TRAINING_0_3.md) for older configuration
 and index-tuning details.

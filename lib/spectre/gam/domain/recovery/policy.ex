@@ -25,6 +25,12 @@ defmodule Spectre.GAM.Domain.Recovery.Policy do
   repeated on restart, and are not a durable incident log. Callback failure or
   timeout cannot turn a failed verification into success.
 
+  Managed GAM also supports optional `recover/2`: return `:wait` (the default),
+  `{:retry, milliseconds}` or `:memory`. Retry re-verifies the existing Domain;
+  memory starts a distinct RAM Domain, never replacing facts in the old one.
+  The host chooses whether losing continuity is acceptable. See the Domain
+  storage guide for AgentServer checkpoint and consent handling.
+
   This is a recovery boundary, not continuous storage monitoring. A running
   Domain uses its verified prefix and checks new suffixes; it does not reread
   all historical bytes before every decision. Independent audits and external
@@ -45,7 +51,28 @@ defmodule Spectre.GAM.Domain.Recovery.Policy do
 
   @callback check(context(), keyword()) :: :ok | {:error, term()}
   @callback failed(incident(), keyword()) :: term()
-  @optional_callbacks failed: 2
+  @callback recover(incident(), keyword()) :: :wait | :memory | {:retry, non_neg_integer()}
+  @optional_callbacks failed: 2, recover: 2
+
+  @doc "Optional host lifecycle decision; it never replaces or authorizes GAM facts."
+  def recover(nil, _incident, _timeout), do: :wait
+
+  def recover({module, _} = policy, incident, timeout) do
+    if function_exported?(module, :recover, 2) do
+      case invoke(policy, :recover, incident, timeout) do
+        {:ok, :memory} ->
+          :memory
+
+        {:ok, {:retry, delay}} when is_integer(delay) and delay >= 0 and delay <= 86_400_000 ->
+          {:retry, delay}
+
+        _ ->
+          :wait
+      end
+    else
+      :wait
+    end
+  end
 
   @doc false
   @spec normalize(term()) :: {:ok, config()} | {:error, term()}

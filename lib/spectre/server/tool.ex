@@ -340,7 +340,7 @@ defmodule Spectre.Server.Tool do
     # Installation exposes a helper, not authority to execute every operation.
     # Managed validates enabled effects at bootstrap and records a rejection
     # if a callback later proposes an operation outside that immutable allowlist.
-    _operations = Spectre.Server.GAM.Managed.operations(Keyword.fetch!(config, :server))
+    _server = Keyword.fetch!(config, :server)
     :ok
   end
 

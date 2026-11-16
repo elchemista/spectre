@@ -48,4 +48,54 @@ defmodule Spectre.Server.DiagnosticDecisionCorrelationTest do
 
     assert {:ok, %{total: 0}} = Diagnostics.page(projection, scope, interaction: "unrelated")
   end
+
+  test "lifecycle correlation and reason codes redact private values and reject foreign cursors" do
+    scope = "scope"
+
+    evidence =
+      struct(Evidence,
+        ref: "lifecycle",
+        proposition: {:spectre_server_lifecycle, "event"},
+        bindings: %{"scope_ref" => scope},
+        payload: %{event: %{origin_id: "i1", phase: :closed, reason: "PRIVATE", input: "PRIVATE"}}
+      )
+
+    decision =
+      struct(Decision,
+        ref: "decision",
+        scope_ref: scope,
+        candidate_identity_key: "unrelated",
+        reasons: [:expired, {:unavailable, "PRIVATE"}, {"PRIVATE", :unknown}, "PRIVATE", %{}],
+        outcome: :refused,
+        candidate_class: %{private: "PRIVATE"}
+      )
+
+    projection = %State{
+      domain_ref: "domain",
+      revision: 1,
+      catalog: %Catalog{scopes: %{scope => struct(Opening, ref: scope)}},
+      evidence: %{evidence.ref => evidence},
+      decisions: %{decision.ref => decision}
+    }
+
+    assert {:ok, %{records: records}} = Diagnostics.page(projection, scope, [])
+
+    assert %{
+             reason_codes: [:expired, :unavailable, :redacted, :redacted, :redacted],
+             candidate_class: nil
+           } =
+             Enum.find(records, &(&1.kind == :decision))
+
+    assert %{lifecycle: %{phase: :closed, reason: nil}} =
+             Enum.find(records, &(&1.kind == :evidence))
+
+    refute inspect(records) =~ "PRIVATE"
+    assert {:ok, %{total: 1}} = Diagnostics.page(projection, scope, interaction: "i1")
+    assert {:ok, %{total: 0}} = Diagnostics.page(projection, scope, interaction: "other")
+
+    assert {:error, :invalid_cursor} =
+             Diagnostics.page(projection, scope, cursor: {1, 1, "foreign", nil, 0})
+
+    assert {:error, :invalid_diagnostic_options} = Diagnostics.page(projection, scope, :invalid)
+  end
 end

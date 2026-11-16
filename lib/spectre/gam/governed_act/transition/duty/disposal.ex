@@ -204,12 +204,15 @@ defmodule Spectre.GAM.GovernedAct.Transition.Duty.Disposal do
   end
 
   defp closing_condition_met?(projection, condition, supporting, committed_at) do
-    available_evidence = projection |> ErasureAnalysis.available_evidence() |> Map.values()
     supporting_refs = for {:evidence, item} <- supporting, do: item.ref
 
     with {:ok, condition} <- Condition.new(condition),
          {:satisfied, basis_refs} <-
-           Recognition.check_with_basis([condition], available_evidence, committed_at) do
+           Recognition.check_with_basis(
+             [condition],
+             Spectre.GAM.GovernedAct.ReadIndex.evidence_for(projection, [condition]),
+             committed_at
+           ) do
       basis_refs -- supporting_refs == []
     else
       _not_satisfied_or_invalid -> false

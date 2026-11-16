@@ -144,6 +144,19 @@ defmodule SpectreCanonicalValueTest do
     assert {:error, {:canonical_value_too_large, _actual, 5}} =
              Value.encode("too large", max_bytes: 5)
 
+    # The shared engine preserves each public codec's established byte budget.
+    assert {:error, {:canonical_value_too_large, 28, 11}} =
+             Value.encode([:a, :b, :c], max_bytes: 11)
+
+    assert {:error, {:canonical_value_too_large, 16, 11}} =
+             Spectre.GAM.Canonical.Value.encode([:a, :b, :c], max_bytes: 11)
+
+    assert {:error, {:unsupported_canonical_value, [1], :pid}} =
+             Value.encode([:a, self()], max_bytes: 11)
+
+    assert {:error, {:canonical_value_too_large, 16, 11}} =
+             Spectre.GAM.Canonical.Value.encode([:a, self()], max_bytes: 11)
+
     assert {:error, {:canonical_depth_exceeded, [0], 0}} =
              Value.encode([:nested], max_depth: 0)
 

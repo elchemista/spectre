@@ -504,10 +504,5 @@ defmodule Spectre.Instance.Lifecycle do
   defp activation_from_data(value),
     do: {:error, {:invalid_definition_lifecycle_field, :activation, value}}
 
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:list, :map, :tuple, :binary, :atom])
 end

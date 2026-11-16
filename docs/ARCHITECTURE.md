@@ -2,7 +2,7 @@
 
 Spectre 0.4 preserves the recognition and extension capabilities of 0.3 while
 separating declarations, conversational ownership and authority. This is the
-AgentServer architecture. The [Instance architecture](ARCHITECTURE_0_3.md)
+AgentServer architecture. The [Instance architecture](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/ARCHITECTURE_0_3.md)
 remains a compatibility path, not a description of the new owner.
 
 ## Responsibilities
@@ -24,17 +24,9 @@ callbacks without taking over framework message dispatch.
 
 ## Agent and Skill process tree
 
-```text
-Application session
-└── Agent Server.Runtime
-    ├── Automatic GAM boundary / Domain (Sequencer + authority ledger)
-    └── Skill supervisor (one_for_one)
-        ├── Research Server.Runtime
-        └── Knowledge Server.Runtime
+![Architecture: Stack, Agent, Server and GAM: Agent and Skill process tree](assets/architecture-1.svg)
 
-All governed commands → Server.GAM → the same Domain
-Shared Stack resources are supervised separately.
-```
+[Diagram source](assets/architecture-1.mmd).
 
 A mounted Skill with `server:` receives its own GenServer, workers, assigns,
 streaming, pending intentions and checkpoint. Matching its route delegates to
@@ -60,27 +52,9 @@ uncertain dispatch recovery and the cancellation contract, or the
 
 ## Input and execution loop
 
-```text
-input → pending-input arbitration → router → handle_flow
-          │                                    │
-          └→ handle_pending                    ↓
-                                      returned context + commands
-                                               ↓
-                                  validate → durable acquisition/outbox
-                                               ↓
-                    ┌──────────────────────────┴────────────────────┐
-                    │                                               │
-             cognitive worker                               governed proposal
-      classify / generate / lookup / tools                 host scope + binding
-                    │                                               ↓
-                    │                                    GAM admission / consent
-                    │                                               ↓
-                    │                                    committed Act → executor
-                    │                                               ↓
-                    └──────────→ handle_result ←────────────── actual Outcome
-                                      │
-                                      └→ next commands / response / wait
-```
+![Architecture: Stack, Agent, Server and GAM: Input and execution loop](assets/architecture-2.svg)
+
+[Diagram source](assets/architecture-2.mmd).
 
 A foreground pending input is checked before ordinary routing. Changing topics
 can suspend it and route the current input. Background actor waits do not

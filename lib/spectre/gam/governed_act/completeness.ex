@@ -14,6 +14,9 @@ defmodule Spectre.GAM.GovernedAct.Completeness do
 
   @doc "Validates relationships that cannot be closed over a single event."
   @spec validate(State.t()) :: :ok | {:error, term()}
+  def validate(%State{read_index: %{selection: reads}}) when not is_nil(reads),
+    do: {:error, :complete_projection_required}
+
   def validate(%State{} = state) do
     with :ok <- complete_admissions(state),
          :ok <- complete_reservations(state),
@@ -31,6 +34,9 @@ defmodule Spectre.GAM.GovernedAct.Completeness do
   @local_events ~w(evidence_recorded decision_recorded act_committed dispatch_ready
     attempt_started outcome_recorded meter_reserved meter_settled meter_released
     meter_suspended duty_opened)
+
+  @doc false
+  def local_event_type?(type), do: type in @local_events
 
   @doc """
   Checks a batch applied by the fold to an already verified prefix.
@@ -50,8 +56,40 @@ defmodule Spectre.GAM.GovernedAct.Completeness do
            :ok <- complete_suspensions(local),
            do: complete_meter_recontainments(local)
     else
-      validate(state)
+      validate_governance(state, events)
     end
+  end
+
+  defp validate_governance(%{read_index: %{selection: nil}} = state, _events),
+    do: validate(state)
+
+  # A verified prefix can be checked incrementally. Execution relationships
+  # close over the touched Acts; authority ownership and restriction lineage
+  # require their complete collections. This does not bless a partial State
+  # as a complete historical projection.
+  defp validate_governance(state, events) do
+    reads = state.read_index.selection
+
+    for collection <- [
+          :mandates,
+          :mandate_successors,
+          :revocations,
+          :meters,
+          :meter_owner_aliases
+        ] do
+      Spectre.GAM.GovernedAct.Reads.ensure(reads, {:page, collection, []})
+    end
+
+    local = execution_slice(state, events)
+
+    with :ok <- complete_admissions(local),
+         :ok <- complete_reservations(local),
+         :ok <- complete_dispatches(local),
+         :ok <- complete_suspensions(local),
+         :ok <- complete_meter_recontainments(local),
+         :ok <- complete_mandate_restrictions(state),
+         :ok <- complete_meter_ownership(state),
+         do: complete_declassifications(state)
   end
 
   defp local_event?(state, %{type: "act_committed", identity: ref}),

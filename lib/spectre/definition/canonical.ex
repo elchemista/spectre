@@ -330,9 +330,5 @@ defmodule Spectre.Definition.Canonical do
   end
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:binary, :list, :map, :tuple])
 end

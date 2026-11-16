@@ -1,0 +1,10 @@
+flowchart TD
+  Input[Input: pending handling or Agent routing] --> Callback[handle_pending or handle_flow]
+  Callback --> Acquire[Validate and acquire returned commands]
+  Acquire --> Cognitive[Cognitive worker]
+  Acquire --> Governed[GAM checks and required consent]
+  Governed --> Execute[Recorded Act, then effect adapter]
+  Execute --> Outcome[Observed Outcome]
+  Cognitive --> Result[handle_result]
+  Outcome --> Result
+  Result --> Next[Respond, wait or return next commands]

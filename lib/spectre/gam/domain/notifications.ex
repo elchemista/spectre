@@ -14,15 +14,17 @@ defmodule Spectre.GAM.Domain.Notifications do
   @doc false
   @spec subscribe(binary()) :: {:ok, pid()} | {:error, atom()}
   def subscribe(domain) do
-    with notifier when is_pid(notifier) <- Process.whereis(__MODULE__) do
-      unless self() in :pg.get_local_members(__MODULE__, domain),
-        do: :ok = :pg.join(__MODULE__, domain, self())
+    case Process.whereis(__MODULE__) do
+      notifier when is_pid(notifier) ->
+        unless self() in :pg.get_local_members(__MODULE__, domain),
+          do: :ok = :pg.join(__MODULE__, domain, self())
 
-      if Process.whereis(__MODULE__) == notifier,
-        do: {:ok, notifier},
-        else: {:error, :notifications_unavailable}
-    else
-      _ -> {:error, :notifications_unavailable}
+        if Process.whereis(__MODULE__) == notifier,
+          do: {:ok, notifier},
+          else: {:error, :notifications_unavailable}
+
+      _ ->
+        {:error, :notifications_unavailable}
     end
   rescue
     _ -> {:error, :notifications_unavailable}

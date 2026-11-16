@@ -33,6 +33,9 @@ defmodule Spectre.Skill.StateBinding do
     :binding_receipt
   ]
 
+  @data_fields Enum.map(@fields, &Atom.to_string/1) ++
+                 ["definition_canonicalization_version", "definition_contract_version"]
+
   @enforce_keys @fields
   defstruct schema_version: @schema_version,
             skill_id: nil,
@@ -116,24 +119,11 @@ defmodule Spectre.Skill.StateBinding do
          :ok <- ordered_timestamps(Map.get(attrs, :created_at), Map.get(attrs, :updated_at)),
          :ok <- portable_map(Map.get(attrs, :provenance), :provenance),
          :ok <- valid_lifecycle(attrs) do
-      base = %__MODULE__{
-        schema_version: @schema_version,
-        skill_id: Map.fetch!(attrs, :skill_id),
-        state_schema_ref: Map.fetch!(attrs, :state_schema_ref),
-        state_generation: Map.fetch!(attrs, :state_generation),
-        branch_id: Map.fetch!(attrs, :branch_id),
-        parent_branch_id: Map.fetch!(attrs, :parent_branch_id),
-        owning_definition_ref: definition_ref,
-        revision: Map.fetch!(attrs, :revision),
-        fencing_token: Map.fetch!(attrs, :fencing_token),
-        status: Map.fetch!(attrs, :status),
-        retention: Map.fetch!(attrs, :retention),
-        state: Map.fetch!(attrs, :state),
-        created_at: Map.fetch!(attrs, :created_at),
-        updated_at: Map.fetch!(attrs, :updated_at),
-        provenance: Map.fetch!(attrs, :provenance),
-        binding_receipt: nil
-      }
+      base =
+        attrs
+        |> Map.put(:owning_definition_ref, definition_ref)
+        |> Map.put(:binding_receipt, nil)
+        |> then(&struct!(__MODULE__, &1))
 
       receipt = receipt(base)
 
@@ -164,12 +154,9 @@ defmodule Spectre.Skill.StateBinding do
          :ok <- expected_schema(binding, Keyword.get(opts, :state_schema_ref)),
          :ok <- expected_owner(binding, Keyword.get(opts, :owning_definition_ref)),
          {:ok, fencing_token} <- next_fencing_token(binding, opts) do
-      rebuild(binding,
+      revise(binding, opts,
         state: state,
-        revision: binding.revision + 1,
-        fencing_token: fencing_token,
-        updated_at: Keyword.get(opts, :updated_at, System.system_time(:millisecond)),
-        provenance: Keyword.get(opts, :provenance, binding.provenance)
+        fencing_token: fencing_token
       )
     end
   end
@@ -187,12 +174,9 @@ defmodule Spectre.Skill.StateBinding do
       if binding.status == status do
         {:ok, binding}
       else
-        rebuild(binding,
+        revise(binding, opts,
           status: status,
-          revision: binding.revision + 1,
-          fencing_token: fencing_token,
-          updated_at: Keyword.get(opts, :updated_at, System.system_time(:millisecond)),
-          provenance: Keyword.get(opts, :provenance, binding.provenance)
+          fencing_token: fencing_token
         )
       end
     end
@@ -211,14 +195,11 @@ defmodule Spectre.Skill.StateBinding do
       if binding.retention == retention do
         {:ok, binding}
       else
-        rebuild(binding,
+        revise(binding, opts,
           status: :dormant,
           retention: retention,
           state: if(retention == :purged, do: nil, else: binding.state),
-          revision: binding.revision + 1,
-          fencing_token: fencing_token,
-          updated_at: Keyword.get(opts, :updated_at, System.system_time(:millisecond)),
-          provenance: Keyword.get(opts, :provenance, binding.provenance)
+          fencing_token: fencing_token
         )
       end
     end
@@ -250,76 +231,37 @@ defmodule Spectre.Skill.StateBinding do
   def to_data(%__MODULE__{} = binding), do: data(binding, binding.binding_receipt)
 
   defp data(binding, binding_receipt) do
-    %{
-      "schema_version" => binding.schema_version,
-      "skill_id" => binding.skill_id,
-      "state_schema_ref" => binding.state_schema_ref,
-      "state_generation" => binding.state_generation,
-      "branch_id" => binding.branch_id,
-      "parent_branch_id" => binding.parent_branch_id,
+    @fields
+    |> Map.new(&{Atom.to_string(&1), Map.fetch!(binding, &1)})
+    |> Map.merge(%{
       "owning_definition_ref" => DefinitionRef.to_string(binding.owning_definition_ref),
       "definition_canonicalization_version" =>
         binding.owning_definition_ref.canonicalization_version,
       "definition_contract_version" => binding.owning_definition_ref.contract_version,
-      "revision" => binding.revision,
-      "fencing_token" => binding.fencing_token,
       "status" => Atom.to_string(binding.status),
       "retention" => Atom.to_string(binding.retention),
-      "state" => binding.state,
-      "created_at" => binding.created_at,
-      "updated_at" => binding.updated_at,
-      "provenance" => binding.provenance,
       "binding_receipt" => binding_receipt
-    }
+    })
   end
 
   @doc "Restores portable binding data without creating atoms."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(%{
-        "schema_version" => schema_version,
-        "skill_id" => skill_id,
-        "state_schema_ref" => state_schema_ref,
-        "state_generation" => state_generation,
-        "branch_id" => branch_id,
-        "parent_branch_id" => parent_branch_id,
-        "owning_definition_ref" => definition_ref,
-        "definition_canonicalization_version" => canonicalization_version,
-        "definition_contract_version" => contract_version,
-        "revision" => revision,
-        "fencing_token" => fencing_token,
-        "status" => status,
-        "retention" => retention,
-        "state" => state,
-        "created_at" => created_at,
-        "updated_at" => updated_at,
-        "provenance" => provenance,
-        "binding_receipt" => binding_receipt
-      }) do
-    with {:ok, definition_ref} <-
-           DefinitionRef.parse(definition_ref,
-             canonicalization_version: canonicalization_version,
-             contract_version: contract_version
+  def from_data(data) when is_map(data) do
+    with true <- Enum.all?(@data_fields, &Map.has_key?(data, &1)),
+         {:ok, definition_ref} <-
+           DefinitionRef.parse(Map.fetch!(data, "owning_definition_ref"),
+             canonicalization_version: Map.fetch!(data, "definition_canonicalization_version"),
+             contract_version: Map.fetch!(data, "definition_contract_version")
            ),
-         {:ok, status} <- status_from_data(status),
-         {:ok, retention} <- retention_from_data(retention) do
-      new(%{
-        schema_version: schema_version,
-        skill_id: skill_id,
-        state_schema_ref: state_schema_ref,
-        state_generation: state_generation,
-        branch_id: branch_id,
-        parent_branch_id: parent_branch_id,
-        owning_definition_ref: definition_ref,
-        revision: revision,
-        fencing_token: fencing_token,
-        status: status,
-        retention: retention,
-        state: state,
-        created_at: created_at,
-        updated_at: updated_at,
-        provenance: provenance,
-        binding_receipt: binding_receipt
-      })
+         {:ok, status} <- status_from_data(Map.fetch!(data, "status")),
+         {:ok, retention} <- retention_from_data(Map.fetch!(data, "retention")) do
+      @fields
+      |> Map.new(&{&1, Map.fetch!(data, Atom.to_string(&1))})
+      |> Map.merge(%{owning_definition_ref: definition_ref, status: status, retention: retention})
+      |> new()
+    else
+      false -> {:error, {:invalid_skill_state_binding_data, :map}}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -337,9 +279,14 @@ defmodule Spectre.Skill.StateBinding do
 
   def decode(value), do: {:error, {:invalid_skill_state_binding_binary, shape(value)}}
 
-  defp rebuild(binding, changes) do
+  defp revise(binding, opts, changes) do
     binding
     |> Map.from_struct()
+    |> Map.merge(%{
+      revision: binding.revision + 1,
+      updated_at: Keyword.get(opts, :updated_at, System.system_time(:millisecond)),
+      provenance: Keyword.get(opts, :provenance, binding.provenance)
+    })
     |> Map.merge(Map.new(changes))
     |> Map.delete(:binding_receipt)
     |> new()
@@ -489,11 +436,6 @@ defmodule Spectre.Skill.StateBinding do
   defp retention_from_data("purged"), do: {:ok, :purged}
   defp retention_from_data(value), do: {:error, {:invalid_skill_state_retention, value}}
 
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(value) when is_integer(value), do: :integer
-  defp shape(_value), do: :other
+  defp shape(value),
+    do: Spectre.ValueShape.of(value, [:list, :map, :tuple, :binary, :atom, :integer])
 end

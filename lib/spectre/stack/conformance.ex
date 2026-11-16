@@ -157,9 +157,5 @@ defmodule Spectre.Stack.Conformance do
     do: {:error, {:invalid_stack_conformance_entry, shape(value)}}
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :atom, :tuple])
 end

@@ -55,11 +55,19 @@ defmodule Spectre.Canonical.Value do
   """
   @spec encode(term(), keyword()) :: {:ok, binary()} | {:error, reason()}
   def encode(value, opts \\ []) do
-    with {:ok, context} <- context(opts),
-         {:ok, payload} <- encode_term(value, context, [], 0),
-         encoded = @magic <> <<@version>> <> payload,
+    with {:ok, context} <- context(opts, :general),
+         {:ok, payload, _context} <- encode_term(value, context, [], 0),
+         encoded = IO.iodata_to_binary([@magic, <<@version>>, payload]),
          :ok <- encoded_size(encoded, context) do
       {:ok, encoded}
+    end
+  end
+
+  @doc false
+  @spec encode_budgeted(term(), keyword()) :: {:ok, binary()} | {:error, reason()}
+  def encode_budgeted(value, opts) do
+    with {:ok, payload} <- encoded_payload(value, opts) do
+      {:ok, IO.iodata_to_binary([@magic, <<@version>>, payload])}
     end
   end
 
@@ -67,8 +75,11 @@ defmodule Spectre.Canonical.Value do
   @spec encode!(term(), keyword()) :: binary()
   def encode!(value, opts \\ []) do
     case encode(value, opts) do
-      {:ok, encoded} -> encoded
-      {:error, reason} -> raise ArgumentError, "non-canonical Spectre value: #{inspect(reason)}"
+      {:ok, encoded} ->
+        encoded
+
+      {:error, reason} ->
+        raise ArgumentError, "non-canonical Spectre value: #{inspect(reason)}"
     end
   end
 
@@ -79,24 +90,35 @@ defmodule Spectre.Canonical.Value do
   unknown atoms, and structs outside the explicit `:allowed_structs` list.
   """
   @spec decode(binary(), keyword()) :: {:ok, term()} | {:error, reason()}
-  def decode(encoded, opts \\ [])
+  def decode(encoded, opts \\ []), do: decode_value(encoded, opts, :general)
 
-  def decode(encoded, opts) when is_binary(encoded) do
-    with {:ok, context} <- context(opts),
+  @doc false
+  @spec decode_checked(binary(), keyword()) :: {:ok, term()} | {:error, reason()}
+  def decode_checked(encoded, opts), do: decode_value(encoded, opts, :gam)
+
+  defp decode_value(encoded, opts, profile) when is_binary(encoded) do
+    with {:ok, context} <- context(opts, profile),
          :ok <- encoded_size(encoded, context),
          {:ok, payload} <- header(encoded),
          {:ok, value, ""} <- decode_term(payload, context, [], 0),
-         {:ok, canonical} <- encode(value, opts),
-         true <- canonical == encoded do
+         :ok <- verify_encoding(value, encoded, opts, profile) do
       {:ok, value}
     else
-      false -> {:error, :noncanonical_value_encoding}
       {:ok, _value, trailing} -> {:error, {:trailing_canonical_bytes, byte_size(trailing)}}
       {:error, _reason} = error -> error
     end
   end
 
-  def decode(value, _opts), do: {:error, {:invalid_canonical_binary, shape(value)}}
+  defp decode_value(value, _opts, _profile),
+    do: {:error, {:invalid_canonical_binary, shape(value)}}
+
+  defp verify_encoding(_value, _encoded, _opts, :gam), do: :ok
+
+  defp verify_encoding(value, encoded, opts, :general) do
+    with {:ok, canonical} <- encode(value, opts) do
+      if canonical == encoded, do: :ok, else: {:error, :noncanonical_value_encoding}
+    end
+  end
 
   @doc "Returns the lowercase SHA-256 digest of a canonical value."
   @spec digest(term(), keyword()) :: {:ok, String.t()} | {:error, reason()}
@@ -113,32 +135,49 @@ defmodule Spectre.Canonical.Value do
   @spec digest!(term(), keyword()) :: String.t()
   def digest!(value, opts \\ []) do
     case digest(value, opts) do
-      {:ok, digest} -> digest
-      {:error, reason} -> raise ArgumentError, "non-canonical Spectre value: #{inspect(reason)}"
+      {:ok, digest} ->
+        digest
+
+      {:error, reason} ->
+        raise ArgumentError, "non-canonical Spectre value: #{inspect(reason)}"
     end
   end
 
   @doc "Checks whether a value can be represented by this codec."
   @spec validate(term(), keyword()) :: :ok | {:error, reason()}
-  def validate(value, opts \\ []) do
-    case encode(value, opts) do
-      {:ok, _encoded} -> :ok
-      {:error, _reason} = error -> error
+  def validate(value, opts \\ []), do: validation_result(encode(value, opts))
+
+  @doc false
+  @spec validate_budgeted(term(), keyword()) :: :ok | {:error, reason()}
+  def validate_budgeted(value, opts), do: validation_result(encoded_payload(value, opts))
+
+  defp validation_result({:ok, _encoded}), do: :ok
+  defp validation_result({:error, _reason} = error), do: error
+
+  # Validation shares the exact wire budget without allocating the final binary.
+  defp encoded_payload(value, opts) do
+    with {:ok, context} <- context(opts, :gam),
+         {:ok, context} <- charge(context, 5),
+         {:ok, payload, _context} <- encode_term(value, context, [], 0) do
+      {:ok, payload}
     end
   end
 
-  @spec context(keyword()) :: {:ok, map()} | {:error, reason()}
-  defp context(opts) when is_list(opts) do
+  @spec context(keyword(), :general | :gam) :: {:ok, map()} | {:error, reason()}
+  defp context(opts, profile) when is_list(opts) do
     with true <- Keyword.keyword?(opts),
          {:ok, max_bytes} <- positive_option(opts, :max_bytes, @default_max_bytes),
          {:ok, max_depth} <- non_negative_option(opts, :max_depth, @default_max_depth),
          {:ok, max_collection_size} <-
            non_negative_option(opts, :max_collection_size, @default_max_collection_size),
-         {:ok, allowed_structs} <- allowed_structs(Keyword.get(opts, :allowed_structs, [])) do
+         {:ok, allowed_structs} <-
+           allowed_structs(Keyword.get(opts, :allowed_structs, []), profile) do
       {:ok,
        %{
          allowed_structs: allowed_structs,
+         profile: profile,
          max_bytes: max_bytes,
+         used_bytes: 0,
          max_collection_size: max_collection_size,
          max_depth: max_depth
        }}
@@ -148,7 +187,7 @@ defmodule Spectre.Canonical.Value do
     end
   end
 
-  defp context(_opts), do: {:error, :invalid_canonical_options}
+  defp context(_opts, _profile), do: {:error, :invalid_canonical_options}
 
   @spec positive_option(keyword(), atom(), pos_integer()) ::
           {:ok, pos_integer()} | {:error, reason()}
@@ -168,22 +207,55 @@ defmodule Spectre.Canonical.Value do
     end
   end
 
-  @spec allowed_structs(term()) :: {:ok, map()} | {:error, reason()}
-  defp allowed_structs(modules) when is_list(modules) do
-    if Enum.all?(modules, &(is_atom(&1) and not is_nil(&1))) do
+  @spec allowed_structs(term(), :general | :gam) :: {:ok, map()} | {:error, reason()}
+  defp allowed_structs(modules, profile) when is_list(modules) do
+    if module_list?(modules, profile) do
       {:ok, Map.new(modules, &{Atom.to_string(&1), &1})}
     else
       {:error, {:invalid_allowed_structs, modules}}
     end
   end
 
-  defp allowed_structs(modules), do: {:error, {:invalid_allowed_structs, modules}}
+  defp allowed_structs(modules, _profile), do: {:error, {:invalid_allowed_structs, modules}}
+
+  defp module_list?(modules, :general),
+    do: Enum.all?(modules, &(is_atom(&1) and not is_nil(&1)))
+
+  defp module_list?([], :gam), do: true
+
+  defp module_list?([module | rest], :gam) when is_atom(module) and not is_nil(module),
+    do: module_list?(rest, :gam)
+
+  defp module_list?(_invalid, :gam), do: false
 
   @spec encoded_size(binary(), map()) :: :ok | {:error, reason()}
   defp encoded_size(encoded, %{max_bytes: max_bytes}) do
     if byte_size(encoded) <= max_bytes,
       do: :ok,
       else: {:error, {:canonical_value_too_large, byte_size(encoded), max_bytes}}
+  end
+
+  # Charge before allocating output. On rejection the reported size is the
+  # prefix size that exceeds the budget, not an expensive full-size estimate.
+  # Successful encodings keep exactly the same canonical bytes and digests.
+  defp charge(%{profile: :general} = context, _size), do: {:ok, context}
+
+  defp charge(context, size) do
+    used = context.used_bytes + size
+
+    if used <= context.max_bytes,
+      do: {:ok, %{context | used_bytes: used}},
+      else: {:error, {:canonical_value_too_large, used, context.max_bytes}}
+  end
+
+  defp scalar(encoded, context) do
+    with {:ok, context} <- charge(context, byte_size(encoded)),
+         do: {:ok, encoded, context}
+  end
+
+  defp sized_scalar(tag, value, context) do
+    with {:ok, context} <- charge(context, 5 + byte_size(value)),
+         do: {:ok, [<<tag, byte_size(value)::unsigned-big-32>>, value], context}
   end
 
   @spec header(binary()) :: {:ok, binary()} | {:error, reason()}
@@ -195,69 +267,73 @@ defmodule Spectre.Canonical.Value do
   defp header(_encoded), do: {:error, :invalid_canonical_header}
 
   @spec encode_term(term(), map(), [term()], non_neg_integer()) ::
-          {:ok, binary()} | {:error, reason()}
+          {:ok, iodata(), map()} | {:error, reason()}
   defp encode_term(_value, %{max_depth: max_depth}, path, depth) when depth > max_depth,
     do: {:error, {:canonical_depth_exceeded, Enum.reverse(path), max_depth}}
 
-  defp encode_term(nil, _context, _path, _depth), do: {:ok, <<@tag_nil>>}
-  defp encode_term(false, _context, _path, _depth), do: {:ok, <<@tag_false>>}
-  defp encode_term(true, _context, _path, _depth), do: {:ok, <<@tag_true>>}
+  defp encode_term(nil, context, _path, _depth), do: scalar(<<@tag_nil>>, context)
+  defp encode_term(false, context, _path, _depth), do: scalar(<<@tag_false>>, context)
+  defp encode_term(true, context, _path, _depth), do: scalar(<<@tag_true>>, context)
 
-  defp encode_term(value, _context, _path, _depth) when is_integer(value) do
+  defp encode_term(value, context, _path, _depth) when is_integer(value) do
     encoded = Integer.to_string(value)
-    {:ok, <<@tag_integer, byte_size(encoded)::unsigned-big-32, encoded::binary>>}
+    sized_scalar(@tag_integer, encoded, context)
   end
 
-  defp encode_term(value, _context, path, _depth) when is_float(value) do
+  defp encode_term(value, context, path, _depth) when is_float(value) do
     if finite_float?(value),
-      do: {:ok, <<@tag_float, value::float-big-64>>},
+      do: scalar(<<@tag_float, value::float-big-64>>, context),
       else: {:error, {:nonfinite_canonical_float, Enum.reverse(path)}}
   end
 
-  defp encode_term(value, _context, _path, _depth) when is_binary(value),
-    do: {:ok, sized(@tag_binary, value)}
+  defp encode_term(value, context, _path, _depth) when is_binary(value),
+    do: sized_scalar(@tag_binary, value, context)
 
-  defp encode_term(value, _context, _path, _depth) when is_atom(value),
-    do: {:ok, sized(@tag_atom, Atom.to_string(value))}
+  defp encode_term(value, context, _path, _depth) when is_atom(value),
+    do: sized_scalar(@tag_atom, Atom.to_string(value), context)
 
   defp encode_term(value, context, path, depth) when is_struct(value) do
     module = value.__struct__
     module_name = Atom.to_string(module)
 
     if Map.get(context.allowed_structs, module_name) == module do
-      with {:ok, fields} <-
-             encode_term(Map.from_struct(value), context, [:fields | path], depth + 1) do
-        {:ok,
-         <<@tag_struct, byte_size(module_name)::unsigned-big-32, module_name::binary,
-           fields::binary>>}
+      fields = Map.from_struct(value)
+
+      with :ok <- validate_encoding_fields(context, module, fields, path),
+           {:ok, prefix, context} <- sized_scalar(@tag_struct, module_name, context),
+           {:ok, fields, context} <-
+             encode_term(fields, context, [:fields | path], depth + 1) do
+        {:ok, [prefix, fields], context}
       end
     else
       {:error, {:disallowed_canonical_struct, Enum.reverse(path), module}}
     end
   end
 
-  defp encode_term([], _context, _path, _depth), do: {:ok, <<@tag_list, 0::unsigned-big-32>>}
+  defp encode_term([], context, _path, _depth),
+    do: scalar(<<@tag_list, 0::unsigned-big-32>>, context)
 
   defp encode_term([_head | _tail] = value, context, path, depth) do
-    with {:ok, items} <- encode_list(value, context, path, depth + 1, 0, []) do
-      {:ok, <<@tag_list, length(items)::unsigned-big-32, IO.iodata_to_binary(items)::binary>>}
+    with {:ok, context} <- charge(context, 5),
+         {:ok, items, context} <- encode_list(value, context, path, depth + 1, 0, []) do
+      {:ok, [<<@tag_list, length(items)::unsigned-big-32>>, items], context}
     end
   end
 
   defp encode_term(value, context, path, depth) when is_tuple(value) do
-    values = Tuple.to_list(value)
-
-    with :ok <- collection_size(length(values), context, path),
-         {:ok, items} <- encode_sequence(values, context, path, depth + 1, 0, []) do
-      {:ok, <<@tag_tuple, length(items)::unsigned-big-32, IO.iodata_to_binary(items)::binary>>}
+    with :ok <- collection_size(tuple_size(value), context, path),
+         {:ok, context} <- charge(context, 5),
+         {:ok, items, context} <- encode_sequence(value, context, path, depth + 1, 0, []) do
+      {:ok, [<<@tag_tuple, tuple_size(value)::unsigned-big-32>>, items], context}
     end
   end
 
   defp encode_term(value, context, path, depth) when is_map(value) do
     with :ok <- collection_size(map_size(value), context, path),
-         {:ok, entries} <- encode_map(value, context, path, depth + 1) do
-      body = Enum.map_join(entries, fn {key, item} -> key <> item end)
-      {:ok, <<@tag_map, length(entries)::unsigned-big-32, body::binary>>}
+         {:ok, context} <- charge(context, 5),
+         {:ok, entries, context} <- encode_map(value, context, path, depth + 1) do
+      body = Enum.map(entries, fn {key, item} -> [key, item] end)
+      {:ok, [<<@tag_map, map_size(value)::unsigned-big-32>>, body], context}
     end
   end
 
@@ -265,15 +341,15 @@ defmodule Spectre.Canonical.Value do
     {:error, {:unsupported_canonical_value, Enum.reverse(path), kind(value)}}
   end
 
-  @spec encode_list(term(), map(), [term()], non_neg_integer(), non_neg_integer(), [binary()]) ::
-          {:ok, [binary()]} | {:error, reason()}
+  @spec encode_list(term(), map(), [term()], non_neg_integer(), non_neg_integer(), [iodata()]) ::
+          {:ok, [iodata()], map()} | {:error, reason()}
   defp encode_list([], context, path, _depth, count, encoded) do
-    with :ok <- collection_size(count, context, path), do: {:ok, Enum.reverse(encoded)}
+    with :ok <- collection_size(count, context, path), do: {:ok, Enum.reverse(encoded), context}
   end
 
   defp encode_list([head | tail], context, path, depth, index, encoded) do
     with :ok <- collection_size(index + 1, context, path),
-         {:ok, item} <- encode_term(head, context, [index | path], depth) do
+         {:ok, item, context} <- encode_term(head, context, [index | path], depth) do
       encode_list(tail, context, path, depth, index + 1, [item | encoded])
     end
   end
@@ -281,35 +357,34 @@ defmodule Spectre.Canonical.Value do
   defp encode_list(_improper_tail, _context, path, _depth, index, _encoded),
     do: {:error, {:improper_canonical_list, Enum.reverse([{:tail, index} | path])}}
 
-  @spec encode_sequence([term()], map(), [term()], non_neg_integer(), non_neg_integer(), [
-          binary()
-        ]) ::
-          {:ok, [binary()]} | {:error, reason()}
-  defp encode_sequence([], _context, _path, _depth, _index, encoded),
-    do: {:ok, Enum.reverse(encoded)}
+  @spec encode_sequence(tuple(), map(), [term()], non_neg_integer(), non_neg_integer(), [iodata()]) ::
+          {:ok, [iodata()], map()} | {:error, reason()}
+  defp encode_sequence(values, context, _path, _depth, index, encoded)
+       when index == tuple_size(values),
+       do: {:ok, Enum.reverse(encoded), context}
 
-  defp encode_sequence([value | rest], context, path, depth, index, encoded) do
-    with {:ok, item} <- encode_term(value, context, [index | path], depth) do
-      encode_sequence(rest, context, path, depth, index + 1, [item | encoded])
+  defp encode_sequence(values, context, path, depth, index, encoded) do
+    with {:ok, item, context} <- encode_term(elem(values, index), context, [index | path], depth) do
+      encode_sequence(values, context, path, depth, index + 1, [item | encoded])
     end
   end
 
   @spec encode_map(map(), map(), [term()], non_neg_integer()) ::
-          {:ok, [{binary(), binary()}]} | {:error, reason()}
+          {:ok, [{binary(), iodata()}], map()} | {:error, reason()}
   defp encode_map(value, context, path, depth) do
     value
-    |> Map.to_list()
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {{key, item}, index}, {:ok, entries} ->
-      with {:ok, encoded_key} <- encode_term(key, context, [{:key, index} | path], depth),
-           {:ok, encoded_item} <- encode_term(item, context, [{:value, index} | path], depth) do
-        {:cont, {:ok, [{encoded_key, encoded_item} | entries]}}
+    |> Enum.reduce_while({:ok, [], context, 0}, fn {key, item}, {:ok, entries, context, index} ->
+      with {:ok, encoded_key, context} <- encode_term(key, context, [{:key, index} | path], depth),
+           {:ok, encoded_item, context} <-
+             encode_term(item, context, [{:value, index} | path], depth) do
+        entry = {IO.iodata_to_binary(encoded_key), encoded_item}
+        {:cont, {:ok, [entry | entries], context, index + 1}}
       else
         {:error, _reason} = error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, entries} -> {:ok, Enum.sort_by(entries, &elem(&1, 0))}
+      {:ok, entries, context, _index} -> {:ok, Enum.sort_by(entries, &elem(&1, 0)), context}
       {:error, _reason} = error -> error
     end
   end
@@ -320,9 +395,6 @@ defmodule Spectre.Canonical.Value do
       do: :ok,
       else: {:error, {:canonical_collection_too_large, Enum.reverse(path), size, max}}
   end
-
-  @spec sized(byte(), binary()) :: binary()
-  defp sized(tag, value), do: <<tag, byte_size(value)::unsigned-big-32, value::binary>>
 
   @spec decode_term(binary(), map(), [term()], non_neg_integer()) ::
           {:ok, term(), binary()} | {:error, reason()}
@@ -361,8 +433,9 @@ defmodule Spectre.Canonical.Value do
     take_sized(rest, :binary)
   end
 
-  defp decode_term(<<@tag_atom, rest::binary>>, _context, path, _depth) do
+  defp decode_term(<<@tag_atom, rest::binary>>, context, path, _depth) do
     with {:ok, value, rest} <- take_sized(rest, :atom),
+         :ok <- canonical_atom_tag(value, context.profile),
          {:ok, atom} <- existing_atom(value, path) do
       {:ok, atom, rest}
     end
@@ -383,7 +456,13 @@ defmodule Spectre.Canonical.Value do
 
   defp decode_term(<<@tag_map, count::unsigned-big-32, rest::binary>>, context, path, depth) do
     with :ok <- collection_size(count, context, path),
-         do: decode_map(rest, count, context, path, depth + 1, 0, nil, %{})
+         {:ok, decoded, rest} <- decode_map(rest, count, context, path, depth + 1, 0, nil, %{}),
+         false <- context.profile == :gam and is_struct(decoded) do
+      {:ok, decoded, rest}
+    else
+      true -> {:error, :noncanonical_value_encoding}
+      {:error, _} = error -> error
+    end
   end
 
   defp decode_term(<<@tag_struct, rest::binary>>, context, path, depth) do
@@ -391,7 +470,7 @@ defmodule Spectre.Canonical.Value do
          {:ok, module} <- allowed_struct(context, module_name, path),
          {:ok, fields, rest} <- decode_term(rest, context, [:fields | path], depth + 1),
          true <- is_map(fields) do
-      build_struct(module, fields, rest, path)
+      build_struct(module, fields, rest, path, context.profile)
     else
       false -> {:error, {:invalid_canonical_struct_fields, Enum.reverse(path)}}
       {:error, _reason} = error -> error
@@ -403,6 +482,14 @@ defmodule Spectre.Canonical.Value do
 
   defp decode_term(<<>>, _context, path, _depth),
     do: {:error, {:truncated_canonical_value, Enum.reverse(path)}}
+
+  # These values have dedicated tags. Along with rejecting a struct disguised
+  # as a map, this closes the aliases that previously required re-encoding the
+  # entire decoded tree. Every remaining tag is checked canonically in place.
+  defp canonical_atom_tag(value, :gam) when value in ["nil", "true", "false"],
+    do: {:error, :noncanonical_value_encoding}
+
+  defp canonical_atom_tag(_value, _profile), do: :ok
 
   @spec decode_sequence(
           binary(),
@@ -497,14 +584,29 @@ defmodule Spectre.Canonical.Value do
     end
   end
 
-  @spec build_struct(module(), map(), binary(), [term()]) ::
-          {:ok, struct(), binary()} | {:error, reason()}
-  defp build_struct(module, fields, rest, path) do
+  defp validate_encoding_fields(%{profile: :general}, _module, _fields, _path), do: :ok
+
+  defp validate_encoding_fields(_context, module, fields, path),
+    do: validate_struct_fields(module, fields, path)
+
+  defp build_struct(module, fields, rest, path, :general) do
+    build_struct(module, fields, rest, path, :gam)
+  rescue
+    exception ->
+      {:error, {:invalid_canonical_struct, Enum.reverse(path), module, exception.__struct__}}
+  end
+
+  defp build_struct(module, fields, rest, path, :gam) do
+    with :ok <- validate_struct_fields(module, fields, path),
+         do: {:ok, struct!(module, fields), rest}
+  end
+
+  defp validate_struct_fields(module, fields, path) do
     expected = module.__struct__() |> Map.keys() |> List.delete(:__struct__) |> MapSet.new()
     actual = fields |> Map.keys() |> MapSet.new()
 
     if actual == expected do
-      {:ok, struct!(module, fields), rest}
+      :ok
     else
       {:error,
        {:invalid_canonical_struct_fields, Enum.reverse(path), module, MapSet.to_list(actual),
@@ -530,9 +632,5 @@ defmodule Spectre.Canonical.Value do
   defp kind(_value), do: :other
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:atom, :list, :map, :tuple])
 end

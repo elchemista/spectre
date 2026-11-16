@@ -294,7 +294,8 @@ defmodule Spectre.Instance.Configuration do
     ])
   end
 
-  defp first_configured(entries) do
+  @doc false
+  def first_configured(entries) do
     Enum.reduce_while(entries, nil, fn {options, key}, _acc ->
       case Keyword.fetch(options, key) do
         {:ok, value} -> {:halt, value}

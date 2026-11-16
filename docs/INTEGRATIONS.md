@@ -132,6 +132,6 @@ Directive/Pulse integration paths remain available. They use the older decision
 and state protocol. Do not translate their approval records into GAM consent
 Evidence without a deliberate host migration.
 
-The complete [0.3 integration guide](legacy/INTEGRATIONS_0_3.md) remains for those
+The complete [0.3 integration guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/INTEGRATIONS_0_3.md) remains for those
 clients. [Migration](MIGRATING_TO_0_4.md) describes when to retain an old owner and
 when to move behavior into a Server.

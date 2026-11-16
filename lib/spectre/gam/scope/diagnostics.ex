@@ -124,18 +124,7 @@ defmodule Spectre.GAM.Scope.Diagnostics do
     selected =
       Enum.filter(invocation, &(is_nil(interaction) or &1.payload[:interaction] == interaction))
 
-    lifecycle =
-      Enum.filter(view.evidence, fn evidence ->
-        case evidence do
-          %{proposition: {:spectre_server_lifecycle, _}, payload: %{event: event}}
-          when is_map(event) ->
-            is_nil(interaction) or event[:interaction_id] == interaction or
-              event[:origin_id] == interaction
-
-          _ ->
-            false
-        end
-      end)
+    lifecycle = Enum.filter(view.evidence, &lifecycle_matches?(&1, interaction))
 
     evidence_refs = MapSet.new(selected ++ lifecycle, & &1.ref)
 
@@ -180,48 +169,64 @@ defmodule Spectre.GAM.Scope.Diagnostics do
             presentation_refs
           )
       end)
-      |> Enum.map(fn record ->
-        fields =
-          record |> Map.take(@fields) |> Map.new(fn {key, value} -> {key, scalar(value)} end)
-
-        fields =
-          if kind == :decision do
-            codes = record.reasons |> Enum.take(20) |> Enum.map(&reason_code/1)
-            Map.put(fields, :reason_codes, codes)
-          else
-            fields
-          end
-
-        fields =
-          if kind == :evidence and invocation?(record),
-            do:
-              Map.merge(fields, %{
-                event: elem(record.proposition, 0),
-                command_id: scalar(record.payload[:command_id]),
-                interaction_id: scalar(record.payload[:interaction]),
-                skill: scalar(record.payload[:skill])
-              }),
-            else: fields
-
-        fields =
-          case record do
-            %{proposition: {:spectre_server_lifecycle, _}, payload: %{event: event}}
-            when is_map(event) ->
-              safe =
-                Map.take(event, [:phase, :kind, :status, :from_status, :to_status, :reason])
-                |> Map.new(fn {key, value} -> {key, if(is_atom(value), do: value, else: nil)} end)
-
-              Map.merge(fields, %{event: :spectre_server_lifecycle, lifecycle: safe})
-
-            _ ->
-              fields
-          end
-
-        Map.put(fields, :kind, kind)
-      end)
+      |> Enum.map(&display_record(&1, kind))
     end)
     |> Enum.sort_by(&{timestamp(&1), &1.kind, &1.ref})
   end
+
+  defp lifecycle_matches?(
+         %{proposition: {:spectre_server_lifecycle, _}, payload: %{event: event}},
+         interaction
+       )
+       when is_map(event),
+       do:
+         is_nil(interaction) or event[:interaction_id] == interaction or
+           event[:origin_id] == interaction
+
+  defp lifecycle_matches?(_, _), do: false
+
+  defp display_record(record, kind) do
+    fields =
+      record |> Map.take(@fields) |> Map.new(fn {key, value} -> {key, scalar(value)} end)
+
+    fields =
+      if kind == :decision do
+        codes = record.reasons |> Enum.take(20) |> Enum.map(&reason_code/1)
+        Map.put(fields, :reason_codes, codes)
+      else
+        fields
+      end
+
+    fields =
+      if kind == :evidence and invocation?(record),
+        do:
+          Map.merge(fields, %{
+            event: elem(record.proposition, 0),
+            command_id: scalar(record.payload[:command_id]),
+            interaction_id: scalar(record.payload[:interaction]),
+            skill: scalar(record.payload[:skill])
+          }),
+        else: fields
+
+    fields =
+      case record do
+        %{proposition: {:spectre_server_lifecycle, _}, payload: %{event: event}}
+        when is_map(event) ->
+          safe =
+            Map.take(event, [:phase, :kind, :status, :from_status, :to_status, :reason])
+            |> Map.new(&safe_lifecycle_field/1)
+
+          Map.merge(fields, %{event: :spectre_server_lifecycle, lifecycle: safe})
+
+        _ ->
+          fields
+      end
+
+    Map.put(fields, :kind, kind)
+  end
+
+  defp safe_lifecycle_field({key, value}) when is_atom(value), do: {key, value}
+  defp safe_lifecycle_field({key, _value}), do: {key, nil}
 
   @spec linked?(atom(), map(), MapSet.t(), MapSet.t(), MapSet.t(), MapSet.t(), MapSet.t()) ::
           boolean()

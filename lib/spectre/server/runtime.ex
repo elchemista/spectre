@@ -58,7 +58,15 @@ defmodule Spectre.Server.Runtime do
   end
 
   def init(opts) do
-    state = opts |> initial_state() |> Checkpoint.load() |> Tool.validate_persisted!()
+    Process.flag(:trap_exit, true)
+
+    state =
+      opts
+      |> Skills.refresh_checkpoint()
+      |> initial_state()
+      |> Checkpoint.load()
+      |> Tool.validate_persisted!()
+
     send(self(), {__MODULE__, state.control, :recover})
 
     case start_skills(state) do
@@ -120,24 +128,145 @@ defmodule Spectre.Server.Runtime do
       |> Keyword.put(:identity, state.identity)
       |> Keyword.put(:consumer, state.consumer)
       |> Keyword.put(:runtime, self())
+      |> Keyword.put(:runtime_control, state.control)
       |> Keyword.put(:options, Keyword.drop(state.opts, [:gam, :assigns, :identity]))
       |> Keyword.put(:stack_runtime, Keyword.get(state.opts, :stack_runtime))
+      |> Keyword.put(:payload_store, Keyword.get(state.opts, :payload_store))
 
     case Managed.start_link(options) do
       {:ok, pid} ->
         opts =
-          if Keyword.get(state.opts, :checkpoint),
+          if Keyword.has_key?(state.opts, :checkpoint),
             do: state.opts,
             else: Keyword.put(state.opts, :checkpoint, Managed.runtime_checkpoint(pid))
+
+        opts = Keyword.put(opts, :checkpoint_domain, {pid, Managed.info(pid).domain})
 
         Map.merge(state, %{gam: {Managed, [server: pid]}, managed_owner: pid, opts: opts})
 
       {:error, reason} ->
-        throw({:managed_gam_start_failed, reason})
+        if Keyword.get(config, :storage, :ephemeral) != :ephemeral and
+             storage_decision(state, :startup, reason) == :memory do
+          config = Managed.Recovery.memory_options(config)
+          opts = state.opts |> Keyword.put(:checkpoint, nil) |> Keyword.put(:gam, config)
+          setup_managed_gam(%{state | gam: config, opts: opts})
+        else
+          throw({:managed_gam_start_failed, reason})
+        end
     end
   end
 
   defp setup_managed_gam(state), do: Map.put(state, :managed_owner, nil)
+
+  defp storage_recovered(state, recovery) do
+    case state.opts[:checkpoint_domain] do
+      {_, current} when current == recovery.domain and not is_nil(recovery.checkpoint) -> state
+      _ -> rebind_storage(state, recovery)
+    end
+  end
+
+  defp rebind_storage(state, recovery) do
+    state = rebind_checkpoint(state, recovery)
+    notify(state, {:storage_recovered, Map.drop(recovery, [:checkpoint])})
+    Checkpoint.save(state)
+  end
+
+  defp rebind_checkpoint(state, %{checkpoint: checkpoint}) when checkpoint in [nil, false],
+    do: state
+
+  defp rebind_checkpoint(state, %{previous_domain: previous} = recovery) do
+    Enum.each(state.skill_current, fn {_skill, pid} ->
+      send(pid, {__MODULE__, :skill_storage_recovered, self(), state.control, recovery})
+    end)
+
+    pending =
+      Map.new(state.pending, fn {id, %{kind: kind} = item} ->
+        {id, if(kind == :consent, do: %{item | status: :uncertain}, else: item)}
+      end)
+
+    foreground =
+      case Map.get(state.pending, state.foreground) do
+        %{kind: :consent} -> nil
+        _ -> state.foreground
+      end
+
+    %{
+      state
+      | opts: recovered_options(state.opts, recovery),
+        checkpoint_revision: nil,
+        outbox: Map.new(state.outbox, &block_previous_domain(&1, previous)),
+        pending: pending,
+        foreground: foreground
+    }
+  end
+
+  defp recovered_options(opts, recovery) do
+    {owner, _previous} = Keyword.fetch!(opts, :checkpoint_domain)
+
+    opts
+    |> Keyword.put(:checkpoint, recovery.checkpoint)
+    |> Keyword.put(:checkpoint_domain, {owner, recovery.domain})
+  end
+
+  defp block_previous_domain({id, entry}, domain) do
+    if Map.has_key?(entry, :lifecycle) or governed?(entry.command.kind),
+      do: {id, Map.put(entry, :blocked_by, {:domain_reset, domain})},
+      else: {id, entry}
+  end
+
+  defp storage_decision(state, phase, reason) do
+    config =
+      case Keyword.get(state.opts, :gam, []) do
+        config when is_list(config) -> config
+        _ -> []
+      end
+
+    case Spectre.GAM.Domain.Recovery.Policy.normalize(config[:recovery_policy]) do
+      {:ok, policy} ->
+        Spectre.GAM.Domain.Recovery.Policy.recover(
+          policy,
+          %{domain_ref: config[:domain], phase: phase, reason: reason, last_verified: nil},
+          Keyword.get(config, :recovery_timeout, 5_000)
+        )
+
+      _ ->
+        :wait
+    end
+  end
+
+  @doc false
+  def checkpoint_failed(state, reason) do
+    case changed_checkpoint(state) do
+      {:ok, recovery} -> {:ok, storage_recovered(state, recovery)}
+      :unchanged -> checkpoint_unavailable(state, reason)
+    end
+  end
+
+  defp changed_checkpoint(state) do
+    with {owner, previous} <- state.opts[:checkpoint_domain],
+         {:ok, domain, checkpoint} <- Managed.checkpoint_binding(owner),
+         true <- domain != previous do
+      checkpoint = skill_checkpoint(state.opts[:skill], checkpoint)
+      {:ok, %{previous_domain: previous, domain: domain, checkpoint: checkpoint}}
+    else
+      _ -> :unchanged
+    end
+  catch
+    :exit, _ -> :unchanged
+  end
+
+  defp skill_checkpoint(nil, checkpoint), do: checkpoint
+  defp skill_checkpoint(skill, checkpoint), do: Skills.checkpoint(checkpoint, skill.id)
+
+  defp checkpoint_unavailable(state, reason) do
+    if state.managed_owner && storage_decision(state, :runtime, {:checkpoint, reason}) == :memory do
+      :ok = Managed.recover_storage(state.managed_owner, :memory)
+      notify(state, {:storage_unavailable, :checkpoint})
+      {:ok, %{state | opts: Keyword.put(state.opts, :checkpoint, nil), checkpoint_revision: nil}}
+    else
+      {:error, reason}
+    end
+  end
 
   defp server_options(server) do
     if function_exported?(server, :__spectre_server_options__, 0),
@@ -233,6 +362,21 @@ defmodule Spectre.Server.Runtime do
   end
 
   @impl true
+  def handle_call({__MODULE__, :recover_storage, decision}, {caller, _}, state) do
+    if caller == state.consumer and decision in [:retry, :memory] do
+      result = Managed.recover_storage(state.managed_owner, decision)
+
+      next =
+        if result == :ok and decision == :memory,
+          do: %{state | opts: Keyword.put(state.opts, :checkpoint, nil), checkpoint_revision: nil},
+          else: state
+
+      {:reply, result, next}
+    else
+      {:reply, {:error, :untrusted_storage_recovery}, state}
+    end
+  end
+
   def handle_call({__MODULE__, :gam_view}, {caller, _}, state) do
     {:reply, diagnostic_managed_call(state, :view, [caller]), state}
   end
@@ -296,6 +440,38 @@ defmodule Spectre.Server.Runtime do
 
   def handle_call({__MODULE__, :presented, ref}, {caller, _}, state) do
     {:reply, managed_call(state, :presented, [ref, caller]), state}
+  end
+
+  def handle_call({__MODULE__, :approval_reply, id, decision}, from, state),
+    do: approval_io(state, {:reply, id, decision}, from)
+
+  def handle_call({__MODULE__, :approval_query, operation}, from, state),
+    do: approval_io(state, operation, from)
+
+  def handle_call({__MODULE__, :approval_message, %{"type" => type} = message}, from, state)
+      when type in ["approval.request", "approval.cancelled"],
+      do: approval_io(state, {:message, message}, from)
+
+  def handle_call({__MODULE__, :approval_message, message}, from, state) do
+    case managed_call(state, :approval_message, [message]) do
+      {:decision, skill, ref, decision, proof} when skill in [nil, :agent] ->
+        if valid_decision_target?(Map.get(state.pending, state.foreground), ref),
+          do: accept_decision(state, ref, decision, proof),
+          else: {:reply, :ok, state}
+
+      {:decision, skill, ref, decision, proof} ->
+        case Skills.lookup(state.skill_supervisor, skill) do
+          {:ok, child} ->
+            relay_request(state, child, from, {:decision, ref, decision, proof})
+            {:noreply, state}
+
+          error ->
+            {:reply, error, state}
+        end
+
+      result ->
+        {:reply, result, state}
+    end
   end
 
   def handle_call({__MODULE__, :decide, skill, ref, decision}, {caller, _} = from, state) do
@@ -519,11 +695,87 @@ defmodule Spectre.Server.Runtime do
   @impl true
   def handle_cast(message, state), do: delegate_otp(:handle_cast, [message], state)
 
+  defp approval_event(state, event) do
+    {ctx, dispatch} = context(state, nil)
+
+    returned =
+      if function_exported?(state.server, :handle_approval_inbox, 2),
+        do: state.server.handle_approval_inbox(event, ctx),
+        else: :default
+
+    case returned do
+      :default ->
+        :default
+
+      %Context{} = returned ->
+        validate_context!(returned, dispatch)
+        validate_approval_policy!(event, returned, state)
+
+        if returned.commands == [] and returned.assigns == state.assigns,
+          do: {:private, returned.private},
+          else: prepare_acquisition(state, returned, dispatch)
+
+      _ ->
+        raise ArgumentError, "invalid handle_approval_inbox return"
+    end
+  end
+
+  defp validate_approval_policy!(%{event: :storage_error}, returned, state) do
+    if returned.commands != [] or returned.assigns != state.assigns,
+      do: raise(ArgumentError, "storage error policy may update private state only")
+  end
+
+  defp validate_approval_policy!(_, _, _), do: :ok
+
+  defp approval_io(state, operation, from) do
+    case managed_call(state, :approval_io, [operation, from]) do
+      :ok -> {:noreply, state}
+      error -> {:reply, error, state}
+    end
+  end
+
   @impl true
   def handle_continue({__MODULE__, value}, state),
     do: delegate_otp(:handle_continue, [value], state)
 
   @impl true
+  def handle_info(
+        {__MODULE__, control, :gam_storage_recovered, recovery},
+        %{control: control} = state
+      ) do
+    {:noreply, storage_recovered(state, recovery)}
+  end
+
+  def handle_info({__MODULE__, :skill_storage_recovered, parent, token, recovery}, state) do
+    if state.opts[:skill_parent] == {parent, token} do
+      recovery = %{
+        recovery
+        | checkpoint: Skills.checkpoint(recovery.checkpoint, state.opts[:skill].id)
+      }
+
+      {:noreply, storage_recovered(state, recovery)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({__MODULE__, control, :approval_event, event}, %{control: control} = state) do
+    case Failure.capture(fn -> approval_event(state, event) end) do
+      {:ok, :default} ->
+        {:noreply, state}
+
+      {:ok, {:private, private}} ->
+        {:noreply, %{state | private: private}}
+
+      {:ok, prepared} ->
+        {:noreply, commit_acquisition(prepared) |> finish()}
+
+      {:error, reason} ->
+        notify(state, {:approval_callback_error, reason})
+        {:noreply, state}
+    end
+  end
+
   def handle_info(
         {__MODULE__, token, :decision_ready, {caller, _} = from, child, ref, decision,
          {:ok, pending}},
@@ -627,6 +879,12 @@ defmodule Spectre.Server.Runtime do
   end
 
   def handle_info(
+        {:DOWN, monitor, :process, owner, :normal},
+        %{startup_owner: {owner, monitor}} = state
+      ),
+      do: {:noreply, %{state | startup_owner: nil}}
+
+  def handle_info(
         {:DOWN, monitor, :process, owner, reason},
         %{startup_owner: {owner, monitor}} = state
       ),
@@ -689,6 +947,23 @@ defmodule Spectre.Server.Runtime do
   # Unknown messages in this reserved envelope cannot complete an operation.
   def handle_info({__MODULE__, _ref, _kind}, state), do: {:noreply, state}
   def handle_info({__MODULE__, _ref, _kind, _value}, state), do: {:noreply, state}
+
+  def handle_info({:EXIT, owner, :normal}, %{startup_owner: {owner, monitor}} = state) do
+    Process.demonitor(monitor, [:flush])
+    {:noreply, %{state | startup_owner: nil}}
+  end
+
+  def handle_info({:EXIT, owner, reason}, %{startup_owner: {owner, _}} = state),
+    do: {:stop, reason, state}
+
+  def handle_info({:EXIT, owner, reason}, %{managed_owner: owner} = state),
+    do: {:stop, {:managed_owner_stopped, reason}, state}
+
+  def handle_info({:EXIT, owner, reason}, %{skill_supervisor: owner} = state),
+    do: {:stop, {:skill_supervisor_stopped, reason}, state}
+
+  def handle_info({:EXIT, _pid, :normal}, state), do: {:noreply, state}
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
   def handle_info(message, state), do: delegate_otp(:handle_info, [message], state)
 
   @impl true
@@ -821,7 +1096,7 @@ defmodule Spectre.Server.Runtime do
         |> Map.put(:consent_proof, proof)
         |> Map.put(
           :consent_source_digest,
-          if(proof, do: Base.encode16(:crypto.hash(:sha256, input.text), case: :lower))
+          consent_source_digest(proof, input.text)
         )
 
       id = event.id
@@ -837,6 +1112,11 @@ defmodule Spectre.Server.Runtime do
       {:reply, {:ok, id}, Checkpoint.save(state)}
     end
   end
+
+  defp consent_source_digest(nil, _text), do: nil
+
+  defp consent_source_digest(_proof, text),
+    do: Base.encode16(:crypto.hash(:sha256, text), case: :lower)
 
   @spec managed_call(map(), atom(), list()) :: term()
   defp managed_call(%{gam: {Managed, config}}, function, args),
@@ -1032,15 +1312,17 @@ defmodule Spectre.Server.Runtime do
 
     Task.Supervisor.start_child(Spectre.Server.TaskSupervisor, fn ->
       reply =
-        case Failure.capture(fn ->
-               GenServer.call(child, {__MODULE__, :relay, token, request}, 2_000)
-             end) do
+        case call_skill(child, token, request) do
           {:ok, reply} -> reply
           {:error, reason} -> {:error, {:skill_unavailable, reason}}
         end
 
       GenServer.reply(from, reply)
     end)
+  end
+
+  defp call_skill(child, token, request) do
+    Failure.capture(fn -> GenServer.call(child, {__MODULE__, :relay, token, request}, 2_000) end)
   end
 
   @spec accept_relay_input(map(), term(), keyword(), binary() | nil) :: tuple()
@@ -1354,7 +1636,11 @@ defmodule Spectre.Server.Runtime do
 
     state = %{state | pending: Map.put(state.pending, id, pending), foreground: foreground}
     notify(state, {:pending, event_id(event), id})
-    state |> arm_pending_timer(pending) |> reconcile_close_timers()
+
+    state
+    |> arm_pending_timer(pending)
+    |> reconcile_close_timers()
+    |> apply_deferred_approval(pending)
   end
 
   defp apply_worker_result(
@@ -1384,6 +1670,19 @@ defmodule Spectre.Server.Runtime do
 
     conversation(state, :handle_result, [tag, result], event)
   end
+
+  defp apply_deferred_approval(state, %{status: :foreground, presentation: %{ref: ref}}) do
+    case managed_call(state, :pending_approval, [ref]) do
+      {:decision, _, ^ref, decision, proof} ->
+        {:reply, _, state} = accept_decision(state, ref, decision, proof)
+        state
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_deferred_approval(state, _pending), do: state
 
   @spec dispatch_flow(map(), term(), map()) :: map()
   defp dispatch_flow(state, {{{:skill, id}, _flow}, _label} = key, event)
@@ -2879,7 +3178,21 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp execute_regular_entry(state, id, entry) do
-    state = mark_execution_started(state, id, entry)
+    if domain_reset_command?(state, id) do
+      state
+    else
+      state = mark_execution_started(state, id, entry)
+
+      if domain_reset_command?(state, id),
+        do: state,
+        else: execute_acquired_entry(state, id, entry)
+    end
+  end
+
+  defp domain_reset_command?(state, id),
+    do: match?(%{blocked_by: {:domain_reset, _}}, Map.get(state.outbox, id))
+
+  defp execute_acquired_entry(state, id, entry) do
     state = execute(%{state | active_command: id}, entry.command, entry.event)
 
     outstanding? =
@@ -3216,7 +3529,8 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp recover_inbox_entry({id, entry}, state) do
-    state = worker_result(%{state | processing_result: id}, entry.worker, entry.result)
+    worker = Map.put(entry.worker, :recovered, true)
+    state = worker_result(%{state | processing_result: id}, worker, entry.result)
     state = state |> acquire_result() |> Checkpoint.save()
     release_worker_journal(state, entry.worker)
   end

@@ -16,6 +16,7 @@ defmodule Spectre.GAM.GovernedAct.AuthorityIndex do
   @version 2
 
   defstruct version: @version,
+            selection: nil,
             mandates_by_holder: %{},
             aliases_by_owner: %{},
             debts_by_owner: %{},
@@ -39,7 +40,41 @@ defmodule Spectre.GAM.GovernedAct.AuthorityIndex do
   @doc false
   @spec complete?(t(), Spectre.GAM.GovernedAct.State.t()) :: boolean()
   def complete?(index, state),
-    do: Map.get(index, :version) === @version and index.counts === counts(state)
+    do:
+      index.selection == nil and Map.get(index, :version) === @version and
+        index.counts === counts(state)
+
+  @doc false
+  def usable?(%{selection: nil} = index, state), do: complete?(index, state)
+
+  def usable?(index, _state) do
+    for collection <- [
+          :mandates,
+          :mandate_successors,
+          :revocations,
+          :meters,
+          :meter_owner_aliases,
+          :owner_debts,
+          :debt_owners,
+          :blocked_effects,
+          :open_duty_causes
+        ] do
+      Spectre.GAM.GovernedAct.Reads.ensure(index.selection, {:page, collection, []})
+    end
+
+    true
+  end
+
+  @doc false
+  def selected?(%{selection: nil} = index, state), do: complete?(index, state)
+
+  def selected?(index, _state) do
+    for collection <- [:owner_debts, :debt_owners, :blocked_effects, :open_duty_causes] do
+      Spectre.GAM.GovernedAct.Reads.ensure(index.selection, {:page, collection, []})
+    end
+
+    true
+  end
 
   @doc false
   @spec record(Spectre.GAM.GovernedAct.State.t(), Spectre.GAM.Domain.Event.t()) ::
@@ -52,8 +87,8 @@ defmodule Spectre.GAM.GovernedAct.AuthorityIndex do
     # just one new event. Counts check coverage, not authenticity of host memory.
     index =
       if Map.get(index, :version) === @version and
-           index.counts === previous_counts(counts, event.type),
-         do: %{update(index, state, event) | counts: counts},
+           (index.selection != nil or index.counts === previous_counts(counts, event.type)),
+         do: %{update(index, state, event) | counts: if(index.selection, do: nil, else: counts)},
          else: %{index | counts: nil}
 
     %{state | read_index: %{state.read_index | authority: index}}

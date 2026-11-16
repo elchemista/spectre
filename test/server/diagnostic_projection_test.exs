@@ -100,6 +100,43 @@ defmodule Spectre.Server.DiagnosticProjectionTest do
     end
   end
 
+  defmodule UnavailableStore do
+    def fetch(_, _), do: {:error, :temporarily_unavailable}
+  end
+
+  @tag :tmp_dir
+  test "missing storage and malformed retained data fail closed without diagnostic payloads", %{
+    tmp_dir: path
+  } do
+    assert {:error, :server_checkpoint_required} = Diagnostics.read(%{opts: []}, [])
+    store = start_supervised!({Spectre.Server.Store.Disk, path: Path.join(path, "checkpoint")})
+    state = %{opts: [checkpoint: {store, :missing}]}
+    assert {:error, :checkpoint_not_found} = Diagnostics.read(state, [])
+
+    assert {:error, :temporarily_unavailable} =
+             Diagnostics.read(%{opts: [checkpoint: {UnavailableStore, store, :missing}]}, [])
+
+    for interaction <- [nil, "", String.duplicate("x", 257)] do
+      assert {:error, :invalid_interaction_id} = Diagnostics.trace(encoded(), interaction)
+    end
+
+    assert {:error, _} = Diagnostics.checkpoint("not a checkpoint")
+
+    assert {:error, :not_a_server_checkpoint} =
+             Diagnostics.checkpoint(encoded(%{outbox: %{bad: 1}}))
+
+    bytes =
+      encoded(%{
+        current: %{routing: %{checkpoint_route: %{kind: :portable, value: %{strategy: :regex}}}},
+        outbox: %{"safe" => %{tag: %{secret: "PRIVATE"}}}
+      })
+
+    assert {:ok, %{routing: %{strategy: :regex}, commands: [%{tag: nil}]} = view} =
+             Diagnostics.checkpoint(bytes)
+
+    refute inspect(view) =~ "PRIVATE"
+  end
+
   test "routing projects actual nested and Skill dispatch keys and saved strategy attributes" do
     for {key, expected} <- [
           {{[:support, :billing], "PRICING"}, [[:support, :billing], "PRICING"]},

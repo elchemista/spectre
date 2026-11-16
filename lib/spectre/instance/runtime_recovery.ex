@@ -502,48 +502,17 @@ defmodule Spectre.Instance.RuntimeRecovery do
     end
   end
 
-  defp continue_recovered_selected_dispatch(
-         data,
-         run,
-         invocation,
-         prepared,
-         entry,
-         :selection_receipted
-       ) do
-    InferenceCoordinator.dispatch_intent(data, run, invocation, prepared, entry)
-  end
+  defp continue_recovered_selected_dispatch(data, run, invocation, prepared, entry, status) do
+    case status do
+      :selection_receipted ->
+        InferenceCoordinator.dispatch_intent(data, run, invocation, prepared, entry)
 
-  defp continue_recovered_selected_dispatch(
-         data,
-         run,
-         invocation,
-         prepared,
-         entry,
-         :supersession_receipted
-       ) do
-    commit_recovered_selection_receipt(data, run, invocation, prepared, entry)
-  end
+      :steer_successor_selected ->
+        commit_recovered_supersession_receipt(data, run, invocation, prepared, entry)
 
-  defp continue_recovered_selected_dispatch(
-         data,
-         run,
-         invocation,
-         prepared,
-         entry,
-         :steer_successor_selected
-       ) do
-    commit_recovered_supersession_receipt(data, run, invocation, prepared, entry)
-  end
-
-  defp continue_recovered_selected_dispatch(
-         data,
-         run,
-         invocation,
-         prepared,
-         entry,
-         _unreceipted_selection
-       ) do
-    commit_recovered_selection_receipt(data, run, invocation, prepared, entry)
+      _unreceipted_or_supersession_receipted ->
+        commit_recovered_selection_receipt(data, run, invocation, prepared, entry)
+    end
   end
 
   defp resume_recovered_stream_dispatch(data, run, invocation, prepared, entry) do

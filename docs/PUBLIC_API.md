@@ -617,13 +617,16 @@ Mix project version.
 ## Agent/Server and GAM additions in 0.4
 
 - `Spectre.Server`
+  - functions: `approval/2`, `approval_inbox/1`, `approval_inbox/2`, `approval_decide/3`, `approval_presented/2`, `receive_approval/2`, `presented/2`, `decide/4`, `gam_view/1`, `gam_inspect/2`
   - functions: `get_pending/2`, `put_private/2`, `put_private/3`, `get_private/2`, `get_private/3`, `delete_private/2`, `close_pending/2`, `close_pending/3`, `close_pending_after/3`, `close_pending_after/4`, `cancel_pending_close/2`, `cancel_pending_close/3`
   - functions: `await_input/2`, `await_input/3`
   - functions: `assign/2`, `assign/3`, `await_reply/2`, `await_reply/3`, `call_actor/3`, `call_actor/4`, `cancel/1`, `child_spec/1`, `classify/2`, `classify/3`, `confirm_pending/2`, `deliver/4`, `explain_pending/2`, `generate/2`, `generate/3`, `input/2`, `input/3`, `no_response/1`, `propose/3`, `propose/4`, `reject_pending/2`, `resolve_await/3`, `respond/2`, `respond/3`, `resume_pending/2`, `route_current_input/1`, `route_current_input/2`, `start_link/1`, `status/1`
   - macros: `__using__/1`
-  - callbacks: `code_change/3`, `format_status/1`, `handle_call/3`, `handle_cast/2`, `handle_continue/2`, `handle_flow/3`, `handle_info/2`, `handle_pending/3`, `handle_result/3`, `init/2`, `terminate/2`
+  - callbacks: `handle_approval_inbox/2`, `code_change/3`, `format_status/1`, `handle_call/3`, `handle_cast/2`, `handle_continue/2`, `handle_flow/3`, `handle_info/2`, `handle_pending/3`, `handle_result/3`, `init/2`, `terminate/2`
 - `Spectre.Server.Context`
 
+- `Spectre.Server.GAM.Managed.Approval`
+  - callbacks: `send_message/2`
 - `Spectre.Server.GAM`
   - functions: `record_lifecycle/3`, `lifecycle_configured?/1`
   - functions: `confirm/4`, `explain/4`, `propose/4`, `recover_command/3`, `reject/4`, `release_command/3`, `resolve_command_result/4`, `resolve_result/3`, `result_key/1`, `result_reference/1`, `resume/4`
@@ -635,10 +638,10 @@ Mix project version.
 - `Spectre.Server.GAM.Lifecycle`
   - functions: `evidence/3`, `record/3`, `validate/1`
 - `Spectre.Server.Store`
-  - callbacks: `delete/3`
+  - callbacks: `list/3`, `delete/3`, `gam_ledger/1`
   - callbacks: `compare_and_swap/4`, `fetch/2`, `put_new/3`
 - `Spectre.Server.Store.Disk`
-  - functions: `delete/3`
+  - functions: `list/2`, `list/3`, `delete/3`
   - functions: `fetch/2`, `put_new/3`, `compare_and_swap/4`
   - functions: `child_spec/1`, `start_link/1`
 - `Spectre.IntentDataset`
@@ -735,3 +738,15 @@ Mix project version.
 
 - `Spectre.Server.Registry`
   - functions: `key/2`, `lookup/2`, `lookup/3`, `via/2`, `via/3`, `ensure_started/3`, `ensure_started/4`
+
+- `Spectre.Server.Store.Page`
+  - functions: `key/1`, `options/2`, `upper_bound/1`, `read/4`
+
+## Application payload storage
+
+`Spectre.Payload.Store` defines `put/3` and `fetch/3` callbacks and exports
+`normalize/1`, `put/3` and `fetch/3`. Configure the top-level Server option
+`payload_store: {MyApp.Payloads, options}`. References are opaque portable data;
+storage, encryption and reference guarantees belong to the adapter.
+See [application-owned payload storage](PAYLOAD_STORAGE.md) for worker behavior,
+recovery and the scope of protected records.

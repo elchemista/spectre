@@ -14,6 +14,9 @@ defmodule Spectre.GAM.Core.RecoveryPolicyTest.HostPolicy do
     send(Keyword.fetch!(opts, :owner), {:recovery_failed, incident})
     Keyword.get(opts, :failed, fn -> :ok end).()
   end
+
+  @impl true
+  def recover(_incident, opts), do: Keyword.fetch!(opts, :recover).()
 end
 
 defmodule Spectre.GAM.Core.RecoveryPolicyTest do
@@ -29,12 +32,50 @@ defmodule Spectre.GAM.Core.RecoveryPolicyTest do
 
   setup do
     Runtime.reset(Fixture.default_now())
-    f = Fixture.start_domain(mock_store: true)
+    f = Fixture.start_domain(projection_store: nil, mock_store: true)
     on_exit(fn -> Fixture.stop_domain(f) end)
     payment = Fixture.paid_evidence(f)
     assert {:ok, ^payment} = Fixture.observe_payment(f, payment)
     snapshot = Fixture.snapshot(f)
     %{f: f, snapshot: snapshot, head: Map.take(snapshot, [:revision, :head_digest])}
+  end
+
+  test "only explicit supported recovery decisions can request a lifecycle change" do
+    incident = %{
+      domain_ref: "policy-boundary",
+      phase: :runtime,
+      reason: :offline,
+      last_verified: nil
+    }
+
+    assert :wait = Policy.recover(nil, incident, 100)
+
+    for decision <- [:wait, :memory, {:retry, 0}, {:retry, 86_400_000}] do
+      assert Policy.recover({HostPolicy, recover: fn -> decision end}, incident, 100) == decision
+    end
+
+    for invalid <- [:ok, {:ok, :memory}, {:retry, -1}, {:retry, 86_400_001}, {:retry, 1.0}] do
+      assert :wait = Policy.recover({HostPolicy, recover: fn -> invalid end}, incident, 100)
+    end
+
+    assert :wait = Policy.recover({HostPolicy, recover: fn -> raise "offline" end}, incident, 100)
+  end
+
+  test "a recovery callback timeout terminates the callback and cannot select RAM" do
+    owner = self()
+
+    callback = fn ->
+      send(owner, {:policy_worker, self()})
+
+      receive do
+        :never -> :memory
+      end
+    end
+
+    assert :wait = Policy.recover({HostPolicy, recover: callback}, %{}, 5)
+    assert_receive {:policy_worker, worker}
+    monitor = Process.monitor(worker)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, _}
   end
 
   test "corrupt recovered bytes cannot be accepted by an incident handler", c do

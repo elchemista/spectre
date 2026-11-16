@@ -31,8 +31,20 @@ defmodule Spectre.GAM.Ledger.Reader do
   def reduce(store, domain_ref, cursor, initial, reducer, opts \\ []) do
     with true <- Entry.valid_identifier?(domain_ref),
          :ok <- validate_cursor(cursor),
+         {:ok, target} <- Store.head(store, domain_ref, opts) do
+      reduce_to(store, domain_ref, cursor, target, initial, reducer, opts)
+    else
+      false -> {:error, :invalid_ledger_read_range}
+      error -> error
+    end
+  end
+
+  @doc false
+  def reduce_to(store, domain_ref, cursor, target, initial, reducer, opts) do
+    with true <- Entry.valid_identifier?(domain_ref),
+         :ok <- validate_cursor(cursor),
+         :ok <- validate_cursor(target),
          cursor = Map.take(cursor, [:revision, :head_digest]),
-         {:ok, target} <- Store.head(store, domain_ref, opts),
          true <- target.revision >= cursor.revision do
       context = %{
         store: store,

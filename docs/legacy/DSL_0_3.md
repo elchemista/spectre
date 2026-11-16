@@ -126,7 +126,7 @@ content by default and are delivered through a supervised bounded buffer.
 
 Use `journal(false)` to disable an application-level default. Use
 `mode: :sync, on_error: :error` only when an append must succeed before the
-turn continues. See [Journal](../JOURNAL.md) for the record schema, privacy model,
+turn continues. See [Journal](JOURNAL.md) for the record schema, privacy model,
 sampling, and delivery semantics.
 
 ## Runtime Boundaries
@@ -344,7 +344,7 @@ lets the Turn finish while the Work advances on the operational runtime.
 mounted and like `reason` otherwise. It remains supported for compatibility,
 but new Flows should prefer the unambiguous `reason`/`act` split; `ask` will
 be deprecated in a future release (see the
-[migration guide](../MIGRATING_TO_0_2.md)).
+[migration guide](MIGRATING_TO_0_2.md)).
 
 `reply` renders a deterministic response without calling the model. This is good
 for help, health checks, canned answers, and policy confirmations.

@@ -1,49 +1,34 @@
-# Start here: Spectre 0.4
+# Spectre 0.4 documentation
 
-This checkout documents the unreleased `0.4.0` AgentServer development line.
-Its primary path is **Stack → Agent → Server → GAM for governed consequences**.
-For an existing 0.3 application, begin with [Migration](MIGRATING_TO_0_4.md).
+The application model is **Stack → Agent → Server**. GAM governs the operations
+the host declares consequential. Existing 0.3 applications start with
+[Migration](MIGRATING_TO_0_4.md).
 
-## Learn in this order
+## First steps
 
-1. [Installation](INSTALLATION.md): compatible development branches, requirements
-   and application supervision.
-2. [Getting started](GETTING_STARTED.md): a website-to-email agent with Lens, Kinetic,
-   informational flows and GAM confirmation.
-3. [Architecture](ARCHITECTURE.md): ownership, command execution, streaming and
-   the boundary between recognition and authority.
-4. [GAM](GAM.md): the imported kernel, consent, outcomes and host responsibilities,
-   with the [manifesto](https://spectre.guide/en/governed-act-model).
-5. [Agent and Server](AGENT_SERVER.md): callbacks, services, context and recovery.
-6. [Stack tools](STACK_TOOLS.md): generated helpers and package-author contracts.
-7. [Skills](SKILLS.md): reusable GenServers sharing their Agent’s GAM Domain.
-8. [LiveView showcase](DEMO.md): run the nine-package chat with two Skills.
+1. [Installation](INSTALLATION.md): dependencies, compatible branches and supervision.
+2. [Getting started](GETTING_STARTED.md): generate an Agent/Server and receive a reply.
+3. [Architecture](ARCHITECTURE.md): process ownership, commands and authority.
+4. [Managed GAM](MANAGED_GAM.md): configure effects, identity and human consent.
 
-## Find a specific answer
+## Build your application
 
 | Task | Guide |
 | --- | --- |
-| Run parallel Skill servers with one GAM and isolated confirmations | [Skills](SKILLS.md), [Automatic GAM](MANAGED_GAM.md) and [LiveView showcase](DEMO.md) |
-| Recognize intent and handle unmatched input | [Routing](ROUTING.md) |
-| Collect intent examples and train a classifier | [Training](TRAINING.md) |
-| Generate text and turn consolidated AL into proposals | [Actions](ACTIONS.md) |
-| Suspend, resume or expire an open consent | [Pending lifecycle](PENDING_LIFECYCLE.md) |
-| Browse, contact people and remember results | [Examples](EXAMPLES.md) and [nine-package test application](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) |
-| Inspect callback and helper APIs | [API](API.md), [DSL](DSL.md), `Spectre.Server` |
-| Give an AI coding assistant the correct contracts | [LLMS](../LLMS.md) |
-| Understand what changed | [0.4 migration](MIGRATING_TO_0_4.md), [Changelog](../CHANGELOG.md) |
+| Recognize input and train classifiers | [Routing](ROUTING.md), [Training](TRAINING.md), [Evaluation](EVALUATION.md) |
+| Implement callbacks and asynchronous work | [Server](AGENT_SERVER.md), [API](API.md), [DSL](DSL.md) |
+| Install package helpers and effects | [Stack tools](STACK_TOOLS.md), [Stack](STACK.md) |
+| Run reusable Skill servers | [Skills](SKILLS.md) |
+| Prepare and confirm operations | [Actions](ACTIONS.md), [Pending lifecycle](PENDING_LIFECYCLE.md) |
+| Ask a human through another agent | [External approval](EXTERNAL_APPROVALS.md) |
+| Store history and application content | [Domain storage](DOMAIN_STORAGE.md), [Payload storage](PAYLOAD_STORAGE.md), [Memory](MEMORY.md) |
+| Stream model output and configure providers | [Streaming](STREAMING_INFERENCE.md), [Providers](PROVIDERS.md) |
+| Integrate a UI or another process | [Integrations](INTEGRATIONS.md), [Examples](EXAMPLES.md), [Demo](DEMO.md) |
+| Inspect runtime behavior | [Diagnostics](DIAGNOSTICS.md), [Server contracts](SERVER_CONTRACTS.md) |
+| Test and deploy | [Testing](TESTING.md), [Production](PRODUCTION.md), [Profiling](OTP_PROFILE_0_4.md) |
 
-## Compatibility documentation
-
-The repository still contains APIs for the earlier Instance/Run architecture.
-They remain useful for existing applications and do not describe an automatic
-GAM migration. The [0.3 tutorial](GETTING_STARTED_0_3.md) and
-[0.3 architecture](ARCHITECTURE_0_3.md) preserve that context. Guides specifically
-about Instances, Runs and their checkpoint formats apply to that runtime; use
-[Agent and Server](AGENT_SERVER.md) for Server checkpoints and execution.
-
-## Release hardening
-
-[Server contracts](SERVER_CONTRACTS.md) covers optional assigns/continuation schemas
-and root/mount permission diagnostics. [Diagnostics](DIAGNOSTICS.md) describes
-authorized operational views, GAM pagination, notifications and trace coverage.
+[GAM](GAM.md) explains the authority model. [Public API](PUBLIC_API.md) lists the
+supported surface; [Changelog](../CHANGELOG.md) records version changes.
+[Compatibility](COMPATIBILITY.md) indexes the retained Instance/Run runtime and
+historical migrations. [Application authoring reference](../LLMS.md) summarizes
+the contracts for code generation.

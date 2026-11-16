@@ -18,6 +18,7 @@ defmodule Spectre.Server.GAM.Managed do
   alias Spectre.Server.GAM.Invocation
   alias Spectre.Server.GAM.Managed.{Binding, Bootstrap, Gate, Reviewer}
   alias Spectre.Server.GAM.Managed.Identity, as: ManagedIdentity
+  alias Spectre.GAM.Domain.Recovery.Policy, as: RecoveryPolicy
 
   @doc "Starts the standard private Domain integration for an AgentServer."
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -44,15 +45,21 @@ defmodule Spectre.Server.GAM.Managed do
   @doc "Stops intake and drains acquired bridge work before closing owned resources."
   @spec close(pid()) :: :ok | {:error, :shutdown_drain_timeout}
   def close(server) do
-    GenServer.call(server, :close, :infinity)
-  catch
-    :exit, {:noproc, _} -> :ok
-    :exit, {:normal, _} -> :ok
-  end
+    monitor = Process.monitor(server)
 
-  @doc "Returns enabled operations without authenticated handles."
-  @spec operations(pid()) :: map()
-  def operations(server), do: GenServer.call(server, :operations)
+    try do
+      result = GenServer.call(server, :close, :infinity)
+
+      receive do
+        {:DOWN, ^monitor, :process, ^server, _reason} -> result
+      end
+    catch
+      :exit, {:noproc, _} -> :ok
+      :exit, {:normal, _} -> :ok
+    after
+      Process.demonitor(monitor, [:flush])
+    end
+  end
 
   @doc false
   @spec revoke(pid()) :: {:ok, GAM.Proposal.Result.t()} | {:error, term()}
@@ -67,6 +74,9 @@ defmodule Spectre.Server.GAM.Managed do
   @doc false
   @spec runtime_checkpoint(pid()) :: {module(), term(), {:managed_agent, binary()}}
   def runtime_checkpoint(server), do: GenServer.call(server, :runtime_checkpoint)
+
+  @doc false
+  def recover_storage(server, decision), do: GenServer.call(server, {:recover_storage, decision})
   @doc "Returns public Domain references."
   @spec info(pid()) :: map()
   def info(server), do: GenServer.call(server, :info)
@@ -87,18 +97,46 @@ defmodule Spectre.Server.GAM.Managed do
   @doc "Acknowledges rendering through the configured consumer."
   @spec presented(pid(), binary(), pid()) :: :ok | {:error, atom()}
   def presented(server, ref, caller),
-    do: Gate.presented(GenServer.call(server, :gate), ref, caller)
+    do: call_gate(server, :presented, [ref, caller])
 
   @doc "Issues one-use, presentation-bound proof of a consumer decision."
   @spec authorize_decision(pid(), binary(), :confirm | :reject, pid()) ::
           {:ok, binary()} | {:error, atom()}
   def authorize_decision(server, ref, decision, caller),
-    do: Gate.authorize(GenServer.call(server, :gate), ref, decision, caller)
+    do: call_gate(server, :authorize, [ref, decision, caller])
 
   @doc "Records authenticated transport provenance for a reply interpreted by the configured binding."
   @spec authorize_input(pid(), binary(), binary(), pid()) :: {:ok, binary()} | {:error, atom()}
   def authorize_input(server, ref, text, caller),
-    do: Gate.authorize_input(GenServer.call(server, :gate), ref, text, caller)
+    do: call_gate(server, :authorize_input, [ref, text, caller])
+
+  @doc false
+  def approval_message(server, message),
+    do: call_gate(server, :receive_message, [message])
+
+  @doc false
+  def approval_reply(server, id, decision, caller),
+    do: call_gate(server, :reply, [id, decision, caller])
+
+  @doc false
+  def approval_io(server, operation, client),
+    do: call_gate(server, :io, [operation, client])
+
+  @doc false
+  def pending_approval(server, ref),
+    do: call_gate(server, :pending_decision, [ref])
+
+  defp call_gate(server, operation, args) do
+    case GenServer.call(server, :gate) do
+      gate when is_pid(gate) -> apply(Gate, operation, [gate | args])
+      {:error, _} = error -> error
+    end
+  catch
+    :exit, _ -> {:error, :managed_gate_unavailable}
+  end
+
+  @doc false
+  def checkpoint_binding(server), do: GenServer.call(server, :checkpoint_binding, :infinity)
 
   @doc false
   @spec lifecycle_configured?(keyword()) :: boolean()
@@ -150,13 +188,6 @@ defmodule Spectre.Server.GAM.Managed do
   def resolve_command_result(id, reference, context, opts),
     do: invoke(:resolve_command_result, [id, reference], context, opts)
 
-  @doc false
-  @spec result_reference(term()) :: term()
-  def result_reference(result), do: Bridge.result_reference(result)
-  @doc false
-  @spec result_key(term()) :: term()
-  def result_key(result), do: Bridge.result_key(result)
-
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -178,7 +209,24 @@ defmodule Spectre.Server.GAM.Managed do
   end
 
   @impl true
-  def handle_call(:operations, _, state), do: {:reply, state.operations, state}
+  def handle_call({:recover_storage, :retry}, _, %{ephemeral: true} = state),
+    do: {:reply, {:error, :ephemeral_history_cannot_be_recovered}, state}
+
+  def handle_call({:recover_storage, decision}, {caller, _}, state) do
+    if caller == state.options[:runtime] and decision in [:memory, :retry],
+      do: {:reply, :ok, schedule_storage_recovery(state, decision, 0)},
+      else: {:reply, {:error, :untrusted_storage_recovery}, state}
+  end
+
+  def handle_call(:checkpoint_binding, _, state) do
+    if state.domain,
+      do: {:reply, {:ok, state.refs.domain, checkpoint_reference(state)}, state},
+      else: {:reply, {:error, :gam_storage_unavailable}, state}
+  end
+
+  def handle_call(request, _from, %{storage_unavailable: reason} = state)
+      when request != :close and request != :info and request != :runtime_checkpoint,
+      do: {:reply, {:error, {:gam_storage_unavailable, reason}}, state}
 
   def handle_call(:revoke, {caller, _}, state) do
     result =
@@ -202,10 +250,8 @@ defmodule Spectre.Server.GAM.Managed do
     {:reply, result, state}
   end
 
-  def handle_call(:runtime_checkpoint, _, state) do
-    {module, reference} = checkpoint_store(state)
-    {:reply, {module, reference, {:managed_agent, state.refs.domain}}, state}
-  end
+  def handle_call(:runtime_checkpoint, _, state),
+    do: {:reply, checkpoint_reference(state), state}
 
   def handle_call(:info, _, state), do: {:reply, state.refs, state}
   def handle_call(:gate, _, state), do: {:reply, state.gate, state}
@@ -235,15 +281,11 @@ defmodule Spectre.Server.GAM.Managed do
     end
   end
 
-  def handle_call(:close, from, state) do
-    Process.send_after(
-      self(),
-      :drain_timeout,
-      Keyword.get(state.options, :shutdown_timeout, 30_000)
-    )
+  def handle_call(:close, from, state),
+    do: begin_close(%{state | close_waiters: [from | state.close_waiters]})
 
-    finish_close(%{state | closing: true, close_waiters: [from | state.close_waiters]})
-  end
+  def handle_call(:checkout, _, %{storage_recovery: _} = state),
+    do: {:reply, {:error, :managed_storage_recovering}, state}
 
   def handle_call(:checkout, {worker, _}, %{closing: false} = state) do
     workers = Map.put_new_lazy(state.workers, worker, fn -> Process.monitor(worker) end)
@@ -252,8 +294,23 @@ defmodule Spectre.Server.GAM.Managed do
     # configuration. The independent reviewer scope never leaves its owner.
     snapshot =
       state
-      |> Map.take([:scope, :refs, :row, :mandate, :effects, :journal, :gate])
-      |> Map.put(:options, Keyword.take(state.options, [:bindings, :store, :consent_ttl_ms]))
+      |> Map.take([:scope, :refs, :row, :mandate, :show_mandate, :effects, :journal, :gate])
+      |> Map.put(
+        :options,
+        Keyword.take(state.options, [
+          :bindings,
+          :store,
+          :consent_ttl_ms,
+          :approvals,
+          :payload_store
+        ])
+      )
+      |> Map.update!(:options, fn options ->
+        case options[:approvals] do
+          nil -> options
+          config -> Keyword.put(options, :approvals, Map.take(config, [:address, :approvers]))
+        end
+      end)
 
     {:reply, {:ok, snapshot}, %{state | workers: workers}}
   end
@@ -307,6 +364,32 @@ defmodule Spectre.Server.GAM.Managed do
   end
 
   @impl true
+  def handle_info({__MODULE__.Recovery, token, decision}, %{token: token} = state) do
+    case decision do
+      :memory -> {:noreply, schedule_storage_recovery(state, :memory, 0)}
+      {:retry, delay} -> {:noreply, schedule_storage_recovery(state, :retry, delay)}
+      :wait -> {:noreply, state}
+    end
+  end
+
+  # A replaced Domain (or a failed bootstrap) can finish its notification after
+  # recovery. Its incident belongs to that previous storage generation.
+  def handle_info({__MODULE__.Recovery, _token, _incident}, state), do: {:noreply, state}
+
+  def handle_info({:recover_storage, token}, %{storage_recovery: {token, decision}} = state) do
+    if state.closing do
+      {:noreply, state}
+    else
+      if map_size(state.workers) == 0,
+        do: recover_owned_storage(state, decision),
+        else:
+          {:noreply,
+           schedule_storage_recovery(Map.delete(state, :storage_recovery), decision, 25)}
+    end
+  end
+
+  def handle_info({:recover_storage, _token}, state), do: {:noreply, state}
+
   def handle_info({:diagnostic_read, token, result}, state),
     do: {:noreply, finish_diagnostic_read(state, token, result)}
 
@@ -328,7 +411,8 @@ defmodule Spectre.Server.GAM.Managed do
       send(
         state.options[:consumer],
         {Spectre.Server, state.options[:runtime],
-         {:diagnostics_changed, %{source: :gam, revision: state.diagnostics_revision}}}
+         {:diagnostics_changed,
+          %{source: :gam, revision: Map.get(state, :diagnostics_revision, 0)}}}
       )
     end
 
@@ -354,15 +438,8 @@ defmodule Spectre.Server.GAM.Managed do
     {:noreply, retry_diagnostics_subscription(state)}
   end
 
-  def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state) do
-    Process.send_after(
-      self(),
-      :drain_timeout,
-      Keyword.get(state.options, :shutdown_timeout, 30_000)
-    )
-
-    finish_close(%{state | closing: true})
-  end
+  def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state),
+    do: begin_close(state)
 
   def handle_info({:DOWN, monitor, :process, worker, _}, state) do
     case Enum.find(Map.get(state, :diagnostic_reads, %{}), fn {_token, read} ->
@@ -381,15 +458,12 @@ defmodule Spectre.Server.GAM.Managed do
   def handle_info({:EXIT, pid, reason}, state) do
     cond do
       pid == state.options[:runtime] ->
-        Process.send_after(
-          self(),
-          :drain_timeout,
-          Keyword.get(state.options, :shutdown_timeout, 30_000)
-        )
+        begin_close(state)
 
-        finish_close(%{state | closing: true})
+      pid == state.domain ->
+        {:noreply, Map.put(state, :storage_unavailable, reason)}
 
-      pid in [state.domain, state.gate | state.owned] ->
+      pid in [state.gate | state.owned] ->
         {:stop, {:managed_component_stopped, reason}, state}
 
       true ->
@@ -402,6 +476,111 @@ defmodule Spectre.Server.GAM.Managed do
     {:stop, :normal, %{state | close_waiters: []}}
   end
 
+  defp schedule_storage_recovery(state, decision, delay) do
+    if Map.has_key?(state, :storage_recovery) do
+      state
+    else
+      token = make_ref()
+      Process.send_after(self(), {:recover_storage, token}, delay)
+      Map.put(state, :storage_recovery, {token, decision})
+    end
+  end
+
+  defp recover_owned_storage(%{ephemeral: true} = state, :retry) do
+    {:noreply, Map.delete(state, :storage_recovery)}
+  end
+
+  defp recover_owned_storage(state, decision) do
+    {options, retained} = recovery_resources(state, decision)
+
+    case Bootstrap.open(options, self()) do
+      {:ok, recovered} ->
+        recovered = %{recovered | owned: recovered.owned ++ retained}
+        checkpoint = recovered_checkpoint(decision, recovered)
+
+        send(
+          state.options[:runtime],
+          {Spectre.Server.Runtime, state.options[:runtime_control], :gam_storage_recovered,
+           %{
+             checkpoint: checkpoint,
+             previous_domain: state.refs.domain,
+             domain: recovered.refs.domain
+           }}
+        )
+
+        next =
+          recovered
+          |> Map.merge(Map.take(state, [:workers, :closing, :close_waiters, :owner_monitor]))
+          |> restore_diagnostics(state)
+
+        {:noreply, next}
+
+      {:error, reason} ->
+        next =
+          state
+          |> Map.delete(:storage_recovery)
+          |> Map.put(:storage_unavailable, reason)
+          |> Map.merge(%{domain: nil, gate: nil, owned: retained, options: options})
+
+        incident = %{
+          domain_ref: state.refs.domain,
+          phase: :runtime,
+          reason: reason,
+          last_verified: nil
+        }
+
+        case RecoveryPolicy.recover(
+               state.options[:recovery_policy],
+               incident,
+               Keyword.get(state.options, :recovery_timeout, 5_000)
+             ) do
+          :memory when decision != :memory ->
+            {:noreply, schedule_storage_recovery(next, :memory, 0)}
+
+          {:retry, delay} ->
+            {:noreply, schedule_storage_recovery(next, :retry, delay)}
+
+          _ when decision == :retry ->
+            {:noreply, schedule_storage_recovery(next, :retry, 1_000)}
+
+          _ ->
+            {:noreply, next}
+        end
+    end
+  end
+
+  defp recovery_resources(state, :memory) do
+    terminate(:storage_recovery, state)
+    {__MODULE__.Recovery.memory_options(state.options), []}
+  end
+
+  defp recovery_resources(state, :retry) do
+    # A local coordination Store belongs to the running Server, including its
+    # Skill checkpoints. Keep that owner while replacing the Domain resources.
+    journal = unwrap_journal(state.journal)
+    {_, pid} = journal
+    retained = Enum.filter(state.owned, &(&1 == pid))
+    terminate(:storage_recovery, %{state | owned: state.owned -- retained})
+    {Keyword.put(state.options, :store, journal), retained}
+  end
+
+  defp unwrap_journal({Spectre.Server.Store.Payload, %{store: store}}), do: store
+  defp unwrap_journal(store), do: store
+
+  defp recovered_checkpoint(:memory, state), do: checkpoint_reference(state)
+  defp recovered_checkpoint(:retry, _state), do: nil
+
+  defp restore_diagnostics(next, previous) do
+    if Map.get(previous, :diagnostics_registered),
+      do: elem(ensure_diagnostics_subscription(next), 1),
+      else: next
+  end
+
+  defp checkpoint_reference(state) do
+    {module, reference} = state.journal
+    {module, reference, {:managed_agent, state.refs.domain}}
+  end
+
   @spec ensure_diagnostics_subscription(map()) :: {:ok | {:error, atom()}, map()}
   defp ensure_diagnostics_subscription(state) do
     notifier = Map.get(state, :diagnostics_notifier)
@@ -409,28 +588,32 @@ defmodule Spectre.Server.GAM.Managed do
     if is_pid(notifier) and Process.alive?(notifier) do
       {:ok, state}
     else
-      if monitor = Map.get(state, :diagnostics_monitor), do: Process.demonitor(monitor, [:flush])
+      resubscribe_diagnostics(state)
+    end
+  end
 
-      case GAM.Domain.Notifications.subscribe(state.refs.domain) do
-        {:ok, notifier} ->
-          if timer = Map.get(state, :diagnostics_retry), do: Process.cancel_timer(timer)
+  defp resubscribe_diagnostics(state) do
+    if monitor = Map.get(state, :diagnostics_monitor), do: Process.demonitor(monitor, [:flush])
 
-          state =
-            Map.merge(state, %{
-              diagnostics_notifier: notifier,
-              diagnostics_monitor: Process.monitor(notifier),
-              diagnostics_retry: nil,
-              diagnostics_registered: true
-            })
+    case GAM.Domain.Notifications.subscribe(state.refs.domain) do
+      {:ok, notifier} ->
+        if timer = Map.get(state, :diagnostics_retry), do: Process.cancel_timer(timer)
 
-          {:noreply, state} = start_diagnostic_read(state, :refresh, :head)
-          {:ok, state}
+        state =
+          Map.merge(state, %{
+            diagnostics_notifier: notifier,
+            diagnostics_monitor: Process.monitor(notifier),
+            diagnostics_retry: nil,
+            diagnostics_registered: true
+          })
 
-        {:error, _} ->
-          # Subscription is an accepted intent, even while its disposable
-          # notification process is being replaced. Checkpoint delivery stays on.
-          {:ok, retry_diagnostics_subscription(state)}
-      end
+        {:noreply, state} = start_diagnostic_read(state, :refresh, :head)
+        {:ok, state}
+
+      {:error, _} ->
+        # Subscription is an accepted intent, even while its disposable
+        # notification process is being replaced. Checkpoint delivery stays on.
+        {:ok, retry_diagnostics_subscription(state)}
     end
   end
 
@@ -515,6 +698,16 @@ defmodule Spectre.Server.GAM.Managed do
 
   defp finish_close(state), do: {:noreply, state}
 
+  defp begin_close(state) do
+    Process.send_after(
+      self(),
+      :drain_timeout,
+      Keyword.get(state.options, :shutdown_timeout, 30_000)
+    )
+
+    finish_close(%{state | closing: true})
+  end
+
   @impl true
   def format_status(status) do
     state = status.state
@@ -540,9 +733,7 @@ defmodule Spectre.Server.GAM.Managed do
         do: GenServer.reply(read.from, {:error, :diagnostic_source_unavailable})
     end)
 
-    Enum.each([state.domain, state.gate | state.owned], fn pid ->
-      if is_pid(pid) and Process.alive?(pid), do: GenServer.stop(pid, :normal, 5_000)
-    end)
+    Bootstrap.close_resources(state)
 
     :ok
   end
@@ -564,26 +755,28 @@ defmodule Spectre.Server.GAM.Managed do
 
   @spec invoke_bridge(atom(), list(), map(), keyword(), term(), map()) :: term()
   defp invoke_bridge(function, args, context, opts, operation, state) do
-    policy = effective_policy(args, opts, context)
-
-    with :ok <- validate_policy(policy) do
+    with {:ok, policy} <- effective_policy(args, opts, context, state),
+         :ok <- validate_policy(policy) do
       context =
         Map.merge(context, %{
           managed: binding_context(state),
           managed_operation: operation,
-          managed_policy: policy
+          managed_policy: policy,
+          managed_revision: managed_revision(args)
         })
 
       bridge = [
         scope: state.scope,
+        response_scope: response_scope(state, context),
         bindings: Binding.bindings(state, operation, policy),
         lifecycle: true,
-        store: Keyword.get(state.options, :store, state.journal),
+        store: state.journal,
         consent_ttl_ms: ttl(state, policy, operation),
         ingress_opts: [
           gate: state.gate,
           consent_proof: Map.get(context, :consent_proof),
-          source_digest: Map.get(context, :consent_source_digest)
+          source_digest: Map.get(context, :consent_source_digest),
+          payload_store: state.options[:payload_store]
         ]
       ]
 
@@ -610,10 +803,36 @@ defmodule Spectre.Server.GAM.Managed do
     end
   end
 
+  defp managed_revision([%{kind: :consent, revision: revision} | _]), do: revision + 1
+  defp managed_revision(_), do: 1
+
+  defp response_scope(state, context) do
+    proof = Map.get(context, :consent_proof)
+
+    case Gate.external_auth(state.gate, proof) do
+      {:ok, _} ->
+        with {:ok, authenticated} <-
+               GAM.Domain.Sequencer.authenticate(state.scope.domain.server, state.refs.scope, %{
+                 gate: state.gate,
+                 external_proof: proof
+               }),
+             {:ok, scope} <- GAM.Scope.new(state.scope.domain, authenticated) do
+          scope
+        else
+          _ -> state.scope
+        end
+
+      _ ->
+        state.scope
+    end
+  end
+
   @spec reject_preparation(map(), map(), term(), term()) :: term()
   defp reject_preparation(state, context, operation, reason) do
     with {:ok, _} <-
-           Invocation.record(state.scope, context, operation, ingress_opts: [gate: state.gate]),
+           Invocation.record(state.scope, context, operation,
+             ingress_opts: [gate: state.gate, payload_store: state.options[:payload_store]]
+           ),
          {:ok, _} <-
            GAM.observe(
              state.scope,
@@ -623,7 +842,7 @@ defmodule Spectre.Server.GAM.Managed do
                reason: reason,
                command_id: context.command_id
              },
-             ingress_opts: [gate: state.gate]
+             ingress_opts: [gate: state.gate, payload_store: state.options[:payload_store]]
            ) do
       {:error, {:action_rejected, reason}}
     end
@@ -665,9 +884,9 @@ defmodule Spectre.Server.GAM.Managed do
       end)
 
     state
-    |> Map.take([:refs, :row, :mandate])
+    |> Map.take([:refs, :row, :mandate, :show_mandate, :gate])
     |> Map.put(:effects, effects)
-    |> Map.put(:options, Keyword.take(state.options, [:bindings]))
+    |> Map.put(:options, Keyword.take(state.options, [:bindings, :approvals, :payload_store]))
   end
 
   @spec validate_policy(term()) :: :ok | {:error, atom()}
@@ -729,50 +948,49 @@ defmodule Spectre.Server.GAM.Managed do
     end
   end
 
-  @spec effective_policy(list(), keyword(), map()) :: map()
-  defp effective_policy(args, opts, context) do
-    frozen =
-      case args do
-        [%{candidate: %{consequence: consequence}} | _] ->
-          Map.get(consequence, "managed_policy", %{})
+  @spec effective_policy(list(), keyword(), map(), map()) :: {:ok, map()} | {:error, term()}
+  defp effective_policy(args, opts, context, state) do
+    with {:ok, policy} <- requested_policy(args, opts, state) do
+      if is_map(policy) and
+           (get_in(context, [:routing, :protected]) not in [nil, false] or
+              Keyword.get(opts, :confirmation) not in [nil, false]),
+         do: {:ok, Map.put(policy, :confirm, true)},
+         else: {:ok, policy}
+    end
+  end
 
-        _ ->
-          %{}
-      end
+  defp requested_policy(
+         [%{candidate: %{consequence: %{"managed_policy" => frozen}}} | _],
+         _,
+         state
+       ) do
+    with {:ok, frozen} <- restore_policy(state, frozen) do
+      policy =
+        [:confirm, :message, :expires_in, :bind, :reject]
+        |> Map.new(fn key ->
+          {key, Map.get(frozen, Atom.to_string(key), Map.get(frozen, key))}
+        end)
+        |> Map.reject(fn {_, value} -> is_nil(value) end)
 
-    policy =
-      Map.new([:confirm, :message, :expires_in, :bind, :reject], fn key ->
-        {key, Map.get(frozen, Atom.to_string(key), Map.get(frozen, key))}
-      end)
-      |> Map.reject(fn {_, value} -> is_nil(value) end)
+      {:ok, policy}
+    end
+  end
 
-    policy =
-      case args do
-        [%{candidate: %{consequence: %{"managed_policy" => _}}} | _] -> policy
-        _ -> Keyword.get(opts, :action_policy, %{})
-      end
+  defp requested_policy(_, opts, _), do: {:ok, Keyword.get(opts, :action_policy, %{})}
 
-    if is_map(policy) and
-         (get_in(context, [:routing, :protected]) not in [nil, false] or
-            Keyword.get(opts, :confirmation) not in [nil, false]),
-       do: Map.put(policy, :confirm, true),
-       else: policy
+  defp restore_policy(state, frozen) do
+    with {:ok, material} <-
+           Spectre.Server.GAM.Managed.Payload.restore(
+             state.options[:payload_store],
+             frozen,
+             %{kind: :operation, domain_ref: state.refs.domain}
+           ) do
+      policy = if is_map(material), do: Map.get(material, "managed_policy", material)
+      if is_map(policy), do: {:ok, policy}, else: {:error, :invalid_operation_payload}
+    end
   end
 
   @spec canonical_identity(map()) :: map()
   defp canonical_identity(identity),
     do: Map.new(identity, fn {key, value} -> {to_string(key), value} end)
-
-  @spec checkpoint_store(map()) :: {module(), term()}
-  defp checkpoint_store(state) do
-    case Keyword.get(state.options, :store, state.journal) do
-      {module, reference} when is_atom(module) ->
-        if Code.ensure_loaded?(module) and function_exported?(module, :fetch, 2),
-          do: {module, reference},
-          else: state.journal
-
-      _ ->
-        state.journal
-    end
-  end
 end

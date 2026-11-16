@@ -104,7 +104,11 @@ defmodule Spectre.GAM.BootstrapFailureBoundaryTest do
       )
 
     {:ok, config} =
-      Configuration.new(Keyword.put(c.f.sequencer_opts, :store, {Mock, [server: mock]}))
+      Configuration.new(
+        c.f.sequencer_opts
+        |> Keyword.put(:store, {Mock, [server: mock]})
+        |> Keyword.put(:projection_store, nil)
+      )
 
     assert {:ok, state} = Startup.load(config)
     assert state.head_digest == c.attempted.head_digest
@@ -119,7 +123,11 @@ defmodule Spectre.GAM.BootstrapFailureBoundaryTest do
       start_supervised!({Mock, store: {ETS, [server: store]}, script: script}, id: make_ref())
 
     {:ok, config} =
-      Configuration.new(Keyword.put(c.f.sequencer_opts, :store, {Mock, [server: mock]}))
+      Configuration.new(
+        c.f.sequencer_opts
+        |> Keyword.put(:store, {Mock, [server: mock]})
+        |> Keyword.put(:projection_store, nil)
+      )
 
     assert config.clock.now() == Runtime.now()
     {config, mock}

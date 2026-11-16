@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant Customer as Customer agent and GAM
+  participant Personal as Personal agent
+  participant UI as Trusted chat consumer
+  actor Human as Authorized human
+  Customer->>Personal: approval.request
+  Personal->>UI: Exact request and expiry
+  UI->>Human: Render approval controls
+  UI->>Personal: Rendering acknowledged
+  Personal->>Customer: Signed approval.presented
+  Human->>UI: Confirm or reject
+  UI->>Personal: Decision for this request
+  Personal->>Customer: Signed approval.decision
+  Customer->>Customer: Verify request and authority
+  Customer-->>Customer: Admit execution or return refusal

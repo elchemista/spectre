@@ -425,8 +425,5 @@ defmodule Spectre.Governance.GC do
   defp store_opts(opts),
     do: Keyword.take(opts, [:checkpoint_store, :component_registry, :now])
 
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:list, :map, :tuple])
 end

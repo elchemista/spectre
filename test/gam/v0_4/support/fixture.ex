@@ -1,3 +1,5 @@
+Code.require_file("../../support/projection_store.ex", __DIR__)
+
 defmodule Spectre.GAM.V04Test.Runtime do
   @moduledoc false
 
@@ -123,6 +125,8 @@ defmodule Spectre.GAM.V04Test.Fixture do
   @grant_secret :binary.copy(<<0x5A>>, 32)
 
   def start_domain(opts \\ []) do
+    opts = projection_options(opts)
+
     namespace = Keyword.get(opts, :namespace, "refund")
     clock = Keyword.get(opts, :clock, Clock)
     now = clock.now()
@@ -260,6 +264,7 @@ defmodule Spectre.GAM.V04Test.Fixture do
           :mind,
           :context,
           :payload_store,
+          :projection_store,
           :late_observer,
           :ingress,
           :ingress_max_concurrency,
@@ -267,6 +272,8 @@ defmodule Spectre.GAM.V04Test.Fixture do
           :max_pending_submissions
         ])
       )
+
+    sequencer_opts = native_projection_reads(sequencer_opts, mock)
 
     server = record!(Sequencer.start_link(sequencer_opts))
 
@@ -347,6 +354,22 @@ defmodule Spectre.GAM.V04Test.Fixture do
         :erlang.raise(:exit, reason, stacktrace)
     after
       1_000 -> :erlang.raise(:exit, reason, stacktrace)
+    end
+  end
+
+  defp native_projection_reads(opts, mock) do
+    if opts[:projection_store] && mock,
+      do: Keyword.put(opts, :store, {Spectre.GAM.Test.ProjectionLedger, server: mock}),
+      else: opts
+  end
+
+  defp projection_options(opts) do
+    if System.get_env("SPECTRE_TEST_PROJECTION") == "1" and
+         not Keyword.has_key?(opts, :projection_store) do
+      {:ok, storage} = Spectre.GAM.Test.ProjectionStore.start_link()
+      Keyword.put(opts, :projection_store, {Spectre.GAM.Test.ProjectionStore, server: storage})
+    else
+      opts
     end
   end
 

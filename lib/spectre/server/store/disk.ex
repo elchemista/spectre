@@ -24,6 +24,7 @@ defmodule Spectre.Server.Store.Disk do
 
   alias Spectre.GAM.Canonical.Value
   alias Spectre.GAM.Ledger.Store.Disk.FileIO
+  alias Spectre.Server.Store.Page
 
   @magic "SPSS1"
   @default_max_bytes 16 * 1_024 * 1_024
@@ -45,6 +46,10 @@ defmodule Spectre.Server.Store.Disk do
   def delete(store, key, expected_revision),
     do: GenServer.call(store, {:delete, key, expected_revision}, :infinity)
 
+  @impl Spectre.Server.Store
+  def list(store, prefix, opts \\ []),
+    do: GenServer.call(store, {:list, prefix, opts}, :infinity)
+
   @impl true
   def init(opts) do
     with {:ok, path, max_bytes} <- options(opts),
@@ -52,7 +57,14 @@ defmodule Spectre.Server.Store.Disk do
          {:ok, owner_key} <- owner_key(path),
          :yes <- :global.register_name(owner_key, self()),
          {:ok, entries, sequence} <- read(path, max_bytes) do
-      {:ok, %{path: path, max_bytes: max_bytes, entries: entries, sequence: sequence}}
+      {:ok,
+       %{
+         path: path,
+         max_bytes: max_bytes,
+         entries: entries,
+         sequence: sequence,
+         index: Page.index(Map.keys(entries))
+       }}
     else
       :no -> {:stop, :store_path_in_use}
       {:error, reason} -> {:stop, reason}
@@ -81,38 +93,44 @@ defmodule Spectre.Server.Store.Disk do
     {:reply, Map.get(state.entries, key, :not_found) |> found(), state}
   end
 
+  def handle_call({:list, prefix, opts}, _from, state),
+    do: {:reply, Page.read(state.index, &Map.fetch!(state.entries, &1), prefix, opts), state}
+
   def handle_call({:put_new, key, value}, _from, state) do
     if Map.has_key?(state.entries, key) do
       {:reply, {:error, :exists}, state}
     else
-      commit(state, key, 1, value)
+      commit(state, key, value)
     end
   end
 
   def handle_call({:cas, key, expected, value}, _from, state) do
     case Map.get(state.entries, key) do
-      %{revision: revision} when revision === expected -> commit(state, key, revision + 1, value)
+      %{revision: ^expected} -> commit(state, key, value)
       _ -> {:reply, {:error, :conflict}, state}
     end
   end
 
   def handle_call({:delete, key, expected}, _from, state) do
     case Map.get(state.entries, key) do
-      %{revision: ^expected} -> persist(state, Map.delete(state.entries, key), :ok)
-      _ -> {:reply, {:error, :conflict}, state}
+      %{revision: ^expected} ->
+        persist(state, Map.delete(state.entries, key), :ok, Page.delete(state.index, key))
+
+      _ ->
+        {:reply, {:error, :conflict}, state}
     end
   end
 
   defp found(:not_found), do: :not_found
   defp found(entry), do: {:ok, entry}
 
-  defp commit(state, key, _revision, value) do
+  defp commit(state, key, value) do
     revision = state.sequence + 1
     entries = Map.put(state.entries, key, %{revision: revision, value: value})
-    persist(state, entries, {:ok, revision})
+    persist(state, entries, {:ok, revision}, Page.put(state.index, key))
   end
 
-  defp persist(state, entries, reply) do
+  defp persist(state, entries, reply, index) do
     sequence = state.sequence + 1
 
     case Value.encode(%{version: 2, entries: entries, sequence: sequence},
@@ -120,7 +138,7 @@ defmodule Spectre.Server.Store.Disk do
          ) do
       {:ok, bytes} ->
         case write(state.path, bytes) do
-          :ok -> {:reply, reply, %{state | entries: entries, sequence: sequence}}
+          :ok -> {:reply, reply, %{state | entries: entries, sequence: sequence, index: index}}
           {:error, reason} -> {:stop, {:store_write_failed, reason}, {:error, reason}, state}
         end
 

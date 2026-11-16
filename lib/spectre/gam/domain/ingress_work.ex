@@ -32,7 +32,7 @@ defmodule Spectre.GAM.Domain.IngressWork do
 
   @doc false
   def observe(state, from, context, input, opts, operation, context_refs \\ []) do
-    case Input.prepare_observation(state, context, context_refs) do
+    case Input.prepare_observation(state, context, context_refs, operation == :observe) do
       {:ok, context, now} ->
         ingress = state.ingress
 

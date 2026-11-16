@@ -23,7 +23,7 @@ defmodule Spectre.Definition.Manifest do
     publisher_ref provenance_refs receipt_refs
   )
 
-  @enforce_keys [
+  @fields [
     :schema_version,
     :contract_version,
     :definition_ref,
@@ -35,6 +35,7 @@ defmodule Spectre.Definition.Manifest do
     :provenance_refs,
     :receipt_refs
   ]
+  @enforce_keys @fields
   defstruct schema_version: @schema_version,
             contract_version: @contract_version,
             definition_ref: nil,
@@ -174,42 +175,29 @@ defmodule Spectre.Definition.Manifest do
 
   def from_data(value), do: {:error, {:invalid_definition_manifest_data, shape(value)}}
 
-  defp restore_data(%{
-         "schema_version" => schema_version,
-         "contract_version" => contract_version,
-         "definition_ref" => definition_ref,
-         "definition_canonicalization_version" => canonicalization_version,
-         "definition_contract_version" => definition_contract_version,
-         "authority" => authority,
-         "execution_closure" => closure,
-         "component_contracts" => component_contracts,
-         "parent_refs" => parent_refs,
-         "publisher_ref" => publisher_ref,
-         "provenance_refs" => provenance_refs,
-         "receipt_refs" => receipt_refs
-       }) do
+  defp restore_data(data) do
+    canonicalization = Map.fetch!(data, "definition_canonicalization_version")
+    contract = Map.fetch!(data, "definition_contract_version")
+
     with {:ok, definition_ref} <-
-           Ref.parse(definition_ref,
-             canonicalization_version: canonicalization_version,
-             contract_version: definition_contract_version
+           Ref.parse(Map.fetch!(data, "definition_ref"),
+             canonicalization_version: canonicalization,
+             contract_version: contract
            ),
-         {:ok, authority} <- Envelope.from_data(authority),
-         {:ok, closure} <- Closure.from_data(closure),
-         {:ok, component_contracts} <- contracts_from_data(component_contracts),
-         {:ok, parent_refs} <-
-           parse_refs(parent_refs, canonicalization_version, definition_contract_version) do
-      new(%{
-        schema_version: schema_version,
-        contract_version: contract_version,
+         {:ok, authority} <- Envelope.from_data(Map.fetch!(data, "authority")),
+         {:ok, closure} <- Closure.from_data(Map.fetch!(data, "execution_closure")),
+         {:ok, contracts} <- contracts_from_data(Map.fetch!(data, "component_contracts")),
+         {:ok, parents} <- parse_refs(Map.fetch!(data, "parent_refs"), canonicalization, contract) do
+      @fields
+      |> Map.new(&{&1, Map.fetch!(data, Atom.to_string(&1))})
+      |> Map.merge(%{
         definition_ref: definition_ref,
         authority: authority,
         execution_closure: closure,
-        component_contracts: component_contracts,
-        parent_refs: parent_refs,
-        publisher_ref: publisher_ref,
-        provenance_refs: provenance_refs,
-        receipt_refs: receipt_refs
+        component_contracts: contracts,
+        parent_refs: parents
       })
+      |> new()
     end
   end
 
@@ -258,20 +246,7 @@ defmodule Spectre.Definition.Manifest do
 
   @spec validate_keys(map()) :: :ok | {:error, term()}
   defp validate_keys(attrs) do
-    allowed = [
-      :schema_version,
-      :contract_version,
-      :definition_ref,
-      :authority,
-      :execution_closure,
-      :component_contracts,
-      :parent_refs,
-      :publisher_ref,
-      :provenance_refs,
-      :receipt_refs
-    ]
-
-    case Map.keys(attrs) -- allowed do
+    case Map.keys(attrs) -- @fields do
       [] -> :ok
       unknown -> {:error, {:unknown_definition_manifest_fields, Enum.sort(unknown)}}
     end
@@ -465,9 +440,5 @@ defmodule Spectre.Definition.Manifest do
     do: {:error, {:invalid_definition_parent_refs, shape(value)}}
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:binary, :list, :map, :tuple])
 end

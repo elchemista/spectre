@@ -585,7 +585,7 @@ defmodule Spectre.Instance.Erasure do
   end
 
   defp checkpoint_store(agent, opts, base_opts) do
-    first_configured([
+    Spectre.Instance.Configuration.first_configured([
       {opts, :checkpoint_store},
       {base_opts, :checkpoint_store},
       {agent_config(agent), :checkpoint_store}
@@ -593,7 +593,7 @@ defmodule Spectre.Instance.Erasure do
   end
 
   defp owner(agent, opts, base_opts) do
-    first_configured([
+    Spectre.Instance.Configuration.first_configured([
       {opts, :owner},
       {base_opts, :owner},
       {agent_config(agent), :owner}
@@ -601,7 +601,7 @@ defmodule Spectre.Instance.Erasure do
   end
 
   defp journal(agent, opts, base_opts) do
-    first_configured([
+    Spectre.Instance.Configuration.first_configured([
       {opts, :journal},
       {base_opts, :journal},
       {agent_config(agent), :journal}
@@ -609,7 +609,7 @@ defmodule Spectre.Instance.Erasure do
   end
 
   defp receipt_sink(agent, opts, base_opts) do
-    first_configured([
+    Spectre.Instance.Configuration.first_configured([
       {opts, :receipt_sink},
       {base_opts, :receipt_sink},
       {agent_config(agent), :receipt_sink}
@@ -623,15 +623,6 @@ defmodule Spectre.Instance.Erasure do
   end
 
   defp agent_config(_agent), do: []
-
-  defp first_configured(entries) do
-    Enum.reduce_while(entries, nil, fn {options, key}, _acc ->
-      case Keyword.fetch(options, key) do
-        {:ok, value} -> {:halt, value}
-        :error -> {:cont, nil}
-      end
-    end)
-  end
 
   defp instance_ref(%Ref{} = ref, subject) do
     supplied = Ref.new(ref.agent_ref, subject)

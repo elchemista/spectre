@@ -169,10 +169,18 @@ its own state, pending intentions and checkpoint; mount restrictions and exact
 presentation correlation isolate permissions and consent. The [LiveView demo](DEMO.md)
 adds two concurrent Skills so these boundaries can be exercised interactively.
 
+## Two agents with external human consent
+
+Run `mix run docs/examples/external_approval.exs` from the core checkout. It
+starts separate customer and owner AgentServers with independent GAM Domains,
+exchanges protocol maps using a small mailbox adapter, and verifies confirm,
+reject and replay rejection. Human interaction and the browser are simulated.
+Pulse is optional; see [External approval](EXTERNAL_APPROVALS.md).
+
 ## Further recipes and compatibility
 
 - [Actions](ACTIONS.md): deterministic and model-produced proposals.
 - [Pending lifecycle](PENDING_LIFECYCLE.md): application policy, durable timers and OTP timer ownership.
 - [Routing](ROUTING.md): native custom adapters and route-only evaluation.
 - [Stack tools](STACK_TOOLS.md): generated helpers and installation contracts.
-- [0.3 examples](legacy/EXAMPLES_0_3.md): retained Instance/Turn/Effect compositions, not new Server scaffolding.
+- [0.3 examples](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/EXAMPLES_0_3.md): retained Instance/Turn/Effect compositions, not new Server scaffolding.

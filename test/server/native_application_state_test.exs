@@ -77,7 +77,7 @@ defmodule Spectre.Server.NativeApplicationStateTest do
 
     GenServer.stop(server)
     {:ok, restored} = Spectre.Server.Runtime.start_link(opts)
-    on_exit(fn -> if Process.alive?(restored), do: GenServer.stop(restored) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(restored) end)
     assert {%{}, %{ticks: 1}} = GenServer.call(restored, :local_state)
   end
 
@@ -103,7 +103,7 @@ defmodule Spectre.Server.NativeApplicationStateTest do
         services: [generate: Probe]
       )
 
-    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(server) end)
     assert {:ok, interaction} = Server.input(server, "probe")
     assert_receive {:service_context, context}, 2_000
     refute Map.has_key?(context, :private)

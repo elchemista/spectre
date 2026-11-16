@@ -21,7 +21,7 @@ defmodule Spectre.GAM.Core.DutyRepairBoundaryTest do
 
   setup do
     Runtime.reset(Fixture.default_now())
-    f = Fixture.start_domain(mock_store: true)
+    f = Fixture.start_domain(projection_store: nil, mock_store: true)
     on_exit(fn -> Fixture.stop_domain(f) end)
     paid = Fixture.paid_evidence(f)
     assert {:ok, ^paid} = Fixture.observe_payment(f, paid)

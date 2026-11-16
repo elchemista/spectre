@@ -1,450 +1,139 @@
 # Spectre
 
-Spectre is an Elixir framework for agents with declarative routing, an OTP
-process for application behaviour, and governed execution of consequences.
+Spectre is an Elixir framework for agents: a **Stack** installs capabilities, an
+**Agent** recognizes intentions, and a **Server** implements application behavior
+inside an OTP process. The Governed Act Model (**GAM**) mediates the operations
+that the application declares consequential.
 
-**0.4.0 development branch:** this README describes the AgentServer architecture
-on `feature/agent-server-gam`. It changes the authoring model from 0.3; it is not
-an announcement of a published Hex release. Start with the
-[0.3 → 0.4 migration guide](docs/MIGRATING_TO_0_4.md) for existing applications.
+**0.4.0 development branch:** this README describes `feature/agent-server-gam`;
+it is not
+an announcement of a published Hex release. Existing applications should read
+[Migration from 0.3](docs/MIGRATING_TO_0_4.md).
 
-## Three application modules, one conversation owner
+## Install
 
-```text
-Stack: installed capabilities, providers and resources
-  ↓
-Agent: classifiers, router, flows and intent examples
-  ↓
-Server: handle_flow / handle_result / handle_pending + OTP callbacks
-  ├─ cognitive commands → workers → results
-  └─ consequence proposals → GAM admission → Act → executor → Outcome
-```
-
-`Spectre.Stack` connects packages. `Spectre.Agent` declares what input means.
-`Spectre.Server` supplies ordinary Elixir callbacks for what happens next.
-`Spectre.Server.Runtime` is the GenServer that owns the conversation, pending
-intentions, command outbox and recovery. Your Server callbacks execute inside
-that owner; a second application GenServer is not required.
-
-The **Governed Act Model (GAM)** kernel records authority and causality at the
-host's declared governed boundary. A model can propose deleting an account;
-the proposal is not permission and is not proof of deletion. Admission precedes
-the recorded Act and capability release; observed Outcomes describe what
-actually happened. Read the [GAM manifesto](https://spectre.guide/en/governed-act-model)
-and [how Spectre integrates GAM](docs/GAM.md).
-
-## Independent Skill servers, one shared GAM
-
-A `Spectre.Skill` with `server:` runs its callbacks in a separate GenServer.
-The root AgentServer automatically connects every mounted Skill to its **same
-GAM Domain, authority ledger and execution boundary**. Mounting a Skill creates
-neither another Domain nor an additional grant; no Skill Host or manual GAM
-wiring is required.
-
-```text
-AgentServer ─────────┐
-Research Skill ──────┼──→ shared Server.GAM boundary → one Domain / ledger
-Knowledge Skill ────┘
-```
-
-Each Server owns its assigns, workers, streams, pending intentions and checkpoint.
-Skills can work concurrently; the shared kernel orders admission and applies its
-existing laws. A governed operation must be enabled in the root `gam:` operations
-configuration and allowed by the mount's `governed:` references. Installing a
-Stack package alone grants no execution authority.
-
-Every Skill proposal records its mount and invocation provenance in the shared
-ledger. Consent belongs to the exact Skill and presentation: approving Research's
-email cannot approve Knowledge's memory write. Timers record lifecycle changes
-in that same Domain; closing an intention does not erase a Duty. See
-[Skills](docs/SKILLS.md) and the [two-Skill LiveView demo](docs/DEMO.md).
-
-## Install this development line
-
-Requires Elixir `~> 1.19`:
+Requires Elixir `~> 1.19`.
 
 ```elixir
 {:spectre, github: "elchemista/spectre", branch: "feature/agent-server-gam"}
 ```
 
-Run `mix deps.get`. Keep `mix.lock` under version control, or pin an exact
-reviewed commit with `ref:`. Companion libraries use `feature/stack-tools-0.4`;
-see [Installation](docs/INSTALLATION.md) for compatible dependency and runtime
-setup. Published 0.3 documentation does not describe this branch's Server API.
+Run `mix deps.get` and commit `mix.lock`. Use an exact reviewed `ref:` for a
+reproducible deployment. [Installation](docs/INSTALLATION.md) lists the compatible
+companion branches and supervision setup.
 
-## An agent that reads a website and asks before sending email
+## A minimal agent
 
-Send a new URL. Lens opens the page, an application parser finds its contact
-email, the model drafts a message in Action Language, and Kinetic prepares the
-email proposal. **GAM requires confirmation before the host executor sends it.**
-The user can also ask for `status`, `info` or `history`.
-
-This is the main application code, not a standalone no-configuration script.
-`MyApp.MailActions`, `MyApp.Contacts` and `MyApp.TextModel` are application modules;
-the [complete guide](docs/GETTING_STARTED.md) explains their small contracts and
-the GAM configuration. Install Lens and Kinetic from their companion branches.
+No model, database or external service is needed for this example:
 
 ```elixir
-# 1. Stack: install capabilities shared by recognition and execution.
-defmodule MyApp.OutreachAI do
+defmodule MyApp.AI do
   use Spectre.Stack
-
-  install Spectre.Lens do
-    backend(SpectreLens.Browsers.Lightpanda, instances: 1)
-  end
-
-  # MailActions declares SEND EMAIL and its typed arguments; planning does not send.
-  install(Spectre.Kinetic,
-    mode: :closed_moves,
-    actions: MyApp.MailActions,
-    modes: [send_email: :write]
-  )
 end
 
-# 2. Agent: the readable map of user intentions, before their implementation.
-defmodule MyApp.OutreachAgent do
-  use Spectre.Agent, stack: MyApp.OutreachAI, server: MyApp.OutreachServer
-
-  # Writes the email draft.
-  model(MyApp.TextModel)
-  # Recognizes intent; may be another model.
-  classifier(:llm, MyApp.IntentModel)
-  # Encodes text for semantic similarity.
-  embedding(MyApp.Embeddings)
-
-  # :intent_dataset below uses the built-in example store by default.
-  # Bind intent_dataset(MyApp.Dataset, ...) only for a custom store adapter.
-
-  # Regex recognizes explicit commands; the dataset reuses reviewed examples;
-  # embeddings compare meaning; the intent model handles less explicit wording.
-  # Arbitration chooses a declared route; not every provider runs on every input.
-  router(strategies: [:regex, :intent_dataset, :embedding, :llm_classifier])
-
-  # Every match below dispatches to handle_flow({:outreach, intent}, input, ctx).
-  # Collect eligible informational examples for review/training, not model replies.
-  flow :outreach, defaults: [collect_intent: true] do
-    # A URL starts page inspection -> contact extraction -> draft -> GAM consent.
-    # Restrict this route to URL input; Lens validates the destination.
-    # Classifiers must not turn arbitrary text into a browser destination.
-    # Do not collect URLs as intent-training examples.
-    on(:new_link,
-      regex: ~r/^https?:\/\/\S+$/i,
-      match_with: [:regex],
-      dataset_lookup: false,
-      collect_intent: false
-    )
-
-    # "status" matches directly; these examples also recognize natural questions.
-    # -> handle_flow({:outreach, :status}, ...): report the current job's progress.
-    on(:status,
-      regex: ~r/^status$/i,
-      semantic_examples: ["How is the work going?", "Are you waiting for my confirmation?"]
-    )
-
-    # Explain what the agent can do, without opening a page or proposing an email.
-    # -> handle_flow({:outreach, :info}, ...).
-    on(:info,
-      regex: ~r/^(info|help)$/i,
-      semantic_examples: ["What can you do?", "How does contacting a website work?"]
-    )
-
-    # Show previous job summaries, not the current job or the full GAM audit log.
-    # -> handle_flow({:outreach, :history}, ...).
-    on(:history,
-      regex: ~r/^history$/i,
-      semantic_examples: ["Show previous jobs", "Which websites have you already processed?"]
-    )
-  end
-end
-
-# 3. Server: implement the declared intentions and continue asynchronous results.
-defmodule MyApp.OutreachServer do
-  use Spectre.Server, tools: MyApp.OutreachAI, prompt_root: "priv/outreach/prompts"
-
-  def init(_arg, ctx) do
-    # Preserve restored work/history; initialize only missing values.
-    {:ok,
-     ctx
-     |> assign(:job, ctx.assigns[:job])
-     |> assign(:history, Map.get(ctx.assigns, :history, []))}
-  end
-
-  def handle_flow({:outreach, :new_link}, input, ctx) do
-    # One active job: another link cannot replace an email awaiting approval.
-    if ctx.assigns.job do
-      respond(ctx, "A job is already open. Ask for status or finish its confirmation.")
-    else
-      ctx
-      |> assign(:job, %{url: input.text, status: :reading})
-      |> lens({:open, input.text}, on_result: :opened)
-    end
-  end
-
-  def handle_flow({:outreach, :status}, _input, ctx) do
-    status = if ctx.assigns.job, do: ctx.assigns.job.status, else: :idle
-    respond(ctx, "Job status: #{status}")
-  end
-
-  def handle_flow({:outreach, :info}, _input, ctx),
-    do:
-      respond(
-        ctx,
-        "Send a URL. I find its contact email, draft a message and ask before sending."
-      )
-
-  def handle_flow({:outreach, :history}, _input, ctx) do
-    lines = Enum.map_join(ctx.assigns.history, "\n", &"#{&1.url}: #{&1.status}")
-    respond(ctx, if(lines == "", do: "No completed jobs yet.", else: lines))
-  end
-
-  # No accepted route (including ambiguous recognition): clarify, never invent one.
-  def handle_flow(:unmatched, _input, ctx) do
-    case ctx.pending do
-      %{kind: :consent, id: id} -> explain_pending(ctx, id)
-      _ -> respond(ctx, "Send a URL, or ask about progress, capabilities or previous jobs.")
-    end
-  end
-
-  def handle_result(:opened, {:ok, tab}, ctx),
-    do: ctx |> assign(:tab, tab) |> lens({:look, tab}, on_result: :looked)
-
-  # Close the known tab even if reading failed, before moving to the model.
-  def handle_result(:looked, result, ctx),
-    do: ctx |> assign(:page_result, result) |> lens({:close, ctx.assigns.tab}, on_result: :closed)
-
-  def handle_result(:closed, {:ok, _}, ctx) do
-    with {:ok, view} <- ctx.assigns.page_result,
-         # Application parser: returns {:ok, email} only for an address in the page.
-         {:ok, email} <- MyApp.Contacts.email_from(view) do
-      ctx
-      |> assign(:job, Map.merge(ctx.assigns.job, %{email: email, status: :drafting}))
-      |> generate(:contact,
-        assigns: %{page: view.context, email: email},
-        planning: false,
-        on_result: :drafted
-      )
-    else
-      :not_found -> finish(ctx, :no_email, "No contact email found on this page.")
-      {:error, _} -> finish(ctx, :read_failed, "Could not inspect the contact page.")
-    end
-  end
-
-  # The model generates AL; Kinetic interprets the consolidated response.
-  def handle_result(:drafted, {:generated, response}, ctx),
-    do: kinetic(ctx, response, on_result: :prepared)
-
-  def handle_result(
-        :prepared,
-        {:prepared, %{actions: [%{operation: {:kinetic, :send_email}} = p]}},
-        ctx
-      ) do
-    ctx
-    |> assign(:job, %{ctx.assigns.job | status: :awaiting_confirmation})
-    # GAM's host binding below presents the exact recipient and body for consent.
-    |> propose(p.operation, p.args, proposal_metadata: p.metadata, on_result: :sent)
-  end
-
-  def handle_result(:prepared, {:prepared, _}, ctx),
-    do: finish(ctx, :invalid_draft, "Expected exactly one email proposal; nothing was sent.")
-
-  def handle_result(:sent, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
-    do: finish(ctx, :sent, "The mail service confirmed the send operation.")
-
-  # Refusal, cancellation and uncertain-result handling: see the full guide.
-  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
-
-  def handle_pending(%{kind: :consent} = pending, input, ctx) do
-    case String.downcase(String.trim(input.text)) do
-      "confirm" -> confirm_pending(ctx, pending.id)
-      "cancel" -> reject_pending(ctx, pending.id)
-      # Let the same router recognize natural questions such as "How is it going?".
-      # The pending email stays open: routing an information request is not consent.
-      # Unmatched input reaches handle_flow(:unmatched, ...) and re-explains it.
-      _ -> route_current_input(ctx)
-    end
-  end
-
-  def handle_pending(pending, input, ctx), do: super(pending, input, ctx)
-
-  defp finish(ctx, status, message) do
-    entry = %{url: ctx.assigns.job.url, status: status}
-
-    ctx
-    |> assign(:history, Enum.take([entry | ctx.assigns.history], 20))
-    |> assign(:job, nil)
-    |> respond(message)
-  end
-end
-```
-
-Read the example in order: **Stack → Agent flows → Server handlers**. Each `on`
-explains both the recognized request and its destination. For example,
-“How is the work going?” can select `:status` through semantic recognition;
-it does not need to contain the word “status”. URLs deliberately use regex only.
-`MyApp.Embeddings` and `MyApp.IntentModel` are configured host adapters, separate
-from the drafting model. Reviewed dataset examples can improve recognition;
-collection does not automatically verify examples or train a model.
-
-The Stack generates `lens` and `kinetic`; there are no package helper imports.
-Kinetic receives the **model result**, not a hand-written send command in a flow.
-The email binding below applies regardless of how the proposal was recognized;
-a regex match or an installed action is not permission to send.
-
-```elixir
-# Spectre owns GAM; the application supplies identity and operation policy.
-{:ok, _runtime} = Spectre.Stack.start_link(MyApp.OutreachAI, name: MyApp.OutreachRuntime)
-{:ok, agent} = Spectre.summon(
-  agent: MyApp.OutreachAgent,
-  identity: %{subject: authenticated_user.id},
-  stack_runtime: MyApp.OutreachRuntime,
-  gam: [
-    storage: :ephemeral,
-    operations: %{{:kinetic, :send_email} => [confirm: true]}
-  ],
-  consumer: self()
-)
-
-Spectre.Server.input(agent, "https://company.example/contact")
-Spectre.Server.input(agent, "status")
-# The configured consumer renders the presentation, then acknowledges it:
-# Spectre.Server.presented(agent, presentation_ref)
-# A separate user click approves that exact presentation:
-# Spectre.Server.decide(agent, nil, presentation_ref, :confirm)
-```
-
-The framework constructs Candidate, Presentation and execution records from the
-registered action and configured authority. Confirmation shows the frozen recipient
-and body; an admitted executor runs only after GAM commits the Act. Use optional
-`handle_action/2` and `handle_pending/3` callbacks for business rules or custom
-conversation. There is one automatic integration for every environment; the
-application does not construct a Host, Scope, Candidate or executor bridge. It
-supplies an identity from its authenticated transport and declares which registered
-operations are allowed. These policies can restrict proposals, but cannot bypass
-GAM admission, consent or recording. See [automatic GAM](docs/MANAGED_GAM.md).
-See [the guide](docs/GETTING_STARTED.md) for the model prompt, result handling,
-provider setup and what is intentionally omitted from this sketch.
-
-Application actors can use `Spectre.GAM.submit(agent, operation, args,
-on_result: :tag)` to enter this same governed loop. Only the configured consumer
-or startup `submitters` may do so; submission does not approve the operation.
-The eventual outcome still reaches the Server's `handle_result/3`.
-
-## Capabilities retained from 0.3
-
-- Regex, intent-dataset, embedding, local-classifier, LLM-classifier and custom
-  routing strategies, with explicit unmatched/ambiguous handling.
-- Separate classification and generation models, including custom adapters.
-- Online collection of labelled examples with `collect_intent`, dataset lookup,
-  training and evaluation. Text examples are useful without embeddings; vector
-  search only indexes valid compatible embeddings.
-- Streaming generation. Preview tokens are provisional; only consolidated
-  output can become executable proposals.
-- Installed Stack packages and their standalone APIs.
-
-The change is ownership: routing stays declarative, application logic moves to
-Server callbacks, and governed effects enter GAM. Consent and its lifetime are
-pending state with correlation and recovery, not an unscoped match on “yes”.
-Native `handle_call`, `handle_cast` and `handle_info` remain available. See
-[Architecture](docs/ARCHITECTURE.md) and [Pending lifecycle](docs/PENDING_LIFECYCLE.md).
-
-## Reusable Skills with their own Server
-
-A `Spectre.Skill` with a `server:` binding gets a supervised runtime with its
-own handlers, state, streams and pending intentions. Mount it with
-`skill MyApp.ResearchSkill, as: :research, governed: [:save_report]`.
-The Agent and its Skills share one GAM Domain and ledger; a Skill does not gain
-new authority by being mounted. Skill commands record their origin through the
-host's authenticated ingress.
-
-The Agent routes input to mounted flows automatically. `delegate(ctx, :research,
-input)` starts work explicitly; output reaches `handle_skill/3` and the consumer
-with mount and interaction identities. Answer a Skill's confirmation using
-`Spectre.Server.input(agent, "yes", skill: :research)`. Confirmation buttons
-should also pin the exact request: `pending: {pending.id, pending.revision}`;
-an old button cannot approve a newer proposal.
-
-```elixir
-# Declarations select the reusable routes and callback module.
-defmodule MyApp.ResearchSkill do
-  use Spectre.Skill, server: MyApp.ResearchServer
-  flow :research do
-    on :inspect, regex: ~r/^https?:\/\/\S+$/i, collect_intent: false
-  end
-end
-
-# In the mounting Agent:
-# skill MyApp.ResearchSkill, as: :research, governed: [:save_report]
-
-# Behavior runs in this Skill's own GenServer, with Stack-generated helpers.
-defmodule MyApp.ResearchServer do
+defmodule MyApp.SupportServer do
   use Spectre.Server, tools: MyApp.AI
-  def handle_flow({:research, :inspect}, input, ctx),
-    do: lens(ctx, {:look, input.text}, on_result: :observed)
-  def handle_result(:observed, {:ok, page}, ctx), do: respond(ctx, page.markdown)
-  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+
+  def handle_flow({:support, :pricing}, _input, ctx),
+    do: respond(ctx, "Plans start at EUR 20 per month.")
+
+  def handle_flow(:unmatched, _input, ctx),
+    do: respond(ctx, "Ask me about pricing.")
+end
+
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+  router(strategies: [:regex])
+
+  flow :support do
+    on(:pricing, regex: ~r/\b(price|pricing|cost)\b/i)
+  end
+end
+
+{:ok, server} = Spectre.Server.start_link(agent: MyApp.SupportAgent, consumer: self())
+{:ok, interaction} = Spectre.Server.input(server, "What is the price?")
+
+receive do
+  {Spectre.Server, ^server, {:response, ^interaction, text, _metadata}} ->
+    IO.puts(text)
 end
 ```
 
-See [Skills](docs/SKILLS.md) for a commented example, host ingress wiring,
-installed helpers and crash recovery.
+`input/3` returns an interaction ID; replies arrive asynchronously at the
+consumer. In an application, supervise the Server or use `Spectre.summon/1`
+for per-subject ownership. [Getting started](docs/GETTING_STARTED.md) covers
+these next steps and the generator.
 
-## Installed tools
+## From conversation to governed work
 
-`c:Spectre.Stack.Installable.tools/1` lets a package register operations.
-`use Spectre.Server, tools: MyApp.AI` generates helpers from that Stack's
-registered names. You do **not** import invented helper functions from each
-package. The helper builds a command; the runtime resolves the installed
-adapter/resource and applies its cognitive or governed contract.
+![Spectre: From conversation to governed work](docs/assets/readme-architecture.svg)
 
-| Package | Helper / role in the Server loop |
+[Diagram source](docs/assets/readme-architecture.mmd).
+
+Server helpers return commands in the Context. `on_result:` names the callback
+continuation. Models, classifiers and tools run in workers; native OTP callbacks
+remain available in the same conversation owner.
+
+Configure permitted effects through `gam: [operations: ...]`. Confirmation,
+when required, binds the human's decision to the exact presented operation.
+Installing a tool or receiving a model proposal does not grant authority.
+Mounted Skill servers have independent state and workers while sharing their
+root AgentServer's GAM Domain and the mount's restrictions.
+
+RAM-only operation is supported. Ledger can persist canonical GAM history,
+Server coordination and the Domain's historical projection in the application's
+PostgreSQL database. Application payload callbacks choose where content is stored
+and how it is protected.
+
+## Example: ask before sending an email
+
+After registering the email effect, configure the operation on the root:
+
+```elixir
+# Options for Spectre.Server.start_link/1; the application authenticates the user.
+identity: %{subject: user.id},
+consumer: chat_process,
+gam: [operations: %{{:kinetic, :send_email} => [confirm: true]}]
+```
+
+The business callback proposes the concrete draft instead of sending it directly:
+
+```elixir
+def handle_flow({:mail, :send}, _input, ctx) do
+  propose(ctx, {:kinetic, :send_email},
+    %{"to" => ctx.assigns.recipient, "body" => ctx.assigns.draft},
+    on_result: :sent)
+end
+
+def handle_result(:sent, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
+  do: respond(ctx, "The mail service confirmed the send operation.")
+```
+
+These are application fragments: the effect registration, draft preparation and
+chat consumer are supplied by the host. The consumer displays the exact draft,
+acknowledges rendering and submits the human's separate confirm/reject decision.
+GAM checks that decision before execution. [Managed GAM](docs/MANAGED_GAM.md)
+shows those calls; [the full outreach source](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/examples/outreach_agent.exs)
+connects website inspection, drafting, refusal and failure handling.
+
+## Guides
+
+| Goal | Start here |
 | --- | --- |
-| [Kinetic](https://github.com/elchemista/spectre_kinetic/tree/feature/stack-tools-0.4) | `kinetic`: consolidate Action Language into proposals |
-| [Mnemonic](https://github.com/elchemista/spectre_mnemonic/tree/feature/stack-tools-0.4) | `mnemonic`: recall; bind writes to governed operations |
-| [Lens](https://github.com/elchemista/spectre_lens/tree/feature/stack-tools-0.4) | `lens`: browser observations and bound actions |
-| [Prism](https://github.com/elchemista/spectre_prism/tree/feature/stack-tools-0.4) | `prism`: model selection and installed inference services |
-| [Beam](https://github.com/elchemista/spectre_beam/tree/feature/stack-tools-0.4) | `beam`: endpoints and governed delivery |
-| [Directive](https://github.com/elchemista/spectre_directive/tree/feature/stack-tools-0.4) | `directive`: portable task-state reduction |
-| [Pulse](https://github.com/elchemista/spectre_pulse/tree/feature/stack-tools-0.4) | `pulse`: protocol/contacts and bound sends |
-| [Ledger](https://github.com/elchemista/spectre_ledger/tree/feature/stack-tools-0.4) | `ledger`: current checkpoint metadata; durable store adapter |
-| [Lab](https://github.com/elchemista/spectre_lab/tree/feature/diagnostics-0.4) | `lab`: checkpoint inspection and validation |
+| Build and run an agent | [Getting started](docs/GETTING_STARTED.md) |
+| Understand processes, Context and continuations | [Architecture](docs/ARCHITECTURE.md), [Server](docs/AGENT_SERVER.md) |
+| Add models, browser, memory and other packages | [Stack tools](docs/STACK_TOOLS.md) |
+| Require local or external human consent | [Managed GAM](docs/MANAGED_GAM.md), [external approval](docs/EXTERNAL_APPROVALS.md) |
+| Configure persistence and content storage | [Domain storage](docs/DOMAIN_STORAGE.md), [payload storage](docs/PAYLOAD_STORAGE.md) |
+| Run parallel reusable capabilities | [Skills](docs/SKILLS.md) |
+| Run a complete website-to-email workflow | [Examples](docs/EXAMPLES.md), [LiveView demo](docs/DEMO.md) |
+| Deploy, test or migrate | [Production](docs/PRODUCTION.md), [Testing](docs/TESTING.md), [Migration](docs/MIGRATING_TO_0_4.md) |
 
-See [Stack tools](docs/STACK_TOOLS.md) for exact requests, results, bindings and
-replay rules. The [nine-package integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md)
-includes browsing, memory, model-generated AL, email, consent, topic changes,
-timers and crash recovery. Its external transports are simulated; the package
-adapters, persistence and GAM loop are real.
+The [documentation index](docs/START_HERE.md) links the full 0.4 reference.
+Earlier Instance/Run APIs remain supported through the
+[compatibility reference](docs/COMPATIBILITY.md). The
+[GAM manifesto](https://spectre.guide/en/governed-act-model) explains its authority
+model; [GAM in Spectre](docs/GAM.md) maps it to the implementation.
 
-## LiveView showcase
-
-The [demo_spectre](https://github.com/elchemista/demo_spectre) development application runs a chat, two supervised
-Skills, all nine Stack packages and a shared GAM Domain. Lens visits a local
-website in Lightpanda; the deterministic model produces AL, Kinetic prepares the
-email, and GAM asks for separate email and memory consent. The UI includes
-stream previews, pending controls, tool activity, local mail and the actual
-paginated, redacted GAM inspector with commit-triggered refresh. The standalone
-repository pins all ten Spectre dependencies to exact Git commits. See the [showcase guide](docs/DEMO.md) for setup,
-coverage and the optional OpenRouter mode. The demo lives outside this package.
-
-## Documentation
-
-Start at [Start here](docs/START_HERE.md), then read
-[Getting started](docs/GETTING_STARTED.md), [Agent and Server](docs/AGENT_SERVER.md),
-[GAM](docs/GAM.md), [Routing](docs/ROUTING.md) and [Training](docs/TRAINING.md).
-[Migration](docs/MIGRATING_TO_0_4.md) identifies breaking changes and compatibility
-boundaries. [Server contracts](docs/SERVER_CONTRACTS.md) documents optional
-state/continuation validation; [Diagnostics](docs/DIAGNOSTICS.md) explains
-operational snapshots, GAM pages and partial traces. [Changelog](CHANGELOG.md) records version history.
-
-The old `Instance`/`Run` APIs remain in the repository for compatibility; using
-them does not automatically migrate an application or its checkpoints to GAM.
-The application supplies authenticated identity, operation policy, credentials and
-registered effect adapters. AgentServer provisions GAM and records its protocol
-automatically. Spectre is not a sandbox for arbitrary Elixir code.
-
-Apache-2.0; see [LICENSE](LICENSE).
-
-The Stack helper selects an explicit library operation, for example
-`mnemonic(ctx, {:search, query, limit: 5}, on_result: :found)`. Search, recall and
-reflection have different result shapes; writes have separate host bindings.
-See [Stack tools](docs/STACK_TOOLS.md#mnemonic-request-ergonomics) and
-[Skill prompt roots](docs/SKILLS.md#prompt-roots-in-skill-servers).
+[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md) ·
+[Application authoring reference](LLMS.md)

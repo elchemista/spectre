@@ -125,6 +125,11 @@ defmodule Spectre.GAM.GovernedAct.Transition.Execution do
   end
 
   defp nonce_available(state, nonce_digest) do
+    Spectre.GAM.GovernedAct.Reads.ensure(
+      state.read_index.selection,
+      {:row, :consumed_nonces, nonce_digest}
+    )
+
     if MapSet.member?(state.consumed_nonces, nonce_digest),
       do: {:error, {:grant_nonce_already_consumed, nonce_digest}},
       else: :ok

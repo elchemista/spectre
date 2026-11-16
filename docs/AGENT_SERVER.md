@@ -364,38 +364,12 @@ letters instead of causing an endless replay loop.
 
 ## Migration boundaries
 
-The existing Instance, Session, Skill, Work/Vigil, Directive, reflection and Morph APIs
-remain available for compatibility. Their continued availability is not proof
-that every old execution path has been migrated behind the new GAM boundary.
-Inventory the actual effects, hooks, checkpoints and package versions used by
-an application before replacing its owner. In particular, migrating a nominal
-delete action is insufficient when anonymization happens in an after-delivery
-hook or another branch.
+Existing Instance/Run, Session, Work/Vigil and reflection APIs remain supported.
+They have different checkpoint and execution contracts. Inventory an application's
+effects, hooks and stored continuations before changing its owner; installing
+0.4 does not automatically put old direct effects behind GAM.
 
-Skills with a `server:` binding now run in supervised child runtimes, sharing
-the Agent's GAM Domain while retaining separate state and checkpoints.
-See [Skills](SKILLS.md) for native OTP callbacks, parallel execution, scoped
-confirmation and ingress attribution. Mounts without a Server retain declarative
-routing. This does not automatically migrate legacy workflow bodies or the old
-generational private-state protocol. The memory bridge likewise provides a history-oriented legacy state
-projection; adapters relying on the complete old Instance state need an audit.
-
-The nine installable satellite packages have companion
-`feature/stack-tools-0.4` branches implementing the existing Stack behaviour's
-`tools/1` callback. See [Installed tools](STACK_TOOLS.md) for helper usage and
-[the integration project](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) for an executable
-Agent using all nine. Legacy package APIs remain available; arbitrary existing
-application effects and workflow callbacks still need explicit migration.
-
-Legacy
-Instance checkpoints are not automatically converted into Server checkpoints
-or GAM consent Evidence. `freelance` is a reference application only; its
-Client/Freelancer flows, production services and alternate anonymization paths
-have not been migrated here.
-
-The architecture and full acceptance plan remain in the source checkout at
-`docs/proposals/agent-server-gam-from-0.3.it.md`.
-Historical proposal/status files explain the design work; the current API,
-migration and integration guides describe the supported implementation.
-Production host isolation and application-specific providers require their own
-verification.
+Use [Migration](MIGRATING_TO_0_4.md) for the Server conversion and
+[Compatibility](COMPATIBILITY.md) for the retained runtime's guide archive.
+The [Stack integration](https://github.com/elchemista/spectre/tree/feature/agent-server-gam/integration/stack_tools)
+exercises the current Server/tool/GAM contracts with deterministic providers.

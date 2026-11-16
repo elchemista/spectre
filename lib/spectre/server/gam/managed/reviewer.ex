@@ -194,7 +194,11 @@ defmodule Spectre.Server.GAM.Managed.Reviewer do
   def dispose(state, ref, kind, options, caller) do
     with true <- caller == state.reviewer.consumer,
          :ok <- disposition_options(options),
-         {:ok, view} <- GAM.view(state.scope),
+         {:ok, view} <-
+           GAM.Facade.Access.scoped_query(
+             state.scope,
+             {:selected_view, %{duty_ref: ref, evidence_refs: options[:supporting_refs]}}
+           ),
          %GAM.Duty{} = duty <- Enum.find(view.duties, &(&1.ref == ref)),
          {:ok, disposition} <-
            Disposition.for_duty(

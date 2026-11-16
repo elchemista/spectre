@@ -47,9 +47,7 @@ defmodule Spectre.Operation.Runtime do
   def start(kind, controller, input, opts, env)
       when kind in [:work, :vigil, :directive] and is_atom(controller) and is_list(opts) and
              is_map(env) do
-    with {:ok, definition} <- Definition.load(controller),
-         :ok <- Contract.ensure_kind(definition, kind),
-         :ok <- Contract.validate_controller_contract(definition, controller) do
+    with {:ok, definition} <- Definition.load(controller) do
       start_definition(kind, controller, definition, input, opts, env)
     end
   end

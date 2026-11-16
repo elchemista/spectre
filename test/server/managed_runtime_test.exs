@@ -187,7 +187,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     {:ok, second} = Server.start_link(agent: Agent, consumer: self())
 
     on_exit(fn ->
-      for pid <- [first, second], Process.alive?(pid), do: GenServer.stop(pid)
+      Enum.each([first, second], &Spectre.Test.Processes.stop/1)
     end)
 
     assert {:ok, first_view} = Server.gam_view(first)
@@ -300,7 +300,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
         gam: [operations: %{deliver: [confirm: true]}]
       )
 
-    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(server) end)
     send(actor, {:submit, server})
     assert_receive {:actor_submission, {:ok, _}}, 5_000
     ref = presentation()
@@ -835,7 +835,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     ]
 
     {:ok, server} = Server.start_link(opts)
-    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(server) end)
     {:ok, interaction} = Server.input(server, "PRIVATE CONTRACT BODY")
     assert_receive {:effect, %{body: "PRIVATE CONTRACT BODY"}, _}, 5_000
 
@@ -864,7 +864,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     assert :ok = GenServer.stop(server)
 
     {:ok, restored} = Server.start_link(opts)
-    on_exit(fn -> if Process.alive?(restored), do: GenServer.stop(restored) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(restored) end)
     assert map_size(Server.status(restored).dead_letters) == 1
     refute_receive {:effect, _, _}
     refute_receive :invalid_continuation_entered

@@ -22,8 +22,8 @@ defmodule Spectre.GAM.Domain.Command.Input do
   alias Spectre.GAM.Scope.View, as: ScopeView
 
   @doc false
-  def prepare_observation(state, context, context_refs) do
-    with {:ok, context, _opening} <- Context.validate_scope(state, context),
+  def prepare_observation(state, context, context_refs, external_response? \\ false) do
+    with {:ok, context} <- observation_context(state, context, external_response?),
          {:ok, _evidence} <- scoped_evidence(state.projection, context.scope_ref, context_refs),
          {:ok, now} <- Transaction.trusted_recorded_at(state) do
       {:ok, context, now}
@@ -32,10 +32,27 @@ defmodule Spectre.GAM.Domain.Command.Input do
 
   @doc false
   def finish_observation(state, context, evidence) do
-    case Context.validate_scope(state, context) do
-      {:ok, _context, _opening} -> EvidenceCommand.record(state, evidence)
+    with {:ok, context} <- Context.validate_current(state, context),
+         :ok <- validate_observations(state.projection, context, evidence) do
+      EvidenceCommand.record(state, evidence)
+    else
       {:error, reason} -> {:error, state, reason}
     end
+  end
+
+  defp observation_context(state, context, true), do: Context.validate_current(state, context)
+
+  defp observation_context(state, context, false) do
+    with {:ok, context, _} <- Context.validate_scope(state, context), do: {:ok, context}
+  end
+
+  defp validate_observations(projection, context, evidence) do
+    Enum.reduce_while(evidence, :ok, fn record, :ok ->
+      case Spectre.GAM.GovernedAct.View.observation_context(projection, context, record) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   @doc false

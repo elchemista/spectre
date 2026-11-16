@@ -36,6 +36,7 @@ defmodule Spectre.Server do
   @callback handle_action(map(), Context.t()) ::
               :default | :confirm | {:confirm, map()} | {:reject, term()}
   @callback handle_skill(term(), term(), Context.t()) :: Context.t()
+  @callback handle_approval_inbox(map(), Context.t()) :: :default | Context.t()
   @callback handle_call(term(), GenServer.from(), Context.t()) :: tuple()
   @callback handle_cast(term(), Context.t()) :: tuple()
   @callback handle_info(term(), Context.t()) :: tuple()
@@ -47,7 +48,7 @@ defmodule Spectre.Server do
   @callback continuation_contracts() ::
               nil | %{optional(atom()) => Spectre.Server.Contracts.schema()}
 
-  @optional_callbacks assigns_schema: 0, continuation_contracts: 0
+  @optional_callbacks assigns_schema: 0, continuation_contracts: 0, handle_approval_inbox: 2
 
   defmacro __using__(opts) do
     tools = Spectre.Server.ToolCompiler.snapshot!(opts, __CALLER__)
@@ -105,6 +106,7 @@ defmodule Spectre.Server do
       def handle_pending(pending, _input, ctx), do: explain_pending(ctx, pending.id)
 
       def handle_action(_action, _ctx), do: :default
+      def handle_approval_inbox(_event, _ctx), do: :default
 
       def handle_result(_tag, {:generated, %{text: text} = response}, ctx) do
         case Map.get(response, :proposals, []) do
@@ -143,6 +145,7 @@ defmodule Spectre.Server do
                      continuation_contracts: 0,
                      init: 2,
                      handle_action: 2,
+                     handle_approval_inbox: 2,
                      handle_flow: 3,
                      handle_pending: 3,
                      handle_result: 3,
@@ -165,12 +168,34 @@ defmodule Spectre.Server do
     end
   end
 
+  @doc """
+  Requests storage recovery through the configured consumer.
+
+  `:retry` rebuilds the same Domain from its canonical store. `:memory` starts
+  a fresh Domain and coordination store in RAM, preserving the running agent
+  and session. Earlier governed requests require reconciliation; approvals and
+  Grants from the previous Domain cannot authorize work in the new one.
+  """
+  def recover_storage(server, decision) when decision in [:retry, :memory],
+    do: GenServer.call(server, {Runtime, :recover_storage, decision})
+
   @spec automatic_options(keyword()) :: {:ok, keyword()} | {:error, atom()}
   defp automatic_options(opts) do
     gam = Keyword.get(opts, :gam, [])
     identity = Keyword.get(opts, :identity, %{})
     submitters = Keyword.get(opts, :submitters, [])
 
+    with :ok <- validate_gam_configuration(gam),
+         :ok <- validate_automatic_options(opts, identity, submitters, gam) do
+      identity =
+        if map_size(identity) == 0, do: %{conversation: Spectre.Identity.uuid7()}, else: identity
+
+      with {:ok, identity} <- Spectre.Server.GAM.Managed.Identity.normalize(identity),
+           do: {:ok, opts |> Keyword.put(:gam, gam) |> Keyword.put(:identity, identity)}
+    end
+  end
+
+  defp validate_gam_configuration(gam) do
     cond do
       not is_list(gam) or not Keyword.keyword?(gam) ->
         {:error, :gam_requires_configuration_not_bridge}
@@ -178,6 +203,13 @@ defmodule Spectre.Server do
       not valid_gam_options?(gam) ->
         {:error, :invalid_gam_options}
 
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_automatic_options(opts, identity, submitters, gam) do
+    cond do
       Enum.any?([:skill, :skill_parent, :runtime_scope], &Keyword.has_key?(opts, &1)) ->
         {:error, :reserved_server_options}
 
@@ -194,14 +226,7 @@ defmodule Spectre.Server do
         {:error, :managed_identity_required_for_durable_storage}
 
       true ->
-        identity =
-          if map_size(identity) == 0,
-            do: %{conversation: Spectre.Identity.uuid7()},
-            else: identity
-
-        with {:ok, identity} <- Spectre.Server.GAM.Managed.Identity.normalize(identity) do
-          {:ok, opts |> Keyword.put(:gam, gam) |> Keyword.put(:identity, identity)}
-        end
+        :ok
     end
   end
 
@@ -219,6 +244,9 @@ defmodule Spectre.Server do
       :shutdown_timeout,
       :store,
       :reviewer,
+      :approvals,
+      :recovery_policy,
+      :recovery_timeout,
       :authority
     ]
 
@@ -310,6 +338,35 @@ defmodule Spectre.Server do
   @spec presented(GenServer.server(), String.t()) :: :ok | {:error, term()}
   def presented(server, presentation_ref),
     do: GenServer.call(server, {Runtime, :presented, presentation_ref})
+
+  @doc "Receives an external approval protocol message through the trusted transport host. Decisions require configured signatures."
+  @spec receive_approval(GenServer.server(), map()) :: :ok | {:ok, binary()} | {:error, term()}
+  def receive_approval(server, message),
+    do: GenServer.call(server, {Runtime, :approval_message, message}, :infinity)
+
+  @doc "Reads one page of approval history through the authenticated root consumer."
+  def approval_inbox(server, opts \\ []),
+    do: GenServer.call(server, {Runtime, :approval_query, {:list, opts}}, :infinity)
+
+  @doc "Retrieves an approval by its scoped reference, or by an unambiguous request id."
+  def approval(server, reference),
+    do: GenServer.call(server, {Runtime, :approval_query, {:fetch, reference}}, :infinity)
+
+  @doc "Records the authenticated consumer's rendering acknowledgement and queues its signed delivery."
+  @spec approval_presented(GenServer.server(), binary() | %{id: binary(), from: binary()}) ::
+          :ok | {:error, term()}
+  def approval_presented(server, request_id),
+    do: GenServer.call(server, {Runtime, :approval_reply, request_id, :presented}, :infinity)
+
+  @doc "Records the authenticated human consumer's exact decision and queues its signed delivery."
+  @spec approval_decide(
+          GenServer.server(),
+          binary() | %{id: binary(), from: binary()},
+          :confirm | :reject
+        ) ::
+          :ok | {:error, term()}
+  def approval_decide(server, request_id, decision),
+    do: GenServer.call(server, {Runtime, :approval_reply, request_id, decision}, :infinity)
 
   @doc "Submits an authenticated consumer decision for one exact presentation and mounted Skill."
   @spec decide(GenServer.server(), atom() | nil, String.t(), :confirm | :reject) ::

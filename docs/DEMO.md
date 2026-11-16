@@ -1,130 +1,108 @@
 # Spectre 0.4 LiveView showcase
 
-The demo is a [separate repository](https://github.com/elchemista/demo_spectre),
-created with Phoenix without a database. It is not part of the Spectre Hex package.
+The [demo application](https://github.com/elchemista/demo_spectre) runs an
+AgentServer and two independent Skill Servers against one shared GAM Domain.
+PostgreSQL/Ecto stores canonical history, persisted Domain records and scoped
+Server checkpoints. The demo is a separate Phoenix application, outside the
+Spectre package; its default deterministic model needs no provider key.
 
 ## Start locally
 
-Clone the demo and follow its README. Default dependencies are exact Git commits
-for core and all nine packages, so sibling checkouts are not required. Its checked-in
-manifest and lockfile identify the tested set. For ecosystem development only,
-`SPECTRE_LOCAL_DEPS=1` explicitly selects sibling paths instead.
+Follow the [demo requirements](https://github.com/elchemista/demo_spectre#run),
+then:
 
 ```sh
 git clone https://github.com/elchemista/demo_spectre.git
 cd demo_spectre
+docker compose up -d db
 mix setup
+export LIGHTPANDA_INSTALL_DIR="$HOME/.local/share/demo-spectre/browser-1.0.4"
+bash scripts/install_browser.sh
+export LIGHTPANDA_PATH="$LIGHTPANDA_INSTALL_DIR/lightpanda"
 mix phx.server
 ```
 
-Open `http://localhost:4000`. A supported Lightpanda binary must be installed
-before startup; see the Lens standalone guide. The deterministic mode needs no
-provider key. The demo opens only its own fixture pages and never sends SMTP.
+Open `http://localhost:4000`. Compose provides PostgreSQL on loopback port 5433;
+`mix setup` creates/migrates the development database and builds assets. The
+installer verifies Lightpanda 1.0.4 for Linux x86_64. Other platforms can select a
+supported executable through `LIGHTPANDA_PATH`.
 
-## Separate Skill servers, one GAM
+The demo's source manifest pins the core and nine packages to exact Git commits,
+and its lockfile records their dependency graph. Public-source verification uses
+those revisions. For sibling development, `SPECTRE_LOCAL_DEPS=1` explicitly
+selects the local checkouts instead. Run migrations before starting an upgrade;
+application startup performs no DDL or automatic history deletion.
 
-The demo uses `DemoSpectre.AgentServer`, Research's `OutreachServer` and
-`KnowledgeServer`. These are three independent Server runtimes. The root starts
-GAM automatically and passes its existing connection to both children:
+## Separate Skill Servers, one GAM
 
-```text
-AgentServer ────────┐
-OutreachServer ─────┼──→ same automatic GAM → one Domain / authority ledger
-KnowledgeServer ────┘
-```
+![Root, two Skill Servers, shared GAM and PostgreSQL](https://raw.githubusercontent.com/elchemista/demo_spectre/main/docs/assets/readme-architecture.svg)
 
-Each Server keeps local assigns, workers, streams, pending intentions and a
-checkpoint key. The children can run concurrently; the shared kernel orders
-admission. Session startup configures the root's allowed operations once, while
-the Agent's `governed:` mount references restrict each Skill. There is no
-`DemoSpectre.Host`, Skill-specific Domain or manual ingress to implement.
+Research's `OutreachServer` and `KnowledgeServer` have their own GenServers,
+assigns, workers, streams, pending intentions and checkpoint identities. The
+root starts GAM once and shares its connection with both children. Root operation
+permissions and each mount's `governed:` references both constrain proposals.
+Installing a tool or mounting a Skill does not grant more authority.
 
-The same ledger records Skill invocation provenance and all governed lifecycle
-facts. Confirmation controls address the exact Skill and presentation: approving
-Research's email cannot approve Knowledge's note, or even Research's subsequent
-memory write. Expiry closes an intention without erasing a Duty. The inspector's
-**Identità e processi** shows the distinct Skill PIDs and shared Domain; **Registro
-GAM** shows the single authority projection. The sibling application's
-`docs/SHARED_GAM.md` follows these connections through the actual source.
+Confirmation controls identify the exact Skill and Presentation. Approving an
+email cannot approve another Skill's note or the subsequent memory write.
+Expiry closes the pending intention while preserving committed authority facts
+and unresolved Duties. The demo's
+[source walkthrough](https://github.com/elchemista/demo_spectre/blob/main/docs/SHARED_GAM.md)
+connects these rules to the callbacks.
 
 ## Walk through it
 
-1. **Apri sito di esempio**: the Research Skill opens and reads a local page using
-   real Lens/Lightpanda, recalls memory, selects a model through Prism and
-   streams a deterministic draft. Kinetic interprets the final AL into a proposal.
-2. GAM presents the exact local email. The browser acknowledges rendering before
-   a response can become consent. Confirm to put the message in the local mailbox,
-   or cancel to leave the effect unexecuted.
-3. A second request asks whether to save the result through Mnemonic. Email
-   approval does not approve memory storage.
-4. While a request is open, try **Diagnostica**, **Memoria** or **Salva nota**.
-   Knowledge runs in its own GenServer, under the same GAM Domain. Root `status`
-   remains available. Confirmation buttons pin the Skill, pending ID and revision.
-5. **Sospendi** changes topic within Research and schedules an audited closure
-   after 30 seconds. **Riprendi** before expiry asks for a fresh presentation.
-6. The inspector shows tool results, local mail and redacted, paginated GAM
-   records. Commit notifications trigger refresh; there is no periodic full-ledger
-   polling. See [Diagnostics](DIAGNOSTICS.md) for authorization and trace limits.
+1. **Apri sito di esempio** opens a local page through real Lens/Lightpanda.
+   Research recalls memory, uses Directive and Prism, streams a deterministic
+   draft, and lets Kinetic interpret the completed Action Language.
+2. GAM presents the exact email recipient and body. **Confermo** writes to the
+   local mailbox; **Annulla** leaves that effect unexecuted. Rendering the card
+   is not consent. No SMTP service is configured.
+3. A separate request asks to save the result through Mnemonic. Email approval
+   does not approve memory storage.
+4. Leave a confirmation open and try **Diagnostica**, **Memoria**, **Salva nota**
+   or root `status`. The other Servers continue independently. The inspector
+   shows distinct PIDs, one Domain and redacted paginated GAM records.
+5. **Sospendi** schedules closure after 30 seconds. **Riprendi** creates a fresh
+   Presentation; an older button cannot approve its new revision.
+6. **Notifica Beam**, **Hello + consenso**, **Esplora la memoria**, **Mappa** and
+   **Prova parafrasi** exercise local delivery, the Logger action, Mnemonic and
+   exact/vector IntentDataset lookup. The vector store is real; its test encoder
+   is deterministic, and private memory is separate from the reviewed dataset.
 
 The Stack installs Lens, Kinetic, Mnemonic, Prism, Beam, Directive, Pulse, Ledger
-and Lab. Diagnostics exercises Beam endpoint discovery, Pulse protocol inspection,
-Ledger checkpoint lookup and Lab validation. **Notifica Beam** exercises a bound
-local delivery with its own GAM confirmation. This is representative capability
-coverage, not a test of every operation or remote transport in each package.
+and Lab. This is representative local integration coverage, with Pulse protocol
+inspection rather than a remote transport. External approval by a second
+AgentServer is documented in [External approvals](EXTERNAL_APPROVALS.md),
+including an exchange without Pulse; a personal approver chat is not part of
+this UI.
 
-## Optional model
+## History, payloads and lifetime
 
-The demo README documents `DEMO_MODEL=openrouter`, `OPENROUTER_API_KEY` and
-`OPENROUTER_MODEL`. Only the explicit mode flag enables a remote call. The
-OpenRouter path uses non-streaming Chat Completions; deterministic preview uses
-the real Server streaming contract. Configure credentials in the environment,
-not in chat or source. Provider credentials and live API behavior require a
-separate check with the user's selected model.
+Each browser connection starts a fresh identity, Domain and Server tree.
+Closing it stops that tree but retains PostgreSQL history and local Mnemonic
+files. Reloading creates a new session; it does not reattach an old account.
+The demo has no account authentication and opens only its local fixture URLs.
 
-## Scope and lifetime
+The [PostgreSQL examples](https://github.com/elchemista/demo_spectre#postgresql-and-history)
+show bounded Ecto queries, canonical verification and paginated Domain reads
+after Session shutdown. These trusted administrative reads may contain private
+operation data; the LiveView diagnostic projection excludes that content.
 
-Each connected chat owns a new Agent/Skill tree with an automatically created
-GAM Domain. The authority ledger, command journal, checkpoints and Mnemonic data
-use local disk storage. A reloaded chat receives a new session/subject; it does
-not reattach old authority or silently recover a previous session. Closing the
-LiveView tears down its process tree while retaining the recorded history.
-Account login and reconnecting an existing session are outside this showcase.
-The [GAM manifesto](https://spectre.guide/en/governed-act-model) and existing
-kernel semantics are unchanged.
+Payload storage is optional and application-owned. The demo includes `put/3`
+and `fetch/3` callbacks using private files and random opaque references, without
+encryption. Unconfigured payloads remain in ordinary storage; an application can
+choose its own encryption or object store. See [Payload storage](PAYLOAD_STORAGE.md).
 
-See the sibling README for source navigation, verification and current limits.
+## Verification and optional provider
 
-## Browser and adversarial verification
+The [verification guide](https://github.com/elchemista/demo_spectre/blob/main/docs/VERIFICATION.md)
+covers `mix precommit`, real PostgreSQL integration and the Chromium/Lightpanda
+suite. Browser checks include simultaneous Skills, stale/replayed consent,
+expiry, malformed events, reconnection and lost rendering acknowledgements.
 
-The sibling demo includes a repeatable Playwright suite for Chromium. It drives
-actual LiveView forms, rendering acknowledgements and confirmation controls,
-including stale/replayed consent, concurrent Skills, real expiry timers,
-malformed client payloads, reconnects and lost presentation acknowledgements.
-Run `npm ci`, `npx playwright install chromium ffmpeg` and
-`npm run test:browser` from `demo_spectre` while its deterministic server runs.
-The demo's `docs/VERIFICATION.md` records results, corrected bugs and limits.
-
-For notes unrelated to the default contact query, use `memoria <search terms>`.
-An empty recall result is not an assertion that the memory store is empty.
-
-## Additional capability checks
-
-The demo now also includes:
-
-- **Esplora la memoria**: explicit Mnemonic search, recall or reflection; source
-  cards and a governed **Dimentica…** action showing the selected record text.
-- **Mappa**, **Conoscenze**, and `impara <text>` for graph inspection and separately
-  consented reusable knowledge.
-- **Hello + consenso**: model-generated AL → Kinetic → GAM presentation/button →
-  real Logger action; cancel/replayed confirmation never creates a second log.
-- **Prova parafrasi**: exact and quantized-vector IntentDataset lookup, with the
-  actual winning strategy visible. Vettore is real; the test encoder is
-  deterministic. Reviewed vectors are in the demo's `priv/intents/prepared.jsonl`.
-
-The core tests exercise online collection, verification, re-embedding and
-training artifacts. The demo disables automatic shared intent collection;
-Mnemonic's per-session user memory remains separate from that intent dataset.
-
-Contacts are selected from structured Lens links and observed semantic text, with
-source provenance. Multiple distinct addresses stop before message generation.
-The demo keeps consent and execution material bound to the selected observation.
+The optional `DEMO_MODEL=openrouter` mode uses credentials from the environment
+and sends rendered prompts, observed page content and recalled memory to the
+selected provider. It is non-streaming; the default provider exercises the Server
+streaming contract without remote calls. The demo README documents these choices
+and their configuration.

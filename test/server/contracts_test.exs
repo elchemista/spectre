@@ -64,7 +64,7 @@ defmodule Spectre.Server.ContractsTest do
         consumer: self()
       )
 
-    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(server) end)
     {:ok, id} = Server.input(server, "bad_state")
     assert_receive {Server, ^server, {:callback_error, ^id, :handle_flow, reason}}
     assert reason.kind == :contract
@@ -86,7 +86,7 @@ defmodule Spectre.Server.ContractsTest do
         assigns: %{actor: actor}
       )
 
-    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(server) end)
     {:ok, id} = Server.input(server, "bad_tag")
 
     assert_receive {Server, ^server,
@@ -113,7 +113,7 @@ defmodule Spectre.Server.ContractsTest do
 
     {:ok, server} = Server.Runtime.start_link(opts)
 
-    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(server) end)
     {:ok, id} = Server.input(server, "result")
     assert_receive :effect_invoked
     assert_receive {Server, ^server, {:callback_error, ^id, :handle_result, reason}}
@@ -126,7 +126,7 @@ defmodule Spectre.Server.ContractsTest do
     assert Process.alive?(server)
     GenServer.stop(server)
     {:ok, restored} = Server.Runtime.start_link(opts)
-    on_exit(fn -> if Process.alive?(restored), do: GenServer.stop(restored) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(restored) end)
     assert map_size(Server.status(restored).dead_letters) == 1
     refute_receive :effect_invoked
   end
@@ -166,6 +166,74 @@ defmodule Spectre.Server.ContractsTest do
 
   defmodule BadSchema do
     def assigns_schema, do: %{name: :unrecognised}
+  end
+
+  defmodule Structured do
+    def assigns_schema,
+      do: %{
+        rows: {:list, {:map, %{count: :number, enabled: :boolean, label: {:optional, :atom}}}},
+        metadata: :map,
+        history: :list,
+        extension: :any
+      }
+
+    def continuation_contracts, do: %{batch: {:tuple, [:atom, {:list, :integer}]}}
+  end
+
+  defmodule InvalidDeclaration do
+    def assigns_schema, do: [:integer]
+  end
+
+  test "nested collection contracts identify the failing element without exposing its value" do
+    assert :ok = Contracts.validate_configuration!(Structured)
+
+    valid = %{
+      rows: [%{count: 1.5, enabled: true, label: :ready}],
+      metadata: %{},
+      history: [],
+      extension: {:arbitrary, :data}
+    }
+
+    assert :ok = Contracts.validate_assigns(Structured, valid)
+    assert :ok = Contracts.validate_assigns(Structured, %{valid | rows: []})
+
+    assert {:error, %{path: [:rows, 0, :count], received: :string}} =
+             Contracts.validate_assigns(Structured, put_in(valid, [:rows], [%{count: "PRIVATE"}]))
+
+    for {value, shape} <- [{%{}, :map}, {[], :list}, {2.5, :number}, {self(), :other}] do
+      assert {:error, %{received: ^shape}} = Contracts.validate_assigns(App, %{count: value})
+    end
+
+    assert_raise Server.ContractError, fn ->
+      Contracts.validate_result!(Structured, :batch, {:ok}, %{})
+    end
+
+    assert_raise ArgumentError, ~r/must return nil or a map/, fn ->
+      Contracts.validate_configuration!(InvalidDeclaration)
+    end
+  end
+
+  test "retained live workers and older implicit waits preserve continuation rules" do
+    assert :ok =
+             Contracts.validate_commands!(App, [
+               %Server.Command{kind: :generate, args: [], opts: []}
+             ])
+
+    assert {:error, %{reason: :undeclared_tag, tag: :non_atom_tag}} =
+             Contracts.validate_retained(App, %{
+               workers: %{"worker" => %{tag: "PRIVATE", opts: [on_result: "PRIVATE"]}}
+             })
+
+    assert :ok =
+             Contracts.validate_retained(App, %{
+               outbox: %{"historical" => %{}},
+               pending: %{"implicit" => %{id: "implicit", kind: :reply, on_result: "implicit"}}
+             })
+
+    assert {:error, %{reason: :undeclared_tag}} =
+             Contracts.validate_retained(App, %{
+               pending: %{"explicit" => %{id: "explicit", kind: :reply, on_result: :removed}}
+             })
   end
 
   defmodule Alternatives do

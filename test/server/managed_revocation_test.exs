@@ -106,7 +106,7 @@ defmodule Spectre.Server.ManagedRevocationTest do
     GenServer.stop(server)
 
     {:ok, restarted} = Server.start_link(opts)
-    on_exit(fn -> if Process.alive?(restarted), do: GenServer.stop(restarted) end)
+    on_exit(fn -> Spectre.Test.Processes.stop(restarted) end)
     assert {:ok, view} = Server.gam_view(restarted)
     assert Enum.any?(view.acts, &(&1.ref == revoked.primary.act.ref))
     assert {:ok, _} = Server.input(restarted, "after restart")

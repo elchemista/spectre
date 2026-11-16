@@ -15,7 +15,7 @@ through `Spectre.Skill.Definition` and manage them with
 `Spectre.Skill.Runtime`. They lower into the same canonical model, use only
 registered operation references and closed prompt fragments, and have a
 separate authority-checked lifecycle. See
-[Runtime Skills and Routing Projections](../RUNTIME_SKILLS.md). The compiled mount
+[Runtime Skills and Routing Projections](RUNTIME_SKILLS.md). The compiled mount
 path described below remains unchanged.
 
 ## The Smallest Complete Example
@@ -230,7 +230,7 @@ choice.
 Use `Spectre.skill_state/3`, `Spectre.skill_state_branches/3`,
 `Spectre.update_skill_state/4`, and
 `Spectre.transition_skill_state_retention/5` at the trusted host boundary.
-See [Generational Skill State](../SKILL_STATE.md) for activation examples,
+See [Generational Skill State](SKILL_STATE.md) for activation examples,
 retention rules, and checkpoint compatibility.
 
 ## What A Skill Inherits
@@ -281,4 +281,4 @@ To add a Skill:
 6. Call `Spectre.ask/3` or `Spectre.turn/3` on the Agent, not on the Skill.
 
 See also [DSL](../DSL.md), [Actions](../ACTIONS.md), and the `Spectre.Skill`
-moduledoc in [`lib/spectre/skill.ex`](../lib/spectre/skill.ex).
+moduledoc in [`lib/spectre/skill.ex`](../../lib/spectre/skill.ex).

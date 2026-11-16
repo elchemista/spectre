@@ -44,17 +44,21 @@ defmodule Spectre.Server.PermissionDiagnostics do
     if strict and is_list(Keyword.get(opts, :gam)) and not Keyword.has_key?(opts, :skill) do
       operations = Keyword.get(opts[:gam], :operations, %{})
 
-      if is_map(operations) do
-        case report(agent, operations) do
-          [] ->
-            :ok
-
-          issues ->
-            raise ArgumentError, "incompatible Skill operation permissions: #{inspect(issues)}"
-        end
-      end
+      validate_operations!(agent, operations)
     end
 
     :ok
   end
+
+  defp validate_operations!(agent, operations) when is_map(operations) do
+    case report(agent, operations) do
+      [] ->
+        :ok
+
+      issues ->
+        raise ArgumentError, "incompatible Skill operation permissions: #{inspect(issues)}"
+    end
+  end
+
+  defp validate_operations!(_agent, _operations), do: :ok
 end

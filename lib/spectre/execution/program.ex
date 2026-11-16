@@ -795,7 +795,7 @@ defmodule Spectre.Execution.Program do
   @spec normalize_budget(term()) :: {:ok, map()} | {:error, term()}
   defp normalize_budget(nil), do: {:error, :execution_program_requires_budget}
 
-  defp normalize_budget(value) do
+  defp normalize_budget(value) when is_map(value) or is_list(value) do
     with :ok <- reject_ambiguous_budget(value) do
       value = atomize_budget(value)
       budget = Budget.new(value, 0)
@@ -820,6 +820,8 @@ defmodule Spectre.Execution.Program do
     error in ArgumentError ->
       {:error, {:invalid_execution_program_budget, Exception.message(error)}}
   end
+
+  defp normalize_budget(value), do: {:error, {:invalid_execution_program_budget, shape(value)}}
 
   @spec atomize_budget(term()) :: term()
   defp atomize_budget(value) when is_map(value) do
@@ -1303,10 +1305,5 @@ defmodule Spectre.Execution.Program do
   end
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :tuple, :binary, :atom])
 end

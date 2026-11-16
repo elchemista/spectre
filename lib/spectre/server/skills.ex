@@ -169,13 +169,37 @@ defmodule Spectre.Server.Skills do
     )
     |> Keyword.put(:init_arg, Keyword.get(options, :init_arg))
     |> Keyword.put(:checkpoint, checkpoint)
+    |> Keyword.put(
+      :checkpoint_domain,
+      if(state.managed_owner,
+        do: {state.managed_owner, Spectre.Server.GAM.Managed.info(state.managed_owner).domain},
+        else: nil
+      )
+    )
     |> Keyword.put(:gam, state.gam)
   end
 
+  @doc false
+  def refresh_checkpoint(opts) do
+    case opts[:checkpoint_domain] do
+      {owner, original} ->
+        if Spectre.Server.GAM.Managed.info(owner).domain == original do
+          opts
+        else
+          current = Spectre.Server.GAM.Managed.runtime_checkpoint(owner)
+          Keyword.put(opts, :checkpoint, checkpoint(current, opts[:skill].id))
+        end
+
+      nil ->
+        opts
+    end
+  end
+
   @spec checkpoint(term(), term()) :: term()
-  defp checkpoint(nil, _id), do: nil
-  defp checkpoint({store, key}, id), do: {store, {:spectre_skill, key, id}}
-  defp checkpoint({module, store, key}, id), do: {module, store, {:spectre_skill, key, id}}
+  @doc false
+  def checkpoint(nil, _id), do: nil
+  def checkpoint({store, key}, id), do: {store, {:spectre_skill, key, id}}
+  def checkpoint({module, store, key}, id), do: {module, store, {:spectre_skill, key, id}}
 
   @doc false
   @spec validate_input(term()) :: :ok | {:error, term()}

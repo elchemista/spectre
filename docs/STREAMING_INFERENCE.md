@@ -109,7 +109,7 @@ and consumer envelopes differ from the retained `Spectre.stream(instance, ...)`
 Enumerable/Run protocol. Native Instance steering, stream handles, observer
 receipts and resume guarantees must be evaluated in that older API's context.
 
-The complete [0.3 streaming reference](legacy/STREAMING_INFERENCE_0_3.md) preserves
+The complete [0.3 streaming reference](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/STREAMING_INFERENCE_0_3.md) preserves
 adapter details and those Instance-specific guarantees. Use [Providers](PROVIDERS.md)
 for shared resilience boundaries, [AgentServer](AGENT_SERVER.md) for current
 ownership and [migration](MIGRATING_TO_0_4.md) when replacing an Instance.

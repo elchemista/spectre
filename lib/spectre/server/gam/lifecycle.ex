@@ -17,6 +17,7 @@ defmodule Spectre.Server.GAM.Lifecycle do
   alias Spectre.GAM
   alias Spectre.GAM.{Evidence, Ingress, Scope, SubmissionContext}
   alias Spectre.GAM.Canonical.Value
+  alias Spectre.Server.GAM.Managed.Payload
 
   @required [:id, :phase, :kind, :pending_id, :revision]
   @optional [
@@ -138,10 +139,14 @@ defmodule Spectre.Server.GAM.Lifecycle do
   end
 
   defp recover_or_observe(scope, event, digest, opts) do
-    with {:ok, view} <- GAM.view(scope) do
-      case Enum.filter(view.evidence, &(&1.bindings[@identity_binding] == event.id)) do
+    with {:ok, records} <-
+           Spectre.GAM.Facade.Access.scoped_query(
+             scope,
+             {:evidence_proposition, proposition(event.id)}
+           ) do
+      case Enum.filter(records, &(&1.bindings[@identity_binding] == event.id)) do
         [] -> observe(scope, event, digest, opts)
-        existing -> receipt(existing, scope, event, digest)
+        existing -> receipt(existing, scope, event, digest, opts)
       end
     end
   end
@@ -149,11 +154,17 @@ defmodule Spectre.Server.GAM.Lifecycle do
   defp observe(scope, event, digest, opts) do
     with {:ok, observed} <-
            GAM.observe(scope, %{kind: :spectre_server_lifecycle, event: event}, opts) do
-      receipt(observed, scope, event, digest)
+      receipt(observed, scope, event, digest, opts)
     end
   end
 
-  defp receipt(records, scope, event, digest) do
+  defp receipt(records, scope, event, digest, opts) do
+    with {:ok, records} <- Payload.restore_evidence(records, opts, Scope.domain_ref(scope)) do
+      validated_receipt(records, scope, event, digest)
+    end
+  end
+
+  defp validated_receipt(records, scope, event, digest) do
     cond do
       Enum.any?(records, &conflicting_evidence?(&1, event.id, digest)) ->
         {:error, :lifecycle_event_conflict}

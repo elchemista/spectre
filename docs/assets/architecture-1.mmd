@@ -1,0 +1,10 @@
+flowchart TB
+  Root[Root Server Runtime] -->|delegates a route| Research[Research Skill Runtime]
+  Root -->|delegates a route| Knowledge[Knowledge Skill Runtime]
+  Root -->|proposal| GAM[Shared Managed GAM boundary]
+  Research -->|proposal with mount identity| GAM
+  Knowledge -->|proposal with mount identity| GAM
+  GAM --> Domain[One GAM Domain and authority ledger]
+  Resources[Supervised Stack resources] -.-> Root
+  Resources -.-> Research
+  Resources -.-> Knowledge

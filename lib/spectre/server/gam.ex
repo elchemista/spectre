@@ -90,7 +90,7 @@ defmodule Spectre.Server.GAM do
          :ok <- not_expired(pending),
          {:ok, evidence} <-
            GAM.observe(
-             scope,
+             Keyword.get(config, :response_scope, scope),
              response_input(pending, recovered, input, context),
              observation_options(config)
            ),
@@ -117,7 +117,7 @@ defmodule Spectre.Server.GAM do
          :ok <- successful_show(recovered),
          {:ok, _evidence} <-
            GAM.observe(
-             scope,
+             Keyword.get(config, :response_scope, scope),
              response_input(pending, recovered, input, context, :contradicts),
              observation_options(config)
            ) do
@@ -160,7 +160,7 @@ defmodule Spectre.Server.GAM do
          {:ok, presentation, show_attrs} <-
            invoke(binding[:presentation], [
              candidate,
-             context,
+             Map.put(context, :consent_expires_at, expires_at),
              Keyword.get(opts, :confirmation, [])
            ]),
          {:ok, presentation} <- Presentation.new(presentation),
@@ -306,7 +306,7 @@ defmodule Spectre.Server.GAM do
   def resolve_result(reference, context, opts) when is_map(reference) do
     with {:ok, config} <- config(opts),
          {:ok, scope} <- scope(config, context),
-         {:ok, view} <- GAM.view(scope),
+         {:ok, view} <- Spectre.GAM.Facade.Access.scoped_query(scope, {:selected_view, reference}),
          {:ok, result} <- referenced_result(view, reference, scope) do
       {:governed, result}
     end

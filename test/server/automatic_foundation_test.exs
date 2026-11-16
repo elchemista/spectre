@@ -4,6 +4,9 @@ defmodule Spectre.Server.AutomaticFoundationTest do
   alias Spectre.GAM
   alias Spectre.Server.GAM.Managed
   alias Spectre.Server.GAM.Managed.Authority
+  alias Spectre.Server.GAM.Managed.LedgerStorage
+  alias Spectre.Server.GAM.Managed.Store, as: Memory
+  alias Spectre.GAM.Ledger.Store.ETS, as: LedgerETS
 
   defmodule Stack do
     use Spectre.Stack
@@ -11,6 +14,25 @@ defmodule Spectre.Server.AutomaticFoundationTest do
 
   defmodule Agent do
     use Spectre.Agent, stack: Stack
+  end
+
+  defmodule FaultStore do
+    def fetch({_, :offline}, _), do: {:error, :offline}
+    def fetch({pid, _}, key), do: Memory.fetch(pid, key)
+
+    def put_new({pid, :lost_ack}, key, value) do
+      {:ok, _} = Memory.put_new(pid, key, value)
+      {:error, :ambiguous}
+    end
+
+    def put_new({pid, _}, key, value), do: Memory.put_new(pid, key, value)
+
+    def compare_and_swap({_, :offline}, _, _, _), do: {:error, :offline}
+    def delete(_, _, _), do: {:error, :unused}
+    def gam_ledger({_, :offline}), do: {:error, :offline}
+    def gam_ledger({_, :unconfigured}), do: :not_configured
+    def gam_ledger({_, :invalid}), do: {:ok, :missing_adapter}
+    def gam_ledger({_, {:ledger, store}}), do: {:ok, store}
   end
 
   defp options(extra \\ []) do
@@ -169,5 +191,141 @@ defmodule Spectre.Server.AutomaticFoundationTest do
 
     assert {:error, :managed_authority_configuration_changed} =
              Managed.start_link(Keyword.put(opts, :expires_at, deadline + 1))
+  end
+
+  test "host-owned ledger and journal recover one foundation without local files or owned stores" do
+    ledger = start_supervised!(LedgerETS)
+    journal = start_supervised!({Memory, []})
+    selected = {LedgerETS, server: ledger}
+    opts = options(storage: {:ledger, selected}, store: {Memory, journal})
+
+    assert {:ok, managed} = Managed.start_link(opts)
+    original = :sys.get_state(managed)
+    assert original.store == selected
+    assert original.owned == []
+    :ok = Managed.close(managed)
+    assert Process.alive?(ledger)
+    assert Process.alive?(journal)
+
+    assert {:ok, recovered} = Managed.start_link(opts)
+    state = :sys.get_state(recovered)
+    assert state.genesis == original.genesis
+    assert state.mandate == original.mandate
+    :ok = Managed.close(recovered)
+
+    assert {:error, :managed_authority_configuration_changed} =
+             Managed.start_link(Keyword.put(opts, :purpose, "changed"))
+
+    empty = start_supervised!(LedgerETS, id: :empty)
+
+    assert {:error, :managed_authority_history_missing} =
+             Managed.start_link(
+               Keyword.put(opts, :storage, {:ledger, {LedgerETS, server: empty}})
+             )
+
+    assert :not_found = GAM.Ledger.Store.head({LedgerETS, server: empty}, state.refs.domain)
+
+    :ok = stop_supervised(LedgerETS)
+    assert {:error, _} = Managed.start_link(opts)
+  end
+
+  test "ledger storage requires compatible providers and never silently falls back to memory" do
+    journal = start_supervised!({Memory, []})
+
+    assert {:error, :managed_ledger_requires_coordination_store} =
+             Managed.start_link(options(storage: :ledger))
+
+    assert {:error, :managed_gam_ledger_unavailable} =
+             Managed.start_link(options(storage: :ledger, store: {Memory, journal}))
+
+    assert {:error, {:adapter_callback_missing, Memory, :append, 5}} =
+             Managed.start_link(options(storage: {:ledger, Memory}, store: {Memory, journal}))
+
+    ledger = start_supervised!(LedgerETS)
+    {:ok, _} = Memory.put_new(journal, {:managed_agent, "existing"}, %{checkpoint: :previous})
+
+    assert {:error, :managed_authority_migration_required} =
+             Managed.start_link(
+               options(
+                 domain: "existing",
+                 storage: {:ledger, {LedgerETS, server: ledger}},
+                 store: {Memory, journal}
+               )
+             )
+  end
+
+  test "racing first opens share the exact profile and an interrupted bootstrap can resume" do
+    ledger = start_supervised!(LedgerETS)
+    journal = start_supervised!({Memory, []})
+    selected = {:ledger, {LedgerETS, server: ledger}}
+
+    hosts =
+      1..12
+      |> Task.async_stream(fn _ ->
+        LedgerStorage.open(selected, {Memory, journal}, "racing", "configuration-digest")
+      end)
+      |> Enum.map(fn {:ok, {:ok, host}} -> host end)
+
+    assert hosts |> Enum.map(& &1.issued_at) |> Enum.uniq() |> length() == 1
+    assert Enum.all?(hosts, fn host -> elem(host.authority_profile, 1).value.ready == false end)
+    assert {:ok, [_], nil} = Memory.list(journal, {:managed_authority})
+
+    # Simulates publication after successful ledger verification. Concurrent
+    # publishers may only accept the exact already-published profile.
+    Enum.each(hosts, &assert(:ok = LedgerStorage.ready(&1)))
+
+    assert {:error, :managed_authority_history_missing} =
+             LedgerStorage.open(selected, {Memory, journal}, "racing", "configuration-digest")
+  end
+
+  test "unavailable providers and ambiguous profile writes never manufacture a fresh authority" do
+    ledger = start_supervised!(LedgerETS)
+    journal = start_supervised!({Memory, []})
+    selected = {:ledger, {LedgerETS, server: ledger}}
+
+    assert {:ok, %{store: {LedgerETS, _}}} =
+             LedgerStorage.open(
+               :ledger,
+               {FaultStore, {journal, selected}},
+               "configured",
+               "digest"
+             )
+
+    assert {:error, :offline} =
+             LedgerStorage.open(:ledger, {FaultStore, {journal, :offline}}, "offline", "digest")
+
+    assert {:error, :managed_gam_ledger_unavailable} =
+             LedgerStorage.open(
+               :ledger,
+               {FaultStore, {journal, :unconfigured}},
+               "offline",
+               "digest"
+             )
+
+    assert {:error, {:adapter_module_not_loaded, :missing_adapter}} =
+             LedgerStorage.open(:ledger, {FaultStore, {journal, :invalid}}, "offline", "digest")
+
+    assert {:error, :offline} =
+             LedgerStorage.open(selected, {FaultStore, {journal, :offline}}, "offline", "digest")
+
+    assert {:error, :ambiguous} =
+             LedgerStorage.open(selected, {FaultStore, {journal, :lost_ack}}, "unknown", "digest")
+
+    assert {:ok, saved} = Memory.fetch(journal, {:managed_authority, "unknown"})
+    assert {:ok, host} = LedgerStorage.open(selected, {Memory, journal}, "unknown", "digest")
+    assert host.issued_at == saved.value.issued_at
+    assert host.authority_profile == {{:managed_authority, "unknown"}, saved}
+
+    assert {:error, :offline} =
+             LedgerStorage.ready(%{host | journal: {FaultStore, {journal, :offline}}})
+
+    {:ok, _} =
+      Memory.compare_and_swap(journal, {:managed_authority, "unknown"}, saved.revision, %{
+        saved.value
+        | digest: "other-configuration"
+      })
+
+    assert {:error, :managed_authority_configuration_changed} = LedgerStorage.ready(host)
+    assert :not_found = GAM.Ledger.Store.head({LedgerETS, server: ledger}, "unknown")
   end
 end

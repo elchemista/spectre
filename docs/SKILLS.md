@@ -5,8 +5,8 @@ module. Mounting it creates a supervised GenServer with its own assigns, private
 state, workers, pending intentions and checkpoint. Its governed actions enter
 **the same GAM Domain as its Agent**, through `Spectre.Server.GAM`.
 
-This is the 0.4 AgentServer path. The [0.3 Skill guide](legacy/SKILLS_0_3.md),
-[generational Skill state](SKILL_STATE.md) and [data-defined runtime Skills](RUNTIME_SKILLS.md)
+This is the 0.4 AgentServer path. The [0.3 Skill guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/SKILLS_0_3.md),
+[generational Skill state](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/SKILL_STATE.md) and [data-defined runtime Skills](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/RUNTIME_SKILLS.md)
 describe compatibility APIs; their Instance snapshots are not converted into
 Server checkpoints.
 

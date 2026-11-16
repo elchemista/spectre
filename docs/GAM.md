@@ -191,3 +191,14 @@ The existing `Spectre.Governance` APIs for definition changes and the 0.3 policy
 DSL are distinct from the imported `Spectre.GAM` act kernel. Do not treat an old
 policy declaration as a migrated mandate. Follow [Migration](MIGRATING_TO_0_4.md)
 and retain history when changing runtime ownership.
+
+### Responses from an independent Presentation recipient
+
+A Scope remains bound to its opening context. The fixed authenticated ingress
+may nevertheless observe an exact Presentation response from another declared
+recipient in that Scope. Only this response Evidence can cross that boundary:
+its issuer/context/source must match the declared recipient and approval source,
+and the prepared Presentation, show Act and successful Outcome must already
+validate. Replay applies the same checks. This grants no query, Mind Turn,
+proposal or execution authority to that recipient. Managed GAM uses this narrow
+contract for [external human approvals](MANAGED_GAM.md#external-human-approval).

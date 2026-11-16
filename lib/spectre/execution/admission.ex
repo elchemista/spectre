@@ -212,7 +212,9 @@ defmodule Spectre.Execution.Admission do
     end
   end
 
-  defp budget_authority(authority, program) do
+  @doc false
+  @spec budget_authority(Envelope.t(), Program.t()) :: :ok | {:error, term()}
+  def budget_authority(authority, program) do
     excess =
       [cost: :max_cost, duration_ms: :max_duration_ms, pages: :max_pages]
       |> Enum.find_value(&budget_excess(program, authority, &1))

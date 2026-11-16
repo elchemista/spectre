@@ -9,10 +9,12 @@ defmodule Spectre.GAM.GovernedAct.ReadIndex do
   """
 
   alias Spectre.GAM.Erasure.{Analysis, Index}
+  alias Spectre.GAM.GovernedAct.Reads, as: Selection
   alias Spectre.GAM.GovernedAct.AuthorityIndex
   alias Spectre.GAM.Presentation
 
   defstruct duties: %Spectre.GAM.Duty.Frontier{},
+            selection: nil,
             erasure: %Index{},
             authority: %AuthorityIndex{},
             batches: MapSet.new(),
@@ -209,11 +211,13 @@ defmodule Spectre.GAM.GovernedAct.ReadIndex do
 
   @doc "Selects all potentially relevant proof and counterproof, including recursive assumptions."
   def evidence_for(state, conditions, presentation_ref \\ nil) do
+    reads = state.read_index.selection
     propositions = Enum.map(conditions || [], & &1.proposition)
+    if presentation_ref, do: Selection.group(reads, :approval_propositions, presentation_ref)
     responses = Map.get(state.read_index.approval_propositions, presentation_ref, MapSet.new())
     propositions = propositions ++ MapSet.to_list(responses)
 
-    if complete?(state) do
+    if reads != nil or complete?(state) do
       selected = collect(propositions, state, %{}, %{})
       unavailable = Analysis.unavailable_evidence_refs(state)
 
@@ -231,8 +235,11 @@ defmodule Spectre.GAM.GovernedAct.ReadIndex do
 
   @doc "Selects the shows and all their Outcomes, including failed and contradictory receipts."
   def presentation_history(state, ref) do
-    if state.read_index.act_count === map_size(state.acts) and
-         state.read_index.outcome_count === map_size(state.outcomes) do
+    Selection.group(state.read_index.selection, :presentation_shows, ref)
+
+    if state.read_index.selection != nil or
+         (state.read_index.act_count === map_size(state.acts) and
+            state.read_index.outcome_count === map_size(state.outcomes)) do
       refs = Map.get(state.read_index.show_acts, ref, MapSet.new()) |> MapSet.to_list()
       outcomes = Enum.reduce(refs, %{}, &Map.merge(&2, outcomes_for(state, :act, &1)))
       {Map.take(state.acts, refs), Map.values(outcomes)}
@@ -243,7 +250,9 @@ defmodule Spectre.GAM.GovernedAct.ReadIndex do
 
   @doc false
   def evidence_for_attempt(state, act_ref, attempt_ref) do
-    if complete?(state) do
+    Selection.group(state.read_index.selection, :attempt_evidence, {act_ref, attempt_ref})
+
+    if state.read_index.selection != nil or complete?(state) do
       refs = Map.get(state.read_index.evidence_by_attempt, {act_ref, attempt_ref}, MapSet.new())
       Map.take(state.evidence, MapSet.to_list(refs))
     else
@@ -254,12 +263,17 @@ defmodule Spectre.GAM.GovernedAct.ReadIndex do
   @doc false
   def complete?(state),
     do:
-      :gb_trees.size(state.read_index.evidence_by_revision) == map_size(state.evidence) and
+      state.read_index.selection == nil and
+        :gb_trees.size(state.read_index.evidence_by_revision) == map_size(state.evidence) and
         state.read_index.presentation_count == map_size(state.presentations)
 
   @doc false
   def outcomes_for(state, kind, ref) when kind in [:act, :attempt] do
-    if state.read_index.outcome_count == map_size(state.outcomes) do
+    collection = if kind == :act, do: :act_outcomes, else: :attempt_outcomes
+    Selection.group(state.read_index.selection, collection, ref)
+
+    if state.read_index.selection != nil or
+         state.read_index.outcome_count == map_size(state.outcomes) do
       index =
         if kind == :act,
           do: state.read_index.duties.outcomes_by_act,
@@ -292,6 +306,7 @@ defmodule Spectre.GAM.GovernedAct.ReadIndex do
     if Map.has_key?(seen, proposition) do
       collect(rest, state, seen, selected)
     else
+      Selection.group(state.read_index.selection, :evidence_propositions, proposition)
       refs = Map.get(state.read_index.evidence_by_proposition, proposition, MapSet.new())
       assumptions = Enum.flat_map(refs, &Map.fetch!(state.evidence, &1).assumptions)
 

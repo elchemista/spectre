@@ -118,7 +118,6 @@ defmodule Spectre.GAM.DomainConfigurationBoundaryTest do
           record_presentation: [nil, %{}],
           open_scope: [nil, %{}],
           resume_scope: [nil],
-          scope_projection: [nil],
           definition: [nil, "missing"]
         ] do
       assert {:error, :authenticated_scope_context_required} =
@@ -129,8 +128,6 @@ defmodule Spectre.GAM.DomainConfigurationBoundaryTest do
   test "read options and malformed definition refs leave the durable head unchanged", %{f: f} do
     context = Fixture.context(f)
     head = Sequencer.head(f.server)
-    assert {:ok, projection} = Sequencer.scope_projection(f.server, context)
-    assert projection.domain_ref == f.refs.domain
     assert {:ok, time} = Sequencer.trusted_time(f.server)
     assert time == Runtime.now()
     assert {:error, {:invalid_definition_ref, nil}} = Sequencer.definition(f.server, context, nil)

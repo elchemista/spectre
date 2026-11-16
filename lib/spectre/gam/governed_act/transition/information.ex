@@ -236,7 +236,7 @@ defmodule Spectre.GAM.GovernedAct.Transition.Information do
   defp validate_evidence_context(_projection, _evidence, nil), do: :ok
 
   defp validate_evidence_context(projection, evidence, context) do
-    with {:ok, opening} <- View.scope_context(projection, context) do
+    with {:ok, opening} <- View.observation_context(projection, context, evidence) do
       if evidence.provenance != :observed or evidence.source_ref == opening.ingress_ref,
         do: :ok,
         else: {:error, {:evidence_scope_ingress_source_mismatch, evidence.ref, context.scope_ref}}

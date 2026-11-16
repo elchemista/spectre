@@ -10,6 +10,7 @@ defmodule Spectre.Server.GAM.Invocation do
   alias Spectre.GAM
   alias Spectre.GAM.{Evidence, Ingress, Scope, SubmissionContext}
   alias Spectre.GAM.Canonical.Value
+  alias Spectre.Server.GAM.Managed.Payload
 
   @doc "Builds attribution Evidence inside the authenticated Domain ingress."
   @spec evidence(SubmissionContext.t(), map(), integer()) ::
@@ -63,7 +64,8 @@ defmodule Spectre.Server.GAM.Invocation do
   defp record_invocation(scope, invocation, opts) do
     with :ok <- validate(invocation, scope.context),
          {:ok, evidence} <-
-           GAM.observe(scope, %{kind: kind(invocation), invocation: invocation}, opts) do
+           GAM.observe(scope, %{kind: kind(invocation), invocation: invocation}, opts),
+         {:ok, evidence} <- Payload.restore_evidence(evidence, opts, Scope.domain_ref(scope)) do
       matching = Enum.filter(evidence, &matches?(&1, invocation, scope.context))
 
       if matching == [],

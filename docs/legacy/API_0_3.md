@@ -45,7 +45,7 @@ return opinion and falsifiable cases, but a case enters the ChangeSet only
 through a trusted oracle Ref or independent `OracleApproval`. Pass
 `proposal.change_set` to Composer and pass `Spectre.Forge.evidence/2` unchanged
 to both composition and activation. Changed evidence requires
-`Spectre.Forge.rebase/5`. See [Reflective Runtime](../REFLECTIVE_RUNTIME.md).
+`Spectre.Forge.rebase/5`. See [Reflective Runtime](REFLECTIVE_RUNTIME.md).
 
 ## Verify the foundation before an upgrade
 
@@ -55,7 +55,7 @@ representative State, Run, and canonical Instance checkpoints. Use
 Definition+Manifest pairs. Satellite suites should pass their entire package
 set to `Spectre.Stack.Conformance.run/2` so cross-package requirements,
 conflicts, compatibility, and ownership collisions are checked together. See
-[Foundation Conformance](../FOUNDATION_CONFORMANCE.md).
+[Foundation Conformance](FOUNDATION_CONFORMANCE.md).
 
 ## Record nondeterministic boundaries
 
@@ -69,7 +69,7 @@ and requires both a durable Instance Checkpoint Store and payload-capable sink.
 `Spectre.Receipt.Envelope` binds the typed domain payload to the exact
 Definition/closure identity and pre/post canonical state digests. It is
 evidence linkage, not a claim of deterministic replay or exactly-once external
-work. See [Boundary receipts](../RECEIPTS.md).
+work. See [Boundary receipts](RECEIPTS.md).
 
 ## Govern a Definition change
 
@@ -92,7 +92,7 @@ gate receipts before the existing generation CAS. Use `Spectre.rollback/3`
 only for an explicit ancestor Candidate; it creates a new activation generation
 and does not reverse external Effects. `Spectre.Governance.GC.plan/3` produces
 verified retention evidence but never deletes. See
-[Governed Definition Changes](../GOVERNANCE.md).
+[Governed Definition Changes](GOVERNANCE.md).
 
 ## Canonical behavior identity
 
@@ -103,7 +103,7 @@ identity. `Spectre.Projection.generate/1` returns the exact Audit projection;
 view bound to a versioned `Spectre.Router.IndexProfile`. Projection digests
 bind the generator ID, version, and generated content. These APIs inspect
 declared behavior only: they do not activate a Definition or grant authority. See
-[Canonical Definitions and Audit Projections](../CANONICAL_DEFINITIONS.md).
+[Canonical Definitions and Audit Projections](CANONICAL_DEFINITIONS.md).
 
 ## Mount a declarative runtime Skill
 
@@ -125,7 +125,7 @@ executable entry is created from runtime data.
 replacement keep old Definition generations only while exact pinned
 continuations remain. Malformed routing input and non-map Canonical route or
 requirement entries return structured errors rather than raising. See
-[Runtime Skills and Routing Projections](../RUNTIME_SKILLS.md).
+[Runtime Skills and Routing Projections](RUNTIME_SKILLS.md).
 
 ## Materialize and start data-driven Work
 
@@ -145,7 +145,7 @@ operational runtime rather than a parallel executor.
 `Spectre.Execution.Migration` prepares and commits pure registered state
 migrations; and `Spectre.Execution.Rehearsal.run/4` replays exact recordings
 without dispatching real Effects. See
-[Data-driven execution](../DATA_DRIVEN_EXECUTION.md).
+[Data-driven execution](DATA_DRIVEN_EXECUTION.md).
 
 ## Publish and resolve canonical behavior
 
@@ -158,7 +158,7 @@ read-only input: declared capabilities become effective only when an explicit
 publication receipt as one immutable artifact. `Spectre.Definition.Resolver`
 re-reads and verifies that artifact, and reports compiled-build drift as
 `:unobserved`, `:matched`, or a rejected/reported drift. See
-[Definition Store, Resolver, and Manifest V2](../DEFINITION_STORE.md).
+[Definition Store, Resolver, and Manifest V2](DEFINITION_STORE.md).
 
 ## Activate a published Definition
 
@@ -186,7 +186,7 @@ Definition, then passes only its Ref to the owning Instance:
 The Instance re-reads Candidate, Definition, Manifest, and publication receipt
 inside its sequencer. New Runs pin the committed Definition and execution
 closure; open Runs preserve their prior pins. See
-[Stable Identity, Activation, and Definition-Pinned Runs](../IDENTITY_ACTIVATION.md).
+[Stable Identity, Activation, and Definition-Pinned Runs](IDENTITY_ACTIVATION.md).
 
 ## Admit an ownership-fenced event
 
@@ -211,7 +211,7 @@ currently active Definition.
 Missing, expired, mismatched, or ambiguous continuations are committed to the
 quarantine window instead of being rebound. Use `admitted_events/2` and
 `quarantined_events/2` for bounded inspection. See
-[Event Ownership and Definition Lifecycle](../EVENT_LIFECYCLE.md).
+[Event Ownership and Definition Lifecycle](EVENT_LIFECYCLE.md).
 
 ## Drain or revoke one Definition
 
@@ -244,7 +244,7 @@ retained dormant target branch exists.
 Read through `skill_state/3` or `skill_state_branches/3`. Updates must present
 the current `expected_generation`, `expected_revision`, and
 `state_schema_ref`; Core also checks the active Definition and current owner
-fence before committing. See [Generational Skill State](../SKILL_STATE.md).
+fence before committing. See [Generational Skill State](SKILL_STATE.md).
 
 ## Stack installation
 
@@ -394,7 +394,7 @@ vocabulary is closed:
 {:error, reason, run}
 ```
 
-See [Resumable Runs](../RUNS.md) for fencing, checkpointing, and recovery.
+See [Resumable Runs](RUNS.md) for fencing, checkpointing, and recovery.
 
 ## Results and lifecycle queries
 
@@ -577,7 +577,7 @@ subject = Spectre.Subject.new({:account, account.id})
 
 `Spectre.summon/1,3` selects the Instance runtime when `:subject` is supplied.
 Prefer supervised `Spectre.instance/4` in production. See
-[Agent Instances and Subjects](../INSTANCES.md) for Run resume, identity linking,
+[Agent Instances and Subjects](INSTANCES.md) for Run resume, identity linking,
 per-Run lifecycle ownership, and serialized capability execution.
 
 After an Instance has been drained and stopped, `Spectre.erase_instance/3`
@@ -586,8 +586,8 @@ required outbox, and stable/legacy checkpoints under a non-preemptive
 maintenance Owner. The exact stable Ref key is a mandatory confirmation value.
 Use the I/O-free `Spectre.Privacy.erasure_plan/3` first. The proof does not
 cover delivered receipt records, host State or Memory, telemetry, providers,
-replicas, exports, or backups; see [Instance data lifecycle](../DATA_LIFECYCLE.md)
-and [Offline Instance erasure](../ERASURE.md).
+replicas, exports, or backups; see [Instance data lifecycle](DATA_LIFECYCLE.md)
+and [Offline Instance erasure](ERASURE.md).
 
 ### Operational Work and Vigil
 
@@ -622,7 +622,7 @@ Canonical persistence is available through `checkpoint/1`,
 `operation_events/2` or a local subscription. Delivery consent and receipts
 authorize transport but do not perform it.
 
-See [Work, Vigil, and the operational runtime](../OPERATIONS.md) for Definition,
+See [Work, Vigil, and the operational runtime](OPERATIONS.md) for Definition,
 operation, Runner, recovery, checkpoint, event, and delivery contracts.
 
 ### Legacy conversation sessions
@@ -786,7 +786,7 @@ end
 
 Arbitration records have stable identifiers derived from turn identity and do
 not include conversation content unless `include_input: true` is explicit.
-See [Journal](../JOURNAL.md) for delivery and privacy semantics.
+See [Journal](JOURNAL.md) for delivery and privacy semantics.
 
 `Spectre.Telemetry.emit/4` always supports the configured callback and also
 emits through `:telemetry` when that library is available. The two delivery

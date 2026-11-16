@@ -21,8 +21,8 @@ library disagree, prefer the compiled API and the following sources, in order:
    surface.
 2. Generated module documentation on
    [HexDocs](https://hexdocs.pm/spectre/0.3.4) for function contracts.
-3. [Getting Started](../GETTING_STARTED_0_3.md) for the complete host lifecycle.
-4. [Architecture](../ARCHITECTURE_0_3.md) and
+3. [Getting Started](GETTING_STARTED_0_3.md) for the complete host lifecycle.
+4. [Architecture](ARCHITECTURE_0_3.md) and
    [Production Operations](../PRODUCTION.md) for ownership and deployment.
 
 Do not infer a public contract from an exported function that is absent from
@@ -189,8 +189,8 @@ Use the narrowest operational abstraction:
 | Await its canonical Result | `Spectre.await_result/1,2` |
 | Inspect or control an operation | `loop/2,3`, `pause_loop/2,3`, `update_and_resume_loop/3,4` |
 
-Read [Instances](../INSTANCES.md), [Runs](../RUNS.md), and
-[Operations](../OPERATIONS.md) before implementing durable adapters. Read
+Read [Instances](INSTANCES.md), [Runs](RUNS.md), and
+[Operations](OPERATIONS.md) before implementing durable adapters. Read
 [Streaming inference](STREAMING_INFERENCE_0_3.md) before writing a provider
 stream adapter. A real
 deployment needs durable checkpoint and Definition stores plus an owner/lease
@@ -207,7 +207,7 @@ Boundary receipts are optional. Use `:required` mode only with a durable
 Checkpoint Store and payload-capable idempotent `Spectre.Receipt.Sink`.
 Receipts bind evidence and state roots; do not describe them as deterministic
 replay or exactly-once provider execution. See
-[Boundary receipts](../RECEIPTS.md).
+[Boundary receipts](RECEIPTS.md).
 
 ## Governed Agent evolution with Morph
 
@@ -266,8 +266,8 @@ Spectre.turn(instance, input,
 ```
 
 Never derive privileged Skill scope from untrusted user text or metadata. Read
-[Governance](../GOVERNANCE.md), [Runtime Skills](../RUNTIME_SKILLS.md), and
-[Reflective Runtime](../REFLECTIVE_RUNTIME.md) before changing this flow.
+[Governance](GOVERNANCE.md), [Runtime Skills](RUNTIME_SKILLS.md), and
+[Reflective Runtime](REFLECTIVE_RUNTIME.md) before changing this flow.
 
 ## Runtime data rules
 
@@ -283,9 +283,9 @@ When generating or consuming portable Spectre data:
   `:erlang.binary_to_term/1`, or executable templates on runtime input;
 - do not recalculate or substitute a pinned ref with the active ref.
 
-Use [Canonical Definitions](../CANONICAL_DEFINITIONS.md),
-[Definition Store](../DEFINITION_STORE.md), and
-[Data-driven Execution](../DATA_DRIVEN_EXECUTION.md) for artifact contracts.
+Use [Canonical Definitions](CANONICAL_DEFINITIONS.md),
+[Definition Store](DEFINITION_STORE.md), and
+[Data-driven Execution](DATA_DRIVEN_EXECUTION.md) for artifact contracts.
 
 ## Testing generated integrations
 

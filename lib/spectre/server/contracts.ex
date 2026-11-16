@@ -34,10 +34,7 @@ defmodule Spectre.Server.Contracts do
           :ok
 
         fields when is_map(fields) and not is_struct(fields) ->
-          Enum.each(fields, fn {key, type} ->
-            unless is_atom(key) and valid_type?(type),
-              do: raise(ArgumentError, "invalid #{callback} declaration")
-          end)
+          Enum.each(fields, &validate_field!(&1, callback))
 
         _ ->
           raise ArgumentError, "#{callback} must return nil or a map"
@@ -45,6 +42,11 @@ defmodule Spectre.Server.Contracts do
     end
 
     :ok
+  end
+
+  defp validate_field!({key, type}, callback) do
+    unless is_atom(key) and valid_type?(type),
+      do: raise(ArgumentError, "invalid #{callback} declaration")
   end
 
   @doc "Checks application assigns without returning values in diagnostics."
@@ -71,22 +73,24 @@ defmodule Spectre.Server.Contracts do
     contracts = declaration(server, :continuation_contracts)
 
     if is_map(contracts) do
-      Enum.each(commands, fn command ->
-        case Keyword.fetch(command.opts, :on_result) do
-          {:ok, tag} ->
-            unless Map.has_key?(contracts, tag),
-              do:
-                raise(ContractError,
-                  details: %{contract: :continuation, reason: :undeclared_tag, tag: safe_tag(tag)}
-                )
-
-          :error ->
-            :ok
-        end
-      end)
+      Enum.each(commands, &validate_command!(&1, contracts))
     end
 
     :ok
+  end
+
+  defp validate_command!(command, contracts) do
+    case Keyword.fetch(command.opts, :on_result) do
+      {:ok, tag} ->
+        unless Map.has_key?(contracts, tag),
+          do:
+            raise(ContractError,
+              details: %{contract: :continuation, reason: :undeclared_tag, tag: safe_tag(tag)}
+            )
+
+      :error ->
+        :ok
+    end
   end
 
   @doc false
@@ -131,25 +135,28 @@ defmodule Spectre.Server.Contracts do
       for {_id, worker} <- Map.get(retained, :workers, %{}),
           do: validate_retained_worker!(server, worker)
 
-      for {_id, pending} <- Map.get(retained, :pending, %{}) do
-        source = get_in(retained, [:operations, Map.get(pending, :command_id)])
-        if is_map(source), do: validate_retained_entry!(server, source)
-
-        # Older reply waits used their ID as the implicit tag. Consent waits
-        # without provenance are checked through their retained source above.
-        explicit =
-          Map.get(
-            pending,
-            :explicit_on_result,
-            Map.get(pending, :kind) == :reply and
-              Map.get(pending, :on_result) != Map.get(pending, :id)
-          )
-
-        if explicit, do: validate_tag!(server, Map.get(pending, :on_result))
-      end
+      for {_id, pending} <- Map.get(retained, :pending, %{}),
+          do: validate_retained_pending!(server, retained, pending)
     end
 
     :ok
+  end
+
+  defp validate_retained_pending!(server, retained, pending) do
+    source = get_in(retained, [:operations, Map.get(pending, :command_id)])
+    if is_map(source), do: validate_retained_entry!(server, source)
+
+    # Older reply waits used their ID as the implicit tag. Consent waits
+    # without provenance are checked through their retained source above.
+    explicit =
+      Map.get(
+        pending,
+        :explicit_on_result,
+        Map.get(pending, :kind) == :reply and
+          Map.get(pending, :on_result) != Map.get(pending, :id)
+      )
+
+    if explicit, do: validate_tag!(server, Map.get(pending, :on_result))
   end
 
   @spec validate_retained_entry!(module(), map()) :: :ok
@@ -219,16 +226,7 @@ defmodule Spectre.Server.Contracts do
 
   defp check({:map, fields}, value, path) when is_map(value) and not is_struct(value) do
     Enum.reduce_while(fields, :ok, fn {key, type}, :ok ->
-      result =
-        case Map.fetch(value, key) do
-          {:ok, item} ->
-            check(type, item, path ++ [key])
-
-          :error ->
-            if match?({:optional, _}, type),
-              do: :ok,
-              else: {:error, %{path: path ++ [key], reason: :missing_field}}
-        end
+      result = check_field(value, key, type, path)
 
       if result == :ok, do: {:cont, :ok}, else: {:halt, result}
     end)
@@ -250,32 +248,39 @@ defmodule Spectre.Server.Contracts do
       Enum.zip(types, Tuple.to_list(value))
       |> Enum.with_index()
       |> Enum.reduce_while(:ok, fn {{item_type, item}, index}, :ok ->
-        case check(item_type, item, path ++ [index]) do
-          :ok -> {:cont, :ok}
-          error -> {:halt, error}
-        end
+        check_item(item_type, item, path ++ [index])
       end)
     else
       matched(false, type, value, path)
     end
   end
 
-  defp check(type, value, path) do
-    valid =
-      case type do
-        :any -> true
-        :string -> is_binary(value)
-        :integer -> is_integer(value)
-        :number -> is_number(value)
-        :boolean -> is_boolean(value)
-        :atom -> is_atom(value)
-        :map -> is_map(value) and not is_struct(value)
-        :list -> is_list(value)
-        _ -> false
-      end
+  defp check(:any, _value, _path), do: :ok
+  defp check(:string, value, _path) when is_binary(value), do: :ok
+  defp check(:integer, value, _path) when is_integer(value), do: :ok
+  defp check(:number, value, _path) when is_number(value), do: :ok
+  defp check(:boolean, value, _path) when is_boolean(value), do: :ok
+  defp check(:atom, value, _path) when is_atom(value), do: :ok
+  defp check(:map, value, _path) when is_map(value) and not is_struct(value), do: :ok
+  defp check(:list, value, _path) when is_list(value), do: :ok
+  defp check(type, value, path), do: matched(false, type, value, path)
 
-    matched(valid, type, value, path)
+  defp check_item(type, value, path) do
+    case check(type, value, path) do
+      :ok -> {:cont, :ok}
+      error -> {:halt, error}
+    end
   end
+
+  defp check_field(value, key, type, path) do
+    case Map.fetch(value, key) do
+      {:ok, item} -> check(type, item, path ++ [key])
+      :error -> missing_field(type, path ++ [key])
+    end
+  end
+
+  defp missing_field({:optional, _}, _path), do: :ok
+  defp missing_field(_type, path), do: {:error, %{path: path, reason: :missing_field}}
 
   @spec matched(boolean(), schema(), term(), list()) :: :ok | {:error, map()}
   defp matched(true, _, _, _), do: :ok

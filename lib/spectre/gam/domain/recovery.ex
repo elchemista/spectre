@@ -154,23 +154,30 @@ defmodule Spectre.GAM.Domain.Recovery do
           payload_check()
         ) ::
           {:ok, Projection.t()} | {:error, term()}
-  def confirm_prepared(store, %State{} = prefix, %Commit{} = prepared, opts, check \\ nil) do
+  def confirm_prepared(
+        store,
+        %State{} = prefix,
+        %Commit{} = prepared,
+        opts,
+        check \\ nil,
+        resume \\ nil
+      ) do
     # The prepared value is local to this command, never loaded from storage.
     # Its exact predecessor must still be the caller's verified prefix.
     if prepared.prefix === cursor(prefix) and prepared.state.domain_ref === prefix.domain_ref do
-      confirm_prepared_at_prefix(store, prefix, prepared, opts, check)
+      confirm_prepared_at_prefix(store, prefix, prepared, opts, check, resume)
     else
       {:error, :prepared_commit_prefix_mismatch}
     end
   end
 
-  defp confirm_prepared_at_prefix(store, prefix, prepared, opts, check) do
+  defp confirm_prepared_at_prefix(store, prefix, prepared, opts, check, resume) do
     case Ledger.lookup_batch(store, prefix.domain_ref, prepared.receipt.batch_id, opts) do
       {:ok, receipt} when receipt === prepared.receipt ->
         check_prepared(prepared, check)
 
       _unconfirmed ->
-        recover_committed_batch(store, prefix, prepared.receipt, opts, check)
+        recover_committed_batch(store, prefix, prepared.receipt, opts, check, resume)
     end
   end
 
@@ -181,7 +188,7 @@ defmodule Spectre.GAM.Domain.Recovery do
     with :ok <- check.(prepared.state, refs), do: {:ok, prepared.state}
   end
 
-  defp recover_committed_batch(store, prefix, expected, opts, check) do
+  defp recover_committed_batch(store, prefix, expected, opts, check, resume) do
     if Ledger.Store.batch_reads?(store) do
       with {:ok, snapshot} <-
              Ledger.Store.read_batch(store, prefix.domain_ref, prefix.revision + 1, opts),
@@ -189,7 +196,7 @@ defmodule Spectre.GAM.Domain.Recovery do
            {:ok, actual} <- Support.derive_batch_info(prefix.domain_ref, snapshot.entries),
            :ok <- match_predecessor(prefix, snapshot.entries),
            true <- matching_batch_info?(actual, Map.delete(expected, :head_digest)) do
-        resume(store, prefix, opts, check)
+        resume_committed(resume, store, prefix, opts, check)
       else
         :not_found -> {:error, :domain_ledger_disappeared}
         false -> {:error, {:committed_batch_identity_mismatch, expected.batch_id}}
@@ -199,6 +206,9 @@ defmodule Spectre.GAM.Domain.Recovery do
       recover_committed_suffix(store, prefix, expected, opts, check)
     end
   end
+
+  defp resume_committed(nil, store, prefix, opts, check), do: resume(store, prefix, opts, check)
+  defp resume_committed(callback, _, _, _, _), do: callback.()
 
   defp recover_committed_suffix(store, prefix, expected, opts, check) do
     with {:ok, snapshot} <- Ledger.load_from(store, prefix.domain_ref, cursor(prefix), opts),

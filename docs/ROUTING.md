@@ -82,7 +82,7 @@ return refs that Spectre resolves against the current visible rule set.
 The default arbitrator keeps provider evidence separate. Similarity scores,
 acceptance thresholds, margins and conflict/no-decision settings are recognition
 policy, not execution authorization. Custom arbitrators remain supported. The
-[retained detailed router reference](legacy/ROUTING_0_3.md) documents low-level
+[retained detailed router reference](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/ROUTING_0_3.md) documents low-level
 plug options, adapter contracts and arbitration rules; its older handler examples
 belong to the compatibility runtime.
 

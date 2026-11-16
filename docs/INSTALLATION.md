@@ -94,9 +94,11 @@ local to the BEAM node; the subject identifier is not authentication.
 Installed resources use a stable Stack runtime name, not a PID in portable
 state. Credentials belong in runtime package configuration, not immutable
 Stack definitions or conversational `assigns`. See [Stack tools](STACK_TOOLS.md).
-A governed application also needs host GAM configuration; a durable application
-needs a Server checkpoint store and GAM journal store. Neither is silently
-provisioned by this minimal supervision example. See [GAM](GAM.md) and
+For consequential operations, configure registered effects, authenticated identity
+and `gam: [operations: ...]`. AgentServer automatically provisions its GAM Domain
+and coherent default coordination stores. The default is ephemeral; select
+`gam: [storage: {:disk, path}, ...]` for durable history and recovery. A minimal
+startup grants no application effects. See [GAM](GAM.md) and
 [Agent and Server](AGENT_SERVER.md).
 
 ## Formatter and diagnostics
@@ -126,6 +128,6 @@ configured separately; see [Training](TRAINING.md).
 ## Remaining on 0.3
 
 An existing application can keep its `{:spectre, "~> 0.3.4"}` dependency and
-[0.3 tutorial](GETTING_STARTED_0_3.md). That API does not include the new
+[0.3 tutorial](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/GETTING_STARTED_0_3.md). That API does not include the new
 AgentServer/tool-helper contracts. Follow [Migration](MIGRATING_TO_0_4.md) before
 changing runtime ownership or persisted state.

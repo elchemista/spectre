@@ -332,8 +332,5 @@ defmodule Spectre.Governance.Constraints do
   defp get(map, key, default \\ nil),
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :binary])
 end

@@ -1,90 +1,39 @@
-# Spectre 0.4 guide for LLMs and coding agents
+# Spectre 0.4 guide for application authors
 
-Use this guide when generating Spectre applications. The application architecture
-is **Stack → declarative Agent → OTP Server**, with GAM mediating the host's
-declared governed consequences. The model is a cognitive dependency, not the
-owner of authority or application state.
+Use **Stack → Agent → Server** for new applications. The Stack installs packages;
+the Agent declares recognition; the Server implements callbacks inside the
+Runtime's GenServer. GAM verifies declared effects. Start with
+[Getting started](docs/GETTING_STARTED.md) and [Server](docs/AGENT_SERVER.md).
 
-Read [Getting started](docs/GETTING_STARTED.md), [Agent and Server](docs/AGENT_SERVER.md),
-[installed tools](docs/STACK_TOOLS.md), [Skills](docs/SKILLS.md), [GAM](docs/GAM.md) and
-[migration from 0.3](docs/MIGRATING_TO_0_4.md). The
-[GAM manifesto](https://spectre.guide/en/governed-act-model) defines the model;
-the implementation guide maps its concepts to Elixir modules.
+## Generate and extend the supported shape
 
-## Generate this shape
-
-```elixir
-defmodule MyApp.AI do
-  use Spectre.Stack
-end
-
-defmodule MyApp.SupportServer do
-  use Spectre.Server, tools: MyApp.AI
-
-  def handle_flow({:support, :pricing}, _input, ctx),
-    do: respond(ctx, "The starter plan costs €20 per month.")
-
-  def handle_flow(:unmatched, _input, ctx),
-    do: respond(ctx, "What would you like to know?")
-end
-
-defmodule MyApp.SupportAgent do
-  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
-  router strategies: [:regex]
-
-  flow :support do
-    on :pricing, regex: ~r/price|cost/i
-  end
-end
-
-{:ok, pid} = Spectre.summon(agent: MyApp.SupportAgent, subject: "customer-42")
-{:ok, interaction_id} = Spectre.Server.input(pid, "What does it cost?")
+```sh
+mix spectre.gen.agent MyApp.SupportAgent --server
 ```
 
-`input/3` accepts the input and returns its interaction id. Replies and previews
-are asynchronous consumer events; it does not return a completed legacy Turn.
-The host supplies authentication, identity, model services, resources and
-persistence when those features are used. `subject:` identifies the local
-owner; it does not authenticate the caller.
+Put routes and recognition examples in the Agent, behavior in `handle_flow/3`,
+continuations in `handle_result/3` and conversation policy in `handle_pending/3`.
+Use ordinary OTP tuples for native callbacks, with Context as state. The callback
+module does not need a second application GenServer.
 
-## Keep the ownership boundaries
+`Spectre.Server.input/3` returns an interaction ID. Replies and previews arrive
+as asynchronous consumer events. `Spectre.summon/1` selects Server ownership
+when the Agent has a `server:` binding. The host supplies authenticated identity;
+a subject ID alone is not authentication.
 
-| Layer | Responsibility |
-| --- | --- |
-| `Spectre.Stack` | Install packages, configure capabilities and supervise named runtime resources. |
-| `Spectre.Agent` | Declare routes, independent classifiers, examples and recognition settings. |
-| `Spectre.Server` | Implement application callbacks and build commands on a Context. |
-| `Spectre.Server.Runtime` | Own the GenServer, inbox/outbox, pending intentions, workers, streams and recovery. |
-| `Spectre.GAM` and host | Evaluate concrete Candidates under Mandate/Evidence, record Acts, execute admitted Attempts, observe Outcomes and preserve Duties. |
+## Context and commands
 
-The application Server callback module runs inside the Runtime's GenServer;
-do not start a second application GenServer to wrap it. `handle_call`,
-`handle_cast`, `handle_info`, `handle_continue` and `code_change` are supported.
-Native callbacks return ordinary OTP tuples with `ctx` as their state.
-Conversational callbacks return an updated Context, usually through a helper.
+- `ctx.assigns`: portable application state, included in checkpoints.
+- `ctx.private`: volatile process references, excluded from checkpoints.
+- Identity, routing, pending and Agent fields: runtime views, not mutable authority.
 
-`ctx.assigns` contains portable application data. `ctx.private` holds process-local
-references and actor handles and is not checkpointed. Identity, input, routing,
-pending records and Agent are views. Mutating a view does not change the
-Runtime's authoritative value. Do not put initialized Kinetic, browser, model
-or memory runtimes in assigns.
-
-## Helpers are commands, not synchronous service calls
-
-Core helpers include `respond`, `generate`, `classify`, `propose`, `call_actor`,
-`await_input`, `await_reply`, `resolve_await`, `route_current_input`,
-`confirm_pending`, `reject_pending`, `explain_pending`, `resume_pending`,
-`close_pending`, `close_pending_after`, `cancel_pending_close` and `no_response`.
-Return the Context containing the commands. `on_result:` identifies the
-continuation delivered to `handle_result/3`.
-
-Installed packages declare `c:Spectre.Stack.Installable.tools/1`.
-`use Spectre.Server, tools: MyApp.AI` generates private helpers from those
-descriptors. Do **not** invent imports such as
-`import Spectre.Kinetic, only: [kinetic: 3]`.
+Return the Context produced by helpers such as `respond`, `generate`, `classify`,
+`propose`, `await_input` and `call_actor`. `on_result:` names the continuation.
+Select `tools: MyApp.AI` to generate helpers declared by installed packages;
+do not invent package imports or retain initialized provider clients in assigns.
 
 ```elixir
-def handle_result(:composed, {:generated, response}, ctx),
+def handle_result(:drafted, {:generated, response}, ctx),
   do: kinetic(ctx, response, on_result: :prepared)
 
 def handle_result(:prepared, {:prepared, %{actions: [proposal]}}, ctx) do
@@ -93,102 +42,50 @@ def handle_result(:prepared, {:prepared, %{actions: [proposal]}}, ctx) do
 end
 ```
 
-This fragment requires a Stack with Kinetic, a closed action registry, a model
-and configured allowed GAM operations. The model produces AL; Kinetic prepares candidates from
-its consolidated output. Do not execute raw AL or partial streaming tokens.
-If `generate(..., planning: true)` already prepared proposals, do not parse them
-again with the explicit helper. See [Actions](docs/ACTIONS.md).
+This fragment requires configured model/Kinetic adapters, prompts and allowed
+registered effects. Parse consolidated output once; partial streaming tokens are
+not executable proposals. See [Stack tools](docs/STACK_TOOLS.md) and
+[Actions](docs/ACTIONS.md).
 
-## Preserve recognition and fallback
+## Recognition and pending input
 
-Prefer `strategies:`, `:intent_dataset`, `:local_classifier`,
-`semantic_examples:`, `collect_intent:` and `dataset_lookup:` in new examples.
-Legacy aliases are still accepted; conflicting aliases are errors.
-The classifier may use a different model from response generation, or a host
-adapter. Regex, dataset lookup, embedding, local classifiers, LLM arbitration,
-custom router adapters and failure paths remain available.
+Prefer `strategies:`, `:intent_dataset`, `:local_classifier`, `semantic_examples:`,
+`collect_intent:` and `dataset_lookup:`. Classifiers and response models can differ.
+Handle no match and ambiguity through `handle_flow(:unmatched, input, ctx)` using
+`ctx.routing.reason`. An `:understand` prompt is application-defined.
 
-No match and unresolved ambiguity reach `handle_flow(:unmatched, input, ctx)`.
-Inspect `ctx.routing.reason`; do not hide infrastructure failure as a confident
-intent. An `:understand` prompt is an application choice, not a magical callback.
-Foreground pending input goes to `handle_pending` before ordinary routing.
-Use `route_current_input(ctx, suspend: pending.id)` for a new topic; add
-`close_pending_after` when the old intention should expire. Follow
-[the pending lifecycle guide](docs/PENDING_LIFECYCLE.md) to record the policy
-transition through the configured GAM ingress.
+Foreground pending input reaches `handle_pending` first. Use the documented
+suspend/resume/expiry helpers for topic changes. Collection, review, embeddings
+and classifier training are separate steps; collected examples are not verified
+truth. See [Routing](docs/ROUTING.md), [Training](docs/TRAINING.md) and
+[Pending lifecycle](docs/PENDING_LIFECYCLE.md).
 
-IntentDataset stores labeled examples, including useful text-only rows.
-Only compatible stored embeddings participate in vector search. An exact hit
-needs no query embedding. Online collection is not automatic training and does
-not make an example verified ground truth. Keep export, review, embedding and
-classifier training distinct. See [Training](docs/TRAINING.md).
+## Authority and persistence
 
-## Do not invent authority
+Configure identity, allowed operations and storage on the root Server. Installations,
+routes, models and `protected: true` do not grant execution authority. Freeze
+concrete arguments, obtain actual presentation acknowledgement and a separate
+human choice, then let GAM verify admission. An observed Outcome is separate from
+admission; uncertain effects require reconciliation.
 
-Installing a model or classifying an input does not automatically ask the end
-user for consent. GAM applies to the host's declared governed surface, which
-may also include protected reads, disclosures or resource consumption. A route,
-`protected: true`, classifier label or package `bind:` never grants a mandate.
+Skills with `server:` have independent GenServers and state while sharing the
+root Domain. Mount `governed:` references restrict existing authority. External
+approval uses the same requesting Domain; the receiving agent mediates the human
+choice. Pulse delivery acceptance never implies consent.
 
-A candidate builder freezes the concrete operation and authenticated context.
-Consent, when required, binds the original response to a successfully shown
-Presentation. A committed Act precedes the executor's capability. An Outcome
-reports what was observed; absence of an Outcome is not proof of failure or a
-license to retry. A timer closes an intention, not an unresolved Duty.
+RAM-only operation remains valid. Ledger can persist canonical history,
+coordination and per-record Domain projections. A fresh RAM recovery Domain cannot
+reuse previous grants or consent. `payload_store` lets the application choose
+content retention, references, encryption and backend through two callbacks.
 
-Do not report deletion or email delivery because admission succeeded. Match an
-observed `{:governed, %{outcome: %{status: :succeeded}}}` result. Preserve
-`:ambiguous`, `{:governed_unknown, ...}` and `{:tool_unknown, ...}` as uncertainty.
-Native OTP callbacks are not a sandbox: a direct HTTP call can bypass the host
-boundary. Consequential work must remain a governed command.
+Read [Managed GAM](docs/MANAGED_GAM.md), [Skills](docs/SKILLS.md),
+[External approval](docs/EXTERNAL_APPROVALS.md), [Domain storage](docs/DOMAIN_STORAGE.md)
+and [Payload storage](docs/PAYLOAD_STORAGE.md) for these contracts.
 
-## Persistence and compatibility
+## Examples and retained APIs
 
-Server checkpoints support `{disk_store, key}` and `{StoreModule, store_ref, key}`.
-Use separate keys for conversations and a durable GAM command journal. Assigns,
-commands and projected results must fit the portable codec and shared budget.
-Safe cognitive commands may repeat after restart. Nonrepeatable commands are
-marked before invocation and become uncertain after interruption.
-
-Definition/adapter/config drift requires an explicit checkpoint migrator.
-It cannot rewrite inbox/outbox/pending facts to turn old approval into new
-permission. Started governed requests reconcile the original GAM journal.
-
-`docs/PUBLIC_API.md` is the checked callable manifest. It lists Server and GAM
-alongside retained APIs, but does not yet enumerate the complete new Stack tool
-adapter contract; use [Stack tools](docs/STACK_TOOLS.md) and its source contract
-for that documented addition. Do not claim that the machine manifest tests it.
-
-The old `ask`/`turn`, Instance, Run, Effect, policy DSL, Work/Vigil and reflection
-surfaces remain compatibility APIs. They are not automatically governed by the
-new Server/GAM loop. Never mix their state or continuation protocols into new
-Server examples. The archived [0.3 guide](docs/legacy/LLMS_0_3.md) is for maintaining
-those applications, not for scaffolding a new one.
-
-## Skill processes
-
-Use `Spectre.Skill, server: SkillServer` and ordinary `Spectre.Server` callbacks.
-Mounts run independently under the Agent's Skill supervisor, sharing its pinned
-GAM Domain, authority ledger and automatic execution boundary. Configure `gam:`
-once on the root; do not generate a Skill Host, another Domain or custom ingress.
-Each child owns its assigns, workers, streams, pending intentions and checkpoint
-key. Parallel work still passes through the shared kernel's ordered admission.
-
-Declare the mount's `governed:` operations; they cannot widen root authority or
-infer permission from Stack installation. Spectre automatically records invocation
-Evidence through its fixed ingress. Use `delegate/4` for work and `handle_skill/3`
-for live output. Target chat with `Server.input(agent, text, skill: mount)`;
-explicit UI decisions use `Server.decide(agent, mount, presentation_ref, decision)`
-after a separate rendering acknowledgement. Consent cannot cross mounts or
-presentations. Delegated/model input is not consent. Timer closure records the
-Skill lifecycle in the shared Domain and cannot erase unresolved Duties.
-
-## Local LiveView showcase
-
-The sibling `../demo_spectre` application demonstrates core 0.4 with independent
-Outreach and Knowledge Skill Servers, all nine Stack packages and one shared GAM
-Domain per chat. It is outside this package. See `docs/DEMO.md` and the demo's
-README for local paths, real versus deterministic components and test results.
-It uses automatically provisioned GAM, session-specific disk storage and local
-email receipts. Do not present it as account authentication, automatic reconnect
-recovery or live-provider validation.
+[Examples](docs/EXAMPLES.md) links executable workflows; [Demo](docs/DEMO.md)
+describes the LiveView application. Existing Instance/Run APIs are indexed in
+[Compatibility](docs/COMPATIBILITY.md). Their checkpoint/Effect lifecycle must
+be migrated explicitly before using the Server/GAM execution loop. Use
+[Migration](docs/MIGRATING_TO_0_4.md) and [Public API](docs/PUBLIC_API.md).

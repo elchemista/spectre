@@ -106,6 +106,11 @@ defmodule Spectre.GAM.GovernedAct.Fold do
   def append_batch(_projection, _entries), do: {:error, :invalid_governed_batch}
 
   defp replay_batch(projection, [%Entry{batch_id: batch_id} | _] = entries) do
+    Spectre.GAM.GovernedAct.Reads.ensure(
+      projection.read_index.selection,
+      {:row, :batches, batch_id}
+    )
+
     if MapSet.member?(projection.read_index.batches, batch_id) do
       {:error, {:duplicate_ledger_batch, batch_id}}
     else

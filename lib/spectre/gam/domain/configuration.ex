@@ -37,6 +37,7 @@ defmodule Spectre.GAM.Domain.Configuration do
     :registry,
     :domain_ref,
     :store,
+    :projection_store,
     :ingress,
     :clock,
     :clock_tolerance_ms,
@@ -74,6 +75,7 @@ defmodule Spectre.GAM.Domain.Configuration do
 
   @runtime_fields [
     :store,
+    :projection_store,
     :ingress,
     :ingress_ref,
     :clock,
@@ -106,6 +108,7 @@ defmodule Spectre.GAM.Domain.Configuration do
   @type t :: %__MODULE__{
           domain_ref: String.t(),
           store: Store.config(),
+          projection_store: Spectre.GAM.Domain.Projection.Store.config() | nil,
           ingress: module(),
           ingress_ref: String.t(),
           clock: module(),
@@ -142,6 +145,9 @@ defmodule Spectre.GAM.Domain.Configuration do
          :ok <- known_options(opts),
          {:ok, domain_ref} <- required_non_empty_binary(opts, :domain_ref),
          {:ok, store} <- required_store(opts),
+         {:ok, projection_store} <-
+           Spectre.GAM.Domain.Projection.Store.normalize(Keyword.get(opts, :projection_store)),
+         :ok <- projection_reads(store, projection_store),
          {:ok, {ingress, ingress_ref}} <- required_ingress(opts),
          {:ok, payload_store} <- PayloadStore.normalize(Keyword.get(opts, :payload_store)),
          {:ok, clock} <- module_option(opts, :clock, Spectre.GAM.Clock.System, now: 0),
@@ -175,6 +181,7 @@ defmodule Spectre.GAM.Domain.Configuration do
        %__MODULE__{
          domain_ref: domain_ref,
          store: store,
+         projection_store: projection_store,
          ingress: ingress,
          ingress_ref: ingress_ref,
          clock: clock,
@@ -210,6 +217,12 @@ defmodule Spectre.GAM.Domain.Configuration do
   end
 
   def new(_opts), do: {:error, :invalid_sequencer_options}
+
+  defp projection_reads(_store, nil), do: :ok
+
+  defp projection_reads(store, _) do
+    if Store.batch_reads?(store), do: :ok, else: {:error, :projection_requires_batch_reads}
+  end
 
   @doc false
   @spec runtime_fields() :: [atom()]

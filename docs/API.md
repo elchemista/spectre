@@ -50,6 +50,17 @@ to an authorized consumer, including Skill proposal provenance. Separate local
 checkpoints do not split this ledger. See [Skills](SKILLS.md) for concurrency,
 timers, recovery and rejection handling.
 
+## External human consent
+
+`Spectre.Server.receive_approval(server, message)` is the host ingress for the
+transport-independent approval protocol. The transport host authenticates the
+requester; Managed GAM verifies signed responses against configured human trust.
+The personal Server's authenticated consumer calls `approval_presented/2` after
+rendering, then `approval_decide/3` for the human's exact request and choice.
+These APIs do not grant the model approval authority. See
+[External approval](EXTERNAL_APPROVALS.md) for configuration, recovery, the
+optional Pulse adapter and an executable example without it.
+
 ## Implement callbacks
 
 | Callback | Return |
@@ -176,7 +187,7 @@ interfaces. They remain for existing applications. Their state, checkpoints and
 continuations are not interchangeable with Server or GAM, and their continued
 availability does not mean all paths now pass through GAM.
 
-The complete [0.3 API guide](legacy/API_0_3.md) is retained for those applications.
+The complete [0.3 API guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/API_0_3.md) is retained for those applications.
 Use [migration](MIGRATING_TO_0_4.md) before changing ownership or effect execution.
 
 ## Submit from an application actor
@@ -187,7 +198,7 @@ Only its consumer or startup `submitters: [pid]` may call it. `{:ok, command_id}
 is acquisition; the eventual result reaches `handle_result/3`. A busy runtime
 returns `{:error, :busy}` without acquiring the command. Optional `key: "stable-id"` deduplicates the same
 request across checkpoint recovery and rejects conflicting reuse; it does not
-promise external exactly-once delivery. Submission does not supply user consent. See [Automatic GAM](MANAGED_GAM.md#submit-from-another-process).
+promise external exactly-once delivery. Submission does not supply user consent. See [Automatic GAM](MANAGED_GAM.md#submit-from-a-trusted-actor).
 
 `Spectre.GAM.revoke(server)` lets only the root consumer revoke its application
 mandate through the kernel. Existing Acts, Outcomes and Duties remain recorded,

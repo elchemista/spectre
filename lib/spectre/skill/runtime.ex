@@ -137,22 +137,7 @@ defmodule Spectre.Skill.Runtime do
          {:ok, definition} <- normalize_definition(source),
          :ok <- validate_mount(runtime, mount_id, definition),
          {:ok, projection} <- routing_projection(runtime, definition) do
-      revision = runtime.revision + 1
-
-      entry = %{
-        mount_id: mount_id,
-        definition: definition,
-        state: :active,
-        mounted_revision: revision,
-        routing_projection: projection
-      }
-
-      {:ok,
-       %{
-         runtime
-         | revision: revision,
-           mounts: Map.put(runtime.mounts, mount_id, entry)
-       }}
+      put_mount(runtime, mount_id, definition, projection)
     end
   end
 
@@ -165,24 +150,24 @@ defmodule Spectre.Skill.Runtime do
          {:ok, definition} <- normalize_definition(source),
          :ok <- validate_mount(runtime, mount_id, definition, replacing: current),
          {:ok, projection} <- routing_projection(runtime, definition) do
-      revision = runtime.revision + 1
-      {runtime, _old_state} = retire_for_replace(runtime, current)
-
-      entry = %{
-        mount_id: mount_id,
-        definition: definition,
-        state: :active,
-        mounted_revision: revision,
-        routing_projection: projection
-      }
-
-      {:ok,
-       %{
-         runtime
-         | revision: revision,
-           mounts: Map.put(runtime.mounts, mount_id, entry)
-       }}
+      runtime
+      |> retire_for_replace(current)
+      |> put_mount(mount_id, definition, projection)
     end
+  end
+
+  defp put_mount(runtime, mount_id, definition, projection) do
+    revision = runtime.revision + 1
+
+    entry = %{
+      mount_id: mount_id,
+      definition: definition,
+      state: :active,
+      mounted_revision: revision,
+      routing_projection: projection
+    }
+
+    {:ok, %{runtime | revision: revision, mounts: Map.put(runtime.mounts, mount_id, entry)}}
   end
 
   @doc "Disables a mount immediately or drains its owned continuations."
@@ -191,7 +176,7 @@ defmodule Spectre.Skill.Runtime do
     with :ok <- cas(runtime, opts),
          :ok <- authorized(runtime, @disable_capability),
          {:ok, entry} <- current_entry(runtime, mount_id),
-         :ok <- disable_state(entry.state) do
+         :ok <- active_state(entry.state) do
       ref = definition_ref(entry)
       state = if continuation_count(runtime, mount_id, ref) > 0, do: :draining, else: :disabled
       revision = runtime.revision + 1
@@ -814,15 +799,15 @@ defmodule Spectre.Skill.Runtime do
     }
   end
 
-  @spec retire_for_replace(t(), entry()) :: {t(), lifecycle()}
+  @spec retire_for_replace(t(), entry()) :: t()
   defp retire_for_replace(runtime, entry) do
     ref = definition_ref(entry)
 
     if continuation_count(runtime, entry.mount_id, ref) > 0 do
       retired = Map.put(runtime.retired, {entry.mount_id, ref}, %{entry | state: :draining})
-      {%{runtime | retired: retired}, :draining}
+      %{runtime | retired: retired}
     else
-      {runtime, :disabled}
+      runtime
     end
   end
 
@@ -944,10 +929,6 @@ defmodule Spectre.Skill.Runtime do
   defp active_state(:active), do: :ok
   defp active_state(state), do: {:error, {:skill_mount_not_active, state}}
 
-  @spec disable_state(lifecycle()) :: :ok | {:error, term()}
-  defp disable_state(:active), do: :ok
-  defp disable_state(state), do: {:error, {:skill_mount_not_active, state}}
-
   @spec validate_new_options(keyword()) :: :ok | {:error, term()}
   defp validate_new_options(opts) do
     if Keyword.keyword?(opts) do
@@ -1029,9 +1010,5 @@ defmodule Spectre.Skill.Runtime do
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :binary, :tuple])
 end

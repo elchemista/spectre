@@ -3,7 +3,7 @@ defmodule Spectre.Server.GAM.Managed.Executor do
   @behaviour Spectre.GAM.Attempt.Executor
   alias Spectre.GAM
   alias Spectre.Server.GAM.{Effect, Managed}
-  alias Spectre.Server.GAM.Managed.Broker
+  alias Spectre.Server.GAM.Managed.{Broker, Content, Payload}
 
   {:ok, principal} =
     GAM.Principal.new(%{kind: :service, attributes: %{"name" => "spectre-managed-executor-v1"}})
@@ -38,10 +38,10 @@ defmodule Spectre.Server.GAM.Managed.Executor do
   defp execute_admitted(act, attempt, opts) do
     case perform(act, opts) do
       {:ok, receipt} ->
-        result(act, attempt, :succeeded, receipt)
+        result(act, attempt, :succeeded, receipt, opts)
 
       {:error, status, reason} when status in [:failed, :definitive_no_effect] ->
-        result(act, attempt, status, %{reason: public_reason(reason)})
+        result(act, attempt, status, %{reason: public_reason(reason)}, opts)
 
       {:error, :ambiguous, _reason} ->
         {:error, :ambiguous, %{evidence: [], details_ref: "spectre:uncertain:" <> act.ref}}
@@ -53,12 +53,25 @@ defmodule Spectre.Server.GAM.Managed.Executor do
     material = act.consequence["presentation_show"]
     ref = material["presentation_ref"]
 
-    case Managed.Gate.show(opts[:gate], material, self()) do
-      :ok ->
-        receive do
-          {:spectre_managed_presented, ^ref} -> {:ok, %{shown: true}}
-        after
-          opts[:show_timeout] -> {:error, :ambiguous, :presentation_not_acknowledged}
+    case Content.shown(opts[:payload_store], material, opts[:domain_ref]) do
+      {:ok, material} ->
+        case Managed.Gate.show(opts[:gate], material, self(), act.ref) do
+          :ok ->
+            receive do
+              {:spectre_managed_presented, ^ref} ->
+                {:ok, %{shown: true}}
+
+              {:spectre_managed_show_failed, ^ref, certainty, reason} ->
+                {:error, certainty, reason}
+            after
+              opts[:show_timeout] -> {:error, :ambiguous, :presentation_not_acknowledged}
+            end
+
+          {:error, :ambiguous, reason} ->
+            {:error, :ambiguous, reason}
+
+          {:error, reason} ->
+            {:error, :definitive_no_effect, reason}
         end
 
       {:error, reason} ->
@@ -67,9 +80,15 @@ defmodule Spectre.Server.GAM.Managed.Executor do
   end
 
   defp perform(act, opts) do
-    case prepare_effect(act, opts) do
-      {:ok, effect, context} -> Effect.execute(effect, act.consequence["payload"], context)
-      {:error, reason} -> {:error, :definitive_no_effect, reason}
+    case Content.act(opts[:payload_store], act, opts[:domain_ref]) do
+      {:ok, act} ->
+        case prepare_effect(act, opts) do
+          {:ok, effect, context} -> Effect.execute(effect, act.consequence["payload"], context)
+          {:error, reason} -> {:error, :definitive_no_effect, reason}
+        end
+
+      {:error, reason} ->
+        {:error, :definitive_no_effect, reason}
     end
   end
 
@@ -96,9 +115,18 @@ defmodule Spectre.Server.GAM.Managed.Executor do
     %{digest: Spectre.GAM.Canonical.Value.digest!(reason)}
   end
 
-  @spec result(GAM.Act.t(), GAM.Attempt.t(), atom(), term()) :: term()
-  defp result(act, attempt, status, receipt) do
-    with {:ok, evidence} <-
+  @spec result(GAM.Act.t(), GAM.Attempt.t(), atom(), term(), keyword()) :: term()
+  defp result(act, attempt, status, receipt, opts) do
+    with {:ok, receipt} <-
+           Payload.protect(
+             opts[:payload_store],
+             receipt,
+             Map.merge(Content.context(opts[:domain_ref], :receipt), %{
+               act_ref: act.ref,
+               attempt_ref: attempt.ref
+             })
+           ),
+         {:ok, evidence} <-
            GAM.Attempt.Executor.outcome_evidence(
              act,
              attempt,

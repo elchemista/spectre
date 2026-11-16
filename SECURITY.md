@@ -85,5 +85,5 @@ sink; the in-memory adapters are for tests and development only.
 
 See [Architecture](docs/ARCHITECTURE.md), [Provider Resilience](docs/PROVIDERS.md),
 [Streaming inference](docs/STREAMING_INFERENCE.md),
-[Boundary receipts](docs/RECEIPTS.md), and
+[Boundary receipts](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/RECEIPTS.md), and
 [Production Operations](docs/PRODUCTION.md) for the complete trust model.

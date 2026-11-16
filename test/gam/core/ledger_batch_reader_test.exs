@@ -169,6 +169,28 @@ defmodule Spectre.GAM.CoreTest.LedgerBatchReaderTest do
              Reader.reduce(store, "domain", ctx.zero, nil, fn _, acc -> {:ok, acc} end)
   end
 
+  test "a shorter captured head cannot admit a complete later batch", ctx do
+    store =
+      {Scripted,
+       head: %{revision: 1, head_digest: hd(ctx.snapshot.entries).digest},
+       read: fn revision -> Store.read_batch(ctx.store, "domain", revision) end}
+
+    assert {:error, :ledger_read_beyond_head} =
+             Reader.reduce(store, "domain", ctx.zero, nil, fn _, _ ->
+               flunk("a batch beyond the captured head reached reduction")
+             end)
+  end
+
+  test "a malformed reducer result stops at its first verified batch", ctx do
+    store = scripted(ctx, fn revision -> Store.read_batch(ctx.store, "domain", revision) end)
+
+    assert {:error, :invalid_ledger_reducer_result} =
+             Reader.reduce(store, "domain", ctx.zero, nil, fn _, _ -> :ok end)
+
+    assert_received {:read_batch, 1}
+    refute_received {:read_batch, 3}
+  end
+
   defp scripted(ctx, read) do
     {Scripted, head: Map.take(ctx.snapshot, [:revision, :head_digest]), read: read}
   end

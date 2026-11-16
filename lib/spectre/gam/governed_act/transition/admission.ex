@@ -61,6 +61,11 @@ defmodule Spectre.GAM.GovernedAct.Transition.Admission do
   defp install_decision(state, decision) do
     candidate_key = decision.candidate_identity_key
 
+    Spectre.GAM.GovernedAct.Reads.ensure(
+      state.read_index.selection,
+      {:row, :admissions, candidate_key}
+    )
+
     case Map.fetch(state.admissions, candidate_key) do
       :error ->
         {:ok,

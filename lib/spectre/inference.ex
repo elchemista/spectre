@@ -698,11 +698,7 @@ defmodule Spectre.Inference do
   defp stable_ref(value), do: inspect(value)
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :tuple, :binary, :atom])
 
   @spec emit_selection(Selection.t(), Request.t(), keyword()) :: :ok
   defp emit_selection(selection, request, opts) do

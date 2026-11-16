@@ -33,7 +33,7 @@ defmodule Spectre.Instance.InferenceSteering do
 
   @doc false
   def resume_stream(data, %InferenceStream{} = old_stream, from) do
-    with :ok <- owner_guard(data, :inference_resume),
+    with :ok <- Owner.assert_current(data, :inference_resume),
          %Run{
            status: :awaiting,
            cursor: :inference,
@@ -59,7 +59,7 @@ defmodule Spectre.Instance.InferenceSteering do
 
   @doc false
   def cancel_stream(data, %InferenceStream{} = stream, reason, opts) do
-    with :ok <- owner_guard(data, :inference_cancel),
+    with :ok <- Owner.assert_current(data, :inference_cancel),
          {:ok, ownership, run} <- InferenceStreamControl.current_ownership(data, stream),
          {:ok, command} <- InferenceStreamControl.cancel_command(run, stream, reason, opts),
          {:ok, committed} <- commit_stream_cancel(data, run, command) do
@@ -105,7 +105,7 @@ defmodule Spectre.Instance.InferenceSteering do
 
   @doc false
   def steer_stream(data, %InferenceStream{} = stream, input, opts, from) do
-    with :ok <- owner_guard(data, :inference_steer),
+    with :ok <- Owner.assert_current(data, :inference_steer),
          {:ok, ownership, run} <- InferenceStreamControl.current_ownership(data, stream),
          {:ok, steer_input} <- InferenceStreamControl.normalize_steer_input(input, opts, data),
          {:ok, command} <- InferenceStreamControl.steer_command(run, stream, steer_input, opts),
@@ -445,10 +445,6 @@ defmodule Spectre.Instance.InferenceSteering do
   end
 
   defp portable_failure(reason), do: InferenceFailure.sanitize(reason)
-
-  defp owner_guard(data, operation) do
-    Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
-  end
 
   defp id_digest(value), do: InstanceTelemetry.id_digest(value)
 end
