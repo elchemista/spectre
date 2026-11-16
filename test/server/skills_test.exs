@@ -92,6 +92,7 @@ defmodule Spectre.Server.SkillsTest do
 
     def open(_, opts) do
       send(opts[:observer], {:stream_opened, self()})
+      receive do: (:stream_ready -> :ok)
       {:ok, %{observer: opts[:observer], phase: 0}, %{}}
     end
 
@@ -202,13 +203,15 @@ defmodule Spectre.Server.SkillsTest do
     assert_receive {:skill_started, :work, ^child}
     {:ok, input} = Server.input(root, "work stream", skill: :work)
     assert_receive {:stream_opened, worker}, 2000
+    monitor = Process.monitor(worker)
+    send(worker, :stream_ready)
 
     assert_receive {Server, ^root,
                     {:skill, :work, {:preview, ^input, "skill-generation", "preview"}}},
                    2000
 
     refute_receive {:skill_event, :work, {:preview, _, _, _}}
-    monitor = Process.monitor(worker)
+    assert Process.alive?(worker)
     Process.exit(child, :kill)
     assert_receive {:skill_started, :work, new_child}, 2000
     assert new_child != child
