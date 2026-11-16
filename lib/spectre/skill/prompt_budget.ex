@@ -241,8 +241,5 @@ defmodule Spectre.Skill.PromptBudget do
   defp estimate(content), do: div(byte_size(content) + 3, 4)
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:list, :map, :binary])
 end

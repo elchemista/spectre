@@ -1,65 +1,52 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.3.4"
+  @version "0.4.0"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
   @docs_extras [
-    "docs/START_HERE.md",
     "README.md",
+    "docs/START_HERE.md",
     "docs/INSTALLATION.md",
     "docs/GETTING_STARTED.md",
     "docs/ARCHITECTURE.md",
-    "docs/EXAMPLES.md",
-    "SYSTEM.md",
-    "docs/CANONICAL_DEFINITIONS.md",
-    "docs/ROUTING.md",
-    "docs/ACTIONS.md",
+    "docs/AGENT_SERVER.md",
+    "docs/GAM.md",
+    "docs/MANAGED_GAM.md",
+    "docs/STACK_TOOLS.md",
     "docs/SKILLS.md",
-    "docs/MEMORY.md",
-    "docs/STREAMING_INFERENCE.md",
-    "docs/RECEIPTS.md",
-    "docs/RUNS.md",
-    "docs/INSTANCES.md",
-    "docs/OPERATIONS.md",
-    "docs/DEFINITION_STORE.md",
-    "docs/IDENTITY_ACTIVATION.md",
-    "docs/EVENT_LIFECYCLE.md",
-    "docs/SKILL_STATE.md",
-    "docs/JOURNAL.md",
-    "docs/DATA_LIFECYCLE.md",
-    "docs/ERASURE.md",
-    "docs/PRODUCTION.md",
-    "docs/TESTING.md",
-    "docs/PROVIDERS.md",
-    "docs/EVALUATION.md",
-    "docs/TRAINING.md",
-    "docs/FOUNDATION_CONFORMANCE.md",
-    "SECURITY.md",
-    "docs/INTEGRATIONS.md",
-    "docs/STACK.md",
-    "docs/RUNTIME_SKILLS.md",
-    "docs/DATA_DRIVEN_EXECUTION.md",
-    "docs/GOVERNANCE.md",
-    "docs/REFLECTIVE_RUNTIME.md",
-    "docs/DSL.md",
+    "docs/DOMAIN_STORAGE.md",
+    "docs/PAYLOAD_STORAGE.md",
+    "docs/EXTERNAL_APPROVALS.md",
+    "docs/ACTIONS.md",
     "docs/API.md",
+    "docs/COMPATIBILITY.md",
+    "docs/DEMO.md",
+    "docs/DIAGNOSTICS.md",
+    "docs/DSL.md",
+    "docs/EVALUATION.md",
+    "docs/EXAMPLES.md",
+    "docs/INTEGRATIONS.md",
+    "docs/MEMORY.md",
+    "docs/MIGRATING_TO_0_4.md",
+    "docs/OTP_PROFILE_0_4.md",
+    "docs/PENDING_LIFECYCLE.md",
+    "docs/PRODUCTION.md",
+    "docs/PROVIDERS.md",
     "docs/PUBLIC_API.md",
-    "docs/MIGRATING_TO_0_2.md",
-    "docs/MIGRATING_TO_0_2_3.md",
-    "docs/MIGRATING_TO_0_2_4.md",
-    "docs/MIGRATING_TO_0_2_5.md",
-    "docs/MIGRATING_TO_0_2_6.md",
-    "docs/MIGRATING_TO_0_2_7.md",
-    "docs/MIGRATING_TO_0_2_8.md",
-    "docs/MIGRATING_TO_0_2_9.md",
-    "docs/MIGRATING_TO_0_3.md",
-    "docs/MIGRATING_TO_RUN_V3.md",
-    "docs/MIGRATING_TO_INSTANCE_CHECKPOINT_V3.md",
-    "CHANGELOG.md",
+    "docs/RELEASE_0_4.md",
     "docs/ROADMAP.md",
+    "docs/ROUTING.md",
+    "docs/SERVER_CONTRACTS.md",
+    "docs/STACK.md",
+    "docs/STREAMING_INFERENCE.md",
+    "docs/TESTING.md",
+    "docs/TRAINING.md",
+    "SYSTEM.md",
     "LLMS.md",
+    "SECURITY.md",
     "CONTRIBUTING.md",
+    "CHANGELOG.md",
     "LICENSE"
   ]
 
@@ -73,12 +60,17 @@ defmodule Spectre.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
-      test_ignore_filters: [&String.starts_with?(&1, "test/support/")],
+      test_ignore_filters: [
+        &String.contains?(&1, "/support/"),
+        &String.ends_with?(&1, "/helper.exs")
+      ],
       test_coverage: [summary: [threshold: 95]],
       description: description(),
       package: package(),
       dialyzer: [
         plt_add_apps: [:mix],
+        # The application is analyzed below, not cached as its own dependency.
+        plt_ignore_apps: [:spectre],
         flags: [:no_opaque]
       ],
       docs: docs(),
@@ -90,7 +82,7 @@ defmodule Spectre.MixProject do
   def application do
     [
       mod: {Spectre.Application, []},
-      extra_applications: [:logger, :eex, :crypto]
+      extra_applications: [:logger, :eex, :crypto, :mnesia]
     ]
   end
 
@@ -103,21 +95,22 @@ defmodule Spectre.MixProject do
       name: "spectre",
       maintainers: ["elchemista"],
       files:
-        ~w(lib/**/*.ex priv mix.exs .formatter.exs docs/examples/routing-eval.jsonl) ++
+        ~w(lib/**/*.ex priv docs/assets mix.exs .formatter.exs docs/examples/routing-eval.jsonl docs/examples/agent_server_quickstart.exs docs/examples/outreach_agent.exs docs/examples/external_approval.exs) ++
           @docs_extras,
       licenses: ["Apache-2.0"],
       links: %{
         "Website" => @homepage_url,
-        "Documentation" => "https://hexdocs.pm/spectre/#{@version}",
+        "Documentation" => "#{@source_url}/blob/feature/agent-server-gam/docs/START_HERE.md",
         "GitHub" => @source_url,
-        "Changelog" => "#{@source_url}/blob/#{@version}/CHANGELOG.md"
+        "Changelog" => "#{@source_url}/blob/feature/agent-server-gam/CHANGELOG.md"
       }
     ]
   end
 
   defp deps do
     [
-      {:vettore, "~> 0.3.5"},
+      {:uuid_v7, "~> 0.6.0"},
+      {:vettore, "~> 0.3.6"},
       {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -160,8 +153,10 @@ defmodule Spectre.MixProject do
 
   defp docs do
     [
+      # README and guide image paths retain their GitHub-relative layout.
+      assets: %{"docs/assets" => "docs/assets", "./docs/assets" => "assets"},
       main: "start_here",
-      source_ref: @version,
+      source_ref: "feature/agent-server-gam",
       extras: @docs_extras,
       groups_for_extras: [
         "Start here": [
@@ -169,79 +164,61 @@ defmodule Spectre.MixProject do
           "README.md",
           "docs/INSTALLATION.md",
           "docs/GETTING_STARTED.md",
-          "docs/ARCHITECTURE.md"
+          "docs/ARCHITECTURE.md",
+          "SYSTEM.md"
         ],
-        Tutorials: [
-          "docs/EXAMPLES.md"
-        ],
-        "Core concepts": [
-          "SYSTEM.md",
-          "docs/CANONICAL_DEFINITIONS.md",
+        "Application development": [
+          "docs/AGENT_SERVER.md",
           "docs/ROUTING.md",
-          "docs/ACTIONS.md",
+          "docs/DSL.md",
+          "docs/STACK.md",
+          "docs/STACK_TOOLS.md",
           "docs/SKILLS.md",
+          "docs/ACTIONS.md",
+          "docs/PENDING_LIFECYCLE.md",
           "docs/MEMORY.md",
           "docs/STREAMING_INFERENCE.md",
-          "docs/RECEIPTS.md"
-        ],
-        "Runtime and durability": [
-          "docs/INSTANCES.md",
-          "docs/RUNS.md",
-          "docs/OPERATIONS.md",
-          "docs/DEFINITION_STORE.md",
-          "docs/IDENTITY_ACTIVATION.md",
-          "docs/EVENT_LIFECYCLE.md",
-          "docs/SKILL_STATE.md",
-          "docs/JOURNAL.md"
-        ],
-        Operations: [
-          "docs/DATA_LIFECYCLE.md",
-          "docs/ERASURE.md",
-          "docs/PRODUCTION.md",
-          "docs/TESTING.md",
-          "docs/PROVIDERS.md",
-          "docs/EVALUATION.md",
           "docs/TRAINING.md",
-          "docs/FOUNDATION_CONFORMANCE.md",
-          "SECURITY.md"
-        ],
-        "Extensions and integration": [
+          "docs/EVALUATION.md",
           "docs/INTEGRATIONS.md",
-          "docs/STACK.md",
-          "docs/RUNTIME_SKILLS.md",
-          "docs/DATA_DRIVEN_EXECUTION.md",
-          "docs/GOVERNANCE.md",
-          "docs/REFLECTIVE_RUNTIME.md"
+          "docs/EXAMPLES.md",
+          "docs/DEMO.md"
         ],
-        Reference: [
-          "docs/DSL.md",
+        "Governance and persistence": [
+          "docs/GAM.md",
+          "docs/MANAGED_GAM.md",
+          "docs/EXTERNAL_APPROVALS.md",
+          "docs/DOMAIN_STORAGE.md",
+          "docs/PAYLOAD_STORAGE.md"
+        ],
+        "Operations and verification": [
+          "docs/PRODUCTION.md",
+          "docs/PROVIDERS.md",
+          "docs/DIAGNOSTICS.md",
+          "docs/SERVER_CONTRACTS.md",
+          "docs/TESTING.md",
+          "docs/OTP_PROFILE_0_4.md",
+          "docs/RELEASE_0_4.md"
+        ],
+        "Reference and migration": [
           "docs/API.md",
-          "docs/PUBLIC_API.md"
-        ],
-        "Migration and history": [
-          "docs/MIGRATING_TO_0_2.md",
-          "docs/MIGRATING_TO_0_2_3.md",
-          "docs/MIGRATING_TO_0_2_4.md",
-          "docs/MIGRATING_TO_0_2_5.md",
-          "docs/MIGRATING_TO_0_2_6.md",
-          "docs/MIGRATING_TO_0_2_7.md",
-          "docs/MIGRATING_TO_0_2_8.md",
-          "docs/MIGRATING_TO_0_2_9.md",
-          "docs/MIGRATING_TO_0_3.md",
-          "docs/MIGRATING_TO_RUN_V3.md",
-          "docs/MIGRATING_TO_INSTANCE_CHECKPOINT_V3.md",
-          "CHANGELOG.md",
-          "docs/ROADMAP.md"
-        ],
-        "LLM and coding agents": [
+          "docs/PUBLIC_API.md",
+          "docs/MIGRATING_TO_0_4.md",
+          "docs/COMPATIBILITY.md",
           "LLMS.md"
         ],
         Project: [
           "CONTRIBUTING.md",
+          "SECURITY.md",
+          "CHANGELOG.md",
+          "docs/ROADMAP.md",
           "LICENSE"
         ]
       ],
       groups_for_modules: [
+        AgentServer: ~r/^Spectre\.Server(?:\.|$)/,
+        "Governed Act Model": ~r/^Spectre\.GAM(?:\.|$)/,
+        "Intent datasets": ~r/^Spectre\.IntentDataset(?:\.|$)/,
         "Canonical definitions and projections": [
           Spectre.Authority.Envelope,
           Spectre.Canonical.Value,

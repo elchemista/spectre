@@ -1,284 +1,307 @@
-# Skills
+# Skills in 0.4
 
-A `Spectre.Skill` packages reusable conversation behavior that an Agent can
-mount. It can own flows, route handlers, prompt injections, policies, and
-action hooks, while the Agent continues to own the runtime infrastructure and
-the real side-effect boundary.
+A Skill packages reusable routes and binds an ordinary `Spectre.Server` callback
+module. Mounting it creates a supervised GenServer with its own assigns, private
+state, workers, pending intentions and checkpoint. Its governed actions enter
+**the same GAM Domain as its Agent**, through `Spectre.Server.GAM`.
 
-Use a Skill when the same capability should be shared by multiple Agents, or
-when a large Agent is easier to understand as several independently scoped
-capabilities. Keep behavior that is specific to one small Agent directly in
-that Agent.
+This is the 0.4 AgentServer path. The [0.3 Skill guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/SKILLS_0_3.md),
+[generational Skill state](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/SKILL_STATE.md) and [data-defined runtime Skills](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/RUNTIME_SKILLS.md)
+describe compatibility APIs; their Instance snapshots are not converted into
+Server checkpoints.
 
-Starting with Spectre 0.2.7, trusted hosts may also construct data-only Skills
-through `Spectre.Skill.Definition` and manage them with
-`Spectre.Skill.Runtime`. They lower into the same canonical model, use only
-registered operation references and closed prompt fragments, and have a
-separate authority-checked lifecycle. See
-[Runtime Skills and Routing Projections](RUNTIME_SKILLS.md). The compiled mount
-path described below remains unchanged.
-
-## The Smallest Complete Example
-
-Define the Skill with `use Spectre.Skill`:
+## Declare routes, then implement behavior
 
 ```elixir
-defmodule MyApp.Skills.Greeting do
-  use Spectre.Skill, id: :greeting, version: 1
+# Reusable declaration: the mount name is chosen by each Agent.
+defmodule MyApp.BillingSkill do
+  use Spectre.Skill,
+    id: :billing,
+    server: MyApp.BillingServer,
+    prompt_root: "priv/billing/prompts"
 
-  flow :greeting do
-    on :HELLO, regex: ~r/^hello$/i do
-      run(:greet)
-    end
-  end
+  flow :billing do
+    # Regex is one strategy; the mounting Agent still owns classifiers,
+    # embedding, intent dataset, thresholds and routing fallbacks.
+    on :refund,
+      regex: ~r/^refund$/i,
+      semantic_examples: ["I would like my money back"],
+      protected: true
 
-  def greet(%Spectre.Input{text: text}, _ctx) do
-    {:ok, "The greeting skill received: #{text}"}
-  end
-end
-```
-
-Mount it in an Agent with `skill/2`:
-
-```elixir
-defmodule MyApp.Agent do
-  use Spectre.Agent
-
-  skill(MyApp.Skills.Greeting, as: :greeting)
-end
-```
-
-Use the Agent normally. Spectre includes mounted Skill routes during routing
-and invokes the callback on the module that owns the selected route:
-
-```elixir
-{:ok, result} = Spectre.ask(MyApp.Agent, "hello")
-
-result.reply_text
-#=> "The greeting skill received: hello"
-
-result.route.scope
-#=> {:skill, :greeting}
-```
-
-`as: :greeting` is the local mount identifier. It becomes the route, policy,
-effect, and prompt scope, so two mounted Skills can reuse the same flow names
-and route labels without losing ownership.
-
-If `as:` is omitted, the Skill's `id:` is used. Mount identifiers must be
-unique within an Agent.
-
-## Binding Actions
-
-A reusable Skill should not know the concrete action names used by every host
-application. Declare a logical requirement in the Skill, use that logical name
-in its handlers, and bind it when mounting the Skill.
-
-```elixir
-defmodule MyApp.Skills.DocumentSearch do
-  use Spectre.Skill, id: :document_search, version: 1
-
-  requires_action(:search, mode: :read)
-
-  flow :document_search do
-    on :SEARCH_DOCUMENTS, regex: ~r/\bsearch (the )?docs\b/i do
-      action(:search, args: %{index: "help-center"})
-    end
-  end
-end
-```
-
-The Agent owns the concrete action module and binds `:search` to an action in
-that module:
-
-```elixir
-defmodule MyApp.Actions do
-  def search_help_center(args, ctx) do
-    MyApp.Search.run(args.index, ctx.input.text)
+    # A different topic can be handled while a refund awaits confirmation.
+    on :status, regex: ~r/^billing status$/i
   end
 end
 
 defmodule MyApp.SupportAgent do
-  use Spectre.Agent
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+  router strategies: [:regex, :intent_dataset, :embedding, :llm_classifier]
 
-  actions(MyApp.Actions)
-
-  skill(MyApp.Skills.DocumentSearch,
-    as: :docs,
-    bind: [search: :search_help_center]
-  )
+  # This mount may propose only this host operation. It does not grant GAM
+  # authority or bypass the operation's existing confirmation requirements.
+  skill MyApp.BillingSkill, as: :billing, governed: [:refund]
 end
-```
 
-The logical action is materialized as the concrete action while retaining its
-Skill owner and scope:
+defmodule MyApp.BillingServer do
+  use Spectre.Server, tools: MyApp.AI
 
-```elixir
-{:ok, turn} = Spectre.turn(MyApp.SupportAgent, "search the docs")
-
-{:needs,
- %Spectre.Effect{
-   name: :search_help_center,
-   mode: :read,
-   scope: {:skill, :docs},
-   status: :pending
- } = effect, result} = turn.decision
-
-{:ok, completed} = Spectre.execute(MyApp.SupportAgent, result)
-```
-
-`mode:` may be `:read`, `:write`, or `:destructive`. Every declared requirement
-must have a binding, and a Skill cannot stage, protect, or attach hooks to an
-action that it did not declare. These rules are checked while the Agent
-compiles.
-
-`requires_tool/2` is an alias for `requires_action/2` when tool terminology is
-more natural for the capability.
-
-## Skill Policies
-
-Policies may live with the reusable behavior. Protect the logical action name;
-Spectre applies the policy to the bound concrete action and keeps the policy in
-the mount's scope.
-
-```elixir
-defmodule MyApp.Skills.Publisher do
-  use Spectre.Skill,
-    id: :publisher,
-    version: 1,
-    prompt_root: "priv/skills/publisher/prompts"
-
-  requires_action(:publish, mode: :write)
-
-  policy :confirm_publish do
-    request(:confirm_publish)
-    accept(:accepted, regex: ~r/^yes$/i)
-    reject(:rejected, regex: ~r/^no$/i)
+  @impl true
+  def handle_flow({:billing, :refund}, _input, ctx) do
+    # The runtime constructs the Candidate and its consequence presentation.
+    propose(ctx, :refund, %{invoice_id: ctx.assigns.invoice_id}, on_result: :refunded)
   end
 
-  protect(:publish, with: :confirm_publish)
+  def handle_flow({:billing, :status}, _input, ctx), do: respond(ctx, "Checking billing.")
+  def handle_flow(:unmatched, _input, ctx), do: respond(ctx, "Which invoice do you mean?")
 
-  flow :publishing do
-    on :PUBLISH, regex: ~r/^publish$/i do
-      action(:publish)
+  @impl true
+  def handle_pending(pending, input, ctx) do
+    case String.downcase(String.trim(input.text)) do
+      "yes" -> confirm_pending(ctx, pending.id)
+      "no" -> reject_pending(ctx, pending.id)
+      _ ->
+        ctx
+        |> close_pending_after(pending.id, 120_000, reason: :topic_changed)
+        |> route_current_input(suspend: pending.id)
     end
   end
+
+  @impl true
+  def handle_result(:refunded, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
+    do: respond(ctx, "Refund completed.")
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+
+  # Native OTP callbacks are available too. These callbacks run in this
+  # Skill's process, with the same command acquisition and GAM boundaries.
+  @impl true
+  def handle_info({:invoice_changed, invoice_id}, ctx),
+    do: {:noreply, assign(ctx, :invoice_id, invoice_id)}
 end
 ```
 
-Mount it just like the previous example:
+`handle_flow` receives local `{flow, intent}` keys. `ctx.routing` retains the
+mounted route, including `owner: MyApp.BillingSkill` and `scope: {:skill, :billing}`.
+`ctx.skill` identifies the mount even in `init`, `handle_info` and `handle_cast`.
+The host identity is unchanged. Root assigns are copied at startup; subsequent
+updates are private to each runtime. `private` is never copied or checkpointed.
 
-```elixir
-skill(MyApp.Skills.Publisher,
-  as: :publisher,
-  bind: [publish: :publish_article]
-)
-```
+The Agent keeps all its recognition strategies, online intent collection,
+semantic cache and training. Root routing runs once and hands the selected
+route to the Skill. Targeted input and a Skill's own `route_current_input`
+consider only that mount's routes, including its interrupts and fallbacks.
+Root pre-route turn handlers are not run again inside the Skill.
 
-When `:PUBLISH` routes, the resulting effect is named `:publish_article`, its
-status is `:waiting_policy`, and its open awaitable is named
-`{{:skill, :publisher}, :confirm_publish}`. Approval still only changes state;
-the host must explicitly call `Spectre.execute/3` afterward. If the Agent also
-protects the bound concrete action, the Agent's protection takes precedence.
-
-## Prompts And Injections
-
-A Skill may set its own `prompt_root:` and use the same `reason`, `reply`, and
-`inject` declarations as an Agent:
-
-```elixir
-defmodule MyApp.Skills.Answers do
-  use Spectre.Skill,
-    id: :answers,
-    version: 1,
-    prompt_root: "priv/skills/answers/prompts"
-
-  inject(:answering_rules, into: :instructions, position: :end)
-
-  flow :answers do
-    on :ANSWER, regex: ~r/^answer:/i do
-      reason(:answer)
-    end
-  end
-end
-```
-
-For a selected Skill route, Agent-level injections are composed with that
-Skill's injections. Prompt names declared by the Skill resolve below its own
-prompt root. In this example, `reason(:answer)` resolves:
+## One Domain, independent runtimes
 
 ```text
-priv/skills/answers/prompts/answer.text.heex
+Application supervision
+└── AgentServer
+    ├── Automatic GAM boundary / Domain / Sequencer + ledger
+    └── Skill supervisor (one_for_one)
+        ├── Billing Server.Runtime
+        └── Research Server.Runtime
+
+Agent and Skill commands → Server.GAM → same Domain → Act → executor → Outcome
 ```
 
-The model used for `reason` still comes from the mounting Agent.
+The Domain runs separately and is created automatically by the root AgentServer.
+Spectre does not create a new Domain or grant when mounting a Skill. The child
+receives the same pinned boundary and its mount restrictions; application
+`skill_options` cannot replace either.
 
-## Private Generational State
+**A separate Skill process is not a separate GAM.** The child reuses the root's
+automatic integration; the application configures `gam:` once when starting the
+root AgentServer. Do not start another Domain, copy its ledger, construct a
+Skill-specific Host or install another consent ingress for each mount.
 
-Starting with Spectre 0.2.5, a stable Skill id can own private state as a
-canonical `Spectre.Skill.StateBinding`. The Instance—not the Skill DSL—is the
-single sequencer for this state. Updates require the selected branch's exact
-schema Ref, generation, and revision, and are fenced by the active Definition
-and current Instance owner lease.
+| Shared by Agent and mounted Skill Servers | Owned by each Server |
+| --- | --- |
+| GAM Domain, authority ledger and automatic execution boundary | GenServer mailbox and application callbacks |
+| Root identity, configured operation authority and standard ingress | Assigns, workers, result continuations and streams |
+| Recorded Evidence, Decisions, Acts, Outcomes and Duties | Pending intentions and their presentation correlation |
+| Stack installation and selected supervised runtime resources | Checkpoint under the mount's own key |
 
-Definition changes create explicit state history. In an A → B → A sequence,
-B's branch is never merged into A. If the target Definition already has a
-dormant branch, activation must explicitly resume, fork, migrate, or abandon
-it. The common stateless case and a target with no dormant branch need no
-choice.
+The shared ledger retains the originating mount, module, interaction and command
+for each Skill proposal. Separate checkpoints preserve local continuations;
+they do not create copies of the authority history or independent permission.
 
-Use `Spectre.skill_state/3`, `Spectre.skill_state_branches/3`,
-`Spectre.update_skill_state/4`, and
-`Spectre.transition_skill_state_retention/5` at the trusted host boundary.
-See [Generational Skill State](SKILL_STATE.md) for activation examples,
-retention rules, and checkpoint compatibility.
+Cognition and workers can run concurrently. The kernel orders admission in the
+shared ledger; an admitted execution does not hold the Agent mailbox. Existing
+GAM rules still determine whether effects can proceed together. The contract
+follows the [GAM manifesto](https://spectre.guide/en/governed-act-model).
 
-## What A Skill Inherits
+`governed:` lists the host operation references a mount may propose. With no
+explicit list, it defaults to the targets of the existing `bind:` mapping;
+with neither, the list is empty. Direct logical `propose` names are resolved
+through that mapping. A scoped Kinetic operation must retain its full reference,
+for example `{{:skill, :research}, :kinetic, :send_email}` and have a matching
+allowed operation entry. Stack registration alone does not authorize a Skill to act.
 
-A Skill describes behavior; it does not create a session or establish a second
-runtime. The mounting Agent supplies:
+### Record which Skill proposed an action
 
-- the resolved Stack and capability bindings;
-- the router and arbitrator;
-- model, classifier, and embedding adapters;
-- the action module;
-- state, memory, and journal adapters;
-- the input pipeline, history, failure behavior, and session lifecycle.
+The runtime records authenticated invocation Evidence automatically. The record
+contains mount, module, interaction, command, operation and Domain/Scope/principal
+references. It attributes the proposal; it does not grant authority or constitute
+consent. Every Candidate retains this evidence.
 
-Consequently, do not declare `model`, `classifier`, `embedding`, `router`,
-`actions`, `state`, `memory`, `journal`, `input_pipeline`, `history`, `idle`,
-`shutdown`, `fail`, or `stack` inside a Skill. Invalid infrastructure
-declarations are rejected at compile time.
+The normal presentation/approval path remains unchanged. Timer closure uses the
+same lifecycle ingress and coherent checkpoint/journal as the Agent. Closing an
+intention does not erase a GAM Duty or imply that an uncertain effect was cancelled.
 
-A Skill cannot mount another Skill. Compose multiple Skills at the Agent level:
+### Two Skills waiting for consent
+
+Research can prepare an email while Knowledge prepares a memory write. Both
+proposals enter the same Domain, but produce separate pending intentions and
+Presentations. The UI first acknowledges rendering each exact presentation;
+its subsequent decision identifies the originating mount:
 
 ```elixir
-defmodule MyApp.Assistant do
-  use Spectre.Agent
+# Called by the configured consumer after rendering the relevant presentation.
+# These references come from the actual presentation events, not from model text.
+Spectre.Server.presented(agent, email_presentation_ref)
+Spectre.Server.decide(agent, :research, email_presentation_ref, :confirm)
 
-  skill(MyApp.Skills.Greeting, as: :greeting)
-  skill(MyApp.Skills.DocumentSearch,
-    as: :docs,
-    bind: [search: :search_help_center]
-  )
+Spectre.Server.presented(agent, memory_presentation_ref)
+Spectre.Server.decide(agent, :knowledge, memory_presentation_ref, :reject)
+```
+
+Rendering acknowledgement is not consent. The email decision does not approve
+the memory write, and swapping a mount or reusing a stale presentation is
+rejected. Both histories remain visible through `Spectre.Server.gam_view(agent)`
+to an authorized consumer. Only an observed successful Outcome establishes
+execution success. The [LiveView showcase](DEMO.md) exercises parallel requests,
+isolated confirmations and native Skill messages against this shared Domain.
+
+## Calling and answering Skills
+
+Normal Agent input automatically reaches the Skill whose route matched:
+
+```elixir
+{:ok, interaction} = Spectre.Server.input(agent, "refund")
+```
+
+A Server callback can delegate work explicitly:
+
+```elixir
+def handle_flow({:support, :investigate}, input, ctx) do
+  delegate(ctx, :research, input, on_result: :research_started)
+end
+
+def handle_result(:research_started, {:delegated, %{skill: :research, interaction: id}}, ctx) do
+  assign(ctx, :research_interaction, id) |> respond("Research started.")
+end
+
+# The Agent receives correlated output while remaining available for input.
+def handle_skill(:research, {:response, interaction, text, _metadata}, ctx) do
+  assign(ctx, :last_research, %{interaction: interaction, text: text})
+  |> no_response()
 end
 ```
 
-The Agent's configured routing strategies decide among Agent-owned and
-Skill-owned routes together. Route receipts expose `scope`, making the selected
-owner explicit for logging, persistence, and tests.
+The consumer receives `{Spectre.Server, agent_pid, {:skill, mount, event}}`.
+`preview` and `preview_end` are relayed directly to that consumer; they do not
+run `handle_skill/3` or write the Agent checkpoint for every token. A bounded
+history of child process identities preserves stream closure after a Skill
+restart. Losing the stream owner cancels its cognitive transport.
+Responses and streams retain their child interaction id. Automatic routing also
+emits `{:delegated, parent_interaction, %{skill: mount, interaction: child_id}}`
+to correlate the original input with the child invocation. A pending notification
+is `{:pending, interaction, pending_id}`; inspect `Server.status(skill_pid)` for
+its revision, status and full wait information.
 
-## Checklist
+In a chat, bind the confirmation controls to the originating Skill:
 
-To add a Skill:
+```elixir
+Spectre.Server.input(agent, "yes", skill: :billing)
+```
 
-1. Create a module with `use Spectre.Skill, id: ..., version: 1`.
-2. Add flows, handlers, prompts, policies, injections, or hooks with the normal
-   Spectre DSL.
-3. Declare every logical action with `requires_action/2`.
-4. Mount it in an Agent with `skill SkillModule, as: ...`.
-5. Bind each required action with `bind: [logical_name: :concrete_name]`.
-6. Call `Spectre.ask/3` or `Spectre.turn/3` on the Agent, not on the Skill.
+For confirmation buttons, bind the exact pending identity and presentation
+revision obtained from the Skill status, so an old button cannot approve a newer
+question in the same Skill:
 
-See also [DSL](DSL.md), [Actions](ACTIONS.md), and the `Spectre.Skill`
-moduledoc in [`lib/spectre/skill.ex`](../lib/spectre/skill.ex).
+```elixir
+Spectre.Server.input(agent, "yes",
+  skill: :billing, pending: {pending.id, pending.revision})
+```
+
+A missing, resolved or changed wait returns `{:error, :stale_pending}`. The runtime
+checks the target again when queued input reaches the callback.
+
+Untargeted input stays with the Agent. It never guesses which Skill an ambiguous
+“yes” refers to. `delegate` starts work and cannot manufacture a user-confirmation
+turn. Neither acceptance nor a Skill reply is proof that an effect succeeded;
+use the governed Outcome.
+
+`handle_skill/3` and consumer notifications use the existing live notification
+contract, not durable exactly-once delivery. Root history and memory are not
+silently merged with each Skill's conversation. Store or project selected results
+explicitly; use `Server.deliver/4` and a host delivery outbox when a downstream
+continuation must survive loss of the consumer.
+
+## Lifecycle and recovery
+
+```elixir
+{:ok, agent} = Spectre.Server.start_link(
+  agent: MyApp.SupportAgent,
+  consumer: self(),
+  identity: %{subject: "customer-42"},
+  gam: [
+    storage: {:disk, "var/support/customer-42"},
+    operations: %{refund: [confirm: true]}
+  ],
+  skill_options: %{billing: [init_arg: :billing_session, assigns: %{invoice_id: 42}]}
+)
+
+{:ok, billing} = Spectre.Server.skill_server(agent, :billing)
+GenServer.cast(billing, :refresh)
+```
+
+`skill_options` supplies per-mount `init_arg` and initial `assigns`; it cannot
+replace the Domain, identity, consumer or checkpoint. Each Skill has a checkpoint
+key `{:spectre_skill, agent_checkpoint_key, mount_id}` in the same coordination
+store. It retains scoped routing, pending revisions, inbox and outbox. Its prompt
+root and handler module remain independent of the Agent's Server.
+
+Delegation is acquired in the parent's outbox. The command id identifies the
+child invocation, with deduplication in the existing bounded inbox window.
+A possibly started delegation is not blindly repeated after a parent crash:
+its continuation receives `{:skill_unknown, details}` for reconciliation.
+Already-started governed effects use the existing GAM journal recovery.
+Restored consent remains suspended and requires a fresh presentation.
+
+`Server.cancel(agent)` cancels the Agent's current work; it does not implicitly
+cancel delegated Skill work. Resolve its runtime with `skill_server/2` and call
+`Server.cancel(skill_pid)` when that is intended. Neither call rolls back an
+admitted effect or closes a pending intention; use the pending lifecycle for that.
+
+A child crash restarts that child. Stopping or killing the Agent terminates the
+Skill subtree. If the Skill supervisor exceeds its restart intensity, failure
+escalates to the Agent's supervisor. Governed workers already released to GAM
+retain the existing reconciliation semantics; killing an owner is not effect
+cancellation. The root runtime drains its governed workers before closing the
+automatic Domain; application-owned stores must outlive that drain.
+
+Mounts without `server:` remain declarative and dispatch their scoped key to the
+Agent Server. Existing 0.3 workflow bodies and generational private state are not
+silently executed or migrated by the 0.4 owner.
+
+See the [nine-package integration](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md) and its
+Skill scenario for Lens, Kinetic, Mnemonic, Prism, Beam, Directive, Pulse, Ledger
+and Lab running through the same callback/runtime/GAM path.
+
+## Try the process tree interactively
+
+The [LiveView showcase](DEMO.md) mounts Research and Knowledge Skills using all
+nine installed packages. It shows actual pending identities, stream previews,
+local email receipts and the shared GAM projection. Spectre automatically creates
+the Domain and stores its authority history on local disk. Each browser connection
+uses a new identity; reconnect does not silently restore an earlier session.
+
+## Prompt roots in Skill Servers
+
+`use Spectre.Server, prompt_root: "priv/billing/prompts"` works on a mounted
+Skill Server as well as the root Server. The override is bound to that Server's
+runtime scope; the root Agent's Server cannot replace another Skill's assets.
+Without a Server override, prompts resolve from the Skill declaration as before.
+The normal path/symlink containment checks still apply.

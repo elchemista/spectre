@@ -1,0 +1,8 @@
+flowchart TB
+  Content[Application content] --> Put[Payload Store put/3 in a worker]
+  Put --> Backend[Application backend: encrypted DB, object store or other]
+  Put --> Reference[Portable reference]
+  Reference --> Facts[GAM, coordination and checkpoints]
+  Facts --> Fetch[Payload Store fetch/3 in a worker]
+  Backend --> Fetch
+  Fetch --> Original[Original encoded bytes for use or recovery]

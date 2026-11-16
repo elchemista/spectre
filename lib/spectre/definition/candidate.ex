@@ -30,7 +30,7 @@ defmodule Spectre.Definition.Candidate do
     "created_at"
   ]
 
-  @enforce_keys [
+  @fields [
     :schema_version,
     :definition_ref,
     :manifest_digest,
@@ -41,6 +41,7 @@ defmodule Spectre.Definition.Candidate do
     :governance,
     :created_at
   ]
+  @enforce_keys @fields
   defstruct schema_version: @schema_version,
             definition_ref: nil,
             manifest_digest: nil,
@@ -180,40 +181,25 @@ defmodule Spectre.Definition.Candidate do
 
   @doc "Restores a Candidate from decoded canonical data."
   @spec from_data(map()) :: {:ok, t()} | {:error, term()}
-  def from_data(
-        %{
-          "schema_version" => schema_version,
-          "definition_ref" => definition_ref,
-          "definition_canonicalization_version" => canonicalization_version,
-          "definition_contract_version" => contract_version,
-          "manifest_digest" => manifest_digest,
-          "publication_id" => publication_id,
-          "source" => source,
-          "parent_ref" => parent_ref,
-          "provenance_refs" => provenance_refs,
-          "created_at" => created_at
-        } = data
-      ) do
+  def from_data(data) when is_map(data) do
     with :ok <- validate_data_keys(data),
          {:ok, definition_ref} <-
-           DefinitionRef.parse(definition_ref,
-             canonicalization_version: canonicalization_version,
-             contract_version: contract_version
+           DefinitionRef.parse(Map.fetch!(data, "definition_ref"),
+             canonicalization_version: Map.fetch!(data, "definition_canonicalization_version"),
+             contract_version: Map.fetch!(data, "definition_contract_version")
            ),
-         {:ok, source} <- source_from_data(source),
-         {:ok, parent_ref} <- parent_from_data(parent_ref),
+         {:ok, source} <- source_from_data(Map.fetch!(data, "source")),
+         {:ok, parent_ref} <- parent_from_data(Map.fetch!(data, "parent_ref")),
          {:ok, governance} <- governance_from_data(Map.get(data, "governance")) do
-      new(%{
-        schema_version: schema_version,
+      @fields
+      |> Map.new(&{&1, Map.get(data, Atom.to_string(&1))})
+      |> Map.merge(%{
         definition_ref: definition_ref,
-        manifest_digest: manifest_digest,
-        publication_id: publication_id,
         source: source,
         parent_ref: parent_ref,
-        provenance_refs: provenance_refs,
-        governance: governance,
-        created_at: created_at
+        governance: governance
       })
+      |> new()
     end
   end
 
@@ -237,30 +223,20 @@ defmodule Spectre.Definition.Candidate do
 
   @spec validate_keys(map()) :: :ok | {:error, term()}
   defp validate_keys(attrs) do
-    allowed = [
-      :schema_version,
-      :definition_ref,
-      :manifest_digest,
-      :publication_id,
-      :source,
-      :parent_ref,
-      :provenance_refs,
-      :governance,
-      :created_at
-    ]
-
-    case Map.keys(attrs) -- allowed do
+    case Map.keys(attrs) -- @fields do
       [] -> :ok
       unknown -> {:error, {:unknown_definition_candidate_fields, Enum.sort(unknown)}}
     end
   end
 
   defp validate_data_keys(data) do
-    allowed = @data_fields ++ ["governance"]
-
-    case Map.keys(data) -- allowed do
-      [] -> :ok
-      unknown -> {:error, {:unknown_definition_candidate_data_fields, Enum.sort(unknown)}}
+    if Enum.all?(@data_fields, &Map.has_key?(data, &1)) do
+      case Map.keys(data) -- (@data_fields ++ ["governance"]) do
+        [] -> :ok
+        unknown -> {:error, {:unknown_definition_candidate_data_fields, Enum.sort(unknown)}}
+      end
+    else
+      {:error, {:invalid_definition_candidate_data, :map}}
     end
   end
 
@@ -344,11 +320,6 @@ defmodule Spectre.Definition.Candidate do
   defp unique_keyword?(attrs),
     do: length(Keyword.keys(attrs)) == length(Enum.uniq(Keyword.keys(attrs)))
 
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(value) when is_integer(value), do: :integer
-  defp shape(_value), do: :other
+  defp shape(value),
+    do: Spectre.ValueShape.of(value, [:binary, :map, :list, :tuple, :atom, :integer])
 end

@@ -12,81 +12,35 @@ defmodule Spectre.Definition.ContractRegistry do
   alias Spectre.Definition.Component
 
   @criticalities [:must_understand, :advisory, :descriptive]
-  @builtin_entries [
-    %{
-      component_type: :identity,
-      schema_ref: "spectre.definition.identity/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :metadata,
-      schema_ref: "spectre.definition.metadata/1",
-      criticalities: [:descriptive],
-      version: 1
-    },
-    %{
-      component_type: :applicability,
-      schema_ref: "spectre.definition.applicability/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :routing,
-      schema_ref: "spectre.definition.routing/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :policies,
-      schema_ref: "spectre.definition.policies/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :prompt_fragments,
-      schema_ref: "spectre.prompt.fragments/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :requirements,
-      schema_ref: "spectre.definition.requirements/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :skills,
-      schema_ref: "spectre.definition.skills/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :compiled_runtime,
-      schema_ref: "spectre.definition.compiled-runtime/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :change_surface,
-      schema_ref: "spectre.definition.change-surface/1",
-      criticalities: [:must_understand],
-      version: 1,
-      validator: {Spectre.Morph.Surface, :validate_component}
-    },
-    %{
-      component_type: :execution,
-      schema_ref: "spectre.definition.execution/1",
-      criticalities: [:must_understand],
-      version: 1
-    },
-    %{
-      component_type: :projection,
-      schema_ref: "spectre.definition.projection/1",
-      criticalities: [:advisory],
-      version: 1
-    }
-  ]
+  @builtin_entries Enum.map(
+                     [
+                       {:identity, "spectre.definition.identity/1", :must_understand},
+                       {:metadata, "spectre.definition.metadata/1", :descriptive},
+                       {:applicability, "spectre.definition.applicability/1", :must_understand},
+                       {:routing, "spectre.definition.routing/1", :must_understand},
+                       {:policies, "spectre.definition.policies/1", :must_understand},
+                       {:prompt_fragments, "spectre.prompt.fragments/1", :must_understand},
+                       {:requirements, "spectre.definition.requirements/1", :must_understand},
+                       {:skills, "spectre.definition.skills/1", :must_understand},
+                       {:compiled_runtime, "spectre.definition.compiled-runtime/1",
+                        :must_understand},
+                       {:change_surface, "spectre.definition.change-surface/1", :must_understand},
+                       {:execution, "spectre.definition.execution/1", :must_understand},
+                       {:projection, "spectre.definition.projection/1", :advisory}
+                     ],
+                     fn {type, schema, criticality} ->
+                       %{
+                         component_type: type,
+                         schema_ref: schema,
+                         criticalities: [criticality],
+                         version: 1,
+                         validator:
+                           if(type == :change_surface,
+                             do: {Spectre.Morph.Surface, :validate_component}
+                           )
+                       }
+                     end
+                   )
 
   @enforce_keys [:entries]
   defstruct entries: %{}
@@ -322,8 +276,5 @@ defmodule Spectre.Definition.ContractRegistry do
   defp valid_validator?(_value), do: false
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :tuple, :binary])
 end

@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
   workflow_dispatch:
 
@@ -22,7 +19,7 @@ jobs:
   quality:
     name: Quality (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +64,18 @@ jobs:
         run: mix compile --warnings-as-errors
 
       - name: Run tests
-        run: mix test ${{ matrix.test_args }}
+        run: |
+          if [ "${{ matrix.test_args }}" = "--cover" ]; then
+            mix test --cover --export-coverage ram
+            SPECTRE_TEST_PROJECTION=1 mix test test/gam --cover --export-coverage projection
+          else
+            mix test
+            SPECTRE_TEST_PROJECTION=1 mix test test/gam
+          fi
+
+      - name: Check standalone core coverage
+        if: matrix.test_args == '--cover'
+        run: mix test.coverage
 
       - name: Run Credo
         run: mix credo
@@ -183,6 +191,9 @@ jobs:
         run: |
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent.ex.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/agent_test.exs.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/server_agent.ex.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/server.ex.eex"
+          test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.agent/server_agent_test.exs.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable.ex.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.installable/installable_test.exs.eex"
           test -f "$RUNNER_TEMP/hex-package/priv/templates/spectre.gen.checkpoint_store/checkpoint_store.ex.eex"

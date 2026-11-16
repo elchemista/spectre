@@ -1,0 +1,155 @@
+defmodule Spectre.GAM.Domain.Admission.Command do
+  @moduledoc """
+  Plans, appends and recovers one ordered group of Candidate submissions.
+
+  The command receives queue entries whose ledger configuration is owned by
+  the Sequencer state. It builds their provisional decisions in order, commits
+  one atomic batch, then reconstructs each response from confirmed durable
+  state. Confirmation can reuse the prepared fold after an exact receipt
+  match; uncertainty takes the recovery path. Executor Grants are minted only
+  after that boundary. It does not own a mailbox or choose batch timing.
+  """
+
+  alias Spectre.GAM.{Act, Candidate}
+  alias Spectre.GAM.Domain.Admission.Planner, as: AdmissionPlanner
+  alias Spectre.GAM.Domain.Command.Durability
+  alias Spectre.GAM.Domain.Command.Execution, as: ExecutionCommand
+  alias Spectre.GAM.Domain.{Projection, Transaction}
+  alias Spectre.GAM.Domain.Sequencer.State
+  alias Spectre.GAM.Scope.Opening
+
+  @doc "Processes one non-empty, ledger-option-homogeneous submission group."
+  @spec run(State.t(), [map()]) :: {State.t(), [{GenServer.from(), term()}]}
+
+  def run(%State{} = state, requests) do
+    case Durability.preflight(state) do
+      {:ok, current} ->
+        current |> admit(requests, current.conflict_retries) |> admission_reply()
+
+      {:error, halted, reason} ->
+        replies = Enum.map(requests, &{&1.from, {:error, reason}})
+        {halted, replies}
+    end
+  end
+
+  defp admission_reply({:ok, state, plans}), do: {state, finalize_admission(state, plans)}
+
+  defp admission_reply({:error, state, {plans, reason}}) do
+    {state, Enum.map(plans, &admission_error_reply(&1, reason))}
+  end
+
+  defp admission_error_reply(plan, batch_reason) do
+    reason = plan.error || batch_reason
+    {plan.from, {:error, reason}}
+  end
+
+  defp admit(state, requests, conflicts_left) do
+    case Transaction.trusted_recorded_at(state) do
+      {:ok, admitted_at} ->
+        {plans, payloads} = AdmissionPlanner.plan(state, requests, admitted_at)
+
+        if payloads == [] do
+          {:ok, state, plans}
+        else
+          append_planned_admission(
+            state,
+            requests,
+            plans,
+            payloads,
+            conflicts_left,
+            admitted_at
+          )
+        end
+
+      {:error, reason} ->
+        {:error, state, {AdmissionPlanner.error_plans(requests), reason}}
+    end
+  end
+
+  defp append_planned_admission(
+         state,
+         requests,
+         plans,
+         payloads,
+         conflicts_left,
+         admitted_at
+       ) do
+    result =
+      Durability.append(
+        state,
+        payloads,
+        admitted_at,
+        conflicts_left,
+        fn recovered -> {:ok, %{state | projection: recovered}, plans} end,
+        &admit(&1, requests, &2)
+      )
+
+    case result do
+      {:error, next_state, {failed_plans, _reason} = failure}
+      when is_list(failed_plans) ->
+        {:error, next_state, failure}
+
+      {:error, next_state, reason} ->
+        {:error, next_state, {plans, reason}}
+
+      {:ok, _next_state, _plans} = success ->
+        success
+    end
+  end
+
+  defp finalize_admission(state, plans) do
+    Enum.map(plans, fn plan ->
+      reply =
+        if plan.error do
+          {:error, plan.error}
+        else
+          admission_reply(state, plan)
+        end
+
+      {plan.from, reply}
+    end)
+  end
+
+  defp admission_reply(state, %{candidate: %Candidate{class: "scope.open"}} = plan) do
+    with {:ok, admission} <- admission_from_projection(state, plan.candidate),
+         {:ok, opening} <- admitted_scope_opening(state.projection, admission, plan.candidate) do
+      {:ok, Map.put(admission, :opening, opening)}
+    end
+  end
+
+  defp admission_reply(state, plan),
+    do: admission_from_projection(state, plan.candidate)
+
+  defp admitted_scope_opening(_projection, %{decision: %{outcome: outcome}, act: nil}, _candidate)
+       when outcome != :admitted,
+       do: {:ok, nil}
+
+  defp admitted_scope_opening(
+         projection,
+         %{decision: %{outcome: :admitted}, act: %Act{ref: act_ref}},
+         %Candidate{consequence: %{"scope_open" => %{"ref" => scope_ref}}}
+       ) do
+    case Map.fetch(projection.catalog.scopes, scope_ref) do
+      {:ok, %Opening{source_act_ref: ^act_ref} = opening} -> {:ok, opening}
+      {:ok, %Opening{}} -> {:error, {:scope_opening_source_mismatch, scope_ref, act_ref}}
+      :error -> {:error, {:governed_scope_opening_not_recovered, scope_ref}}
+    end
+  end
+
+  defp admitted_scope_opening(_projection, _admission, _candidate),
+    do: {:error, :invalid_governed_scope_admission}
+
+  defp admission_from_projection(state, candidate) do
+    with {:ok, decision} <-
+           Projection.candidate_decision(state.projection, candidate.identity_key),
+         true <- decision.candidate_digest == candidate.material_digest,
+         {:ok, act} <- Projection.decision_act(state.projection, decision),
+         {:ok, grant} <- ExecutionCommand.mint_grant(state, act) do
+      {:ok, %{decision: decision, act: act, grant: grant}}
+    else
+      :not_found -> {:error, :admission_not_recovered}
+      false -> {:error, {:candidate_identity_conflict, candidate.identity_key}}
+      {:error, _reason} = error -> error
+    end
+  end
+end

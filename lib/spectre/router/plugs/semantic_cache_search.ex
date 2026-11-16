@@ -36,6 +36,9 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
       not Keyword.get(context.opts, :semantic_after_classifier?, true) ->
         {:cont, context}
 
+      not Keyword.get(context.opts, :semantic_search?, true) ->
+        {:cont, context}
+
       true ->
         semantic_search(context)
     end
@@ -48,6 +51,7 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
 
   @spec semantic_search(Context.t()) :: {:cont, Context.t()}
   defp semantic_search(%Context{input: %{text: text}, rules: rules, opts: opts} = context) do
+    rules = Enum.filter(rules, &Keyword.get(&1.opts, :dataset_lookup, true))
     ambiguous = Support.ambiguous_labels(rules, :semantic_cache, context.input)
     ambiguity_reason = Support.ambiguity_reason(:semantic_cache, ambiguous)
     visible_rules = Support.rules_for(rules, :semantic_cache, context.input)
@@ -131,6 +135,7 @@ defmodule Spectre.Router.Plugs.SemanticCacheSearch do
 
   @spec routeable_labels([Spectre.Rule.t()], term() | nil) :: :ok | {:skip, term()}
   defp routeable_labels([], reason) when not is_nil(reason), do: {:skip, reason}
+  defp routeable_labels([], nil), do: {:skip, :no_visible_rules}
   defp routeable_labels(_visible_rules, _reason), do: :ok
 
   @spec skip_search(Context.t(), term(), keyword()) :: {:cont, Context.t()}

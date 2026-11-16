@@ -1,0 +1,10 @@
+defmodule <%= @module %> do
+  @moduledoc "Declares intent recognition and binds the application Server."
+  use Spectre.Agent, server: <%= @server %>
+
+  router strategies: [:regex]
+
+  flow :support do
+    on :greeting, regex: ~r/^hello$/i
+  end
+end

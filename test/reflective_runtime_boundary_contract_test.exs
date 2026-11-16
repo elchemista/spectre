@@ -682,6 +682,9 @@ defmodule SpectreReflectiveRuntimeBoundaryContractTest do
     assert purged.state == nil
     assert purged.status == :dormant
 
+    for branch <- [dormant, abandoned, eligible, purged],
+        do: assert(StateBinding.from_data(StateBinding.to_data(branch)) == {:ok, branch})
+
     assert {:ok, ^purged} =
              StateBinding.transition_retention(purged, :purged,
                expected_revision: 4,

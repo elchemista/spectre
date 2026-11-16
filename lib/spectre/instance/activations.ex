@@ -107,7 +107,7 @@ defmodule Spectre.Instance.Activations do
   @spec commit(InstanceState.t(), Activation.t(), map()) ::
           {:ok, InstanceState.t()} | {:error, term()}
   def commit(%InstanceState{} = data, %Activation{} = activation, skill_states) do
-    with :ok <- owner_guard(data, :activation_commit),
+    with :ok <- Owner.assert_current(data, :activation_commit),
          :ok <- checkpoint_ready(data),
          {:ok, lifecycles} <- Events.activation_lifecycles(data, activation),
          {:ok, committed} <-
@@ -242,9 +242,5 @@ defmodule Spectre.Instance.Activations do
   defp owner_fenced_correlations(data) do
     {:ok, correlations} = Canonical.fetch(data.canonical, :correlations)
     Map.put(correlations, :owner_fencing_token, data.owner_lease.fencing_token)
-  end
-
-  defp owner_guard(data, operation) do
-    Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
   end
 end

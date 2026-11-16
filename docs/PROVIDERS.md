@@ -1,11 +1,22 @@
-# Provider Resilience
+# Provider resilience in 0.4
 
 Spectre isolates routing-critical and turn-owning external calls behind
 `Spectre.Provider.Call`. The boundary protects the caller from adapter crashes,
 enforces a bounded wait, and produces a sanitized
 `Spectre.Provider.Failure` for infrastructure failures.
 
-The boundary currently covers:
+In AgentServer, routing and cognitive services execute in workers while the
+Runtime remains the coordination owner. The existing provider-call boundary
+continues to normalize failures inside those services. Installed tool adapters
+also have their own prepare/invoke/project boundary, documented in
+[Stack tools](STACK_TOOLS.md); not every arbitrary direct application call is
+wrapped automatically.
+
+These controls do not grant authority. Cognitive use does not automatically
+ask for consent, but any protected disclosure or consumption declared in the
+host's governed surface must use that boundary. See [GAM](GAM.md).
+
+The shared provider boundary covers:
 
 - main response-model completion;
 - LLM classifier completion;
@@ -13,7 +24,7 @@ The boundary currently covers:
 - router embedding adapters;
 - native Router Adapters;
 - semantic-cache lookups;
-- turn-handler callbacks.
+- legacy turn-handler callbacks (the retained Instance/Turn integration).
 
 Provider-specific training and semantic-cache administration remain explicit
 host operations and are not silently given runtime retry policies.
@@ -55,10 +66,8 @@ model MyApp.LLM,
 Classifier-specific deadlines remain next to the classifier declaration:
 
 ```elixir
-classifier MyApp.ClassifierLLM,
-  local: MyApp.LocalClassifier,
-  local_classifier_timeout: 2_000,
-  llm_opts: [llm_timeout: 12_000]
+classifier :local, MyApp.LocalClassifier, timeout: 2_000
+classifier :llm, MyApp.ClassifierLLM, timeout: 12_000
 ```
 
 Embedding and semantic lookup deadlines can be configured through their normal
@@ -67,8 +76,7 @@ agent/router options:
 ```elixir
 embedding MyApp.Embeddings, embedding_timeout: 8_000
 
-router
-  via: [:semantic_cache, :embedding, :classifier, :llm_classifier],
+router strategies: [:intent_dataset, :embedding, :local_classifier, :llm_classifier],
   semantic_cache_timeout: 1_500,
   router_adapter_timeout: 5_000
 ```
@@ -168,17 +176,22 @@ Configured LLM fallback models still run after a timeout or other normalized
 primary failure. The fallback receives the primary failure under
 `opts[:primary_error]`.
 
-Spectre does not automatically retry calls. Retries require provider-specific
-knowledge about rate limits, idempotency, and billing, and therefore belong in
-the adapter or an optional provider middleware package. The core boundary
-supplies stable failure categories that such middleware can inspect.
+The synchronous provider-call boundary does not automatically retry a failed
+call. Adapter retries need provider-specific rate-limit, idempotency and billing
+knowledge. This is distinct from Server crash recovery: an unfinished safe
+cognitive command may be invoked again with the same command identity. A tool
+declaring `retry: :never` becomes uncertain after interruption or loss of a usable
+receipt. Governed effects use their original GAM journal instead of a generic
+provider retry. See [AgentServer recovery](AGENT_SERVER.md#checkpoints-and-reconciliation).
 
 ## Streaming adapters
 
 Streaming inference uses a different transport contract from synchronous
 `Spectre.LLM.complete/2`. A provider package implements
-`Spectre.Inference.StreamAdapter`; Spectre keeps Run ownership, budgets,
-cancellation, steering, fences and terminal processing in the Instance.
+`Spectre.Inference.StreamAdapter`. In the new Server path, a monitored worker
+and transport guard own provider transport while the Runtime owns conversation
+coordination and terminal continuations. The retained Instance path owns its
+separate Run/stream-handle protocol. See [Streaming inference](STREAMING_INFERENCE.md).
 
 Prefer adapters with `:pull_transport`. Spectre issues one transport credit at
 a time and bounds every normalized batch. A push adapter is accepted only when
@@ -187,12 +200,13 @@ capability certifies that the provider/client imposes a real bound before
 messages enter the session mailbox. The core never treats an Erlang mailbox as
 a backpressure mechanism.
 
-Adapter callbacks run in the supervised stream session, must return promptly,
+Adapter callbacks run in their owning stream worker/session, must return promptly,
 and must never expose credentials or raw provider errors in normalized events.
 Provider request ids and resume cursors are confidential recovery coordinates,
-not observer or receipt fields. A transport can optionally declare `:resume`,
-`:reconcile`, `:incremental_usage` and `:cost_usage`; missing capabilities fail
-closed when the requested recovery or budget guarantee depends on them.
+not observer or receipt fields. The shared adapter contract can declare
+`:resume`, `:reconcile`, `:incremental_usage` and `:cost_usage`; their use depends
+on the owning runtime. Do not infer the retained Instance resume/steering
+semantics for Server generation from adapter capability flags alone.
 
 The core supplies `max_transport_chunk_bytes` and
 `max_parser_residual_bytes` to every streaming adapter under the

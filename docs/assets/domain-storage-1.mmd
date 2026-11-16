@@ -1,0 +1,9 @@
+flowchart TB
+  Command[Governed command] --> Domain[Domain: active roots and work]
+  Domain -->|load relevant records| Projection[Disposable historical projection]
+  Projection -->|revision-fenced rows| Domain
+  Domain --> Kernel[Pure GAM checks and Fold]
+  Kernel --> Commit[Commit history and changed rows]
+  Commit --> Ledger[Canonical ledger]
+  Commit --> Projection
+  Commit --> Release[Release loaded history from Domain RAM]

@@ -405,8 +405,5 @@ defmodule Spectre.Morph.Surface do
   end
 
   @spec shape(term()) :: :map | :tuple | :binary | :other
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :tuple, :binary])
 end

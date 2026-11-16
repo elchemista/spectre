@@ -7,6 +7,74 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
+## 0.4.0 (unreleased)
+
+### Added
+
+- Declarative Agent and OTP Server authoring, asynchronous worker commands,
+  explicit result continuations, streaming, native OTP callbacks and durable
+  pending-intention lifecycle. The Runtime owns the conversation GenServer.
+- Managed GAM with identity and operation configuration, registered effects,
+  frozen Candidates/Presentations, consumer-bound consent and recorded admission
+  before capability release. Add trusted-actor submission, keyed acquisition
+  deduplication, revocation and independent Duty review.
+- Parallel Skill Servers with separate state, workers and checkpoints, sharing
+  the root Domain. Mount restrictions, invocation provenance and exact
+  presentation correlation keep consent scoped to its originating Skill.
+- Transport-independent external human approval, signed request/decision binding,
+  deadlines, exact-reply retries and durable inbox recovery. Pulse is an optional
+  adapter; a runnable two-AgentServer example also works without it.
+- Ledger-backed Managed storage for canonical GAM history and Server coordination,
+  with optional revision/generation-fenced per-record Domain projection. Commands
+  load historical dependencies as needed and release them after use.
+- Explicit storage recovery policy for retry or a fresh RAM Domain. Fresh-Domain
+  recovery invalidates previous grants, consent and governed outbox work.
+- Optional application-owned payload storage through `put/3` and `fetch/3`, used
+  for operation material, Evidence, receipts, approval records and checkpoints.
+  The host chooses references, protection, retention and backend.
+- Stack `tools/1` helpers and `effects/1` registrations, descriptor validation,
+  portable results and adapter fingerprint checks. Add nine-package integration
+  and a LiveView/PostgreSQL demo with two Skills.
+- Authorized redacted diagnostics, revision-bound GAM pagination, commit
+  invalidations, continuation/assigns contracts and mount permission reports.
+
+### Changed
+
+- New applications use Stack → Agent → Server. Recognition, independent
+  classifiers, intent examples, embeddings, review/training and router adapters
+  remain available; IntentDataset names make their roles explicit.
+- Explicit regex rules are hard evidence by default in Server routing, retaining
+  legacy defaults and explicit weak-rule overrides.
+- Server owns managed authority wiring in every environment. Application identity,
+  business policy and registered effects configure the boundary; application
+  callbacks cannot select a weaker authority protocol or enlarge mandates.
+- Share canonical codec implementation while preserving existing bytes, digests,
+  profile-specific budget checks and error ordering. Consolidate decoder,
+  lifecycle, owner-guard and projection persistence paths.
+- Reorganize documentation around current architecture, runnable examples and
+  static diagrams; retain earlier runtime guides in the compatibility archive.
+
+### Fixed
+
+- Restore interrupted consent as suspended and require a fresh Presentation.
+  Keep slow approval delivery and inbox I/O in bounded supervised tasks, preserve
+  exact signed retries and report delivery separately from consent.
+- Preserve recorded lifecycle deadlines and fence stale decisions, retired stores,
+  missing derived history and ambiguous durable commits.
+- Honor each mounted Skill Server's prompt root and reject malformed execution
+  budgets with validation errors.
+
+### Compatibility
+
+- Instance/Run and standalone satellite APIs remain supported. Their checkpoints,
+  policies and direct effects do not automatically become Server/GAM records.
+- RAM-only operation remains available without Ledger or a database. Database
+  history is not automatically migrated, deleted or merged with fallback RAM.
+- Payload storage is opt-in; old inline records remain readable. Required
+  governance facts continue to obey the existing GAM verification contracts.
+- See [Migration](docs/MIGRATING_TO_0_4.md), [Managed GAM](docs/MANAGED_GAM.md)
+  and [Compatibility](docs/COMPATIBILITY.md).
+
 ## 0.3.4 — 2026-08-30
 
 ### Added

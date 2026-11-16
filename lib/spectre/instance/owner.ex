@@ -115,6 +115,12 @@ defmodule Spectre.Instance.Owner do
     end
   end
 
+  @doc false
+  @spec assert_current(Spectre.Instance.State.t(), atom()) :: :ok | {:error, term()}
+  def assert_current(data, operation) do
+    assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
+  end
+
   @doc "Releases an owned lease when the adapter implements the callback."
   @spec release(config(), Ref.t(), Lease.t(), keyword()) :: :ok | {:error, term()}
   def release(config, %Ref{} = ref, %Lease{} = lease, opts \\ []) do

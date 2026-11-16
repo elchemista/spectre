@@ -207,6 +207,23 @@ defmodule Spectre.Definition.Store do
     end
   end
 
+  @doc false
+  @spec fetch_gate_receipts(config(), [GateReceiptRef.t() | String.t()], keyword()) ::
+          {:ok, [GateReceipt.t()]} | {:error, term()}
+  def fetch_gate_receipts(store, refs, opts \\ []) when is_list(opts) do
+    Enum.reduce_while(refs, {:ok, []}, fn ref, {:ok, receipts} ->
+      case fetch_gate_receipt(store, ref, opts) do
+        {:ok, receipt} -> {:cont, {:ok, [receipt | receipts]}}
+        :not_found -> {:halt, {:error, {:gate_receipt_not_found, ref}}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, receipts} -> {:ok, Enum.reverse(receipts)}
+      {:error, _reason} = error -> error
+    end)
+  end
+
   @doc """
   Fetches and fully verifies one published artifact.
 
@@ -721,9 +738,5 @@ defmodule Spectre.Definition.Store do
     do: {:error, :durable_checkpoint_requires_durable_definition_store}
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:binary, :list, :map, :tuple])
 end

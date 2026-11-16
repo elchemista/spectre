@@ -1,33 +1,32 @@
 defmodule Spectre do
   @moduledoc """
-  OTP-native conversational runtime for Elixir agents.
+  OTP-native agents with declarative recognition, Server callbacks and governed acts.
 
-  `Spectre` owns the thin, boring middle of an agent: route a user turn, render
-  prompts, keep conversation state, stage provider-neutral actions, and enforce
-  policy gates before anything with side effects can execute.
+  New applications in 0.4 use `Spectre.Stack` for installed capabilities,
+  `Spectre.Agent` for recognition, and `Spectre.Server` for behaviour.
+  `Spectre.Server.Runtime` owns the conversation in one GenServer. Governed
+  consequences enter the host bridge `Spectre.Server.GAM` and the `Spectre.GAM`
+  kernel; a model proposal is neither authority nor proof of execution.
 
-  The runtime is deliberately split into small boundaries:
+  With a Server-bound Agent and a host consumer:
 
-    * `Spectre.Input` normalizes host input once.
-    * `Spectre.Runtime` loads state and memory, then chooses policy resume or
-      normal routing.
-    * `Spectre.Router` collects route evidence and arbitrates a single route.
-    * `Spectre.Runner` executes the route handler without directly performing
-      protected side effects.
-    * `Spectre.Run` carries a checkpointable continuation through the closed
-      `Spectre.Runtime.start/3`, `advance/2`, and `resume/3` protocol.
-    * `Spectre.Execution` is the explicit boundary for executing a pending
-      action or extension-owned effect after policy approval.
+      {:ok, server} = Spectre.summon(agent: MyApp.SupportAgent, consumer: self())
+      {:ok, interaction_id} = Spectre.Server.input(server, "I need help")
 
-  A simple stateless call:
+  Responses arrive as `{Spectre.Server, server,
+  {:response, interaction_id, text, metadata}}`. See the Getting Started,
+  AgentServer, Stack Tools and GAM guides for complete examples and host setup.
+  The [GAM manifesto](https://spectre.guide/en/governed-act-model) explains the
+  authority, evidence, act and duty model.
 
-      {:ok, result} = Spectre.ask(MyApp.SupportAgent, "I need help")
+  ## Retained 0.3 APIs
 
-  A stateful supervised conversation:
-
-      {:ok, session} = Spectre.summon(agent: MyApp.SupportAgent)
-      {:ok, result} = Spectre.ask(session, "create a project")
-      state = Spectre.state(session)
+  This module also exposes the legacy Instance/Session/Run facade, including
+  `ask/3`, `turn/3` and `execute/3`. Those functions do not replace
+  `Spectre.Server.input/3` and do not automatically migrate old policy gates,
+  state or checkpoints into GAM. `summon/1` chooses the Server path only when
+  the Agent declares a `server:` binding. The migration guide distinguishes
+  these runtime contracts.
   """
 
   alias Spectre.Input
@@ -35,7 +34,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.3.4"
+  @version "0.4.0"
 
   @doc """
   Returns the running Spectre library version.
@@ -44,7 +43,9 @@ defmodule Spectre do
   def version, do: @version
 
   @doc """
-  Asks either an agent module or a supervised session to handle one turn.
+  Handles one turn through the retained Instance/Session runtime.
+
+  For a Server-bound Agent, use `Spectre.Server.input/3` on its Server instead.
 
   When the first argument is an agent module built with `use Spectre.Agent`,
   Spectre runs a stateless turn and uses the configured state adapter or the
@@ -73,7 +74,9 @@ defmodule Spectre do
   end
 
   @doc """
-  Runs to the first observable boundary and returns its public Turn projection.
+  Runs the retained Instance/Run path to its first observable boundary.
+
+  This returns a legacy public Turn, not a Server command result or GAM Act.
 
       {:ok, turn} = Spectre.turn(MyApp.Agent, "hello")
       {:reply, result} = turn.decision
@@ -131,23 +134,47 @@ defmodule Spectre do
   end
 
   @doc """
-  Summons an Agent Instance or legacy Session process directly.
+  Summons the Server bound to an Agent, or its legacy Instance/Session runtime.
 
       {:ok, pid} = Spectre.summon(agent: MyApp.Agent, subject: account.id)
 
-  Supplying `:subject` selects the Agent Instance runtime. Calls without
-  it preserve the conversation-scoped Session compatibility path.
+  An Agent with `server:` uses the Server runtime. Supplying `:subject` selects
+  its unique local owner. Agents without `server:` preserve the legacy
+  subject-scoped Instance or conversation-scoped Session path.
   """
   @spec summon(keyword()) :: GenServer.on_start()
   def summon(opts) when is_list(opts) do
-    if Keyword.has_key?(opts, :subject) do
-      case Spectre.Instance.start_link(opts) do
-        {:error, {:already_started, pid}} -> {:ok, pid}
-        other -> other
-      end
-    else
-      Spectre.Session.start_link(opts)
+    agent = Keyword.get(opts, :agent)
+
+    server = bound_server(agent)
+
+    cond do
+      not is_nil(server) and Keyword.has_key?(opts, :subject) ->
+        Spectre.Server.Registry.ensure_started(
+          Spectre.Server.Supervisor,
+          agent,
+          opts[:subject],
+          opts
+        )
+
+      not is_nil(server) ->
+        Spectre.Server.start_link(opts)
+
+      Keyword.has_key?(opts, :subject) ->
+        case Spectre.Instance.start_link(opts) do
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          other -> other
+        end
+
+      true ->
+        Spectre.Session.start_link(opts)
     end
+  end
+
+  defp bound_server(agent) do
+    if is_atom(agent) and Code.ensure_loaded?(agent) and
+         function_exported?(agent, :__spectre_server__, 0),
+       do: agent.__spectre_server__()
   end
 
   @doc """

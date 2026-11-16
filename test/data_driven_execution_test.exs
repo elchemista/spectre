@@ -2793,7 +2793,7 @@ defmodule SpectreDataDrivenExecutionTest do
     assert report.consumed_recordings == expected["consumed_recordings"]
 
     matrix = Conformance.matrix()
-    assert matrix.release == "0.3.4"
+    assert matrix.release == Spectre.version()
     assert matrix.data_execution.program_schema == 1
     assert matrix.data_execution.handoff_schema == 1
     assert matrix.data_execution.prompt_receipt_schema == 1
@@ -2805,6 +2805,15 @@ defmodule SpectreDataDrivenExecutionTest do
       assert Code.ensure_loaded?(module)
       assert function_exported?(module, function, arity)
     end)
+  end
+
+  test "malformed program budgets return validation errors without raising" do
+    data = Program.to_data(loop_program())
+
+    for {budget, shape} <- [{:invalid, :atom}, {42, :other}, {"invalid", :binary}] do
+      assert {:error, {:invalid_execution_program_budget, ^shape}} =
+               Program.new(Map.put(data, :budget, budget))
+    end
   end
 
   defp loop_program do

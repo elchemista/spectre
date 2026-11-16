@@ -182,7 +182,8 @@ defmodule Spectre.Governance.Verifier do
              governance.state_migrations,
              Keyword.get(opts, :registered_migrations, [])
            ),
-         {:ok, receipts} <- fetch_receipts(store, governance.gate_receipt_refs, opts),
+         {:ok, receipts} <-
+           Store.fetch_gate_receipts(store, governance.gate_receipt_refs, store_opts(opts)),
          :ok <- verify_report_evidence(governance, receipts),
          :ok <- verify_gate_set(governance, receipts, opts, mode) do
       verify_approval(governance, receipts, opts, parent.definition)
@@ -479,20 +480,6 @@ defmodule Spectre.Governance.Verifier do
       true ->
         :ok
     end
-  end
-
-  defp fetch_receipts(store, refs, opts) do
-    Enum.reduce_while(refs, {:ok, []}, fn ref, {:ok, receipts} ->
-      case Store.fetch_gate_receipt(store, ref, store_opts(opts)) do
-        {:ok, receipt} -> {:cont, {:ok, [receipt | receipts]}}
-        :not_found -> {:halt, {:error, {:gate_receipt_not_found, ref}}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> then(fn
-      {:ok, receipts} -> {:ok, Enum.reverse(receipts)}
-      {:error, _reason} = error -> error
-    end)
   end
 
   defp verify_gate_set(governance, receipts, opts, mode) do

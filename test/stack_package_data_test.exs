@@ -54,7 +54,7 @@ defmodule SpectreStackPackageDataTest.FirstPackage do
   use Spectre.Stack.Installable,
     id: :package_data_first,
     version: "0.1.0",
-    spectre: ">= 0.3.0 and < 0.4.0"
+    spectre: ">= 0.3.0 and < 0.5.0"
 
   @impl Spectre.Stack.PackageData
   def erasure_plan(ref, opts), do: SpectreStackPackageDataTest.Support.plan(:first, ref, opts)
@@ -71,7 +71,7 @@ defmodule SpectreStackPackageDataTest.SecondPackage do
   use Spectre.Stack.Installable,
     id: :package_data_second,
     version: "0.1.0",
-    spectre: ">= 0.3.0 and < 0.4.0"
+    spectre: ">= 0.3.0 and < 0.5.0"
 
   @impl Spectre.Stack.PackageData
   def erasure_plan(ref, opts), do: SpectreStackPackageDataTest.Support.plan(:second, ref, opts)
@@ -87,7 +87,7 @@ defmodule SpectreStackPackageDataTest.PlanOnlyPackage do
   use Spectre.Stack.Installable,
     id: :package_data_plan_only,
     version: "0.1.0",
-    spectre: ">= 0.3.0 and < 0.4.0"
+    spectre: ">= 0.3.0 and < 0.5.0"
 
   def erasure_plan(_ref, _opts), do: {:ok, %{supported?: true}}
 end

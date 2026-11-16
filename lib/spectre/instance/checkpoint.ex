@@ -56,7 +56,7 @@ defmodule Spectre.Instance.Checkpoint do
     config = agent.__spectre_config__()
 
     value =
-      first_configured([
+      Spectre.Instance.Configuration.first_configured([
         {opts, :checkpoint_store},
         {base_opts, :checkpoint_store},
         {config, :checkpoint_store}
@@ -531,12 +531,12 @@ defmodule Spectre.Instance.Checkpoint do
   defp canonical_validation_opts(opts, base_opts) do
     [
       receipt_outbox_limit:
-        first_configured([
+        Spectre.Instance.Configuration.first_configured([
           {opts, :receipt_outbox_limit},
           {base_opts, :receipt_outbox_limit}
         ]) || 256,
       inference_progress_limit:
-        first_configured([
+        Spectre.Instance.Configuration.first_configured([
           {opts, :inference_progress_limit},
           {base_opts, :inference_progress_limit}
         ]) || 256
@@ -553,14 +553,5 @@ defmodule Spectre.Instance.Checkpoint do
       receipt_outbox_limit: receipt_limit,
       inference_progress_limit: Keyword.get(data.base_opts, :inference_progress_limit, 256)
     ]
-  end
-
-  defp first_configured(entries) do
-    Enum.reduce_while(entries, nil, fn {options, key}, _acc ->
-      case Keyword.fetch(options, key) do
-        {:ok, value} -> {:halt, value}
-        :error -> {:cont, nil}
-      end
-    end)
   end
 end

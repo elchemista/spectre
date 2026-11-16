@@ -236,12 +236,6 @@ defmodule Spectre.Experience.Redactor do
   defp key_label(key) when is_atom(key) or is_binary(key) or is_integer(key), do: key
   defp key_label(_key), do: :key
 
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_function(value), do: :function
-  defp shape(value) when is_pid(value), do: :pid
-  defp shape(value) when is_reference(value), do: :reference
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value),
+    do: Spectre.ValueShape.of(value, [:map, :list, :binary, :function, :pid, :reference, :tuple])
 end

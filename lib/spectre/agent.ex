@@ -1,84 +1,43 @@
 defmodule Spectre.Agent do
   @moduledoc """
-  Declarative DSL for building Spectre agents.
+  Declarative recognition for Spectre agents.
 
-  The DSL is intentionally a control plane, not a place to hide application
-  logic. It describes the agent boundary: how input is normalized, how routes
-  are selected, which prompts/actions run, and which actions must pass a policy
-  gate before side effects can execute. The actual domain work should stay in
-  ordinary Elixir modules and be called through `run/2`, `action/2`, adapters,
-  or lifecycle hooks.
+  In 0.4, the Agent binds a Stack and a Server callback module. It declares
+  classifiers, routing strategies, flows and intent examples; application
+  behaviour lives in ordinary `Spectre.Server` callbacks.
 
-  This split keeps complex agents understandable:
+      defmodule MyApp.SupportAgent do
+        use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
 
-    * `flow/2` declares conversation intents and handlers.
-    * `router/1` declares which evidence providers produce candidates.
-    * `policy/2` declares approval/rejection gates for dangerous actions.
-    * `protect/2` attaches an action name to a policy independently from the
-      prompt or handler that produced the action.
-    * `actions/2` and `action_provider/3` keep side effects behind registered
-      providers.
-    * `action_planner/2` accepts provider-neutral plans without coupling the
-      runtime to a planning library.
-    * `state/1` and `memory/1` keep persistence at explicit runtime boundaries.
+        classifier :llm, MyApp.IntentModel
+        router strategies: [:regex, :intent_dataset, :llm_classifier]
 
-      defmodule MyApp.ProjectAgent do
-        use Spectre.Agent, prompt_root: "priv/agents/project/prompts"
-
-        model MyApp.LLM
-        actions MyApp.ProjectActions
-        state MyApp.AgentStateStore
-        memory MyApp.AgentMemory
-        input_pipeline do
-          plug Spectre.Input.Plugs.NormalizeText, case: :downcase
-        end
-        shutdown 600_000
-        fail :agent_failure_reply
-
-        router via: [:regex, :semantic_cache, :classifier, :llm_classifier]
-
-        protect :create_project, with: :terms
-
-        policy :terms do
-          request :accept_terms
-          accept :accepted_terms, regex: ~r/^accetto$/i
-          reject :rejected_terms, regex: ~r/^no$/i
-          otherwise ask: :accept_terms_retry
-          attempts 3, then: :cancel_pending
-        end
-
-        flow :project_create do
-          on :wants_project_create, regex: ~r/crea.*progetto/i do
-            ask :project_create
-          end
+        flow :support, defaults: [collect_intent: true] do
+          on :pricing, regex: ~r/^pricing$/i
+          on :delete_account, regex: ~r/^delete my account$/i,
+            protected: true, collect_intent: false
         end
       end
 
-  In a larger agent, keep this module as the readable map of the system and
-  move business decisions into named functions or modules:
+  The referenced Stack, Server and model are application-supplied. Bodyless
+  routes dispatch to `c:Spectre.Server.handle_flow/3`; unresolved recognition
+  reaches `handle_flow(:unmatched, input, ctx)`. Classifiers may differ from
+  the generation model. IntentDataset collection and vector lookup remain
+  distinct: useful labelled text does not need a vector until vector search.
 
-      defmodule MyApp.BillingAgent do
-        use Spectre.Agent
+  A route's `protected: true` does not grant authority. The Server proposes a
+  concrete consequence through the host GAM binding; `Spectre.GAM` admits and
+  records acts before executors receive capability. See the GAM and 0.4
+  migration guides and the
+  [GAM manifesto](https://spectre.guide/en/governed-act-model).
 
-        actions MyApp.BillingActions
-        router via: [:regex, :classifier, :embedding, :llm_classifier]
+  ## Retained authoring compatibility
 
-        protect :issue_refund, with: :refund_confirmation
-
-        flow :billing do
-          on :refund_request do
-            run :prepare_refund_case
-          end
-
-          on :confirm_refund, regex: ~r/^refund now$/i do
-            action :issue_refund
-          end
-        end
-
-        def prepare_refund_case(input, ctx) do
-          MyApp.Billing.PrepareRefund.call(input, ctx)
-        end
-      end
+  This module also retains the older route-body, `policy`, `protect`, `act`,
+  `reason` and other Instance/Run DSL forms. They describe the 0.3 execution
+  path and are not automatically translated into Server callbacks or GAM
+  mandates. New Server-bound applications keep recognition here and effects,
+  continuations and conversational pending handling in the Server.
   """
 
   alias Spectre.Definition
@@ -100,7 +59,10 @@ defmodule Spectre.Agent do
     :learn,
     :check,
     :checks,
-    :via
+    :via,
+    :semantic_examples,
+    :collect_intent,
+    :match_with
   ]
 
   @doc """
@@ -113,8 +75,8 @@ defmodule Spectre.Agent do
 
       defmodule MyApp.SupportAgent do
         use Spectre.Agent,
-          prompt_root: "priv/agents/support/prompts",
-          history: 20
+          stack: MyApp.AI,
+          server: MyApp.SupportServer
       end
   """
   defmacro __using__(opts) do
@@ -144,6 +106,7 @@ defmodule Spectre.Agent do
     # then visible to Flow handler parsing in the same module, while Agent
     # remains the only owner of the eventual before-compile pass.
     Module.register_attribute(module, :spectre_config, persist: false)
+    Module.register_attribute(module, :spectre_named_classifiers, persist: false)
     Module.register_attribute(module, :spectre_rules, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_policies, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_after_actions, accumulate: true, persist: false)
@@ -189,6 +152,7 @@ defmodule Spectre.Agent do
     caller = __CALLER__
     module = Macro.expand(module, caller)
     opts = eval_opts(opts, caller)
+    Code.ensure_compiled!(module)
     definition = Definition.fetch!(module)
 
     if definition.kind != :skill do
@@ -525,16 +489,77 @@ defmodule Spectre.Agent do
         local: MyApp.LocalClassifier,
         artifact_dir: "priv/spectre/support"
   """
-  defmacro classifier(adapter, opts \\ []) do
+  defmacro classifier(adapter, opts \\ [])
+
+  defmacro classifier(kind, adapter) when kind in [:local, :llm] do
+    named_classifier(kind, adapter, [], __CALLER__)
+  end
+
+  defmacro classifier(adapter, opts) do
     adapter = Macro.expand(adapter, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
     classifier = normalize_classifier(adapter, opts)
 
     quote do
+      @spectre_named_classifiers false
       @spectre_config Keyword.put(
                         @spectre_config,
                         :classifier,
                         unquote(Macro.escape(classifier))
+                      )
+    end
+  end
+
+  @doc "Declares a local or LLM classifier independently of the response model."
+  defmacro classifier(kind, adapter, opts) when kind in [:local, :llm] do
+    named_classifier(kind, adapter, opts, __CALLER__)
+  end
+
+  defp named_classifier(kind, adapter, opts, caller) do
+    adapter = Macro.expand(adapter, caller)
+    opts = eval_opts(opts, caller)
+
+    binding =
+      case kind do
+        :local ->
+          function = Keyword.get(opts, :function, Keyword.get(opts, :with))
+          local = if function, do: {adapter, function}, else: adapter
+
+          local_opts =
+            opts
+            |> Keyword.drop([:function, :with, :adapter_options])
+            |> Keyword.merge(Keyword.get(opts, :adapter_options, []))
+            |> rename_option(:timeout, :local_classifier_timeout)
+
+          [local: local, local_opts: local_opts]
+
+        :llm ->
+          timeout = Keyword.get(opts, :timeout)
+          adapter_opts = Keyword.get(opts, :adapter_options, [])
+          opts = Keyword.drop(opts, [:timeout, :adapter_options])
+          opts = Keyword.merge(opts, adapter_opts)
+
+          opts =
+            if timeout,
+              do:
+                Keyword.update(
+                  opts,
+                  :llm_opts,
+                  [llm_timeout: timeout],
+                  &Keyword.put(&1, :llm_timeout, timeout)
+                ),
+              else: opts
+
+          normalize_classifier(adapter, opts)
+      end
+
+    quote do
+      @spectre_named_classifiers true
+      @spectre_config Keyword.update(
+                        @spectre_config,
+                        :classifier,
+                        unquote(Macro.escape(binding)),
+                        &Keyword.merge(&1, unquote(Macro.escape(binding)))
                       )
     end
   end
@@ -634,6 +659,20 @@ defmodule Spectre.Agent do
         end
 
       @spectre_config Keyword.put(@spectre_config, :turn_handlers, handlers)
+    end
+  end
+
+  @doc "Adds an ordered handler before ordinary routing; foreground pending has precedence."
+  defmacro pre_route_handler(handler, opts \\ []) do
+    quote do
+      turn_handler(unquote(handler), unquote(opts))
+    end
+  end
+
+  @doc "Replaces or disables the pre-route handler pipeline."
+  defmacro pre_route_handlers(handlers) do
+    quote do
+      turn_handlers(unquote(handlers))
     end
   end
 
@@ -782,8 +821,10 @@ defmodule Spectre.Agent do
       router via: [:regex, :semantic_cache, :classifier, :embedding, :llm_classifier]
   """
   defmacro router(opts) do
-    quote bind_quoted: [opts: opts] do
-      @spectre_router Keyword.merge(@spectre_router, opts)
+    opts = opts |> eval_opts(__CALLER__) |> normalize_router_options()
+
+    quote do
+      @spectre_router Keyword.merge(@spectre_router, unquote(Macro.escape(opts)))
     end
   end
 
@@ -797,7 +838,7 @@ defmodule Spectre.Agent do
   """
   defmacro arbitrator(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
-    opts = eval_opts(opts, __CALLER__)
+    opts = opts |> eval_opts(__CALLER__) |> normalize_arbitration_options()
 
     quote do
       @spectre_router Keyword.put(
@@ -822,6 +863,25 @@ defmodule Spectre.Agent do
                         @spectre_config,
                         :embedding,
                         {unquote(module), unquote(Macro.escape(opts))}
+                      )
+    end
+  end
+
+  @doc """
+  Binds the intent example dataset used by routing and online collection.
+
+  Dataset collection remains opt-in on each route with `collect_intent: true`.
+  """
+  defmacro intent_dataset(adapter, opts \\ []) do
+    adapter = Macro.expand(adapter, __CALLER__)
+    opts = eval_opts(opts, __CALLER__)
+
+    quote do
+      @spectre_router Keyword.merge(
+                        @spectre_router,
+                        Spectre.IntentDataset.normalize_options(
+                          [intent_dataset: unquote(adapter)] ++ unquote(Macro.escape(opts))
+                        )
                       )
     end
   end
@@ -966,13 +1026,20 @@ defmodule Spectre.Agent do
   @doc """
   Declares a global route using the compact keyword `do:` form.
   """
-  defmacro interrupt(label, opts) do
-    {opts, block} = split_do!(opts)
+  defmacro interrupt(label, opts) when is_list(opts) do
+    unless Keyword.keyword?(opts),
+      do: raise(ArgumentError, "expected keyword options with do block")
+
+    {block, opts} = Keyword.pop(opts, :do)
     rule = build_rule(label, [], opts, block, __CALLER__, global?: true)
 
     quote do
       @spectre_rules unquote(Macro.escape(rule))
     end
+  end
+
+  defmacro interrupt(_label, other) do
+    raise ArgumentError, "expected keyword options with do block, got: #{inspect(other)}"
   end
 
   @doc """
@@ -1109,6 +1176,9 @@ defmodule Spectre.Agent do
       def __spectre_config__, do: unquote(Macro.escape(metadata.config))
 
       @doc false
+      def __spectre_server__, do: unquote(Keyword.get(metadata.config, :server))
+
+      @doc false
       def __spectre_router__, do: unquote(Macro.escape(metadata.router))
 
       @doc false
@@ -1166,7 +1236,21 @@ defmodule Spectre.Agent do
       |> Enum.map(&compile_rule_constraints!(&1, extensions))
 
     base_config = Module.get_attribute(module, :spectre_config) || []
-    config = Extension.merge_agent_config(base_config, extensions)
+    extension_defaults = Extension.merge_agent_config([], extensions)
+    config = Keyword.merge(extension_defaults, base_config)
+
+    config =
+      if Module.get_attribute(module, :spectre_named_classifiers) do
+        classifier =
+          Keyword.merge(
+            Keyword.get(extension_defaults, :classifier, []),
+            Keyword.get(base_config, :classifier, [])
+          )
+
+        Keyword.put(config, :classifier, classifier)
+      else
+        config
+      end
 
     router = Module.get_attribute(module, :spectre_router) || []
     router = RouterAdapterCompiler.compile_router!(module, router, @consumed_rule_option_keys)
@@ -1264,7 +1348,7 @@ defmodule Spectre.Agent do
   @spec normalize_arbitrator(module() | {module(), keyword()}) :: {module(), keyword()}
   defp normalize_arbitrator({module, arbitrator_opts})
        when is_atom(module) and is_list(arbitrator_opts) do
-    {module, arbitrator_opts}
+    {module, normalize_arbitration_options(arbitrator_opts)}
   end
 
   defp normalize_arbitrator(module) when is_atom(module), do: {module, []}
@@ -1347,9 +1431,26 @@ defmodule Spectre.Agent do
     end
   end
 
-  @spec parse_flow_rules([atom()], keyword(), Macro.t(), Macro.Env.t(), [Operation.t()]) ::
+  @spec parse_flow_rules(
+          [atom()],
+          keyword(),
+          Macro.t(),
+          Macro.Env.t(),
+          [Operation.t()],
+          keyword()
+        ) ::
           [map()]
-  defp parse_flow_rules(path, flow_opts, block, caller, inherited_injections) do
+  defp parse_flow_rules(
+         path,
+         flow_opts,
+         block,
+         caller,
+         inherited_injections,
+         inherited_defaults \\ []
+       ) do
+    {local_defaults, flow_opts} = Keyword.pop(flow_opts, :defaults, [])
+    defaults = Keyword.merge(inherited_defaults, local_defaults)
+
     {injection_calls, rule_calls} =
       block
       |> calls()
@@ -1359,21 +1460,24 @@ defmodule Spectre.Agent do
       inherited_injections ++ Enum.map(injection_calls, &parse_flow_injection(&1, caller, path))
 
     Enum.flat_map(rule_calls, fn
-      {:on, _meta, [label, opts]} ->
-        {opts, block} = split_do!(opts)
-        [flow_rule(label, path, opts, block, caller, injections, flow_opts)]
+      {:on, _meta, [label]} ->
+        [flow_rule(label, path, [], nil, caller, injections, flow_opts, defaults)]
+
+      {:on, _meta, [label, opts]} when is_list(opts) ->
+        {block, opts} = Keyword.pop(opts, :do)
+        [flow_rule(label, path, opts, block, caller, injections, flow_opts, defaults)]
 
       {:on, _meta, [label, opts, [do: block]]} ->
-        [flow_rule(label, path, opts, block, caller, injections, flow_opts)]
+        [flow_rule(label, path, opts, block, caller, injections, flow_opts, defaults)]
 
       {:flow, _meta, [name, opts]} when is_atom(name) ->
         {opts, nested_block} = split_do!(opts)
         nested_opts = Keyword.merge(flow_opts, eval_opts(opts, caller))
-        parse_flow_rules(path ++ [name], nested_opts, nested_block, caller, injections)
+        parse_flow_rules(path ++ [name], nested_opts, nested_block, caller, injections, defaults)
 
       {:flow, _meta, [name, opts, [do: nested_block]]} when is_atom(name) ->
         nested_opts = Keyword.merge(flow_opts, eval_opts(opts, caller))
-        parse_flow_rules(path ++ [name], nested_opts, nested_block, caller, injections)
+        parse_flow_rules(path ++ [name], nested_opts, nested_block, caller, injections, defaults)
 
       other ->
         raise ArgumentError, "invalid flow declaration: #{Macro.to_string(other)}"
@@ -1387,12 +1491,15 @@ defmodule Spectre.Agent do
           Macro.t(),
           Macro.Env.t(),
           [Operation.t()],
+          keyword(),
           keyword()
         ) ::
           map()
-  defp flow_rule(label, path, opts, block, caller, injections, flow_opts) do
+  defp flow_rule(label, path, opts, block, caller, injections, flow_opts, defaults) do
+    opts = Keyword.merge(defaults, eval_opts(opts, caller))
+
     label
-    |> build_rule(path, opts, block, caller, global?: false)
+    |> build_rule_from_opts(path, opts, block, caller, global?: false)
     |> Map.put(:injections, injections)
     |> Map.put(:flow_opts, flow_opts)
   end
@@ -1467,13 +1574,18 @@ defmodule Spectre.Agent do
   @spec build_rule(atom(), [atom()], Macro.t(), Macro.t(), Macro.Env.t(), keyword()) :: map()
   defp build_rule(label, flow_path, opts_ast, block, caller, extra) do
     opts = eval_opts(opts_ast, caller)
+    build_rule_from_opts(label, flow_path, opts, block, caller, extra)
+  end
+
+  defp build_rule_from_opts(label, flow_path, opts, block, caller, extra) do
     reject_training_opts!(opts)
+    opts = normalize_rule_options(opts)
 
     rule = %{
       label: label,
       flow: List.last(flow_path),
       flow_path: flow_path,
-      handler: parse_handler(block, caller),
+      handler: route_handler(block, flow_path, label, caller),
       regex: List.wrap(Keyword.get(opts, :regex, [])),
       bag: examples_from_opts(opts, :bag),
       jaro: examples_from_opts(opts, :jaro),
@@ -1488,6 +1600,147 @@ defmodule Spectre.Agent do
     }
 
     RouterAdapterCompiler.preflight_rule_data!(rule, definition_scope(caller.module))
+  end
+
+  defp route_handler(nil, path, label, caller) do
+    config = Module.get_attribute(caller.module, :spectre_config) || []
+    kind = Module.get_attribute(caller.module, :spectre_kind)
+    server = Keyword.get(config, :server)
+
+    if server != nil and (not is_atom(server) or server in [true, false]) do
+      raise ArgumentError, "invalid_server: #{inspect(server)}"
+    end
+
+    if server || kind == :skill do
+      {:server, {path, label}, []}
+    else
+      raise ArgumentError,
+            "expected do block; bodyless on declarations require an Agent server: binding"
+    end
+  end
+
+  defp route_handler(block, _path, _label, caller), do: parse_handler(block, caller)
+
+  defp normalize_rule_options(opts) do
+    opts
+    |> rename_option(:semantic_examples, :embedding)
+    |> rename_option(:collect_intent, :learn)
+    |> normalize_dataset_lookup()
+    |> rename_option(:match_with, :via)
+    |> Keyword.update(:via, [], &normalize_strategies/1)
+    |> validate_boolean_option!(:learn)
+    |> validate_boolean_option!(:protected)
+  end
+
+  defp normalize_dataset_lookup(opts) do
+    case Keyword.fetch(opts, :dataset_lookup) do
+      {:ok, enabled?} ->
+        # Legacy cache: false excludes built-in examples but still accepts a
+        # custom adapter's label. Keep the explicit lookup opt-out distinct.
+        opts
+        |> rename_option(:dataset_lookup, :cache)
+        |> Keyword.put(:dataset_lookup, enabled?)
+
+      :error ->
+        opts
+    end
+  end
+
+  defp normalize_router_options(opts) do
+    opts
+    |> rename_option(:strategies, :via)
+    |> normalize_router_strategies()
+    |> rename_option(:log_decisions, :classification_log?)
+    |> rename_option(:hard_short_circuit, :hard_short_circuit?)
+    |> flatten_option_group(:terminal,
+      intents: :terminal_labels,
+      min_confidence: :high_confidence_threshold
+    )
+    |> normalize_arbitration_options()
+    |> normalize_router_arbitrator()
+  end
+
+  defp normalize_router_strategies(opts) do
+    case Keyword.fetch(opts, :via) do
+      {:ok, strategies} -> Keyword.put(opts, :via, normalize_strategies(strategies))
+      :error -> opts
+    end
+  end
+
+  defp normalize_router_arbitrator(opts) do
+    case Keyword.fetch(opts, :arbitrator) do
+      {:ok, arbitrator} -> Keyword.put(opts, :arbitrator, normalize_arbitrator(arbitrator))
+      :error -> opts
+    end
+  end
+
+  defp normalize_arbitration_options(opts) do
+    opts
+    |> rename_option(:on_conflict, :conflict)
+    |> rename_option(:on_no_decision, :no_decision)
+    |> flatten_option_group(:local_classifier,
+      min_score: :classifier_accept,
+      min_margin: :classifier_margin
+    )
+    |> flatten_option_group(:embedding,
+      min_score: :embedding_accept,
+      min_margin: :embedding_margin
+    )
+    |> flatten_option_group(:bag, min_score: :bag_accept)
+    |> flatten_option_group(:jaro, min_score: :jaro_accept)
+  end
+
+  defp flatten_option_group(opts, group, fields) do
+    case Keyword.pop(opts, group) do
+      {nil, opts} -> opts
+      {values, opts} when is_list(values) -> flatten_group_values(opts, group, fields, values)
+      {invalid, _opts} -> raise ArgumentError, "invalid #{group} options: #{inspect(invalid)}"
+    end
+  end
+
+  defp flatten_group_values(opts, group, fields, values) do
+    unless Keyword.keyword?(values), do: raise(ArgumentError, "#{group} options must be keywords")
+
+    Enum.reduce(values, opts, fn {key, value}, acc ->
+      case Keyword.fetch(fields, key) do
+        {:ok, legacy} -> rename_option([{key, value} | acc], key, legacy)
+        :error -> raise ArgumentError, "unknown #{group} option: #{inspect(key)}"
+      end
+    end)
+  end
+
+  defp normalize_strategies(strategies) do
+    strategies
+    |> List.wrap()
+    |> Enum.map(fn
+      :intent_dataset -> :semantic_cache
+      :local_classifier -> :classifier
+      strategy -> strategy
+    end)
+  end
+
+  defp rename_option(opts, name, legacy) do
+    case Keyword.fetch(opts, name) do
+      {:ok, value} ->
+        if Keyword.has_key?(opts, legacy) and Keyword.fetch!(opts, legacy) != value do
+          raise ArgumentError, "conflicting options #{inspect(name)} and #{inspect(legacy)}"
+        end
+
+        opts |> Keyword.delete(name) |> Keyword.put(legacy, value)
+
+      :error ->
+        opts
+    end
+  end
+
+  defp validate_boolean_option!(opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} when not is_boolean(value) ->
+        raise ArgumentError, "#{key}: accepts only true or false, got: #{inspect(value)}"
+
+      _ ->
+        opts
+    end
   end
 
   @spec definition_scope(module()) :: Definition.scope()

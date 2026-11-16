@@ -1,0 +1,16 @@
+defmodule <%= @module %>Test do
+  use ExUnit.Case, async: true
+
+  test "routes input to the application Server" do
+    assert <%= @module %>.__spectre_server__() == <%= @server %>
+    assert {:ok, {:support, :greeting}, _routing} =
+             Spectre.Server.Router.route(<%= @module %>, "hello")
+
+    server = start_supervised!({Spectre.Server,
+      agent: <%= @module %>, identity: %{user_id: "example"}, consumer: self()})
+
+    assert {:ok, interaction} = Spectre.Server.input(server, "hello")
+    assert_receive {Spectre.Server, ^server, {:response, ^interaction, "Hello!", metadata}}
+    assert is_binary(metadata[:message_id])
+  end
+end

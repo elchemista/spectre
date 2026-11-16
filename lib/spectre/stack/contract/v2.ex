@@ -108,32 +108,26 @@ defmodule Spectre.Stack.Contract.V2 do
   def from_compiled(%CompiledDefinition{} = definition, %Canonical{} = canonical, opts \\ [])
       when is_list(opts) do
     with {:ok, compiled_modules} <- compiled_modules(definition) do
+      skills = skill_definitions(canonical)
+
       opts =
         opts
-        |> Keyword.update(:owner_modules, compiled_modules, fn modules ->
-          Enum.uniq(compiled_modules ++ List.wrap(modules))
-        end)
-        |> Keyword.put_new(:prompt_fragment_digests, prompt_digests(canonical))
-        |> Keyword.update(:contract_refs, canonical_contract_refs(canonical), fn refs ->
-          Enum.uniq(canonical_contract_refs(canonical) ++ List.wrap(refs))
-        end)
-        |> Keyword.update(:model_profile_refs, model_profile_refs(canonical), fn refs ->
-          Enum.uniq(model_profile_refs(canonical) ++ List.wrap(refs))
-        end)
-        |> Keyword.update(
+        |> prepend_option(:owner_modules, compiled_modules)
+        |> Keyword.put_new(:prompt_fragment_digests, prompt_digests(canonical, skills))
+        |> prepend_option(:contract_refs, canonical_contract_refs(canonical, skills))
+        |> prepend_option(:model_profile_refs, model_profile_refs(skills))
+        |> prepend_option(
           :projection_generators,
-          projection_generators(canonical),
-          fn generators ->
-            Enum.uniq_by(
-              projection_generators(canonical) ++ List.wrap(generators),
-              &{&1.id, &1.version}
-            )
-          end
+          projection_generators(canonical, skills),
+          &Enum.uniq_by(&1, fn generator -> {generator.id, generator.version} end)
         )
 
       from_v1(definition.stack, opts)
     end
   end
+
+  defp prepend_option(opts, key, defaults, unique \\ &Enum.uniq/1),
+    do: Keyword.update(opts, key, defaults, &unique.(defaults ++ List.wrap(&1)))
 
   @doc "Returns portable inspection data for the adapted contract."
   @spec to_data(t()) :: map()
@@ -305,11 +299,10 @@ defmodule Spectre.Stack.Contract.V2 do
       else: {:ok, []}
   end
 
-  @spec prompt_digests(Canonical.t()) :: [String.t()]
-  defp prompt_digests(canonical) do
+  @spec prompt_digests(Canonical.t(), [SkillDefinition.t()]) :: [String.t()]
+  defp prompt_digests(canonical, skills) do
     nested =
-      canonical
-      |> skill_definitions()
+      skills
       |> Enum.flat_map(&SkillDefinition.prompt_fragments/1)
       |> Enum.map(& &1.digest)
 
@@ -330,10 +323,10 @@ defmodule Spectre.Stack.Contract.V2 do
     |> Enum.sort()
   end
 
-  @spec projection_generators(Canonical.t()) :: [map()]
-  defp projection_generators(canonical) do
+  @spec projection_generators(Canonical.t(), [SkillDefinition.t()]) :: [map()]
+  defp projection_generators(canonical, skills) do
     canonicals = [
-      canonical | Enum.map(skill_definitions(canonical), &SkillDefinition.canonical/1)
+      canonical | Enum.map(skills, &SkillDefinition.canonical/1)
     ]
 
     canonicals
@@ -364,21 +357,19 @@ defmodule Spectre.Stack.Contract.V2 do
     end
   end
 
-  @spec canonical_contract_refs(Canonical.t()) :: [String.t()]
-  defp canonical_contract_refs(canonical) do
+  @spec canonical_contract_refs(Canonical.t(), [SkillDefinition.t()]) :: [String.t()]
+  defp canonical_contract_refs(canonical, skills) do
     operation_refs =
-      canonical
-      |> skill_definitions()
+      skills
       |> Enum.flat_map(&SkillDefinition.operation_refs/1)
       |> Enum.map(&("spectre.operation:" <> stable_ref(&1)))
 
     Enum.sort(Enum.uniq(code_contract_refs(canonical) ++ operation_refs))
   end
 
-  @spec model_profile_refs(Canonical.t()) :: [String.t()]
-  defp model_profile_refs(canonical) do
-    canonical
-    |> skill_definitions()
+  @spec model_profile_refs([SkillDefinition.t()]) :: [String.t()]
+  defp model_profile_refs(skills) do
+    skills
     |> Enum.flat_map(&SkillDefinition.works/1)
     |> Enum.flat_map(&Program.profile_refs/1)
     |> Enum.uniq()

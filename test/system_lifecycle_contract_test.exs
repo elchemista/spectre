@@ -332,6 +332,8 @@ defmodule SpectreSystemLifecycleContractTest do
                     ^replacement_collection_owner, _reason}
 
     new_owner = eventually(fn -> replacement_pid(Owner, old_owner) end)
+    # Registration precedes init completion: synchronize before inspecting its ETS tables.
+    :sys.get_state(new_owner)
     assert :ets.info(Learned, :owner) == new_owner
     assert_application_supervisor(supervisor)
 

@@ -73,7 +73,7 @@ defmodule Spectre.Instance.RunExecution do
   @spec dispatch(Run.t(), term(), keyword(), atom(), GenServer.from(), InstanceState.t()) ::
           {:reply, term(), InstanceState.t()} | {:noreply, InstanceState.t()}
   def dispatch(run, command, opts, projection, from, data) do
-    with :ok <- owner_guard(data, :effect_dispatch),
+    with :ok <- Owner.assert_current(data, :effect_dispatch),
          :ok <- Events.authorize(data, run.definition_ref, :dispatch),
          %Invocation{} = invocation <- run.waiting,
          false <- RunQueue.active?(data, run.id),
@@ -676,7 +676,7 @@ defmodule Spectre.Instance.RunExecution do
     if entry.state_revision == data.state.revision or state_neutral_step?(entry, run) do
       previous = Map.get(data.runs, run.id)
 
-      with :ok <- owner_guard(data, :commit),
+      with :ok <- Owner.assert_current(data, :commit),
            projected <- project(data, run, entry),
            {:ok, prepared} <-
              Receipts.prepare_run(
@@ -806,7 +806,7 @@ defmodule Spectre.Instance.RunExecution do
   def record_started_conversation(data, _entry, _run), do: data
 
   defp apply_returned_run(data, %Run{} = run, entry) do
-    with :ok <- owner_guard(data, :commit) do
+    with :ok <- Owner.assert_current(data, :commit) do
       next = project(data, run, entry)
       Commit.flow_state(next, next.state, run)
     end
@@ -1072,10 +1072,6 @@ defmodule Spectre.Instance.RunExecution do
     do: Map.get(entry, :commit_state?, not Map.get(entry, :internal?, false))
 
   defp portable_failure(reason), do: InferenceFailure.sanitize(reason)
-
-  defp owner_guard(data, operation) do
-    Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
-  end
 
   defp emit(event, data, measurements, metadata),
     do: InstanceTelemetry.emit(event, data, measurements, metadata)

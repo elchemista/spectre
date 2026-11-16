@@ -249,8 +249,5 @@ defmodule Spectre.Skill.Runtime.Loader do
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
   @spec shape(term()) :: shape()
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:list, :map, :tuple])
 end

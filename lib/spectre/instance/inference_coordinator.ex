@@ -112,7 +112,7 @@ defmodule Spectre.Instance.InferenceCoordinator do
           map()
         ) :: InstanceState.t()
   def commit_selection(data, invocation, run, prepared, entry) do
-    with :ok <- owner_guard(data, :commit),
+    with :ok <- Owner.assert_current(data, :commit),
          selected <- mark_selection_receipted(run),
          projected <- RunExecution.project(data, selected, entry),
          {:ok, prepared_receipt} <-
@@ -1222,10 +1222,6 @@ defmodule Spectre.Instance.InferenceCoordinator do
       {:inference_terminal, ownership, resume},
       prepared
     )
-  end
-
-  defp owner_guard(data, operation) do
-    Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
   end
 
   defp emit(event, data, measurements, metadata),

@@ -1,299 +1,130 @@
-# Architecture
+# Architecture: Stack, Agent, Server and GAM
 
-Spectre separates conversational decisions from application authority. An
-agent may classify input and propose work, but only deterministic lifecycle and
-policy code can make that work executable. The host application remains the
-owner of storage, credentials, authorization, model clients, and side effects.
+Spectre 0.4 preserves the recognition and extension capabilities of 0.3 while
+separating declarations, conversational ownership and authority. This is the
+AgentServer architecture. The [Instance architecture](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/ARCHITECTURE_0_3.md)
+remains a compatibility path, not a description of the new owner.
 
-## Canonical Agent state
+## Responsibilities
 
-The `0.2.0` architecture keeps one Agent Instance as the local canonical state
-owner while allowing slow operations to run elsewhere. Its internal canonical
-state is split into typed Flow, Work, Vigil, Directive, control, correlation,
-event, inference control/progress, and receipt-outbox sections. Every accepted
-change advances one global revision and the revision of only the sections it
-replaces.
+| Layer | Owns | Does not establish |
+| --- | --- | --- |
+| `Spectre.Stack` | Installed packages, immutable tool descriptors, provider bindings, resource declarations | Business permission to execute a proposed effect |
+| `Spectre.Agent` | Classifiers, router strategies, flow/intent metadata, dataset collection settings | Mutable conversation state or execution of route bodies |
+| `Spectre.Skill` | Reusable scoped routes and an optional Server binding; mount-local allowed operations | A separate mandate or automatically granted authority |
+| Application `Spectre.Server` module | `handle_flow`, `handle_result`, `handle_pending`, ordinary OTP callbacks | Independent ownership outside the runtime process |
+| `Spectre.Server.Runtime` | One GenServer owner, context, command outbox, workers, streaming, pending intentions, checkpoints and automatic GAM integration | Authority inferred from a model label or arbitrary “yes” |
+| `Spectre.GAM` kernel | Scoped observations, admission, recorded Acts, attempts/outcomes, consent evidence and unresolved duties | Proof that an external effect succeeded just because it was admitted |
+| Host application | Authenticated identity, allowed operations, business policy, registered effect adapters, storage and independent real-world review | Automatic safety for arbitrary direct I/O in application callbacks |
 
-An immutable snapshot declares separate read and write scopes. A change based
-on an older global revision may still commit when every section it writes is
-unchanged; a stale change to an already modified section is rejected. A
-read-only snapshot cannot produce a state change. Accepted changes are
-correlated, journaled, idempotent by change identifier, and included in a
-portable checkpoint with their per-section revision fences.
+Stack resources are supervised separately; that does not create a second owner
+of the conversation. Your Server module is a behaviour implementation delegated
+to by the runtime in the same process. It can use `handle_info` and other OTP
+callbacks without taking over framework message dispatch.
 
-`Spectre.State` and `Spectre.Run` remain the conversational state and
-continuation contracts. Work and Vigil are separate operational domains owned
-by the same Instance; they do not overload or rename Run.
+## Agent and Skill process tree
 
-Canonical persistence uses a strict, versioned JSON codec and an optional
-compare-and-swap store. Writes are serialized and coalesced outside the
-GenServer mailbox. An adapter that cannot determine whether a write committed
-returns an ambiguous result; the Instance fences further automatic writes
-until explicit reconciliation loads and validates the stored checkpoint.
+![Architecture: Stack, Agent, Server and GAM: Agent and Skill process tree](assets/architecture-1.svg)
 
-## Operational loops
+[Diagram source](assets/architecture-1.mmd).
 
-```text
-Flow / host command
-        │
-        ▼
-Spectre.Instance ── canonical Work/Vigil/controller + Control
-        │
-        ├─ creates revision-fenced snapshot and Attempt
-        │
-        ▼
-temporary Runner ── one registered operation ──► Progress / Result
-        │                                           │
-        └──────────────── terminates ◄───────────────┘
-                                                    │
-                                                    ▼
-                                           Instance validates,
-                                           reduces, and commits
-```
+A mounted Skill with `server:` receives its own GenServer, workers, assigns,
+streaming, pending intentions and checkpoint. Matching its route delegates to
+that process. Its `handle_flow` receives the local `{flow, intent}`; `ctx.skill`
+and the authenticated invocation Evidence retain the mount identity. Skills
+without `server:` keep their declarative routing behavior in the Agent Server.
 
-The Runner owns no canonical state and never decides semantic retry. The
-Instance validates loop id, attempt id, epoch, fencing token, context revision,
-control generation, and trigger generation before applying Progress or Result.
-Every subsequent operation receives a new snapshot, Attempt, and Runner.
+The root stays responsive while Skill workers run. The GAM Domain orders
+admission according to its existing laws; process concurrency never grants
+permission. `governed:` restricts the mount's available host operation references.
+Confirmation controls address both the mount and `{pending.id, pending.revision}`.
 
-Work, Vigil, and authorized external controllers implement one deterministic
-controller contract. Operations are immutable catalog entries resolved from
-code after restart. Waiting loops retain data and timers, not live Runners.
-Side effects declare whether they are idempotent, reconcilable, or
-non-idempotent so a crash cannot be mistaken for proof that nothing happened.
+The root creates the GAM integration once. Each Skill receives that same pinned
+connection: there is no per-Skill Domain, copied ledger, new mandate or manual
+ingress to implement. Shared governance does not merge the Servers' local state
+or pending intentions. Every proposal retains its mount provenance; one Skill's
+consent cannot approve another Skill's operation. Timer closure is recorded in
+the same Domain and cannot erase unresolved Duties.
 
-Control commands are canonical transitions. A safe pause reaches a boundary;
-an explicitly authorized immediate pause fences the active attempt without
-claiming to undo external work. Updates pass through the controller's declared
-schema and fields, advance the context revision, and invalidate stale results.
-A stop produces a terminal outcome and cannot be resumed.
+See [Skills](SKILLS.md) for delegation, native OTP callbacks, recorded provenance,
+uncertain dispatch recovery and the cancellation contract, or the
+[LiveView showcase](DEMO.md) to exercise this tree interactively.
 
-Committed operational events may be observed locally or routed back through
-the existing Flow router. Event significance, visibility, delivery
-authorization, and transport remain separate decisions. See
-[Work, Vigil, and the operational runtime](OPERATIONS.md).
+## Input and execution loop
 
-## One turn
+![Architecture: Stack, Agent, Server and GAM: Input and execution loop](assets/architecture-2.svg)
 
-```text
-host input
-  │
-  ▼
-Input pipeline ──► normalized Spectre.Input
-  │
-  ▼
-Runtime restore ──► Spectre.State + recalled memory
-  │
-  ├─ open policy ──► deterministic Policy.Matcher
-  │
-  └─ normal turn ──► ordered turn handlers
-                       │
-                       ├─ claimed ──► typed integration reply
-                       │
-                       └─ continue ──► router plugs ──► candidates ──► arbitrator
-                                              │
-                                              ▼
-                                         Spectre.Route
-                                              │
-                                              ▼
-                                            Runner
-                   ┌──────────────┬────────────┼──────────────┐
-                   ▼              ▼            ▼              ▼
-                 reply           run          ask           action
-                                                │              │
-                                                ▼              ▼
-                                          Prompt.Plan      staged Effect
-                                                │              │
-                                                ▼              ▼
-                                      inference Invocation policy/lifecycle
-                   └──────────────┴────────────┬──────────────┘
-                                              ▼
-                                        Spectre.Result
-                                              │
-                                    persist state, then memory
-```
+[Diagram source](assets/architecture-2.mmd).
 
-Inside an Instance, reaching an inference Invocation releases the
-conversational Move. Selection and dispatch intent are committed before a
-one-shot worker or streaming session starts. The provider result returns as a
-typed, correlated receipt; only then does the Runtime resume deterministic
-post-processing against current State.
+A foreground pending input is checked before ordinary routing. Changing topics
+can suspend it and route the current input. Background actor waits do not
+capture the next user message. An unresolved router result reaches
+`handle_flow(:unmatched, input, ctx)` with its reason in `ctx.routing`.
 
-Streaming adds a bounded data plane, not a second state owner:
+Helpers append commands to the context. The runtime validates portable state
+and command contracts before acquisition; workers receive a service projection,
+not mutable authority over the owner. Result tags identify continuations.
+Handlers must distinguish success, refusal, errors and uncertain outcomes.
 
-```text
-consumer pull ──► StreamSession (:gen_statem) ──► provider transport credit
-       ▲                    │
-       │                    ├── provisional fenced deltas (direct)
-       │                    └── text-free heartbeat ──► Instance commit/events
-       │
-       └── terminal Result after Instance receipt + Run commit
-```
+## Recognition stays flexible
 
-The live stream handle and raw deltas are ephemeral. Run v3 retains only the
-portable inference continuation and bounded recovery coordinates. Steering
-ends the old epoch and creates a successor; restart never silently joins two
-streams.
+The Agent keeps regex, IntentDataset lookup, embedding similarity, local and
+LLM classifiers, and custom router adapters. A classifier may use a distinct
+model or application implementation. `collect_intent` collects labelled examples
+for lookup/training; it is not a synonym for vector indexing or model training.
+Text-only examples stay in the dataset. Only valid compatible embeddings enter
+the semantic vector index. See [Routing](ROUTING.md) and [Training](TRAINING.md).
 
-`Spectre.Runtime.start/3` creates the logical continuation, while `advance/2`
-re-resolves memory and runtime dependencies and stops at the first Invocation,
-public boundary, completion, or error. `resume/3` accepts only a reference
-fenced to that Run revision.
+Classification and ordinary generation are cognitive operations by default.
+GAM does not require a user-consent ceremony just because routing calls a model.
+The host's declared governed surface remains decisive: protected-data access,
+disclosure or model/resource use can themselves be governed consequences.
+Installing a model is developer configuration, not a mandate for every action
+its output might propose. See [GAM](GAM.md).
 
-`Spectre.turn/3` projects that first observable point into a `Spectre.Turn`.
-The Turn exposes a `Spectre.Run.Ref`, not the continuation itself. It does not
-execute a staged effect.
+## Installed tools share the loop
 
-```text
-start ──► {:continue, Run}
-              │
-           advance
-              ├──► {:await, Invocation, Run}
-              ├──► {:boundary, Boundary, Run}
-              ├──► {:complete, Result, Run}
-              └──► {:error, reason, Run}
-```
+An installable package may declare `tools/1`. The Server compiler generates
+helpers from the chosen Stack's closed descriptors. These helpers are not
+functions exported by the satellite package. Runtime adapters normalize requests
+and resolve named Stack resources; `ctx` contains no hidden initialized Kinetic
+client. Cognitive operations return results, while governed operations normalize
+to proposals before acquisition and follow the same GAM boundary as `propose`.
 
-## One vocabulary, separate execution models
+Kinetic interprets consolidated model AL into proposals. Mnemonic can recall
+and propose bound writes. Lens observes pages and can propose bound actions.
+Directive reduces portable state instead of running a second hidden loop.
+See the complete [tool contract and package matrix](STACK_TOOLS.md).
 
-The common semantic boundary is `input -> result -> turn decision`. It is not
-a requirement that every participant use the same callback or own the same
-state:
+## Streaming, pending state and recovery
 
-| Participant | Role in a turn |
-| --- | --- |
-| Agent module | evaluates one stateless/local call through `Spectre.turn/3` |
-| `Spectre.Instance` | owns the ordered State and multiple Runs for one `AgentRef + Subject` |
-| `Spectre.Session` | serializes calls and retains the latest Spectre state |
-| `GenServer` or `gen_statem` | calls or adapts the local turn API while retaining its native OTP protocol |
-| `Spectre.Turn.Handler` | optionally claims an already-active dialogue before routing |
-| SpectreDirective | may describe a durable mission/plan, but does not replace or mutate the core Run reducer |
-| SpectrePulse | owns remote envelopes, correlation, task state, and delivery |
+Streaming can expose provisional preview events while generation is in progress.
+Preview text is not an admitted proposal or final response. Only the consolidated
+model result enters planning; internal AL is retained for durable interpretation
+without leaking it as cleaned public text.
 
-This distinction matters under failure. A local handler timeout, an OTP process
-restart, a stale durable snapshot, and an ambiguous network delivery require
-different recovery rules even though they eventually produce or consume the
-same turn decisions.
+Consent is correlated with its presentation, candidate and original response.
+A topic change can suspend it; resumption uses a fresh presentation. Absolute
+expiry/closure schedules survive supported durable recovery. Expiry is a
+recorded lifecycle fact, not erasure of history or proof of no effect.
+See [Pending lifecycle](PENDING_LIFECYCLE.md).
 
-## Ownership
+Server checkpoints, command journals and GAM facts have different purposes.
+A checkpoint records the owner's durable continuation; the GAM journal permits
+reconciliation with exact recorded acts/outcomes. Tool descriptors and adapter
+fingerprints fence replay after code/configuration changes. Safe cognitive work
+may be replayable; uncertain nonrepeatable work must not be blindly repeated.
+An ambiguous external outcome remains unresolved until evidence closes it.
 
-| Concern | Owner |
-| --- | --- |
-| Agent declarations | `Spectre.Agent`, `Spectre.Skill`, `Spectre.Definition` |
-| Input normalization | `Spectre.Input.Pipeline` |
-| Evidence collection | router plugs |
-| Final route choice | `Spectre.Router.Arbitrator` |
-| State transitions | `Spectre.Lifecycle` |
-| Logical continuation and step fencing | `Spectre.Run`, `Spectre.Runtime` |
-| Subject-scoped Run ownership and scheduling | `Spectre.Instance` |
-| Per-Run Effect and Awaitable ownership inside an Instance | `run_id` on lifecycle values |
-| Exact external-identity resolution | `Spectre.Subject.Registry` |
-| Policy text/label matching | `Spectre.Policy.Matcher` |
-| Prompt trust and composition | `Spectre.Prompt.Plan` |
-| Provider isolation and deadlines | `Spectre.Provider.Call` |
-| Inference selection, attempt lifecycle and terminal commit | `Spectre.Instance` + `Spectre.Run` |
-| Streaming transport normalization | `Spectre.Inference.StreamAdapter` |
-| Streaming demand and provisional delivery | internal supervised `:gen_statem` session |
-| Boundary evidence delivery | `Spectre.Receipt.Sink` (host adapter), sequenced by the Instance |
-| Optional ownership of a complete normal turn | `Spectre.Turn.Handler` |
-| Action capability invocation | `Spectre.ActionDispatcher` |
-| Extension-owned effect invocation | `Spectre.Effect.Executor` |
-| Effect terminal transition | `Spectre.Execution` |
-| Durable storage and authorization | host application |
+Native OTP callbacks remain trusted host code. Direct calls to external APIs
+from them can bypass the helper pipeline; no Elixir macro can turn that code
+into a security sandbox. Governed executors and application boundaries must be
+connected deliberately by the host.
 
-No model adapter, classifier, router plug, or action module should mutate
-Spectre state directly.
+## Migration boundary
 
-## State and transition model
-
-`Spectre.State` is the authoritative snapshot. `Spectre.Result` is a receipt
-for one runtime operation; arrays inside a result do not override newer state.
-`Spectre.Transition` records one accepted lifecycle command.
-
-Inside a `Spectre.Instance`, pending Effects and open policy Awaitables are
-scoped by Run id. Several Runs may hold independent boundaries in the same
-authoritative State, while the Instance serializes commits and capability
-execution. Stateless Runtime calls and Sessions omit this ownership field and
-retain the single pending lifecycle.
-
-The protected-action path is:
-
-```text
-pending
-  └─ policy required ─► waiting_policy
-                          ├─ accept ─► approved ─► completed | failed
-                          ├─ reject ─► cancelled
-                          ├─ attempts exhausted ─► cancelled
-                          └─ expire/cancel ─► cancelled
-```
-
-Approval and execution are separate commits. With a compare-and-set state
-adapter, Spectre persists `:approved`, invokes the capability once, and then
-persists its terminal result. An uncertain second commit is returned as
-ambiguous data; the runtime does not guess whether an external side effect
-should be retried.
-
-## Trust boundaries
-
-### Untrusted or probabilistic
-
-- user text and metadata supplied by an external host;
-- classifier, embedding, semantic-cache, and LLM replies;
-- prompt context returned by a dynamic provider;
-- provisional inference deltas and normalized provider events;
-- persisted payloads before codec validation.
-
-### Deterministic runtime authority
-
-- compiled rule and policy definitions;
-- policy resolution labels declared in those definitions;
-- lifecycle commands and state revisions;
-- registered action names and Skill bindings;
-- prompt operation target/trust rules;
-- inference budgets, cancellation/steering revisions, and receipt fences.
-
-### Host authority
-
-- authentication and authorization;
-- durable state and idempotency records;
-- secrets and provider clients;
-- actual business effects;
-- delivery of replies, fallbacks, and completion receipts.
-
-## Prompt trust
-
-Static instruction and task assets remain instruction fragments. Dynamic
-providers can target only `:context`, which is trusted as data. Structured
-adapters receive a `Spectre.Prompt.Plan`; legacy adapters receive one string
-with context enclosed by explicit data markers.
-
-This prevents a dynamic provider from being promoted to an instruction by the
-Spectre API. It is not a guarantee about how a downstream model interprets
-natural language.
-
-## Extension points
-
-Spectre uses small host-owned callbacks instead of owning application
-infrastructure:
-
-- `Spectre.State.Store` for durable state;
-- memory callbacks documented in [Memory](MEMORY.md);
-- `Spectre.Journal.Store` for append-only records;
-- `Spectre.Classifier.Embedding` and classifier callbacks;
-- model functions or modules through `Spectre.LLM`;
-- bounded model streaming through `Spectre.Inference.StreamAdapter`;
-- provider-neutral boundary evidence through `Spectre.Receipt.Sink`;
-- semantic-cache adapters through `Spectre.Router.SemanticCache`;
-- external conversation owners through ordered `Spectre.Turn.Handler`
-  adapters;
-- action registries and optional SpectreKinetic planning;
-- package-scoped effect executors through `Spectre.Extension`.
-
-All provider-style callbacks execute behind documented failure and timeout
-boundaries. See [Provider Resilience](PROVIDERS.md).
-
-The handler is not a universal plugin or a wire protocol. The canonical local
-host result is `%Spectre.Turn{}` from `Spectre.turn/3`. Input transformation,
-memory, Skills, actions, telemetry, journaling, and transport retain their
-dedicated boundaries. See
-[Turn semantics and integration boundaries](INTEGRATIONS.md).
+0.4 does not remove every historical module. `Instance`, `Run`, the older
+`turn`/`execute` APIs and their documents remain for compatibility. Their
+checkpoints are not Server checkpoints and their policy DSL is not a GAM
+mandate. New applications use [Getting started](GETTING_STARTED.md); existing
+applications follow [Migration](MIGRATING_TO_0_4.md).

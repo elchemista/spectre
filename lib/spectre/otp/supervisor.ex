@@ -50,13 +50,32 @@ defmodule Spectre.Supervisor do
   @spec summon(GenServer.server(), module(), [session_option() | Spectre.Instance.option()]) ::
           DynamicSupervisor.on_start_child()
   def summon(supervisor \\ __MODULE__, agent, opts \\ []) when is_atom(agent) do
+    Code.ensure_loaded?(agent)
+
+    if function_exported?(agent, :__spectre_server__, 0) and agent.__spectre_server__() do
+      summon_server(supervisor, agent, opts)
+    else
+      case Keyword.fetch(opts, :subject) do
+        {:ok, subject} ->
+          Spectre.Instance.Registry.ensure_started(supervisor, agent, subject, opts)
+
+        :error ->
+          opts = Keyword.put(opts, :agent, agent)
+          DynamicSupervisor.start_child(supervisor, {Spectre.Session, opts})
+      end
+    end
+  end
+
+  defp summon_server(supervisor, agent, opts) do
     case Keyword.fetch(opts, :subject) do
       {:ok, subject} ->
-        Spectre.Instance.Registry.ensure_started(supervisor, agent, subject, opts)
+        Spectre.Server.Registry.ensure_started(supervisor, agent, subject, opts)
 
       :error ->
-        opts = Keyword.put(opts, :agent, agent)
-        DynamicSupervisor.start_child(supervisor, {Spectre.Session, opts})
+        DynamicSupervisor.start_child(
+          supervisor,
+          {Spectre.Server, Keyword.put(opts, :agent, agent)}
+        )
     end
   end
 

@@ -86,29 +86,22 @@ defmodule Spectre.Instance.RunQueue do
   @doc false
   @spec reply_stream_caller(InstanceState.t(), String.t(), Enumerable.t()) :: InstanceState.t()
   def reply_stream_caller(%InstanceState{} = data, run_id, stream) when is_binary(run_id) do
-    case Map.pop(data.callers, run_id) do
-      {nil, callers} ->
-        %{data | callers: callers}
-
-      {from, callers} ->
-        GenServer.reply(from, {:ok, stream})
-        %{data | callers: callers}
-    end
+    reply_registered_caller(data, run_id, {:ok, stream})
   end
 
   @doc false
   @spec reply_caller(InstanceState.t(), String.t(), term()) :: InstanceState.t()
   def reply_caller(%InstanceState{} = data, run_id, reply) when is_binary(run_id) do
-    data = data |> notify_stream_result(run_id, reply) |> InferenceCapacity.release(run_id)
+    data
+    |> notify_stream_result(run_id, reply)
+    |> InferenceCapacity.release(run_id)
+    |> reply_registered_caller(run_id, reply)
+  end
 
-    case Map.pop(data.callers, run_id) do
-      {nil, callers} ->
-        %{data | callers: callers}
-
-      {from, callers} ->
-        GenServer.reply(from, reply)
-        %{data | callers: callers}
-    end
+  defp reply_registered_caller(data, run_id, reply) do
+    {from, callers} = Map.pop(data.callers, run_id)
+    if not is_nil(from), do: GenServer.reply(from, reply)
+    %{data | callers: callers}
   end
 
   @doc false

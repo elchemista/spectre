@@ -419,14 +419,7 @@ defmodule Spectre.Skill.Definition do
           {:ok, [Fragment.t()]} | {:error, term()}
   defp runtime_fragments(fragments, publisher_ref) when is_list(fragments) do
     fragments
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {fragment, index}, {:ok, normalized} ->
-      case runtime_fragment(fragment, publisher_ref) do
-        {:ok, fragment} -> {:cont, {:ok, [fragment | normalized]}}
-        {:error, reason} -> {:halt, {:error, {:invalid_runtime_prompt_fragment, index, reason}}}
-      end
-    end)
-    |> reverse_result()
+    |> decode_entries(&runtime_fragment(&1, publisher_ref), :invalid_runtime_prompt_fragment)
     |> unique_fragments()
   end
 
@@ -510,14 +503,7 @@ defmodule Spectre.Skill.Definition do
   @spec runtime_programs(term()) :: {:ok, [Program.t()]} | {:error, term()}
   defp runtime_programs(programs) when is_list(programs) do
     programs
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {program, index}, {:ok, normalized} ->
-      case Program.new(program) do
-        {:ok, program} -> {:cont, {:ok, [program | normalized]}}
-        {:error, reason} -> {:halt, {:error, {:invalid_runtime_work, index, reason}}}
-      end
-    end)
-    |> reverse_result()
+    |> decode_entries(&Program.new/1, :invalid_runtime_work)
     |> unique_programs()
   end
 
@@ -595,15 +581,14 @@ defmodule Spectre.Skill.Definition do
     prompt_ids = Enum.map(fragments, & &1.id)
     work_ids = Enum.map(programs, & &1.id)
 
-    flows
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {flow, flow_index}, {:ok, rules} ->
-      case runtime_flow(flow, prompt_ids, operation_refs, work_ids) do
-        {:ok, flow_rules} -> {:cont, {:ok, Enum.reverse(flow_rules, rules)}}
-        {:error, reason} -> {:halt, {:error, {:invalid_runtime_flow, flow_index, reason}}}
-      end
-    end)
-    |> reverse_result()
+    with {:ok, rules} <-
+           decode_entries(
+             flows,
+             &runtime_flow(&1, prompt_ids, operation_refs, work_ids),
+             :invalid_runtime_flow
+           ) do
+      {:ok, Enum.concat(rules)}
+    end
   end
 
   defp runtime_flows(value, _fragments, _operation_refs, _programs),
@@ -631,15 +616,11 @@ defmodule Spectre.Skill.Definition do
   @spec runtime_rules([term()], term(), [term()], [term()], [String.t()]) ::
           {:ok, [map()]} | {:error, term()}
   defp runtime_rules(routes, flow, prompt_ids, operation_refs, work_ids) do
-    routes
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {route, index}, {:ok, rules} ->
-      case runtime_rule(route, flow, prompt_ids, operation_refs, work_ids) do
-        {:ok, rule} -> {:cont, {:ok, [rule | rules]}}
-        {:error, reason} -> {:halt, {:error, {:invalid_runtime_route, index, reason}}}
-      end
-    end)
-    |> reverse_result()
+    decode_entries(
+      routes,
+      &runtime_rule(&1, flow, prompt_ids, operation_refs, work_ids),
+      :invalid_runtime_route
+    )
   end
 
   @spec runtime_rule(term(), term(), [term()], [term()], [String.t()]) ::
@@ -973,18 +954,7 @@ defmodule Spectre.Skill.Definition do
 
   @spec restore_fragments([map()]) :: {:ok, [Fragment.t()]} | {:error, term()}
   defp restore_fragments(fragments) do
-    fragments
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {data, index}, {:ok, restored} ->
-      case fragment_from_data(data) do
-        {:ok, fragment} ->
-          {:cont, {:ok, [fragment | restored]}}
-
-        {:error, reason} ->
-          {:halt, {:error, {:invalid_canonical_skill_prompt_fragment, index, reason}}}
-      end
-    end)
-    |> reverse_result()
+    decode_entries(fragments, &fragment_from_data/1, :invalid_canonical_skill_prompt_fragment)
   end
 
   @spec fragment_from_data(term()) :: {:ok, Fragment.t()} | {:error, term()}
@@ -1061,12 +1031,16 @@ defmodule Spectre.Skill.Definition do
 
   @spec decode_canonical_programs([term()]) :: {:ok, [Program.t()]} | {:error, term()}
   defp decode_canonical_programs(programs) do
-    programs
+    decode_entries(programs, &Program.from_data/1, :invalid_canonical_skill_work)
+  end
+
+  defp decode_entries(entries, decode, error) do
+    entries
     |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {data, index}, {:ok, decoded} ->
-      case Program.from_data(data) do
-        {:ok, program} -> {:cont, {:ok, [program | decoded]}}
-        {:error, reason} -> {:halt, {:error, {:invalid_canonical_skill_work, index, reason}}}
+    |> Enum.reduce_while({:ok, []}, fn {entry, index}, {:ok, decoded} ->
+      case decode.(entry) do
+        {:ok, value} -> {:cont, {:ok, [value | decoded]}}
+        {:error, reason} -> {:halt, {:error, {error, index, reason}}}
       end
     end)
     |> reverse_result()
@@ -1532,9 +1506,5 @@ defmodule Spectre.Skill.Definition do
   defp reverse_result({:error, _reason} = error), do: error
 
   @spec shape(term()) :: atom()
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:list, :map, :binary, :tuple])
 end

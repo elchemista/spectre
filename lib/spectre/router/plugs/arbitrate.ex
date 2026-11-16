@@ -309,6 +309,19 @@ defmodule Spectre.Router.Plugs.Arbitrate do
     end
   end
 
+  defp unprotected_route(
+         %Spectre.Route{handler: {:server, _, opts}, rule: rule},
+         %Context{} = context
+       ) do
+    rule_opts = if rule, do: Map.get(rule, :opts, []), else: []
+    protected? = Keyword.get(opts, :protected, false) or Keyword.get(rule_opts, :protected, false)
+
+    if protected? and
+         not Keyword.get(context.opts, :semantic_learn_protected?, false),
+       do: {:skip, :protected_action},
+       else: :ok
+  end
+
   defp unprotected_route(_route, _context), do: :ok
 
   @spec unprotected_action_route(

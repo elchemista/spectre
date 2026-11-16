@@ -23,6 +23,18 @@ defmodule Spectre.Skill.Mount do
   @spec new(module(), Spectre.Definition.t(), keyword()) :: t()
   def new(module, %Spectre.Definition{kind: :skill} = definition, opts)
       when is_atom(module) and is_list(opts) do
+    case Keyword.fetch(opts, :governed) do
+      :error ->
+        :ok
+
+      {:ok, operations} when is_list(operations) ->
+        unless Enum.all?(operations, &(is_atom(&1) or is_binary(&1) or is_tuple(&1))),
+          do: raise(ArgumentError, "Skill governed: expects host operation references")
+
+      _ ->
+        raise ArgumentError, "Skill governed: expects a list of host operation references"
+    end
+
     id = Keyword.get(opts, :as, definition.id)
     bindings = opts |> Keyword.get(:bind, []) |> normalize_bindings()
 

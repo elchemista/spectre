@@ -292,47 +292,27 @@ defmodule Spectre.Instance.SkillStates do
     end)
   end
 
-  defp apply_transition(states, skill_id, :resume, _source, target, data, activated_at) do
+  defp apply_transition(states, skill_id, operation, _source, target, data, activated_at)
+       when operation in [:resume, :abandon] do
     with {:ok, entry} <- fetch_entry(states, skill_id),
-         {:ok, binding} <- unique_target_branch(entry, target, :resume) do
-      activate_selected(states, binding, data, activated_at, :branch_resumed)
+         {:ok, binding} <- unique_target_branch(entry, target, operation) do
+      transition_selected(operation, states, binding, data, activated_at)
     end
   end
 
   defp apply_transition(
          states,
          skill_id,
-         {:resume, branch_id},
+         {operation, branch_id},
          _source,
          target,
          data,
          activated_at
-       ) do
+       )
+       when operation in [:resume, :abandon] do
     with {:ok, entry} <- fetch_entry(states, skill_id),
-         {:ok, binding} <- select_target_branch(entry, branch_id, target, :resume) do
-      activate_selected(states, binding, data, activated_at, :branch_resumed)
-    end
-  end
-
-  defp apply_transition(states, skill_id, :abandon, _source, target, data, activated_at) do
-    with {:ok, entry} <- fetch_entry(states, skill_id),
-         {:ok, binding} <- unique_target_branch(entry, target, :abandon) do
-      abandon_selected(states, binding, data, activated_at)
-    end
-  end
-
-  defp apply_transition(
-         states,
-         skill_id,
-         {:abandon, branch_id},
-         _source,
-         target,
-         data,
-         activated_at
-       ) do
-    with {:ok, entry} <- fetch_entry(states, skill_id),
-         {:ok, binding} <- select_target_branch(entry, branch_id, target, :abandon) do
-      abandon_selected(states, binding, data, activated_at)
+         {:ok, binding} <- select_target_branch(entry, branch_id, target, operation) do
+      transition_selected(operation, states, binding, data, activated_at)
     end
   end
 
@@ -366,14 +346,15 @@ defmodule Spectre.Instance.SkillStates do
   defp apply_transition(
          states,
          skill_id,
-         {:fork, schema_ref, value},
+         {operation, schema_ref, value},
          source,
          target,
          data,
          activated_at
-       ) do
-    with {:ok, source} <- require_source(source, skill_id, :fork),
-         :ok <- same_fork_schema(source, schema_ref) do
+       )
+       when operation in [:fork, :migrate] do
+    with {:ok, source} <- require_source(source, skill_id, operation),
+         :ok <- transition_schema(operation, source, schema_ref) do
       create_branch(
         states,
         skill_id,
@@ -382,7 +363,7 @@ defmodule Spectre.Instance.SkillStates do
         source,
         target,
         data,
-        {activated_at, :branch_forked}
+        {activated_at, branch_event(operation)}
       )
     end
   end
@@ -390,69 +371,22 @@ defmodule Spectre.Instance.SkillStates do
   defp apply_transition(
          states,
          skill_id,
-         {:fork, source_branch_id, schema_ref, value},
+         {operation, source_branch_id, schema_ref, value},
          _source,
          target,
          data,
          activated_at
-       ) do
-    with {:ok, source} <- source_branch(states, skill_id, source_branch_id, :fork),
-         :ok <- same_fork_schema(source, schema_ref) do
-      create_branch(
+       )
+       when operation in [:fork, :migrate] do
+    with {:ok, source} <- source_branch(states, skill_id, source_branch_id, operation) do
+      apply_transition(
         states,
         skill_id,
-        schema_ref,
-        value,
+        {operation, schema_ref, value},
         source,
         target,
         data,
-        {activated_at, :branch_forked}
-      )
-    end
-  end
-
-  defp apply_transition(
-         states,
-         skill_id,
-         {:migrate, schema_ref, value},
-         source,
-         target,
-         data,
-         activated_at
-       ) do
-    with {:ok, source} <- require_source(source, skill_id, :migrate) do
-      create_branch(
-        states,
-        skill_id,
-        schema_ref,
-        value,
-        source,
-        target,
-        data,
-        {activated_at, :branch_migrated}
-      )
-    end
-  end
-
-  defp apply_transition(
-         states,
-         skill_id,
-         {:migrate, source_branch_id, schema_ref, value},
-         _source,
-         target,
-         data,
-         activated_at
-       ) do
-    with {:ok, source} <- source_branch(states, skill_id, source_branch_id, :migrate) do
-      create_branch(
-        states,
-        skill_id,
-        schema_ref,
-        value,
-        source,
-        target,
-        data,
-        {activated_at, :branch_migrated}
+        activated_at
       )
     end
   end
@@ -596,6 +530,18 @@ defmodule Spectre.Instance.SkillStates do
   defp usable_source(binding, operation),
     do:
       {:error, {:skill_state_source_unavailable, binding.branch_id, operation, binding.retention}}
+
+  defp transition_selected(:resume, states, binding, data, at),
+    do: activate_selected(states, binding, data, at, :branch_resumed)
+
+  defp transition_selected(:abandon, states, binding, data, at),
+    do: abandon_selected(states, binding, data, at)
+
+  defp transition_schema(:fork, source, schema_ref), do: same_fork_schema(source, schema_ref)
+  defp transition_schema(:migrate, _source, _schema_ref), do: :ok
+
+  defp branch_event(:fork), do: :branch_forked
+  defp branch_event(:migrate), do: :branch_migrated
 
   defp same_fork_schema(source, schema_ref) when source.state_schema_ref == schema_ref, do: :ok
 
@@ -923,11 +869,6 @@ defmodule Spectre.Instance.SkillStates do
   defp same_ref?(%DefinitionRef{} = left, %DefinitionRef{} = right),
     do: DefinitionRef.to_string(left) == DefinitionRef.to_string(right)
 
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(value) when is_integer(value), do: :integer
-  defp shape(_value), do: :other
+  defp shape(value),
+    do: Spectre.ValueShape.of(value, [:list, :map, :tuple, :binary, :atom, :integer])
 end

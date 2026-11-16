@@ -1,0 +1,13 @@
+defmodule <%= @server %> do
+  @moduledoc "Implements conversational behavior and ordinary OTP callbacks."
+  use Spectre.Server
+
+  @impl true
+  def handle_flow({:support, :greeting}, _input, ctx) do
+    respond(ctx, "Hello!")
+  end
+
+  def handle_flow(:unmatched, _input, ctx) do
+    respond(ctx, "How can I help?")
+  end
+end

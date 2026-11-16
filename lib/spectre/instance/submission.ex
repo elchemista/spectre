@@ -28,7 +28,8 @@ defmodule Spectre.Instance.Submission do
 
   @doc false
   def submit(input, opts, projection, from, %InstanceState{} = data) do
-    case {owner_guard(data, :admission), DefinitionCompatibility.validate_turn(data, opts)} do
+    case {Owner.assert_current(data, :admission),
+          DefinitionCompatibility.validate_turn(data, opts)} do
       {:ok, :ok} -> submit_owned(input, opts, projection, from, data)
       {{:error, reason}, _guard} -> {:reply, {:error, reason}, Idle.arm(data)}
       {:ok, {:error, reason}} -> {:reply, {:error, reason}, Idle.arm(data)}
@@ -50,7 +51,7 @@ defmodule Spectre.Instance.Submission do
     input = Keyword.get(opts, :inference_input, %Input{})
     run_id = cognitive_inference_run_id(data, request, opts)
 
-    with :ok <- owner_guard(data, :admission),
+    with :ok <- Owner.assert_current(data, :admission),
          :ok <- Receipts.admission_available?(data),
          :ok <- valid_cognitive_inference_run_id(run_id) do
       case Map.get(data.runs, run_id) do
@@ -400,8 +401,4 @@ defmodule Spectre.Instance.Submission do
   defp execution_shape(value) when is_tuple(value), do: :tuple
   defp execution_shape(value) when is_atom(value), do: :atom
   defp execution_shape(_value), do: :other
-
-  defp owner_guard(data, operation) do
-    Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
-  end
 end

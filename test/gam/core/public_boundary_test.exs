@@ -1,0 +1,250 @@
+Code.require_file("../helper.exs", __DIR__)
+
+defmodule Spectre.GAM.Core.PublicBoundaryTest do
+  use ExUnit.Case, async: false
+
+  alias Spectre.GAM.{Domain, Outcome, SubmissionContext}
+  alias Spectre.GAM.Domain.Sequencer
+  alias Spectre.GAM.V04Test.{Fixture, Runtime}
+
+  setup do
+    Runtime.reset(Fixture.default_now())
+
+    f =
+      Fixture.start_domain(
+        namespace: "public-boundary",
+        name: {:via, Registry, {Spectre.GAM.Domain.Registry, "v0.4:public-boundary:domain"}}
+      )
+
+    on_exit(fn -> Fixture.stop_domain(f) end)
+    {:ok, domain} = Spectre.GAM.lookup_domain(f.refs.domain)
+    {:ok, scope} = Spectre.GAM.resume_scope(domain, Fixture.context(f))
+    %{f: f, domain: domain, scope: scope}
+  end
+
+  for {function, args, reason} <- [
+        {:definition, ["definition:x"], :invalid_scope},
+        {:observe, [%{}], :invalid_observation},
+        {:record_derivation, [%{}, %{}], :invalid_evidence_derivation},
+        {:prepare_presentation, [%{}], :invalid_presentation},
+        {:show_presentation, ["presentation:x", %{}], :invalid_presentation_show},
+        {:record_outcome, [%{}], :invalid_outcome},
+        {:record_late_observation, ["attempt:x", %{}], :invalid_late_observation},
+        {:turn, [%{}], :invalid_turn},
+        {:propose, [%{}], :invalid_proposal},
+        {:view, [], :invalid_scope},
+        {:authority, [], :authenticated_scope_required},
+        {:acts, [], :authenticated_scope_required},
+        {:duties, [], :authenticated_scope_required},
+        {:erasures, [], :authenticated_scope_required},
+        {:declassifications, [], :authenticated_scope_required},
+        {:register_principal, [%{}, %{}], :invalid_principal_registration},
+        {:delegate_mandate, [%{}, %{}], :invalid_mandate_delegation},
+        {:issue_mandate, [%{}, %{}], :invalid_mandate_delegation},
+        {:devolve_mandate, ["mandate:x", %{}, %{}], :invalid_mandate_devolution},
+        {:restrict_mandate, ["mandate:x", %{}, %{}], :invalid_mandate_restriction},
+        {:revoke_mandate, ["mandate:x", %{}], :invalid_mandate_revocation},
+        {:dispose_duty, [%{}, %{}], :invalid_duty_disposition},
+        {:revise_surface, ["surface:x", %{}, %{}], :invalid_surface_revision},
+        {:revise_host_profile, ["profile:x", %{}, %{}], :invalid_host_profile_revision},
+        {:revise_definition, [%{}, %{}], :invalid_definition_revision},
+        {:declassify_evidence, [%{}, [], %{}], :invalid_evidence_declassification},
+        {:request_erasure, [%{}, %{}], :invalid_erasure_request}
+      ] do
+    test "#{function} cannot use a serialized Scope or bare Domain as authentication", c do
+      before = Sequencer.projection(c.f.server)
+
+      for forged <- [Map.from_struct(c.scope), c.domain, c.scope.context, c.f.server] do
+        assert {:error, unquote(reason)} =
+                 apply(Spectre.GAM, unquote(function), [forged | unquote(Macro.escape(args))])
+      end
+
+      assert Sequencer.projection(c.f.server) == before
+    end
+  end
+
+  test "unknown and malformed query options do not become privileged query controls", c do
+    assert {:error, {:unknown_query_options, :duties, [:limit]}} =
+             Spectre.GAM.duties(c.scope, limit: 1)
+
+    assert {:error, _} = Spectre.GAM.duties(c.scope, [:not_keyword])
+    assert {:error, {:invalid_definition_ref, nil}} = Spectre.GAM.definition(c.scope, nil)
+
+    assert {:error, {:mandate_not_found, "missing"}} =
+             Spectre.GAM.revoke_mandate(c.scope, "missing", %{})
+
+    assert {:error, :invalid_mandate_ref} = Spectre.GAM.revoke_mandate(c.scope, nil, %{})
+
+    assert {:error, {:presentation_not_found, "missing"}} =
+             Spectre.GAM.show_presentation(c.scope, "missing", %{})
+  end
+
+  test "public governance helpers still traverse ordinary admission instead of granting authority",
+       c do
+    attrs = %{
+      identity_key: "public-governance-helper",
+      requested_mandate_ref: c.f.mandate.ref,
+      accountable_ref: c.f.mandate.accountable_ref,
+      purpose_ref: c.f.refs.purpose
+    }
+
+    child = %{c.f.mandate | ref: nil, parent_ref: c.f.mandate.ref}
+
+    assert {:ok, delegated} = Spectre.GAM.delegate_mandate(c.scope, child, attrs)
+    assert delegated.primary.decision.outcome == :unknown_class
+    assert delegated.primary.act == nil
+
+    assert {:ok, devolved} =
+             Spectre.GAM.devolve_mandate(
+               c.scope,
+               "mandate:child",
+               %{c.f.refs.meter => 1},
+               %{attrs | identity_key: "public-governance-devolution"}
+             )
+
+    assert devolved.primary.decision.outcome == :unknown_class
+
+    disposition = %{
+      kind: :accept_loss,
+      duty_ref: "duty:unmaterialized",
+      opening_digest: String.duplicate("a", 64),
+      cause_key: {:application_review, 1},
+      supporting_refs: [c.f.refs.payment_evidence],
+      meter_resolution: :none
+    }
+
+    assert {:ok, disposed} =
+             Spectre.GAM.dispose_duty(
+               c.scope,
+               disposition,
+               %{attrs | identity_key: "public-governance-disposition"}
+             )
+
+    assert disposed.primary.decision.outcome == :unknown_class
+  end
+
+  test "direct Scope opening validates the exact typed record and rejects governed kinds", c do
+    context = c.scope.context
+    state = Sequencer.projection(c.f.server)
+    opening = state.catalog.scopes[c.f.refs.scope]
+
+    assert {:ok, reopened} = Spectre.GAM.open_scope(c.domain, context, opening)
+    assert Spectre.GAM.Scope.ref(reopened) == c.f.refs.scope
+
+    assert {:error, {:missing_scope_opening_field, :opened_at}} =
+             Spectre.GAM.open_scope(c.domain, context, [])
+
+    assert {:error, {:governed_scope_opening_required, :work}} =
+             Spectre.GAM.open_scope(c.domain, context, kind: :work, opened_at: opening.opened_at)
+
+    assert {:error, {:invalid_scope_kind, :unknown}} =
+             Spectre.GAM.open_scope(c.domain, context,
+               kind: :unknown,
+               opened_at: opening.opened_at
+             )
+
+    assert {:error, {:unknown_governed_scope_opening_options, [:unexpected]}} =
+             Spectre.GAM.open_scope(c.scope, context, %{}, %{}, unexpected: true)
+  end
+
+  test "editing public Scope data cannot replace its seal, principal or generation", c do
+    before = Sequencer.projection(c.f.server)
+    context = c.scope.context
+
+    for forged_context <- [
+          %{context | seal: nil},
+          %{context | authenticated_principal_ref: c.f.refs.grantor},
+          %{context | host_generation: context.host_generation + 1}
+        ] do
+      # Public content references are reproducible; the host's seal is not.
+      {:ok, forged_context} = SubmissionContext.new(%{forged_context | ref: nil})
+      forged_scope = %{c.scope | context: forged_context}
+
+      assert {:error, :submission_context_authentication_failed} = Spectre.GAM.view(forged_scope)
+
+      assert {:error, :submission_context_authentication_failed} =
+               Spectre.GAM.propose(forged_scope, Fixture.refund_candidate(c.f, 1))
+    end
+
+    assert Sequencer.projection(c.f.server) === before
+    assert {:ok, _view} = Spectre.GAM.view(c.scope)
+  end
+
+  test "late outcomes require an existing Act in the caller's Scope and actual evidence", c do
+    payment = Fixture.paid_evidence(c.f)
+    {:ok, _} = Fixture.observe_payment(c.f, payment)
+
+    {:ok, %{act: act, grant: grant}} =
+      Sequencer.submit(
+        c.f.server,
+        Fixture.context(c.f),
+        Fixture.refund_candidate(c.f, 100, evidence_refs: [payment.ref])
+      )
+
+    {:ok, _, attempt, _} = Sequencer.consume_grant(c.f.server, grant)
+    ambiguous = Fixture.outcome(c.f, act, attempt, :ambiguous)
+
+    assert {:error, :public_ambiguous_outcome_forbidden} =
+             Spectre.GAM.record_outcome(c.scope, ambiguous)
+
+    receipt = Fixture.receipt_evidence(c.f, act.ref)
+    {:ok, _} = Fixture.record_receipt(c.f, receipt)
+    success = Fixture.outcome(c.f, act, attempt, :succeeded, [receipt.ref])
+    assert {:ok, ^success} = Spectre.GAM.record_outcome(c.scope, success)
+
+    {:ok, missing} =
+      success |> Map.from_struct() |> Map.merge(%{ref: nil, act_ref: "missing"}) |> Outcome.new()
+
+    assert {:error, {:outcome_act_not_found, "missing"}} =
+             Spectre.GAM.record_outcome(c.scope, missing)
+
+    assert {:error, _} = Spectre.GAM.record_outcome(c.scope, success, unknown: true)
+
+    assert {:error, _} =
+             Spectre.GAM.record_outcome(c.scope, success, sequencer_opts: [unknown: true])
+  end
+
+  test "Domain startup owns registration and rejects duplicate identities or wiring overrides",
+       c do
+    Fixture.stop_process(c.f.server)
+    opts = Keyword.drop(c.f.sequencer_opts, [:domain_ref, :store, :name, :registry])
+    assert {:ok, domain} = Spectre.GAM.start_domain(c.f.refs.domain, c.f.store_config, opts)
+
+    on_exit(fn ->
+      DynamicSupervisor.terminate_child(Spectre.GAM.Domain.Supervisor, domain.server)
+    end)
+
+    assert Domain.whereis(domain.ref) == domain.server
+    assert {:ok, ^domain} = Spectre.GAM.lookup_domain(domain.ref)
+    assert {:ok, _} = Spectre.GAM.head(domain.ref)
+
+    assert {:error, {:domain_already_started, _}} =
+             Spectre.GAM.start_domain(domain.ref, c.f.store_config, opts)
+
+    for key <- [:domain_ref, :store, :registry, :name] do
+      assert {:error, {:reserved_domain_option, ^key}} =
+               Spectre.GAM.start_domain(
+                 domain.ref,
+                 c.f.store_config,
+                 Keyword.put(opts, key, :override)
+               )
+    end
+
+    assert Spectre.GAM.version() == "0.4.0"
+  end
+
+  test "malformed Domain handles and context shapes fail explicitly before lookup", c do
+    assert {:error, :invalid_domain_start} = Spectre.GAM.start_domain(nil, c.f.store_config)
+    assert {:error, _} = Spectre.GAM.start_domain("new", c.f.store_config, [:invalid])
+    assert {:error, :invalid_domain_ref} = Spectre.GAM.lookup_domain(nil)
+    assert {:error, :invalid_domain} = Spectre.GAM.head(%{})
+    assert Domain.whereis(nil) == nil
+    assert Domain.whereis("missing") == nil
+    assert {:error, :invalid_domain_options} = Domain.start_link(nil)
+    assert {:error, :invalid_domain_options} = Domain.start_link(domain_ref: "", registry: nil)
+    assert {:error, :authenticated_context_required} = Spectre.GAM.resume_scope(c.domain, %{})
+    assert {:error, _} = Spectre.GAM.authenticate(c.domain, nil, %{}, :invalid)
+    assert {:error, _} = Spectre.GAM.open_scope(c.domain, %{}, [])
+    assert {:error, _} = Spectre.GAM.open_scope(%{}, %{}, %{}, %{}, [])
+  end
+end

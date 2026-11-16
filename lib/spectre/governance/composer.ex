@@ -455,9 +455,5 @@ defmodule Spectre.Governance.Composer do
 
   defp get(_value, _key, default), do: default
 
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :tuple, :atom])
 end

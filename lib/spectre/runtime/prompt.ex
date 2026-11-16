@@ -104,10 +104,31 @@ defmodule Spectre.Prompt do
   def resolve(agent, prompt, ctx, opts \\ []) do
     scope = prompt_scope(ctx, opts)
 
-    with {:ok, root} <- Definition.prompt_root(agent, scope),
+    with {:ok, root} <- resolve_root(agent, scope, opts),
          {:ok, relative} <- relative_prompt(prompt, ctx, opts),
          {:ok, path} <- contained_path(root, relative) do
       if File.regular?(path), do: {:ok, path}, else: {:error, {:missing_prompt, path}}
+    end
+  end
+
+  # A root override belongs to the Server's own scope. An Agent Server must
+  # never replace a mounted Skill's root; a Skill Server may bind its own.
+  defp resolve_root(agent, :agent, opts) do
+    server_root(agent, :agent, opts)
+  end
+
+  defp resolve_root(agent, scope, opts) do
+    if Keyword.get(opts, :server_prompt_scope) == scope,
+      do: server_root(agent, scope, opts),
+      else: Definition.prompt_root(agent, scope)
+  end
+
+  defp server_root(agent, scope, opts) do
+    case Keyword.fetch(opts, :server_prompt_root) do
+      {:ok, root} when is_binary(root) and byte_size(root) > 0 -> {:ok, root}
+      {:ok, nil} -> Definition.prompt_root(agent, scope)
+      {:ok, invalid} -> {:error, {:invalid_server_prompt_root, invalid}}
+      :error -> Definition.prompt_root(agent, scope)
     end
   end
 

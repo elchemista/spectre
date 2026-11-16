@@ -62,6 +62,7 @@ defmodule Spectre.Definition.Validator do
          :ok <- validate_skill_router(definition),
          :ok <- validate_router(definition),
          :ok <- validate_rules(definition),
+         :ok <- validate_server(definition),
          :ok <- validate_policies(definition),
          :ok <- validate_injections(definition),
          :ok <- validate_mounts(definition),
@@ -76,6 +77,22 @@ defmodule Spectre.Definition.Validator do
         raise ArgumentError,
               "invalid Spectre #{definition.kind} definition #{inspect(definition.owner)}: " <>
                 format_reason(reason)
+    end
+  end
+
+  defp validate_server(%Definition{config: config, rules: rules, kind: kind}) do
+    server = Keyword.get(config, :server)
+    server_rules? = Enum.any?(rules, &match?({:server, _, _}, Map.get(&1, :handler)))
+
+    cond do
+      server != nil and (not is_atom(server) or server in [true, false]) ->
+        {:error, {:invalid_server, server}}
+
+      kind == :agent and server_rules? and is_nil(server) ->
+        {:error, :bodyless_routes_require_server}
+
+      true ->
+        :ok
     end
   end
 
@@ -283,6 +300,9 @@ defmodule Spectre.Definition.Validator do
   defp valid_handler?({kind, value, opts})
        when kind in [:ask, :reason, :act, :reply] and not is_nil(value) and is_list(opts),
        do: true
+
+  defp valid_handler?({:server, {path, label}, opts})
+       when is_list(path) and is_atom(label) and is_list(opts), do: true
 
   defp valid_handler?({:run, value, opts}) when is_atom(value) and is_list(opts), do: true
 

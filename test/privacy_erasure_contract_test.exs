@@ -189,7 +189,7 @@ defmodule SpectrePrivacyErasureContractTest.PackageDataPackage do
   use Spectre.Stack.Installable,
     id: :privacy_package_data,
     version: "0.1.0",
-    spectre: ">= 0.3.0 and < 0.4.0"
+    spectre: ">= 0.3.0 and < 0.5.0"
 
   @impl Spectre.Stack.PackageData
   def erasure_plan(_ref, opts) do

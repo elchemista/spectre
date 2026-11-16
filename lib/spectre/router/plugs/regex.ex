@@ -44,9 +44,15 @@ defmodule Spectre.Router.Plugs.Regex do
         route = Support.route_from_rule(rule, :regex, text, labels)
         Support.log_route(:info, "regex_accept", route, context.opts)
 
+        strength =
+          case Keyword.fetch(context.opts, :regex_strength) do
+            {:ok, value} -> [strength: value]
+            :error -> []
+          end
+
         {:cont,
          context
-         |> Context.add_candidate(Candidate.from_rule(rule, :regex, text))
+         |> Context.add_candidate(Candidate.from_rule(rule, :regex, text, strength))
          |> Context.put_trace({:regex_accept, route})}
 
       nil ->

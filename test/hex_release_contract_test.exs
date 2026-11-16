@@ -2,7 +2,7 @@ defmodule SpectreHexReleaseContractTest do
   use ExUnit.Case, async: true
 
   @root Path.expand("..", __DIR__)
-  @release "0.3.4"
+  @release "0.4.0"
   @workflow Path.join(@root, ".github/workflows/ci.yml")
   @satellite_apps ~w(
     spectre_history
@@ -33,6 +33,9 @@ defmodule SpectreHexReleaseContractTest do
   @generator_templates ~w(
     priv/templates/spectre.gen.agent/agent.ex.eex
     priv/templates/spectre.gen.agent/agent_test.exs.eex
+    priv/templates/spectre.gen.agent/server_agent.ex.eex
+    priv/templates/spectre.gen.agent/server.ex.eex
+    priv/templates/spectre.gen.agent/server_agent_test.exs.eex
     priv/templates/spectre.gen.checkpoint_store/checkpoint_store.ex.eex
     priv/templates/spectre.gen.checkpoint_store/checkpoint_store_test.exs.eex
     priv/templates/spectre.gen.installable/installable.ex.eex
@@ -65,7 +68,7 @@ defmodule SpectreHexReleaseContractTest do
                          "SECURITY.md"
                        ] ++ Path.wildcard("docs/*.md", match_dot: true)
 
-  test "Hex package metadata describes the stable 0.3.4 release" do
+  test "Hex package metadata describes the 0.4.0 development release" do
     config = Mix.Project.config()
     package = Keyword.fetch!(config, :package)
     docs = Keyword.fetch!(config, :docs)
@@ -76,7 +79,7 @@ defmodule SpectreHexReleaseContractTest do
     assert Spectre.version() == @release
     assert Application.spec(:spectre, :vsn) |> to_string() == @release
     assert config[:homepage_url] == "https://spectre.elchemista.com"
-    assert docs[:source_ref] == @release
+    assert docs[:source_ref] == "feature/agent-server-gam"
     assert package[:licenses] == ["Apache-2.0"]
     assert "LLMS.md" in package[:files]
     assert "priv" in package[:files]
@@ -92,9 +95,11 @@ defmodule SpectreHexReleaseContractTest do
 
     assert package[:links] == %{
              "Website" => "https://spectre.elchemista.com",
-             "Documentation" => "https://hexdocs.pm/spectre/#{@release}",
+             "Documentation" =>
+               "https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/START_HERE.md",
              "GitHub" => "https://github.com/elchemista/spectre",
-             "Changelog" => "https://github.com/elchemista/spectre/blob/#{@release}/CHANGELOG.md"
+             "Changelog" =>
+               "https://github.com/elchemista/spectre/blob/feature/agent-server-gam/CHANGELOG.md"
            }
 
     assert {:ex_doc, "~> 0.40.3", ex_doc_opts} =
@@ -103,7 +108,7 @@ defmodule SpectreHexReleaseContractTest do
     assert ex_doc_opts[:only] == :dev
     assert ex_doc_opts[:runtime] == false
 
-    assert {:vettore, "~> 0.3.5"} =
+    assert {:vettore, "~> 0.3.6"} =
              Enum.find(config[:deps], &match?({:vettore, _requirement}, &1))
 
     refute Enum.any?(config[:deps], fn
@@ -183,6 +188,15 @@ defmodule SpectreHexReleaseContractTest do
 
     assert satellite_dependencies == []
 
+    workflow = File.read!(@workflow)
+
+    for app <- @satellite_apps do
+      refute workflow =~ Atom.to_string(app),
+             "core CI must not check out or execute #{app}"
+    end
+
+    refute File.exists?(Path.join(@root, "integration/stack_tools/mix.exs"))
+
     for source_path <- Path.wildcard(Path.join(@root, "lib/**/*.ex")) do
       source = File.read!(source_path)
 
@@ -190,7 +204,7 @@ defmodule SpectreHexReleaseContractTest do
              "#{Path.relative_to(source_path, @root)} couples core code to a satellite module"
     end
 
-    refute File.read!(Path.join(@root, "CHANGELOG.md")) =~ ~r/^## 0\.4\.0\b/mu
+    assert File.read!(Path.join(@root, "CHANGELOG.md")) =~ "## 0.4.0 (unreleased)"
   end
 
   defp forbidden_satellite_aliases(source) do
@@ -226,15 +240,16 @@ defmodule SpectreHexReleaseContractTest do
     end
   end
 
-  test "current installation examples use Hex while snapshots require an exact ref" do
+  test "installation examples target the package version and document source pins" do
     readme = File.read!(Path.join(@root, "README.md"))
     installation = File.read!(Path.join(@root, "docs/INSTALLATION.md"))
     llm_guide = File.read!(Path.join(@root, "LLMS.md"))
     changelog = File.read!(Path.join(@root, "CHANGELOG.md"))
 
-    assert readme =~ ~s({:spectre, "~> 0.3.4"})
-    assert installation =~ ~s({:spectre, "~> 0.3.4"})
-    assert llm_guide =~ ~s({:spectre, "~> 0.3.4"})
+    dependency = ~s({:spectre, "~> #{@release}"})
+    assert readme =~ dependency
+    assert installation =~ dependency
+    assert llm_guide =~ "Spectre 0.4 guide"
     assert changelog =~ "## 0.3.4 — 2026-08-30"
     assert changelog =~ "## 0.3.3 — 2026-08-23"
     assert installation =~ ~s({:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"})

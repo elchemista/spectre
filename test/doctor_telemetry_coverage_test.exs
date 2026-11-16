@@ -28,7 +28,7 @@ defmodule SpectreDoctorTelemetryCoverageTest.Package do
   use Spectre.Stack.Installable,
     id: :doctor_telemetry_package,
     version: "1.0.0",
-    spectre: "~> 0.3.0",
+    spectre: ">= 0.3.0 and < 0.5.0",
     provides: [{:contract, :doctor_telemetry_probe}]
 end
 

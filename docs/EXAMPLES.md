@@ -1,179 +1,186 @@
-# Three Realistic Agents
+# AgentServer examples
 
-The support agent in the [README](../README.md) is deliberately minimal. These
-two compositions show what a useful agent looks like with one satellite
-package each.
+These examples use the 0.4 architecture. Recognition lives in an Agent;
+application behavior lives in a Server; installed capabilities live in a Stack.
+The complete nine-package, GAM-backed workflow is in
+[`integration/stack_tools`](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md).
 
-## Answer questions from your database (core + Kinetic)
+## A complete deterministic agent with native OTP callbacks
 
-Each query is an ordinary function. The `@al` attribute, doc, and typespec are
-all Kinetic needs to build its planning registry — no JSON schemas, no tool
-catalog in the prompt:
-
-```elixir
-defmodule MyApp.Warehouse do
-  use SpectreKinetic
-
-  @al ~s(COUNT ORDERS WITH: ACCOUNT="acme" PERIOD="last_month")
-  @doc "Counts orders placed by an account in a period."
-  @spec count_orders(String.t(), String.t()) ::
-          {:ok, non_neg_integer()} | {:error, term()}
-  def count_orders(account, period),
-    do: MyApp.Reports.count_orders(account, period)
-
-  @al ~s(TOP CUSTOMERS WITH: LIMIT="5")
-  @doc "Lists the accounts with the most orders."
-  @spec top_customers(String.t()) :: {:ok, [map()]} | {:error, term()}
-  def top_customers(limit), do: MyApp.Reports.top_customers(limit)
-end
-
-defmodule MyApp.AnalyticsAgent do
-  use Spectre.Agent
-
-  use Spectre.Kinetic,
-    actions: MyApp.Warehouse,
-    modes: [count_orders: :read, top_customers: :read]
-
-  model(MyApp.LLM, purpose: :smart)
-
-  router(via: [:regex, :llm_classifier])
-
-  flow :analytics do
-    on :DATA_QUESTION,
-      regex: ~r/\b(how many|orders|customers|revenue)\b/i do
-      act(:data_question)
-    end
-  end
-end
-```
-
-Ask a question:
+This example needs only Spectre and does not call a model or external service.
 
 ```elixir
-{:ok, turn} =
-  Spectre.turn(MyApp.AnalyticsAgent,
-    "how many orders did acme place last month?"
-  )
-```
-
-`act` renders the prompt and calls the model; the model answers in compact
-Action Language (`COUNT ORDERS WITH: ACCOUNT="acme" PERIOD="last_month"`);
-Kinetic maps it onto `MyApp.Warehouse.count_orders/2` with validated, canonical
-argument names. The planner never touches the database: the selected Action is
-staged as a `:read` Effect, and the query runs only when the host executes the
-`{:needs, effect, result}` decision. Add `protect(...)` to any function that
-writes, and the same policy machinery from the support example guards it.
-
-## Read a page and answer (core + Lens)
-
-Lens gives the agent browser perception through a Stack, with browser
-processes kept in an explicitly started runtime:
-
-```elixir
-defmodule MyApp.AI do
+defmodule Demo.AI do
   use Spectre.Stack
+end
 
-  install Spectre.Lens, planner_exposure: [:look, :discover] do
-    backend(SpectreLens.Browsers.Lightpanda,
-      instances: 1,
-      protocol: SpectreLens.Protocol.Lightpanda
-    )
+defmodule Demo.SupportServer do
+  use Spectre.Server, tools: Demo.AI
+
+  def init(_arg, ctx), do: {:ok, assign(ctx, :price, 20)}
+
+  def handle_flow({:support, :pricing}, _input, ctx),
+    do: respond(ctx, "The price is €#{ctx.assigns.price} per month.")
+
+  def handle_flow(:unmatched, _input, ctx),
+    do: respond(ctx, "Ask me about pricing.")
+
+  def handle_call(:price, _from, ctx), do: {:reply, ctx.assigns.price, ctx}
+  def handle_call(message, from, ctx), do: super(message, from, ctx)
+
+  def handle_cast({:set_price, price}, ctx) when is_integer(price) and price >= 0,
+    do: {:noreply, assign(ctx, :price, price)}
+
+  def handle_cast(message, ctx), do: super(message, ctx)
+end
+
+defmodule Demo.SupportAgent do
+  use Spectre.Agent, stack: Demo.AI, server: Demo.SupportServer
+  router strategies: [:regex]
+
+  flow :support do
+    on :pricing, regex: ~r/price|cost/i
   end
 end
 
-defmodule MyApp.ResearchAgent do
-  use Spectre.Agent, stack: MyApp.AI
+{:ok, server} = Spectre.summon(
+  agent: Demo.SupportAgent, subject: "demo", consumer: self())
 
-  model(MyApp.LLM, purpose: :smart)
-
-  router(via: [:regex])
-
-  flow :research do
-    on :CHECK_RELEASES, regex: ~r/\brelease page\b/i do
-      action({:lens, :look},
-        args: %{
-          url: "https://github.com/elchemista/spectre/releases",
-          opts: [include: [:markdown, :links]]
-        },
-        mode: :read
-      )
-    end
-  end
-end
+{:ok, _interaction_id} = Spectre.Server.input(server, "What does it cost?")
+:ok = GenServer.cast(server, {:set_price, 25})
+25 = GenServer.call(server, :price)
 ```
 
-Run it with the browser runtime supplied at the boundary, never stored in the
-definition:
+The Server callback module is not a second GenServer. Framework messages and
+workers belong to `Spectre.Server.Runtime`, while application calls/casts/info
+are delegated in that same owner process. Add checkpoint storage when the price
+must survive a restart.
+
+## Independent classification, generation and unmatched handling
+
+The following composition assumes the named model/embedding adapters and prompt
+files are implemented by the host. They can be provided by a Stack instead.
 
 ```elixir
-{:ok, _stack_runtime} =
-  Spectre.Stack.start_link(MyApp.AI,
-    name: MyApp.AIRuntime,
-    packages: [lens: [binary: "/opt/lightpanda"]]
-  )
+defmodule MyApp.SupportServer do
+  use Spectre.Server, prompt_root: "priv/support/prompts"
 
-{:ok, turn} =
-  Spectre.turn(MyApp.ResearchAgent, "check the release page",
-    stack_runtime: MyApp.AIRuntime
-  )
+  def handle_flow({:support, :pricing}, _input, ctx),
+    do: generate(ctx, :pricing, on_result: :answer)
+
+  def handle_flow({:support, :technical}, _input, ctx),
+    do: generate(ctx, :technical, on_result: :answer)
+
+  def handle_flow(:unmatched, input, ctx) do
+    case ctx.routing.reason do
+      :ambiguous -> respond(ctx, "Is this about pricing or technical support?")
+      :no_match -> generate(ctx, :understand, input: input, on_result: :answer)
+      _ -> respond(ctx, "Recognition is unavailable; please try again.")
+    end
+  end
+
+  def handle_result(:answer, {:generated, response}, ctx),
+    do: respond(ctx, response.text)
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+end
+
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+
+  model MyApp.ResponseModel
+  classifier :local, MyApp.LocalClassifier, artifact_dir: "priv/intents"
+  classifier :llm, MyApp.IntentModel, timeout: 8_000
+  embedding MyApp.Embeddings
+
+  router strategies: [:regex, :intent_dataset, :embedding,
+                       :local_classifier, :llm_classifier]
+
+  flow :support, defaults: [collect_intent: true] do
+    on :pricing, semantic_examples: ["How much is a subscription?"]
+    on :technical, semantic_examples: ["My API key is not working"]
+  end
+end
 ```
 
-The deterministic route stages the `:look` Action; executing it returns the
-page as structured data marked `trust: :untrusted`, which the host converts
-with `agent_context/2` before any model sees it. Because the Stack declares
-`planner_exposure: [:look, :discover]`, an `act` route may also let the model
-plan browsing — but only over those two operations, and every browser step
-still passes through the same staged-Effect lifecycle.
+The response model need not be the classifier. `:understand` is an application
+prompt, not a special DSL operation. Recognition evidence selects a declared
+handler; it does not grant authority. Keep labeled example collection, review,
+embedding preparation and training distinct; see [Training](TRAINING.md).
 
-## Route through a vector index (native Router Adapter)
+## Browse, remember, prepare email and ask permission to save
 
-The index stores only stable `{scope, label}` refs and scores. Spectre resolves
-the ref back to the compiled rule and remains the only component that can build
-an authoritative Candidate:
+The executable [outreach integration](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md)
+installs Kinetic, Mnemonic, Lens, Prism, Beam, Directive, Pulse, Ledger and Lab
+in one Stack. Its essential continuation chain is:
 
 ```elixir
-defmodule MyApp.TicketVectorRouter do
-  use Spectre.Router.Adapter,
-    id: :ticket_vectors,
-    accept: 0.87,
-    margin: 0.04,
-    strength: :medium
-
-  @impl Spectre.Router.Adapter
-  def evaluate(%Spectre.Router.Adapter.Request{text: text, rules: rules}) do
-    allowed = Map.new(rules, &{&1.ref, &1})
-
-    with {:ok, hits} <- MyApp.TicketIndex.search(text, limit: 32) do
-      {:ok,
-       Enum.flat_map(hits, fn hit ->
-         case Map.fetch(allowed, hit.rule_ref) do
-           {:ok, rule} ->
-             [result(rule, hit.score, margin: hit.margin, matched: hit.example_id)]
-
-           :error ->
-             []
-         end
-       end)}
-    end
-  end
+# Fragments inside a Server using tools: MyApp.AI.
+def handle_result(:recalled, {:ok, memories}, ctx) do
+  ctx
+  |> assign(:memories, memories)
+  |> lens({:open, "https://shop.example.test"}, on_result: :opened)
 end
 
-defmodule MyApp.TicketAgent do
-  use Spectre.Agent
+def handle_result(:opened, {:ok, tab}, ctx),
+  do: ctx |> assign(:tab, tab) |> lens({:look, tab}, on_result: :looked)
 
-  router(via: [:regex, MyApp.TicketVectorRouter, :llm_classifier])
+def handle_result(:looked, {:ok, view}, ctx),
+  do: ctx |> assign(:page, view) |> lens({:close, ctx.assigns.tab}, on_result: :closed)
 
-  flow :tickets do
-    on :DUPLICATE_TICKET,
-      ticket_vectors: [examples: ["disk full", "no space left"]],
-      via: [:ticket_vectors, :llm_classifier] do
-      reply(:duplicate_ticket)
-    end
-  end
+def handle_result(:closed, {:ok, _}, ctx) do
+  generate(ctx, :contact,
+    assigns: %{page: ctx.assigns.page, memories: ctx.assigns.memories},
+    on_result: :composed)
+end
+
+def handle_result(:composed, {:generated, response}, ctx),
+  do: kinetic(ctx, response, on_result: :prepared)
+
+def handle_result(:prepared, {:prepared, %{actions: [proposal]}}, ctx) do
+  propose(ctx, proposal.operation, proposal.args,
+    proposal_metadata: proposal.metadata, on_result: :email)
 end
 ```
 
-The Adapter may return several distinct refs; Spectre keeps each structurally
-valid result so a secondary vector hit can agree with another provider. Run
-`Spectre.Router.Adapter.Conformance` against an isolated index fixture in CI,
-and reserve live index evaluation for an opt-in corpus.
+The model generates the action language. Kinetic prepares a closed proposal;
+the host's GAM binding and admitted executor perform the email operation.
+Browser views are untrusted data, not instructions. Only portable logical
+browser references are stored in assigns; live resources stay in the named
+Stack runtime.
+
+Mnemonic's `remember` can bind to a host operation requiring presentation and
+consent before saving the report. The host candidate freezes the authenticated
+memory partition; the executor resolves the same named runtime. The integration
+also demonstrates topic change, a scheduled close, suspended consent and
+explicit resume. A generic yes must not approve whichever operation happens to
+be found later.
+
+Read the integration's `support/configuration.ex`, registered adapters and tests
+for operation configuration, consent, ambiguity and recovery. AgentServer
+automatically creates the Domain, Scope, ingress and execution protocol; no
+application Host is required. The external providers are deterministic fixtures,
+not validation of live transport credentials.
+
+The integration also runs the workflow in a dedicated Skill Server with the
+same GAM Domain and authority ledger as the root. It verifies the email/save
+Acts and Skill invocation Evidence through the root consumer. Each child keeps
+its own state, pending intentions and checkpoint; mount restrictions and exact
+presentation correlation isolate permissions and consent. The [LiveView demo](DEMO.md)
+adds two concurrent Skills so these boundaries can be exercised interactively.
+
+## Two agents with external human consent
+
+Run `mix run docs/examples/external_approval.exs` from the core checkout. It
+starts separate customer and owner AgentServers with independent GAM Domains,
+exchanges protocol maps using a small mailbox adapter, and verifies confirm,
+reject and replay rejection. Human interaction and the browser are simulated.
+Pulse is optional; see [External approval](EXTERNAL_APPROVALS.md).
+
+## Further recipes and compatibility
+
+- [Actions](ACTIONS.md): deterministic and model-produced proposals.
+- [Pending lifecycle](PENDING_LIFECYCLE.md): application policy, durable timers and OTP timer ownership.
+- [Routing](ROUTING.md): native custom adapters and route-only evaluation.
+- [Stack tools](STACK_TOOLS.md): generated helpers and installation contracts.
+- [0.3 examples](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/EXAMPLES_0_3.md): retained Instance/Turn/Effect compositions, not new Server scaffolding.

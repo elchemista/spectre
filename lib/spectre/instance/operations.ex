@@ -263,8 +263,7 @@ defmodule Spectre.Instance.Operations do
           next
           |> maybe_emit_uncorrelated_operation_trigger(committed_events)
           |> apply_runner_action(runner_action)
-          |> maybe_queue_after_transition(next_loop, next_control)
-          |> Timers.maybe_schedule_wait_timer(next_loop)
+          |> schedule_transition(next_loop, next_control)
           |> maybe_schedule_operations()
 
         {:reply, {:ok, OperationView.from_loop(next_loop, next_control)}, next}
@@ -337,8 +336,7 @@ defmodule Spectre.Instance.Operations do
         next
         |> finish_operation_runner(ownership)
         |> maybe_remember_operation_result(next_loop, result, ownership.spec)
-        |> maybe_queue_after_transition(next_loop, next_control)
-        |> Timers.maybe_schedule_wait_timer(next_loop)
+        |> schedule_transition(next_loop, next_control)
         |> queue_started_loops(started_loops)
         |> maybe_schedule_operations()
 
@@ -451,8 +449,7 @@ defmodule Spectre.Instance.Operations do
                ) do
           committed =
             committed
-            |> maybe_queue_after_transition(next_loop, next_control)
-            |> Timers.maybe_schedule_wait_timer(next_loop)
+            |> schedule_transition(next_loop, next_control)
             |> maybe_schedule_operations()
 
           {:noreply, committed}
@@ -726,6 +723,12 @@ defmodule Spectre.Instance.Operations do
     end
   end
 
+  defp schedule_transition(data, loop, control) do
+    data
+    |> maybe_queue_after_transition(loop, control)
+    |> Timers.maybe_schedule_wait_timer(loop)
+  end
+
   defp advance_operation(data, {_kind, loop_id}) do
     case Loops.operation_loop(data, loop_id) do
       {:ok, loop, control} ->
@@ -774,21 +777,10 @@ defmodule Spectre.Instance.Operations do
            ) do
       next
       |> maybe_emit_uncorrelated_operation_trigger(committed_events)
-      |> maybe_queue_after_transition(next_loop, next_control)
-      |> Timers.maybe_schedule_wait_timer(next_loop)
+      |> schedule_transition(next_loop, next_control)
     else
       {:error, reason} ->
-        emit(
-          :operation_control_failed,
-          data,
-          %{count: 1},
-          %{
-            loop_id: id_digest(loop.id),
-            reason_class: reason_class(reason)
-          }
-        )
-
-        data
+        operation_failed(data, :operation_control_failed, loop.id, reason)
     end
   end
 
@@ -803,21 +795,10 @@ defmodule Spectre.Instance.Operations do
              transition: :loop_evaluated
            ) do
       next
-      |> maybe_queue_after_transition(next_loop, next_control)
-      |> Timers.maybe_schedule_wait_timer(next_loop)
+      |> schedule_transition(next_loop, next_control)
     else
       {:error, reason} ->
-        emit(
-          :operation_evaluation_failed,
-          data,
-          %{count: 1},
-          %{
-            loop_id: id_digest(loop.id),
-            reason_class: reason_class(reason)
-          }
-        )
-
-        data
+        operation_failed(data, :operation_evaluation_failed, loop.id, reason)
     end
   end
 
@@ -845,17 +826,7 @@ defmodule Spectre.Instance.Operations do
             )
 
           {:error, reason} ->
-            emit(
-              :operation_prepare_failed,
-              data,
-              %{count: 1},
-              %{
-                loop_id: id_digest(loop.id),
-                reason_class: reason_class(reason)
-              }
-            )
-
-            data
+            operation_failed(data, :operation_prepare_failed, loop.id, reason)
         end
 
       {:transition, next_loop, next_control, event_specs} ->
@@ -866,46 +837,25 @@ defmodule Spectre.Instance.Operations do
              ) do
           {:ok, next, _events} ->
             next
-            |> maybe_queue_after_transition(next_loop, next_control)
-            |> Timers.maybe_schedule_wait_timer(next_loop)
+            |> schedule_transition(next_loop, next_control)
 
           {:error, _reason} ->
             data
         end
 
       {:error, reason} ->
-        emit(
-          :operation_prepare_failed,
-          data,
-          %{count: 1},
-          %{
-            loop_id: id_digest(loop.id),
-            reason_class: reason_class(reason)
-          }
-        )
-
-        data
+        operation_failed(data, :operation_prepare_failed, loop.id, reason)
     end
   end
 
   defp start_operation_runner(data, loop, control, attempt, spec, request, reconcile?) do
-    with :ok <- owner_guard(data, :effect_dispatch),
+    with :ok <- Owner.assert_current(data, :effect_dispatch),
          {:ok, operation_definition_ref} <- Events.operation_definition_ref(data, loop),
          :ok <- Events.authorize(data, operation_definition_ref, :dispatch) do
       do_start_operation_runner(data, loop, control, attempt, spec, request, reconcile?)
     else
       {:error, reason} ->
-        emit(
-          :operation_dispatch_blocked,
-          data,
-          %{count: 1},
-          %{
-            loop_id: id_digest(loop.id),
-            reason_class: reason_class(reason)
-          }
-        )
-
-        data
+        operation_failed(data, :operation_dispatch_blocked, loop.id, reason)
     end
   end
 
@@ -978,8 +928,7 @@ defmodule Spectre.Instance.Operations do
              ) do
           {:ok, next, _events} ->
             next
-            |> maybe_queue_after_transition(next_loop, next_control)
-            |> Timers.maybe_schedule_wait_timer(next_loop)
+            |> schedule_transition(next_loop, next_control)
 
           {:error, _reason} ->
             data
@@ -1003,31 +952,12 @@ defmodule Spectre.Instance.Operations do
   defp operation_runner_down(data, pid, monitor, attempt_id, reason) do
     case Map.get(data.operation_runners, attempt_id) do
       %{pid: ^pid, monitor: ^monitor} = ownership ->
-        data = drop_operation_runner(data, ownership)
-
-        with {:ok, loop, control} <- Loops.operation_loop(data, ownership.loop_id),
-             %OperationLoop{attempt: %{id: ^attempt_id}} <- loop,
-             {:ok, next_loop, next_control, event_specs} <-
-               OperationRuntime.runner_down(
-                 loop,
-                 control,
-                 ownership.spec,
-                 reason,
-                 Loops.operation_env(data, snapshot_id: ownership.snapshot_id)
-               ),
-             {:ok, next, _events} <-
-               commit_operational(data, next_loop, next_control, event_specs,
-                 correlation_id: loop.correlation_id,
-                 provenance: %{source: :runner_monitor, attempt_id: attempt_id},
-                 transition: :runner_down
-               ) do
-          next
-          |> maybe_queue_after_transition(next_loop, next_control)
-          |> Timers.maybe_schedule_wait_timer(next_loop)
-          |> maybe_schedule_operations()
-        else
-          _stale_or_invalid -> maybe_schedule_operations(data)
-        end
+        data
+        |> drop_operation_runner(ownership)
+        |> recover_operation_runner(ownership, {ownership.loop_id, attempt_id}, reason,
+          provenance: %{source: :runner_monitor, attempt_id: attempt_id},
+          transition: :runner_down
+        )
 
       _unknown ->
         data
@@ -1040,32 +970,42 @@ defmodule Spectre.Instance.Operations do
   end
 
   defp reject_operation_result(data, ownership, result, reason) do
-    data = finish_operation_runner(data, ownership)
+    data
+    |> finish_operation_runner(ownership)
+    |> recover_operation_runner(
+      ownership,
+      {result.loop_id, ownership.attempt_id},
+      {:invalid_operation_result, reason},
+      causation_id: result.id,
+      provenance: %{source: :result_validator, attempt_id: ownership.attempt_id},
+      transition: :operation_result_rejected
+    )
+  end
 
-    with {:ok, loop, control} <- Loops.operation_loop(data, result.loop_id),
-         %OperationLoop{attempt: %{id: attempt_id}} when attempt_id == ownership.attempt_id <-
-           loop,
+  defp recover_operation_runner(data, ownership, {loop_id, attempt_id}, reason, commit_opts) do
+    with {:ok, loop, control} <- Loops.operation_loop(data, loop_id),
+         %OperationLoop{attempt: %{id: ^attempt_id}} <- loop,
          {:ok, next_loop, next_control, event_specs} <-
            OperationRuntime.runner_down(
              loop,
              control,
              ownership.spec,
-             {:invalid_operation_result, reason},
+             reason,
              Loops.operation_env(data, snapshot_id: ownership.snapshot_id)
            ),
          {:ok, next, _events} <-
-           commit_operational(data, next_loop, next_control, event_specs,
-             correlation_id: loop.correlation_id,
-             causation_id: result.id,
-             provenance: %{source: :result_validator, attempt_id: ownership.attempt_id},
-             transition: :operation_result_rejected
+           commit_operational(
+             data,
+             next_loop,
+             next_control,
+             event_specs,
+             Keyword.put(commit_opts, :correlation_id, loop.correlation_id)
            ) do
       next
-      |> maybe_queue_after_transition(next_loop, next_control)
-      |> Timers.maybe_schedule_wait_timer(next_loop)
+      |> schedule_transition(next_loop, next_control)
       |> maybe_schedule_operations()
     else
-      _invalid -> maybe_schedule_operations(data)
+      _stale_or_invalid -> maybe_schedule_operations(data)
     end
   end
 
@@ -1442,12 +1382,17 @@ defmodule Spectre.Instance.Operations do
     end
   end
 
-  defp owner_guard(data, operation) do
-    Owner.assert_current(data.owner, data.ref, data.owner_lease, operation, data.base_opts)
-  end
-
   defp emit(event, data, measurements, metadata \\ %{}),
     do: InstanceTelemetry.emit(event, data, measurements, metadata)
+
+  defp operation_failed(data, event, loop_id, reason) do
+    emit(event, data, %{count: 1}, %{
+      loop_id: id_digest(loop_id),
+      reason_class: reason_class(reason)
+    })
+
+    data
+  end
 
   defp id_digest(value), do: InstanceTelemetry.id_digest(value)
   defp reason_class(reason), do: InstanceTelemetry.reason_class(reason)

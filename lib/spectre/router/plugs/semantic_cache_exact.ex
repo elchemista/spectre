@@ -29,6 +29,9 @@ defmodule Spectre.Router.Plugs.SemanticCacheExact do
       not Keyword.get(context.opts, :semantic_cache?, true) ->
         {:cont, Context.put_local_result(context, %{semantic_cache: :semantic_cache_disabled})}
 
+      not Keyword.get(context.opts, :intent_exact?, true) ->
+        {:cont, Context.put_trace(context, {:cache_skip, :intent_exact_disabled})}
+
       true ->
         semantic_lookup(context, false, :cache_accept, :cache_skip)
     end
@@ -42,6 +45,7 @@ defmodule Spectre.Router.Plugs.SemanticCacheExact do
          skip_trace
        ) do
     lookup_opts = Keyword.put(opts, :semantic_search?, search?)
+    rules = Enum.filter(rules, &Keyword.get(&1.opts, :dataset_lookup, true))
     ambiguous = Support.ambiguous_labels(rules, :semantic_cache, context.input)
     ambiguity_reason = Support.ambiguity_reason(:semantic_cache, ambiguous)
     visible_rules = Support.rules_for(rules, :semantic_cache, context.input)
@@ -134,6 +138,7 @@ defmodule Spectre.Router.Plugs.SemanticCacheExact do
 
   @spec routeable_labels([Spectre.Rule.t()], term() | nil) :: :ok | {:skip, term()}
   defp routeable_labels([], reason) when not is_nil(reason), do: {:skip, reason}
+  defp routeable_labels([], nil), do: {:skip, :no_visible_rules}
   defp routeable_labels(_visible_rules, _reason), do: :ok
 
   @spec skip_lookup(Context.t(), atom(), term(), keyword()) :: {:cont, Context.t()}

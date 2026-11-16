@@ -386,10 +386,5 @@ defmodule Spectre.Operation.Runtime.Contract do
   defp maybe_missing_correlation(missing, field, nil), do: [field | missing]
   defp maybe_missing_correlation(missing, _field, _value), do: missing
 
-  defp shape(value) when is_map(value), do: :map
-  defp shape(value) when is_list(value), do: :list
-  defp shape(value) when is_binary(value), do: :binary
-  defp shape(value) when is_tuple(value), do: :tuple
-  defp shape(value) when is_atom(value), do: :atom
-  defp shape(_value), do: :other
+  defp shape(value), do: Spectre.ValueShape.of(value, [:map, :list, :binary, :tuple, :atom])
 end
