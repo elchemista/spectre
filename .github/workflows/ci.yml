@@ -38,9 +38,7 @@ jobs:
       - name: Check out compatible satellites
         run: |
           for package in beam directive kinetic ledger lab lens mnemonic prism pulse; do
-            ref=feature/stack-tools-0.4
-            if [ "$package" = lab ]; then ref=feature/diagnostics-0.4; fi
-            git clone --depth 1 --branch "$ref" "https://github.com/elchemista/spectre_$package.git" "spectre_$package"
+            git clone --depth 1 --branch main "https://github.com/elchemista/spectre_$package.git" "spectre_$package"
           done
 
       - name: Set up Elixir and Erlang/OTP
@@ -124,7 +122,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql
           export PATH="$(pg_config --bindir):$PATH"
-          git clone --depth 1 --branch feature/stack-tools-0.4 https://github.com/elchemista/spectre_ledger.git ../spectre_ledger
+          git clone --depth 1 --branch main https://github.com/elchemista/spectre_ledger.git ../spectre_ledger
           cd ../spectre_ledger
           export SPECTRE_PATH="$GITHUB_WORKSPACE"
           export SPECTRE_CORE_COVERAGE_DIR="$GITHUB_WORKSPACE/cover"
