@@ -1,4 +1,4 @@
-# Install the 0.4 development line
+# Installation
 
 Spectre requires Elixir `~> 1.19`. Vettore is a required dependency. JSON uses
 Elixir's standard `JSON` module; applications using Jason directly must declare
@@ -13,30 +13,23 @@ required. See [Skills](SKILLS.md).
 
 ## Dependencies
 
-This branch declares version `0.4.0` but is unreleased. Use the development
-branch, not an assumed Hex 0.4 package:
+Add Spectre to your application's dependencies. If you are upgrading from 0.3,
+follow [Migration](MIGRATING_TO_0_4.md) for the changes to Agents, Servers and tools.
 
 ```elixir
 defp deps do
   [
-    {:spectre, github: "elchemista/spectre", branch: "feature/agent-server-gam"},
-    # Optional: add only the packages your Stack installs.
-    {:spectre_kinetic, github: "elchemista/spectre_kinetic", branch: "feature/stack-tools-0.4"}
+    {:spectre, "~> 0.4.0"}
   ]
 end
 ```
 
-The companion `spectre_mnemonic`, `spectre_lens`, `spectre_prism`, `spectre_beam`,
-`spectre_directive`, `spectre_pulse` and `spectre_ledger` repositories
-also use `feature/stack-tools-0.4`. Lab diagnostics use
-[`feature/diagnostics-0.4`](https://github.com/elchemista/spectre_lab/tree/feature/diagnostics-0.4). Do not mix their older installable contracts
-with examples that depend on generated Server helpers. Commit `mix.lock`;
-for a reproducible reviewed snapshot replace each `branch:` with its exact
-`ref:`. If a satellite declares a conflicting core dependency source, make the
-application's intended core dependency explicit with `override: true` after
-checking that the chosen branches are compatible.
+Companion libraries are optional: add only the packages your Stack installs,
+using their Spectre 0.4-compatible versions. See [Stack tools](STACK_TOOLS.md)
+and the package's own installation guide. Commit `mix.lock` to keep dependency
+versions reproducible.
 
-For an exact reviewed revision:
+To depend on source instead, select an exact reviewed commit:
 
 ```elixir
 {:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"}

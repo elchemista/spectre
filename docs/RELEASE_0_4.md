@@ -1,8 +1,8 @@
 # Verifying a 0.4 release candidate
 
 Use a fixed set of commits for core and every companion package. Package
-versions are independent; the compatible branches are listed in
-[Installation](INSTALLATION.md).
+versions are independent; [Installation](INSTALLATION.md) explains dependency
+selection and source pins.
 
 ## Required checks
 

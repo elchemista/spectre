@@ -4,10 +4,10 @@ AgentServer manages GAM automatically. For startup, application callbacks and
 the boundary between application policy and kernel invariants, see
 [Automatic GAM](MANAGED_GAM.md).
 
-0.4.0 is an unreleased development line with changes to the authoring DSL,
-runtime ownership and installed-tool integration. Use core branch
-`feature/agent-server-gam` and satellite branches `feature/stack-tools-0.4`.
-The [installation guide](INSTALLATION.md) covers dependency pins.
+Spectre 0.4 introduces substantial changes to the authoring DSL, runtime
+ownership and installed-tool integration. Follow this guide to move an existing
+0.3 application to the new model. The [installation guide](INSTALLATION.md)
+covers dependencies and source pins.
 
 The goal is to keep 0.3's useful recognition, training and Stack capabilities
 while making execution explicit: **Stack → Agent → Server, with GAM governing

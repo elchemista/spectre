@@ -1,46 +1,70 @@
 # Spectre
 
-Spectre is an Elixir framework for agents: a **Stack** installs capabilities, an
-**Agent** recognizes intentions, and a **Server** implements application behavior
-inside an OTP process. The Governed Act Model (**GAM**) mediates the operations
-that the application declares consequential.
+Spectre is an Elixir framework for building agents that understand messages,
+use models and tools, and carry out work in supervised OTP processes. You choose
+the recognition strategies, model providers and capabilities your application needs.
 
-**0.4.0 development branch:** this README describes `feature/agent-server-gam`;
-it is not
-an announcement of a published Hex release. Existing applications should read
-[Migration from 0.3](docs/MIGRATING_TO_0_4.md).
+**Upgrading from 0.3?** Spectre 0.4 introduces substantial changes to agent
+definitions, conversation ownership and tool execution. Follow the
+[0.3 → 0.4 migration guide](docs/MIGRATING_TO_0_4.md) before upgrading an existing
+application.
+
+## What is GAM?
+
+**GAM stands for Governed Act Model.** It defines how an agent's proposal becomes
+an authorized operation. Your application declares which operations are governed,
+who may authorize them and when human consent is required. Spectre checks that
+authority and records the decision before allowing execution, then tracks the
+observed result separately.
+
+For example, an agent can prepare an email, but sending it must pass through the
+application's configured permissions and consent checks. Approval applies to the
+specific operation shown to the person, including its recipient and content.
+
+Read the [GAM manifesto](https://spectre.guide/en/governed-act-model) for the model's
+principles and [GAM in Spectre](docs/GAM.md) for their implementation.
+
+## Stack → Agent → Server
+
+![Spectre: From conversation to governed work](docs/assets/readme-architecture.svg)
+
+[Diagram source](docs/assets/readme-architecture.mmd).
+
+- **Stack** installs the capabilities available to the application: models,
+  browser access, memory and other tools.
+- **Agent** declares the router, flows and intents that recognize input and
+  select a route.
+- **Server** implements the callbacks for those routes and manages the
+  conversation's state, pending work and results inside an OTP process.
+
+The Server can ask workers to generate a response or use a tool. Operations on
+the application's governed surface go through GAM before their effect adapter
+can execute them.
 
 ## Install
 
 Requires Elixir `~> 1.19`.
 
 ```elixir
-{:spectre, github: "elchemista/spectre", branch: "feature/agent-server-gam"}
+{:spectre, "~> 0.4.0"}
 ```
 
-Run `mix deps.get` and commit `mix.lock`. Use an exact reviewed `ref:` for a
-reproducible deployment. [Installation](docs/INSTALLATION.md) lists the compatible
-companion branches and supervision setup.
+Run `mix deps.get` and commit `mix.lock`. [Installation](docs/INSTALLATION.md)
+covers optional packages, source dependencies and supervision.
 
 ## A minimal agent
 
-No model, database or external service is needed for this example:
+The code follows the diagram: first the Stack, then the Agent's router, then the
+Server's callbacks. This example uses regex routing and needs no model, database
+or external service:
 
 ```elixir
+# 1. Stack: the application's capabilities; no packages are needed here.
 defmodule MyApp.AI do
   use Spectre.Stack
 end
 
-defmodule MyApp.SupportServer do
-  use Spectre.Server, tools: MyApp.AI
-
-  def handle_flow({:support, :pricing}, _input, ctx),
-    do: respond(ctx, "Plans start at EUR 20 per month.")
-
-  def handle_flow(:unmatched, _input, ctx),
-    do: respond(ctx, "Ask me about pricing.")
-end
-
+# 2. Agent: recognize a pricing question and select the support/pricing route.
 defmodule MyApp.SupportAgent do
   use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
   router(strategies: [:regex])
@@ -50,25 +74,38 @@ defmodule MyApp.SupportAgent do
   end
 end
 
+# 3. Server: handle the route selected by the Agent.
+defmodule MyApp.SupportServer do
+  use Spectre.Server, tools: MyApp.AI
+
+  @impl true
+  def handle_flow({:support, :pricing}, _input, ctx),
+    do: respond(ctx, "Plans start at EUR 20 per month.")
+
+  def handle_flow(:unmatched, _input, ctx),
+    do: respond(ctx, "Ask me about pricing.")
+end
+
 {:ok, server} = Spectre.Server.start_link(agent: MyApp.SupportAgent, consumer: self())
 {:ok, interaction} = Spectre.Server.input(server, "What is the price?")
 
 receive do
   {Spectre.Server, ^server, {:response, ^interaction, text, _metadata}} ->
     IO.puts(text)
+after
+  5_000 -> raise "No response from the agent"
 end
 ```
 
-`input/3` returns an interaction ID; replies arrive asynchronously at the
-consumer. In an application, supervise the Server or use `Spectre.summon/1`
+The Agent recognizes the pricing question; the Server's
+`handle_flow({:support, :pricing}, ...)` replies with the price. `input/3` returns
+an interaction ID; replies arrive asynchronously at the consumer.
+
+In an application, supervise the Server or use `Spectre.summon/1`
 for per-subject ownership. [Getting started](docs/GETTING_STARTED.md) covers
 these next steps and the generator.
 
 ## From conversation to governed work
-
-![Spectre: From conversation to governed work](docs/assets/readme-architecture.svg)
-
-[Diagram source](docs/assets/readme-architecture.mmd).
 
 Server helpers return commands in the Context. `on_result:` names the callback
 continuation. Models, classifiers and tools run in workers; native OTP callbacks
@@ -131,9 +168,7 @@ connects website inspection, drafting, refusal and failure handling.
 
 The [documentation index](docs/START_HERE.md) links the full 0.4 reference.
 Earlier Instance/Run APIs remain supported through the
-[compatibility reference](docs/COMPATIBILITY.md). The
-[GAM manifesto](https://spectre.guide/en/governed-act-model) explains its authority
-model; [GAM in Spectre](docs/GAM.md) maps it to the implementation.
+[compatibility reference](docs/COMPATIBILITY.md).
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md) ·
 [Application authoring reference](LLMS.md)

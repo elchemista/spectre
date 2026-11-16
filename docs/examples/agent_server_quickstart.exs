@@ -2,6 +2,16 @@ defmodule Quickstart.AI do
   use Spectre.Stack
 end
 
+defmodule Quickstart.SupportAgent do
+  use Spectre.Agent, stack: Quickstart.AI, server: Quickstart.SupportServer
+
+  router(strategies: [:regex])
+
+  flow :support do
+    on(:pricing, regex: ~r/\b(price|pricing|cost)\b/i)
+  end
+end
+
 defmodule Quickstart.SupportServer do
   use Spectre.Server, tools: Quickstart.AI
 
@@ -12,16 +22,6 @@ defmodule Quickstart.SupportServer do
 
   def handle_flow(:unmatched, _input, ctx) do
     respond(ctx, "Ask me about pricing.")
-  end
-end
-
-defmodule Quickstart.SupportAgent do
-  use Spectre.Agent, stack: Quickstart.AI, server: Quickstart.SupportServer
-
-  router(strategies: [:regex])
-
-  flow :support do
-    on(:pricing, regex: ~r/\b(price|pricing|cost)\b/i)
   end
 end
 

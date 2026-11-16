@@ -240,18 +240,15 @@ defmodule SpectreHexReleaseContractTest do
     end
   end
 
-  test "unreleased installation examples identify the development branch and reviewed refs" do
+  test "installation examples target the package version and document source pins" do
     readme = File.read!(Path.join(@root, "README.md"))
     installation = File.read!(Path.join(@root, "docs/INSTALLATION.md"))
     llm_guide = File.read!(Path.join(@root, "LLMS.md"))
     changelog = File.read!(Path.join(@root, "CHANGELOG.md"))
 
-    assert readme =~
-             ~s({:spectre, github: "elchemista/spectre", branch: "feature/agent-server-gam"})
-
-    assert readme =~ "not\nan announcement of a published Hex release"
-    assert installation =~ ~s(branch: "feature/agent-server-gam")
-    assert installation =~ "unreleased"
+    dependency = ~s({:spectre, "~> #{@release}"})
+    assert readme =~ dependency
+    assert installation =~ dependency
     assert llm_guide =~ "Spectre 0.4 guide"
     assert changelog =~ "## 0.3.4 — 2026-08-30"
     assert changelog =~ "## 0.3.3 — 2026-08-23"
