@@ -28,17 +28,9 @@ mix test --cover --export-coverage ram
 SPECTRE_TEST_PROJECTION=1 mix test test/gam --cover --export-coverage projection
 ```
 
-From the sibling Ledger checkout, with PostgreSQL installed:
-
-```sh
-SPECTRE_PATH=../spectre SPECTRE_CORE_COVERAGE_DIR=../spectre/cover \
-  mix test test/postgres_server_store_test.exs --cover --export-coverage postgres
-```
-
-Then run `mix test.coverage` in core. Archive or remove earlier `cover/*.coverdata`
-exports before starting a new source revision. The PostgreSQL tests create an
-isolated temporary cluster; they exercise actual SQL, migrations, restart,
-disconnected storage and explicit recovery.
+Then run `mix test.coverage` in core. Only the two core exports contribute to
+this gate; no Ledger, database or companion package is required. Archive or remove
+earlier `cover/*.coverdata` exports before starting a new source revision.
 
 ## Examples and complete Stack
 
@@ -48,9 +40,12 @@ mix run docs/examples/external_approval.exs
 ```
 
 The external-approval example uses two agents and independent Domains without
-Pulse. In `integration/stack_tools`, run `mix test` with the sibling packages on
-the branches listed in [Installation](INSTALLATION.md). It covers real
-Server/GAM coordination with deterministic external providers.
+Pulse. The multipackage suite belongs to
+[spectre_ecosystem](https://github.com/elchemista/spectre_ecosystem/tree/main/integration/stack_tools),
+where it exercises the packages against a selected core revision. Package-specific
+integration tests run in their owning library: PostgreSQL in
+[spectre_ledger](https://github.com/elchemista/spectre_ledger), approval transport
+in Pulse, browser adapters in Lens, and the corresponding tests in other packages.
 
 The [demo's verification guide](https://github.com/elchemista/demo_spectre/blob/main/docs/VERIFICATION.md)
 covers its PostgreSQL, fresh-process queries and browser tests. The

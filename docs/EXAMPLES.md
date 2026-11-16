@@ -3,7 +3,7 @@
 These examples use the 0.4 architecture. Recognition lives in an Agent;
 application behavior lives in a Server; installed capabilities live in a Stack.
 The complete nine-package, GAM-backed workflow is in
-[`integration/stack_tools`](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md).
+[`integration/stack_tools`](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md).
 
 ## A complete deterministic agent with native OTP callbacks
 
@@ -110,7 +110,7 @@ embedding preparation and training distinct; see [Training](TRAINING.md).
 
 ## Browse, remember, prepare email and ask permission to save
 
-The executable [outreach integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md)
+The executable [outreach integration](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md)
 installs Kinetic, Mnemonic, Lens, Prism, Beam, Directive, Pulse, Ledger and Lab
 in one Stack. Its essential continuation chain is:
 

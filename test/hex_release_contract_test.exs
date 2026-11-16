@@ -188,6 +188,15 @@ defmodule SpectreHexReleaseContractTest do
 
     assert satellite_dependencies == []
 
+    workflow = File.read!(@workflow)
+
+    for app <- @satellite_apps do
+      refute workflow =~ Atom.to_string(app),
+             "core CI must not check out or execute #{app}"
+    end
+
+    refute File.exists?(Path.join(@root, "integration/stack_tools/mix.exs"))
+
     for source_path <- Path.wildcard(Path.join(@root, "lib/**/*.ex")) do
       source = File.read!(source_path)
 

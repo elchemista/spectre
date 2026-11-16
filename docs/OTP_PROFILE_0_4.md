@@ -54,7 +54,7 @@ SPECTRE_PATH=../spectre MIX_ENV=test ERL_FLAGS='+S 4:4' \
 ```
 
 Add `PROFILE_EPROF=true` for a smaller CPU tracing run. `PROFILE_GAM_STORAGE=disk`
-selects the alternative history backend. From core's `integration/stack_tools`:
+selects the alternative history backend. From `spectre_ecosystem/integration/stack_tools`:
 
 ```sh
 ERL_FLAGS='+S 4:4' mix run bench/profile_stack.exs

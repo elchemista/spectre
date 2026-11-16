@@ -172,7 +172,7 @@ or uncertain, an unstarted governed command is rejected, and started governed
 work uses its original GAM journal for reconciliation. No changed adapter is
 silently invoked with the old arguments.
 
-The runnable [integration project](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) uses
+The runnable [integration project](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md) uses
 all nine packages with the real Server and GAM kernel. Its external browser,
 model and email transports are deterministic fixtures, not production clients.
 

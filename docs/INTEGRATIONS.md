@@ -106,7 +106,7 @@ perception and can bind actions. Directive is a reducer of mission state: a
 returned proposed effect still needs the application's concrete dispatch path.
 A plan or workflow snapshot never grants execution authority.
 
-The [complete integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) exercises all
+The [complete integration](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md) exercises all
 nine installable packages with a real Server and GAM kernel. Its external
 providers are deterministic fixtures. See [Stack tools](STACK_TOOLS.md) for
 current operation shapes and recovery semantics.

@@ -371,5 +371,5 @@ effects, hooks and stored continuations before changing its owner; installing
 
 Use [Migration](MIGRATING_TO_0_4.md) for the Server conversion and
 [Compatibility](COMPATIBILITY.md) for the retained runtime's guide archive.
-The [Stack integration](https://github.com/elchemista/spectre/tree/feature/agent-server-gam/integration/stack_tools)
+The [Stack integration](https://github.com/elchemista/spectre_ecosystem/tree/main/integration/stack_tools)
 exercises the current Server/tool/GAM contracts with deterministic providers.

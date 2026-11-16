@@ -84,7 +84,7 @@ For governed writes, the runtime freezes that partition into its payload.
 The admitted executor reconstructs memory context from the frozen payload and
 resolves the same engine. It must not substitute the current user's mutable
 context when an older operation resumes. The
-[subject-isolated integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) shows the
+[subject-isolated integration](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md) shows the
 complete host wiring and verifies no cross-subject recall.
 
 A stable command id helps correlate a write; it is not a promise of whole-request

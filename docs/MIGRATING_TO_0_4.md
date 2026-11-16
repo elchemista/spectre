@@ -177,7 +177,7 @@ stream consolidation, every installed helper, consent rejection/topic change/
 expiry, and restart during an external operation. Assert that effects are not
 repeated and that reported success comes from actual Outcomes.
 
-The [nine-package integration](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md) provides a
+The [nine-package integration](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md) provides a
 runnable reference with fake external transports and real package/GAM/persistence
 contracts. It complements your application's tests; it does not validate live
 credentials or the host's production authorization policy.

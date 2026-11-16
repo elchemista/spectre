@@ -79,7 +79,7 @@ end
 ```
 
 The action module, model, prompt and host bindings are application dependencies;
-see [the complete executable example](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md).
+see [the complete executable example](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md).
 Kinetic receives the consolidated generation, including its private model
 output, and prepares portable action data. It does not send email. Preserve
 `proposal.metadata` when proposing the prepared operation.

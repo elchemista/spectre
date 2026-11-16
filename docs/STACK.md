@@ -294,7 +294,7 @@ source-compatible while packages adopt the V1 manifest.
 The Stack manifest contract number, package version and Spectre requirement are
 separate values. `contract: 1` does not mean Spectre 0.1, and a satellite does not
 need to copy core's version. Check the package's actual compatible requirement.
-The full nine-package example is [here](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/integration/stack_tools/README.md).
+The full nine-package example is [here](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md).
 
 The optional tool descriptor contract is documented in [Stack tools](STACK_TOOLS.md).
 Its startup check pins the Server's compiled helper snapshot to the actual Agent

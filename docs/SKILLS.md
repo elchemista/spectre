@@ -286,7 +286,7 @@ Mounts without `server:` remain declarative and dispatch their scoped key to the
 Agent Server. Existing 0.3 workflow bodies and generational private state are not
 silently executed or migrated by the 0.4 owner.
 
-See the [nine-package integration](../integration/stack_tools/README.md) and its
+See the [nine-package integration](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md) and its
 Skill scenario for Lens, Kinetic, Mnemonic, Prism, Beam, Directive, Pulse, Ledger
 and Lab running through the same callback/runtime/GAM path.
 
