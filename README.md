@@ -105,6 +105,27 @@ In an application, supervise the Server or use `Spectre.summon/1`
 for per-subject ownership. [Getting started](docs/GETTING_STARTED.md) covers
 these next steps and the generator.
 
+## Satellite libraries
+
+All nine libraries are optional. Install only the capabilities your Stack needs.
+
+| Library | Purpose |
+| --- | --- |
+| [spectre_beam](https://github.com/elchemista/spectre_beam) | Receive and deliver messages through external channels. |
+| [spectre_directive](https://github.com/elchemista/spectre_directive) | Manage resumable missions, plans and their next steps. |
+| [spectre_kinetic](https://github.com/elchemista/spectre_kinetic) | Turn model output into validated action proposals. |
+| [spectre_lab](https://github.com/elchemista/spectre_lab) | Inspect agents and checkpoints; test and compare recorded runs. |
+| [spectre_ledger](https://github.com/elchemista/spectre_ledger) | Persist Server state and GAM history, with file and PostgreSQL storage. |
+| [spectre_lens](https://github.com/elchemista/spectre_lens) | Browse websites, inspect pages and perform browser actions. |
+| [spectre_mnemonic](https://github.com/elchemista/spectre_mnemonic) | Store, search and recall agent memory. |
+| [spectre_prism](https://github.com/elchemista/spectre_prism) | Select models for generation, classification and embeddings. |
+| [spectre_pulse](https://github.com/elchemista/spectre_pulse) | Exchange authenticated messages between agents across transports. |
+
+Related tools: [spectre_ecosystem](https://github.com/elchemista/spectre_ecosystem)
+runs compatibility checks across packages;
+[spectre_studio](https://github.com/elchemista/spectre_studio) provides a LiveView
+control panel for the retained Instance runtime.
+
 ## From conversation to governed work
 
 Server helpers return commands in the Context. `on_result:` names the callback
@@ -150,7 +171,7 @@ These are application fragments: the effect registration, draft preparation and
 chat consumer are supplied by the host. The consumer displays the exact draft,
 acknowledges rendering and submits the human's separate confirm/reject decision.
 GAM checks that decision before execution. [Managed GAM](docs/MANAGED_GAM.md)
-shows those calls; [the full outreach source](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/examples/outreach_agent.exs)
+shows those calls; [the full outreach source](https://github.com/elchemista/spectre/blob/main/docs/examples/outreach_agent.exs)
 connects website inspection, drafting, refusal and failure handling.
 
 ## Guides
