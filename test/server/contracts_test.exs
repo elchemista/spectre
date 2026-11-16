@@ -115,8 +115,8 @@ defmodule Spectre.Server.ContractsTest do
 
     on_exit(fn -> Spectre.Test.Processes.stop(server) end)
     {:ok, id} = Server.input(server, "result")
-    assert_receive :effect_invoked
-    assert_receive {Server, ^server, {:callback_error, ^id, :handle_result, reason}}
+    assert_receive {Server, ^server, {:callback_error, ^id, :handle_result, reason}}, 5000
+    assert_received :effect_invoked
     assert reason.contract == :continuation
     assert reason.tag == :finished
     assert reason.interaction_id == id
