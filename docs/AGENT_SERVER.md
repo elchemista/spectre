@@ -283,15 +283,31 @@ already committed effect.
 
 ## Checkpoints and reconciliation
 
-`Spectre.Server.Store` and its disk adapter provide versioned portable snapshots
-with compare-and-swap. Configure `checkpoint: {store_process, subject_key}` for
-the Disk adapter, or `checkpoint: {StoreModule, store_ref, subject_key}` for an
-explicit Store implementation. The GAM journal separately accepts
-`store: store_process` or `store: {StoreModule, store_ref}`. Use distinct keys per
-conversation. For example, Ledger's `Spectre.Ledger.ServerStore` implements both
-storage ports; it remains distinct from the GAM ledger of governed facts. The disk adapter is
-intended for conversations or small groups; capacity and compaction are
-operational concerns, not evidence of large-scale throughput.
+The default runs entirely in RAM without a database or satellite package.
+For durable custom storage, one module can implement `Spectre.Server.Store`
+for coordination and its `ledger_*` callbacks for canonical GAM history.
+Implement the complete `projection_*` group to persist the disposable read model,
+or omit it to retain that projection in RAM:
+
+```elixir
+gam: [storage: {MyApp.Storage, database_reference}]
+```
+
+The same reference reaches every callback. The application owns the provider's
+lifecycle, connections and migrations. The existing
+`gam: [storage: :ledger, store: {StoreModule, store_ref}]` form and
+`gam_domain/1` / `gam_ledger/1` integrations remain supported. A configured Ledger
+Stack resource can still be discovered automatically. See
+[Domain storage](DOMAIN_STORAGE.md#custom-storage) for callback groups and
+durability guarantees.
+
+For an explicit checkpoint, use `checkpoint: {store_process, subject_key}` with
+the Disk adapter or `checkpoint: {StoreModule, store_ref, subject_key}` with a
+custom Store. Managed storage otherwise provides its default checkpoint binding.
+Give logical agents/sessions distinct stable identities, and keep explicit
+checkpoint keys distinct per conversation. The disk adapter is intended for
+conversations or small groups; capacity and compaction are operational concerns,
+not evidence of large-scale throughput.
 
 A changed definition fingerprint is rejected unless the host supplies
 `checkpoint_migrator: {MyApp.CheckpointMigration, :migrate}`. The callback
@@ -347,7 +363,7 @@ cannot discard a possible execution or its late result. Reconciliation or the
 actual result settles the original continuation; a late show stays suspended
 when another wait owns the foreground.
 
-`Spectre.Server.deliver/4` requires a checkpoint for durable delivery. Governed
+`Spectre.Server.deliver/5` requires a checkpoint for durable delivery. Governed
 delivery uses `{:governed_ref, reference}` to resolve real kernel records and
 check their Scope and continuation; an invented `{:governed, payload}` is
 rejected. `Spectre.Server.OutcomeDispatcher` persists host continuations,
@@ -361,6 +377,54 @@ that must be deduplicated need an application idempotency key. Consequential
 actor work must use a declared governed operation. Effects must remain commands
 through the governed boundary. Callback failures are quarantined as dead
 letters instead of causing an endless replay loop.
+
+## Resetting an agent session
+
+The configured consumer resets the root through `Spectre.Server.reset/2`:
+
+```elixir
+:ok = Spectre.Server.reset(server)
+%{session: session} = Spectre.Server.status(server)
+
+# Keep this token with external work when that work is requested.
+:ok = Spectre.Server.deliver(server, "reply-42", :external_reply, result,
+  session: session)
+```
+
+The root PID, registered name, identity and configuration remain stable. Reset
+clears conversation history, assigns, private state, queued input, pending waits
+and old continuations; mounted Skill processes restart, so their PIDs change.
+The root runs `terminate(:reset, context)` and initializes again from the original
+startup defaults through `init/2`. Release application-owned timers, monitors,
+workers and other resources in the termination callback; dropping a private
+reference does not cancel its resource. Business data and externally stored
+memory are not cleared. An `init/2` callback that reloads external data may bring
+that data into the new session again.
+
+Reset keeps the current backend by default. Durable storage receives a new
+session generation, and restarting the same configured agent/identity resumes
+that generation. Old governance history is retained. Explicit
+`Spectre.Server.reset(server, storage: :ephemeral)` selects temporary RAM;
+restarting the original durable configuration returns to its last durable
+session. Reset does not merge those histories or erase external effects.
+
+The call returns after activation and initialization. `timeout:` bounds reset
+work and defaults to 30,000 milliseconds. Unresolved governed work returns
+`{:error, :reset_busy}`; reconcile it before resetting. Reset a Skill through its
+root. Successful reset emits
+`{Spectre.Server, server, {:reset, %{session: token, previous_domain: old, domain: new}}}`.
+
+Use the token from `status/1`, `Context.session` or the service context's `:session`
+when starting external work, then return that same token in `deliver/5`.
+After reset, arbitrary result tags require it: omission returns
+`{:error, :session_required}`, and an earlier token returns
+`{:error, :stale_session}`. Command and pending tags retain their original unique
+continuation IDs. Fetching the current token only when an old reply arrives
+would incorrectly attribute old work to the new session.
+
+For a storage outage, use `recover_storage/2` and the configured recovery policy
+instead; those preserve the running application's session state. See
+[Domain storage and recovery](DOMAIN_STORAGE.md).
 
 ## Migration boundaries
 

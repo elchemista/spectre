@@ -1,9 +1,11 @@
 # Domain memory and storage recovery
 
-Without a projection store, GAM keeps the original complete in-memory projection.
-No Ledger package or database is required. `gam: [storage: :ledger]` uses the
-configured Ledger resource's canonical history and per-record projection store.
-The application owns its Repo and migrations; startup never creates a database.
+AgentServer defaults to RAM, including its GAM history, coordination state and
+complete projection. No Ledger package or database is required. A configured
+`Spectre.Server.Store` can supply durable coordination, canonical history and an
+optional per-record projection through one behaviour. `gam: [storage: :ledger]`
+also discovers an installed Ledger resource. The application owns its database,
+connections and migrations; startup never creates a database.
 
 ![Domain memory and storage recovery: architecture](assets/domain-storage-1.svg)
 
@@ -35,11 +37,53 @@ does not promise latency independent of the database.
 
 ## Custom storage
 
-`Spectre.GAM.Domain.Projection.Store` requires `open/2`, `head/2`, `commit/5`,
-`fetch/4`, `page/4` and `select/5`. Selections cover exact groups and ordered
-ranges. Each page and record read is fenced by Domain, owner generation and exact
-revision; row changes and the cursor commit atomically. Its canonical ledger
-must provide native `head/2` and `read_batch/3` for streaming recovery.
+A custom database provider implements `@behaviour Spectre.Server.Store` in one
+module and receives the same opaque reference first in every callback:
+
+```elixir
+{:ok, server} = Spectre.Server.start_link(
+  agent: MyApp.SupportAgent,
+  consumer: self(),
+  identity: %{tenant: "acme", subject: "support", conversation: "42"},
+  gam: [storage: {MyApp.Storage, MyApp.Repo}]
+)
+```
+
+The shorthand is equivalent to
+`gam: [storage: :ledger, store: {MyApp.Storage, MyApp.Repo}]`; combining the
+shorthand with another `store:` returns `:conflicting_managed_storage`.
+The provider can use a Repo, connection pool or an existing process as its
+reference. The application supervises it once; AgentServer neither starts a
+second provider nor stops a shared provider when an agent closes.
+
+| Callback group | Contract |
+| --- | --- |
+| Coordination | Existing `fetch/2`, `put_new/3`, `compare_and_swap/4`, `delete/3`; optional `list/3` supplies bounded namespace pages. |
+| Canonical history | `ledger_append/6`, `ledger_load/3`, `ledger_head/3`, `ledger_read_batch/4`, `ledger_lookup_batch/4`, `ledger_export/3`. Optional `ledger_load_from/4` avoids verified full reads when loading a suffix. |
+| Persisted projection | All of `projection_open/3`, `projection_head/3`, `projection_commit/6`, `projection_fetch/5`, `projection_page/5`, `projection_select/6`, or none of them. Omitting the group retains the complete projection in RAM. |
+
+The callback arities include the provider reference. Implementing part of a
+group returns `{:incomplete_server_store, module, group, missing_callbacks}`
+before authority-profile writes. Every history append must atomically acquire a
+complete batch, enforce its expected revision and deduplicate its batch identity.
+An uncertain acknowledgement is `{:error, :ambiguous}`, never proof of absence.
+Batch reads must be indexed and bounded. Projection selections cover exact groups
+and ordered ranges; reads require the exact Domain, owner generation and cursor.
+Row changes and their cursor advance atomically. Sharing a provider does not add
+a transaction spanning all three resources: checkpoint, history and projection
+retain their existing durability barriers.
+
+The existing `Spectre.GAM.Ledger.Store` and
+`Spectre.GAM.Domain.Projection.Store` contracts remain available to standalone
+Domains and existing adapters. Managed first uses an explicit `gam_domain/1`,
+then the unified callback groups, then the older history-only `gam_ledger/1`
+fallback. Only an absent callback or `:not_configured` permits fallback; a
+storage error is propagated. Kernel verification and admission are unchanged.
+
+Give each logical agent/session a distinct stable `identity`. The Agent definition
+and identity select its Domain and default coordination key; the same identity
+recovers the same persisted session. Supervisor child IDs do not separate storage
+records. Explicit Domain/checkpoint overrides must preserve that uniqueness.
 
 Cold startup rebuilds disposable projection rows from verified canonical batches.
 A saved cursor is not a trusted snapshot. Canonical history is never deleted by
@@ -90,6 +134,32 @@ automatic merge or write-back of divergent RAM history when the database returns
 Restore a coherent backup to preserve continuity, or deliberately use a new
 Domain after administrative deletion. Loss of arbitrary data cannot be inferred
 continuously from a surviving head; verify after database maintenance.
+
+## Starting a fresh session
+
+The configured consumer can call `Spectre.Server.reset(server)` to clear the
+conversation and application runtime state while retaining the root PID, name,
+identity and configuration. Mounted Skill runtimes restart with fresh local
+state. The root calls `terminate(:reset, context)`, restores the original startup
+defaults, and runs `init/2` again. Application-owned timers, monitors and handles
+in `Context.private` need cleanup in that termination callback. External memory,
+business data and effects already performed remain application-owned.
+
+Reset uses the current storage mode by default. A durable reset starts a new
+Domain/checkpoint generation on the same backend and persists the active
+generation so restart resumes the new session. Old audit history remains stored.
+`Spectre.Server.reset(server, storage: :ephemeral)` explicitly selects a fresh
+RAM session. That choice is temporary: restarting with the original durable
+configuration reopens its last durable session. RAM history is never silently
+merged back into that backend.
+
+Reset returns after activation and initialization; `timeout:` defaults to 30
+seconds. It refuses unresolved governed work with `:reset_busy`, and the root
+consumer receives `{:reset, %{session: token, previous_domain: old, domain: new}}`
+inside the ordinary Server envelope. Storage recovery preserves the existing
+application session; reset deliberately initializes a new one. See
+[the reset and result-delivery example](AGENT_SERVER.md#resetting-an-agent-session)
+for fencing external replies with the session token.
 
 ## Application content
 

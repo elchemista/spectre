@@ -3,6 +3,23 @@ defmodule Spectre.Server.GAM.Managed.LedgerStorage do
   alias Spectre.GAM.{Adapter, Ledger}
   alias Spectre.Server.Store.Port
 
+  @ledger_callbacks [
+    ledger_append: 6,
+    ledger_load: 3,
+    ledger_head: 3,
+    ledger_read_batch: 4,
+    ledger_lookup_batch: 4,
+    ledger_export: 3
+  ]
+  @projection_callbacks [
+    projection_open: 3,
+    projection_head: 3,
+    projection_commit: 6,
+    projection_fetch: 5,
+    projection_page: 5,
+    projection_select: 6
+  ]
+
   # Keep the foundation's issuance time with the coordination journal. It is
   # immutable configuration, not a projection or a replacement for the ledger.
   def open(selection, journal, domain, digest) when not is_nil(journal) do
@@ -57,14 +74,52 @@ defmodule Spectre.Server.GAM.Managed.LedgerStorage do
     if function_exported?(module, :gam_domain, 1) do
       case Adapter.invoke(module, :gam_domain, [ref]) do
         {:ok, {:ok, %{ledger: _, projection: _} = storage}} -> {:ok, storage}
-        {:ok, :not_configured} -> select_ledger(module, ref)
+        {:ok, :not_configured} -> select_unified(module, ref)
         {:ok, {:error, _} = error} -> error
         {:error, _} = error -> error
         _ -> {:error, :managed_gam_domain_unavailable}
       end
     else
+      select_unified(module, ref)
+    end
+  end
+
+  defp select_unified(module, ref) do
+    callbacks = @ledger_callbacks ++ [ledger_load_from: 4] ++ @projection_callbacks
+
+    if any_callback?(module, callbacks) do
+      with :ok <- validate_group(module, :ledger, @ledger_callbacks),
+           {:ok, projection} <- unified_projection(module, ref) do
+        {:ok,
+         %{
+           ledger: {Spectre.Server.Store.Ledger, store: {module, ref}},
+           projection: projection
+         }}
+      end
+    else
       select_ledger(module, ref)
     end
+  end
+
+  defp unified_projection(module, ref) do
+    if any_callback?(module, @projection_callbacks) do
+      with :ok <- validate_group(module, :projection, @projection_callbacks),
+           do: {:ok, {Spectre.Server.Store.Projection, store: {module, ref}}}
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp any_callback?(module, callbacks),
+    do: Enum.any?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end)
+
+  defp validate_group(module, group, callbacks) do
+    missing =
+      Enum.reject(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end)
+
+    if missing == [],
+      do: :ok,
+      else: {:error, {:incomplete_server_store, module, group, missing}}
   end
 
   defp select_ledger(module, ref) do

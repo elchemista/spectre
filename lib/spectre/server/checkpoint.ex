@@ -40,6 +40,7 @@ defmodule Spectre.Server.Checkpoint do
   alias Spectre.Server.Store.Disk
   alias Spectre.{Definition, Route}
   alias Spectre.Server.Router
+  alias Spectre.Server.TaskGuard
 
   @max_bytes 16 * 1_024 * 1_024 - 16_384
 
@@ -272,21 +273,9 @@ defmodule Spectre.Server.Checkpoint do
   defp supervised_payload_callback(owner, callback) do
     worker = self()
 
-    case Task.Supervisor.start_child(Spectre.Server.TaskSupervisor, fn ->
-           watch_payload_owner(owner, worker)
-         end) do
+    case TaskGuard.start(owner, worker) do
       {:ok, _watcher} -> callback.()
       _ -> {:error, :checkpoint_payload_unavailable}
-    end
-  end
-
-  defp watch_payload_owner(owner, worker) do
-    owner_monitor = Process.monitor(owner)
-    worker_monitor = Process.monitor(worker)
-
-    receive do
-      {:DOWN, ^owner_monitor, :process, ^owner, _} -> Process.exit(worker, :kill)
-      {:DOWN, ^worker_monitor, :process, ^worker, _} -> :ok
     end
   end
 

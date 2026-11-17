@@ -72,6 +72,14 @@ defmodule Spectre.Server.GAM.Managed.Gate do
   @doc false
   def io(server, operation, client), do: GenServer.call(server, {:approval_io, operation, client})
 
+  @doc false
+  @spec pause_for_reset(pid(), reference()) :: :ok | {:error, atom()}
+  def pause_for_reset(server, token), do: GenServer.call(server, {:pause_for_reset, token})
+
+  @doc false
+  @spec resume_reset(pid(), reference()) :: :ok | {:error, atom()}
+  def resume_reset(server, token), do: GenServer.call(server, {:resume_reset, token})
+
   @impl true
   def init(config) do
     {:ok, tasks} = Task.Supervisor.start_link()
@@ -83,6 +91,7 @@ defmodule Spectre.Server.GAM.Managed.Gate do
         prepared: %{},
         deliveries: %{},
         io: %{},
+        reset_token: nil,
         tasks: tasks
       })
 
@@ -97,6 +106,38 @@ defmodule Spectre.Server.GAM.Managed.Gate do
     reply = if token == state.token, do: {:ok, state.auth}, else: {:error, :unauthenticated}
     {:reply, reply, state}
   end
+
+  def handle_call({:pause_for_reset, token}, {caller, _}, state) do
+    cond do
+      caller != state.owner or not is_reference(token) ->
+        {:reply, {:error, :untrusted_reset_transport}, state}
+
+      state.reset_token == token ->
+        {:reply, :ok, state}
+
+      state.reset_token || map_size(state.deliveries) > 0 || map_size(state.io) > 0 ->
+        {:reply, {:error, :reset_busy}, state}
+
+      true ->
+        {:reply, :ok, %{state | reset_token: token}}
+    end
+  end
+
+  def handle_call({:resume_reset, token}, {caller, _}, state) do
+    cond do
+      caller != state.owner ->
+        {:reply, {:error, :untrusted_reset_transport}, state}
+
+      state.reset_token == token ->
+        {:reply, :ok, %{state | reset_token: nil}}
+
+      true ->
+        {:reply, {:error, :reset_busy}, state}
+    end
+  end
+
+  def handle_call(_request, _from, %{reset_token: token} = state) when not is_nil(token),
+    do: {:reply, {:error, :reset_busy}, state}
 
   def handle_call(
         {:prepare_external, presentation, approver, deadline, revision, skill},
@@ -451,7 +492,13 @@ defmodule Spectre.Server.GAM.Managed.Gate do
        %{state | proofs: Map.delete(state.proofs, proof), shows: Map.delete(state.shows, ref)}}
 
   @impl true
+  def handle_info(:prune_external_shows, %{reset_token: token} = state) when not is_nil(token),
+    do: {:noreply, state}
+
   def handle_info(:prune_external_shows, state), do: {:noreply, prune(state)}
+
+  def handle_info(:approval_recovery, %{reset_token: token} = state) when not is_nil(token),
+    do: {:noreply, state}
 
   def handle_info(:approval_recovery, state) do
     case start_io(state, {:recover, []}, nil, :deferred) do

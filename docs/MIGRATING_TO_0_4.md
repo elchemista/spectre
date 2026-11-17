@@ -169,6 +169,16 @@ remove fingerprints to force replay. Unsafe/nonrepeatable work with unknown
 results stays unknown until reconciled. For Ledger format/recovery constraints,
 read the companion branch's ServerStore documentation.
 
+Custom databases can now implement the single `Spectre.Server.Store` behaviour
+with `ledger_*` and optional `projection_*` groups, selected through
+`gam: [storage: {MyStorage, reference}]`. Existing GAM storage adapters remain
+supported; see [Domain storage](DOMAIN_STORAGE.md#custom-storage).
+Use `Spectre.Server.reset/2` for a fresh application/GAM session on the current
+backend, preserving old audit history. Unlike storage recovery, reset reruns
+initialization from startup defaults. Keep the originating session token with
+external work and return it through `deliver/5`; after reset, arbitrary callback
+tags require `session:`. See [session reset](AGENT_SERVER.md#resetting-an-agent-session).
+
 ## 6. Verify the application, not just compilation
 
 Exercise matched, ambiguous, unmatched and provider-failure paths. Check separate

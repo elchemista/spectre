@@ -617,6 +617,7 @@ Mix project version.
 ## Agent/Server and GAM additions in 0.4
 
 - `Spectre.Server`
+  - functions: `reset/1`, `reset/2`, `recover_storage/2`, `deliver/5`
   - functions: `approval/2`, `approval_inbox/1`, `approval_inbox/2`, `approval_decide/3`, `approval_presented/2`, `receive_approval/2`, `presented/2`, `decide/4`, `gam_view/1`, `gam_inspect/2`
   - functions: `get_pending/2`, `put_private/2`, `put_private/3`, `get_private/2`, `get_private/3`, `delete_private/2`, `close_pending/2`, `close_pending/3`, `close_pending_after/3`, `close_pending_after/4`, `cancel_pending_close/2`, `cancel_pending_close/3`
   - functions: `await_input/2`, `await_input/3`
@@ -638,6 +639,8 @@ Mix project version.
 - `Spectre.Server.GAM.Lifecycle`
   - functions: `evidence/3`, `record/3`, `validate/1`
 - `Spectre.Server.Store`
+  - callbacks: `gam_domain/1`, `ledger_append/6`, `ledger_load/3`, `ledger_load_from/4`, `ledger_head/3`, `ledger_read_batch/4`, `ledger_lookup_batch/4`, `ledger_export/3`
+  - callbacks: `projection_open/3`, `projection_head/3`, `projection_commit/6`, `projection_fetch/5`, `projection_page/5`, `projection_select/6`
   - callbacks: `list/3`, `delete/3`, `gam_ledger/1`
   - callbacks: `compare_and_swap/4`, `fetch/2`, `put_new/3`
 - `Spectre.Server.Store.Disk`

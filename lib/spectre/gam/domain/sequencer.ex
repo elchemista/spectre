@@ -414,6 +414,11 @@ defmodule Spectre.GAM.Domain.Sequencer do
   @impl GenServer
   def handle_call(:head, from, state), do: dispatch_call(:head, from, state)
 
+  # These verified active indexes survive historical projection eviction.
+  # Reset readiness must remain readable while the backend is unavailable.
+  def handle_call(:unresolved_duties, _from, state),
+    do: {:reply, Query.unresolved_duties(state), state}
+
   def handle_call(request, from, state)
       when request == :late_observer or
              (is_tuple(request) and

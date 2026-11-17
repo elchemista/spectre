@@ -43,10 +43,11 @@ defmodule Spectre.Server.TransportGuard do
     status = terminal_status(result)
 
     if is_pid(context[:consumer]) do
-      send(
+      Spectre.Server.Runtime.notify_consumer(
         context.consumer,
-        {Spectre.Server, context[:runtime],
-         {:preview_end, context.interaction, generation, status}}
+        context[:runtime],
+        {:preview_end, context.interaction, generation, status},
+        if(context[:skill], do: context[:session])
       )
     end
 

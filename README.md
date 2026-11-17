@@ -143,6 +143,12 @@ Server coordination and the Domain's historical projection in the application's
 PostgreSQL database. Application payload callbacks choose where content is stored
 and how it is protected.
 
+`Spectre.Server.reset(server)` starts a fresh session, including mounted Skills,
+while keeping the root PID. Use `storage: :ephemeral` to explicitly reset into RAM.
+See [Server lifecycle](docs/AGENT_SERVER.md#resetting-an-agent-session) and
+[custom storage](docs/DOMAIN_STORAGE.md) for reset semantics and the single
+`Spectre.Server.Store` behaviour.
+
 ## Example: ask before sending an email
 
 After registering the email effect, configure the operation on the root:

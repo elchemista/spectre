@@ -2,6 +2,27 @@ defmodule Spectre.Server.Delivery do
   @moduledoc false
   alias Spectre.Server.GAM
 
+  @doc false
+  @spec session(map(), term(), keyword()) :: :ok | {:error, atom()}
+  def session(state, tag, opts) when is_list(opts) do
+    cond do
+      not Keyword.keyword?(opts) or Keyword.keys(opts) -- [:session] != [] ->
+        {:error, :invalid_delivery_options}
+
+      Keyword.has_key?(opts, :session) and opts[:session] != state.submission_epoch ->
+        {:error, :stale_session}
+
+      Map.get(state, :session_required, false) and not Keyword.has_key?(opts, :session) and
+          not match?({:command, _}, tag) ->
+        {:error, :session_required}
+
+      true ->
+        :ok
+    end
+  end
+
+  def session(_, _, _), do: {:error, :invalid_delivery_options}
+
   def validate(_state, _tag, {:governed, _payload}), do: {:error, :unverified_governed_result}
 
   def validate(state, {:pending, id}, result) do

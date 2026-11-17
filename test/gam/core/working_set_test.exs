@@ -32,6 +32,7 @@ defmodule Spectre.GAM.Core.WorkingSetTest do
   end
 
   test "ordinary commits discard history and replay agrees with the complete pure fold", %{f: f} do
+    assert {:ok, false} = GenServer.call(f.server, :unresolved_duties)
     paid = Fixture.paid_evidence(f)
     assert {:ok, ^paid} = Fixture.observe_payment(f, paid)
     assert_same_history(f)
@@ -153,6 +154,11 @@ defmodule Spectre.GAM.Core.WorkingSetTest do
     assert Enum.any?(repaired.duties, fn {_, duty} ->
              duty.act_ref == act.ref and duty.class == :ambiguous_outcome
            end)
+
+    assert {:ok, true} =
+             Spectre.GAM.Domain.Query.unresolved_duties(%{
+               projection: Spectre.GAM.Domain.Projection.Live.retain(repaired)
+             })
 
     rows = Agent.get(storage, & &1[f.refs.domain].rows)
     refute Map.has_key?(rows, {:duty_deadlines, {deadline, :attempt, attempt.ref}})

@@ -24,6 +24,8 @@ defmodule Spectre.Server.Runtime do
     Inbox,
     Operations,
     PendingLifecycle,
+    Reset,
+    Session,
     Skills,
     Tool
   }
@@ -135,14 +137,7 @@ defmodule Spectre.Server.Runtime do
 
     case Managed.start_link(options) do
       {:ok, pid} ->
-        opts =
-          if Keyword.has_key?(state.opts, :checkpoint),
-            do: state.opts,
-            else: Keyword.put(state.opts, :checkpoint, Managed.runtime_checkpoint(pid))
-
-        opts = Keyword.put(opts, :checkpoint_domain, {pid, Managed.info(pid).domain})
-
-        Map.merge(state, %{gam: {Managed, [server: pid]}, managed_owner: pid, opts: opts})
+        bind_managed(state, pid, Managed.session(pid))
 
       {:error, reason} ->
         if Keyword.get(config, :storage, :ephemeral) != :ephemeral and
@@ -157,6 +152,21 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp setup_managed_gam(state), do: Map.put(state, :managed_owner, nil)
+
+  @spec bind_managed(map(), pid(), Session.t()) :: map()
+  defp bind_managed(state, pid, session) do
+    opts = Session.runtime_options(session, state.opts)
+    opts = Keyword.put_new_lazy(opts, :checkpoint, fn -> Managed.runtime_checkpoint(pid) end)
+    opts = Keyword.put(opts, :checkpoint_domain, {pid, Managed.info(pid).domain})
+
+    Map.merge(state, %{
+      gam: {Managed, [server: pid]},
+      managed_owner: pid,
+      opts: opts,
+      submission_epoch: session.generation || state.submission_epoch,
+      session_required: not is_nil(session.generation)
+    })
+  end
 
   defp storage_recovered(state, recovery) do
     case state.opts[:checkpoint_domain] do
@@ -283,6 +293,9 @@ defmodule Spectre.Server.Runtime do
       assigns: Keyword.get(opts, :assigns, %{}),
       private: %{},
       opts: Keyword.delete(opts, :private),
+      boot_options: Keyword.delete(opts, :private),
+      reset_request: nil,
+      session_required: false,
       services: Map.new(Keyword.get(opts, :services, [])),
       consumer: Keyword.get(opts, :consumer),
       gam: Keyword.get(opts, :gam),
@@ -308,7 +321,7 @@ defmodule Spectre.Server.Runtime do
       inbox: %{},
       seen_events: %{},
       external_submissions: %{},
-      submission_epoch: Spectre.Identity.uuid7(),
+      submission_epoch: Keyword.get(opts, :session_generation) || Spectre.Identity.uuid7(),
       seen_event_order: [],
       dead_letters: %{},
       operations: %{},
@@ -362,6 +375,36 @@ defmodule Spectre.Server.Runtime do
   end
 
   @impl true
+  def handle_call({__MODULE__, :freeze_reset, control}, _from, state) do
+    with {_parent, ^control} <- state.opts[:skill_parent],
+         nil <- state.reset_request,
+         :ok <- Reset.available(state, &governed?/1) do
+      {:reply, :ok, %{state | reset_request: %{kind: :skill, control: control, deferred: []}}}
+    else
+      _ -> {:reply, {:error, :reset_busy}, state}
+    end
+  end
+
+  def handle_call({__MODULE__, :reset, opts}, {caller, _} = from, state) do
+    with false <- Keyword.has_key?(state.opts, :skill),
+         true <- caller == state.consumer,
+         nil <- state.reset_request,
+         {:ok, opts} <- Reset.options(opts),
+         :ok <- Reset.available(state, &governed?/1),
+         {:ok, reset} <- Reset.start(state, from, opts) do
+      {:noreply, %{state | reset_request: reset}}
+    else
+      true -> {:reply, {:error, :reset_through_root_agent}, state}
+      false -> {:reply, {:error, :untrusted_reset_transport}, state}
+      {:error, _} = error -> {:reply, error, state}
+      _ -> {:reply, {:error, :reset_busy}, state}
+    end
+  end
+
+  def handle_call(message, _from, %{reset_request: reset} = state)
+      when is_map(reset) and message != {__MODULE__, :status},
+      do: {:reply, {:error, :reset_busy}, state}
+
   def handle_call({__MODULE__, :recover_storage, decision}, {caller, _}, state) do
     if caller == state.consumer and decision in [:retry, :memory] do
       result = Managed.recover_storage(state.managed_owner, decision)
@@ -540,8 +583,14 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
-  def handle_call({__MODULE__, :deliver, event_id, tag, result}, from, state) do
+  def handle_call({__MODULE__, :deliver, event_id, tag, result}, from, state),
+    do: handle_call({__MODULE__, :deliver, event_id, tag, result, []}, from, state)
+
+  def handle_call({__MODULE__, :deliver, event_id, tag, result, opts}, from, state) do
     cond do
+      Delivery.session(state, tag, opts) != :ok ->
+        {:reply, Delivery.session(state, tag, opts), state}
+
       not is_binary(event_id) or event_id == "" ->
         {:reply, {:error, :invalid_event_id}, state}
 
@@ -566,7 +615,9 @@ defmodule Spectre.Server.Runtime do
        workers: map_size(state.workers),
        dead_letters: state.dead_letters,
        outbox_size: map_size(state.outbox),
-       operations: state.operations
+       operations: state.operations,
+       session: state.submission_epoch,
+       resetting: not is_nil(state.reset_request)
      }, state}
   end
 
@@ -693,6 +744,15 @@ defmodule Spectre.Server.Runtime do
   end
 
   @impl true
+  def handle_cast(
+        {__MODULE__, :resume_reset, control},
+        %{reset_request: %{kind: :skill, control: control}} = state
+      ),
+      do: {:noreply, resume_reset_messages(state)}
+
+  def handle_cast(message, %{reset_request: reset} = state) when is_map(reset),
+    do: {:noreply, defer_reset(state, {:cast, message})}
+
   def handle_cast(message, state), do: delegate_otp(:handle_cast, [message], state)
 
   defp approval_event(state, event) do
@@ -735,10 +795,79 @@ defmodule Spectre.Server.Runtime do
   end
 
   @impl true
+  def handle_continue(value, %{reset_request: reset} = state) when is_map(reset),
+    do: {:noreply, defer_reset(state, {:continue, value})}
+
   def handle_continue({__MODULE__, value}, state),
     do: delegate_otp(:handle_continue, [value], state)
 
   @impl true
+  def handle_info(
+        {__MODULE__, control, :reset_activating, token, owner},
+        %{control: control, reset_request: %{token: token} = reset} = state
+      ) do
+    send(reset.pid, {token, :activate})
+    {:noreply, %{state | reset_request: %{reset | phase: :activating, owner: owner}}}
+  end
+
+  def handle_info(
+        {__MODULE__, control, :reset_ready, token, result},
+        %{control: control, reset_request: %{token: token}} = state
+      ) do
+    case result do
+      {:ok, owner, session} -> complete_reset(state, owner, session)
+      {:error, {:session_activation_unknown, _}} = error -> stop_reset(state, error)
+      {:error, _} = error -> failed_reset(state, error)
+    end
+  end
+
+  def handle_info(
+        {__MODULE__, control, :reset_timeout, token},
+        %{control: control, reset_request: %{token: token}} = state
+      ),
+      do: failed_reset(state, {:error, :reset_timeout})
+
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, reason},
+        %{reset_request: %{monitor: monitor}} = state
+      ),
+      do: failed_reset(state, {:error, {:reset_worker_down, reason}})
+
+  def handle_info(
+        {:DOWN, monitor, :process, owner, :normal},
+        %{startup_owner: {owner, monitor}} = state
+      ),
+      do: {:noreply, %{state | startup_owner: nil}}
+
+  def handle_info(
+        {:DOWN, monitor, :process, owner, reason},
+        %{startup_owner: {owner, monitor}} = state
+      ),
+      do: {:stop, reason, state}
+
+  def handle_info({:EXIT, owner, :normal}, %{startup_owner: {owner, monitor}} = state) do
+    Process.demonitor(monitor, [:flush])
+    {:noreply, %{state | startup_owner: nil}}
+  end
+
+  def handle_info({:EXIT, owner, reason}, %{startup_owner: {owner, _}} = state),
+    do: {:stop, reason, state}
+
+  def handle_info({:EXIT, owner, reason}, %{managed_owner: owner} = state),
+    do: {:stop, {:managed_owner_stopped, reason}, state}
+
+  def handle_info({:EXIT, owner, reason}, %{skill_supervisor: owner} = state),
+    do: {:stop, {:skill_supervisor_stopped, reason}, state}
+
+  def handle_info({:EXIT, _pid, :normal}, state), do: {:noreply, state}
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
+
+  def handle_info(message, %{reset_request: reset} = state) when is_map(reset),
+    do: {:noreply, defer_reset(state, {:info, message})}
+
+  def handle_info({__MODULE__, control, :reset_continue, value}, %{control: control} = state),
+    do: handle_continue(value, state)
+
   def handle_info(
         {__MODULE__, control, :gam_storage_recovered, recovery},
         %{control: control} = state
@@ -878,18 +1007,6 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
-  def handle_info(
-        {:DOWN, monitor, :process, owner, :normal},
-        %{startup_owner: {owner, monitor}} = state
-      ),
-      do: {:noreply, %{state | startup_owner: nil}}
-
-  def handle_info(
-        {:DOWN, monitor, :process, owner, reason},
-        %{startup_owner: {owner, monitor}} = state
-      ),
-      do: {:stop, reason, state}
-
   def handle_info({:DOWN, monitor, :process, _pid, reason} = message, state) do
     case Enum.find(state.workers, fn {_ref, worker} -> worker.monitor == monitor end) do
       nil ->
@@ -940,31 +1057,119 @@ defmodule Spectre.Server.Runtime do
           else: {:noreply, conversation(state, :handle_skill, [id, event], nil) |> finish()}
 
       :error ->
-        delegate_otp(:handle_info, [message], state)
+        if state.session_required and is_pid(child) and node(child) == node() and
+             not Process.alive?(child),
+           do: {:noreply, state},
+           else: delegate_otp(:handle_info, [message], state)
     end
   end
 
-  # Unknown messages in this reserved envelope cannot complete an operation.
-  def handle_info({__MODULE__, _ref, _kind}, state), do: {:noreply, state}
-  def handle_info({__MODULE__, _ref, _kind, _value}, state), do: {:noreply, state}
+  def handle_info(
+        {__MODULE__, session, :skill_event, child, event},
+        %{submission_epoch: session} = state
+      ),
+      do: handle_info({Spectre.Server, child, event}, state)
 
-  def handle_info({:EXIT, owner, :normal}, %{startup_owner: {owner, monitor}} = state) do
-    Process.demonitor(monitor, [:flush])
-    {:noreply, %{state | startup_owner: nil}}
+  # Unknown messages in this reserved envelope cannot complete an operation.
+  def handle_info(message, state)
+      when is_tuple(message) and tuple_size(message) > 0 and elem(message, 0) == __MODULE__,
+      do: {:noreply, state}
+
+  def handle_info(message, state), do: delegate_otp(:handle_info, [message], state)
+
+  @spec defer_reset(map(), tuple()) :: map()
+  defp defer_reset(state, message),
+    do: update_in(state.reset_request.deferred, &[message | &1])
+
+  @spec resume_reset_messages(map()) :: map()
+  defp resume_reset_messages(state) do
+    Enum.each(Enum.reverse(state.reset_request.deferred), fn
+      {:info, message} -> send(self(), message)
+      {:cast, message} -> GenServer.cast(self(), message)
+      {:continue, value} -> send(self(), {__MODULE__, state.control, :reset_continue, value})
+    end)
+
+    %{state | reset_request: nil}
   end
 
-  def handle_info({:EXIT, owner, reason}, %{startup_owner: {owner, _}} = state),
-    do: {:stop, reason, state}
+  @spec failed_reset(map(), {:error, term()}) :: tuple()
+  defp failed_reset(%{reset_request: %{phase: :activating}} = state, error),
+    do: stop_reset(state, error)
 
-  def handle_info({:EXIT, owner, reason}, %{managed_owner: owner} = state),
-    do: {:stop, {:managed_owner_stopped, reason}, state}
+  defp failed_reset(state, error), do: abort_reset(state, error)
 
-  def handle_info({:EXIT, owner, reason}, %{skill_supervisor: owner} = state),
-    do: {:stop, {:skill_supervisor_stopped, reason}, state}
+  @spec abort_reset(map(), {:error, term()}) :: {:noreply, map()}
+  defp abort_reset(state, error) do
+    Reset.finish(state.reset_request, :abort)
+    Reset.resume(state)
+    GenServer.reply(state.reset_request.from, error)
+    {:noreply, resume_reset_messages(state)}
+  end
 
-  def handle_info({:EXIT, _pid, :normal}, state), do: {:noreply, state}
-  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
-  def handle_info(message, state), do: delegate_otp(:handle_info, [message], state)
+  @spec stop_reset(map(), {:error, term()}) :: {:stop, term(), map()}
+  defp stop_reset(state, error) do
+    Reset.finish(state.reset_request, :abort)
+    GenServer.reply(state.reset_request.from, error)
+    {:stop, {:reset_failed, elem(error, 1)}, %{state | reset_request: nil}}
+  end
+
+  @spec complete_reset(map(), pid(), Session.t()) :: tuple()
+  defp complete_reset(state, owner, session) do
+    :ok = Managed.adopt_reset(owner, session)
+    Process.link(owner)
+    Reset.finish(state.reset_request, :adopted)
+
+    Enum.each(state.workers, fn {_ref, worker} ->
+      if worker.monitor, do: Process.demonitor(worker.monitor, [:flush])
+      if worker[:reply_to], do: GenServer.reply(worker.reply_to, {:error, :session_reset})
+    end)
+
+    terminate(:reset, state)
+
+    fresh =
+      state.agent
+      |> new_state(state.server, state.boot_options)
+      |> Map.put(:control, state.reset_request.control)
+      |> bind_managed(owner, session)
+      |> then(&Map.put(&1, :tool_bindings, Tool.bindings!(&1)))
+
+    result =
+      Failure.capture(fn ->
+        with {:ok, fresh} <- start_skills(fresh), do: init_application(fresh)
+      end)
+
+    case result do
+      {:ok, {:ok, fresh}} ->
+        finish_reset(state, fresh)
+
+      {:ok, {:ok, fresh, action}} ->
+        finish_reset(state, fresh, action)
+
+      failure ->
+        GenServer.reply(
+          state.reset_request.from,
+          {:error, {:reset_initialization_failed, failure}}
+        )
+
+        {:stop, {:reset_initialization_failed, failure}, fresh}
+    end
+  end
+
+  @spec finish_reset(map(), map(), term()) :: {:noreply, map(), term()}
+  defp finish_reset(previous, fresh, action \\ :hibernate) do
+    notify(
+      fresh,
+      {:reset,
+       %{
+         session: fresh.submission_epoch,
+         previous_domain: previous.opts[:checkpoint_domain] |> elem(1),
+         domain: elem(fresh.opts[:checkpoint_domain], 1)
+       }}
+    )
+
+    GenServer.reply(previous.reset_request.from, :ok)
+    {:noreply, finish(fresh), action}
+  end
 
   @impl true
   def terminate(reason, state) do
@@ -1982,6 +2187,7 @@ defmodule Spectre.Server.Runtime do
 
     ctx = %Context{
       agent: state.agent,
+      session: state.submission_epoch,
       assigns: state.assigns,
       private: state.private,
       identity: state.identity,
@@ -2532,6 +2738,7 @@ defmodule Spectre.Server.Runtime do
       agent: state.agent,
       server: state.server,
       runtime: state.runtime_pid,
+      session: state.submission_epoch,
       identity: state.identity,
       skill: Keyword.get(state.opts, :skill),
       assigns: state.assigns,
@@ -3917,8 +4124,24 @@ defmodule Spectre.Server.Runtime do
   defp cancel_timer(nil), do: :ok
   defp cancel_timer(timer), do: Process.cancel_timer(timer)
 
-  defp notify(%{consumer: pid}, event) when is_pid(pid),
-    do: send(pid, {Spectre.Server, self(), event})
+  @doc false
+  @spec notify_consumer(pid() | nil, pid(), term(), binary() | nil) :: term()
+  def notify_consumer(consumer, runtime, event, session) when is_pid(consumer) do
+    if session,
+      do: send(consumer, {__MODULE__, session, :skill_event, runtime, event}),
+      else: send(consumer, {Spectre.Server, runtime, event})
+  end
+
+  def notify_consumer(_, _, _, _), do: :ok
+
+  defp notify(%{consumer: pid} = state, event) when is_pid(pid),
+    do:
+      notify_consumer(
+        pid,
+        self(),
+        event,
+        if(Keyword.has_key?(state.opts, :skill), do: state.submission_epoch)
+      )
 
   defp notify(_, _), do: :ok
 end

@@ -18,6 +18,14 @@ defmodule Spectre.GAM.Domain.Query do
   def head(state), do: Map.take(state.projection, [:domain_ref, :revision, :head_digest])
 
   @doc false
+  @spec unresolved_duties(map()) :: {:ok, boolean()}
+  def unresolved_duties(state) do
+    index = state.projection.read_index
+
+    {:ok, MapSet.size(index.authority.open_duty_causes) > 0 or map_size(index.duties.pending) > 0}
+  end
+
+  @doc false
   def attempt_result(state, decision, act),
     do: Recovery.from_projection(state.projection, decision, act)
 
