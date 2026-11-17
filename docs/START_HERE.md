@@ -6,16 +6,18 @@ the host declares consequential. Existing 0.3 applications start with
 
 ## First steps
 
-1. [Installation](INSTALLATION.md): dependencies, compatible branches and supervision.
+1. [Installation](INSTALLATION.md): dependencies, source pins and supervision.
 2. [Getting started](GETTING_STARTED.md): generate an Agent/Server and receive a reply.
 3. [Architecture](ARCHITECTURE.md): process ownership, commands and authority.
-4. [Managed GAM](MANAGED_GAM.md): configure effects, identity and human consent.
+4. [Routing](ROUTING.md): choose and combine recognition strategies.
+5. [Managed GAM](MANAGED_GAM.md): configure effects, identity and human consent.
 
 ## Build your application
 
 | Task | Guide |
 | --- | --- |
 | Recognize input and train classifiers | [Routing](ROUTING.md), [Training](TRAINING.md), [Evaluation](EVALUATION.md) |
+| Implement custom providers and adapters | [Behaviours and adapters](BEHAVIOURS.md) |
 | Implement callbacks and asynchronous work | [Server](AGENT_SERVER.md), [API](API.md), [DSL](DSL.md) |
 | Install package helpers and effects | [Stack tools](STACK_TOOLS.md), [Stack](STACK.md) |
 | Run reusable Skill servers | [Skills](SKILLS.md) |

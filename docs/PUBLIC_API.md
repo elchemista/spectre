@@ -9,14 +9,15 @@ alongside the retained compatibility API. See [Agent and Server](AGENT_SERVER.md
 for ownership and migration requirements.
 This is the machine-checked callable inventory, not an architecture tutorial.
 For new code start with [AgentServer](AGENT_SERVER.md), [Stack tools](STACK_TOOLS.md)
-and [GAM](GAM.md); use [migration](MIGRATING_TO_0_4.md) for the retained Instance API.
+and [GAM](GAM.md). [Behaviours and adapters](BEHAVIOURS.md) groups every public
+behaviour with its required/optional callbacks, configuration and examples;
+use [migration](MIGRATING_TO_0_4.md) for the retained Instance API.
 
 The inventory includes the Server and GAM additions listed below, alongside the
-retained compatibility surface. It does **not yet enumerate the complete 0.4
-Stack tool-descriptor contract**: the optional `c:Spectre.Stack.Installable.tools/1`
-callback, adapter prepare/invoke/project contract and Stack-generated private
-helpers are documented in [Stack tools](STACK_TOOLS.md) and their source modules.
-The manifest test does not establish coverage of those omitted additions.
+retained compatibility surface, including all public behaviour callbacks. The
+convention-based adapter prepare/invoke/project contract and Stack-generated
+private helpers are documented in [Stack tools](STACK_TOOLS.md), rather than
+enumerated as behaviour callbacks here.
 Other unlisted exports should not be inferred to be application APIs merely
 because they are visible in generated documentation.
 
@@ -268,6 +269,8 @@ Mix project version.
 - `Spectre.Inference.StreamAdapter`
   - functions: `validate/2`, `validate/3`
   - callbacks: `cancel/2`, `capabilities/2`, `handle_transport/2`, `open/2`, `reconcile/3`, `request_transport_item/1`, `resume/3`
+  - callbacks: `conformance_fixture/4`
+
 - `Spectre.Inference.StreamAdapter.Conformance`
   - functions: `run/3`, `run/4`
 - `Spectre.Inference.StreamEvent`
@@ -281,6 +284,8 @@ Mix project version.
 - `Spectre.Input.Pipeline.Spec`
 - `Spectre.Input.Plug`
   - callbacks: `call/3`, `init/1`
+  - callbacks: `rehearsable?/0`
+
 - `Spectre.Input.Plugs.NormalizeText`
 - `Spectre.Input.Source`
   - functions: `new/1`, `trust_classes/0`, `validate/1`
@@ -566,6 +571,8 @@ Mix project version.
   - functions: `contract_version/0`, `verify/1`, `verify/2`, `verify!/1`, `verify!/2`
   - macros: `__using__/1`
   - callbacks: `child_specs/2`, `compile/3`, `manifest/0`
+  - callbacks: `effects/1`, `tools/1`
+
 - `Spectre.Stack.Installation`
   - functions: `from_extension_mount/1`, `from_provider_mount/1`
 - `Spectre.Stack.Package`
@@ -624,6 +631,8 @@ Mix project version.
   - functions: `assign/2`, `assign/3`, `await_reply/2`, `await_reply/3`, `call_actor/3`, `call_actor/4`, `cancel/1`, `child_spec/1`, `classify/2`, `classify/3`, `confirm_pending/2`, `deliver/4`, `explain_pending/2`, `generate/2`, `generate/3`, `input/2`, `input/3`, `no_response/1`, `propose/3`, `propose/4`, `reject_pending/2`, `resolve_await/3`, `respond/2`, `respond/3`, `resume_pending/2`, `route_current_input/1`, `route_current_input/2`, `start_link/1`, `status/1`
   - macros: `__using__/1`
   - callbacks: `handle_approval_inbox/2`, `code_change/3`, `format_status/1`, `handle_call/3`, `handle_cast/2`, `handle_continue/2`, `handle_flow/3`, `handle_info/2`, `handle_pending/3`, `handle_result/3`, `init/2`, `terminate/2`
+  - callbacks: `assigns_schema/0`, `continuation_contracts/0`, `handle_action/2`, `handle_skill/3`
+
 - `Spectre.Server.Context`
 
 - `Spectre.Server.GAM.Managed.Approval`
@@ -744,6 +753,38 @@ Mix project version.
 
 - `Spectre.Server.Store.Page`
   - functions: `key/1`, `options/2`, `upper_bound/1`, `read/4`
+
+## Additional extension contracts
+
+- `Spectre.Event.SchemaRegistry`
+  - callbacks: `compatible?/3`
+
+- `Spectre.GAM.Clock`
+  - callbacks: `now/0`
+
+- `Spectre.GAM.Definition.Verifier`
+  - callbacks: `verify/2`
+
+- `Spectre.GAM.Domain.Projection.Store`
+  - callbacks: `commit/5`, `fetch/4`, `head/2`, `open/2`, `page/4`, `select/5`
+
+- `Spectre.GAM.Domain.Recovery.Policy`
+  - callbacks: `check/2`, `failed/2`, `recover/2`
+
+- `Spectre.GAM.Id.Source`
+  - callbacks: `generate/0`
+
+- `Spectre.GAM.Payload.Store`
+  - callbacks: `verify/2`
+
+- `Spectre.Governance.GC.InventoryProvider`
+  - callbacks: `snapshot/2`
+
+- `Spectre.Payload.Store`
+  - callbacks: `fetch/3`, `put/3`
+
+- `Spectre.Server.GAM.EffectAdapter`
+  - callbacks: `effect_schema/2`, `execute_effect/3`
 
 ## Application payload storage
 

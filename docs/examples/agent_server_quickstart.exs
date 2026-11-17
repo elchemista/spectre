@@ -5,10 +5,14 @@ end
 defmodule Quickstart.SupportAgent do
   use Spectre.Agent, stack: Quickstart.AI, server: Quickstart.SupportServer
 
-  router(strategies: [:regex])
+  router(strategies: [:regex, :bag, :jaro])
 
   flow :support do
-    on(:pricing, regex: ~r/\b(price|pricing|cost)\b/i)
+    on(:pricing,
+      regex: ~r/\b(price|pricing|cost)\b/i,
+      bag: ["subscription plans"],
+      jaro: ["monthly subscription"]
+    )
   end
 end
 
