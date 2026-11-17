@@ -60,6 +60,10 @@ migration called out explicitly below.
 
 ### Fixed
 
+- Generate valid managed identity in AgentServer scaffold tests and execute the
+  generated test suite as part of generator verification.
+- Check root and mounted Skill Server callbacks in Doctor, and report each
+  Skill's actual Server in routing diagnostics.
 - Restore interrupted consent as suspended and require a fresh Presentation.
   Keep slow approval delivery and inbox I/O in bounded supervised tasks, preserve
   exact signed retries and report delivery separately from consent.

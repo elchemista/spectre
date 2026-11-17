@@ -41,6 +41,10 @@ defmodule Spectre.Doctor do
   @doc """
   Runs runtime, Foundation, Agent, Stack, package, and store diagnostics.
 
+  AgentServer bindings and mounted Skill Servers are checked against required
+  callbacks without invoking them. Runtime GAM/storage options and live backend
+  availability are outside these compiled-contract diagnostics.
+
   When `:agent` is present, optional `:router_opts` diagnoses the effective
   Router Adapter order and availability under a trusted runtime override.
   `:router_opts` must be a keyword list and cannot be used without `:agent`.
@@ -279,7 +283,8 @@ defmodule Spectre.Doctor do
             safe("agent.planner_action_schema", fn -> planner_action_schema_check(definition) end),
             safe("agent.executor_egress", fn -> executor_egress_check(definition) end),
             safe("agent.reply_sanitization", fn -> reply_sanitization_check(definition) end)
-          ] ++ RouterAdapterDiagnostics.checks(definition, router_opts)
+          ] ++
+            server_checks(definition) ++ RouterAdapterDiagnostics.checks(definition, router_opts)
 
         {checks, definition}
 
@@ -306,6 +311,46 @@ defmodule Spectre.Doctor do
        check(:skipped, "agent.reply_sanitization", :agent_definition_unavailable)
        | RouterAdapterDiagnostics.skipped(:agent_definition_unavailable)
      ], nil}
+  end
+
+  @spec server_checks(Definition.t()) :: [map()]
+  defp server_checks(%Definition{owner: agent, config: config}) do
+    case Keyword.get(config, :server) do
+      nil ->
+        [{"server.callbacks", nil}]
+
+      server ->
+        [{"server.callbacks", server}] ++
+          Enum.map(agent.__spectre_skills__(), fn mount ->
+            {"skill.#{mount.id}.server_callbacks", mount.module.__spectre_server__() || server}
+          end)
+    end
+    |> Enum.map(fn {id, module} ->
+      safe(id, fn -> server_callback_check(id, module) end)
+    end)
+  end
+
+  @spec server_callback_check(String.t(), module() | nil) :: map()
+  defp server_callback_check(id, nil), do: check(:skipped, id, :server_not_configured)
+
+  defp server_callback_check(id, module) do
+    required =
+      Spectre.Server.behaviour_info(:callbacks) --
+        Spectre.Server.behaviour_info(:optional_callbacks)
+
+    missing =
+      Enum.reject(required, fn {name, arity} ->
+        Code.ensure_loaded?(module) and function_exported?(module, name, arity)
+      end)
+
+    if missing == [] do
+      check(:ok, id, :server_callbacks_valid, %{module: inspect(module)})
+    else
+      check(:error, id, :server_callbacks_missing, %{
+        module: inspect(module),
+        missing_callbacks: Enum.map(missing, fn {name, arity} -> "#{name}/#{arity}" end)
+      })
+    end
   end
 
   defp prompt_trust_check(definition) do

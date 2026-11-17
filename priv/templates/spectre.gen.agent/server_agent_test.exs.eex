@@ -7,10 +7,10 @@ defmodule <%= @module %>Test do
              Spectre.Server.Router.route(<%= @module %>, "hello")
 
     server = start_supervised!({Spectre.Server,
-      agent: <%= @module %>, identity: %{user_id: "example"}, consumer: self()})
+      agent: <%= @module %>, identity: %{subject: "example"}, consumer: self()})
 
     assert {:ok, interaction} = Spectre.Server.input(server, "hello")
-    assert_receive {Spectre.Server, ^server, {:response, ^interaction, "Hello!", metadata}}
+    assert_receive {Spectre.Server, ^server, {:response, ^interaction, "Hello!", metadata}}, 1_000
     assert is_binary(metadata[:message_id])
   end
 end

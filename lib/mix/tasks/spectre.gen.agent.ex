@@ -2,8 +2,12 @@ defmodule Mix.Tasks.Spectre.Gen.Agent do
   @moduledoc """
   Generates a minimal Spectre Agent and its contract test.
 
-      mix spectre.gen.agent MyApp.SupportAgent
       mix spectre.gen.agent MyApp.SupportAgent --server
+
+  Use `--server` for the 0.4 Agent/Server architecture. Without this option,
+  the generator retains the Instance-compatible Agent template:
+
+      mix spectre.gen.agent MyApp.SupportAgent
 
   Files are never overwritten unless `--force` is passed. `--dry-run` performs
   validation and prints the complete plan without changing the filesystem.

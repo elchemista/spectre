@@ -4,17 +4,18 @@ defmodule SpectreMixGeneratorTest do
   import ExUnit.CaptureIO
 
   @generators [
-    {Mix.Tasks.Spectre.Gen.Agent, "SpectreGenerated.Agent"},
-    {Mix.Tasks.Spectre.Gen.Installable, "SpectreGenerated.Installable"},
-    {Mix.Tasks.Spectre.Gen.CheckpointStore, "SpectreGenerated.CheckpointStore"}
+    {Mix.Tasks.Spectre.Gen.Agent, "SpectreGenerated.Agent", []},
+    {Mix.Tasks.Spectre.Gen.Installable, "SpectreGenerated.Installable", []},
+    {Mix.Tasks.Spectre.Gen.CheckpointStore, "SpectreGenerated.CheckpointStore", []},
+    {Mix.Tasks.Spectre.Gen.Agent, "SpectreGenerated.SupportAgent", ["--server"]}
   ]
 
   @tag :tmp_dir
   test "generators render deterministic code and executable public contract tests", %{
     tmp_dir: tmp
   } do
-    Enum.each(@generators, fn {task, module} ->
-      output = run_generator(tmp, task, [module])
+    Enum.each(@generators, fn {task, module, opts} ->
+      output = run_generator(tmp, task, [module | opts])
       {source, test} = generated_paths(tmp, module)
 
       assert output =~ "create #{relative(source, tmp)}"
@@ -25,7 +26,7 @@ defmodule SpectreMixGeneratorTest do
       assert {:ok, _ast} = test |> File.read!() |> Code.string_to_quoted(file: test)
 
       original = File.read!(source)
-      output = run_generator(tmp, task, [module, "--force"])
+      output = run_generator(tmp, task, [module, "--force" | opts])
 
       assert output =~ "overwrite #{relative(source, tmp)}"
       assert File.read!(source) == original
@@ -133,8 +134,8 @@ defmodule SpectreMixGeneratorTest do
 
   defp assert_generated_tests_pass!(root) do
     files =
-      @generators
-      |> Enum.flat_map(fn {_task, module} -> Tuple.to_list(generated_paths(root, module)) end)
+      (Path.wildcard(Path.join(root, "lib/**/*.ex")) ++
+         Path.wildcard(Path.join(root, "test/**/*_test.exs")))
       |> Enum.map_join(", ", &inspect/1)
 
     expression = """
@@ -146,13 +147,13 @@ defmodule SpectreMixGeneratorTest do
     """
 
     {output, status} =
-      System.cmd("mix", ["run", "--no-start", "-e", expression],
+      System.cmd("mix", ["run", "-e", expression],
         cd: File.cwd!(),
         env: [{"MIX_ENV", "test"}],
         stderr_to_stdout: true
       )
 
     assert status == 0, output
-    assert output =~ "SPECTRE_GENERATED_TEST_RESULT total=3 failures=0"
+    assert output =~ "SPECTRE_GENERATED_TEST_RESULT total=#{length(@generators)} failures=0"
   end
 end

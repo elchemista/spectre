@@ -7,13 +7,15 @@ defmodule Mix.Tasks.Spectre.Routes do
 
   This reports declared destinations. Arbitrary Elixir guards in a Server's
   callbacks still require behavior tests; the task does not claim static
-  coverage of every possible callback clause.
+  coverage of every possible callback clause. A mounted Skill names its own
+  Server when bound, or inherits the root Server otherwise.
   """
   use Mix.Task
 
   @shortdoc "Show Agent intents, scoped flows and Server destinations"
 
   @impl true
+  @spec run([String.t()]) :: :ok | no_return()
   def run(argv) do
     {opts, args, invalid} = OptionParser.parse(argv, strict: [json: :boolean])
 
@@ -33,7 +35,7 @@ defmodule Mix.Tasks.Spectre.Routes do
           intent: Atom.to_string(rule.label),
           flow_path: Enum.map(rule.flow_path, &Atom.to_string/1),
           scope: inspect(rule.scope),
-          server: if(server, do: inspect(server)),
+          server: server_name(rule.owner, server),
           dispatch:
             rule
             |> Spectre.Route.from_rule(:declared, nil)
@@ -55,6 +57,16 @@ defmodule Mix.Tasks.Spectre.Routes do
     end
 
     :ok
+  end
+
+  @spec server_name(module() | nil, module() | nil) :: String.t() | nil
+  defp server_name(owner, fallback) do
+    server =
+      if Code.ensure_loaded?(owner) and function_exported?(owner, :__spectre_server__, 0),
+        do: owner.__spectre_server__() || fallback,
+        else: fallback
+
+    if server, do: inspect(server)
   end
 
   defp print_route(route) do

@@ -5,6 +5,19 @@ authority for admission, Acts, Outcomes and Duties; storage adapters persist
 their records. Lab reads and presents these sources. It creates no second
 ledger, permission system or workflow engine.
 
+## Compiled contracts and routing destinations
+
+```sh
+mix spectre.doctor --agent MyApp.SupportAgent --strict
+mix spectre.routes MyApp.SupportAgent --json
+```
+
+Doctor checks the required callbacks of the declared root and mounted Skill
+Servers without starting them or invoking their callbacks. The routing JSON names
+each Skill's bound Server, falling back to the root when the Skill inherits it.
+These checks inspect compiled contracts; live GAM state and backend availability
+use the authorized runtime inspector below and application integration tests.
+
 ## Application inspector
 
 Call these APIs from the process configured as the root Server's `consumer:`:
