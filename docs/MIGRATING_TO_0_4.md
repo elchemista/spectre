@@ -192,8 +192,8 @@ runnable reference with fake external transports and real package/GAM/persistenc
 contracts. It complements your application's tests; it does not validate live
 credentials or the host's production authorization policy.
 
-The [old tutorial](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/GETTING_STARTED_0_3.md) and
-[old architecture](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/ARCHITECTURE_0_3.md) remain available for comparison.
+The [old tutorial](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/GETTING_STARTED_0_3.md) and
+[old architecture](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/ARCHITECTURE_0_3.md) remain available for comparison.
 
 ## Skills
 

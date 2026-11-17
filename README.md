@@ -120,7 +120,7 @@ Server handler. `input/3` returns an interaction ID; replies arrive asynchronous
 at the consumer. A successful early match can avoid a model call.
 
 For a complete first run without configured providers, use the
-[model-free quickstart](https://github.com/elchemista/spectre/blob/main/docs/examples/agent_server_quickstart.exs).
+[model-free quickstart](https://github.com/elchemista/spectre/blob/0.4.0/docs/examples/agent_server_quickstart.exs).
 
 In an application, supervise the Server or use `Spectre.summon/1`
 for per-subject ownership. [Getting started](docs/GETTING_STARTED.md) covers
@@ -237,7 +237,7 @@ These are application fragments: the effect registration, draft preparation and
 chat consumer are supplied by the host. The consumer displays the exact draft,
 acknowledges rendering and submits the human's separate confirm/reject decision.
 GAM checks that decision before execution. [Managed GAM](docs/MANAGED_GAM.md)
-shows those calls; [the full outreach source](https://github.com/elchemista/spectre/blob/main/docs/examples/outreach_agent.exs)
+shows those calls; [the full outreach source](https://github.com/elchemista/spectre/blob/0.4.0/docs/examples/outreach_agent.exs)
 connects website inspection, drafting, refusal and failure handling.
 
 ## Guides

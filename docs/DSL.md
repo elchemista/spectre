@@ -164,6 +164,6 @@ descriptors, not imported from satellite modules. See [AgentServer](AGENT_SERVER
 The 0.3 `reply`, `reason`, `act`, `action`, `policy`, `protect`, `turn_handler`
 and Instance/Run handler forms remain compatibility APIs. A bodyful route is
 not automatically converted into a new GAM-governed Server callback.
-The [archived DSL reference](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/DSL_0_3.md) documents those forms and their
+The [archived DSL reference](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/DSL_0_3.md) documents those forms and their
 input/prompt machinery. Use [migration](MIGRATING_TO_0_4.md) when moving an
 existing flow; do not combine both continuation protocols in one example.

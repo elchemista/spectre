@@ -101,9 +101,9 @@ defmodule Spectre.MixProject do
       licenses: ["Apache-2.0"],
       links: %{
         "Website" => @homepage_url,
-        "Documentation" => "#{@source_url}/blob/feature/agent-server-gam/docs/START_HERE.md",
+        "Documentation" => "#{@source_url}/blob/#{@version}/docs/START_HERE.md",
         "GitHub" => @source_url,
-        "Changelog" => "#{@source_url}/blob/feature/agent-server-gam/CHANGELOG.md"
+        "Changelog" => "#{@source_url}/blob/#{@version}/CHANGELOG.md"
       }
     ]
   end
@@ -157,7 +157,7 @@ defmodule Spectre.MixProject do
       # README and guide image paths retain their GitHub-relative layout.
       assets: %{"docs/assets" => "docs/assets", "./docs/assets" => "assets"},
       main: "start_here",
-      source_ref: "feature/agent-server-gam",
+      source_ref: @version,
       extras: @docs_extras,
       groups_for_extras: [
         "Start here": [

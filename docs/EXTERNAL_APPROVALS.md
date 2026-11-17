@@ -111,8 +111,8 @@ requests and authenticated REST ingress. Real account login, remote credentials
 and a production deployment remain host responsibilities.
 
 See [Automatic GAM](MANAGED_GAM.md#external-human-approval),
-[the transport-independent tests](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/test/server/external_approval_test.exs)
-and the optional [Pulse adapter guide](https://github.com/elchemista/spectre_pulse/blob/feature/stack-tools-0.4/docs/EXTERNAL_APPROVALS.md).
+[the transport-independent tests](https://github.com/elchemista/spectre/blob/0.4.0/test/server/external_approval_test.exs)
+and the optional [Pulse adapter guide](https://github.com/elchemista/spectre_pulse/blob/0.1.0/docs/EXTERNAL_APPROVALS.md).
 
 ## Inbox storage and application policy
 

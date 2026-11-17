@@ -183,4 +183,4 @@ Pulse is optional; see [External approval](EXTERNAL_APPROVALS.md).
 - [Pending lifecycle](PENDING_LIFECYCLE.md): application policy, durable timers and OTP timer ownership.
 - [Routing](ROUTING.md): native custom adapters and route-only evaluation.
 - [Stack tools](STACK_TOOLS.md): generated helpers and installation contracts.
-- [0.3 examples](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/EXAMPLES_0_3.md): retained Instance/Turn/Effect compositions, not new Server scaffolding.
+- [0.3 examples](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/EXAMPLES_0_3.md): retained Instance/Turn/Effect compositions, not new Server scaffolding.

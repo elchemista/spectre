@@ -68,7 +68,7 @@ defmodule SpectreHexReleaseContractTest do
                          "SECURITY.md"
                        ] ++ Path.wildcard("docs/*.md", match_dot: true)
 
-  test "Hex package metadata describes the 0.4.0 development release" do
+  test "Hex package metadata describes the 0.4.0 release" do
     config = Mix.Project.config()
     package = Keyword.fetch!(config, :package)
     docs = Keyword.fetch!(config, :docs)
@@ -79,7 +79,7 @@ defmodule SpectreHexReleaseContractTest do
     assert Spectre.version() == @release
     assert Application.spec(:spectre, :vsn) |> to_string() == @release
     assert config[:homepage_url] == "https://spectre.elchemista.com"
-    assert docs[:source_ref] == "feature/agent-server-gam"
+    assert docs[:source_ref] == @release
     assert package[:licenses] == ["Apache-2.0"]
     assert "LLMS.md" in package[:files]
     assert "priv" in package[:files]
@@ -96,10 +96,9 @@ defmodule SpectreHexReleaseContractTest do
     assert package[:links] == %{
              "Website" => "https://spectre.elchemista.com",
              "Documentation" =>
-               "https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/START_HERE.md",
+               "https://github.com/elchemista/spectre/blob/#{@release}/docs/START_HERE.md",
              "GitHub" => "https://github.com/elchemista/spectre",
-             "Changelog" =>
-               "https://github.com/elchemista/spectre/blob/feature/agent-server-gam/CHANGELOG.md"
+             "Changelog" => "https://github.com/elchemista/spectre/blob/#{@release}/CHANGELOG.md"
            }
 
     assert {:ex_doc, "~> 0.40.3", ex_doc_opts} =
@@ -204,7 +203,7 @@ defmodule SpectreHexReleaseContractTest do
              "#{Path.relative_to(source_path, @root)} couples core code to a satellite module"
     end
 
-    assert File.read!(Path.join(@root, "CHANGELOG.md")) =~ "## 0.4.0 (unreleased)"
+    assert File.read!(Path.join(@root, "CHANGELOG.md")) =~ "## #{@release} — 2026-11-17"
   end
 
   defp forbidden_satellite_aliases(source) do

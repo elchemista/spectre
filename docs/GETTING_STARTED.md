@@ -112,7 +112,7 @@ agent, follow [External approval](EXTERNAL_APPROVALS.md); Pulse is optional.
 
 ## Continue with a complete workflow
 
-The [outreach source](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/examples/outreach_agent.exs)
+The [outreach source](https://github.com/elchemista/spectre/blob/0.4.0/docs/examples/outreach_agent.exs)
 shows website inspection, contact extraction, model drafting, typed Kinetic
 proposals and email confirmation. It requires the named application adapters;
 [the executable Stack integration](https://github.com/elchemista/spectre_ecosystem/tree/main/integration/stack_tools)

@@ -145,6 +145,6 @@ this protocol. Installing a package is not isolation against such code.
 `Spectre.Effect`, the `policy`/`protect` DSL, ActionDispatcher/ActionExecutor and
 Instance/Run policy continuations remain available. They have their own state
 and execution contracts; they are not automatically new GAM Acts.
-The [retained action reference](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/ACTIONS_0_3.md) explains those APIs.
+The [retained action reference](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/ACTIONS_0_3.md) explains those APIs.
 Inventory direct effects, providers and before/after hooks when following the
 [migration guide](MIGRATING_TO_0_4.md).

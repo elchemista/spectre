@@ -95,7 +95,7 @@ end
 ```
 
 `"What is the price?"`, `"subscription plans"` and `"monthly subscription"`
-all select the pricing route. The [executable quickstart](https://github.com/elchemista/spectre/blob/main/docs/examples/agent_server_quickstart.exs)
+all select the pricing route. The [executable quickstart](https://github.com/elchemista/spectre/blob/0.4.0/docs/examples/agent_server_quickstart.exs)
 supplies the Stack, Agent, Server and input loop for this variant.
 
 Bag and Jaro compare input and examples after lowercasing, trimming and

@@ -207,7 +207,7 @@ interfaces. They remain for existing applications. Their state, checkpoints and
 continuations are not interchangeable with Server or GAM, and their continued
 availability does not mean all paths now pass through GAM.
 
-The complete [0.3 API guide](https://github.com/elchemista/spectre/blob/main/docs/legacy/API_0_3.md) is retained for those applications.
+The complete [0.3 API guide](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/API_0_3.md) is retained for those applications.
 Use [migration](MIGRATING_TO_0_4.md) before changing ownership or effect execution.
 
 ## Submit from an application actor

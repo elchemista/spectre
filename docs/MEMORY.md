@@ -107,7 +107,7 @@ framework boundary; trusted application code remains responsible for using the
 intended host path.
 
 The old Session/State-adapter APIs and their cross-store persistence warning
-semantics are preserved in [the 0.3 memory reference](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/MEMORY_0_3.md).
+semantics are preserved in [the 0.3 memory reference](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/MEMORY_0_3.md).
 Do not apply those return tuples to Server Context or treat their checkpoint as
 a Server checkpoint. See [migration](MIGRATING_TO_0_4.md), [AgentServer](AGENT_SERVER.md)
 and [GAM](GAM.md).

@@ -121,6 +121,6 @@ configured separately; see [Training](TRAINING.md).
 ## Remaining on 0.3
 
 An existing application can keep its `{:spectre, "~> 0.3.4"}` dependency and
-[0.3 tutorial](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/GETTING_STARTED_0_3.md). That API does not include the new
+[0.3 tutorial](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/GETTING_STARTED_0_3.md). That API does not include the new
 AgentServer/tool-helper contracts. Follow [Migration](MIGRATING_TO_0_4.md) before
 changing runtime ownership or persisted state.

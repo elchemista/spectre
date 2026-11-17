@@ -2,7 +2,7 @@
 
 Spectre 0.4 preserves the recognition and extension capabilities of 0.3 while
 separating declarations, conversational ownership and authority. This is the
-AgentServer architecture. The [Instance architecture](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/ARCHITECTURE_0_3.md)
+AgentServer architecture. The [Instance architecture](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/ARCHITECTURE_0_3.md)
 remains a compatibility path, not a description of the new owner.
 
 ## Responsibilities

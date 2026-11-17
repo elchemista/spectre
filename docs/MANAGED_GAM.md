@@ -48,7 +48,7 @@ With PostgreSQL Ledger, the application starts its Repo and installs migrations
 before starting Servers. Startup creates neither databases nor tables. Its
 `gam_domain/1` integration supplies canonical history and the disposable
 per-record projection; older `gam_ledger/1` history-only providers remain
-supported. See [Ledger setup](https://github.com/elchemista/spectre_ledger/blob/feature/stack-tools-0.4/docs/SPECTRE_0_4.md).
+supported. See [Ledger setup](https://github.com/elchemista/spectre_ledger/blob/0.1.0/docs/SPECTRE_0_4.md).
 
 ```elixir
 Spectre.Server.start_link(
@@ -182,7 +182,7 @@ limits admission.
 
 [External approval](EXTERNAL_APPROVALS.md) defines the signed request/decision,
 expiry, replay, inbox and recovery contracts. Its runnable two-agent example
-works without Pulse. The [Pulse adapter](https://github.com/elchemista/spectre_pulse/blob/feature/stack-tools-0.4/docs/EXTERNAL_APPROVALS.md)
+works without Pulse. The [Pulse adapter](https://github.com/elchemista/spectre_pulse/blob/0.1.0/docs/EXTERNAL_APPROVALS.md)
 uses the same contract; technical delivery receipts carry no approval authority.
 
 ## Revoke authority and review Duties

@@ -1,4 +1,4 @@
-# Verifying a 0.4 release candidate
+# Verifying the 0.4 release
 
 Use a fixed set of commits for core and every companion package. Package
 versions are independent; [Installation](INSTALLATION.md) explains dependency
@@ -38,8 +38,21 @@ the runtime and deployment responsibilities. CI never publishes packages.
 
 ## Publication handoff
 
-Commit and review the candidate branches, update pins, and let the corresponding
-remote workflows finish on those exact revisions. Before publishing, set source
-references to the intended release tags and refresh dependency requirements in
-dependency order: core and Ledger before Lab. The maintainer owns tags and Hex
-publication; release verification does not perform them.
+Commit the release changes, update pins, and let the corresponding remote
+workflows finish on those exact revisions. Core source and package links use
+the `0.4.0` tag, matching the repository's existing numeric tags. Each companion
+package uses its own version and release tag; publish dependencies first,
+including core and Ledger before Lab.
+
+From the verified core commit, the maintainer can run:
+
+```sh
+mix hex.publish --dry-run
+git tag 0.4.0
+git push origin 0.4.0
+mix hex.publish
+```
+
+The dry-run validates the package without publishing it. Tag only the commit
+that passed verification, and publish from the same clean checkout. The
+maintainer owns tags and Hex publication; release verification performs neither.
