@@ -37,6 +37,7 @@ defmodule Spectre.MixProject do
     "docs/RELEASE_0_4.md",
     "docs/ROADMAP.md",
     "docs/ROUTING.md",
+    "docs/BEHAVIOURS.md",
     "docs/SERVER_CONTRACTS.md",
     "docs/STACK.md",
     "docs/STREAMING_INFERENCE.md",
@@ -170,6 +171,7 @@ defmodule Spectre.MixProject do
         "Application development": [
           "docs/AGENT_SERVER.md",
           "docs/ROUTING.md",
+          "docs/BEHAVIOURS.md",
           "docs/DSL.md",
           "docs/STACK.md",
           "docs/STACK_TOOLS.md",

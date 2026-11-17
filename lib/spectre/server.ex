@@ -65,6 +65,8 @@ defmodule Spectre.Server do
           input: 2,
           input: 3,
           cancel: 1,
+          reset: 1,
+          reset: 2,
           status: 1,
           skill_server: 2,
           inspect: 1,
@@ -176,8 +178,31 @@ defmodule Spectre.Server do
   and session. Earlier governed requests require reconciliation; approvals and
   Grants from the previous Domain cannot authorize work in the new one.
   """
+  @spec recover_storage(GenServer.server(), :retry | :memory) :: :ok | {:error, term()}
   def recover_storage(server, decision) when decision in [:retry, :memory],
     do: GenServer.call(server, {Runtime, :recover_storage, decision})
+
+  @doc """
+  Starts a fresh agent session, including mounted Skills and its GAM Domain.
+
+  Keeps the root PID, name, identity and configuration. Application state is
+  initialized from the original startup defaults: `terminate(:reset, context)`
+  releases application-owned resources before `init/2` runs again. External
+  memory, business data and previous governance history are retained.
+
+  Only the configured consumer may reset the root. Unresolved governed work
+  prevents reset. Storage defaults to its current mode; `storage: :ephemeral`
+  explicitly selects fresh RAM. Durable resets survive restart using a new
+  persisted generation. RAM sessions are temporary and never silently merged
+  into the previous backend.
+
+  Returns after initialization and activation. `timeout:` bounds reset work
+  (30 seconds by default). After reset, uncorrelated `deliver/5` results must
+  include `session:` from the Context, `status/1` or the service context.
+  """
+  @spec reset(GenServer.server(), keyword()) :: :ok | {:error, term()}
+  def reset(server, opts \\ []),
+    do: GenServer.call(server, {Runtime, :reset, opts}, :infinity)
 
   @spec automatic_options(keyword()) :: {:ok, keyword()} | {:error, atom()}
   defp automatic_options(opts) do
@@ -186,12 +211,28 @@ defmodule Spectre.Server do
     submitters = Keyword.get(opts, :submitters, [])
 
     with :ok <- validate_gam_configuration(gam),
+         {:ok, gam} <- normalize_storage(gam),
          :ok <- validate_automatic_options(opts, identity, submitters, gam) do
       identity =
         if map_size(identity) == 0, do: %{conversation: Spectre.Identity.uuid7()}, else: identity
 
       with {:ok, identity} <- Spectre.Server.GAM.Managed.Identity.normalize(identity),
            do: {:ok, opts |> Keyword.put(:gam, gam) |> Keyword.put(:identity, identity)}
+    end
+  end
+
+  @spec normalize_storage(keyword()) :: {:ok, keyword()} | {:error, atom()}
+  defp normalize_storage(gam) do
+    case gam[:storage] do
+      {module, reference} when is_atom(module) and module not in [:disk, :ledger] ->
+        if Keyword.has_key?(gam, :store),
+          do: {:error, :conflicting_managed_storage},
+          else:
+            {:ok,
+             gam |> Keyword.put(:storage, :ledger) |> Keyword.put(:store, {module, reference})}
+
+      _ ->
+        {:ok, gam}
     end
   end
 
@@ -319,9 +360,17 @@ defmodule Spectre.Server do
   end
 
   def cancel(server), do: GenServer.call(server, {Runtime, :cancel})
-  @doc "Acquires a durable result once per event id; requires a configured checkpoint store."
-  def deliver(server, event_id, tag, result),
-    do: GenServer.call(server, {Runtime, :deliver, event_id, tag, result}, :infinity)
+
+  @doc """
+  Acquires a durable result once per event ID through the configured checkpoint.
+
+  `session:` fences results from external work to the session that requested it.
+  After a reset it is required for callback and pending tags, whose IDs may be
+  reused by the application. Command tags carry runtime-generated unique IDs.
+  """
+  @spec deliver(GenServer.server(), binary(), term(), term(), keyword()) :: :ok | {:error, term()}
+  def deliver(server, event_id, tag, result, opts \\ []),
+    do: GenServer.call(server, {Runtime, :deliver, event_id, tag, result, opts}, :infinity)
 
   @doc "Returns a mounted Skill's supervised runtime for native OTP calls or inspection."
   @spec skill_server(GenServer.server(), term()) :: {:ok, pid()} | {:error, term()}
@@ -332,6 +381,8 @@ defmodule Spectre.Server do
   def delegate(ctx, skill, input, opts \\ []),
     do: command(ctx, :delegate, [skill, input], opts)
 
+  @doc "Returns coordination status, the current session ID and whether a reset is in progress."
+  @spec status(GenServer.server()) :: map()
   def status(server), do: GenServer.call(server, {Runtime, :status})
 
   @doc "Acknowledges rendering of one managed presentation from its authenticated consumer."

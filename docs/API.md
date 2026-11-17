@@ -63,15 +63,23 @@ optional Pulse adapter and an executable example without it.
 
 ## Implement callbacks
 
+For custom routing, model transports, storage and other extension points, see
+[Behaviours and adapters](BEHAVIOURS.md). It lists the implementable contracts,
+their wiring and examples; module API documentation specifies the exact types.
+
 | Callback | Return |
 | --- | --- |
 | `init(arg, ctx)` | `{:ok, ctx}`, optionally an OTP action; `:ignore` or `{:stop, reason}` |
 | `handle_flow(route, input, ctx)` | Updated Context containing next-step commands |
 | `handle_pending(pending, input, ctx)` | Updated Context |
 | `handle_result(tag, result, ctx)` | Updated Context |
+| `handle_skill(skill, result, ctx)` | Updated Context after a mounted Skill result |
+| `handle_action(request, ctx)` | `:default`, `:confirm`, `{:confirm, policy_context}` or `{:reject, reason}` |
+| `handle_approval_inbox(event, ctx)` | `:default` or an updated Context |
 | `handle_call(request, from, ctx)` | Ordinary OTP reply/noreply/stop tuple using Context |
 | `handle_cast`, `handle_info`, `handle_continue` | Ordinary OTP tuple using Context |
 | `terminate`, `code_change`, `format_status` | Declared Server callback contract |
+| `assigns_schema/0`, `continuation_contracts/0` | Optional schemas for portable state and continuation results |
 
 `use Spectre.Server` supplies overridable defaults. Delegate unmatched result
 clauses with `super(tag, result, ctx)` when appropriate. Keep callbacks short;
@@ -155,12 +163,18 @@ retry rules, errors, memory isolation and checkpoint inspection.
 
 ## Persist and reconcile
 
+For one provider owning Server coordination, GAM history and optional historical
+projections, configure `gam: [storage: {MyApp.Storage, reference}]`. Implement
+the callback groups in `Spectre.Server.Store`; Spectre adapts them to the GAM
+storage ports. [Domain storage](DOMAIN_STORAGE.md#custom-storage) describes the
+required groups, compatibility bindings and RAM-only operation.
+
 Use `checkpoint: {disk_store, key}` or `{StoreModule, store_ref, key}`.
 Store callbacks are `fetch/2`, `put_new/3`, `compare_and_swap/4` and `delete/3`.
 The Server's checkpoint and GAM command journal have separate identities and
 responsibilities. Use a distinct conversation key.
 
-`Spectre.Server.deliver/4` durably acquires externally recovered results.
+`Spectre.Server.deliver/4,5` durably acquires externally recovered results.
 Governed delivery resolves a kernel reference rather than trusting arbitrary
 invented Outcome data. `Spectre.Server.OutcomeDispatcher` requires explicit
 host tracking and a recovery/delivery adapter; installation alone does not wire
@@ -170,6 +184,12 @@ A `checkpoint_migrator` may change application data and explicitly map route
 keys, while preserving reconciliation facts. Adapter/config drift does not
 permit rerunning an old tool command under the new implementation. See
 [AgentServer recovery](AGENT_SERVER.md#checkpoints-and-reconciliation).
+
+`Spectre.Server.reset/1,2` starts a new agent session, including mounted Skills,
+without replacing the root PID. `recover_storage/2` only changes the GAM storage
+boundary. See [session reset](AGENT_SERVER.md#resetting-an-agent-session) for
+caller authorization, pending-work guards and the explicit `storage: :ephemeral`
+option.
 
 ## Dataset and classifier APIs
 
@@ -187,7 +207,7 @@ interfaces. They remain for existing applications. Their state, checkpoints and
 continuations are not interchangeable with Server or GAM, and their continued
 availability does not mean all paths now pass through GAM.
 
-The complete [0.3 API guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/legacy/API_0_3.md) is retained for those applications.
+The complete [0.3 API guide](https://github.com/elchemista/spectre/blob/main/docs/legacy/API_0_3.md) is retained for those applications.
 Use [migration](MIGRATING_TO_0_4.md) before changing ownership or effect execution.
 
 ## Submit from an application actor

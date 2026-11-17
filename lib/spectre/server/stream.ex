@@ -203,7 +203,12 @@ defmodule Spectre.Server.Stream do
          text
        )
        when is_pid(consumer) and text != "" do
-    send(consumer, {Spectre.Server, context[:runtime], {:preview, id, generation, text}})
+    Spectre.Server.Runtime.notify_consumer(
+      consumer,
+      context[:runtime],
+      {:preview, id, generation, text},
+      if(context[:skill], do: context[:session])
+    )
   end
 
   defp emit(_state, _text), do: :ok

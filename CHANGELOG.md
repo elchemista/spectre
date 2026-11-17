@@ -11,6 +11,10 @@ migration called out explicitly below.
 
 ### Added
 
+- `Spectre.Server.reset/2` for fresh root and Skill sessions, with stable root
+  ownership, durable generation selection and session-fenced external results.
+- Unified `Spectre.Server.Store` callbacks for coordination, GAM history and
+  optional persisted projection, with one provider reference and shorthand setup.
 - Declarative Agent and OTP Server authoring, asynchronous worker commands,
   explicit result continuations, streaming, native OTP callbacks and durable
   pending-intention lifecycle. The Runtime owns the conversation GenServer.

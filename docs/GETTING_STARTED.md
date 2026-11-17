@@ -1,7 +1,8 @@
 # Getting started
 
 Start with a deterministic conversation, then add the capabilities your application
-needs. The [README example](../README.md#a-minimal-agent) uses only Spectre;
+needs. The [README example](../README.md#build-an-agent) shows regex, semantic
+matching and model classification;
 [Installation](INSTALLATION.md) covers dependencies and supervision.
 
 ## Generate the Agent and Server
@@ -62,6 +63,18 @@ them. Identity, routing and pending fields are runtime views.
 Conversation callbacks return an updated Context. Native `handle_call`,
 `handle_cast` and `handle_info` keep their ordinary OTP return tuples, with the
 Context as state. [Server](AGENT_SERVER.md) describes every callback.
+
+## Choose how the Agent recognizes input
+
+`router strategies: [...]` selects recognition sources. The README combines
+`:regex`, `:embedding` and `:llm_classifier` with application-owned adapters.
+For a model-free start, choose `[:regex, :bag, :jaro]` as in the executable
+quickstart. Add `:intent_dataset` for reviewed examples or `:local_classifier`
+for a configured local classifier.
+
+The [Routing guide](ROUTING.md) shows combined model and semantic recognition,
+then covers each strategy and its requirements. To provide your own implementation, use the
+[behaviour catalogue](BEHAVIOURS.md) and its adapter examples.
 
 ## Add a model or installed tool
 

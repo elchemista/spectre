@@ -19,6 +19,7 @@ defmodule Spectre.Server.GAM.Managed do
   alias Spectre.Server.GAM.Managed.{Binding, Bootstrap, Gate, Reviewer}
   alias Spectre.Server.GAM.Managed.Identity, as: ManagedIdentity
   alias Spectre.GAM.Domain.Recovery.Policy, as: RecoveryPolicy
+  alias Spectre.Server.{Session, TaskGuard}
 
   @doc "Starts the standard private Domain integration for an AgentServer."
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -74,6 +75,24 @@ defmodule Spectre.Server.GAM.Managed do
   @doc false
   @spec runtime_checkpoint(pid()) :: {module(), term(), {:managed_agent, binary()}}
   def runtime_checkpoint(server), do: GenServer.call(server, :runtime_checkpoint)
+
+  @doc false
+  @spec session(pid()) :: Session.t() | {:error, :untrusted_reset_transport}
+  def session(server), do: GenServer.call(server, :session)
+
+  @doc false
+  @spec prepare_reset(pid(), reference() | nil) ::
+          {:ok, %{session: Session.t(), domain: binary()}} | {:error, term()}
+  def prepare_reset(server, control \\ nil),
+    do: GenServer.call(server, {:prepare_reset, control}, :infinity)
+
+  @doc false
+  @spec resume_reset(pid(), reference() | nil) :: :ok | {:error, term()}
+  def resume_reset(server, control \\ nil), do: GenServer.call(server, {:resume_reset, control})
+
+  @doc false
+  @spec adopt_reset(pid(), Session.t()) :: :ok | {:error, term()}
+  def adopt_reset(server, session), do: GenServer.call(server, {:adopt_reset, session})
 
   @doc false
   def recover_storage(server, decision), do: GenServer.call(server, {:recover_storage, decision})
@@ -192,15 +211,20 @@ defmodule Spectre.Server.GAM.Managed do
   def init(opts) do
     Process.flag(:trap_exit, true)
     owner_monitor = Process.monitor(Keyword.fetch!(opts, :runtime))
+    {bootstrap_monitor, guardian} = monitor_bootstrap_owner(opts)
+    result = Bootstrap.open(opts, self())
+    TaskGuard.stop(guardian)
 
-    case Bootstrap.open(opts, self()) do
+    case result do
       {:ok, state} ->
         {:ok,
          Map.merge(state, %{
            workers: %{},
+           reset_token: nil,
            closing: false,
            close_waiters: [],
-           owner_monitor: owner_monitor
+           owner_monitor: owner_monitor,
+           bootstrap_monitor: bootstrap_monitor
          })}
 
       {:error, reason} ->
@@ -209,6 +233,49 @@ defmodule Spectre.Server.GAM.Managed do
   end
 
   @impl true
+  def handle_call(:session, {caller, _}, state) do
+    if caller == state.options[:runtime],
+      do: {:reply, state.session, state},
+      else: {:reply, {:error, :untrusted_reset_transport}, state}
+  end
+
+  def handle_call({:prepare_reset, control}, {caller, _}, state) do
+    if reset_authorized?(state, caller, control),
+      do: reserve_reset(state),
+      else: {:reply, {:error, :untrusted_reset_transport}, state}
+  end
+
+  def handle_call({:resume_reset, control}, {caller, _}, state) do
+    if reset_authorized?(state, caller, control) do
+      resume_reset_gates(state, state.reset_token)
+
+      next =
+        case Map.pop(%{state | reset_token: nil}, :reset_storage_recovery) do
+          {{decision, delay}, next} -> schedule_storage_recovery(next, decision, delay)
+          {nil, next} -> next
+        end
+
+      {:reply, :ok, next}
+    else
+      {:reply, {:error, :untrusted_reset_transport}, state}
+    end
+  end
+
+  def handle_call({:adopt_reset, session}, {caller, _}, state) do
+    cond do
+      caller != state.options[:runtime] ->
+        {:reply, {:error, :untrusted_reset_transport}, state}
+
+      not match?(%Session{}, session) or session.domain != state.refs.domain ->
+        {:reply, {:error, :invalid_server_session}, state}
+
+      true ->
+        if state.bootstrap_monitor, do: Process.demonitor(state.bootstrap_monitor, [:flush])
+        session = %{session | base_options: state.session.base_options}
+        {:reply, :ok, %{state | bootstrap_monitor: nil, session: session}}
+    end
+  end
+
   def handle_call({:recover_storage, :retry}, _, %{ephemeral: true} = state),
     do: {:reply, {:error, :ephemeral_history_cannot_be_recovered}, state}
 
@@ -286,6 +353,9 @@ defmodule Spectre.Server.GAM.Managed do
 
   def handle_call(:checkout, _, %{storage_recovery: _} = state),
     do: {:reply, {:error, :managed_storage_recovering}, state}
+
+  def handle_call(:checkout, _, %{reset_token: token} = state) when not is_nil(token),
+    do: {:reply, {:error, :reset_busy}, state}
 
   def handle_call(:checkout, {worker, _}, %{closing: false} = state) do
     workers = Map.put_new_lazy(state.workers, worker, fn -> Process.monitor(worker) end)
@@ -441,6 +511,12 @@ defmodule Spectre.Server.GAM.Managed do
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state),
     do: begin_close(state)
 
+  def handle_info(
+        {:DOWN, monitor, :process, _owner, _reason},
+        %{bootstrap_monitor: monitor} = state
+      ),
+      do: begin_close(state)
+
   def handle_info({:DOWN, monitor, :process, worker, _}, state) do
     case Enum.find(Map.get(state, :diagnostic_reads, %{}), fn {_token, read} ->
            read.monitor == monitor
@@ -476,6 +552,10 @@ defmodule Spectre.Server.GAM.Managed do
     {:stop, :normal, %{state | close_waiters: []}}
   end
 
+  defp schedule_storage_recovery(%{reset_token: token} = state, decision, delay)
+       when not is_nil(token),
+       do: Map.put_new(state, :reset_storage_recovery, {decision, delay})
+
   defp schedule_storage_recovery(state, decision, delay) do
     if Map.has_key?(state, :storage_recovery) do
       state
@@ -483,6 +563,111 @@ defmodule Spectre.Server.GAM.Managed do
       token = make_ref()
       Process.send_after(self(), {:recover_storage, token}, delay)
       Map.put(state, :storage_recovery, {token, decision})
+    end
+  end
+
+  @spec reserve_reset(map()) :: {:reply, term(), map()}
+  defp reserve_reset(state) do
+    with :ok <- reset_available(state),
+         token = make_ref(),
+         :ok <- reserve_reset(state, token) do
+      {:reply, {:ok, %{session: state.session, domain: state.refs.domain}},
+       %{state | reset_token: token}}
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  @spec reserve_reset(map(), reference()) :: :ok | {:error, term()}
+  defp reserve_reset(state, token) do
+    with :ok <- pause_reset_gates(state, token),
+         :ok <- reset_duties_idle(state.scope) do
+      :ok
+    else
+      error ->
+        resume_reset_gates(state, token)
+        error
+    end
+  end
+
+  @spec reset_available(map()) :: :ok | {:error, term()}
+  defp reset_available(%{closing: true}), do: {:error, :reset_busy}
+
+  defp reset_available(%{reset_token: token}) when not is_nil(token),
+    do: {:error, :reset_busy}
+
+  defp reset_available(%{workers: workers}) when map_size(workers) > 0,
+    do: {:error, :reset_busy}
+
+  defp reset_available(%{storage_recovery: _}), do: {:error, :reset_busy}
+
+  defp reset_available(%{storage_unavailable: reason}),
+    do: {:error, {:gam_storage_unavailable, reason}}
+
+  defp reset_available(_state), do: :ok
+
+  @spec reset_authorized?(map(), pid(), reference() | nil) :: boolean()
+  defp reset_authorized?(state, caller, control) do
+    runtime = state.options[:runtime]
+
+    caller == runtime or
+      (is_reference(control) and control == state.options[:runtime_control] and
+         Process.alive?(runtime))
+  end
+
+  @spec reset_gates(map()) :: [pid()]
+  defp reset_gates(state),
+    do: [state.gate | if(state.reviewer, do: [state.reviewer.gate], else: [])]
+
+  @spec pause_reset_gates(map(), reference()) :: :ok | {:error, term()}
+  defp pause_reset_gates(state, token) do
+    Enum.reduce_while(reset_gates(state), :ok, fn gate, :ok ->
+      case Gate.pause_for_reset(gate, token) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  catch
+    :exit, _ -> {:error, :managed_gate_unavailable}
+  end
+
+  @spec resume_reset_gates(map(), reference() | nil) :: :ok
+  defp resume_reset_gates(_state, nil), do: :ok
+
+  defp resume_reset_gates(state, token) do
+    Enum.each(reset_gates(state), fn gate ->
+      try do
+        Gate.resume_reset(gate, token)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    :ok
+  end
+
+  @spec reset_duties_idle(GAM.Scope.t()) :: :ok | {:error, term()}
+  defp reset_duties_idle(scope) do
+    case GenServer.call(scope.domain.server, :unresolved_duties, 5_000) do
+      {:ok, false} -> :ok
+      {:ok, true} -> {:error, :reconciliation_required}
+      {:error, reason} -> {:error, {:gam_storage_unavailable, reason}}
+    end
+  catch
+    :exit, _ -> {:error, :gam_storage_unavailable}
+  end
+
+  @spec monitor_bootstrap_owner(keyword()) :: {reference() | nil, pid() | nil}
+  defp monitor_bootstrap_owner(opts) do
+    owner = opts[:bootstrap_owner]
+
+    if is_pid(owner) do
+      # init cannot handle a monitor message while an adapter call is blocked.
+      # Once bootstrap returns, the ordinary owner monitor handles cleanup.
+      {:ok, guardian} = TaskGuard.start(owner, self())
+      {Process.monitor(owner), guardian}
+    else
+      {nil, nil}
     end
   end
 
@@ -510,7 +695,16 @@ defmodule Spectre.Server.GAM.Managed do
 
         next =
           recovered
-          |> Map.merge(Map.take(state, [:workers, :closing, :close_waiters, :owner_monitor]))
+          |> Map.merge(
+            Map.take(state, [
+              :workers,
+              :closing,
+              :close_waiters,
+              :owner_monitor,
+              :bootstrap_monitor,
+              :reset_token
+            ])
+          )
           |> restore_diagnostics(state)
 
         {:noreply, next}
@@ -551,7 +745,8 @@ defmodule Spectre.Server.GAM.Managed do
 
   defp recovery_resources(state, :memory) do
     terminate(:storage_recovery, state)
-    {__MODULE__.Recovery.memory_options(state.options), []}
+    {:ok, _candidate, options} = Session.prepare(state.session, :memory)
+    {options, []}
   end
 
   defp recovery_resources(state, :retry) do
@@ -561,7 +756,11 @@ defmodule Spectre.Server.GAM.Managed do
     {_, pid} = journal
     retained = Enum.filter(state.owned, &(&1 == pid))
     terminate(:storage_recovery, %{state | owned: state.owned -- retained})
-    {Keyword.put(state.options, :store, journal), retained}
+
+    options =
+      state.options |> Keyword.put(:store, journal) |> Keyword.put(:session, state.session)
+
+    {options, retained}
   end
 
   defp unwrap_journal({Spectre.Server.Store.Payload, %{store: store}}), do: store

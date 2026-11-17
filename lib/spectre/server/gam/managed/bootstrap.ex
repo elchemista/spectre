@@ -25,6 +25,7 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
     StorageLock
   }
 
+  alias Spectre.Server.Session
   alias Spectre.Server.Store.Disk, as: ServerDisk
 
   # The kernel requires an integer deadline. This is the final UTC millisecond
@@ -35,7 +36,8 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
   @doc false
   @spec open(keyword(), pid()) :: {:ok, map()} | {:error, term()}
   def open(opts, owner) do
-    with {:ok, policy} <- Spectre.GAM.Domain.Recovery.Policy.normalize(opts[:recovery_policy]),
+    with {:ok, opts, session} <- Session.restore(opts),
+         {:ok, policy} <- Spectre.GAM.Domain.Recovery.Policy.normalize(opts[:recovery_policy]),
          opts = Keyword.put(opts, :recovery_policy, policy),
          {:ok, opts} <- Reviewer.normalize(opts),
          {:ok, opts} <- Approval.normalize(opts),
@@ -47,7 +49,10 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
          :ok <- validate_approvers(opts, effects),
          :ok <- Binding.validate_overrides(effects, Keyword.get(opts, :bindings, %{})),
          {:ok, storage} <- storage(opts, effects) do
-      open_storage(storage, opts, owner, effects, operations)
+      case open_storage(storage, opts, owner, effects, operations) do
+        {:ok, host} -> {:ok, Map.put(host, :session, session)}
+        error -> error
+      end
     else
       {:error, _} = error -> error
       _ -> {:error, :invalid_managed_gam_configuration}

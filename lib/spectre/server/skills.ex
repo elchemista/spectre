@@ -160,6 +160,7 @@ defmodule Spectre.Server.Skills do
     |> Keyword.put(:server, mount.module.__spectre_server__())
     |> Keyword.put(:consumer, state.runtime_pid)
     |> Keyword.put(:skill_parent, {state.runtime_pid, state.control})
+    |> Keyword.put(:session_generation, state.submission_epoch)
     |> Keyword.put(:skill, skill)
     |> Keyword.put(:runtime_scope, {:skill, mount.id})
     |> Keyword.put(:identity, state.identity)
