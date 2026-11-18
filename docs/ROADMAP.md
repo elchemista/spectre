@@ -15,6 +15,15 @@ The implemented contracts are described in [Architecture](ARCHITECTURE.md),
 [Managed GAM](MANAGED_GAM.md) and [Migration](MIGRATING_TO_0_4.md).
 [Release checks](RELEASE_0_4.md) describes how to verify a candidate.
 
+## Planned 0.4.1 work
+
+The [0.4.1 implementation plan](https://github.com/elchemista/spectre/blob/0.4.1/docs/PLAN_0_4_1.md)
+covers Stack-installed runtime components, router and conversational continuations, background missions,
+Directive's reusable driver, and the AgentServer evolution bridge for
+`spectre_morph`. It records the proposed public contracts, remaining design
+decisions, compatibility requirements and acceptance tests. These capabilities
+are planned work, not features already provided by 0.4.0.
+
 ## Compatibility and future changes
 
 Instance/Run remains a supported compatibility runtime. Any future removal or
