@@ -13,6 +13,8 @@ There are no public `@macrocallback` contracts. A module with functions named
 separately. Satellite libraries can expose additional contracts in their own
 documentation.
 
+For application callbacks, go directly to [Server callbacks in dispatch order](SERVER_CALLBACKS.md). Use this catalogue when implementing an adapter or extending the runtime.
+
 ## Choose a contract
 
 | What you are building | Contract family | Guide |

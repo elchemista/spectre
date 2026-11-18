@@ -10,6 +10,8 @@ an Agent Stack and catches compatibility, dependency, conflict, ordering, and
 ownership failures that isolated manifest checks cannot see. See
 [Foundation Conformance](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/FOUNDATION_CONFORMANCE.md).
 
+**Do I need an empty Stack?** The generated Agent can use `use Spectre.Agent, server: MyApp.SupportServer` and the callback module can use plain `use Spectre.Server`. Add `stack:` and `tools:` when installing a package. To wrap an existing SDK, [build the invoice tool from start to finish](CUSTOM_STACK_TOOLS.md).
+
 ## Define a Stack
 
 ```elixir

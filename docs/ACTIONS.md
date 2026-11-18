@@ -9,6 +9,8 @@ The [GAM manifesto](https://spectre.guide/en/governed-act-model) defines the
 boundary. [GAM in Spectre](GAM.md) maps Mandate, Evidence, Act and Duty to the
 implementation and explains the automatic Domain/Scope boundary.
 
+To run a proposal, display its material and try both outcomes in one file, start with [the mail walkthrough](HANDLER_WALKTHROUGH.md).
+
 ## Deterministic proposal
 
 ```elixir

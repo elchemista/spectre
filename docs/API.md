@@ -67,19 +67,7 @@ For custom routing, model transports, storage and other extension points, see
 [Behaviours and adapters](BEHAVIOURS.md). It lists the implementable contracts,
 their wiring and examples; module API documentation specifies the exact types.
 
-| Callback | Return |
-| --- | --- |
-| `init(arg, ctx)` | `{:ok, ctx}`, optionally an OTP action; `:ignore` or `{:stop, reason}` |
-| `handle_flow(route, input, ctx)` | Updated Context containing next-step commands |
-| `handle_pending(pending, input, ctx)` | Updated Context |
-| `handle_result(tag, result, ctx)` | Updated Context |
-| `handle_skill(skill, result, ctx)` | Updated Context after a mounted Skill result |
-| `handle_action(request, ctx)` | `:default`, `:confirm`, `{:confirm, policy_context}` or `{:reject, reason}` |
-| `handle_approval_inbox(event, ctx)` | `:default` or an updated Context |
-| `handle_call(request, from, ctx)` | Ordinary OTP reply/noreply/stop tuple using Context |
-| `handle_cast`, `handle_info`, `handle_continue` | Ordinary OTP tuple using Context |
-| `terminate`, `code_change`, `format_status` | Declared Server callback contract |
-| `assigns_schema/0`, `continuation_contracts/0` | Optional schemas for portable state and continuation results |
+The [Server callback reference](SERVER_CALLBACKS.md) covers every conversation, OTP and schema callback with its trigger and return. The [runnable walkthrough](HANDLER_WALKTHROUGH.md) follows a command from `handle_flow/3` to `handle_result/3`.
 
 `use Spectre.Server` supplies overridable defaults. Delegate unmatched result
 clauses with `super(tag, result, ctx)` when appropriate. Keep callbacks short;

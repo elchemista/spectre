@@ -1,9 +1,5 @@
-defmodule Quickstart.AI do
-  use Spectre.Stack
-end
-
 defmodule Quickstart.SupportAgent do
-  use Spectre.Agent, stack: Quickstart.AI, server: Quickstart.SupportServer
+  use Spectre.Agent, server: Quickstart.SupportServer
 
   router(strategies: [:regex, :bag, :jaro])
 
@@ -17,7 +13,7 @@ defmodule Quickstart.SupportAgent do
 end
 
 defmodule Quickstart.SupportServer do
-  use Spectre.Server, tools: Quickstart.AI
+  use Spectre.Server
 
   @impl true
   def handle_flow({:support, :pricing}, _input, ctx) do

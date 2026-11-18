@@ -4,6 +4,8 @@ AgentServer manages GAM automatically. For startup, application callbacks and
 the boundary between application policy and kernel invariants, see
 [Automatic GAM](MANAGED_GAM.md).
 
+[Build an invoice integration](CUSTOM_STACK_TOOLS.md) to see the complete code for a custom client, a generated helper, a governed write and its human approval.
+
 ## Registered execution for managed GAM
 
 `c:Spectre.Stack.Installable.effects/1` is an optional, immutable execution

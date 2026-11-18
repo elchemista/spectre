@@ -5,6 +5,8 @@ module. Mounting it creates a supervised GenServer with its own assigns, private
 state, workers, pending intentions and checkpoint. Its governed actions enter
 **the same GAM Domain as its Agent**, through `Spectre.Server.GAM`.
 
+This process belongs to a mount that specifies `server:`. A declarative Skill can omit that binding and leave dispatch to the root Server. [See both callback keys and the options for flow, route and mount](SERVER_CALLBACKS.md#flow-route-and-skill-options).
+
 This is the 0.4 AgentServer path. The [0.3 Skill guide](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/SKILLS_0_3.md),
 [generational Skill state](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/SKILL_STATE.md) and [data-defined runtime Skills](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/RUNTIME_SKILLS.md)
 describe compatibility APIs; their Instance snapshots are not converted into
@@ -55,7 +57,7 @@ defmodule MyApp.BillingServer do
   def handle_flow(:unmatched, _input, ctx), do: respond(ctx, "Which invoice do you mean?")
 
   @impl true
-  def handle_pending(pending, input, ctx) do
+  def handle_pending(%{kind: :consent} = pending, input, ctx) do
     case String.downcase(String.trim(input.text)) do
       "yes" -> confirm_pending(ctx, pending.id)
       "no" -> reject_pending(ctx, pending.id)
@@ -65,6 +67,8 @@ defmodule MyApp.BillingServer do
         |> route_current_input(suspend: pending.id)
     end
   end
+
+  def handle_pending(pending, input, ctx), do: super(pending, input, ctx)
 
   @impl true
   def handle_result(:refunded, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
@@ -77,8 +81,12 @@ defmodule MyApp.BillingServer do
   @impl true
   def handle_info({:invoice_changed, invoice_id}, ctx),
     do: {:noreply, assign(ctx, :invoice_id, invoice_id)}
+
+  def handle_info(message, ctx), do: super(message, ctx)
 end
 ```
+
+Trace the refund: `on :refund` inside `flow :billing` selects the local key `{:billing, :refund}`. The mount name is chosen independently by `as:`. Here `protected: true` asks Managed GAM to require confirmation when the callback proposes an operation. The mount allowlist and root policy decide what can be proposed. `on_result: :refunded` is the tag returned with the outcome, including rejection. The status route can reply immediately.
 
 `handle_flow` receives local `{flow, intent}` keys. `ctx.routing` retains the
 mounted route, including `owner: MyApp.BillingSkill` and `scope: {:skill, :billing}`.

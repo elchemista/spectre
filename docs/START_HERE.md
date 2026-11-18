@@ -8,9 +8,11 @@ the host declares consequential. Existing 0.3 applications start with
 
 1. [Installation](INSTALLATION.md): dependencies, source pins and supervision.
 2. [Getting started](GETTING_STARTED.md): generate an Agent/Server and receive a reply.
-3. [Architecture](ARCHITECTURE.md): process ownership, commands and authority.
-4. [Routing](ROUTING.md): choose and combine recognition strategies.
-5. [Managed GAM](MANAGED_GAM.md): configure effects, identity and human consent.
+3. [Follow a complete input](HANDLER_WALKTHROUGH.md) from route to consumer and try both consent choices.
+4. [Look up a Server callback](SERVER_CALLBACKS.md) by event, input and return.
+5. [Architecture](ARCHITECTURE.md): process ownership, commands and authority.
+6. [Routing](ROUTING.md): choose and combine recognition strategies.
+7. [Managed GAM](MANAGED_GAM.md): configure effects, identity and human consent.
 
 ## Build your application
 
@@ -18,7 +20,8 @@ the host declares consequential. Existing 0.3 applications start with
 | --- | --- |
 | Recognize input and train classifiers | [Routing](ROUTING.md), [Training](TRAINING.md), [Evaluation](EVALUATION.md) |
 | Implement custom providers and adapters | [Behaviours and adapters](BEHAVIOURS.md) |
-| Implement callbacks and asynchronous work | [Server](AGENT_SERVER.md), [API](API.md), [DSL](DSL.md) |
+| Implement callbacks and asynchronous work | [Callback reference](SERVER_CALLBACKS.md), [Server](AGENT_SERVER.md), [API](API.md), [DSL](DSL.md) |
+| Add your billing client | [Read a draft and issue it after approval](CUSTOM_STACK_TOOLS.md) |
 | Install package helpers and effects | [Stack tools](STACK_TOOLS.md), [Stack](STACK.md) |
 | Run reusable Skill servers | [Skills](SKILLS.md) |
 | Prepare and confirm operations | [Actions](ACTIONS.md), [Pending lifecycle](PENDING_LIFECYCLE.md) |

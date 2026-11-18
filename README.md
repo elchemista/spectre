@@ -37,6 +37,8 @@ principles and [GAM in Spectre](docs/GAM.md) for their implementation.
 - **Server** implements the callbacks for those routes and manages the
   conversation's state, pending work and results inside an OTP process.
 
+For a conversation with no installed packages, `use Spectre.Agent, server: MyApp.Server` and `use Spectre.Server` suffice. Add a Stack when you install capabilities. [Build a helper for an existing billing client](docs/CUSTOM_STACK_TOOLS.md).
+
 The Server can ask workers to generate a response or use a tool. Operations on
 the application's governed surface go through GAM before their effect adapter
 can execute them.
@@ -120,7 +122,7 @@ Server handler. `input/3` returns an interaction ID; replies arrive asynchronous
 at the consumer. A successful early match can avoid a model call.
 
 For a complete first run without configured providers, use the
-[model-free quickstart](https://github.com/elchemista/spectre/blob/0.4.0/docs/examples/agent_server_quickstart.exs).
+[model-free quickstart](docs/GETTING_STARTED.md).
 
 In an application, supervise the Server or use `Spectre.summon/1`
 for per-subject ownership. [Getting started](docs/GETTING_STARTED.md) covers
@@ -244,6 +246,8 @@ connects website inspection, drafting, refusal and failure handling.
 
 | Goal | Start here |
 | --- | --- |
+| Add your own tool or cloud API | [Stack and invoice SDK walkthrough](docs/CUSTOM_STACK_TOOLS.md) |
+| Follow input, approval and result end to end | [Step-by-step walkthrough](docs/HANDLER_WALKTHROUGH.md), [Callback order and return types](docs/SERVER_CALLBACKS.md) |
 | Build and run an agent | [Getting started](docs/GETTING_STARTED.md) |
 | Choose recognition strategies | [Routing](docs/ROUTING.md), [Training](docs/TRAINING.md) |
 | Implement custom adapters and behaviours | [Behaviours and adapters](docs/BEHAVIOURS.md) |

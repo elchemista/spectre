@@ -15,6 +15,8 @@ Read [the migration guide](MIGRATING_TO_0_4.md) for the change from 0.3,
 [Installed tools](STACK_TOOLS.md) explains generated helpers and the companion
 satellite adapters. Existing application effects still require an explicit audit.
 
+For your first Server, [run the mail walkthrough](HANDLER_WALKTHROUGH.md). For an existing Server, [look up the event that calls your handler](SERVER_CALLBACKS.md). A direct reply ends at the consumer. An asynchronous command can resume in `handle_result/3`; a foreground wait takes the next input in `handle_pending/3`.
+
 ## Skill Servers share the root's automatic GAM
 
 `Spectre.Skill, server: MyApp.SkillServer` gives a mount its own GenServer and

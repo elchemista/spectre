@@ -7,15 +7,11 @@ The complete nine-package, GAM-backed workflow is in
 
 ## A complete deterministic agent with native OTP callbacks
 
-This example needs only Spectre and does not call a model or external service.
+Start with Agent and Server. This example has no installed capabilities, so it omits both `stack:` and `tools:`. For a runnable example with a custom tool, follow [the invoice client](CUSTOM_STACK_TOOLS.md). To trace a route and its result tag, try [the mail walkthrough](HANDLER_WALKTHROUGH.md).
 
 ```elixir
-defmodule Demo.AI do
-  use Spectre.Stack
-end
-
 defmodule Demo.SupportServer do
-  use Spectre.Server, tools: Demo.AI
+  use Spectre.Server
 
   def init(_arg, ctx), do: {:ok, assign(ctx, :price, 20)}
 
@@ -35,7 +31,7 @@ defmodule Demo.SupportServer do
 end
 
 defmodule Demo.SupportAgent do
-  use Spectre.Agent, stack: Demo.AI, server: Demo.SupportServer
+  use Spectre.Agent, server: Demo.SupportServer
   router strategies: [:regex]
 
   flow :support do

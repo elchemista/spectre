@@ -62,8 +62,7 @@ permission grants. A missing model/adapter is not replaced by an invented API.
 | `protected:` | Marks a sensitive route and requests standard bridge confirmation; not a mandate. |
 
 Flow nesting retains the complete taxonomy. A single flow uses `{flow, label}`;
-nested routes retain their path and mounted Skill routes retain scope. Labels
-remain globally unique. Do not discard those keys in a catch-all dispatcher.
+nested routes retain their path and mounted Skill routes retain scope. Use the scoped key when similar labels appear on different mounts. Do not discard those keys in a catch-all dispatcher.
 The input pipeline can normalize input and attach metadata before pending or
 routing dispatch; it runs once for an admitted input.
 
@@ -146,6 +145,8 @@ defmodule MyApp.SupportServer do
   def handle_result(tag, result, ctx), do: super(tag, result, ctx)
 end
 ```
+
+Here `:pricing` names a prompt, and `on_result: :answer` tells the runtime to pass `:answer` as the first argument of `handle_result/3`. The second argument carries the result of generation. [Follow a runnable example with both approval outcomes](HANDLER_WALKTHROUGH.md).
 
 This fragment illustrates response handling; a real Server must implement each
 route it declares, including deletion when using the Agent above. `:understand`

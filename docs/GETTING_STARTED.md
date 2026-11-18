@@ -5,6 +5,8 @@ needs. The [README example](../README.md#build-an-agent) shows regex, semantic
 matching and model classification;
 [Installation](INSTALLATION.md) covers dependencies and supervision.
 
+An empty Stack is optional. The generator and the model-free example below use only Agent and Server. When you want to call your own billing library, follow [the Stack integration walkthrough](CUSTOM_STACK_TOOLS.md).
+
 ## Generate the Agent and Server
 
 Inside your application:
@@ -17,6 +19,8 @@ mix test test/my_app/support_agent_test.exs
 The generator creates a declarative Agent, a Server callback module and a runtime
 test. It does not overwrite existing files unless you pass `--force`; `--dry-run`
 prints the plan first.
+
+Open `lib/my_app/support_agent.ex` to find `flow :support` and its `:greeting` route. Open `lib/my_app/support_server.ex` to find the matching `handle_flow({:support, :greeting}, _input, ctx)`. Change its reply and check the assertion in the generated test.
 
 The Agent recognizes `hello`; the Server handles the declared route and unmatched
 input. Add recognition rules in the Agent and behavior in `handle_flow/3`.
@@ -62,7 +66,7 @@ them. Identity, routing and pending fields are runtime views.
 
 Conversation callbacks return an updated Context. Native `handle_call`,
 `handle_cast` and `handle_info` keep their ordinary OTP return tuples, with the
-Context as state. [Server](AGENT_SERVER.md) describes every callback.
+Context as state. [Server callbacks](SERVER_CALLBACKS.md) lists each trigger, argument and return. [Follow a complete input](HANDLER_WALKTHROUGH.md) runs a help reply, a proposal and its continuation.
 
 ## Choose how the Agent recognizes input
 

@@ -11,6 +11,8 @@ declare the mount's permitted `governed:` operations. Each Skill has its own
 runtime state and checkpoint; no second GAM installation, Domain or Host is
 required. See [Skills](SKILLS.md).
 
+For the first conversation you can omit `stack:` on the Agent and `tools:` on the Server. Add them when the application installs a package. [Integrate your own Elixir library](CUSTOM_STACK_TOOLS.md).
+
 ## Dependencies
 
 Add Spectre to your application's dependencies. If you are upgrading from 0.3,
