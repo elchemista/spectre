@@ -31,10 +31,13 @@ the application must enable the operation and GAM must admit its concrete effect
 
 ## Generated helper contract
 
-The package's existing `Spectre.Stack.Installable` behaviour declares `tools/1`.
-A Server selects a Stack with `use Spectre.Server, tools: MyApp.AI`. The core
-creates private helpers named by the installed descriptors. No imports from
-`Spectre.Kinetic`, `Spectre.Mnemonic` or `Spectre.Lens` are needed.
+Why can a callback call `kinetic(ctx, response, on_result: :prepared)`?
+
+1. Adding `spectre_kinetic` to your dependencies makes the package module available.
+2. `install Spectre.Kinetic` adds its `tools/1` descriptor to the Stack. The key `:kinetic` names the helper and the descriptor selects `:interpret` as its default operation.
+3. `stack: MyApp.AI` binds the Agent to that installation. In the Server, `use Spectre.Server, tools: MyApp.AI` reads the descriptors at compile time and defines private `kinetic/2` and `kinetic/3` functions in that module. Call them directly from a callback.
+
+The helper returns the updated Context with a queued command. Once the worker interprets the consolidated model output, the runtime calls `handle_result(:prepared, {:prepared, data}, ctx)`. The first atom is the application’s `on_result:` tag (defaults to `:kinetic`). The second is the result type returned by the Kinetic adapter. The callback can then submit a concrete proposal to GAM.
 
 ```elixir
 defmodule MyApp.AI do
