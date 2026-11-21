@@ -201,3 +201,205 @@ Kinetic AL (output consolidato) -----/              |
 
 Kinetic è un **interprete di istruzioni**, non un secondo executor. Per le candidate Kinetic che corrispondono a tool, aggiungere un mapping verso i riferimenti dello stesso catalogo; gli effetti Kinetic già registrati con `effects/1` restano governati come prima. Non eseguire `execute_effect` da Directive e non trasformare token AL parziali in atti. Per la prima release è sufficiente **una chiamata tool per decisione LLM**; evolvere a più call solo con correlazione e budget testati.
 
+
+## 4. Proposta concreta di :cont nei handler e ownership della conversazione
+
+### 4.1 Callback e forme di ritorno (API 0.4.1 PROPOSTA)
+
+Oggi il Server non accetta `:cont` da `handle_flow`/`handle_pending`: bisogna modificare `lib/spectre/server.ex` e l'acquisizione in `lib/spectre/server/runtime.ex` **prima** di costruire il driver.
+
+~~~elixir
+# Estensione dei contratti del behaviour Spectre.Server.
+@callback handle_input(Spectre.Input.t(), Spectre.Server.Context.t()) ::
+  Spectre.Server.Context.t() | :cont | {:cont, Spectre.Server.Context.t()}
+
+@callback handle_flow(term(), Spectre.Input.t(), Spectre.Server.Context.t()) ::
+  Spectre.Server.Context.t() | :cont | {:cont, Spectre.Server.Context.t()}
+
+@callback handle_pending(map(), Spectre.Input.t(), Spectre.Server.Context.t()) ::
+  Spectre.Server.Context.t() | :cont | {:cont, Spectre.Server.Context.t()}
+
+# handle_result/3 continua a dover restituire Context: un risultato di
+# worker non è un input utente che possa essere reinstradato.
+~~~
+
+`handle_input/2` è opzionale, default `:cont`. Serve per consentire al Server o alla Skill proprietaria di **offrire** l'input a un handler prima del routing normale. Le callback OTP native `handle_call/cast/info` non vengono toccate.
+
+| Ritorno | Semantica |
+| --- | --- |
+| `ctx` | Handler ha consumato il turno; i comandi/stato vengono acquisiti normalmente |
+| `:cont` | Handler declina il turno; stato immutato; **una sola** transizione al prossimo stadio |
+| `{:cont, ctx}` | Come `:cont`, ma con sole modifiche di assigns/stato locale; `ctx.commands` deve essere vuoto e `dispatch_token` identico |
+| Errore/crash | Quarantine e diagnostica esistenti, **mai** convertire in `:cont` |
+| `handle_result -> :cont` | Errore di contratto, non un nuovo input |
+
+### 4.2 Per ogni callback: quale è lo step successivo?
+
+- **`handle_input/2`:** `:cont` -> continuare verso PreRoute/Router. Non ricominciare preparazione e ingress.
+- **`handle_pending/3` su reply-pending:** `:cont` -> sospendere **l'attesa originaria** con id/revision, poi inviare l'input al Router una sola volta. La vecchia attesa resta riprendibile.
+- **`handle_pending/3` su consent-pending:** nessun `:cont` può approvare o rifiutare il consenso. La policy attuale decide se e come sospendere. Decisioni `:confirm/:reject` restano vincolate a Presentation + pending id/revision e provenienza.
+- **`handle_flow(route,...)` già scelta:** `:cont` -> rifiutare la route per **questo input** e chiamare il fallback `handle_flow(:unmatched,...)` una volta, **senza re-invocare il classificatore**. Un `:cont` nel fallback `:unmatched` è errore terminale, non un ciclo.
+- **Skill con proprietà di conversazione:** `:cont` -> cede l'input originale al **root** tramite una receipt correlata. La Skill perde il focus automatico (non la memoria né le missioni), e il root esegue PreRoute/Router una sola volta.
+- **`{:cont, ctx}`:** nessuna emissione di comandi, nessuna risoluzione pending nascosta, nessun effetto; l'aggiornamento state-only viene validato e checkpointato **prima** di cedere l'input.
+
+### 4.3 Precedenza reale da preservare
+
+Non reimpostare arbitrariamente l'ordine del runtime attuale. Proposta di ordine esplicito, con due casi:
+
+**Input indirizzato** (es. decisione UI per un consent): preparazione e ingress -> verifica esatta di Skill + pending.id + pending.revision -> consegna esclusiva alla relativa attesa o errore `:stale_pending`. Nessun fallback cognitivo su una decisione esplicitamente riferita a un pending superato.
+
+**Input ordinario**: preparazione e ingress -> global interrupts già previsti -> foreground pending con policy -> eventuale conversation owner -> `handle_input/2` -> PreRoute esistente -> router -> `handle_flow`/`:unmatched`. Quando un consent è foreground, non permettere al modello di intercettarlo come risposta ordinaria senza applicare la policy.
+
+A ogni passo, il Runtime mantiene un marker dell'evento e del suo stadio; dopo `:cont` non torna indietro a uno stadio già visitato. Un errore del classifier non è `:no_match`, un turno reindirizzato non perde la provenienza autenticata.
+
+### 4.4 Handoff root <-> Skill (non specifico di Directive)
+
+I child Skill Server esistono già. Il **nuovo** pezzo è un handoff generico, con receipt di yield, per i messaggi di una conversazione che la Skill già possiede.
+
+~~~elixir
+# PROTOCOLLO INTERNO - pseudocodice, non tool del modello
+# Root ha preparato e registrato l'evento E, con subject + conversation_key.
+offer_to_owner(E, owner: {:skill, :assistant}, generation: 8, revision: 4)
+
+# Skill elabora handle_input(E) nel suo Runtime e risponde SOLO dopo acquisizione:
+{:accepted, event_id, owner_ref}
+# oppure:
+{:yielded, event_id, owner_ref, :cont}
+
+# Root valida event_id, owner_ref, session_generation, revision:
+# accepted -> fine dispatch (child continua con worker/risposta);
+# yielded  -> route_once(E) sul root, senza re-inviare ingress o preparazione.
+~~~
+
+La receipt non deve bloccare il GenServer root aspettando un LLM: è un ack della **presa in carico**, non l'esito della missione. Il root mantiene un registro breve dei messaggi in handoff e marca il yield in modo idempotente; due yield o un yield tardivo non rilanciano due volte il Router. Se la Skill crasha nel mezzo, recovery dal checkpoint/receipt oppure failure esplicita, mai un replay cieco di effetti.
+
+**Design gate obbligatorio:** provare prima `await_reply`/`await_input`, `handle_pending` e `route_current_input` della 0.4. Se un pending basta per un dialogo libero anche quando il modello non ha una domanda specifica, riusarlo. Se non basta, estendere il runtime con un solo **conversation lease** generico `{conversation_key, skill_mount, session_generation, revision}` e receipt di handoff. Il `conversation_key` è autenticato e assegnato dall'host/transport, non dal testo LLM. Niente seconda mappa di focus non sincronizzata e nessuna conoscenza di "Mission" nel core.
+
+### 4.5 Scenario di test per :cont
+
+~~~text
+T1 "Analizza le fatture" -> root no_match -> delegate assistant -> owner :assistant
+T2 "La F-10 era annullata" -> owner assistant -> inform(mission) -> NO router
+T3 "Intanto, stato fatture" -> assistant :cont -> root router UNA volta
+                             -> flow deterministico :invoices/:status
+                             -> analisi m-1 prosegue nel child, senza prendere focus
+T4 "Riprendi analisi" -> root risolve mission m-1 dello stesso subject -> delega/riattiva
+T5 "Sì" a proposta di piano -> confirmation Directive, NON consenso GAM
+T6 "Sì" a Presentation GAM -> richiede ref+revision corretti; no contaminazione
+~~~
+
+Per T4 il testo "riprendi" da solo non dà autorità di riaprire una missione di altro soggetto: il root/host risolve mission id e proprietario prima del resume. Misurare che T2/T3 producano esattamente il numero di routing pass previsto: **zero** per il turno consumato, **uno** per il turno ceduto.
+
+## 5. Spectre.Directive: conversazione, reasoner e tool loop completi
+
+### 5.1 Un normale Server per la Skill, nessun runtime nascosto
+
+Lavorare in `spectre_directive`. Mantenere reducer puro (`SpectreDirective.Loop.Engine`), API standalone e helper reducer V1. Aggiungere un driver che implementa le callback del **normale `Spectre.Server`** e che può essere montato sotto `Spectre.Skill`:
+
+~~~elixir
+# API ERGONOMICA PROPOSTA 0.4.1; da implementare nel package Directive.
+defmodule Demo.AssistantServer do
+  use Spectre.Directive.Server,
+    tools: Demo.Stack,
+    mode: :conversation,
+    protocol: :json,
+    model: :configured_response_model,
+    model_tools: ["invoice.list", "invoice.send"]
+end
+~~~
+
+La macro `use Spectre.Directive.Server` deve espandere il normale `use Spectre.Server, tools: Demo.Stack`, registrare i propri handler e gli eventuali continuation contracts. Non avvia una missione OTP aggiuntiva dentro un altro GenServer; usa il **processo Skill Server** già supervisionato. Deve mostrare chiaramente come fare override di un handler e quando usare `super`. Callback `handle_result` dedicate del driver non possono sparire dietro un catch-all dell'applicazione.
+
+### 5.2 Due modalità che condividono tool, worker e policy
+
+**`mode: :conversation`:** risposta aperta multi-turno, modello che ragiona e sceglie tool, history bounded, possibilità di chiedere dettagli. Non forzare ogni messaggio in una Mission con Plan terminale; il package può avere `SpectreDirective.Conversation.State`, piccolo stato puro che usa lo stesso formato decisioni/tool e la stessa gestione degli input.
+
+**`mode: :mission`:** usare il reducer già esistente, con id/plan_version/step/request e `new/next/respond/inform`. Una Mission può rimanere attiva in background e ricevere correzioni senza interrompere altri flow. Il root e le altre Skill sono disponibili mentre i suoi worker lavorano.
+
+~~~text
+Directive handle_input -> state/conversation oppure mission
+  |
+  +-- conversazione -> prepara prompt + memoria opzionale + available_tools
+  |                    -> generate(reason) nel worker
+  |                    -> valida risposta consolidata:
+  |                       - "say"     -> respond + salva stato
+  |                       - "ask"     -> await_input + ripresa id/revision
+  |                       - "tool"    -> call_tool -> on_result -> nuovo reason -> respond
+  |                       - "yield"   -> :cont (stato solo; root router once)
+  |
+  +-- missione -> SpectreDirective.next:
+                 :reason       -> generate -> parse -> respond(request.id)
+                 :invoke       -> ToolRef chiuso -> call_tool -> observed result -> respond
+                 :question     -> await_input -> respond(request.id)
+                 :confirmation -> conferma del PIANO, non consenso GAM
+                 :policy       -> host-selected handler, allow/deny/blocked
+                 :done         -> final outcome, release focus
+                 :blocked      -> sospesa, eventuale richiesta utente
+                 :error        -> diagnostica o recovery bounded
+~~~
+
+### 5.3 JSON e Kinetic AL convergono prima del Server command
+
+~~~json
+{"type":"tool_call","id":"model-call-1",
+ "name":"invoice.list","arguments":{"status":"overdue"}}
+~~~
+
+~~~json
+{"type":"assistant_message","text":"Ci sono due fatture scadute."}
+~~~
+
+Il parser deve accettare soltanto decisioni documentate e validate. Chiamate native function-call del provider vanno normalizzate al medesimo formato. Se `protocol: :kinetic_al`, soltanto l'AL **consolidato** viene interpretato da Kinetic e trasformato in `ToolRef + args`. Non ci sono due executor e non basta un nome inventato dal modello per lanciare codice. Il modello non seleziona provider, credenziali, MFA o tool non esposti. Errori JSON/AL possono provocare un retry cognitivo bounded, mai un side effect parziale.
+
+### 5.4 Come il driver usa i comandi e riceve i risultati
+
+~~~elixir
+# PSEUDOCODICE del driver, sufficiente per fissare il contratto.
+def handle_result(:directive_reason, {:correlated, request, {:generated, output}}, ctx) do
+  case Spectre.Directive.Decision.decode(output) do
+    {:say, text} -> Spectre.Directive.Driver.complete_turn(ctx, request, text)
+    {:ask, question} -> Spectre.Directive.Driver.ask(ctx, request, question)
+    {:tool, ref, args} ->
+      Spectre.Server.call_tool(ctx, ref, args,
+        on_result: :directive_tool, correlation: request)
+    {:yield, _} ->
+      # Una decisione model non è da sola un :cont autorizzato:
+      # validare ownership/situazione, poi il driver applica la policy.
+      Spectre.Directive.Driver.request_yield(ctx, request)
+    {:error, error} -> Spectre.Directive.Driver.invalid_decision(ctx, request, error)
+  end
+end
+
+def handle_result(:directive_tool, {:correlated, request, observed}, ctx) do
+  # Verifica request viva, result del command corretto, severity/outcome.
+  # Alimenta reducer o history; se necessario avvia una nuova generate.
+  Spectre.Directive.Driver.observe(ctx, request, observed)
+end
+
+# handle_input/2 / handle_pending/3 possono tornare :cont o Context.
+# handle_result/3 NON può tornare :cont: per il yield su risultato asincrono
+# si registra il desiderio di cedere il PROSSIMO input, non si fa rerouting.
+~~~
+
+Per `:invoke` conservare e verificare `mission_id + request.id + plan_version + command_id`. Una risposta governata `unknown` non equivale a `complete_step`; l'obbligo GAM resta aperto. Il driver non può rispondere `"inviato"` a una semplice admission, solo a un Outcome osservato.
+
+### 5.5 Stato privato del driver, retention e recovery
+
+La Skill Server già ha checkpoint; riusare quello, senza creare obbligatoriamente un Directive Store parallelo. Esempio di struttura portabile **illustrativa**:
+
+~~~elixir
+%{
+  schema_version: 1,
+  conversations: %{
+    "chat-7" => %{mode: :conversation, revision: 12, history: [...], focus: :foreground}
+  },
+  missions: %{"m-1" => encoded_reducer_state},
+  inflight: %{
+    "command-ref" => %{conversation: "chat-7", mission: "m-1",
+                       request: "r-9", attempt: 1}
+  }
+}
+~~~
+
+Niente PID, clients, provider secret, interi Context o history illimitata nel checkpoint. Lo stato reducer oggi ha un limite serializzato **900.000 byte**; misurarlo e applicare proiezione/retention/summarization esplicita. Reset invalida correlazioni vecchie. Un risultato tardivo non deve ridare a una missione il foreground né causare il retry di un effetto incerto. Separare il budget/lifetime della missione dalla singola interazione (nel prototipo il limite di 32 step e timeout ereditati fermavano catene di lavoro); nessun timeout infinito implicito.
+
