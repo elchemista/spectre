@@ -290,6 +290,29 @@ T6 "Sì" a Presentation GAM -> richiede ref+revision corretti; no contaminazione
 
 Per T4 il testo "riprendi" da solo non dà autorità di riaprire una missione di altro soggetto: il root/host risolve mission id e proprietario prima del resume. Misurare che T2/T3 producano esattamente il numero di routing pass previsto: **zero** per il turno consumato, **uno** per il turno ceduto.
 
+### 4.6 Claim e release espliciti della conversazione
+
+Per non lasciare implicito il passaggio iniziale da `delegate` a "questa Skill possiede i prossimi input", aggiungere **due helper generici** del Server, non specifici di Directive:
+
+~~~elixir
+# API 0.4.1 PROPOSTA: gli helper accodano comandi di lifecycle locali.
+ctx = Spectre.Server.claim_conversation(ctx)
+ctx = Spectre.Server.release_conversation(ctx)
+
+# Opzione host-only proposta per più chat dello stesso subject.
+# Il valore è validato dal transport autenticato; mai dal testo del modello.
+{:ok, _} = Spectre.Server.input(root, "Continua", conversation: verified_key)
+~~~
+
+- `claim_conversation(ctx)` è disponibile da un Server/Skill che sta realmente trattando un input consegnato dal runtime. Il Runtime valida soggetto, mount, session generation e conversation key. Il claim è acquisito con checkpoint prima di pubblicare il lease al root. Ripetere lo stesso claim è idempotente; reclamare la conversazione di un altro soggetto è rifiutato.
+- La prima delega da `handle_flow(:unmatched)` **non diventa automaticamente focus perpetuo**. Il driver Directive, quando accetta l'ingresso, chiama `claim_conversation`; il root riceve una receipt verificabile e consegna i turni seguenti allo stesso child.
+- `release_conversation` termina il focus quando la conversazione finisce/cancella. `:cont` di child **sospende** il focus per cedere il turno al router, ma non cancella memoria, attese o missioni.
+- Per applicazioni con una sola chat per Server, il conversation key di default è la sessione autenticata. Per più chat dello stesso subject l'host fornisce `conversation: verified_key`, che viene vincolato al subject; non è un valore arbitrario copiato dall'input esterno.
+- Claim/release usano i command/checkpoint esistenti e receipt root/child; **non** creano un nuovo GAM Act e non fanno `GenServer.call` ricorsivo.
+- Global interrupt e pending esplicitamente indirizzati mantengono la priorità. Dopo `:cont`, una Skill non ricattura automaticamente il messaggio seguente senza un nuovo claim/resume verificato.
+
+**Nel codice generato da `use Spectre.Directive.Server`** il claim avviene automaticamente quando il driver prende in carico il primo input. Un package terzo può usare gli stessi helper.
+
 ## 5. Spectre.Directive: conversazione, reasoner e tool loop completi
 
 ### 5.1 Un normale Server per la Skill, nessun runtime nascosto
@@ -315,6 +338,8 @@ La macro `use Spectre.Directive.Server` deve espandere il normale `use Spectre.S
 **`mode: :conversation`:** risposta aperta multi-turno, modello che ragiona e sceglie tool, history bounded, possibilità di chiedere dettagli. Non forzare ogni messaggio in una Mission con Plan terminale; il package può avere `SpectreDirective.Conversation.State`, piccolo stato puro che usa lo stesso formato decisioni/tool e la stessa gestione degli input.
 
 **`mode: :mission`:** usare il reducer già esistente, con id/plan_version/step/request e `new/next/respond/inform`. Una Mission può rimanere attiva in background e ricevere correzioni senza interrompere altri flow. Il root e le altre Skill sono disponibili mentre i suoi worker lavorano.
+
+**Importante:** `mode: :conversation` è il default del driver, non un divieto di missioni: una chat può aprire più missioni del reducer e lasciarle lavorare in background. `mode: :mission` è la variante restrittiva per una Skill dedicata a un task pianificato.
 
 ~~~text
 Directive handle_input -> state/conversation oppure mission
@@ -768,13 +793,26 @@ Costruire un fake V1 cognitivo/governato; registrare il risultato dell'helper co
 In `stack/tools.ex` e nel nuovo `Spectre.Tool.Adapter` introdurre schema e validator V2. Mantenere parser/descriptor V1 **identici** per chi già lo usa. Fissare il subset JSON Schema e rifiutare keyword sconosciute. Introdurre helper di creazione schema/descriptor **puro e opzionale**, per evitare boilerplate tra satellite, ma senza creare un altro registry/DSL obbligatorio.
 
 ~~~elixir
-# API DI ERGONOMIA PROPOSTA, solo alias costruttore/validator di Stack.Tools:
-Spectre.Tool.define!(:invoice,
-  adapter: Demo.InvoiceAdapter,
-  description: "Fatture",
-  operations: %{list: %{path: :cognitive, retry: :safe, max_bytes: 65_536,
-                         description: "Elenca", input_schema: %{...}}})
-# Ritorna un descriptor V2 puro, da restituire in Installable.tools/1.
+# API ERGONOMICA 0.4.1 PROPOSTA: helper puro sopra Stack.Tools.
+def tools(_config) do
+  Spectre.Tool.define!(:invoice,
+    adapter: Demo.InvoiceAdapter,
+    default: nil,
+    description: "Fatture",
+    operations: %{
+      list: %{
+        path: :cognitive, retry: :safe, max_bytes: 65_536,
+        description: "Lista fatture",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{"status" => %{"type" => "string"}},
+          "required" => ["status"],
+          "additionalProperties" => false
+        }
+      }
+    })
+end
+# Ritorna %{invoice: descriptor_v2}; nessun registry o macro aggiuntivo.
 ~~~
 
 **GATE 1:** fixture V2 valida e serializzabile, V1 invariata, zero registri di tool nuovi.
