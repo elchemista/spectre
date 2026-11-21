@@ -1,0 +1,279 @@
+defmodule Spectre.Server.ActivitiesTest do
+  use ExUnit.Case, async: true
+
+  alias Spectre.Server
+  alias Spectre.Server.Activities
+  alias Spectre.Test.Processes
+
+  @timeout 2_000
+
+  defmodule Fixture do
+    use GenServer
+
+    def start_link(opts) do
+      with {:ok, child} <- GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name])) do
+        wait_for_test(child, opts[:barrier], Keyword.fetch!(opts, :observer))
+      end
+    end
+
+    defp wait_for_test(child, nil, _observer), do: {:ok, child}
+
+    defp wait_for_test(child, barrier, observer) do
+      send(observer, {:fixture_waiting, barrier, self(), child})
+
+      receive do
+        {:release_fixture, ^barrier} -> {:ok, child}
+      after
+        2_000 ->
+          GenServer.stop(child)
+          {:error, :fixture_timeout}
+      end
+    end
+
+    @impl true
+    def init(opts), do: {:ok, %{owner: Keyword.fetch!(opts, :observer), ref: nil, count: 0}}
+
+    @impl true
+    def handle_info({:spectre_activity, :activate, ref}, %{ref: nil} = state) do
+      send(state.owner, {:fixture_activated, ref, self()})
+      {:noreply, %{state | ref: ref}}
+    end
+
+    @impl true
+    def handle_call(:work, _from, %{ref: nil} = state),
+      do: {:reply, {:error, :waiting_for_activation}, state}
+
+    def handle_call(:work, _from, state) do
+      count = state.count + 1
+      {:reply, {:ok, count}, %{state | count: count}}
+    end
+  end
+
+  defmodule Unavailable do
+    use GenServer
+
+    def start_link(_opts), do: {:error, :fixture_unavailable}
+
+    @impl true
+    def init(_opts), do: :ignore
+  end
+
+  defmodule Callback do
+    use Spectre.Server
+
+    def handle_flow({:fixture, :ping}, _input, ctx), do: respond(ctx, "pong")
+    def handle_flow(route, input, ctx), do: super(route, input, ctx)
+
+    def handle_call({:launch_fixture, coordinator, command, specification}, _from, ctx),
+      do: {:reply, Activities.start(coordinator, command, specification), ctx}
+
+    def handle_call({:hold_start_reply, coordinator, command, specification}, {caller, _}, ctx) do
+      send(caller, {:start_reply_held, Activities.start(coordinator, command, specification)})
+      {:noreply, ctx}
+    end
+
+    def handle_call(request, from, ctx), do: super(request, from, ctx)
+  end
+
+  defmodule Definition do
+    use Spectre.Agent, server: Callback
+    router(strategies: [:regex])
+
+    flow :fixture do
+      on(:ping, regex: ~r/^ping$/)
+    end
+  end
+
+  test "reservations are lazy and concurrent replays activate one child" do
+    coordinator = start_coordinator()
+    specification = fixture()
+    assert {:ok, ref} = Activities.reserve(coordinator, "reserved", specification)
+
+    assert {:error, :activity_command_conflict} =
+             Activities.reserve(coordinator, "reserved", fixture(barrier: make_ref()))
+
+    assert is_nil(Activities.supervisor(coordinator))
+
+    starts =
+      for _ <- 1..2 do
+        Task.async(fn -> Activities.start(coordinator, "reserved", specification) end)
+      end
+
+    assert Task.await_many(starts, @timeout) == [{:ok, ref}, {:ok, ref}]
+    assert_receive {:fixture_activated, ^ref, child}, @timeout
+    assert {:ok, %{status: :running, pid: ^child}} = Activities.lookup(coordinator, ref)
+
+    assert [{:undefined, ^child, :worker, _}] =
+             DynamicSupervisor.which_children(Activities.supervisor(coordinator))
+  end
+
+  test "an Activity crash leaves sibling work and the direct Root available" do
+    root = start_root()
+    assert {:links, links} = Process.info(root, :links)
+    assert self() in links
+    coordinator = start_coordinator()
+
+    assert {:ok, first_ref} = Activities.start(coordinator, "first", fixture())
+    assert {:ok, second_ref} = Activities.start(coordinator, "second", fixture())
+    refute first_ref == second_ref
+    assert_receive {:fixture_activated, ^first_ref, first}, @timeout
+    assert_receive {:fixture_activated, ^second_ref, second}, @timeout
+
+    first_monitor = Process.monitor(first)
+    Process.exit(first, :kill)
+    assert_receive {:DOWN, ^first_monitor, :process, ^first, :killed}, @timeout
+    eventually(fn -> Activities.lookup(coordinator, first_ref) |> failed?() end)
+
+    assert {:ok, %{status: :running, pid: ^second}} = Activities.lookup(coordinator, second_ref)
+    assert {:ok, 1} = GenServer.call(second, :work)
+    assert_root_responds(root)
+    assert {:ok, ^first_ref} = Activities.start(coordinator, "first", fixture())
+    assert {:ok, %{status: :failed, pid: nil}} = Activities.lookup(coordinator, first_ref)
+  end
+
+  test "the supervised Root survives loss of the Activity supervisor and retains subject ownership" do
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+    options = [subject: "activity-fixture", consumer: self()]
+    assert {:ok, root} = Spectre.Supervisor.summon(supervisor, Definition, options)
+    assert {:ok, ^root} = Spectre.Supervisor.summon(supervisor, Definition, options)
+    assert_root_responds(root)
+
+    coordinator = start_coordinator()
+    assert {:ok, ref} = Activities.start(coordinator, "first", fixture())
+    assert_receive {:fixture_activated, ^ref, child}, @timeout
+
+    activity_supervisor = Activities.supervisor(coordinator)
+    supervisor_monitor = Process.monitor(activity_supervisor)
+    child_monitor = Process.monitor(child)
+    Process.exit(activity_supervisor, :kill)
+    assert_receive {:DOWN, ^supervisor_monitor, :process, ^activity_supervisor, :killed}, @timeout
+    assert_receive {:DOWN, ^child_monitor, :process, ^child, _}, @timeout
+    eventually(fn -> Activities.lookup(coordinator, ref) |> failed?() end)
+    eventually(fn -> is_nil(Activities.supervisor(coordinator)) end)
+
+    assert_root_responds(root)
+    assert {:ok, ^root} = Spectre.Supervisor.summon(supervisor, Definition, options)
+    assert {:ok, replacement} = Activities.start(coordinator, "new", fixture())
+    assert_receive {:fixture_activated, ^replacement, replacement_child}, @timeout
+    assert replacement_child != child
+    assert {:ok, 1} = GenServer.call(replacement_child, :work)
+  end
+
+  test "an unspawned reservation can resume after the Root dies" do
+    root = start_root()
+    coordinator = start_coordinator()
+    specification = fixture()
+    assert {:ok, ref} = Activities.reserve(coordinator, "interrupted", specification)
+    assert is_nil(Activities.supervisor(coordinator))
+
+    kill_root(root)
+
+    replacement = start_root()
+    assert_root_responds(replacement)
+    assert {:ok, ^ref} = Activities.resume(coordinator, ref)
+    assert_receive {:fixture_activated, ^ref, child}, @timeout
+    assert {:ok, ^ref} = Activities.start(coordinator, "interrupted", specification)
+    assert {:ok, 1} = GenServer.call(child, :work)
+  end
+
+  test "a child created before Root loss stays inert until activation and retains its ref" do
+    root = start_root()
+    coordinator = start_coordinator()
+    barrier = make_ref()
+    specification = fixture(barrier: barrier)
+
+    {:ok, ref} = Activities.reserve(coordinator, "before-activation", specification)
+
+    :gen_server.send_request(
+      root,
+      {:launch_fixture, coordinator, "before-activation", specification}
+    )
+
+    assert_receive {:fixture_waiting, ^barrier, starter, child}, @timeout
+    assert {:error, :waiting_for_activation} = GenServer.call(child, :work)
+
+    kill_root(root)
+    send(starter, {:release_fixture, barrier})
+
+    assert_receive {:fixture_activated, ^ref, ^child}, @timeout
+    assert {:ok, ^ref} = Activities.start(coordinator, "before-activation", specification)
+    assert {:ok, %{status: :running, pid: ^child}} = Activities.lookup(coordinator, ref)
+    assert {:ok, 1} = GenServer.call(child, :work)
+    assert_root_responds(start_root())
+  end
+
+  test "completed work and rejected startup both replay their original outcome" do
+    coordinator = start_coordinator()
+    specification = fixture()
+    assert {:ok, ref} = Activities.start(coordinator, "complete", specification)
+    assert_receive {:fixture_activated, ^ref, child}, @timeout
+    assert {:ok, 1} = GenServer.call(child, :work)
+    assert :ok = GenServer.stop(child)
+
+    eventually(fn ->
+      match?({:ok, %{status: :completed, pid: nil}}, Activities.lookup(coordinator, ref))
+    end)
+
+    assert {:ok, ^ref} = Activities.start(coordinator, "complete", specification)
+    failure = {Unavailable, []}
+    assert {:ok, failed_ref} = Activities.reserve(coordinator, "unavailable", failure)
+    assert {:error, :fixture_unavailable} = Activities.resume(coordinator, failed_ref)
+    assert {:error, :fixture_unavailable} = Activities.start(coordinator, "unavailable", failure)
+
+    assert {:ok, %{status: :failed, reason: :fixture_unavailable}} =
+             Activities.lookup(coordinator, failed_ref)
+  end
+
+  test "Root loss after activation and before its reply adopts the running child" do
+    root = start_root()
+    coordinator = start_coordinator()
+    specification = fixture()
+
+    :gen_server.send_request(root, {:hold_start_reply, coordinator, "lost-reply", specification})
+
+    assert_receive {:start_reply_held, {:ok, ref}}, @timeout
+    assert_receive {:fixture_activated, ^ref, child}, @timeout
+    assert {:ok, 1} = GenServer.call(child, :work)
+    kill_root(root)
+
+    assert_root_responds(start_root())
+    assert {:ok, ^ref} = Activities.start(coordinator, "lost-reply", specification)
+    assert {:ok, %{status: :running, pid: ^child}} = Activities.lookup(coordinator, ref)
+    assert {:ok, 2} = GenServer.call(child, :work)
+  end
+
+  defp start_coordinator, do: start_supervised!({Activities, []})
+
+  defp start_root do
+    {:ok, root} = Server.start_link(agent: Definition, consumer: self())
+    on_exit(fn -> Processes.stop(root) end)
+    root
+  end
+
+  defp fixture(opts \\ []), do: {Fixture, [observer: self()] ++ opts}
+
+  defp kill_root(root) do
+    Process.unlink(root)
+    monitor = Process.monitor(root)
+    Process.exit(root, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^root, :killed}, @timeout
+  end
+
+  defp assert_root_responds(root) do
+    assert {:ok, id} = Server.input(root, "ping")
+    assert_receive {Server, ^root, {:response, ^id, "pong", _}}, @timeout
+  end
+
+  defp failed?({:ok, %{status: :failed, pid: nil}}), do: true
+  defp failed?(_), do: false
+
+  defp eventually(check, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + @timeout
+
+    unless check.() do
+      assert System.monotonic_time(:millisecond) < deadline, "activity monitor did not settle"
+      :erlang.yield()
+      eventually(check, deadline)
+    end
+  end
+end
