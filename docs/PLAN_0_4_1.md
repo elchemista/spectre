@@ -1,409 +1,293 @@
-# Spectre 0.4.1 implementation plan
+# Spectre 0.4.1 - Tool API unificata e conversazione con Directive
 
-Status: proposed implementation plan, 2026-11-18. This document describes work
-to implement and verify; it does not announce available APIs or a release.
-It consolidates the runtime-component experiment, the subsequent Opus 5.5
-reviews, and the requirements for PartIVA and `spectre_morph`.
+**Stato:** piano di implementazione proposto, riscritto il 21 novembre 2026. Questo file descrive API da costruire e testare, non funzionalita gia rilasciate.
 
-## 1. Outcome and boundaries
+## 1. Obiettivo della release
 
-Keep **Stack → Agent → Server**, with GAM governing declared effects. Make a
-satellite installable once in the Stack and able to reuse the Server's command,
-continuation and storage lifecycle through documented public contracts.
+Conservare **Stack -> Agent -> Server**, le Skill supervisionate della 0.4 e il **GAM Domain condiviso**. Introdurre soltanto i contratti generici che mancano per:
 
-PartIVA must support an open conversation, a mission spanning many turns,
-corrections and questions, and a long analysis while the user talks about
-something else. An active continuation must be able to receive input without
-classifying every message again. The router remains available for entry,
-topic changes and ordinary application flows.
+1. **Creare e installare nuovi tool** da una libreria o dall'applicazione, tramite un unico contratto pubblico, senza patch specifiche al core.
+2. **Scoprire e invocare tutti i tool installati tramite una sola API** del Server, da callback applicative, Skill e driver cognitivi. Un tool cognitivo e un tool governato attraversano lo stesso percorso di acquisizione, con GAM per i conseguenti effetti.
+3. **Integrare spectre_directive come driver di conversazione**, capace di dialogo libero, ragionamento, tool calling, missioni multi-turno e lavoro in background. Il router deterministico resta disponibile ma non deve classificare ogni messaggio di una conversazione gia posseduta.
+4. Mantenere un solo owner operativo per ogni Server. Directive usa il runtime, i worker, i pending e i checkpoint esistenti; **non avvia implicitamente un secondo AgentServer, un altro journal o un altro scheduler**.
 
-The release also connects declarative Skill evolution from `spectre_morph` to a
-real AgentServer. A successfully activated Skill must actually run through that
-Server and its GAM boundary.
+**Fuori scope per 0.4.1:** \`spectre_morph\`, attivazione/evoluzione dinamica delle Skill, generazione di moduli BEAM da risposte LLM, una nuova DSL \`mission()\` nel core, un registro tool parallelo, una riscrittura di GAM o la rimozione dei percorsi Instance/Run di compatibilita.
 
-Constraints:
+> Principio: il **core sa quali tool sono installati e come eseguirli**. Directive **decide quando usarli e come continuare la conversazione**. Le librerie satellite non devono implementare ciascuna un proprio loop.
 
-- Reuse the existing Stack, router, pending, command/outbox, worker, Definition
-  and storage mechanisms. Extend them where a concrete missing contract is shown.
-- Keep RAM-only operation. Ledger and databases remain optional application choices.
-- Keep slow model, tool and evaluation work out of coordinating callbacks.
-- Keep application policy configurable: approval, timeouts, allowed tools,
-  retention and recovery. Installing a package grants no extra authority.
-- Preserve standalone satellite APIs and existing 0.4 applications.
-- Add no `mission()` DSL, hidden second AgentServer, separate scheduler, journal,
-  storage registry or arbitrary core-command escape hatch.
-- Do not rewrite the GAM kernel or remove Instance/Run compatibility in this work.
+## 2. Stato verificato: cosa riusare, cosa manca
 
-## 2. Verified starting point
+Riferimenti al codice della 0.4 sul branch 0.4.1:
 
-| Repository / area | Available now | Missing for this release |
+| Area | Gia presente nella 0.4 | Lavoro 0.4.1 |
 | --- | --- | --- |
-| Core, inspected at `9932f25` | Stack installation, tools/effects, Router.Adapter, Extension, pending lifecycle, workers, checkpoint/recovery, reset | Public installation-owned conversation/continuation dispatch and AgentServer evolution bridge |
-| Directive, inspected at `e9f2065` | Pure reducer; Stack helper `new/next/respond/inform`; standalone runtime | Reusable AgentServer driver connecting reasoning, user answers, tools, GAM and results |
-| Morph, inspected at `9db28de` | Data-only mount/replace/disable proposals, staged adapter workflow, capability detection | Public core boundary, real activation/recovery and execution of activated data Skills |
-| Runtime experiment | Scoped component state, route bypass, detached workers, approval and disk-state examples | Final input ownership, protected delivery, complete correlation, background lifetime and production recovery |
+| [Stack.Installable](../lib/spectre/stack/installable.ex), [Stack.Tools](../lib/spectre/stack/tools.ex) | \`tools/1\`, \`effects/1\`, descrittori immutabili, identita e digest d'installazione | Rendere esplicito il comportamento dell'adapter, esporre descrizioni/schema per i tool selezionabili da un modello |
+| [Server.Tool](../lib/spectre/server/tool.ex), [ToolCompiler](../lib/spectre/server/tool_compiler.ex) | Helper privati generati a compile time, \`prepare/invoke/project\`, comando \`:tool\`, worker, conversione governed in \`propose\` | API pubblica di discovery e invocazione dinamica per nome, **sullo stesso percorso** |
+| [Server.Command](../lib/spectre/server/command.ex), [Server.Runtime](../lib/spectre/server/runtime.ex) | Outbox/inbox, tag \`on_result\`, continuazioni, checkpoint, pending, reset | Verificare correlazione generica, ownership dell'input e durata del lavoro in background |
+| [Server.Skills](../lib/spectre/server/skills.ex), [Skills](SKILLS.md) | Una Skill con \`server:\` ha il proprio GenServer, worker e checkpoint; condivide GAM col root | Riutilizzare, non sostituire; nessuna Skill speciale richiesta dal core |
+| [Routing](ROUTING.md), [Pending lifecycle](PENDING_LIFECYCLE.md) | Regex, dataset, embedding, classificatori, router adapter, \`current_flow\`, interruzioni, \`await_reply\` | Dialogo libero con continuita esplicita e ritorno al router quando opportuno |
+| [spectre_directive](https://github.com/elchemista/spectre_directive) | Reducer puro \`new/next/respond/inform\`, richieste \`:reason/:question/:confirmation/:policy/:invoke\`, helper Stack e runtime standalone | Driver AgentServer che gestisce automaticamente il ciclo, senza callback manuali per ciascun risultato |
 
-The experiment passed seven example tests and 85 existing core tests. Two
-additional diagnostics reproduced its limitations: a background chain stops
-after 32 results, and a background worker inherits the configured worker timeout.
-These results establish neither release readiness nor a memory plateau.
+**Gap concreto:** oggi una libreria puo dichiarare \`tools/1\`, ma un driver come Directive non dispone di un'unica API pubblica per elencare i tool effettivamente disponibili e invocarli con un riferimento scelto a runtime. Gli helper privati, ad esempio \`mnemonic(ctx, ...)\`, sono adatti a codice Elixir statico, non a una selezione di tool restituita da un modello.
 
-The current Morph bridge proposal and adapter were also read from GitHub:
-[core proposal](https://github.com/elchemista/spectre_morph/blob/main/docs/CORE_0_4_1.md),
-[adapter](https://github.com/elchemista/spectre_morph/blob/main/lib/spectre_morph/adapters/spectre.ex).
-The default adapter currently returns `:agent_server_evolution_unavailable` on
-0.4.0. Its test adapter does not establish real AgentServer activation.
+**Gap conversazionale:** \`current_flow\` e una preferenza del router, non la proprieta del prossimo messaggio. Un \`pending\` attende una risposta specifica; bisogna verificare se basta, con sospensione/ritorno al router, anche per una conversazione aperta. In un esperimento precedente una catena in background si arrestava dopo 32 risultati e un worker ereditava il timeout della richiesta originaria: sono casi da riprodurre, non garanzie di produzione.
 
-## 3. One installation entry point, optional extension contracts
+## 3. Contratto unico per dichiarare un tool
 
-Extend `Spectre.Stack.Installable`; do not create a competing plugin system.
-Retain `tools/1`, `effects/1`, `child_specs/2` and `agent_extensions`. Add an
-optional, versioned **component descriptor** only for libraries that need to own
-conversation state and receive continuations.
+**Non introdurre un secondo plugin system.** Il punto di ingresso resta \`Spectre.Stack.Installable\`:
 
-Proposed shape, subject to the contract tests in phase 0:
+- \`tools/1\`: catalogo immutabile delle operazioni invocabili.
+- \`effects/1\`: registrazioni degli executor dei soli effetti governati.
+- \`child_specs/2\`: eventuali risorse supervisionate dallo Stack.Runtime.
+- \`agent_extensions\`: integrazioni esistenti, senza registrazione duplicata.
 
-```elixir
-@impl Spectre.Stack.Installable
-def component(_config) do
-  %{contract: 1, module: MyLibrary.Conversation}
+Per facilitare la creazione di una libreria, formalizzare un **behaviour pubblico per gli adapter tool** (nome proposto: \`Spectre.Server.Tool.Adapter\`) con le funzioni **gia utilizzate**: \`prepare/3\`, \`invoke/3\`, \`project/2\`. Esso documenta argomenti, risultati, errori, serializzazione, idempotenza e separazione cognitivo/governato. Gli adapter 0.4 che espongono gia le funzioni restano compatibili anche senza \`@behaviour\`.
+
+### Metadati per tool calling: descriptor v2 opzionale
+
+Conservare integralmente il descriptor **contract 1**. Solo per i tool che devono essere presentati a un modello, progettare un **contract 2 opt-in**, con metadata immutabili e portabili: descrizione, schema di input per operazione e, se utile, schema di output. Non cambiare le regole di esecuzione di \`contract 1\`.
+
+Esempio di forma **proposta, non API corrente**:
+
+~~~elixir
+def tools(_config) do
+  %{
+    invoices: %{
+      contract: 2,
+      adapter: MyApp.InvoiceTool,
+      default: nil,
+      description: "Consulta e gestisce fatture",
+      operations: %{
+        list: %{
+          path: :cognitive,
+          retry: :safe,
+          max_bytes: 65_536,
+          description: "Elenca le fatture",
+          input_schema: %{"type" => "object", "properties" => %{
+            "status" => %{"type" => "string"}
+          }}
+        },
+        send: %{
+          path: :governed,
+          operation: :send_invoice,
+          max_bytes: 65_536,
+          description: "Invia una fattura esistente",
+          input_schema: %{"type" => "object", "properties" => %{
+            "invoice_id" => %{"type" => "string"}
+          }, "required" => ["invoice_id"]}
+        }
+      }
+    }
+  }
 end
-```
+~~~
 
-Validate the descriptor at installation/Server binding time. Reuse installation
-identity and configuration; do not introduce another registry or duplicated
-configuration tree. Packages without a component remain unchanged.
+La forma esatta di \`contract 2\` va congelata **dopo** test su un tool di terze parti. La configurazione rimane data-only; schema e descrizione non autorizzano l'esecuzione. \`send_invoice\` richiede la normale registrazione \`effects/1\`, abilitazione host e ammissione GAM.
 
-| Extension need | Public contract to use |
+**Creare un tool** in questa release significa scrivere un adapter affidabile e installarlo nello Stack, non permettere al modello di inventare e caricare codice Elixir. Un futuro tool composto di soli dati potra eventualmente referenziare operazioni gia autorizzate; non e una dipendenza di 0.4.1.
+
+## 4. Unica API runtime per tutti i tool
+
+Proporre due funzioni pubbliche sul Server. Il naming definitivo e soggetto ai test di fase 0:
+
+~~~elixir
+# PROPOSTA - non presenti nella 0.4.0/branch 0.4.1 corrente
+
+# Solo una proiezione descrittiva, senza credenziali o handle runtime.
+{:ok, tools} = Spectre.Server.available_tools(ctx, audience: :model)
+
+# Accoda il comando esistente :tool, non esegue I/O nella callback.
+ctx =
+  Spectre.Server.call_tool(
+    ctx,
+    :invoices,
+    {:list, %{"status" => "overdue"}},
+    on_result: {:directive, mission_id, request_id}
+  )
+~~~
+
+### Invarianti dell'API
+
+1. **Una sola tabella:** risoluzione sul \`Stack.Tools.table!\` della installazione del Server; non introdurre un nuovo registry globale di tool.
+2. **Un solo percorso di esecuzione:** \`call_tool\` normalizza nello stesso \`Server.Tool\`, \`Command :tool\`, outbox, worker o \`propose\` usati dagli helper generati. I helper \`invoices(ctx, ...)\` restano disponibili e compatibili.
+3. **Discovery non equivale ad autorizzazione:** \`available_tools\` restituisce solo descrizioni esplicitamente visibili nel contesto host/Skill; l'ammissione finale delle conseguenze resta GAM. Non esporre dati privati, config, credenziali o operazioni che la Skill non puo nominare.
+4. **Riferimenti chiusi:** il modello seleziona soltanto tool/operazioni gia dichiarati nello Stack e ammessi all'interfaccia corrente. Nessun \`String.to_atom\`, MFA arbitraria, eval o nuovo adapter caricato da input LLM.
+5. **Identita e correlazione:** il comando porta tool, operazione, installazione/digest, origine (Agent o Skill), interaction id e tag di continuazione. Due missioni o due installazioni non condividono accidentalmente i risultati.
+6. **Errori espliciti:** tool inesistente, operazione sconosciuta, schema invalido, timeout, rifiuto GAM, errore dell'adapter ed esito incerto restano distinti. Nessun retry cieco di effetti non idempotenti.
+7. **Compatibilita:** nessun cambiamento di semantica per \`generate\`, \`propose\`, \`delegate\`, \`await_reply\`, callback OTP e tool descriptor v1. Entrambe le chiamate devono funzionare sia nel root Server sia in un Skill Server.
+
+Il catalogo v2 rende possibile serializzare la descrizione dei tool per il normale **JSON tool calling**. **Kinetic AL** resta un parser/adapter alternativo che produce gli stessi riferimenti e argomenti validati. **Non creare un executor JSON e un executor AL**.
+
+## 5. Directive: aggiungere conversazione, non un altro runtime
+
+In \`spectre_directive\`, mantenere il reducer puro e l'API standalone. Aggiungere un **driver AgentServer** (nome proposto \`Spectre.Directive.Server\`) che utilizza solo i comandi pubblici del core: \`generate\`, \`call_tool\`, \`await_reply\`, \`respond\`, e \`propose\` solo quando serve il percorso governato esistente.
+
+Il driver deve essere riusabile dentro una normale **Skill con \`server:\`**, oppure come Server root, senza costringere l'applicazione a scrivere il loop \`handle_result(:model...)\` / \`handle_result(:tool...)\` ad ogni nuova applicazione. Il driver, e non il core, conosce \`Mission\`, \`Plan\`, \`Request\`, \`WorkingContext\` e il protocollo di decisione di Directive.
+
+### Due modalita dello stesso driver
+
+- **Conversazione aperta:** l'utente parla liberamente; il modello risponde, chiede dettagli, seleziona tool installati e mantiene contesto multi-turno. Non serve predefinire una route per ogni domanda.
+- **Missione:** Directive mantiene obiettivo, piano, step, evidenza e richieste correlate. Puo fare lavoro prolungato in background mentre altre interazioni restano utilizzabili.
+
+Non aggiungere un \`mission()\` DSL nel core. Se il reducer mission-oriented non rappresenta bene una conversazione non terminale, aggiungere nel **package Directive** un sottile stato/modalita conversazionale che riusa protocollo, working context e gestione delle richieste; non forzare ogni messaggio a iniziare/chiudere una nuova missione.
+
+### Dispatch delle richieste Directive
+
+| Richiesta del reducer | Il driver esegue |
 | --- | --- |
-| Recognize input using a library-specific method | Existing `Spectre.Router.Adapter` |
-| Add namespaced compile-time declarations | Existing `Spectre.Extension` through `agent_extensions` |
-| Own a conversation or correlated workflow | Proposed optional `component/1` and `Spectre.Server.Component` |
-| Request a tool or register a governed effect | Existing `tools/1`, `effects/1`, validated Server command path |
-| Own an optional resource/process | Existing `child_specs/2` and explicit Stack runtime |
-| Supply storage, memory or model services | Existing specialized provider behaviours |
-| Activate a new agent Definition | Proposed typed `Spectre.Server.Evolution` boundary |
+| \`:reason\` | \`generate\` su modello host-configurato; valida output e decisione prima di \`respond\` sul reducer |
+| \`:invoke\` | Risolve il target nel catalogo consentito, accoda \`call_tool\`, restituisce al reducer il **risultato osservato** |
+| \`:question\` | Attesa utente correlata; distingue risposta, correzione, cambio argomento e ripresa |
+| \`:confirmation\` | Conferma del piano secondo policy dell'app; **non e consenso GAM** |
+| \`:policy\` | Policy del host con esiti espliciti allow, deny, blocked |
+| \`:done/:blocked/:error\` | Risposta, sospensione o terminazione esplicita, con stato coerente |
 
-A package implements only what it uses. Mnemonic and Ledger need not handle
-chat events. A third-party invoice integration must work without changing core.
-New libraries using these capabilities require no package-specific runtime
-branches. A fundamentally new core invariant may still require a separately
-versioned contract; the interface is not permission to mutate arbitrary internals.
+La normale integrazione JSON e un adapter di parsing validato; l'opzione Kinetic AL usa Kinetic come interprete, ma entrambe passano da **\`call_tool\` e GAM**, con lo stesso tag originale della richiesta Directive. Un errore del modello o una risposta malformata non devono essere interpretati come comando.
 
-## 4. Router integration and conversation ownership
+### Esempio di ergonomia desiderata
 
-Keep recognition and execution separate. A router adapter contributes evidence
-for visible declared routes; the configured router arbitrates. Application
-configuration selects adapters, thresholds and the routing vocabulary.
+~~~elixir
+# ESEMPIO DI DESIGN, non compilabile sulla 0.4 corrente
 
-Start with a small public handoff helper inside the existing Server callback:
-
-```elixir
-# Proposed 0.4.1 API; Component.route/4 is not available in 0.4.0.
-def handle_flow({:fatture, _} = route, input, ctx) do
-  Spectre.Server.Component.route(ctx, :directive, route, input)
+defmodule MyApp.Stack do
+  use Spectre.Stack
+  install Spectre.Directive
+  install MyApp.InvoiceTools
 end
-```
 
-This is an entry binding, not the mission loop. The driver belongs to Directive.
-An application can also explicitly bind an unrecognized input to the component
-to provide an open assistant. It must distinguish a genuine no-match from a
-router/provider failure: today both reach `handle_flow(:unmatched, ...)`, with
-the error described in routing metadata. Preserve that distinction in the
-helper/example rather than silently starting a mission on classifier failure.
+defmodule MyApp.ConversationServer do
+  use Spectre.Directive.Server,
+    tools: MyApp.Stack,
+    mode: :conversation,
+    tool_protocol: :json
+end
 
-Do not add `flow ..., to:` in the first implementation. Revisit it only if the
-working helper demonstrates a meaningful ergonomic need. `mission()` is excluded.
-Do not implicitly give every installed library first access to every input.
+defmodule MyApp.ConversationSkill do
+  use Spectre.Skill, id: :assistant, server: MyApp.ConversationServer
 
-### Required input ordering
+  flow :assistant do
+    on :start, regex: ~r/^\/assistant\b/i
+  end
+end
 
-1. Existing input preparation and mandatory ingress checks.
-2. Global interrupts under the existing pending-lifecycle policy.
-3. An explicitly targeted/foreground pending, including its identity/revision.
-4. Existing PreRoute handlers when ordinary routing is reached.
-5. Router and its current-flow preference.
-6. Application callback or explicitly selected component.
+defmodule MyApp.Agent do
+  use Spectre.Agent, stack: MyApp.Stack, server: MyApp.RootServer
+  skill MyApp.ConversationSkill, as: :assistant
+end
+~~~
 
-The component cannot silently move ahead of existing interrupts, consume another
-owner's wait, or treat an ordinary answer as GAM approval. Consent and a mission
-question remain different pending kinds with their existing authority checks.
+Il root puo delegare esplicitamente la route o il vero no-match a \`:assistant\`. **Non convertire un errore del router/classificatore in no-match silenzioso.** In modalita assistente aperto, la Skill attiva deve poter ricevere i turni successivi senza ripetere la classificazione di ogni input. Le route esplicite e gli interrupt del root devono comunque continuare a funzionare.
 
-### Design gate: free conversation without repeated routing
+## 6. Gate obbligatorio: ownership della conversazione
 
-`current_flow` prioritizes candidates; it does not own the next message. Test
-reuse of the existing reply-pending mechanism for an active conversational
-continuation, including turns that are not answers to a narrow question.
-The conversation may remain active while a particular worker is absent.
+**Prima di aggiungere una API di focus al core, provare il percorso 0.4 esistente** con \`await_reply\`/\`await_input\`, \`handle_pending\`, \`route_current_input\` e delega alla Skill.
 
-The required scenario is: mission → free correction → question → topic change →
-help → explicit resumption → answer. A component can return `:cont` or
-`{:cont, ctx}` for input it declines, suspending its own conversational wait and
-routing that same input once. No commands accompany the state-only `:cont` form.
-Those returns are not a loop back to routing after a route has already selected
-the component. Errors are not converted into continuation.
+Scenario reale obbligatorio:
 
-Prefer existing pending ownership over a second global focus map. If it cannot
-represent the required dialogue cleanly, extend that ownership contract minimally
-and explicitly; do not discard the bypass requirement just to remove a field.
-Document the decision and passing scenarios before freezing the interface.
+1. Utente: "Analizza le fatture" -> il root delega a Directive; parte una missione.
+2. Utente: "La fattura X e annullata" -> Directive riceve la correzione senza riclassificare il turno.
+3. Utente: "Intanto spiegami l'INPS" -> la conversazione cede una volta al router/altro handler; l'analisi continua.
+4. Utente: "Riprendi l'analisi" -> rientra nella missione precedente con identita e stato corretti.
+5. Utente: "Si" a una domanda di missione -> **non** conferma una diversa Presentation GAM.
 
-```mermaid
-flowchart TD
-  I[Input and ingress checks] --> P[Interrupts and pending ownership]
-  P -->|owned reply or continuation| C[Installed component]
-  P -->|ordinary input| H[Existing PreRoute handlers]
-  H --> R[Router]
-  R --> S[Server handle_flow]
-  S -->|explicit handoff| C
-  C -->|decline owned input; route once| H
-  C --> Q[Existing Server command and checkpoint path]
-  Q --> W[Supervised model or tool worker]
-  Q --> G[GAM admission for governed effects]
-  W --> E[Correlated component result]
-  G --> E
-  E --> C
-```
+**Esito gate A:** se i pending esistenti gestiscono correttamente il dialogo, non cambiare il core.
 
-## 5. Server component and continuation contract
+**Esito gate B:** se i pending possono rappresentare solo una domanda specifica e il root non puo indirizzare una conversazione aperta verso lo Skill Server, aggiungere **solo un ownership/handoff generico di input** nel runtime gia esistente, versionato e correlato a Skill, session e generazione. Non introdurre \`Spectre.Server.Component\`, un nuovo router, un focus globale parallelo o una seconda mailbox. L'owner deve poter consumare l'input o cederlo al router **una sola volta**. Prima restano obbligatori ingress, interrupt globali e pending/consensi esplicitamente indirizzati.
 
-Use a small behaviour with `handle(event, ctx)`. Initial proposed events:
+Questa eventuale estensione non appartiene a Directive: deve funzionare anche con una Skill terza, senza dipendenze dal package.
 
-- `{:route, route_key, input}`: entry explicitly selected by the application.
-- `{:reply, request_id, input}`: an input owned by this component's wait.
-- `{:result, tag, result}`: completion of its previously staged command.
+## 7. Background, stato e recovery
 
-Returning a Context stages ordinary Server commands and local state. The
-runtime acquires both through its existing validation/checkpoint/outbox path.
-The component's assigns are namespaced by installation. Identity, authority,
-session, another component's state and runtime-owned fields are not replaced by
-the returned context. This is trusted application code, not a code sandbox.
+La Skill Directive usa il proprio GenServer come tutte le Skill della 0.4: worker e pending locali, stesso GAM del root, checkpoint con namespace della Skill. I lavori cognitivi lenti girano in worker; il GenServer non resta bloccato da chiamate modello o tool.
 
-Deliver owned replies/results in the runtime below application catch-all
-callbacks. A custom `handle_result`, `handle_pending` or `handle_info` must not
-silently disable a satellite. Ordinary application events retain their callbacks.
-Keep strict application assigns/result schemas compatible with internal component
-state and envelopes; do not force applications to declare private runtime keys.
+- Distinguere **proprieta del dialogo** da **durata del lavoro**: cambiare argomento non cancella una missione in background e il risultato tardivo non cattura un'altra conversazione.
+- Riprodurre il limite sperimentale dei **32 step** e i timeout ereditati; correggere solo il budget/lifetime generico che impedisce una missione prolungata, con limiti e scadenze espliciti, mai \`:infinity\` implicito.
+- Persistenza RAM-only supportata; disco e Ledger opzionali tramite gli store esistenti. Non aggiungere uno store o journal Directive obbligatorio nel percorso AgentServer.
+- Salvare stato corrente, richieste e correlazioni necessarie, non ogni Context e ogni snapshot storico. La dimensione serializzata del reducer ha oggi un limite di **900.000 byte**: misurare, segnalare e applicare retention/proiezione; nessuna promessa di conversazioni illimitate.
+- Reset, cancel e stop rifiutano risultati obsoleti; una richiesta governata ammessa non si annulla per magia. Effetti incerti mantengono le loro Duties e richiedono riconciliazione.
+- Il checkpoint ripristinato e vincolato al contratto, al digest dello Stack, alla Definition e alla sessione: non reinterpretare stato incompatibile dopo una modifica di tool o deployment.
 
-Normalize pending identities and continuation tags at the boundary. Bind results
-to installation, session, request and applicable revision using existing command
-and event identities. Mark transitions in flight atomically when acquired;
-discard duplicates or superseded results before applying a reducer transition.
-Define an explicit stale-result outcome for a removed installation.
+## 8. Piano di implementazione incrementale (con prove prima di ogni passo)
 
-Component helpers use installed descriptors and existing commands. Host policy
-may narrow a component's tool/operation access; reuse existing Skill restrictions
-and provenance where applicable. Do not duplicate GAM or require a new role system.
-Validate ownership of pending-resolution commands as well as ordinary tool calls.
+### Fase 0 - Esperimento minimo e decisioni API (NESSUNA modifica definitiva)
 
-Use the existing checkpoint/store and reset API. Reset invalidates old
-continuations and clears component state. Define reset of affected work,
-component removal and state-schema compatibility explicitly; restored data
-must never be silently interpreted using an incompatible component contract.
+**Partire da questi file:** \`lib/spectre/stack/tools.ex\`, \`lib/spectre/server/tool.ex\`, \`lib/spectre/server/tool_compiler.ex\`, \`lib/spectre/server/runtime.ex\`, \`lib/spectre/server/skills.ex\`, \`docs/STACK_TOOLS.md\`, \`spectre_directive/lib/spectre/directive/server_tool.ex\`.
 
-## 6. Background lifetime, recovery and memory
+- Scrivere un fixture di libreria terza con due operazioni: lettura cognitiva e invio governato, usando soltanto gli attuali \`tools/1\`/\`effects/1\`.
+- Eseguire la stessa richiesta attraverso helper compilato e prototipo di \`call_tool\`; confrontare identita, command/outbox, correlazione, errori e GAM.
+- Provare lo scenario di ownership della sezione 6 con root + Skill Server; documentare se serve davvero un handoff generico.
+- Congelare shape dell'API pubblica e schema descriptor v2; test di backwards compatibility contro descriptor v1.
 
-Separate conversational ownership from work lifetime. Releasing a conversation
-does not cancel its analysis; receiving a late result does not seize another
-foreground wait. Background questions follow the existing pending scheduling
-policy instead of replacing an active consent prompt.
+**Gate:** nessuna implementazione aggiuntiva prima di aver identificato il punto esatto di riuso in \`Server.Tool\` e il minimo delta per una conversazione libera.
 
-Reuse supervised workers, outbox/inbox and stable correlation. Give background
-continuations a lifetime and step-budget scope distinct from the completed
-foreground interaction. Preserve a configurable loop budget and explicit
-timeouts; neither the inherited 32-step interaction limit nor an implicit
-infinite timeout is a satisfactory mission policy.
+### Fase 1 - Tool API nel core
 
-Cancellation must distinguish work not started, a running cancellable worker,
-and a governed effect already admitted or of uncertain outcome. A cancelled
-conversation cannot undo an external effect. Reject stale completions after
-cancellation/reset without blind retries of nonrepeatable effects.
+- Pubblicare il behaviour tool adapter, il catalogo descrittivo compatibile e \`available_tools\`.
+- Implementare \`call_tool\` come una sola porta verso la normalizzazione esistente; gli helper generati restano wrapper dello stesso percorso.
+- Testare tool disponibili/non disponibili, collisioni, schema, scope Skill, digest incompatibili, errori, replay safe/never, effect binding mancante e rifiuto/consenso GAM.
+- Scrivere un esempio end-to-end che crea un tool terzo **senza branch speciali nel core**.
 
-Persist only current state, necessary continuations and existing durable records.
-Do not retain every Context, worker reference or historical mission snapshot in
-assigns. Slow I/O and expensive evaluation use workers; coordinating callbacks
-remain short. Use existing cleanup/retention hooks for terminal state and
-completed correlations. Developer choices remain explicit.
+**Gate:** una applicazione, una Skill e un chiamante che sceglie il tool a runtime ottengono lo stesso risultato e gli stessi controlli.
 
-RAM-only works without a DB. With persistence, use existing storage recovery and
-degradation policy. On unavailable/pruned storage, expose retry or a deliberate
-fresh RAM session; do not invent missing authority, approvals or successful
-activation. A RAM fallback is volatile and must not report a durable commit.
-Existing unaffected conversation capabilities should remain usable where safe.
+### Fase 2 - Driver Directive: conversazione aperta
 
-Profile completed and active workloads separately: process/ETS/binary memory,
-reductions, mailbox depth, worker count, checkpoint size, I/O count and response
-latency. Use repeated equal-size batches after warm-up and post-GC baselines to
-identify retained growth. Measure 1/10/100 agents, long conversations, more than
-32 mission steps, repeated reset/cancel, and storage outage/recovery. Report the
-payload and retention settings. Compression/hibernation are measured options,
-not substitutes for releasing retained state.
+**Partire da:** \`spectre_directive/lib/spectre_directive/loop/engine.ex\`, \`lib/spectre/directive/server_tool.ex\`, \`docs/SPECTRE_0_4.md\`.
 
-## 7. Complete Directive inside its package
+- Riutilizzare il reducer, senza copiarne l'engine nel core.
+- Implementare il driver automatico model -> parse -> tool -> result -> model -> response.
+- Fornire \`mode: :conversation\`, il formato JSON come primo protocollo e Kinetic AL come adapter opzionale.
+- Collegare le continuazioni della Skill ai risultati con tag univoci, senza chiedere all'app di scrivere il loop.
+- Superare il gate ownership della sezione 6; aggiungere al core solo il minimo handoff generico se il test fallisce.
 
-Move the experiment's reusable driver into `spectre_directive`, using the public
-component contract. Keep the pure reducer and standalone runtime available;
-Stack integration must not start that second runtime implicitly.
+**Gate:** utente parla liberamente, usa un tool, corregge i dati, cambia argomento e torna, senza riclassificazione inutile o fuga di authority.
 
-| Directive request | Driver action through Server |
+### Fase 3 - Missioni Directive e lavoro in background
+
+- Integrare \`:reason/:invoke/:question/:confirmation/:policy\` nel driver, mantenendo le semantiche del reducer.
+- Usare lo stesso Skill Server, i worker, pending e checkpoint del core.
+- Correggere i budget/lifetime soltanto se i test dimostrano blocchi reali; coprire >32 step, worker crash, timeout, reset, restart e cancellation.
+- Testare GAM approved, rejected, expired e outcome uncertain; non completare uno step senza evidenza dell'effetto.
+
+**Gate:** una missione continua mentre un'altra conversazione riceve risposta; dopo restart non duplica un effetto.
+
+### Fase 4 - Conformance, prestazioni e documentazione
+
+- Integrare almeno Kinetic, Mnemonic e un tool di fatturazione terzo; gli altri satellite conservano le API attuali.
+- Test con 1/10/100 agenti, conversazioni lunghe, piu di 32 step, molte chiamate tool, RAM-only, disco e storage outage/recovery.
+- Misurare memoria processi/ETS/binary, mailbox, checkpoint, worker, I/O e latenza; confrontare baseline 0.4, dopo warm-up e GC.
+- Eseguire formatter, compile warnings-as-errors, suite completa, Credo strict, Dialyzer e docs; integration test real-model opzionale e chiaramente etichettato.
+- Documentare ogni API come **implemented** o **proposed**; non aggiornare esempi e guide con API che non compilano.
+
+**Gate:** gli esempi reali e la matrice di failure passano; nessuna dipendenza da Morph o da un nuovo runtime di componenti.
+
+## 9. Matrice di regressione obbligatoria
+
+| Scenario | Risultato atteso |
 | --- | --- |
-| `:reason` | Use the configured model service; validate the decision protocol before applying it |
-| `:question` | Open an owned reply wait; handle answer, topic change and resumption |
-| `:confirmation` | Apply the configured mission confirmation policy; do not equate plan approval with GAM consent |
-| `:policy` | Call the host-selected policy handler and preserve refusal/blocked outcomes |
-| `:invoke` | Resolve an installed/host-declared target and stage its cognitive or governed command |
+| Installable v1 esistente con helper privato | Compila ed esegue senza cambiamenti |
+| Tool descriptor v2 e API generica | Stessa normalizzazione, identita, worker e result del vecchio helper |
+| Due pacchetti con tool/operazioni omonimi | Collisione rilevata; nessuna esecuzione ambigua |
+| Tool JSON scelto dal modello ma inesistente | Errore di risoluzione, nessuna MFA o nuovo atom |
+| Tool visibile ma effetto non autorizzato | Rifiuto al confine host/GAM; nessun executor chiamato |
+| Kinetic AL e JSON per la stessa azione | Stesso tool ref e stesso GAM path, differenze solo nel parsing |
+| Free chat senza route dedicata per ogni domanda | Risposta e continuazione corrette senza classificazione per ogni turno posseduto |
+| Interrupt, topic change, resume, pending consent | Nessun doppio routing; consenso non intercambiabile con una risposta missione |
+| Due Skill Server che lavorano in parallelo | Stato, pending, results e checkpoint isolati; Domain GAM condiviso |
+| Missione >32 step, timeout e worker crash | Limiti espliciti e recupero coerente, niente loop infinito |
+| Reset, duplicate delivery, late result, code drift | Risultato stale scartato, nessuna modifica di stato non autorizzata |
+| Effetto ambiguo dopo crash o perdita risposta | Nessun retry cieco e nessun falso \`succeeded\` |
+| RAM-only, disco, Ledger e restore | Nessun obbligo di DB; nessun successo durevole inventato |
 
-Feed observed results back into the exact reducer request. Support `:done`,
-`:blocked`, `:error`, malformed model output, cancellation and resumption as
-explicit states. Reuse existing Directive parsing and request-handler logic
-where it fits; do not copy its standalone runtime into Server.
+## 10. Documentazione e definizione di done
 
-Keep target/model selection under host configuration. Model output cannot choose
-an arbitrary MFA or bypass an operation's GAM path. Do not report an uncertain
-effect as a completed step. Make the current 900,000-byte serialized-state limit
-visible, measure history growth and reuse retention/projection facilities before
-claiming support for indefinitely growing missions.
+Aggiornare nel core: [STACK_TOOLS.md](STACK_TOOLS.md), [CUSTOM_STACK_TOOLS.md](CUSTOM_STACK_TOOLS.md), [STACK.md](STACK.md), [AGENT_SERVER.md](AGENT_SERVER.md), [SKILLS.md](SKILLS.md), [ROUTING.md](ROUTING.md), [SERVER_CALLBACKS.md](SERVER_CALLBACKS.md), [MANAGED_GAM.md](MANAGED_GAM.md). Aggiornare in Directive: README, \`docs/SPECTRE_0_4.md\`, documentazione del reducer e un esempio di chat libera e missione lunga. Mantenere l'ordine didattico **Stack -> Agent -> Server**.
 
-## 8. Complete Morph and the AgentServer evolution boundary
+Per ogni helper nuovo mostrare: chi lo chiama, argomenti e risultato, owner dello stato, tag/result, worker, permessi e recovery. Distinguere **tool dichiarato**, **tool visibile al modello**, **operazione ammessa** e **effetto osservato**.
 
-Reuse `SpectreMorph`, `Operation`, `Adapter` and the prepared default adapter.
-Implement its proposed public core capability:
+La release e pronta solo quando:
+1. un package esterno crea un tool ed e invocabile con la stessa API da Server, Skill e Directive;
+2. Directive gestisce conversazione libera e missione in background sullo stesso runtime 0.4;
+3. i casi di reset, input ownership, GAM e replay superano i test;
+4. compatibilita e misure di memoria/latency sono documentate.
 
-```elixir
-# Proposed boundary already expected by spectre_morph; absent from core 0.4.0.
-Spectre.Server.Evolution.contract_version() # 1
-Spectre.Server.Evolution.call(target, action, request, opts)
-# {:ok, result_map} | {:error, reason}
-```
-
-Actions are the existing `:snapshot`, `:evaluate`, `:approve`, `:reject` and
-`:activate`. This is a typed evolution boundary, not an arbitrary runtime-call API.
-Keep capability detection and explicit unavailable errors compatible with 0.4.0.
-
-Implementation requirements:
-
-- Reuse `Skill.Definition`, ChangeSet operations/evaluation, Definition storage,
-  Skill runtime and existing authority/GAM checks. Extract small shared functions
-  from Instance-bound code if necessary; do not redirect to a hidden Instance.
-- Authenticate the caller through the host boundary. `by:` remains attribution.
-  Human approval is required only when the host's policy requires it.
-- Bind snapshot, candidate and approval to the same evolution-relevant revision:
-  session/reset generation, active Definition and applicable mount authority.
-  A routine checkpoint write revision is not sufficient.
-- Support mount, replacement and disable of declarative runtime Skills. Preserve
-  ceilings, compiled mount protection and existing route-conflict checks.
-  No executable modules or callbacks are authored in model data.
-- Run expensive evaluation in supervised work. Server callbacks stage commands;
-  they must not synchronously call Evolution on their own GenServer.
-- Begin activation at an idle boundary for the affected mount. Return `:busy`
-  when its pending/work/outbox still depends on it; keep unrelated chat running.
-- Define the durable activation commit and recovery sequence before implementing
-  success responses. Coordinate Definition artifacts, existing store CAS and
-  GAM records without assuming cross-store atomicity. Retry/lost-response recovery
-  must identify the same attempt rather than apply the change again.
-- Connect data Skills to actual Server execution: replies become responses,
-  operation requests enter the existing registered/GAM path, and work responses
-  use the existing Execution contracts with exact Definition/program references.
-  Evaluation rejects unsupported handler kinds before approval/activation.
-- Exercise reset, concurrent activation, stale receipts, revoked authority,
-  missing Definition data and crash recovery. Never restore an old authorization
-  into a new session or silently activate a partial candidate.
-
-Add a thin Stack installable adapter to `spectre_morph` for its optional Server
-helpers/effects, leaving the `SpectreMorph` proposal API usable directly. It need
-not be a conversation component. Approval and activation remain authoritative
-core operations even when requested by a model-driven component.
-
-Acceptance must include real input to the same AgentServer after mount, replace
-and disable. A stored candidate or successful fake adapter receipt is insufficient.
-Keep existing `Spectre.Morph` compatibility APIs unchanged.
-
-## 9. Satellite adoption and future extensibility proof
-
-| Package | Intended use of the common interfaces |
-| --- | --- |
-| Directive | Component driver plus existing reducer tools |
-| Morph | Typed evolution bridge; optional Stack facade |
-| Kinetic | Existing interpretation/tools/effects; reusable from a component |
-| Prism | Existing model selection/service integration; model work in workers |
-| Mnemonic | Existing standalone memory/provider and explicit tools/effects |
-| Lens | Existing tools/resources/effects; preserve each operation's declared governance |
-| Beam / Pulse | Existing transport tools/effects and correlated delivery; technical receipt is not consent |
-| Ledger | Existing storage/projection providers; no chat component required |
-| Lab | Existing diagnostics/tools; optional interactive component only if needed |
-| Third-party invoice library | Public Installable/tools/effects and optionally Router.Adapter; no core patch |
-
-Audit compatibility and make only necessary adapter changes. Do not rewrite all
-satellites into components or couple their standalone APIs to Directive.
-Place real satellite integration tests in their repositories or
-`spectre_ecosystem`; the core suite uses small contract fixtures and runs without
-satellite dependencies.
-
-## 10. Delivery order and acceptance gates
-
-| Phase | Deliverable | Exit condition |
-| --- | --- | --- |
-| 0 — Contract experiment | Explicit component entry, owned replies, bypass/topic-change comparison | Free PartIVA dialogue and router coexist; input order and return meanings decided; no additional DSL |
-| 1 — Core integration | Optional descriptor, scoped state, protected result delivery, correlation, background lifecycle | Contract tests pass with no satellites installed; ordinary callbacks and schemas remain compatible |
-| 2 — Directive | Reusable driver, all request/result kinds, open-chat and routed examples | Real reducer/model-service/tool loop works without an application-written continuation loop |
-| 3 — Morph | Versioned boundary, activation/recovery and data-Skill execution | Same live AgentServer uses mounted/replaced/disabled Skill; stale/concurrent/failed activation cannot apply |
-| 4 — Integration and performance | Satellite compatibility, ecosystem scenarios, storage failures and profiling | Required failure scenarios pass; measured memory/latency regressions investigated and documented |
-| 5 — Documentation and release checks | Guides, runnable examples, API contracts, mix tasks/doctor coverage | Documentation and generators describe the tested 0.4.1 interfaces; all applicable quality checks pass |
-
-Required test matrix:
-
-- Route-selected component and explicitly configured open assistant; no-match
-  distinguished from provider error; one routing pass after a declined reply.
-- Free conversation without repeated routing, correction, help/cancel interrupt,
-  suspended wait and resumption; GAM consent remains correctly correlated.
-- Application callback catch-alls and strict schemas do not break component delivery.
-- Two installations using the same local tags remain isolated; stale session,
-  duplicate result and superseded revision cannot advance another continuation.
-- Held background worker while a different chat request completes; a mission
-  exceeding 32 steps; timeout, worker crash, cancellation and late result.
-- Reset/restart during a wait and during work; disk restoration; removed or
-  incompatible component. Verify actual continuation recovery, not just saved assigns.
-- Governed effect approved, refused, expired, unauthorized and uncertain; same
-  admission rules with routed and directly owned input. Include transport-independent
-  approval and Pulse integration in their appropriate suites.
-- Morph mount/replace/disable followed by actual input, affected-mount busy,
-  duplicate activation, reset race, forged/stale approval and loss of the reply.
-- RAM-only, disk and existing Ledger/Postgres adapters with a real database in
-  the appropriate integration project: outage, restoration, missing/pruned records
-  and explicit fresh-RAM recovery. No fabricated durable success.
-- Third-party invoice library and router adapter integrated using public contracts
-  only; core tests continue to run independently of every satellite package.
-
-Use deterministic model/SDK fixtures for the normal suite and one opt-in real
-model end-to-end check when credentials are available. Label the evidence clearly.
-Run formatter, compilation with warnings as errors, tests/coverage, strict Credo,
-Dialyzer and documentation checks for changed packages. Keep the configured
-coverage threshold; do not add implementation-mirroring tests to chase a new number.
-CI remains PR-triggered without duplicate push runs. Do not expand unrelated jobs.
-
-## 11. Documentation deliverables and definition of done
-
-Update [Server callbacks](SERVER_CALLBACKS.md), [AgentServer](AGENT_SERVER.md),
-[routing](ROUTING.md), [Stack tools](STACK_TOOLS.md),
-[behaviours](BEHAVIOURS.md), [Skills](SKILLS.md),
-[Managed GAM](MANAGED_GAM.md) and the affected storage/production guides.
-Add the component contract and a short 0.4.0-to-0.4.1 guide. Update Directive and
-Morph guides with tested APIs; later synchronize ecosystem examples and the
-documentation site from these sources.
-
-Show Stack → Agent → Server code in that order. For every handler, show who calls
-it, input shape, return shape, command/result tag connection, state owner and
-whether slow work runs in a worker. Document pending/interrupt/route order with
-a diagram. Mark optional providers and distinguish current APIs from proposals.
-
-Include runnable examples for: ordinary routing; open assistant; background
-invoice analysis and governed issuance; a custom Installable/Router.Adapter;
-Morph activation on a live AgentServer; standalone satellite usage. Review mix
-task generation/training/doctor examples against the actual new architecture;
-doctor should identify a missing/incompatible component or evolution capability.
-
-The release is ready when the acceptance scenarios, recovery tests and documented
-profiling pass, compatibility remains intact, and the public contract is small
-enough to explain through these examples. Passing the experimental tests alone
-does not satisfy this gate. Commit/push, tagging and Hex publication are separate
-release actions; this planning change performs none of them.
+**Non previsti da questo piano:** implementazione di Morph, modifica del kernel GAM, pubblicazione Hex, tag o merge automatico. Commit del documento e sviluppo del codice sono azioni separate.
