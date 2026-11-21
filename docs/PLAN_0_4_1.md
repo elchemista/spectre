@@ -429,6 +429,28 @@ La Skill Server già ha checkpoint; riusare quello, senza creare obbligatoriamen
 Niente PID, clients, provider secret, interi Context o history illimitata nel checkpoint. Lo stato reducer oggi ha un limite serializzato **900.000 byte**; misurarlo e applicare proiezione/retention/summarization esplicita. Reset invalida correlazioni vecchie. Un risultato tardivo non deve ridare a una missione il foreground né causare il retry di un effetto incerto. Separare il budget/lifetime della missione dalla singola interazione (nel prototipo il limite di 32 step e timeout ereditati fermavano catene di lavoro); nessun timeout infinito implicito.
 
 
+### 5.6 Continuazioni background: scope, budget e delivery
+
+Il limite dei passaggi di un singolo turno non deve essere utilizzato accidentalmente come limite globale di una missione. La 0.4 conserva `event.steps` sul current interaction e le catene lunghe possono arrivare al limite di 32; bisogna prima riprodurre il problema e poi introdurre il **minimo contratto generico**, non un secondo scheduler.
+
+~~~elixir
+# API PROPOSTA, da fissare dopo il characterization test:
+# lavoro di una missione dichiarato dal driver, NON dal modello.
+Spectre.Server.generate(ctx, :reason,
+  on_result: :directive_reason,
+  correlation: %{"mission" => "m-1", "request" => "r-9"},
+  work_scope: {:background, "m-1"})
+
+Spectre.Server.call_tool(ctx, "invoice.list", %{"status" => "overdue"},
+  on_result: :directive_tool,
+  correlation: %{"mission" => "m-1", "request" => "r-10"},
+  work_scope: {:background, "m-1"})
+~~~
+
+`work_scope` è **proposto e host-only**: se il characterization test rivela un meccanismo già sufficiente, non creare questa opzione. In caso contrario, il Runtime conserva command/outbox/worker attuali, ma associa i successivi risultati di missione allo stesso `work_id`, con budget/lifetime propri, timeout espliciti, cancellation e status indipendenti dal turno foreground. `event.steps` continua a proteggere la singola interazione.
+
+Le policy di Directive fissano un `max_iterations` e un limite di tool call per missione; il Core verifica command count, resource/time budget e correlation. Al ritorno del worker il risultato è applicato **alla missione** senza imporre che essa torni automaticamente focus della conversazione. La root può rispondere a un altro flow; il child Skill resta vivo e supervisionato. Worker persi o comandi non repeatable rimangono `unknown`/reconciled, mai replay cieco.
+
 ## 6. Esempio completo, dalla libreria fino al risultato
 
 **È la fixture target da rendere eseguibile dopo l'implementazione della 0.4.1.** Non è un esempio "magico" e non deve richiedere callback model/tool scritti dall'applicazione. `Demo.InvoiceAPI` è un fake deterministico; sostituirlo con una vera libreria di fatture non deve cambiare la struttura.
@@ -669,6 +691,25 @@ Il driver deve decidere quando produrre `generate`, `call_tool`, `respond` o `aw
 ~~~
 
 L'approvazione non va inventata nel test. Il consumer deve ricevere la **vera Presentation** e usarne riferimento e revisione con le API già documentate (`Server.presented`, `Server.decide` indirizzato a `:assistant`). Verificare `approved` e `rejected` e gli outcome ambiguo/unknown; soltanto l'Outcome reale `:succeeded` giustifica `"fattura inviata"`.
+
+Esempio della fase di conferma con un riferimento **reale**, ricevuto dal Managed GAM durante il test; gli esiti vanno verificati contro la versione specifica del core:
+
+~~~elixir
+receive do
+  {Spectre.Server.GAM.Managed, _owner, {:presentation, material}} ->
+    presentation_ref = Map.fetch!(material, "presentation_ref")
+    :ok = Spectre.Server.presented(root, presentation_ref)
+    {:ok, _} = Spectre.Server.decide(root, :assistant, presentation_ref, :confirm)
+    # Solo un successivo Outcome :succeeded consente al driver
+    # di dire all'utente che l'invio è stato eseguito.
+after
+  5_000 -> raise "Presentation GAM non ricevuta"
+end
+~~~
+
+La fixture deve replicare la stessa richiesta con `:reject` e con executor che ritorna `:ambiguous`; nel caso ambiguo la missione non dichiara successo e non ripete l'invio. La tipizzazione esatta di `material` e dei callback viene verificata nella fase 0; non codificare reference inventate nei test.
+
+
 
 La fixture deve registrare e confrontare i seguenti stadi, non soltanto il testo finale:
 
