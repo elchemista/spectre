@@ -18,11 +18,14 @@ The implemented contracts are described in [Architecture](ARCHITECTURE.md),
 ## Planned 0.4.1 work
 
 The [0.4.1 implementation plan](https://github.com/elchemista/spectre/blob/0.4.1/docs/PLAN_0_4_1.md)
-covers Stack-installed runtime components, router and conversational continuations, background missions,
-Directive's reusable driver, and the AgentServer evolution bridge for
-`spectre_morph`. It records the proposed public contracts, remaining design
-decisions, compatibility requirements and acceptance tests. These capabilities
-are planned work, not features already provided by 0.4.0.
+focuses on a unified public tool API: existing Stack Installable declarations,
+model-facing tool metadata, generic discovery/invocation from Server and Skill,
+and the same command/GAM execution path for all installed packages. On top of
+that API, spectre_directive will provide open conversation and background
+missions using the existing AgentServer lifecycle, without adding a second
+runtime. Input ownership and background budgets are subject to explicit
+minimal-change acceptance gates. Morph and runtime Skill evolution are out of
+scope for 0.4.1. These capabilities remain proposed, not released features.
 
 ## Compatibility and future changes
 
