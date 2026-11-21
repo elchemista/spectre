@@ -333,6 +333,36 @@ end
 
 La macro `use Spectre.Directive.Server` deve espandere il normale `use Spectre.Server, tools: Demo.Stack`, registrare i propri handler e gli eventuali continuation contracts. Non avvia una missione OTP aggiuntiva dentro un altro GenServer; usa il **processo Skill Server** già supervisionato. Deve mostrare chiaramente come fare override di un handler e quando usare `super`. Callback `handle_result` dedicate del driver non possono sparire dietro un catch-all dell'applicazione.
 
+### 5.1.1 Prompt: usare ESCLUSIVAMENTE quello già presente nel core 0.4
+
+**Nessun nuovo DSL, nessun nuovo prompt registry, nessun prompt-builder in Directive.** Il sistema è già presente in `lib/spectre/runtime/prompt.ex`, `lib/spectre/prompt/plan.ex`, `lib/spectre/prompt/operation.ex` e `lib/spectre/server/services.ex`.
+
+- `use Spectre.Server, prompt_root: "priv/assistant/prompts"` è la configurazione già valida nella 0.4; `use Spectre.Skill, prompt_root: ...` è valido per le Skill. Il Server della Skill può fare override **solo nel proprio scope**. Non usare l'opzione inventata `root_prompt_dir`: nel codice corrente si chiama `prompt_root`.
+- `generate(ctx, :chat, ...)` legge `chat.text.heex` dal root effettivo attraverso `Spectre.Prompt.build/4`, esattamente come qualsiasi Server esistente. Directive deve usare la stessa chiamata, lo stesso ServiceContext e lo stesso worker.
+- `Spectre.Prompt.Plan` compone `:instructions`, `:context` e `:task`; `Spectre.Prompt.Operation` supporta injection scoped di Agent/Skill/flow/handler/runtime e distingue `:instruction` da `:data`. Non duplicare questi layer nel driver.
+- Il contesto runtime (memorie Mnemonic, risposte Lens, output dei tool, testo utente) entra come **dati non fidati**; non convertirlo in asset di istruzioni host, né promuoverlo a `:instructions` tramite concatenazione di stringhe. Riutilizzare la separazione trust e la validazione già esistenti. Questa riduce il rischio di prompt injection, non garantisce immunità del modello.
+- La 0.4 possiede già controlli di path traversal/symlink per i prompt. Directive non deve costruire percorsi con input del modello.
+- Non confondere l'iniezione di istruzioni nel prompt (per singola inferenza) con il lock/ownership della conversazione (più turni): soltanto quest'ultimo potrebbe richiedere un contratto nuovo nel Server.
+
+**Esempio reale di base 0.4**, da riusare *internamente* al driver Directive, senza un secondo engine di prompt:
+
+~~~elixir
+defmodule MyApp.ExistingSkillServer do
+  use Spectre.Server, prompt_root: "priv/assistant/prompts"
+
+  @impl true
+  def handle_flow({:assistant, :answer}, _input, ctx),
+    do: generate(ctx, :chat, on_result: :chat_answer)
+
+  @impl true
+  def handle_result(:chat_answer, {:generated, result}, ctx),
+    do: respond(ctx, result.text)
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+end
+~~~
+
+**Nella 0.4.1** `use Spectre.Directive.Server` deve soltanto inoltrare `prompt_root:` al normale `Spectre.Server` e generare le callback del ciclo conversazionale/missione usando `generate` e il prompt esistente. Non ricreare `prompt :chat do`, `instructions :...` o un suo `Prompt.Plan` parallelo.
 ### 5.2 Due modalità che condividono tool, worker e policy
 
 **`mode: :conversation`:** risposta aperta multi-turno, modello che ragiona e sceglie tool, history bounded, possibilità di chiedere dettagli. Non forzare ogni messaggio in una Mission con Plan terminale; il package può avere `SpectreDirective.Conversation.State`, piccolo stato puro che usa lo stesso formato decisioni/tool e la stessa gestione degli input.
@@ -562,6 +592,7 @@ defmodule Demo.AssistantServer do
   use Spectre.Directive.Server,
     tools: Demo.Stack,
     mode: :conversation,
+    prompt_root: "priv/assistant/prompts", # inoltrato al Server esistente
     model: :configured_response_model,
     protocol: :json,
     model_tools: ["invoice.list", "invoice.send"]
