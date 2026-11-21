@@ -17,15 +17,13 @@ The implemented contracts are described in [Architecture](ARCHITECTURE.md),
 
 ## Planned 0.4.1 work
 
-The [0.4.1 implementation plan](https://github.com/elchemista/spectre/blob/0.4.1/docs/PLAN_0_4_1.md)
-focuses on a unified public tool API: existing Stack Installable declarations,
-model-facing tool metadata, generic discovery/invocation from Server and Skill,
-and the same command/GAM execution path for all installed packages. On top of
-that API, spectre_directive will provide open conversation and background
-missions using the existing AgentServer lifecycle, without adding a second
-runtime. Input ownership and background budgets are subject to explicit
-minimal-change acceptance gates. Morph and runtime Skill evolution are out of
-scope for 0.4.1. These capabilities remain proposed, not released features.
+The [0.4.1 implementation plan](https://github.com/elchemista/spectre/blob/0.4.1/docs/PLAN_0_4_1.md) proposes typed integration
+ports for Stack-installed libraries, scoped conversational flows and an
+operational API for tools and on-demand Activities. Applications start and
+control work by logical name. Spectre owns OTP supervision and recovery.
+The plan puts the OTP, Managed GAM rebind and revision/admission spikes
+before the Integration API freeze. It covers package compatibility and the
+Prism, Documents and Directive pilots.
 
 ## Compatibility and future changes
 
