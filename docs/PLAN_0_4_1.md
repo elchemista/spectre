@@ -238,7 +238,7 @@ Oggi il Server non accetta `:cont` da `handle_flow`/`handle_pending`: bisogna mo
 - **`handle_input/2`:** `:cont` -> continuare verso PreRoute/Router. Non ricominciare preparazione e ingress.
 - **`handle_pending/3` su reply-pending:** `:cont` -> sospendere **l'attesa originaria** con id/revision, poi inviare l'input al Router una sola volta. La vecchia attesa resta riprendibile.
 - **`handle_pending/3` su consent-pending:** nessun `:cont` può approvare o rifiutare il consenso. La policy attuale decide se e come sospendere. Decisioni `:confirm/:reject` restano vincolate a Presentation + pending id/revision e provenienza.
-- **`handle_flow(route,...)` già scelta:** `:cont` -> rifiutare la route per **questo input** e chiamare il fallback `handle_flow(:unmatched,...)` una volta, **senza re-invocare il classificatore**. Un `:cont` nel fallback `:unmatched` è errore terminale, non un ciclo.
+- **`handle_flow(route,...)` già scelta:** `:cont` -> rifiutare la route per **questo input** e chiamare il fallback `handle_flow(:unmatched,...)` una volta, **senza re-invocare il classificatore**. Il fallback riceve `ctx.routing.reason: {:declined_route, key}` (PROPOSTA), distinto da `:no_match`, così l'host decide esplicitamente se delegare a Directive. Un `:cont` dal fallback `:unmatched` è errore terminale, non un ciclo.
 - **Skill con proprietà di conversazione:** `:cont` -> cede l'input originale al **root** tramite una receipt correlata. La Skill perde il focus automatico (non la memoria né le missioni), e il root esegue PreRoute/Router una sola volta.
 - **`{:cont, ctx}`:** nessuna emissione di comandi, nessuna risoluzione pending nascosta, nessun effetto; l'aggiornamento state-only viene validato e checkpointato **prima** di cedere l'input.
 
@@ -715,6 +715,36 @@ Per ogni repository: leggere la dichiarazione dei tools nel modulo `lib/spectre/
 | Package nuovo di terze parti | Nessuno | Deve compilare uno Stack, essere scoperto/invocato da root e Skill e, se governato, seguire GAM senza **alcuna** clausola particolare nel core |
 
 **Morph** resta intenzionalmente fuori dalla release: non aggiungere una API `Evolution` per fargli funzionare questa migrazione.
+
+### 7.3 Esempi di riferimenti chiamabili con la stessa API
+
+Queste sono **forme V2 TARGET**, non promesse sugli argomenti delle attuali API V1. Ogni satellite deve fornire il suo mapping esplicito V2 -> `ServerTool.prepare` esistente, con schema verificato e proiezione portabile. La policy host seleziona quali sono model-visible:
+
+~~~elixir
+# Tutti usano Spectre.Server.call_tool(ctx, name, JSON_args, on_result: tag).
+call_tool(ctx, "prism.select",     %{"purpose" => "response_generation"}, on_result: :selected)
+call_tool(ctx, "mnemonic.recall",  %{"cue" => "contratto"}, on_result: :recalled)
+call_tool(ctx, "lens.look",        %{"tab_ref" => "tab-23"}, on_result: :viewed)
+call_tool(ctx, "beam.endpoints",   %{}, on_result: :endpoints)
+call_tool(ctx, "pulse.contacts",   %{}, on_result: :contacts)
+call_tool(ctx, "ledger.head",      %{}, on_result: :ledger_head)
+call_tool(ctx, "lab.inspect",      %{"mode" => "operational"}, on_result: :diagnostics)
+
+# Governed: visibili al modello solo se l'host sceglie di esporli;
+# l'operazione e il mandato restano verificati dal GAM.
+call_tool(ctx, "beam.deliver", %{"endpoint" => "whatsapp",
+  "outbound" => %{"text" => "Ciao"}}, on_result: :delivery)
+
+call_tool(ctx, "pulse.send", %{"to" => "agent:billing",
+  "act" => "request", "payload" => %{"invoice_id" => "F-10"}},
+  on_result: :agent_message)
+~~~
+
+`kinetic.interpret` resta primariamente una funzione di parsing del driver, normalmente **non** offerta al modello come tool da invocare. `directive.next/respond` restano strumenti interni del reducer, **non** capacità da esporre all'utente. `ledger.head` e `lab.inspect` dovrebbero essere **host-only** per default.
+
+**Il fatto che un nome sia mostrato qui non ne garantisce la disponibilità:** è il descriptor installato, il binding GAM e il model tool policy del Server a decidere. I nomi e i campi effettivi saranno fissati dai test sul rispettivo adapter.
+
+
 
 ### 7.1 Regola di migrazione per ogni package (non rompere i chiamanti)
 
