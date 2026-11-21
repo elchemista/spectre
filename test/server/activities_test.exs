@@ -3,6 +3,8 @@ defmodule Spectre.Server.ActivitiesTest do
 
   alias Spectre.Server
   alias Spectre.Server.Activities
+  alias Spectre.Server.Registry, as: ServerRegistry
+  alias Spectre.Server.TaskSupervisor
   alias Spectre.Test.Processes
 
   @timeout 2_000
@@ -202,6 +204,77 @@ defmodule Spectre.Server.ActivitiesTest do
     assert_root_responds(start_root())
   end
 
+  test "a child spawned by a killed launcher is cleaned up and its error is replayed" do
+    coordinator = start_coordinator()
+    barrier = make_ref()
+    specification = fixture(barrier: barrier)
+    assert {:ok, ref} = Activities.reserve(coordinator, "lost-launcher", specification)
+    request = Task.async(fn -> Activities.resume(coordinator, ref) end)
+
+    assert_receive {:fixture_waiting, ^barrier, supervisor, child}, @timeout
+    assert {:error, :waiting_for_activation} = GenServer.call(child, :work)
+
+    child_monitor = Process.monitor(child)
+    launcher = launch_task(coordinator)
+    launch_monitor = Process.monitor(launcher)
+    Process.exit(launcher, :kill)
+    assert_receive {:DOWN, ^launch_monitor, :process, ^launcher, :killed}, @timeout
+
+    send(supervisor, {:release_fixture, barrier})
+
+    assert {:error, :killed} = Task.await(request, @timeout)
+    assert_receive {:DOWN, ^child_monitor, :process, ^child, _}, @timeout
+    assert [] = DynamicSupervisor.which_children(supervisor)
+    eventually(fn -> Registry.lookup(ServerRegistry, {Activities, coordinator, ref}) == [] end)
+
+    assert {:ok, %{status: :failed, pid: nil, reason: :killed}} =
+             Activities.lookup(coordinator, ref)
+
+    assert {:error, :killed} = Activities.start(coordinator, "lost-launcher", specification)
+    refute_received {:fixture_activated, ^ref, _}
+  end
+
+  test "a Registry restart preserves a reservation while the old Activity branch is shutting down" do
+    registry = start_registry()
+    coordinator = start_coordinator(registry: ActivityTestRegistry)
+    barrier = make_ref()
+
+    {:ok, blocked_ref} =
+      Activities.reserve(coordinator, "blocked-start", fixture(barrier: barrier))
+
+    request = Task.async(fn -> Activities.resume(coordinator, blocked_ref) end)
+
+    assert_receive {:fixture_waiting, ^barrier, old_supervisor, waiting_child}, @timeout
+    old_supervisor_monitor = Process.monitor(old_supervisor)
+    child_monitor = Process.monitor(waiting_child)
+    specification = fixture()
+    assert {:ok, ref} = Activities.reserve(coordinator, "retry-after-restart", specification)
+
+    :erlang.trace(coordinator, true, [:receive])
+    assert :ok = stop_supervised(ActivityTestRegistry)
+    assert_receive {:trace, ^coordinator, :receive, {:DOWN, _, :process, ^registry, _}}, @timeout
+    :erlang.trace(coordinator, false, [:receive])
+
+    assert start_registry() != registry
+    assert Process.alive?(old_supervisor)
+
+    retry = Task.async(fn -> Activities.resume(coordinator, ref) end)
+    assert {:error, reason} = Task.await(retry, @timeout)
+    assert reason in [:activity_supervisor_unavailable, :server_registry_unavailable]
+    assert {:ok, %{status: :reserved, pid: nil}} = Activities.lookup(coordinator, ref)
+
+    send(old_supervisor, {:release_fixture, barrier})
+    assert_receive {:DOWN, ^old_supervisor_monitor, :process, ^old_supervisor, _}, @timeout
+    assert_receive {:DOWN, ^child_monitor, :process, ^waiting_child, _}, @timeout
+    assert {:error, _} = Task.await(request, @timeout)
+    refute_received {:fixture_activated, ^blocked_ref, _}
+    eventually(fn -> is_nil(Activities.supervisor(coordinator)) end)
+
+    assert {:ok, ^ref} = Activities.start(coordinator, "retry-after-restart", specification)
+    assert_receive {:fixture_activated, ^ref, child}, @timeout
+    assert {:ok, 1} = GenServer.call(child, :work)
+  end
+
   test "completed work and rejected startup both replay their original outcome" do
     coordinator = start_coordinator()
     specification = fixture()
@@ -242,7 +315,24 @@ defmodule Spectre.Server.ActivitiesTest do
     assert {:ok, 2} = GenServer.call(child, :work)
   end
 
-  defp start_coordinator, do: start_supervised!({Activities, []})
+  defp start_coordinator(opts \\ []), do: start_supervised!({Activities, opts})
+
+  defp start_registry do
+    start_supervised!(
+      {Registry, keys: :unique, name: ActivityTestRegistry},
+      id: ActivityTestRegistry,
+      restart: :temporary
+    )
+  end
+
+  defp launch_task(coordinator) do
+    {:monitors, monitors} = Process.info(coordinator, :monitors)
+
+    [launcher] =
+      Enum.filter(Task.Supervisor.children(TaskSupervisor), &({:process, &1} in monitors))
+
+    launcher
+  end
 
   defp start_root do
     {:ok, root} = Server.start_link(agent: Definition, consumer: self())
