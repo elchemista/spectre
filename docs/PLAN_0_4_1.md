@@ -669,3 +669,172 @@ restart -> tool and continuation digest check -> stale outcome cannot advance
 
 **Bug gate:** la fixture deve fallire se il comando JSON aggira `Tool.normalize` o GAM, se esiste un doppio GenServer di Directive, se il root usa il router durante ogni turno owned, o se dopo `:cont` l'input viene interpretato due volte.
 
+
+## 7. Migrazione verificabile di TUTTI i package spectre_* all'API comune
+
+Questa parte è parte integrante della release, non un "audit eventuale". Il Core nuovo **non deve avere case hardcoded sui nomi dei package**. Il solo contratto necessario per una callable operation è `Installable.tools/1` -> `Spectre.Tool.Adapter` -> `call_tool`; per i governed effects rimane `effects/1` -> `GAM.EffectAdapter`.
+
+Per ogni repository: leggere la dichiarazione dei tools nel modulo `lib/spectre/<nome>.ex`, l'implementazione `lib/spectre/<nome>/server_tool.ex` e gli effect bindings. Proporre uno schema V2 per le operazioni che possono essere mostrate a un modello; le altre conservano V1 o diventano V2 **host-only**. L'API standalone e i provider spezializzati NON vengono soppressi.
+
+| Repository | Operazioni già presenti nella 0.4 da riusare | Modifica target + test obbligatorio |
+| --- | --- | --- |
+| [spectre_kinetic](https://github.com/elchemista/spectre_kinetic) | `kinetic.interpret` come parser di AL; action catalog ed effects | Catalog V2 per `interpret` solo host/driver; il risultato AL consolidato si normalizza in ToolRef oppure nella registered action host, che attraversa `propose/GAM`. Test equivalenza JSON/AL verso lo stesso target, zero esecuzioni duplicate |
+| [spectre_mnemonic](https://github.com/elchemista/spectre_mnemonic) | `search/recall/reflect` e altre read; `remember/signal/forget` e write opzionalmente bound | V2 con schema esplicito per cue, scope e write payload. Subject/partition rimane fissato dall'host, mai dal modello; write solo da GAM. Test dati non-leak tra subject e stesso risultato v1 vs call_tool |
+| [spectre_prism](https://github.com/elchemista/spectre_prism) | `prism.select` read-only; provider/inference selector separati | V2 per `select`, modello visibile solo con allowlist. I model provider restano `generate/classify` services, non MFA o credenziali invocabili dal modello. Test nessun selector bypass |
+| [spectre_lens](https://github.com/elchemista/spectre_lens) | `open/look/act/close` con alcuni bound governati | V2 per URL/tab/action e ref portabili, stessa politica effettiva per open/look/act/close (non presumere lettura sempre libera). Test rollback impossibile di open ambigua, lease e stessi Outcome |
+| [spectre_beam](https://github.com/elchemista/spectre_beam) | `endpoints` cognitivo, `deliver` governato | V2 per endpoint lookup e outbound; ingress del canale, socket e idempotency restano servizi Beam. Test ricevuta delivery, autorizzazione e invio una volta |
+| [spectre_pulse](https://github.com/elchemista/spectre_pulse) | `protocol/contacts` cognitivi, `send` governato | V2 per discovery/protocol e messaggi; external approval continua nel protocollo Pulse e GAM. Test un ack tecnico NON approva una Presentation GAM |
+| [spectre_ledger](https://github.com/elchemista/spectre_ledger) | `head/entries` read-only | V2 per introspezione sicura, invisibile al modello per default. Gli Store/Checkpoint/Domain backend restano **provider**, non tool generici di scrittura. Test isolamento del checkpoint corrente |
+| [spectre_lab](https://github.com/elchemista/spectre_lab) | `inspect` e diagnostica redatta | V2 di introspezione, host-only per default. Test dati redatti, nessun accesso a checkpoint di una Skill sorella o un altro subject |
+| [spectre_directive](https://github.com/elchemista/spectre_directive) | `new/next/respond/inform` reducer (pure helper) | Conservare tool V1 di compatibilità e introdurre il nuovo driver che **consuma** la stessa Tool API. Non esporre `directive.respond` come tool libero del modello; richiesta reducer correlata |
+| Package nuovo di terze parti | Nessuno | Deve compilare uno Stack, essere scoperto/invocato da root e Skill e, se governato, seguire GAM senza **alcuna** clausola particolare nel core |
+
+**Morph** resta intenzionalmente fuori dalla release: non aggiungere una API `Evolution` per fargli funzionare questa migrazione.
+
+### 7.1 Regola di migrazione per ogni package (non rompere i chiamanti)
+
+L'attuale helper privato generato a compile time deve continuare a funzionare:
+
+~~~elixir
+# 0.4, input posizionale:
+ctx = mnemonic(ctx, {:recall, "contratto"}, on_result: :memory)
+
+# 0.4.1, input JSON V2:
+ctx = Spectre.Server.call_tool(ctx, "mnemonic.recall",
+  %{"cue" => "contratto"}, on_result: :memory)
+~~~
+
+Lo `ServerTool.prepare/3` di Mnemonic attuale non deve necessariamente ricevere lo stesso payload dai due ingressi: lo **strato di adattamento V2** può convertire la mappa JSON in una chiamata con argomenti posizionali legacy, **oppure** aggiungere una clausola nel suo adapter. Documentare e testare questa conversione. Non cambiare silenziosamente il significato dei dati V1.
+
+### 7.2 Conformance richiesto per ciascun satellite
+
+Per ogni package eseguire **tutte** queste prove, non solo un test di compilazione:
+
+1. `tools/1` del package compilato, descriptor/digest validi e assenza di collisioni.
+2. `available_tools` restituisce operazioni V2 **solo se** host le espone e lo scope Skill lo consente; le altre restano private.
+3. `call_tool` da root e da un child Skill produce lo stesso `prepare/invoke/project` (o lo stesso `propose/GAM`) del vecchio helper V1.
+4. Esistono test per argomenti malformati, tool inesistente, operation non registrata, domain error e risultato non portabile.
+5. Per tool governato: denial, approval, timeout, esito ambiguo, replay protetto e provenance Skill; **non** chiamare `execute_effect` durante `prepare/invoke`.
+6. Standalone API e resource/provider behaviors restano invariati; `spectre_ecosystem` esegue l'integrazione completa con core e package reali, non con test stub che imitano il contratto.
+
+Se un adapter V2 richiede un `if package == :mnemonic` o `case tool == :lens` nel Core, il gate fallisce: la regola va espressa dal descriptor/adapter, oppure serve discutere un nuovo **contratto generico**, non un'eccezione per satellite.
+
+## 8. Test di errore, sicurezza e proprietà del flusso
+
+| Test concreto | Risultato richiesto |
+| --- | --- |
+| Il modello emette `"invoice.delete_all"` non installato | Lookup fallisce in modo controllato; nessun nuovo atom o MFA viene creato |
+| Il modello chiede `invoice.send` installato ma non esposto | Rifiuto anche in fase di call, non solo mancata visibilità |
+| Tool descritto ma effect host non registrato | Fail-closed all'avvio o prima del dispatch; nessun executor chiamato |
+| JSON schema invalido o AL parziale | Il reasoner riceve errore bounded; nessun command di effetto |
+| V1 helper e V2 call con input equivalente | Stessi adapter, command path, result tag, policy e digest corretto |
+| Due package tentano il nome `invoice` | Errore deterministico di collisione alla compilazione Stack |
+| `call_tool` cognitivo interrupted con `retry: :safe` | Recovery con identità corretta, senza doppio commit di stato |
+| `call_tool` `retry: :never` con failure ambigua | Restituisce unknown, non esegue in automatico una seconda volta |
+| Due Mission con `:directive_tool` in contemporanea | Tag statico ma ref diverso; result non attraversa mission/Skill/session |
+| `handle_input -> :cont` | Una chiamata al router, zero comandi acquisiti |
+| `handle_input -> {:cont, ctx}` con comandi | Contratto invalido, nessun comando eseguito |
+| `handle_pending -> :cont` | Wait sospesa, ref conservato; nessun "sì" inventato come consenso |
+| `handle_flow(route) -> :cont` | Un solo fallback, niente richiamo dello stesso classificatore |
+| `handle_flow(:unmatched) -> :cont` | Errore terminale di dispatch, nessun ciclo |
+| Child Skill fa `:cont` | Yield correlato al root, routing una sola volta, missione non cancellata |
+| Child crasha dopo yield o manda yield duplicato | Il root non ripete il tool né la stessa route due volte |
+| Router restituisce `{:classifier_error, reason}` | Errore diagnosticato, NON trattato come `:no_match` |
+| Pending/Presentation di Skill A riceve risposta di Skill B | Stale/invalid authority, nessuna approvazione |
+| Background mission >32 step mentre arriva una FAQ | FAQ risponde dal root, mission continua e non riprende foreground |
+| Reset, restart, stale response, digest drift | Risultato scartato o recupero controllato, no restore di autorizzazioni vecchie |
+| RAM-only, disk, Ledger e storage outage | RAM volatile corretta, nessun falso commit durevole |
+| Strict `assigns_schema` / `continuation_contracts` | Nuovi envelope e tag statici validati, senza richiedere campi runtime privati |
+| 1/10/100 agenti con chat e tool | Memoria, code e latenza misurate su workload ripetibili e dopo GC |
+
+## 9. Piano di sviluppo per un agente implementatore: file, intervento e GATE
+
+**Non implementare contemporaneamente tutti i punti. Ogni fase ha un test che deve diventare verde prima della successiva.** I test dovranno distinguere la 0.4 corrente dalle nuove API 0.4.1 e non dichiarare risultati che non sono stati misurati.
+
+### Fase 0 - Baseline, prova minima e contratti
+
+**Aprire prima:**
+
+- `lib/spectre/stack/installable.ex`, `lib/spectre/stack/tools.ex`, `lib/spectre/stack/effects.ex`.
+- `lib/spectre/server/tool.ex`, `tool_compiler.ex`, `command.ex`, `runtime.ex`, `contracts.ex`, `skills.ex`, `pre_route.ex`, `router.ex`.
+- `spectre_directive/lib/spectre/directive/server_tool.ex`, `spectre_directive/lib/spectre_directive/loop/engine.ex`.
+
+Costruire un fake V1 cognitivo/governato; registrare il risultato dell'helper compilato, command id, trace outbox, GAM outcome, reset e ripresa. Eseguire una callback che restituisce `:cont` e documentare l'attuale errore di contratto. Provare la delega di una Skill senza flow (se il compiler la rifiuta, registrare l'ostacolo).
+
+**GATE 0:** baseline eseguibile, report dei gap reali, nessun cambiamento del kernel o dei package satellite.
+
+### Fase 1 - Tool authoring V2
+
+In `stack/tools.ex` e nel nuovo `Spectre.Tool.Adapter` introdurre schema e validator V2. Mantenere parser/descriptor V1 **identici** per chi già lo usa. Fissare il subset JSON Schema e rifiutare keyword sconosciute. Introdurre helper di creazione schema/descriptor **puro e opzionale**, per evitare boilerplate tra satellite, ma senza creare un altro registry/DSL obbligatorio.
+
+~~~elixir
+# API DI ERGONOMIA PROPOSTA, solo alias costruttore/validator di Stack.Tools:
+Spectre.Tool.define!(:invoice,
+  adapter: Demo.InvoiceAdapter,
+  description: "Fatture",
+  operations: %{list: %{path: :cognitive, retry: :safe, max_bytes: 65_536,
+                         description: "Elenca", input_schema: %{...}}})
+# Ritorna un descriptor V2 puro, da restituire in Installable.tools/1.
+~~~
+
+**GATE 1:** fixture V2 valida e serializzabile, V1 invariata, zero registri di tool nuovi.
+
+### Fase 2 - Invocazione API unica nel Runtime
+
+In `server.ex`/`server/tool.ex`/`tool_compiler.ex`/`server/context.ex` implementare:
+
+- `available_tools(ctx, audience: :model)` come proiezione filtered e deterministica.
+- `call_tool(ctx, ref, args, opts)` come wrapper del comando `:tool` esistente, non invocazione sincrona.
+- Name resolution da stringa verso ToolRef closed, nessun atom dinamico; permit/visibility re-check prima dell'acquisizione.
+- `correlation` opt-in su generate/tool/await, con tagged reply `{:correlated, ref, result}` per strict continuation contracts.
+- Firma immutable/digest e provenance già previsti dal core.
+
+Testare root e child, shape di tool result con/senza correlazione, consent, rejection, unknown, restart.
+
+**GATE 2:** due ingressi (helper v1 e call_tool v2) = **un solo Tool.normalize e un solo GAM**.
+
+### Fase 3 - Prima migrazione satellite e verifica universalità
+
+Migrare in ordine: **Prism (read-only) -> Ledger/Lab (diagnostica) -> Mnemonic (read/write) -> Kinetic (AL parser) -> Lens -> Beam -> Pulse**. Per ogni repo aggiungere suite v1-v2 e prova in Skill Server. Non incorporare logica del package nel core.
+
+**GATE 3:** matrice della sezione 7 verde per almeno un package nuovo di terzi e per i satellite effettivamente migrati; gli altri V1 ancora funzionanti. Se fallisce un contratto, correggere nel punto comune o adapter, non bypassarlo.
+
+### Fase 4 - Contratto :cont, root/Skill handoff
+
+In `server.ex` + `server/runtime.ex` aggiungere `handle_input/2` e ritorni `:cont / {:cont, ctx}`, con state-only dispatch validation. Preservare precedenza degli interrupt, consent e dei pending. Sperimentare prima `await_reply/route_current_input`; aggiungere un lease di ownership minimo **solo se necessario** per la conversazione senza pending. Root/Skill handoff per yield con una receipt idempotente e one-pass router.
+
+**GATE 4:** sequenza T1-T6 della sezione 4.5 verde, nessuna seconda classificazione, nessuna conferma GAM incrociata, test di duplicate yield e crash.
+
+### Fase 5 - Nuovo driver Directive di conversazione
+
+Nel package `spectre_directive` creare `Spectre.Directive.Server` e il driver automatico. Riutilizzare reducer/host tool. Codificare `mode: :conversation` senza forzare il `Plan`; implementare JSON tool protocol per primo. Aggiungere opzionale Kinetic AL che produce lo stesso ToolRef. Il driver deve poter gestire callback e tag senza codice custom in `Demo.AssistantServer`.
+
+**GATE 5:** esempio completo della sezione 6, chat libera senza regex `/assistant`, root deterministico quando possibile, AI fallback soltanto su `:no_match`.
+
+### Fase 6 - Missioni, background e recovery
+
+Collegare tutte le request reducer `:reason/:question/:confirmation/:policy/:invoke` e plan patch, con correlazione fino all'Outcome osservato. Misurare e risolvere il limite sperimentale oltre 32 step, timeout ereditato e memoria; usare il normale worker/checkpoint della Skill. Testare due missioni, due Skill parallele, worker crash, interruzione durante consent, reset, restoration da disk e storage temporaneamente indisponibile.
+
+**GATE 6:** la missione prosegue mentre il root risponde; niente risultati stale, niente side effect ripetuti, e il limite 900.000 byte è gestito e segnalato, non ignorato.
+
+### Fase 7 - E2E satellite, profiling e documentazione
+
+In `spectre_ecosystem` creare l'esempio realmente eseguibile con tool terzo, Root, Skill Directive e GAM. Eseguire formatter, compile warnings-as-errors, suite e coverage configurata, Credo strict, Dialyzer, docs check; provider reale solo in test opt-in e con autorizzazioni. Profiling agenti 1/10/100, separando processi/ETS/binary, worker, code, outbox e checkpoint, prima/dopo GC. Nessuna promessa di plateau senza misure.
+
+Aggiornare nel core `docs/STACK_TOOLS.md`, `CUSTOM_STACK_TOOLS.md`, `STACK.md`, `SERVER_CALLBACKS.md`, `AGENT_SERVER.md`, `SKILLS.md`, `ROUTING.md`, `PENDING_LIFECYCLE.md`, `MANAGED_GAM.md`. Nel package Directive aggiornare README, `docs/SPECTRE_0_4.md`, API, runtime/OTP, esempi JSON e Kinetic.
+
+**GATE 7:** test E2E realmente riproducibili e documentazione allineata alle API implementate. Non taggare o pubblicare Hex sulla base del solo piano.
+
+## 10. Definition of Done (sintesi finale)
+
+- [ ] Un package esterno dichiara `tools/1` e, se necessario, `effects/1` senza cambiare il Core.
+- [ ] Un unico catalogo espone `available_tools` e invocazione `call_tool` per callback, Skill e Directive, con modello/schema/allowlist.
+- [ ] Helper v1 e call_tool V2 producono lo stesso comando e usano lo stesso adapter/GAM; nessun secondo executor JSON/AL.
+- [ ] Le nove integrazioni satellite sopra sono verificate o conservano compatibilità esplicita e testata nel percorso V1.
+- [ ] `handle_input/handle_pending/handle_flow` comprendono `:cont` senza loop né comandi nascosti; root/Skill condividono handoff e consent corretti.
+- [ ] Una Skill conversazionale usa Directive con `use Spectre.Directive.Server`, senza route `/assistant`, senza callback model/tool scritti dall'app.
+- [ ] Directive parla liberamente, esegue tool, cambia argomento, riprende missioni e lavora in background con Session/Skill/GAM correttamente correlati.
+- [ ] 32+ passaggi, restart/reset/cancel, esiti incerti, storage RAM-only e persistente sono verificati e misurati.
+- [ ] Documenti, esempi, test di integrazione e release audit rispecchiano i comportamenti effettivamente implementati.
+
+**Principio finale:** Stack installa; Agent riconosce; Server esegue e governa; Directive conversa e orchestra. `:cont` lascia proseguire **lo stesso input una volta sola**. Morph, nuovi runtime e nuove autorità non servono a questa release.
