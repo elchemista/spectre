@@ -170,6 +170,17 @@ defmodule Spectre.Server do
     end
   end
 
+  @doc false
+  @spec start_supervised(keyword(), {reference(), reference()}, map()) :: GenServer.on_start()
+  def start_supervised(opts, {slot, proof}, default_identity) do
+    with {:ok, opts} <- automatic_options(opts, default_identity) do
+      opts
+      |> Keyword.put(:managed_attachment, {slot, proof, self()})
+      |> Keyword.put(:managed_attach_timeout, managed_shutdown_timeout(opts))
+      |> start_automatic_server()
+    end
+  end
+
   @doc """
   Requests storage recovery through the configured consumer.
 
@@ -204,8 +215,8 @@ defmodule Spectre.Server do
   def reset(server, opts \\ []),
     do: GenServer.call(server, {Runtime, :reset, opts}, :infinity)
 
-  @spec automatic_options(keyword()) :: {:ok, keyword()} | {:error, atom()}
-  defp automatic_options(opts) do
+  @spec automatic_options(keyword(), map() | nil) :: {:ok, keyword()} | {:error, atom()}
+  defp automatic_options(opts, default_identity \\ nil) do
     gam = Keyword.get(opts, :gam, [])
     identity = Keyword.get(opts, :identity, %{})
     submitters = Keyword.get(opts, :submitters, [])
@@ -214,7 +225,9 @@ defmodule Spectre.Server do
          {:ok, gam} <- normalize_storage(gam),
          :ok <- validate_automatic_options(opts, identity, submitters, gam) do
       identity =
-        if map_size(identity) == 0, do: %{conversation: Spectre.Identity.uuid7()}, else: identity
+        if map_size(identity) == 0,
+          do: default_identity || %{conversation: Spectre.Identity.uuid7()},
+          else: identity
 
       with {:ok, identity} <- Spectre.Server.GAM.Managed.Identity.normalize(identity),
            do: {:ok, opts |> Keyword.put(:gam, gam) |> Keyword.put(:identity, identity)}
@@ -251,7 +264,16 @@ defmodule Spectre.Server do
 
   defp validate_automatic_options(opts, identity, submitters, gam) do
     cond do
-      Enum.any?([:skill, :skill_parent, :runtime_scope], &Keyword.has_key?(opts, &1)) ->
+      Enum.any?(
+        [
+          :skill,
+          :skill_parent,
+          :runtime_scope,
+          :managed_attachment,
+          :managed_attach_timeout
+        ],
+        &Keyword.has_key?(opts, &1)
+      ) ->
         {:error, :reserved_server_options}
 
       not is_map(identity) ->
@@ -317,12 +339,16 @@ defmodule Spectre.Server do
     end
   end
 
-  def child_spec(opts),
-    do: %{
+  def child_spec(opts) do
+    attachment = {make_ref(), make_ref()}
+    identity = %{conversation: Spectre.Identity.uuid7()}
+
+    %{
       id: Keyword.get(opts, :id, Runtime),
-      start: {__MODULE__, :start_link, [opts]},
+      start: {__MODULE__, :start_supervised, [opts, attachment, identity]},
       shutdown: managed_shutdown_timeout(opts)
     }
+  end
 
   @spec managed_shutdown_timeout(keyword()) :: pos_integer()
   defp managed_shutdown_timeout(opts) do

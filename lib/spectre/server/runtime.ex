@@ -33,11 +33,18 @@ defmodule Spectre.Server.Runtime do
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
+    {timeout, opts} = Keyword.pop(opts, :managed_attach_timeout, 5_000)
+
+    start_options =
+      opts
+      |> Keyword.take([:name, :debug, :spawn_opt, :hibernate_after])
+      |> Keyword.put(:timeout, timeout)
+
     result =
       GenServer.start(
         __MODULE__,
         {opts, self()},
-        Keyword.take(opts, [:name, :debug, :spawn_opt, :hibernate_after])
+        start_options
       )
 
     case result do
@@ -117,13 +124,20 @@ defmodule Spectre.Server.Runtime do
     opts = Keyword.merge(server_options(server), opts)
     Spectre.Server.Contracts.validate_configuration!(server)
     Spectre.Server.PermissionDiagnostics.validate_options!(agent, opts)
-    state = new_state(agent, server, opts) |> setup_managed_gam()
+    {attachment, opts} = Keyword.pop(opts, :managed_attachment)
+
+    state =
+      agent
+      |> new_state(server, opts)
+      |> Map.put(:managed_hosted, not is_nil(attachment))
+      |> setup_managed_gam(attachment)
+
     validate_initial_state!(state)
     Map.put(state, :tool_bindings, Tool.bindings!(state))
   end
 
-  @spec setup_managed_gam(map()) :: map()
-  defp setup_managed_gam(%{gam: config} = state) when is_list(config) do
+  @spec setup_managed_gam(map(), Managed.attachment() | nil) :: map()
+  defp setup_managed_gam(%{gam: config} = state, attachment) when is_list(config) do
     options =
       config
       |> Keyword.put(:agent, state.agent)
@@ -131,10 +145,54 @@ defmodule Spectre.Server.Runtime do
       |> Keyword.put(:consumer, state.consumer)
       |> Keyword.put(:runtime, self())
       |> Keyword.put(:runtime_control, state.control)
+      |> Keyword.put(:runtime_epoch, state.submission_epoch)
+      |> Keyword.put(:managed_attachment, attachment)
       |> Keyword.put(:options, Keyword.drop(state.opts, [:gam, :assigns, :identity]))
       |> Keyword.put(:stack_runtime, Keyword.get(state.opts, :stack_runtime))
       |> Keyword.put(:payload_store, Keyword.get(state.opts, :payload_store))
 
+    case attachment do
+      {slot, _proof, _host} ->
+        case Registry.lookup(Spectre.Server.Registry, {Managed, slot}) do
+          [{pid, _}] -> reattach_managed(state, options, pid, attachment)
+          [] -> start_managed(state, options)
+        end
+
+      nil ->
+        start_managed(state, options)
+    end
+  end
+
+  defp setup_managed_gam(state, _attachment), do: Map.put(state, :managed_owner, nil)
+
+  @spec reattach_managed(map(), keyword(), pid(), Managed.attachment()) :: map()
+  defp reattach_managed(state, options, pid, attachment) do
+    case Managed.reattach(pid, attachment, state.control) do
+      {:ok, session} ->
+        state |> Map.put(:gam_reattached, true) |> bind_managed(pid, session)
+
+      {:error, :managed_domain_closing} ->
+        Managed.close(pid)
+        start_managed(state, options)
+
+      {:error, {:reset_activation_unknown, generation, session}} ->
+        if Session.activation_recorded?(session, generation) do
+          Managed.close(pid)
+          start_managed(state, options)
+        else
+          throw({:managed_gam_start_failed, :reset_activation_unknown})
+        end
+
+      {:error, reason} ->
+        throw({:managed_gam_start_failed, reason})
+    end
+  catch
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] ->
+      start_managed(state, options)
+  end
+
+  @spec start_managed(map(), keyword()) :: map()
+  defp start_managed(%{gam: config} = state, options) do
     case Managed.start_link(options) do
       {:ok, pid} ->
         bind_managed(state, pid, Managed.session(pid))
@@ -144,14 +202,12 @@ defmodule Spectre.Server.Runtime do
              storage_decision(state, :startup, reason) == :memory do
           config = Managed.Recovery.memory_options(config)
           opts = state.opts |> Keyword.put(:checkpoint, nil) |> Keyword.put(:gam, config)
-          setup_managed_gam(%{state | gam: config, opts: opts})
+          setup_managed_gam(%{state | gam: config, opts: opts}, options[:managed_attachment])
         else
           throw({:managed_gam_start_failed, reason})
         end
     end
   end
-
-  defp setup_managed_gam(state), do: Map.put(state, :managed_owner, nil)
 
   @spec bind_managed(map(), pid(), Session.t()) :: map()
   defp bind_managed(state, pid, session) do
@@ -160,10 +216,11 @@ defmodule Spectre.Server.Runtime do
     opts = Keyword.put(opts, :checkpoint_domain, {pid, Managed.info(pid).domain})
 
     Map.merge(state, %{
-      gam: {Managed, [server: pid]},
+      gam: {Managed, [server: pid, control: state.control]},
       managed_owner: pid,
       opts: opts,
-      submission_epoch: session.generation || state.submission_epoch,
+      submission_epoch:
+        session.generation || session.base_options[:runtime_epoch] || state.submission_epoch,
       session_required: not is_nil(session.generation)
     })
   end
@@ -348,12 +405,27 @@ defmodule Spectre.Server.Runtime do
     result = Failure.capture(fn -> prepare_init(state, ctx, dispatch) end)
 
     case result do
-      {:ok, {:ok, prepared}} -> {:ok, commit_acquisition(prepared)}
-      {:ok, {:ok, prepared, action}} -> {:ok, commit_acquisition(prepared), action}
-      {:ok, other} -> other
-      {:error, reason} -> {:stop, reason}
+      {:ok, {:ok, prepared}} ->
+        {:ok, prepared |> commit_acquisition() |> confirm_managed()}
+
+      {:ok, {:ok, prepared, action}} ->
+        {:ok, prepared |> commit_acquisition() |> confirm_managed(), action}
+
+      {:ok, other} ->
+        other
+
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
+
+  @spec confirm_managed(map()) :: map()
+  defp confirm_managed(%{managed_hosted: true, managed_owner: owner} = state) do
+    :ok = Managed.confirm_attachment(owner)
+    state
+  end
+
+  defp confirm_managed(state), do: state
 
   defp prepare_init(state, ctx, dispatch) do
     case state.server.init(Keyword.get(state.opts, :init_arg), ctx) do
@@ -803,11 +875,17 @@ defmodule Spectre.Server.Runtime do
 
   @impl true
   def handle_info(
-        {__MODULE__, control, :reset_activating, token, owner},
+        {__MODULE__, control, :reset_activating, token, owner, generation},
         %{control: control, reset_request: %{token: token} = reset} = state
       ) do
-    send(reset.pid, {token, :activate})
-    {:noreply, %{state | reset_request: %{reset | phase: :activating, owner: owner}}}
+    case Managed.mark_reset_activating(state.managed_owner, generation) do
+      :ok ->
+        send(reset.pid, {token, :activate})
+        {:noreply, %{state | reset_request: %{reset | phase: :activating, owner: owner}}}
+
+      {:error, _} = error ->
+        failed_reset(state, error)
+    end
   end
 
   def handle_info(
@@ -1115,6 +1193,7 @@ defmodule Spectre.Server.Runtime do
 
   @spec complete_reset(map(), pid(), Session.t()) :: tuple()
   defp complete_reset(state, owner, session) do
+    if state.managed_hosted, do: Managed.close(state.managed_owner)
     :ok = Managed.adopt_reset(owner, session)
     Process.link(owner)
     Reset.finish(state.reset_request, :adopted)
@@ -1130,6 +1209,7 @@ defmodule Spectre.Server.Runtime do
       state.agent
       |> new_state(state.server, state.boot_options)
       |> Map.put(:control, state.reset_request.control)
+      |> Map.put(:managed_hosted, state.managed_hosted)
       |> bind_managed(owner, session)
       |> then(&Map.put(&1, :tool_bindings, Tool.bindings!(&1)))
 
@@ -1183,11 +1263,18 @@ defmodule Spectre.Server.Runtime do
       cancel_timer(worker.timer)
     end)
 
-    if is_pid(state.managed_owner) and Process.alive?(state.managed_owner),
+    if close_managed?(state, reason),
       do: Managed.close(state.managed_owner)
 
     {ctx, _} = context(state, nil)
     state.server.terminate(reason, ctx)
+  end
+
+  @spec close_managed?(map(), term()) :: boolean()
+  defp close_managed?(state, reason) do
+    is_pid(state.managed_owner) and Process.alive?(state.managed_owner) and
+      (not state.managed_hosted or reason in [:normal, :reset, :shutdown] or
+         match?({:shutdown, _}, reason))
   end
 
   @impl true
@@ -1304,19 +1391,34 @@ defmodule Spectre.Server.Runtime do
           consent_source_digest(proof, input.text)
         )
 
-      id = event.id
-      state = %{state | sequence: state.sequence + 1}
-      state = if invocation, do: Inbox.mark_seen(state, "skill:" <> invocation), else: state
-
-      state =
-        if waiting?,
-          do: %{state | queue: :queue.in(event, state.queue)},
-          else: begin_input(state, event)
-
-      if queued? and not busy?, do: send(self(), {__MODULE__, state.control, :pump})
-      {:reply, {:ok, id}, Checkpoint.save(state)}
+      acquire_input_event(state, event, invocation, waiting?, queued? and not busy?)
     end
   end
+
+  defp acquire_input_event(state, event, invocation, waiting?, pump?) do
+    case bind_consent_event(state, event) do
+      :ok ->
+        state = %{state | sequence: state.sequence + 1}
+        state = if invocation, do: Inbox.mark_seen(state, "skill:" <> invocation), else: state
+
+        state =
+          if waiting?,
+            do: %{state | queue: :queue.in(event, state.queue)},
+            else: begin_input(state, event)
+
+        if pump?, do: send(self(), {__MODULE__, state.control, :pump})
+        {:reply, {:ok, event.id}, Checkpoint.save(state)}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  defp bind_consent_event(%{managed_hosted: true} = state, %{id: id, consent_proof: proof})
+       when is_binary(proof),
+       do: managed_call(state, :bind_consent_event, [proof, id])
+
+  defp bind_consent_event(_state, _event), do: :ok
 
   defp consent_source_digest(nil, _text), do: nil
 
@@ -1824,7 +1926,7 @@ defmodule Spectre.Server.Runtime do
       Map.merge(Map.delete(data, :close_schedule), %{
         id: id,
         kind: :consent,
-        status: shown_pending_status(state, worker, id),
+        status: shown_pending_status(state, worker, id, data),
         revision: Map.get(previous, :revision, 0) + 1,
         shown_at_sequence: state.sequence,
         on_result: Map.get(previous, :on_result, tag),
@@ -1917,12 +2019,21 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
-  defp shown_pending_status(state, worker, id) do
-    if Map.get(worker, :recovered, false) or Map.get(worker, :uncertain, false) or
-         state.foreground not in [nil, id],
-       do: :suspended,
-       else: :foreground
+  defp shown_pending_status(state, worker, id, data) do
+    cond do
+      Map.get(worker, :uncertain, false) or state.foreground not in [nil, id] -> :suspended
+      not Map.get(worker, :recovered, false) -> :foreground
+      live_presentation?(state, data) -> :foreground
+      true -> :suspended
+    end
   end
+
+  defp live_presentation?(%{gam_reattached: true, managed_owner: owner}, %{
+         presentation: %{ref: ref}
+       }),
+       do: Managed.presentation_ready?(owner, ref)
+
+  defp live_presentation?(_state, _data), do: false
 
   defp restore_failed_pending(state, worker, pending) do
     previous = Map.get(pending, :previous_status, :suspended)
@@ -3724,8 +3835,10 @@ defmodule Spectre.Server.Runtime do
   defp release_lifecycle_following(state, _entry), do: state
 
   defp recover(state) do
+    state = restore_consent_events(state)
     state = Enum.reduce(state.inbox, state, &recover_inbox_entry/2)
     state = Enum.reduce(state.outbox, state, &recover_outbox_entry/2)
+    state = apply_deferred_approval(state, Map.get(state.pending, state.foreground))
 
     state =
       Enum.reduce(state.pending, state, fn {_id, pending}, state ->
@@ -3734,6 +3847,39 @@ defmodule Spectre.Server.Runtime do
 
     state |> reconcile_close_timers() |> recover_current()
   end
+
+  defp restore_consent_events(%{gam_reattached: true} = state) do
+    case managed_call(state, :consent_events, []) do
+      proofs when is_map(proofs) and map_size(proofs) > 0 ->
+        queue = state.queue |> :queue.to_list() |> Enum.map(&restore_consent(&1, proofs))
+
+        outbox =
+          Map.new(state.outbox, fn
+            {id, %{event: event} = entry} ->
+              {id, %{entry | event: restore_consent(event, proofs)}}
+
+            entry ->
+              entry
+          end)
+
+        %{
+          state
+          | current: restore_consent(state.current, proofs),
+            queue: :queue.from_list(queue),
+            outbox: outbox
+        }
+
+      _ ->
+        state
+    end
+  end
+
+  defp restore_consent_events(state), do: state
+
+  defp restore_consent(%{id: id} = event, proofs) when is_map_key(proofs, id),
+    do: Map.put(event, :consent_proof, Map.fetch!(proofs, id))
+
+  defp restore_consent(event, _proofs), do: event
 
   defp recover_inbox_entry({id, entry}, state) do
     worker = Map.put(entry.worker, :recovered, true)

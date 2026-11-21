@@ -1,6 +1,7 @@
 defmodule Spectre.Server.ManagedRuntimeTest do
   use ExUnit.Case, async: false
   alias Spectre.Server
+  alias Spectre.Server.GAM.Managed
 
   defmodule Effect do
     @behaviour Spectre.Server.GAM.EffectAdapter
@@ -68,6 +69,18 @@ defmodule Spectre.Server.ManagedRuntimeTest do
   defmodule App do
     use Spectre.Server, tools: Stack
 
+    def init({:reject_start, observer}, _ctx) do
+      send(observer, {:failing_init, self()})
+
+      receive do
+        :reject_start -> {:stop, :test_init_error}
+      after
+        5_000 -> {:stop, :test_init_timeout}
+      end
+    end
+
+    def init(arg, ctx), do: super(arg, ctx)
+
     def handle_flow({:test, :send}, %{text: "helper"}, ctx),
       do: deliver(ctx, %{body: "helper"}, on_result: :sent)
 
@@ -130,6 +143,32 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     flow :test do
       on(:protected, regex: ~r/^protected_route$/, protected: true)
       on(:send, regex: ~r/^(?!protected_route$).*$/)
+    end
+  end
+
+  defmodule PauseConfirmation do
+    def init(opts), do: opts
+
+    def call(%{text: "confermo"} = input, _ctx, _opts) do
+      send(Spectre.Server.ManagedRuntimeTest, {:preparing_confirmation, self()})
+
+      receive do
+        :continue_confirmation -> {:cont, input}
+      after
+        5_000 -> {:error, :confirmation_preparation_timed_out}
+      end
+    end
+
+    def call(input, _ctx, _opts), do: {:cont, input}
+  end
+
+  defmodule ConfirmationAgent do
+    use Spectre.Agent, stack: Stack, server: App
+
+    input_pipeline([PauseConfirmation])
+
+    flow :test do
+      on(:send, regex: ~r/^short$/)
     end
   end
 
@@ -348,6 +387,157 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     assert :ok = GenServer.stop(second, :normal, 35_000)
   end
 
+  test "a supervised Root that fails to initialize releases its Managed owner" do
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    spec =
+      Server.child_spec(agent: Agent, consumer: self(), init_arg: {:reject_start, self()})
+
+    %{start: {Server, :start_supervised, [_opts, {slot, _proof}, _identity]}} = spec
+    key = {Managed, slot}
+    start = Task.async(fn -> DynamicSupervisor.start_child(supervisor, spec) end)
+    assert_receive {:failing_init, root}, 5_000
+    assert [{managed, _}] = Registry.lookup(Server.Registry, key)
+    monitor = Process.monitor(managed)
+    send(root, :reject_start)
+    assert {:error, :test_init_error} = Task.await(start, 5_000)
+    assert_receive {:DOWN, ^monitor, :process, ^managed, _}, 5_000
+    eventually(fn -> Registry.lookup(Server.Registry, key) == [] end)
+  end
+
+  test "a temporary Root crash releases its Managed owner while the supervisor lives" do
+    spec =
+      Server.child_spec(agent: Agent, consumer: self(), gam: [shutdown_timeout: 50])
+      |> Supervisor.child_spec(restart: :temporary)
+
+    supervisor = runtime_supervisor(spec)
+    [{_, root, _, _}] = Supervisor.which_children(supervisor)
+    managed = :sys.get_state(root).managed_owner
+    monitor = Process.monitor(managed)
+
+    Process.exit(root, :kill)
+
+    assert_receive {:DOWN, ^monitor, :process, ^managed, _}, 5_000
+    assert Process.alive?(supervisor)
+    assert Supervisor.which_children(supervisor) == []
+  end
+
+  test "summoned Root retains its live RAM consent and authority after restart" do
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+    subject = "ram-consent-restart"
+
+    opts = [
+      subject: subject,
+      consumer: self(),
+      identity: %{subject: subject},
+      gam: [operations: %{deliver: [confirm: true]}]
+    ]
+
+    assert {:ok, first} = Spectre.Supervisor.summon(supervisor, Agent, opts)
+    second = assert_resumes_consent(first, supervisor)
+    assert {:ok, ^second} = Spectre.Server.Registry.lookup(Agent, subject)
+    assert {:ok, ^second} = Spectre.Supervisor.summon(supervisor, Agent, opts)
+
+    managed = :sys.get_state(second).managed_owner
+    monitor = Process.monitor(managed)
+    assert :ok = Spectre.Supervisor.dismiss(supervisor, second)
+    assert_receive {:DOWN, ^monitor, :process, ^managed, _}, 5_000
+  end
+
+  test "a Root crash before RAM reset activation preserves the canonical revocation" do
+    spec =
+      Server.child_spec(
+        agent: Agent,
+        consumer: self(),
+        identity: %{subject: "ram-reset-before-activation"},
+        gam: [operations: %{deliver: []}]
+      )
+
+    %{start: {Server, :start_supervised, [_opts, {slot, _proof}, _identity]}} = spec
+    supervisor = runtime_supervisor(spec)
+    [{_, first, _, _}] = Supervisor.which_children(supervisor)
+    %{managed_owner: managed, control: control} = :sys.get_state(first)
+    assert {:ok, %{primary: %{act: %{ref: revoked}}}} = Spectre.GAM.revoke(first)
+    assert {:ok, _} = Managed.prepare_reset(managed, control)
+
+    :ok = :sys.suspend(supervisor)
+
+    try do
+      monitor = Process.monitor(first)
+      Process.exit(first, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^first, :killed}
+      assert [{^managed, _}] = Registry.lookup(Server.Registry, {Managed, slot})
+
+      assert {:error, :untrusted_reattachment} =
+               Managed.reattach(managed, {slot, make_ref(), supervisor}, make_ref())
+    after
+      :sys.resume(supervisor)
+    end
+
+    second = replacement_root(supervisor, first)
+
+    assert :sys.get_state(second).managed_owner == managed
+    assert {:ok, view} = Server.gam_view(second)
+    assert Enum.any?(view.acts, &(&1.ref == revoked))
+    assert {:ok, _} = Server.input(second, "after abandoned reset")
+    assert_receive {:completed, {:governed, %{decision: %{outcome: :refused}, act: nil}}}, 5_000
+    refute_receive {:effect, _, _}
+  end
+
+  test "a supervised Root resumes an acknowledged local decision before command acquisition" do
+    spec =
+      Server.child_spec(
+        agent: ConfirmationAgent,
+        consumer: self(),
+        identity: %{subject: "confirmation-before-root-crash"},
+        gam: [operations: %{deliver: [confirm: true]}]
+      )
+
+    supervisor = runtime_supervisor(spec)
+    [{_, first, _, _}] = Supervisor.which_children(supervisor)
+    assert {:ok, _} = Server.input(first, "short")
+    ref = presentation()
+    assert :ok = Server.presented(first, ref)
+    assert_receive {Server, ^first, {:pending, _, _}}, 5_000
+    assert {:ok, event_id} = Server.decide(first, nil, ref, :confirm)
+    assert_receive {:preparing_confirmation, original_worker}, 5_000
+
+    monitor = Process.monitor(first)
+    Process.exit(first, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^first, :killed}
+    send(original_worker, :continue_confirmation)
+
+    second = replacement_root(supervisor, first)
+    assert_receive {:preparing_confirmation, recovered_worker}, 5_000
+    assert %{current: %{id: ^event_id}} = :sys.get_state(second)
+    send(recovered_worker, :continue_confirmation)
+
+    assert_receive {:effect, %{body: "short"}, _}, 5_000
+    assert_receive {:completed, {:governed, %{outcome: %{status: :succeeded}}}}, 5_000
+    assert {:error, :stale_presentation} = Server.decide(second, nil, ref, :confirm)
+    refute_receive {:effect, _, _}
+  end
+
+  @tag :tmp_dir
+  test "supervised disk Root retains live consent in its reset generation", %{tmp_dir: path} do
+    spec =
+      Server.child_spec(
+        agent: Agent,
+        consumer: self(),
+        identity: %{subject: "disk-consent-restart"},
+        gam: [storage: {:disk, path}, operations: %{deliver: [confirm: true]}]
+      )
+
+    supervisor = runtime_supervisor(spec)
+    [{_, first, _, _}] = Supervisor.which_children(supervisor)
+
+    assert :ok = Server.reset(first)
+    managed = :sys.get_state(first).managed_owner
+    assert %{session: %{generation: generation}} = :sys.get_state(managed)
+    assert is_binary(generation)
+    assert_resumes_consent(first, supervisor)
+  end
+
   @tag :tmp_dir
   test "supervised disk restart waits for the dead runtime's in-flight effect to drain", %{
     tmp_dir: path
@@ -359,41 +549,112 @@ defmodule Spectre.Server.ManagedRuntimeTest do
       gam: [
         storage: {:disk, path},
         shutdown_timeout: 10_000,
-        operations: %{deliver: [confirm: false, class: "test.deliver"]}
+        operations: %{deliver: [confirm: true, class: "test.deliver"]}
       ]
     ]
 
     spec = Server.child_spec(opts)
     assert spec.shutdown == 15_000
 
-    supervisor =
-      start_supervised!(%{
-        id: :draining_supervisor,
-        start: {Supervisor, :start_link, [[spec], [strategy: :one_for_one, max_restarts: 1]]}
-      })
-
+    supervisor = runtime_supervisor(spec)
     [{_, first, _, _}] = Supervisor.which_children(supervisor)
-    assert {:ok, _} = Server.input(first, "hold-during-restart")
-    assert_receive {:effect_started, executor}, 5_000
-    {_, bridge} = :sys.get_state(first).gam
-    managed = bridge[:server]
-    managed_monitor = Process.monitor(managed)
-    runtime_monitor = Process.monitor(first)
-    Process.exit(first, :kill)
-    assert_receive {:DOWN, ^runtime_monitor, :process, ^first, :killed}
 
-    # The supervisor is waiting for storage; it must not exhaust restart intensity.
-    restart = Task.async(fn -> Supervisor.which_children(supervisor) end)
+    args = %{body: "hold-during-restart"}
+    options = [key: "held-operation", on_result: :sent]
+    assert {:ok, id} = Spectre.GAM.submit(first, :deliver, args, options)
+    ref = presentation()
+    assert :ok = Server.presented(first, ref)
+    assert_receive {Server, ^first, {:pending, _, _}}, 5_000
+    assert {:ok, _} = Server.decide(first, nil, ref, :confirm)
+    assert_receive {:effect_started, executor}, 5_000
+    on_exit(fn -> send(executor, :release_effect) end)
+    managed = :sys.get_state(first).managed_owner
+    %{domain: domain} = Managed.info(managed)
+    monitor = Process.monitor(first)
+    Process.exit(first, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^first, :killed}
+
+    # The replacement waits for the original owner to settle the effect.
+    restart = Task.async(fn -> replacement_root(supervisor, first) end)
     assert Task.yield(restart, 100) == nil
+    assert %{domain: ^domain} = Managed.info(managed)
     send(executor, :release_effect)
-    assert_receive {:effect, %{body: "hold-during-restart"}, _}, 5_000
-    assert_receive {:DOWN, ^managed_monitor, :process, ^managed, _}, 5_000
-    [{_, second, _, _}] = Task.await(restart, 5_000)
-    assert is_pid(second) and second != first
+    assert_receive {:effect, ^args, _}, 5_000
+    second = Task.await(restart, 5_000)
     assert Process.alive?(supervisor)
+    assert :sys.get_state(second).managed_owner == managed
+
+    assert_receive {:completed, {:governed, %{outcome: %{status: :succeeded}}}}, 5_000
+    assert Server.status(second).pending == []
     assert {:ok, view} = Server.gam_view(second)
-    assert Enum.count(view.acts, &(&1.class == "test.deliver")) == 1
+    assert [%{ref: act}] = Enum.filter(view.acts, &(&1.class == "test.deliver"))
+    assert [%{status: :succeeded}] = Enum.filter(view.outcomes, &(&1.act_ref == act))
+    assert {:ok, ^id} = Spectre.GAM.submit(second, :deliver, args, options)
     refute_receive {:effect_started, _}
+  end
+
+  defp assert_resumes_consent(first, supervisor) do
+    %{managed_owner: managed, control: control} = :sys.get_state(first)
+    assert %{domain: domain, session: %{generation: generation}} = :sys.get_state(managed)
+    assert {:ok, _} = Server.input(first, "short")
+    ref = presentation()
+    assert :ok = Server.presented(first, ref)
+    assert_receive {Server, ^first, {:pending, _, id}}, 5_000
+
+    assert %{session: session, pending: [%{id: ^id, expires_at: deadline, revision: revision}]} =
+             Server.status(first)
+
+    monitor = Process.monitor(first)
+    assert :ok = :sys.terminate(first, :test_root_crashed)
+    assert_receive {:DOWN, ^monitor, :process, ^first, :test_root_crashed}
+    second = replacement_root(supervisor, first)
+
+    assert :sys.get_state(second).managed_owner == managed
+    assert %{domain: ^domain, session: %{generation: ^generation}} = :sys.get_state(managed)
+    assert {:error, :untrusted_reset_transport} = Managed.prepare_reset(managed, control)
+
+    assert {:error, :untrusted_governance_transport} =
+             GenServer.call(managed, {:checkout, control})
+
+    assert %{
+             session: ^session,
+             pending: [
+               %{
+                 id: ^id,
+                 expires_at: ^deadline,
+                 revision: ^revision,
+                 presentation: %{ref: ^ref},
+                 status: :foreground
+               }
+             ]
+           } = Server.status(second)
+
+    assert {:ok, _} = Server.decide(second, nil, ref, :confirm)
+    assert_receive {:effect, %{body: "short"}, _}, 5_000
+    assert_receive {:completed, {:governed, %{outcome: %{status: :succeeded}}}}, 5_000
+    assert {:error, :stale_presentation} = Server.decide(second, nil, ref, :confirm)
+    refute_receive {Managed, ^managed, {:presentation, _}}
+    refute_receive {:effect, _, _}
+    second
+  end
+
+  defp runtime_supervisor(spec) do
+    start_supervised!(%{
+      id: :runtime_supervisor,
+      start: {Supervisor, :start_link, [[spec], [strategy: :one_for_one, max_restarts: 1]]}
+    })
+  end
+
+  defp replacement_root(supervisor, prior) do
+    eventually(fn ->
+      case Supervisor.which_children(supervisor) do
+        [{_, root, _, _}] when is_pid(root) -> root != prior
+        _ -> false
+      end
+    end)
+
+    [{_, root, _, _}] = Supervisor.which_children(supervisor)
+    root
   end
 
   test "tenant identity is normalized and frozen consistently through execution" do
@@ -670,7 +931,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     assert :ok = Server.presented(server, ref)
     assert_receive {Server, ^server, {:pending, _, _}}, 5_000
     [pending] = Server.status(server).pending
-    managed = :sys.get_state(server).managed_owner
+    %{managed_owner: managed, control: control} = :sys.get_state(server)
 
     context = %{
       agent: Agent,
@@ -686,7 +947,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     task =
       Task.async(fn ->
         Server.GAM.Managed.resume(pending, context.input, context,
-          bridge_config: [server: managed],
+          bridge_config: [server: managed, control: control],
           action_policy: %{confirm: false, expires_in: 900_000, message: "changed"}
         )
       end)
@@ -887,7 +1148,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     old_registry = Process.whereis(registry)
     Process.exit(old_registry, :kill)
 
-    diagnostics_eventually(fn ->
+    eventually(fn ->
       replacement = Process.whereis(registry)
 
       replacement != nil and replacement != old_registry and
@@ -923,7 +1184,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     tmp_dir: path
   } do
     server = diagnostics_server(path)
-    managed = :sys.get_state(server).managed_owner
+    %{managed_owner: managed, control: control} = :sys.get_state(server)
     domain = :sys.get_state(managed).domain
     :ok = :sys.suspend(domain)
 
@@ -931,12 +1192,12 @@ defmodule Spectre.Server.ManagedRuntimeTest do
       for query <- [&Server.gam_inspect/1, &Server.gam_view/1] do
         probe =
           Task.async(fn ->
-            diagnostics_eventually(fn ->
+            eventually(fn ->
               {:messages, messages} = Process.info(domain, :messages)
               Enum.any?(messages, &match?({:"$gen_call", _, {:query, _, _}}, &1))
             end)
 
-            assert {:ok, _} = GenServer.call(managed, :checkout, 250)
+            assert {:ok, _} = GenServer.call(managed, {:checkout, control}, 250)
             GenServer.cast(managed, {:checkin, self()})
             :ok
           end)
@@ -991,7 +1252,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
       assert_receive {Server, ^server, {:pending, _, _}}, 5_000
       assert_receive {Server, ^server, {:diagnostics_changed, %{source: :checkpoint}}}, 5_000
       assert {:ok, _} = Supervisor.restart_child(supervisor, notifier)
-      diagnostics_eventually(fn -> managed in :pg.get_local_members(notifier, domain_ref) end)
+      eventually(fn -> managed in :pg.get_local_members(notifier, domain_ref) end)
       assert_receive {Server, ^server, {:diagnostics_changed, %{source: :gam}}}, 5_000
       assert Process.alive?(server)
     after
@@ -999,15 +1260,15 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     end
   end
 
-  defp diagnostics_eventually(check, attempts \\ 100)
-  defp diagnostics_eventually(check, 0), do: assert(check.())
+  defp eventually(check, attempts \\ 100)
+  defp eventually(check, 0), do: assert(check.())
 
-  defp diagnostics_eventually(check, attempts) do
+  defp eventually(check, attempts) do
     if check.() do
       :ok
     else
       Process.sleep(10)
-      diagnostics_eventually(check, attempts - 1)
+      eventually(check, attempts - 1)
     end
   end
 

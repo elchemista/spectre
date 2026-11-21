@@ -109,8 +109,8 @@ defmodule Spectre.Server.ManagedReviewerTest do
     deadline = System.system_time(:millisecond) + 1_500
     opts = options(c.reviewer, storage: {:disk, c.tmp_dir}, expires_at: deadline)
     server = start_supervised!({Server, opts})
-    managed = :sys.get_state(server).managed_owner
-    {:ok, snapshot} = GenServer.call(managed, :checkout)
+    %{managed_owner: managed, control: control} = :sys.get_state(server)
+    {:ok, snapshot} = GenServer.call(managed, {:checkout, control})
     refute Map.has_key?(snapshot, :reviewer)
     refute Keyword.has_key?(snapshot.options, :reviewer)
     refute Keyword.has_key?(snapshot.options, :options)

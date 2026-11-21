@@ -21,6 +21,9 @@ defmodule Spectre.Server.GAM.Managed do
   alias Spectre.GAM.Domain.Recovery.Policy, as: RecoveryPolicy
   alias Spectre.Server.{Session, TaskGuard}
 
+  @typedoc false
+  @type attachment :: {reference(), reference(), pid()}
+
   @doc "Starts the standard private Domain integration for an AgentServer."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -81,10 +84,31 @@ defmodule Spectre.Server.GAM.Managed do
   def session(server), do: GenServer.call(server, :session)
 
   @doc false
+  @spec reattach(pid(), attachment(), reference()) ::
+          {:ok, Session.t()} | {:error, term()}
+  def reattach(server, attachment, control),
+    do: GenServer.call(server, {:reattach, attachment, control}, :infinity)
+
+  @doc false
+  @spec confirm_attachment(pid()) :: :ok | {:error, atom()}
+  def confirm_attachment(server), do: GenServer.call(server, :confirm_attachment)
+
+  @doc false
+  @spec presentation_ready?(pid(), binary()) :: boolean()
+  def presentation_ready?(server, ref), do: call_gate(server, :presentation_ready?, [ref]) == true
+
+  @doc false
   @spec prepare_reset(pid(), reference() | nil) ::
           {:ok, %{session: Session.t(), domain: binary()}} | {:error, term()}
   def prepare_reset(server, control \\ nil),
     do: GenServer.call(server, {:prepare_reset, control}, :infinity)
+
+  @doc false
+  @spec mark_reset_activating(pid(), binary() | nil) :: :ok | {:error, atom()}
+  def mark_reset_activating(_server, nil), do: :ok
+
+  def mark_reset_activating(server, generation),
+    do: GenServer.call(server, {:mark_reset_activating, generation})
 
   @doc false
   @spec resume_reset(pid(), reference() | nil) :: :ok | {:error, term()}
@@ -128,6 +152,20 @@ defmodule Spectre.Server.GAM.Managed do
   @spec authorize_input(pid(), binary(), binary(), pid()) :: {:ok, binary()} | {:error, atom()}
   def authorize_input(server, ref, text, caller),
     do: call_gate(server, :authorize_input, [ref, text, caller])
+
+  @doc false
+  @spec bind_consent_event(pid(), binary(), binary()) :: :ok | {:error, term()}
+  def bind_consent_event(server, proof, event_id),
+    do: call_gate(server, :bind_consent_event, [proof, event_id])
+
+  @doc false
+  @spec consent_events(pid()) :: %{optional(binary()) => binary()}
+  def consent_events(server) do
+    case call_gate(server, :consent_events, []) do
+      %{} = events -> events
+      {:error, _} -> %{}
+    end
+  end
 
   @doc false
   def approval_message(server, message),
@@ -210,7 +248,13 @@ defmodule Spectre.Server.GAM.Managed do
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
+
+    with :ok <- register_initial_attachment(opts), do: open_owner(opts)
+  end
+
+  defp open_owner(opts) do
     owner_monitor = Process.monitor(Keyword.fetch!(opts, :runtime))
+    host_monitor = monitor_attachment_host(opts)
     {bootstrap_monitor, guardian} = monitor_bootstrap_owner(opts)
     result = Bootstrap.open(opts, self())
     TaskGuard.stop(guardian)
@@ -224,6 +268,9 @@ defmodule Spectre.Server.GAM.Managed do
            closing: false,
            close_waiters: [],
            owner_monitor: owner_monitor,
+           host_monitor: host_monitor,
+           attachment_confirmed: false,
+           pending_attachment: nil,
            bootstrap_monitor: bootstrap_monitor
          })}
 
@@ -239,26 +286,51 @@ defmodule Spectre.Server.GAM.Managed do
       else: {:reply, {:error, :untrusted_reset_transport}, state}
   end
 
+  def handle_call(:confirm_attachment, {caller, _}, state) do
+    if caller == state.options[:runtime] and not state.closing,
+      do: {:reply, :ok, %{state | attachment_confirmed: true}},
+      else: {:reply, {:error, :untrusted_reattachment}, state}
+  end
+
+  def handle_call({:reattach, attachment, control}, from, state) do
+    cond do
+      not reattachment_authorized?(state, attachment, control) ->
+        {:reply, {:error, :untrusted_reattachment}, state}
+
+      state.closing or not state.attachment_confirmed ->
+        {:reply, {:error, :managed_domain_closing}, state}
+
+      state[:reset_activating] ->
+        {:reply, {:error, {:reset_activation_unknown, state.reset_activating, state.session}},
+         state}
+
+      state.pending_attachment && Process.alive?(elem(state.pending_attachment.from, 0)) ->
+        {:reply, {:error, :managed_reattachment_in_progress}, state}
+
+      true ->
+        # A call can arrive before the old runtime monitor notification. Wait
+        # for its exit classification and for acquired bridge work to finish.
+        settle_workers(%{state | pending_attachment: %{from: from, control: control}})
+    end
+  end
+
   def handle_call({:prepare_reset, control}, {caller, _}, state) do
     if reset_authorized?(state, caller, control),
       do: reserve_reset(state),
       else: {:reply, {:error, :untrusted_reset_transport}, state}
   end
 
+  def handle_call({:mark_reset_activating, generation}, {caller, _}, state) do
+    if caller == state.options[:runtime] and is_reference(state.reset_token) and
+         is_binary(generation),
+       do: {:reply, :ok, Map.put(state, :reset_activating, generation)},
+       else: {:reply, {:error, :untrusted_reset_transport}, state}
+  end
+
   def handle_call({:resume_reset, control}, {caller, _}, state) do
-    if reset_authorized?(state, caller, control) do
-      resume_reset_gates(state, state.reset_token)
-
-      next =
-        case Map.pop(%{state | reset_token: nil}, :reset_storage_recovery) do
-          {{decision, delay}, next} -> schedule_storage_recovery(next, decision, delay)
-          {nil, next} -> next
-        end
-
-      {:reply, :ok, next}
-    else
-      {:reply, {:error, :untrusted_reset_transport}, state}
-    end
+    if reset_authorized?(state, caller, control) and not Map.has_key?(state, :reset_activating),
+      do: {:reply, :ok, release_reset(state)},
+      else: {:reply, {:error, :untrusted_reset_transport}, state}
   end
 
   def handle_call({:adopt_reset, session}, {caller, _}, state) do
@@ -270,9 +342,17 @@ defmodule Spectre.Server.GAM.Managed do
         {:reply, {:error, :invalid_server_session}, state}
 
       true ->
-        if state.bootstrap_monitor, do: Process.demonitor(state.bootstrap_monitor, [:flush])
-        session = %{session | base_options: state.session.base_options}
-        {:reply, :ok, %{state | bootstrap_monitor: nil, session: session}}
+        case register_attachment(state.options) do
+          :ok ->
+            if state.bootstrap_monitor, do: Process.demonitor(state.bootstrap_monitor, [:flush])
+            session = %{session | base_options: state.session.base_options}
+
+            {:reply, :ok,
+             %{state | bootstrap_monitor: nil, session: session, attachment_confirmed: true}}
+
+          {:stop, reason} ->
+            {:reply, {:error, reason}, state}
+        end
     end
   end
 
@@ -351,41 +431,22 @@ defmodule Spectre.Server.GAM.Managed do
   def handle_call(:close, from, state),
     do: begin_close(%{state | close_waiters: [from | state.close_waiters]})
 
-  def handle_call(:checkout, _, %{storage_recovery: _} = state),
+  def handle_call(:checkout, from, state), do: handle_call({:checkout, nil}, from, state)
+
+  def handle_call({:checkout, _}, _, %{storage_recovery: _} = state),
     do: {:reply, {:error, :managed_storage_recovering}, state}
 
-  def handle_call(:checkout, _, %{reset_token: token} = state) when not is_nil(token),
+  def handle_call({:checkout, _}, _, %{reset_token: token} = state) when not is_nil(token),
     do: {:reply, {:error, :reset_busy}, state}
 
-  def handle_call(:checkout, {worker, _}, %{closing: false} = state) do
-    workers = Map.put_new_lazy(state.workers, worker, fn -> Process.monitor(worker) end)
-
-    # Ordinary proposal workers receive only their own scope and bridge
-    # configuration. The independent reviewer scope never leaves its owner.
-    snapshot =
-      state
-      |> Map.take([:scope, :refs, :row, :mandate, :show_mandate, :effects, :journal, :gate])
-      |> Map.put(
-        :options,
-        Keyword.take(state.options, [
-          :bindings,
-          :store,
-          :consent_ttl_ms,
-          :approvals,
-          :payload_store
-        ])
-      )
-      |> Map.update!(:options, fn options ->
-        case options[:approvals] do
-          nil -> options
-          config -> Keyword.put(options, :approvals, Map.take(config, [:address, :approvers]))
-        end
-      end)
-
-    {:reply, {:ok, snapshot}, %{state | workers: workers}}
+  def handle_call({:checkout, control}, {worker, _}, %{closing: false} = state) do
+    if checkout_authorized?(state, control),
+      do: checkout(state, worker),
+      else: {:reply, {:error, :untrusted_governance_transport}, state}
   end
 
-  def handle_call(:checkout, _, state), do: {:reply, {:error, :managed_domain_closing}, state}
+  def handle_call({:checkout, _}, _, state),
+    do: {:reply, {:error, :managed_domain_closing}, state}
 
   def handle_call({:execution, act}, _, state) do
     entry =
@@ -426,11 +487,39 @@ defmodule Spectre.Server.GAM.Managed do
     {:reply, reply, state}
   end
 
+  defp checkout(state, worker) do
+    workers = Map.put_new_lazy(state.workers, worker, fn -> Process.monitor(worker) end)
+
+    # Ordinary proposal workers receive only their own scope and bridge
+    # configuration. The independent reviewer scope never leaves its owner.
+    snapshot =
+      state
+      |> Map.take([:scope, :refs, :row, :mandate, :show_mandate, :effects, :journal, :gate])
+      |> Map.put(
+        :options,
+        Keyword.take(state.options, [
+          :bindings,
+          :store,
+          :consent_ttl_ms,
+          :approvals,
+          :payload_store
+        ])
+      )
+      |> Map.update!(:options, fn options ->
+        case options[:approvals] do
+          nil -> options
+          config -> Keyword.put(options, :approvals, Map.take(config, [:address, :approvers]))
+        end
+      end)
+
+    {:reply, {:ok, snapshot}, %{state | workers: workers}}
+  end
+
   @impl true
   def handle_cast({:checkin, worker}, state) do
     {monitor, workers} = Map.pop(state.workers, worker)
     if monitor, do: Process.demonitor(monitor, [:flush])
-    finish_close(%{state | workers: workers})
+    settle_workers(%{state | workers: workers})
   end
 
   @impl true
@@ -508,8 +597,17 @@ defmodule Spectre.Server.GAM.Managed do
     {:noreply, retry_diagnostics_subscription(state)}
   end
 
-  def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state),
+  def handle_info({:DOWN, monitor, :process, _host, _reason}, %{host_monitor: monitor} = state),
     do: begin_close(state)
+
+  def handle_info({:DOWN, monitor, :process, _owner, reason}, %{owner_monitor: monitor} = state) do
+    if state.host_monitor && state.attachment_confirmed && not intentional_stop?(reason) do
+      schedule_reattach_timeout(state)
+      settle_workers(%{state | owner_monitor: nil})
+    else
+      begin_close(state)
+    end
+  end
 
   def handle_info(
         {:DOWN, monitor, :process, _owner, _reason},
@@ -526,13 +624,16 @@ defmodule Spectre.Server.GAM.Managed do
 
       nil ->
         if Map.get(state.workers, worker) == monitor,
-          do: finish_close(%{state | workers: Map.delete(state.workers, worker)}),
+          do: settle_workers(%{state | workers: Map.delete(state.workers, worker)}),
           else: {:noreply, state}
     end
   end
 
   def handle_info({:EXIT, pid, reason}, state) do
     cond do
+      pid == state.options[:runtime] and state.host_monitor ->
+        {:noreply, state}
+
       pid == state.options[:runtime] ->
         begin_close(state)
 
@@ -546,6 +647,22 @@ defmodule Spectre.Server.GAM.Managed do
         {:noreply, state}
     end
   end
+
+  def handle_info({:reattach_timeout, runtime}, %{owner_monitor: nil} = state) do
+    cond do
+      runtime != state.options[:runtime] ->
+        {:noreply, state}
+
+      state.pending_attachment ->
+        schedule_reattach_timeout(state)
+        {:noreply, reply_attachment(state, {:error, :managed_reattach_timeout})}
+
+      true ->
+        begin_close(state)
+    end
+  end
+
+  def handle_info({:reattach_timeout, _token}, state), do: {:noreply, state}
 
   def handle_info(:drain_timeout, state) do
     Enum.each(state.close_waiters, &GenServer.reply(&1, {:error, :shutdown_drain_timeout}))
@@ -606,7 +723,7 @@ defmodule Spectre.Server.GAM.Managed do
 
   defp reset_available(_state), do: :ok
 
-  @spec reset_authorized?(map(), pid(), reference() | nil) :: boolean()
+  @spec reset_authorized?(map(), pid() | nil, reference() | nil) :: boolean()
   defp reset_authorized?(state, caller, control) do
     runtime = state.options[:runtime]
 
@@ -646,6 +763,15 @@ defmodule Spectre.Server.GAM.Managed do
     :ok
   end
 
+  defp release_reset(state) do
+    resume_reset_gates(state, state.reset_token)
+
+    case Map.pop(%{state | reset_token: nil}, :reset_storage_recovery) do
+      {{decision, delay}, next} -> schedule_storage_recovery(next, decision, delay)
+      {nil, next} -> next
+    end
+  end
+
   @spec reset_duties_idle(GAM.Scope.t()) :: :ok | {:error, term()}
   defp reset_duties_idle(scope) do
     case GenServer.call(scope.domain.server, :unresolved_duties, 5_000) do
@@ -669,6 +795,123 @@ defmodule Spectre.Server.GAM.Managed do
     else
       {nil, nil}
     end
+  end
+
+  defp register_initial_attachment(opts) do
+    if opts[:bootstrap_owner], do: :ok, else: register_attachment(opts)
+  end
+
+  defp register_attachment(opts) do
+    case opts[:managed_attachment] do
+      {slot, proof, host}
+      when is_reference(slot) and is_reference(proof) and is_pid(host) and node(host) == node() ->
+        case Registry.register(Spectre.Server.Registry, {__MODULE__, slot}, nil) do
+          {:ok, _} -> :ok
+          {:error, {:already_registered, _}} -> {:stop, :managed_attachment_in_use}
+        end
+
+      nil ->
+        :ok
+
+      _ ->
+        {:stop, :invalid_managed_attachment}
+    end
+  end
+
+  defp monitor_attachment_host(opts) do
+    case opts[:managed_attachment] do
+      {_slot, _proof, host} -> Process.monitor(host)
+      nil -> nil
+    end
+  end
+
+  defp reattachment_authorized?(state, {slot, proof, host} = attachment, control)
+       when is_reference(slot) and is_reference(proof) and is_pid(host) and node(host) == node() and
+              is_reference(control) do
+    state.options[:managed_attachment] == attachment and Process.alive?(host) and
+      not Process.alive?(state.options[:runtime])
+  end
+
+  defp reattachment_authorized?(_state, _attachment, _control), do: false
+
+  defp checkout_authorized?(%{host_monitor: nil}, _control), do: true
+
+  defp checkout_authorized?(state, control),
+    do: reset_authorized?(state, nil, control)
+
+  defp intentional_stop?(reason),
+    do: reason in [:normal, :shutdown] or match?({:shutdown, _}, reason)
+
+  defp schedule_reattach_timeout(state) do
+    timeout = Keyword.get(state.options, :shutdown_timeout, 30_000)
+    Process.send_after(self(), {:reattach_timeout, state.options[:runtime]}, timeout)
+  end
+
+  defp reply_attachment(%{pending_attachment: nil} = state, _reply), do: state
+
+  defp reply_attachment(state, reply) do
+    GenServer.reply(state.pending_attachment.from, reply)
+    %{state | pending_attachment: nil}
+  end
+
+  defp settle_workers(%{closing: true} = state), do: finish_close(state)
+
+  defp settle_workers(
+         %{owner_monitor: nil, workers: workers, pending_attachment: pending} = state
+       )
+       when map_size(workers) == 0 and not is_nil(pending) do
+    runtime = elem(pending.from, 0)
+
+    {reply, state} =
+      if Process.alive?(runtime) do
+        bind_runtime(state, runtime, pending.control)
+      else
+        {{:error, :managed_reattachment_abandoned}, state}
+      end
+
+    {:noreply, reply_attachment(state, reply)}
+  end
+
+  defp settle_workers(state), do: {:noreply, state}
+
+  defp bind_runtime(state, runtime, control) do
+    # The old Root never released the reset worker to activate its candidate.
+    # Its existing session and gates can be used again.
+    state = if state.reset_token, do: release_reset(state), else: state
+
+    case rewire_gates(state, runtime, control) do
+      :ok ->
+        owner_monitor = Process.monitor(runtime)
+        Process.link(runtime)
+        options = [runtime: runtime, runtime_control: control]
+
+        session = %{
+          state.session
+          | base_options: Keyword.merge(state.session.base_options, options)
+        }
+
+        {{:ok, session},
+         %{
+           state
+           | options: Keyword.merge(state.options, options),
+             owner_monitor: owner_monitor,
+             session: session
+         }}
+
+      error ->
+        {error, state}
+    end
+  end
+
+  defp rewire_gates(state, runtime, control) do
+    Enum.reduce_while(reset_gates(state), :ok, fn gate, :ok ->
+      case Gate.rebind(gate, runtime, control) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  catch
+    :exit, _ -> {:error, :managed_gate_unavailable}
   end
 
   defp recover_owned_storage(%{ephemeral: true} = state, :retry) do
@@ -701,6 +944,9 @@ defmodule Spectre.Server.GAM.Managed do
               :closing,
               :close_waiters,
               :owner_monitor,
+              :host_monitor,
+              :attachment_confirmed,
+              :pending_attachment,
               :bootstrap_monitor,
               :reset_token
             ])
@@ -897,6 +1143,8 @@ defmodule Spectre.Server.GAM.Managed do
 
   defp finish_close(state), do: {:noreply, state}
 
+  defp begin_close(%{closing: true} = state), do: finish_close(state)
+
   defp begin_close(state) do
     Process.send_after(
       self(),
@@ -904,7 +1152,10 @@ defmodule Spectre.Server.GAM.Managed do
       Keyword.get(state.options, :shutdown_timeout, 30_000)
     )
 
-    finish_close(%{state | closing: true})
+    state
+    |> reply_attachment({:error, :managed_domain_closing})
+    |> Map.put(:closing, true)
+    |> finish_close()
   end
 
   @impl true
@@ -923,7 +1174,7 @@ defmodule Spectre.Server.GAM.Managed do
   end
 
   @impl true
-  def terminate(_, state) do
+  def terminate(reason, state) do
     Enum.each(Map.get(state, :diagnostic_reads, %{}), fn {_token, read} ->
       Process.cancel_timer(read.timer)
       Process.exit(read.pid, :kill)
@@ -934,6 +1185,13 @@ defmodule Spectre.Server.GAM.Managed do
 
     Bootstrap.close_resources(state)
 
+    if reason != :storage_recovery do
+      case state.options[:managed_attachment] do
+        {slot, _proof, _host} -> Registry.unregister(Spectre.Server.Registry, {__MODULE__, slot})
+        nil -> :ok
+      end
+    end
+
     :ok
   end
 
@@ -941,7 +1199,7 @@ defmodule Spectre.Server.GAM.Managed do
   defp invoke(function, args, context, opts, operation \\ nil) do
     with config when is_list(config) <- opts[:bridge_config],
          server when is_pid(server) <- config[:server],
-         {:ok, state} <- GenServer.call(server, :checkout) do
+         {:ok, state} <- GenServer.call(server, {:checkout, config[:control]}) do
       try do
         invoke_bridge(function, args, context, opts, operation, state)
       after

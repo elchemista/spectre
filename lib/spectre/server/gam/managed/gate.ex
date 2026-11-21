@@ -27,6 +27,14 @@ defmodule Spectre.Server.GAM.Managed.Gate do
   def pending_decision(server, ref), do: GenServer.call(server, {:pending_decision, ref})
 
   @doc false
+  @spec rebind(pid(), pid(), reference()) :: :ok | {:error, atom()}
+  def rebind(server, runtime, control), do: GenServer.call(server, {:rebind, runtime, control})
+
+  @doc false
+  @spec presentation_ready?(pid(), binary()) :: boolean()
+  def presentation_ready?(server, ref), do: GenServer.call(server, {:presentation_ready, ref})
+
+  @doc false
   @spec start_link(map()) :: GenServer.on_start()
   def start_link(config), do: GenServer.start_link(__MODULE__, config)
 
@@ -63,6 +71,15 @@ defmodule Spectre.Server.GAM.Managed.Gate do
   @spec authorize_input(pid(), binary(), binary(), pid()) :: {:ok, binary()} | {:error, atom()}
   def authorize_input(server, ref, text, caller),
     do: GenServer.call(server, {:authorize_input, ref, text, caller})
+
+  @doc false
+  @spec bind_consent_event(pid(), binary(), binary()) :: :ok | {:error, atom()}
+  def bind_consent_event(server, proof, event_id),
+    do: GenServer.call(server, {:bind_consent_event, proof, event_id})
+
+  @doc false
+  @spec consent_events(pid()) :: %{optional(binary()) => binary()} | {:error, atom()}
+  def consent_events(server), do: GenServer.call(server, :consent_events)
 
   @doc false
   @spec consume(pid(), binary(), atom(), binary() | nil, binary() | nil) :: :ok | {:error, atom()}
@@ -138,6 +155,26 @@ defmodule Spectre.Server.GAM.Managed.Gate do
 
   def handle_call(_request, _from, %{reset_token: token} = state) when not is_nil(token),
     do: {:reply, {:error, :reset_busy}, state}
+
+  def handle_call({:rebind, runtime, control}, {caller, _}, state) do
+    if caller == state.owner do
+      {:reply, :ok, Map.merge(state, %{runtime: runtime, runtime_control: control})}
+    else
+      {:reply, {:error, :untrusted_reattachment}, state}
+    end
+  end
+
+  def handle_call({:presentation_ready, ref}, {caller, _}, state) do
+    ready =
+      with true <- caller == state.runtime,
+           %{shown: true, deadline_bound: true, expires_at: deadline} <- state.shows[ref] do
+        not expired?(deadline, System.system_time(:millisecond))
+      else
+        _ -> false
+      end
+
+    {:reply, ready, state}
+  end
 
   def handle_call(
         {:prepare_external, presentation, approver, deadline, revision, skill},
@@ -303,6 +340,34 @@ defmodule Spectre.Server.GAM.Managed.Gate do
     end
   end
 
+  def handle_call(
+        {:bind_consent_event, proof, event_id},
+        {runtime, _},
+        %{runtime: runtime} = state
+      )
+      when is_binary(event_id) and byte_size(event_id) > 0 do
+    state = prune(state)
+
+    with %{} = entry <- state.proofs[proof],
+         ^event_id <- Map.get(entry, :event_id, event_id) do
+      {:reply, :ok, put_in(state, [:proofs, proof, :event_id], event_id)}
+    else
+      _ -> {:reply, {:error, :consent_event_not_authorized}, state}
+    end
+  end
+
+  def handle_call({:bind_consent_event, _proof, _event_id}, _from, state),
+    do: {:reply, {:error, :consent_event_not_authorized}, state}
+
+  def handle_call(:consent_events, {runtime, _}, %{runtime: runtime} = state) do
+    state = prune(state)
+    events = Map.new(for {proof, %{event_id: id}} <- state.proofs, do: {id, proof})
+    {:reply, events, state}
+  end
+
+  def handle_call(:consent_events, _from, state),
+    do: {:reply, {:error, :consent_event_not_authorized}, state}
+
   def handle_call({:approval_io, operation, client}, {runtime, _}, state) do
     if runtime == state.runtime and is_tuple(client),
       do: start_io(state, operation, client, :submitted),
@@ -355,11 +420,16 @@ defmodule Spectre.Server.GAM.Managed.Gate do
   def handle_call({:pending_decision, ref}, _, state) do
     state = prune(state)
 
-    case Map.get(state.shows, ref) do
-      %{response: response} -> receive_approval(state, response)
+    with %{response: response} <- state.shows[ref],
+         false <- Enum.any?(state.proofs, &bound_proof_for?(&1, ref)) do
+      receive_approval(state, response)
+    else
       _ -> {:reply, :none, state}
     end
   end
+
+  defp bound_proof_for?({_proof, %{ref: ref, event_id: _id}}, ref), do: true
+  defp bound_proof_for?(_proof, _ref), do: false
 
   defp receive_approval(state, message) do
     state = prune(state)

@@ -44,6 +44,7 @@ defmodule SpectreHexReleaseContractTest do
   @public_package_assets ~w(
     docs/examples/routing-eval.jsonl
   )
+  @development_guides ["docs/PLAN_0_4_1.md"]
   @excluded_package_paths ~w(
     docs/adr
     lib/spectre/instance/README.md
@@ -222,14 +223,12 @@ defmodule SpectreHexReleaseContractTest do
     |> Enum.sort()
   end
 
-  test "all Markdown guides are part of ExDoc and every local link resolves" do
+  test "published Markdown guides are part of ExDoc and every local link resolves" do
     extras = Mix.Project.config() |> Keyword.fetch!(:docs) |> Keyword.fetch!(:extras)
+    guides = Path.wildcard("docs/*.md", match_dot: true) -- @development_guides
 
-    assert MapSet.subset?(
-             MapSet.new(Path.wildcard("docs/*.md", match_dot: true)),
-             MapSet.new(extras)
-           )
-
+    assert guides -- extras == []
+    refute Enum.any?(@development_guides, &(&1 in extras))
     assert "LLMS.md" in extras
 
     for relative_file <- @documentation_files,

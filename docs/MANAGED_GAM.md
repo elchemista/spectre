@@ -64,6 +64,25 @@ Restart verifies the same authority foundation and configuration. A different
 identity, operation policy or explicit authority deadline cannot silently reuse
 old authority. Selecting Ledger does not migrate an existing disk Domain.
 
+When an OTP supervisor restarts an AgentServer after a crash, the new Root
+reattaches to the live Managed GAM owner on the same node. The Domain and
+session keep their identity. A checkpointed foreground consent can continue
+with its original presentation and deadline while GAM still holds that
+presentation. Recovery reconciles any effect GAM already admitted before it
+continues the turn. If the original input was checkpointed and its one-use
+consent receipt is still live, recovery continues that same input. Resolve
+the replacement Root PID through its registered name or your supervisor before
+sending input or a consent decision.
+
+Direct `start_link/1` ties Managed GAM to the Root's lifetime. A supervised
+shutdown also closes Managed GAM. On a cold restart, durable storage can
+recover the Domain and command history, and pending consent requires a fresh
+presentation. RAM-only recovery depends on the live owner, which releases its
+resources if the Root does not return within the configured shutdown timeout.
+An explicit `Spectre.Server.reset/2` starts a new session. A crash before reset
+activation leaves the previous authority in force. Once a durable activation
+begins, automatic restart needs a record of the selected generation.
+
 A projection-backed Domain loads the records needed by a command, commits changed
 rows and releases historical records. Active Duties and relevant proof groups
 can grow; full views can materialize history temporarily. DB latency still

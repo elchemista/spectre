@@ -9,7 +9,9 @@ defmodule Spectre.Server.Checkpoint do
   codec accepts the listed portable records; custom application structs must
   be projected into plain data by the application before acquisition.
 
-  Consent waits are restored suspended and require a fresh presentation.
+  A cold recovery restores consent waits suspended and requires a fresh
+  presentation. When a supervised Server reattaches to its live Managed GAM,
+  its foreground wait resumes if Managed still holds that presentation.
   Pending governed commands keep their referenced wait uncertain until recovery
   finishes, so a concurrent resume cannot start another resolution.
   Unacknowledged governed commands require host reconciliation; they are never
@@ -37,6 +39,7 @@ defmodule Spectre.Server.Checkpoint do
   """
   alias Spectre.GAM.Canonical.Value
   alias Spectre.Payload.Store, as: PayloadStore
+  alias Spectre.Server.GAM.Managed
   alias Spectre.Server.Store.Disk
   alias Spectre.{Definition, Route}
   alias Spectre.Server.Router
@@ -99,10 +102,17 @@ defmodule Spectre.Server.Checkpoint do
 
   defp restore_state(state, projection, revision) do
     recovering = recovering_pending_ids(projection.outbox, projection.pending)
+    foreground = restore_foreground(state, projection.pending, recovering)
 
     pending =
       Map.new(projection.pending, fn {id, pending} ->
-        status = if MapSet.member?(recovering, id), do: :uncertain, else: :suspended
+        status =
+          cond do
+            MapSet.member?(recovering, id) -> :uncertain
+            id == foreground and not is_nil(foreground) -> :foreground
+            true -> :suspended
+          end
+
         {id, Map.put(pending, :status, status)}
       end)
 
@@ -118,7 +128,7 @@ defmodule Spectre.Server.Checkpoint do
         history: projection.history,
         current_flow: projection.current_flow,
         current_scope: projection.current_scope,
-        foreground: nil,
+        foreground: foreground,
         current: projection.current,
         queue: :queue.from_list(projection.queue)
     }
@@ -129,6 +139,20 @@ defmodule Spectre.Server.Checkpoint do
       seen_event_order: Map.get(projection, :seen_event_order, Map.keys(projection.seen_events))
     })
   end
+
+  defp restore_foreground(%{gam_reattached: true, managed_owner: owner}, pending, recovering)
+       when is_pid(owner) do
+    with [{id, %{kind: :consent, presentation: %{ref: ref}}}] <-
+           Enum.filter(pending, fn {_id, wait} -> wait.status == :foreground end),
+         false <- MapSet.member?(recovering, id),
+         true <- Managed.presentation_ready?(owner, ref) do
+      id
+    else
+      _ -> nil
+    end
+  end
+
+  defp restore_foreground(_state, _pending, _recovering), do: nil
 
   defp recovering_pending_ids(outbox, pending) do
     Enum.reduce(outbox, MapSet.new(), fn {_command_id, entry}, ids ->
@@ -384,8 +408,7 @@ defmodule Spectre.Server.Checkpoint do
   def project_event(event) do
     input = %{event.input | raw: nil}
     routing = project_routing(event.routing)
-    # A recovered consent must be re-presented. Transport receipts are one-use
-    # runtime credentials, never part of the durable conversation snapshot.
+    # Transport receipts are one-use runtime credentials and stay in memory.
     event |> Map.delete(:consent_proof) |> Map.merge(%{input: input, routing: routing})
   end
 
