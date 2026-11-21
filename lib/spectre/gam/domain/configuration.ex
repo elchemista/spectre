@@ -60,6 +60,7 @@ defmodule Spectre.GAM.Domain.Configuration do
     :ambiguous_retries,
     :ledger_opts,
     :payload_store,
+    :activity_fence,
     :executors,
     :broker,
     :constitution,
@@ -100,7 +101,8 @@ defmodule Spectre.GAM.Domain.Configuration do
     :conflict_retries,
     :ambiguous_retries,
     :ledger_opts,
-    :payload_store
+    :payload_store,
+    :activity_fence
   ]
   @enforce_keys [:domain_ref, :bootstrap_opts, :constitution | @runtime_fields]
   defstruct @enforce_keys
@@ -134,6 +136,7 @@ defmodule Spectre.GAM.Domain.Configuration do
           ambiguous_retries: non_neg_integer(),
           ledger_opts: keyword(),
           payload_store: PayloadStore.config() | nil,
+          activity_fence: {reference(), {module(), term()}} | nil,
           bootstrap_opts: keyword(),
           constitution: map()
         }
@@ -148,6 +151,7 @@ defmodule Spectre.GAM.Domain.Configuration do
          {:ok, projection_store} <-
            Spectre.GAM.Domain.Projection.Store.normalize(Keyword.get(opts, :projection_store)),
          :ok <- projection_reads(store, projection_store),
+         {:ok, activity_fence} <- activity_fence_option(opts[:activity_fence]),
          {:ok, {ingress, ingress_ref}} <- required_ingress(opts),
          {:ok, payload_store} <- PayloadStore.normalize(Keyword.get(opts, :payload_store)),
          {:ok, clock} <- module_option(opts, :clock, Spectre.GAM.Clock.System, now: 0),
@@ -207,6 +211,7 @@ defmodule Spectre.GAM.Domain.Configuration do
          ambiguous_retries: ambiguous_retries,
          ledger_opts: ledger_opts,
          payload_store: payload_store,
+         activity_fence: activity_fence,
          bootstrap_opts: Keyword.take(opts, @bootstrap_options),
          constitution: constitution
        }}
@@ -217,6 +222,15 @@ defmodule Spectre.GAM.Domain.Configuration do
   end
 
   def new(_opts), do: {:error, :invalid_sequencer_options}
+
+  defp activity_fence_option(nil), do: {:ok, nil}
+
+  defp activity_fence_option({token, {module, _}} = fence) when is_reference(token) do
+    with :ok <- Adapter.validate(module, fetch: 2, put_new: 3, compare_and_swap: 4, delete: 3),
+         do: {:ok, fence}
+  end
+
+  defp activity_fence_option(_), do: {:error, :invalid_activity_fence_option}
 
   defp projection_reads(_store, nil), do: :ok
 

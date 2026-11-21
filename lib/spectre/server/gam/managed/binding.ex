@@ -135,12 +135,7 @@ defmodule Spectre.Server.GAM.Managed.Binding do
         "execution_identity" =>
           context.identity
           |> Map.new(fn {key, value} -> {to_string(key), value} end),
-        "execution_context" => %{
-          "current_flow" => Map.get(context, :current_flow),
-          "current_scope" => Map.get(context, :current_scope),
-          "skill" => frozen_skill(Map.get(context, :skill)),
-          "namespace" => Keyword.get(context.options, :namespace)
-        },
+        "execution_context" => execution_context(context),
         "managed_policy" => Map.new(policy, fn {key, value} -> {to_string(key), value} end),
         "bound" => Map.get(policy, :bind, %{})
       }
@@ -444,6 +439,7 @@ defmodule Spectre.Server.GAM.Managed.Binding do
       :agent,
       :server,
       :skill,
+      :activity,
       :assigns,
       :input,
       :interaction,
@@ -462,6 +458,23 @@ defmodule Spectre.Server.GAM.Managed.Binding do
       :options,
       Keyword.take(context.options, [:namespace, :prompt_root, :runtime_scope])
     )
+  end
+
+  defp execution_context(context) do
+    frozen = %{
+      "current_flow" => Map.get(context, :current_flow),
+      "current_scope" => Map.get(context, :current_scope),
+      "skill" => frozen_skill(Map.get(context, :skill)),
+      "namespace" => Keyword.get(context.options, :namespace)
+    }
+
+    case context[:activity] do
+      %{ref: ref, revision: revision} ->
+        Map.put(frozen, "activity", %{"ref" => ref, "revision" => revision})
+
+      nil ->
+        frozen
+    end
   end
 
   @spec invalid!(binary()) :: no_return()

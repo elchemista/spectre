@@ -37,6 +37,7 @@ defmodule Spectre.Stack do
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Ref
   alias Spectre.Stack.Runtime
+  alias Spectre.Stack.Tools
 
   @doc """
   Initializes a Stack definition.
@@ -47,7 +48,7 @@ defmodule Spectre.Stack do
     version = Keyword.get(opts, :version, 1)
 
     quote bind_quoted: [stack_id: id, stack_version: version] do
-      import Spectre.Stack, only: [install: 1, install: 2, install: 3]
+      import Spectre.Stack, only: [install: 1, install: 2, install: 3, activity: 2, activity: 3]
 
       Module.register_attribute(__MODULE__, :spectre_stack_installations,
         accumulate: true,
@@ -56,6 +57,7 @@ defmodule Spectre.Stack do
 
       Module.register_attribute(__MODULE__, :spectre_stack_id, persist: false)
       Module.register_attribute(__MODULE__, :spectre_stack_version, persist: false)
+      Module.register_attribute(__MODULE__, :spectre_stack_activities, accumulate: true)
 
       @spectre_stack_id stack_id
       @spectre_stack_version stack_version
@@ -78,6 +80,20 @@ defmodule Spectre.Stack do
     compile_install(package, opts, block, __CALLER__)
   end
 
+  @doc "Declares a local Activity that can be started by its name."
+  defmacro activity(name, module, options \\ []) do
+    binding = %{
+      module: Macro.expand(module, __CALLER__),
+      options: eval_opts(options, __CALLER__)
+    }
+
+    entry = {Macro.expand(name, __CALLER__), binding}
+
+    quote do
+      @spectre_stack_activities unquote(Macro.escape(entry))
+    end
+  end
+
   @doc false
   defmacro __before_compile__(env) do
     installations =
@@ -91,7 +107,8 @@ defmodule Spectre.Stack do
         id: Module.get_attribute(env.module, :spectre_stack_id) || env.module,
         owner: env.module,
         version: Module.get_attribute(env.module, :spectre_stack_version) || 1,
-        installations: installations
+        installations: installations,
+        activities: Module.get_attribute(env.module, :spectre_stack_activities)
       })
 
     manifest = Definition.manifest(definition)
@@ -130,6 +147,24 @@ defmodule Spectre.Stack do
   @spec installation(module(), term()) :: {:ok, Installation.t()} | {:error, term()}
   def installation(agent, package_or_installation),
     do: Binding.installation(agent, package_or_installation)
+
+  @doc "Returns public metadata for one typed tool selected by the host."
+  @spec tool_metadata(module(), {term(), atom()}) :: {:ok, map()} | {:error, term()}
+  def tool_metadata(stack, {id, name}) do
+    with {:ok, definition} <- Definition.fetch(stack),
+         {:ok, installation} <- Definition.installation(definition, id) do
+      Tools.public(installation, name)
+    end
+  end
+
+  @doc "Returns the provider and options selected for a service by an Agent."
+  @spec service(module(), module()) :: Spectre.Integration.service() | nil
+  def service(agent, Spectre.Inference.Selector), do: Spectre.Extension.inference_selector(agent)
+
+  def service(agent, Spectre.Action.Planner), do: Spectre.ActionConfig.planner(agent)
+
+  def service(agent, role),
+    do: agent |> Spectre.Definition.fetch!() |> Binding.selected_service(role)
 
   @doc """
   Starts a caller-owned runtime for a Stack.

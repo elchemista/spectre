@@ -1,8 +1,8 @@
 defmodule Spectre.Server.Tool do
   @moduledoc false
 
-  alias Spectre.Server.{Checkpoint, Command, Context, Failure}
-  alias Spectre.Stack.{Binding, Tools}
+  alias Spectre.Server.{ActivityBinding, Checkpoint, Command, Context, Failure}
+  alias Spectre.Stack.{Binding, Definition, Tools}
 
   @public_options [:on_result, :timeout, :confirmation]
 
@@ -22,46 +22,110 @@ defmodule Spectre.Server.Tool do
   end
 
   def bindings!(state) do
-    Map.new(snapshot(state.server), fn {name, expected} ->
-      installation = installation!(state.agent, expected.installation_id)
-      actual = Map.fetch!(Tools.table!([installation]), name)
-      unless actual == expected, do: invalid!({:tool_contract_mismatch, name})
-      validate_adapter!(expected.descriptor)
-      validate_governed_bindings!(expected.descriptor, state.gam)
-      {name, %{snapshot: expected, installation: installation}}
-    end)
+    explicit =
+      Map.new(snapshot(state.server), fn {name, expected} ->
+        installation = installation!(state.agent, expected.installation_id)
+        actual = Map.fetch!(Tools.table!([installation]), name)
+        unless actual == expected, do: invalid!({:tool_contract_mismatch, name})
+        validate_adapter!(expected.descriptor)
+        validate_governed_bindings!(expected.descriptor, state.gam)
+        {name, %{key: name, snapshot: expected, installation: installation}}
+      end)
+
+    Map.merge(scoped_bindings(state.agent), explicit)
+  end
+
+  defp scoped_bindings(agent) do
+    with {:ok, %{stack: stack}} when not is_nil(stack) <- Spectre.Definition.fetch(agent),
+         {:ok, definition} <- Definition.fetch(stack) do
+      Enum.reduce(Tools.scoped_table!(definition.installations), %{}, fn
+        {ref, %{key: key, snapshot: snapshot}}, bindings ->
+          installation = installation!(agent, snapshot.installation_id)
+
+          binding = %{
+            key: key,
+            snapshot: snapshot,
+            installation: installation,
+            scoped_only?: true
+          }
+
+          bindings |> Map.put(ref, binding) |> Map.put(key, binding)
+
+        {ref, :ambiguous}, bindings ->
+          Map.put(bindings, ref, :ambiguous)
+      end)
+    else
+      _ -> %{}
+    end
+  end
+
+  def normalize(
+        state,
+        %Command{kind: :call_tool, args: [{_, operation} = ref, input], opts: opts},
+        event
+      ) do
+    case state.tool_bindings[ref] do
+      %{key: key} ->
+        binding = Map.fetch!(state.tool_bindings, key)
+        normalize_request(state, binding, operation, input, opts, event, operation)
+
+      unavailable ->
+        reason =
+          if unavailable == :ambiguous,
+            do: :ambiguous_tool_operation,
+            else: :unknown_tool_operation
+
+        rejection(
+          nil,
+          Keyword.put_new(opts, :on_result, operation),
+          {:tool_rejected, ref, operation, reason}
+        )
+    end
   end
 
   def normalize(state, %Command{kind: :tool, args: [name, input, expected], opts: opts}, event) do
     binding = Map.get(state.tool_bindings, name) || invalid!({:tool_not_registered, name})
     unless binding.snapshot == expected, do: invalid!({:tool_contract_mismatch, name})
-    validate_options!(opts)
     descriptor = binding.snapshot.descriptor
     {operation, payload} = selection(input, descriptor.default)
+    normalize_request(state, binding, operation, payload, opts, event, name)
+  end
+
+  def normalize(_state, command, _event), do: {command, nil}
+
+  defp normalize_request(state, binding, operation, payload, opts, event, tag) do
+    validate_options!(opts)
+    descriptor = binding.snapshot.descriptor
+    validate_adapter!(descriptor)
     specification = Map.get(descriptor.operations, operation)
     validate_path_options!(specification, opts)
-    tag = Keyword.get(opts, :on_result, name)
+    tag = Keyword.get(opts, :on_result, tag)
     unless Checkpoint.validate_value(tag) == :ok, do: invalid!(:tool_result_tag_not_portable)
 
     unless Checkpoint.validate_value(Keyword.get(opts, :confirmation)) == :ok,
       do: invalid!(:tool_confirmation_not_portable)
 
     opts = Keyword.put(opts, :on_result, tag)
-    origin = origin(name, operation, binding.snapshot)
+    origin = origin(binding, operation)
 
     prepared =
-      if specification do
-        prepare(
-          descriptor.adapter,
-          operation,
-          payload,
-          binding,
-          state.agent,
-          event,
-          specification
-        )
-      else
-        {:error, :unknown_tool_operation}
+      cond do
+        not ActivityBinding.allowed_tool?(state, {binding.snapshot.installation_id, operation}) ->
+          {:error, :activity_tool_not_allowed}
+
+        specification ->
+          prepare(
+            descriptor.adapter,
+            operation,
+            payload,
+            binding,
+            state.agent,
+            event,
+            specification
+          )
+
+        true ->
+          {:error, :unknown_tool_operation}
       end
 
     case prepared do
@@ -69,8 +133,6 @@ defmodule Spectre.Server.Tool do
       {:error, reason} -> rejected(origin, opts, reason)
     end
   end
-
-  def normalize(_state, command, _event), do: {command, nil}
 
   def invoke(state, identity, args, service_context) do
     binding = Map.fetch!(state.tool_bindings, identity.tool)
@@ -176,7 +238,7 @@ defmodule Spectre.Server.Tool do
         nil
 
       binding ->
-        expected = origin(identity.tool, identity.operation, binding.snapshot)
+        expected = origin(binding, identity.operation)
         if Map.delete(identity, :retry) == expected, do: binding
     end
   end
@@ -189,7 +251,7 @@ defmodule Spectre.Server.Tool do
   end
 
   defp validate_identity!(binding, identity, specification) do
-    expected = origin(identity.tool, identity.operation, binding.snapshot)
+    expected = origin(binding, identity.operation)
 
     unless specification.path == :cognitive and Map.get(specification, :retry) == identity.retry and
              expected == Map.delete(identity, :retry),
@@ -260,25 +322,37 @@ defmodule Spectre.Server.Tool do
   end
 
   defp rejected(origin, opts, reason) do
-    result = {:error, {:tool_rejected, origin.tool, origin.operation, bounded(reason)}}
+    rejection(origin, opts, {:tool_rejected, origin.tool, origin.operation, bounded(reason)})
+  end
 
+  defp rejection(origin, opts, reason) do
     command = %Command{
       kind: :tool_rejected,
-      args: [result],
+      args: [{:error, reason}],
       opts: Keyword.take(opts, [:on_result])
     }
 
     {command, origin}
   end
 
-  defp origin(name, operation, snapshot) do
-    %{
+  defp origin(%{key: name, snapshot: snapshot} = binding, operation) do
+    origin = %{
       tool: name,
       operation: bounded(operation),
       installation_id: snapshot.installation_id,
       descriptor_digest: snapshot.digest,
       installation_digest: snapshot.installation_digest
     }
+
+    if Map.get(binding, :scoped_only?, false) do
+      Map.put(origin, :adapter_digest, adapter_digest(snapshot.descriptor.adapter))
+    else
+      origin
+    end
+  end
+
+  defp adapter_digest(module) do
+    if Code.ensure_loaded?(module), do: Base.encode16(module.module_info(:md5), case: :lower)
   end
 
   defp selection(tuple, _default) when is_tuple(tuple) and tuple_size(tuple) > 0 do

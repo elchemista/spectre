@@ -94,6 +94,45 @@ defmodule Spectre.Server.GAM.Managed do
   def confirm_attachment(server), do: GenServer.call(server, :confirm_attachment)
 
   @doc false
+  @spec activity_owner(pid(), :existing | :start) ::
+          {:ok, {pid(), reference()} | nil} | {:error, term()}
+  def activity_owner(server, mode), do: GenServer.call(server, {:activity_owner, mode})
+
+  @doc false
+  @spec register_activity(pid(), reference(), binary()) :: :ok | {:error, term()}
+  def register_activity(server, control, ref),
+    do: activity_fence(server, control, {:register, ref})
+
+  @doc false
+  @spec retire_activity(pid(), reference(), binary()) :: :ok | {:error, term()}
+  def retire_activity(server, control, ref),
+    do: activity_fence(server, control, {:retire, ref})
+
+  @doc false
+  @spec close_activity_show(pid(), reference(), binary()) :: :ok | {:error, term()}
+  def close_activity_show(server, control, show_ref) do
+    with {:ok, gate} <- GenServer.call(server, {:activity_gate, control}) do
+      Gate.close_show(gate, show_ref)
+    end
+  catch
+    :exit, _ -> {:error, :activity_gate_unavailable}
+  end
+
+  @doc false
+  @spec fence_activity(pid(), reference(), GAM.Domain.Admission.Fence.transition()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def fence_activity(server, control, transition),
+    do: activity_fence(server, control, {:advance, transition})
+
+  defp activity_fence(server, control, command) do
+    with {:ok, domain, token} <- GenServer.call(server, {:activity_fence, control}) do
+      GAM.Domain.Sequencer.activity_fence(domain, token, command)
+    end
+  catch
+    :exit, _ -> {:error, :activity_fence_unavailable}
+  end
+
+  @doc false
   @spec presentation_ready?(pid(), binary()) :: boolean()
   def presentation_ready?(server, ref), do: call_gate(server, :presentation_ready?, [ref]) == true
 
@@ -375,6 +414,28 @@ defmodule Spectre.Server.GAM.Managed do
       when request != :close and request != :info and request != :runtime_checkpoint,
       do: {:reply, {:error, {:gam_storage_unavailable, reason}}, state}
 
+  def handle_call({:activity_owner, mode}, {caller, _}, state) when mode in [:existing, :start] do
+    if caller == state.options[:runtime] and not state.closing and is_nil(state.reset_token) do
+      {result, state} = obtain_activity_owner(state, mode)
+      {:reply, result, state}
+    else
+      {:reply, {:error, :untrusted_activity_transport}, state}
+    end
+  end
+
+  def handle_call({:activity_fence, control}, _, state) do
+    if activity_control?(state, control) and not state.closing and
+         is_nil(state.reset_token) and not is_map_key(state, :storage_recovery),
+       do: {:reply, {:ok, state.domain, state.activity_fence_token}, state},
+       else: {:reply, {:error, :activity_fence_unavailable}, state}
+  end
+
+  def handle_call({:activity_gate, control}, _, state) do
+    if activity_control?(state, control) and is_pid(state.gate),
+      do: {:reply, {:ok, state.gate}, state},
+      else: {:reply, {:error, :untrusted_activity_transport}, state}
+  end
+
   def handle_call(:revoke, {caller, _}, state) do
     result =
       if caller == state.options[:runtime] do
@@ -433,19 +494,22 @@ defmodule Spectre.Server.GAM.Managed do
 
   def handle_call(:checkout, from, state), do: handle_call({:checkout, nil}, from, state)
 
-  def handle_call({:checkout, _}, _, %{storage_recovery: _} = state),
+  def handle_call({:checkout, control}, from, state),
+    do: handle_call({:checkout, control, nil}, from, state)
+
+  def handle_call({:checkout, _, _}, _, %{storage_recovery: _} = state),
     do: {:reply, {:error, :managed_storage_recovering}, state}
 
-  def handle_call({:checkout, _}, _, %{reset_token: token} = state) when not is_nil(token),
+  def handle_call({:checkout, _, _}, _, %{reset_token: token} = state) when not is_nil(token),
     do: {:reply, {:error, :reset_busy}, state}
 
-  def handle_call({:checkout, control}, {worker, _}, %{closing: false} = state) do
-    if checkout_authorized?(state, control),
-      do: checkout(state, worker),
+  def handle_call({:checkout, control, origin}, {worker, _}, %{closing: false} = state) do
+    if checkout_authorized?(state, control, origin),
+      do: checkout(state, worker, origin),
       else: {:reply, {:error, :untrusted_governance_transport}, state}
   end
 
-  def handle_call({:checkout, _}, _, state),
+  def handle_call({:checkout, _, _}, _, state),
     do: {:reply, {:error, :managed_domain_closing}, state}
 
   def handle_call({:execution, act}, _, state) do
@@ -470,16 +534,26 @@ defmodule Spectre.Server.GAM.Managed do
             do: Keyword.put(options, :namespace, frozen["namespace"]),
             else: Keyword.delete(options, :namespace)
 
-        {:ok, effect,
-         %{
-           agent: state.options[:agent],
-           command_id: act.ref,
-           identity: state.options[:identity],
-           options: options,
-           current_flow: frozen["current_flow"],
-           current_scope: frozen["current_scope"],
-           skill: frozen["skill"]
-         }}
+        context = %{
+          agent: state.options[:agent],
+          command_id: act.ref,
+          identity: state.options[:identity],
+          options: options,
+          current_flow: frozen["current_flow"],
+          current_scope: frozen["current_scope"],
+          skill: frozen["skill"]
+        }
+
+        context =
+          case frozen["activity"] do
+            %{"ref" => ref, "revision" => revision} ->
+              Map.put(context, :activity, %{ref: ref, revision: revision})
+
+            nil ->
+              context
+          end
+
+        {:ok, effect, context}
       else
         _ -> {:error, :managed_execution_binding_mismatch}
       end
@@ -487,7 +561,7 @@ defmodule Spectre.Server.GAM.Managed do
     {:reply, reply, state}
   end
 
-  defp checkout(state, worker) do
+  defp checkout(state, worker, origin) do
     workers = Map.put_new_lazy(state.workers, worker, fn -> Process.monitor(worker) end)
 
     # Ordinary proposal workers receive only their own scope and bridge
@@ -511,6 +585,11 @@ defmodule Spectre.Server.GAM.Managed do
           config -> Keyword.put(options, :approvals, Map.take(config, [:address, :approvers]))
         end
       end)
+
+    snapshot =
+      if origin,
+        do: Map.put(snapshot, :activity_fence, state.activity_fence_token),
+        else: snapshot
 
     {:reply, {:ok, snapshot}, %{state | workers: workers}}
   end
@@ -631,6 +710,9 @@ defmodule Spectre.Server.GAM.Managed do
 
   def handle_info({:EXIT, pid, reason}, state) do
     cond do
+      match?({^pid, _}, state[:activity_owner]) ->
+        {:noreply, Map.delete(state, :activity_owner)}
+
       pid == state.options[:runtime] and state.host_monitor ->
         {:noreply, state}
 
@@ -834,10 +916,49 @@ defmodule Spectre.Server.GAM.Managed do
 
   defp reattachment_authorized?(_state, _attachment, _control), do: false
 
-  defp checkout_authorized?(%{host_monitor: nil}, _control), do: true
+  defp checkout_authorized?(%{host_monitor: nil}, nil, nil), do: true
 
-  defp checkout_authorized?(state, control),
+  defp checkout_authorized?(state, control, nil),
     do: reset_authorized?(state, nil, control)
+
+  defp checkout_authorized?(state, control, %{ref: ref, revision: revision})
+       when is_binary(ref) and byte_size(ref) > 0 and is_integer(revision) and revision >= 0,
+       do: activity_control?(state, control)
+
+  defp checkout_authorized?(_, _, _), do: false
+
+  defp activity_control?(%{activity_owner: {owner, control}}, control),
+    do: Process.alive?(owner)
+
+  defp activity_control?(_state, _control), do: false
+
+  defp obtain_activity_owner(%{activity_owner: {pid, control}} = state, mode) do
+    if Process.alive?(pid) do
+      send(
+        pid,
+        {Spectre.Server.Activities, control, :bind_root, state.options[:runtime],
+         state.options[:runtime_control]}
+      )
+
+      {{:ok, {pid, control}}, state}
+    else
+      obtain_activity_owner(Map.delete(state, :activity_owner), mode)
+    end
+  end
+
+  defp obtain_activity_owner(state, :existing), do: {{:ok, nil}, state}
+
+  defp obtain_activity_owner(state, :start) do
+    control = make_ref()
+
+    case Spectre.Server.Activities.start_link(managed: self(), activity_control: control) do
+      {:ok, pid} ->
+        obtain_activity_owner(Map.put(state, :activity_owner, {pid, control}), :existing)
+
+      {:error, _} = error ->
+        {error, state}
+    end
+  end
 
   defp intentional_stop?(reason),
     do: reason in [:normal, :shutdown] or match?({:shutdown, _}, reason)
@@ -1175,6 +1296,11 @@ defmodule Spectre.Server.GAM.Managed do
 
   @impl true
   def terminate(reason, state) do
+    case state[:activity_owner] do
+      {pid, _} -> Process.exit(pid, :shutdown)
+      nil -> :ok
+    end
+
     Enum.each(Map.get(state, :diagnostic_reads, %{}), fn {_token, read} ->
       Process.cancel_timer(read.timer)
       Process.exit(read.pid, :kill)
@@ -1199,7 +1325,8 @@ defmodule Spectre.Server.GAM.Managed do
   defp invoke(function, args, context, opts, operation \\ nil) do
     with config when is_list(config) <- opts[:bridge_config],
          server when is_pid(server) <- config[:server],
-         {:ok, state} <- GenServer.call(server, {:checkout, config[:control]}) do
+         {:ok, state} <-
+           GenServer.call(server, {:checkout, config[:control], Map.get(context, :activity)}) do
       try do
         invoke_bridge(function, args, context, opts, operation, state)
       after
@@ -1224,6 +1351,7 @@ defmodule Spectre.Server.GAM.Managed do
 
       bridge = [
         scope: state.scope,
+        activity_fence: state[:activity_fence],
         response_scope: response_scope(state, context),
         bindings: Binding.bindings(state, operation, policy),
         lifecycle: true,

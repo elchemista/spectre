@@ -139,6 +139,55 @@ Server helpers and dispatch consume these descriptors with
 identity and governed host bindings are validated at Server startup. See
 [Installed tools](STACK_TOOLS.md) for the lifecycle, package matrix and example.
 
+## Typed package integrations
+
+`integration/1` receives the compiled installation configuration. Use
+`Spectre.Integration` to declare service providers, tool bindings and on-demand
+Activity types. Existing `tools/1`, `effects/1` and `child_specs/2` declarations
+can contribute additional capabilities to the same installation.
+
+```elixir
+defmodule MyApp.Documents do
+  use Spectre.Stack.Installable, id: :documents, version: "1.0.0"
+
+  @impl true
+  def integration(_config) do
+    Spectre.Integration.new()
+    |> Spectre.Integration.tool(:read, MyApp.Documents.Read,
+      args: [id: :string],
+      access: :subject_scoped,
+      retry: :safe)
+    |> Spectre.Integration.activity(:research, MyApp.Research)
+  end
+end
+```
+
+Call an operation from a Server or Activity with
+`call_tool(ctx, {:documents, :read}, %{id: "D12"}, on_result: :loaded)`.
+Use the installation ID in that pair when installing with `as:`. An optional
+`helper:` name also makes the existing Server helper available through `tools:`.
+Both call paths use the same tool adapter. Governed tools name an existing host
+GAM operation through `governed:`. The host configures authority and installs or
+binds its effect executor. A typed Activity starts on an explicit command using
+`{:documents, :research}`. Declare application-local types inside a Stack with
+`activity(:research, MyApp.Research)` and start them by the local name.
+Use `tools:` to narrow an Activity's tool scope and `requires:` to name the
+scoped tools it needs to start.
+
+When a package declares `Spectre.Integration.service/4`, it names the behaviour
+and its implementation. The Agent binds a sole provider automatically. Select
+an installation explicitly with
+`use Spectre.Agent, stack: MyApp.Stack, services: %{Spectre.Inference.Selector => :library}`
+when several providers match. The existing inference selector and action
+planner call sites use the selected implementation. A custom service can be
+looked up by its caller with `Spectre.Stack.service/2`.
+
+`Spectre.Stack.tool_metadata/2` returns the public argument schema and its
+digest for a host-selected tool. The tool adapter's `prepare/3` callback still
+validates execution inputs and enforces its data access rules. Public metadata
+has a separate digest so descriptions and schemas do not invalidate executable
+tool bindings.
+
 ## Installable Contract V1
 
 A package implements `Spectre.Stack.Installable`:

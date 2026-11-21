@@ -80,6 +80,24 @@ defmodule Spectre.Server.Checkpoint do
     end
   end
 
+  @doc false
+  @spec retire(nil | tuple()) :: term()
+  def retire(nil), do: :ok
+
+  def retire(configuration) do
+    {module, store, key} = storage(configuration)
+
+    case module.fetch(store, key) do
+      {:ok, %{revision: revision}} -> module.delete(store, key, revision)
+      :not_found -> :ok
+      error -> error
+    end
+  rescue
+    _ -> {:error, :checkpoint_store_unavailable}
+  catch
+    :exit, _ -> {:error, :checkpoint_store_unavailable}
+  end
+
   defp load_entry(:not_found, state), do: state
 
   defp load_entry({:ok, %{revision: revision, value: binary}}, state) do

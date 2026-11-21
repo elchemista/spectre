@@ -95,9 +95,13 @@ defmodule Spectre.ActionConfig do
       |> normalize_explicit_planner!()
 
     contributed =
-      definition.extensions
-      |> Enum.map(&Extension.action_planner/1)
-      |> Enum.reject(&is_nil/1)
+      case Spectre.Stack.Binding.selected_service(definition, Spectre.Action.Planner) do
+        nil ->
+          definition.extensions |> Enum.map(&Extension.action_planner/1) |> Enum.reject(&is_nil/1)
+
+        provider ->
+          [provider]
+      end
 
     select_planner!(explicit ++ contributed)
   end

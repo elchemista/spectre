@@ -10,6 +10,7 @@ defmodule Spectre.Stack.Installation do
   alias Spectre.Action.Provider.Mount, as: ProviderMount
   alias Spectre.Extension
   alias Spectre.Extension.Mount, as: ExtensionMount
+  alias Spectre.Integration
   alias Spectre.Stack.Effects
   alias Spectre.Stack.Installable
   alias Spectre.Stack.Package
@@ -47,18 +48,21 @@ defmodule Spectre.Stack.Installation do
     {installation_id, package_opts} = Keyword.pop(opts, :as)
     package = Installable.verify!(module)
     config = Installable.compile!(module, package_opts, block, caller)
-    tools = Installable.tools!(module, config)
+    adapters = tool_adapters!(module, config)
     effects = Installable.effects!(module, config)
-    adapters = if map_size(tools) == 0, do: %{}, else: %{tools: tools}
-    adapters = if map_size(effects) == 0, do: adapters, else: Map.put(adapters, :effects, effects)
+    adapters = if effects == %{}, do: adapters, else: Map.put(adapters, :effects, effects)
+    build!(installation_id || package.id, package, config, adapters, false)
+  end
 
-    build!(
-      installation_id || package.id,
-      package,
-      config,
-      adapters,
-      false
-    )
+  @doc false
+  @spec tool_adapters!(module(), map() | keyword()) :: map()
+  def tool_adapters!(module, config) do
+    integration = Installable.integration!(module, config)
+    tools = module |> Installable.tools!(config) |> Tools.merge_integration!(integration)
+
+    [tools: tools, integration: integration]
+    |> Enum.reject(fn {_, value} -> value in [%{}, nil] end)
+    |> Map.new()
   end
 
   @doc """
@@ -126,8 +130,13 @@ defmodule Spectre.Stack.Installation do
 
     Value.ensure_portable!(config, "Stack installation configuration")
     Value.ensure_portable!(adapters, "Stack installation adapters")
-    Tools.validate!(Map.get(adapters, :tools, %{}))
+    tools = Tools.validate!(Map.get(adapters, :tools, %{}))
     Effects.validate!(Map.get(adapters, :effects, %{}))
+
+    if integration = adapters[:integration] do
+      integration = Integration.validate!(integration)
+      Tools.validate_integration_aliases!(tools, integration)
+    end
 
     installation = %__MODULE__{
       id: id,
@@ -187,9 +196,24 @@ defmodule Spectre.Stack.Installation do
     end
   end
 
+  @doc false
+  @spec execution_projection(t()) :: t()
+  def execution_projection(%__MODULE__{adapters: %{integration: integration} = adapters} = inst) do
+    canonical =
+      case Integration.execution_projection(integration) do
+        nil -> Map.delete(adapters, :integration)
+        execution -> Map.put(adapters, :integration, execution)
+      end
+
+    %{inst | adapters: canonical}
+  end
+
+  def execution_projection(%__MODULE__{} = installation), do: installation
+
   @spec canonical(t()) :: map()
   defp canonical(%__MODULE__{} = installation) do
     installation
+    |> execution_projection()
     |> Map.from_struct()
     |> Map.delete(:digest)
   end

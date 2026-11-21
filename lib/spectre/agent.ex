@@ -1237,7 +1237,9 @@ defmodule Spectre.Agent do
 
     base_config = Module.get_attribute(module, :spectre_config) || []
     extension_defaults = Extension.merge_agent_config([], extensions)
-    config = Keyword.merge(extension_defaults, base_config)
+
+    config =
+      extension_defaults |> Keyword.merge(base_config) |> Binding.compile_services!(extensions)
 
     config =
       if Module.get_attribute(module, :spectre_named_classifiers) do

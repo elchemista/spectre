@@ -239,18 +239,10 @@ defmodule Spectre.Extension do
   """
   @spec inference_selector(module()) :: {module(), keyword()} | nil
   def inference_selector(agent) when is_atom(agent) do
-    selectors =
-      agent
-      |> Spectre.Definition.fetch!()
-      |> Map.fetch!(:extensions)
-      |> Enum.map(&inference_selector/1)
-      |> Enum.reject(&is_nil/1)
+    definition = Spectre.Definition.fetch!(agent)
 
-    case selectors do
-      [] -> nil
-      [selector] -> selector
-      many -> raise ArgumentError, "multiple inference selectors configured: #{inspect(many)}"
-    end
+    Spectre.Stack.Binding.selected_service(definition, Spectre.Inference.Selector) ||
+      legacy_inference_selector(definition.extensions)
   end
 
   @doc false
@@ -263,6 +255,19 @@ defmodule Spectre.Extension do
       normalize_planner!(module.inference_selector(extension_config(mount)))
     else
       nil
+    end
+  end
+
+  defp legacy_inference_selector(extensions) do
+    selectors =
+      extensions
+      |> Enum.map(&inference_selector/1)
+      |> Enum.reject(&is_nil/1)
+
+    case selectors do
+      [] -> nil
+      [selector] -> selector
+      many -> raise ArgumentError, "multiple inference selectors configured: #{inspect(many)}"
     end
   end
 

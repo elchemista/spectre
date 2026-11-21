@@ -19,6 +19,10 @@ defmodule Spectre.Stack.Installable do
   compatible with manual GAM bindings. Installing an execution adapter still
   requires the application to enable the operation under its declared authority.
 
+  Optional `c:integration/1` returns `Spectre.Integration` declarations for
+  services, tools and on-demand Activities. It receives the same compiled
+  configuration as `c:tools/1` and `c:effects/1`.
+
   `c:child_specs/2`, when implemented, runs only when a caller explicitly starts
   `Spectre.Stack.Runtime`. The optional callback extends the existing version-1
   installable contract; packages without tools still install but provide no
@@ -26,6 +30,7 @@ defmodule Spectre.Stack.Installable do
   example and the adapter contract.
   """
 
+  alias Spectre.Integration
   alias Spectre.Stack.Effects
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Package
@@ -39,12 +44,13 @@ defmodule Spectre.Stack.Installable do
               {:ok, map() | keyword()} | {:error, term()}
   @callback tools(map() | keyword()) :: Tools.t()
   @callback effects(map() | keyword()) :: Effects.t()
+  @callback integration(map() | keyword()) :: Integration.t()
   @callback child_specs(Installation.t(), keyword()) ::
               [{term(), Supervisor.child_spec()}]
               | {:ok, [{term(), Supervisor.child_spec()}]}
               | {:error, term()}
 
-  @optional_callbacks compile: 3, child_specs: 2, tools: 1, effects: 1
+  @optional_callbacks compile: 3, child_specs: 2, tools: 1, effects: 1, integration: 1
 
   @doc """
   Defines a static manifest and default data-only compiler.
@@ -150,6 +156,22 @@ defmodule Spectre.Stack.Installable do
     else
       %{}
     end
+  end
+
+  @doc false
+  @spec integration!(module(), map() | keyword()) :: Integration.t() | nil
+  def integration!(module, config) do
+    if function_exported?(module, :integration, 1) do
+      case invoke(module, :integration, [config]) do
+        {:ok, integration} -> normalize_integration(integration)
+        {:error, reason} -> raise_compile_error(module, reason)
+      end
+    end
+  end
+
+  defp normalize_integration(integration) do
+    validated = Integration.validate!(integration)
+    if validated == Integration.new(), do: nil, else: validated
   end
 
   @doc false

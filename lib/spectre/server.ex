@@ -28,6 +28,18 @@ defmodule Spectre.Server do
   alias Spectre.Server.{Command, Context, Runtime}
   alias Spectre.Server.Registry, as: ServerRegistry
 
+  @type installation_id :: atom() | binary() | integer() | tuple()
+  @type activity_type :: atom() | {installation_id(), atom()}
+  @type activity_target :: atom() | String.t()
+  @type activity_status :: :reserved | :starting | :running | :completed | :failed | :cancelled
+  @type activity_identity :: %{
+          ref: String.t(),
+          key: atom() | nil,
+          parent: String.t() | nil,
+          status: activity_status(),
+          revision: non_neg_integer()
+        }
+
   @callback init(term(), Context.t()) ::
               {:ok, Context.t()} | {:ok, Context.t(), term()} | :ignore | {:stop, term()}
   @callback handle_flow(term(), Spectre.Input.t(), Context.t()) :: Context.t()
@@ -36,6 +48,7 @@ defmodule Spectre.Server do
   @callback handle_action(map(), Context.t()) ::
               :default | :confirm | {:confirm, map()} | {:reject, term()}
   @callback handle_skill(term(), term(), Context.t()) :: Context.t()
+  @callback handle_activity(activity_identity(), term(), Context.t()) :: Context.t()
   @callback handle_approval_inbox(map(), Context.t()) :: :default | Context.t()
   @callback handle_call(term(), GenServer.from(), Context.t()) :: tuple()
   @callback handle_cast(term(), Context.t()) :: tuple()
@@ -48,7 +61,10 @@ defmodule Spectre.Server do
   @callback continuation_contracts() ::
               nil | %{optional(atom()) => Spectre.Server.Contracts.schema()}
 
-  @optional_callbacks assigns_schema: 0, continuation_contracts: 0, handle_approval_inbox: 2
+  @optional_callbacks assigns_schema: 0,
+                      continuation_contracts: 0,
+                      handle_activity: 3,
+                      handle_approval_inbox: 2
 
   defmacro __using__(opts) do
     tools = Spectre.Server.ToolCompiler.snapshot!(opts, __CALLER__)
@@ -75,7 +91,13 @@ defmodule Spectre.Server do
           trace: 3,
           gam_inspect: 1,
           gam_inspect: 2,
-          subscribe: 1
+          subscribe: 1,
+          activities: 1,
+          activities: 2,
+          activity: 2,
+          activity: 3,
+          complete_activity: 2,
+          fail_activity: 2
         ]
 
       def __spectre_server_options__, do: @spectre_server_options
@@ -132,6 +154,7 @@ defmodule Spectre.Server do
       def handle_result(_tag, _result, ctx), do: no_response(ctx)
 
       def handle_skill(_skill, _event, ctx), do: no_response(ctx)
+      def handle_activity(_identity, _event, ctx), do: ctx
 
       def handle_call(request, _from, ctx),
         do: {:reply, {:error, {:unsupported_call, request}}, ctx}
@@ -152,6 +175,7 @@ defmodule Spectre.Server do
                      handle_pending: 3,
                      handle_result: 3,
                      handle_skill: 3,
+                     handle_activity: 3,
                      handle_call: 3,
                      handle_cast: 2,
                      handle_info: 2,
@@ -269,6 +293,7 @@ defmodule Spectre.Server do
           :skill,
           :skill_parent,
           :runtime_scope,
+          :activity,
           :managed_attachment,
           :managed_attach_timeout
         ],
@@ -411,6 +436,18 @@ defmodule Spectre.Server do
   @spec status(GenServer.server()) :: map()
   def status(server), do: GenServer.call(server, {Runtime, :status})
 
+  @doc "Lists Activities owned by this Server for an authenticated caller."
+  @spec activities(GenServer.server(), keyword()) ::
+          {:ok, [activity_identity()]} | {:error, term()}
+  def activities(server, opts \\ []),
+    do: GenServer.call(server, {Runtime, :activities, opts})
+
+  @doc "Reads one owned Activity by its execution reference or logical key."
+  @spec activity(GenServer.server(), activity_target(), keyword()) ::
+          {:ok, activity_identity()} | {:error, term()}
+  def activity(server, target, opts \\ []),
+    do: GenServer.call(server, {Runtime, :activity, target, opts})
+
   @doc "Acknowledges rendering of one managed presentation from its authenticated consumer."
   @spec presented(GenServer.server(), String.t()) :: :ok | {:error, term()}
   def presented(server, presentation_ref),
@@ -498,6 +535,73 @@ defmodule Spectre.Server do
   def generate(ctx, prompt, opts \\ []), do: command(ctx, :generate, [prompt], opts)
   def classify(ctx, input, opts \\ []), do: command(ctx, :classify, [input], opts)
   def propose(ctx, name, args, opts \\ []), do: command(ctx, :propose, [name, args], opts)
+
+  @doc """
+  Calls an operation from the Agent's compiled Stack through its registered tool binding.
+
+  Use `{installation, operation}` to select the binding. The operation is the
+  default result tag, and `on_result:` selects another tag. Governed bindings
+  use the registered GAM operation and its admission policy.
+  """
+  @spec call_tool(Context.t(), {installation_id(), atom()}, term(), keyword()) :: Context.t()
+  def call_tool(ctx, ref, args, opts \\ []), do: command(ctx, :call_tool, [ref, args], opts)
+
+  @doc """
+  Schedules an Activity start through the Server command path.
+
+  The type is a Stack-local atom or `{installation, type}`. Each new start gets a
+  new execution reference. Use `as:` for a logical key and `scope:` to narrow
+  the allowed tools. With `on_result:`, readiness reaches `handle_result/3`
+  as `{:ok, %{ref: ref, key: key}}`.
+  """
+  @spec start_activity(Context.t(), activity_type(), term(), keyword()) :: Context.t()
+  def start_activity(ctx, type, args, opts \\ []),
+    do: command(ctx, :start_activity, [type, args], opts)
+
+  @doc """
+  Signals an Activity by its reference or logical key.
+
+  A callback passes its Context and schedules the request with its commands.
+  An authenticated host passes the Server and receives a request identifier
+  on acceptance. Lifecycle events report the outcome. Use `if_revision:` to
+  require a specific current revision.
+  """
+  @spec signal_activity(Context.t(), activity_target(), term(), keyword()) :: Context.t()
+  @spec signal_activity(GenServer.server(), activity_target(), term(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def signal_activity(ctx_or_server, target, signal, opts \\ [])
+
+  def signal_activity(%Context{} = ctx, target, signal, opts),
+    do: command(ctx, :signal_activity, [target, signal], opts)
+
+  def signal_activity(server, target, signal, opts),
+    do: GenServer.call(server, {Runtime, :signal_activity, target, signal, opts})
+
+  @doc """
+  Requests cancellation of an owned Activity.
+
+  A callback passes its Context. An authenticated host passes the Server.
+  Cancellation settles pending work while preserving reconciliation of admitted
+  effects.
+  """
+  @spec cancel_activity(Context.t(), activity_target(), keyword()) :: Context.t()
+  @spec cancel_activity(GenServer.server(), activity_target(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def cancel_activity(ctx_or_server, target, opts \\ [])
+
+  def cancel_activity(%Context{} = ctx, target, opts),
+    do: command(ctx, :cancel_activity, [target], opts)
+
+  def cancel_activity(server, target, opts),
+    do: GenServer.call(server, {Runtime, :cancel_activity, target, opts})
+
+  @doc false
+  @spec complete_activity(Context.t(), term()) :: Context.t()
+  def complete_activity(ctx, value), do: command(ctx, :complete_activity, [value], [])
+
+  @doc false
+  @spec fail_activity(Context.t(), term()) :: Context.t()
+  def fail_activity(ctx, reason), do: command(ctx, :fail_activity, [reason], [])
 
   def call_actor(ctx, actor, request, opts \\ []),
     do: command(ctx, :call_actor, [actor, request], opts)

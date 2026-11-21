@@ -7,6 +7,7 @@ defmodule Spectre.GAM.Facade.Proposal do
   # never recursion or a retry of an uncertain external effect.
   alias Spectre.GAM.Attempt.Runner
   alias Spectre.GAM.{Candidate, Fallback, Scope, Surface}
+  alias Spectre.GAM.Domain.Admission.Fence
   alias Spectre.GAM.Domain.Sequencer
   alias Spectre.GAM.Facade.Access
   alias Spectre.GAM.Proposal.Result, as: ProposalResult
@@ -17,8 +18,19 @@ defmodule Spectre.GAM.Facade.Proposal do
   @spec run(Scope.t(), Candidate.t() | map() | keyword(), keyword()) ::
           {:ok, ProposalResult.t()} | {:error, term()}
   def run(%Scope{} = scope, candidate, opts) when is_list(opts) do
-    with :ok <- validate_public_execution_options(opts),
-         {:ok, scope} <- Access.rebind_scope(scope),
+    with :ok <- validate_public_execution_options(opts), do: run_proposal(scope, candidate, opts)
+  end
+
+  def run(_scope, _candidate, _opts), do: {:error, :invalid_proposal}
+
+  @doc false
+  @spec run_activity(Scope.t(), Candidate.t(), reference(), Fence.origin()) ::
+          {:ok, ProposalResult.t()} | {:error, term()}
+  def run_activity(%Scope{} = scope, candidate, token, origin),
+    do: run_proposal(scope, candidate, activity: {token, origin})
+
+  defp run_proposal(scope, candidate, opts) do
+    with {:ok, scope} <- Access.rebind_scope(scope),
          {:ok, candidate} <- Candidate.new(candidate),
          {:ok, primary} <- submit_and_run(scope, candidate, opts),
          {:ok, fallback} <- declared_fallback(scope, primary, opts) do
@@ -26,23 +38,28 @@ defmodule Spectre.GAM.Facade.Proposal do
     end
   end
 
-  def run(_scope, _candidate, _opts), do: {:error, :invalid_proposal}
-
   defp submit_and_run(scope, candidate, opts) do
-    with {:ok, sequencer_opts} <- Access.nested_keyword(opts, :sequencer_opts),
-         {:ok, admission} <-
+    with {:ok, admission} <-
            Access.sequencer_result(
-             fn ->
-               Sequencer.submit(
-                 scope.domain.server,
-                 scope.context,
-                 candidate,
-                 sequencer_opts
-               )
-             end,
+             fn -> submit(scope, candidate, opts) end,
              :domain_submission_failed
            ) do
-      run_admission(scope.domain.server, {:ok, admission}, opts)
+      run_admission(scope.domain.server, {:ok, admission}, Keyword.delete(opts, :activity))
+    end
+  end
+
+  defp submit(scope, candidate, opts) do
+    case opts[:activity] do
+      {token, origin} ->
+        Sequencer.submit_activity(scope.domain.server, scope.context, candidate, token, origin)
+
+      nil ->
+        Sequencer.submit(
+          scope.domain.server,
+          scope.context,
+          candidate,
+          Keyword.get(opts, :sequencer_opts, [])
+        )
     end
   end
 

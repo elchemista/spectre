@@ -11,6 +11,8 @@ defmodule Spectre.Stack.Tools do
   """
 
   alias Spectre.GAM.Canonical.Value, as: CanonicalValue
+  alias Spectre.Integration
+  alias Spectre.Stack.Installation
   alias Spectre.Stack.Value
 
   @max_bytes Spectre.Server.Checkpoint.max_bytes()
@@ -51,17 +53,96 @@ defmodule Spectre.Stack.Tools do
     end)
   end
 
+  @doc false
+  @spec merge_integration!(t(), Integration.t() | nil) :: t()
+  def merge_integration!(legacy, nil), do: legacy
+
+  def merge_integration!(legacy, %Integration{tools: tools}) do
+    legacy_operations = legacy |> Map.values() |> Enum.flat_map(&Map.keys(&1.operations))
+
+    Enum.reduce(tools, legacy, fn {name, tool}, entries ->
+      if name in legacy_operations,
+        do: invalid!("duplicate operation #{inspect(name)} in tools/1 and integration/1")
+
+      if is_nil(tool.helper), do: entries, else: put_alias!(entries, tool.helper, tool.descriptor)
+    end)
+  end
+
+  @doc false
+  @spec validate_integration_aliases!(t(), Integration.t()) :: :ok
+  def validate_integration_aliases!(tools, %Integration{tools: typed} = integration) do
+    names = for {_, %{helper: helper}} <- typed, not is_nil(helper), do: helper
+    legacy = Map.drop(tools, names)
+
+    unless merge_integration!(legacy, integration) == tools,
+      do: invalid!("integration helper does not match its binding")
+
+    :ok
+  end
+
+  @doc false
+  @spec scoped_table!([Installation.t()]) :: map()
+  def scoped_table!(installations) do
+    installations
+    |> table!()
+    |> Enum.reduce(%{}, &index_helper/2)
+    |> then(fn table -> Enum.reduce(installations, table, &index_unaliased_tools/2) end)
+  end
+
+  @doc false
+  @spec public(Installation.t(), atom()) :: {:ok, map()} | {:error, term()}
+  def public(%Installation{} = installation, name) do
+    case get_in(installation.adapters, [:integration, Access.key(:tools), name]) do
+      %{descriptor: descriptor, public: metadata} ->
+        projection = Map.merge(metadata, %{version: 1, binding: Value.digest(descriptor)})
+        {:ok, Map.put(projection, :digest, Value.digest(projection))}
+
+      nil ->
+        {:error, {:unknown_public_tool, {installation.id, name}}}
+    end
+  end
+
+  defp put_alias!(tools, helper, descriptor) do
+    if Map.has_key?(tools, helper), do: invalid!("duplicate helper #{inspect(helper)}")
+    Map.put(tools, helper, descriptor)
+  end
+
+  defp index_helper({name, snapshot}, table) do
+    Enum.reduce(snapshot.descriptor.operations, table, fn {operation, _}, entries ->
+      key = {snapshot.installation_id, operation}
+      Map.update(entries, key, %{key: name, snapshot: snapshot}, fn _ -> :ambiguous end)
+    end)
+  end
+
+  defp index_unaliased_tools(%{adapters: %{integration: %{tools: tools}}} = installation, table) do
+    Enum.reduce(tools, table, fn
+      {name, %{helper: nil, descriptor: descriptor}}, entries ->
+        key = {installation.id, name}
+        binding = %{key: key, snapshot: snapshot(installation, descriptor)}
+        Map.put(entries, key, binding)
+
+      _, entries ->
+        entries
+    end)
+  end
+
+  defp index_unaliased_tools(_installation, table), do: table
+
   @spec put_descriptor!({atom(), descriptor()}, map(), term()) :: map()
   defp put_descriptor!({name, descriptor}, table, installation) do
     if Map.has_key?(table, name),
       do: invalid!("duplicate helper #{inspect(name)} across Stack installations")
 
-    Map.put(table, name, %{
+    Map.put(table, name, snapshot(installation, descriptor))
+  end
+
+  defp snapshot(installation, descriptor) do
+    %{
       installation_id: installation.id,
       installation_digest: installation.digest,
       descriptor: descriptor,
       digest: Value.digest(descriptor)
-    })
+    }
   end
 
   @spec validate_name!(term()) :: :ok

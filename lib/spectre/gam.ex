@@ -520,19 +520,32 @@ defmodule Spectre.GAM do
         opts
       )
       when Portable.is_non_empty_binary(presentation_ref) and is_list(opts) do
+    with {:ok, scope, candidate} <- show_candidate(scope, presentation_ref, candidate_attrs),
+         do: propose(scope, candidate, opts)
+  end
+
+  def show_presentation(_scope, _presentation_ref, _candidate_attrs, _opts),
+    do: {:error, :invalid_presentation_show}
+
+  @doc false
+  @spec show_activity_presentation(Scope.t(), String.t(), map() | keyword(), reference(), map()) ::
+          {:ok, ProposalResult.t()} | {:error, term()}
+  def show_activity_presentation(scope, presentation_ref, candidate_attrs, token, origin) do
+    with {:ok, scope, candidate} <- show_candidate(scope, presentation_ref, candidate_attrs),
+         do: Proposal.run_activity(scope, candidate, token, origin)
+  end
+
+  defp show_candidate(scope, presentation_ref, candidate_attrs) do
     with {:ok, scope, %Presentation{} = presentation} <-
            Access.scoped_read(scope, {:presentation, presentation_ref}),
          :ok <- presentation_scope(presentation, Scope.ref(scope)),
          {:ok, candidate} <-
            presentation_show_candidate(scope, presentation, candidate_attrs) do
-      propose(scope, candidate, opts)
+      {:ok, scope, candidate}
     else
       {:error, _reason} = error -> error
     end
   end
-
-  def show_presentation(_scope, _presentation_ref, _candidate_attrs, _opts),
-    do: {:error, :invalid_presentation_show}
 
   @doc "Records a late or independently obtained world Outcome for an Act in this Scope."
   @spec record_outcome(Scope.t(), Outcome.t() | map() | keyword(), keyword()) ::

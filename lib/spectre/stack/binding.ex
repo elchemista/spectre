@@ -16,9 +16,94 @@ defmodule Spectre.Stack.Binding do
 
   alias Spectre.Extension
   alias Spectre.Extension.Mount
+  alias Spectre.Integration
   alias Spectre.Stack.Definition, as: StackDefinition
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Ref
+
+  @doc false
+  @spec compile_services!(keyword(), [Mount.t()]) :: keyword()
+  def compile_services!(config, mounts) do
+    config = Keyword.delete(config, :integration_services)
+    selected = Keyword.get(config, :services, %{})
+    providers = service_providers(config[:stack])
+
+    if providers == %{} and selected == %{} do
+      config
+    else
+      bindings = bind_services!(providers, selected, mounts)
+      Keyword.put(config, :integration_services, bindings)
+    end
+  end
+
+  @doc false
+  @spec selected_service(Spectre.Definition.t(), module()) :: Integration.service() | nil
+  def selected_service(%Spectre.Definition{config: config}, role),
+    do: Map.get(Keyword.get(config, :integration_services, %{}), role)
+
+  defp service_providers(nil), do: %{}
+
+  defp service_providers(stack) do
+    services =
+      for installation <- StackDefinition.fetch!(stack).installations,
+          %Integration{services: entries} <- [installation.adapters[:integration]],
+          {role, provider} <- entries do
+        {role, {installation.id, provider}}
+      end
+
+    Enum.group_by(services, &elem(&1, 0), &elem(&1, 1))
+  end
+
+  defp bind_services!(providers, selected, mounts) do
+    unless is_map(selected) and Map.keys(selected) -- Map.keys(providers) == [],
+      do:
+        raise(
+          ArgumentError,
+          "Agent services: expected a map of installed roles to installation IDs"
+        )
+
+    Map.new(providers, fn {role, declared} ->
+      providers = declared ++ legacy_providers(role, mounts)
+      {role, select_service!(role, providers, Map.fetch(selected, role))}
+    end)
+  end
+
+  defp select_service!(role, providers, selection) do
+    ids = Enum.map(providers, &elem(&1, 0))
+
+    if Enum.uniq(ids) != ids,
+      do: raise(ArgumentError, "duplicate Stack service #{inspect(role)} in one installation")
+
+    case {providers, selection} do
+      {[{_id, provider}], :error} ->
+        provider
+
+      {_, {:ok, id}} ->
+        fetch_service!(role, providers, id)
+
+      {_, :error} ->
+        raise ArgumentError, "multiple Stack providers for #{inspect(role)}: #{inspect(ids)}"
+    end
+  end
+
+  defp fetch_service!(role, providers, id) do
+    case List.keyfind(providers, id, 0) do
+      {^id, provider} -> provider
+      nil -> raise ArgumentError, "unknown Stack provider #{inspect(id)} for #{inspect(role)}"
+    end
+  end
+
+  defp legacy_providers(Spectre.Inference.Selector, mounts),
+    do: collect_legacy(mounts, &Extension.inference_selector/1)
+
+  defp legacy_providers(Spectre.Action.Planner, mounts),
+    do: collect_legacy(mounts, &Extension.action_planner/1)
+
+  defp legacy_providers(_role, _mounts), do: []
+
+  defp collect_legacy(mounts, callback) do
+    for mount <- mounts, provider = callback.(mount), do: {mount.id, provider}
+  end
 
   @doc false
   @spec setup_agent!(module(), module() | nil) :: :ok

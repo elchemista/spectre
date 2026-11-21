@@ -76,7 +76,7 @@ defmodule Spectre.Server.GAM.Invocation do
 
   @spec base(Scope.t(), map(), term()) :: map()
   defp base(scope, context, operation) do
-    %{
+    invocation = %{
       command_id: context.command_id,
       interaction: Map.get(context, :interaction),
       operation: operation,
@@ -84,6 +84,14 @@ defmodule Spectre.Server.GAM.Invocation do
       scope_ref: Scope.ref(scope),
       principal_ref: scope.context.authenticated_principal_ref
     }
+
+    case Map.get(context, :activity) do
+      %{ref: _, revision: _} = activity ->
+        Map.put(invocation, :activity, Map.take(activity, [:ref, :revision]))
+
+      _ ->
+        invocation
+    end
   end
 
   @spec validate(map(), SubmissionContext.t()) :: :ok | {:error, atom()}

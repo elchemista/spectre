@@ -164,6 +164,74 @@ with `{:ok, input}`. Both use a 30,000 ms timeout unless overridden, and accept
 `:infinity`. Only one foreground wait can own the input. `call_actor/4` is the
 worker-based request/reply helper when an ordinary GenServer call is sufficient.
 
+## Run a background Activity
+
+An Activity runs its own callbacks under the AgentServer's supervision. Start
+one from a Server callback when a job needs to continue while the Root handles
+other messages. Both use the Agent's installed tools and Managed GAM Domain.
+
+```elixir
+defmodule MyApp.Research do
+  use Spectre.Activity
+
+  def handle_start(%{id: id}, ctx) do
+    call_tool(ctx, {:documents, :read}, %{id: id}, on_result: :document)
+  end
+
+  def handle_result(:document, {:ok, doc}, ctx), do: complete(ctx, doc)
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+end
+
+defmodule MyApp.Stack do
+  use Spectre.Stack
+
+  install MyApp.Documents
+  activity :research, MyApp.Research, tools: [{:documents, :read}]
+end
+
+# In the Agent's Server
+def handle_flow({:work, :research}, _input, ctx) do
+  start_activity(ctx, :research, %{id: "D12"}, as: :report)
+end
+
+def handle_activity(%{key: :report}, {:completed, doc}, ctx) do
+  respond(ctx, doc.summary)
+end
+```
+
+Use an atom for a local Activity type or `{installation, type}` for an
+installed library type. An unnamed start receives a fresh execution reference.
+A name identifies one active execution at a time. Lifecycle events and
+`handle_activity/3` include the execution `ref` and optional `key` so callers can
+tell two uses of the same name apart. The configured consumer receives
+`{Spectre.Server, root, {:activity, identity, event}}`.
+
+The consumer and configured submitters can use `Spectre.Server.activities/2`
+and `Spectre.Server.activity/3` to inspect work. `signal_activity/4` and
+`cancel_activity/3` accept a reference or active name and return a request ID.
+The outcome arrives in a `{:signalled, request_id, result}` event. Within a
+callback, use the same helpers with a Context. Add `on_result:` for a tagged
+callback. `if_revision:` lets a caller apply a change to a specific revision.
+
+An Activity handles signals in `handle_signal/2`. Sending `{:revise, value}`
+advances its revision and retires its open consent. A late decision for that
+presentation returns `{:error, :superseded}`. Effects admitted before the
+revision retain their original identity. The current Activity receives a late
+admitted outcome as `handle_signal({:effect, result}, ctx)`. A governed
+presentation is still acknowledged and decided through the Root. Wait for the
+Activity's `{:pending, presentation_ref}` event after acknowledging the card.
+
+Declare a `tools:` scope on the Activity and use `requires:` for bindings that
+must be present at startup. At AgentServer startup, `activities:` selects
+allowed types and `activity_tools:` narrows the tool scope. `scope:` narrows a
+particular start further. Starting subactivities requires explicit
+`allow_children:` on the parent's declaration. [Stack integrations](STACK.md)
+
+The pilot is local to one BEAM node. A supervised Root restart can reattach to
+running Activities while Managed GAM survives. A failed Activity ends that
+execution and its siblings continue. Effects already admitted remain in the
+GAM history.
+
 ## Where GAM intervenes
 
 Ordinary classification, lookup, embedding and generation use Stack services

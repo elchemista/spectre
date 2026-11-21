@@ -15,6 +15,7 @@ defmodule Spectre.Server.Context do
             identity: %{},
             session: nil,
             skill: nil,
+            activity: nil,
             interaction: nil,
             input: nil,
             routing: %{},

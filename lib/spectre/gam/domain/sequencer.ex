@@ -33,6 +33,7 @@ defmodule Spectre.GAM.Domain.Sequencer do
   }
 
   alias Spectre.GAM.Domain.Admission.Command, as: AdmissionCommand
+  alias Spectre.GAM.Domain.Admission.Fence
   alias Spectre.GAM.Domain.Command.Durability
   alias Spectre.GAM.Domain.Command.Evidence, as: EvidenceCommand
   alias Spectre.GAM.Domain.Command.Execution, as: ExecutionCommand
@@ -94,6 +95,31 @@ defmodule Spectre.GAM.Domain.Sequencer do
 
   def submit(_server, _context, _candidate, _opts),
     do: {:error, :invalid_submission_input}
+
+  @doc false
+  @spec submit_activity(
+          GenServer.server(),
+          SubmissionContext.t(),
+          Candidate.t(),
+          reference(),
+          Fence.origin()
+        ) ::
+          {:ok, admission_result()} | {:error, term()}
+  def submit_activity(server, %SubmissionContext{} = context, candidate, token, origin),
+    do: GenServer.call(server, {:submit_activity, context, candidate, token, origin}, :infinity)
+
+  @doc false
+  @spec activity_fence(
+          GenServer.server(),
+          reference(),
+          {:register, binary()}
+          | {:retire, binary()}
+          | {:advance, Fence.transition()}
+          | {:current, Fence.origin()}
+        ) ::
+          :ok | {:ok, non_neg_integer()} | {:error, term()}
+  def activity_fence(server, token, action),
+    do: GenServer.call(server, {:activity_fence, token, action}, :infinity)
 
   @doc false
   @spec submit_scope_opening(
@@ -424,6 +450,8 @@ defmodule Spectre.GAM.Domain.Sequencer do
              (is_tuple(request) and
                 elem(request, 0) in [
                   :submit,
+                  :submit_activity,
+                  :activity_fence,
                   :submit_scope_opening,
                   :execution_route,
                   :trusted_time
@@ -548,7 +576,8 @@ defmodule Spectre.GAM.Domain.Sequencer do
         _from,
         %State{pending_count: count, max_pending_submissions: limit} = state
       )
-      when is_tuple(request) and elem(request, 0) in [:submit, :submit_scope_opening] and
+      when is_tuple(request) and
+             elem(request, 0) in [:submit, :submit_activity, :submit_scope_opening] and
              count >= limit,
       do: {:reply, {:error, :submission_queue_full}, state}
 
@@ -567,6 +596,30 @@ defmodule Spectre.GAM.Domain.Sequencer do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  def dispatch_call({:submit_activity, context, candidate, token, origin}, from, %State{} = state) do
+    case Fence.authenticate(state, token, origin) do
+      :ok ->
+        request = %{from: from, context: context, candidate: candidate, activity: {token, origin}}
+        {:noreply, enqueue_submission(state, request)}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  def dispatch_call({:activity_fence, token, action}, _from, %State{} = state) do
+    result =
+      case action do
+        {:register, ref} -> Fence.register(state, token, ref)
+        {:retire, ref} -> Fence.retire(state, token, ref)
+        {:advance, transition} -> Fence.advance(state, token, transition)
+        {:current, origin} -> Fence.current(state, token, origin)
+        _ -> {:error, :invalid_activity_fence_action}
+      end
+
+    {:reply, result, state}
   end
 
   def dispatch_call(

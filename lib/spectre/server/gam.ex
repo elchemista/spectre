@@ -21,6 +21,8 @@ defmodule Spectre.Server.GAM do
   """
   alias Spectre.GAM
   alias Spectre.GAM.{Candidate, Presentation, Scope}
+  alias Spectre.GAM.Domain.Sequencer
+  alias Spectre.GAM.Facade.Proposal
   alias Spectre.GAM.Mind.Turn
   alias Spectre.Server.Store.Port, as: Store
 
@@ -81,6 +83,7 @@ defmodule Spectre.Server.GAM do
          {:ok, binding} <- binding(config, pending.operation),
          {:ok, scope} <- scope(config, context),
          :ok <- matching_scope(scope, pending),
+         :ok <- current_activity(scope, config, context, pending),
          :ok <- not_expired(pending),
          :confirm <-
            interpret(binding[:interpreter] || pending[:interpreter], input, pending.presentation),
@@ -89,11 +92,7 @@ defmodule Spectre.Server.GAM do
          :ok <- successful_show(recovered),
          :ok <- not_expired(pending),
          {:ok, evidence} <-
-           GAM.observe(
-             Keyword.get(config, :response_scope, scope),
-             response_input(pending, recovered, input, context),
-             observation_options(config)
-           ),
+           observe_response(scope, config, pending, recovered, input, context, :supports),
          {:ok, refs} <- approval_refs(evidence, pending, recovered),
          {:ok, candidate} <- final_candidate(pending.candidate, pending.presentation, refs),
          :ok <- not_expired(pending) do
@@ -111,16 +110,13 @@ defmodule Spectre.Server.GAM do
          {:ok, binding} <- binding(config, pending.operation),
          {:ok, scope} <- scope(config, context),
          :ok <- matching_scope(scope, pending),
+         :ok <- current_activity(scope, config, context, pending),
          :reject <-
            interpret(binding[:interpreter] || pending[:interpreter], input, pending.presentation),
          {:ok, recovered} <- GAM.recover_proposal(scope, pending.show),
          :ok <- successful_show(recovered),
          {:ok, _evidence} <-
-           GAM.observe(
-             Keyword.get(config, :response_scope, scope),
-             response_input(pending, recovered, input, context, :contradicts),
-             observation_options(config)
-           ) do
+           observe_response(scope, config, pending, recovered, input, context, :contradicts) do
       {:consent, :rejected}
     else
       {:error, _} = error -> error
@@ -134,7 +130,8 @@ defmodule Spectre.Server.GAM do
     with {:ok, config} <- config(opts),
          {:ok, binding} <- binding(config, pending.operation),
          {:ok, scope} <- scope(config, context),
-         :ok <- matching_scope(scope, pending) do
+         :ok <- matching_scope(scope, pending),
+         :ok <- current_activity(scope, config, context, pending) do
       binding = Map.put(binding, :interpreter, binding[:interpreter] || pending[:interpreter])
       # A new show identity is mandatory on resume; the host presentation
       # builder must produce a fresh identity, never reuse the original show.
@@ -181,22 +178,25 @@ defmodule Spectre.Server.GAM do
              scope_ref: Scope.ref(scope),
              principal_ref: scope.context.authenticated_principal_ref
            }),
-         {:ok, show} <- GAM.show_presentation(scope, presentation.ref, show_attrs),
+         {:ok, show} <- show_presentation(scope, presentation.ref, show_attrs, config, context),
          :ok <- successful_show(show) do
       {:pending,
-       %{
-         kind: :consent,
-         interpreter: interpreter,
-         operation: binding.operation,
-         candidate: candidate,
-         presentation: presentation,
-         show: show,
-         shown_at: System.system_time(:millisecond),
-         domain_ref: Scope.domain_ref(scope),
-         scope_ref: Scope.ref(scope),
-         principal_ref: scope.context.authenticated_principal_ref,
-         expires_at: expires_at
-       }}
+       maybe_activity(
+         %{
+           kind: :consent,
+           interpreter: interpreter,
+           operation: binding.operation,
+           candidate: candidate,
+           presentation: presentation,
+           show: show,
+           shown_at: System.system_time(:millisecond),
+           domain_ref: Scope.domain_ref(scope),
+           scope_ref: Scope.ref(scope),
+           principal_ref: scope.context.authenticated_principal_ref,
+           expires_at: expires_at
+         },
+         context
+       )}
     else
       false -> {:error, :presentation_candidate_mismatch}
       {:error, _} = error -> error
@@ -213,12 +213,25 @@ defmodule Spectre.Server.GAM do
              scope_ref: Scope.ref(scope),
              principal_ref: scope.context.authenticated_principal_ref
            }) do
-      submit(scope, candidate)
+      submit(scope, candidate, config, context)
     end
   end
 
-  defp submit(scope, candidate) do
-    case GAM.propose(scope, candidate) do
+  defp show_presentation(scope, ref, attrs, config, context) do
+    case Map.get(context, :activity) do
+      nil -> GAM.show_presentation(scope, ref, attrs)
+      origin -> GAM.show_activity_presentation(scope, ref, attrs, config[:activity_fence], origin)
+    end
+  end
+
+  defp submit(scope, candidate, config, context) do
+    result =
+      case Map.get(context, :activity) do
+        nil -> GAM.propose(scope, candidate)
+        origin -> Proposal.run_activity(scope, candidate, config[:activity_fence], origin)
+      end
+
+    case result do
       {:ok, result} -> {:governed, Map.put(Map.from_struct(result.primary), :proposal, result)}
       {:error, _} = error -> error
     end
@@ -232,6 +245,7 @@ defmodule Spectre.Server.GAM do
          {:ok, scope} <- scope(config, context),
          :ok <- matching_scope(scope, saved),
          :ok <- matching_skill(saved, context),
+         :ok <- matching_activity(saved, context),
          {:ok, candidate} <- Candidate.from_canonical(saved.candidate) do
       recover_saved(scope, saved, candidate, config)
     else
@@ -240,15 +254,25 @@ defmodule Spectre.Server.GAM do
     end
   end
 
-  defp recover_saved(scope, %{kind: :effect}, candidate, _config), do: submit(scope, candidate)
+  defp recover_saved(scope, %{kind: :effect} = saved, candidate, config),
+    do: submit(scope, candidate, config, saved)
 
-  defp recover_saved(scope, %{kind: :show} = saved, candidate, _config) do
-    with {:ok, presentation} <- Presentation.from_canonical(saved.presentation),
-         {:ok, show} <- GAM.show_presentation(scope, presentation.ref, saved.show_attrs),
+  defp recover_saved(scope, %{kind: :show} = saved, candidate, config) do
+    with :ok <- current_activity(scope, config, saved, saved),
+         {:ok, presentation} <- Presentation.from_canonical(saved.presentation),
+         {:ok, show} <-
+           show_presentation(scope, presentation.ref, saved.show_attrs, config, saved),
          :ok <- successful_show(show) do
       {:pending,
        Map.merge(
-         Map.take(saved, [:operation, :domain_ref, :scope_ref, :principal_ref, :interpreter]),
+         Map.take(saved, [
+           :operation,
+           :domain_ref,
+           :scope_ref,
+           :principal_ref,
+           :interpreter,
+           :activity
+         ]),
          %{
            kind: :consent,
            status: :suspended,
@@ -280,6 +304,7 @@ defmodule Spectre.Server.GAM do
         with {:ok, scope} <- scope(config, context),
              :ok <- matching_scope(scope, saved),
              :ok <- matching_skill(saved, context),
+             :ok <- matching_activity(saved, context),
              do: Store.delete(store, journal_key(id), revision)
 
       {:error, _} = error ->
@@ -400,7 +425,7 @@ defmodule Spectre.Server.GAM do
         write_journal(
           store,
           Map.get(context, :command_id),
-          Map.put(entry, :skill, Map.get(context, :skill))
+          entry |> Map.put(:skill, Map.get(context, :skill)) |> maybe_activity(context)
         )
     end
   end
@@ -430,6 +455,30 @@ defmodule Spectre.Server.GAM do
   end
 
   defp journal_key(id), do: {:spectre_gam_command, id}
+
+  defp maybe_activity(entry, %{activity: %{ref: _, revision: _} = origin}),
+    do: Map.put(entry, :activity, Map.take(origin, [:ref, :revision]))
+
+  defp maybe_activity(entry, _context), do: entry
+
+  defp current_activity(scope, config, context, pending) do
+    case {Map.get(context, :activity), Map.get(pending, :activity)} do
+      {nil, nil} ->
+        :ok
+
+      {%{ref: ref, revision: revision}, %{ref: ref, revision: revision} = origin} ->
+        Sequencer.activity_fence(scope.domain.server, config[:activity_fence], {:current, origin})
+
+      _ ->
+        {:error, :superseded}
+    end
+  end
+
+  defp matching_activity(saved, context) do
+    if get_in(saved, [:activity, :ref]) == get_in(context, [:activity, :ref]),
+      do: :ok,
+      else: {:error, :journal_activity_mismatch}
+  end
 
   defp successful_show(%{primary: %{act: act, outcome: %{status: :succeeded}}})
        when not is_nil(act), do: :ok
@@ -487,7 +536,21 @@ defmodule Spectre.Server.GAM do
     |> Candidate.new()
   end
 
-  defp response_input(pending, show, input, context, stance \\ :supports) do
+  defp observe_response(scope, config, pending, show, input, context, stance) do
+    case GAM.observe(
+           Keyword.get(config, :response_scope, scope),
+           response_input(pending, show, input, context, stance),
+           observation_options(config)
+         ) do
+      {:error, _} = error ->
+        with :ok <- current_activity(scope, config, context, pending), do: error
+
+      observed ->
+        observed
+    end
+  end
+
+  defp response_input(pending, show, input, context, stance) do
     %{
       kind: :presentation_response,
       input: input,
