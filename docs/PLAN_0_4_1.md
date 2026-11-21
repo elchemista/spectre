@@ -403,3 +403,269 @@ La Skill Server già ha checkpoint; riusare quello, senza creare obbligatoriamen
 
 Niente PID, clients, provider secret, interi Context o history illimitata nel checkpoint. Lo stato reducer oggi ha un limite serializzato **900.000 byte**; misurarlo e applicare proiezione/retention/summarization esplicita. Reset invalida correlazioni vecchie. Un risultato tardivo non deve ridare a una missione il foreground né causare il retry di un effetto incerto. Separare il budget/lifetime della missione dalla singola interazione (nel prototipo il limite di 32 step e timeout ereditati fermavano catene di lavoro); nessun timeout infinito implicito.
 
+
+## 6. Esempio completo, dalla libreria fino al risultato
+
+**È la fixture target da rendere eseguibile dopo l'implementazione della 0.4.1.** Non è un esempio "magico" e non deve richiedere callback model/tool scritti dall'applicazione. `Demo.InvoiceAPI` è un fake deterministico; sostituirlo con una vera libreria di fatture non deve cambiare la struttura.
+
+### 6.1 Creare il package e la registrazione di un tool
+
+~~~elixir
+# Nessun SDK esterno: fixture per poter verificare ogni passaggio.
+defmodule Demo.InvoiceAPI do
+  def list("tenant-1", "overdue"),
+    do: {:ok, [%{"id" => "F-10", "status" => "overdue"}]}
+  def list(_, _), do: {:ok, []}
+
+  def send("tenant-1", "F-10", idempotency_key),
+    do: {:ok, %{"invoice_id" => "F-10", "receipt" => idempotency_key}}
+  def send(_, _, _), do: {:error, :definitive_no_effect, :not_found}
+end
+
+defmodule Demo.InvoiceTool do
+  use Spectre.Stack.Installable,
+    id: :demo_invoice, version: "1.0.0", contract: 1
+
+  @impl true
+  def tools(_config) do
+    %{
+      invoice: %{
+        contract: 2, adapter: Demo.InvoiceAdapter,
+        default: nil, description: "Operazioni su fatture",
+        operations: %{
+          list: %{
+            path: :cognitive, retry: :safe, max_bytes: 65_536,
+            description: "Cerca fatture per stato",
+            input_schema: %{
+              "type" => "object",
+              "properties" => %{"status" => %{"type" => "string"}},
+              "required" => ["status"], "additionalProperties" => false
+            }
+          },
+          send: %{
+            path: :governed, operation: :send_invoice, max_bytes: 65_536,
+            description: "Invia una fattura già preparata",
+            input_schema: %{
+              "type" => "object",
+              "properties" => %{"invoice_id" => %{"type" => "string"}},
+              "required" => ["invoice_id"], "additionalProperties" => false
+            }
+          }
+        }
+      }
+    }
+  end
+
+  @impl true
+  def effects(_config) do
+    %{send_invoice: %{
+      contract: 1, adapter: Demo.InvoiceAdapter, operation: :send,
+      side_effect: :non_idempotent, material: :arguments,
+      partition: [:subject], schema_hash: nil, config: %{}
+    }}
+  end
+end
+
+defmodule Demo.InvoiceAdapter do
+  @behaviour Spectre.Tool.Adapter
+  @behaviour Spectre.Server.GAM.EffectAdapter
+
+  def prepare(:list, [%{"status" => status}], _) when is_binary(status),
+    do: {:ok, %{"status" => status}}
+
+  def prepare(:send, [%{"invoice_id" => id}], _) when is_binary(id),
+    do: {:ok, %{"invoice_id" => id}}
+
+  def prepare(_, _, _), do: {:error, :invalid_invoice_arguments}
+
+  # Il Server esegue questa read cognitiva in un worker supervisionato.
+  def invoke(:list, %{"status" => status}, %{service_context: service}),
+    do: Demo.InvoiceAPI.list(service.identity.subject, status)
+
+  def project(:list, {:ok, data}), do: {:ok, {:ok, data}}
+  def project(:list, {:error, reason}), do: {:ok, {:error, reason}}
+  def project(_, _), do: {:error, :invalid_invoice_result}
+
+  # Chiamata SOLO dall'executor dopo l'ammissione GAM, mai da Directive.
+  def execute_effect(:send, %{"invoice_id" => id}, context),
+    do: Demo.InvoiceAPI.send(context.identity.subject, id, context.command_id)
+end
+~~~
+
+Il `:list` è `:cognitive` e usa `invoke/3`; il `:send` è `:governed`, risolto da `effects/1` e dal GAM. Il Server invoca la stessa interfaccia sia tramite codice statico sia tramite un tool name selezionato dal modello. La versione V2 dello schema è controllata, non sostituisce `prepare/3`.
+
+### 6.2 Lo Stack installa gli stessi package, senza autorizzarli
+
+~~~elixir
+defmodule Demo.Stack do
+  use Spectre.Stack
+  install Demo.InvoiceTool
+  install Spectre.Directive
+  # In seguito si possono installare Spectre.Mnemonic, Spectre.Kinetic, ecc.
+end
+~~~
+
+Lo Stack compila la tabella delle installazioni, gli schema V2 e i digest; non crea un secondo registro. Allo startup del Server i binding devono corrispondere a quelli del compiled Stack e gli effects governati devono avere una configurazione GAM valida.
+
+### 6.3 Una Skill conversazionale normale, SENZA la route artificiale /assistant
+
+~~~elixir
+# API 0.4.1 PROPOSTA, da implementare nel package spectre_directive.
+defmodule Demo.AssistantServer do
+  use Spectre.Directive.Server,
+    tools: Demo.Stack,
+    mode: :conversation,
+    model: :configured_response_model,
+    protocol: :json,
+    model_tools: ["invoice.list", "invoice.send"]
+end
+
+defmodule Demo.AssistantSkill do
+  use Spectre.Skill, id: :assistant, server: Demo.AssistantServer
+  # Deve poter essere montata e invocata dal root via delegate,
+  # anche senza un flow fittizio /assistant.
+end
+
+defmodule Demo.Agent do
+  use Spectre.Agent, stack: Demo.Stack, server: Demo.RootServer
+  router strategies: [:regex]
+
+  flow :invoices do
+    on :status, regex: ~r/^stato fatture$/i
+  end
+
+  skill Demo.AssistantSkill, as: :assistant, governed: [:send_invoice]
+end
+~~~
+
+**Gate specifico da verificare in codice:** se nella 0.4 una `Spectre.Skill` priva di flow non può essere montata/delegata, modificare **solo il contratto di delega esplicita** per supportare quel caso. Non simulare la soluzione aggiungendo un regex che cattura tutti i messaggi; sarebbe un bug architetturale, non una feature.
+
+### 6.4 Root Server: routing deterministico, :cont e fallback dichiarato
+
+~~~elixir
+defmodule Demo.RootServer do
+  use Spectre.Server, tools: Demo.Stack
+
+  @impl true
+  def handle_input(_input, _ctx), do: :cont
+  # Nessun owner -> prosegue verso il router deterministico.
+
+  @impl true
+  def handle_flow({:invoices, :status}, _input, ctx) do
+    Spectre.Server.call_tool(ctx, "invoice.list", %{"status" => "overdue"},
+      on_result: :invoice_status)
+  end
+
+  @impl true
+  def handle_result(:invoice_status, {:ok, invoices}, ctx),
+    do: respond(ctx, "Fatture scadute: " <> inspect(invoices))
+
+  @impl true
+  def handle_flow(:unmatched, input, ctx) do
+    case ctx.routing.reason do
+      :no_match ->
+        delegate(ctx, :assistant, input, on_result: :assistant_started)
+
+      :ambiguous ->
+        respond(ctx, "Puoi chiarire la richiesta?")
+
+      {:classifier_error, _} ->
+        respond(ctx, "Il router non è disponibile; riprova.")
+
+      other ->
+        respond(ctx, "Routing non risolto: " <> inspect(other))
+    end
+  end
+
+  @impl true
+  def handle_result(:assistant_started, {:delegated, _details}, ctx),
+    do: no_response(ctx)
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+end
+~~~
+
+**Il Root non contiene nessun loop LLM o Tool JSON.** La callback di fallback è breve ed esplicita. La Skill deve possedere il dialogo dopo l'ack di delega; i turni successivi non vengono classificati ogni volta finché restano nel suo focus.
+
+### 6.5 Driver Directive generato, senza callback manuali nell'app
+
+L'ergonomia `use Spectre.Directive.Server` deve generare (nel package Directive, non nell'app) una implementazione equivalente a:
+
+~~~elixir
+# ESTRATTO DI DESIGN del package; NON codice richiesto all'applicazione
+def handle_input(input, ctx) do
+  case Spectre.Directive.Driver.offer(ctx, input) do
+    {:handled, next_ctx} -> next_ctx
+    :not_owned -> :cont
+    {:yield, next_ctx} -> {:cont, next_ctx} # commands vuoto, stato solo
+  end
+end
+
+def handle_result(:directive_reason, {:correlated, ref, generated}, ctx),
+  do: Spectre.Directive.Driver.accept_model(ctx, ref, generated)
+
+def handle_result(:directive_tool, {:correlated, ref, result}, ctx),
+  do: Spectre.Directive.Driver.accept_tool(ctx, ref, result)
+
+def handle_result(:directive_reply, {:correlated, ref, answer}, ctx),
+  do: Spectre.Directive.Driver.accept_answer(ctx, ref, answer)
+~~~
+
+Il driver deve decidere quando produrre `generate`, `call_tool`, `respond` o `await_input`. Il model parser valida **prima** di chiamare il tool. La richiesta reducer corrente è correlata ai command id; non usare il testo `"sì"` come approvazione GAM generica. Callback `handle_result` dell'applicazione non devono intercettare per sbaglio i tag propri del driver.
+
+### 6.6 Avvio, messaggi e traccia di esecuzione
+
+~~~elixir
+# Avvio TARGET (le API qui sotto di start_link/input/decide sono già note
+# nella 0.4; il driver e call_tool restano proposti).
+{:ok, root} =
+  Spectre.Server.start_link(
+    agent: Demo.Agent,
+    identity: %{subject: "tenant-1"},
+    consumer: self(),
+    gam: [operations: %{send_invoice: [confirm: true]}]
+  )
+
+{:ok, _i1} = Spectre.Server.input(root, "stato fatture")
+# Router riconosce invoices.status. Root chiama invoice.list.
+# Arriva una response con "F-10"; Directive non è stato chiamato.
+
+{:ok, _i2} = Spectre.Server.input(root, "Controlla le fatture scadute")
+# Router: vero no_match -> delegate(:assistant) -> Claim/owner.
+# Directive: generate -> {"name":"invoice.list",...}
+#          -> call_tool -> cognitive worker -> on_result -> generate -> risposta.
+
+{:ok, _i3} = Spectre.Server.input(root, "E la fattura F-10?")
+# Conversation owner = assistant: il router non viene richiamato.
+
+{:ok, _i4} = Spectre.Server.input(root, "Invia la fattura F-10")
+# Directive: invoice.send -> proposta governata -> GAM Presentation.
+# NESSUN invio reale prima dell'ammissione/consenso.
+~~~
+
+L'approvazione non va inventata nel test. Il consumer deve ricevere la **vera Presentation** e usarne riferimento e revisione con le API già documentate (`Server.presented`, `Server.decide` indirizzato a `:assistant`). Verificare `approved` e `rejected` e gli outcome ambiguo/unknown; soltanto l'Outcome reale `:succeeded` giustifica `"fattura inviata"`.
+
+La fixture deve registrare e confrontare i seguenti stadi, non soltanto il testo finale:
+
+~~~text
+compile Stack -> check digest/tools/effects
+start root -> start Skill Supervisor -> assistant child PID -> same GAM Domain
+input 1 -> input prepare -> router regex -> handle_flow(status)
+        -> call_tool(invoice.list) -> Command :tool -> outbox -> worker
+        -> Demo.InvoiceAdapter.invoke -> project -> handle_result -> response
+input 2 -> no_match -> root delegate -> assistant accepts/claims conversation
+        -> generate -> decision parse JSON -> resolve "invoice.list"
+        -> call_tool -> prepare/schema -> worker -> correlated result
+        -> Directive updates state -> generate -> response
+input 3 -> owner assistant -> handle_input consumes -> no router
+input 4 -> owner assistant -> tool invoice.send -> propose
+        -> GAM authorization/Presentation -> presented -> decide
+        -> executor.execute_effect -> Outcome -> Directive -> response
+topic change -> owner assistant returns :cont -> verified yield receipt
+             -> root pre-route + regex router EXACTLY ONCE
+background mission continues -> result never steals focus
+restart -> tool and continuation digest check -> stale outcome cannot advance
+~~~
+
+**Bug gate:** la fixture deve fallire se il comando JSON aggira `Tool.normalize` o GAM, se esiste un doppio GenServer di Directive, se il root usa il router durante ogni turno owned, o se dopo `:cont` l'input viene interpretato due volte.
+
