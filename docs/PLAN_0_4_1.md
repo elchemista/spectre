@@ -716,6 +716,34 @@ Per ogni repository: leggere la dichiarazione dei tools nel modulo `lib/spectre/
 
 **Morph** resta intenzionalmente fuori dalla release: non aggiungere una API `Evolution` per fargli funzionare questa migrazione.
 
+### 7.1 Regola di migrazione per ogni package (non rompere i chiamanti)
+
+L'attuale helper privato generato a compile time deve continuare a funzionare:
+
+~~~elixir
+# 0.4, input posizionale:
+ctx = mnemonic(ctx, {:recall, "contratto"}, on_result: :memory)
+
+# 0.4.1, input JSON V2:
+ctx = Spectre.Server.call_tool(ctx, "mnemonic.recall",
+  %{"cue" => "contratto"}, on_result: :memory)
+~~~
+
+Lo `ServerTool.prepare/3` di Mnemonic attuale non deve necessariamente ricevere lo stesso payload dai due ingressi: lo **strato di adattamento V2** può convertire la mappa JSON in una chiamata con argomenti posizionali legacy, **oppure** aggiungere una clausola nel suo adapter. Documentare e testare questa conversione. Non cambiare silenziosamente il significato dei dati V1.
+
+### 7.2 Conformance richiesto per ciascun satellite
+
+Per ogni package eseguire **tutte** queste prove, non solo un test di compilazione:
+
+1. `tools/1` del package compilato, descriptor/digest validi e assenza di collisioni.
+2. `available_tools` restituisce operazioni V2 **solo se** host le espone e lo scope Skill lo consente; le altre restano private.
+3. `call_tool` da root e da un child Skill produce lo stesso `prepare/invoke/project` (o lo stesso `propose/GAM`) del vecchio helper V1.
+4. Esistono test per argomenti malformati, tool inesistente, operation non registrata, domain error e risultato non portabile.
+5. Per tool governato: denial, approval, timeout, esito ambiguo, replay protetto e provenance Skill; **non** chiamare `execute_effect` durante `prepare/invoke`.
+6. Standalone API e resource/provider behaviors restano invariati; `spectre_ecosystem` esegue l'integrazione completa con core e package reali, non con test stub che imitano il contratto.
+
+Se un adapter V2 richiede un `if package == :mnemonic` o `case tool == :lens` nel Core, il gate fallisce: la regola va espressa dal descriptor/adapter, oppure serve discutere un nuovo **contratto generico**, non un'eccezione per satellite.
+
 ### 7.3 Esempi di riferimenti chiamabili con la stessa API
 
 Queste sono **forme V2 TARGET**, non promesse sugli argomenti delle attuali API V1. Ogni satellite deve fornire il suo mapping esplicito V2 -> `ServerTool.prepare` esistente, con schema verificato e proiezione portabile. La policy host seleziona quali sono model-visible:
@@ -745,34 +773,6 @@ call_tool(ctx, "pulse.send", %{"to" => "agent:billing",
 **Il fatto che un nome sia mostrato qui non ne garantisce la disponibilità:** è il descriptor installato, il binding GAM e il model tool policy del Server a decidere. I nomi e i campi effettivi saranno fissati dai test sul rispettivo adapter.
 
 
-
-### 7.1 Regola di migrazione per ogni package (non rompere i chiamanti)
-
-L'attuale helper privato generato a compile time deve continuare a funzionare:
-
-~~~elixir
-# 0.4, input posizionale:
-ctx = mnemonic(ctx, {:recall, "contratto"}, on_result: :memory)
-
-# 0.4.1, input JSON V2:
-ctx = Spectre.Server.call_tool(ctx, "mnemonic.recall",
-  %{"cue" => "contratto"}, on_result: :memory)
-~~~
-
-Lo `ServerTool.prepare/3` di Mnemonic attuale non deve necessariamente ricevere lo stesso payload dai due ingressi: lo **strato di adattamento V2** può convertire la mappa JSON in una chiamata con argomenti posizionali legacy, **oppure** aggiungere una clausola nel suo adapter. Documentare e testare questa conversione. Non cambiare silenziosamente il significato dei dati V1.
-
-### 7.2 Conformance richiesto per ciascun satellite
-
-Per ogni package eseguire **tutte** queste prove, non solo un test di compilazione:
-
-1. `tools/1` del package compilato, descriptor/digest validi e assenza di collisioni.
-2. `available_tools` restituisce operazioni V2 **solo se** host le espone e lo scope Skill lo consente; le altre restano private.
-3. `call_tool` da root e da un child Skill produce lo stesso `prepare/invoke/project` (o lo stesso `propose/GAM`) del vecchio helper V1.
-4. Esistono test per argomenti malformati, tool inesistente, operation non registrata, domain error e risultato non portabile.
-5. Per tool governato: denial, approval, timeout, esito ambiguo, replay protetto e provenance Skill; **non** chiamare `execute_effect` durante `prepare/invoke`.
-6. Standalone API e resource/provider behaviors restano invariati; `spectre_ecosystem` esegue l'integrazione completa con core e package reali, non con test stub che imitano il contratto.
-
-Se un adapter V2 richiede un `if package == :mnemonic` o `case tool == :lens` nel Core, il gate fallisce: la regola va espressa dal descriptor/adapter, oppure serve discutere un nuovo **contratto generico**, non un'eccezione per satellite.
 
 ## 8. Test di errore, sicurezza e proprietà del flusso
 
@@ -869,7 +869,7 @@ Migrare in ordine: **Prism (read-only) -> Ledger/Lab (diagnostica) -> Mnemonic (
 
 ### Fase 4 - Contratto :cont, root/Skill handoff
 
-In `server.ex` + `server/runtime.ex` aggiungere `handle_input/2` e ritorni `:cont / {:cont, ctx}`, con state-only dispatch validation. Preservare precedenza degli interrupt, consent e dei pending. Sperimentare prima `await_reply/route_current_input`; aggiungere un lease di ownership minimo **solo se necessario** per la conversazione senza pending. Root/Skill handoff per yield con una receipt idempotente e one-pass router.
+In `server.ex` + `server/runtime.ex` aggiungere `handle_input/2`, `claim_conversation/release_conversation` e ritorni `:cont / {:cont, ctx}`, con state-only dispatch validation, lease autenticato e receipt root/child. Preservare precedenza degli interrupt, consent e dei pending. Sperimentare prima `await_reply/route_current_input`; aggiungere un lease di ownership minimo **solo se necessario** per la conversazione senza pending. Root/Skill handoff per yield con una receipt idempotente e one-pass router.
 
 **GATE 4:** sequenza T1-T6 della sezione 4.5 verde, nessuna seconda classificazione, nessuna conferma GAM incrociata, test di duplicate yield e crash.
 
