@@ -7,7 +7,7 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
-## 0.4.1 — Unreleased
+## 0.4.1 — 2026-11-22
 
 ### Added
 

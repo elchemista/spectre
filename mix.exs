@@ -3,7 +3,7 @@ defmodule Spectre.MixProject do
 
   @version "0.4.1"
   @source_url "https://github.com/elchemista/spectre"
-  @homepage_url "https://spectre.elchemista.com"
+  @homepage_url "https://spectre.guide"
   @example_files ~w(
     docs/examples/agent_server_quickstart.exs
     docs/examples/outreach_agent.exs

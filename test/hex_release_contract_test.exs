@@ -83,7 +83,7 @@ defmodule SpectreHexReleaseContractTest do
     assert config[:elixir] == "~> 1.19"
     assert Spectre.version() == @release
     assert Application.spec(:spectre, :vsn) |> to_string() == @release
-    assert config[:homepage_url] == "https://spectre.elchemista.com"
+    assert config[:homepage_url] == "https://spectre.guide"
     assert docs[:source_ref] == @release
     assert package[:licenses] == ["Apache-2.0"]
     assert "LLMS.md" in package[:files]
@@ -99,7 +99,7 @@ defmodule SpectreHexReleaseContractTest do
     end
 
     assert package[:links] == %{
-             "Website" => "https://spectre.elchemista.com",
+             "Website" => "https://spectre.guide",
              "Documentation" =>
                "https://github.com/elchemista/spectre/blob/#{@release}/docs/START_HERE.md",
              "GitHub" => "https://github.com/elchemista/spectre",
