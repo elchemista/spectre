@@ -115,120 +115,35 @@ for per-subject ownership. [Getting started](docs/GETTING_STARTED.md).
 
 ## Open chat with Directive missions
 
-Give the Agent a chat route and a mission route. An LLM classifier can recognize
-“Compare these markets and prepare a report” without a trigger word. Ordinary
-chat, including an unmatched message, generates a reply in the Root. A mission
-runs independently while the Root continues accepting chat.
+Start the [LiveView demo](https://github.com/elchemista/demo_spectre/tree/0.4.1#website-mission-with-directive-020)
+with [OpenRouter enabled](https://github.com/elchemista/demo_spectre/tree/0.4.1#optional-openrouter)
+and write in chat:
 
-With `[:llm_classifier]`, an ordinary chat turn can call the model once for
-classification and again for the reply. Add a local recognition strategy
-when explicit patterns or reviewed examples can settle some routes.
+> Visita https://elchemista.com/en, trova un contatto e inviagli un’email per chiedere una call.
 
-This example requires Spectre 0.4.1, Directive 0.2.0 and a host model adapter
-`MyApp.TextModel` implementing `Spectre.LLM.complete(prompt, options)`. A model
-can return `{:ok, text}` or `{:error, reason}`. Here one adapter is used for
-classification, replies and mission reasoning. You can configure separate
-adapters. [Model contracts and configuration](docs/PROVIDERS.md).
+1. The router recognizes the request and the Server starts a Directive Activity.
+   You can keep chatting while it works.
+2. Directive uses Lens to read the page, find a contact and prepare an email.
+3. Review the recipient, subject and body. GAM asks you to approve saving the
+   draft, then asks separately before sending it. After approval, the email
+   appears in the demo’s development mailbox at `/dev/mailbox`.
+
+For the same workflow without a model API key, select **Missione · salva e invia**
+in the demo.
+
+The demo starts the Activity with one Server command:
 
 ```elixir
-defmodule MyApp.Workspace do
-  use Spectre.Stack
-  install Spectre.Directive
-end
-
-defmodule MyApp.Assistant do
-  use Spectre.Agent, stack: MyApp.Workspace, server: MyApp.AssistantServer
-
-  model MyApp.TextModel
-  classifier :llm, MyApp.TextModel
-  router strategies: [:llm_classifier]
-
-  flow :assistant do
-    on :chat, semantic_examples: ["How are you?", "Remind me what we discussed"]
-    on :mission, semantic_examples: ["Compare these markets and prepare a report"]
-  end
-end
-
-defmodule MyApp.AssistantServer do
-  use Spectre.Server, prompt_root: "priv/prompts"
-
-  def handle_flow({:assistant, :mission}, input, ctx) do
-    start_activity(ctx, {:directive, :mission}, %{
-      goal: input.text,
-      context: %{recent_turns: Map.get(ctx.assigns, :turns, [])}
-    })
-  end
-
-  def handle_flow({:assistant, :chat}, _input, ctx), do: chat(ctx)
-  def handle_flow(:unmatched, _input, ctx), do: chat(ctx)
-
-  def handle_result(:chat_reply, {:generated, %{text: text}}, ctx) do
-    turns = Map.get(ctx.assigns, :turns, []) ++ [%{user: ctx.input.text, assistant: text}]
-    ctx |> assign(:turns, Enum.take(turns, -6)) |> respond(text)
-  end
-
-  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
-
-  defp chat(ctx) do
-    generate(ctx, :chat,
-      assigns: %{recent_turns: Map.get(ctx.assigns, :turns, [])},
-      on_result: :chat_reply
-    )
-  end
-end
+Spectre.Server.start_activity(ctx, {:website_mission, :outreach}, mission,
+  scope: allowed_tools
+)
 ```
 
-Add `priv/prompts/chat.text.heex` to the app.
-
-```text
-Answer the latest message in the user's language. Use earlier turns as context.
-Earlier turns:
-<%= Spectre.Prompt.data(Spectre.JSON.encode!(@recent_turns)) %>
-Latest message:
-<%= Spectre.Prompt.data(@input.text) %>
-```
-
-- `stack:` selects the installed packages. `{:directive, :mission}` names
-  Directive's installation and its Activity type. Installing the package
-  registers the type. `start_activity/3` creates each execution.
-- `goal` is the user's request. `context` carries application data available
-  to the mission. This example supplies six recent chat turns and uses the
-  built-in Directive mission prompt. Include only the context the model needs.
-- `semantic_examples:` describe the intent to the classifier. To use them for
-  vector similarity as well, configure an embedder and enable `:embedding`.
-  A classified label selects a declared handler. Permissions come from the host.
-- `prompt_root:` locates the Root's prompts. `:chat` resolves the prompt shown
-  above. A custom Activity can set its own prompt root and otherwise uses
-  the Agent's configured root. `assigns:` adds template data for this
-  command. `on_result: :chat_reply`
-  sends the generation result to the matching callback clause. The tag is an
-  application name. It differs from the `:chat` route and prompt name.
-- The result handler records the generated text beside the input, keeps the
-  six most recent chat turns and replies. `super/3` delegates the other results
-  to Spectre, including the default failure reply. `Spectre.Prompt.data/1`
-  marks user content and history as data within the prompt.
-
-Call `Spectre.Server.input/2` on the same Root for chat and new missions.
-The consumer receives `{:activity, identity, :started}` inside
-`{Spectre.Server, root, event}`. `identity.ref` identifies this execution.
-Use `Spectre.Server.activities(root)` to list work. Target a reference with
-`Spectre.Server.signal_activity(root, ref, {:revise, notes})` or
-`Spectre.Server.cancel_activity(root, ref)`. Here `notes` is the new instruction.
-Wait for lifecycle events to show completion, failure or cancellation.
-For a message such as “Focus only on Italy,” have the UI or application choose
-the target execution and send a revision to that ref. When several missions
-could match, ask the user which one. In the example, the `:mission` route
-starts new work and the chat routes keep the conversation going.
-[Activity lifecycle, options and replies](docs/AGENT_SERVER.md#run-a-background-activity).
-
-This mission example reasons and asks questions. To give it an installed tool,
-pass a map such as `tools: %{"read_document" => {:documents, :read}}` in the
-mission arguments. `"read_document"` is the alias visible to the model.
-`{:documents, :read}` is the Stack binding chosen by the application. A governed
-tool goes through GAM. Use `scope:` on the start command to narrow access further.
-Directive consumes structured mission decisions using these aliases. Kinetic is
-an optional integration for interpreting Action Language and preparing proposals.
-[Runnable examples and Directive](docs/EXAMPLES.md).
+`{:website_mission, :outreach}` is the demo’s Directive Activity installed in
+the Stack. `mission` carries the link, the user’s request and the tools
+Directive can use. `scope:` limits which tools this run can call.
+[Mission source](https://github.com/elchemista/demo_spectre/blob/0.4.1/lib/demo_spectre/outreach_mission.ex)
+· [Activity guide](docs/AGENT_SERVER.md#run-a-background-activity)
 
 ## Routing strategies
 
