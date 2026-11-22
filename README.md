@@ -115,76 +115,85 @@ for per-subject ownership. [Getting started](docs/GETTING_STARTED.md).
 
 ## Open chat with Directive missions
 
-Start the [LiveView demo](https://github.com/elchemista/demo_spectre/tree/0.4.1#website-mission-with-directive-020)
-with [OpenRouter enabled](https://github.com/elchemista/demo_spectre/tree/0.4.1#optional-openrouter)
-and write in chat:
-
-> Visita https://elchemista.com/en, trova un contatto e inviagli un’email per chiedere una call.
-
-Here is the mission route in code. It uses `DemoSpectre.AI`, the demo Stack
-that installs Directive, Lens and the website and email tools.
+Use Directive for messages that reach `:unmatched`. The user's message is
+the mission goal. This example uses `DemoSpectre.AI`, the demo Stack with
+Directive, a Lens website reader and a registered Kinetic email action.
 
 ```elixir
-defmodule WebsiteEmail.Agent do
-  use Spectre.Agent, stack: DemoSpectre.AI, server: WebsiteEmail.Server
-
+defmodule WebsiteAssistant.Agent do
+  use Spectre.Agent, stack: DemoSpectre.AI, server: WebsiteAssistant.Server
   model(DemoSpectre.Model)
-  classifier(:llm, DemoSpectre.Model, llm_opts: [structured_output?: false])
-  router(strategies: [:llm_classifier])
-
-  flow :website do
-    on(:send_email, semantic_examples: ["Find a contact on a website and send an email"])
-  end
 end
 
-defmodule WebsiteEmail.Server do
-  use Spectre.Server, prompt_root: {:priv, :demo_spectre, "prompts"}
+defmodule WebsiteAssistant.Server do
+  use Spectre.Server, tools: DemoSpectre.AI
 
-  def handle_flow({:website, :send_email}, %{text: request}, ctx) do
-    case DemoSpectre.IntentClassifier.urls(request) do
-      [url] ->
-        tools = %{
-          "analyse_site" => {:website_mission, :analyse_site},
-          "save_draft" => {:website_mission, :save_draft}
-        }
-
-        start_activity(
-          ctx,
-          {:website_mission, :outreach},
-          %{
-            goal: "Read the URL with analyse_site. Then call save_draft with the observed " <>
-              "contact, observation ID, email subject and body.",
-            context: %{demo_website_mail: %{url: url, request: request}},
-            tools: tools,
-            send_after_save: true
-          },
-          scope: [{:website_mission, :send_draft} | Map.values(tools)]
-        )
-
-      _ ->
-        respond(ctx, "Please include one website link.")
-    end
+  def handle_flow(:unmatched, input, ctx) do
+    start_activity(ctx, {:directive, :mission}, %{
+      goal: input.text,
+      tools: %{"read_site" => {:website_mission, :analyse_site}},
+      constraints: [
+        "For website email, use a contact found with read_site.",
+        ~s(If the user asks to send mail, return <al>SEND EMAIL TO="..." BODY="..."</al>.)
+      ]
+    }, scope: [{:website_mission, :analyse_site}])
   end
 
-  def handle_flow(:unmatched, _input, ctx) do
-    generate(ctx, :chat, purpose: :chat, planning: false, assigns: %{recent_turns: []})
+  def handle_activity(_mission, {:completed, %{mission_id: _, result: text}}, ctx)
+      when is_binary(text) do
+    kinetic(ctx, %{model_output: text, planning: false}, on_result: :prepared)
   end
+
+  def handle_activity(_mission, _event, ctx), do: ctx
+
+  def handle_result(:prepared, {:prepared, %{actions: [], text: text}}, ctx),
+    do: respond(ctx, text)
+
+  def handle_result(
+        :prepared,
+        {:prepared, %{actions: [%{operation: {:kinetic, :send_email}} = email]}},
+        ctx
+      ) do
+    propose(ctx, email.operation, email.args,
+      proposal_metadata: email.metadata,
+      on_result: :sent
+    )
+  end
+
+  def handle_result(:sent, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
+    do: respond(ctx, "Email delivered to the development mailbox.")
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
 end
 ```
 
-`on(:send_email, ...)` selects `handle_flow({:website, :send_email}, ...)`.
-The Server passes the URL and original request to Directive. The model can
-use the two aliases in `tools`. The Activity requests `send_draft` after the
-save succeeds because `send_after_save` is set. `scope:` limits this run to
-those three tools.
+`read_site` is the model-facing name for the Lens reader. The mission's
+`scope:` limits it to that tool. When Directive completes, the Server passes
+its `result` to `kinetic/3`. Plain text becomes a chat reply. A single
+prepared email goes to `propose/4` with Kinetic's metadata.
 
-The chat stays available while Directive works. GAM asks for separate approvals
-to save and send the draft. After both, the message appears in `/dev/mailbox`.
-To try the same mission without an OpenRouter key, select **Missione · salva e invia**.
+In the configured demo app, start the Stack and require confirmation for the
+registered email operation:
 
-[Demo Stack](https://github.com/elchemista/demo_spectre/blob/0.4.1/lib/demo_spectre/ai.ex)
-· [Outreach Activity](https://github.com/elchemista/demo_spectre/blob/0.4.1/lib/demo_spectre/outreach_activity.ex)
-· [GAM configuration](https://github.com/elchemista/demo_spectre/blob/0.4.1/lib/demo_spectre/session.ex)
+```elixir
+{:ok, stack} = Spectre.Stack.Runtime.start_link(DemoSpectre.AI)
+
+{:ok, server} = Spectre.Server.start_link(
+  agent: WebsiteAssistant.Agent,
+  stack_runtime: stack,
+  consumer: self(),
+  identity: %{subject: Spectre.Identity.uuid7()},
+  gam: [operations: %{{:kinetic, :send_email} => [confirm: true]}]
+)
+
+Spectre.Server.input(server, "Visit https://elchemista.com/en and email the contact to ask for a call.")
+```
+
+The consumer shows the exact email and submits the user's decision. Once
+approved, the demo's executor delivers to `/dev/mailbox`.
+[Demo Stack and model setup](https://github.com/elchemista/demo_spectre/tree/0.4.1)
+· [Show and approve the GAM presentation](docs/MANAGED_GAM.md)
+· [Activity lifecycle](docs/AGENT_SERVER.md#run-a-background-activity).
 
 ## Routing strategies
 
