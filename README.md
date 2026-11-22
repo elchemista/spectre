@@ -121,29 +121,70 @@ and write in chat:
 
 > Visita https://elchemista.com/en, trova un contatto e inviagli un’email per chiedere una call.
 
-1. The router recognizes the request and the Server starts a Directive Activity.
-   You can keep chatting while it works.
-2. Directive uses Lens to read the page, find a contact and prepare an email.
-3. Review the recipient, subject and body. GAM asks you to approve saving the
-   draft, then asks separately before sending it. After approval, the email
-   appears in the demo’s development mailbox at `/dev/mailbox`.
-
-For the same workflow without a model API key, select **Missione · salva e invia**
-in the demo.
-
-The demo starts the Activity with one Server command:
+Here is the mission route in code. It uses `DemoSpectre.AI`, the demo Stack
+that installs Directive, Lens and the website and email tools.
 
 ```elixir
-Spectre.Server.start_activity(ctx, {:website_mission, :outreach}, mission,
-  scope: allowed_tools
-)
+defmodule WebsiteEmail.Agent do
+  use Spectre.Agent, stack: DemoSpectre.AI, server: WebsiteEmail.Server
+
+  model(DemoSpectre.Model)
+  classifier(:llm, DemoSpectre.Model, llm_opts: [structured_output?: false])
+  router(strategies: [:llm_classifier])
+
+  flow :website do
+    on(:send_email, semantic_examples: ["Find a contact on a website and send an email"])
+  end
+end
+
+defmodule WebsiteEmail.Server do
+  use Spectre.Server, prompt_root: {:priv, :demo_spectre, "prompts"}
+
+  def handle_flow({:website, :send_email}, %{text: request}, ctx) do
+    case DemoSpectre.IntentClassifier.urls(request) do
+      [url] ->
+        tools = %{
+          "analyse_site" => {:website_mission, :analyse_site},
+          "save_draft" => {:website_mission, :save_draft}
+        }
+
+        start_activity(
+          ctx,
+          {:website_mission, :outreach},
+          %{
+            goal: "Read the URL with analyse_site. Then call save_draft with the observed " <>
+              "contact, observation ID, email subject and body.",
+            context: %{demo_website_mail: %{url: url, request: request}},
+            tools: tools,
+            send_after_save: true
+          },
+          scope: [{:website_mission, :send_draft} | Map.values(tools)]
+        )
+
+      _ ->
+        respond(ctx, "Please include one website link.")
+    end
+  end
+
+  def handle_flow(:unmatched, _input, ctx) do
+    generate(ctx, :chat, purpose: :chat, planning: false, assigns: %{recent_turns: []})
+  end
+end
 ```
 
-`{:website_mission, :outreach}` is the demo’s Directive Activity installed in
-the Stack. `mission` carries the link, the user’s request and the tools
-Directive can use. `scope:` limits which tools this run can call.
-[Mission source](https://github.com/elchemista/demo_spectre/blob/0.4.1/lib/demo_spectre/outreach_mission.ex)
-· [Activity guide](docs/AGENT_SERVER.md#run-a-background-activity)
+`on(:send_email, ...)` selects `handle_flow({:website, :send_email}, ...)`.
+The Server passes the URL and original request to Directive. The model can
+use the two aliases in `tools`. The Activity requests `send_draft` after the
+save succeeds because `send_after_save` is set. `scope:` limits this run to
+those three tools.
+
+The chat stays available while Directive works. GAM asks for separate approvals
+to save and send the draft. After both, the message appears in `/dev/mailbox`.
+To try the same mission without an OpenRouter key, select **Missione · salva e invia**.
+
+[Demo Stack](https://github.com/elchemista/demo_spectre/blob/0.4.1/lib/demo_spectre/ai.ex)
+· [Outreach Activity](https://github.com/elchemista/demo_spectre/blob/0.4.1/lib/demo_spectre/outreach_activity.ex)
+· [GAM configuration](https://github.com/elchemista/demo_spectre/blob/0.4.1/lib/demo_spectre/session.ex)
 
 ## Routing strategies
 
